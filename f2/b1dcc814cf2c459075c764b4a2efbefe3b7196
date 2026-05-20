@@ -1,0 +1,34 @@
+shared/node-manifest.ts
+  s_3e9de69a56e5c0::t_c061d1aa52d3f7 131-132,135-137,139-140,142-145,149-153
+  s_3e9de69a56e5c0::t_92e04923af3f75 7-8,16-51
+  s_3e9de69a56e5c0::t_9f6d25c45063e6 301-336,345-348,354-376
+bin/relay-ide.ts
+  s_3e9de69a56e5c0::t_47994243c106f7 1838-1843
+test/node-manifest-build.test.ts
+  s_3e9de69a56e5c0::t_f50ae002ef1282 1-154,156-161,163-453,455-605
+server/node-manifest-build.ts
+  s_3e9de69a56e5c0::t_d3f5d941c87f29 1-363,373-378,383-400
+  s_3e9de69a56e5c0::t_8be22550f3a365 364-372,379-382
+server/node-manifest.ts
+  s_3e9de69a56e5c0::t_09d794f63ca16f 11
+  s_3e9de69a56e5c0::t_aa9a9fca96706a 32-37
+  s_3e9de69a56e5c0::t_b90022304fe533 228,230-236
+  s_3e9de69a56e5c0::t_42e6f24490cf90 212-217,224
+  s_3e9de69a56e5c0::t_e2f712238489d0 186-189,196-201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "f2b1dcc814cf2c459075c764b4a2efbefe3b7196",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
