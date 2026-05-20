@@ -47,6 +47,9 @@ interface FileRpcCopyAcrossNodesRequest {
   expectedDestHash?: string;
   // size cap; server enforces a hard ceiling regardless.
   maxBytes: number;
+  // client-supplied idempotency token; only honored for mode: 'create'
+  // (see open question 1 below). Bounded TTL on hub-side cache.
+  idempotencyKey?: string;
 }
 ```
 
@@ -137,15 +140,23 @@ The cost: a new envelope variant. The hub's audit emitter learns one more action
 
 ## Failure modes and recovery
 
-| Stage                   | What can fail                                                                          | Server behavior                                                                                                                                                                                                                        | Client-visible code                                                 |
-| ----------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Policy decision         | Source or dest grant missing                                                           | Deny before any read attempted; emit `denial` audit row.                                                                                                                                                                               | `FORBIDDEN`                                                         |
-| Source read             | Network drop, file not found, source node offline                                      | No bytes leave the source side; no write attempted; emit `denial` audit row with `COPY_SOURCE_READ_FAILED` reason.                                                                                                                     | `COPY_SOURCE_READ_FAILED` (or `NODE_OFFLINE`, `FILE_RPC_NOT_FOUND`) |
-| Hash check              | `expectedDestHash` mismatch                                                            | Source bytes are discarded by the hub; dest unchanged; emit `denial` audit row.                                                                                                                                                        | `COPY_DEST_HASH_MISMATCH`                                           |
-| Dest write              | Network drop after read, dest node offline, write-permission denied                    | Source bytes discarded; dest unchanged; emit `denial` audit row with `COPY_DEST_WRITE_FAILED`.                                                                                                                                         | `COPY_DEST_WRITE_FAILED`                                            |
-| Network drop mid-stream | Hub holds bytes in memory; if dest write completes the hub still emits the success row | If dest write was committed before the drop, the audit chain reflects success and the client retries idempotently (same `expectedDestHash` → either `COPY_DEST_HASH_MISMATCH` if the prior write landed or success again if it didn't) | depends on which leg dropped                                        |
+| Stage                      | What can fail                                                                      | Server behavior                                                                                                                                                                 | Client-visible code                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Policy decision            | Source or dest grant missing                                                       | Deny before any read attempted; emit `denial` audit row.                                                                                                                        | `FORBIDDEN`                                                         |
+| Source read                | Network drop, file not found, source node offline                                  | No bytes leave the source side; no write attempted; emit `denial` audit row with `COPY_SOURCE_READ_FAILED` reason.                                                              | `COPY_SOURCE_READ_FAILED` (or `NODE_OFFLINE`, `FILE_RPC_NOT_FOUND`) |
+| Hash check                 | `expectedDestHash` mismatch                                                        | Source bytes are discarded by the hub; dest unchanged; emit `denial` audit row.                                                                                                 | `COPY_DEST_HASH_MISMATCH`                                           |
+| Dest write                 | Network drop after read, dest node offline, write-permission denied                | Source bytes discarded; dest unchanged; emit `denial` audit row with `COPY_DEST_WRITE_FAILED`.                                                                                  | `COPY_DEST_WRITE_FAILED`                                            |
+| Client → Hub request drop  | Request never reached the hub                                                      | Nothing happens on either node; no audit row.                                                                                                                                   | Client sees transport-level error; safe to retry.                   |
+| Source → Hub transfer drop | Source read started but bytes did not fully arrive at the hub                      | Hub aborts the read; no write attempted; emit `denial` audit row.                                                                                                               | `COPY_SOURCE_READ_FAILED` (or `NODE_OFFLINE`)                       |
+| Hub → Dest transfer drop   | Source read completed; dest write started but did not commit                       | Source bytes discarded; dest unchanged; emit `denial` audit row.                                                                                                                | `COPY_DEST_WRITE_FAILED`                                            |
+| Hub → Client response drop | Operation committed on dest; success row in audit chain; client never saw response | The audit chain is the source of truth: dest hash matches `newHash`. Client retry semantics are mode-dependent — see the idempotency note below for `mode: 'create'` ambiguity. | Client transport error; retry behavior differs by mode              |
 
 The hub does not surface "we got partway through" to the client. The contract is: either the destination has the expected bytes and the hash matches, or it doesn't.
+
+### Retry semantics by mode
+
+- **`mode: 'overwrite'`.** The retry is naturally idempotent. The client sends the same `expectedDestHash`. If the prior write committed, `expectedDestHash` no longer matches the new content → server returns `COPY_DEST_HASH_MISMATCH` and the client knows the prior write landed. If the prior write did not commit, the retry succeeds. No ambiguity.
+- **`mode: 'create'`.** The retry is **not** naturally idempotent. If the prior write committed, the dest file now exists and the retry fails with `FILE_RPC_WRITE_PERMISSION_DENIED` or a `FILE_EXISTS`-shaped error — and the client cannot distinguish "my prior request landed" from "another writer raced me to that path". See the idempotency-key open question below for the v1 disposition of this case.
 
 ---
 
@@ -182,7 +193,14 @@ Where Relay diverges:
 
 ## Open questions (resolve before implementation)
 
-1. **Idempotency key.** Should the request carry a client-supplied idempotency token so retries after network drops don't double-write when the dest hash hasn't yet been read? If `expectedDestHash` is set and matches, a retry would just no-op — but if the dest content has diverged, the retry surfaces `COPY_DEST_HASH_MISMATCH`. That seems sufficient; no separate idempotency key needed for v1.
+1. **Idempotency key.** Should the request carry a client-supplied idempotency token so retries after network drops are unambiguous?
+
+   The case **for** adding one is the `mode: 'create'` retry ambiguity above: after a Hub → Client response drop, the client cannot tell whether its create landed or whether another writer beat it to the path. An idempotency key (client-supplied UUID; hub remembers the (key → result) mapping for some bounded window, e.g. 5 minutes) lets the hub return the cached success response on retry and skip the racy second write.
+
+   The case **against** is added state: the hub now keeps a short-lived idempotency cache and must invalidate it on dest changes from non-copy paths (e.g. a direct `fs.write` to the same path while the cache is live).
+
+   **Recommendation:** add `idempotencyKey?: string` to the request shape **for `mode: 'create'`** only; ignore the field for `mode: 'overwrite'` (where `expectedDestHash` already provides idempotency). Bounded TTL on the cache (5 min), keyed on `(destNodeId, destPath, idempotencyKey)`. This was a gap in the original spike — flagged by review feedback before implementation.
+
 2. **Audit row cardinality if dest is the same as source node.** Should "copy within the same node" be allowed? It maps to a local `fs.read` → `fs.write` and doesn't need the cross-node envelope. Reject at the hub: same `nodeId` on both sides returns `INVALID_ARGUMENT` and forces the caller to use `fs.write` directly.
 3. **Provider-side enforcement.** The destination node still enforces its own filesystem permission bits at write time. If the hub said "yes" but the OS user can't write the path, we surface `FILE_RPC_WRITE_PERMISSION_DENIED` (same code as slice 4's existing path). This is consistent and needs no new error class.
 
