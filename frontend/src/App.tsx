@@ -889,6 +889,16 @@ export default function App() {
     (s) => s.recallSessionForWorkspace
   );
 
+  // #630: env picker candidates derived from known repos. Memoized so the
+  // dialog's internal effects (default-selection memo, etc.) don't refire
+  // on unrelated App rerenders. The `generatedAt` is intentionally bound to
+  // the `repos` reference — when repos change we get fresh stamps; when they
+  // don't we keep the same option identities (Gemini PR #646 feedback).
+  const envPickerOptions = useMemo(
+    () => reposToEnvironmentOptions(repos, new Date().toISOString()),
+    [repos]
+  );
+
   // ── Boot store ─────────────────────────────────────────────────────────────
   const bootComplete = useBootStateStore((s) => s.bootComplete);
   const startBoot = useBootStateStore((s) => s.startBoot);
@@ -1310,10 +1320,12 @@ export default function App() {
       />
       {/* #630: command-palette "start work in environment…" target. Driven by
           the `env-picker` ActiveModal variant. Options derive from known
-          repos as a stopgap until the full env-inventory feed lands (#615). */}
+          repos as a stopgap until the full env-inventory feed lands (#615).
+          Memoized on `repos` so the picker's internal effects don't fire on
+          unrelated App rerenders (Gemini PR #646 feedback). */}
       <EnvPickerDialog
         open={activeModal?.modal === 'env-picker'}
-        options={reposToEnvironmentOptions(repos)}
+        options={envPickerOptions}
         onClose={handleModalClose}
       />
 

@@ -86,10 +86,18 @@ export function repoToEnvironmentOption(
 /**
  * Build the candidate list <EnvPickerDialog> consumes: one option per known
  * repo plus a single "free home" option for non-repo launches.
+ *
+ * `generatedAt` is required (no default `new Date().toISOString()`) so the
+ * function is deterministic. Defaulting to "now" would re-stamp every
+ * EnvironmentOption on every call and break reference equality, defeating
+ * React memoization at every call site. Callers are responsible for picking
+ * a stable timestamp source — typically the upstream inventory snapshot
+ * time — or a once-per-mount `useMemo` if no upstream time exists yet
+ * (per Gemini PR #646 feedback).
  */
 export function reposToEnvironmentOptions(
   repos: readonly Repo[],
-  generatedAt: string = new Date().toISOString()
+  generatedAt: string
 ): EnvironmentOption[] {
   const opts = repos.map((repo) => repoToEnvironmentOption(repo, generatedAt));
   // Always offer a free / non-git cwd entry so the user can launch into a

@@ -72,6 +72,17 @@ describe('reposToEnvironmentOptions', () => {
     expect(opts[1]?.cwd).toBe('~');
   });
 
+  it('is deterministic for identical inputs (stable refs for React memoization)', () => {
+    // Gemini PR #646: defaulting `generatedAt` to `new Date().toISOString()`
+    // would re-stamp every option on every call and break memoization at
+    // every call site. The signature now requires the timestamp, and the
+    // resulting `generatedAt` field MUST be identical when the input is.
+    const a = reposToEnvironmentOptions([gitRepo()], GENERATED_AT);
+    const b = reposToEnvironmentOptions([gitRepo()], GENERATED_AT);
+    expect(a).toEqual(b);
+    expect(a.every((opt) => opt.generatedAt === GENERATED_AT)).toBe(true);
+  });
+
   it('produces unique ids per option', () => {
     const opts = reposToEnvironmentOptions(
       [
