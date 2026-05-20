@@ -1,0 +1,24 @@
+docs/federated-relay.md
+  s_9eb1a81904495b::t_184ead65c9f9d1 524-545
+test/file-resource-ref.test.ts
+  s_9eb1a81904495b::t_4bec73d5377a36 1-261
+shared/file-resource-ref.ts
+  s_9eb1a81904495b::t_aae10cb2c0fc33 1-175,177-179,190-224
+  s_9eb1a81904495b::t_1d2a1c7adfafb3 176,180-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "821f64de151dc091eb335b62bc5a7481b5f789bc",
+  "prompts": {},
+  "sessions": {
+    "s_9eb1a81904495b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53e80a0e-911e-46c4-85e1-6c4fa7efbf19",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
