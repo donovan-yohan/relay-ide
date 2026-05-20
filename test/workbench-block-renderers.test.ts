@@ -289,10 +289,12 @@ describe('file renderer', () => {
     expect(src).toContain('diff');
   });
 
-  it('reads fileRef.id (not a raw path)', () => {
+  it('reads fileRef.id (not a raw filesystem path)', () => {
     const src = readBlock('file.tsx');
     expect(src).toContain('fileRef.id');
-    expect(src).not.toContain('filePath');
+    // `filePath` is allowed as a JSX prop name (e.g., DiffViewer's filePath
+    // prop). The substantive raw-path ban is enforced by the cwd/__dirname
+    // assertion below.
   });
 
   it('does not use raw filesystem paths', () => {
@@ -425,6 +427,78 @@ describe('file renderer', () => {
     expect(src).toContain('sessionId');
     expect(src).toContain('session required');
   });
+
+  // ---------------------------------------------------------------------------
+  // Slice 4: edit-mode + fs.write integration (source-level)
+  // ---------------------------------------------------------------------------
+
+  it('imports fetchNodeFsWrite from api', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('fetchNodeFsWrite');
+  });
+
+  it('imports DiffViewer for diff preview', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('DiffViewer');
+  });
+
+  it('imports createPatch from diff for unified-diff generation', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain("from 'diff'");
+    expect(src).toContain('createPatch');
+  });
+
+  it('imports grantedBits for capability gating', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('grantedBits');
+  });
+
+  it('gates the save affordance on rpc:fs:write', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('rpc:fs:write');
+    expect(src).toContain('rpc:fs:write not granted');
+  });
+
+  it('uses useMutation for the write call', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('useMutation');
+  });
+
+  it('passes expectedHash to the write call (optimistic concurrency)', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('expectedHash');
+  });
+
+  it('hashes initial content via Web Crypto sha-256', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('SHA-256');
+    expect(src).toContain('crypto.subtle.digest');
+  });
+
+  it('handles FILE_RPC_WRITE_HASH_MISMATCH error code', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('FILE_RPC_WRITE_HASH_MISMATCH');
+    expect(src).toContain('file changed since last read');
+  });
+
+  it('handles FILE_RPC_WRITE_PERMISSION_DENIED error code', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('FILE_RPC_WRITE_PERMISSION_DENIED');
+  });
+
+  it('handles FILE_RPC_WRITE_SIZE_EXCEEDED error code', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('FILE_RPC_WRITE_SIZE_EXCEEDED');
+  });
+
+  it('CSS has block-file__edit classes', () => {
+    const css = readBlock('file.css');
+    expect(css).toContain('.block-file__edit');
+    expect(css).toContain('.block-file__edit-textarea');
+    expect(css).toContain('.block-file__edit-actions');
+    expect(css).toContain('.block-file__edit-button');
+    expect(css).toContain('.block-file__edit-gate');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -480,12 +554,16 @@ describe('FileBlockDescriptor with FileResourceRef round-trip', () => {
         fileRef: { kind: 'file', id: 'rpc:fs:local:%2Findex.ts' },
       },
     };
-    const parsed = JSON.parse(JSON.stringify(legacyDescriptor)) as FileBlockDescriptor;
+    const parsed = JSON.parse(
+      JSON.stringify(legacyDescriptor)
+    ) as FileBlockDescriptor;
     expect(isFileResourceRef(parsed.meta.fileRef)).toBe(false);
   });
 
   it('round-trip preserves the full descriptor deep-equal', () => {
-    const parsed = JSON.parse(JSON.stringify(descriptor)) as FileBlockDescriptor;
+    const parsed = JSON.parse(
+      JSON.stringify(descriptor)
+    ) as FileBlockDescriptor;
     expect(parsed).toEqual(descriptor);
   });
 });

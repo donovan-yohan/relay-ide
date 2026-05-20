@@ -4,6 +4,7 @@ import type {
   FileRpcListResponse,
   FileRpcReadResponse,
   FileRpcStatResponse,
+  FileRpcWriteResponse,
 } from '../../../shared/file-rpc.js';
 import type {
   SessionSummary,
@@ -721,9 +722,15 @@ export interface NodeFsListArgs {
   maxEntries?: number;
 }
 
-export async function fetchNodeFsList(args: NodeFsListArgs): Promise<FileRpcListResponse> {
+export async function fetchNodeFsList(
+  args: NodeFsListArgs
+): Promise<FileRpcListResponse> {
   const url = `/hub/nodes/${encodeURIComponent(args.nodeId)}/sessions/${encodeURIComponent(args.sessionId)}/files/list`;
-  const body: Omit<FileRpcListRequest, 'sessionId' | 'root'> & { cwd: string; path: string; maxEntries: number } = {
+  const body: Omit<FileRpcListRequest, 'sessionId' | 'root'> & {
+    cwd: string;
+    path: string;
+    maxEntries: number;
+  } = {
     cwd: args.cwd,
     path: args.path ?? args.cwd,
     maxEntries: args.maxEntries ?? 100,
@@ -745,7 +752,9 @@ export interface NodeFsReadArgs {
   rangeStart?: number;
 }
 
-export async function fetchNodeFsRead(args: NodeFsReadArgs): Promise<FileRpcReadResponse> {
+export async function fetchNodeFsRead(
+  args: NodeFsReadArgs
+): Promise<FileRpcReadResponse> {
   const url = `/hub/nodes/${encodeURIComponent(args.nodeId)}/sessions/${encodeURIComponent(args.sessionId)}/files/read`;
   const body: Record<string, unknown> = { path: args.path };
   if (args.maxBytes !== undefined) body.maxBytes = args.maxBytes;
@@ -765,10 +774,47 @@ export interface NodeFsStatArgs {
   path: string;
 }
 
-export async function fetchNodeFsStat(args: NodeFsStatArgs): Promise<FileRpcStatResponse> {
+export async function fetchNodeFsStat(
+  args: NodeFsStatArgs
+): Promise<FileRpcStatResponse> {
   const url = `/hub/nodes/${encodeURIComponent(args.nodeId)}/sessions/${encodeURIComponent(args.sessionId)}/files/stat`;
   const body: Record<string, unknown> = { path: args.path };
   return json<FileRpcStatResponse>(
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+export interface NodeFsWriteArgs {
+  nodeId: string;
+  sessionId: string;
+  path: string;
+  mode: 'create' | 'overwrite' | 'append';
+  /** UTF-8 content; encoded to base64 by this helper. */
+  content: string;
+  /** sha256 hex of current on-disk content; required by server for overwrite. */
+  expectedHash?: string;
+}
+
+export async function fetchNodeFsWrite(
+  args: NodeFsWriteArgs
+): Promise<FileRpcWriteResponse> {
+  const url = `/hub/nodes/${encodeURIComponent(args.nodeId)}/sessions/${encodeURIComponent(args.sessionId)}/files/write`;
+  // btoa requires latin1; encode UTF-8 → bytes → base64 safely.
+  const bytes = new TextEncoder().encode(args.content);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  const contentBase64 = btoa(binary);
+  const body: Record<string, unknown> = {
+    path: args.path,
+    mode: args.mode,
+    contentBase64,
+  };
+  if (args.expectedHash) body.expectedHash = args.expectedHash;
+  return json<FileRpcWriteResponse>(
     await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

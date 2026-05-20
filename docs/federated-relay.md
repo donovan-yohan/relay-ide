@@ -572,6 +572,20 @@ The contract is **ref-only by default**. Attachments carry a `FileResourceRef` p
 
 `promptAttachmentToArtifactRef` bridges an attachment into a `WorkContext.ArtifactRef` with `privacy.rawPayloadStored = false` and `redaction.strategy = 'hash'` (when `ref.sha256` is set) or `'summary'`. Per-adapter consumption of `promptAttachments` (Claude/Codex/OpenCode/Hermes) and dispatch-site `WorkContext.artifacts` append land in follow-on #616 slices.
 
+### Edit mode (#616 slice 4)
+
+`FileBlockDescriptor.meta.mode` now accepts `'edit'` in addition to `'read' | 'diff'`. The edit branch in `frontend/src/workbench/blocks/file.tsx` renders an editable `<textarea>` seeded with the file's current content (fetched via the slice-2 read path) and a two-step save flow:
+
+1. **Edit**: user types into the textarea. The "preview diff" button activates once the draft differs from the original.
+2. **Diff preview**: clicking "preview diff" swaps the textarea for the existing `DiffViewer` (`frontend/src/components/DiffViewer.tsx`) rendering a unified diff produced by `createPatch` (`diff` npm package). "back to edit" and "confirm write" actions live alongside.
+3. **Confirm write**: clicking "confirm write" POSTs to `/hub/nodes/:nodeId/sessions/:sessionId/files/write` via the new `fetchNodeFsWrite` helper with `mode: 'overwrite'` and `expectedHash` = sha-256 of the original content (computed client-side via `crypto.subtle.digest('SHA-256', …)`). The server enforces optimistic concurrency: a stale read surfaces as `FILE_RPC_WRITE_HASH_MISMATCH` and the editor renders `file changed since last read — reload before saving`.
+
+**Capability gate**: if `grantedBits(context).has('rpc:fs:write')` is false, the textarea renders read-only and inline copy says `rpc:fs:write not granted — cannot save`. The save buttons are hidden in that state.
+
+The server-side write route (`server/hub-node-router.ts`) already enforces `rpc:fs:write` policy and emits hash-chained pre/post-write audit envelopes (`appendFsWriteCompletionAudit`). Slice 4 wires the frontend; it does not change server enforcement.
+
+Slice 4 ships `mode: 'overwrite'` only. `'create'` and `'append'` affordances, and per-line diff-block attachment in agent prompts, are follow-ons.
+
 ## Bootstrap and Service Modes
 
 ### Supported Service Modes

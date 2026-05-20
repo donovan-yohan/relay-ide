@@ -60,11 +60,7 @@ export type {
 export function isFileResourceRef(
   ref: FileRef | FileResourceRef
 ): ref is FileResourceRef {
-  return (
-    'capturedAt' in ref &&
-    'intent' in ref &&
-    !('id' in ref)
-  );
+  return 'capturedAt' in ref && 'intent' in ref && !('id' in ref);
 }
 
 // ---------------------------------------------------------------------------
@@ -230,8 +226,13 @@ export interface FileBlockDescriptor extends WorkbenchBlockDescriptorBase {
      * `ref.nodeId` or `ref.path`.
      */
     fileRef: FileRef | FileResourceRef;
-    /** `'read'` = viewer; `'diff'` = inline diff against HEAD or base. */
-    mode?: 'read' | 'diff';
+    /**
+     * `'read'` = viewer; `'diff'` = inline diff against HEAD or base;
+     * `'edit'` = editable textarea + diff confirmation + fs.write (slice 4).
+     * Edit mode is gated server-side via `rpc:fs:write`; the renderer hides
+     * the save affordance when the bit is not granted.
+     */
+    mode?: 'read' | 'edit' | 'diff';
   };
 }
 
