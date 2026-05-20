@@ -606,7 +606,11 @@ export function redactText(value: string): RedactionResult<string> {
   );
   output = replaceAndCount(
     output,
-    /(https?:\/\/)([^/\s:@]+):([^@\s/]+)@/g,
+    // Match URL-embedded credentials for ANY scheme, not just http(s).
+    // node-link-client logs ws://user:pass@host and wss://user:pass@host
+    // after upgrading the configured hub URL; without this generalization
+    // the diag bundle leaked the embedded credential. See issue #604.
+    /([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^@\s/]+)@/gi,
     'url-credential',
     `$1${REDACTED}:${REDACTED}@`,
     counts

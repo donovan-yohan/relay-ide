@@ -261,21 +261,34 @@ describe('routed-PTY / node-link log shapes (#587, #588) are covered by redactio
     expect(out).toContain('hub.example.test');
   });
 
-  // Known gap tracked as issue #604: the diag bundle url-credential regex
-  // only matches https?:// URLs, but node-link-client logs the WS variant
-  // (wss://). When that's fixed, this it.fails flips green and forces us
-  // to retire the .fails marker — exactly the regression behavior we want.
-  it.fails(
-    'redacts ws(s) URL-embedded credentials in "connected to <linkUrl>" lines — see issue #604',
-    () => {
-      const raw =
-        "[node-link] connected to wss://relayuser:FAKE_URL_PASS_aaaaaaaa@hub.example.test/hub/node-link";
-      const out = redactText(raw).value;
-      expect(out).not.toContain('FAKE_URL_PASS_aaaaaaaa');
-      expect(out).not.toContain('relayuser');
-      expect(out).toContain('hub.example.test');
-    }
-  );
+  // Closed by #604 fix: url-credential redactor now generalizes across
+  // schemes (http/https/ws/wss/...) so ws-upgraded link URLs are caught.
+  it('redacts ws(s) URL-embedded credentials in "connected to <linkUrl>" lines (closes #604)', () => {
+    const raw =
+      "[node-link] connected to wss://relayuser:FAKE_URL_PASS_aaaaaaaa@hub.example.test/hub/node-link";
+    const out = redactText(raw).value;
+    expect(out).not.toContain('FAKE_URL_PASS_aaaaaaaa');
+    expect(out).not.toContain('relayuser');
+    expect(out).toContain('hub.example.test');
+  });
+
+  it('redacts ws:// URL-embedded credentials (insecure transport variant)', () => {
+    const raw =
+      "[node-link] retrying ws://relayuser:FAKE_URL_PASS_bbbbbbbb@hub.example.test/hub/node-link";
+    const out = redactText(raw).value;
+    expect(out).not.toContain('FAKE_URL_PASS_bbbbbbbb');
+    expect(out).not.toContain('relayuser');
+    expect(out).toContain('hub.example.test');
+  });
+
+  it('redacts URL-embedded credentials behind less-common schemes', () => {
+    const raw =
+      "[adapter] proxy at socks5://relayuser:FAKE_URL_PASS_cccccccc@socks.example.test:1080";
+    const out = redactText(raw).value;
+    expect(out).not.toContain('FAKE_URL_PASS_cccccccc');
+    expect(out).not.toContain('relayuser');
+    expect(out).toContain('socks.example.test');
+  });
 
   it('redacts Authorization headers if a node-link RPC error path echoes request headers', () => {
     const raw =
