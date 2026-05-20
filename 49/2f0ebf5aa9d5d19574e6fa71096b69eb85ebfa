@@ -1,0 +1,19 @@
+frontend/src/components/dialogs/CustomizeSessionDialog.css
+  s_afc3e94f2d047a::t_5f12d2d0143f7d 68-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "492f0ebf5aa9d5d19574e6fa71096b69eb85ebfa",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
