@@ -217,10 +217,11 @@ describe('custom renderer (slice 4)', () => {
     expect(src).toContain('RevokedCard');
   });
 
-  it('uses TanStack Query to load approved proposals', () => {
+  it('uses TanStack Query to load proposal by id', () => {
     const src = readBlock('custom.tsx');
     expect(src).toContain('useQuery');
-    expect(src).toContain('fetchCustomBlockProposals');
+    // Uses fetchCustomBlockProposalById to load any status, not just approved.
+    expect(src).toContain('fetchCustomBlockProposalById');
   });
 
   it('delegates rendering to TemplateRenderer', () => {

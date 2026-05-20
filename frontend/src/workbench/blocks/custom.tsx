@@ -37,10 +37,9 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { WorkbenchBlockRenderer } from '../../../../shared/workbench-block-types.js';
-import type { CustomBlockProposal } from '../../../../shared/workbench-custom-blocks.js';
 import { isKnownTemplateName } from '../../../../shared/workbench-custom-blocks.js';
 import type { RelayCapabilityBit } from '../../../../shared/security-policy.js';
-import { fetchCustomBlockProposals } from '../../lib/api.js';
+import { fetchCustomBlockProposalById } from '../../lib/api.js';
 import { TemplateRenderer } from './custom-templates.js';
 
 import './custom.css';
@@ -50,8 +49,8 @@ import './custom-templates.css';
 // Query key factory
 // ---------------------------------------------------------------------------
 
-function approvedProposalsKey() {
-  return ['custom-block-proposals', 'approved'] as const;
+function proposalByIdKey(proposalId: string) {
+  return ['custom-block-proposal', proposalId] as const;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,15 +170,18 @@ export const CustomBlock: WorkbenchBlockRenderer<'custom'> = ({
 }) => {
   const { rendererId } = descriptor.meta;
 
-  // Fetch all approved proposals; cache-hit on normal usage since other
-  // blocks on the same canvas share the query.
+  // Fetch the proposal by id regardless of status. This ensures revoked and
+  // pending proposals render the correct card instead of the unknown-renderer
+  // fallback (fix #1).
   const {
-    data: approved,
+    data: proposal,
     isLoading,
     error,
   } = useQuery({
-    queryKey: approvedProposalsKey(),
-    queryFn: () => fetchCustomBlockProposals('approved'),
+    queryKey: proposalByIdKey(rendererId),
+    queryFn: () => fetchCustomBlockProposalById(rendererId),
+    // Treat 404 as a non-error to render the NotFoundCard gracefully.
+    throwOnError: false,
   });
 
   if (isLoading) {
@@ -219,14 +221,7 @@ export const CustomBlock: WorkbenchBlockRenderer<'custom'> = ({
     );
   }
 
-  // Find the proposal whose proposalId matches the rendererId
-  const proposal: CustomBlockProposal | undefined = approved?.find(
-    (p) => p.proposalId === rendererId
-  );
-
   if (!proposal) {
-    // No approved proposal — check if it might be in another status
-    // (no separate fetch to avoid over-fetching; the user should look at pending list)
     return <NotFoundCard title={descriptor.title} rendererId={rendererId} />;
   }
 
@@ -307,9 +302,16 @@ export const CustomBlock: WorkbenchBlockRenderer<'custom'> = ({
   //
   // Blocked (not accessible from the renderer):
   //   env vars, network fetch, browser storage, raw session bytes, secrets
-  const grantedBitNames: RelayCapabilityBit[] = context.capabilityGrants
-    .filter((g) => g.capability)
-    .map((g) => g.capability!);
+  // Flatten both `capability` (singular) and `capabilities` (array) from each
+  // CapabilityGrantRef — the schema allows either or both fields (fix #2).
+  const grantedBitNames: RelayCapabilityBit[] =
+    context.capabilityGrants.flatMap((g) =>
+      (
+        [g.capability, ...(g.capabilities ?? [])] as Array<
+          RelayCapabilityBit | undefined
+        >
+      ).filter((bit): bit is RelayCapabilityBit => bit !== undefined)
+    );
 
   const sandboxApi = {
     getWorkContextStatus: (_workContextId: string): string | null => {

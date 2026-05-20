@@ -117,10 +117,34 @@ function KvGridRenderer({ props }: KvGridRendererProps) {
 // LinkList
 // ---------------------------------------------------------------------------
 
-const SAFE_URL_PATTERN = /^(https:\/\/|\/)/;
+/**
+ * Returns true only for:
+ *   - Absolute HTTPS URLs (e.g. https://example.com/path)
+ *   - Root-relative paths starting with / but NOT protocol-relative // (e.g. /path/to/page)
+ *
+ * Explicitly rejects:
+ *   - Protocol-relative URLs (//evil.com) — these inherit the page protocol
+ *     and bypass the scheme check.
+ *   - Any other scheme (http:, javascript:, data:, etc.)
+ *
+ * SAFE_URL_PATTERN is a pre-filter for the common cases; the WHATWG URL parser
+ * handles the full absolute-URL validation.
+ */
+// Matches root-relative paths (/foo) but NOT protocol-relative (//foo).
+const SAFE_URL_PATTERN = /^\/(?!\/)/;
 
-function isSafeUrl(url: string): boolean {
-  return SAFE_URL_PATTERN.test(url);
+export function isSafeUrl(href: string): boolean {
+  // Root-relative paths are safe (e.g. /path/to/page).
+  // The pattern explicitly rejects // so protocol-relative URLs fall through.
+  if (SAFE_URL_PATTERN.test(href)) return true;
+  // For absolute URLs, require https: scheme via the WHATWG URL parser.
+  // This correctly handles javascript:, data:, http:, and protocol-relative cases.
+  try {
+    const url = new URL(href);
+    return url.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 interface LinkListRendererProps {

@@ -2,7 +2,10 @@
  * Custom block proposal contracts — slice 4 of epic #612.
  *
  * This module defines the shared TypeScript contracts for the agent-authored
- * custom block proposal/approval flow. No runtime code — types only.
+ * custom block proposal/approval flow. It also exports a small set of runtime
+ * constants and predicates used by both the server and frontend:
+ *   - KNOWN_TEMPLATE_NAMES, isKnownTemplateName
+ *   - CUSTOM_BLOCK_PROPOSAL_ERRORS
  *
  * # Proposal lifecycle
  *

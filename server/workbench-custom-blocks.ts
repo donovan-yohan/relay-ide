@@ -11,6 +11,7 @@
  * REST routes (relative to mount point `/workbench/custom-blocks`):
  *   POST   /proposals                    — agent submits proposal
  *   GET    /proposals?status=<status>    — list proposals (filter by status)
+ *   GET    /proposals/:id                — get a single proposal by id
  *   POST   /proposals/:id/approve        — user approves pending proposal
  *   POST   /proposals/:id/reject         — user rejects pending proposal
  *   POST   /proposals/:id/revoke         — user revokes approved proposal
@@ -21,6 +22,11 @@
  *   - Capability requirements are validated; proposals requesting bits not
  *     in the granted set for the proposing actor are rejected.
  *   - Audit envelopes are emitted on every state transition.
+ *   - `proposedBy` attribution is derived server-side from the request's
+ *     `x-relay-actor-id` header (set by CLI gateway) or falls back to the
+ *     literal string 'hub-user' for cookie-authenticated hub sessions.
+ *     The request body's `proposedBy` field is treated as an UNTRUSTED
+ *     display hint only — it is never used for audit attribution.
  *
  * Refs: #622, epic #612, ADR-017.
  */
@@ -42,8 +48,12 @@ import type {
   CustomBlockProposalInput,
   CustomBlockProposalStatus,
 } from '../shared/workbench-custom-blocks.js';
-import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
+import type {
+  SecurityAuditEntryInput,
+  SecurityAuditPeerIdentity,
+} from '../shared/security-audit.js';
 import { isRelayCapabilityBit } from '../shared/security-policy.js';
+import type { ActorRef } from '../shared/workbench-block-types.js';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('workbench-custom-blocks');
@@ -176,6 +186,74 @@ function validateDescriptor(descriptor: unknown): string | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Per-template prop validators (fix #6)
+// ---------------------------------------------------------------------------
+
+type TemplatePropsValidator = (props: Record<string, unknown>) => string | null;
+
+const TEMPLATE_PROP_VALIDATORS: Record<string, TemplatePropsValidator> = {
+  'status-card': (p) => {
+    if (typeof p['title'] !== 'string') {
+      return 'status-card requires a string `title` prop';
+    }
+    const validStatuses = ['active', 'idle', 'error', 'done', 'pending'];
+    if (
+      p['status'] !== undefined &&
+      !validStatuses.includes(p['status'] as string)
+    ) {
+      return `status-card "status" must be one of: ${validStatuses.join(', ')}`;
+    }
+    if (
+      p['description'] !== undefined &&
+      typeof p['description'] !== 'string'
+    ) {
+      return 'status-card `description` must be a string if provided';
+    }
+    return null;
+  },
+  'kv-grid': (p) => {
+    if (!Array.isArray(p['rows'])) {
+      return 'kv-grid requires an array `rows` prop';
+    }
+    for (let i = 0; i < (p['rows'] as unknown[]).length; i++) {
+      const row = (p['rows'] as unknown[])[i];
+      if (
+        typeof row !== 'object' ||
+        row === null ||
+        typeof (row as Record<string, unknown>)['key'] !== 'string' ||
+        typeof (row as Record<string, unknown>)['value'] !== 'string'
+      ) {
+        return `kv-grid rows[${i}] must be an object with string \`key\` and string \`value\``;
+      }
+    }
+    if (p['heading'] !== undefined && typeof p['heading'] !== 'string') {
+      return 'kv-grid `heading` must be a string if provided';
+    }
+    return null;
+  },
+  'link-list': (p) => {
+    if (!Array.isArray(p['links'])) {
+      return 'link-list requires an array `links` prop';
+    }
+    for (let i = 0; i < (p['links'] as unknown[]).length; i++) {
+      const link = (p['links'] as unknown[])[i];
+      if (
+        typeof link !== 'object' ||
+        link === null ||
+        typeof (link as Record<string, unknown>)['label'] !== 'string' ||
+        typeof (link as Record<string, unknown>)['url'] !== 'string'
+      ) {
+        return `link-list links[${i}] must be an object with string \`label\` and string \`url\``;
+      }
+    }
+    if (p['heading'] !== undefined && typeof p['heading'] !== 'string') {
+      return 'link-list `heading` must be a string if provided';
+    }
+    return null;
+  },
+};
+
 /**
  * Validate the rendererSource portion of a proposal input.
  * Returns an error string or null.
@@ -202,6 +280,20 @@ function validateRendererSource(rs: unknown): string | null {
     return `${CUSTOM_BLOCK_PROPOSAL_ERRORS.unknown_template}. Known templates: ${KNOWN_TEMPLATE_NAMES.join(', ')}`;
   }
 
+  // Validate template-specific props (fix #6).
+  const props =
+    typeof rsObj['props'] === 'object' &&
+    rsObj['props'] !== null &&
+    !Array.isArray(rsObj['props'])
+      ? (rsObj['props'] as Record<string, unknown>)
+      : {};
+  const templateName = rsObj['template'] as string;
+  const validator = TEMPLATE_PROP_VALIDATORS[templateName];
+  if (validator) {
+    const propsError = validator(props);
+    if (propsError) return propsError;
+  }
+
   return null;
 }
 
@@ -214,6 +306,10 @@ function validateRendererSource(rs: unknown): string | null {
  *   - Template names must be in KNOWN_TEMPLATE_NAMES.
  *   - capabilityRequirements must contain only known RelayCapabilityBit values.
  *     Enforcement of actor-level grants is left to callers with ACL access.
+ *
+ * Note: `proposedBy` attribution is derived server-side from the request
+ * context (see deriveActorRef). The body's `proposedBy` field is accepted
+ * as an UNTRUSTED display hint but is NOT validated here.
  */
 export function validateProposalInput(body: unknown): string | null {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
@@ -227,16 +323,6 @@ export function validateProposalInput(body: unknown): string | null {
   const rsError = validateRendererSource(obj['rendererSource']);
   if (rsError) return rsError;
 
-  const proposedBy = obj['proposedBy'];
-  if (
-    typeof proposedBy !== 'object' ||
-    proposedBy === null ||
-    Array.isArray(proposedBy) ||
-    typeof (proposedBy as Record<string, unknown>)['id'] !== 'string'
-  ) {
-    return CUSTOM_BLOCK_PROPOSAL_ERRORS.missing_proposed_by;
-  }
-
   return null;
 }
 
@@ -248,11 +334,62 @@ type AuditSink =
   | { append(input: SecurityAuditEntryInput): unknown }
   | undefined;
 
+/**
+ * Derive actor identity server-side from the request.
+ *
+ * Security: the request body's `proposedBy` field is NEVER used for audit
+ * attribution — it is untrusted client input. Instead:
+ *   - CLI gateway requests (x-relay-cli-gateway: v1) are tagged as `node` peers.
+ *     The node identity comes from the request headers, not the body.
+ *   - Cookie-authenticated hub sessions are tagged as `user` peers with a
+ *     stable display name of 'hub-user'.
+ *
+ * The `displayHint` is the untrusted `proposedBy.displayName` from the body,
+ * used only as a non-authoritative label in the audit entry.
+ */
+export function deriveActorRef(req: Request, displayHint?: string): ActorRef {
+  const isCliGateway = req.header('x-relay-cli-gateway') === 'v1';
+  if (isCliGateway) {
+    // Agent (node) submitting via the versioned CLI gateway.
+    // Use x-relay-node-id header if present; fall back to 'cli-gateway'.
+    const nodeId = req.header('x-relay-node-id') ?? 'cli-gateway';
+    return {
+      kind: 'actor',
+      id: nodeId,
+      displayName: displayHint ?? nodeId,
+    };
+  }
+  // Cookie-authenticated hub user.
+  return {
+    kind: 'actor',
+    id: 'hub-user',
+    displayName: displayHint ?? 'hub-user',
+  };
+}
+
+/**
+ * Map an ActorRef to a SecurityAuditPeerIdentity discriminated on kind.
+ *
+ * Actor id 'hub-user' → kind: 'user'.
+ * CLI gateway actor (id != 'hub-user') → kind: 'node' with nodeId.
+ */
+function actorRefToPeer(actor: ActorRef): SecurityAuditPeerIdentity {
+  if (actor.id === 'hub-user') {
+    const peer: SecurityAuditPeerIdentity = { kind: 'user' };
+    if (actor.displayName !== undefined) peer.displayName = actor.displayName;
+    return peer;
+  }
+  // Agent actor submitted via CLI gateway — tag as node peer.
+  const peer: SecurityAuditPeerIdentity = { kind: 'node', nodeId: actor.id };
+  if (actor.displayName !== undefined) peer.displayName = actor.displayName;
+  return peer;
+}
+
 function emitProposalAudit(
   auditSink: AuditSink,
   opts: {
     proposalId: string;
-    actorId: string;
+    actor: ActorRef;
     action: string;
     decision: SecurityAuditEntryInput['decision'];
     eventType: SecurityAuditEntryInput['eventType'];
@@ -261,20 +398,21 @@ function emitProposalAudit(
 ): string | undefined {
   if (!auditSink) return undefined;
   const eventId = crypto.randomUUID();
+  const peer = actorRefToPeer(opts.actor);
   try {
     auditSink.append({
       eventId,
       eventType: opts.eventType,
       decision: opts.decision,
       reasonCode: opts.reasonCode,
-      peer: { kind: 'user', displayName: opts.actorId },
-      node: {},
+      peer,
+      node: peer.kind === 'node' && peer.nodeId ? { nodeId: peer.nodeId } : {},
       intent: {
         action: opts.action,
         target: `custom-block-proposal:${opts.proposalId}`,
       },
       material: {
-        params: { proposalId: opts.proposalId, actorId: opts.actorId },
+        params: { proposalId: opts.proposalId, actorId: opts.actor.id },
       },
       refs: {},
     });
@@ -302,6 +440,7 @@ export interface WorkbenchCustomBlocksRouterDeps {
  * Routes (relative to mount point `/workbench/custom-blocks`):
  *   POST   /proposals                    — submit a new proposal
  *   GET    /proposals?status=<status>    — list proposals
+ *   GET    /proposals/:id                — get a single proposal by id
  *   POST   /proposals/:id/approve        — approve a pending proposal
  *   POST   /proposals/:id/reject         — reject a pending proposal
  *   POST   /proposals/:id/revoke         — revoke an approved proposal
@@ -325,15 +464,34 @@ export function createWorkbenchCustomBlocksRouter(
       return;
     }
 
-    const input = body as CustomBlockProposalInput;
+    const input = body as Omit<CustomBlockProposalInput, 'proposedBy'> & {
+      proposedBy?: { displayName?: string };
+    };
     const proposalId = crypto.randomUUID();
     const now = new Date().toISOString();
 
+    // Derive actor identity server-side — never trust the request body's
+    // proposedBy for attribution (fix #4). Use the body's displayName only
+    // as a non-authoritative display hint.
+    const actor = deriveActorRef(req, input.proposedBy?.displayName);
+
+    // Sync rendererId to the server-generated proposalId (fix #5).
+    // The client may supply any rendererId value, but the contract is that
+    // proposalId IS the rendererId for the approved descriptor.
+    const descriptor = {
+      ...input.descriptor,
+      meta: {
+        ...input.descriptor.meta,
+        rendererId: proposalId,
+      },
+    };
+
     const proposal: CustomBlockProposal = {
       proposalId,
-      descriptor: input.descriptor,
-      rendererSource: input.rendererSource,
-      proposedBy: input.proposedBy,
+      descriptor,
+      rendererSource:
+        input.rendererSource as CustomBlockProposalInput['rendererSource'],
+      proposedBy: actor,
       proposedAt: now,
       status: 'pending',
       statusUpdatedAt: now,
@@ -344,7 +502,7 @@ export function createWorkbenchCustomBlocksRouter(
 
     const auditEventId = emitProposalAudit(auditSink, {
       proposalId,
-      actorId: input.proposedBy.id,
+      actor,
       action: 'workbench.custom-block.propose',
       decision: 'recorded',
       eventType: 'grant',
@@ -400,6 +558,24 @@ export function createWorkbenchCustomBlocksRouter(
   });
 
   // -------------------------------------------------------------------------
+  // GET /proposals/:id — get a single proposal by id regardless of status (fix #1)
+  // -------------------------------------------------------------------------
+  router.get('/proposals/:id', (req: Request, res: Response) => {
+    const { id } = req.params as { id: string };
+    const proposals = readAllProposals(configPath);
+    const proposal = proposals.get(id);
+
+    if (!proposal) {
+      res
+        .status(404)
+        .json({ error: CUSTOM_BLOCK_PROPOSAL_ERRORS.proposal_not_found });
+      return;
+    }
+
+    res.json(proposal);
+  });
+
+  // -------------------------------------------------------------------------
   // POST /proposals/:id/approve — user approves a pending proposal
   // -------------------------------------------------------------------------
   router.post('/proposals/:id/approve', (req: Request, res: Response) => {
@@ -428,9 +604,16 @@ export function createWorkbenchCustomBlocksRouter(
       statusUpdatedAt: now,
     };
 
+    // Hub-user is always the actor for approval/reject/revoke (user-facing actions).
+    const hubActor: ActorRef = {
+      kind: 'actor',
+      id: 'hub-user',
+      displayName: 'hub-user',
+    };
+
     const auditEventId = emitProposalAudit(auditSink, {
       proposalId: id,
-      actorId: 'user',
+      actor: hubActor,
       action: 'workbench.custom-block.approve',
       decision: 'approved',
       eventType: 'approval',
@@ -486,9 +669,15 @@ export function createWorkbenchCustomBlocksRouter(
       statusUpdatedAt: now,
     };
 
+    const hubActor: ActorRef = {
+      kind: 'actor',
+      id: 'hub-user',
+      displayName: 'hub-user',
+    };
+
     const auditEventId = emitProposalAudit(auditSink, {
       proposalId: id,
-      actorId: 'user',
+      actor: hubActor,
       action: 'workbench.custom-block.reject',
       decision: 'deny',
       eventType: 'denial',
@@ -544,9 +733,15 @@ export function createWorkbenchCustomBlocksRouter(
       statusUpdatedAt: now,
     };
 
+    const hubActor: ActorRef = {
+      kind: 'actor',
+      id: 'hub-user',
+      displayName: 'hub-user',
+    };
+
     const auditEventId = emitProposalAudit(auditSink, {
       proposalId: id,
-      actorId: 'user',
+      actor: hubActor,
       action: 'workbench.custom-block.revoke',
       decision: 'revoked',
       eventType: 'revocation',

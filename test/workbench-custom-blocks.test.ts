@@ -353,17 +353,21 @@ describe('validateProposalInput', () => {
     expect(err).toContain('template');
   });
 
-  it('rejects missing proposedBy', () => {
+  it('accepts missing proposedBy (attribution is derived server-side)', () => {
+    // proposedBy is no longer validated in the request body — actor identity
+    // is derived server-side from the authenticated request context (fix #4).
     const body = makeValidBody() as Record<string, unknown>;
     delete body['proposedBy'];
-    expect(validateProposalInput(body)).toContain('proposedBy');
+    expect(validateProposalInput(body)).toBeNull();
   });
 
-  it('rejects proposedBy without id', () => {
+  it('accepts proposedBy without id (display hint only, not validated)', () => {
+    // The body's proposedBy is an untrusted display hint — it is never used
+    // for audit attribution, so its shape is not enforced here (fix #4).
     const err = validateProposalInput(
       makeValidBody({ proposedBy: { kind: 'actor' } })
     );
-    expect(err).toContain('proposedBy');
+    expect(err).toBeNull();
   });
 
   it('rejects unknown rendererSource.kind', () => {
@@ -1122,5 +1126,498 @@ describe('server/index.ts: router mount', () => {
   it('mounts at /workbench/custom-blocks', () => {
     const src = readFileSync(indexPath, 'utf-8');
     expect(src).toContain('/workbench/custom-blocks');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. isSafeUrl unit tests (fix #3 — SAFE_URL_PATTERN allows //evil.com)
+// ---------------------------------------------------------------------------
+
+import { isSafeUrl } from '../frontend/src/workbench/blocks/custom-templates.js';
+
+describe('isSafeUrl: URL safety filter', () => {
+  it('allows absolute https URLs', () => {
+    expect(isSafeUrl('https://example.com')).toBe(true);
+    expect(isSafeUrl('https://example.com/path?q=1')).toBe(true);
+  });
+
+  it('allows root-relative paths', () => {
+    expect(isSafeUrl('/path/to/page')).toBe(true);
+    expect(isSafeUrl('/')).toBe(true);
+    expect(isSafeUrl('/path?q=1#anchor')).toBe(true);
+  });
+
+  it('rejects protocol-relative URLs (security: //evil.com bypass)', () => {
+    expect(isSafeUrl('//evil.com')).toBe(false);
+    expect(isSafeUrl('//evil.com/path')).toBe(false);
+  });
+
+  it('rejects http:// URLs', () => {
+    expect(isSafeUrl('http://example.com')).toBe(false);
+  });
+
+  it('rejects javascript: URLs', () => {
+    expect(isSafeUrl('javascript:alert(1)')).toBe(false);
+    expect(isSafeUrl('javascript:void(0)')).toBe(false);
+  });
+
+  it('rejects data: URLs', () => {
+    expect(isSafeUrl('data:text/html,<h1>hi</h1>')).toBe(false);
+  });
+
+  it('rejects bare relative paths (no leading slash)', () => {
+    expect(isSafeUrl('relative/path')).toBe(false);
+    expect(isSafeUrl('../up/one')).toBe(false);
+  });
+
+  it('rejects empty string', () => {
+    expect(isSafeUrl('')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. rendererId sync on proposal create (fix #5)
+// ---------------------------------------------------------------------------
+
+describe('REST: POST /proposals — rendererId synced to proposalId', () => {
+  let tmpDir: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcb-renderid-'));
+    configPath = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('overwrites client rendererId with the server-generated proposalId', async () => {
+    const app = makeApp(configPath);
+    const res = await call(
+      app,
+      'POST',
+      '/workbench/custom-blocks/proposals',
+      makeValidBody({
+        descriptor: {
+          kind: 'custom',
+          id: 'block-1',
+          title: 'test',
+          capabilityRequirements: [],
+          // Client submits a rendererId that should be replaced server-side.
+          meta: { rendererId: 'client-supplied-renderer-id' },
+        },
+      })
+    );
+    expect(res.status).toBe(201);
+    const body = res.body as Record<string, unknown>;
+    const proposalId = body['proposalId'] as string;
+    // The descriptor's rendererId must equal the server-generated proposalId.
+    const descriptor = body['descriptor'] as Record<string, unknown>;
+    const meta = descriptor['meta'] as Record<string, unknown>;
+    expect(meta['rendererId']).toBe(proposalId);
+    expect(meta['rendererId']).not.toBe('client-supplied-renderer-id');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. Per-template prop validation 422 cases (fix #6)
+// ---------------------------------------------------------------------------
+
+describe('validateProposalInput: per-template prop validation', () => {
+  it('rejects status-card without title prop', () => {
+    const err = validateProposalInput(
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'status-card',
+          props: { status: 'active' }, // missing title
+        },
+      })
+    );
+    expect(err).toBeTruthy();
+    expect(err).toContain('title');
+  });
+
+  it('accepts status-card with valid props', () => {
+    const err = validateProposalInput(
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'status-card',
+          props: { title: 'my card', status: 'active' },
+        },
+      })
+    );
+    expect(err).toBeNull();
+  });
+
+  it('rejects kv-grid without rows prop', () => {
+    const err = validateProposalInput(
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'kv-grid',
+          props: {}, // missing rows
+        },
+      })
+    );
+    expect(err).toBeTruthy();
+    expect(err).toContain('rows');
+  });
+
+  it('rejects kv-grid with invalid row shape', () => {
+    const err = validateProposalInput(
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'kv-grid',
+          props: { rows: [{ key: 'k', value: 123 }] }, // value not a string
+        },
+      })
+    );
+    expect(err).toBeTruthy();
+    expect(err).toContain('rows[0]');
+  });
+
+  it('accepts kv-grid with valid rows', () => {
+    const err = validateProposalInput(
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'kv-grid',
+          props: { rows: [{ key: 'env', value: 'dev' }] },
+        },
+      })
+    );
+    expect(err).toBeNull();
+  });
+
+  it('rejects link-list without links prop', () => {
+    const err = validateProposalInput(
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'link-list',
+          props: {}, // missing links
+        },
+      })
+    );
+    expect(err).toBeTruthy();
+    expect(err).toContain('links');
+  });
+
+  it('rejects link-list with invalid link shape', () => {
+    const err = validateProposalInput(
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'link-list',
+          props: { links: [{ label: 'Home' }] }, // missing url
+        },
+      })
+    );
+    expect(err).toBeTruthy();
+    expect(err).toContain('links[0]');
+  });
+
+  it('accepts link-list with valid links', () => {
+    const err = validateProposalInput(
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'link-list',
+          props: { links: [{ label: 'Home', url: 'https://example.com' }] },
+        },
+      })
+    );
+    expect(err).toBeNull();
+  });
+});
+
+describe('REST: per-template prop validation returns 422', () => {
+  let tmpDir: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcb-props-'));
+    configPath = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns 422 for status-card missing title', async () => {
+    const app = makeApp(configPath);
+    const res = await call(
+      app,
+      'POST',
+      '/workbench/custom-blocks/proposals',
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'status-card',
+          props: { status: 'active' },
+        },
+      })
+    );
+    expect(res.status).toBe(422);
+    expect(String((res.body as Record<string, unknown>)['error'])).toContain(
+      'title'
+    );
+  });
+
+  it('returns 422 for kv-grid missing rows', async () => {
+    const app = makeApp(configPath);
+    const res = await call(
+      app,
+      'POST',
+      '/workbench/custom-blocks/proposals',
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'kv-grid',
+          props: {},
+        },
+      })
+    );
+    expect(res.status).toBe(422);
+    expect(String((res.body as Record<string, unknown>)['error'])).toContain(
+      'rows'
+    );
+  });
+
+  it('returns 422 for link-list missing links', async () => {
+    const app = makeApp(configPath);
+    const res = await call(
+      app,
+      'POST',
+      '/workbench/custom-blocks/proposals',
+      makeValidBody({
+        rendererSource: {
+          kind: 'template',
+          template: 'link-list',
+          props: {},
+        },
+      })
+    );
+    expect(res.status).toBe(422);
+    expect(String((res.body as Record<string, unknown>)['error'])).toContain(
+      'links'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. GET /proposals/:id endpoint (fix #1)
+// ---------------------------------------------------------------------------
+
+describe('REST: GET /proposals/:id', () => {
+  let tmpDir: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcb-byid-'));
+    configPath = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns 404 for unknown id', async () => {
+    const app = makeApp(configPath);
+    const res = await call(
+      app,
+      'GET',
+      '/workbench/custom-blocks/proposals/nonexistent'
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('returns a pending proposal by id', async () => {
+    const app = makeApp(configPath);
+    const createRes = await call(
+      app,
+      'POST',
+      '/workbench/custom-blocks/proposals',
+      makeValidBody()
+    );
+    expect(createRes.status).toBe(201);
+    const proposalId = (createRes.body as Record<string, unknown>)[
+      'proposalId'
+    ] as string;
+
+    const res = await call(
+      app,
+      'GET',
+      `/workbench/custom-blocks/proposals/${proposalId}`
+    );
+    expect(res.status).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body['proposalId']).toBe(proposalId);
+    expect(body['status']).toBe('pending');
+  });
+
+  it('returns a revoked proposal by id (status = revoked)', async () => {
+    const app = makeApp(configPath);
+    const createRes = await call(
+      app,
+      'POST',
+      '/workbench/custom-blocks/proposals',
+      makeValidBody()
+    );
+    const id = (createRes.body as Record<string, unknown>)[
+      'proposalId'
+    ] as string;
+    await call(app, 'POST', `/workbench/custom-blocks/proposals/${id}/approve`);
+    await call(app, 'POST', `/workbench/custom-blocks/proposals/${id}/revoke`);
+
+    const res = await call(
+      app,
+      'GET',
+      `/workbench/custom-blocks/proposals/${id}`
+    );
+    expect(res.status).toBe(200);
+    expect((res.body as Record<string, unknown>)['status']).toBe('revoked');
+  });
+
+  it('returns a rejected proposal by id (status = rejected)', async () => {
+    const app = makeApp(configPath);
+    const createRes = await call(
+      app,
+      'POST',
+      '/workbench/custom-blocks/proposals',
+      makeValidBody()
+    );
+    const id = (createRes.body as Record<string, unknown>)[
+      'proposalId'
+    ] as string;
+    await call(app, 'POST', `/workbench/custom-blocks/proposals/${id}/reject`);
+
+    const res = await call(
+      app,
+      'GET',
+      `/workbench/custom-blocks/proposals/${id}`
+    );
+    expect(res.status).toBe(200);
+    expect((res.body as Record<string, unknown>)['status']).toBe('rejected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Audit peer mapping — agent vs user actor (fix #7)
+// ---------------------------------------------------------------------------
+
+import {
+  deriveActorRef,
+  validateProposalInput as _validateProposalInput2,
+} from '../server/workbench-custom-blocks.js';
+import type { Request as ExpressRequest } from 'express';
+
+function mockRequest(
+  opts: { cliGateway?: boolean; nodeId?: string } = {}
+): ExpressRequest {
+  const headers: Record<string, string> = {};
+  if (opts.cliGateway) headers['x-relay-cli-gateway'] = 'v1';
+  if (opts.nodeId) headers['x-relay-node-id'] = opts.nodeId;
+  return {
+    header: (name: string) => headers[name.toLowerCase()] ?? headers[name],
+  } as unknown as ExpressRequest;
+}
+
+describe('deriveActorRef: actor identity from request context', () => {
+  it('cookie-auth session → hub-user actor', () => {
+    const actor = deriveActorRef(mockRequest());
+    expect(actor.id).toBe('hub-user');
+    expect(actor.kind).toBe('actor');
+  });
+
+  it('CLI gateway request → node actor with id = x-relay-node-id', () => {
+    const actor = deriveActorRef(
+      mockRequest({ cliGateway: true, nodeId: 'node-xyz' })
+    );
+    expect(actor.id).toBe('node-xyz');
+    expect(actor.kind).toBe('actor');
+  });
+
+  it('CLI gateway without x-relay-node-id → fallback id = cli-gateway', () => {
+    const actor = deriveActorRef(mockRequest({ cliGateway: true }));
+    expect(actor.id).toBe('cli-gateway');
+  });
+
+  it('uses displayHint as displayName for hub-user', () => {
+    const actor = deriveActorRef(mockRequest(), 'My Agent');
+    expect(actor.displayName).toBe('My Agent');
+  });
+});
+
+describe('REST: audit peer kind for agent vs user proposals', () => {
+  let tmpDir: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcb-peer-'));
+    configPath = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('cookie-auth proposal: audit peer is kind=user', async () => {
+    const auditSink = { append: vi.fn() };
+    const app = makeApp(configPath, auditSink);
+    // No x-relay-cli-gateway header → hub-user (kind: user)
+    await call(
+      app,
+      'POST',
+      '/workbench/custom-blocks/proposals',
+      makeValidBody()
+    );
+
+    expect(auditSink.append).toHaveBeenCalledOnce();
+    const envelope = auditSink.append.mock
+      .calls[0]![0] as SecurityAuditEntryInput;
+    expect(envelope.peer.kind).toBe('user');
+  });
+
+  it('approve/reject/revoke: audit peer is kind=user (hub action)', async () => {
+    const auditSink = { append: vi.fn() };
+    const app = makeApp(configPath, auditSink);
+    const createRes = await call(
+      app,
+      'POST',
+      '/workbench/custom-blocks/proposals',
+      makeValidBody()
+    );
+    const id = (createRes.body as Record<string, unknown>)[
+      'proposalId'
+    ] as string;
+    await call(app, 'POST', `/workbench/custom-blocks/proposals/${id}/approve`);
+
+    expect(auditSink.append).toHaveBeenCalledTimes(2);
+    const approveEnvelope = auditSink.append.mock
+      .calls[1]![0] as SecurityAuditEntryInput;
+    expect(approveEnvelope.peer.kind).toBe('user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. api.ts: fetchCustomBlockProposalById (fix #1)
+// ---------------------------------------------------------------------------
+
+describe('api.ts: fetchCustomBlockProposalById', () => {
+  const apiPath = join(projectRoot, 'frontend/src/lib/api.ts');
+
+  it('exports fetchCustomBlockProposalById', () => {
+    const src = readFileSync(apiPath, 'utf-8');
+    expect(src).toContain('export async function fetchCustomBlockProposalById');
+  });
+
+  it('uses the /workbench/custom-blocks/proposals/:id route', () => {
+    const src = readFileSync(apiPath, 'utf-8');
+    expect(src).toContain('/workbench/custom-blocks/proposals/');
   });
 });

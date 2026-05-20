@@ -1965,6 +1965,24 @@ export async function fetchCustomBlockProposals(
 }
 
 /**
+ * Fetch a single custom block proposal by id, regardless of status.
+ * Used by CustomBlock to look up pending/revoked proposals that would be missed
+ * by the approved-only list query.
+ */
+export async function fetchCustomBlockProposalById(
+  proposalId: string
+): Promise<CustomBlockProposal> {
+  const res = await fetch(
+    `/workbench/custom-blocks/proposals/${encodeURIComponent(proposalId)}`
+  );
+  if (!res.ok)
+    throw new Error(
+      await parseErrorBody(res, 'Failed to fetch custom block proposal')
+    );
+  return json<CustomBlockProposal>(res);
+}
+
+/**
  * Submit a new custom block proposal (agent-facing).
  * Returns the created proposal with server-generated proposalId.
  */
