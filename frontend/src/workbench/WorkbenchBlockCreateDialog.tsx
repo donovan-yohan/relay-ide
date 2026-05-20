@@ -282,7 +282,11 @@ export function WorkbenchBlockCreateDialog({
           </div>
         ) : null}
         <EnvironmentPicker
-          options={[...filteredCandidates]}
+          // `filteredCandidates` is already a fresh array from useMemo above
+          // (or the unmodified `candidates` passthrough); no spread needed.
+          // EnvironmentPicker accepts a mutable `EnvironmentOption[]`, so
+          // we narrow the readonly prop with a cast rather than copying.
+          options={filteredCandidates as EnvironmentOption[]}
           {...(selectedId !== undefined
             ? { selectedOptionId: selectedId }
             : {})}

@@ -542,8 +542,14 @@ export function WorkbenchCanvas({
   // ---------------------------------------------------------------------------
 
   const [createOpen, setCreateOpen] = useState(false);
+  // Gate the create button on `!isLoading` so the UI does not invite a click
+  // before the layout has hydrated. The handler also seeds an empty layout
+  // for the no-layout case (defense in depth), but hiding the button during
+  // load matches what the empty-state UI already implies.
   const showCreate =
-    environmentCandidates !== undefined && environmentCandidates.length > 0;
+    !isLoading &&
+    environmentCandidates !== undefined &&
+    environmentCandidates.length > 0;
 
   const handleCreate = useCallback(
     (req: WorkbenchBlockCreateRequest) => {

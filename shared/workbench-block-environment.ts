@@ -149,10 +149,6 @@ function hasString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-function isOptionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === 'string';
-}
-
 function isCwdMode(value: unknown): value is EnvironmentCwdMode {
   return (
     value === 'repo' || value === 'free' || value === 'explicit-outside-repo'
@@ -198,9 +194,9 @@ export function isWorkbenchBlockEnvironmentRef(
   if (!value.capabilities.every(isRelayCapabilityBit)) return false;
   if (!hasString(value.pickerOptionId)) return false;
   if (typeof value.pickerVersion !== 'number') return false;
-  if (!isOptionalString(value.createdAt) || !hasString(value.createdAt)) {
-    return false;
-  }
+  // `createdAt` is required on the interface; check directly for a non-empty
+  // string rather than chaining `isOptionalString` + `hasString`.
+  if (!hasString(value.createdAt)) return false;
   // Invariant: bench implies repoInstance.
   if (
     value.worktreeInstanceId !== undefined &&
