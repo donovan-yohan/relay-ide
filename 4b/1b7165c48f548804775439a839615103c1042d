@@ -1,0 +1,38 @@
+test/workbench-layout.test.ts
+  s_3e9de69a56e5c0::t_1bf57c020eb9ae 687-689,695-700,709-752
+  s_3e9de69a56e5c0::t_457ccee13f79da 253-357
+shared/workbench-layout-types.ts
+  s_3e9de69a56e5c0::t_0ca7f5a5ff6874 51-81,85-89,91-94,98,102
+  s_3e9de69a56e5c0::t_a19b19eb3c57f5 149-169,176-181,183-198
+  s_3e9de69a56e5c0::t_ade81196d7c424 28
+  s_3e9de69a56e5c0::t_7e653c3ac561b6 274,277-301,304-312,341-350,359,362-367,370
+server/workbench-layout.ts
+  s_3e9de69a56e5c0::t_f3250240efc810 124-190,224-225
+  s_3e9de69a56e5c0::t_ea2961d6542f8b 262-264
+  s_3e9de69a56e5c0::t_5f555f20046726 313-315
+frontend/src/workbench/WorkbenchCanvas.tsx
+  s_3e9de69a56e5c0::t_e3e48ac169ae2b 117-130,134,139-141,158-159,167-168,173-174,178-180
+  s_3e9de69a56e5c0::t_2682731064b3ef 37-40
+  s_3e9de69a56e5c0::t_38c392b5aa4c96 131-133,135-138
+  s_3e9de69a56e5c0::t_956f58d88ea904 268-276
+  s_3e9de69a56e5c0::t_75b0295e7f923b 389-398,401-405
+  s_3e9de69a56e5c0::t_11b3aa777eed1d 207-210
+  s_3e9de69a56e5c0::t_7a363ae1ba9cfe 236,238-241,248-250,254,280,284-285,287-317
+  s_3e9de69a56e5c0::t_59f578a8c3cdd5 29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "4b1b7165c48f548804775439a839615103c1042d",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
