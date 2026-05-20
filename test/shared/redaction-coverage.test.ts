@@ -261,21 +261,27 @@ describe('routed-PTY / node-link log shapes (#587, #588) are covered by redactio
     expect(out).toContain('hub.example.test');
   });
 
-  // Known gap tracked as issue #604: the diag bundle url-credential regex
-  // only matches https?:// URLs, but node-link-client logs the WS variant
-  // (wss://). When that's fixed, this it.fails flips green and forces us
-  // to retire the .fails marker — exactly the regression behavior we want.
-  it.fails(
-    'redacts ws(s) URL-embedded credentials in "connected to <linkUrl>" lines — see issue #604',
-    () => {
-      const raw =
-        "[node-link] connected to wss://relayuser:FAKE_URL_PASS_aaaaaaaa@hub.example.test/hub/node-link";
-      const out = redactText(raw).value;
-      expect(out).not.toContain('FAKE_URL_PASS_aaaaaaaa');
-      expect(out).not.toContain('relayuser');
-      expect(out).toContain('hub.example.test');
-    }
-  );
+  // Issue #604 fixed: the diag bundle url-credential regex now matches any
+  // RFC-3986 scheme prefix (case-insensitive), so the WS variant logged at
+  // node-link-client.ts:411 no longer leaks credentials into shipped bundles.
+  // The `it.fails` marker that previously asserted the leak has been retired.
+  it('redacts ws(s) URL-embedded credentials in "connected to <linkUrl>" lines (covers the ws/wss half of node-link-client.ts:411, issue #604)', () => {
+    const raw =
+      "[node-link] connected to wss://relayuser:FAKE_URL_PASS_aaaaaaaa@hub.example.test/hub/node-link";
+    const out = redactText(raw).value;
+    expect(out).not.toContain('FAKE_URL_PASS_aaaaaaaa');
+    expect(out).not.toContain('relayuser');
+    expect(out).toContain('hub.example.test');
+  });
+
+  it('redacts ws:// URL-embedded credentials too (cleartext websocket variant, issue #604)', () => {
+    const raw =
+      "[node-link] connected to ws://relayuser:FAKE_URL_PASS_bbbbbbbb@hub.example.test/hub/node-link";
+    const out = redactText(raw).value;
+    expect(out).not.toContain('FAKE_URL_PASS_bbbbbbbb');
+    expect(out).not.toContain('relayuser');
+    expect(out).toContain('hub.example.test');
+  });
 
   it('redacts Authorization headers if a node-link RPC error path echoes request headers', () => {
     const raw =

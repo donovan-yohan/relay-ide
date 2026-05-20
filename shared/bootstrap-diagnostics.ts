@@ -267,5 +267,12 @@ export function redactBootstrapSecrets(value: string): string {
     .replace(/(Authorization:\s*Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1…redacted')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1…redacted')
     .replace(/("(?:token|pairToken|pin|password|secret)"\s*:\s*)"[^"]*"/gi, '$1"…redacted"')
-    .replace(/\b(token|pin|password|secret)=([^\s&"',}]+)/gi, '$1=…redacted');
+    .replace(/\b(token|pin|password|secret)=([^\s&"',}]+)/gi, '$1=…redacted')
+    // URL-embedded credentials, any scheme — keeps bootstrap log lines
+    // (which can quote `--hub-url https://user:pass@…` or `wss://…`) in
+    // lockstep with the diag-bundle url-credential rule (#604).
+    .replace(
+      /([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^@\s/]+)@/gi,
+      '$1…redacted:…redacted@'
+    );
 }
