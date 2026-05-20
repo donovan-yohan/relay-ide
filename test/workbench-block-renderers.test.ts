@@ -169,10 +169,10 @@ describe('work-context renderer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// custom renderer (scaffold)
+// custom renderer (slice 4 — sandboxed proposal/approval flow)
 // ---------------------------------------------------------------------------
 
-describe('custom renderer (scaffold)', () => {
+describe('custom renderer (slice 4)', () => {
   it('file exists', () => {
     expect(blockExists('custom.tsx')).toBe(true);
   });
@@ -191,30 +191,52 @@ describe('custom renderer (scaffold)', () => {
     expect(src).toContain(`WorkbenchBlockRenderer<'custom'>`);
   });
 
-  it('displays slice-4 scaffold notice', () => {
+  it('does NOT contain the slice-2 scaffold notice', () => {
+    // Slice 4 replaced the placeholder — scaffold notice must be gone
     const src = readBlock('custom.tsx');
-    expect(src).toContain('slice 4');
-    expect(src).toContain('sandbox not yet implemented');
+    expect(src).not.toContain('sandbox not yet implemented');
+    expect(src).not.toContain('SCAFFOLD ONLY');
   });
 
   it('does NOT execute props as code', () => {
     const src = readBlock('custom.tsx');
-    // No eval, no Function constructor, no dangerouslySetInnerHTML
     expect(src).not.toContain('eval(');
     expect(src).not.toContain('new Function(');
     expect(src).not.toContain('dangerouslySetInnerHTML');
   });
 
-  it('reads rendererId from descriptor.meta', () => {
+  it('uses rendererId from descriptor.meta to look up the approved proposal', () => {
     const src = readBlock('custom.tsx');
     expect(src).toContain('rendererId');
+    expect(src).toContain('proposalId');
   });
 
-  it('reads props from descriptor.meta without executing them', () => {
+  it('renders revoked state when proposal is revoked', () => {
     const src = readBlock('custom.tsx');
-    // props is referenced (display count) but not executed
-    expect(src).toContain('props');
-    expect(src).not.toContain('eval(');
+    expect(src).toContain('revoked');
+    expect(src).toContain('RevokedCard');
+  });
+
+  it('uses TanStack Query to load proposal by id', () => {
+    const src = readBlock('custom.tsx');
+    expect(src).toContain('useQuery');
+    // Uses fetchCustomBlockProposalById to load any status, not just approved.
+    expect(src).toContain('fetchCustomBlockProposalById');
+  });
+
+  it('delegates rendering to TemplateRenderer', () => {
+    const src = readBlock('custom.tsx');
+    expect(src).toContain('TemplateRenderer');
+  });
+
+  it('does NOT access process.env (sandbox boundary)', () => {
+    const src = readBlock('custom.tsx');
+    expect(src).not.toContain('process.env');
+  });
+
+  it('does NOT access localStorage (sandbox boundary)', () => {
+    const src = readBlock('custom.tsx');
+    expect(src).not.toContain('localStorage');
   });
 
   it('CSS has block-custom class', () => {
@@ -222,15 +244,14 @@ describe('custom renderer (scaffold)', () => {
     expect(css).toContain('.block-custom');
   });
 
-  it('CSS has block-custom__notice class for scaffold notice', () => {
+  it('CSS has block-custom__notice class', () => {
     const css = readBlock('custom.css');
     expect(css).toContain('.block-custom__notice');
   });
 
-  it('has inline documentation about slice 4', () => {
-    const src = readBlock('custom.tsx');
-    expect(src).toContain('SCAFFOLD ONLY');
-    expect(src).toContain('Slice 4');
+  it('CSS has revoked modifier class', () => {
+    const css = readBlock('custom.css');
+    expect(css).toContain('block-custom__notice--revoked');
   });
 });
 

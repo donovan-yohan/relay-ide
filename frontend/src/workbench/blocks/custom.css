@@ -48,6 +48,20 @@
   font-style: italic;
 }
 
+.block-custom__notice--revoked {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.block-custom__notice--error {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.block-custom--active .block-custom__body--template {
+  padding: var(--space-md);
+}
+
 .block-custom__info {
   display: flex;
   flex-direction: column;

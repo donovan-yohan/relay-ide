@@ -85,6 +85,7 @@ import {
 import { clearCiStatusCache } from './gh.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createWorkbenchLayoutRouter } from './workbench-layout.js';
+import { createWorkbenchCustomBlocksRouter } from './workbench-custom-blocks.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
 import { createIntegrationGitHubRouter } from './integration-github.js';
 import {
@@ -1734,6 +1735,17 @@ async function main(): Promise<void> {
     '/workspace-groups',
     requireAuth,
     createWorkbenchLayoutRouter({ configPath: CONFIG_PATH })
+  );
+
+  // Mount workbench custom block proposal router (slice 4, #622)
+  // POST/GET/POST /workbench/custom-blocks/proposals[/:id/(approve|reject|revoke)]
+  app.use(
+    '/workbench/custom-blocks',
+    requireAuth,
+    createWorkbenchCustomBlocksRouter({
+      configPath: CONFIG_PATH,
+      auditSink: securityAuditLog,
+    })
   );
 
   // Mount GitHub integration router

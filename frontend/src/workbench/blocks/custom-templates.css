@@ -1,0 +1,141 @@
+/* ===== Custom Block Templates ===== */
+
+.custom-template {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  width: 100%;
+}
+
+/* --- status-card --- */
+
+.custom-template--status-card .custom-template__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.custom-template__title {
+  font-size: var(--font-size-base);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.custom-template__badge {
+  font-size: var(--font-size-xs);
+  padding: 1px var(--space-xs);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.template-status--active {
+  border-color: var(--status-success);
+  color: var(--status-success);
+}
+
+.template-status--error {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.template-status--done {
+  border-color: var(--status-merged);
+  color: var(--status-merged);
+}
+
+.template-status--pending {
+  border-color: var(--status-warning);
+  color: var(--status-warning);
+}
+
+.template-status--idle {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.custom-template__description {
+  margin-top: var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* --- kv-grid --- */
+
+.custom-template__heading {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-xs);
+}
+
+.custom-template__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-xs);
+}
+
+.custom-template__row {
+  border-bottom: 1px solid var(--border);
+}
+
+.custom-template__row:last-child {
+  border-bottom: none;
+}
+
+.custom-template__key {
+  color: var(--text-muted);
+  padding: var(--space-2xs) var(--space-sm) var(--space-2xs) 0;
+  min-width: 80px;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.custom-template__value {
+  color: var(--text);
+  padding: var(--space-2xs) 0;
+  word-break: break-word;
+}
+
+/* --- link-list --- */
+
+.custom-template__list {
+  list-style: decimal inside;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.custom-template__list-item {
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  padding: var(--space-2xs) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.custom-template__list-item:last-child {
+  border-bottom: none;
+}
+
+.custom-template__link {
+  color: var(--status-info);
+  text-decoration: underline;
+}
+
+.custom-template__link--unsafe {
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: not-allowed;
+  font-style: italic;
+}
+
+/* --- unknown / fallback --- */
+
+.custom-template--unknown {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: var(--font-size-xs);
+}
