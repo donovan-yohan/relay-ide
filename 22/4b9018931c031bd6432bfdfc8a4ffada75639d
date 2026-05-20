@@ -1,0 +1,25 @@
+shared/workbench-block-types.ts
+  s_afc3e94f2d047a::t_c36f0adfea380e 35
+  s_afc3e94f2d047a::t_58e18c08e8aa0b 142-155
+shared/workbench-block-environment.ts
+  s_afc3e94f2d047a::t_3a53375621ec1d 1-311
+test/shared/workbench-block-env-roundtrip.test.ts
+  s_afc3e94f2d047a::t_9ef7bd64c887e3 1-109,111-464
+  s_afc3e94f2d047a::t_9be29c514da217 110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "224b9018931c031bd6432bfdfc8a4ffada75639d",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
