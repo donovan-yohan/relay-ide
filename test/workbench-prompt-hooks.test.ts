@@ -903,36 +903,44 @@ describe('workbench-prompt-hooks REST router', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns 409 when approving non-pending proposal', async () => {
+  it('returns 409 when rejecting a non-pending (auto-approved) proposal', async () => {
     const app = makeApp();
     const createRes = await call(app, 'POST', '/workbench/propose-block', {
       descriptor: {
-        kind: 'markdown',
-        id: 'block-md',
-        title: 'MD',
-        capabilityRequirements: [],
-        meta: { content: '' },
+        kind: 'terminal',
+        id: 'block-t3',
+        title: 'Term 3',
+        capabilityRequirements: ['session:attach'],
+        meta: {
+          sessionRef: {
+            sessionId: 'sid3',
+            nodeId: 'n1',
+            tabKind: 'agent',
+            cwd: '/tmp',
+          },
+        },
       },
       actorId: 'actor-test',
-      actorGrantedBits: [], // auto-approved (no requirements)
+      actorGrantedBits: [], // missing session:attach → pending
     });
-    // Wait — this will auto-approve (no capabilityRequirements), attempt second approve
     const proposalId = (createRes.body as { proposalId: string }).proposalId;
+    expect((createRes.body as { status: string }).status).toBe('pending');
 
-    // Reject it first
-    await call(
+    // Approve it (pending → auto-approved)
+    const approveRes = await call(
+      app,
+      'POST',
+      `/workbench/propose-block/proposals/${proposalId}/approve`
+    );
+    expect(approveRes.status).toBe(200);
+
+    // Now trying to reject an already-approved proposal should return 409
+    const rejectRes = await call(
       app,
       'POST',
       `/workbench/propose-block/proposals/${proposalId}/reject`
     );
-
-    // Now trying to reject again should 409
-    const secondReject = await call(
-      app,
-      'POST',
-      `/workbench/propose-block/proposals/${proposalId}/reject`
-    );
-    expect(secondReject.status).toBe(409);
+    expect(rejectRes.status).toBe(409);
   });
 });
 
