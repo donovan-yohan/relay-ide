@@ -26,7 +26,7 @@
  *     mount time.
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { EnvironmentPicker } from '../components/EnvironmentPicker.js';
 import type { EnvironmentOption } from '../../../shared/environment-option.js';
 import {
@@ -139,33 +139,39 @@ export function WorkbenchBlockCreateDialog({
   nowIso,
   defaultKind = 'terminal',
 }: WorkbenchBlockCreateDialogProps): React.ReactElement {
-  // Default selection. We compute once on first render via lazy initialiser
-  // so navigation by the user (clicking another row) wins over the default.
-  const initial = useMemo(
+  // Default-selection result. Recomputed when inputs change so the typed
+  // error message stays accurate as candidates load / nodes come online.
+  const defaultResult = useMemo(
     () =>
       pickDefaultEnvironment({
         activeTab,
         history,
         candidates,
       }),
-    // Run only on mount — once the user starts navigating the picker, we keep
-    // their choice. If `candidates` changes upstream (e.g. a node goes
-    // online), they can re-open the dialog.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+    [activeTab, history, candidates]
   );
 
-  const initialSelected = initial.kind === 'ok' ? initial.option.id : undefined;
-
   const [selectedId, setSelectedId] = useState<string | undefined>(
-    initialSelected
+    defaultResult.kind === 'ok' ? defaultResult.option.id : undefined
   );
   const [kind, setKind] =
     useState<WorkbenchBlockDescriptor['kind']>(defaultKind);
   const [title, setTitle] = useState('');
 
+  // If we didn't have a selection yet (candidates loaded after mount, or the
+  // active tab's node just turned fresh), apply the first valid default that
+  // becomes available. Explicit user navigation always wins because we only
+  // fire while `selectedId === undefined`.
+  useEffect(() => {
+    if (selectedId === undefined && defaultResult.kind === 'ok') {
+      setSelectedId(defaultResult.option.id);
+    }
+  }, [defaultResult, selectedId]);
+
   const defaultErrorMessage =
-    initial.kind === 'error' ? describeDefaultError(initial.reason) : null;
+    defaultResult.kind === 'error'
+      ? describeDefaultError(defaultResult.reason)
+      : null;
 
   // Filter candidates by required capabilities at the picker layer. Resolves
   // up-front so the picker never offers an option that fails the block's
