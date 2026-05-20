@@ -32,6 +32,7 @@ import type {
   WorkContext,
   WorkContextRef,
 } from './work-context.js';
+import type { WorkbenchBlockEnvironmentRef } from './workbench-block-environment.js';
 
 // ---------------------------------------------------------------------------
 // Re-exported re-used types for convenience
@@ -138,6 +139,20 @@ interface WorkbenchBlockDescriptorBase {
    * Typed as `RelayCapabilityBit` (closed enum) to prevent invalid bit strings.
    */
   capabilityRequirements: ReadonlyArray<RelayCapabilityBit>;
+  /**
+   * Typed environment metadata captured at block create time (#631).
+   *
+   * Optional for backward compatibility — blocks persisted before #631 landed
+   * have no `environment` field and the resume path treats them as legacy
+   * (see `resolveBlockEnvironment` in `shared/workbench-block-environment.ts`).
+   * Any new block created through the create dialog MUST set this field; the
+   * picker is the only blessed source.
+   *
+   * Stores typed IDs (nodeId, repoIdentity, repoInstanceId, worktreeInstanceId,
+   * cwd, cwdMode, capabilities). Never free-form path strings beyond `cwd`,
+   * which is node-scoped and resolved by the hub at attach time.
+   */
+  environment?: WorkbenchBlockEnvironmentRef;
 }
 
 /** Renders a PTY-backed terminal session. */
