@@ -4,7 +4,7 @@ Operator guide for pairing, installing, updating, diagnosing, and unpairing Rela
 
 Relay uses one npm package for both roles. The packaging decision is documented in [Relay Hub/Node Packaging Decision](RELAY_HUB_NODE_PACKAGING.md): operators install `relay-ide` once, run the web server as `relay-ide hub`, and pair or bootstrap nodes with `relay-ide node ...`. Bare `relay-ide` and top-level `install/status/uninstall` remain back-compat hub aliases.
 
-Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are handled by `relay-ide node connect` / `node install`; the persistent steady-state reverse WebSocket `/hub/node-link` is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager. Bootstrap commands (`node connect`, `node install`) themselves do not open or maintain `/hub/node-link`.
+Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are handled by `relay-ide node pair` / `relay-ide node install`; the persistent steady-state reverse WebSocket `/hub/node-link` is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager. Bootstrap commands (`node pair`, `node install`) themselves do not open or maintain `/hub/node-link`.
 
 > This document is the runbook. For architecture and protocol details, see `docs/federated-relay.md`. For the generic Relay service install/uninstall (non-node), see `docs/references/deployment.md`.
 
@@ -16,20 +16,45 @@ Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagno
 
 ## Quick Reference
 
-| Task                           | Command                                                                                                  |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| Pair node (pair-only)          | `relay-ide node connect --hub <url> --pair-token <token>`                                                |
-| Pair + install service         | `relay-ide node install --hub <url> --pair-token <token> --service <mode>`                               |
-| Hold reverse node link         | `relay-ide node link --hub <url>`                                                                        |
-| Check node status              | `relay-ide node status`                                                                                  |
-| Read service logs              | `relay-ide node logs`                                                                                    |
-| Diagnose hub reachability      | `relay-ide node doctor --hub <url>`                                                                      |
-| Update Relay + restart service | `relay-ide update`                                                                                       |
-| Unpair from hub                | `DELETE /nodes/{nodeId}` from hub UI/API; then `rm ~/.config/relay-ide/node-credential.json` on the node |
+| Task                             | Command                                                                                                  |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Install relay-ide binary on node | `relay-ide node install --hub <url> [--service <mode>]`                                                  |
+| Pair node with hub (pair-only)   | `relay-ide node pair --hub <url> --pair-token <token>`                                                   |
+| Pair node (back-compat alias)    | `relay-ide node connect --hub <url> --pair-token <token>`                                                |
+| Generate SSH bootstrap script    | `relay-ide node ssh-bootstrap --target <host> --hub <url>`                                               |
+| Hold reverse node link           | `relay-ide node link --hub <url>`                                                                        |
+| Check node status                | `relay-ide node status`                                                                                  |
+| Read service logs                | `relay-ide node logs`                                                                                    |
+| Diagnose local node health       | `relay-ide node doctor [--hub <url>] [--json]`                                                           |
+| Update Relay + restart service   | `relay-ide update`                                                                                       |
+| Unpair from hub                  | `DELETE /nodes/{nodeId}` from hub UI/API; then `rm ~/.config/relay-ide/node-credential.json` on the node |
 
 ## Pairing Lifecycle
 
-### 1. Generate a pair token from the hub
+### Step 1: Install the binary on the node
+
+On the target machine (either directly or via the generated SSH bootstrap script):
+
+```bash
+# Install relay-ide globally and optionally set up the platform service.
+# No pair token needed at this step.
+relay-ide node install --hub https://hub.example.com --service launchd
+```
+
+If you omit `--service`, the default is `manual` (binary installed, no service unit). You can set up the service later with `relay-ide hub install`.
+
+Supported `--service` values:
+
+| Value          | Platform             | Behavior                                                          |
+| -------------- | -------------------- | ----------------------------------------------------------------- |
+| `launchd`      | macOS                | Writes `~/Library/LaunchAgents/com.relay-ide.plist` and starts it |
+| `systemd-user` | Linux                | Writes `~/.config/systemd/user/relay-ide.service` and enables it  |
+| `wsl-systemd`  | WSL2 with systemd    | Same as `systemd-user` with WSL caveats                           |
+| `wsl-manual`   | WSL2 without systemd | Pair-only; no background service                                  |
+| `manual`       | Any                  | Binary only; no background service                                |
+| `auto`         | Any                  | Detects platform and chooses the best supported mode              |
+
+### Step 2: Generate a pair token from the hub
 
 An authenticated hub user creates a short-lived, one-time token:
 
@@ -42,30 +67,43 @@ curl -X POST https://hub.example.com/hub/pair-tokens \
 
 Response includes `pairToken` and suggested bootstrap commands for each supported service mode.
 
-### 2. Bootstrap the node
+### Step 3: Pair the node
 
-On the target machine, run one of the following depending on the desired service mode:
+On the node machine, exchange the pair token:
 
 ```bash
 # Pair-only: stores credential, sends one heartbeat, then exits
-relay-ide node connect --hub https://hub.example.com --pair-token <token>
+relay-ide node pair --hub https://hub.example.com --pair-token <token>
 
-# Pair + install generic service setup (does not hold /hub/node-link by itself)
-relay-ide node install --hub https://hub.example.com --pair-token <token> --service launchd
+# If --pair-token is omitted, the CLI prints instructions for getting one
+relay-ide node pair --hub https://hub.example.com
 ```
 
-Supported `--service` values:
+`relay-ide node connect` is a back-compat alias for `pair`. Both sub-commands call the same pairing flow.
 
-| Value          | Platform             | Behavior                                                          |
-| -------------- | -------------------- | ----------------------------------------------------------------- |
-| `launchd`      | macOS                | Writes `~/Library/LaunchAgents/com.relay-ide.plist` and starts it |
-| `systemd-user` | Linux                | Writes `~/.config/systemd/user/relay-ide.service` and enables it  |
-| `wsl-systemd`  | WSL2 with systemd    | Same as `systemd-user` with WSL caveats                           |
-| `wsl-manual`   | WSL2 without systemd | Pair-only; no background service                                  |
-| `manual`       | Any                  | Pair-only; no background service                                  |
-| `auto`         | Any                  | Detects platform and chooses the best supported mode              |
+> **Important:** `node install` and `node pair` do **not** start the reverse WebSocket link `/hub/node-link`. Use `relay-ide node link --hub <url>` to hold the persistent reverse link in the foreground (or run it from your platform service manager).
 
-> **Important:** Bootstrap diagnostics pair credentials and install/start the generic Relay service. They do **not** start the reverse WebSocket link `/hub/node-link` themselves. Use `relay-ide node link --hub <url>` to hold the persistent reverse link in the foreground (or run it from your platform service manager).
+### Alternative: SSH bootstrap script (one-shot remote install+pair)
+
+To bootstrap a remote host in one step, generate a paste-able script:
+
+```bash
+relay-ide node ssh-bootstrap --target user@remote.internal --hub https://hub.example.com
+```
+
+This prints a bash script that:
+
+1. Checks for `relay-ide` on the remote and installs it via `npm install -g relay-ide` if missing.
+2. Runs `relay-ide node install --hub <url> --pair-token ... --service auto` on the remote.
+
+The script uses a `PAIR_TOKEN` shell variable placeholder — set it at runtime before running the script. This is a **generation utility**, not an SSH product API. No SSH connection is made by the CLI itself; copy the script and run it on the remote.
+
+Legacy combined pair+service command (still supported):
+
+```bash
+# Pair + install generic service setup in one command (legacy, requires --pair-token)
+relay-ide node install --hub https://hub.example.com --pair-token <token> --service launchd
+```
 
 ### Persistent /hub/node-link
 
@@ -336,13 +374,36 @@ Hub doctor is intentionally cheap and read-only. It checks local config readabil
 ```bash
 # Full local diagnostic + hub reachability check
 relay-ide node doctor --hub https://hub.example.com
+
+# Structured JSON output for scripts and automation
+relay-ide node doctor --hub https://hub.example.com --json
 ```
 
-This prints:
+This prints (human-readable):
 
-- Local capability manifest (tmux, git, agents, etc.)
-- Service manager detection result
-- Whether the hub `/version` endpoint is reachable
+- Host info: hostname, platform, arch, relay version, protocol version
+- Service manager kind and whether it is supported
+- Whether the local service is installed and running
+- All degraded reasons from the node manifest (every `warn` or `error` reason)
+- Hub `/version` reachability result
+
+`--json` output shape:
+
+```json
+{
+  "ok": true,
+  "hostname": "dev-macbook",
+  "platform": "darwin",
+  "arch": "arm64",
+  "helperVersion": "0.4.2",
+  "serviceManager": { "kind": "launchd", "supported": true, "message": "..." },
+  "degradedReasons": [],
+  "hubUrl": "https://hub.example.com",
+  "hubReachable": true
+}
+```
+
+Exit code is 0 when `ok` is true (no `warn` or `error` degraded reasons and hub reachable if `--hub` supplied), 1 otherwise.
 
 ### Service logs by platform
 
@@ -384,11 +445,11 @@ If you see `NODE_CREDENTIAL_REJECTED`:
 
 ### Trust tiers and default ACL
 
-| Tier | Blast radius |
-| ---- | ------------ |
-| `sandbox` | Experimental/constrained node. Keep grants narrow. |
-| `dev` | Default legacy private-infra node. Read/session-safe bits are granted by migration; destructive bits stay off. |
-| `prod` | Sensitive node. High-risk allowed bits may require confirmation and must never be silently widened. |
+| Tier      | Blast radius                                                                                                   |
+| --------- | -------------------------------------------------------------------------------------------------------------- |
+| `sandbox` | Experimental/constrained node. Keep grants narrow.                                                             |
+| `dev`     | Default legacy private-infra node. Read/session-safe bits are granted by migration; destructive bits stay off. |
+| `prod`    | Sensitive node. High-risk allowed bits may require confirmation and must never be silently widened.            |
 
 Legacy paired nodes receive a default `dev` ACL on upgrade. Session/read-safe bits are allowed; file write/delete, git write, arbitrary exec, and preview/port-forward remain off unless explicitly granted. Node manifest capabilities are availability probes only, not grants. See `docs/SECURITY_POLICY.md`.
 
