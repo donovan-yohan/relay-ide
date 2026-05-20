@@ -86,6 +86,7 @@ import { clearCiStatusCache } from './gh.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
 import { createWorkbenchLayoutRouter } from './workbench-layout.js';
 import { createWorkbenchCustomBlocksRouter } from './workbench-custom-blocks.js';
+import { createWorkbenchProposeBlockRouter } from './workbench-prompt-hooks.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
 import { createIntegrationGitHubRouter } from './integration-github.js';
 import {
@@ -1743,6 +1744,19 @@ async function main(): Promise<void> {
     '/workbench/custom-blocks',
     requireAuth,
     createWorkbenchCustomBlocksRouter({
+      configPath: CONFIG_PATH,
+      auditSink: securityAuditLog,
+    })
+  );
+
+  // Mount workbench propose-block router (slice 5, #625)
+  // POST /workbench/propose-block — agent proposes any block kind
+  // GET  /workbench/propose-block/proposals — list first-party proposals
+  // POST /workbench/propose-block/proposals/:id/(approve|reject)
+  app.use(
+    '/workbench',
+    requireAuth,
+    createWorkbenchProposeBlockRouter({
       configPath: CONFIG_PATH,
       auditSink: securityAuditLog,
     })
