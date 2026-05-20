@@ -90,6 +90,11 @@
   color: var(--text);
 }
 
+.canvas-block__minimize-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ===== Block body (content area) ===== */
 
 .canvas-block__body {
@@ -108,6 +113,11 @@
   height: 12px;
   cursor: nwse-resize;
   z-index: 10;
+}
+
+.canvas-block__resize-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Draw a subtle triangle indicator */

@@ -67,9 +67,17 @@ export function readWorkbenchLayout(
   let raw: string;
   try {
     raw = fs.readFileSync(fp, 'utf8');
-  } catch {
-    // File not found — no layout stored yet
-    return null;
+  } catch (err: unknown) {
+    if (
+      err &&
+      typeof err === 'object' &&
+      'code' in err &&
+      (err as NodeJS.ErrnoException).code === 'ENOENT'
+    ) {
+      // File not found — no layout stored yet
+      return null;
+    }
+    throw err;
   }
   try {
     return deserialiseWorkbenchLayout(JSON.parse(raw));

@@ -1945,7 +1945,9 @@ export async function fetchSecurityAuditVerify(): Promise<SecurityAuditVerifyRes
 export async function fetchWorkbenchLayout(
   workspaceId: string
 ): Promise<WorkbenchLayout | null> {
-  const res = await fetch(`/workspace-groups/${workspaceId}/workbench-layout`);
+  const res = await fetch(
+    `/workspace-groups/${encodeURIComponent(workspaceId)}/workbench-layout`
+  );
   if (res.status === 204) return null;
   if (!res.ok)
     throw new Error(
@@ -1962,11 +1964,14 @@ export async function putWorkbenchLayout(
   workspaceId: string,
   layout: WorkbenchLayout
 ): Promise<WorkbenchLayout> {
-  const res = await fetch(`/workspace-groups/${workspaceId}/workbench-layout`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(layout),
-  });
+  const res = await fetch(
+    `/workspace-groups/${encodeURIComponent(workspaceId)}/workbench-layout`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(layout),
+    }
+  );
   if (!res.ok)
     throw new Error(
       await parseErrorBody(res, 'Failed to save workbench layout')
