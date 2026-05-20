@@ -296,10 +296,12 @@ describe('pickDefaultEnvironment', () => {
   });
 
   describe('compatibility (active tab carries RepoIdentity)', () => {
-    it('history fallback prefers same-RepoIdentity candidate when the active tab had a repo', () => {
-      // Active tab is missing from candidates but had REPO_RELAY identity. The
-      // history fallback should prefer a candidate with the same repo identity
-      // over an unrelated repo, even if both are fresh.
+    it('never silently substitutes a same-RepoIdentity candidate when the active tab is missing', () => {
+      // Active tab had REPO_RELAY identity but its environment id is no longer
+      // in candidates (node unpaired, repo instance removed, etc). Even though
+      // a fresh same-repo candidate exists on a *different* node, the picker
+      // must return `active-tab-missing` rather than silently jumping the tab
+      // to a different machine. This is the critical #628 correctness rule.
       const active = makeOption({ nodeId: NODE_LOCAL, repoIdentity: REPO_RELAY });
       const sameRepoDifferentNode = makeOption({
         nodeId: NODE_REMOTE,
