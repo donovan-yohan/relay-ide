@@ -1,0 +1,25 @@
+frontend/test-env-picker-dialog.html
+  s_afc3e94f2d047a::t_e5e0f2e128a397 1-15
+frontend/src/test-env-picker-dialog.tsx
+  s_afc3e94f2d047a::t_5474fe46c4513f 1-329
+test/e2e/components/EnvPickerDialog.spec.ts
+  s_afc3e94f2d047a::t_4147ccaec880b7 1-180
+frontend/vite.config.ts
+  s_afc3e94f2d047a::t_d1aded7a468b78 43-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "8fa644d300ff29ed56d24b51e175728d1de50f50",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
