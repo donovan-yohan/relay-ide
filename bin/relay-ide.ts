@@ -2885,6 +2885,217 @@ async function runNodeInstallBinary(nodeArgs: string[]): Promise<void> {
 }
 
 /**
+ * Notify the hub that this node is entering the `updating` state so the hub
+ * blocks new session-create requests while the binary is being replaced.
+ * Best-effort: if the hub cannot be reached, the update proceeds anyway
+ * (the 503 gate is a hub-side guard; the CLI does not block on hub ack).
+ */
+async function notifyHubNodeUpdating(
+  hubUrl: string,
+  nodeId: string,
+  token: string,
+  starting: boolean
+): Promise<void> {
+  const endpoint = `${hubUrl}/hub/nodes/${encodeURIComponent(nodeId)}/updating`;
+  try {
+    const res = await fetch(endpoint, {
+      method: starting ? 'POST' : 'DELETE',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
+    });
+    if (!res.ok) {
+      logger.warn(
+        `hub node-updating signal returned ${res.status}; proceeding with update.`
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      `could not signal hub (${starting ? 'updating-start' : 'updating-complete'}): ${err instanceof Error ? err.message : String(err)}. proceeding with update.`
+    );
+  }
+}
+
+/** Read the update channel from config. Defaults to 'stable'. */
+function resolveUpdateChannel(): 'stable' | 'nightly' {
+  const configPath = resolveConfigPath();
+  if (!fs.existsSync(configPath)) return 'stable';
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
+      updateChannel?: string;
+    };
+    if (config.updateChannel === 'nightly') return 'nightly';
+  } catch {
+    // ignore
+  }
+  return 'stable';
+}
+
+/** Read the currently installed relay-ide version from package.json. */
+function readInstalledVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')
+    ) as { version: string };
+    return pkg.version;
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** Query npm for the latest published version of the given dist-tag. */
+async function fetchLatestNpmVersion(tag: string): Promise<string> {
+  try {
+    const result = await execFileAsync('npm', [
+      'view',
+      `relay-ide@${tag}`,
+      'version',
+    ]);
+    const v = result.stdout.trim();
+    if (!v) {
+      logger.error(
+        `NODE_UPDATE_FAILED: npm view returned an empty version for relay-ide@${tag}`
+      );
+      process.exit(1);
+    }
+    return v;
+  } catch (err) {
+    logger.error(
+      `NODE_UPDATE_FAILED: could not fetch latest version from npm: ${execErrorMessage(err, 'npm view failed')}`
+    );
+    process.exit(1);
+  }
+}
+
+/** Restart the managed platform service after a binary update. Best-effort. */
+function restartServiceAfterUpdate(): void {
+  if (!service.isInstalled()) {
+    logger.info(
+      'no managed service detected. restart relay-ide node link manually to connect with the updated binary.'
+    );
+    return;
+  }
+  logger.info('platform service detected — restarting...');
+  try {
+    service.uninstall();
+    service.install({
+      configPath: resolveConfigPath(),
+      port: getArg('--port') ?? String(DEFAULTS.port),
+      host: getArg('--host') ?? DEFAULTS.host,
+    });
+    logger.info('service restarted.');
+  } catch (err) {
+    logger.warn(
+      `service restart failed (update succeeded): ${execErrorMessage(err, 'service restart failed')}. restart the service manually.`
+    );
+  }
+}
+
+/**
+ * Update the relay-ide helper binary on this node.
+ *
+ * `relay-ide node update [--hub <url>]`        — install latest, signal hub, restart service if managed
+ * `relay-ide node update --check [--hub <url>]` — report whether update is available (non-destructive)
+ *
+ * Idempotent: if already at the latest version, prints "already at latest" and exits 0.
+ *
+ * When `--hub <url>` is provided, the node signals the hub with `POST /hub/nodes/:nodeId/updating`
+ * before installing and `DELETE /hub/nodes/:nodeId/updating` after completion, so the hub can
+ * block new session-create requests for the duration of the update (#655, Slice 5 of epic #613).
+ */
+async function runNodeUpdate(nodeArgs: string[]): Promise<void> {
+  const checkOnly = nodeArgs.includes('--check');
+  const hubUrl = getNodeArg(nodeArgs, '--hub');
+  const tag = resolveUpdateChannel() === 'nightly' ? 'nightly' : 'latest';
+  const currentVersion = readInstalledVersion();
+  const latestVersion = await fetchLatestNpmVersion(tag);
+
+  if (checkOnly) {
+    if (currentVersion === latestVersion) {
+      logger.info(
+        `already at latest (${currentVersion} == relay-ide@${tag} ${latestVersion}).`
+      );
+    } else {
+      logger.info(
+        `update available: installed ${currentVersion}, latest relay-ide@${tag} is ${latestVersion}. run 'relay-ide node update' to apply.`
+      );
+    }
+    process.exit(0);
+  }
+
+  if (currentVersion === latestVersion) {
+    logger.info(
+      `already at latest (relay-ide@${tag} ${latestVersion}). nothing to do.`
+    );
+    process.exit(0);
+  }
+
+  // Load credential if hub signaling is requested.
+  let credential: { nodeId: string; token: string } | undefined;
+  if (hubUrl) {
+    try {
+      credential = loadNodeCredential();
+    } catch {
+      logger.warn(
+        'could not load node credential; proceeding without hub signaling.'
+      );
+    }
+  }
+
+  // Signal hub: entering updating state (best-effort).
+  if (hubUrl && credential) {
+    await notifyHubNodeUpdating(
+      hubUrl,
+      credential.nodeId,
+      credential.token,
+      true
+    );
+  }
+
+  logger.info(
+    `updating relay-ide from ${currentVersion} → ${latestVersion} (relay-ide@${tag})...`
+  );
+  try {
+    await execFileAsync('npm', ['install', '-g', `relay-ide@${tag}`], {
+      env: process.env,
+    });
+  } catch (err) {
+    if (hubUrl && credential) {
+      await notifyHubNodeUpdating(
+        hubUrl,
+        credential.nodeId,
+        credential.token,
+        false
+      );
+    }
+    logger.error(
+      `NODE_UPDATE_FAILED: ${execErrorMessage(err, 'npm install -g relay-ide failed')}`
+    );
+    process.exit(1);
+  }
+
+  const installedVersion = readInstalledVersion();
+  logger.info(
+    installedVersion !== 'unknown'
+      ? `relay-ide updated to ${installedVersion}.`
+      : 'relay-ide updated.'
+  );
+
+  // Signal hub: update complete, clear the updating flag.
+  if (hubUrl && credential) {
+    await notifyHubNodeUpdating(
+      hubUrl,
+      credential.nodeId,
+      credential.token,
+      false
+    );
+  }
+
+  restartServiceAfterUpdate();
+}
+
+/**
  * Generate and print a paste-able bash script that installs relay-ide and
  * pairs the node with the given hub on a remote machine reached via SSH.
  *
@@ -3272,6 +3483,12 @@ if (command === 'node') {
     await runNodeLink(nodeArgs);
     process.exit(0);
   }
+  // relay-ide node update [--check]
+  // Update the helper binary on this node (Slice 5, #655).
+  if (subCommand === 'update') {
+    await runNodeUpdate(nodeArgs.slice(1));
+    process.exit(0);
+  }
   // relay-ide node pair --hub <url> --pair-token <token>
   // Productized pair-only command. The existing 'connect' subcommand is kept
   // as a back-compat alias. Both call pairNode() under the hood.
@@ -3349,7 +3566,7 @@ if (command === 'node') {
     }
   }
   logger.error(
-    'Usage: relay-ide node <status|logs|doctor|pair|install|ssh-bootstrap|connect|link>'
+    'Usage: relay-ide node <status|logs|doctor|pair|install|ssh-bootstrap|connect|link|update>'
   );
   process.exit(1);
 }

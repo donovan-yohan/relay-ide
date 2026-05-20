@@ -12,6 +12,7 @@ import {
   type HubNodeCredentialRotationState,
   type HubNodeCredentialRotationSummary,
   type HubNodeCredentialState,
+  type HubNodeHelperSkewSummary,
   type HubNodeStatus,
   type HubNodeSummary,
   type HubNodeVersionState,
@@ -20,6 +21,7 @@ import {
   type RelayNodeError,
   type RelayNodeErrorCode,
 } from '../shared/relay-node-protocol.js';
+import { classifyHelperSkew } from './node-version-skew.js';
 import {
   RELAY_SECURITY_POLICY_VERSION,
   createLegacyDefaultNodeAcl,
@@ -73,6 +75,8 @@ interface StoredNodeRecord {
   platform: string;
   arch: string;
   relayVersion: string;
+  /** Helper binary version from NodeManifest.helperVersion (#655). Optional for backward compat. */
+  helperVersion?: string;
   protocolVersion: string;
   capabilities: NodeCapabilityManifestSummary;
   acl?: RelayNodeAcl;
@@ -83,6 +87,8 @@ interface StoredNodeRecord {
   lastSeenAt: string;
   linkDisconnectedAt?: string;
   revokedAt?: string;
+  /** Set while `relay-ide node update` is in progress. Cleared when update completes. */
+  updatingAt?: string;
 }
 
 interface RegistryFile {
@@ -142,6 +148,8 @@ export interface HubNodeRegistryOptions {
   offlineMs?: number;
   heartbeatPersistDebounceMs?: number;
   auditSink?: { append(input: SecurityAuditEntryInput): unknown };
+  /** Hub's own package version, used for helper-version skew detection (#655). */
+  hubVersion?: string;
 }
 
 export const DEFAULT_PAIR_TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -401,6 +409,7 @@ function statusForNode(
   offlineMs: number
 ): HubNodeStatus {
   if (node.revokedAt) return 'revoked';
+  if (node.updatingAt) return 'updating';
   if (
     node.linkDisconnectedAt &&
     Date.parse(node.linkDisconnectedAt) >= Date.parse(node.lastSeenAt)
@@ -538,13 +547,32 @@ function assertNoActiveRotation(node: StoredNodeRecord): void {
 
 function publicNode(
   node: StoredNodeRecord,
-  status: HubNodeStatus
+  status: HubNodeStatus,
+  hubVersion?: string
 ): HubNodeSummary {
   const acl = ensureNodeAcl(node);
   const aclSummary = summarizeAcl(acl);
   const rotationSummary = node.credentialRotation
     ? publicRotation(node.credentialRotation)
     : undefined;
+
+  let helperSkew: HubNodeHelperSkewSummary | undefined;
+  if (hubVersion && (node.helperVersion || node.relayVersion)) {
+    const result = classifyHelperSkew(
+      node.helperVersion ?? node.relayVersion,
+      hubVersion
+    );
+    helperSkew = {
+      category: result.category,
+      helperVersion: result.helperVersion,
+      hubVersion: result.hubVersion,
+      message: result.message,
+      ...(result.remediationHint
+        ? { remediationHint: result.remediationHint }
+        : {}),
+    };
+  }
+
   return {
     nodeId: node.nodeId,
     displayName: node.displayName,
@@ -570,6 +598,7 @@ function publicNode(
       nodeProtocolVersion: node.protocolVersion,
       hubProtocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
     },
+    ...(helperSkew ? { helperSkew } : {}),
     capabilities: normalizeCapabilitySummary(node.capabilities),
     createdAt: node.createdAt,
     pairedAt: node.pairedAt,
@@ -587,6 +616,8 @@ function connectionSummary(
     return { route: REVERSE_LINK_ROUTE, status: 'stale heartbeat' };
   if (status === 'offline')
     return { route: REVERSE_LINK_ROUTE, status: 'offline' };
+  if (status === 'updating')
+    return { route: REVERSE_LINK_ROUTE, status: 'updating' };
   return { route: REVERSE_LINK_ROUTE, status: 'revoked' };
 }
 
@@ -605,6 +636,8 @@ export class HubNodeRegistry {
     | undefined;
   private readonly nodeStatusListeners = new Set<NodeStatusListener>();
   private readonly lastNotifiedStatuses = new Map<string, HubNodeStatus>();
+  /** Hub's own package version, forwarded to helperSkew computation. */
+  private readonly hubVersion: string | undefined;
 
   constructor(options: HubNodeRegistryOptions) {
     this.storagePath = options.storagePath;
@@ -616,6 +649,7 @@ export class HubNodeRegistry {
       options.heartbeatPersistDebounceMs ??
       DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS;
     this.auditSink = options.auditSink;
+    this.hubVersion = options.hubVersion;
     this.state = readRegistryFile(options.storagePath);
     const needsAclMigration = registryNeedsAclMigration(this.state);
     for (const node of this.state.nodes) ensureNodeAcl(node);
@@ -709,6 +743,9 @@ export class HubNodeRegistry {
       platform: input.manifest.platform,
       arch: input.manifest.arch,
       relayVersion: input.manifest.relayVersion,
+      ...(input.manifest.helperVersion
+        ? { helperVersion: input.manifest.helperVersion }
+        : {}),
       protocolVersion,
       capabilities: summarizeCapabilities(input.manifest),
       acl: createLegacyDefaultNodeAcl({
@@ -738,7 +775,7 @@ export class HubNodeRegistry {
         token: credential.token,
         issuedAt: timestamp,
       },
-      node: publicNode(node, 'online'),
+      node: publicNode(node, 'online', this.hubVersion),
     };
   }
 
@@ -785,7 +822,8 @@ export class HubNodeRegistry {
       ok: true,
       node: publicNode(
         node,
-        statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+        statusForNode(node, this.now(), this.staleMs, this.offlineMs),
+        this.hubVersion
       ),
       credentialId: matchesRotation
         ? rotation!.nextCredentialId
@@ -823,6 +861,9 @@ export class HubNodeRegistry {
       node.platform = input.manifest.platform;
       node.arch = input.manifest.arch;
       node.relayVersion = input.manifest.relayVersion;
+      if (input.manifest.helperVersion) {
+        node.helperVersion = input.manifest.helperVersion;
+      }
       node.capabilities = summarizeCapabilities(input.manifest);
     }
     if (input.repoInventory !== undefined && input.repoInventory !== null) {
@@ -835,7 +876,7 @@ export class HubNodeRegistry {
       input.manifest,
       previousStatus
     );
-    return publicNode(node, 'online');
+    return publicNode(node, 'online', this.hubVersion);
   }
 
   markNodeLinkDisconnected(nodeId: string): HubNodeSummary {
@@ -844,7 +885,7 @@ export class HubNodeRegistry {
     );
     if (!node)
       throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
-    if (node.revokedAt) return publicNode(node, 'revoked');
+    if (node.revokedAt) return publicNode(node, 'revoked', this.hubVersion);
 
     const previousStatus = statusForNode(
       node,
@@ -855,7 +896,7 @@ export class HubNodeRegistry {
     node.linkDisconnectedAt = this.now().toISOString();
     this.persist();
     this.notifyNodeStatusIfChanged(node, 'offline', undefined, previousStatus);
-    return publicNode(node, 'offline');
+    return publicNode(node, 'offline', this.hubVersion);
   }
 
   beginCredentialRotation(nodeId: string): CredentialRotationResult {
@@ -881,7 +922,8 @@ export class HubNodeRegistry {
     return {
       node: publicNode(
         node,
-        statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+        statusForNode(node, this.now(), this.staleMs, this.offlineMs),
+        this.hubVersion
       ),
       credential: {
         protocol: RELAY_NODE_LINK_PROTOCOL,
@@ -909,7 +951,8 @@ export class HubNodeRegistry {
     return {
       node: publicNode(
         node,
-        statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+        statusForNode(node, this.now(), this.staleMs, this.offlineMs),
+        this.hubVersion
       ),
       rotation: publicRotation(rotation)!,
     };
@@ -931,7 +974,8 @@ export class HubNodeRegistry {
     return {
       node: publicNode(
         node,
-        statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+        statusForNode(node, this.now(), this.staleMs, this.offlineMs),
+        this.hubVersion
       ),
       rotation: publicRotation(rotation)!,
     };
@@ -959,7 +1003,8 @@ export class HubNodeRegistry {
     this.persist();
     return publicNode(
       node,
-      statusForNode(node, this.now(), this.staleMs, this.offlineMs)
+      statusForNode(node, this.now(), this.staleMs, this.offlineMs),
+      this.hubVersion
     );
   }
 
@@ -1059,7 +1104,11 @@ export class HubNodeRegistry {
   listNodes(): HubNodeSummary[] {
     const now = this.now();
     return this.state.nodes.map((node) =>
-      publicNode(node, statusForNode(node, now, this.staleMs, this.offlineMs))
+      publicNode(
+        node,
+        statusForNode(node, now, this.staleMs, this.offlineMs),
+        this.hubVersion
+      )
     );
   }
 
@@ -1123,7 +1172,54 @@ export class HubNodeRegistry {
       this.persist();
       this.notifyNodeStatusIfChanged(node, 'revoked');
     }
-    return publicNode(node, 'revoked');
+    return publicNode(node, 'revoked', this.hubVersion);
+  }
+
+  /**
+   * Mark a node as `updating`. While in this state the hub refuses new
+   * session-create requests for the node (returns 503 with Retry-After).
+   * Existing sessions are allowed to drain naturally (#655).
+   */
+  markNodeUpdating(nodeId: string): HubNodeSummary {
+    const node = this.state.nodes.find(
+      (candidate) => candidate.nodeId === nodeId
+    );
+    if (!node)
+      throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
+    if (node.revokedAt)
+      throw new HubNodeRegistryError('NODE_REVOKED', 'node was revoked');
+    if (!node.updatingAt) {
+      node.updatingAt = this.now().toISOString();
+      this.persist();
+      this.notifyNodeStatusIfChanged(node, 'updating');
+    }
+    return publicNode(node, 'updating', this.hubVersion);
+  }
+
+  /**
+   * Clear the `updating` flag after a node update completes. The node
+   * transitions back to its normal heartbeat-derived status.
+   */
+  markNodeUpdateComplete(nodeId: string): HubNodeSummary {
+    const node = this.state.nodes.find(
+      (candidate) => candidate.nodeId === nodeId
+    );
+    if (!node)
+      throw new HubNodeRegistryError('NOT_FOUND', 'node is not paired');
+    if (node.revokedAt)
+      throw new HubNodeRegistryError('NODE_REVOKED', 'node was revoked');
+    if (node.updatingAt) {
+      delete node.updatingAt;
+      this.persist();
+    }
+    const status = statusForNode(
+      node,
+      this.now(),
+      this.staleMs,
+      this.offlineMs
+    );
+    this.notifyNodeStatusIfChanged(node, status);
+    return publicNode(node, status, this.hubVersion);
   }
 
   errorBody(error: unknown): { error: RelayNodeError } {

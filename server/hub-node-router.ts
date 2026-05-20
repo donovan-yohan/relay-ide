@@ -111,7 +111,10 @@ export interface RoutedSessionAuditSink {
   listBefore?(
     beforeSequence: number | null,
     limit: number
-  ): { rows: NormalizedSecurityAuditEntry[]; nextBeforeSequence: number | null };
+  ): {
+    rows: NormalizedSecurityAuditEntry[];
+    nextBeforeSequence: number | null;
+  };
   head?(): { latestSequence: number; latestHash: string | null };
   verify?(): SecurityAuditVerificationResult;
 }
@@ -144,7 +147,11 @@ function bearerToken(req: Request): string | null {
 }
 
 function optionalControlActorOk(value: unknown): boolean {
-  return value === undefined || value === null || normalizeControlActor(value) !== undefined;
+  return (
+    value === undefined ||
+    value === null ||
+    normalizeControlActor(value) !== undefined
+  );
 }
 
 function optionalControlStringOk(value: unknown): boolean {
@@ -193,7 +200,8 @@ function controlSummaryFieldsOk(session: Partial<SessionSummary>): boolean {
     optionalControlStringOk(session.lastInterventionEventId) &&
     (session.controlFreshness === undefined ||
       isControlFreshness(session.controlFreshness)) &&
-    (session.controlReason === undefined || typeof session.controlReason === 'string')
+    (session.controlReason === undefined ||
+      typeof session.controlReason === 'string')
   );
 }
 
@@ -251,6 +259,59 @@ export function relayError(
 
 export function sendRelayError(res: Response, error: RelayNodeError): void {
   res.status(errorStatus(error)).json({ error });
+}
+
+/**
+ * Check whether a node is in a state that blocks new session-create:
+ *   - `updating` — binary update in progress, drain in-flight sessions
+ *   - `major-skew-error` — helper major version mismatch, must update first
+ *   - protocol mismatch — node-link protocol != hub protocol
+ *
+ * Returns true and sends the appropriate error response if blocked; returns false if clear.
+ * Extracted to keep the session-create route handler below the complexity limit (#655).
+ */
+export function sendNodeUnavailableForCreate(
+  res: Response,
+  node: import('../shared/relay-node-protocol.js').HubNodeSummary,
+  nodeId: string
+): boolean {
+  if (node.status === 'updating') {
+    res.setHeader('Retry-After', '60');
+    res.status(503).json({
+      error: relayError(
+        'NODE_BUSY',
+        `node ${nodeId} is updating; new sessions blocked while update drains. retry after 60 seconds.`,
+        true,
+        { reasonCode: 'NODE_UPDATING' }
+      ),
+    });
+    return true;
+  }
+  if (node.helperSkew?.category === 'major-skew-error') {
+    res.setHeader('Retry-After', '60');
+    res.status(503).json({
+      error: relayError('NODE_BUSY', node.helperSkew.message, true, {
+        reasonCode: 'NODE_VERSION_SKEW',
+        helperVersion: node.helperSkew.helperVersion,
+        hubVersion: node.helperSkew.hubVersion,
+        remediationHint: node.helperSkew.remediationHint,
+      }),
+    });
+    return true;
+  }
+  if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+    const [nodeMajor] = node.protocolVersion.split('.');
+    const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+    sendRelayError(
+      res,
+      relayError(
+        nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+        `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+      )
+    );
+    return true;
+  }
+  return false;
 }
 
 export function isSessionSummary(value: unknown): value is SessionSummary {
@@ -323,7 +384,8 @@ export function scopedNodeSession(
       ...(scoped.worktreePath !== undefined
         ? { worktreePath: scoped.worktreePath }
         : {}),
-      issuedAt: lifecycle.issuedAt ?? existingEnvelope?.issuedAt ?? scoped.createdAt,
+      issuedAt:
+        lifecycle.issuedAt ?? existingEnvelope?.issuedAt ?? scoped.createdAt,
       expiresAt:
         lifecycle.expiresAt !== undefined
           ? lifecycle.expiresAt
@@ -333,12 +395,16 @@ export function scopedNodeSession(
       ...(existingEnvelope?.correlationId
         ? { correlationId: existingEnvelope.correlationId }
         : {}),
-      ...(existingEnvelope?.auditId ? { auditId: existingEnvelope.auditId } : {}),
+      ...(existingEnvelope?.auditId
+        ? { auditId: existingEnvelope.auditId }
+        : {}),
     }),
   };
 }
 
-function routedWorkContextId(body: Record<string, unknown>): string | undefined {
+function routedWorkContextId(
+  body: Record<string, unknown>
+): string | undefined {
   const value = body['workContextId'];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -373,7 +439,9 @@ function associateRoutedWorkContext(
     store.associateSession(workContextId, { session });
     return null;
   } catch (error) {
-    return error instanceof Error ? error.message : 'work_context_association_failed';
+    return error instanceof Error
+      ? error.message
+      : 'work_context_association_failed';
   }
 }
 
@@ -433,7 +501,8 @@ function routedGatewayCreateBodyFromRequest(
   routeNodeId: string
 ): Record<string, unknown> | null {
   const body = req.body as unknown;
-  if (!isCliGatewayV1Request(req)) return paramsWithoutConfirmation(bodyRecord(req));
+  if (!isCliGatewayV1Request(req))
+    return paramsWithoutConfirmation(bodyRecord(req));
   if (!isRecord(body)) {
     sendGatewayCreateValidationError(res, {
       code: 'INVALID_ARGUMENT',
@@ -444,7 +513,8 @@ function routedGatewayCreateBodyFromRequest(
   }
 
   const validationInput = paramsWithoutConfirmation(body);
-  if (validationInput['nodeId'] === undefined) validationInput['nodeId'] = routeNodeId;
+  if (validationInput['nodeId'] === undefined)
+    validationInput['nodeId'] = routeNodeId;
   const validated = validateAndSanitizeGatewayCreateInput(validationInput);
   if (validated.ok === false) {
     sendGatewayCreateValidationError(res, validated.error);
@@ -455,7 +525,11 @@ function routedGatewayCreateBodyFromRequest(
       code: 'INVALID_ARGUMENT',
       message: 'sessions.create nodeId must match route nodeId',
       retryable: false,
-      details: { field: 'nodeId', nodeId: routeNodeId, bodyNodeId: validated.nodeId ?? null },
+      details: {
+        field: 'nodeId',
+        nodeId: routeNodeId,
+        bodyNodeId: validated.nodeId ?? null,
+      },
     });
     return null;
   }
@@ -465,30 +539,40 @@ function routedGatewayCreateBodyFromRequest(
   return routedBody;
 }
 
-function confirmationTokenFromRequest(req: Request, body: Record<string, unknown>): string | undefined {
+function confirmationTokenFromRequest(
+  req: Request,
+  body: Record<string, unknown>
+): string | undefined {
   const bodyToken = body['confirmationToken'];
-  if (typeof bodyToken === 'string' && bodyToken.trim()) return bodyToken.trim();
+  if (typeof bodyToken === 'string' && bodyToken.trim())
+    return bodyToken.trim();
   const headerToken = req.header('x-confirmation-token');
   return headerToken?.trim() || undefined;
 }
 
-export function paramsWithoutConfirmation(body: Record<string, unknown>): Record<string, unknown> {
+export function paramsWithoutConfirmation(
+  body: Record<string, unknown>
+): Record<string, unknown> {
   const cleaned: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body)) {
-    if (key === 'confirmationToken' || key === 'confirmationChallengeId') continue;
+    if (key === 'confirmationToken' || key === 'confirmationChallengeId')
+      continue;
     cleaned[key] = value;
   }
   return cleaned;
 }
 
 function authSessionHash(req: Request): string {
-  const cookieToken = typeof req.cookies?.token === 'string' ? req.cookies.token : undefined;
+  const cookieToken =
+    typeof req.cookies?.token === 'string' ? req.cookies.token : undefined;
   if (cookieToken) return hashAuthSessionIdentity(`cookie:${cookieToken}`);
   const authHeader = req.header('authorization')?.trim();
   if (authHeader) return hashAuthSessionIdentity(`authorization:${authHeader}`);
   const explicit = req.header('x-auth-session')?.trim();
-  if (explicit && req.header('x-test-auth')) return hashAuthSessionIdentity(`test-header:${explicit}`);
-  if (req.header('x-test-auth')) return hashAuthSessionIdentity(`test:${req.header('x-test-auth')}`);
+  if (explicit && req.header('x-test-auth'))
+    return hashAuthSessionIdentity(`test-header:${explicit}`);
+  if (req.header('x-test-auth'))
+    return hashAuthSessionIdentity(`test:${req.header('x-test-auth')}`);
   return hashAuthSessionIdentity(`remote:${req.ip ?? 'unknown'}`);
 }
 
@@ -497,14 +581,20 @@ function authSessionLabel(req: Request): string | undefined {
   return req.header('x-auth-session')?.trim() || undefined;
 }
 
-function relayErrorForConfirmationFailure(failure: ConfirmationFailure): RelayNodeError {
+function relayErrorForConfirmationFailure(
+  failure: ConfirmationFailure
+): RelayNodeError {
   return relayError(
-    failure.reasonCode === 'CONFIRMATION_REQUIRED' ? 'CONFIRMATION_REQUIRED' : 'UNAUTHORIZED',
+    failure.reasonCode === 'CONFIRMATION_REQUIRED'
+      ? 'CONFIRMATION_REQUIRED'
+      : 'UNAUTHORIZED',
     failure.message,
     false,
     {
       reasonCode: failure.reasonCode,
-      ...(failure.challenge ? { challenge: publicChallenge(failure.challenge) } : {}),
+      ...(failure.challenge
+        ? { challenge: publicChallenge(failure.challenge) }
+        : {}),
     }
   );
 }
@@ -600,7 +690,10 @@ function resolveConfirmationForDecision(input: {
     if (redeemed.ok === true) return { ok: true };
     return { ok: false, error: relayErrorForConfirmationFailure(redeemed) };
   }
-  const decisionWithCanonicalParams = { ...input.decision, params: canonicalParams };
+  const decisionWithCanonicalParams = {
+    ...input.decision,
+    params: canonicalParams,
+  };
   const auditedDecision = appendPolicyAudit(
     input.auditSink,
     decisionWithCanonicalParams,
@@ -613,7 +706,11 @@ function resolveConfirmationForDecision(input: {
   try {
     challenge = input.confirmations.createChallenge(
       decisionWithCanonicalParams,
-      confirmationCreateInput(input.req, requesterAuthSessionHash, canonicalParams)
+      confirmationCreateInput(
+        input.req,
+        requesterAuthSessionHash,
+        canonicalParams
+      )
     );
   } catch (error) {
     if (error instanceof ConfirmationChallengeCapacityError) {
@@ -954,7 +1051,9 @@ export function coldReopenSessionPayload(
   return payload;
 }
 
-function auditPeerForSummary(summary: ScopedSessionSummary | undefined): SecurityAuditEntryInput['peer'] {
+function auditPeerForSummary(
+  summary: ScopedSessionSummary | undefined
+): SecurityAuditEntryInput['peer'] {
   if (summary?.peerIdentity.kind === 'relay-node') {
     return {
       kind: 'node',
@@ -985,55 +1084,69 @@ function appendRoutedSessionAudit(
 
 function appendFsWriteCompletionAudit(
   sink: RoutedSessionAuditSink | undefined,
-  opts: {
-    success: true;
-    peer: SecurityAuditEntryInput['peer'];
-    nodeId: string;
-    sessionId: string;
-    policyScope: unknown;
-    payload: unknown;
-    correlationId?: string;
-  } | {
-    success: false;
-    peer: SecurityAuditEntryInput['peer'];
-    nodeId: string;
-    sessionId: string;
-    policyScope: unknown;
-    errorCode: string;
-    correlationId?: string;
-  }
+  opts:
+    | {
+        success: true;
+        peer: SecurityAuditEntryInput['peer'];
+        nodeId: string;
+        sessionId: string;
+        policyScope: unknown;
+        payload: unknown;
+        correlationId?: string;
+      }
+    | {
+        success: false;
+        peer: SecurityAuditEntryInput['peer'];
+        nodeId: string;
+        sessionId: string;
+        policyScope: unknown;
+        errorCode: string;
+        correlationId?: string;
+      }
 ): void {
-  appendRoutedSessionAudit(sink, opts.success ? {
-    eventType: 'grant',
-    decision: 'allow',
-    reasonCode: 'POLICY_ALLOW',
-    peer: opts.peer,
-    node: { nodeId: opts.nodeId },
-    sessionId: opts.sessionId,
-    intent: { action: 'rpc.fs.write.completed', target: opts.nodeId },
-    material: {
-      scope: opts.policyScope,
-      params: typeof opts.payload === 'object' && opts.payload !== null
-        ? (opts.payload as Record<string, unknown>)
-        : { payload: opts.payload },
-    },
-    ...(opts.correlationId ? { correlationId: opts.correlationId } : {}),
-  } : {
-    eventType: 'denial',
-    decision: 'failed',
-    reasonCode: opts.errorCode,
-    peer: opts.peer,
-    node: { nodeId: opts.nodeId },
-    sessionId: opts.sessionId,
-    intent: { action: 'rpc.fs.write.completed', target: opts.nodeId },
-    material: { scope: opts.policyScope, params: { error: opts.errorCode } },
-    ...(opts.correlationId ? { correlationId: opts.correlationId } : {}),
-  });
+  appendRoutedSessionAudit(
+    sink,
+    opts.success
+      ? {
+          eventType: 'grant',
+          decision: 'allow',
+          reasonCode: 'POLICY_ALLOW',
+          peer: opts.peer,
+          node: { nodeId: opts.nodeId },
+          sessionId: opts.sessionId,
+          intent: { action: 'rpc.fs.write.completed', target: opts.nodeId },
+          material: {
+            scope: opts.policyScope,
+            params:
+              typeof opts.payload === 'object' && opts.payload !== null
+                ? (opts.payload as Record<string, unknown>)
+                : { payload: opts.payload },
+          },
+          ...(opts.correlationId ? { correlationId: opts.correlationId } : {}),
+        }
+      : {
+          eventType: 'denial',
+          decision: 'failed',
+          reasonCode: opts.errorCode,
+          peer: opts.peer,
+          node: { nodeId: opts.nodeId },
+          sessionId: opts.sessionId,
+          intent: { action: 'rpc.fs.write.completed', target: opts.nodeId },
+          material: {
+            scope: opts.policyScope,
+            params: { error: opts.errorCode },
+          },
+          ...(opts.correlationId ? { correlationId: opts.correlationId } : {}),
+        }
+  );
 }
 
 function auditLifecycleDenial(
   sink: RoutedSessionAuditSink | undefined,
-  validation: Exclude<ReturnType<InMemorySessionEnvelopeRegistry['validate']>, { ok: true }>,
+  validation: Exclude<
+    ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+    { ok: true }
+  >,
   nodeId: string,
   sessionId: string,
   action: string,
@@ -1065,7 +1178,9 @@ function auditLifecycleDenial(
       scope: validation.summary?.scope ?? null,
       params: params ?? validation.error.details ?? null,
     },
-    ...(validation.summary?.correlationId ? { correlationId: validation.summary.correlationId } : {}),
+    ...(validation.summary?.correlationId
+      ? { correlationId: validation.summary.correlationId }
+      : {}),
   });
 }
 
@@ -1134,7 +1249,11 @@ function auditCredentialRotation(
     eventType: input.eventType,
     decision: input.decision,
     reasonCode: input.reasonCode,
-    peer: { kind: 'node', nodeId: input.nodeId, ...(input.credentialId ? { credentialId: input.credentialId } : {}) },
+    peer: {
+      kind: 'node',
+      nodeId: input.nodeId,
+      ...(input.credentialId ? { credentialId: input.credentialId } : {}),
+    },
     node: { nodeId: input.nodeId },
     intent: { action: 'nodes.credential.rotate', target: input.nodeId },
     material: {
@@ -1150,9 +1269,13 @@ function auditCredentialRotation(
   });
 }
 
-function revokedReasonFromBody(body: Record<string, unknown>): string | undefined {
+function revokedReasonFromBody(
+  body: Record<string, unknown>
+): string | undefined {
   const reason = body['reason'];
-  return typeof reason === 'string' && reason.trim() ? reason.trim() : undefined;
+  return typeof reason === 'string' && reason.trim()
+    ? reason.trim()
+    : undefined;
 }
 
 const SESSION_RENEW_IMMUTABLE_FIELDS = [
@@ -1162,8 +1285,12 @@ const SESSION_RENEW_IMMUTABLE_FIELDS = [
   'sessionEnvelope',
 ] as const;
 
-function renewAuthorityError(body: Record<string, unknown>): RelayNodeError | null {
-  const field = SESSION_RENEW_IMMUTABLE_FIELDS.find((key) => body[key] !== undefined);
+function renewAuthorityError(
+  body: Record<string, unknown>
+): RelayNodeError | null {
+  const field = SESSION_RENEW_IMMUTABLE_FIELDS.find(
+    (key) => body[key] !== undefined
+  );
   if (!field) return null;
   return relayError(
     'SESSION_MISMATCH',
@@ -1228,7 +1355,9 @@ function auditLifecycleRenewal(
         renewedExpiresAt: input.summary.expiresAt,
       },
     },
-    ...(input.summary.correlationId ? { correlationId: input.summary.correlationId } : {}),
+    ...(input.summary.correlationId
+      ? { correlationId: input.summary.correlationId }
+      : {}),
   });
 }
 
@@ -1252,7 +1381,10 @@ function auditRenewalImmediateDenial(
     peer: { kind: 'hub' },
     node: { ...(input.nodeId ? { nodeId: input.nodeId } : {}) },
     sessionId: input.sessionId,
-    intent: { action: 'sessions.renew', ...(input.nodeId ? { target: input.nodeId } : {}) },
+    intent: {
+      action: 'sessions.renew',
+      ...(input.nodeId ? { target: input.nodeId } : {}),
+    },
     material: { params: input.params ?? input.error.details ?? null },
   });
 }
@@ -1265,10 +1397,14 @@ function nodeLogLinesFromQuery(value: unknown): number | RelayNodeError {
   const raw = Array.isArray(value) ? value[0] : value;
   if (raw === undefined) return 100;
   if (typeof raw !== 'string' || !/^\d+$/.test(raw)) {
-    return relayError('INVALID_REQUEST', 'lines must be a non-negative integer');
+    return relayError(
+      'INVALID_REQUEST',
+      'lines must be a non-negative integer'
+    );
   }
   const lines = Number(raw);
-  if (lines > 2_000) return relayError('INVALID_REQUEST', 'lines must be <= 2000');
+  if (lines > 2_000)
+    return relayError('INVALID_REQUEST', 'lines must be <= 2000');
   return lines;
 }
 
@@ -1323,7 +1459,10 @@ async function streamFileTailFollow(input: {
   if (!nodeLinks.streamRequest) {
     sendRelayError(
       res,
-      relayError('NODE_UNSUPPORTED', 'file RPC tail follow is not supported by this runtime')
+      relayError(
+        'NODE_UNSUPPORTED',
+        'file RPC tail follow is not supported by this runtime'
+      )
     );
     return;
   }
@@ -1426,7 +1565,9 @@ async function streamFileTailFollow(input: {
   }
 }
 
-function protocolVersionRelayError(nodeProtocolVersion: string): RelayNodeError {
+function protocolVersionRelayError(
+  nodeProtocolVersion: string
+): RelayNodeError {
   const [nodeMajor] = nodeProtocolVersion.split('.');
   const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
   return relayError(
@@ -1478,13 +1619,20 @@ function nodeCwdOnboardingPayload(input: {
   node: HubNodeSummary;
   body: Record<string, unknown>;
   operation: 'browse' | 'validate';
-}): { request: Record<string, unknown>; cwd: string; path: string } | RelayNodeError {
+}):
+  | { request: Record<string, unknown>; cwd: string; path: string }
+  | RelayNodeError {
   const cwd = stringField(input.body, 'cwd') ?? input.node.homeDir ?? '/';
   if (cwd.includes('\0')) {
-    return relayError('INVALID_REQUEST', 'cwd must not contain NUL bytes', false, {
-      reasonCode: 'NODE_CWD_INVALID_REQUEST',
-      field: 'cwd',
-    });
+    return relayError(
+      'INVALID_REQUEST',
+      'cwd must not contain NUL bytes',
+      false,
+      {
+        reasonCode: 'NODE_CWD_INVALID_REQUEST',
+        field: 'cwd',
+      }
+    );
   }
   const root = cwdOnboardingRoot(input.node, cwd);
   const pathValue =
@@ -1492,10 +1640,15 @@ function nodeCwdOnboardingPayload(input: {
       ? cwd
       : (stringField(input.body, 'path') ?? '.');
   if (pathValue.includes('\0')) {
-    return relayError('INVALID_REQUEST', 'path must not contain NUL bytes', false, {
-      reasonCode: 'NODE_CWD_INVALID_REQUEST',
-      field: 'path',
-    });
+    return relayError(
+      'INVALID_REQUEST',
+      'path must not contain NUL bytes',
+      false,
+      {
+        reasonCode: 'NODE_CWD_INVALID_REQUEST',
+        field: 'path',
+      }
+    );
   }
   const maxEntries = input.body['maxEntries'];
   return {
@@ -1506,7 +1659,9 @@ function nodeCwdOnboardingPayload(input: {
       root,
       cwd: input.operation === 'validate' ? root : cwd,
       path: pathValue,
-      ...(input.operation === 'browse' && maxEntries !== undefined ? { maxEntries } : {}),
+      ...(input.operation === 'browse' && maxEntries !== undefined
+        ? { maxEntries }
+        : {}),
     },
   };
 }
@@ -1662,7 +1817,8 @@ export function createHubNodeRouter(
   const cliGatewayAuth = options.cliGatewayAuth ?? requireAuth;
   const scopedSessionAuth = options.scopedSessionAuth ?? requireAuth;
   const envelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
-  const confirmations = options.confirmations ?? createConfirmationChallengeStore();
+  const confirmations =
+    options.confirmations ?? createConfirmationChallengeStore();
   const now = () => options.now?.() ?? new Date();
   const repoInventoryFeature =
     options.repoInventoryFeature ?? createRepoInventoryFeature(registry);
@@ -1673,7 +1829,9 @@ export function createHubNodeRouter(
 
   router.get('/hub/confirmations/:challengeId', requireAuth, (req, res) => {
     const { challengeId } = req.params;
-    const challenge = challengeId ? confirmations.getChallenge(challengeId) : undefined;
+    const challenge = challengeId
+      ? confirmations.getChallenge(challengeId)
+      : undefined;
     if (!challenge) {
       sendRelayError(
         res,
@@ -1686,72 +1844,95 @@ export function createHubNodeRouter(
     res.json({ challenge: publicChallenge(challenge) });
   });
 
-  router.post('/hub/confirmations/:challengeId/requester-token', requireAuth, (req, res) => {
-    const { challengeId } = req.params;
-    if (!challengeId) {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', 'confirmation challenge id is required', false, {
-          reasonCode: 'CONFIRMATION_NOT_FOUND',
-        })
-      );
-      return;
-    }
-    const result = confirmations.getRequesterToken({
-      challengeId,
-      requesterAuthSessionHash: authSessionHash(req),
-      now: now(),
-    });
-    if (result.ok === false) {
-      sendRelayError(res, relayErrorForConfirmationFailure(result));
-      return;
-    }
-    res.json({
-      confirmationToken: result.confirmationToken,
-      challenge: publicChallenge(result.challenge),
-    });
-  });
-
-  router.post('/hub/confirmations/:challengeId/approve', requireAuth, (req, res) => {
-    const { challengeId } = req.params;
-    const body = bodyRecord(req);
-    const decision = body['decision'] ?? 'approve';
-    if (!challengeId || !isConfirmationDecision(decision)) {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', 'decision must be approve, deny, or deny_revoke', false, {
-          reasonCode: 'CONFIRMATION_INVALID_DECISION',
-        })
-      );
-      return;
-    }
-    const result = confirmations.approveChallenge(
-      confirmationApprovalInput(req, challengeId, decision, now())
-    );
-    const auditError = result.challenge
-      ? appendConfirmationAudit(options.auditSink, result.audit, result.challenge.decision)
-      : null;
-    if (auditError) {
-      if (result.ok === true) {
-        confirmations.invalidateChallenge({
-          challengeId: result.challenge.challengeId,
-          reasonCode: 'CONFIRMATION_TOKEN_INVALID',
-          message: 'confirmation approval audit write failed; approval token invalidated',
-          now: now(),
-        });
+  router.post(
+    '/hub/confirmations/:challengeId/requester-token',
+    requireAuth,
+    (req, res) => {
+      const { challengeId } = req.params;
+      if (!challengeId) {
+        sendRelayError(
+          res,
+          relayError(
+            'INVALID_REQUEST',
+            'confirmation challenge id is required',
+            false,
+            {
+              reasonCode: 'CONFIRMATION_NOT_FOUND',
+            }
+          )
+        );
+        return;
       }
-      sendRelayError(res, auditError);
-      return;
+      const result = confirmations.getRequesterToken({
+        challengeId,
+        requesterAuthSessionHash: authSessionHash(req),
+        now: now(),
+      });
+      if (result.ok === false) {
+        sendRelayError(res, relayErrorForConfirmationFailure(result));
+        return;
+      }
+      res.json({
+        confirmationToken: result.confirmationToken,
+        challenge: publicChallenge(result.challenge),
+      });
     }
-    if (result.ok === false) {
-      sendRelayError(res, relayErrorForConfirmationFailure(result));
-      return;
+  );
+
+  router.post(
+    '/hub/confirmations/:challengeId/approve',
+    requireAuth,
+    (req, res) => {
+      const { challengeId } = req.params;
+      const body = bodyRecord(req);
+      const decision = body['decision'] ?? 'approve';
+      if (!challengeId || !isConfirmationDecision(decision)) {
+        sendRelayError(
+          res,
+          relayError(
+            'INVALID_REQUEST',
+            'decision must be approve, deny, or deny_revoke',
+            false,
+            {
+              reasonCode: 'CONFIRMATION_INVALID_DECISION',
+            }
+          )
+        );
+        return;
+      }
+      const result = confirmations.approveChallenge(
+        confirmationApprovalInput(req, challengeId, decision, now())
+      );
+      const auditError = result.challenge
+        ? appendConfirmationAudit(
+            options.auditSink,
+            result.audit,
+            result.challenge.decision
+          )
+        : null;
+      if (auditError) {
+        if (result.ok === true) {
+          confirmations.invalidateChallenge({
+            challengeId: result.challenge.challengeId,
+            reasonCode: 'CONFIRMATION_TOKEN_INVALID',
+            message:
+              'confirmation approval audit write failed; approval token invalidated',
+            now: now(),
+          });
+        }
+        sendRelayError(res, auditError);
+        return;
+      }
+      if (result.ok === false) {
+        sendRelayError(res, relayErrorForConfirmationFailure(result));
+        return;
+      }
+      res.json({
+        confirmationToken: result.confirmationToken,
+        challenge: publicChallenge(result.challenge),
+      });
     }
-    res.json({
-      confirmationToken: result.confirmationToken,
-      challenge: publicChallenge(result.challenge),
-    });
-  });
+  );
 
   router.post('/hub/pair-tokens', requireAuth, (req, res) => {
     const body = bodyRecord(req);
@@ -1899,7 +2080,11 @@ export function createHubNodeRouter(
         peer: redactPeerForBrowser(row.peer),
       }));
       const head = options.auditSink.head();
-      res.json({ entries, nextBeforeSequence: result.nextBeforeSequence, head });
+      res.json({
+        entries,
+        nextBeforeSequence: result.nextBeforeSequence,
+        head,
+      });
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('[hub-node-router] audit entries read failed', error);
@@ -1949,7 +2134,11 @@ export function createHubNodeRouter(
     if (node.status !== 'online' || !options.nodeLinks?.hasActiveNode(nodeId)) {
       sendRelayError(
         res,
-        relayError('NODE_OFFLINE', `node ${nodeId} has no live reverse link`, true)
+        relayError(
+          'NODE_OFFLINE',
+          `node ${nodeId} has no live reverse link`,
+          true
+        )
       );
       return;
     }
@@ -1967,12 +2156,18 @@ export function createHubNodeRouter(
       params: requestPayload,
       now: now(),
     });
-    if (sendPolicyDecision(options.auditSink, res, policyDecision, requestPayload)) {
+    if (
+      sendPolicyDecision(options.auditSink, res, policyDecision, requestPayload)
+    ) {
       return;
     }
     if (!follow) {
       try {
-        const payload = await options.nodeLinks.request(nodeId, 'logs.tail', requestPayload);
+        const payload = await options.nodeLinks.request(
+          nodeId,
+          'logs.tail',
+          requestPayload
+        );
         res.json({ log: payload });
       } catch (error) {
         sendRelayError(res, relayErrorFromUnknown(error));
@@ -1982,7 +2177,10 @@ export function createHubNodeRouter(
     if (!options.nodeLinks.streamRequest) {
       sendRelayError(
         res,
-        relayError('NODE_UNSUPPORTED', 'hub node log streaming is not supported by this runtime')
+        relayError(
+          'NODE_UNSUPPORTED',
+          'hub node log streaming is not supported by this runtime'
+        )
       );
       return;
     }
@@ -2000,22 +2198,27 @@ export function createHubNodeRouter(
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.setHeader('Cache-Control', 'no-store');
       res.flushHeaders();
-      stream = await options.nodeLinks.streamRequest(nodeId, 'logs.tail', requestPayload, {
-        onChunk: (payload) => {
-          if (closed || res.destroyed) return;
-          const chunk = nodeLogChunk(payload);
-          if (chunk) res.write(chunk);
-        },
-        onError: (error) => {
-          if (closed || res.destroyed) return;
-          res.write(`\n[${error.code}] ${error.message}\n`);
-          res.end();
-        },
-        onEnd: () => {
-          if (closed || res.destroyed) return;
-          res.end();
-        },
-      });
+      stream = await options.nodeLinks.streamRequest(
+        nodeId,
+        'logs.tail',
+        requestPayload,
+        {
+          onChunk: (payload) => {
+            if (closed || res.destroyed) return;
+            const chunk = nodeLogChunk(payload);
+            if (chunk) res.write(chunk);
+          },
+          onError: (error) => {
+            if (closed || res.destroyed) return;
+            res.write(`\n[${error.code}] ${error.message}\n`);
+            res.end();
+          },
+          onEnd: () => {
+            if (closed || res.destroyed) return;
+            res.end();
+          },
+        }
+      );
       if (closed || res.destroyed) {
         stream.close();
         return;
@@ -2037,106 +2240,119 @@ export function createHubNodeRouter(
     }
   });
 
-  router.post('/hub/nodes/:nodeId/credential-rotation', requireAuth, async (req, res) => {
-    const { nodeId } = req.params;
-    if (!nodeId) {
-      sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
-      return;
-    }
-    const body = bodyRecord(req);
-    const delivery = stringField(body, 'delivery') ?? 'online';
-    if (delivery !== 'online' && delivery !== 'manual') {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', 'delivery must be "online" or "manual"')
-      );
-      return;
-    }
-    try {
-      const started = registry.beginCredentialRotation(nodeId);
-      auditCredentialRotation(options.auditSink, {
-        nodeId,
-        eventType: 'rotation',
-        decision: 'recorded',
-        reasonCode: 'CREDENTIAL_ROTATION_ISSUED',
-        credentialId: started.rotation.previousCredentialId,
-        rotationId: started.rotation.rotationId,
-        params: { delivery },
-      });
-      if (delivery === 'online') {
-        if (!options.nodeLinks?.hasActiveNode(nodeId)) {
-          const failed = registry.failCredentialRotation(
-            nodeId,
-            started.rotation.rotationId,
-            'node is not connected for online credential rotation'
-          );
-          auditCredentialRotation(options.auditSink, {
-            nodeId,
-            eventType: 'rotation',
-            decision: 'failed',
-            reasonCode: 'CREDENTIAL_ROTATION_NODE_OFFLINE',
-            credentialId: started.rotation.previousCredentialId,
-            rotationId: started.rotation.rotationId,
-          });
-          res.status(503).json({
-            error: relayError('NODE_OFFLINE', 'node is not connected', true),
-            node: failed.node,
-            rotation: failed.rotation,
-          });
-          return;
-        }
-        try {
-          await options.nodeLinks.request(nodeId, 'credential.rotate', {
-            credential: started.credential,
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const failed = registry.failCredentialRotation(
-            nodeId,
-            started.rotation.rotationId,
-            message
-          );
-          auditCredentialRotation(options.auditSink, {
-            nodeId,
-            eventType: 'rotation',
-            decision: 'failed',
-            reasonCode: 'CREDENTIAL_ROTATION_DELIVERY_FAILED',
-            credentialId: started.rotation.previousCredentialId,
-            rotationId: started.rotation.rotationId,
-            params: { message },
-          });
-          res.status(502).json({
-            error: relayError('NODE_UNSUPPORTED', 'credential rotation delivery failed', true, {
-              reasonCode: 'CREDENTIAL_ROTATION_DELIVERY_FAILED',
-            }),
-            node: failed.node,
-            rotation: failed.rotation,
-          });
-          return;
-        }
-        const delivered = registry.markCredentialRotationDelivered(
-          nodeId,
-          started.rotation.rotationId
+  router.post(
+    '/hub/nodes/:nodeId/credential-rotation',
+    requireAuth,
+    async (req, res) => {
+      const { nodeId } = req.params;
+      if (!nodeId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'nodeId is required')
         );
+        return;
+      }
+      const body = bodyRecord(req);
+      const delivery = stringField(body, 'delivery') ?? 'online';
+      if (delivery !== 'online' && delivery !== 'manual') {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'delivery must be "online" or "manual"')
+        );
+        return;
+      }
+      try {
+        const started = registry.beginCredentialRotation(nodeId);
         auditCredentialRotation(options.auditSink, {
           nodeId,
           eventType: 'rotation',
           decision: 'recorded',
-          reasonCode: 'CREDENTIAL_ROTATION_DELIVERED',
+          reasonCode: 'CREDENTIAL_ROTATION_ISSUED',
           credentialId: started.rotation.previousCredentialId,
           rotationId: started.rotation.rotationId,
+          params: { delivery },
         });
-        res.status(202).json({
-          node: delivered.node,
-          rotation: delivered.rotation,
-        });
-        return;
+        if (delivery === 'online') {
+          if (!options.nodeLinks?.hasActiveNode(nodeId)) {
+            const failed = registry.failCredentialRotation(
+              nodeId,
+              started.rotation.rotationId,
+              'node is not connected for online credential rotation'
+            );
+            auditCredentialRotation(options.auditSink, {
+              nodeId,
+              eventType: 'rotation',
+              decision: 'failed',
+              reasonCode: 'CREDENTIAL_ROTATION_NODE_OFFLINE',
+              credentialId: started.rotation.previousCredentialId,
+              rotationId: started.rotation.rotationId,
+            });
+            res.status(503).json({
+              error: relayError('NODE_OFFLINE', 'node is not connected', true),
+              node: failed.node,
+              rotation: failed.rotation,
+            });
+            return;
+          }
+          try {
+            await options.nodeLinks.request(nodeId, 'credential.rotate', {
+              credential: started.credential,
+            });
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            const failed = registry.failCredentialRotation(
+              nodeId,
+              started.rotation.rotationId,
+              message
+            );
+            auditCredentialRotation(options.auditSink, {
+              nodeId,
+              eventType: 'rotation',
+              decision: 'failed',
+              reasonCode: 'CREDENTIAL_ROTATION_DELIVERY_FAILED',
+              credentialId: started.rotation.previousCredentialId,
+              rotationId: started.rotation.rotationId,
+              params: { message },
+            });
+            res.status(502).json({
+              error: relayError(
+                'NODE_UNSUPPORTED',
+                'credential rotation delivery failed',
+                true,
+                {
+                  reasonCode: 'CREDENTIAL_ROTATION_DELIVERY_FAILED',
+                }
+              ),
+              node: failed.node,
+              rotation: failed.rotation,
+            });
+            return;
+          }
+          const delivered = registry.markCredentialRotationDelivered(
+            nodeId,
+            started.rotation.rotationId
+          );
+          auditCredentialRotation(options.auditSink, {
+            nodeId,
+            eventType: 'rotation',
+            decision: 'recorded',
+            reasonCode: 'CREDENTIAL_ROTATION_DELIVERED',
+            credentialId: started.rotation.previousCredentialId,
+            rotationId: started.rotation.rotationId,
+          });
+          res.status(202).json({
+            node: delivered.node,
+            rotation: delivered.rotation,
+          });
+          return;
+        }
+        res.status(201).json(started);
+      } catch (error) {
+        sendRegistryError(registry, res, error);
       }
-      res.status(201).json(started);
-    } catch (error) {
-      sendRegistryError(registry, res, error);
     }
-  });
+  );
 
   router.post(
     '/hub/nodes/:nodeId/credential-rotation/clear-failure',
@@ -2144,7 +2360,10 @@ export function createHubNodeRouter(
     (req, res) => {
       const { nodeId } = req.params;
       if (!nodeId) {
-        sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'nodeId is required')
+        );
         return;
       }
       try {
@@ -2162,6 +2381,39 @@ export function createHubNodeRouter(
     }
   );
 
+  // ── Node update state (Slice 5, #655) ────────────────────────────────────
+  // Marks a node as `updating` so the hub blocks new session-create requests.
+  // Called by `relay-ide node update` at the start of a node binary update.
+  router.post('/hub/nodes/:nodeId/updating', requireAuth, (req, res) => {
+    const { nodeId } = req.params;
+    if (!nodeId) {
+      sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+      return;
+    }
+    try {
+      const node = registry.markNodeUpdating(nodeId);
+      res.json({ node });
+    } catch (error) {
+      sendRegistryError(registry, res, error);
+    }
+  });
+
+  // Clears the `updating` flag after a node update completes.
+  // Called by `relay-ide node update` on success.
+  router.delete('/hub/nodes/:nodeId/updating', requireAuth, (req, res) => {
+    const { nodeId } = req.params;
+    if (!nodeId) {
+      sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+      return;
+    }
+    try {
+      const node = registry.markNodeUpdateComplete(nodeId);
+      res.json({ node });
+    } catch (error) {
+      sendRegistryError(registry, res, error);
+    }
+  });
+
   // Repo-feature endpoints (GET /hub/repo-inventory + POST
   // /hub/nodes/:nodeId/sessions/reopen) used to live here. Per #425.2 /
   // #433 they moved to `server/features/repo-router.ts`. Composition
@@ -2177,51 +2429,123 @@ export function createHubNodeRouter(
     });
   });
 
-  router.post('/hub/scoped-sessions/:sessionId/renew', scopedSessionAuth, (req, res) => {
-    const { sessionId } = req.params;
-    if (!sessionId) {
-      sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
-      return;
-    }
-    const body = bodyRecord(req);
-    const queryNodeId =
-      typeof req.query['nodeId'] === 'string' ? req.query['nodeId'] : undefined;
-    const nodeId = stringField(body, 'nodeId') ?? queryNodeId;
-    const renewalNow = now();
+  router.post(
+    '/hub/scoped-sessions/:sessionId/renew',
+    scopedSessionAuth,
+    (req, res) => {
+      const { sessionId } = req.params;
+      if (!sessionId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'sessionId is required')
+        );
+        return;
+      }
+      const body = bodyRecord(req);
+      const queryNodeId =
+        typeof req.query['nodeId'] === 'string'
+          ? req.query['nodeId']
+          : undefined;
+      const nodeId = stringField(body, 'nodeId') ?? queryNodeId;
+      const renewalNow = now();
 
-    const authorityError = renewAuthorityError(body);
-    if (authorityError) {
-      auditRenewalImmediateDenial(options.auditSink, {
-        error: authorityError,
-        ...(nodeId ? { nodeId } : {}),
-        sessionId,
-        params: body,
-      });
-      sendRelayError(res, authorityError);
-      return;
-    }
+      const authorityError = renewAuthorityError(body);
+      if (authorityError) {
+        auditRenewalImmediateDenial(options.auditSink, {
+          error: authorityError,
+          ...(nodeId ? { nodeId } : {}),
+          sessionId,
+          params: body,
+        });
+        sendRelayError(res, authorityError);
+        return;
+      }
 
-    const expiresAt = renewExpiresAtFromBody(body, renewalNow);
-    if (typeof expiresAt !== 'string') {
-      auditRenewalImmediateDenial(options.auditSink, {
-        error: expiresAt,
-        ...(nodeId ? { nodeId } : {}),
-        sessionId,
-        params: body,
-      });
-      sendRelayError(res, expiresAt);
-      return;
-    }
+      const expiresAt = renewExpiresAtFromBody(body, renewalNow);
+      if (typeof expiresAt !== 'string') {
+        auditRenewalImmediateDenial(options.auditSink, {
+          error: expiresAt,
+          ...(nodeId ? { nodeId } : {}),
+          sessionId,
+          params: body,
+        });
+        sendRelayError(res, expiresAt);
+        return;
+      }
 
-    if (nodeId !== DEFAULT_LOCAL_NODE_ID) {
-      const lifecycle = envelopes.validate({
-        sessionId,
-        ...(nodeId ? { nodeId } : {}),
-        now: renewalNow,
-      });
-      if (lifecycle.ok === false) {
-        const denial = lifecycle as Exclude<
-          ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+      if (nodeId !== DEFAULT_LOCAL_NODE_ID) {
+        const lifecycle = envelopes.validate({
+          sessionId,
+          ...(nodeId ? { nodeId } : {}),
+          now: renewalNow,
+        });
+        if (lifecycle.ok === false) {
+          const denial = lifecycle as Exclude<
+            ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+            { ok: true }
+          >;
+          auditLifecycleDenial(
+            options.auditSink,
+            denial,
+            nodeId ?? denial.summary?.nodeId ?? 'unknown',
+            sessionId,
+            'sessions.renew',
+            body
+          );
+          sendRelayError(res, denial.error);
+          return;
+        }
+
+        const policyNode = registry
+          .listNodes()
+          .find((candidate) => candidate.nodeId === lifecycle.summary.nodeId);
+        const policyDecision = evaluateHubPolicy({
+          peer: { kind: 'hub' },
+          node: policyNode ?? null,
+          nodeId: lifecycle.summary.nodeId,
+          intent: {
+            action: 'sessions.renew',
+            target: lifecycle.summary.nodeId,
+          },
+          scope: sessionRenewPolicyScope(lifecycle.summary),
+          requiredCapabilities:
+            requiredCapabilitiesForRpcIntent('sessions.renew'),
+          expiresAt: lifecycle.summary.expiresAt,
+          revokedAt: lifecycle.summary.revokedAt,
+          sessionId: lifecycle.summary.sessionId,
+          ...(lifecycle.summary.correlationId
+            ? { correlationId: lifecycle.summary.correlationId }
+            : {}),
+          params: body,
+          now: renewalNow,
+        });
+        if (
+          sendPolicyDecision(options.auditSink, res, policyDecision, body, {
+            confirmations,
+            req,
+            canonicalParams: body,
+            now: renewalNow,
+          })
+        )
+          return;
+      }
+
+      const renewed =
+        nodeId === DEFAULT_LOCAL_NODE_ID && options.renewLocalSession
+          ? options.renewLocalSession({
+              id: sessionId,
+              expiresAt,
+              now: renewalNow,
+            })
+          : envelopes.renew({
+              sessionId,
+              ...(nodeId ? { nodeId } : {}),
+              expiresAt,
+              now: renewalNow,
+            });
+      if (renewed.ok === false) {
+        const denial = renewed as Exclude<
+          ReturnType<InMemorySessionEnvelopeRegistry['renew']>,
           { ok: true }
         >;
         auditLifecycleDenial(
@@ -2236,395 +2560,416 @@ export function createHubNodeRouter(
         return;
       }
 
-      const policyNode = registry
+      auditLifecycleRenewal(options.auditSink, {
+        previousSummary: renewed.previousSummary,
+        summary: renewed.summary,
+        params: body,
+      });
+      res.json({ session: renewed.summary });
+    }
+  );
+
+  router.post(
+    '/hub/scoped-sessions/:sessionId/revoke',
+    scopedSessionAuth,
+    (req, res) => {
+      const { sessionId } = req.params;
+      if (!sessionId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'sessionId is required')
+        );
+        return;
+      }
+      const body = bodyRecord(req);
+      const queryNodeId =
+        typeof req.query['nodeId'] === 'string'
+          ? req.query['nodeId']
+          : undefined;
+      const nodeId = stringField(body, 'nodeId') ?? queryNodeId;
+      const revokeReason = revokedReasonFromBody(body);
+      const addressError = revokeAddressError(envelopes, sessionId, nodeId);
+      if (addressError) {
+        sendRelayError(res, addressError);
+        return;
+      }
+      const summary = envelopes.revoke(sessionId, {
+        ...(nodeId ? { nodeId } : {}),
+        ...(revokeReason ? { reason: revokeReason } : {}),
+        now: now(),
+      });
+      if (!summary) {
+        sendRelayError(
+          res,
+          relayError('NOT_FOUND', 'scoped session envelope was not found')
+        );
+        return;
+      }
+      auditLifecycleRevocation(options.auditSink, summary, body);
+      res.json({ session: summary });
+    }
+  );
+
+  router.delete(
+    '/hub/scoped-sessions/:sessionId',
+    scopedSessionAuth,
+    (req, res) => {
+      const { sessionId } = req.params;
+      if (!sessionId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'sessionId is required')
+        );
+        return;
+      }
+      const nodeId =
+        typeof req.query['nodeId'] === 'string'
+          ? req.query['nodeId']
+          : undefined;
+      const addressError = revokeAddressError(envelopes, sessionId, nodeId);
+      if (addressError) {
+        sendRelayError(res, addressError);
+        return;
+      }
+      const summary = envelopes.revoke(sessionId, {
+        ...(nodeId ? { nodeId } : {}),
+        reason: 'operator-revoked',
+        now: now(),
+      });
+      if (!summary) {
+        sendRelayError(
+          res,
+          relayError('NOT_FOUND', 'scoped session envelope was not found')
+        );
+        return;
+      }
+      auditLifecycleRevocation(options.auditSink, summary, {
+        method: 'DELETE',
+      });
+      res.json({ session: summary });
+    }
+  );
+
+  router.post(
+    '/hub/nodes/:nodeId/cwd/:operation',
+    requireAuth,
+    async (req, res) => {
+      const { nodeId, operation } = req.params;
+      if (!nodeId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'nodeId is required')
+        );
+        return;
+      }
+      if (operation !== 'browse' && operation !== 'validate') {
+        sendRelayError(
+          res,
+          relayError(
+            'INVALID_REQUEST',
+            'cwd operation must be browse or validate'
+          )
+        );
+        return;
+      }
+      const node = registry
         .listNodes()
-        .find((candidate) => candidate.nodeId === lifecycle.summary.nodeId);
+        .find((candidate) => candidate.nodeId === nodeId);
+      if (!node || node.status === 'revoked') {
+        sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+        return;
+      }
+      if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+        sendRelayError(res, protocolVersionRelayError(node.protocolVersion));
+        return;
+      }
+      const terminalUnsupported = nodeTerminalUnsupportedError(nodeId, node);
+      if (terminalUnsupported) {
+        sendRelayError(res, terminalUnsupported);
+        return;
+      }
+      if (
+        node.status !== 'online' ||
+        !options.nodeLinks?.hasActiveNode(nodeId)
+      ) {
+        sendRelayError(
+          res,
+          relayError(
+            'NODE_OFFLINE',
+            `node ${nodeId} has no live reverse link`,
+            true
+          )
+        );
+        return;
+      }
+
+      const body = bodyRecord(req);
+      const normalized = nodeCwdOnboardingPayload({ node, body, operation });
+      if ('code' in normalized) {
+        sendRelayError(res, normalized);
+        return;
+      }
+      const action = operation === 'browse' ? 'rpc.fs.list' : 'rpc.fs.stat';
+      const nowForPolicy = now();
       const policyDecision = evaluateHubPolicy({
         peer: { kind: 'hub' },
-        node: policyNode ?? null,
-        nodeId: lifecycle.summary.nodeId,
-        intent: { action: 'sessions.renew', target: lifecycle.summary.nodeId },
-        scope: sessionRenewPolicyScope(lifecycle.summary),
-        requiredCapabilities: requiredCapabilitiesForRpcIntent('sessions.renew'),
-        expiresAt: lifecycle.summary.expiresAt,
-        revokedAt: lifecycle.summary.revokedAt,
-        sessionId: lifecycle.summary.sessionId,
-        ...(lifecycle.summary.correlationId
-          ? { correlationId: lifecycle.summary.correlationId }
-          : {}),
-        params: body,
-        now: renewalNow,
+        node,
+        nodeId,
+        intent: { action, target: nodeId },
+        scope: {
+          kind: 'node-cwd',
+          nodeId,
+          cwd: normalized.cwd,
+          path: normalized.path,
+        },
+        requiredCapabilities: requiredCapabilitiesForRpcIntent(action),
+        params: normalized.request,
+        now: nowForPolicy,
       });
       if (
-        sendPolicyDecision(options.auditSink, res, policyDecision, body, {
-          confirmations,
-          req,
-          canonicalParams: body,
-          now: renewalNow,
-        })
-      ) return;
-    }
-
-    const renewed =
-      nodeId === DEFAULT_LOCAL_NODE_ID && options.renewLocalSession
-        ? options.renewLocalSession({ id: sessionId, expiresAt, now: renewalNow })
-        : envelopes.renew({
-            sessionId,
-            ...(nodeId ? { nodeId } : {}),
-            expiresAt,
-            now: renewalNow,
-          });
-    if (renewed.ok === false) {
-      const denial = renewed as Exclude<
-        ReturnType<InMemorySessionEnvelopeRegistry['renew']>,
-        { ok: true }
-      >;
-      auditLifecycleDenial(
-        options.auditSink,
-        denial,
-        nodeId ?? denial.summary?.nodeId ?? 'unknown',
-        sessionId,
-        'sessions.renew',
-        body
-      );
-      sendRelayError(res, denial.error);
-      return;
-    }
-
-    auditLifecycleRenewal(options.auditSink, {
-      previousSummary: renewed.previousSummary,
-      summary: renewed.summary,
-      params: body,
-    });
-    res.json({ session: renewed.summary });
-  });
-
-  router.post('/hub/scoped-sessions/:sessionId/revoke', scopedSessionAuth, (req, res) => {
-    const { sessionId } = req.params;
-    if (!sessionId) {
-      sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
-      return;
-    }
-    const body = bodyRecord(req);
-    const queryNodeId =
-      typeof req.query['nodeId'] === 'string' ? req.query['nodeId'] : undefined;
-    const nodeId = stringField(body, 'nodeId') ?? queryNodeId;
-    const revokeReason = revokedReasonFromBody(body);
-    const addressError = revokeAddressError(envelopes, sessionId, nodeId);
-    if (addressError) {
-      sendRelayError(res, addressError);
-      return;
-    }
-    const summary = envelopes.revoke(sessionId, {
-      ...(nodeId ? { nodeId } : {}),
-      ...(revokeReason ? { reason: revokeReason } : {}),
-      now: now(),
-    });
-    if (!summary) {
-      sendRelayError(res, relayError('NOT_FOUND', 'scoped session envelope was not found'));
-      return;
-    }
-    auditLifecycleRevocation(options.auditSink, summary, body);
-    res.json({ session: summary });
-  });
-
-  router.delete('/hub/scoped-sessions/:sessionId', scopedSessionAuth, (req, res) => {
-    const { sessionId } = req.params;
-    if (!sessionId) {
-      sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
-      return;
-    }
-    const nodeId = typeof req.query['nodeId'] === 'string' ? req.query['nodeId'] : undefined;
-    const addressError = revokeAddressError(envelopes, sessionId, nodeId);
-    if (addressError) {
-      sendRelayError(res, addressError);
-      return;
-    }
-    const summary = envelopes.revoke(sessionId, {
-      ...(nodeId ? { nodeId } : {}),
-      reason: 'operator-revoked',
-      now: now(),
-    });
-    if (!summary) {
-      sendRelayError(res, relayError('NOT_FOUND', 'scoped session envelope was not found'));
-      return;
-    }
-    auditLifecycleRevocation(options.auditSink, summary, { method: 'DELETE' });
-    res.json({ session: summary });
-  });
-
-  router.post('/hub/nodes/:nodeId/cwd/:operation', requireAuth, async (req, res) => {
-    const { nodeId, operation } = req.params;
-    if (!nodeId) {
-      sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
-      return;
-    }
-    if (operation !== 'browse' && operation !== 'validate') {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', 'cwd operation must be browse or validate')
-      );
-      return;
-    }
-    const node = registry
-      .listNodes()
-      .find((candidate) => candidate.nodeId === nodeId);
-    if (!node || node.status === 'revoked') {
-      sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
-      return;
-    }
-    if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
-      sendRelayError(res, protocolVersionRelayError(node.protocolVersion));
-      return;
-    }
-    const terminalUnsupported = nodeTerminalUnsupportedError(nodeId, node);
-    if (terminalUnsupported) {
-      sendRelayError(res, terminalUnsupported);
-      return;
-    }
-    if (node.status !== 'online' || !options.nodeLinks?.hasActiveNode(nodeId)) {
-      sendRelayError(
-        res,
-        relayError('NODE_OFFLINE', `node ${nodeId} has no live reverse link`, true)
-      );
-      return;
-    }
-
-    const body = bodyRecord(req);
-    const normalized = nodeCwdOnboardingPayload({ node, body, operation });
-    if ('code' in normalized) {
-      sendRelayError(res, normalized);
-      return;
-    }
-    const action = operation === 'browse' ? 'rpc.fs.list' : 'rpc.fs.stat';
-    const nowForPolicy = now();
-    const policyDecision = evaluateHubPolicy({
-      peer: { kind: 'hub' },
-      node,
-      nodeId,
-      intent: { action, target: nodeId },
-      scope: {
-        kind: 'node-cwd',
-        nodeId,
-        cwd: normalized.cwd,
-        path: normalized.path,
-      },
-      requiredCapabilities: requiredCapabilitiesForRpcIntent(action),
-      params: normalized.request,
-      now: nowForPolicy,
-    });
-    if (
-      sendPolicyDecision(options.auditSink, res, policyDecision, normalized.request, {
-        confirmations,
-        req,
-        canonicalParams: normalized.request,
-        now: nowForPolicy,
-      })
-    ) return;
-
-    try {
-      const rpcType = operation === 'browse' ? 'fs.list' : 'fs.stat';
-      const payload = await options.nodeLinks.request(nodeId, rpcType, normalized.request);
-      const responsePayload = isRecord(payload) ? payload : { payload };
-      res.json({ nodeId, cwd: normalized.cwd, ...responsePayload });
-    } catch (error) {
-      if (error instanceof HubNodeLinkError) {
-        sendRelayError(res, error.relayNodeError);
-        return;
-      }
-      sendRegistryError(registry, res, error);
-    }
-  });
-
-  router.post('/hub/nodes/:nodeId/sessions', cliGatewayAuth, async (req, res) => {
-    const { nodeId } = req.params;
-    if (!nodeId) {
-      sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
-      return;
-    }
-    const routedBody = routedGatewayCreateBodyFromRequest(req, res, nodeId);
-    if (!routedBody) return;
-    const workContextId = routedWorkContextId(routedBody);
-    const workContextError = validateRoutedWorkContext(
-      options.workContextStore,
-      workContextId
-    );
-    if (workContextError) {
-      sendRelayError(res, workContextError);
-      return;
-    }
-    const node = registry
-      .listNodes()
-      .find((candidate) => candidate.nodeId === nodeId);
-    if (!node || node.status === 'revoked') {
-      sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
-      return;
-    }
-    if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
-      const [nodeMajor] = node.protocolVersion.split('.');
-      const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
-      sendRelayError(
-        res,
-        relayError(
-          nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
-          `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
-        )
-      );
-      return;
-    }
-    const terminalUnsupported = nodeTerminalUnsupportedError(nodeId, node);
-    if (terminalUnsupported) {
-      sendRelayError(res, terminalUnsupported);
-      return;
-    }
-    if (node.status !== 'online' || !options.nodeLinks?.hasActiveNode(nodeId)) {
-      sendRelayError(
-        res,
-        relayError(
-          'NODE_OFFLINE',
-          `node ${nodeId} has no live reverse link`,
-          true
-        )
-      );
-      return;
-    }
-
-    const lifecycleError = lifecycleInputError(routedBody);
-    if (lifecycleError) {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', lifecycleError.message, false, {
-          reasonCode: 'INVALID_LIFECYCLE_INPUT',
-          field: lifecycleError.field,
-        })
-      );
-      return;
-    }
-    const createNow = now();
-    const expiresAt = expiresAtFromLifecycleInput(routedBody, createNow);
-    if (expiresAt !== undefined && expiresAt !== null && Date.parse(expiresAt) <= createNow.getTime()) {
-      const error = relayError(
-        'SESSION_EXPIRED',
-        'routed session envelope is already expired',
-        false,
-        { reasonCode: 'SESSION_EXPIRED', expiresAt }
-      );
-      appendRoutedSessionAudit(options.auditSink, {
-        eventType: 'expiry',
-        decision: 'expired',
-        reasonCode: 'SESSION_EXPIRED',
-        peer: { kind: 'hub' },
-        node: { nodeId },
-        intent: { action: 'sessions.create', target: nodeId },
-        material: { params: routedBody },
-      });
-      sendRelayError(res, error);
-      return;
-    }
-    const requestedEnvelope = isSessionEnvelope(routedBody['sessionEnvelope'])
-      ? routedBody['sessionEnvelope']
-      : null;
-    if (requestedEnvelope && requestedEnvelope.nodeId !== nodeId) {
-      appendRoutedSessionAudit(options.auditSink, {
-        eventType: 'denial',
-        decision: 'deny',
-        reasonCode: 'SESSION_NODE_MISMATCH',
-        peer: { kind: 'hub' },
-        node: { nodeId },
-        sessionId: requestedEnvelope.sessionId,
-        intent: { action: 'sessions.create', target: nodeId },
-        material: {
-          params: {
-            expectedNodeId: requestedEnvelope.nodeId,
-            actualNodeId: nodeId,
-          },
-        },
-        ...(requestedEnvelope.correlationId ? { correlationId: requestedEnvelope.correlationId } : {}),
-      });
-      sendRelayError(
-        res,
-        relayError(
-          'SESSION_MISMATCH',
-          'routed session envelope node does not match the route',
-          false,
+        sendPolicyDecision(
+          options.auditSink,
+          res,
+          policyDecision,
+          normalized.request,
           {
-            reasonCode: 'SESSION_NODE_MISMATCH',
-            expectedNodeId: requestedEnvelope.nodeId,
-            actualNodeId: nodeId,
+            confirmations,
+            req,
+            canonicalParams: normalized.request,
+            now: nowForPolicy,
           }
         )
-      );
-      return;
-    }
-    const rawSessionType = routedBody['type'];
-    if (rawSessionType !== undefined && !isSessionCreateType(rawSessionType)) {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', 'type must be agent or terminal', false, {
-          reasonCode: 'INVALID_SESSION_TYPE',
-          field: 'type',
-        })
-      );
-      return;
-    }
-    const sessionType = rawSessionType === 'agent' ? 'agent' : 'terminal';
-    const policyDecision = evaluateHubPolicy({
-      peer: { kind: 'hub' },
-      node,
-      nodeId,
-      intent: { action: 'sessions.create', target: nodeId },
-      scope: sessionCreatePolicyScope(nodeId, routedBody),
-      requiredCapabilities: sessionCreateCapabilities({
-        sessionType,
-        controlMode: routedBody['controlMode'],
-      }),
-      ...(expiresAt !== undefined ? { expiresAt } : {}),
-      params: routedBody,
-      now: createNow,
-    });
-    if (
-      sendPolicyDecision(options.auditSink, res, policyDecision, routedBody, {
-        confirmations,
-        req,
-        canonicalParams: routedBody,
-        now: createNow,
-      })
-    ) return;
+      )
+        return;
 
-    try {
-      const payload = await options.nodeLinks.request(
-        nodeId,
-        'sessions.create',
-        routedBody
-      );
-      const session = scopedNodeSession(nodeId, sessionFromPayload(payload), {
-        ...(expiresAt !== undefined ? { expiresAt } : {}),
-      });
-      envelopes.upsert(session.sessionEnvelope!);
-      const associationError = associateRoutedWorkContext(
-        options.workContextStore,
-        workContextId,
-        session
-      );
-      const responseSession = withTrustedWorkContextId(
-        options.workContextStore,
-        session,
-        workContextId
-      );
-      options.readModelCache?.upsert(nodeId, session, createNow.getTime());
-      res.status(201).json(
-        associationError
-          ? { ...responseSession, workContextAssociationError: associationError }
-          : responseSession
-      );
-    } catch (error) {
-      if (error instanceof HubNodeLinkError) {
-        sendRelayError(res, error.relayNodeError);
+      try {
+        const rpcType = operation === 'browse' ? 'fs.list' : 'fs.stat';
+        const payload = await options.nodeLinks.request(
+          nodeId,
+          rpcType,
+          normalized.request
+        );
+        const responsePayload = isRecord(payload) ? payload : { payload };
+        res.json({ nodeId, cwd: normalized.cwd, ...responsePayload });
+      } catch (error) {
+        if (error instanceof HubNodeLinkError) {
+          sendRelayError(res, error.relayNodeError);
+          return;
+        }
+        sendRegistryError(registry, res, error);
+      }
+    }
+  );
+
+  router.post(
+    '/hub/nodes/:nodeId/sessions',
+    cliGatewayAuth,
+    async (req, res) => {
+      const { nodeId } = req.params;
+      if (!nodeId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'nodeId is required')
+        );
         return;
       }
-      sendRegistryError(registry, res, error);
+      const routedBody = routedGatewayCreateBodyFromRequest(req, res, nodeId);
+      if (!routedBody) return;
+      const workContextId = routedWorkContextId(routedBody);
+      const workContextError = validateRoutedWorkContext(
+        options.workContextStore,
+        workContextId
+      );
+      if (workContextError) {
+        sendRelayError(res, workContextError);
+        return;
+      }
+      const node = registry
+        .listNodes()
+        .find((candidate) => candidate.nodeId === nodeId);
+      if (!node || node.status === 'revoked') {
+        sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+        return;
+      }
+      // 503/400: node updating, helper major-version skew, or protocol mismatch blocks new sessions.
+      if (sendNodeUnavailableForCreate(res, node, nodeId)) return;
+      const terminalUnsupported = nodeTerminalUnsupportedError(nodeId, node);
+      if (terminalUnsupported) {
+        sendRelayError(res, terminalUnsupported);
+        return;
+      }
+      if (
+        node.status !== 'online' ||
+        !options.nodeLinks?.hasActiveNode(nodeId)
+      ) {
+        sendRelayError(
+          res,
+          relayError(
+            'NODE_OFFLINE',
+            `node ${nodeId} has no live reverse link`,
+            true
+          )
+        );
+        return;
+      }
+
+      const lifecycleError = lifecycleInputError(routedBody);
+      if (lifecycleError) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', lifecycleError.message, false, {
+            reasonCode: 'INVALID_LIFECYCLE_INPUT',
+            field: lifecycleError.field,
+          })
+        );
+        return;
+      }
+      const createNow = now();
+      const expiresAt = expiresAtFromLifecycleInput(routedBody, createNow);
+      if (
+        expiresAt !== undefined &&
+        expiresAt !== null &&
+        Date.parse(expiresAt) <= createNow.getTime()
+      ) {
+        const error = relayError(
+          'SESSION_EXPIRED',
+          'routed session envelope is already expired',
+          false,
+          { reasonCode: 'SESSION_EXPIRED', expiresAt }
+        );
+        appendRoutedSessionAudit(options.auditSink, {
+          eventType: 'expiry',
+          decision: 'expired',
+          reasonCode: 'SESSION_EXPIRED',
+          peer: { kind: 'hub' },
+          node: { nodeId },
+          intent: { action: 'sessions.create', target: nodeId },
+          material: { params: routedBody },
+        });
+        sendRelayError(res, error);
+        return;
+      }
+      const requestedEnvelope = isSessionEnvelope(routedBody['sessionEnvelope'])
+        ? routedBody['sessionEnvelope']
+        : null;
+      if (requestedEnvelope && requestedEnvelope.nodeId !== nodeId) {
+        appendRoutedSessionAudit(options.auditSink, {
+          eventType: 'denial',
+          decision: 'deny',
+          reasonCode: 'SESSION_NODE_MISMATCH',
+          peer: { kind: 'hub' },
+          node: { nodeId },
+          sessionId: requestedEnvelope.sessionId,
+          intent: { action: 'sessions.create', target: nodeId },
+          material: {
+            params: {
+              expectedNodeId: requestedEnvelope.nodeId,
+              actualNodeId: nodeId,
+            },
+          },
+          ...(requestedEnvelope.correlationId
+            ? { correlationId: requestedEnvelope.correlationId }
+            : {}),
+        });
+        sendRelayError(
+          res,
+          relayError(
+            'SESSION_MISMATCH',
+            'routed session envelope node does not match the route',
+            false,
+            {
+              reasonCode: 'SESSION_NODE_MISMATCH',
+              expectedNodeId: requestedEnvelope.nodeId,
+              actualNodeId: nodeId,
+            }
+          )
+        );
+        return;
+      }
+      const rawSessionType = routedBody['type'];
+      if (
+        rawSessionType !== undefined &&
+        !isSessionCreateType(rawSessionType)
+      ) {
+        sendRelayError(
+          res,
+          relayError(
+            'INVALID_REQUEST',
+            'type must be agent or terminal',
+            false,
+            {
+              reasonCode: 'INVALID_SESSION_TYPE',
+              field: 'type',
+            }
+          )
+        );
+        return;
+      }
+      const sessionType = rawSessionType === 'agent' ? 'agent' : 'terminal';
+      const policyDecision = evaluateHubPolicy({
+        peer: { kind: 'hub' },
+        node,
+        nodeId,
+        intent: { action: 'sessions.create', target: nodeId },
+        scope: sessionCreatePolicyScope(nodeId, routedBody),
+        requiredCapabilities: sessionCreateCapabilities({
+          sessionType,
+          controlMode: routedBody['controlMode'],
+        }),
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+        params: routedBody,
+        now: createNow,
+      });
+      if (
+        sendPolicyDecision(options.auditSink, res, policyDecision, routedBody, {
+          confirmations,
+          req,
+          canonicalParams: routedBody,
+          now: createNow,
+        })
+      )
+        return;
+
+      try {
+        const payload = await options.nodeLinks.request(
+          nodeId,
+          'sessions.create',
+          routedBody
+        );
+        const session = scopedNodeSession(nodeId, sessionFromPayload(payload), {
+          ...(expiresAt !== undefined ? { expiresAt } : {}),
+        });
+        envelopes.upsert(session.sessionEnvelope!);
+        const associationError = associateRoutedWorkContext(
+          options.workContextStore,
+          workContextId,
+          session
+        );
+        const responseSession = withTrustedWorkContextId(
+          options.workContextStore,
+          session,
+          workContextId
+        );
+        options.readModelCache?.upsert(nodeId, session, createNow.getTime());
+        res
+          .status(201)
+          .json(
+            associationError
+              ? {
+                  ...responseSession,
+                  workContextAssociationError: associationError,
+                }
+              : responseSession
+          );
+      } catch (error) {
+        if (error instanceof HubNodeLinkError) {
+          sendRelayError(res, error.relayNodeError);
+          return;
+        }
+        sendRegistryError(registry, res, error);
+      }
     }
-  });
+  );
 
   router.post(
     '/hub/nodes/:nodeId/sessions/:sessionId/files/:operation',
@@ -2632,20 +2977,31 @@ export function createHubNodeRouter(
     async (req, res) => {
       const { nodeId, sessionId, operation } = req.params;
       if (!nodeId) {
-        sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'nodeId is required')
+        );
         return;
       }
       if (!sessionId) {
-        sendRelayError(res, relayError('INVALID_REQUEST', 'sessionId is required'));
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'sessionId is required')
+        );
         return;
       }
       if (!isFileRpcOperation(operation)) {
         sendRelayError(
           res,
-          relayError('INVALID_REQUEST', 'file RPC operation must be list, stat, read, tail, or write', false, {
-            reasonCode: 'FILE_RPC_INVALID_REQUEST',
-            operation,
-          })
+          relayError(
+            'INVALID_REQUEST',
+            'file RPC operation must be list, stat, read, tail, or write',
+            false,
+            {
+              reasonCode: 'FILE_RPC_INVALID_REQUEST',
+              operation,
+            }
+          )
         );
         return;
       }
@@ -2741,12 +3097,18 @@ export function createHubNodeRouter(
         path: normalized.value.request.path,
       };
       if (
-        sendPolicyDecision(options.auditSink, res, policyDecision, canonicalFileParams, {
-          confirmations,
-          req,
-          canonicalParams: canonicalFileParams,
-          now: now(),
-        })
+        sendPolicyDecision(
+          options.auditSink,
+          res,
+          policyDecision,
+          canonicalFileParams,
+          {
+            confirmations,
+            req,
+            canonicalParams: canonicalFileParams,
+            now: now(),
+          }
+        )
       ) {
         return;
       }
@@ -2781,7 +3143,9 @@ export function createHubNodeRouter(
             sessionId,
             policyScope: normalized.value.policyScope,
             payload,
-            ...(lifecycle.summary.correlationId ? { correlationId: lifecycle.summary.correlationId } : {}),
+            ...(lifecycle.summary.correlationId
+              ? { correlationId: lifecycle.summary.correlationId }
+              : {}),
           });
         }
         res.json(payload);
@@ -2794,8 +3158,13 @@ export function createHubNodeRouter(
               nodeId,
               sessionId,
               policyScope: normalized.value.policyScope,
-              errorCode: String(error.relayNodeError.details?.['reasonCode'] ?? error.relayNodeError.code),
-              ...(lifecycle.summary.correlationId ? { correlationId: lifecycle.summary.correlationId } : {}),
+              errorCode: String(
+                error.relayNodeError.details?.['reasonCode'] ??
+                  error.relayNodeError.code
+              ),
+              ...(lifecycle.summary.correlationId
+                ? { correlationId: lifecycle.summary.correlationId }
+                : {}),
             });
           }
           sendRelayError(res, error.relayNodeError);
@@ -2889,7 +3258,9 @@ export function createHubNodeRouter(
               kind: scoped.scope.kind,
               nodeId,
               cwd: scoped.scope.cwd,
-              ...(scoped.scope.repoPath ? { repoPath: scoped.scope.repoPath } : {}),
+              ...(scoped.scope.repoPath
+                ? { repoPath: scoped.scope.repoPath }
+                : {}),
               ...(scoped.scope.worktreePath !== undefined
                 ? { worktreePath: scoped.scope.worktreePath }
                 : {}),
@@ -2897,20 +3268,31 @@ export function createHubNodeRouter(
           : { kind: 'node', nodeId, cwd: '/' },
         requiredCapabilities: ['session:control:kill'],
         sessionId,
-        ...(scoped?.correlationId ? { correlationId: scoped.correlationId } : {}),
-        ...(scoped?.expiresAt !== undefined ? { expiresAt: scoped.expiresAt } : {}),
+        ...(scoped?.correlationId
+          ? { correlationId: scoped.correlationId }
+          : {}),
+        ...(scoped?.expiresAt !== undefined
+          ? { expiresAt: scoped.expiresAt }
+          : {}),
         ...(scoped?.revokedAt ? { revokedAt: scoped.revokedAt } : {}),
         params: killParams,
         now: killNow,
       });
       if (
-        sendPolicyDecision(options.auditSink, res, killPolicyDecision, killParams, {
-          confirmations,
-          req,
-          canonicalParams: killParams,
-          now: killNow,
-        })
-      ) return;
+        sendPolicyDecision(
+          options.auditSink,
+          res,
+          killPolicyDecision,
+          killParams,
+          {
+            confirmations,
+            req,
+            canonicalParams: killParams,
+            now: killNow,
+          }
+        )
+      )
+        return;
 
       try {
         await options.nodeLinks.request(nodeId, 'sessions.kill', {

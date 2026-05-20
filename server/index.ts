@@ -1016,6 +1016,7 @@ function createAuditedHubNodeRegistry(
 ): ReturnType<typeof createHubNodeRegistry> {
   const options: Parameters<typeof createHubNodeRegistry>[0] = {
     storagePath: path.join(configDir, 'hub-node-registry.json'),
+    hubVersion: getCurrentVersion(),
   };
   if (auditSink) options.auditSink = auditSink;
   return createHubNodeRegistry(options);
