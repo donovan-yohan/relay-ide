@@ -8,6 +8,7 @@ import type { Config } from './types.js';
 import { resolveExecutablePath } from './frameworks.js';
 import { detectServiceManager, detectWslInfo } from './service.js';
 import { decorateManifestWithFrameworks } from './features/frameworks.js';
+import { enrichManifest } from './node-manifest-build.js';
 import type {
   NodeCapabilities,
   NodeCapabilityProbe,
@@ -28,6 +29,12 @@ interface NodeManifestOptions {
   homeDir?: string;
   relayVersion?: string;
   cwd?: string;
+  /** Config dir path (dirname of config.json) — forwarded to resolvedPaths. */
+  configDir?: string;
+  /** Service log dir — forwarded to resolvedPaths. */
+  logDir?: string | null;
+  /** Socket dir — forwarded to resolvedPaths. */
+  socketDir?: string | null;
 }
 
 function packageJsonPath(): string {
@@ -176,13 +183,22 @@ async function getCoreNodeManifest(
     ...(options.cwd ? { cwd: options.cwd } : {}),
   });
   const serviceManager = detectServiceManager({ platform, env, wsl });
+  const relayVersion = options.relayVersion ?? getRelayVersion();
+  // #651: new required fields are populated with stub values here so that
+  // the core manifest satisfies NodeManifest's type. `getNodeManifest` and
+  // `enrichManifest` will overwrite these with the real values.
   return {
     schemaVersion: 1,
     platform,
     arch: options.arch ?? os.arch(),
     hostname: options.hostname ?? os.hostname(),
     homeDir: options.homeDir ?? os.homedir(),
-    relayVersion: options.relayVersion ?? getRelayVersion(),
+    relayVersion,
+    helperVersion: relayVersion,
+    protocolVersion: '',
+    resolvedPaths: {},
+    fileRpc: { available: true, capabilities: [] },
+    degradedReasons: [],
     generatedAt: (options.now ?? new Date()).toISOString(),
     wsl,
     serviceManager,
@@ -193,20 +209,31 @@ async function getCoreNodeManifest(
 /**
  * Build a manifest with framework / agent probes applied. This is the
  * back-compat entry point that pre-#436 callers used. Internally it
- * builds a core manifest then layers the frameworks feature on top, so
- * callers that don't need agent probing (or want to inject their own
- * decoration order) can call `getCoreNodeManifest` + decorate
- * themselves.
+ * builds a core manifest, layers the frameworks feature on top, then
+ * enriches with the #651 fields (protocolVersion, helperVersion, distro,
+ * resolvedPaths, fileRpc, authStatus on agents, degradedReasons).
+ *
+ * Callers that don't need agent probing (or want to inject their own
+ * decoration order) can call `getCoreNodeManifest` + decorate themselves.
  */
 async function getNodeManifest(
   options: NodeManifestOptions = {}
 ): Promise<NodeManifest> {
   const env = options.env ?? process.env;
   const manifest = await getCoreNodeManifest(options);
-  return decorateManifestWithFrameworks(manifest, {
+  const decorated = await decorateManifestWithFrameworks(manifest, {
     config: options.config,
     env,
   });
+  const enrichDeps: import('./node-manifest-build.js').EnrichManifestDeps = {
+    env,
+  };
+  if (options.configDir !== undefined) enrichDeps.configDir = options.configDir;
+  if (options.logDir !== undefined) enrichDeps.logDir = options.logDir;
+  if (options.socketDir !== undefined) enrichDeps.socketDir = options.socketDir;
+  if (options.homeDir !== undefined) enrichDeps.homeDir = options.homeDir;
+  if (options.platform !== undefined) enrichDeps.platform = options.platform;
+  return enrichManifest(decorated, enrichDeps);
 }
 
 export {

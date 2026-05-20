@@ -54,7 +54,11 @@ import {
   sanitizedGatewayErrorDetails,
   validateAndSanitizeGatewayCreateInput,
 } from '../shared/cli-gateway-runtime.js';
-import { isFileRpcOperation, FILE_RPC_MAX_WRITE_BYTES, type FileRpcOperation } from '../shared/file-rpc.js';
+import {
+  isFileRpcOperation,
+  FILE_RPC_MAX_WRITE_BYTES,
+  type FileRpcOperation,
+} from '../shared/file-rpc.js';
 import { WebSocket } from 'ws';
 
 const execFileAsync = promisify(execFile);
@@ -218,7 +222,13 @@ function gatewayInvalid(
   message: string,
   details?: Record<string, unknown>
 ): never {
-  printGatewayEnvelope(gatewayError(commandName, gatewayCliInvalidArgumentError(commandName, message, details)), 1);
+  printGatewayEnvelope(
+    gatewayError(
+      commandName,
+      gatewayCliInvalidArgumentError(commandName, message, details)
+    ),
+    1
+  );
 }
 
 function gatewayArg(commandArgs: string[], flag: string): string | undefined {
@@ -234,17 +244,29 @@ function parseGatewayJson(
 ): Record<string, unknown> {
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+    ) {
       return parsed as Record<string, unknown>;
     }
     gatewayInvalid(commandName, 'input JSON must be an object');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    printGatewayEnvelope(gatewayError(commandName, gatewayCliInvalidJsonError(commandName, message)), 1);
+    printGatewayEnvelope(
+      gatewayError(
+        commandName,
+        gatewayCliInvalidJsonError(commandName, message)
+      ),
+      1
+    );
   }
 }
 
-function parseGatewayCreateInput(sessionArgs: string[]): Record<string, unknown> {
+function parseGatewayCreateInput(
+  sessionArgs: string[]
+): Record<string, unknown> {
   const inputJson = gatewayArg(sessionArgs, '--input-json');
   if (inputJson) return parseGatewayJson('sessions.create', inputJson);
   const inputFile = gatewayArg(sessionArgs, '--input-file');
@@ -256,7 +278,10 @@ function parseGatewayCreateInput(sessionArgs: string[]): Record<string, unknown>
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      gatewayInvalid('sessions.create', `could not read --input-file: ${message}`);
+      gatewayInvalid(
+        'sessions.create',
+        `could not read --input-file: ${message}`
+      );
     }
   }
 
@@ -289,7 +314,10 @@ function parseGatewayCreateInput(sessionArgs: string[]): Record<string, unknown>
     if (value !== undefined) {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) {
-        gatewayInvalid('sessions.create', `${flag} must be numeric`, { flag, value });
+        gatewayInvalid('sessions.create', `${flag} must be numeric`, {
+          flag,
+          value,
+        });
       }
       input[key] = numeric;
     }
@@ -322,7 +350,8 @@ async function gatewayHttpJson(input: {
     );
   }
 
-  const port = getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  const port =
+    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     'x-relay-cli-gateway': 'v1',
@@ -382,7 +411,8 @@ function requireGatewaySessionId(
   sessionArgs: string[]
 ): string {
   const id = gatewayArg(sessionArgs, '--id') ?? sessionArgs[0];
-  if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+  if (!id || id.startsWith('--'))
+    gatewayInvalid(commandName, '--id is required');
   return id;
 }
 
@@ -440,7 +470,6 @@ async function runGatewaySessionGet(sessionArgs: string[]): Promise<never> {
   printGatewayEnvelope(gatewayOk('sessions.get', session), 0);
 }
 
-
 interface GatewaySessionDescriptor {
   id?: string;
   nodeId?: string;
@@ -490,7 +519,10 @@ function gatewayFileInputFromArgs(
   const inputFile = gatewayArg(fileArgs, '--input-file');
   if (!inputFile) return gatewayFileInputFromFlags(commandName, fileArgs);
   try {
-    return parseGatewayJson(commandName, fs.readFileSync(path.resolve(inputFile), 'utf8'));
+    return parseGatewayJson(
+      commandName,
+      fs.readFileSync(path.resolve(inputFile), 'utf8')
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     gatewayInvalid(commandName, `could not read --input-file: ${message}`);
@@ -499,61 +531,103 @@ function gatewayFileInputFromArgs(
 
 function readFileArgStdin(commandName: RelayCliGatewayCommand): Buffer {
   if (process.stdin.isTTY) {
-    gatewayInvalid(commandName, '--file - requires piped stdin (stdin is a TTY)', {
-      field: 'file',
-      reason: 'stdin_requires_pipe',
-    });
+    gatewayInvalid(
+      commandName,
+      '--file - requires piped stdin (stdin is a TTY)',
+      {
+        field: 'file',
+        reason: 'stdin_requires_pipe',
+      }
+    );
   }
   // fd 0 = stdin, portable on Windows and POSIX; cap at 2× write limit to guard OOM
   const buf = fs.readFileSync(0);
   if (buf.length > FILE_RPC_MAX_WRITE_BYTES * 2) {
-    gatewayInvalid(commandName, `stdin exceeds maximum buffered size of ${FILE_RPC_MAX_WRITE_BYTES * 2} bytes`, {
-      field: 'file',
-      reason: 'size_exceeded',
-      size: buf.length,
-      max: FILE_RPC_MAX_WRITE_BYTES * 2,
-    });
+    gatewayInvalid(
+      commandName,
+      `stdin exceeds maximum buffered size of ${FILE_RPC_MAX_WRITE_BYTES * 2} bytes`,
+      {
+        field: 'file',
+        reason: 'size_exceeded',
+        size: buf.length,
+        max: FILE_RPC_MAX_WRITE_BYTES * 2,
+      }
+    );
   }
   return buf;
 }
 
-function readFileArgPath(commandName: RelayCliGatewayCommand, fileArg: string): Buffer {
+function readFileArgPath(
+  commandName: RelayCliGatewayCommand,
+  fileArg: string
+): Buffer {
   const resolvedPath = path.resolve(fileArg);
   let stat: ReturnType<typeof fs.statSync>;
   try {
     stat = fs.statSync(resolvedPath);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    gatewayInvalid(commandName, `cannot access --file path: ${err instanceof Error ? err.message : String(err)}`, {
-      field: 'file',
-      reason: code === 'ENOENT' ? 'not_found' : code === 'EACCES' ? 'permission_denied' : 'io_error',
-    });
+    gatewayInvalid(
+      commandName,
+      `cannot access --file path: ${err instanceof Error ? err.message : String(err)}`,
+      {
+        field: 'file',
+        reason:
+          code === 'ENOENT'
+            ? 'not_found'
+            : code === 'EACCES'
+              ? 'permission_denied'
+              : 'io_error',
+      }
+    );
   }
   if (stat!.isDirectory()) {
-    gatewayInvalid(commandName, '--file path is a directory', { field: 'file', reason: 'is_directory' });
+    gatewayInvalid(commandName, '--file path is a directory', {
+      field: 'file',
+      reason: 'is_directory',
+    });
   }
   if (stat!.size > FILE_RPC_MAX_WRITE_BYTES) {
-    gatewayInvalid(commandName, `file size exceeds maximum write size of ${FILE_RPC_MAX_WRITE_BYTES} bytes`, {
-      field: 'file',
-      reason: 'size_exceeded',
-      size: stat!.size,
-      max: FILE_RPC_MAX_WRITE_BYTES,
-    });
+    gatewayInvalid(
+      commandName,
+      `file size exceeds maximum write size of ${FILE_RPC_MAX_WRITE_BYTES} bytes`,
+      {
+        field: 'file',
+        reason: 'size_exceeded',
+        size: stat!.size,
+        max: FILE_RPC_MAX_WRITE_BYTES,
+      }
+    );
   }
   try {
     return fs.readFileSync(resolvedPath);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    gatewayInvalid(commandName, `could not read --file: ${err instanceof Error ? err.message : String(err)}`, {
-      field: 'file',
-      reason: code === 'ENOENT' ? 'not_found' : code === 'EACCES' ? 'permission_denied' : 'io_error',
-    });
+    gatewayInvalid(
+      commandName,
+      `could not read --file: ${err instanceof Error ? err.message : String(err)}`,
+      {
+        field: 'file',
+        reason:
+          code === 'ENOENT'
+            ? 'not_found'
+            : code === 'EACCES'
+              ? 'permission_denied'
+              : 'io_error',
+      }
+    );
   }
 }
 
-function gatewayFileInputFromFlags(commandName: RelayCliGatewayCommand, fileArgs: string[]): Record<string, unknown> {
+function gatewayFileInputFromFlags(
+  commandName: RelayCliGatewayCommand,
+  fileArgs: string[]
+): Record<string, unknown> {
   const input: Record<string, unknown> = {};
-  const sessionId = gatewayArg(fileArgs, '--session-id') ?? gatewayArg(fileArgs, '--id') ?? fileArgs[0];
+  const sessionId =
+    gatewayArg(fileArgs, '--session-id') ??
+    gatewayArg(fileArgs, '--id') ??
+    fileArgs[0];
   if (sessionId && !sessionId.startsWith('--')) input['sessionId'] = sessionId;
   for (const [flag, field] of [
     ['--node-id', 'nodeId'],
@@ -572,9 +646,10 @@ function gatewayFileInputFromFlags(commandName: RelayCliGatewayCommand, fileArgs
   }
   const fileArg = gatewayArg(fileArgs, '--file');
   if (fileArg !== undefined) {
-    const raw = fileArg === '-'
-      ? readFileArgStdin(commandName)
-      : readFileArgPath(commandName, fileArg);
+    const raw =
+      fileArg === '-'
+        ? readFileArgStdin(commandName)
+        : readFileArgPath(commandName, fileArg);
     input['contentBase64'] = raw.toString('base64');
   }
   return input;
@@ -599,11 +674,15 @@ function normalizeGatewayFileRequiredFields(
     input['sessionId'] = input['id'];
   }
   if (typeof input['sessionId'] !== 'string' || !input['sessionId'].trim()) {
-    gatewayInvalid(commandName, '--session-id is required', { field: 'sessionId' });
+    gatewayInvalid(commandName, '--session-id is required', {
+      field: 'sessionId',
+    });
   }
   if (input['path'] === undefined) input['path'] = '.';
   if (typeof input['path'] !== 'string' || !input['path'].trim()) {
-    gatewayInvalid(commandName, '--path must be a non-empty string', { field: 'path' });
+    gatewayInvalid(commandName, '--path must be a non-empty string', {
+      field: 'path',
+    });
   }
 }
 
@@ -615,11 +694,15 @@ function gatewayBoundedNumber(
 ): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > max) {
-    gatewayInvalid(commandName, `${field} must be a positive integer <= ${max}`, {
-      field,
-      value,
-      max,
-    });
+    gatewayInvalid(
+      commandName,
+      `${field} must be a positive integer <= ${max}`,
+      {
+        field,
+        value,
+        max,
+      }
+    );
   }
   return parsed;
 }
@@ -632,7 +715,13 @@ function applyGatewayFileCaps(
 ): void {
   if (operation === 'list') {
     const value = input['maxEntries'] ?? gatewayArg(fileArgs, '--max-entries');
-    if (value !== undefined) input['maxEntries'] = gatewayBoundedNumber(commandName, 'maxEntries', value, 500);
+    if (value !== undefined)
+      input['maxEntries'] = gatewayBoundedNumber(
+        commandName,
+        'maxEntries',
+        value,
+        500
+      );
   }
   if (operation === 'read' || operation === 'tail') {
     const caps = [
@@ -641,7 +730,8 @@ function applyGatewayFileCaps(
     ] as const;
     for (const [field, flag, max] of caps) {
       const value = input[field] ?? gatewayArg(fileArgs, flag);
-      if (value !== undefined) input[field] = gatewayBoundedNumber(commandName, field, value, max);
+      if (value !== undefined)
+        input[field] = gatewayBoundedNumber(commandName, field, value, max);
     }
   }
   if (operation === 'write') {
@@ -654,23 +744,34 @@ function applyGatewayFileCaps(
           reason: 'malformed_base64',
         });
       }
-      const decodedBytes = Math.floor(b64.length * 3 / 4);
+      const decodedBytes = Math.floor((b64.length * 3) / 4);
       if (decodedBytes > FILE_RPC_MAX_WRITE_BYTES) {
-        gatewayInvalid(commandName, `file content exceeds maximum write size of ${FILE_RPC_MAX_WRITE_BYTES} bytes`, {
-          field: 'contentBase64',
-          decodedBytes,
-          max: FILE_RPC_MAX_WRITE_BYTES,
-        });
+        gatewayInvalid(
+          commandName,
+          `file content exceeds maximum write size of ${FILE_RPC_MAX_WRITE_BYTES} bytes`,
+          {
+            field: 'contentBase64',
+            decodedBytes,
+            max: FILE_RPC_MAX_WRITE_BYTES,
+          }
+        );
       }
     }
     // Clamp permissions to 0..0o777 (0..511)
     if (input['permissions'] !== undefined) {
-      const perms = typeof input['permissions'] === 'number' ? input['permissions'] : Number(input['permissions']);
+      const perms =
+        typeof input['permissions'] === 'number'
+          ? input['permissions']
+          : Number(input['permissions']);
       if (!Number.isInteger(perms) || perms < 0 || perms > 0o777) {
-        gatewayInvalid(commandName, 'permissions must be an octal integer between 0 and 0o777 (511)', {
-          field: 'permissions',
-          value: input['permissions'],
-        });
+        gatewayInvalid(
+          commandName,
+          'permissions must be an octal integer between 0 and 0o777 (511)',
+          {
+            field: 'permissions',
+            value: input['permissions'],
+          }
+        );
       }
       input['permissions'] = perms & 0o777;
     }
@@ -684,9 +785,13 @@ function assertGatewayFileAllowedFields(
 ): void {
   for (const field of Object.keys(input)) {
     if (!gatewayFileAllowedFields.has(field)) {
-      gatewayInvalid(commandName, `files.${operation} field is not in the v1 contract: ${field}`, {
-        field,
-      });
+      gatewayInvalid(
+        commandName,
+        `files.${operation} field is not in the v1 contract: ${field}`,
+        {
+          field,
+        }
+      );
     }
   }
 }
@@ -724,7 +829,9 @@ async function runGatewaySessionCreate(sessionArgs: string[]): Promise<never> {
       validated.sessionType === 'terminal'
         ? 'session:create:terminal'
         : 'session:create:agent',
-      ...(validated.input['controlMode'] === 'agent-driven' ? ['tab:mode:set-agent'] : []),
+      ...(validated.input['controlMode'] === 'agent-driven'
+        ? ['tab:mode:set-agent']
+        : []),
     ],
   });
   printGatewayEnvelope(gatewayOk('sessions.create', session), 0);
@@ -788,11 +895,15 @@ function gatewayOptionalPositiveInt(
   if (raw === undefined) return undefined;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > max) {
-    gatewayInvalid(commandName, `${flag} must be a positive integer <= ${max}`, {
-      flag,
-      value: raw,
-      max,
-    });
+    gatewayInvalid(
+      commandName,
+      `${flag} must be a positive integer <= ${max}`,
+      {
+        flag,
+        value: raw,
+        max,
+      }
+    );
   }
   return parsed;
 }
@@ -814,7 +925,9 @@ function gatewayRequiredToken(commandName: RelayCliGatewayCommand): string {
 }
 
 function gatewayWsPort(): string {
-  return getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  return (
+    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port)
+  );
 }
 
 async function resolveGatewayPtyTarget(
@@ -838,10 +951,13 @@ async function resolveGatewayPtyTarget(
 }
 
 function gatewayWsErrorCode(message: string): RelayCliGatewayErrorCode {
-  if (message.includes('Unexpected server response: 401')) return 'UNAUTHORIZED';
+  if (message.includes('Unexpected server response: 401'))
+    return 'UNAUTHORIZED';
   if (message.includes('Unexpected server response: 403')) return 'FORBIDDEN';
-  if (message.includes('Unexpected server response: 404')) return 'NODE_OFFLINE';
-  if (message.includes('ECONNREFUSED') || message.includes('connect')) return 'SERVER_UNAVAILABLE';
+  if (message.includes('Unexpected server response: 404'))
+    return 'NODE_OFFLINE';
+  if (message.includes('ECONNREFUSED') || message.includes('connect'))
+    return 'SERVER_UNAVAILABLE';
   return 'UPSTREAM_ERROR';
 }
 
@@ -888,11 +1004,15 @@ function gatewayCreatePtyWebSocket(
   return { ws, opened };
 }
 
-function gatewayTargetPayload(target: GatewayPtyTarget): Record<string, unknown> {
+function gatewayTargetPayload(
+  target: GatewayPtyTarget
+): Record<string, unknown> {
   return {
     sessionId: target.sessionId,
     ...(target.nodeId ? { nodeId: target.nodeId } : {}),
-    ...(target.globalSessionId ? { globalSessionId: target.globalSessionId } : {}),
+    ...(target.globalSessionId
+      ? { globalSessionId: target.globalSessionId }
+      : {}),
   };
 }
 
@@ -905,10 +1025,23 @@ async function runGatewaySessionStream(sessionArgs: string[]): Promise<never> {
   const id = requireGatewaySessionId('sessions.stream', sessionArgs);
   const mode = gatewayArg(sessionArgs, '--mode') ?? 'ndjson';
   if (mode !== 'ndjson') {
-    gatewayInvalid('sessions.stream', '--mode must be ndjson', { field: 'mode', value: mode });
+    gatewayInvalid('sessions.stream', '--mode must be ndjson', {
+      field: 'mode',
+      value: mode,
+    });
   }
-  const maxEvents = gatewayOptionalPositiveInt('sessions.stream', sessionArgs, '--max-events', 10000);
-  const maxBytes = gatewayOptionalPositiveInt('sessions.stream', sessionArgs, '--max-bytes', 1048576);
+  const maxEvents = gatewayOptionalPositiveInt(
+    'sessions.stream',
+    sessionArgs,
+    '--max-events',
+    10000
+  );
+  const maxBytes = gatewayOptionalPositiveInt(
+    'sessions.stream',
+    sessionArgs,
+    '--max-bytes',
+    1048576
+  );
   const idleTimeoutMs = gatewayOptionalPositiveInt(
     'sessions.stream',
     sessionArgs,
@@ -1003,12 +1136,20 @@ function gatewayInputData(sessionArgs: string[]): string {
   const data = gatewayArg(sessionArgs, '--data');
   const dataBase64 = gatewayArg(sessionArgs, '--data-base64');
   const stdin = sessionArgs.includes('--stdin');
-  const sourceCount = [data !== undefined, dataBase64 !== undefined, stdin].filter(Boolean).length;
+  const sourceCount = [
+    data !== undefined,
+    dataBase64 !== undefined,
+    stdin,
+  ].filter(Boolean).length;
   if (sourceCount !== 1) {
-    gatewayInvalid('sessions.input', 'exactly one of --data, --data-base64, or --stdin is required');
+    gatewayInvalid(
+      'sessions.input',
+      'exactly one of --data, --data-base64, or --stdin is required'
+    );
   }
   if (data !== undefined) return data;
-  if (dataBase64 !== undefined) return Buffer.from(dataBase64, 'base64').toString('utf8');
+  if (dataBase64 !== undefined)
+    return Buffer.from(dataBase64, 'base64').toString('utf8');
   return fs.readFileSync(0, 'utf8');
 }
 
@@ -1017,9 +1158,19 @@ async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
   const input = gatewayInputData(sessionArgs);
   const waitFor = gatewayArg(sessionArgs, '--wait-for');
   const timeoutMs =
-    gatewayOptionalPositiveInt('sessions.input', sessionArgs, '--timeout-ms', 300000) ?? 5000;
+    gatewayOptionalPositiveInt(
+      'sessions.input',
+      sessionArgs,
+      '--timeout-ms',
+      300000
+    ) ?? 5000;
   const maxBytes =
-    gatewayOptionalPositiveInt('sessions.input', sessionArgs, '--max-bytes', 1048576) ?? 65536;
+    gatewayOptionalPositiveInt(
+      'sessions.input',
+      sessionArgs,
+      '--max-bytes',
+      1048576
+    ) ?? 65536;
   const target = await resolveGatewayPtyTarget(id, 'sessions.input');
   const { ws, opened } = gatewayCreatePtyWebSocket('sessions.input', target);
   const bytesSent = Buffer.byteLength(input, 'utf8');
@@ -1077,7 +1228,10 @@ async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
   };
 
   const timer = waitFor
-    ? setTimeout(() => fail(`timed out waiting for PTY output: ${waitFor}`), timeoutMs)
+    ? setTimeout(
+        () => fail(`timed out waiting for PTY output: ${waitFor}`),
+        timeoutMs
+      )
     : undefined;
   timer?.unref?.();
 
@@ -1087,7 +1241,9 @@ async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
     const nextBytes = Buffer.byteLength(text, 'utf8');
     if (bytesReceived + nextBytes > maxBytes) {
       const remaining = Math.max(0, maxBytes - bytesReceived);
-      output += Buffer.from(text, 'utf8').subarray(0, remaining).toString('utf8');
+      output += Buffer.from(text, 'utf8')
+        .subarray(0, remaining)
+        .toString('utf8');
       bytesReceived = maxBytes;
       truncated = true;
       fail(`PTY output exceeded maxBytes before waitFor matched`);
@@ -1132,20 +1288,30 @@ async function runGatewaySessionRenew(sessionArgs: string[]): Promise<never> {
   if (ttlSeconds !== undefined) {
     const numeric = Number(ttlSeconds);
     if (!Number.isFinite(numeric) || numeric <= 0) {
-      gatewayInvalid('sessions.renew', '--ttl-seconds must be a positive number', {
-        field: 'ttlSeconds',
-        value: ttlSeconds,
-      });
+      gatewayInvalid(
+        'sessions.renew',
+        '--ttl-seconds must be a positive number',
+        {
+          field: 'ttlSeconds',
+          value: ttlSeconds,
+        }
+      );
     }
     input['ttlSeconds'] = numeric;
   }
   if (input['expiresAt'] === undefined && input['ttlSeconds'] === undefined) {
-    gatewayInvalid('sessions.renew', '--ttl-seconds or --expires-at is required');
+    gatewayInvalid(
+      'sessions.renew',
+      '--ttl-seconds or --expires-at is required'
+    );
   }
 
   let sessionId = requestedId;
   if (!input['nodeId']) {
-    const session = await gatewaySessionDescriptor(requestedId, 'sessions.renew');
+    const session = await gatewaySessionDescriptor(
+      requestedId,
+      'sessions.renew'
+    );
     if (typeof session.nodeId === 'string') input['nodeId'] = session.nodeId;
     sessionId = session.id ?? requestedId;
   }
@@ -1160,7 +1326,9 @@ async function runGatewaySessionRenew(sessionArgs: string[]): Promise<never> {
   printGatewayEnvelope(gatewayOk('sessions.renew', result), 0);
 }
 
-async function runGatewaySessionInterventions(sessionArgs: string[]): Promise<never> {
+async function runGatewaySessionInterventions(
+  sessionArgs: string[]
+): Promise<never> {
   const id = requireGatewaySessionId('sessions.interventions', sessionArgs);
   const limit = gatewayArg(sessionArgs, '--limit');
   const query = limit ? `?limit=${encodeURIComponent(limit)}` : '';
@@ -1172,7 +1340,9 @@ async function runGatewaySessionInterventions(sessionArgs: string[]): Promise<ne
   printGatewayEnvelope(gatewayOk('sessions.interventions', data), 0);
 }
 
-async function runGatewaySessionHandBack(sessionArgs: string[]): Promise<never> {
+async function runGatewaySessionHandBack(
+  sessionArgs: string[]
+): Promise<never> {
   const id = requireGatewaySessionId('sessions.handBack', sessionArgs);
   const latestSeenInterventionEventId = gatewayArg(
     sessionArgs,
@@ -1199,11 +1369,15 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   const sessionArgs = gatewayArgs.slice(2);
   if (sessionSubcommand === 'list') return runGatewaySessionList();
   if (sessionSubcommand === 'get') return runGatewaySessionGet(sessionArgs);
-  if (sessionSubcommand === 'create') return runGatewaySessionCreate(sessionArgs);
+  if (sessionSubcommand === 'create')
+    return runGatewaySessionCreate(sessionArgs);
   if (sessionSubcommand === 'renew') return runGatewaySessionRenew(sessionArgs);
-  if (sessionSubcommand === 'attach') return runGatewaySessionAttach(sessionArgs);
-  if (sessionSubcommand === 'detach') return runGatewaySessionDetach(sessionArgs);
-  if (sessionSubcommand === 'stream') return runGatewaySessionStream(sessionArgs);
+  if (sessionSubcommand === 'attach')
+    return runGatewaySessionAttach(sessionArgs);
+  if (sessionSubcommand === 'detach')
+    return runGatewaySessionDetach(sessionArgs);
+  if (sessionSubcommand === 'stream')
+    return runGatewaySessionStream(sessionArgs);
   if (sessionSubcommand === 'input') return runGatewaySessionInput(sessionArgs);
   if (sessionSubcommand === 'interventions') {
     return runGatewaySessionInterventions(sessionArgs);
@@ -1211,22 +1385,29 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   if (sessionSubcommand === 'hand-back') {
     return runGatewaySessionHandBack(sessionArgs);
   }
-  gatewayInvalid('sessions.list', 'unknown sessions command', { args: gatewayArgs });
+  gatewayInvalid('sessions.list', 'unknown sessions command', {
+    args: gatewayArgs,
+  });
 }
-
 
 async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
   const operation = gatewayArgs[1];
   if (!isFileRpcOperation(operation)) {
-    gatewayInvalid('files.list', 'unknown files command', { args: gatewayArgs });
+    gatewayInvalid('files.list', 'unknown files command', {
+      args: gatewayArgs,
+    });
   }
   const commandName = `files.${operation}` as RelayCliGatewayCommand;
   const input = parseGatewayFileInput(operation, gatewayArgs.slice(2));
   const requestedSessionId = input['sessionId'] as string;
-  let nodeId = typeof input['nodeId'] === 'string' ? input['nodeId'] : undefined;
+  let nodeId =
+    typeof input['nodeId'] === 'string' ? input['nodeId'] : undefined;
   let sessionId = requestedSessionId;
   if (!nodeId) {
-    const session = await gatewaySessionDescriptor(requestedSessionId, commandName);
+    const session = await gatewaySessionDescriptor(
+      requestedSessionId,
+      commandName
+    );
     nodeId = session.nodeId;
     sessionId = session.id ?? requestedSessionId;
   }
@@ -1245,8 +1426,23 @@ async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
   const body: Record<string, unknown> = {};
   const bodyFields =
     operation === 'write'
-      ? ['path', 'cwd', 'mode', 'contentBase64', 'expectedHash', 'permissions', 'confirmationToken']
-      : ['path', 'cwd', 'maxEntries', 'maxBytes', 'maxLines', 'confirmationToken'];
+      ? [
+          'path',
+          'cwd',
+          'mode',
+          'contentBase64',
+          'expectedHash',
+          'permissions',
+          'confirmationToken',
+        ]
+      : [
+          'path',
+          'cwd',
+          'maxEntries',
+          'maxBytes',
+          'maxLines',
+          'confirmationToken',
+        ];
   for (const field of bodyFields) {
     if (input[field] !== undefined) body[field] = input[field];
   }
@@ -1270,8 +1466,13 @@ async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
   printGatewayEnvelope(gatewayOk(commandName, result), 0);
 }
 
-function parseEventsSubscribeTopic(value: string | undefined): EventsSubscribeTopic {
-  if (!value || !EVENTS_SUBSCRIBE_TOPICS.includes(value as EventsSubscribeTopic)) {
+function parseEventsSubscribeTopic(
+  value: string | undefined
+): EventsSubscribeTopic {
+  if (
+    !value ||
+    !EVENTS_SUBSCRIBE_TOPICS.includes(value as EventsSubscribeTopic)
+  ) {
     printGatewayEnvelope(
       gatewayError('events.subscribe', {
         code: 'INVALID_ARGUMENT',
@@ -1355,13 +1556,18 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
       body = { raw: text };
     }
     const upstream =
-      typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : undefined;
+      typeof body === 'object' && body !== null
+        ? (body as Record<string, unknown>)
+        : undefined;
     printGatewayEnvelope(
       gatewayError('events.subscribe', {
         code: normalizeGatewayErrorCode(res.status, upstream),
         message: gatewayErrorMessage(res.status, upstream),
         retryable: gatewayErrorRetryable(res.status, upstream),
-        details: { ...sanitizedGatewayErrorDetails(res.status, upstream), topic },
+        details: {
+          ...sanitizedGatewayErrorDetails(res.status, upstream),
+          topic,
+        },
       }),
       1
     );
@@ -1437,7 +1643,9 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
     const frameTopic =
       typeof frame['topic'] === 'string' ? (frame['topic'] as string) : topic;
     const occurredAt =
-      typeof frame['occurredAt'] === 'string' ? (frame['occurredAt'] as string) : undefined;
+      typeof frame['occurredAt'] === 'string'
+        ? (frame['occurredAt'] as string)
+        : undefined;
     const payload =
       frame['payload'] && typeof frame['payload'] === 'object'
         ? (frame['payload'] as Record<string, unknown>)
@@ -1481,7 +1689,7 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
   try {
     const reader = (body as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder('utf-8');
-    // eslint-disable-next-line no-constant-condition
+
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -1520,8 +1728,11 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
 
 async function runGatewayEvents(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
-  if (subcommand === 'subscribe') return runGatewayEventsSubscribe(gatewayArgs.slice(2));
-  gatewayInvalid('events.subscribe', 'unknown events command', { args: gatewayArgs });
+  if (subcommand === 'subscribe')
+    return runGatewayEventsSubscribe(gatewayArgs.slice(2));
+  gatewayInvalid('events.subscribe', 'unknown events command', {
+    args: gatewayArgs,
+  });
 }
 
 async function runGatewayV1(): Promise<never> {
@@ -1539,14 +1750,19 @@ async function runGatewayV1(): Promise<never> {
     );
   }
   if (top === 'schema' && json) {
-    printGatewayEnvelope(gatewayOk('contract.schema', RELAY_CLI_GATEWAY_CONTRACT), 0);
+    printGatewayEnvelope(
+      gatewayOk('contract.schema', RELAY_CLI_GATEWAY_CONTRACT),
+      0
+    );
   }
   if (!json) gatewayUsage();
   if (top === 'nodes') return runGatewayNodes(gatewayArgs);
   if (top === 'sessions') return runGatewaySessions(gatewayArgs);
   if (top === 'files') return runGatewayFiles(gatewayArgs);
   if (top === 'events') return runGatewayEvents(gatewayArgs);
-  gatewayInvalid('contract.list', 'unknown v1 gateway command', { args: gatewayArgs });
+  gatewayInvalid('contract.list', 'unknown v1 gateway command', {
+    args: gatewayArgs,
+  });
 }
 
 if (command === 'v1') {
@@ -1619,7 +1835,12 @@ if (command === 'manifest') {
     }
   }
 
-  const manifest = await getNodeManifest(config ? { config } : {});
+  const servicePaths = service.getServicePaths();
+  const manifest = await getNodeManifest({
+    ...(config ? { config } : {}),
+    configDir: path.dirname(configPath),
+    logDir: servicePaths.logDir,
+  });
   console.log(
     JSON.stringify(manifest, null, args.includes('--compact') ? 0 : 2)
   );
@@ -1707,9 +1928,8 @@ if (command === 'audit') {
     }
     process.exit(1);
   }
-  const { verifySecurityAuditLog } = await import(
-    '../server/security-audit-log.js'
-  );
+  const { verifySecurityAuditLog } =
+    await import('../server/security-audit-log.js');
   const result = verifySecurityAuditLog(dbPath);
   if (jsonOutput) {
     console.log(JSON.stringify({ dbPath, ...result }, null, 2));
@@ -1833,7 +2053,9 @@ interface HubNodesPayload {
 }
 
 function hubCliPort(): string {
-  return getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  return (
+    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port)
+  );
 }
 
 function hubCliBaseUrl(): string {
@@ -1851,7 +2073,10 @@ function hubCliToken(): string {
 const HUB_CLI_FETCH_TIMEOUT_MS = 2500;
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
+  return (
+    error instanceof Error &&
+    (error.name === 'AbortError' || error.name === 'TimeoutError')
+  );
 }
 
 async function hubFetchJson(
@@ -1859,24 +2084,38 @@ async function hubFetchJson(
   capabilities: readonly string[] = []
 ): Promise<
   | { ok: true; status: number; body: unknown }
-  | { ok: false; status?: number; reason: HubDoctorReason; message: string; body?: unknown }
+  | {
+      ok: false;
+      status?: number;
+      reason: HubDoctorReason;
+      message: string;
+      body?: unknown;
+    }
 > {
   const token = hubCliToken();
   const headers: Record<string, string> = { 'x-relay-cli-gateway': 'v1' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (capabilities.length) headers['x-relay-capabilities'] = capabilities.join(',');
+  if (capabilities.length)
+    headers['x-relay-capabilities'] = capabilities.join(',');
   const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), HUB_CLI_FETCH_TIMEOUT_MS);
+  const timeout = setTimeout(
+    () => abortController.abort(),
+    HUB_CLI_FETCH_TIMEOUT_MS
+  );
   let res: Response;
   let text: string;
   try {
-    res = await fetch(`${hubCliBaseUrl()}${pathName}`, { headers, signal: abortController.signal });
+    res = await fetch(`${hubCliBaseUrl()}${pathName}`, {
+      headers,
+      signal: abortController.signal,
+    });
     text = await res.text();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const timeoutMessage = isAbortError(error) || abortController.signal.aborted
-      ? `timed out after ${HUB_CLI_FETCH_TIMEOUT_MS}ms`
-      : message;
+    const timeoutMessage =
+      isAbortError(error) || abortController.signal.aborted
+        ? `timed out after ${HUB_CLI_FETCH_TIMEOUT_MS}ms`
+        : message;
     return {
       ok: false,
       reason: 'HUB_UNREACHABLE',
@@ -1892,10 +2131,14 @@ async function hubFetchJson(
     body = { raw: text };
   }
   if (res.ok) return { ok: true, status: res.status, body: redactForCli(body) };
-  const upstream = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : undefined;
-  const reason = normalizeGatewayErrorCode(res.status, upstream) === 'UNAUTHORIZED'
-    ? 'UNAUTHORIZED'
-    : 'HUB_HTTP_ERROR';
+  const upstream =
+    typeof body === 'object' && body !== null
+      ? (body as Record<string, unknown>)
+      : undefined;
+  const reason =
+    normalizeGatewayErrorCode(res.status, upstream) === 'UNAUTHORIZED'
+      ? 'UNAUTHORIZED'
+      : 'HUB_HTTP_ERROR';
   return {
     ok: false,
     status: res.status,
@@ -1948,7 +2191,8 @@ function hubAuthCheck(): HubDoctorCheck {
     name: 'auth.token',
     status: 'fail',
     reason: 'AUTH_TOKEN_MISSING',
-    message: 'RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.',
+    message:
+      'RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.',
   };
 }
 
@@ -1959,8 +2203,7 @@ function nodesFromBody(body: unknown): HubNodeSummary[] | undefined {
 }
 
 async function fetchHubNodes(): Promise<
-  | { ok: true; nodes: HubNodeSummary[] }
-  | { ok: false; check: HubDoctorCheck }
+  { ok: true; nodes: HubNodeSummary[] } | { ok: false; check: HubDoctorCheck }
 > {
   const result = await hubFetchJson('/nodes', ['session:read']);
   if ('reason' in result) {
@@ -2006,7 +2249,10 @@ function nodeCapabilityChecks(node: HubNodeSummary): HubDoctorCheck[] {
     checks.push({
       name: `node.${node.nodeId}.version`,
       status: 'fail',
-      reason: node.version.state === 'version-skew' ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+      reason:
+        node.version.state === 'version-skew'
+          ? 'VERSION_SKEW'
+          : 'PROTOCOL_INCOMPATIBLE',
       message: `${node.displayName} protocol ${node.version.nodeProtocolVersion} does not match hub ${node.version.hubProtocolVersion}.`,
       details: { nodeId: node.nodeId, version: node.version },
     });
@@ -2023,24 +2269,39 @@ function nodeAvailabilityCheck(node: HubNodeSummary): HubDoctorCheck {
       details: { nodeId: node.nodeId, lastSeenAt: node.lastSeenAt },
     };
   }
-  const reason: HubDoctorReason = node.status === 'stale' ? 'NODE_STALE' : node.status === 'revoked' ? 'NODE_REVOKED' : 'NODE_OFFLINE';
+  const reason: HubDoctorReason =
+    node.status === 'stale'
+      ? 'NODE_STALE'
+      : node.status === 'revoked'
+        ? 'NODE_REVOKED'
+        : 'NODE_OFFLINE';
   return {
     name: `node.${node.nodeId}.availability`,
     status: 'fail',
     reason,
     message: `${node.displayName} is ${node.status}; last seen ${node.lastSeenAt}.`,
-    details: { nodeId: node.nodeId, status: node.status, lastSeenAt: node.lastSeenAt },
+    details: {
+      nodeId: node.nodeId,
+      status: node.status,
+      lastSeenAt: node.lastSeenAt,
+    },
   };
 }
 
-async function nodeLogSupportCheck(node: HubNodeSummary): Promise<HubDoctorCheck> {
+async function nodeLogSupportCheck(
+  node: HubNodeSummary
+): Promise<HubDoctorCheck> {
   if (node.status !== 'online' || node.version.state !== 'compatible') {
     return {
       name: `node.${node.nodeId}.logs`,
       status: 'skip',
       reason: 'CHECK_SKIPPED',
       message: `${node.displayName} log support check skipped because the node is not online and protocol-compatible.`,
-      details: { nodeId: node.nodeId, status: node.status, version: node.version.state },
+      details: {
+        nodeId: node.nodeId,
+        status: node.status,
+        version: node.version.state,
+      },
     };
   }
   const result = await hubFetchJson(
@@ -2058,7 +2319,10 @@ async function nodeLogSupportCheck(node: HubNodeSummary): Promise<HubDoctorCheck
   return {
     name: `node.${node.nodeId}.logs`,
     status: 'fail',
-    reason: result.reason === 'HUB_HTTP_ERROR' ? 'MISSING_LOG_SUPPORT' : result.reason,
+    reason:
+      result.reason === 'HUB_HTTP_ERROR'
+        ? 'MISSING_LOG_SUPPORT'
+        : result.reason,
     message: `${node.displayName} node-log check failed: ${result.message}`,
     details: { nodeId: node.nodeId, status: result.status, body: result.body },
   };
@@ -2071,21 +2335,45 @@ function boundedNodeRow(value: string | undefined, max = 24): string {
 
 function formatNodeTable(nodes: HubNodeSummary[]): string[] {
   if (nodes.length === 0) return ['No paired Relay nodes.'];
-  const rows = nodes.slice(0, 100).map((node) => [
-    node.status,
-    boundedNodeRow(node.nodeId, 20),
-    boundedNodeRow(node.displayName, 24),
-    boundedNodeRow(`${node.hostname} ${node.platform}/${node.arch}`, 30),
-    boundedNodeRow(node.relayVersion, 14),
-    boundedNodeRow(node.version.state, 16),
-    `tmux:${node.capabilities.core.tmux}`,
-    node.lastSeenAt,
-  ]);
-  const header = ['STATUS', 'NODE ID', 'NAME', 'HOST', 'VERSION', 'PROTO', 'CAPS', 'LAST SEEN'];
-  const widths = header.map((heading, index) => Math.max(heading.length, ...rows.map((row) => row[index]?.length ?? 0)));
-  const render = (row: string[]): string => row.map((cell, index) => cell.padEnd(widths[index] ?? 0)).join('  ').trimEnd();
-  const output = [render(header), render(widths.map((width) => '-'.repeat(width))), ...rows.map(render)];
-  if (nodes.length > rows.length) output.push(`… ${nodes.length - rows.length} more nodes omitted from human output; use --json for the full list.`);
+  const rows = nodes
+    .slice(0, 100)
+    .map((node) => [
+      node.status,
+      boundedNodeRow(node.nodeId, 20),
+      boundedNodeRow(node.displayName, 24),
+      boundedNodeRow(`${node.hostname} ${node.platform}/${node.arch}`, 30),
+      boundedNodeRow(node.relayVersion, 14),
+      boundedNodeRow(node.version.state, 16),
+      `tmux:${node.capabilities.core.tmux}`,
+      node.lastSeenAt,
+    ]);
+  const header = [
+    'STATUS',
+    'NODE ID',
+    'NAME',
+    'HOST',
+    'VERSION',
+    'PROTO',
+    'CAPS',
+    'LAST SEEN',
+  ];
+  const widths = header.map((heading, index) =>
+    Math.max(heading.length, ...rows.map((row) => row[index]?.length ?? 0))
+  );
+  const render = (row: string[]): string =>
+    row
+      .map((cell, index) => cell.padEnd(widths[index] ?? 0))
+      .join('  ')
+      .trimEnd();
+  const output = [
+    render(header),
+    render(widths.map((width) => '-'.repeat(width))),
+    ...rows.map(render),
+  ];
+  if (nodes.length > rows.length)
+    output.push(
+      `… ${nodes.length - rows.length} more nodes omitted from human output; use --json for the full list.`
+    );
   return output;
 }
 
@@ -2093,8 +2381,14 @@ async function printHubNodes(commandArgs: string[]): Promise<void> {
   const jsonOutput = commandArgs.includes('--json');
   const fetched = await fetchHubNodes();
   if ('check' in fetched) {
-    if (jsonOutput) console.log(JSON.stringify(redactForCli(fetched.check), null, 2));
-    else logger.error(redactBootstrapSecrets(`${fetched.check.reason}: ${fetched.check.message}`));
+    if (jsonOutput)
+      console.log(JSON.stringify(redactForCli(fetched.check), null, 2));
+    else
+      logger.error(
+        redactBootstrapSecrets(
+          `${fetched.check.reason}: ${fetched.check.message}`
+        )
+      );
     process.exit(1);
   }
   const payload = redactForCli<HubNodesPayload>({
@@ -2104,7 +2398,9 @@ async function printHubNodes(commandArgs: string[]): Promise<void> {
     nodes: fetched.nodes,
   });
   if (jsonOutput) console.log(JSON.stringify(payload, null, 2));
-  else for (const line of formatNodeTable(payload.nodes)) logger.info(redactBootstrapSecrets(line));
+  else
+    for (const line of formatNodeTable(payload.nodes))
+      logger.info(redactBootstrapSecrets(line));
 }
 
 async function runHubDoctor(commandArgs: string[]): Promise<void> {
@@ -2114,8 +2410,17 @@ async function runHubDoctor(commandArgs: string[]): Promise<void> {
   const hubReachable = !('reason' in reachable);
   checks.push(
     hubReachable
-      ? { name: 'hub.reachable', status: 'pass', message: `hub answered /version at ${hubCliBaseUrl()}.` }
-      : { name: 'hub.reachable', status: 'fail', reason: reachable.reason, message: reachable.message }
+      ? {
+          name: 'hub.reachable',
+          status: 'pass',
+          message: `hub answered /version at ${hubCliBaseUrl()}.`,
+        }
+      : {
+          name: 'hub.reachable',
+          status: 'fail',
+          reason: reachable.reason,
+          message: reachable.message,
+        }
   );
   let nodes: HubNodeSummary[] = [];
   if (hubCliToken() && hubReachable) {
@@ -2128,7 +2433,8 @@ async function runHubDoctor(commandArgs: string[]): Promise<void> {
         message: `hub returned ${nodes.length} paired node(s).`,
         details: { count: nodes.length },
       });
-      for (const node of nodes) checks.push(nodeAvailabilityCheck(node), ...nodeCapabilityChecks(node));
+      for (const node of nodes)
+        checks.push(nodeAvailabilityCheck(node), ...nodeCapabilityChecks(node));
       for (const node of nodes) checks.push(await nodeLogSupportCheck(node));
     } else {
       checks.push(fetched.check);
@@ -2138,21 +2444,27 @@ async function runHubDoctor(commandArgs: string[]): Promise<void> {
       name: 'nodes.registry',
       status: 'skip',
       reason: 'CHECK_SKIPPED',
-      message: 'authenticated node registry checks skipped because hub reachability or auth token failed.',
+      message:
+        'authenticated node registry checks skipped because hub reachability or auth token failed.',
     });
   }
   const failed = checks.filter((check) => check.status === 'fail');
   const payload = redactForCli({
     ok: failed.length === 0,
     generatedAt: new Date().toISOString(),
-    hub: { url: hubCliBaseUrl(), protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION },
+    hub: {
+      url: hubCliBaseUrl(),
+      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+    },
     checks,
     nodes,
   });
   if (jsonOutput) {
     console.log(JSON.stringify(payload, null, 2));
   } else {
-    logger.info(`Hub doctor ${payload.ok ? 'OK' : 'FAILED'} (${failed.length} failure(s))`);
+    logger.info(
+      `Hub doctor ${payload.ok ? 'OK' : 'FAILED'} (${failed.length} failure(s))`
+    );
     for (const check of checks) {
       const label = check.status.toUpperCase().padEnd(4);
       const reason = check.reason ? ` ${check.reason}` : '';
@@ -2167,7 +2479,9 @@ async function runHubDoctor(commandArgs: string[]): Promise<void> {
 async function printRemoteNodeLogs(commandArgs: string[]): Promise<void> {
   const nodeId = commandArgs[0];
   if (!nodeId || nodeId.startsWith('-')) {
-    logger.error('Usage: relay-ide hub node-logs <nodeId> [--lines <n>] [--follow]');
+    logger.error(
+      'Usage: relay-ide hub node-logs <nodeId> [--lines <n>] [--follow]'
+    );
     process.exit(1);
   }
   const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
@@ -2185,7 +2499,8 @@ async function printRemoteNodeLogs(commandArgs: string[]): Promise<void> {
     process.exit(1);
   }
   const follow = commandArgs.includes('--follow') || commandArgs.includes('-f');
-  const port = getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  const port =
+    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
   const url = new URL(
     `/hub/nodes/${encodeURIComponent(nodeId)}/logs`,
     `http://127.0.0.1:${port}`
@@ -2220,14 +2535,19 @@ async function printRemoteNodeLogs(commandArgs: string[]): Promise<void> {
   }
   if (!follow) {
     const body = (await res.json()) as Record<string, unknown>;
-    const log = typeof body['log'] === 'object' && body['log'] !== null ? (body['log'] as Record<string, unknown>) : {};
+    const log =
+      typeof body['log'] === 'object' && body['log'] !== null
+        ? (body['log'] as Record<string, unknown>)
+        : {};
     const output = log['output'];
     const message = log['message'];
     if (typeof output === 'string' && output) process.stdout.write(output);
     else if (typeof message === 'string') logger.info(message);
     return;
   }
-  logger.info(`Following remote Relay node logs for ${nodeId}; press Ctrl-C to stop.`);
+  logger.info(
+    `Following remote Relay node logs for ${nodeId}; press Ctrl-C to stop.`
+  );
   const reader = res.body?.getReader();
   if (!reader) {
     logger.error('Remote log stream is unavailable.');
@@ -2245,7 +2565,8 @@ async function printRemoteNodeLogs(commandArgs: string[]): Promise<void> {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          if (value) process.stdout.write(decoder.decode(value, { stream: true }));
+          if (value)
+            process.stdout.write(decoder.decode(value, { stream: true }));
         }
       } catch (error) {
         logger.error(
@@ -2375,7 +2696,11 @@ function writeNodeCredential(credential: unknown): void {
   writeNodeCredentialFile(nodeCredentialPath(), credential);
 }
 
-function loadNodeCredential(): { nodeId: string; token: string; credentialId?: string } {
+function loadNodeCredential(): {
+  nodeId: string;
+  token: string;
+  credentialId?: string;
+} {
   const credentialPath = nodeCredentialPath();
   if (!fs.existsSync(credentialPath)) {
     logger.error(
@@ -2391,7 +2716,11 @@ function loadNodeCredential(): { nodeId: string; token: string; credentialId?: s
       );
       process.exit(1);
     }
-    const parsed = raw as { nodeId?: unknown; token?: unknown; credentialId?: unknown };
+    const parsed = raw as {
+      nodeId?: unknown;
+      token?: unknown;
+      credentialId?: unknown;
+    };
     if (
       typeof parsed.nodeId !== 'string' ||
       !parsed.nodeId ||
@@ -2443,7 +2772,8 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
     sessionResume,
     localRelayNode,
   });
-  const nodeLinkClient: { current?: ReturnType<typeof createNodeLinkClient> } = {};
+  const nodeLinkClient: { current?: ReturnType<typeof createNodeLinkClient> } =
+    {};
   const rpcHost = createNodeLinkRpcHost({
     localRelayNode,
     localLogConfigPath: configPath,
@@ -2806,7 +3136,8 @@ if (command === 'sessions') {
   const sessionArgs = args.slice(1);
   const subCommand = sessionArgs[0];
   const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
-  const port = getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  const port =
+    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
 
   if (!token) {
     logger.error(
@@ -2831,7 +3162,7 @@ if (command === 'sessions') {
       throw new Error(`server returned ${res.status}: ${body}`);
     }
     return res.json();
-  }
+  };
 
   try {
     if (subCommand === 'get') {
@@ -2850,7 +3181,9 @@ if (command === 'sessions') {
     if (subCommand === 'interventions') {
       const sessionId = sessionArgs[1];
       if (!sessionId) {
-        logger.error('Usage: relay-ide sessions interventions <session-id> [--limit <n>]');
+        logger.error(
+          'Usage: relay-ide sessions interventions <session-id> [--limit <n>]'
+        );
         process.exit(1);
       }
       const limit = getNodeArg(sessionArgs, '--limit');
@@ -2887,7 +3220,9 @@ if (command === 'sessions') {
     }
 
     if (subCommand === 'scoped' && sessionArgs[1] === 'list') {
-      const includeRevoked = sessionArgs.includes('--include-revoked') ? '1' : '0';
+      const includeRevoked = sessionArgs.includes('--include-revoked')
+        ? '1'
+        : '0';
       const includeExpired = sessionArgs.includes('--active-only') ? '0' : '1';
       const data = await scopedSessionRequest(
         `/hub/scoped-sessions?includeRevoked=${includeRevoked}&includeExpired=${includeExpired}`
@@ -2899,7 +3234,9 @@ if (command === 'sessions') {
     if (subCommand === 'scoped' && sessionArgs[1] === 'revoke') {
       const sessionId = sessionArgs[2];
       if (!sessionId) {
-        logger.error('Usage: relay-ide sessions scoped revoke <session-id> [--node-id <nodeId>] [--reason <reason>]');
+        logger.error(
+          'Usage: relay-ide sessions scoped revoke <session-id> [--node-id <nodeId>] [--reason <reason>]'
+        );
         process.exit(1);
       }
       const nodeId = getNodeArg(sessionArgs, '--node-id');
