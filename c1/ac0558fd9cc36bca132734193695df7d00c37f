@@ -1,0 +1,26 @@
+shared/index.ts
+  s_afc3e94f2d047a::t_eafa0ec5da0578 50-61
+test/shared/safe-defaults.test.ts
+  s_afc3e94f2d047a::t_30c44ab7b56b57 1-411
+shared/safe-defaults.ts
+  s_afc3e94f2d047a::t_24b7dc7dd5c9a0 129-130
+  s_afc3e94f2d047a::t_6c81db8da0249e 27,164,174,185,208
+  s_afc3e94f2d047a::t_3aff0f1fb3f38d 120
+  s_afc3e94f2d047a::t_5774d9f85bc98c 1-26,28-119,121-128,131-163,165-173,175-184,186-207,209
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "c1ac0558fd9cc36bca132734193695df7d00c37f",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
