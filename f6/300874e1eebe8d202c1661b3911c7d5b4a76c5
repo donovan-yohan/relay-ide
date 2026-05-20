@@ -1,0 +1,32 @@
+frontend/src/lib/environment-options.ts
+  s_afc3e94f2d047a::t_ee0f29ccca02e7 1-131,135-137,139-229,231-539
+  s_afc3e94f2d047a::t_cfe589198fe130 132-134,138
+frontend/src/components/dialogs/CustomizeSessionDialog.tsx
+  s_afc3e94f2d047a::t_1e7af6512c6e7c 3,14,25-28,45-46
+  s_afc3e94f2d047a::t_9fd1c8bda94abe 165-171
+  s_afc3e94f2d047a::t_fabccb518e5b75 678-684
+  s_afc3e94f2d047a::t_18209d3efc8240 703-706
+  s_afc3e94f2d047a::t_91efc20f3d0b40 782-810
+  s_afc3e94f2d047a::t_a8afe9f4407c77 1111-1150
+  s_afc3e94f2d047a::t_f9efd84dff9ddf 1211-1230,1240-1306,1308,1310-1321
+  s_afc3e94f2d047a::t_a6bfce8fa431e5 1231-1239
+  s_afc3e94f2d047a::t_b9305dc6dd3a81 1427-1433
+  s_afc3e94f2d047a::t_cee868f3ccfd0a 1491,1505
+  s_afc3e94f2d047a::t_b589d3f7568b03 1541-1544
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "f6300874e1eebe8d202c1661b3911c7d5b4a76c5",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
