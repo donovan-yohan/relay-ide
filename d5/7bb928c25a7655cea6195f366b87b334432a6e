@@ -1,0 +1,19 @@
+test/node-bootstrap-docs.test.ts
+  s_3e9de69a56e5c0::t_26c1ab2d137e63 35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "d57bb928c25a7655cea6195f366b87b334432a6e",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
