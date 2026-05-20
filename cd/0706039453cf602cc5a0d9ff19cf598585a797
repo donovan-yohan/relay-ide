@@ -1,0 +1,32 @@
+frontend/test-environment-picker.html
+  s_afc3e94f2d047a::t_1340221114a999 1-15
+test/components/EnvironmentPicker.test.ts
+  s_afc3e94f2d047a::t_2ad9bc5d06fef2 443-446,448
+  s_afc3e94f2d047a::t_e856a8ad555de0 403-409,411
+  s_afc3e94f2d047a::t_10db373f7ea94e 1-55,57-84,86-129,131-383,385-392,394-402,410,412-442,447,449-456
+frontend/vite.config.ts
+  s_afc3e94f2d047a::t_cda23a58663b92 39-42
+frontend/src/components/EnvironmentPicker.tsx
+  s_afc3e94f2d047a::t_aceb6d5e7d5100 1-381
+frontend/src/test-environment-picker.tsx
+  s_afc3e94f2d047a::t_7539e4f22af3b1 167
+  s_afc3e94f2d047a::t_7c177ca465ff58 1-135,137-146,148-166,168-190
+frontend/src/components/EnvironmentPicker.css
+  s_afc3e94f2d047a::t_3f0d5953c13812 1-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "cd0706039453cf602cc5a0d9ff19cf598585a797",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
