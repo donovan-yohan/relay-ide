@@ -295,6 +295,65 @@ describe('buildEnvironmentOptions', () => {
     expect(remote?.cwd).toBe('/home/linux');
   });
 
+  it('omits session:create:terminal capability when tmux is unavailable (Gemini PR #647)', () => {
+    const options = buildEnvironmentOptions({
+      inventory: inventory(),
+      nodes: [
+        node(),
+        node({
+          nodeId: 'linux',
+          displayName: 'linux lab',
+          capabilities: {
+            ...node().capabilities,
+            core: {
+              ...node().capabilities.core,
+              tmux: 'unavailable',
+            },
+            agents: { claude: 'available' },
+          },
+        }),
+      ],
+      selectedAgent: 'claude',
+      sessionType: 'terminal',
+      generatedAt: GENERATED_AT,
+    });
+    const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
+    // tmux is mandatory for PTY sessions; without it the option must NOT
+    // advertise session:create:terminal even if shell is available.
+    expect(linuxOpt?.capabilities).not.toContain('session:create:terminal');
+    // And it should also flag the missing capability as a degraded reason.
+    expect(
+      linuxOpt?.degradedReasons?.some((r) => r.kind === 'capability-missing')
+    ).toBe(true);
+  });
+
+  it('omits session:create:agent capability when tmux is unavailable in agent mode', () => {
+    const options = buildEnvironmentOptions({
+      inventory: inventory(),
+      nodes: [
+        node(),
+        node({
+          nodeId: 'linux',
+          displayName: 'linux lab',
+          capabilities: {
+            ...node().capabilities,
+            core: {
+              ...node().capabilities.core,
+              tmux: 'unavailable',
+            },
+            agents: { claude: 'available' },
+          },
+        }),
+      ],
+      selectedAgent: 'claude',
+      sessionType: 'agent',
+      generatedAt: GENERATED_AT,
+    });
+    const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
+    expect(linuxOpt?.capabilities).not.toContain('session:create:agent');
+    expect(linuxOpt?.capabilities).not.toContain('session:create:terminal');
+  });
+
   it('does not silently merge a stale/offline node into another node', () => {
     // Critical correctness property of #629: stale/offline nodes still appear
     // as their own options with a degraded reason. They are NEVER replaced
