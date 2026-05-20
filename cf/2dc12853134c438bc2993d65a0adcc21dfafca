@@ -1,0 +1,19 @@
+frontend/src/workbench/WorkbenchCanvas.tsx
+  s_afc3e94f2d047a::t_309dc6046cfba7 557-558,563-564,569-579,582
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "cf2dc12853134c438bc2993d65a0adcc21dfafca",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
