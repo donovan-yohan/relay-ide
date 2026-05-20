@@ -1,0 +1,21 @@
+shared/prompt-attachment.ts
+  s_5aff5e5e0d9bbd::t_a4177becaa7518 63-66
+server/ws.ts
+  s_5aff5e5e0d9bbd::t_be52c0e776ac91 190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "7e425e274dd5777b7222a5e4a4471c34367fa4d3",
+  "prompts": {},
+  "sessions": {
+    "s_5aff5e5e0d9bbd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "06797abf-9fbb-49ce-9a89-a80a243f8f06",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
