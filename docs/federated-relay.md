@@ -32,10 +32,10 @@ Implemented/current:
 - Multi-node routed PTY smoke: `test/hub-cross-node-pty.test.ts` is the canonical integration harness for hub + two simulated nodes, concurrent browser PTY streams, sustained byte flow, and one-node reverse-link failure isolation. Run it with `npm run test:smoke:multi-node`.
 - Repo inventory: `server/repo-inventory.ts` reports configured repos/worktrees, dirty/divergence summaries, and canonical repo identity; the hub aggregates it through `GET /hub/repo-inventory`.
 - Local hub-as-node: `server/local-node.ts` scopes existing hub-local sessions and file events as the default local node.
+- File RPC (#428, #505, #539, #638): `fs.list`, `fs.stat`, `fs.read`, and `fs.tail` are shipped. `fs.write` is also shipped with the `rpc:fs:write` capability gate, 1 MB cap, atomic-rename semantics on the node executor, and a confirmation gate for prod-tier nodes. See `docs/CLI_GATEWAY.md` for the `files.write` verb shape.
 
 Planned/deferred:
 
-- #428 File RPC (`fs.read`, `fs.list`, `fs.tail`) shipped in C1. `fs.write` is now shipped with `rpc:fs:write` capability gate, 1 MB cap, atomic-rename semantics on the node executor, and confirmation gate for prod-tier nodes. See `docs/CLI_GATEWAY.md` for the `files.write` verb shape.
 - #476 node-log proxy / `logs.tail` / downloadable diagnostic bundles are not implemented. Current CLI diagnostics are `relay-ide node status`, `node logs`, and `node doctor`.
 - #427 policy schema/default ACLs, policy evaluator gates, two-token confirmation, audit sink/verifier, manual/online credential rotation, and an opt-in scheduled credential rotation loop are implemented. External audit shipping and a default rotation cadence in shipped config remain deferred.
 - #444 six-layer IA is product direction, not the persisted backend model in this doc.
@@ -74,7 +74,7 @@ Worker/agent identity is dynamic decoration on Bench/Tab, not a federated tree n
 - `globalSessionId` is an internal stream/routing id. It is useful in API diagnostics and reconnect paths, but users should primarily see Tab, node, cwd, and process status.
 - `repoPath` and `worktreePath` remain compatibility fields while old session creation, repo inventory, and git routes are migrated. They must stay node-scoped; never treat a path alone as global identity.
 - Repo inventory is deliberately git-specific. It can seed repo-kind Projects/Instances, but it is not the full future Project inventory.
-- Remote file browsing remains unavailable until #428 file RPC lands; do not document hub-local filesystem fallback as supported behavior.
+- Remote file browsing is available for online nodes via `fs.list` / `fs.read` / `fs.tail` (#428). Hub-local filesystem fallback is not a supported behavior; always route file RPC through the node link.
 
 ## Reverse WebSocket Model
 
@@ -453,6 +453,8 @@ A single hub UI can host terminal tabs attached to multiple paired nodes:
 - Tab chrome (`WorkspaceTabBar` + `workspace-summary.ts`) shows a node label + heartbeat dot for cross-node tabs, sourced from `SummaryContext.findNode` which `WorkspaceArea` populates from the `useQuery(['hub-nodes'], fetchHubNodes)` cache (15 s refetch interval).
 
 Reload-resume is implemented as of #467: see [SessionAttachment Boundary](#sessionattachment-boundary). The two-node routed PTY smoke harness is now the canonical integration coverage for concurrent cross-node streams and node-link failure isolation; run it with `npm run test:smoke:multi-node`.
+
+Remote files are also browsable for online remote tabs (#428). The right-sidebar files panel detects `nodeId` on the active session and calls `POST /hub/nodes/:nodeId/sessions/:sessionId/files/list` instead of the local file-list route, rendering the live remote filesystem in the same file browser component.
 
 ### SessionAttachment Boundary
 

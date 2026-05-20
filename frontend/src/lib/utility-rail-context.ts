@@ -10,6 +10,9 @@ export type UtilityRailDisabledReason =
 export interface UtilityRailResourcePath {
   workspacePath: string;
   disabledReason: UtilityRailDisabledReason | null;
+  nodeId?: string | null;
+  sessionId?: string | null;
+  root?: string | null;
 }
 
 export interface UtilityRailResourceContext {
@@ -96,6 +99,24 @@ export function deriveUtilityRailContext(
   }
 
   if (remote) {
+    const hasLiveSession = Boolean(activeSession?.id && nodeId);
+    if (hasLiveSession) {
+      const root = activeSession!.worktreePath ?? activeSession!.repoPath ?? activeSession!.cwd;
+      return {
+        stateKey,
+        displayWorkspacePath,
+        anchorLabel: formatAnchorLabel(nodeLabel, displayWorkspacePath),
+        repoBadge: null,
+        files: {
+          workspacePath: displayWorkspacePath,
+          nodeId: nodeId as string,
+          sessionId: activeSession!.id,
+          root,
+          disabledReason: null,
+        },
+        git: { workspacePath: '', disabledReason: 'remote-git-unavailable' },
+      };
+    }
     return {
       stateKey,
       displayWorkspacePath,

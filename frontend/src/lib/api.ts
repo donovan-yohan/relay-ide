@@ -1,5 +1,9 @@
 import type { WorkbenchLayout } from '../../../shared/workbench-layout-types.js';
 import type {
+  FileRpcListRequest,
+  FileRpcListResponse,
+} from '../../../shared/file-rpc.js';
+import type {
   SessionSummary,
   WorktreeInfo,
   Repo,
@@ -705,6 +709,30 @@ export interface BulkAddResult {
     defaultBranch: string | null;
   }>;
   errors: Array<{ path: string; error: string }>;
+}
+
+export interface NodeFsListArgs {
+  nodeId: string;
+  sessionId: string;
+  cwd: string;
+  path?: string;
+  maxEntries?: number;
+}
+
+export async function fetchNodeFsList(args: NodeFsListArgs): Promise<FileRpcListResponse> {
+  const url = `/hub/nodes/${encodeURIComponent(args.nodeId)}/sessions/${encodeURIComponent(args.sessionId)}/files/list`;
+  const body: Omit<FileRpcListRequest, 'sessionId' | 'root'> & { cwd: string; path: string; maxEntries: number } = {
+    cwd: args.cwd,
+    path: args.path ?? args.cwd,
+    maxEntries: args.maxEntries ?? 100,
+  };
+  return json<FileRpcListResponse>(
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  );
 }
 
 export async function addWorkspacesBulk(

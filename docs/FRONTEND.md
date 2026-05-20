@@ -186,28 +186,28 @@ Typed action registry for the command palette. Actions are pure metadata (`Actio
 Keep these entrypoints aligned when changing tab/session semantics:
 
 - **Create-tab modal / customize flow:** `CustomizeSessionDialog` and `createAgentSession()` still use workspace/repo defaults for local repo sessions, while node-aware terminal creation can pass `nodeId` and route through `/hub/nodes/:nodeId/sessions`.
-- **Tab-plus picker:** `WorkspaceTabBar` uses `TerminalNodePicker` for terminal creation. It lists `this host` plus paired nodes, disables non-online nodes, and must not imply remote file/git support before #428.
+- **Tab-plus picker:** `WorkspaceTabBar` uses `TerminalNodePicker` for terminal creation. It lists `this host` plus paired nodes, disables non-online nodes. Remote file browsing is available for online nodes via `fs.list` (#428); remote git actions remain unavailable.
 - **Command palette / action registry:** `useActionRegistry()` registers session/workspace/PR actions. Contextual actions may still depend on `workspacePath` / `activeRepoPath`; treat those as repo-bound actions, not global active-tab truth.
 - **Restore/resume:** `useSessionHandlers()`, session restore, and worktree resume paths still prefer `repoPath` / `worktreePath`. Remote/global session identity uses `nodeId` / `globalSessionId` when present.
 - **Sidebar / right rail:** Sidebar rows remain repo/worktree-heavy. The right rail derives `stateKey`, anchor label, file resource path, and git resource path from active session context via `deriveUtilityRailContext()`.
 - **Close/delete:** Session close can route through `killSession(id, nodeId)` for remote sessions. Worktree delete remains git-worktree-specific and should only appear for local repo Project/Bench rows.
-- **Hooks/stores:** `useUiStore` still persists rail state by a string key; for remote tabs that key must include `nodeId + cwd`. `useSessionsStore` still has repo enrichment APIs; use them only when a repo binding is verified.
+- **Hooks/stores:** `useUiStore` still persists rail state by a string key; for remote tabs that key is `node:<nodeId>:<cwd>` (shipped via #479). `useSessionsStore` still has repo enrichment APIs; use them only when a repo binding is verified.
 
 ### Tab and rail states
 
 | active tab state               | anchor shown                                                                                     | files panel                                           | git/branch/review panels            | implementation status                                                           |
 | ------------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------- |
 | local repo tab                 | `local · <repoPath or worktreePath>` plus `[repo]` badge                                         | local cwd file browser                                | enabled when git context exists     | implemented current path                                                        |
-| remote node tab, online        | `<nodeId> · <remote cwd>` with no repo badge unless a future verified remote repo binding exists | `remote files unavailable` until #428                 | `remote git unavailable` until #428 | terminal + guard states implemented; remote file/git planned                    |
+| remote node tab, online        | `<nodeId> · <remote cwd>` with no repo badge unless a future verified remote repo binding exists | remote files via `fs.list` (#428)                     | `remote git unavailable` until #428 | terminal + remote file browse implemented; remote git planned                   |
 | free/non-git local tab         | `local · <cwd>` with no repo badge                                                               | local cwd file browser                                | `no git context`                    | implemented by utility rail guards                                              |
 | offline/stale remote tab       | `<nodeId> · <last known cwd>` plus node status in tab chrome                                     | no live remote browsing                               | no live git actions                 | explicit offline copy is planned; current guards are generic unavailable states |
 | missing cwd / no workspace ctx | `local` or node label only                                                                       | `no workspace context`                                | `no workspace context`              | guard exists in `deriveUtilityRailContext()`                                    |
-| cwd exists, no repo binding    | `<nodeId or local> · <cwd>` with no repo badge                                                   | local files when local; remote unavailable until #428 | no repo/git widgets                 | implemented for local free folders; remote stays unavailable                    |
+| cwd exists, no repo binding    | `<nodeId or local> · <cwd>` with no repo badge                                                   | local files when local; remote files via `fs.list` (#428) when online | no repo/git widgets            | implemented for local free folders; remote file browse shipped (#428)           |
 
 Right rail rules:
 
 - Rail state follows the active Tab, not the last selected repo. Remote state keys include `nodeId + cwd` to avoid collisions between nodes with the same path.
-- Resource paths are separate from the state key. A remote tab may have a stable rail state key but an empty file/git fetch path until #428.
+- Resource paths are separate from the state key. A remote tab has a stable rail state key and a live file fetch path via `fs.list` (#428); git fetch paths remain unavailable until a verified remote repo binding is wired.
 - Repo/git/branch/PR widgets render only with a verified repo binding (`repoPath`, `worktreePath`, or a future repo-kind Project/Bench binding).
 - Workspace pins/grouping can power dashboards and watch lists, but they are not proof that the active tab is repo-bound.
 

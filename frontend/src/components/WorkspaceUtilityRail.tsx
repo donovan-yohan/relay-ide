@@ -359,6 +359,9 @@ interface UtilityRailFilesPaneContentProps {
   disabledReason: UtilityRailDisabledReason | null;
   gitDisabledReason: UtilityRailDisabledReason | null;
   fileTreeSidebarRef: React.RefObject<FileTreeHandle | null> | undefined;
+  nodeId?: string | null;
+  sessionId?: string | null;
+  root?: string | null;
 }
 
 function UtilityRailFilesPaneContent({
@@ -369,6 +372,9 @@ function UtilityRailFilesPaneContent({
   disabledReason,
   gitDisabledReason,
   fileTreeSidebarRef,
+  nodeId,
+  sessionId,
+  root,
 }: UtilityRailFilesPaneContentProps) {
   if (disabledReason) {
     return (
@@ -386,6 +392,9 @@ function UtilityRailFilesPaneContent({
       gitDisabledReason={gitDisabledReason}
       stateKey={stateKey}
       {...(fileTreeSidebarRef ? { fileTreeSidebarRef } : {})}
+      {...(nodeId !== undefined ? { nodeId } : {})}
+      {...(sessionId !== undefined ? { sessionId } : {})}
+      {...(root !== undefined ? { root } : {})}
     />
   );
 }
@@ -456,6 +465,9 @@ interface UtilityRailPaneBodyProps {
   utilityTerminalSessions: SessionSummary[];
   fullPageDiff: boolean;
   fileTreeSidebarRef: React.RefObject<FileTreeHandle | null> | undefined;
+  fileNodeId?: string | null;
+  fileSessionId?: string | null;
+  fileRoot?: string | null;
   onCreateUtilityTerminal: (() => void | Promise<void>) | undefined;
   onSelectUtilityTerminal: ((sessionId: string) => void) | undefined;
   onCloseUtilityTerminal:
@@ -483,6 +495,9 @@ function UtilityRailPaneBody({
   utilityTerminalSessions,
   fullPageDiff,
   fileTreeSidebarRef,
+  fileNodeId,
+  fileSessionId,
+  fileRoot,
   onCreateUtilityTerminal,
   onSelectUtilityTerminal,
   onCloseUtilityTerminal,
@@ -503,6 +518,9 @@ function UtilityRailPaneBody({
           disabledReason={fileDisabledReason}
           gitDisabledReason={gitDisabledReason}
           fileTreeSidebarRef={fileTreeSidebarRef}
+          {...(fileNodeId !== undefined && fileNodeId !== null ? { nodeId: fileNodeId } : {})}
+          {...(fileSessionId !== undefined && fileSessionId !== null ? { sessionId: fileSessionId } : {})}
+          {...(fileRoot !== undefined && fileRoot !== null ? { root: fileRoot } : {})}
         />
       ),
     },
@@ -627,6 +645,9 @@ export function WorkspaceUtilityRail({
   const anchorLabel = resourceContext?.anchorLabel ?? displayWorkspacePath;
   const fileWorkspacePath = resourceContext?.files.workspacePath ?? workspacePath;
   const fileDisabledReason = resourceContext?.files.disabledReason ?? null;
+  const fileNodeId = resourceContext?.files.nodeId ?? null;
+  const fileSessionId = resourceContext?.files.sessionId ?? null;
+  const fileRoot = resourceContext?.files.root ?? null;
   const gitWorkspacePath = resourceContext?.git.workspacePath ?? workspacePath;
   const gitDisabledReason = resourceContext?.git.disabledReason ?? null;
   const repoBadge =
@@ -700,6 +721,9 @@ export function WorkspaceUtilityRail({
           utilityTerminalSessions={utilityTerminalSessions}
           fullPageDiff={fullPageDiff !== null}
           fileTreeSidebarRef={fileTreeSidebarRef}
+          fileNodeId={fileNodeId}
+          fileSessionId={fileSessionId}
+          fileRoot={fileRoot}
           onCreateUtilityTerminal={onCreateUtilityTerminal}
           onSelectUtilityTerminal={onSelectUtilityTerminal}
           onCloseUtilityTerminal={onCloseUtilityTerminal}

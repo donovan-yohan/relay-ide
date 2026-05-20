@@ -4,6 +4,7 @@ import {
   ConfirmationRequiredError,
   createSession,
   fetchConfirmationRequesterToken,
+  fetchNodeFsList,
   HttpError,
   killSession,
   type ConfirmationChallenge,
@@ -386,5 +387,86 @@ describe('frontend api errors', () => {
       message: 'node node-a has no live reverse link',
       retryable: true,
     });
+  });
+
+  it('fetchNodeFsList → 404 throws HttpError with the right status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: { code: 'NOT_FOUND', message: 'node is not paired' },
+            }),
+            {
+              status: 404,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
+      )
+    );
+
+    await expect(
+      fetchNodeFsList({ nodeId: 'nodeB', sessionId: 's1', cwd: '/remote/repo' })
+    ).rejects.toMatchObject({
+      name: 'HttpError',
+      status: 404,
+    });
+  });
+
+  it('fetchNodeFsList → NODE_OFFLINE (503) throws retryable HttpError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 'NODE_OFFLINE',
+                message: 'node nodeB has no live reverse link',
+                retryable: true,
+              },
+            }),
+            {
+              status: 503,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
+      )
+    );
+
+    await expect(
+      fetchNodeFsList({ nodeId: 'nodeB', sessionId: 's1', cwd: '/remote/repo' })
+    ).rejects.toMatchObject({
+      name: 'HttpError',
+      status: 503,
+      retryable: true,
+    });
+  });
+
+  it('fetchNodeFsList POSTs to the correct session-scoped URL', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            operation: 'list',
+            root: '/remote/repo',
+            cwd: '/remote/repo',
+            path: '/remote/repo',
+            entries: [],
+            truncated: false,
+            maxEntries: 100,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchNodeFsList({ nodeId: 'nodeB', sessionId: 's1', cwd: '/remote/repo' });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/hub/nodes/nodeB/sessions/s1/files/list',
+      expect.objectContaining({ method: 'POST' })
+    );
   });
 });
