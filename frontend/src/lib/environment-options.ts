@@ -129,10 +129,13 @@ function nodeFreshnessAndReasons(
     const agentStatus = node.capabilities.agents[selectedAgent];
     if (capabilityProblem(agentStatus) !== null) {
       if (freshness === 'fresh') freshness = 'stale';
+      // `displayName` is optional on `HubNodeSummary` — fall back to
+      // `nodeId` so the message stays meaningful instead of printing
+      // "on undefined" (Gemini PR #647 review).
       reasons.push({
         kind: 'capability-missing',
         capability: 'session:create:agent',
-        message: `${selectedAgent} ${agentStatus ?? 'unknown'} on ${node.displayName}`,
+        message: `${selectedAgent} ${agentStatus ?? 'unknown'} on ${node.displayName ?? node.nodeId}`,
       });
     }
   }

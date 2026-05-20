@@ -162,6 +162,13 @@ export interface EnvironmentPickerInput {
 const CHECKOUT_ROOT_PREFIX = 'repo:';
 const CHECKOUT_WORKTREE_PREFIX = 'worktree:';
 
+// Stable timestamp used as `generatedAt` for picker options when the
+// inventory snapshot hasn't loaded yet. Pinned to a fixed value (rather
+// than `new Date().toISOString()`) so the picker doesn't churn referential
+// equality on every render — the inventory's real `generatedAt` replaces
+// it as soon as `/hub/repo-inventory` resolves.
+const PICKER_FALLBACK_GENERATED_AT = '1970-01-01T00:00:00.000Z';
+
 function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
   return {
     nodeId: DEFAULT_LOCAL_NODE_ID,
@@ -1221,7 +1228,15 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
             : {}),
         },
         fallbackWorktreePath: worktreePath,
-        generatedAt: inventory?.generatedAt ?? '',
+        // Use the inventory's `generatedAt` so options refresh in lockstep
+        // with inventory snapshots. When inventory has not loaded yet, fall
+        // back to a stable epoch marker so the option still satisfies
+        // `isEnvironmentOption` (which requires a non-empty string) without
+        // injecting `new Date()` into a memo — non-determinism inside
+        // `useMemo` would mint a new timestamp on every render and trip the
+        // referential-equality guards downstream (Gemini PR #647 review,
+        // matches the same critique on PR #646).
+        generatedAt: inventory?.generatedAt ?? PICKER_FALLBACK_GENERATED_AT,
       });
     }, [
       inventory,
