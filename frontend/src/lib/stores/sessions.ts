@@ -37,6 +37,7 @@ import {
   type InterventionRecord,
   type TabControlEvent,
 } from '../../../../shared/control-state.js';
+import type { SessionDurabilityState } from '../../../../shared/session-durability.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
@@ -257,6 +258,11 @@ export interface SessionsState {
     permissionType?: 'approval' | 'question',
     scope?: SessionEventScope
   ) => void;
+  handleDurabilityChanged: (
+    sessionId: string,
+    durability: SessionDurabilityState,
+    scope?: SessionEventScope
+  ) => void;
   handleUserViewed: (sessionId: string, scope?: SessionEventScope) => void;
   handleTabControlEvent: (event: TabControlEvent) => void;
   setNotificationEnabled: (sessionId: string, enabled: boolean) => void;
@@ -329,7 +335,12 @@ function sessionsShareScopedIdentity(
     return left.nodeId === right.nodeId && left.id === right.id;
   }
 
-  if (left.globalSessionId || right.globalSessionId || left.nodeId || right.nodeId) {
+  if (
+    left.globalSessionId ||
+    right.globalSessionId ||
+    left.nodeId ||
+    right.nodeId
+  ) {
     return false;
   }
 
@@ -363,7 +374,8 @@ function storedSessionIdMatchesSession(
   }
 
   return (
-    session.id === storedId && isLegacyLocalSessionIdUnambiguous(sessions, storedId)
+    session.id === storedId &&
+    isLegacyLocalSessionIdUnambiguous(sessions, storedId)
   );
 }
 
@@ -799,6 +811,20 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     });
   },
 
+  handleDurabilityChanged: (sessionId, durability, scope) => {
+    set((state) => {
+      let changed = false;
+      const sessions = state.sessions.map((s) => {
+        if (!sessionMatchesEventScope(s, sessionId, scope)) return s;
+        if (s.durability === durability) return s;
+        changed = true;
+        return { ...s, durability };
+      });
+      if (!changed) return state;
+      return { ...state, sessions };
+    });
+  },
+
   handleUserViewed: (sessionId, scope) => {
     set((state) => {
       const viewedSession = resolveSessionByKey(state.sessions, sessionId);
@@ -829,9 +855,12 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       sessionId: identity.sessionId,
       localSessionId: identity.sessionId,
       ...(identity.nodeId ? { nodeId: identity.nodeId } : {}),
-      ...(identity.globalSessionId ? { globalSessionId: identity.globalSessionId } : {}),
+      ...(identity.globalSessionId
+        ? { globalSessionId: identity.globalSessionId }
+        : {}),
     };
-    const cacheKey = identity.globalSessionId ?? `${identity.nodeId}:${identity.sessionId}`;
+    const cacheKey =
+      identity.globalSessionId ?? `${identity.nodeId}:${identity.sessionId}`;
     set((state) => {
       const sessions = state.sessions.map((session): SessionSummary => {
         if (!sessionMatchesEventScope(session, identity.sessionId, scope)) {
@@ -858,7 +887,10 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       });
       if (event.type !== 'tab.intervention') return { sessions };
       const previous = state.interventionsBySession[cacheKey] ?? [];
-      const next = [event.intervention, ...previous.filter((record) => record.id !== event.intervention.id)].slice(0, 12);
+      const next = [
+        event.intervention,
+        ...previous.filter((record) => record.id !== event.intervention.id),
+      ].slice(0, 12);
       return {
         sessions,
         interventionsBySession: {

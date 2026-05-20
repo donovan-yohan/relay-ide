@@ -6,6 +6,7 @@ import type {
   WorkContextActiveGroup,
   WorkContextSessionSummary,
 } from './types.js';
+import { durabilityDisabledReason } from './session-durability.js';
 
 export interface ActiveWorkMobileControlState {
   attachDisabledReason: string | null;
@@ -70,6 +71,12 @@ function liveControlDisabledReason(
   session?: WorkContextSessionSummary
 ): string | null {
   if (!session) return 'no session selected';
+  // Session-level durability overrides coarse live/node checks: a session
+  // that landed in `stale-node` / `ended` / `error` should disable
+  // controls even if other signals say "online", and the typed reason is
+  // more honest than the legacy `${status} node` message.
+  const durabilityReason = durabilityDisabledReason(session.durability);
+  if (durabilityReason) return durabilityReason;
   if (!session.live) return 'last-known session only';
   if (group.node.status !== 'online') return `${group.node.status} node`;
   if (group.staleReadModel) return 'stale read model';
