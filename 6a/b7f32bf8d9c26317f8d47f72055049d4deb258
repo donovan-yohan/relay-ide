@@ -1,0 +1,22 @@
+frontend/src/lib/environment-options.ts
+  s_afc3e94f2d047a::t_cfe589198fe130 132-134,138
+frontend/src/components/dialogs/CustomizeSessionDialog.tsx
+  s_afc3e94f2d047a::t_a6bfce8fa431e5 1231-1239
+  s_afc3e94f2d047a::t_9fd1c8bda94abe 165-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "6ab7f32bf8d9c26317f8d47f72055049d4deb258",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
