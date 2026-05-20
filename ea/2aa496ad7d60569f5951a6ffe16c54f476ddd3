@@ -1,0 +1,47 @@
+frontend/src/lib/api.ts
+  s_5aff5e5e0d9bbd::t_5c1486f7dfd810 7
+  s_5aff5e5e0d9bbd::t_67f04965c6e229 791-803,805-816,818-825
+  s_5aff5e5e0d9bbd::t_700a5213b5b05f 804,817
+test/file-write-api.test.ts
+  s_5aff5e5e0d9bbd::t_77d2644f0f7e61 2-140,143-161
+  s_5aff5e5e0d9bbd::t_9d268c0b2c1d5d 1
+test/workbench-block-types.test.ts
+  s_5aff5e5e0d9bbd::t_dac66b487a9327 172
+frontend/src/workbench/blocks/file.css
+  s_5aff5e5e0d9bbd::t_3e07a0b28258d1 120-184
+package.json
+  s_5aff5e5e0d9bbd::t_d864db7860e47e 77,106
+shared/workbench-prompt-hooks.ts
+  s_5aff5e5e0d9bbd::t_d98682432efc4f 113
+shared/workbench-block-types.ts
+  s_5aff5e5e0d9bbd::t_a55b57f2aa3b72 229-235
+frontend/src/workbench/blocks/file.tsx
+  s_5aff5e5e0d9bbd::t_a9f5d2f774a283 299-313
+  s_5aff5e5e0d9bbd::t_ff40fa56022c22 87-94,96-102
+  s_5aff5e5e0d9bbd::t_e655772b9cce0c 335-483
+  s_5aff5e5e0d9bbd::t_d4c7970b056f53 67-68
+  s_5aff5e5e0d9bbd::t_07bb827bd5e88e 201,214,222
+  s_5aff5e5e0d9bbd::t_83212d5d4ea4b3 165,220
+  s_5aff5e5e0d9bbd::t_da65b6176e2d53 26-27,32,36,41
+test/workbench-block-renderers.test.ts
+  s_5aff5e5e0d9bbd::t_b65bf934bc8435 430-501
+  s_5aff5e5e0d9bbd::t_5b9f70d4f72fbf 292,295-297
+docs/federated-relay.md
+  s_5aff5e5e0d9bbd::t_655cdaa2d034fa 557-570
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "ea2aa496ad7d60569f5951a6ffe16c54f476ddd3",
+  "prompts": {},
+  "sessions": {
+    "s_5aff5e5e0d9bbd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "06797abf-9fbb-49ce-9a89-a80a243f8f06",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
