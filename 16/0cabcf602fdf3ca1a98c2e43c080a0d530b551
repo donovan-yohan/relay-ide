@@ -1,0 +1,22 @@
+server/features/repo-router.ts
+  s_afc3e94f2d047a::t_0654d56a496770 97
+  s_afc3e94f2d047a::t_b6beeb4e3e7d05 93-96
+shared/repo-inventory.ts
+  s_afc3e94f2d047a::t_98f2515200f6d6 93-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "160cabcf602fdf3ca1a98c2e43c080a0d530b551",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
