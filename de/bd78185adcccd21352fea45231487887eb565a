@@ -1,0 +1,19 @@
+server/hub-node-registry.ts
+  s_3e9de69a56e5c0::t_064c392d36c723 78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "debd78185adcccd21352fea45231487887eb565a",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
