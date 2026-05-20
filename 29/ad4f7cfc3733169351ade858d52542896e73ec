@@ -1,0 +1,39 @@
+frontend/src/workbench/WorkbenchBlockCreateDialog.tsx
+  s_afc3e94f2d047a::t_5f23b56923a6f0 1-115,117,119-317
+frontend/src/workbench/block-create-helpers.ts
+  s_afc3e94f2d047a::t_87316c1c2f31f4 1-162,164-166
+frontend/src/workbench/workbench-canvas.css
+  s_afc3e94f2d047a::t_21f3c7935e2b2f 156-185
+shared/workbench-block-environment.ts
+  s_afc3e94f2d047a::t_95cbd9d768543e 262-263,273,280,288,300
+frontend/src/workbench/WorkbenchCanvas.tsx
+  s_afc3e94f2d047a::t_4bfc74ea5d1990 41-43,45,48-52
+  s_afc3e94f2d047a::t_70878332981cdc 375-377
+  s_afc3e94f2d047a::t_e3d5a9e9bee29d 577-606,611-612,623-624,653-654
+  s_afc3e94f2d047a::t_7cd626a64962f2 340-353
+  s_afc3e94f2d047a::t_b118d25dfa6f1b 541-560,563-572
+frontend/src/workbench/workbench-block-create-dialog.css
+  s_afc3e94f2d047a::t_8c9b4084c7a0c5 1-110
+test/components/WorkbenchBlockEnvPicker.test.ts
+  s_afc3e94f2d047a::t_421548e0eaf7c1 1-33,35-188,195,197-198,203,205-265
+  s_afc3e94f2d047a::t_a43676fc19c4ce 199-202,204
+  s_afc3e94f2d047a::t_ffccb9955b6c2f 189-194,196
+test/shared/workbench-block-env-roundtrip.test.ts
+  s_afc3e94f2d047a::t_577734de6094b9 122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "29ad4f7cfc3733169351ade858d52542896e73ec",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
