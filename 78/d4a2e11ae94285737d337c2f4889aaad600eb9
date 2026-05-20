@@ -1,0 +1,32 @@
+shared/repo-inventory.ts
+  s_afc3e94f2d047a::t_a8736276e53130 296-330
+  s_afc3e94f2d047a::t_c76e0b846538d1 92-135
+server/features/repo-router.ts
+  s_afc3e94f2d047a::t_7174e6516afab6 72-73
+  s_afc3e94f2d047a::t_4ba160cefb1e95 33-36
+  s_afc3e94f2d047a::t_ef455efefe7501 99-116
+test/shared/repo-identity.test.ts
+  s_afc3e94f2d047a::t_3df4fed8ca6dc6 128
+  s_afc3e94f2d047a::t_ddc8373e22b422 1-127,129-207
+test/server/repo-aggregation.test.ts
+  s_afc3e94f2d047a::t_8fe171fe8905bf 435,456,466
+  s_afc3e94f2d047a::t_06d5966d5ca9cb 1-434,436-455,457-465,467-468
+shared/index.ts
+  s_afc3e94f2d047a::t_2274fcab4b15c1 25-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "78d4a2e11ae94285737d337c2f4889aaad600eb9",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
