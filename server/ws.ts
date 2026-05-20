@@ -187,7 +187,7 @@ function sendAgentMessageV2(
       ws,
       session.id,
       `prompt attachments exceed cap (${rawPromptAttachments.length} > ${MAX_PROMPT_ATTACHMENTS_PER_MESSAGE})`,
-      null
+      new Error('promptAttachments exceeds allowed maximum')
     );
     return;
   }

@@ -60,18 +60,10 @@ export function createPromptAttachment(
     throw new Error('PromptAttachment.ref is required for kind=file-ref');
   }
   // Re-mint through `createFileResourceRef` so any caller-built ref is
-  // normalized + validated by the canonical constructor.
-  const normalizedRef = createFileResourceRef({
-    nodeId: args.ref.nodeId,
-    path: args.ref.path,
-    intent: args.ref.intent,
-    ...(args.ref.size !== undefined ? { size: args.ref.size } : {}),
-    ...(args.ref.sha256 !== undefined ? { sha256: args.ref.sha256 } : {}),
-    ...(args.ref.mtimeMs !== undefined ? { mtimeMs: args.ref.mtimeMs } : {}),
-    ...(args.ref.repoBinding ? { repoBinding: args.ref.repoBinding } : {}),
-    ...(args.ref.maxBytes !== undefined ? { maxBytes: args.ref.maxBytes } : {}),
-    ...(args.ref.capturedAt ? { capturedAt: args.ref.capturedAt } : {}),
-  });
+  // normalized + validated by the canonical constructor. `FileResourceRef`
+  // is a structural supertype of `CreateFileResourceRefArgs`, so the ref
+  // can be passed through directly.
+  const normalizedRef = createFileResourceRef(args.ref);
   const out: PromptAttachmentFileRef = {
     kind: 'file-ref',
     ref: normalizedRef,
