@@ -1,0 +1,28 @@
+shared/bootstrap-diagnostics.ts
+  s_afc3e94f2d047a::t_bfea7148933fde 270-277
+server/diagnostics-bundle.ts
+  s_afc3e94f2d047a::t_101145594dae5a 113-117
+  s_afc3e94f2d047a::t_89c3afc77466a1 613-618
+test/fixtures/redaction/url-credential-ws.txt
+  s_afc3e94f2d047a::t_bf9f299a7e6345 1-9
+test/fixtures/redaction/url-credential-wss.txt
+  s_afc3e94f2d047a::t_a961f5b35f35df 1-9
+test/shared/redaction-coverage.test.ts
+  s_afc3e94f2d047a::t_7c270a09b8af73 264-284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "ba3342c47ec2eea07fd9106f958b44480810ef8d",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
