@@ -1,73 +1,360 @@
 /**
- * CustomBlock — Workbench slice 2 of epic #612.
+ * CustomBlock — Workbench slice 4 of epic #612.
  *
- * SCAFFOLD ONLY — agent-authored payload execution is NOT implemented here.
+ * Replaces the slice-2 scaffold. Renders an approved custom block via the
+ * template renderer system. The block is identified by its descriptor's
+ * `rendererId`, which is the `proposalId` of the approved proposal.
  *
- * This renderer is a placeholder for the extensibility escape-hatch defined in
- * CustomBlockDescriptor. The `rendererId` and `props` fields are displayed for
- * diagnostic purposes only.
+ * # Rendering flow
  *
- * Slice 4 will implement:
- *   - A sandboxed execution environment for agent-authored renderers.
- *   - Registry lookup by `rendererId` for externally registered custom renderers.
- *   - Safe execution of `props` / `dataRefs` resolution from the hub.
+ *   1. Look up the approved proposal by descriptor.meta.rendererId
+ *      (= proposalId) via TanStack Query.
+ *   2. Validate the proposal is `approved` (not revoked, not rejected).
+ *   3. Render via TemplateRenderer with a sandboxed api object.
  *
- * DO NOT execute `descriptor.meta.props` or `descriptor.meta.dataRefs` as code.
- * They are opaque JSON values forwarded from agent-authored payloads and must
- * not be treated as trusted input until slice 4 implements the sandbox.
+ * # Revoked state
+ *
+ *   If the proposal was revoked, render a clear "revoked" card. The block
+ *   will not execute any renderer code. A link to the audit entry is shown
+ *   if `auditEventId` is available.
+ *
+ * # Sandbox boundary (non-negotiable)
+ *
+ *   TemplateRenderer receives only typed props and a whitelisted api object.
+ *   It cannot access env vars, make network calls, read browser storage,
+ *   access raw transcripts, or reach any ungranted capability endpoint.
+ *   The api is constructed here and passed as a parameter — the renderer
+ *   cannot import or reconstruct it.
+ *
+ *   Template kinds: 'status-card', 'kv-grid', 'link-list'.
+ *   'jsx-snippet' is defined in types but always rejected at proposal time —
+ *   it is never executed here (and will never reach approved status).
+ *
+ * Refs: #622, epic #612.
  */
 
 import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import type { WorkbenchBlockRenderer } from '../../../../shared/workbench-block-types.js';
+import type { CustomBlockProposal } from '../../../../shared/workbench-custom-blocks.js';
+import { isKnownTemplateName } from '../../../../shared/workbench-custom-blocks.js';
+import type { RelayCapabilityBit } from '../../../../shared/security-policy.js';
+import { fetchCustomBlockProposals } from '../../lib/api.js';
+import { TemplateRenderer } from './custom-templates.js';
 
 import './custom.css';
+import './custom-templates.css';
+
+// ---------------------------------------------------------------------------
+// Query key factory
+// ---------------------------------------------------------------------------
+
+function approvedProposalsKey() {
+  return ['custom-block-proposals', 'approved'] as const;
+}
+
+// ---------------------------------------------------------------------------
+// Revoked card
+// ---------------------------------------------------------------------------
+
+interface RevokedCardProps {
+  title: string;
+  proposalId: string;
+  auditEventId?: string | undefined;
+}
+
+function RevokedCard({ title, proposalId, auditEventId }: RevokedCardProps) {
+  return (
+    <div
+      className="block-custom block-custom--revoked"
+      role="alert"
+      aria-label={`revoked custom block: ${title}`}
+    >
+      <div className="block-custom__header">
+        <div className="block-custom__kind">custom block — revoked</div>
+        <div className="block-custom__title">{title}</div>
+      </div>
+      <div className="block-custom__body">
+        <div className="block-custom__notice block-custom__notice--revoked">
+          this custom block renderer was revoked and can no longer render
+        </div>
+        <div className="block-custom__info">
+          <div className="block-custom__row">
+            <span className="block-custom__key">proposal</span>
+            <span className="block-custom__value">{proposalId}</span>
+          </div>
+          {auditEventId && (
+            <div className="block-custom__row">
+              <span className="block-custom__key">audit event</span>
+              <span className="block-custom__value">{auditEventId}</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PendingCard — proposal exists but is still pending (not yet approved)
+// ---------------------------------------------------------------------------
+
+function PendingCard({
+  title,
+  proposalId,
+}: {
+  title: string;
+  proposalId: string;
+}) {
+  return (
+    <div
+      className="block-custom block-custom--pending"
+      role="status"
+      aria-label={`pending custom block: ${title}`}
+    >
+      <div className="block-custom__header">
+        <div className="block-custom__kind">
+          custom block — pending approval
+        </div>
+        <div className="block-custom__title">{title}</div>
+      </div>
+      <div className="block-custom__body">
+        <div className="block-custom__notice">
+          this custom block is waiting for user approval (proposal: {proposalId}
+          )
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NotFoundCard — no proposal found for the given rendererId
+// ---------------------------------------------------------------------------
+
+function NotFoundCard({
+  title,
+  rendererId,
+}: {
+  title: string;
+  rendererId: string;
+}) {
+  return (
+    <div
+      className="block-custom block-custom--not-found"
+      role="alert"
+      aria-label={`unknown custom block: ${title}`}
+    >
+      <div className="block-custom__header">
+        <div className="block-custom__kind">
+          custom block — unknown renderer
+        </div>
+        <div className="block-custom__title">{title}</div>
+      </div>
+      <div className="block-custom__body">
+        <div className="block-custom__notice">
+          no approved proposal found for renderer: {rendererId}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CustomBlock renderer
+// ---------------------------------------------------------------------------
 
 export const CustomBlock: WorkbenchBlockRenderer<'custom'> = ({
   descriptor,
-  context: _context,
+  context,
 }) => {
-  const { rendererId, dataRefs, props } = descriptor.meta;
+  const { rendererId } = descriptor.meta;
+
+  // Fetch all approved proposals; cache-hit on normal usage since other
+  // blocks on the same canvas share the query.
+  const {
+    data: approved,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: approvedProposalsKey(),
+    queryFn: () => fetchCustomBlockProposals('approved'),
+  });
+
+  if (isLoading) {
+    return (
+      <div
+        className="block-custom"
+        aria-label={`custom block: ${descriptor.title}`}
+      >
+        <div className="block-custom__header">
+          <div className="block-custom__kind">custom block</div>
+          <div className="block-custom__title">{descriptor.title}</div>
+        </div>
+        <div className="block-custom__body">
+          <div className="block-custom__notice">loading renderer...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        className="block-custom"
+        role="alert"
+        aria-label={`custom block error: ${descriptor.title}`}
+      >
+        <div className="block-custom__header">
+          <div className="block-custom__kind">custom block — error</div>
+          <div className="block-custom__title">{descriptor.title}</div>
+        </div>
+        <div className="block-custom__body">
+          <div className="block-custom__notice block-custom__notice--error">
+            failed to load renderer: {(error as Error).message}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Find the proposal whose proposalId matches the rendererId
+  const proposal: CustomBlockProposal | undefined = approved?.find(
+    (p) => p.proposalId === rendererId
+  );
+
+  if (!proposal) {
+    // No approved proposal — check if it might be in another status
+    // (no separate fetch to avoid over-fetching; the user should look at pending list)
+    return <NotFoundCard title={descriptor.title} rendererId={rendererId} />;
+  }
+
+  if (proposal.status === 'revoked') {
+    return (
+      <RevokedCard
+        title={descriptor.title}
+        proposalId={proposal.proposalId}
+        auditEventId={proposal.auditEventId}
+      />
+    );
+  }
+
+  if (proposal.status === 'pending') {
+    return (
+      <PendingCard title={descriptor.title} proposalId={proposal.proposalId} />
+    );
+  }
+
+  // proposal.status === 'approved' — render via template
+  const { rendererSource } = proposal;
+
+  if (rendererSource.kind !== 'template') {
+    // jsx-snippet or any future kind that is not yet implemented
+    return (
+      <div
+        className="block-custom"
+        role="alert"
+        aria-label={`custom block unsupported renderer: ${descriptor.title}`}
+      >
+        <div className="block-custom__header">
+          <div className="block-custom__kind">
+            custom block — unsupported renderer
+          </div>
+          <div className="block-custom__title">{descriptor.title}</div>
+        </div>
+        <div className="block-custom__body">
+          <div className="block-custom__notice">
+            renderer source kind &ldquo;{rendererSource.kind}&rdquo; is not
+            supported in this version
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isKnownTemplateName(rendererSource.template)) {
+    return (
+      <div
+        className="block-custom"
+        role="alert"
+        aria-label={`custom block unknown template: ${descriptor.title}`}
+      >
+        <div className="block-custom__header">
+          <div className="block-custom__kind">
+            custom block — unknown template
+          </div>
+          <div className="block-custom__title">{descriptor.title}</div>
+        </div>
+        <div className="block-custom__body">
+          <div className="block-custom__notice">
+            unknown template: {rendererSource.template}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Build the sandboxed api for the template renderer.
+  //
+  // SECURITY BOUNDARY: this api object is the ONLY side-effect channel
+  // available to the template renderer. It is typed and constructed here —
+  // the renderer cannot import or reconstruct it.
+  //
+  // Whitelisted:
+  //   getWorkContextStatus — returns id+status only, never full transcript
+  //   listGrantedCapabilities — returns granted bit names, read-only
+  //
+  // Blocked (not accessible from the renderer):
+  //   env vars, network fetch, browser storage, raw session bytes, secrets
+  const grantedBitNames: RelayCapabilityBit[] = context.capabilityGrants
+    .filter((g) => g.capability)
+    .map((g) => g.capability!);
+
+  const sandboxApi = {
+    getWorkContextStatus: (_workContextId: string): string | null => {
+      // Returns work context status only — no full transcript
+      // The context.workContext?.id check prevents cross-context info leakage
+      if (context.workContext && context.workContext.id === _workContextId) {
+        // WorkContext.source is the status field in the current schema
+        return context.workContext.source ?? null;
+      }
+      return null;
+    },
+    listGrantedCapabilities: (): RelayCapabilityBit[] => grantedBitNames,
+  };
+
+  const sandboxContext: {
+    workContextId?: string | undefined;
+    workContextStatus?: string | undefined;
+    capabilityGrants: readonly RelayCapabilityBit[];
+  } = {
+    ...(context.workContext?.id !== undefined
+      ? { workContextId: context.workContext.id }
+      : {}),
+    ...(context.workContext?.source !== undefined
+      ? { workContextStatus: context.workContext.source }
+      : {}),
+    capabilityGrants: grantedBitNames,
+  };
 
   return (
     <div
-      className="block-custom"
+      className="block-custom block-custom--active"
       aria-label={`custom block: ${descriptor.title}`}
     >
       <div className="block-custom__header">
         <div className="block-custom__kind">custom block</div>
         <div className="block-custom__title">{descriptor.title}</div>
       </div>
-
-      <div className="block-custom__body">
-        <div className="block-custom__notice">
-          custom block (sandbox not yet implemented — slice 4)
-        </div>
-
-        <div className="block-custom__info">
-          <div className="block-custom__row">
-            <span className="block-custom__key">renderer</span>
-            <span className="block-custom__value">{rendererId}</span>
-          </div>
-
-          {dataRefs && dataRefs.length > 0 && (
-            <div className="block-custom__row">
-              <span className="block-custom__key">data refs</span>
-              <span className="block-custom__value">
-                {dataRefs.length} ref(s)
-              </span>
-            </div>
-          )}
-
-          {props && Object.keys(props).length > 0 && (
-            <div className="block-custom__row">
-              <span className="block-custom__key">props</span>
-              <span className="block-custom__value">
-                {Object.keys(props).length} key(s)
-              </span>
-            </div>
-          )}
-        </div>
+      <div className="block-custom__body block-custom__body--template">
+        <TemplateRenderer
+          descriptor={descriptor}
+          context={sandboxContext}
+          api={sandboxApi}
+          template={rendererSource.template}
+          props={rendererSource.props as Record<string, unknown>}
+        />
       </div>
     </div>
   );

@@ -1938,6 +1938,103 @@ export async function fetchSecurityAuditVerify(): Promise<SecurityAuditVerifyRes
 // Workbench layout API (slice 3 of epic #612)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Custom block proposals — slice 4, #622
+// ---------------------------------------------------------------------------
+
+import type {
+  CustomBlockProposal,
+  CustomBlockProposalInput,
+} from '../../../shared/workbench-custom-blocks.js';
+
+/**
+ * Fetch the list of custom block proposals, optionally filtered by status.
+ */
+export async function fetchCustomBlockProposals(
+  status?: 'pending' | 'approved' | 'rejected' | 'revoked'
+): Promise<CustomBlockProposal[]> {
+  const url = status
+    ? `/workbench/custom-blocks/proposals?status=${status}`
+    : '/workbench/custom-blocks/proposals';
+  const res = await fetch(url);
+  if (!res.ok)
+    throw new Error(
+      await parseErrorBody(res, 'Failed to fetch custom block proposals')
+    );
+  return json<CustomBlockProposal[]>(res);
+}
+
+/**
+ * Submit a new custom block proposal (agent-facing).
+ * Returns the created proposal with server-generated proposalId.
+ */
+export async function submitCustomBlockProposal(
+  input: CustomBlockProposalInput
+): Promise<CustomBlockProposal> {
+  const res = await fetch('/workbench/custom-blocks/proposals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok)
+    throw new Error(
+      await parseErrorBody(res, 'Failed to submit custom block proposal')
+    );
+  return json<CustomBlockProposal>(res);
+}
+
+/**
+ * Approve a pending custom block proposal (user-facing).
+ */
+export async function approveCustomBlockProposal(
+  proposalId: string
+): Promise<CustomBlockProposal> {
+  const res = await fetch(
+    `/workbench/custom-blocks/proposals/${proposalId}/approve`,
+    { method: 'POST' }
+  );
+  if (!res.ok)
+    throw new Error(
+      await parseErrorBody(res, 'Failed to approve custom block proposal')
+    );
+  return json<CustomBlockProposal>(res);
+}
+
+/**
+ * Reject a pending custom block proposal (user-facing).
+ */
+export async function rejectCustomBlockProposal(
+  proposalId: string
+): Promise<CustomBlockProposal> {
+  const res = await fetch(
+    `/workbench/custom-blocks/proposals/${proposalId}/reject`,
+    { method: 'POST' }
+  );
+  if (!res.ok)
+    throw new Error(
+      await parseErrorBody(res, 'Failed to reject custom block proposal')
+    );
+  return json<CustomBlockProposal>(res);
+}
+
+/**
+ * Revoke a previously-approved custom block proposal (user-facing).
+ * Affected mounted blocks will render a "revoked" card.
+ */
+export async function revokeCustomBlockProposal(
+  proposalId: string
+): Promise<CustomBlockProposal> {
+  const res = await fetch(
+    `/workbench/custom-blocks/proposals/${proposalId}/revoke`,
+    { method: 'POST' }
+  );
+  if (!res.ok)
+    throw new Error(
+      await parseErrorBody(res, 'Failed to revoke custom block proposal')
+    );
+  return json<CustomBlockProposal>(res);
+}
+
 /**
  * Fetch the persisted workbench layout for a workspace.
  * Returns `null` if no layout has been saved yet (server responds 204).
