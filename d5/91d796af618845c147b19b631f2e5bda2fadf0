@@ -1,0 +1,32 @@
+docs/RELAY_NODE_BOOTSTRAP.md
+  s_3e9de69a56e5c0::t_9a7b450253e022 34-57,70,72,76,78-79,82,84-97,99-106
+  s_3e9de69a56e5c0::t_04b984010a0dd5 19,21-30
+  s_3e9de69a56e5c0::t_6d0062c164cc29 377-379,382-404,406
+  s_3e9de69a56e5c0::t_973bc6d93d9c87 7
+test/node-bootstrap-cli.test.ts
+  s_3e9de69a56e5c0::t_0e825edfc4d6ca 383,391-398
+  s_3e9de69a56e5c0::t_704c09c92c48b3 1-382,384-390,399-485
+bin/relay-ide.ts
+  s_3e9de69a56e5c0::t_7064e5a714194b 2830-2952
+  s_3e9de69a56e5c0::t_feb2e07b5dd4ad 2608-2628,2634,2646,2648,2662,2664-2665,2667-2668,2670-2671,2673-2675,2677-2678,2680-2681,2684,2694-2704,2708-2726,2729,2776,2778
+  s_3e9de69a56e5c0::t_b9c7ae9d1ea2c6 13
+  s_3e9de69a56e5c0::t_b349894fbc8237 2629-2633,2635-2638,2642,2645,2647,2649-2661,2663,2666,2669,2672,2676,2679,2682-2683,2685-2692,2705-2706,2735-2774,2777
+  s_3e9de69a56e5c0::t_f977fa1fa4eca1 3267-3268,3275-3312,3315-3321,3352
+  s_3e9de69a56e5c0::t_e9ae09d0dd64b4 104-108,110-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "d591d796af618845c147b19b631f2e5bda2fadf0",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
