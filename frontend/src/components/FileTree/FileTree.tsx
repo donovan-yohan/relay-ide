@@ -19,6 +19,7 @@ import {
   browseFsDirectory,
   fetchChangedFiles,
   fetchDefaultBranch,
+  fetchNodeFsList,
   type BrowseEntry,
 } from '../../lib/api.js';
 import { useUiStore, type RightSidebarTab } from '../../lib/stores/ui.js';
@@ -39,6 +40,9 @@ export interface FileTreeProps {
   gitWorkspacePath?: string;
   gitDisabledReason?: UtilityRailDisabledReason | null;
   changedFilesData?: string[];
+  nodeId?: string | null;
+  sessionId?: string | null;
+  root?: string | null;
 }
 
 type Chip = 'all' | 'modified' | 'added' | 'untracked' | 'deleted';
@@ -78,9 +82,10 @@ function defaultBranchQueryKey(workspacePath: string) {
 
 export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
   function FileTree(
-    { workspacePath, stateKey, gitWorkspacePath, gitDisabledReason },
+    { workspacePath, stateKey, gitWorkspacePath, gitDisabledReason, nodeId, sessionId, root: _root },
     ref
   ) {
+    const isRemote = Boolean(nodeId && sessionId);
     const workspaceStateKey = stateKey ?? workspacePath;
     const effectiveGitWorkspacePath = gitWorkspacePath ?? workspacePath;
     const gitEnabled = Boolean(effectiveGitWorkspacePath) && !gitDisabledReason;
@@ -171,17 +176,36 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
       setAllFilesLoading(true);
       setAllFilesError(null);
       try {
-        const data = await browseFsDirectory(workspacePath, {
-          includeFiles: true,
-          showHidden: true,
-        });
-        setAllFilesTree(data.entries);
+        if (isRemote && nodeId && sessionId) {
+          const data = await fetchNodeFsList({
+            nodeId,
+            sessionId,
+            cwd: workspacePath,
+            path: workspacePath,
+          });
+          setAllFilesTree(
+            data.entries.map((e) => ({
+              name: e.name,
+              path: e.path,
+              isGitRepo: false,
+              hasChildren: e.type === 'directory',
+              isDirectory: e.type === 'directory',
+              size: e.size,
+            }))
+          );
+        } else {
+          const data = await browseFsDirectory(workspacePath, {
+            includeFiles: true,
+            showHidden: true,
+          });
+          setAllFilesTree(data.entries);
+        }
       } catch (err) {
         setAllFilesError(err instanceof Error ? err.message : 'failed to load');
       } finally {
         setAllFilesLoading(false);
       }
-    }, [workspacePath]);
+    }, [isRemote, nodeId, sessionId, workspacePath]);
 
     useEffect(() => {
       if (
@@ -331,18 +355,44 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(
         if (allFilesChildren.has(entryPath)) return;
 
         try {
-          const data = await browseFsDirectory(entryPath, {
-            includeFiles: true,
-            showHidden: true,
-          });
-          setAllFilesChildren(
-            (prev) => new Map([...prev, [entryPath, data.entries]])
-          );
+          if (isRemote && nodeId && sessionId) {
+            const data = await fetchNodeFsList({
+              nodeId,
+              sessionId,
+              cwd: entryPath,
+              path: entryPath,
+            });
+            setAllFilesChildren(
+              (prev) =>
+                new Map([
+                  ...prev,
+                  [
+                    entryPath,
+                    data.entries.map((e) => ({
+                      name: e.name,
+                      path: e.path,
+                      isGitRepo: false,
+                      hasChildren: e.type === 'directory',
+                      isDirectory: e.type === 'directory',
+                      size: e.size,
+                    })),
+                  ],
+                ])
+            );
+          } else {
+            const data = await browseFsDirectory(entryPath, {
+              includeFiles: true,
+              showHidden: true,
+            });
+            setAllFilesChildren(
+              (prev) => new Map([...prev, [entryPath, data.entries]])
+            );
+          }
         } catch {
           // best-effort expansion; root-level errors are shown by loadAllFiles.
         }
       },
-      [allFilesChildren, allFilesExpanded]
+      [allFilesChildren, allFilesExpanded, isRemote, nodeId, sessionId]
     );
 
     const handleAllFilesClick = useCallback(

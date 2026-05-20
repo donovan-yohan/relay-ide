@@ -9,6 +9,9 @@ export interface UtilityRailFilesPanelProps {
   gitWorkspacePath?: string;
   gitDisabledReason?: UtilityRailDisabledReason | null;
   fileTreeSidebarRef?: React.RefObject<FileTreeHandle | null>;
+  nodeId?: string | null;
+  sessionId?: string | null;
+  root?: string | null;
 }
 
 export function UtilityRailFilesPanel({
@@ -17,12 +20,18 @@ export function UtilityRailFilesPanel({
   gitWorkspacePath,
   gitDisabledReason,
   fileTreeSidebarRef,
+  nodeId,
+  sessionId,
+  root,
 }: UtilityRailFilesPanelProps) {
   const stateKeyProps = stateKey === undefined ? {} : { stateKey };
   const gitWorkspacePathProps =
     gitWorkspacePath === undefined ? {} : { gitWorkspacePath };
   const gitDisabledReasonProps =
     gitDisabledReason === undefined ? {} : { gitDisabledReason };
+  const nodeIdProps = nodeId === undefined ? {} : { nodeId };
+  const sessionIdProps = sessionId === undefined ? {} : { sessionId };
+  const rootProps = root === undefined ? {} : { root };
 
   return (
     <FileTree
@@ -31,6 +40,9 @@ export function UtilityRailFilesPanel({
       {...gitWorkspacePathProps}
       {...gitDisabledReasonProps}
       {...stateKeyProps}
+      {...nodeIdProps}
+      {...sessionIdProps}
+      {...rootProps}
     />
   );
 }

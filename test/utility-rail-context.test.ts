@@ -47,7 +47,7 @@ describe('deriveUtilityRailContext', () => {
     expect(context.git.disabledReason).toBeNull();
   });
 
-  it('does not expose hub-local repo paths to file or git widgets for a remote active tab', () => {
+  it('enables remote files (via fs.list) and disables git for a remote active tab with a live session', () => {
     const context = deriveUtilityRailContext({
       activeRepoPath: '/hub/repo',
       activeWorkspace: repo(),
@@ -62,9 +62,13 @@ describe('deriveUtilityRailContext', () => {
 
     expect(context.stateKey).toBe('node:linux-box:/home/me/repo');
     expect(context.displayWorkspacePath).toBe('/home/me/repo');
-    expect(context.files.workspacePath).toBe('');
+    // files now enabled: fs.list is live
+    expect(context.files.workspacePath).toBe('/home/me/repo');
+    expect(context.files.disabledReason).toBeNull();
+    expect(context.files.nodeId).toBe('linux-box');
+    expect(context.files.sessionId).toBe('remote-1');
+    // git is still unavailable for remote tabs
     expect(context.git.workspacePath).toBe('');
-    expect(context.files.disabledReason).toBe('remote-files-unavailable');
     expect(context.git.disabledReason).toBe('remote-git-unavailable');
   });
 
@@ -117,5 +121,70 @@ describe('deriveUtilityRailContext', () => {
     expect(context.files.workspacePath).toBe('/folders/plain');
     expect(context.git.workspacePath).toBe('');
     expect(context.git.disabledReason).toBe('no-git-context');
+  });
+
+  it('remote tab + attached session → files enabled with nodeId/sessionId/root', () => {
+    const context = deriveUtilityRailContext({
+      activeRepoPath: '/hub/repo',
+      activeWorkspace: repo(),
+      activeSession: session({
+        id: 'remote-sess-1',
+        nodeId: 'linux-box',
+        repoPath: '/home/me/repo',
+        worktreePath: null,
+        cwd: '/home/me/repo',
+      }),
+    });
+
+    expect(context.stateKey).toBe('node:linux-box:/home/me/repo');
+    expect(context.files.disabledReason).toBeNull();
+    expect(context.files.workspacePath).toBe('/home/me/repo');
+    expect(context.files.nodeId).toBe('linux-box');
+    expect(context.files.sessionId).toBe('remote-sess-1');
+    expect(context.files.root).toBe('/home/me/repo');
+    expect(context.git.disabledReason).toBe('remote-git-unavailable');
+  });
+
+  it('remote tab + attached session uses worktreePath as root when available', () => {
+    const context = deriveUtilityRailContext({
+      activeRepoPath: '/hub/repo',
+      activeWorkspace: repo(),
+      activeSession: session({
+        id: 'remote-wt-1',
+        nodeId: 'linux-box',
+        repoPath: '/home/me/repo',
+        worktreePath: '/home/me/repo/.worktrees/feat',
+        cwd: '/home/me/repo/.worktrees/feat',
+      }),
+    });
+
+    expect(context.files.disabledReason).toBeNull();
+    expect(context.files.root).toBe('/home/me/repo/.worktrees/feat');
+  });
+
+  it('remote tab + NO attached session → files disabled with remote-files-unavailable', () => {
+    // A workspace-only context with a remote nodeId but no session
+    const context = deriveUtilityRailContext({
+      activeRepoPath: '/hub/repo',
+      activeWorkspace: repo({ nodeId: 'linux-box' }),
+      activeSession: undefined,
+    });
+
+    expect(context.files.disabledReason).toBe('remote-files-unavailable');
+    expect(context.files.workspacePath).toBe('');
+    expect(context.git.disabledReason).toBe('remote-git-unavailable');
+  });
+
+  it('local repo tab → files and git enabled as before', () => {
+    const context = deriveUtilityRailContext({
+      activeRepoPath: '/hub/repo',
+      activeWorkspace: repo(),
+      activeSession: session({ nodeId: undefined }),
+    });
+
+    expect(context.files.disabledReason).toBeNull();
+    expect(context.files.nodeId).toBeUndefined();
+    expect(context.files.sessionId).toBeUndefined();
+    expect(context.git.disabledReason).toBeNull();
   });
 });
