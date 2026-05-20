@@ -1,0 +1,48 @@
+frontend/src/lib/ws.ts
+  s_8e47e58ef792e1::t_4d4cd1e5d492d0 26
+  s_8e47e58ef792e1::t_b77b3d530fae73 115-122
+test/session-durability-ui.test.ts
+  ai_agent 91-92,103-105
+  s_8e47e58ef792e1::t_b21ea0cef8b634 1-88,110-131
+  s_8e47e58ef792e1::t_82499702d0dd8e 89-90,93-102,106-109
+frontend/src/hooks/useEventSocket.ts
+  s_8e47e58ef792e1::t_70347362be77be 298-304,310
+  ai_agent 150,200-202,305-309
+frontend/src/lib/types.ts
+  s_8e47e58ef792e1::t_97eda3a8d21b79 222
+  s_8e47e58ef792e1::t_5ff6e0a00d8443 9
+  s_8e47e58ef792e1::t_ccddf0857a5259 183-184
+frontend/src/lib/stores/sessions.ts
+  s_8e47e58ef792e1::t_af27881b3506f2 40
+  s_8e47e58ef792e1::t_86e7bd2104ce6d 261-265
+  ai_agent 338-343,377-378,858-860,862-863,890-893
+  s_8e47e58ef792e1::t_2eed408e829e8e 814-827
+frontend/src/components/SessionItem.tsx
+  s_8e47e58ef792e1::t_7f1d680a1bbcd5 129-131,133-138,153-154
+  ai_agent 2-7,41-44,58-60,63-67,69-72,78-83,89-94,98-101,104-108,113-118,122-125,132,140-147,158-160,165-170,174-179
+  s_8e47e58ef792e1::t_dff55d870af874 9-10
+frontend/src/lib/session-durability.ts
+  ai_agent 27-31
+  s_8e47e58ef792e1::t_af3acbbecb75fb 1-26,32-63
+frontend/src/lib/active-work-control.ts
+  s_8e47e58ef792e1::t_0c2f252566009e 9
+  s_8e47e58ef792e1::t_03c2ec0d25ee18 74-79
+docs/SESSION_DURABILITY.md
+  s_8e47e58ef792e1::t_bd0cb1b4c173a0 83-100,103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "90bcb3c38dd1e46bf9340b14850ae9be371e3355",
+  "prompts": {},
+  "sessions": {
+    "s_8e47e58ef792e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8c96e46-a41f-4160-8319-11ffa90ca8ee",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
