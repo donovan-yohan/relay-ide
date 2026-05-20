@@ -30,7 +30,10 @@ import {
   type SessionCreateType,
 } from '../hub-policy-evaluator.js';
 import type { RepoInventoryFeature } from './repo-inventory.js';
-import type { RepoInventoryReport } from '../../shared/repo-inventory.js';
+import {
+  summarizeRepoIdentityGroups,
+  type RepoInventoryReport,
+} from '../../shared/repo-inventory.js';
 import {
   expiresAtFromLifecycleInput,
   lifecycleInputError,
@@ -66,7 +69,8 @@ function sessionCreateTypeFromBody(body: Record<string, unknown>): SessionCreate
 // repo-agnostic.
 //
 // Endpoints:
-// - GET  /hub/repo-inventory                      → aggregate repo inventory across nodes
+// - GET  /hub/repo-inventory                      → aggregate repo inventory across nodes (full payload)
+// - GET  /hub/repo-groups                         → slim cross-node project groups keyed by RepoIdentity (#624)
 // - POST /hub/nodes/:nodeId/sessions/reopen       → cold-reopen a session on a target node from inventory state
 //
 // Pure routing (pairing, heartbeat, node list/lifecycle, direct
@@ -87,6 +91,24 @@ export function createRepoFeatureRouter(
         reports.push(await options.collectLocalRepoInventory());
       }
       res.json(repoInventoryFeature.aggregateInventoryReports(reports));
+    } catch (error) {
+      sendRegistryError(registry, res, error);
+    }
+  });
+
+  // GET /hub/repo-groups (#624): lightweight read of cross-node project
+  // groups keyed by canonical RepoIdentity. Drops dirty/divergence/worktree
+  // payloads so the picker (#615) and external agents can dedupe "same repo
+  // on N nodes" without paying for full inventory bytes. Non-git or
+  // remote-less checkouts surface as `repoIdentity === null` groups
+  // (graceful absence, not an error per #624 AC).
+  router.get('/hub/repo-groups', requireAuth, async (_req, res) => {
+    try {
+      const reports = [...repoInventoryFeature.listInventoryReports()];
+      if (options.collectLocalRepoInventory) {
+        reports.push(await options.collectLocalRepoInventory());
+      }
+      res.json(summarizeRepoIdentityGroups(reports, now()));
     } catch (error) {
       sendRegistryError(registry, res, error);
     }

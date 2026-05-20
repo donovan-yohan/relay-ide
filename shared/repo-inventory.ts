@@ -89,6 +89,50 @@ export interface AggregatedRepoInventoryResponse {
   reports: RepoInventoryReport[];
 }
 
+/**
+ * Slim per-node coordinates inside a `RepoIdentityGroup`. Mirrors the picker
+ * slice in `shared/environment-option.ts` (`EnvironmentRepoInstanceSummary`)
+ * so the environment picker (#615) can construct options directly from a
+ * group without re-reading full inventory.
+ *
+ * `localPath` is intentionally node-local: per epic #615 / ADR-016 we never
+ * treat absolute paths as global identity, only as the cwd inside their
+ * owning node.
+ */
+export interface RepoIdentityGroupInstance {
+  nodeId: NodeId;
+  repoInstanceId: RepoInstanceId;
+  localPath: string;
+  currentBranch: string | null;
+  defaultBranch: string | null;
+}
+
+/**
+ * Cross-node project grouping keyed by canonical `RepoIdentity`. Lightweight
+ * read shape exposed by `GET /hub/repo-groups`: just enough for the
+ * environment picker (#615) and external agents to dedupe "same logical
+ * repo on N nodes" without paying for the full per-instance inventory
+ * payload returned by `GET /hub/repo-inventory`.
+ *
+ * `repoIdentity` is canonical and stable (see `shared/repo-identity.ts`):
+ *   - github.com remotes normalise to `github.com/owner/repo` (lower-cased)
+ *   - other hosts preserve case in path but lower-case the host
+ *   - non-git or remote-less checkouts land in `unidentified` groups
+ */
+export interface RepoIdentityGroup {
+  repoIdentity: RepoIdentity | null;
+  displayName: string;
+  instanceCount: number;
+  nodeIds: NodeId[];
+  instances: RepoIdentityGroupInstance[];
+  warnings: RepoIdentityWarning[];
+}
+
+export interface RepoIdentityGroupsResponse {
+  generatedAt: string;
+  groups: RepoIdentityGroup[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -248,4 +292,39 @@ export function aggregateRepoInventoryReports(
     groups,
     reports,
   };
+}
+
+/**
+ * Build the slim `RepoIdentityGroup[]` view used by the environment picker
+ * (#615) and the `GET /hub/repo-groups` endpoint. Drops dirty/divergence
+ * payloads and worktrees, preserving only the cross-node identity coordinates
+ * a picker needs at decision time.
+ *
+ * Grouping rules:
+ * - Repos with a canonical `repoIdentity` collapse into one group regardless
+ *   of node-local path or remote URL form (https vs ssh vs git@).
+ * - Repos with `repoIdentity === null` (non-git cwd, missing remotes, or
+ *   malformed remote URLs) each get their own group keyed by repoInstanceId.
+ *   This is graceful absence, not an error — matches issue #624 AC.
+ */
+export function summarizeRepoIdentityGroups(
+  reports: RepoInventoryReport[],
+  now: Date = new Date()
+): RepoIdentityGroupsResponse {
+  const aggregated = aggregateRepoInventoryReports(reports, now);
+  const groups: RepoIdentityGroup[] = aggregated.groups.map((group) => ({
+    repoIdentity: group.repoIdentity,
+    displayName: group.displayName,
+    instanceCount: group.identityDebug.instanceCount,
+    nodeIds: group.identityDebug.nodeIds,
+    instances: group.instances.map((instance) => ({
+      nodeId: instance.nodeId,
+      repoInstanceId: instance.repoInstanceId,
+      localPath: instance.localPath,
+      currentBranch: instance.currentBranch,
+      defaultBranch: instance.defaultBranch,
+    })),
+    warnings: group.warnings,
+  }));
+  return { generatedAt: aggregated.generatedAt, groups };
 }
