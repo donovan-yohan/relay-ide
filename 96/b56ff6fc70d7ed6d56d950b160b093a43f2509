@@ -1,0 +1,57 @@
+test/utility-rail-context.test.ts
+  s_9eb1a81904495b::t_25b7d910e457ef 125-189
+  s_9eb1a81904495b::t_4bc1790e14447a 50,65-70
+frontend/src/components/WorkspaceUtilityRail.tsx
+  s_9eb1a81904495b::t_901c92836a4c98 648-650
+  s_9eb1a81904495b::t_07d386fdb9ebed 362-364,375-377,395-397
+  s_9eb1a81904495b::t_37580e2480e839 724-726
+  s_9eb1a81904495b::t_f3bb533608355a 468-470
+  s_9eb1a81904495b::t_1509faaea2b854 521-523
+  s_9eb1a81904495b::t_d67f71f346659f 498-500
+frontend/src/components/FileTree/FileTree.tsx
+  s_9eb1a81904495b::t_17d49ba009d445 22
+  s_9eb1a81904495b::t_85f3e48e03b905 85
+  s_9eb1a81904495b::t_a9a217ff3c17cf 88
+  s_9eb1a81904495b::t_bdbe0e8e1473da 179-202,208
+  s_9eb1a81904495b::t_1bb0fddb499f8b 43-45
+  s_9eb1a81904495b::t_562800e170357a 358-390,395
+docs/federated-relay.md
+  s_9eb1a81904495b::t_2a60da1dc1bafa 35
+  s_9eb1a81904495b::t_f23fcf92571cab 77
+  s_9eb1a81904495b::t_b57760e950ffab 457-458
+test/components/file-tree-remote.test.ts
+  s_9eb1a81904495b::t_ff86f406b45395 135-136
+frontend/src/components/UtilityRailFilesPanel.tsx
+  s_9eb1a81904495b::t_66cb1b41e436f1 12-14,23-25,32-34,43-45
+frontend/src/lib/api.ts
+  s_9eb1a81904495b::t_bbcb521970ae9a 3-5
+  s_9eb1a81904495b::t_096a8c4dcc8866 714-737
+frontend/src/lib/utility-rail-context.ts
+  s_9eb1a81904495b::t_34e45263edf12a 102-119
+  s_9eb1a81904495b::t_0898ec625af596 13-15
+test/api-error.test.ts
+  s_9eb1a81904495b::t_4a416bdbec120a 7
+  s_9eb1a81904495b::t_9122e9b93baabd 391-471
+docs/FRONTEND.md
+  s_9eb1a81904495b::t_4dfb77f54798b0 189
+  s_9eb1a81904495b::t_d507c3044a2a41 205
+  s_9eb1a81904495b::t_ebef1ec5d5a41e 210
+  s_9eb1a81904495b::t_14739250227362 194
+  s_9eb1a81904495b::t_5cecec5b3e7d26 201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "96b56ff6fc70d7ed6d56d950b160b093a43f2509",
+  "prompts": {},
+  "sessions": {
+    "s_9eb1a81904495b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53e80a0e-911e-46c4-85e1-6c4fa7efbf19",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
