@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -10,6 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
 import TuiCheckbox from '../TuiCheckbox.js';
+import { EnvironmentPicker } from '../EnvironmentPicker.js';
 import { estimateTerminalDimensions } from '../../lib/utils.js';
 import { useConfigStore } from '../../lib/stores/config.js';
 import { useUiStore } from '../../lib/stores/ui.js';
@@ -20,6 +22,10 @@ import {
   defaultRemoteCwd,
   rememberRemoteCwd,
 } from '../../lib/remote-node-cwd.js';
+import {
+  buildEnvironmentOptions,
+  firstDegradedReasonMessage,
+} from '../../lib/environment-options.js';
 import type {
   AgentType,
   AggregatedRepoInventoryGroup,
@@ -36,6 +42,8 @@ import {
   DEFAULT_LOCAL_NODE_ID,
   type NodeId,
 } from '../../../../shared/identity.js';
+import type { EnvironmentOption } from '../../../../shared/environment-option.js';
+import { pickDefaultEnvironment } from '../../../../shared/safe-defaults.js';
 import type { SessionLane } from '../../../../shared/session-lane.js';
 import './CustomizeSessionDialog.css';
 
@@ -153,6 +161,13 @@ export interface EnvironmentPickerInput {
 
 const CHECKOUT_ROOT_PREFIX = 'repo:';
 const CHECKOUT_WORKTREE_PREFIX = 'worktree:';
+
+// Stable timestamp used as `generatedAt` for picker options when the
+// inventory snapshot hasn't loaded yet. Pinned to a fixed value (rather
+// than `new Date().toISOString()`) so the picker doesn't churn referential
+// equality on every render — the inventory's real `generatedAt` replaces
+// it as soon as `/hub/repo-inventory` resolves.
+const PICKER_FALLBACK_GENERATED_AT = '1970-01-01T00:00:00.000Z';
 
 function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
   return {
@@ -380,7 +395,9 @@ function selectedEnvironmentGroup(
   );
 }
 
-function nodeMapFor(input: EnvironmentPickerInput): Map<NodeId, HubNodeSummary> {
+function nodeMapFor(
+  input: EnvironmentPickerInput
+): Map<NodeId, HubNodeSummary> {
   const nodeById = new Map(input.nodes.map((node) => [node.nodeId, node]));
   if (!nodeById.has(DEFAULT_LOCAL_NODE_ID)) {
     nodeById.set(
@@ -437,7 +454,9 @@ function selectedNodeChoiceFor(
   nodeChoices: EnvironmentChoice[],
   selectedNodeId: NodeId | null
 ): EnvironmentChoice | undefined {
-  const explicit = nodeChoices.find((choice) => choice.value === selectedNodeId);
+  const explicit = nodeChoices.find(
+    (choice) => choice.value === selectedNodeId
+  );
   const firstEnabled = nodeChoices.find((choice) => !choice.disabled);
   if (explicit && (!explicit.disabled || !firstEnabled)) return explicit;
   return firstEnabled ?? explicit ?? nodeChoices[0];
@@ -513,7 +532,12 @@ export function buildEnvironmentPickerModel(
   const groups = environmentGroupsFor(input);
   const selectedGroup = selectedEnvironmentGroup(groups, input);
   const nodeById = nodeMapFor(input);
-  const nodeChoices = nodeChoicesFor(selectedGroup, input, nodeById, sessionType);
+  const nodeChoices = nodeChoicesFor(
+    selectedGroup,
+    input,
+    nodeById,
+    sessionType
+  );
   const selectedNodeChoice = selectedNodeChoiceFor(
     nodeChoices,
     input.selectedNodeId
@@ -651,6 +675,13 @@ interface BodyProps {
   environmentModel: EnvironmentPickerModel;
   selectedRemoteNode: HubNodeSummary | null;
   remoteCwd: string;
+  /** Candidate `EnvironmentOption`s built from inventory + nodes (#629). */
+  environmentOptions: EnvironmentOption[];
+  /** Currently-selected option id in the new picker (#627). */
+  selectedEnvironmentOptionId: string | null;
+  /** Typed degraded reason chip shown when selection is stale/offline (#629). */
+  selectedOptionDegradedMessage: string | null;
+  onPickerSelect: (option: EnvironmentOption) => void;
   onFormChange: (patch: Partial<FormState>) => void;
   onEnvironmentChange: (patch: Partial<EnvironmentSelection>) => void;
   onRemoteCwdChange: (cwd: string) => void;
@@ -669,6 +700,10 @@ function CustomizeSessionBody({
   environmentModel,
   selectedRemoteNode,
   remoteCwd,
+  environmentOptions,
+  selectedEnvironmentOptionId,
+  selectedOptionDegradedMessage,
+  onPickerSelect,
   onFormChange,
   onEnvironmentChange,
   onRemoteCwdChange,
@@ -706,7 +741,9 @@ function CustomizeSessionBody({
     (framework) => framework.id === form.selectedAgent
   );
   const selectedUnavailable =
-    !isTerminal && selectedFramework && !isFrameworkAvailable(selectedFramework);
+    !isTerminal &&
+    selectedFramework &&
+    !isFrameworkAvailable(selectedFramework);
   const selectedWebUnavailable =
     !isTerminal &&
     selectedFramework &&
@@ -719,7 +756,10 @@ function CustomizeSessionBody({
   return (
     <div className="customize-session-body-fields">
       <div className="customize-session-dialog-field">
-        <label className="customize-session-dialog-label" htmlFor="cs-session-type">
+        <label
+          className="customize-session-dialog-label"
+          htmlFor="cs-session-type"
+        >
           mode
         </label>
         <select
@@ -738,6 +778,35 @@ function CustomizeSessionBody({
       </div>
       {workspaceName && (
         <p className="customize-session-workspace-name">— {workspaceName}</p>
+      )}
+      {environmentOptions.length > 0 && (
+        <section
+          className="customize-session-env-picker"
+          aria-label="environment options"
+          data-testid="customize-session-env-picker"
+        >
+          <div className="customize-session-environment-copy">
+            choose an environment. stale or offline picks block launch — pick
+            another node instead of falling through to a different machine.
+          </div>
+          <EnvironmentPicker
+            options={environmentOptions}
+            {...(selectedEnvironmentOptionId
+              ? { selectedOptionId: selectedEnvironmentOptionId }
+              : {})}
+            onSelect={onPickerSelect}
+            autoFocusSearch={false}
+          />
+          {selectedOptionDegradedMessage && (
+            <div
+              className="customize-session-degraded-chip"
+              role="status"
+              data-testid="customize-session-degraded-chip"
+            >
+              launch blocked: {selectedOptionDegradedMessage}
+            </div>
+          )}
+        </section>
       )}
       {(environmentModel.showPicker || remoteNodeSelected) && (
         <section
@@ -1039,6 +1108,46 @@ function validateAgentFramework(
   return null;
 }
 
+/**
+ * Map an `EnvironmentOption` (selected via the new #627 picker) back to the
+ * legacy `EnvironmentSelection` shape this dialog already uses to drive
+ * `buildEnvironmentPickerModel` resolution. Keeping the resolution layer
+ * unchanged means the existing session-launch payload tests stay valid; the
+ * new picker is purely a richer UI on top.
+ *
+ * - Group id comes from the inventory groups list (matched by `repoIdentity`
+ *   when present, or by `groupId` containing the option's `repoInstanceId`).
+ * - Checkout id encodes whether the user picked the repo root
+ *   (`repo:<repoInstanceId>`) or a worktree (`worktree:<worktreeInstanceId>`),
+ *   mirroring `CHECKOUT_ROOT_PREFIX` / `CHECKOUT_WORKTREE_PREFIX` above.
+ */
+export function environmentSelectionFromOption(
+  option: EnvironmentOption,
+  inventory: AggregatedRepoInventoryResponse | null
+): EnvironmentSelection {
+  let selectedGroupId: string | null = null;
+  if (option.repoInstance && inventory) {
+    const matching = inventory.groups.find((group) =>
+      group.instances.some(
+        (instance) =>
+          instance.repoInstanceId === option.repoInstance!.repoInstanceId
+      )
+    );
+    selectedGroupId = matching?.groupId ?? null;
+  }
+  let selectedCheckoutId: string | null = null;
+  if (option.bench) {
+    selectedCheckoutId = `${CHECKOUT_WORKTREE_PREFIX}${option.bench.worktreeInstanceId}`;
+  } else if (option.repoInstance) {
+    selectedCheckoutId = `${CHECKOUT_ROOT_PREFIX}${option.repoInstance.repoInstanceId}`;
+  }
+  return {
+    selectedGroupId,
+    selectedNodeId: option.node.nodeId,
+    selectedCheckoutId,
+  };
+}
+
 const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
   function CustomizeSessionDialog({ onSessionCreated }, ref) {
     const shellRef = useRef<DialogShellHandle>(null);
@@ -1047,7 +1156,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
     const [workspacePath, setWorkspacePath] = useState('');
     const [worktreePath, setWorktreePath] = useState<string | null>(null);
     const [workspaceName, setWorkspaceName] = useState('');
-    const [workspaceIsGitRepo, setWorkspaceIsGitRepo] = useState<boolean | undefined>(undefined);
+    const [workspaceIsGitRepo, setWorkspaceIsGitRepo] = useState<
+      boolean | undefined
+    >(undefined);
     const [form, setForm] = useState<FormState>(defaultForm());
     const [creating, setCreating] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -1075,7 +1186,9 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           fallbackWorkspace: {
             name: workspaceName,
             path: workspacePath,
-            ...(workspaceIsGitRepo !== undefined ? { isGitRepo: workspaceIsGitRepo } : {}),
+            ...(workspaceIsGitRepo !== undefined
+              ? { isGitRepo: workspaceIsGitRepo }
+              : {}),
           },
           fallbackWorktreePath: worktreePath,
           sessionType: form.dialogSessionType,
@@ -1093,6 +1206,117 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         workspaceIsGitRepo,
         worktreePath,
       ]
+    );
+
+    // EnvironmentOption[] for the new #627 picker. Derived from the same
+    // inventory + nodes data the legacy `environmentModel` consumes, then fed
+    // into `pickDefaultEnvironment` (#628) for initial selection. Both paths
+    // stay in sync because the picker's `onSelect` patches
+    // `environmentSelection`, which `environmentModel` already memoises on.
+    const environmentOptions = useMemo<EnvironmentOption[]>(() => {
+      if (!workspacePath) return [];
+      return buildEnvironmentOptions({
+        inventory,
+        nodes,
+        selectedAgent: form.selectedAgent,
+        sessionType: form.dialogSessionType,
+        fallbackWorkspace: {
+          name: workspaceName,
+          path: workspacePath,
+          ...(workspaceIsGitRepo !== undefined
+            ? { isGitRepo: workspaceIsGitRepo }
+            : {}),
+        },
+        fallbackWorktreePath: worktreePath,
+        // Use the inventory's `generatedAt` so options refresh in lockstep
+        // with inventory snapshots. When inventory has not loaded yet, fall
+        // back to a stable epoch marker so the option still satisfies
+        // `isEnvironmentOption` (which requires a non-empty string) without
+        // injecting `new Date()` into a memo — non-determinism inside
+        // `useMemo` would mint a new timestamp on every render and trip the
+        // referential-equality guards downstream (Gemini PR #647 review,
+        // matches the same critique on PR #646).
+        generatedAt: inventory?.generatedAt ?? PICKER_FALLBACK_GENERATED_AT,
+      });
+    }, [
+      inventory,
+      nodes,
+      form.selectedAgent,
+      form.dialogSessionType,
+      workspaceName,
+      workspacePath,
+      workspaceIsGitRepo,
+      worktreePath,
+    ]);
+
+    // Track the picker's selected option id. Initial selection comes from
+    // `pickDefaultEnvironment` once options are loaded; subsequent changes
+    // come from the user clicking the picker.
+    const [selectedOptionId, setSelectedOptionId] = useState<string | null>(
+      null
+    );
+
+    useEffect(() => {
+      // Apply safe-defaults whenever the candidate list changes (after
+      // inventory/nodes load, or after agent/session-type toggles change
+      // which capabilities are required). Do NOT re-pick if the user has
+      // already selected an option still present in candidates — that would
+      // silently undo their choice on every refetch.
+      if (environmentOptions.length === 0) {
+        setSelectedOptionId(null);
+        return;
+      }
+      if (
+        selectedOptionId &&
+        environmentOptions.some((opt) => opt.id === selectedOptionId)
+      ) {
+        return;
+      }
+      const result = pickDefaultEnvironment({
+        activeTab: null,
+        history: [],
+        candidates: environmentOptions,
+      });
+      if (result.kind === 'ok') {
+        setSelectedOptionId(result.option.id);
+        setEnvironmentSelection(
+          environmentSelectionFromOption(result.option, inventory)
+        );
+      } else {
+        // No fresh candidate. Surface the first option so the picker still
+        // shows something; the launch button gating below will block submit
+        // with the typed reason.
+        const first = environmentOptions[0]!;
+        setSelectedOptionId(first.id);
+        setEnvironmentSelection(
+          environmentSelectionFromOption(first, inventory)
+        );
+      }
+    }, [environmentOptions, inventory, selectedOptionId]);
+
+    const selectedEnvironmentOption = useMemo<EnvironmentOption | null>(() => {
+      if (!selectedOptionId) return null;
+      return (
+        environmentOptions.find((opt) => opt.id === selectedOptionId) ?? null
+      );
+    }, [environmentOptions, selectedOptionId]);
+
+    const selectedOptionDegradedMessage =
+      selectedEnvironmentOption &&
+      selectedEnvironmentOption.freshness !== 'fresh'
+        ? (firstDegradedReasonMessage(
+            selectedEnvironmentOption.degradedReasons
+          ) ?? `selected environment is ${selectedEnvironmentOption.freshness}`)
+        : null;
+
+    const handlePickerSelect = useCallback(
+      (option: EnvironmentOption) => {
+        setSelectedOptionId(option.id);
+        setEnvironmentSelection(
+          environmentSelectionFromOption(option, inventory)
+        );
+      },
+      [inventory]
     );
 
     const remoteNodeSelected =
@@ -1200,6 +1424,13 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
         setError(environmentModel.selectedNodeReason);
         return;
       }
+      // #629: block launch when the selected environment is stale/offline.
+      // Never silently switch to a different node — surface the typed reason
+      // and require the user to pick another option (or wait for recovery).
+      if (selectedOptionDegradedMessage) {
+        setError(selectedOptionDegradedMessage);
+        return;
+      }
       const cwdForRemote = remoteNodeSelected
         ? cleanCwd(remoteCwdOverride ?? remoteCwd)
         : undefined;
@@ -1257,6 +1488,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
               !workspacePath ||
               !selectedRemoteHome ||
               Boolean(environmentModel.selectedNodeReason) ||
+              Boolean(selectedOptionDegradedMessage) ||
               creating
             }
           >
@@ -1270,6 +1502,7 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           disabled={
             !workspacePath ||
             Boolean(environmentModel.selectedNodeReason) ||
+            Boolean(selectedOptionDegradedMessage) ||
             (remoteNodeSelected && !cleanCwd(remoteCwd)) ||
             creating ||
             (form.dialogSessionType === 'agent' &&
@@ -1305,6 +1538,10 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
           environmentModel={environmentModel}
           selectedRemoteNode={selectedRemoteNode}
           remoteCwd={remoteCwd}
+          environmentOptions={environmentOptions}
+          selectedEnvironmentOptionId={selectedOptionId}
+          selectedOptionDegradedMessage={selectedOptionDegradedMessage}
+          onPickerSelect={handlePickerSelect}
           onFormChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
           onEnvironmentChange={(patch) =>
             setEnvironmentSelection((selection) => ({ ...selection, ...patch }))

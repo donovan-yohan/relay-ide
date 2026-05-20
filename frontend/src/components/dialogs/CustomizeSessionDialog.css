@@ -65,3 +65,28 @@
   font-size: var(--font-size-sm);
   line-height: 1.4;
 }
+
+/*
+ * #629 — typed degraded reason chip surfaced when the user picks a stale or
+ * offline environment in the new EnvironmentPicker. Matches the TUI aesthetic
+ * (no border-radius, monospace, outline-only chrome). Uses the danger token
+ * the rest of the dialog already inherits via DialogShell.
+ */
+.customize-session-env-picker {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.customize-session-degraded-chip {
+  border: 1px solid var(--danger, var(--text-muted));
+  border-radius: 0;
+  color: var(--danger, var(--text));
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  padding: 6px 8px;
+  text-transform: lowercase;
+}
