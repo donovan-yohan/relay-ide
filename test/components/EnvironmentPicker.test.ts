@@ -325,28 +325,35 @@ describe('<EnvironmentPicker />', () => {
       options: [option({ id: 'a' }), option({ id: 'b' }), option({ id: 'c' })],
       onSelect,
     });
+    // Per ARIA APG combobox/listbox pattern, aria-activedescendant lives on the
+    // combobox (input), not the listbox. Keyboard events can come from either
+    // (both have onKeyDown), but the assertion target is the combobox input.
+    const combobox = container.querySelector(
+      '[role="combobox"]'
+    ) as HTMLElement;
     const listbox = container.querySelector('[role="listbox"]') as HTMLElement;
+    expect(combobox).toBeTruthy();
     expect(listbox).toBeTruthy();
     // First option is active by default
-    expect(listbox.getAttribute('aria-activedescendant')).toContain('a');
+    expect(combobox.getAttribute('aria-activedescendant')).toContain('a');
     await act(async () => {
       listbox.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })
       );
     });
-    expect(listbox.getAttribute('aria-activedescendant')).toContain('b');
+    expect(combobox.getAttribute('aria-activedescendant')).toContain('b');
     await act(async () => {
       listbox.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })
       );
     });
-    expect(listbox.getAttribute('aria-activedescendant')).toContain('c');
+    expect(combobox.getAttribute('aria-activedescendant')).toContain('c');
     await act(async () => {
       listbox.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })
       );
     });
-    expect(listbox.getAttribute('aria-activedescendant')).toContain('b');
+    expect(combobox.getAttribute('aria-activedescendant')).toContain('b');
     await act(async () => {
       listbox.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
@@ -407,6 +414,9 @@ describe('<EnvironmentPicker />', () => {
       window.HTMLInputElement.prototype,
       'value'
     )?.set;
+    // Guard so a happy-dom version bump that drops the descriptor surfaces as a
+    // clear assertion failure instead of a generic "cannot read .call of undefined".
+    expect(setter).toBeTruthy();
     await act(async () => {
       setter!.call(input, 'mac');
       input.dispatchEvent(new Event('input', { bubbles: true }));

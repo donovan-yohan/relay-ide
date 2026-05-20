@@ -143,8 +143,12 @@ function describeDegradedReason(reason: EnvironmentDegradedReason): string {
       return reason.message;
     case 'other':
       return reason.message;
-    default:
-      return '';
+    default: {
+      // Exhaustive guard: any new EnvironmentDegradedReason kind added to the
+      // shared union will fail to compile here until handled above.
+      const _exhaustive: never = reason;
+      return String(_exhaustive);
+    }
   }
 }
 
@@ -161,16 +165,25 @@ export function EnvironmentPicker({
   const listboxId = `${idPrefix}-listbox`;
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // Filter first, then group. Filtering across the flat list keeps the search
-  // behavior intuitive even when an option's group label would otherwise hide it.
-  const visibleOptions = useMemo(
-    () => filterOptions(options, query),
+  // Filter, then group, then derive the flat list FROM the grouped order. This
+  // ensures keyboard navigation order matches the visual order — Arrow Down
+  // moves to the next visually-adjacent row, even across the free / non-git
+  // group that grouping appends to the end.
+  const groups = useMemo(
+    () => groupOptionsByRepoIdentity(filterOptions(options, query)),
     [options, query]
   );
-  const groups = useMemo(
-    () => groupOptionsByRepoIdentity(visibleOptions),
-    [visibleOptions]
+  const visibleOptions = useMemo(
+    () => groups.flatMap((group) => group.options),
+    [groups]
   );
+  // Map from option id → flat index so per-row render is O(1) instead of an
+  // O(N) `indexOf` per row (avoids O(N²) total when the picker grows).
+  const flatIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    visibleOptions.forEach((opt, i) => map.set(opt.id, i));
+    return map;
+  }, [visibleOptions]);
 
   // The keyboard active descendant tracks a flat index into `visibleOptions`,
   // independent of the persistent `selectedOptionId` so navigation never
@@ -178,13 +191,11 @@ export function EnvironmentPicker({
   const [activeIndex, setActiveIndex] = useState(0);
 
   useEffect(() => {
-    // Clamp active index when the visible set changes (filter narrowed or grew).
-    setActiveIndex((prev) => {
-      if (visibleOptions.length === 0) return 0;
-      if (prev >= visibleOptions.length) return 0;
-      if (prev < 0) return 0;
-      return prev;
-    });
+    // Reset to the top of the visible list whenever the filtered set changes
+    // (e.g. user typed a query). Highlighting the first match is the standard
+    // command-palette behavior; clamping mid-list would otherwise leave a
+    // confusing arbitrary row highlighted as the user types.
+    setActiveIndex(0);
   }, [visibleOptions]);
 
   useEffect(() => {
@@ -241,16 +252,11 @@ export function EnvironmentPicker({
   );
 
   return (
-    <div
-      className="env-picker"
-      role="combobox"
-      aria-expanded="true"
-      aria-haspopup="listbox"
-      aria-controls={listboxId}
-      // The combobox surface itself is a wrapper; the input owns focus, but
-      // the role conveys the relationship to the listbox per ARIA APG.
-    >
-      <div className="env-picker__search">
+    // Wrapper is purely presentational. ARIA APG combobox/listbox pattern
+    // places role="combobox" + aria-* on the input (the element that actually
+    // receives focus). Matches existing CommandPalette / FilePicker pattern.
+    <div className="env-picker">
+      <div className="env-picker__search" role="presentation">
         <span className="env-picker__search-prompt" aria-hidden="true">
           &gt;
         </span>
@@ -263,8 +269,13 @@ export function EnvironmentPicker({
           value={query}
           onChange={(e) => setQuery(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
+          role="combobox"
+          aria-expanded={visibleOptions.length > 0}
+          aria-haspopup="listbox"
           aria-controls={listboxId}
           aria-autocomplete="list"
+          autoComplete="off"
+          spellCheck={false}
           {...(activeDescendantId
             ? { 'aria-activedescendant': activeDescendantId }
             : {})}
@@ -276,9 +287,6 @@ export function EnvironmentPicker({
         tabIndex={-1}
         className="env-picker__listbox"
         onKeyDown={handleKeyDown}
-        {...(activeDescendantId
-          ? { 'aria-activedescendant': activeDescendantId }
-          : {})}
       >
         {groups.length === 0 ? (
           <div className="env-picker__empty" data-testid="env-picker-empty">
@@ -298,7 +306,7 @@ export function EnvironmentPicker({
                 {group.label}
               </div>
               {group.options.map((opt) => {
-                const flatIndex = visibleOptions.indexOf(opt);
+                const flatIndex = flatIndexById.get(opt.id) ?? -1;
                 const isActive = flatIndex === activeIndex;
                 const isSelected = selectedOptionId === opt.id;
                 return (
@@ -306,13 +314,19 @@ export function EnvironmentPicker({
                     key={opt.id}
                     id={optionDomId(opt.id)}
                     role="option"
-                    aria-selected={isSelected || isActive}
+                    // ARIA APG combobox/listbox pattern: aria-selected reflects
+                    // the *persistent* selection only. The focused/active row
+                    // is communicated via aria-activedescendant on the
+                    // container; doubling it up on aria-selected confuses
+                    // screen readers in a single-select listbox.
+                    aria-selected={isSelected}
                     data-option-id={opt.id}
                     data-freshness={opt.freshness}
                     data-active={isActive ? 'true' : 'false'}
                     className={[
                       'env-picker__option',
                       isActive ? 'env-picker__option--active' : '',
+                      isSelected ? 'env-picker__option--selected' : '',
                       `env-picker__option--${opt.freshness}`,
                     ]
                       .filter(Boolean)
