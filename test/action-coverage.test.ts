@@ -14,15 +14,16 @@ import { dashboardActions } from '../frontend/src/lib/actions/definitions/dashbo
 import { terminalActions } from '../frontend/src/lib/actions/definitions/terminal.js';
 import { navigationActions } from '../frontend/src/lib/actions/definitions/navigation.js';
 
-// Full allowlist: 59 palettable action IDs (15 Phase 2 + 44 Phase 3)
+// Full allowlist: 60 palettable action IDs (15 Phase 2 + 44 Phase 3 + 1 from #630)
 const ACTION_ALLOWLIST = [
-  // Session (9)
+  // Session (10)
   'session.new-agent',
   'session.new-terminal',
   'session.close-active',
   'session.kill',
   'session.start-on-repo',
   'session.start-on-ticket',
+  'session.start-work-in-env',
   'session.customize',
   'session.switch-to-tab',
   'session.rename',
