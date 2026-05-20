@@ -1,0 +1,35 @@
+shared/workbench-layout-types.ts
+  s_3e9de69a56e5c0::t_b008695340a6c2 1-240,242-256
+server/index.ts
+  s_3e9de69a56e5c0::t_b7da9d2ca28655 87
+  s_3e9de69a56e5c0::t_522b74430ed55e 1731-1738
+test/workbench-layout.test.ts
+  s_3e9de69a56e5c0::t_fe9e8022e9e97d 1-147,150-219,221-297,299-308,312-338,340-392,397-494,496-576,578-649,656-693
+  s_3e9de69a56e5c0::t_77279c66045dd2 650-655
+  s_3e9de69a56e5c0::t_e109a20bf7d875 339,393-396
+frontend/src/lib/api.ts
+  s_3e9de69a56e5c0::t_430410ac611a05 1936-1975
+frontend/src/workbench/WorkbenchCanvas.tsx
+  s_3e9de69a56e5c0::t_cb23c0ac58d46b 1-17,19-478,483-484,486-490
+  s_3e9de69a56e5c0::t_4827ebd630699e 479-482,485
+server/workbench-layout.ts
+  s_3e9de69a56e5c0::t_23c471e3b1d5e6 1-286
+frontend/src/workbench/workbench-canvas.css
+  s_3e9de69a56e5c0::t_fa77598a6f00f6 1-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "2f467018a6ff444a088ab8d367cefa481b635555",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
