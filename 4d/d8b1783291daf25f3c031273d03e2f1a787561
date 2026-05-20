@@ -1,0 +1,22 @@
+docs/spikes/2026-05-20-cross-node-copy.md
+  s_5aff5e5e0d9bbd::t_0961c0853cf61f 50-52
+  s_5aff5e5e0d9bbd::t_91cf574edafb5c 196-202
+  s_5aff5e5e0d9bbd::t_f1eb1e59163d80 156-159
+  ai_agent 143-152,203
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "4dd8b1783291daf25f3c031273d03e2f1a787561",
+  "prompts": {},
+  "sessions": {
+    "s_5aff5e5e0d9bbd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "06797abf-9fbb-49ce-9a89-a80a243f8f06",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
