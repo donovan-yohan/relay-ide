@@ -44,6 +44,24 @@ import type { WorkspaceScopeRef } from './workbench-layout-types.js';
 import type { RelayCapabilityBit } from './security-policy.js';
 
 // ---------------------------------------------------------------------------
+// Known block-kind guard (forward-compat helper)
+// ---------------------------------------------------------------------------
+
+const KNOWN_BLOCK_KINDS: ReadonlySet<WorkbenchBlockKind> = new Set([
+  'terminal',
+  'agent',
+  'work-context',
+  'file',
+  'artifact',
+  'markdown',
+  'custom',
+]);
+
+function isKnownBlockKind(kind: string): kind is WorkbenchBlockKind {
+  return KNOWN_BLOCK_KINDS.has(kind as WorkbenchBlockKind);
+}
+
+// ---------------------------------------------------------------------------
 // Size caps (documented)
 // ---------------------------------------------------------------------------
 
@@ -290,9 +308,16 @@ export function summarizeWorkbenchBlocks(
     WORKBENCH_CONTEXT_SUMMARY_MAX_BLOCKS
   );
 
-  // Step 2: summarize each block
-  const summaries: WorkbenchBlockSummary[] = cappedByCount.map((placement) =>
-    summarizeBlock(placement.descriptor)
+  // Step 2: summarize each block. Forward-compat: skip placements whose `kind`
+  // is not in the closed `WorkbenchBlockKind` union (future block kinds the
+  // client doesn't yet recognize). They still round-trip in the layout via the
+  // widened `WorkbenchBlockPlacementDescriptor`, but agent context only includes
+  // recognized kinds for now.
+  const summaries: WorkbenchBlockSummary[] = cappedByCount.flatMap(
+    (placement) => {
+      if (!isKnownBlockKind(placement.descriptor.kind)) return [];
+      return [summarizeBlock(placement.descriptor as WorkbenchBlockDescriptor)];
+    }
   );
 
   // Step 3: cap by byte size — serialize incrementally and stop before limit
