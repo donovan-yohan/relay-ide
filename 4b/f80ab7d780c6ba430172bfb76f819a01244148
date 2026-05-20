@@ -1,0 +1,23 @@
+docs/CLI_GATEWAY.md
+  s_afc3e94f2d047a::t_c6d11249161838 137
+shared/cli-gateway-contract.ts
+  s_afc3e94f2d047a::t_49ce9dbb69b386 602-606
+test/cli-gateway/typed-env-ids.test.ts
+  s_afc3e94f2d047a::t_53137ec1efe079 108-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "4bf80ab7d780c6ba430172bfb76f819a01244148",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
