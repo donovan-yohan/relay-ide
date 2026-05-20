@@ -1,0 +1,24 @@
+docs/plans/2026-04-28-codex-web-ui-v2-design.md
+  ai_agent 1-464
+shared/workbench-prompt-hooks.ts
+  s_3e9de69a56e5c0::t_abf0900f6cb2d9 47-63
+  s_3e9de69a56e5c0::t_9470d1cda04b01 311-320
+docs/plans/2026-04-26-v1-to-v2-port.md
+  ai_agent 1-2081
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "c794afae837cc13540970dafe794521d6de38d0f",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
