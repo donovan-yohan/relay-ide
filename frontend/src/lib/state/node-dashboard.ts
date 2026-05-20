@@ -23,12 +23,14 @@ export interface HubNodeDashboardRow {
   hostname: string;
   hostLabel: string;
   status: HubNodeStatus;
-  statusTone: 'online' | 'stale' | 'offline' | 'revoked';
+  statusTone: 'online' | 'stale' | 'offline' | 'revoked' | 'updating';
   routeLabel: string;
   lastSeenLabel: string;
   relayVersion: string;
   protocolVersion: string;
   versionWarning: string | null;
+  /** Helper-binary skew warning, present when helper version diverges from hub. */
+  helperSkewWarning: string | null;
   capabilityHints: HubNodeCapabilityHint[];
   security: NodeSecurityVisibility;
   attachable: boolean;
@@ -93,8 +95,13 @@ function disabledReason(
   if (node.status === 'revoked') return 'not attachable: node was revoked';
   if (node.status === 'offline') return 'not attachable: node is offline';
   if (node.status === 'stale') return 'not attachable: heartbeat is stale';
+  if (node.status === 'updating')
+    return 'not attachable: node is updating — new sessions blocked until update completes';
+  if (node.helperSkew?.category === 'major-skew-error')
+    return `not attachable: ${node.helperSkew.message}${node.helperSkew.remediationHint ? ` — ${node.helperSkew.remediationHint}` : ''}`;
   if (node.trust?.policy?.revokedAt) return 'work disabled: policy revoked';
-  if (node.trust?.policy?.supersededBy) return 'work disabled: policy superseded';
+  if (node.trust?.policy?.supersededBy)
+    return 'work disabled: policy superseded';
 
   const blockers = readinessCapabilities.flatMap((key) => {
     const hint = capabilityHints.find((candidate) => candidate.key === key);
@@ -177,6 +184,11 @@ export function deriveHubNodeDashboardRows(
         ? null
         : `protocol ${node.protocolVersion} != hub ${expectedProtocolVersion}`;
 
+    const helperSkewWarning =
+      node.helperSkew && node.helperSkew.category !== 'compatible'
+        ? node.helperSkew.message
+        : null;
+
     return {
       nodeId: node.nodeId,
       displayName: node.displayName,
@@ -189,6 +201,7 @@ export function deriveHubNodeDashboardRows(
       relayVersion: node.relayVersion,
       protocolVersion: node.protocolVersion,
       versionWarning,
+      helperSkewWarning,
       capabilityHints: hints,
       security,
       attachable: reason === null,
@@ -227,7 +240,9 @@ export function hubNodeDashboardSummary(
   const blockedByCapabilities = rows.filter(
     (row) => !row.attachable && row.disabledReason?.startsWith('work disabled:')
   ).length;
-  const policyUnavailable = rows.filter((row) => row.security.policyRef === null).length;
+  const policyUnavailable = rows.filter(
+    (row) => row.security.policyRef === null
+  ).length;
   const prodHighRisk = rows.filter(
     (row) => row.security.trustTier === 'prod' && row.security.tone === 'danger'
   ).length;

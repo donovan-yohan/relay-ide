@@ -26,6 +26,8 @@ Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagno
 | Check node status                | `relay-ide node status`                                                                                  |
 | Read service logs                | `relay-ide node logs`                                                                                    |
 | Diagnose local node health       | `relay-ide node doctor [--hub <url>] [--json]`                                                           |
+| Update node helper binary        | `relay-ide node update [--hub <url>]`                                                                    |
+| Check if update is available     | `relay-ide node update --check [--hub <url>]`                                                            |
 | Update Relay + restart service   | `relay-ide update`                                                                                       |
 | Unpair from hub                  | `DELETE /nodes/{nodeId}` from hub UI/API; then `rm ~/.config/relay-ide/node-credential.json` on the node |
 
@@ -303,21 +305,59 @@ Returns all paired nodes with `online`/`stale`/`offline`/`revoked` status, last 
 
 ## Update
 
-To update the node to the latest Relay version:
+### Node helper update (`relay-ide node update`)
+
+To update the helper binary on a paired node, run this command **on the node machine**:
+
+```bash
+# Install the latest version and restart the managed service if present.
+relay-ide node update
+
+# Optional: notify the hub while updating so it blocks new sessions during drain.
+relay-ide node update --hub https://hub.example.com
+
+# Non-destructive check: reports whether an update is available.
+relay-ide node update --check
+relay-ide node update --check --hub https://hub.example.com
+```
+
+The command:
+
+1. Reads the current `updateChannel` from config (`stable` or `nightly`).
+2. Queries `npm view relay-ide@<tag> version` to get the latest published version.
+3. If already at that version, prints "already at latest" and exits 0 (idempotent).
+4. If `--hub` is provided, signals `POST /hub/nodes/:nodeId/updating` — the hub marks the node as `updating` and returns HTTP 503 + `Retry-After: 60` for any new session-create requests while the update runs. Existing sessions drain naturally.
+5. Runs `npm install -g relay-ide@<tag>`.
+6. If `--hub` is provided, signals `DELETE /hub/nodes/:nodeId/updating` to clear the drain gate.
+7. If a managed platform service is detected, stops and restarts it.
+
+> `relay-ide node update` replaces the binary on the node and restarts the local service. It does **not** re-pair the node; the existing `node-credential.json` and hub registration remain valid.
+
+### Hub-only `relay-ide update`
+
+The top-level `relay-ide update` command updates the hub's own binary. It is not node-aware:
 
 ```bash
 relay-ide update
 ```
 
-This:
+This follows the same npm + service-restart pattern but applies to the machine it is run on, not to any paired nodes.
 
-1. Reads the current `updateChannel` from config (`stable` or `nightly`)
-2. Runs `npm install -g relay-ide@<latest|nightly>`
-3. If a background service is detected, stops it, reinstalls with the new binary, and restarts it
+### Version skew model (#655)
 
-> The `update` command updates the global npm package and restarts the local service. It does **not** re-pair the node; the existing `node-credential.json` remains valid.
+The hub detects helper-binary version skew on every heartbeat and pair exchange. The skew category is exposed in the `helperSkew` field of each node summary (`GET /nodes`) and in the hub node dashboard.
 
-To update a specific node from the hub side, you must SSH or otherwise access the node and run `relay-ide update` there. There is no remote forced-upgrade mechanism.
+| Category           | Condition                                 | Effect                                                                          |
+| ------------------ | ----------------------------------------- | ------------------------------------------------------------------------------- |
+| `compatible`       | Same major, `helperMinor >= hubMinor - 2` | No restriction                                                                  |
+| `minor-skew-warn`  | Same major, minor gap > 0                 | Sessions allowed; update recommended                                            |
+| `major-skew-error` | Different major version                   | New session-create returns **503** + `Retry-After: 60`; existing sessions drain |
+
+The compatibility rule is: **same major version, node helper minor within 2 of hub minor** (or node is ahead). Nodes on a different major are fully blocked until `relay-ide node update` is run.
+
+When a node is being updated (`status: updating`), the hub also returns 503 for new session-create requests on that node. This drain window is temporary; the hub automatically clears it when the node signals completion via `DELETE /hub/nodes/:nodeId/updating`.
+
+To update a specific node from the hub side, you must SSH or otherwise access the node and run `relay-ide node update` there. Auto-update from the hub UI is out of scope.
 
 ## Unpairing (Revocation)
 
