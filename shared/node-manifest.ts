@@ -4,6 +4,8 @@ export type NodeCapabilityStatus =
   | 'unavailable'
   | 'unknown';
 
+export type NodeAgentAuthStatus = 'authed' | 'unauthed' | 'unknown';
+
 export interface NodeCapabilityProbe {
   id: string;
   label: string;
@@ -11,6 +13,42 @@ export interface NodeCapabilityProbe {
   message: string;
   path?: string;
   version?: string;
+  /** Best-effort auth status for agent CLI probes. Never leaks secrets. */
+  authStatus?: NodeAgentAuthStatus;
+}
+
+/**
+ * Structured degraded reason emitted in `NodeManifest.degradedReasons`.
+ * Consumers can filter by severity and react to specific codes without
+ * parsing message strings.
+ */
+export interface NodeManifestDegradedReason {
+  code: string;
+  description: string;
+  severity: 'info' | 'warn' | 'error';
+}
+
+/**
+ * Canonical resolved filesystem paths for this node installation.
+ * Populated best-effort; absent when a path cannot be determined.
+ */
+export interface NodeResolvedPaths {
+  binary?: string;
+  configDir?: string;
+  logDir?: string;
+  socketDir?: string;
+}
+
+/**
+ * File RPC availability for this node.
+ * `capabilities` lists the enabled FileRpcOperation names.
+ * `restrictions` lists any active policy overrides that reduce default
+ * behaviour (e.g. "write disabled by policy").
+ */
+export interface NodeFileRpcStatus {
+  available: boolean;
+  capabilities: string[];
+  restrictions?: string[];
 }
 
 export type NodePathMode =
@@ -90,13 +128,29 @@ export interface NodeManifest {
   schemaVersion: 1;
   platform: string;
   arch: string;
+  /** Linux distro name (from /etc/os-release or WSL_DISTRO_NAME). Absent on macOS/Windows. */
+  distro?: string;
   hostname: string;
   homeDir?: string;
+  /** Relay helper version (from package.json). Canonical field for the installed helper binary. */
+  helperVersion: string;
+  /** @deprecated Use helperVersion. Kept for backward compatibility. */
   relayVersion: string;
+  /** Hub/node-link protocol version advertised by this node. */
+  protocolVersion: string;
   generatedAt: string;
+  /** Canonical resolved filesystem paths for this node. */
+  resolvedPaths: NodeResolvedPaths;
+  /** File RPC availability and capability list. */
+  fileRpc: NodeFileRpcStatus;
   wsl: WslInfo;
   serviceManager: NodeServiceManager;
   capabilities: NodeCapabilities;
+  /**
+   * Structured list of degraded conditions detected during manifest build.
+   * Derived from capability probes; never just strings.
+   */
+  degradedReasons: NodeManifestDegradedReason[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -244,6 +298,42 @@ function isNodeCapabilities(value: unknown): value is NodeCapabilities {
   return Object.values(agents).every((probe) => isNodeCapabilityProbe(probe));
 }
 
+function isDegradedSeverity(
+  value: unknown
+): value is NodeManifestDegradedReason['severity'] {
+  return value === 'info' || value === 'warn' || value === 'error';
+}
+
+function isNodeManifestDegradedReason(
+  value: unknown
+): value is NodeManifestDegradedReason {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value['code'] === 'string' &&
+    typeof value['description'] === 'string' &&
+    isDegradedSeverity(value['severity'])
+  );
+}
+
+function isNodeResolvedPaths(value: unknown): value is NodeResolvedPaths {
+  if (!isRecord(value)) return false;
+  return (
+    isOptionalString(value['binary']) &&
+    isOptionalString(value['configDir']) &&
+    isOptionalString(value['logDir']) &&
+    isOptionalString(value['socketDir'])
+  );
+}
+
+function isNodeFileRpcStatus(value: unknown): value is NodeFileRpcStatus {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value['available'] === 'boolean' &&
+    isStringArray(value['capabilities']) &&
+    isOptionalStringArray(value['restrictions'])
+  );
+}
+
 export function isNodeManifest(value: unknown): value is NodeManifest {
   if (!isRecord(value)) return false;
   if (
@@ -252,10 +342,38 @@ export function isNodeManifest(value: unknown): value is NodeManifest {
     typeof value['arch'] !== 'string' ||
     typeof value['hostname'] !== 'string' ||
     !isOptionalString(value['homeDir']) ||
-    typeof value['relayVersion'] !== 'string' ||
+    !isOptionalString(value['distro']) ||
+    // helperVersion is required in new manifests; relayVersion kept for back-compat
+    (typeof value['helperVersion'] !== 'string' &&
+      typeof value['relayVersion'] !== 'string') ||
     typeof value['generatedAt'] !== 'string'
   ) {
     return false;
+  }
+
+  // resolvedPaths and fileRpc are required in new (schemaVersion 1 + helperVersion) manifests,
+  // but older nodes may omit them. Accept absence for wire compat.
+  if (
+    value['resolvedPaths'] !== undefined &&
+    !isNodeResolvedPaths(value['resolvedPaths'])
+  ) {
+    return false;
+  }
+  if (
+    value['fileRpc'] !== undefined &&
+    !isNodeFileRpcStatus(value['fileRpc'])
+  ) {
+    return false;
+  }
+  if (value['degradedReasons'] !== undefined) {
+    if (!Array.isArray(value['degradedReasons'])) return false;
+    if (
+      !(value['degradedReasons'] as unknown[]).every(
+        isNodeManifestDegradedReason
+      )
+    ) {
+      return false;
+    }
   }
 
   return (
