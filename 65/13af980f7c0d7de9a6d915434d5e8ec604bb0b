@@ -1,0 +1,23 @@
+frontend/src/workbench/WorkbenchBlockCreateDialog.tsx
+  s_afc3e94f2d047a::t_a724f6dd299a38 285-289
+frontend/src/workbench/WorkbenchCanvas.tsx
+  s_afc3e94f2d047a::t_fb2dceb0c0e35a 545-548,550-552
+shared/workbench-block-environment.ts
+  s_afc3e94f2d047a::t_f6135b9043df19 197-199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "6513af980f7c0d7de9a6d915434d5e8ec604bb0b",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
