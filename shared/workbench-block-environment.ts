@@ -184,10 +184,7 @@ export function isWorkbenchBlockEnvironmentRef(
   ) {
     return false;
   }
-  if (
-    value.repoInstanceId !== undefined &&
-    !hasString(value.repoInstanceId)
-  ) {
+  if (value.repoInstanceId !== undefined && !hasString(value.repoInstanceId)) {
     return false;
   }
   if (
@@ -205,7 +202,10 @@ export function isWorkbenchBlockEnvironmentRef(
     return false;
   }
   // Invariant: bench implies repoInstance.
-  if (value.worktreeInstanceId !== undefined && value.repoInstanceId === undefined) {
+  if (
+    value.worktreeInstanceId !== undefined &&
+    value.repoInstanceId === undefined
+  ) {
     return false;
   }
   // Invariant: cwdMode 'free' MUST NOT carry a repoInstanceId.
@@ -259,6 +259,8 @@ export type ResolveBlockEnvironmentResult =
  *      the create-time bits → `block-on-launch / capability-shrunk`.
  *   5. Otherwise → `ok`.
  */
+const BLOCK_ON_LAUNCH = 'block-on-launch' as const;
+
 export function resolveBlockEnvironment(
   environment: WorkbenchBlockEnvironmentRef | undefined,
   candidates: readonly EnvironmentOption[]
@@ -268,14 +270,14 @@ export function resolveBlockEnvironment(
   const match = candidates.find((c) => c.id === environment.pickerOptionId);
   if (match === undefined) {
     return {
-      kind: 'block-on-launch',
+      kind: BLOCK_ON_LAUNCH,
       reason: 'option-missing',
       ref: environment,
     };
   }
   if (match.freshness === 'offline') {
     return {
-      kind: 'block-on-launch',
+      kind: BLOCK_ON_LAUNCH,
       reason: 'option-offline',
       ref: environment,
       candidate: match,
@@ -283,7 +285,7 @@ export function resolveBlockEnvironment(
   }
   if (match.freshness === 'stale') {
     return {
-      kind: 'block-on-launch',
+      kind: BLOCK_ON_LAUNCH,
       reason: 'option-stale',
       ref: environment,
       candidate: match,
@@ -295,7 +297,7 @@ export function resolveBlockEnvironment(
   );
   if (!stillSatisfied) {
     return {
-      kind: 'block-on-launch',
+      kind: BLOCK_ON_LAUNCH,
       reason: 'capability-shrunk',
       ref: environment,
       candidate: match,

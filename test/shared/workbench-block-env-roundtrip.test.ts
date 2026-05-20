@@ -42,11 +42,18 @@ const CREATED_AT = '2026-05-19T12:00:00.000Z';
 // helpers
 // ---------------------------------------------------------------------------
 
-function repoOption(overrides: Partial<EnvironmentOption> = {}): EnvironmentOption {
+function repoOption(
+  overrides: Partial<EnvironmentOption> = {}
+): EnvironmentOption {
   return {
     schemaVersion: 1,
     id: 'opt-relay-nightly',
-    node: { nodeId: 'local', kind: 'local', displayName: 'this host', online: true },
+    node: {
+      nodeId: 'local',
+      kind: 'local',
+      displayName: 'this host',
+      online: true,
+    },
     capabilities: ['session:create:terminal', 'rpc:fs:read', 'rpc:git:read'],
     cwd: '/Users/dev/repos/relay-ide',
     cwdMode: 'repo',
@@ -112,8 +119,7 @@ function placementWithEnv(
         },
       },
       ...(env !== undefined ? { environment: env } : {}),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test scaffold
-    } as any,
+    } as WorkbenchBlockPlacement['descriptor'],
     position: { x: 0, y: 0 },
     size: { width: 400, height: 200 },
     minimized: false,
@@ -141,9 +147,7 @@ describe('buildBlockEnvironmentRef', () => {
     expect(env.schemaVersion).toBe(WORKBENCH_BLOCK_ENVIRONMENT_SCHEMA_VERSION);
     expect(env.nodeId).toBe('local');
     expect(env.repoIdentity).toBe('github.com/donovan-yohan/relay-ide');
-    expect(env.repoInstanceId).toBe(
-      'local:%2FUsers%2Fdev%2Frepos%2Frelay-ide'
-    );
+    expect(env.repoInstanceId).toBe('local:%2FUsers%2Fdev%2Frepos%2Frelay-ide');
     expect(env.cwd).toBe('/Users/dev/repos/relay-ide');
     expect(env.cwdMode).toBe('repo');
     expect(env.pickerOptionId).toBe('opt-relay-nightly');
