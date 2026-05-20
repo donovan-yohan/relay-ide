@@ -20,6 +20,9 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { FileBlockDescriptor } from '../shared/workbench-block-types.js';
+import { isFileResourceRef } from '../shared/workbench-block-types.js';
+import type { FileResourceRef } from '../shared/file-resource-ref.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
@@ -305,6 +308,185 @@ describe('file renderer', () => {
   it('CSS has block-file class', () => {
     const css = readBlock('file.css');
     expect(css).toContain('.block-file');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Slice 2: FileResourceRef integration assertions (source-level)
+  // ---------------------------------------------------------------------------
+
+  it('imports isFileResourceRef type guard', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('isFileResourceRef');
+  });
+
+  it('imports FILE_RPC_MAX_READ_BYTES constant', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('FILE_RPC_MAX_READ_BYTES');
+  });
+
+  it('imports fetchNodeFsStat and fetchNodeFsRead from api', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('fetchNodeFsStat');
+    expect(src).toContain('fetchNodeFsRead');
+  });
+
+  it('uses TanStack Query useQuery for stat and read', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('@tanstack/react-query');
+    expect(src).toContain('useQuery');
+    expect(src).toContain("'fs.stat'");
+    expect(src).toContain("'fs.read'");
+  });
+
+  it('has no refetchInterval (no polling)', () => {
+    const src = readBlock('file.tsx');
+    expect(src).not.toContain('refetchInterval');
+  });
+
+  it('uses refetchOnWindowFocus', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('refetchOnWindowFocus');
+  });
+
+  it('has staleTime set', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('staleTime');
+  });
+
+  it('has "too large" fallback state', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('block-file__too-large');
+    expect(src).toContain('too large');
+  });
+
+  it('CSS has block-file__too-large class', () => {
+    const css = readBlock('file.css');
+    expect(css).toContain('.block-file__too-large');
+  });
+
+  it('has binary fallback state', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('block-file__binary');
+    expect(src).toContain('binary');
+  });
+
+  it('CSS has block-file__binary class', () => {
+    const css = readBlock('file.css');
+    expect(css).toContain('.block-file__binary');
+  });
+
+  it('has inline error state', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('block-file__error');
+    expect(src).toContain('isError');
+  });
+
+  it('CSS has block-file__error class', () => {
+    const css = readBlock('file.css');
+    expect(css).toContain('.block-file__error');
+  });
+
+  it('renders content in a pre element', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('<pre');
+    expect(src).toContain('block-file__content');
+    // Reads the UTF-8 content field from the FileRpcReadResponse
+    expect(src).toContain('.content');
+  });
+
+  it('handles NODE_OFFLINE error code', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('NODE_OFFLINE');
+    expect(src).toContain('node offline');
+  });
+
+  it('handles FORBIDDEN / 403 error', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('FORBIDDEN');
+    expect(src).toContain('not authorized');
+  });
+
+  it('gates read query on stat success (enabled flag)', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('enabled');
+    expect(src).toContain('enableRead');
+  });
+
+  it('legacy FileRef falls through to placeholder (no useQuery in legacy branch)', () => {
+    const src = readBlock('file.tsx');
+    // The legacy branch returns early before reaching the hooks component
+    expect(src).toContain('isFileResourceRef');
+    // Legacy branch still renders placeholder copy
+    expect(src).toContain('pending slice-3 rpc:fs');
+  });
+
+  it('checks session availability before fetching', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('sessionId');
+    expect(src).toContain('session required');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FileBlockDescriptor with FileResourceRef — JSON round-trip
+// ---------------------------------------------------------------------------
+
+describe('FileBlockDescriptor with FileResourceRef round-trip', () => {
+  const fileResourceRef: FileResourceRef = {
+    nodeId: 'node-test-01',
+    path: '/workspace/src/index.ts',
+    capturedAt: '2026-05-20T00:00:00Z',
+    intent: 'read',
+    size: 1024,
+  };
+
+  const descriptor: FileBlockDescriptor = {
+    kind: 'file',
+    id: 'fb-resource-01',
+    title: 'src/index.ts',
+    capabilityRequirements: ['rpc:fs:read'],
+    meta: {
+      fileRef: fileResourceRef,
+      mode: 'read',
+    },
+  };
+
+  it('JSON round-trip preserves FileResourceRef shape', () => {
+    const serialised = JSON.stringify(descriptor);
+    const parsed = JSON.parse(serialised) as FileBlockDescriptor;
+    expect(parsed.kind).toBe('file');
+    expect(parsed.meta.mode).toBe('read');
+    const ref = parsed.meta.fileRef;
+    expect((ref as FileResourceRef).nodeId).toBe('node-test-01');
+    expect((ref as FileResourceRef).path).toBe('/workspace/src/index.ts');
+    expect((ref as FileResourceRef).capturedAt).toBe('2026-05-20T00:00:00Z');
+    expect((ref as FileResourceRef).intent).toBe('read');
+    expect((ref as FileResourceRef).size).toBe(1024);
+  });
+
+  it('isFileResourceRef returns true for round-tripped FileResourceRef', () => {
+    const serialised = JSON.stringify(descriptor);
+    const parsed = JSON.parse(serialised) as FileBlockDescriptor;
+    expect(isFileResourceRef(parsed.meta.fileRef)).toBe(true);
+  });
+
+  it('isFileResourceRef returns false for legacy FileRef', () => {
+    const legacyDescriptor: FileBlockDescriptor = {
+      kind: 'file',
+      id: 'fb-legacy-01',
+      title: 'index.ts',
+      capabilityRequirements: ['rpc:fs:read'],
+      meta: {
+        fileRef: { kind: 'file', id: 'rpc:fs:local:%2Findex.ts' },
+      },
+    };
+    const parsed = JSON.parse(JSON.stringify(legacyDescriptor)) as FileBlockDescriptor;
+    expect(isFileResourceRef(parsed.meta.fileRef)).toBe(false);
+  });
+
+  it('round-trip preserves the full descriptor deep-equal', () => {
+    const parsed = JSON.parse(JSON.stringify(descriptor)) as FileBlockDescriptor;
+    expect(parsed).toEqual(descriptor);
   });
 });
 

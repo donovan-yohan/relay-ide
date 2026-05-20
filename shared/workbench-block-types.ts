@@ -33,6 +33,7 @@ import type {
   WorkContextRef,
 } from './work-context.js';
 import type { WorkbenchBlockEnvironmentRef } from './workbench-block-environment.js';
+import type { FileResourceRef } from './file-resource-ref.js';
 
 // ---------------------------------------------------------------------------
 // Re-exported re-used types for convenience
@@ -41,11 +42,30 @@ import type { WorkbenchBlockEnvironmentRef } from './workbench-block-environment
 export type {
   ArtifactRef,
   CapabilityGrantRef,
+  FileResourceRef,
   NodeRef,
   SessionRef,
   WorkContext,
   WorkContextRef,
 };
+
+/**
+ * Discriminate a `FileRef | FileResourceRef` union at runtime.
+ *
+ * A `FileResourceRef` always carries `capturedAt` and `intent` (both present
+ * on every minted ref) and never carries the legacy `id` field that `FileRef`
+ * uses as its opaque stable identifier.  Checking for the absence of `id`
+ * guards against accidentally treating a legacy ref as a new ref.
+ */
+export function isFileResourceRef(
+  ref: FileRef | FileResourceRef
+): ref is FileResourceRef {
+  return (
+    'capturedAt' in ref &&
+    'intent' in ref &&
+    !('id' in ref)
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Placeholder ref types (not yet defined elsewhere in shared/)
@@ -199,9 +219,17 @@ export interface FileBlockDescriptor extends WorkbenchBlockDescriptorBase {
   meta: {
     /**
      * Node-scoped file reference.
-     * Uses the local `FileRef` placeholder — see note above.
+     *
+     * Two shapes are valid:
+     *   - `FileRef` (legacy) — opaque id-based placeholder shape.
+     *   - `FileResourceRef` (slice 2+) — addressable handle with `nodeId`,
+     *     `path`, `capturedAt`, and `intent`. The FileBlock renderer narrows
+     *     using `isFileResourceRef` to decide whether to attempt an RPC fetch.
+     *
+     * Consumers should call `isFileResourceRef(ref)` before reading
+     * `ref.nodeId` or `ref.path`.
      */
-    fileRef: FileRef;
+    fileRef: FileRef | FileResourceRef;
     /** `'read'` = viewer; `'diff'` = inline diff against HEAD or base. */
     mode?: 'read' | 'diff';
   };
