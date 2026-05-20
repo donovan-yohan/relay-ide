@@ -221,27 +221,33 @@ function validateCreateEnvironment(
   if (
     environment['repoIdentity'] !== undefined &&
     environment['repoIdentity'] !== null &&
-    typeof environment['repoIdentity'] !== 'string'
+    (typeof environment['repoIdentity'] !== 'string' ||
+      environment['repoIdentity'].length === 0)
   ) {
     return invalidCreateInput(
-      'sessions.create environment.repoIdentity must be a string or null',
+      'sessions.create environment.repoIdentity must be a non-empty string or null',
       { field: 'environment.repoIdentity' }
     );
   }
   if (
     environment['repoInstanceId'] !== undefined &&
-    typeof environment['repoInstanceId'] !== 'string'
+    (typeof environment['repoInstanceId'] !== 'string' ||
+      environment['repoInstanceId'].length === 0)
   ) {
     return invalidCreateInput(
-      'sessions.create environment.repoInstanceId must be a string',
+      'sessions.create environment.repoInstanceId must be a non-empty string',
       { field: 'environment.repoInstanceId' }
     );
   }
   if (environment['benchId'] !== undefined) {
-    if (typeof environment['benchId'] !== 'string') {
-      return invalidCreateInput('sessions.create environment.benchId must be a string', {
-        field: 'environment.benchId',
-      });
+    if (
+      typeof environment['benchId'] !== 'string' ||
+      environment['benchId'].length === 0
+    ) {
+      return invalidCreateInput(
+        'sessions.create environment.benchId must be a non-empty string',
+        { field: 'environment.benchId' }
+      );
     }
     const hasTypedRepoBinding =
       typeof environment['repoIdentity'] === 'string' ||

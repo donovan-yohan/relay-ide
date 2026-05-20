@@ -173,6 +173,41 @@ describe('CLI gateway typed environment IDs (#626)', () => {
       expect(result.error.code).toBe('INVALID_ARGUMENT');
       expect(result.error.details?.['field']).toMatch(/environment\.benchId/);
     });
+
+    it('rejects environment.repoIdentity as empty string (must be non-empty or null)', () => {
+      const result = validateAndSanitizeGatewayCreateInput({
+        environment: { nodeId: NODE_A, cwd: REPO_CWD, repoIdentity: '' },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok !== false) return;
+      expect(result.error.code).toBe('INVALID_ARGUMENT');
+      expect(result.error.details?.['field']).toMatch(/environment\.repoIdentity/);
+    });
+
+    it('rejects environment.repoInstanceId as empty string', () => {
+      const result = validateAndSanitizeGatewayCreateInput({
+        environment: { nodeId: NODE_A, cwd: REPO_CWD, repoInstanceId: '' },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok !== false) return;
+      expect(result.error.code).toBe('INVALID_ARGUMENT');
+      expect(result.error.details?.['field']).toMatch(/environment\.repoInstanceId/);
+    });
+
+    it('rejects environment.benchId as empty string', () => {
+      const result = validateAndSanitizeGatewayCreateInput({
+        environment: {
+          nodeId: NODE_A,
+          cwd: BENCH_CWD,
+          repoIdentity: REPO_IDENTITY,
+          benchId: '',
+        },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok !== false) return;
+      expect(result.error.code).toBe('INVALID_ARGUMENT');
+      expect(result.error.details?.['field']).toMatch(/environment\.benchId/);
+    });
   });
 
   describe('deprecation policy', () => {
