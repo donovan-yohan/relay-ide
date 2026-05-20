@@ -1,0 +1,32 @@
+docs/federated-relay.md
+  s_5aff5e5e0d9bbd::t_898a26540e4c4f 557-564,566-574
+shared/agent-chat-protocol-v2.ts
+  s_5aff5e5e0d9bbd::t_74e426cd63be12 465-466
+  s_5aff5e5e0d9bbd::t_7ac467c4416853 1-2
+  s_5aff5e5e0d9bbd::t_c6a2f7f0866b1b 152-156,158-159
+test/prompt-attachment.test.ts
+  s_5aff5e5e0d9bbd::t_4d2d9a9034b797 1-30,32-113,115-181,183-210
+server/protocol-adapter-v2.ts
+  s_5aff5e5e0d9bbd::t_bd840f5d801f4e 13,22,24-29
+shared/prompt-attachment.ts
+  s_5aff5e5e0d9bbd::t_acda2ce9832a2a 1-180
+server/ws.ts
+  s_5aff5e5e0d9bbd::t_5ace660e8f8bcc 15-18
+  s_5aff5e5e0d9bbd::t_f966a4f767c049 182-202,209
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "77d836e6d5866259088bf7b48408bff7be1771be",
+  "prompts": {},
+  "sessions": {
+    "s_5aff5e5e0d9bbd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "06797abf-9fbb-49ce-9a89-a80a243f8f06",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
