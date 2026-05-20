@@ -1,0 +1,35 @@
+server/workbench-prompt-hooks.ts
+  s_3e9de69a56e5c0::t_218ead5146431f 98-105
+  s_3e9de69a56e5c0::t_631b345ff192d7 1-97,106-424,429-440,442-453,460-465,467,469-471,473,475-482,484-486,488-535,544-570,572-590,592-626,628-646,648-670
+  s_3e9de69a56e5c0::t_4c44e95618fcf0 454-459
+  s_3e9de69a56e5c0::t_8d3d603c42ded2 571,591
+  s_3e9de69a56e5c0::t_81353b4b32cb1e 627
+  s_3e9de69a56e5c0::t_ba574f15d4a91a 647
+  s_3e9de69a56e5c0::t_7c30f7afa33e9c 536-538,540-541,543
+  s_3e9de69a56e5c0::t_e18072e35d7166 425-426,428,441,466,468,472,474,483,487
+shared/workbench-prompt-hooks.ts
+  s_3e9de69a56e5c0::t_2c159784b239d1 1-442,444-462
+server/index.ts
+  s_3e9de69a56e5c0::t_44bc2b142ee778 1752-1764
+  s_3e9de69a56e5c0::t_049e8582df8f37 89
+test/workbench-prompt-hooks.test.ts
+  s_3e9de69a56e5c0::t_c8805f34e37dfe 1-49,51-127,130-329,331-336,338-342,344-349,351-356,358-365,367-438,441,443,451-525,527-548,550-574,576-681,683-732,734-793,796-844,847-876,879-1006,1009-1042,1045-1085,1088-1165,1167-1222
+  s_3e9de69a56e5c0::t_b66f2c20058d5d 439-440,442,444-447,449-450
+  s_3e9de69a56e5c0::t_02df161188842c 128-129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "6e5ddd849e0ed93cf5acc65fae6bd482adad1e2a",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
