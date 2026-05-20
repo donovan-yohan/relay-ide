@@ -554,20 +554,32 @@ export function WorkbenchCanvas({
             ? crypto.randomUUID()
             : `block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       });
+      const existing = layoutRef.current;
+      const blockCount = existing?.blocks.length ?? 0;
       const placement: WorkbenchBlockPlacement = {
         descriptor,
         // Stagger new blocks so consecutive creates don't fully overlap.
         position: {
-          x: 24 + (((layoutRef.current?.blocks.length ?? 0) * 24) % 240),
-          y: 24 + (((layoutRef.current?.blocks.length ?? 0) * 24) % 240),
+          x: 24 + ((blockCount * 24) % 240),
+          y: 24 + ((blockCount * 24) % 240),
         },
         size: { width: 480, height: 320 },
         minimized: false,
       };
-      applyUpdate((prev) => ({ ...prev, blocks: [...prev.blocks, placement] }));
+      // If no layout has hydrated yet, seed an empty one so the first create
+      // is not silently dropped by `applyUpdate`'s `if (!prev) return`.
+      const next: WorkbenchLayout = existing
+        ? { ...existing, blocks: [...existing.blocks, placement] }
+        : {
+            schemaVersion: WORKBENCH_LAYOUT_SCHEMA_VERSION,
+            workspaceScope: { id: workspaceId },
+            blocks: [placement],
+          };
+      setLayout(next);
+      debouncedPersist(next);
       setCreateOpen(false);
     },
-    [applyUpdate]
+    [debouncedPersist, workspaceId]
   );
 
   // ---------------------------------------------------------------------------
