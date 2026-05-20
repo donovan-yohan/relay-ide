@@ -80,10 +80,27 @@ The existing WebSocket attach path keeps streaming raw scrollback bytes to
 xterm clients — this REST snapshot is a separate, optional read for status
 cards, agent adapters, and reattach UX that need a typed view.
 
+## Frontend reconnect UX
+
+`frontend/src/lib/session-durability.ts` maps each `SessionDurabilityState`
+to a `{ statusDot, label, severity }` badge consumed by `SessionItem` and
+mobile surfaces. `durabilityDisabledReason(state)` returns a typed string
+when controls should be disabled (`stale-node`, `ended`, `error`) and
+`null` otherwise. `permission-needed` deliberately does NOT disable
+controls — the operator is supposed to answer prompts.
+
+`activeWorkMobileControlState` consults the helper so the existing
+disabled-reason fields on the mobile Active Work card surface the
+durability reason ahead of the older "stale read model" / "${status} node"
+messages.
+
+The frontend subscribes to the `session-durability-changed` event stream
+and updates the matching session in `useSessionsStore` without refetching
+the full list (`handleDurabilityChanged`).
+
 ## Out of scope (later #614 slices)
 
-- Reconnect UX badges (slice 3).
-- Cross-node/remote replay forwarding (slice 3).
+- Cross-node/remote replay forwarding.
 - Web-session replay redesign (existing `WebSession.messages` buffer is
   unchanged in slice 2).
 - Per-node/per-connection/per-session durability config knobs (slice 4).

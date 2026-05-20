@@ -147,9 +147,7 @@ function eventSessionScope(msg: {
 }): SessionEventScope {
   const localSessionId = msg.localSessionId ?? msg.sessionId;
   return {
-    ...(localSessionId
-      ? { sessionId: localSessionId, localSessionId }
-      : {}),
+    ...(localSessionId ? { sessionId: localSessionId, localSessionId } : {}),
     ...(msg.nodeId ? { nodeId: msg.nodeId } : {}),
     ...(msg.globalSessionId ? { globalSessionId: msg.globalSessionId } : {}),
   };
@@ -199,7 +197,9 @@ function applyHubNodeStatusEvent(
         ...(msg.manifest
           ? {
               hostname: msg.manifest.hostname,
-              ...(msg.manifest.homeDir ? { homeDir: msg.manifest.homeDir } : {}),
+              ...(msg.manifest.homeDir
+                ? { homeDir: msg.manifest.homeDir }
+                : {}),
               platform: msg.manifest.platform,
               arch: msg.manifest.arch,
               relayVersion: msg.manifest.relayVersion,
@@ -292,6 +292,19 @@ export function useEventSocket({
             msg.sessionId,
             msg.state,
             msg.permissionType,
+            eventSessionScope(msg)
+          );
+      },
+      'session-durability-changed': (msg) => {
+        // Push the transition into the session store so badges + disabled
+        // controls update without refetching the whole list. The hub
+        // emits one event per real change, so this is a thin handler.
+        queryClient.invalidateQueries({ queryKey: ['active-work'] });
+        useSessionsStore
+          .getState()
+          .handleDurabilityChanged(
+            msg.sessionId,
+            msg.to,
             eventSessionScope(msg)
           );
       },

@@ -23,6 +23,7 @@ import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
 import type { TabControlEvent } from '../../../shared/control-state.js';
 import type { HubNodeStatus } from '../../../shared/relay-node-protocol.js';
+import type { SessionDurabilityState } from '../../../shared/session-durability.js';
 import type { NodeManifest } from '../../../shared/node-manifest.js';
 
 const logger = createLogger('pty-ws');
@@ -111,7 +112,14 @@ export type EventMessage =
       lastSeenAt: string;
       manifest?: NodeManifest;
     }
-  | { type: 'server-restarting'; reason?: string };
+  | { type: 'server-restarting'; reason?: string }
+  | ({
+      type: 'session-durability-changed';
+      sessionId: string;
+      from: SessionDurabilityState | undefined;
+      to: SessionDurabilityState;
+      at: string;
+    } & SessionScopedEvent);
 
 type EventCallback = (msg: EventMessage) => void;
 type EventOpenCallback = () => void;
