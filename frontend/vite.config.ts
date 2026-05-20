@@ -40,6 +40,10 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-environment-picker.html'
   );
+  buildInputs['test-env-picker-dialog'] = resolve(
+    import.meta.dirname,
+    'test-env-picker-dialog.html'
+  );
 }
 
 export default defineConfig({
