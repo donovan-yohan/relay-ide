@@ -106,9 +106,51 @@ Supported now:
 
 - local repo/worktree-backed session creation using `repoPath` and optional `worktreePath`
 - routed node creation with `nodeId`, `cwd`, `type` (defaulting to `agent` when omitted), `mode`, `agent`, lifecycle fields, and optional non-agent `sessionEnvelope` where the existing backend supports them
+- routed node creation with the typed `environment` object (see [Typed environment IDs](#typed-environment-ids-626) below)
 - `controlMode=agent-driven` only for routed node creation, where hub/node policy and hand-back state can be checked
 - descriptor-only attach with `sessions attach --id ... --json`
 - safe detach with `sessions detach --id ... --json`; this resolves the session and releases only the CLI gateway handle, leaving the underlying Relay session/process running
+
+### Typed environment IDs (#626)
+
+`sessions.create` accepts a typed `environment` object (epic #615) so agent tasks reference where work runs by **typed IDs**, not free-form host/path strings. The shape mirrors `EnvironmentOption` in `shared/environment-option.ts` and uses scoped IDs from `shared/identity.ts` plus the canonical `RepoIdentity` from `shared/repo-identity.ts`.
+
+```json
+{
+  "environment": {
+    "nodeId": "node-a",
+    "repoIdentity": "github.com/donovan-yohan/relay-ide",
+    "repoInstanceId": "node-a:%2FUsers%2Fme%2Fcode%2Frelay-ide",
+    "benchId": "node-a:%2FUsers%2Fme%2Fcode%2Frelay-ide%2F.worktrees%2F626",
+    "cwd": "/Users/me/code/relay-ide/.worktrees/626"
+  },
+  "type": "agent",
+  "mode": "pty",
+  "agent": "claude"
+}
+```
+
+Fields:
+
+- `nodeId` (required) — target Relay node id; sourced from `EnvironmentOption.node.nodeId`.
+- `cwd` (required) — absolute cwd on the target node where the session starts.
+- `repoIdentity` (optional, nullable) — canonical normalized repo identity (e.g. `github.com/owner/name`), produced by `shared/repo-identity.ts`. Never a free-form `{ host, path }` pair. May be `null` when the environment was built from a `RepoInstance` whose remotes did not produce a canonical identity (see `EnvironmentRepoInstanceSummary.repoIdentity` in `shared/environment-option.ts`), so adapters can round-trip the field without losing the "no identity resolved" signal; omit the field entirely otherwise.
+- `repoInstanceId` (optional) — scoped `RepoInstanceId` from `createRepoInstanceId(nodeId, localPath)`.
+- `benchId` (optional) — scoped `WorktreeInstanceId` from `createWorktreeInstanceId(nodeId, localPath)`. Requires `repoIdentity` or `repoInstanceId` (a Bench is anchored to a RepoInstance per `docs/WORKBENCH_BOUNDARY.md`).
+
+Fail-closed examples specific to the typed shape:
+
+- raw `{ host, path }` on `environment` returns `INVALID_ARGUMENT` with `details.field` under `environment.*` (free-form host/path is exactly what #626 forbids)
+- missing `environment.nodeId` or `environment.cwd` returns `INVALID_ARGUMENT`
+- `environment.benchId` without `repoIdentity` or `repoInstanceId` returns `INVALID_ARGUMENT`
+- mixing `environment` with any legacy flat `nodeId` / `repoPath` / `worktreePath` / `cwd` returns `INVALID_ARGUMENT` — pick one shape per request
+- local `/sessions` gateway creation rejects `environment` (typed `environment` always implies routed creation)
+
+A schema fixture of the typed shape is committed at [`docs/cli-schema/sessions.create.environment.json`](cli-schema/sessions.create.environment.json) for adapter generators that consume the schema out-of-band.
+
+#### Deprecation policy
+
+Legacy flat fields `nodeId`, `repoPath`, `worktreePath`, and `cwd` on `sessions.create` remain accepted in **v1.x** so adapters shipped before #626 do not break. They are documented as deprecated and will be **removed in v2**. Adapters built today should emit the typed `environment` object. Mixing legacy flat fields with `environment` in the same call is rejected with `INVALID_ARGUMENT` to avoid ambiguous routing.
 
 `sessions attach` is intentionally descriptor-only in v1. It does not start a Claude/Codex/Hermes adapter runtime and it does not stream PTY data.
 
