@@ -29,6 +29,7 @@ import { writeCodexHooksAdapter } from './codex-hooks-adapter.js';
 import { createLogger } from './logger.js';
 import { getDefaultAllocator, type PortAllocator } from './port-allocator.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
+import { fileURLToPath } from 'node:url';
 import type { SessionLane } from '../shared/session-lane.js';
 import {
   createLegacyControlStateSummary,
@@ -409,6 +410,10 @@ export type CreatePtyParams = {
   portAllocator?: PortAllocator | undefined;
   /** Per-session scrollback cap in bytes. Defaults to 256 KB. */
   maxScrollbackBytes?: number | undefined;
+  /** Relay node ID to inject as RELAY_NODE_ID (defaults to DEFAULT_LOCAL_NODE_ID). */
+  nodeId?: string | undefined;
+  /** WorkContext ID to inject as RELAY_WORK_CONTEXT_ID (omitted when not set). */
+  workContextId?: string | undefined;
   callbacks?:
     | {
         onStateChange?: Array<(sessionId: string, state: AgentState) => void>;
@@ -567,6 +572,118 @@ function injectPortEnvVars(
   }
 }
 
+/**
+ * Resolve the path to the compiled relayctl binary.
+ * Searches relative to this file's location in dist/ (compiled output).
+ */
+function resolveRelayctlBinaryPath(): string | null {
+  try {
+    const selfPath = fileURLToPath(import.meta.url);
+    // selfPath is something like /…/dist/server/pty-handler.js
+    // relayctl is compiled to /…/dist/bin/relayctl.js
+    const distDir = path.dirname(path.dirname(selfPath));
+    const candidate = path.join(distDir, 'bin', 'relayctl.js');
+    if (fs.existsSync(candidate)) return candidate;
+  } catch {
+    // non-ESM context or path not resolvable — skip
+  }
+  return null;
+}
+
+/**
+ * Write a per-session bin directory containing a `relayctl` shim that delegates
+ * to the compiled relayctl.js binary via node. Returns the bin dir path, or null
+ * if the relayctl binary cannot be located.
+ *
+ * The shim is written to `{tmpdir}/relay-ide/{sessionId}/bin/relayctl`.
+ * Callers must prepend this path to PATH in the session environment so that
+ * `relayctl` is only discoverable from within a Relay-spawned PTY.
+ */
+function writeRelayctlShim(sessionId: string): string | null {
+  const binaryPath = resolveRelayctlBinaryPath();
+  if (!binaryPath) return null;
+  try {
+    const binDir = path.join(os.tmpdir(), 'relay-ide', sessionId, 'bin');
+    fs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
+    const shimPath = path.join(binDir, 'relayctl');
+    fs.writeFileSync(
+      shimPath,
+      `#!/bin/sh\nexec node ${shellQuote(binaryPath)} "$@"\n`,
+      { encoding: 'utf-8', mode: 0o755 }
+    );
+    fs.chmodSync(shimPath, 0o755);
+    return binDir;
+  } catch (err) {
+    logger.warn(`Failed to write relayctl shim for session ${sessionId}:`, err);
+    return null;
+  }
+}
+
+type RelaySessionEnvParams = {
+  sessionId: string;
+  nodeId: string;
+  port: number | undefined;
+  workContextId: string | undefined;
+};
+
+/**
+ * Inject Relay-owned session identity env vars into the PTY environment.
+ *
+ * - RELAY_NODE_ID — the node this session is running on
+ * - RELAY_SESSION_ID — the local session ID
+ * - RELAY_HUB_URL — the local hub base URL (http://127.0.0.1:{port})
+ * - RELAY_WORK_CONTEXT_ID — set only when a WorkContext is bound
+ *
+ * Also writes a per-session bin dir with a `relayctl` shim and prepends it
+ * to PATH so relayctl is only discoverable from within a Relay-spawned PTY.
+ *
+ * These env vars are injected here (inside Relay's PTY spawn path) so they
+ * never appear in shells the user opens outside Relay.
+ *
+ * @internal exported for testing only; use `createPtySession` in production.
+ */
+export function injectRelaySessionEnvForTest(
+  env: Record<string, string>,
+  tmuxEnv: Record<string, string>,
+  params: RelaySessionEnvParams
+): void {
+  return injectRelaySessionEnv(env, tmuxEnv, params);
+}
+
+function injectRelaySessionEnv(
+  env: Record<string, string>,
+  tmuxEnv: Record<string, string>,
+  params: RelaySessionEnvParams
+): void {
+  const { sessionId, nodeId, port, workContextId } = params;
+
+  env.RELAY_NODE_ID = nodeId;
+  env.RELAY_SESSION_ID = sessionId;
+  tmuxEnv.RELAY_NODE_ID = nodeId;
+  tmuxEnv.RELAY_SESSION_ID = sessionId;
+
+  if (port !== undefined) {
+    const hubUrl = `http://127.0.0.1:${port}`;
+    env.RELAY_HUB_URL = hubUrl;
+    tmuxEnv.RELAY_HUB_URL = hubUrl;
+  }
+
+  if (workContextId) {
+    env.RELAY_WORK_CONTEXT_ID = workContextId;
+    tmuxEnv.RELAY_WORK_CONTEXT_ID = workContextId;
+  }
+
+  // Write per-session relayctl shim and prepend to PATH so it is only
+  // reachable from within Relay-spawned PTY sessions.
+  const shimBinDir = writeRelayctlShim(sessionId);
+  if (shimBinDir) {
+    const currentPath = env.PATH ?? process.env.PATH ?? '';
+    const currentTmuxPath = tmuxEnv.PATH ?? currentPath;
+    env.PATH = `${shimBinDir}:${currentPath}`;
+    tmuxEnv.PATH = `${shimBinDir}:${currentTmuxPath}`;
+  }
+}
+
 function buildPortInjectionParams(
   repoPath: string | undefined,
   worktreePath: string | null,
@@ -624,7 +741,8 @@ function setupEnvAndHooks(
   paramHooksActive: boolean | undefined,
   paramClaudeFullscreen: boolean | undefined,
   rawArgs: string[],
-  portInjectionParams?: PortInjectionParams
+  portInjectionParams?: PortInjectionParams,
+  relaySessionEnvParams?: RelaySessionEnvParams
 ): HookSetupResult {
   const env = cleanEnv();
   const tmuxEnv: Record<string, string> = {};
@@ -702,6 +820,12 @@ function setupEnvAndHooks(
 
   if (portInjectionParams) {
     injectPortEnvVars(env, tmuxEnv, portInjectionParams);
+  }
+
+  // Inject Relay-owned session identity env vars. These are set last so they
+  // are never overwritten by hook or port injection above.
+  if (relaySessionEnvParams) {
+    injectRelaySessionEnv(env, tmuxEnv, relaySessionEnvParams);
   }
 
   return {
@@ -962,6 +1086,8 @@ export function createPtySession(
     portVariables,
     portAllocator,
     maxScrollbackBytes: paramMaxScrollbackBytes,
+    nodeId: paramNodeId,
+    workContextId: paramWorkContextId,
   } = params;
 
   const maxScrollbackPerSession =
@@ -986,6 +1112,13 @@ export function createPtySession(
     portAllocator
   );
 
+  const relaySessionEnvParams: RelaySessionEnvParams = {
+    sessionId: id,
+    nodeId: paramNodeId ?? DEFAULT_LOCAL_NODE_ID,
+    port,
+    workContextId: paramWorkContextId,
+  };
+
   const hookSetup = setupEnvAndHooks(
     id,
     framework,
@@ -998,7 +1131,8 @@ export function createPtySession(
     paramHooksActive,
     paramClaudeFullscreen,
     rawArgs,
-    portInjectionParams
+    portInjectionParams,
+    relaySessionEnvParams
   );
 
   const { env, tmuxEnv, hookToken, hooksActive, settingsPath } = hookSetup;
