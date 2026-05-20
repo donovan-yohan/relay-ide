@@ -137,11 +137,17 @@ function hasCapabilitySuperset(
   return required.every((bit) => advertised.has(bit));
 }
 
-function findById(
-  candidates: readonly EnvironmentOption[],
-  id: string
-): EnvironmentOption | undefined {
-  return candidates.find((candidate) => candidate.id === id);
+function indexCandidatesById(
+  candidates: readonly EnvironmentOption[]
+): Map<string, EnvironmentOption> {
+  const byId = new Map<string, EnvironmentOption>();
+  for (const candidate of candidates) {
+    // First-wins on duplicate ids — caller is responsible for unique ids, but
+    // we don't want to silently let a later duplicate override the earlier
+    // entry that the user's ordering implies as canonical.
+    if (!byId.has(candidate.id)) byId.set(candidate.id, candidate);
+  }
+  return byId;
 }
 
 /**
@@ -154,6 +160,8 @@ function findById(
  *     selected node is stale/offline.
  *   - Empty candidate list returns `{ reason: 'no-candidates' }` rather than
  *     throwing.
+ *   - O(C + H) — candidates are indexed once into a Map for O(1) lookup from
+ *     both the active-tab match and the history walk.
  */
 export function pickDefaultEnvironment(
   input: PickDefaultEnvironmentInput
@@ -164,10 +172,12 @@ export function pickDefaultEnvironment(
     return { kind: 'error', error: NO_COMPATIBLE, reason: 'no-candidates' };
   }
 
+  const candidatesById = indexCandidatesById(candidates);
+
   // Rule 1: active tab → never silently switch nodes.
   if (activeTab) {
     const activeNodeId = activeTab.environment.node.nodeId;
-    const matched = findById(candidates, activeTab.environment.id);
+    const matched = candidatesById.get(activeTab.environment.id);
     if (matched === undefined) {
       return {
         kind: 'error',
@@ -192,7 +202,7 @@ export function pickDefaultEnvironment(
 
   // Rule 2: history walk (caller-supplied order, newest first by convention).
   for (const entry of history) {
-    const match = findById(candidates, entry.environmentId);
+    const match = candidatesById.get(entry.environmentId);
     if (match && match.freshness === 'fresh') {
       return { kind: 'ok', option: match, reason: 'history' };
     }
