@@ -47,3 +47,15 @@ export {
   type RepoInventoryReport,
   type RepoInventoryWorktreeInstance,
 } from './repo-inventory.js';
+
+export {
+  pickDefaultEnvironment,
+  type ActiveTabContext,
+  type EnvironmentHistoryEntry,
+  type PickDefaultEnvironmentError,
+  type PickDefaultEnvironmentErrorReason,
+  type PickDefaultEnvironmentInput,
+  type PickDefaultEnvironmentOk,
+  type PickDefaultEnvironmentOkReason,
+  type PickDefaultEnvironmentResult,
+} from './safe-defaults.js';
