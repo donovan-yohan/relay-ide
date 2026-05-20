@@ -6,6 +6,7 @@ import type {
   WorktreeInstanceId,
 } from '../../../shared/identity.js';
 import type { SessionEnvelope } from '../../../shared/session-envelope.js';
+import type { SessionDurabilityState } from '../../../shared/session-durability.js';
 import type {
   RepoIdentityWarning,
   ResolvedRemoteIdentity,
@@ -179,6 +180,8 @@ export interface SessionSummary {
   worktreeInstanceId?: WorktreeInstanceId;
   useTmux?: boolean | undefined;
   status?: 'active' | 'disconnected' | undefined;
+  /** #614: derived durability state. Optional for legacy summaries. */
+  durability?: SessionDurabilityState | undefined;
   agentState?: AgentState | undefined;
   workspaceId?: string | undefined;
   additionalDirs?: string[] | undefined;
@@ -216,6 +219,7 @@ export interface WorkContextSessionSummary {
   branchName?: string;
   displayName?: string;
   status?: SessionSummary['status'];
+  durability?: SessionSummary['durability'];
   agentState?: SessionSummary['agentState'];
   currentActivity?: SessionSummary['currentActivity'];
   controlMode?: ControlMode;

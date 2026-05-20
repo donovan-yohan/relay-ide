@@ -80,11 +80,84 @@ The existing WebSocket attach path keeps streaming raw scrollback bytes to
 xterm clients — this REST snapshot is a separate, optional read for status
 cards, agent adapters, and reattach UX that need a typed view.
 
+## Frontend reconnect UX
+
+`frontend/src/lib/session-durability.ts` maps each `SessionDurabilityState`
+to a `{ statusDot, label, severity }` badge consumed by `SessionItem` and
+mobile surfaces. `durabilityDisabledReason(state)` returns a typed string
+when controls should be disabled (`stale-node`, `ended`, `error`) and
+`null` otherwise. `permission-needed` deliberately does NOT disable
+controls — the operator is supposed to answer prompts.
+
+`activeWorkMobileControlState` consults the helper so the existing
+disabled-reason fields on the mobile Active Work card surface the
+durability reason ahead of the older "stale read model" / "${status} node"
+messages.
+
+The frontend subscribes to the `session-durability-changed` event stream
+and updates the matching session in `useSessionsStore` without refetching
+the full list (`handleDurabilityChanged`).
+
+## Configurable scrollback cap
+
+`resolveSessionDurabilityScrollbackBytes(config, repoPath, workspaceId?)`
+resolves the effective per-session FIFO cap. Precedence, most specific
+first:
+
+1. `Config.repoSettings[repoPath].sessionDurability.scrollbackBytes`
+2. `Config.workspaces[].settings.sessionDurability.scrollbackBytes`
+3. `Config.sessionDurability.scrollbackBytes` (global)
+4. `Config.maxScrollbackPerSessionBytes` (legacy top-level)
+5. fallback to the 256 KB hard default in `pty-handler.ts`
+
+Non-positive values are rejected with a warning; the resolver falls
+through to the next layer. `resolveSessionSettings(...)` exposes the
+result as `ResolvedSessionSettings.scrollbackBytes`; session creation
+paths thread it into `CreateParams.maxScrollbackBytes`, which the PTY
+handler persists on `PtySession.scrollbackCapacityBytes` and surfaces in
+`SessionReplaySnapshot.capacityBytes` (slice 2).
+
+Durability mode (Wave's "standard" vs "durable") is not yet a separable
+knob in Relay — every Relay session is durable by construction because
+tmux + node-pty keep the process alive across attach drops. The config
+schema reserves the `sessionDurability` namespace so a future slice can
+add a mode toggle without breaking the surface.
+
+## Failure-matrix runbook
+
+The five durability transitions the epic body promised. Automated coverage
+lives in `test/session-durability-failure-matrix.test.ts`; manual
+verification steps below for the failure modes the unit tests cannot fake.
+
+| Scenario                              | Expected durability | Operator-visible signal                                    |
+| ------------------------------------- | ------------------- | ---------------------------------------------------------- |
+| Browser tab closed while session live | `running-detached`  | Tab badge flips to "detached"; reopening reattaches.       |
+| Node link drops mid-session           | `stale-node`        | Badge flips to "stale node"; live input + kill disabled.   |
+| Node reconnects after link drop       | `running-attached`  | Badge returns to "live"; controls re-enabled.              |
+| PTY process exits (clean or crash)    | `ended` (then gone) | Badge briefly shows "ended" then session leaves the list.  |
+| Agent posts an unrecoverable error    | `error`             | Badge shows "error"; controls disabled with typed reason.  |
+| Permission prompt waiting             | `permission-needed` | Badge pulses; controls stay enabled so operator can reply. |
+
+Manual verification steps for failure modes the automated suite cannot
+simulate end-to-end:
+
+- **Laptop sleep / network flap.** Pair a remote node, open a session,
+  put the laptop running the hub or the node to sleep. The hub's node
+  registry will flip to `stale` then `offline` within `staleMs` /
+  `offlineMs`. Durability follows. On wake, the reverse link
+  reconnects and durability returns to `running-attached`.
+- **Hub restart.** Restart the hub while a node session is open. tmux
+  keeps the PTY alive on the node. After hub comes back, the session
+  list shows the session with `running-detached` until the browser
+  attaches; then `running-attached`.
+- **Browser refresh.** Refresh the browser tab. The WS reconnect handler
+  reattaches; durability stays `running-attached` (or briefly flips
+  through `running-detached` if the WS is rebuilt slowly).
+
 ## Out of scope (later #614 slices)
 
-- Reconnect UX badges (slice 3).
-- Cross-node/remote replay forwarding (slice 3).
+- Cross-node/remote replay forwarding.
 - Web-session replay redesign (existing `WebSession.messages` buffer is
   unchanged in slice 2).
-- Per-node/per-connection/per-session durability config knobs (slice 4).
+- Durability mode toggle (standard vs durable).
 - Live process migration. No raw infinite transcript storage.

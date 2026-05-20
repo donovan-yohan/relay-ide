@@ -521,6 +521,39 @@ Cookie: token={auth-cookie}
 
 Response groups repo instances by canonical git identity, showing per-node paths, branch counts, worktree counts, and online status. In #444 terms this is a repo-kind Project inventory plus git-specific Instance/Bench metadata, not the complete future Project inventory.
 
+## File Resource Refs (#616 slice 1)
+
+`shared/file-resource-ref.ts` defines `FileResourceRef`, the addressable handle for a file or directory on a paired node. Subsequent #616 slices (preview blocks, agent prompt attachments, write/edit flows) consume refs as their pointer shape:
+
+```ts
+interface FileResourceRef {
+  nodeId: NodeId;
+  path: string;                   // absolute, POSIX-normalized
+  capturedAt: string;             // ISO 8601 UTC
+  intent: 'read' | 'list' | 'stat' | 'tail';
+  size?: number;                  // mint-time hint
+  sha256?: string;                // mint-time hash (only if `fs.read` ran)
+  mtimeMs?: number;
+  repoBinding?: { repoPath; worktreePath?; branch? };
+  maxBytes?: number;
+}
+```
+
+Refs are forward-looking pointers, not capability grants. The hub policy evaluator still enforces actual access at fetch time. The `intent` field signals which `fs.*` verb the ref is meant to invoke so capability checks can be planned up front (`rpc:fs:read` / `rpc:fs:list` / `rpc:fs:stat` / `rpc:fs:tail`).
+
+Helpers `createFileResourceRef`, `parseFileResourceRef`, `fileResourceRefEquals`, and `fileResourceRefSummary` live alongside the type. `createFileResourceRef` rejects relative paths, paths that escape root via `..`, malformed sha256 hex, non-ISO `capturedAt`, and unknown intents.
+
+### FileBlock renderer (#616 slice 2)
+
+The `FileBlock` renderer (`frontend/src/workbench/blocks/file.tsx`) now consumes `FileResourceRef` and fetches file contents through the hub-routed file RPC surface. When a `FileBlockDescriptor` carries a `FileResourceRef` in `meta.fileRef` (distinguished from the legacy `FileRef` via the `isFileResourceRef` type guard in `shared/workbench-block-types.ts`), the renderer:
+
+1. Calls `GET /hub/nodes/:nodeId/sessions/:sessionId/files/stat` (via `fetchNodeFsStat`) with `staleTime: 30 000 ms` and `refetchOnWindowFocus: true` — no polling interval.
+2. On stat success, inspects `stat.size` and the file extension: files larger than `FILE_RPC_MAX_READ_BYTES` (64 KB) render a "too large" fallback with size + cap copy; files whose extension matches the binary list (`.png`, `.jpg`, `.pdf`, `.zip`, etc.) render a "binary content" fallback — both without issuing a read call.
+3. For text files within the cap, calls `POST /hub/nodes/:nodeId/sessions/:sessionId/files/read` (via `fetchNodeFsRead`) with `maxBytes: FILE_RPC_MAX_READ_BYTES`. The `FileRpcReadResponse.content` field (UTF-8 string with `encoding: 'utf8'`) is rendered directly in a monospace `<pre>`.
+4. Error states surface inline lowercase copy: `not authorized` (403/FORBIDDEN), `node offline` (NODE_OFFLINE), `file not found` (404/FILE_RPC_NOT_FOUND), `session required` (missing session context).
+
+Legacy `FileRef` descriptors (those without `capturedAt`/`intent`) render the original placeholder copy with no fetch attempted, preserving backward compatibility.
+
 ## Bootstrap and Service Modes
 
 ### Supported Service Modes

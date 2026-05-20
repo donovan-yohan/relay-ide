@@ -526,6 +526,20 @@ export interface WorkspaceSettings {
 
   /** Environment variable names that should receive per-worktree allocated ports. */
   portVariables?: string[];
+
+  /**
+   * #614 slice 4: per-repo durability overrides. `scrollbackBytes` sets the
+   * effective per-session FIFO cap when this repo creates a new session.
+   * Falls back to `Config.sessionDurability.scrollbackBytes`, then the
+   * legacy top-level `Config.maxScrollbackPerSessionBytes`, then the
+   * 256 KB hard default.
+   */
+  sessionDurability?: SessionDurabilitySettings;
+}
+
+export interface SessionDurabilitySettings {
+  /** Per-session FIFO cap in bytes. Must be > 0. */
+  scrollbackBytes?: number;
 }
 
 export const MOUNTAIN_NAMES = [
@@ -617,6 +631,12 @@ export interface Config {
    * Config-file-only for this release; no settings UI surface yet.
    */
   maxScrollbackGlobalBytes?: number | undefined;
+  /**
+   * #614 slice 4: global durability defaults. `scrollbackBytes` overrides the
+   * legacy `maxScrollbackPerSessionBytes` knob when both are present and is
+   * itself overridden by per-repo `WorkspaceSettings.sessionDurability`.
+   */
+  sessionDurability?: SessionDurabilitySettings | undefined;
   integrations?:
     | {
         jira?: {
@@ -885,6 +905,8 @@ export interface WorkspaceLevelSettings {
   promptGeneral?: string;
   promptFixConflicts?: string;
   promptStartWork?: string;
+  /** #614 slice 4: per-workspace durability overrides; same shape as WorkspaceSettings. */
+  sessionDurability?: SessionDurabilitySettings;
 }
 
 export interface Workspace {

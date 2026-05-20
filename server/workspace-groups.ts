@@ -168,7 +168,9 @@ export function createWorkspaceGroupsRouter(
     }
     const workspaces = config.workspaces ?? [];
     const sorted = workspaces
-      .map((workspace, index) => normalizeWorkspaceForResponse(workspace, index))
+      .map((workspace, index) =>
+        normalizeWorkspaceForResponse(workspace, index)
+      )
       .sort((a, b) => a.order - b.order);
     res.json(sorted);
   });
@@ -504,6 +506,9 @@ export function createWorkspaceGroupsRouter(
             createParams.additionalDirs = additionalDirs;
           if (safeCols != null) createParams.cols = safeCols;
           if (safeRows != null) createParams.rows = safeRows;
+          if (resolved.scrollbackBytes !== undefined) {
+            createParams.maxScrollbackBytes = resolved.scrollbackBytes;
+          }
 
           const activePtySessions = countActivePtySessions(
             sessionDeps.sessions.list?.() ?? []
