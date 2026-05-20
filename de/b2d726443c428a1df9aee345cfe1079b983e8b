@@ -1,0 +1,21 @@
+frontend/src/lib/environment-options.ts
+  s_afc3e94f2d047a::t_f32fc4a0d77e5e 160-168,170-172
+test/environment-options.test.ts
+  s_afc3e94f2d047a::t_5c7f0427d22aa5 298-356
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "deb2d726443c428a1df9aee345cfe1079b983e8b",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
