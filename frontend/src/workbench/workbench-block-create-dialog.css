@@ -1,0 +1,110 @@
+/* WorkbenchBlockCreateDialog — TUI aesthetic per DESIGN.md.
+   Outline-only chrome, monospace, lowercase, zero border-radius, no emoji. */
+
+.workbench-block-create-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  min-width: 480px;
+  max-width: 720px;
+}
+
+.workbench-block-create-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-sm);
+}
+
+.workbench-block-create-dialog__title {
+  font-size: var(--font-size-base);
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.workbench-block-create-dialog__cancel {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: var(--space-2xs) var(--space-sm);
+  cursor: pointer;
+}
+
+.workbench-block-create-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.workbench-block-create-dialog__label {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.workbench-block-create-dialog__input,
+.workbench-block-create-dialog__select {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: var(--space-2xs) var(--space-sm);
+}
+
+.workbench-block-create-dialog__input:focus,
+.workbench-block-create-dialog__select:focus {
+  outline: none;
+  border-color: var(--text-muted);
+}
+
+.workbench-block-create-dialog__picker-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.workbench-block-create-dialog__default-error {
+  font-size: var(--font-size-xs);
+  color: var(--status-error);
+  border: 1px solid color-mix(in srgb, var(--status-error) 40%, transparent);
+  padding: var(--space-2xs) var(--space-sm);
+}
+
+.workbench-block-create-dialog__actions {
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-sm);
+}
+
+.workbench-block-create-dialog__confirm,
+.workbench-block-create-dialog__cancel-btn {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: var(--space-2xs) var(--space-md);
+  cursor: pointer;
+}
+
+.workbench-block-create-dialog__confirm:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.workbench-block-create-dialog__confirm:not(:disabled):hover {
+  border-color: var(--text);
+}

@@ -38,8 +38,18 @@ import type {
   WorkbenchBlockContext,
   WorkbenchBlockDescriptor,
 } from '../../../shared/workbench-block-types.js';
+import type { EnvironmentOption } from '../../../shared/environment-option.js';
+import type {
+  ActiveTabContext,
+  EnvironmentHistoryEntry,
+} from '../../../shared/safe-defaults.js';
 import { fetchWorkbenchLayout, putWorkbenchLayout } from '../lib/api.js';
 import { BlockHost } from './BlockHost.js';
+import {
+  WorkbenchBlockCreateDialog,
+  type WorkbenchBlockCreateRequest,
+} from './WorkbenchBlockCreateDialog.js';
+import { buildBlockDescriptor } from './block-create-helpers.js';
 import './workbench-canvas.css';
 
 // ---------------------------------------------------------------------------
@@ -327,6 +337,20 @@ function CanvasBlock({
 
 export interface WorkbenchCanvasProps {
   workspaceId: string;
+  /**
+   * Environment options the create-block dialog will offer. Supplied by the
+   * caller (env store / picker provider). Empty array disables creation with
+   * a typed default-error inside the dialog.
+   *
+   * Optional for backward compatibility — when omitted, the create button is
+   * hidden so the canvas continues to render existing blocks without the
+   * #631 entry point.
+   */
+  environmentCandidates?: readonly EnvironmentOption[];
+  /** Active tab context for `pickDefaultEnvironment`. */
+  activeTab?: ActiveTabContext | null;
+  /** Last-used env history, newest-first by caller convention. */
+  environmentHistory?: readonly EnvironmentHistoryEntry[];
 }
 
 /**
@@ -348,6 +372,9 @@ export interface WorkbenchCanvasProps {
  */
 export function WorkbenchCanvas({
   workspaceId,
+  environmentCandidates,
+  activeTab = null,
+  environmentHistory = [],
 }: WorkbenchCanvasProps): React.ReactElement {
   const queryClient = useQueryClient();
   const queryKey = workbenchLayoutQueryKey(workspaceId);
@@ -511,13 +538,96 @@ export function WorkbenchCanvas({
   );
 
   // ---------------------------------------------------------------------------
+  // Create block (#631) — open dialog, persist on confirm
+  // ---------------------------------------------------------------------------
+
+  const [createOpen, setCreateOpen] = useState(false);
+  // Gate the create button on `!isLoading` so the UI does not invite a click
+  // before the layout has hydrated. The handler also seeds an empty layout
+  // for the no-layout case (defense in depth), but hiding the button during
+  // load matches what the empty-state UI already implies.
+  const showCreate =
+    !isLoading &&
+    environmentCandidates !== undefined &&
+    environmentCandidates.length > 0;
+
+  const handleCreate = useCallback(
+    (req: WorkbenchBlockCreateRequest) => {
+      const descriptor = buildBlockDescriptor({
+        request: req,
+        idFactory: () =>
+          typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID()
+            : `block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      });
+      const existing = layoutRef.current;
+      const blockCount = existing?.blocks.length ?? 0;
+      const placement: WorkbenchBlockPlacement = {
+        descriptor,
+        // Stagger new blocks so consecutive creates don't fully overlap.
+        position: {
+          x: 24 + ((blockCount * 24) % 240),
+          y: 24 + ((blockCount * 24) % 240),
+        },
+        size: { width: 480, height: 320 },
+        minimized: false,
+      };
+      // If no layout has hydrated yet, seed an empty one so the first create
+      // is not silently dropped by `applyUpdate`'s `if (!prev) return`.
+      const next: WorkbenchLayout = existing
+        ? { ...existing, blocks: [...existing.blocks, placement] }
+        : {
+            schemaVersion: WORKBENCH_LAYOUT_SCHEMA_VERSION,
+            workspaceScope: { id: workspaceId },
+            blocks: [placement],
+          };
+      setLayout(next);
+      debouncedPersist(next);
+      setCreateOpen(false);
+    },
+    [debouncedPersist, workspaceId]
+  );
+
+  // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
+
+  const createButton = showCreate ? (
+    <button
+      type="button"
+      className="workbench-canvas__create-btn"
+      onClick={() => setCreateOpen(true)}
+      data-testid="workbench-canvas-create-btn"
+      aria-label="create block"
+    >
+      + create block
+    </button>
+  ) : null;
+
+  const createDialog =
+    showCreate && createOpen ? (
+      <div
+        className="workbench-canvas__create-overlay"
+        data-testid="workbench-canvas-create-overlay"
+        role="dialog"
+        aria-modal="true"
+      >
+        <WorkbenchBlockCreateDialog
+          candidates={environmentCandidates ?? []}
+          activeTab={activeTab}
+          history={environmentHistory}
+          onCreate={handleCreate}
+          onCancel={() => setCreateOpen(false)}
+        />
+      </div>
+    ) : null;
 
   if (isLoading) {
     return (
       <div className="workbench-canvas">
         <div className="workbench-canvas__loading">loading workbench…</div>
+        {createButton}
+        {createDialog}
       </div>
     );
   }
@@ -528,6 +638,8 @@ export function WorkbenchCanvas({
         <div className="workbench-canvas__empty">
           no blocks in this workspace
         </div>
+        {createButton}
+        {createDialog}
       </div>
     );
   }
@@ -556,6 +668,8 @@ export function WorkbenchCanvas({
             onClose={handleClose}
           />
         ))}
+        {createButton}
+        {createDialog}
       </div>
     </DndContext>
   );
