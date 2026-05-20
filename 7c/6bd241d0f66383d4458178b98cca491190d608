@@ -1,0 +1,22 @@
+frontend/src/components/dialogs/EnvPickerDialog.tsx
+  s_afc3e94f2d047a::t_6864f664c08248 134-138,145,151-154,166,180-189,192
+  s_afc3e94f2d047a::t_bda41300e01af9 23
+test/components/EnvPickerPaletteAction.test.ts
+  s_afc3e94f2d047a::t_50ca02b6bd5bf1 319-388
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "7c6bd241d0f66383d4458178b98cca491190d608",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
