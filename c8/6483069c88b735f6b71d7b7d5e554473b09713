@@ -1,0 +1,32 @@
+shared/workbench-block-environment.ts
+  s_afc3e94f2d047a::t_3a53375621ec1d 1-196,200-257,260-268,270-275,277-283,285-295,297-307
+  s_afc3e94f2d047a::t_f6135b9043df19 197-199
+  s_afc3e94f2d047a::t_95cbd9d768543e 258-259,269,276,284,296
+frontend/src/workbench/WorkbenchCanvas.tsx
+  s_afc3e94f2d047a::t_4bfc74ea5d1990 41-43,45,48-52
+  s_afc3e94f2d047a::t_7cd626a64962f2 340-353
+  s_afc3e94f2d047a::t_70878332981cdc 375-377
+  s_afc3e94f2d047a::t_b118d25dfa6f1b 541-544,549,553-562,565-566,571-574
+  s_afc3e94f2d047a::t_fb2dceb0c0e35a 545-548,550-552
+  s_afc3e94f2d047a::t_309dc6046cfba7 563-564,569-570,575-585,588
+  s_afc3e94f2d047a::t_e3d5a9e9bee29d 586-587,589-612,617-618,629-630,659-660
+frontend/src/workbench/WorkbenchBlockCreateDialog.tsx
+  s_afc3e94f2d047a::t_5f23b56923a6f0 1-115,117,119-284,290-321
+  s_afc3e94f2d047a::t_a724f6dd299a38 285-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "c86483069c88b735f6b71d7b7d5e554473b09713",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
