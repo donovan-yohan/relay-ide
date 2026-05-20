@@ -825,6 +825,7 @@ function buildSessionObject(
     createdAt,
     lastActivity: createdAt,
     scrollback,
+    scrollbackBytesEvicted: 0,
     idle: false,
     cwd,
     customCommand:
@@ -1108,12 +1109,15 @@ export function createPtySession(
       resetIdleTimer();
       scrollback.push(data);
       scrollbackRef.bytes += data.length;
-      // Trim oldest entries if over limit
+      // Trim oldest entries if over limit; track total bytes evicted so
+      // `SessionReplaySnapshot.bytesDropped` can report lost history.
       while (
         scrollbackRef.bytes > maxScrollbackPerSession &&
         scrollback.length > 1
       ) {
-        scrollbackRef.bytes -= (scrollback.shift() as string).length;
+        const evicted = (scrollback.shift() as string).length;
+        scrollbackRef.bytes -= evicted;
+        session.scrollbackBytesEvicted += evicted;
       }
       // Notify sessions layer so global cap can be enforced.
       // Pass the session id and chunk size so the caller can maintain an

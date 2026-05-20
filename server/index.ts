@@ -2365,6 +2365,35 @@ async function main(): Promise<void> {
     res.json(remote);
   });
 
+  app.get('/sessions/:id/replay', requireScopedSessionAuth, (req, res) => {
+    const decision = capabilityDecisionFromRequest(
+      req,
+      CONTROL_READ_CAPABILITY
+    );
+    if (decision.decision !== 'allow') {
+      const error = capabilityError(decision);
+      res.status(sessionControlErrorStatus(error)).json({ error });
+      return;
+    }
+    const id = req.params['id'] as string;
+    const snapshot = localRelayNode.sessions.getReplaySnapshot(id);
+    if (!snapshot) {
+      // Routed/remote replay forwarding is out of scope for #656; the hub
+      // currently only serves replay for sessions owned by the local node.
+      res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          reasonCode: 'SESSION_REPLAY_UNAVAILABLE',
+          message:
+            'session replay is only available for local PTY sessions in this slice',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    res.json(snapshot);
+  });
+
   app.get(
     '/sessions/:id/interventions',
     requireScopedSessionAuth,

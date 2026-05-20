@@ -50,9 +50,41 @@ without polling.
 helper only fires when the derived state actually differs, so a steady-state
 session does not emit on every list call.
 
+## Bounded replay snapshot
+
+PTY sessions own a 256 KB FIFO scrollback buffer (`server/pty-handler.ts`).
+Slice 2 formalises this as a typed snapshot consumers can pull on demand:
+
+```ts
+sessions.getReplaySnapshot(sessionId): SessionReplaySnapshot | null
+```
+
+Snapshot fields:
+
+| Field           | Meaning                                        |
+| --------------- | ---------------------------------------------- |
+| `payload`       | Concatenated scrollback string.                |
+| `bytesIncluded` | Resident bytes in `payload`.                   |
+| `bytesDropped`  | Lifetime bytes evicted by the FIFO. Monotonic. |
+| `capacityBytes` | Per-session FIFO cap (currently 256 KB).       |
+| `truncated`     | Convenience flag: `bytesDropped > 0`.          |
+| `capturedAt`    | ISO timestamp of snapshot capture.             |
+| `sessionId`     | Session id this snapshot belongs to.           |
+
+REST endpoint: `GET /sessions/:id/replay` (auth-gated like other session
+routes). Web-mode sessions and unknown ids return 404
+`SESSION_REPLAY_UNAVAILABLE`; remote/routed sessions are out of scope for
+this slice (see #614 slice 3+).
+
+The existing WebSocket attach path keeps streaming raw scrollback bytes to
+xterm clients — this REST snapshot is a separate, optional read for status
+cards, agent adapters, and reattach UX that need a typed view.
+
 ## Out of scope (later #614 slices)
 
 - Reconnect UX badges (slice 3).
-- Bounded replay buffer redesign (slice 2).
+- Cross-node/remote replay forwarding (slice 3).
+- Web-session replay redesign (existing `WebSession.messages` buffer is
+  unchanged in slice 2).
 - Per-node/per-connection/per-session durability config knobs (slice 4).
 - Live process migration. No raw infinite transcript storage.
