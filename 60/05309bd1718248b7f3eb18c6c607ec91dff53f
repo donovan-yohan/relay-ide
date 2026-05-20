@@ -1,0 +1,21 @@
+frontend/src/workbench/blocks/file.tsx
+  s_5aff5e5e0d9bbd::t_e7b6996e01594d 462,470-482
+frontend/src/workbench/blocks/file.css
+  s_5aff5e5e0d9bbd::t_b02437da7ae651 185-188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "6005309bd1718248b7f3eb18c6c607ec91dff53f",
+  "prompts": {},
+  "sessions": {
+    "s_5aff5e5e0d9bbd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "06797abf-9fbb-49ce-9a89-a80a243f8f06",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
