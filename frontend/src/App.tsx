@@ -82,6 +82,8 @@ import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.js';
 import type { AddWorkspaceDialogHandle } from './components/dialogs/AddWorkspaceDialog.js';
 import WorkspaceSettingsDialog from './components/dialogs/WorkspaceSettingsDialog.js';
 import type { WorkspaceSettingsDialogHandle } from './components/dialogs/WorkspaceSettingsDialog.js';
+import EnvPickerDialog from './components/dialogs/EnvPickerDialog.js';
+import { reposToEnvironmentOptions } from './lib/repo-to-environment.js';
 import AnalyticsDashboard from './components/AnalyticsDashboard.js';
 import SessionDetail from './components/SessionDetail.js';
 import FullPageDiff from './components/FullPageDiff.js';
@@ -1305,6 +1307,14 @@ export default function App() {
             useUiStore.getState().setActiveRepoPath(null);
           }
         }}
+      />
+      {/* #630: command-palette "start work in environment…" target. Driven by
+          the `env-picker` ActiveModal variant. Options derive from known
+          repos as a stopgap until the full env-inventory feed lands (#615). */}
+      <EnvPickerDialog
+        open={activeModal?.modal === 'env-picker'}
+        options={reposToEnvironmentOptions(repos)}
+        onClose={handleModalClose}
       />
 
       {/* Full-page diff overlay */}

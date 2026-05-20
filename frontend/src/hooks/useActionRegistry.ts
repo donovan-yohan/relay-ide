@@ -15,6 +15,7 @@ import {
   sessionCustomize,
   sessionSwitchToTab,
   sessionRename,
+  sessionStartWorkInEnv,
 } from '../lib/actions/definitions/session.js';
 import { createFrameworkAction } from '../lib/actions/definitions/frameworks.js';
 import { isFrameworkAvailable } from '../components/dialogs/CustomizeSessionDialog.js';
@@ -214,6 +215,14 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       },
       { ...sessionStartOnRepo, handler: () => handleQuickAgent() },
       { ...sessionStartOnTicket, handler: () => navigateToDashboard() },
+      {
+        // #630: opens the env picker dialog. The dialog itself owns
+        // default-selection + block-on-stale + launch wiring; the action's
+        // only job is to surface the entry point in the palette.
+        ...sessionStartWorkInEnv,
+        handler: () =>
+          useUiStore.getState().setActiveModal({ modal: 'env-picker' }),
+      },
       {
         ...sessionCustomize,
         handler: () => {

@@ -18,6 +18,11 @@ export function hashPath(path: string): string {
 export type ModalRoute =
   | { modal: 'settings'; scrollToId: string | null }
   | { modal: 'add-repo' }
+  // #630: env-picker is a transient palette-driven dialog. It is included in
+  // the ModalRoute union so the activeModal store shape stays compatible with
+  // ActiveModal, but it is intentionally NOT persisted to the URL — opening
+  // it via deep link would race the env-inventory feed.
+  | { modal: 'env-picker' }
   | null;
 
 /** Parse `window.location.search` into a ModalRoute. */
@@ -40,6 +45,8 @@ export function buildQuery(modal: ModalRoute): string {
     return modal.scrollToId ? `?settings=${modal.scrollToId}` : '?settings';
   }
   if (modal.modal === 'add-repo') return '?add-repo';
+  // #630: env-picker is in-memory only; no URL representation.
+  if (modal.modal === 'env-picker') return '';
   return '';
 }
 

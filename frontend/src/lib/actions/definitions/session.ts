@@ -83,6 +83,22 @@ export const sessionRename: ActionMeta = {
   when: (ctx) => !!ctx.sessionId,
 };
 
+// #630: command-palette entry that opens the EnvironmentPicker (#627) and
+// launches against the chosen Node/RepoInstance/Bench via the shared launch
+// hook. Distinct from `sessionNewAgent` / `sessionNewTerminal`: those launch
+// against the active workspace's implicit node, while this one explicitly
+// makes the environment a first-class choice the user makes BEFORE launch.
+// Aliases mirror Wave's "connection picker" vocabulary so users searching for
+// "environment", "node", "where" all find it.
+export const sessionStartWorkInEnv: ActionMeta = {
+  id: 'session.start-work-in-env',
+  label: 'start work in environment…',
+  description: 'pick a node / repo / worktree, then launch',
+  aliases: ['start work', 'environment', 'env', 'node', 'where', 'pick env'],
+  category: 'session',
+  icon: '▸',
+};
+
 export const sessionActions: ActionMeta[] = [
   sessionNewAgent,
   sessionNewTerminal,
@@ -93,4 +109,5 @@ export const sessionActions: ActionMeta[] = [
   sessionCustomize,
   sessionSwitchToTab,
   sessionRename,
+  sessionStartWorkInEnv,
 ];
