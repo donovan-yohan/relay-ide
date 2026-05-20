@@ -528,11 +528,11 @@ Response groups repo instances by canonical git identity, showing per-node paths
 ```ts
 interface FileResourceRef {
   nodeId: NodeId;
-  path: string;                   // absolute, POSIX-normalized
-  capturedAt: string;             // ISO 8601 UTC
+  path: string; // absolute, POSIX-normalized
+  capturedAt: string; // ISO 8601 UTC
   intent: 'read' | 'list' | 'stat' | 'tail';
-  size?: number;                  // mint-time hint
-  sha256?: string;                // mint-time hash (only if `fs.read` ran)
+  size?: number; // mint-time hint
+  sha256?: string; // mint-time hash (only if `fs.read` ran)
   mtimeMs?: number;
   repoBinding?: { repoPath; worktreePath?; branch? };
   maxBytes?: number;
@@ -553,6 +553,24 @@ The `FileBlock` renderer (`frontend/src/workbench/blocks/file.tsx`) now consumes
 4. Error states surface inline lowercase copy: `not authorized` (403/FORBIDDEN), `node offline` (NODE_OFFLINE), `file not found` (404/FILE_RPC_NOT_FOUND), `session required` (missing session context).
 
 Legacy `FileRef` descriptors (those without `capturedAt`/`intent`) render the original placeholder copy with no fetch attempted, preserving backward compatibility.
+
+### PromptAttachment shape (#616 slice 3)
+
+`shared/prompt-attachment.ts` defines `PromptAttachment` — the typed, bounded shape an agent or human attaches to an outgoing prompt. The discriminated union is open for future kinds; the slice-3 shape is:
+
+```ts
+type PromptAttachment = {
+  kind: 'file-ref';
+  ref: FileResourceRef;
+  summary?: string;
+};
+```
+
+The contract is **ref-only by default**. Attachments carry a `FileResourceRef` pointer plus advisory size/hash decorations — never raw bytes. Adapters that want to expand a ref into prompt context must hold the right capability grant (`rpc:fs:read`) and respect the ref's `maxBytes` cap.
+
+`AgentUserMessageItemV2.promptAttachments` and the `agent-send-message-v2` command both carry a typed `PromptAttachment[]` field alongside the legacy untyped `attachments` (which still routes the adapter-local `Attachment` shape — local path + mime — for back-compat). `server/ws.ts` parses incoming `promptAttachments` via `parsePromptAttachmentList`, drops malformed entries, and rejects the message when the array exceeds `MAX_PROMPT_ATTACHMENTS_PER_MESSAGE` (16).
+
+`promptAttachmentToArtifactRef` bridges an attachment into a `WorkContext.ArtifactRef` with `privacy.rawPayloadStored = false` and `redaction.strategy = 'hash'` (when `ref.sha256` is set) or `'summary'`. Per-adapter consumption of `promptAttachments` (Claude/Codex/OpenCode/Hermes) and dispatch-site `WorkContext.artifacts` append land in follow-on #616 slices.
 
 ## Bootstrap and Service Modes
 

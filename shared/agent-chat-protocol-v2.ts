@@ -1,3 +1,5 @@
+import type { PromptAttachment } from './prompt-attachment.js';
+
 export type AgentProviderV2 =
   | 'claude'
   | 'codex'
@@ -147,7 +149,14 @@ export interface AgentUserMessageItemV2 extends AgentItemBaseV2 {
   type: 'userMessage';
   text: string;
   expandedText?: string;
+  /**
+   * Legacy adapter-shaped attachments (local path + mime). New federated
+   * attachments — `FileResourceRef`-backed bounded refs — flow via
+   * `promptAttachments` below. Both fields may coexist during migration.
+   */
   attachments?: Array<Record<string, unknown>>;
+  /** Typed federated attachments. Bounded by default — no raw bytes. */
+  promptAttachments?: PromptAttachment[];
   command?: { name: string; arguments?: string };
 }
 
@@ -453,6 +462,8 @@ export type AgentCommandV2 =
       text: string;
       clientMessageId?: string;
       attachments?: Array<Record<string, unknown>>;
+      /** Typed federated attachments. Bounded by default — no raw bytes. */
+      promptAttachments?: PromptAttachment[];
     }
   | { type: 'agent-interrupt-v2'; sessionId: string; turnId?: string }
   | {
