@@ -125,6 +125,18 @@
   color: var(--text);
 }
 
+/* Disabled palette items — visible but not invocable (e.g. node degraded for this feature) */
+.palette-item.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.palette-item.disabled:hover,
+.palette-item.disabled.focused {
+  background: transparent;
+  color: var(--text-muted);
+}
+
 .item-cursor {
   flex-shrink: 0;
   width: 12px;

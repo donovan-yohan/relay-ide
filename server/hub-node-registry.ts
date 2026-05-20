@@ -75,10 +75,14 @@ interface StoredNodeRecord {
   platform: string;
   arch: string;
   relayVersion: string;
-  /** Helper binary version from NodeManifest.helperVersion (#655). Optional for backward compat. */
+  /** Helper binary version from NodeManifest.helperVersion; optional for legacy records. */
   helperVersion?: string;
   protocolVersion: string;
   capabilities: NodeCapabilityManifestSummary;
+  /** Whether File RPC is available on this node (from NodeManifest.fileRpc.available). */
+  fileRpcAvailable?: boolean;
+  /** Structured degraded reasons from the manifest, persisted on heartbeat. */
+  degradedReasons?: import('../shared/node-manifest.js').NodeManifestDegradedReason[];
   acl?: RelayNodeAcl;
   repoInventory?: unknown;
   credentialRotation?: StoredCredentialRotation;
@@ -581,6 +585,7 @@ function publicNode(
     platform: node.platform,
     arch: node.arch,
     relayVersion: node.relayVersion,
+    ...(node.helperVersion ? { helperVersion: node.helperVersion } : {}),
     protocolVersion: node.protocolVersion,
     status,
     connection: connectionSummary(status),
@@ -600,6 +605,12 @@ function publicNode(
     },
     ...(helperSkew ? { helperSkew } : {}),
     capabilities: normalizeCapabilitySummary(node.capabilities),
+    ...(node.fileRpcAvailable !== undefined
+      ? { fileRpcAvailable: node.fileRpcAvailable }
+      : {}),
+    ...(node.degradedReasons && node.degradedReasons.length > 0
+      ? { degradedReasons: node.degradedReasons }
+      : {}),
     createdAt: node.createdAt,
     pairedAt: node.pairedAt,
     lastSeenAt: node.lastSeenAt,
@@ -743,11 +754,14 @@ export class HubNodeRegistry {
       platform: input.manifest.platform,
       arch: input.manifest.arch,
       relayVersion: input.manifest.relayVersion,
-      ...(input.manifest.helperVersion
-        ? { helperVersion: input.manifest.helperVersion }
-        : {}),
+      helperVersion:
+        input.manifest.helperVersion ?? input.manifest.relayVersion,
       protocolVersion,
       capabilities: summarizeCapabilities(input.manifest),
+      ...(input.manifest.fileRpc
+        ? { fileRpcAvailable: input.manifest.fileRpc.available }
+        : {}),
+      degradedReasons: input.manifest.degradedReasons ?? [],
       acl: createLegacyDefaultNodeAcl({
         nodeId,
         credentialId: credential.credentialId,
@@ -861,10 +875,15 @@ export class HubNodeRegistry {
       node.platform = input.manifest.platform;
       node.arch = input.manifest.arch;
       node.relayVersion = input.manifest.relayVersion;
-      if (input.manifest.helperVersion) {
-        node.helperVersion = input.manifest.helperVersion;
-      }
+      node.helperVersion =
+        input.manifest.helperVersion ?? input.manifest.relayVersion;
       node.capabilities = summarizeCapabilities(input.manifest);
+      // Persist file-rpc availability and degraded reasons from the manifest
+      // so the frontend can surface structured degraded state without re-fetching.
+      if (input.manifest.fileRpc) {
+        node.fileRpcAvailable = input.manifest.fileRpc.available;
+      }
+      node.degradedReasons = input.manifest.degradedReasons ?? [];
     }
     if (input.repoInventory !== undefined && input.repoInventory !== null) {
       node.repoInventory = input.repoInventory;

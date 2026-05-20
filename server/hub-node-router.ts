@@ -2951,16 +2951,14 @@ export function createHubNodeRouter(
           workContextId
         );
         options.readModelCache?.upsert(nodeId, session, createNow.getTime());
-        res
-          .status(201)
-          .json(
-            associationError
-              ? {
-                  ...responseSession,
-                  workContextAssociationError: associationError,
-                }
-              : responseSession
-          );
+        res.status(201).json(
+          associationError
+            ? {
+                ...responseSession,
+                workContextAssociationError: associationError,
+              }
+            : responseSession
+        );
       } catch (error) {
         if (error instanceof HubNodeLinkError) {
           sendRelayError(res, error.relayNodeError);

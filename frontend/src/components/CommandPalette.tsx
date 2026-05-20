@@ -138,6 +138,8 @@ type PaletteResult =
       label: string;
       sublabel?: string;
       data: Action;
+      /** Non-empty when the action is visible but cannot be invoked in the current context. */
+      disabledReason?: string;
     }
   | {
       type: 'setting';
@@ -219,6 +221,26 @@ function useCachedData(open: boolean) {
   return { cachedPrs, cachedGithubIssues, cachedJiraIssues };
 }
 
+/**
+ * Converts an Action into a PaletteResult command entry.
+ * Actions with `disabledReason` that return a non-empty string are included
+ * as disabled items so the user knows why the command is unavailable.
+ */
+function actionToPaletteCommand(
+  a: Action,
+  ctx: ActionContext
+): Extract<PaletteResult, { type: 'command' }> {
+  const reason = a.disabledReason?.(ctx);
+  return {
+    type: 'command',
+    id: `cmd-${a.id}`,
+    label: a.label,
+    sublabel: reason ?? a.description ?? '',
+    data: a,
+    ...(reason ? { disabledReason: reason } : {}),
+  };
+}
+
 function buildResults(
   q: string,
   workspaces: Repo[],
@@ -227,8 +249,11 @@ function buildResults(
   cachedGithubIssues: GitHubIssue[],
   cachedJiraIssues: JiraIssue[],
   registryCommands: Action[],
+  /** Actions that have a disabledReason but failed `when` — shown greyed-out. */
+  degradedCommands: { action: Action; reason: string }[],
   needsAttention: PullRequest[],
-  activeTab: Tab
+  activeTab: Tab,
+  actionContext: ActionContext
 ): PaletteResult[] {
   const items: PaletteResult[] = [];
   if (!q) {
@@ -249,12 +274,15 @@ function buildResults(
         data: ws,
       });
     for (const a of registryCommands)
+      items.push(actionToPaletteCommand(a, actionContext));
+    for (const { action, reason } of degradedCommands)
       items.push({
         type: 'command',
-        id: `cmd-${a.id}`,
-        label: a.label,
-        sublabel: a.description ?? '',
-        data: a,
+        id: `cmd-${action.id}`,
+        label: action.label,
+        sublabel: reason,
+        data: action,
+        disabledReason: reason,
       });
     return items.filter((r) => matchesTab(r.type, activeTab));
   }
@@ -320,12 +348,22 @@ function buildResults(
       a.description?.toLowerCase().includes(q) ||
       a.aliases?.some((alias) => alias.toLowerCase().includes(q))
   )) {
+    items.push(actionToPaletteCommand(a, actionContext));
+  }
+  for (const { action, reason } of degradedCommands.filter(
+    (entry) =>
+      entry.action.label.toLowerCase().includes(q) ||
+      entry.action.description?.toLowerCase().includes(q) ||
+      entry.action.aliases?.some((alias) => alias.toLowerCase().includes(q)) ||
+      entry.reason.toLowerCase().includes(q)
+  )) {
     items.push({
       type: 'command',
-      id: `cmd-${a.id}`,
-      label: a.label,
-      sublabel: a.description ?? '',
-      data: a,
+      id: `cmd-${action.id}`,
+      label: action.label,
+      sublabel: reason,
+      data: action,
+      disabledReason: reason,
     });
   }
   for (const s of SETTINGS_ENTRIES.filter(
@@ -449,6 +487,8 @@ function usePaletteHandlers(
   const selectItem = useCallback(
     async (item: PaletteResult) => {
       if (item.type === 'command') {
+        // Degraded commands are visible but not invocable — do nothing on select.
+        if ('disabledReason' in item && item.disabledReason) return;
         try {
           await (item.data as Action).handler(actionContext);
         } finally {
@@ -607,8 +647,22 @@ export function CommandPalette({
   } = usePaletteState(open, inputRef);
   const { cachedPrs, cachedGithubIssues, cachedJiraIssues } =
     useCachedData(open);
+  // Commands that pass `when` — active and invocable.
   const registryCommands = useMemo(
     () => getAllActions().filter((a) => !a.when || a.when(actionContext)),
+    [actionContext]
+  );
+  // Commands that fail `when` but have a `disabledReason` — shown greyed-out
+  // in the palette so users know the feature exists and why it's unavailable.
+  const degradedCommands = useMemo(
+    () =>
+      getAllActions()
+        .filter((a) => a.when && !a.when(actionContext) && !!a.disabledReason)
+        .map((a) => ({
+          action: a,
+          reason: a.disabledReason!(actionContext) ?? 'unavailable',
+        }))
+        .filter(({ reason }) => reason.length > 0),
     [actionContext]
   );
   const needsAttention = useMemo(
@@ -634,8 +688,10 @@ export function CommandPalette({
         cachedGithubIssues,
         cachedJiraIssues,
         registryCommands,
+        degradedCommands,
         needsAttention,
-        activeTab
+        activeTab,
+        actionContext
       ),
     [
       debouncedQuery,
@@ -645,8 +701,10 @@ export function CommandPalette({
       cachedGithubIssues,
       cachedJiraIssues,
       registryCommands,
+      degradedCommands,
       needsAttention,
       activeTab,
+      actionContext,
     ]
   );
   const groupedResults = useGroupedResults(results, debouncedQuery);
@@ -791,16 +849,30 @@ export function CommandPalette({
                   {group.items.map((item) => {
                     const globalIndex = flatIndexMap.get(item.id) ?? -1;
                     const isFocused = globalIndex === focusedIndex;
+                    const isDisabled =
+                      item.type === 'command' &&
+                      'disabledReason' in item &&
+                      !!item.disabledReason;
+                    const disabledReason =
+                      item.type === 'command' && 'disabledReason' in item
+                        ? item.disabledReason
+                        : undefined;
                     return (
                       <div
                         key={item.id}
                         id={`palette-item-${item.id}`}
-                        className={['palette-item', isFocused ? 'focused' : '']
+                        className={[
+                          'palette-item',
+                          isFocused ? 'focused' : '',
+                          isDisabled ? 'disabled' : '',
+                        ]
                           .filter(Boolean)
                           .join(' ')}
                         role="option"
                         tabIndex={-1}
                         aria-selected={isFocused}
+                        aria-disabled={isDisabled}
+                        title={isDisabled ? disabledReason : undefined}
                         onClick={() => void selectItem(item)}
                         onMouseEnter={() => setFocusedIndex(globalIndex)}
                       >

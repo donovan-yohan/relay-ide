@@ -4,6 +4,7 @@ import {
   type HubNodeSummary,
   type NodeCapabilityStatus,
 } from '../../../../shared/relay-node-protocol.js';
+import type { NodeManifestDegradedReason } from '../../../../shared/node-manifest.js';
 import {
   deriveNodeSecurityVisibility,
   type NodeSecurityVisibility,
@@ -27,6 +28,8 @@ export interface HubNodeDashboardRow {
   routeLabel: string;
   lastSeenLabel: string;
   relayVersion: string;
+  /** Canonical helper binary version. Absent on pre-#651 nodes. */
+  helperVersion: string | null;
   protocolVersion: string;
   versionWarning: string | null;
   /** Helper-binary skew warning, present when helper version diverges from hub. */
@@ -36,6 +39,10 @@ export interface HubNodeDashboardRow {
   attachable: boolean;
   workReadiness: string;
   disabledReason: string | null;
+  /** Whether File RPC is available on this node. `null` = unknown (pre-#651 node). */
+  fileRpcAvailable: boolean | null;
+  /** Structured degraded reasons from the manifest. Empty on healthy nodes. */
+  degradedReasons: NodeManifestDegradedReason[];
 }
 
 interface DeriveOptions {
@@ -199,6 +206,7 @@ export function deriveHubNodeDashboardRows(
       routeLabel: `${route} · ${routeStatus}`,
       lastSeenLabel: formatRelativeTime(node.lastSeenAt, now),
       relayVersion: node.relayVersion,
+      helperVersion: node.helperVersion ?? null,
       protocolVersion: node.protocolVersion,
       versionWarning,
       helperSkewWarning,
@@ -207,6 +215,8 @@ export function deriveHubNodeDashboardRows(
       attachable: reason === null,
       workReadiness: reason === null ? 'ready to work' : 'blocked',
       disabledReason: reason,
+      fileRpcAvailable: node.fileRpcAvailable ?? null,
+      degradedReasons: node.degradedReasons ?? [],
     };
   });
 }

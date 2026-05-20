@@ -79,6 +79,10 @@ import {
   terminalScrollBottom,
 } from '../lib/actions/definitions/terminal.js';
 import {
+  workspaceOpenFileBrowser,
+  workbenchAddFileBlock,
+} from '../lib/actions/definitions/workspace-file-rpc.js';
+import {
   navPreviousTab,
   navNextTab,
   navSwitchToTab,
@@ -523,6 +527,26 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         when: () => !!useUiStore.getState().fullPageDiff,
         handler: () => {
           useUiStore.setState({ fullPageDiff: null });
+        },
+      },
+
+      // ── File-RPC-gated workspace actions (#654) ─────────────────────────────
+      // These show greyed-out in the command palette when the active node's
+      // relay helper does not support file RPC, with a tooltip naming the
+      // missing capability. When the node is healthy, they behave normally.
+      {
+        ...workspaceOpenFileBrowser,
+        handler: () => {
+          // TODO(slice-5+): open the FileBrowser panel against the active node.
+          // For now a noop — the action is registered so the palette gating
+          // machinery can be exercised even before the feature is wired.
+        },
+      },
+      {
+        ...workbenchAddFileBlock,
+        handler: () => {
+          // TODO(slice-5+): open WorkbenchBlockCreateDialog pre-seeded with kind='file'.
+          // For now a noop — same reasoning as workspaceOpenFileBrowser above.
         },
       },
 

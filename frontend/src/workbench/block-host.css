@@ -69,6 +69,23 @@
   background: var(--surface);
 }
 
+/* ===== Node-degraded card (file RPC unavailable on node helper) ===== */
+
+.block-node-degraded {
+  border-color: color-mix(in srgb, var(--status-warning) 40%, transparent);
+}
+
+.block-node-degraded__heading {
+  font-size: var(--font-size-sm);
+  color: var(--status-warning);
+}
+
+.block-node-degraded__detail {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
 /* ===== Error boundary card ===== */
 
 .block-error {
