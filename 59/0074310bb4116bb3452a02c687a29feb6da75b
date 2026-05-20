@@ -1,0 +1,23 @@
+test/session-durability-failure-matrix.test.ts
+  ai_agent 7
+  s_8e47e58ef792e1::t_1ebb82de92a722 1-6,8-210
+docs/SESSION_DURABILITY.md
+  s_8e47e58ef792e1::t_c6497cb19cf7ce 126-131,140-156
+  ai_agent 132-139
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "590074310bb4116bb3452a02c687a29feb6da75b",
+  "prompts": {},
+  "sessions": {
+    "s_8e47e58ef792e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8c96e46-a41f-4160-8319-11ffa90ca8ee",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
