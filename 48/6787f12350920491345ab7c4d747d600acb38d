@@ -1,0 +1,35 @@
+server/pty-handler.ts
+  s_3e9de69a56e5c0::t_9a666316e992ec 32
+  s_3e9de69a56e5c0::t_51c7372d41f504 744-745
+  s_3e9de69a56e5c0::t_e6b272caf89619 642-643,645-652
+  s_3e9de69a56e5c0::t_2dd0d0a10a9a02 1089-1090,1115-1121,1134-1135
+  s_3e9de69a56e5c0::t_412c70cc97af84 575-641,644,653-686
+  s_3e9de69a56e5c0::t_265db48f8d34da 825-830
+  s_3e9de69a56e5c0::t_b6b3a180213f5e 413-416
+bin/relayctl.ts
+  s_3e9de69a56e5c0::t_88f2219ca58e6b 1-251
+package.json
+  s_3e9de69a56e5c0::t_5762ba857088be 9-10
+  s_3e9de69a56e5c0::t_3843880dd0713d 21
+test/relay-session-env.test.ts
+  s_3e9de69a56e5c0::t_d82606546b02f3 157-159,169-182
+  s_3e9de69a56e5c0::t_fc1b22d39f5cde 1-20,22-23,25-156,160-168,183-206,208-212,225-231,236-240,242,249-267,269,275-290,292,298-372
+  s_3e9de69a56e5c0::t_92b350d49b8467 213,215-224
+  s_3e9de69a56e5c0::t_62267a71a931d0 232-235,241,243-248,268,270-274,291,293-297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "486787f12350920491345ab7c4d747d600acb38d",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
