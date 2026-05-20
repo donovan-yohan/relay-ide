@@ -420,6 +420,9 @@ export type AnalyticsView = 'dashboard' | { sessionId: string } | null;
 export type ActiveModal =
   | { modal: 'settings'; scrollToId: string | null }
   | { modal: 'add-repo' }
+  // #630: command-palette entry "start work in environment…" sets this
+  // variant; App renders the EnvPickerDialog which embeds EnvironmentPicker.
+  | { modal: 'env-picker' }
   | null;
 
 // ── State interface ────────────────────────────────────────────────────────
