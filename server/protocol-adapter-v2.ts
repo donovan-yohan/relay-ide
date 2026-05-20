@@ -10,6 +10,7 @@ import {
   type AgentCapabilitySetV2,
   type AgentPatchV2,
 } from '../shared/agent-chat-protocol-v2.js';
+import type { PromptAttachment } from '../shared/prompt-attachment.js';
 
 export type { AdapterConfig, AdapterStatus, Attachment };
 
@@ -18,7 +19,14 @@ const logger = createLogger('protocol-adapter-v2');
 export interface AgentSendMessageInputV2 {
   turnId: string;
   content: string;
+  /** Legacy adapter-shaped attachments — local path + mime. */
   attachments?: Attachment[];
+  /**
+   * Typed federated attachments routed in via slice 3 of #616. Adapters
+   * that do not yet consume these MUST ignore the field; behavior change
+   * lands per-adapter in a follow-on slice.
+   */
+  promptAttachments?: PromptAttachment[];
   clientMessageId?: string;
 }
 

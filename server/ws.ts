@@ -12,6 +12,10 @@ import { loadConfig } from './config.js';
 import { verifyCookieToken } from './auth.js';
 import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
+import {
+  MAX_PROMPT_ATTACHMENTS_PER_MESSAGE,
+  parsePromptAttachmentList,
+} from '../shared/prompt-attachment.js';
 import type { LocalRelayNode } from './local-node.js';
 import type { HubNodeRegistry } from './hub-node-registry.js';
 import {
@@ -175,12 +179,34 @@ function sendAgentMessageV2(
   session: Extract<Session, { mode: 'web' }>,
   parsed: Record<string, unknown>
 ): void {
+  const rawPromptAttachments = Array.isArray(parsed['promptAttachments'])
+    ? (parsed['promptAttachments'] as unknown[])
+    : [];
+  if (rawPromptAttachments.length > MAX_PROMPT_ATTACHMENTS_PER_MESSAGE) {
+    sendAgentErrorV2(
+      ws,
+      session.id,
+      `prompt attachments exceed cap (${rawPromptAttachments.length} > ${MAX_PROMPT_ATTACHMENTS_PER_MESSAGE})`,
+      null
+    );
+    return;
+  }
+  const promptAttachments = parsePromptAttachmentList(rawPromptAttachments);
+  if (
+    rawPromptAttachments.length > 0 &&
+    promptAttachments.length !== rawPromptAttachments.length
+  ) {
+    logger.warn(
+      `v2 sendMessage dropped ${rawPromptAttachments.length - promptAttachments.length} malformed prompt attachments`
+    );
+  }
   const input = {
     turnId: String(parsed['turnId'] ?? ''),
     content: String(parsed['content'] ?? ''),
     ...(parsed['attachments'] !== undefined
       ? { attachments: parsed['attachments'] as Attachment[] }
       : {}),
+    ...(promptAttachments.length > 0 ? { promptAttachments } : {}),
     ...(typeof parsed['clientMessageId'] === 'string'
       ? { clientMessageId: parsed['clientMessageId'] }
       : {}),
