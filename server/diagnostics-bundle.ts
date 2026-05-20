@@ -110,7 +110,11 @@ export const DIAGNOSTICS_REDACTION_RULES: readonly DiagnosticsRedactionRule[] = 
   { id: 'bearer-token', description: 'standalone Bearer token values' },
   { id: 'cookie-header', description: 'cookie header values' },
   { id: 'github-token', description: 'GitHub token formats' },
-  { id: 'url-credential', description: 'URL embedded credentials' },
+  {
+    id: 'url-credential',
+    description:
+      'URL embedded credentials (any scheme: http/https/ws/wss/git/ssh/...)',
+  },
   {
     id: 'secret-assignment',
     description:
@@ -606,7 +610,12 @@ export function redactText(value: string): RedactionResult<string> {
   );
   output = replaceAndCount(
     output,
-    /(https?:\/\/)([^/\s:@]+):([^@\s/]+)@/g,
+    // Match any RFC-3986 scheme prefix (http/https/ws/wss/git/ssh/etc.) so
+    // credentials embedded in non-http URLs — notably the wss:// hub URL
+    // logged by node-link-client.ts:411 — get scrubbed too (issue #604).
+    // Case-insensitive; still anchored at the scheme boundary, so JSON-ish
+    // `key:value@host` without `://` does not match.
+    /([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^@\s/]+)@/gi,
     'url-credential',
     `$1${REDACTED}:${REDACTED}@`,
     counts
