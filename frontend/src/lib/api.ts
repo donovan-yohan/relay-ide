@@ -2,6 +2,8 @@ import type { WorkbenchLayout } from '../../../shared/workbench-layout-types.js'
 import type {
   FileRpcListRequest,
   FileRpcListResponse,
+  FileRpcReadResponse,
+  FileRpcStatResponse,
 } from '../../../shared/file-rpc.js';
 import type {
   SessionSummary,
@@ -727,6 +729,46 @@ export async function fetchNodeFsList(args: NodeFsListArgs): Promise<FileRpcList
     maxEntries: args.maxEntries ?? 100,
   };
   return json<FileRpcListResponse>(
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+export interface NodeFsReadArgs {
+  nodeId: string;
+  sessionId: string;
+  path: string;
+  maxBytes?: number;
+  rangeStart?: number;
+}
+
+export async function fetchNodeFsRead(args: NodeFsReadArgs): Promise<FileRpcReadResponse> {
+  const url = `/hub/nodes/${encodeURIComponent(args.nodeId)}/sessions/${encodeURIComponent(args.sessionId)}/files/read`;
+  const body: Record<string, unknown> = { path: args.path };
+  if (args.maxBytes !== undefined) body.maxBytes = args.maxBytes;
+  if (args.rangeStart !== undefined) body.rangeStart = args.rangeStart;
+  return json<FileRpcReadResponse>(
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+export interface NodeFsStatArgs {
+  nodeId: string;
+  sessionId: string;
+  path: string;
+}
+
+export async function fetchNodeFsStat(args: NodeFsStatArgs): Promise<FileRpcStatResponse> {
+  const url = `/hub/nodes/${encodeURIComponent(args.nodeId)}/sessions/${encodeURIComponent(args.sessionId)}/files/stat`;
+  const body: Record<string, unknown> = { path: args.path };
+  return json<FileRpcStatResponse>(
     await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

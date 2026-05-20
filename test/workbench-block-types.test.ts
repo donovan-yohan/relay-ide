@@ -164,7 +164,11 @@ describe('WorkbenchBlockDescriptor discriminated union narrowing', () => {
     };
 
     if (desc.kind === 'file') {
-      assertType<'file'>(desc.meta.fileRef.kind);
+      // fileRef is FileRef | FileResourceRef; narrow to legacy FileRef to check .kind
+      const ref = desc.meta.fileRef;
+      if ('id' in ref) {
+        assertType<'file'>(ref.kind);
+      }
       assertType<'read' | 'diff' | undefined>(desc.meta.mode);
     }
   });
@@ -424,7 +428,11 @@ describe('WorkbenchBlockDescriptor JSON round-trip', () => {
     const desc = cases.find((d) => d.kind === 'file') as FileBlockDescriptor;
     const parsed = JSON.parse(JSON.stringify(desc)) as FileBlockDescriptor;
     expect(parsed.meta.mode).toBe('diff');
-    expect(parsed.meta.fileRef.kind).toBe('file');
+    // The test case uses a legacy FileRef with .kind; narrow before accessing
+    const ref = parsed.meta.fileRef;
+    if ('id' in ref) {
+      expect(ref.kind).toBe('file');
+    }
   });
 
   it('custom descriptor nested props survive round-trip', () => {
