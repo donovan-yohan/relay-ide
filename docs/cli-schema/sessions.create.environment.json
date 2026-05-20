@@ -1,0 +1,51 @@
+{
+  "contract": "v1",
+  "contractVersion": "1.0",
+  "command": "sessions.create",
+  "field": "environment",
+  "description": "Typed environment IDs for agent tasks (#626). Sourced from shared/environment-option.ts (EnvironmentOption.node / .repoInstance / .bench / .cwd) and shared/identity.ts (NodeId / RepoInstanceId / WorktreeInstanceId) and shared/repo-identity.ts (RepoIdentity).",
+  "schema": {
+    "title": "CreateSessionEnvironment",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "nodeId": {
+        "type": "string",
+        "description": "Target Relay node id. From EnvironmentOption.node.nodeId."
+      },
+      "repoIdentity": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "Canonical normalized repo identity (e.g. \"github.com/owner/name\"). Sourced from shared/repo-identity.ts; never a free-form host/path pair."
+      },
+      "repoInstanceId": {
+        "type": "string",
+        "description": "Scoped RepoInstanceId for a node-local checkout (encodes nodeId + local path)."
+      },
+      "benchId": {
+        "type": "string",
+        "description": "Scoped WorktreeInstanceId for a Bench inside the RepoInstance. Requires repoIdentity or repoInstanceId."
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Absolute cwd on the target node where the session starts."
+      }
+    },
+    "required": [
+      "nodeId",
+      "cwd"
+    ]
+  },
+  "deprecation": {
+    "legacyFields": [
+      "nodeId",
+      "repoPath",
+      "worktreePath",
+      "cwd"
+    ],
+    "targetRemoval": "v2",
+    "policy": "Legacy flat fields remain accepted in v1.x. Mixing legacy flat fields with environment is INVALID_ARGUMENT. Raw { host, path } pairs on environment are INVALID_ARGUMENT."
+  }
+}

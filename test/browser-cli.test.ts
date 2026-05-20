@@ -425,6 +425,25 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
         );
         return;
       }
+      if (
+        req.method === 'POST' &&
+        req.url === '/hub/nodes/node-a/sessions/remote-session-1/files/write'
+      ) {
+        res.end(
+          JSON.stringify({
+            operation: 'write',
+            root: '/fixture',
+            cwd: '/fixture',
+            path: '/fixture/out.txt',
+            mode: entry.body?.['mode'] ?? 'create',
+            bytesWritten: 5,
+            newHash: 'aabbccddee112233445566778899001122334455667788990011223344556677',
+            newMtime: '2026-01-02T03:04:05.000Z',
+            created: true,
+          })
+        );
+        return;
+      }
       res.statusCode = 404;
       res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
     });
@@ -529,6 +548,34 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
     );
     expect(read.data).toMatchObject({ content: 'hello gateway\n', maxBytes: 64, maxLines: 2 });
 
+    // Write a small file via --input-json to avoid needing a real filesystem file
+    const written = parseEnvelope<{ operation: string; bytesWritten: number; created: boolean }>(
+      await execNode(
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'files',
+          'write',
+          '--session-id',
+          'remote-session-1',
+          '--node-id',
+          'node-a',
+          '--input-json',
+          JSON.stringify({
+            sessionId: 'remote-session-1',
+            nodeId: 'node-a',
+            path: 'out.txt',
+            mode: 'create',
+            contentBase64: Buffer.from('hello').toString('base64'),
+          }),
+          '--json',
+        ],
+        env
+      )
+    );
+    expect(written).toMatchObject({ ok: true, command: 'files.write' });
+    expect(written.data).toMatchObject({ operation: 'write', bytesWritten: 5, created: true });
+
     const detached = parseEnvelope<{ detached: boolean; killed: boolean; session: typeof session }>(
       await execNode(
         ['dist/bin/relay-ide.js', 'v1', 'sessions', 'detach', '--id', 'remote-session-1', '--json'],
@@ -555,6 +602,7 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
       'POST /hub/nodes/node-a/sessions/remote-session-1/files/list',
       'POST /hub/nodes/node-a/sessions/remote-session-1/files/stat',
       'POST /hub/nodes/node-a/sessions/remote-session-1/files/read',
+      'POST /hub/nodes/node-a/sessions/remote-session-1/files/write',
       'GET /sessions/remote-session-1',
     ])
   );
@@ -722,5 +770,116 @@ test('v1 gateway session stream and input use routed PTY websocket', async () =>
     ])
   );
   expect(inputs).toContain('marker-input\n');
+});
+
+test('v1 files.write argv parsing: --mode and --file produce correct request body', async () => {
+  const tmpFile = path.join(tmpDir, 'write-payload.txt');
+  fs.writeFileSync(tmpFile, 'hello write');
+
+  const captured: CapturedGatewayRequest[] = [];
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const rawBody = Buffer.concat(chunks).toString('utf8');
+      const entry: CapturedGatewayRequest = {
+        method: req.method,
+        url: req.url,
+        authorization: req.headers.authorization,
+        marker: req.headers['x-relay-cli-gateway'],
+      };
+      if (rawBody) entry.body = JSON.parse(rawBody) as Record<string, unknown>;
+      captured.push(entry);
+      res.setHeader('content-type', 'application/json');
+      if (req.method === 'POST' && req.url?.endsWith('/files/write')) {
+        res.end(
+          JSON.stringify({
+            operation: 'write',
+            root: '/fixture',
+            cwd: '/fixture',
+            path: '/fixture/write-payload.txt',
+            mode: 'create',
+            bytesWritten: 11,
+            newHash: '0011223344556677889900112233445566778899001122334455667788990011',
+            newMtime: '2026-01-02T03:04:05.000Z',
+            created: true,
+          })
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+    });
+  });
+  const port = await listen(server);
+  try {
+    const env = {
+      ...process.env,
+      RELAY_IDE_PORT: String(port),
+      RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      PATH: process.env.PATH,
+    };
+    const result = parseEnvelope<{ operation: string; bytesWritten: number }>(
+      await execNode(
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'files',
+          'write',
+          '--session-id', 'remote-session-1',
+          '--node-id', 'node-a',
+          '--path', 'write-payload.txt',
+          '--mode', 'create',
+          '--file', tmpFile,
+          '--json',
+        ],
+        env
+      )
+    );
+    expect(result).toMatchObject({ ok: true, command: 'files.write' });
+    expect(result.data).toMatchObject({ operation: 'write', bytesWritten: 11 });
+    const writeEntry = captured.find((entry) => entry.url?.endsWith('/files/write'));
+    expect(writeEntry?.body).toMatchObject({
+      path: 'write-payload.txt',
+      mode: 'create',
+      contentBase64: Buffer.from('hello write').toString('base64'),
+    });
+  } finally {
+    await close(server);
+  }
+});
+
+test('v1 files.write size cap: oversized file exits non-zero before HTTP', async () => {
+  // Write a file larger than FILE_RPC_MAX_WRITE_BYTES (1 MB)
+  const oversizedFile = path.join(tmpDir, 'oversized.bin');
+  // 1 MB + 1 byte
+  fs.writeFileSync(oversizedFile, Buffer.alloc(1024 * 1024 + 1, 0x61));
+
+  const env = {
+    ...process.env,
+    RELAY_IDE_PORT: '19999',
+    RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+    PATH: process.env.PATH,
+  };
+
+  const failure = await execNodeFailure(
+    [
+      'dist/bin/relay-ide.js',
+      'v1',
+      'files',
+      'write',
+      '--session-id', 'remote-session-1',
+      '--node-id', 'node-a',
+      '--path', 'oversized.bin',
+      '--mode', 'create',
+      '--file', oversizedFile,
+      '--json',
+    ],
+    env
+  );
+  expect(failure.status).not.toBe(0);
+  const envelope = JSON.parse(failure.stdout) as { ok: boolean; error: { code: string; message: string } };
+  expect(envelope).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+  expect(envelope.error.message).toContain('maximum write size');
 });
 

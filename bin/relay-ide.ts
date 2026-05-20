@@ -54,7 +54,7 @@ import {
   sanitizedGatewayErrorDetails,
   validateAndSanitizeGatewayCreateInput,
 } from '../shared/cli-gateway-runtime.js';
-import { isFileRpcOperation, type FileRpcOperation } from '../shared/file-rpc.js';
+import { isFileRpcOperation, FILE_RPC_MAX_WRITE_BYTES, type FileRpcOperation } from '../shared/file-rpc.js';
 import { WebSocket } from 'ws';
 
 const execFileAsync = promisify(execFile);
@@ -468,6 +468,9 @@ const gatewayFileStringFields = [
   'path',
   'cwd',
   'confirmationToken',
+  'mode',
+  'contentBase64',
+  'expectedHash',
 ] as const;
 
 const gatewayFileAllowedFields = new Set<string>([
@@ -475,6 +478,7 @@ const gatewayFileAllowedFields = new Set<string>([
   'maxEntries',
   'maxBytes',
   'maxLines',
+  'permissions',
 ]);
 
 function gatewayFileInputFromArgs(
@@ -484,7 +488,7 @@ function gatewayFileInputFromArgs(
   const inputJson = gatewayArg(fileArgs, '--input-json');
   if (inputJson) return parseGatewayJson(commandName, inputJson);
   const inputFile = gatewayArg(fileArgs, '--input-file');
-  if (!inputFile) return gatewayFileInputFromFlags(fileArgs);
+  if (!inputFile) return gatewayFileInputFromFlags(commandName, fileArgs);
   try {
     return parseGatewayJson(commandName, fs.readFileSync(path.resolve(inputFile), 'utf8'));
   } catch (error) {
@@ -493,7 +497,61 @@ function gatewayFileInputFromArgs(
   }
 }
 
-function gatewayFileInputFromFlags(fileArgs: string[]): Record<string, unknown> {
+function readFileArgStdin(commandName: RelayCliGatewayCommand): Buffer {
+  if (process.stdin.isTTY) {
+    gatewayInvalid(commandName, '--file - requires piped stdin (stdin is a TTY)', {
+      field: 'file',
+      reason: 'stdin_requires_pipe',
+    });
+  }
+  // fd 0 = stdin, portable on Windows and POSIX; cap at 2× write limit to guard OOM
+  const buf = fs.readFileSync(0);
+  if (buf.length > FILE_RPC_MAX_WRITE_BYTES * 2) {
+    gatewayInvalid(commandName, `stdin exceeds maximum buffered size of ${FILE_RPC_MAX_WRITE_BYTES * 2} bytes`, {
+      field: 'file',
+      reason: 'size_exceeded',
+      size: buf.length,
+      max: FILE_RPC_MAX_WRITE_BYTES * 2,
+    });
+  }
+  return buf;
+}
+
+function readFileArgPath(commandName: RelayCliGatewayCommand, fileArg: string): Buffer {
+  const resolvedPath = path.resolve(fileArg);
+  let stat: ReturnType<typeof fs.statSync>;
+  try {
+    stat = fs.statSync(resolvedPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    gatewayInvalid(commandName, `cannot access --file path: ${err instanceof Error ? err.message : String(err)}`, {
+      field: 'file',
+      reason: code === 'ENOENT' ? 'not_found' : code === 'EACCES' ? 'permission_denied' : 'io_error',
+    });
+  }
+  if (stat!.isDirectory()) {
+    gatewayInvalid(commandName, '--file path is a directory', { field: 'file', reason: 'is_directory' });
+  }
+  if (stat!.size > FILE_RPC_MAX_WRITE_BYTES) {
+    gatewayInvalid(commandName, `file size exceeds maximum write size of ${FILE_RPC_MAX_WRITE_BYTES} bytes`, {
+      field: 'file',
+      reason: 'size_exceeded',
+      size: stat!.size,
+      max: FILE_RPC_MAX_WRITE_BYTES,
+    });
+  }
+  try {
+    return fs.readFileSync(resolvedPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    gatewayInvalid(commandName, `could not read --file: ${err instanceof Error ? err.message : String(err)}`, {
+      field: 'file',
+      reason: code === 'ENOENT' ? 'not_found' : code === 'EACCES' ? 'permission_denied' : 'io_error',
+    });
+  }
+}
+
+function gatewayFileInputFromFlags(commandName: RelayCliGatewayCommand, fileArgs: string[]): Record<string, unknown> {
   const input: Record<string, unknown> = {};
   const sessionId = gatewayArg(fileArgs, '--session-id') ?? gatewayArg(fileArgs, '--id') ?? fileArgs[0];
   if (sessionId && !sessionId.startsWith('--')) input['sessionId'] = sessionId;
@@ -502,9 +560,22 @@ function gatewayFileInputFromFlags(fileArgs: string[]): Record<string, unknown> 
     ['--path', 'path'],
     ['--cwd', 'cwd'],
     ['--confirmation-token', 'confirmationToken'],
+    ['--mode', 'mode'],
+    ['--expected-hash', 'expectedHash'],
   ] as const) {
     const value = gatewayArg(fileArgs, flag);
     if (value) input[field] = value;
+  }
+  const permissionsStr = gatewayArg(fileArgs, '--permissions');
+  if (permissionsStr !== undefined) {
+    input['permissions'] = parseInt(permissionsStr, 8);
+  }
+  const fileArg = gatewayArg(fileArgs, '--file');
+  if (fileArg !== undefined) {
+    const raw = fileArg === '-'
+      ? readFileArgStdin(commandName)
+      : readFileArgPath(commandName, fileArg);
+    input['contentBase64'] = raw.toString('base64');
   }
   return input;
 }
@@ -563,14 +634,46 @@ function applyGatewayFileCaps(
     const value = input['maxEntries'] ?? gatewayArg(fileArgs, '--max-entries');
     if (value !== undefined) input['maxEntries'] = gatewayBoundedNumber(commandName, 'maxEntries', value, 500);
   }
-  if (operation !== 'read') return;
-  const caps = [
-    ['maxBytes', '--max-bytes', 65536],
-    ['maxLines', '--max-lines', 2000],
-  ] as const;
-  for (const [field, flag, max] of caps) {
-    const value = input[field] ?? gatewayArg(fileArgs, flag);
-    if (value !== undefined) input[field] = gatewayBoundedNumber(commandName, field, value, max);
+  if (operation === 'read' || operation === 'tail') {
+    const caps = [
+      ['maxBytes', '--max-bytes', 65536],
+      ['maxLines', '--max-lines', 2000],
+    ] as const;
+    for (const [field, flag, max] of caps) {
+      const value = input[field] ?? gatewayArg(fileArgs, flag);
+      if (value !== undefined) input[field] = gatewayBoundedNumber(commandName, field, value, max);
+    }
+  }
+  if (operation === 'write') {
+    // Validate and size-cap contentBase64
+    if (typeof input['contentBase64'] === 'string') {
+      const b64 = input['contentBase64'];
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) {
+        gatewayInvalid(commandName, 'contentBase64 is malformed base64', {
+          field: 'contentBase64',
+          reason: 'malformed_base64',
+        });
+      }
+      const decodedBytes = Math.floor(b64.length * 3 / 4);
+      if (decodedBytes > FILE_RPC_MAX_WRITE_BYTES) {
+        gatewayInvalid(commandName, `file content exceeds maximum write size of ${FILE_RPC_MAX_WRITE_BYTES} bytes`, {
+          field: 'contentBase64',
+          decodedBytes,
+          max: FILE_RPC_MAX_WRITE_BYTES,
+        });
+      }
+    }
+    // Clamp permissions to 0..0o777 (0..511)
+    if (input['permissions'] !== undefined) {
+      const perms = typeof input['permissions'] === 'number' ? input['permissions'] : Number(input['permissions']);
+      if (!Number.isInteger(perms) || perms < 0 || perms > 0o777) {
+        gatewayInvalid(commandName, 'permissions must be an octal integer between 0 and 0o777 (511)', {
+          field: 'permissions',
+          value: input['permissions'],
+        });
+      }
+      input['permissions'] = perms & 0o777;
+    }
   }
 }
 
@@ -1140,8 +1243,20 @@ async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
     );
   }
   const body: Record<string, unknown> = {};
-  for (const field of ['path', 'cwd', 'maxEntries', 'maxBytes', 'maxLines', 'confirmationToken']) {
+  const bodyFields =
+    operation === 'write'
+      ? ['path', 'cwd', 'mode', 'contentBase64', 'expectedHash', 'permissions', 'confirmationToken']
+      : ['path', 'cwd', 'maxEntries', 'maxBytes', 'maxLines', 'confirmationToken'];
+  for (const field of bodyFields) {
     if (input[field] !== undefined) body[field] = input[field];
+  }
+  let capabilities: string[];
+  if (operation === 'list') {
+    capabilities = ['session:read', 'rpc:fs:list'];
+  } else if (operation === 'write') {
+    capabilities = ['session:read', 'rpc:fs:write'];
+  } else {
+    capabilities = ['session:read', 'rpc:fs:read'];
   }
   const result = await gatewayHttpJson({
     commandName,
@@ -1150,7 +1265,7 @@ async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
     )}/files/${operation}`,
     method: 'POST',
     body,
-    capabilities: ['session:read', operation === 'list' ? 'rpc:fs:list' : 'rpc:fs:read'],
+    capabilities,
   });
   printGatewayEnvelope(gatewayOk(commandName, result), 0);
 }

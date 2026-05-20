@@ -22,6 +22,7 @@ export type RelayCliGatewayCommand =
   | 'files.list'
   | 'files.stat'
   | 'files.read'
+  | 'files.write'
   | 'events.subscribe';
 
 export type RelayCliGatewayErrorCode =
@@ -368,6 +369,36 @@ const fileRpcReadOutputSchema: RelayJsonSchema = {
   ],
 };
 
+const fileRpcWriteInputSchema: RelayJsonSchema = {
+  ...fileRpcBaseInputSchema,
+  title: 'FileRpcWriteGatewayInput',
+  properties: {
+    ...(fileRpcBaseInputSchema.properties ?? {}),
+    mode: { type: 'string', enum: ['create', 'overwrite', 'append'] },
+    contentBase64: stringSchema,
+    expectedHash: stringSchema,
+    permissions: { type: 'number', minimum: 0, maximum: 511 },
+  },
+  required: [...(fileRpcBaseInputSchema.required ?? []), 'mode', 'contentBase64'],
+};
+
+const fileRpcWriteOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    operation: { const: 'write' },
+    root: stringSchema,
+    cwd: stringSchema,
+    path: stringSchema,
+    mode: { type: 'string', enum: ['create', 'overwrite', 'append'] },
+    bytesWritten: { type: 'number' },
+    newHash: stringSchema,
+    newMtime: stringSchema,
+    created: booleanSchema,
+  },
+  required: ['operation', 'root', 'cwd', 'path', 'mode', 'bytesWritten', 'newHash', 'newMtime', 'created'],
+};
+
 const attachOutputSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
@@ -497,18 +528,82 @@ const sessionInputOutputSchema: RelayJsonSchema = {
   required: ['sent', 'sessionId', 'bytesSent', 'matched', 'bytesReceived', 'truncated'],
 };
 
+/**
+ * Typed environment shape for agent task creation (#626, epic #615).
+ *
+ * Adapter-facing alternative to the legacy `repoPath` / `worktreePath` / flat
+ * `nodeId` + `cwd` fields. Uses scoped IDs from `shared/identity.ts` and the
+ * canonical `RepoIdentity` string ("github.com/{owner}/{name}" or
+ * "{host}/{path}") emitted by `shared/repo-identity.ts`. Raw host/path pairs
+ * are intentionally absent: free-form host strings are exactly what #626
+ * forbids on the agent task contract.
+ *
+ * Invariants (enforced in `shared/cli-gateway-runtime.ts`):
+ *   - `nodeId` and `cwd` are required.
+ *   - `benchId` requires either `repoIdentity` or `repoInstanceId` (a Bench is
+ *     anchored to a RepoInstance per `docs/WORKBENCH_BOUNDARY.md`).
+ *   - Mixing `environment` with any of `repoPath` / `worktreePath` / flat
+ *     `cwd` / flat `nodeId` is rejected — callers pick one shape.
+ */
+const createSessionEnvironmentSchema: RelayJsonSchema = {
+  title: 'CreateSessionEnvironment',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    nodeId: {
+      type: 'string',
+      description: 'Target Relay node id. From EnvironmentOption.node.nodeId.',
+    },
+    repoIdentity: {
+      type: ['string', 'null'],
+      description:
+        'Canonical normalized repo identity (e.g. "github.com/owner/name"). ' +
+        'Sourced from shared/repo-identity.ts; never a free-form host/path pair.',
+    },
+    repoInstanceId: {
+      type: 'string',
+      description:
+        'Scoped RepoInstanceId for a node-local checkout (encodes nodeId + local path).',
+    },
+    benchId: {
+      type: 'string',
+      description:
+        'Scoped WorktreeInstanceId for a Bench inside the RepoInstance. Requires repoIdentity or repoInstanceId.',
+    },
+    cwd: {
+      type: 'string',
+      description: 'Absolute cwd on the target node where the session starts.',
+    },
+  },
+  required: ['nodeId', 'cwd'],
+};
+
 const createSessionInputSchema: RelayJsonSchema = {
   title: 'CreateSessionInput',
   type: 'object',
   additionalProperties: false,
   properties: {
     nodeId: {
-      description: 'Optional execution node. Omit for current local /sessions path.',
+      description:
+        'DEPRECATED in v1.x — prefer `environment.nodeId`. Optional execution node; omit for the current local /sessions path. Removed in v2.',
       type: 'string',
     },
-    repoPath: stringSchema,
-    worktreePath: nullableStringSchema,
-    cwd: stringSchema,
+    environment: createSessionEnvironmentSchema,
+    repoPath: {
+      ...stringSchema,
+      description:
+        'DEPRECATED in v1.x — prefer `environment.cwd` (with repoIdentity/repoInstanceId for repo-bound launches). Removed in v2.',
+    },
+    worktreePath: {
+      ...nullableStringSchema,
+      description:
+        'DEPRECATED in v1.x — prefer `environment.benchId` + `environment.cwd`. Removed in v2.',
+    },
+    cwd: {
+      ...stringSchema,
+      description:
+        'DEPRECATED in v1.x — prefer `environment.cwd`. Removed in v2.',
+    },
     type: { type: 'string', enum: ['agent', 'terminal'], default: 'agent' },
     mode: { type: 'string', enum: ['pty', 'web'] },
     agent: stringSchema,
@@ -1065,6 +1160,41 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['session:read', 'rpc:fs:read'],
     inputSchema: fileRpcReadInputSchema,
     outputSchema: okOutput('FilesReadOutput', fileRpcReadOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'CONFIRMATION_REQUIRED',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'files.write',
+    cli: [
+      'relay-ide',
+      'v1',
+      'files',
+      'write',
+      '--session-id',
+      '<session-id>',
+      '--path',
+      '<path>',
+      '--mode',
+      '<create|overwrite|append>',
+      '--file',
+      '<local-path|->',
+      '--json',
+    ],
+    summary: 'Write file content through scoped File RPC with atomic-rename semantics and capability gate.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'rpc:fs:write'],
+    inputSchema: fileRpcWriteInputSchema,
+    outputSchema: okOutput('FilesWriteOutput', fileRpcWriteOutputSchema),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',

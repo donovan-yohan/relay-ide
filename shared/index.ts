@@ -22,3 +22,28 @@ export {
   type EnvironmentOption,
   type EnvironmentRepoInstanceSummary,
 } from './environment-option.js';
+
+export {
+  normalizeRemoteUrl,
+  resolveCanonicalRepoIdentity,
+  type CanonicalRepoIdentityResolution,
+  type NormalizedRemoteIdentity,
+  type RemoteDescriptor,
+  type RemoteProvider,
+  type RepoIdentityWarning,
+  type ResolvedRemoteIdentity,
+} from './repo-identity.js';
+
+export {
+  aggregateRepoInventoryReports,
+  isRepoInventoryReport,
+  summarizeRepoIdentityGroups,
+  type AggregatedRepoInventoryGroup,
+  type AggregatedRepoInventoryResponse,
+  type RepoIdentityGroup,
+  type RepoIdentityGroupInstance,
+  type RepoIdentityGroupsResponse,
+  type RepoInventoryRepoInstance,
+  type RepoInventoryReport,
+  type RepoInventoryWorktreeInstance,
+} from './repo-inventory.js';

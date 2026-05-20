@@ -35,7 +35,7 @@ Implemented/current:
 
 Planned/deferred:
 
-- #428 File RPC (`fs.read`, `fs.list`, `fs.write`, `fs.tail`) is not implemented in source; current mentions live in spikes/design docs.
+- #428 File RPC (`fs.read`, `fs.list`, `fs.tail`) shipped in C1. `fs.write` is now shipped with `rpc:fs:write` capability gate, 1 MB cap, atomic-rename semantics on the node executor, and confirmation gate for prod-tier nodes. See `docs/CLI_GATEWAY.md` for the `files.write` verb shape.
 - #476 node-log proxy / `logs.tail` / downloadable diagnostic bundles are not implemented. Current CLI diagnostics are `relay-ide node status`, `node logs`, and `node doctor`.
 - #427 policy schema/default ACLs, policy evaluator gates, two-token confirmation, audit sink/verifier, manual/online credential rotation, and an opt-in scheduled credential rotation loop are implemented. External audit shipping and a default rotation cadence in shipped config remain deferred.
 - #444 six-layer IA is product direction, not the persisted backend model in this doc.

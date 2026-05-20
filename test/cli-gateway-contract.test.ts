@@ -76,6 +76,7 @@ describe('CLI gateway contract', () => {
       'files.list',
       'files.stat',
       'files.read',
+      'files.write',
       'events.subscribe',
     ]);
 
@@ -249,6 +250,7 @@ describe('CLI gateway contract', () => {
       'files.list',
       'files.stat',
       'files.read',
+      'files.write',
       'events.subscribe',
     ] as const;
 
@@ -377,6 +379,31 @@ describe('CLI gateway contract', () => {
     });
     expect(read.errorCodes).toEqual(expect.arrayContaining(['NODE_OFFLINE', 'NOT_FOUND']));
     expect(commandSpec('files.stat').capabilityHints).toEqual(['session:read', 'rpc:fs:read']);
+
+    const write = commandSpec('files.write');
+    expect(write.capabilityHints).toEqual(['session:read', 'rpc:fs:write']);
+    expect(write.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: expect.arrayContaining(['sessionId', 'mode', 'contentBase64']),
+      properties: {
+        mode: { enum: ['create', 'overwrite', 'append'] },
+        contentBase64: { type: 'string' },
+        permissions: { maximum: 511 },
+      },
+    });
+    expect(write.outputSchema).toMatchObject({
+      properties: {
+        data: {
+          properties: {
+            operation: { const: 'write' },
+            bytesWritten: { type: 'number' },
+            created: { type: 'boolean' },
+            newHash: { type: 'string' },
+          },
+        },
+      },
+    });
+    expect(write.errorCodes).toEqual(expect.arrayContaining(['NODE_OFFLINE', 'FORBIDDEN', 'CONFIRMATION_REQUIRED']));
   });
 
   it('encodes sessions.input source exclusivity for schema-generated adapters', () => {

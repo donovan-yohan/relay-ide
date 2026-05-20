@@ -22,6 +22,7 @@ export type GatewayCreateValidationResult =
 
 const createSessionAllowedFields = new Set([
   'nodeId',
+  'environment',
   'repoPath',
   'worktreePath',
   'cwd',
@@ -41,6 +42,26 @@ const createSessionAllowedFields = new Set([
   'expiresAt',
   'confirmationToken',
 ]);
+
+/**
+ * Fields on the typed `environment` object accepted by `sessions.create` for
+ * #626. Free-form `host` / `path` strings are intentionally NOT in this set:
+ * the whole point of the typed-environment contract is to keep raw host/path
+ * pairs out of the agent task surface.
+ */
+const createSessionEnvironmentAllowedFields = new Set([
+  'nodeId',
+  'repoIdentity',
+  'repoInstanceId',
+  'benchId',
+  'cwd',
+]);
+
+/**
+ * Legacy flat fields that cannot be combined with the typed `environment`
+ * object. Callers pick one shape per request; mixing produces INVALID_ARGUMENT.
+ */
+const legacyEnvironmentFlatFields = ['nodeId', 'repoPath', 'worktreePath', 'cwd'] as const;
 
 const stringFields = [
   'nodeId',
@@ -146,6 +167,111 @@ function validateNumberField(
       { field, min, ...(max !== undefined ? { max } : {}) }
     );
   }
+  return null;
+}
+
+/**
+ * Validate the typed `environment` object for `sessions.create` (#626).
+ *
+ * Returns a validation failure when:
+ *   - `environment` is not an object;
+ *   - it contains an unknown field (notably `host` / `path`, which #626 forbids
+ *     on the agent task contract);
+ *   - `nodeId` or `cwd` is missing or not a string;
+ *   - `repoIdentity`, `repoInstanceId`, or `benchId` is present but not a string;
+ *   - `benchId` is set without a typed repo binding (`repoIdentity` or
+ *     `repoInstanceId`) — a Bench is always anchored to a RepoInstance.
+ */
+function validateCreateEnvironment(
+  rawInput: Record<string, unknown>
+): GatewayCreateValidationFailure | null {
+  const environment = rawInput['environment'];
+  if (environment === undefined) return null;
+  if (!isRecord(environment)) {
+    return invalidCreateInput('sessions.create environment must be an object', {
+      field: 'environment',
+    });
+  }
+
+  for (const field of Object.keys(environment)) {
+    if (!createSessionEnvironmentAllowedFields.has(field)) {
+      // Specifically catch the #626 anti-pattern: raw host/path identity pairs.
+      return invalidCreateInput(
+        `sessions.create environment field is not in the v1 typed contract: ${field}`,
+        {
+          field: `environment.${field}`,
+          allowed: Array.from(createSessionEnvironmentAllowedFields).sort(),
+        }
+      );
+    }
+  }
+
+  if (typeof environment['nodeId'] !== 'string' || environment['nodeId'].length === 0) {
+    return invalidCreateInput(
+      'sessions.create environment.nodeId is required and must be a non-empty string',
+      { field: 'environment.nodeId' }
+    );
+  }
+  if (typeof environment['cwd'] !== 'string' || environment['cwd'].length === 0) {
+    return invalidCreateInput(
+      'sessions.create environment.cwd is required and must be a non-empty string',
+      { field: 'environment.cwd' }
+    );
+  }
+  if (
+    environment['repoIdentity'] !== undefined &&
+    environment['repoIdentity'] !== null &&
+    (typeof environment['repoIdentity'] !== 'string' ||
+      environment['repoIdentity'].length === 0)
+  ) {
+    return invalidCreateInput(
+      'sessions.create environment.repoIdentity must be a non-empty string or null',
+      { field: 'environment.repoIdentity' }
+    );
+  }
+  if (
+    environment['repoInstanceId'] !== undefined &&
+    (typeof environment['repoInstanceId'] !== 'string' ||
+      environment['repoInstanceId'].length === 0)
+  ) {
+    return invalidCreateInput(
+      'sessions.create environment.repoInstanceId must be a non-empty string',
+      { field: 'environment.repoInstanceId' }
+    );
+  }
+  if (environment['benchId'] !== undefined) {
+    if (
+      typeof environment['benchId'] !== 'string' ||
+      environment['benchId'].length === 0
+    ) {
+      return invalidCreateInput(
+        'sessions.create environment.benchId must be a non-empty string',
+        { field: 'environment.benchId' }
+      );
+    }
+    const hasTypedRepoBinding =
+      typeof environment['repoIdentity'] === 'string' ||
+      typeof environment['repoInstanceId'] === 'string';
+    if (!hasTypedRepoBinding) {
+      return invalidCreateInput(
+        'sessions.create environment.benchId requires environment.repoIdentity or environment.repoInstanceId',
+        { field: 'environment.benchId' }
+      );
+    }
+  }
+
+  // Reject mixing the typed environment with the legacy flat fields. Adapters
+  // pick one shape per call — the typed shape is canonical, the flat fields
+  // remain accepted in v1.x only for callers that have not migrated yet.
+  for (const field of legacyEnvironmentFlatFields) {
+    if (rawInput[field] !== undefined) {
+      return invalidCreateInput(
+        `sessions.create cannot mix legacy ${field} with the typed environment object — pick one shape`,
+        { field, conflictsWith: 'environment' }
+      );
+    }
+  }
+
   return null;
 }
 
@@ -324,12 +450,24 @@ export function validateAndSanitizeGatewayCreateInput(
   if (sanitizedResult.ok === false) return sanitizedResult;
 
   const sanitized = sanitizedResult.input;
+  const environmentError = validateCreateEnvironment(sanitized);
+  if (environmentError) return environmentError;
   const typeError = validateCreateFieldTypes(sanitized);
   if (typeError) return typeError;
   const enumError = validateCreateEnums(sanitized);
   if (enumError) return enumError;
 
-  const nodeId = typeof sanitized['nodeId'] === 'string' ? sanitized['nodeId'] : undefined;
+  // The typed environment supplies an effective nodeId for downstream routing
+  // when present. When `environment` is set, `nodeId` (flat) is forbidden by
+  // validateCreateEnvironment, so this is unambiguous.
+  const environment = isRecord(sanitized['environment']) ? sanitized['environment'] : undefined;
+  const environmentNodeId =
+    environment && typeof environment['nodeId'] === 'string'
+      ? environment['nodeId']
+      : undefined;
+  const flatNodeId = typeof sanitized['nodeId'] === 'string' ? sanitized['nodeId'] : undefined;
+  const nodeId = environmentNodeId ?? flatNodeId;
+
   const envelopeError = validateSessionEnvelopeInput(sanitized['sessionEnvelope'], nodeId);
   if (envelopeError) return envelopeError;
   if (!nodeId) {
@@ -347,6 +485,12 @@ export function validateAndSanitizeLocalGatewayCreateInput(
 ): GatewayCreateValidationResult {
   const validated = validateAndSanitizeGatewayCreateInput(rawInput);
   if (validated.ok === false) return validated;
+  if (validated.input['environment'] !== undefined) {
+    return unsupportedCreateInput(
+      'local /sessions gateway creation cannot accept the typed environment object; use routed node creation through /hub/nodes/:nodeId/sessions',
+      { field: 'environment', supported: ['repoPath', 'worktreePath'] }
+    );
+  }
   if (validated.nodeId) {
     return unsupportedCreateInput(
       'local /sessions gateway creation cannot accept nodeId; use routed node creation through /hub/nodes/:nodeId/sessions',
