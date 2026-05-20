@@ -26,6 +26,7 @@ import {
   type DragCancelEvent,
 } from '@dnd-kit/core';
 import { useDraggable } from '@dnd-kit/core';
+import { CSS } from '@dnd-kit/utilities';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 import type {
@@ -33,7 +34,10 @@ import type {
   WorkbenchBlockPlacement,
 } from '../../../shared/workbench-layout-types.js';
 import { WORKBENCH_LAYOUT_SCHEMA_VERSION } from '../../../shared/workbench-layout-types.js';
-import type { WorkbenchBlockContext } from '../../../shared/workbench-block-types.js';
+import type {
+  WorkbenchBlockContext,
+  WorkbenchBlockDescriptor,
+} from '../../../shared/workbench-block-types.js';
 import { fetchWorkbenchLayout, putWorkbenchLayout } from '../lib/api.js';
 import { BlockHost } from './BlockHost.js';
 import './workbench-canvas.css';
@@ -110,6 +114,31 @@ function useBlockResize(
   onResize: (blockId: string, size: { width: number; height: number }) => void
 ) {
   const resizeRef = useRef<ResizeState | null>(null);
+  // Use a ref so mousemove/mouseup listeners always read the latest callback
+  // without needing to be re-added on every render.
+  const onResizeRef = useRef(onResize);
+  onResizeRef.current = onResize;
+
+  // Store the current listener functions so we can remove them on unmount
+  // even if a resize is still in progress.
+  const listenersRef = useRef<{
+    onMouseMove: ((ev: MouseEvent) => void) | null;
+    onMouseUp: (() => void) | null;
+  }>({ onMouseMove: null, onMouseUp: null });
+
+  // Cleanup on unmount: remove any active window listeners.
+  useEffect(() => {
+    // Capture the ref value at effect setup time for the cleanup closure,
+    // as recommended by the react-hooks/exhaustive-deps rule.
+    const listeners = listenersRef.current;
+    return () => {
+      if (listeners.onMouseMove)
+        window.removeEventListener('mousemove', listeners.onMouseMove);
+      if (listeners.onMouseUp)
+        window.removeEventListener('mouseup', listeners.onMouseUp);
+      resizeRef.current = null;
+    };
+  }, []);
 
   const onMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -126,7 +155,8 @@ function useBlockResize(
         if (!resizeRef.current) return;
         const dx = ev.clientX - resizeRef.current.startX;
         const dy = ev.clientY - resizeRef.current.startY;
-        onResize(blockId, {
+        // Read from ref so we always call the latest callback.
+        onResizeRef.current(blockId, {
           width: Math.max(200, resizeRef.current.startWidth + dx),
           height: Math.max(80, resizeRef.current.startHeight + dy),
         });
@@ -134,14 +164,20 @@ function useBlockResize(
 
       function onMouseUp() {
         resizeRef.current = null;
+        listenersRef.current.onMouseMove = null;
+        listenersRef.current.onMouseUp = null;
         window.removeEventListener('mousemove', onMouseMove);
         window.removeEventListener('mouseup', onMouseUp);
       }
 
+      listenersRef.current.onMouseMove = onMouseMove;
+      listenersRef.current.onMouseUp = onMouseUp;
       window.addEventListener('mousemove', onMouseMove);
       window.addEventListener('mouseup', onMouseUp);
     },
-    [blockId, currentSize.width, currentSize.height, onResize]
+    // currentSize values are captured at drag-start time via resizeRef, so
+    // they do not need to be deps here — only blockId which is stable per block.
+    [blockId, currentSize.width, currentSize.height]
   );
 
   return { onMouseDown };
@@ -168,9 +204,10 @@ function CanvasBlock({
   const blockId = descriptor.id;
 
   // dnd-kit draggable — title bar is the handle
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: blockId,
-  });
+  const { attributes, listeners, setNodeRef, isDragging, transform } =
+    useDraggable({
+      id: blockId,
+    });
 
   const { onMouseDown: onResizeMouseDown } = useBlockResize(
     blockId,
@@ -196,17 +233,25 @@ function CanvasBlock({
       style={{
         left: position.x,
         top: position.y,
-        width: minimized ? size.width : size.width,
+        width: size.width,
         height: minimized ? 'auto' : size.height,
+        // Bug 6 fix: apply dnd-kit transform during drag for live tracking.
+        // Without this, the block only snaps to the new position on drag end.
+        // Persist still happens on drag end (handleDragEnd) — no double-persist.
+        transform: isDragging ? CSS.Translate.toString(transform) : undefined,
       }}
     >
       {/* Title bar — drag handle */}
       <div className="canvas-block__titlebar" {...listeners} {...attributes}>
         <span className="canvas-block__kind">{descriptor.kind}</span>
         <span className="canvas-block__title">{descriptor.title}</span>
+        {/* Bug 7 fix: stop pointerDown propagation so dragging cannot start
+            when the user clicks the minimize button. Stopping click alone is
+            insufficient because dnd-kit's PointerSensor fires on pointerdown. */}
         <button
           type="button"
           className="canvas-block__minimize-btn"
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             onMinimizeToggle(blockId);
@@ -220,16 +265,56 @@ function CanvasBlock({
       {/* Block content */}
       {!minimized && (
         <div className="canvas-block__body">
-          <BlockHost descriptor={descriptor} context={context} />
+          {/* Safe cast: WorkbenchBlockPlacementDescriptor is a superset of
+              WorkbenchBlockDescriptor. BlockHost handles unknown kinds via its
+              registry fallback (UnknownKindCard). All required fields (kind, id,
+              title, capabilityRequirements) are validated at deserialization time
+              so this cast cannot produce a crash inside BlockHost. */}
+          <BlockHost
+            descriptor={descriptor as WorkbenchBlockDescriptor}
+            context={context}
+          />
         </div>
       )}
 
-      {/* Resize handle */}
+      {/* Resize handle — Bug 8 fix: semantic role, keyboard resize support. */}
       {!minimized && (
         <div
           className="canvas-block__resize-handle"
-          onMouseDown={onResizeMouseDown}
+          role="separator"
+          aria-orientation="horizontal"
           aria-label="resize block"
+          tabIndex={0}
+          onMouseDown={onResizeMouseDown}
+          onKeyDown={(e) => {
+            // Arrow keys provide keyboard resize: 16px steps.
+            const step = 16;
+            if (e.key === 'ArrowRight') {
+              e.preventDefault();
+              onResize(blockId, {
+                width: Math.max(200, size.width + step),
+                height: size.height,
+              });
+            } else if (e.key === 'ArrowLeft') {
+              e.preventDefault();
+              onResize(blockId, {
+                width: Math.max(200, size.width - step),
+                height: size.height,
+              });
+            } else if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              onResize(blockId, {
+                width: size.width,
+                height: Math.max(80, size.height + step),
+              });
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              onResize(blockId, {
+                width: size.width,
+                height: Math.max(80, size.height - step),
+              });
+            }
+          }}
         />
       )}
     </div>
@@ -301,15 +386,23 @@ export function WorkbenchCanvas({
     300
   );
 
-  // Apply a layout mutation locally + schedule persist
+  // Keep a ref to the latest layout so applyUpdate can read current state
+  // outside the setState updater (required to avoid side effects inside updaters).
+  const layoutRef = useRef<WorkbenchLayout | null>(layout);
+  layoutRef.current = layout;
+
+  // Apply a layout mutation locally + schedule persist.
+  // Bug 2 fix: React requires functional updaters passed to setState to be
+  // pure — they may run more than once. debouncedPersist is a side effect and
+  // must NOT be called inside the updater. Instead, compute next state from the
+  // ref snapshot, set it, then persist outside the updater.
   const applyUpdate = useCallback(
     (updater: (prev: WorkbenchLayout) => WorkbenchLayout) => {
-      setLayout((prev) => {
-        if (!prev) return prev;
-        const next = updater(prev);
-        debouncedPersist(next);
-        return next;
-      });
+      const prev = layoutRef.current;
+      if (!prev) return;
+      const next = updater(prev);
+      setLayout(next);
+      debouncedPersist(next);
     },
     [debouncedPersist]
   );

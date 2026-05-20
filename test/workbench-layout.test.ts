@@ -250,6 +250,111 @@ describe('workbench-layout-types: serialise/deserialise', () => {
     const restored = deserialiseWorkbenchLayout(raw);
     expect(restored!.blocks[0]!.minimized).toBe(false);
   });
+
+  // Bug 3 fix: descriptor must include title and capabilityRequirements so
+  // missingCapabilities() cannot crash on undefined at runtime.
+  it('throws for block descriptor missing title', () => {
+    const raw = {
+      schemaVersion: WORKBENCH_LAYOUT_SCHEMA_VERSION,
+      workspaceScope: { id: 'ws:test' },
+      blocks: [
+        {
+          descriptor: {
+            kind: 'markdown',
+            id: 'b1',
+            // title intentionally omitted
+            capabilityRequirements: [],
+            meta: { content: '' },
+          },
+          position: { x: 0, y: 0 },
+          size: { width: 200, height: 100 },
+          minimized: false,
+        },
+      ],
+    };
+    expect(() => deserialiseWorkbenchLayout(raw)).toThrow(/title/);
+  });
+
+  it('throws for block descriptor missing capabilityRequirements', () => {
+    const raw = {
+      schemaVersion: WORKBENCH_LAYOUT_SCHEMA_VERSION,
+      workspaceScope: { id: 'ws:test' },
+      blocks: [
+        {
+          descriptor: {
+            kind: 'markdown',
+            id: 'b1',
+            title: 't',
+            // capabilityRequirements intentionally omitted
+            meta: { content: '' },
+          },
+          position: { x: 0, y: 0 },
+          size: { width: 200, height: 100 },
+          minimized: false,
+        },
+      ],
+    };
+    expect(() => deserialiseWorkbenchLayout(raw)).toThrow(
+      /capabilityRequirements/
+    );
+  });
+
+  // Bug 4 fix: existing _unknown from a stored JSON bag must be preserved
+  // when deserializing, so unknown fields survive multiple round-trips.
+  it('preserves _unknown bag across multiple serialize/deserialize cycles', () => {
+    // Simulate a layout that was already deserialized once and has an _unknown bag.
+    const rawWithBothExtraAndUnknown = {
+      schemaVersion: WORKBENCH_LAYOUT_SCHEMA_VERSION,
+      workspaceScope: { id: 'ws:test' },
+      blocks: [
+        {
+          descriptor: {
+            kind: 'markdown',
+            id: 'b1',
+            title: 't',
+            capabilityRequirements: [],
+            meta: { content: '' },
+          },
+          position: { x: 0, y: 0 },
+          size: { width: 200, height: 100 },
+          minimized: false,
+          // Simulates a field that was in _unknown from a prior deserialization
+          // and was merged back into the top-level by serialiseWorkbenchLayout.
+          futureTopLevelField: 'must survive',
+          // An _unknown bag from a prior cycle (would come from a server that
+          // itself already did the round-trip preservation).
+          _unknown: { olderFutureField: 'also preserved' },
+        },
+      ],
+    };
+
+    // First deserialization: collects futureTopLevelField into _unknown, merges
+    // olderFutureField from the existing _unknown bag.
+    const restored1 = deserialiseWorkbenchLayout(rawWithBothExtraAndUnknown);
+    expect(restored1).not.toBeNull();
+    expect(restored1!.blocks[0]!._unknown).toBeDefined();
+    expect(restored1!.blocks[0]!._unknown!['futureTopLevelField']).toBe(
+      'must survive'
+    );
+    expect(restored1!.blocks[0]!._unknown!['olderFutureField']).toBe(
+      'also preserved'
+    );
+
+    // Serialize back out — both unknown fields must be in the top-level output.
+    const serialized = serialiseWorkbenchLayout(restored1!);
+    const block0 = serialized.blocks[0] as Record<string, unknown>;
+    expect(block0['futureTopLevelField']).toBe('must survive');
+    expect(block0['olderFutureField']).toBe('also preserved');
+
+    // Second deserialization — unknown fields must still be present.
+    const restored2 = deserialiseWorkbenchLayout(serialized);
+    expect(restored2!.blocks[0]!._unknown!['futureTopLevelField']).toBe(
+      'must survive'
+    );
+    expect(restored2!.blocks[0]!._unknown!['olderFutureField']).toBe(
+      'also preserved'
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -579,13 +684,20 @@ describe('validateLayoutBody', () => {
     expect(validateLayoutBody(bad)).toMatch(/schemaVersion/);
   });
 
-  it('accepts unknown block kinds', () => {
+  it('accepts unknown block kinds when required descriptor fields are present', () => {
+    // Bug 3 fix: unknown *kinds* are accepted, but title + capabilityRequirements
+    // are required on every descriptor so missingCapabilities() cannot crash.
     const good = {
       schemaVersion: WORKBENCH_LAYOUT_SCHEMA_VERSION,
       workspaceScope: { id: 'ws:x' },
       blocks: [
         {
-          descriptor: { kind: 'future-kind', id: 'b1' },
+          descriptor: {
+            kind: 'future-kind',
+            id: 'b1',
+            title: 'future block',
+            capabilityRequirements: [],
+          },
           position: { x: 0, y: 0 },
           size: { width: 200, height: 100 },
           minimized: false,
@@ -593,6 +705,51 @@ describe('validateLayoutBody', () => {
       ],
     };
     expect(validateLayoutBody(good)).toBeNull();
+  });
+
+  it('rejects descriptor missing title', () => {
+    // Bug 3: title is required — absence must produce a validation error.
+    const bad = {
+      schemaVersion: WORKBENCH_LAYOUT_SCHEMA_VERSION,
+      workspaceScope: { id: 'ws:x' },
+      blocks: [
+        {
+          descriptor: {
+            kind: 'future-kind',
+            id: 'b1',
+            // title intentionally omitted
+            capabilityRequirements: [],
+          },
+          position: { x: 0, y: 0 },
+          size: { width: 200, height: 100 },
+          minimized: false,
+        },
+      ],
+    };
+    expect(validateLayoutBody(bad)).toMatch(/title/);
+  });
+
+  it('rejects descriptor missing capabilityRequirements', () => {
+    // Bug 3: capabilityRequirements is required — absence must produce a
+    // validation error so missingCapabilities() cannot crash on undefined.
+    const bad = {
+      schemaVersion: WORKBENCH_LAYOUT_SCHEMA_VERSION,
+      workspaceScope: { id: 'ws:x' },
+      blocks: [
+        {
+          descriptor: {
+            kind: 'markdown',
+            id: 'b1',
+            title: 'some block',
+            // capabilityRequirements intentionally omitted
+          },
+          position: { x: 0, y: 0 },
+          size: { width: 200, height: 100 },
+          minimized: false,
+        },
+      ],
+    };
+    expect(validateLayoutBody(bad)).toMatch(/capabilityRequirements/);
   });
 });
 

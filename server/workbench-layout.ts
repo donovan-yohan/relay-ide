@@ -121,6 +121,74 @@ export function deleteWorkbenchLayout(
 // ---------------------------------------------------------------------------
 
 /**
+ * Validate a single block placement in a layout body.
+ * Extracted from validateLayoutBody to keep per-function complexity manageable.
+ * Returns a descriptive error string on failure, or null on success.
+ */
+function validateBlockPlacementBody(block: unknown, i: number): string | null {
+  if (typeof block !== 'object' || block === null || Array.isArray(block)) {
+    return `blocks[${i}] must be an object`;
+  }
+  const b = block as Record<string, unknown>;
+
+  const descriptor = b['descriptor'];
+  if (
+    typeof descriptor !== 'object' ||
+    descriptor === null ||
+    Array.isArray(descriptor)
+  ) {
+    return `blocks[${i}].descriptor must be an object`;
+  }
+  const desc = descriptor as Record<string, unknown>;
+  if (typeof desc['kind'] !== 'string') {
+    return `blocks[${i}].descriptor.kind must be a string`;
+  }
+  if (typeof desc['id'] !== 'string') {
+    return `blocks[${i}].descriptor.id must be a string`;
+  }
+  // Bug 3 fix: validate title and capabilityRequirements so the server
+  // rejects malformed descriptors before they reach missingCapabilities().
+  if (typeof desc['title'] !== 'string') {
+    return `blocks[${i}].descriptor.title must be a string`;
+  }
+  if (!Array.isArray(desc['capabilityRequirements'])) {
+    return `blocks[${i}].descriptor.capabilityRequirements must be an array`;
+  }
+  const capReqs = desc['capabilityRequirements'] as unknown[];
+  for (let j = 0; j < capReqs.length; j++) {
+    if (typeof capReqs[j] !== 'string') {
+      return `blocks[${i}].descriptor.capabilityRequirements[${j}] must be a string`;
+    }
+  }
+
+  const pos = b['position'];
+  if (
+    typeof pos !== 'object' ||
+    pos === null ||
+    typeof (pos as Record<string, unknown>)['x'] !== 'number' ||
+    typeof (pos as Record<string, unknown>)['y'] !== 'number'
+  ) {
+    return `blocks[${i}].position must have numeric x and y`;
+  }
+
+  const sz = b['size'];
+  if (
+    typeof sz !== 'object' ||
+    sz === null ||
+    typeof (sz as Record<string, unknown>)['width'] !== 'number' ||
+    typeof (sz as Record<string, unknown>)['height'] !== 'number'
+  ) {
+    return `blocks[${i}].size must have numeric width and height`;
+  }
+
+  if (b['minimized'] !== undefined && typeof b['minimized'] !== 'boolean') {
+    return `blocks[${i}].minimized must be a boolean`;
+  }
+
+  return null;
+}
+
+/**
  * Validate that a layout body submitted via PUT is structurally valid.
  * Returns a descriptive error string on failure, or null on success.
  */
@@ -153,47 +221,8 @@ export function validateLayoutBody(body: unknown): string | null {
 
   const blocks = obj['blocks'] as unknown[];
   for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i];
-    if (typeof block !== 'object' || block === null || Array.isArray(block)) {
-      return `blocks[${i}] must be an object`;
-    }
-    const b = block as Record<string, unknown>;
-
-    const descriptor = b['descriptor'];
-    if (
-      typeof descriptor !== 'object' ||
-      descriptor === null ||
-      typeof (descriptor as Record<string, unknown>)['kind'] !== 'string'
-    ) {
-      return `blocks[${i}].descriptor.kind must be a string`;
-    }
-    if (typeof (descriptor as Record<string, unknown>)['id'] !== 'string') {
-      return `blocks[${i}].descriptor.id must be a string`;
-    }
-
-    const pos = b['position'];
-    if (
-      typeof pos !== 'object' ||
-      pos === null ||
-      typeof (pos as Record<string, unknown>)['x'] !== 'number' ||
-      typeof (pos as Record<string, unknown>)['y'] !== 'number'
-    ) {
-      return `blocks[${i}].position must have numeric x and y`;
-    }
-
-    const sz = b['size'];
-    if (
-      typeof sz !== 'object' ||
-      sz === null ||
-      typeof (sz as Record<string, unknown>)['width'] !== 'number' ||
-      typeof (sz as Record<string, unknown>)['height'] !== 'number'
-    ) {
-      return `blocks[${i}].size must have numeric width and height`;
-    }
-
-    if (b['minimized'] !== undefined && typeof b['minimized'] !== 'boolean') {
-      return `blocks[${i}].minimized must be a boolean`;
-    }
+    const err = validateBlockPlacementBody(blocks[i], i);
+    if (err !== null) return err;
   }
 
   return null;
@@ -230,7 +259,9 @@ export function createWorkbenchLayoutRouter(
       res.status(204).end();
       return;
     }
-    res.json(layout);
+    // Use serialiseWorkbenchLayout so _unknown fields are merged back into
+    // each block's top-level representation (round-trip fidelity).
+    res.json(serialiseWorkbenchLayout(layout));
   });
 
   // PUT /:id/workbench-layout
@@ -279,7 +310,9 @@ export function createWorkbenchLayoutRouter(
       return;
     }
 
-    res.json(layout);
+    // Use serialiseWorkbenchLayout so _unknown fields are merged back into
+    // each block's top-level representation (round-trip fidelity).
+    res.json(serialiseWorkbenchLayout(layout));
   });
 
   return router;

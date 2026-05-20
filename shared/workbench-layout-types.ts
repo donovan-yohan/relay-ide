@@ -25,6 +25,7 @@
  */
 
 import type { WorkbenchBlockDescriptor } from './workbench-block-types.js';
+import type { RelayCapabilityBit } from './security-policy.js';
 
 // ---------------------------------------------------------------------------
 // WorkspaceScopeRef
@@ -47,25 +48,58 @@ export interface WorkspaceScopeRef {
 // WorkbenchBlockPlacement
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// WorkbenchBlockPlacementDescriptor — forward-compat widened type
+// ---------------------------------------------------------------------------
+
+/**
+ * An "unknown-capable" descriptor shape used inside `WorkbenchBlockPlacement`.
+ *
+ * Widened beyond `WorkbenchBlockDescriptor` (the closed discriminated union)
+ * so that placement records storing future block kinds (not yet in the client's
+ * union) can round-trip without requiring unsafe casts. The concrete known kinds
+ * narrow normally; unknown kinds fall into the catch-all branch that preserves
+ * the raw `kind` string and arbitrary `meta`.
+ *
+ * `BlockHost` (slice 2) already handles unknown kinds via `getBlockRenderer`
+ * returning `undefined` → `UnknownKindCard`. This type widens the container to
+ * match that runtime reality at the type level.
+ */
+export type WorkbenchBlockPlacementDescriptor =
+  | WorkbenchBlockDescriptor
+  // Unknown future kind — forward-compat catch-all (not in the closed union).
+  // `meta` is intentionally `unknown` because the client cannot validate it.
+  // `_unknown` stashes any extra descriptor fields for round-trip fidelity.
+  | {
+      kind: string;
+      id: string;
+      title: string;
+      capabilityRequirements: ReadonlyArray<RelayCapabilityBit | string>;
+      meta?: unknown;
+      _unknown?: Record<string, unknown>;
+    };
+
 /**
  * Placement record for a single block on the canvas.
  *
- * `descriptor` is a full `WorkbenchBlockDescriptor` (discriminated union on
- * `kind`). When a future kind is added server-side, older clients receive it
- * with `kind` set to the new literal; `getBlockRenderer` returns `undefined`
- * and `BlockHost` renders the UnknownKindCard safe fallback.
+ * `descriptor` is typed as `WorkbenchBlockPlacementDescriptor` — a widened
+ * union that includes both the known `WorkbenchBlockDescriptor` variants and
+ * an unknown-kind catch-all. When a future kind is added server-side, older
+ * clients receive it in the catch-all branch; `getBlockRenderer` returns
+ * `undefined` and `BlockHost` renders the UnknownKindCard safe fallback.
  *
- * The `_unknown` bag captures any extra JSON fields from the server that the
- * current client does not recognise — they are round-tripped back to the
- * server on the next PUT so future state is not silently dropped.
+ * The `_unknown` bag captures any extra JSON fields on the placement object
+ * from the server that the current client does not recognise — they are
+ * round-tripped back to the server on the next PUT so future state is not
+ * silently dropped.
  */
 export interface WorkbenchBlockPlacement {
   /** Full block descriptor — includes kind, id, title, capabilityRequirements, meta. */
-  descriptor: WorkbenchBlockDescriptor;
+  descriptor: WorkbenchBlockPlacementDescriptor;
   /**
    * Top-left corner of the block on the canvas in CSS pixels.
    * Stored as pixel values so the layout is stable across viewport sizes.
-   * The canvas component clamps values to the visible area on mount.
+   * The canvas component clamps x/y to >= 0 on drag end.
    */
   position: { x: number; y: number };
   /**
@@ -112,16 +146,56 @@ export interface WorkbenchLayout {
 export const WORKBENCH_LAYOUT_SCHEMA_VERSION = 1;
 
 // ---------------------------------------------------------------------------
+// Serialised shape (JSON-safe)
+// ---------------------------------------------------------------------------
+
+/**
+ * JSON-safe representation of a `WorkbenchLayout`.
+ * Structurally identical to `WorkbenchLayout` but with all `ReadonlyArray`
+ * fields widened to plain `unknown[]` so the value is directly passable to
+ * `res.json()` or `JSON.stringify` without extra conversion.
+ *
+ * Use `serialiseWorkbenchLayout` to produce this shape — do NOT use
+ * `JSON.parse(JSON.stringify(...))` which performs unnecessary double work.
+ */
+export type SerializedWorkbenchLayout = {
+  schemaVersion: number;
+  workspaceScope: {
+    id: string;
+    displayName?: string;
+  };
+  blocks: unknown[];
+};
+
+// ---------------------------------------------------------------------------
 // Serialization helpers
 // ---------------------------------------------------------------------------
 
 /**
  * Serialise a `WorkbenchLayout` to a plain JSON-compatible object.
- * `ReadonlyArray` fields are cast to `unknown[]` so `JSON.stringify` can
- * handle them without extra conversion at the call site.
+ *
+ * Builds the output object directly — no `JSON.parse(JSON.stringify(...))`
+ * round-trip. The server can pass the result directly to `res.json()`.
+ *
+ * Unknown fields stored in `_unknown` on each block placement are merged back
+ * into the serialised block so they survive round-trips to the server.
  */
-export function serialiseWorkbenchLayout(layout: WorkbenchLayout): unknown {
-  return JSON.parse(JSON.stringify(layout));
+export function serialiseWorkbenchLayout(
+  layout: WorkbenchLayout
+): SerializedWorkbenchLayout {
+  const blocks = layout.blocks.map((placement) => {
+    const { _unknown, ...knownFields } = placement;
+    // Merge _unknown back into the serialised object (known fields win on
+    // conflict so we don't accidentally overwrite typed fields with stale data).
+    return _unknown !== undefined
+      ? { ..._unknown, ...knownFields }
+      : knownFields;
+  });
+  return {
+    schemaVersion: layout.schemaVersion,
+    workspaceScope: { ...layout.workspaceScope },
+    blocks,
+  };
 }
 
 /**
@@ -197,12 +271,44 @@ function deserialiseBlockPlacement(
   if (
     typeof descriptor !== 'object' ||
     descriptor === null ||
-    typeof (descriptor as Record<string, unknown>)['kind'] !== 'string' ||
-    typeof (descriptor as Record<string, unknown>)['id'] !== 'string'
+    Array.isArray(descriptor)
   ) {
     throw new Error(
-      `workbench layout: blocks[${index}].descriptor must have kind and id`
+      `workbench layout: blocks[${index}].descriptor must be an object`
     );
+  }
+  const d = descriptor as Record<string, unknown>;
+
+  if (typeof d['kind'] !== 'string') {
+    throw new Error(
+      `workbench layout: blocks[${index}].descriptor.kind must be a string`
+    );
+  }
+  if (typeof d['id'] !== 'string') {
+    throw new Error(
+      `workbench layout: blocks[${index}].descriptor.id must be a string`
+    );
+  }
+  // Bug 3 fix: validate title and capabilityRequirements so that
+  // missingCapabilities() cannot crash on undefined later.
+  if (typeof d['title'] !== 'string') {
+    throw new Error(
+      `workbench layout: blocks[${index}].descriptor.title must be a string`
+    );
+  }
+  if (!Array.isArray(d['capabilityRequirements'])) {
+    throw new Error(
+      `workbench layout: blocks[${index}].descriptor.capabilityRequirements must be an array`
+    );
+  }
+  // Each entry in capabilityRequirements must be a string.
+  const capReqs = d['capabilityRequirements'] as unknown[];
+  for (let j = 0; j < capReqs.length; j++) {
+    if (typeof capReqs[j] !== 'string') {
+      throw new Error(
+        `workbench layout: blocks[${index}].descriptor.capabilityRequirements[${j}] must be a string`
+      );
+    }
   }
 
   const position = obj['position'];
@@ -232,7 +338,16 @@ function deserialiseBlockPlacement(
   const minimized =
     typeof obj['minimized'] === 'boolean' ? obj['minimized'] : false;
 
-  // Collect any extra fields into _unknown for round-trip fidelity
+  // Bug 4 fix: merge existing _unknown (from a prior deserialization round-trip)
+  // with newly-discovered extra fields. Newly-discovered extras win on conflict
+  // so we don't silently drop fields added by future schema versions.
+  const existingUnknown: Record<string, unknown> =
+    typeof obj['_unknown'] === 'object' &&
+    obj['_unknown'] !== null &&
+    !Array.isArray(obj['_unknown'])
+      ? (obj['_unknown'] as Record<string, unknown>)
+      : {};
+
   const knownKeys = new Set([
     'descriptor',
     'position',
@@ -241,13 +356,18 @@ function deserialiseBlockPlacement(
     '_unknown',
   ]);
   const extraKeys = Object.keys(obj).filter((k) => !knownKeys.has(k));
-  const _unknown: Record<string, unknown> | undefined =
+  const newExtras: Record<string, unknown> =
     extraKeys.length > 0
       ? Object.fromEntries(extraKeys.map((k) => [k, obj[k]]))
-      : undefined;
+      : {};
+
+  // Merge: existing _unknown first, then new extras on top (extras win).
+  const merged = { ...existingUnknown, ...newExtras };
+  const _unknown: Record<string, unknown> | undefined =
+    Object.keys(merged).length > 0 ? merged : undefined;
 
   return {
-    descriptor: descriptor as WorkbenchBlockDescriptor,
+    descriptor: descriptor as WorkbenchBlockPlacementDescriptor,
     position: position as { x: number; y: number },
     size: size as { width: number; height: number },
     minimized,
