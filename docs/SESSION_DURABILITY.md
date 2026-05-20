@@ -123,6 +123,37 @@ tmux + node-pty keep the process alive across attach drops. The config
 schema reserves the `sessionDurability` namespace so a future slice can
 add a mode toggle without breaking the surface.
 
+## Failure-matrix runbook
+
+The five durability transitions the epic body promised. Automated coverage
+lives in `test/session-durability-failure-matrix.test.ts`; manual
+verification steps below for the failure modes the unit tests cannot fake.
+
+| Scenario                              | Expected durability | Operator-visible signal                                    |
+| ------------------------------------- | ------------------- | ---------------------------------------------------------- |
+| Browser tab closed while session live | `running-detached`  | Tab badge flips to "detached"; reopening reattaches.       |
+| Node link drops mid-session           | `stale-node`        | Badge flips to "stale node"; live input + kill disabled.   |
+| Node reconnects after link drop       | `running-attached`  | Badge returns to "live"; controls re-enabled.              |
+| PTY process exits (clean or crash)    | `ended` (then gone) | Badge briefly shows "ended" then session leaves the list.  |
+| Agent posts an unrecoverable error    | `error`             | Badge shows "error"; controls disabled with typed reason.  |
+| Permission prompt waiting             | `permission-needed` | Badge pulses; controls stay enabled so operator can reply. |
+
+Manual verification steps for failure modes the automated suite cannot
+simulate end-to-end:
+
+- **Laptop sleep / network flap.** Pair a remote node, open a session,
+  put the laptop running the hub or the node to sleep. The hub's node
+  registry will flip to `stale` then `offline` within `staleMs` /
+  `offlineMs`. Durability follows. On wake, the reverse link
+  reconnects and durability returns to `running-attached`.
+- **Hub restart.** Restart the hub while a node session is open. tmux
+  keeps the PTY alive on the node. After hub comes back, the session
+  list shows the session with `running-detached` until the browser
+  attaches; then `running-attached`.
+- **Browser refresh.** Refresh the browser tab. The WS reconnect handler
+  reattaches; durability stays `running-attached` (or briefly flips
+  through `running-detached` if the WS is rebuilt slowly).
+
 ## Out of scope (later #614 slices)
 
 - Cross-node/remote replay forwarding.
