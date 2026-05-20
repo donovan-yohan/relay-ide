@@ -1,3 +1,4 @@
+import type { WorkbenchLayout } from '../../../shared/workbench-layout-types.js';
 import type {
   SessionSummary,
   WorktreeInfo,
@@ -1921,7 +1922,8 @@ export async function fetchSecurityAuditEntries(params?: {
   limit?: number;
 }): Promise<SecurityAuditEntriesResponse> {
   const qs = new URLSearchParams();
-  if (params?.beforeSequence != null) qs.set('beforeSequence', String(params.beforeSequence));
+  if (params?.beforeSequence != null)
+    qs.set('beforeSequence', String(params.beforeSequence));
   if (params?.limit) qs.set('limit', String(params.limit));
   return json<SecurityAuditEntriesResponse>(
     await fetch(`/hub/audit/entries${qs.toString() ? '?' + qs.toString() : ''}`)
@@ -1930,4 +1932,44 @@ export async function fetchSecurityAuditEntries(params?: {
 
 export async function fetchSecurityAuditVerify(): Promise<SecurityAuditVerifyResponse> {
   return json<SecurityAuditVerifyResponse>(await fetch('/hub/audit/verify'));
+}
+
+// ---------------------------------------------------------------------------
+// Workbench layout API (slice 3 of epic #612)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the persisted workbench layout for a workspace.
+ * Returns `null` if no layout has been saved yet (server responds 204).
+ */
+export async function fetchWorkbenchLayout(
+  workspaceId: string
+): Promise<WorkbenchLayout | null> {
+  const res = await fetch(`/workspace-groups/${workspaceId}/workbench-layout`);
+  if (res.status === 204) return null;
+  if (!res.ok)
+    throw new Error(
+      await parseErrorBody(res, 'Failed to fetch workbench layout')
+    );
+  return json<WorkbenchLayout>(res);
+}
+
+/**
+ * Persist a workbench layout for a workspace.
+ * Returns the layout as stored by the server.
+ */
+export async function putWorkbenchLayout(
+  workspaceId: string,
+  layout: WorkbenchLayout
+): Promise<WorkbenchLayout> {
+  const res = await fetch(`/workspace-groups/${workspaceId}/workbench-layout`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(layout),
+  });
+  if (!res.ok)
+    throw new Error(
+      await parseErrorBody(res, 'Failed to save workbench layout')
+    );
+  return jsonEither<WorkbenchLayout>(res);
 }

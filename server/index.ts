@@ -84,6 +84,7 @@ import {
 } from './workspaces.js';
 import { clearCiStatusCache } from './gh.js';
 import { createWorkspaceGroupsRouter } from './workspace-groups.js';
+import { createWorkbenchLayoutRouter } from './workbench-layout.js';
 import { createOrgDashboardRouter } from './org-dashboard.js';
 import { createIntegrationGitHubRouter } from './integration-github.js';
 import {
@@ -855,12 +856,10 @@ export function validateSessionCreateRequest(
   } else {
     const anchor = repoPath ?? cwd ?? '';
     if (!configured.has(anchor)) {
-      res
-        .status(400)
-        .json({
-          error:
-            'terminal sessions require a cwd that is a configured project path',
-        });
+      res.status(400).json({
+        error:
+          'terminal sessions require a cwd that is a configured project path',
+      });
       return false;
     }
   }
@@ -1727,6 +1726,14 @@ async function main(): Promise<void> {
       gitWatcher,
       configPath: CONFIG_PATH,
     })
+  );
+
+  // Mount workbench layout persistence router
+  // GET/PUT /workspace-groups/:id/workbench-layout
+  app.use(
+    '/workspace-groups',
+    requireAuth,
+    createWorkbenchLayoutRouter({ configPath: CONFIG_PATH })
   );
 
   // Mount GitHub integration router
