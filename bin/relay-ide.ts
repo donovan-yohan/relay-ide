@@ -10,10 +10,7 @@ import * as service from '../server/service.js';
 import { DEFAULTS, loadConfig } from '../server/config.js';
 import { createLogger } from '../server/logger.js';
 import { getNodeManifest } from '../server/node-manifest.js';
-import {
-  BOOTSTRAP_DIAGNOSTICS,
-  redactBootstrapSecrets,
-} from '../shared/bootstrap-diagnostics.js';
+import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
 import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type HubNodeSummary,
@@ -104,11 +101,15 @@ Commands:
   node               Manage relay-node pairing and diagnostics
     status                             Show local node/service status
     logs [--lines <n>] [--follow]      Print or follow local node log files
-    doctor --hub <url>                 Check hub reachability and local node capability
+    doctor [--hub <url>] [--json]      Diagnose local node health and hub reachability; surfaces all degraded reasons
+    pair --hub <url> --pair-token <token>
+                                       Exchange a pair token with a hub and send one heartbeat (pair-only, no service)
+    install --hub <url> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
+                                       Install relay-ide globally via npm and optionally set up the local service (no pairing)
     connect --hub <url> --pair-token <token>
-                                       Exchange a pair token and send one heartbeat
-    install --hub <url> --pair-token <token> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
-                                       Pair the node, then install/start the local Relay-managed service when requested/available
+                                       Exchange a pair token and send one heartbeat (back-compat alias for 'pair')
+    ssh-bootstrap --target <host> --hub <url>
+                                       Print a paste-able bash script to install and pair on a remote host via SSH
     link --hub <url>                   Open and hold the persistent /hub/node-link reverse WebSocket (foreground)
   worktree           Manage git worktrees (wraps git worktree)
     add [path] [-b branch] [--yolo]   Create worktree and launch Claude
@@ -2604,39 +2605,177 @@ async function printNodeLogs(commandArgs: string[]): Promise<void> {
   await printLocalLogs('node', commandArgs);
 }
 
-async function runNodeDoctor(hubUrl: string | undefined): Promise<void> {
-  const manifest = await getNodeManifest();
-  logger.info(
-    `Local manifest: ${manifest.hostname} ${manifest.platform}/${manifest.arch}`
-  );
-  logger.info(`Service manager: ${manifest.serviceManager.kind}`);
-  if (!manifest.serviceManager.supported) {
-    const diagnostic = BOOTSTRAP_DIAGNOSTICS.find(
-      (entry) => entry.code === 'SERVICE_MANAGER_UNSUPPORTED'
-    );
-    logger.info(`${diagnostic?.code}: ${diagnostic?.meaning}`);
-    logger.info(manifest.serviceManager.installHint);
-  }
-  if (!hubUrl) {
-    logger.info('No --hub supplied; skipping hub reachability check.');
-    return;
-  }
+interface NodeDoctorResult {
+  ok: boolean;
+  hostname: string;
+  platform: string;
+  arch: string;
+  helperVersion: string;
+  serviceManager: {
+    kind: string;
+    supported: boolean;
+    message: string;
+  };
+  degradedReasons: Array<{
+    code: string;
+    description: string;
+    severity: string;
+  }>;
+  hubUrl?: string;
+  hubReachable?: boolean;
+  hubError?: string;
+}
+
+type NodeDoctorDegradedReason = {
+  code: string;
+  description: string;
+  severity: 'info' | 'warn' | 'error';
+};
+
+/** Probe hub reachability at /version and return the result. */
+async function probeHubReachability(
+  hubUrl: string
+): Promise<{ reachable: boolean; error?: string }> {
   try {
     const res = await fetch(new URL('/version', hubUrl));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    logger.info(`Hub reachable: ${hubUrl}`);
+    return { reachable: true };
   } catch (error) {
-    const diagnostic = BOOTSTRAP_DIAGNOSTICS.find(
-      (entry) => entry.code === 'NODE_CONNECT_FAILED'
-    );
     const message = error instanceof Error ? error.message : String(error);
+    return { reachable: false, error: redactBootstrapSecrets(message) };
+  }
+}
+
+/** Collect all degraded reasons: manifest reasons + service state + hub check. */
+function collectNodeDoctorReasons(
+  manifest: NodeManifest,
+  st: ReturnType<typeof service.status>,
+  hubUrl: string | undefined,
+  hubCheck: { reachable?: boolean; error?: string }
+): NodeDoctorDegradedReason[] {
+  const all: NodeDoctorDegradedReason[] = [
+    ...manifest.degradedReasons.map((r) => ({
+      ...r,
+      severity: r.severity as 'info' | 'warn' | 'error',
+    })),
+  ];
+  if (!st.installed) {
+    all.push({
+      code: 'SERVICE_NOT_INSTALLED',
+      description: 'No local relay-ide service is installed on this node.',
+      severity: 'info',
+    });
+  } else if (!st.running) {
+    all.push({
+      code: 'SERVICE_NOT_RUNNING',
+      description: 'The local relay-ide service is installed but not running.',
+      severity: 'warn',
+    });
+  }
+  if (hubUrl && hubCheck.reachable === false) {
+    all.push({
+      code: 'NODE_CONNECT_FAILED',
+      description: `Cannot reach hub at ${redactBootstrapSecrets(hubUrl)}: ${hubCheck.error ?? 'unknown error'}`,
+      severity: 'error',
+    });
+  }
+  return all;
+}
+
+/** Print the human-readable doctor report. */
+function printNodeDoctorHuman(
+  manifest: NodeManifest,
+  st: ReturnType<typeof service.status>,
+  allDegraded: NodeDoctorDegradedReason[],
+  hubUrl: string | undefined,
+  hubCheck: { reachable?: boolean; error?: string }
+): void {
+  logger.info(
+    `node doctor: ${manifest.hostname} (${manifest.platform}/${manifest.arch})`
+  );
+  logger.info(
+    `relay version: ${manifest.helperVersion} | protocol: ${manifest.protocolVersion}`
+  );
+  logger.info(
+    `service manager: ${manifest.serviceManager.kind} (supported: ${manifest.serviceManager.supported ? 'yes' : 'no'})`
+  );
+  logger.info(
+    `service installed: ${st.installed ? 'yes' : 'no'} | running: ${st.running ? 'yes' : 'no'}`
+  );
+  for (const caveat of manifest.serviceManager.caveats) {
+    logger.info(`  caveat: ${caveat}`);
+  }
+  if (allDegraded.length === 0) {
+    logger.info('no degraded reasons detected.');
+  } else {
+    logger.info(`degraded reasons (${allDegraded.length}):`);
+    for (const reason of allDegraded) {
+      const prefix =
+        reason.severity === 'error'
+          ? '[error]'
+          : reason.severity === 'warn'
+            ? '[warn] '
+            : '[info] ';
+      logger.info(`  ${prefix} ${reason.code}: ${reason.description}`);
+    }
+  }
+  if (!hubUrl) {
+    logger.info('no --hub supplied; skipping hub reachability check.');
+  } else if (hubCheck.reachable) {
+    logger.info(`hub reachable: ${hubUrl}`);
+  } else {
     logger.error(
       redactBootstrapSecrets(
-        `${diagnostic?.code}: ${diagnostic?.meaning} (${message})`
+        `NODE_CONNECT_FAILED: cannot reach hub (${hubCheck.error ?? 'unknown error'})`
       )
     );
-    process.exit(1);
   }
+}
+
+async function runNodeDoctor(
+  hubUrl: string | undefined,
+  outputJson: boolean
+): Promise<void> {
+  const manifest = await getNodeManifest();
+  const st = service.status();
+
+  const hubCheck =
+    hubUrl !== undefined
+      ? await probeHubReachability(hubUrl)
+      : ({} as { reachable?: boolean; error?: string });
+
+  const allDegraded = collectNodeDoctorReasons(manifest, st, hubUrl, hubCheck);
+
+  const ok =
+    allDegraded.filter((r) => r.severity === 'error' || r.severity === 'warn')
+      .length === 0 &&
+    (hubUrl === undefined || hubCheck.reachable === true);
+
+  if (outputJson) {
+    const result: NodeDoctorResult = {
+      ok,
+      hostname: manifest.hostname,
+      platform: manifest.platform,
+      arch: manifest.arch,
+      helperVersion: manifest.helperVersion,
+      serviceManager: {
+        kind: manifest.serviceManager.kind,
+        supported: manifest.serviceManager.supported,
+        message: manifest.serviceManager.message,
+      },
+      degradedReasons: allDegraded,
+      ...(hubUrl !== undefined ? { hubUrl } : {}),
+      ...(hubCheck.reachable !== undefined
+        ? { hubReachable: hubCheck.reachable }
+        : {}),
+      ...(hubCheck.error !== undefined ? { hubError: hubCheck.error } : {}),
+    };
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(ok ? 0 : 1);
+  }
+
+  printNodeDoctorHuman(manifest, st, allDegraded, hubUrl, hubCheck);
+  process.exit(ok ? 0 : 1);
 }
 
 function nodeEndpoint(hubUrl: string, pathname: string): string {
@@ -2686,6 +2825,129 @@ function validateNodeServiceMode(
     );
     process.exit(1);
   }
+}
+
+/**
+ * Install the relay-ide binary globally via npm and optionally set up the
+ * local platform service (launchd / systemd). Does NOT pair the node with a
+ * hub — run `relay-ide node pair` after install.
+ *
+ * This is the "install-only" path introduced in #652 Slice 2.
+ * The legacy `relay-ide node install --hub <url> --pair-token <token>` path
+ * (pair + optional service setup in one command) still works and is handled
+ * below in the `connect|install` branch.
+ */
+async function runNodeInstallBinary(nodeArgs: string[]): Promise<void> {
+  const hubUrl = getNodeArg(nodeArgs, '--hub');
+  if (!hubUrl) {
+    logger.error(
+      'Usage: relay-ide node install --hub <url> [--service <mode>]'
+    );
+    process.exit(1);
+  }
+
+  const serviceMode = parseNodeServiceMode(
+    getNodeArg(nodeArgs, '--service') ?? 'manual'
+  );
+
+  logger.info('installing relay-ide globally via npm...');
+  try {
+    await execFileAsync('npm', ['install', '-g', 'relay-ide@latest'], {
+      env: process.env,
+    });
+    logger.info('relay-ide installed.');
+  } catch (err) {
+    logger.error(
+      `BOOTSTRAP_INSTALL_FAILED: ${execErrorMessage(err, 'npm install -g relay-ide failed')}`
+    );
+    process.exit(1);
+  }
+
+  if (serviceMode === 'manual' || serviceMode === 'wsl-manual') {
+    logger.info(
+      `service mode: ${serviceMode} — no service was installed. run 'relay-ide node pair --hub ${hubUrl} --pair-token <token>' to complete pairing.`
+    );
+    process.exit(0);
+  }
+
+  const manifest = await getNodeManifest();
+  validateNodeServiceMode(manifest, serviceMode);
+
+  logger.info(`installing platform service (${serviceMode})...`);
+  runServiceCommand(() => {
+    process.env['RELAY_IDE_BACKGROUND'] = '1';
+    service.install({
+      configPath: resolveConfigPath(),
+      port: getArg('--port') ?? String(DEFAULTS.port),
+      host: getArg('--host') ?? DEFAULTS.host,
+    });
+  });
+}
+
+/**
+ * Generate and print a paste-able bash script that installs relay-ide and
+ * pairs the node with the given hub on a remote machine reached via SSH.
+ *
+ * This is a generation utility — no SSH exec is performed here. The user
+ * copies the output and runs it on the target host.
+ */
+async function runNodeSshBootstrap(nodeArgs: string[]): Promise<void> {
+  const target = getNodeArg(nodeArgs, '--target');
+  const hubUrl = getNodeArg(nodeArgs, '--hub');
+
+  if (!target || !hubUrl) {
+    logger.error(
+      'Usage: relay-ide node ssh-bootstrap --target <host> --hub <url>'
+    );
+    process.exit(1);
+  }
+
+  // Validate that hubUrl is a valid URL before embedding in the script.
+  try {
+    new URL(hubUrl);
+  } catch {
+    logger.error(`invalid --hub url: ${hubUrl}`);
+    process.exit(1);
+  }
+
+  const { generateBootstrapCommands } =
+    await import('../shared/bootstrap-diagnostics.js');
+
+  const commands = generateBootstrapCommands({
+    hubUrl,
+    pairToken: 'PAIR_TOKEN_PLACEHOLDER',
+    sshTarget: target,
+  });
+
+  const sshCmd = commands.find((c) => c.id === 'ssh-auto');
+  if (!sshCmd) {
+    logger.error('could not generate ssh bootstrap script');
+    process.exit(1);
+  }
+
+  // Replace the placeholder pair token with a shell variable so the output is
+  // reproducible for the same hub URL + target combination and does not embed
+  // a real token in the script. The operator fills in PAIR_TOKEN at runtime.
+  const scriptWithVar = sshCmd.command.replace(
+    /--pair-token\s+'PAIR_TOKEN_PLACEHOLDER'/,
+    '--pair-token "${PAIR_TOKEN:?\'set PAIR_TOKEN to a valid pair token from the hub\'}"'
+  );
+
+  console.log(`# relay-ide ssh bootstrap — generated for ${target}`);
+  console.log(`# hub: ${hubUrl}`);
+  console.log(`#`);
+  console.log(`# 1. get a pair token from your hub:`);
+  console.log(
+    `#    curl -X POST ${hubUrl}/hub/pair-tokens -H 'Content-Type: application/json' -b 'token=<auth-cookie>' -d '{"displayName":"<name>","ttlSeconds":600}'`
+  );
+  console.log(`# 2. set PAIR_TOKEN and run the command below:`);
+  console.log(`#    PAIR_TOKEN=pair_... ${scriptWithVar}`);
+  console.log();
+  for (const caveat of sshCmd.caveats) {
+    console.log(`# note: ${caveat}`);
+  }
+  console.log();
+  console.log(scriptWithVar);
 }
 
 function nodeCredentialPath(): string {
@@ -3002,15 +3264,61 @@ if (command === 'node') {
     await runAsyncCommand(() => printNodeLogs(nodeArgs.slice(1)));
   }
   if (subCommand === 'doctor') {
-    await runNodeDoctor(getNodeArg(nodeArgs, '--hub'));
+    const outputJson = nodeArgs.includes('--json');
+    await runNodeDoctor(getNodeArg(nodeArgs, '--hub'), outputJson);
     process.exit(0);
   }
   if (subCommand === 'link') {
     await runNodeLink(nodeArgs);
     process.exit(0);
   }
+  // relay-ide node pair --hub <url> --pair-token <token>
+  // Productized pair-only command. The existing 'connect' subcommand is kept
+  // as a back-compat alias. Both call pairNode() under the hood.
+  if (subCommand === 'pair') {
+    const pairToken = getNodeArg(nodeArgs, '--pair-token');
+    const hubUrl = getNodeArg(nodeArgs, '--hub');
+    if (!hubUrl) {
+      logger.error(
+        'Usage: relay-ide node pair --hub <url> --pair-token <token>'
+      );
+      logger.error(
+        'Get a pair token from your hub: POST /hub/pair-tokens with {"displayName":"<name>","ttlSeconds":600}'
+      );
+      process.exit(1);
+    }
+    if (!pairToken) {
+      logger.info(`to get a pair token from your hub, run:`);
+      logger.info(
+        `  curl -X POST ${hubUrl}/hub/pair-tokens -H 'Content-Type: application/json' -b 'token=<auth-cookie>' -d '{"displayName":"<name>","ttlSeconds":600}'`
+      );
+      logger.info(
+        `then re-run: relay-ide node pair --hub ${hubUrl} --pair-token <token>`
+      );
+      process.exit(1);
+    }
+    await pairNode(nodeArgs, 'connect');
+    process.exit(0);
+  }
+  // relay-ide node ssh-bootstrap --target <host> --hub <url>
+  if (subCommand === 'ssh-bootstrap') {
+    await runNodeSshBootstrap(nodeArgs);
+    process.exit(0);
+  }
+  // relay-ide node install --hub <url> [--service <mode>]
+  //   NEW (Slice 2): install binary only, no pair-token required.
+  //   When --pair-token IS present, falls through to legacy connect+service path.
+  // relay-ide node connect --hub <url> --pair-token <token>
+  //   Back-compat pair-only alias.
   if (subCommand === 'connect' || subCommand === 'install') {
     if (subCommand === 'install') {
+      const pairToken = getNodeArg(nodeArgs, '--pair-token');
+      if (!pairToken) {
+        // New Slice 2 path: install-only (no pairing).
+        await runNodeInstallBinary(nodeArgs);
+        process.exit(0);
+      }
+      // Legacy path: pair + optional service setup in one command.
       const serviceMode = parseNodeServiceMode(
         getNodeArg(nodeArgs, '--service') ?? 'auto'
       );
@@ -3041,7 +3349,7 @@ if (command === 'node') {
     }
   }
   logger.error(
-    'Usage: relay-ide node <status|logs|doctor|connect|install|link>'
+    'Usage: relay-ide node <status|logs|doctor|pair|install|ssh-bootstrap|connect|link>'
   );
   process.exit(1);
 }

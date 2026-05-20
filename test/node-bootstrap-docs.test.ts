@@ -32,7 +32,7 @@ describe('relay-node bootstrap docs', () => {
     const docs = readRepoFile('docs/RELAY_NODE_BOOTSTRAP.md');
 
     expect(docs).toContain(
-      'Bootstrap commands (`node connect`, `node install`) themselves do not open or maintain `/hub/node-link`'
+      'Bootstrap commands (`node pair`, `node install`) themselves do not open or maintain `/hub/node-link`'
     );
     expect(docs).toContain('relay-ide node link --hub');
     expect(cliSource).toContain('does not start or maintain /hub/node-link');
