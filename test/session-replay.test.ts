@@ -8,8 +8,10 @@ import { DEFAULT_SESSION_REPLAY_CAPACITY_BYTES } from '../shared/session-replay.
 
 const createdIds: string[] = [];
 let tmuxTmpdir: string;
+let previousTmuxTmpdir: string | undefined;
 
 beforeAll(() => {
+  previousTmuxTmpdir = process.env.TMUX_TMPDIR;
   tmuxTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-tmux-'));
   process.env.TMUX_TMPDIR = tmuxTmpdir;
 });
@@ -27,6 +29,8 @@ afterEach(async () => {
 
 afterAll(() => {
   if (tmuxTmpdir) fs.rmSync(tmuxTmpdir, { recursive: true, force: true });
+  if (previousTmuxTmpdir === undefined) delete process.env.TMUX_TMPDIR;
+  else process.env.TMUX_TMPDIR = previousTmuxTmpdir;
 });
 
 describe('getReplaySnapshot', () => {
@@ -52,6 +56,26 @@ describe('getReplaySnapshot', () => {
     expect(snap?.truncated).toBe(false);
     expect(snap?.capacityBytes).toBe(DEFAULT_SESSION_REPLAY_CAPACITY_BYTES);
     expect(snap?.capturedAt).toMatch(/T.*Z$/);
+  });
+
+  it('reports the per-session effective cap, not the shared default', () => {
+    const result = sessions.create({
+      repoName: 'replay-custom-cap',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/echo',
+      args: ['hi'],
+    });
+    createdIds.push(result.id);
+    const session = sessions.get(result.id) as PtySession;
+    // Sessions can be created with a non-default cap via
+    // `maxScrollbackBytes`; the snapshot must reflect that effective cap
+    // rather than the shared default, so consumers don't act on stale
+    // metadata.
+    session.scrollbackCapacityBytes = 4096;
+    const snap = sessions.getReplaySnapshot(result.id);
+    expect(snap?.capacityBytes).toBe(4096);
   });
 
   it('reports bytesDropped and truncated=true after the FIFO evicts', () => {

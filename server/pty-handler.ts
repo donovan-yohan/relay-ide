@@ -785,7 +785,8 @@ function buildSessionObject(
   effectiveEventSource: EventSourceType,
   useTmux: boolean,
   tmuxSessionName: string,
-  createdAt: string
+  createdAt: string,
+  scrollbackCapacityBytes: number
 ): PtySession {
   const {
     id,
@@ -826,6 +827,7 @@ function buildSessionObject(
     lastActivity: createdAt,
     scrollback,
     scrollbackBytesEvicted: 0,
+    scrollbackCapacityBytes,
     idle: false,
     cwd,
     customCommand:
@@ -1061,7 +1063,8 @@ export function createPtySession(
     effectiveEventSource,
     useTmux,
     tmuxSessionName,
-    createdAt
+    createdAt,
+    maxScrollbackPerSession
   );
   sessionsMap.set(id, session);
 

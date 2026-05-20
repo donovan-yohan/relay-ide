@@ -762,12 +762,17 @@ function getReplaySnapshot(id: string): SessionReplaySnapshot | null {
   if (!session || session.mode !== 'pty') return null;
   const payload = session.scrollback.join('');
   const bytesDropped = session.scrollbackBytesEvicted;
+  // Prefer the per-session effective cap so the snapshot reports the
+  // actual eviction threshold for that session; fall back to the shared
+  // default only when a legacy/test session record predates the field.
+  const capacityBytes =
+    session.scrollbackCapacityBytes || DEFAULT_SESSION_REPLAY_CAPACITY_BYTES;
   return {
     sessionId: session.id,
     payload,
     bytesIncluded: payload.length,
     bytesDropped,
-    capacityBytes: DEFAULT_SESSION_REPLAY_CAPACITY_BYTES,
+    capacityBytes,
     truncated: bytesDropped > 0,
     capturedAt: new Date().toISOString(),
   };
