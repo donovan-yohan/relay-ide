@@ -9,6 +9,7 @@ import type {
   WorkspaceSettings,
   WorktreeMetadata,
 } from './types.js';
+import { createLogger } from './logger.js';
 
 export const DEFAULT_PRESETS: FilterPreset[] = [
   {
@@ -150,6 +151,54 @@ export interface ResolvedSessionSettings {
   continuePolicy: ContinuePolicy;
   useTmux: boolean;
   claudeArgs: string[];
+  /** #614 slice 4: effective per-session scrollback cap, undefined = use pty-handler default. */
+  scrollbackBytes?: number;
+}
+
+const SESSION_DURABILITY_LOG = createLogger('session-durability-config');
+
+/**
+ * Resolve the effective per-session scrollback cap for a (config, workspace,
+ * repo) tuple. Precedence (most specific first):
+ *   1. repo-specific `WorkspaceSettings.sessionDurability.scrollbackBytes`
+ *   2. workspace-level `WorkspaceSettings.sessionDurability.scrollbackBytes`
+ *   3. global `Config.sessionDurability.scrollbackBytes`
+ *   4. legacy `Config.maxScrollbackPerSessionBytes`
+ *   5. undefined — pty-handler applies its own 256 KB default.
+ * Non-positive values are rejected with a warning and fall through.
+ */
+export function resolveSessionDurabilityScrollbackBytes(
+  config: Config,
+  repoPath: string,
+  workspaceId?: string
+): number | undefined {
+  const repoOverride =
+    config.repoSettings?.[repoPath]?.sessionDurability?.scrollbackBytes;
+  const wsOverride = workspaceId
+    ? config.workspaces?.find((w) => w.id === workspaceId)?.settings
+        ?.sessionDurability?.scrollbackBytes
+    : undefined;
+  const globalOverride = config.sessionDurability?.scrollbackBytes;
+  const legacyTopLevel = config.maxScrollbackPerSessionBytes;
+
+  for (const [layer, value] of [
+    ['repo', repoOverride],
+    ['workspace', wsOverride],
+    ['global.sessionDurability', globalOverride],
+    ['legacy.maxScrollbackPerSessionBytes', legacyTopLevel],
+  ] as const) {
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      SESSION_DURABILITY_LOG.warn(
+        'ignoring non-positive scrollbackBytes at layer %s (got %s); falling through',
+        layer,
+        String(value)
+      );
+      continue;
+    }
+    return value;
+  }
+  return undefined;
 }
 
 export interface SessionSettingsOverrides {
@@ -202,11 +251,18 @@ export function resolveSessionSettings(
     return (globalDefaults.defaultFramework ?? 'claude') as AgentType;
   })();
 
+  const scrollbackBytes = resolveSessionDurabilityScrollbackBytes(
+    config,
+    repoPath,
+    workspaceId
+  );
+
   return {
     agent: overrides.agent ?? agentFromLayers,
     yolo: overrides.yolo ?? merged.defaultYolo ?? false,
     continuePolicy: overrides.continuePolicy ?? configPolicy,
     useTmux: true,
+    ...(scrollbackBytes !== undefined ? { scrollbackBytes } : {}),
     claudeArgs: overrides.claudeArgs ?? merged.claudeArgs ?? [],
   };
 }

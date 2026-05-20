@@ -719,6 +719,8 @@ type AgentSessionParams = {
   controlState?: ReturnType<typeof createAgentDrivenInitialControlState>;
   /** Port env var names to inject for this worktree (from repo settings) */
   portVariables?: string[] | undefined;
+  /** #614 slice 4: effective scrollback cap from resolveSessionSettings. */
+  scrollbackBytes?: number | undefined;
 };
 
 type TerminalSessionParams = {
@@ -792,6 +794,9 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     }),
     // Pass port env var names for per-worktree port injection
     portVariables: params.portVariables,
+    ...(params.scrollbackBytes !== undefined
+      ? { maxScrollbackBytes: params.scrollbackBytes }
+      : {}),
   });
 
   if (params.worktreePath) {
@@ -1998,6 +2003,9 @@ async function main(): Promise<void> {
           }),
           // Pass port env var names for per-worktree port injection
           portVariables,
+          ...(resolved.scrollbackBytes !== undefined
+            ? { maxScrollbackBytes: resolved.scrollbackBytes }
+            : {}),
         });
       },
       broadcastEvent,
@@ -3319,6 +3327,7 @@ async function main(): Promise<void> {
         claudeFullscreen: freshConfig.claudeFullscreen,
         sessionLane,
         portVariables,
+        scrollbackBytes: resolved.scrollbackBytes,
       });
     } catch (err) {
       sendSessionCreateError(res, err, freshConfig.maxPtySessions);

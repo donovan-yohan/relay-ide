@@ -98,10 +98,35 @@ The frontend subscribes to the `session-durability-changed` event stream
 and updates the matching session in `useSessionsStore` without refetching
 the full list (`handleDurabilityChanged`).
 
+## Configurable scrollback cap
+
+`resolveSessionDurabilityScrollbackBytes(config, repoPath, workspaceId?)`
+resolves the effective per-session FIFO cap. Precedence, most specific
+first:
+
+1. `Config.repoSettings[repoPath].sessionDurability.scrollbackBytes`
+2. `Config.workspaces[].settings.sessionDurability.scrollbackBytes`
+3. `Config.sessionDurability.scrollbackBytes` (global)
+4. `Config.maxScrollbackPerSessionBytes` (legacy top-level)
+5. fallback to the 256 KB hard default in `pty-handler.ts`
+
+Non-positive values are rejected with a warning; the resolver falls
+through to the next layer. `resolveSessionSettings(...)` exposes the
+result as `ResolvedSessionSettings.scrollbackBytes`; session creation
+paths thread it into `CreateParams.maxScrollbackBytes`, which the PTY
+handler persists on `PtySession.scrollbackCapacityBytes` and surfaces in
+`SessionReplaySnapshot.capacityBytes` (slice 2).
+
+Durability mode (Wave's "standard" vs "durable") is not yet a separable
+knob in Relay — every Relay session is durable by construction because
+tmux + node-pty keep the process alive across attach drops. The config
+schema reserves the `sessionDurability` namespace so a future slice can
+add a mode toggle without breaking the surface.
+
 ## Out of scope (later #614 slices)
 
 - Cross-node/remote replay forwarding.
 - Web-session replay redesign (existing `WebSession.messages` buffer is
   unchanged in slice 2).
-- Per-node/per-connection/per-session durability config knobs (slice 4).
+- Durability mode toggle (standard vs durable).
 - Live process migration. No raw infinite transcript storage.
