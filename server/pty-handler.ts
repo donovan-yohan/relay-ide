@@ -785,7 +785,8 @@ function buildSessionObject(
   effectiveEventSource: EventSourceType,
   useTmux: boolean,
   tmuxSessionName: string,
-  createdAt: string
+  createdAt: string,
+  scrollbackCapacityBytes: number
 ): PtySession {
   const {
     id,
@@ -825,6 +826,8 @@ function buildSessionObject(
     createdAt,
     lastActivity: createdAt,
     scrollback,
+    scrollbackBytesEvicted: 0,
+    scrollbackCapacityBytes,
     idle: false,
     cwd,
     customCommand:
@@ -1060,7 +1063,8 @@ export function createPtySession(
     effectiveEventSource,
     useTmux,
     tmuxSessionName,
-    createdAt
+    createdAt,
+    maxScrollbackPerSession
   );
   sessionsMap.set(id, session);
 
@@ -1108,12 +1112,15 @@ export function createPtySession(
       resetIdleTimer();
       scrollback.push(data);
       scrollbackRef.bytes += data.length;
-      // Trim oldest entries if over limit
+      // Trim oldest entries if over limit; track total bytes evicted so
+      // `SessionReplaySnapshot.bytesDropped` can report lost history.
       while (
         scrollbackRef.bytes > maxScrollbackPerSession &&
         scrollback.length > 1
       ) {
-        scrollbackRef.bytes -= (scrollback.shift() as string).length;
+        const evicted = (scrollback.shift() as string).length;
+        scrollbackRef.bytes -= evicted;
+        session.scrollbackBytesEvicted += evicted;
       }
       // Notify sessions layer so global cap can be enforced.
       // Pass the session id and chunk size so the caller can maintain an

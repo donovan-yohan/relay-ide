@@ -301,6 +301,18 @@ export interface PtySession extends BaseSession {
   mode: 'pty';
   pty: IPty;
   scrollback: string[];
+  /**
+   * Monotonic total of bytes evicted by the scrollback FIFO over this
+   * session's lifetime. Surfaces in `SessionReplaySnapshot.bytesDropped`
+   * so replay consumers can be honest about history lost to the cap.
+   */
+  scrollbackBytesEvicted: number;
+  /**
+   * Effective per-session FIFO cap in bytes. May differ from the shared
+   * default when a session is created with a custom `maxScrollbackBytes`.
+   * Stored so `SessionReplaySnapshot.capacityBytes` reflects the actual cap.
+   */
+  scrollbackCapacityBytes: number;
   useTmux: boolean;
   tmuxSessionName: string;
   onPtyReplacedCallbacks: Array<(newPty: IPty) => void>;

@@ -4,7 +4,12 @@ import type { CreateParams } from './sessions.js';
 import type { CreateWebParams } from './web-session-handler.js';
 import type { SessionRenewResult } from './session-envelope-registry.js';
 import type { Session, SessionSummary } from './types.js';
-import type { InterventionRecord, TabControlEvent, ControlActor } from '../shared/control-state.js';
+import type { SessionReplaySnapshot } from '../shared/session-replay.js';
+import type {
+  InterventionRecord,
+  TabControlEvent,
+  ControlActor,
+} from '../shared/control-state.js';
 import type { SessionControlError } from './session-control-api.js';
 import {
   DEFAULT_LOCAL_ENVIRONMENT_ID,
@@ -34,7 +39,11 @@ export interface NodeSessionBoundary {
     displayName: string
   ): { id: string; displayName: string };
   write(id: string, data: string): void;
-  getInterventions(id: string, options?: { nodeId?: string; limit?: number }): InterventionRecord[];
+  getInterventions(
+    id: string,
+    options?: { nodeId?: string; limit?: number }
+  ): InterventionRecord[];
+  getReplaySnapshot(id: string): SessionReplaySnapshot | null;
   handBackToAgent(input: {
     id: string;
     latestSeenInterventionEventId?: string;
@@ -78,6 +87,7 @@ const defaultSessionBoundary: NodeSessionBoundary = {
   updateDisplayName: sessionsModule.updateDisplayName,
   write: sessionsModule.write,
   getInterventions: sessionsModule.getInterventions,
+  getReplaySnapshot: sessionsModule.getReplaySnapshot,
   handBackToAgent: sessionsModule.handBackToAgent,
 };
 
