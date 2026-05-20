@@ -1,0 +1,19 @@
+shared/safe-defaults.ts
+  s_afc3e94f2d047a::t_271f025d08594e 140-150,163-164,175-176,180,205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "9830fd77ae8d81d6d9b1af23b443b94f7e9e3908",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
