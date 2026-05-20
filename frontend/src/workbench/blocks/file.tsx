@@ -459,7 +459,7 @@ function FileBlockEditor({
               type="button"
               className="block-file__edit-button block-file__edit-button--primary"
               onClick={() => mutation.mutate()}
-              disabled={mutation.isPending || unchanged}
+              disabled={mutation.isPending || unchanged || !expectedHash}
             >
               {mutation.isPending ? 'saving…' : 'confirm write'}
             </button>
@@ -467,7 +467,19 @@ function FileBlockEditor({
         )}
       </div>
       {mutation.isError && (
-        <div className="block-file__error">{errorMessage(mutation.error)}</div>
+        <div className="block-file__error">
+          {errorMessage(mutation.error)}
+          {mutation.error instanceof HttpError &&
+            mutation.error.code === 'FILE_RPC_WRITE_HASH_MISMATCH' && (
+              <button
+                type="button"
+                className="block-file__edit-button block-file__edit-reload"
+                onClick={onSaved}
+              >
+                reload
+              </button>
+            )}
+        </div>
       )}
     </div>
   );
