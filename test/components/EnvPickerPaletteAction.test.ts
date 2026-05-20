@@ -316,6 +316,76 @@ describe('<EnvPickerDialog /> (palette wiring)', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('guards against re-entry: a second click while launching is a no-op', async () => {
+    // CodeRabbit PR #646 feedback: a fast double-click on a fresh row would
+    // otherwise fire two POST /sessions calls before React rerendered the
+    // `launching` flag. The ref-based guard MUST hold synchronously.
+    const fresh = freshOption({ id: 'opt-double' });
+    let resolveLaunch!: (value: LaunchEnvironmentResult) => void;
+    const launch = vi.fn(
+      () =>
+        new Promise<LaunchEnvironmentResult>((resolve) => {
+          resolveLaunch = resolve;
+        })
+    );
+    const onClose = vi.fn();
+    await render({
+      open: true,
+      options: [fresh],
+      onClose,
+      launch,
+    });
+    const row = container.querySelector(
+      '[data-option-id="opt-double"]'
+    ) as HTMLElement;
+    await act(async () => {
+      row.click();
+      row.click(); // second click while the first launch is in-flight
+      row.click(); // and a third for good measure
+    });
+    expect(launch).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveLaunch({
+        kind: 'launched',
+        result: { session: undefined, error: null },
+      });
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a typed block reason if the launch hook throws', async () => {
+    // CodeRabbit PR #646 feedback: a rejected launch promise must not leave
+    // the dialog in a silently-broken state. The error must be surfaced so
+    // the user can retry / pick a different env.
+    const fresh = freshOption({ id: 'opt-throw' });
+    const launch = vi.fn(async (): Promise<LaunchEnvironmentResult> => {
+      throw new Error('network down');
+    });
+    const onClose = vi.fn();
+    const onLaunched = vi.fn();
+    await render({
+      open: true,
+      options: [fresh],
+      onClose,
+      onLaunched,
+      launch,
+    });
+    const row = container.querySelector(
+      '[data-option-id="opt-throw"]'
+    ) as HTMLElement;
+    await act(async () => {
+      row.click();
+    });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(onLaunched).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    const block = container.querySelector(
+      '[data-testid="env-picker-dialog-block-reason"]'
+    );
+    expect(block?.textContent).toMatch(/launch failed/i);
+    expect(block?.textContent).toMatch(/network down/i);
+  });
+
   it('closes when the backdrop is clicked', async () => {
     const onClose = vi.fn();
     await render({

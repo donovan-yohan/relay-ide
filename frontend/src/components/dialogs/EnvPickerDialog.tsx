@@ -20,7 +20,7 @@
 // button on the selection's freshness so a stale row cannot be activated
 // without surfacing the typed degraded reason.
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   EnvironmentOption,
   EnvironmentDegradedReason,
@@ -131,17 +131,27 @@ export function EnvPickerDialog({
   const [selectedId, setSelectedId] = useState<string | undefined>(defaultId);
   const [blockReason, setBlockReason] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  // Re-entry guard. We use a ref (not the `launching` state) because state
+  // updates batch and a fast double-click would race past the `launching`
+  // check before React schedules the re-render. The ref reflects the in-flight
+  // launch synchronously. Per CodeRabbit feedback on PR #646.
+  const launchInFlightRef = useRef(false);
 
   useEffect(() => {
     if (open) {
       setSelectedId(defaultId);
       setBlockReason(null);
       setLaunching(false);
+      launchInFlightRef.current = false;
     }
   }, [open, defaultId]);
 
   const handleSelect = useCallback(
     async (option: EnvironmentOption) => {
+      // Re-entry guard: ignore additional selects while a launch is pending.
+      // Double-clicking a fresh option or hammering Enter would otherwise fire
+      // duplicate create-session POSTs (CodeRabbit PR #646 feedback).
+      if (launchInFlightRef.current) return;
       setSelectedId(option.id);
       // Always re-check freshness at launch time (defense-in-depth against the
       // picker surfacing a stale row).
@@ -153,6 +163,7 @@ export function EnvPickerDialog({
       }
       setBlockReason(null);
       setLaunching(true);
+      launchInFlightRef.current = true;
       try {
         const result = await launch(option, launchOverrides);
         if (result.kind === 'blocked') {
@@ -166,8 +177,19 @@ export function EnvPickerDialog({
         }
         onLaunched?.(result);
         onClose();
+      } catch (error) {
+        // Reject-path safety: if the launch hook throws (network blip,
+        // capability check raised mid-flight, etc.) we MUST surface a typed
+        // user-visible failure instead of silently swallowing the error and
+        // leaving the dialog open with no feedback. Defense-in-depth against
+        // the "never silently switch nodes" invariant — a thrown launch is
+        // morally equivalent to a stale environment from the user's POV.
+        const message =
+          error instanceof Error ? error.message : String(error ?? 'unknown');
+        setBlockReason(`launch failed: ${message.toLowerCase()}`);
       } finally {
         setLaunching(false);
+        launchInFlightRef.current = false;
       }
     },
     [launch, launchOverrides, onClose, onLaunched]
