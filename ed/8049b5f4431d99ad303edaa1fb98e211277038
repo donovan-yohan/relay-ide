@@ -1,0 +1,24 @@
+frontend/src/components/WorkspaceFilesArea.tsx
+  41c3ff55b5416114 4-211
+frontend/src/components/FileTabContent.tsx
+  41c3ff55b5416114 1-2,38-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "ed8049b5f4431d99ad303edaa1fb98e211277038",
+  "prompts": {
+    "41c3ff55b5416114": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7f3466e9-07c7-4347-9de2-7fd9bf62f97a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null,
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 295,
+      "overriden_lines": 0
+    }
+  }
+}
