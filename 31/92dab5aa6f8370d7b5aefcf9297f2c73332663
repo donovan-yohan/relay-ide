@@ -1,0 +1,28 @@
+test/components/EnvironmentPicker.test.ts
+  s_afc3e94f2d047a::t_03808329642fa1 328-333,335,338,344,350,356
+  s_afc3e94f2d047a::t_fe13f8294bff1f 417-419
+frontend/src/components/EnvironmentPicker.css
+  s_afc3e94f2d047a::t_1a216870e3252a 117-128
+frontend/src/components/EnvironmentPicker.tsx
+  s_afc3e94f2d047a::t_994fefe257edae 168-173,176-178,180-186,194-198
+  s_afc3e94f2d047a::t_81367bdb9ec420 329
+  s_afc3e94f2d047a::t_47660029e86d90 255-259,272-274,277-278
+  s_afc3e94f2d047a::t_47e5923949a313 146-151
+  s_afc3e94f2d047a::t_b411721f0b8796 309,317-322
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "3192dab5aa6f8370d7b5aefcf9297f2c73332663",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
