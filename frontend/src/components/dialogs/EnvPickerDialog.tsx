@@ -41,7 +41,14 @@ import './EnvPickerDialog.css';
 
 export interface EnvPickerDialogProps {
   open: boolean;
-  options: readonly EnvironmentOption[];
+  /**
+   * Mutable shape (not `readonly`) because the downstream
+   * `EnvironmentPicker` (#627) takes `EnvironmentOption[]`. We don't mutate
+   * here, but typing the prop as `readonly` would force a cast at the
+   * `<EnvironmentPicker>` boundary (Gemini PR #646 feedback). When #627's
+   * picker is later updated to take `readonly`, this loosens to readonly.
+   */
+  options: EnvironmentOption[];
   /** Last-used environment history, newest-first per `pickDefaultEnvironment`. */
   history?: readonly EnvironmentHistoryEntry[];
   /** Active tab context for the safe-default rule (#628). */
@@ -235,7 +242,7 @@ export function EnvPickerDialog({
         </header>
         <div className="env-picker-dialog__body">
           <EnvironmentPicker
-            options={options as EnvironmentOption[]}
+            options={options}
             onSelect={handleSelect}
             onCancel={handleCancel}
             {...(selectedId !== undefined ? { selectedOptionId: selectedId } : {})}
