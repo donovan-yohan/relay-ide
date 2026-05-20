@@ -134,7 +134,7 @@ Fields:
 
 - `nodeId` (required) — target Relay node id; sourced from `EnvironmentOption.node.nodeId`.
 - `cwd` (required) — absolute cwd on the target node where the session starts.
-- `repoIdentity` (optional) — canonical normalized repo identity (e.g. `github.com/owner/name`), produced by `shared/repo-identity.ts`. Never a free-form `{ host, path }` pair.
+- `repoIdentity` (optional, nullable) — canonical normalized repo identity (e.g. `github.com/owner/name`), produced by `shared/repo-identity.ts`. Never a free-form `{ host, path }` pair. May be `null` when the environment was built from a `RepoInstance` whose remotes did not produce a canonical identity (see `EnvironmentRepoInstanceSummary.repoIdentity` in `shared/environment-option.ts`), so adapters can round-trip the field without losing the "no identity resolved" signal; omit the field entirely otherwise.
 - `repoInstanceId` (optional) — scoped `RepoInstanceId` from `createRepoInstanceId(nodeId, localPath)`.
 - `benchId` (optional) — scoped `WorktreeInstanceId` from `createWorktreeInstanceId(nodeId, localPath)`. Requires `repoIdentity` or `repoInstanceId` (a Bench is anchored to a RepoInstance per `docs/WORKBENCH_BOUNDARY.md`).
 

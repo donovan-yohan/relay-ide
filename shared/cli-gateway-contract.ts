@@ -599,7 +599,11 @@ const createSessionInputSchema: RelayJsonSchema = {
       description:
         'DEPRECATED in v1.x — prefer `environment.benchId` + `environment.cwd`. Removed in v2.',
     },
-    cwd: stringSchema,
+    cwd: {
+      ...stringSchema,
+      description:
+        'DEPRECATED in v1.x — prefer `environment.cwd`. Removed in v2.',
+    },
     type: { type: 'string', enum: ['agent', 'terminal'], default: 'agent' },
     mode: { type: 'string', enum: ['pty', 'web'] },
     agent: stringSchema,

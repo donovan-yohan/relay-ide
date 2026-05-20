@@ -105,6 +105,24 @@ describe('CLI gateway typed environment IDs (#626)', () => {
         benchId: BENCH_ID,
       });
     });
+
+    it('accepts environment with repoIdentity: null (no canonical identity resolved)', () => {
+      // Mirrors EnvironmentRepoInstanceSummary.repoIdentity, which is `string | null`
+      // when remotes did not produce a canonical RepoIdentity. Adapters must be able
+      // to round-trip the null signal without dropping the field.
+      const result = validateAndSanitizeGatewayCreateInput({
+        environment: {
+          nodeId: NODE_A,
+          repoIdentity: null,
+          repoInstanceId: REPO_INSTANCE_ID,
+          cwd: REPO_CWD,
+        },
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok !== true) return;
+      const env = result.input['environment'] as Record<string, unknown>;
+      expect(env['repoIdentity']).toBeNull();
+    });
   });
 
   describe('validation — raw host/path rejected', () => {
