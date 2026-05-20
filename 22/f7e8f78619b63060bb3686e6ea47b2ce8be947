@@ -1,0 +1,25 @@
+frontend/src/lib/api.ts
+  s_3e9de69a56e5c0::t_5704a7955b0b3b 1948-1950
+  s_3e9de69a56e5c0::t_4f2258c480b0db 1967-1969
+server/workbench-layout.ts
+  s_3e9de69a56e5c0::t_7ced668ae61eb4 70-80
+frontend/src/workbench/workbench-canvas.css
+  s_3e9de69a56e5c0::t_f065ed15733864 118-122
+  s_3e9de69a56e5c0::t_c9c395a1bb4642 93-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "22f7e8f78619b63060bb3686e6ea47b2ce8be947",
+  "prompts": {},
+  "sessions": {
+    "s_3e9de69a56e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86b16749-094e-4afa-832b-09b9931ea393",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
