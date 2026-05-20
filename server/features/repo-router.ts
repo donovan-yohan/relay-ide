@@ -90,7 +90,11 @@ export function createRepoFeatureRouter(
       if (options.collectLocalRepoInventory) {
         reports.push(await options.collectLocalRepoInventory());
       }
-      res.json(repoInventoryFeature.aggregateInventoryReports(reports));
+      // Both /hub/repo-inventory and /hub/repo-groups honour the router's
+      // `options.now` injection point so `generatedAt` is deterministic in
+      // tests and consistent between the two endpoints (Copilot review on
+      // PR #639).
+      res.json(repoInventoryFeature.aggregateInventoryReports(reports, now()));
     } catch (error) {
       sendRegistryError(registry, res, error);
     }

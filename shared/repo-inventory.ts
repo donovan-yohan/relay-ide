@@ -90,10 +90,14 @@ export interface AggregatedRepoInventoryResponse {
 }
 
 /**
- * Slim per-node coordinates inside a `RepoIdentityGroup`. Mirrors the picker
- * slice in `shared/environment-option.ts` (`EnvironmentRepoInstanceSummary`)
- * so the environment picker (#615) can construct options directly from a
- * group without re-reading full inventory.
+ * Slim per-node coordinates inside a `RepoIdentityGroup`. Carries the
+ * per-instance fields the environment picker (#615) needs after it has
+ * already selected a group: `repoIdentity` lives on the parent group (so
+ * we don't repeat it per instance), and `nodeId` is added here because a
+ * single group spans N nodes. Compare with `EnvironmentRepoInstanceSummary`
+ * in `shared/environment-option.ts` — that type carries `repoIdentity`
+ * (because it stands alone outside any group) and omits `nodeId` (because
+ * its `EnvironmentOption` parent already pins the node).
  *
  * `localPath` is intentionally node-local: per epic #615 / ADR-016 we never
  * treat absolute paths as global identity, only as the cwd inside their
