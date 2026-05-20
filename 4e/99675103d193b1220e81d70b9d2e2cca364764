@@ -1,0 +1,29 @@
+server/pty-handler.ts
+  s_8e47e58ef792e1::t_31887de293bca9 788-789
+  s_8e47e58ef792e1::t_7eec3432434be7 1066-1067
+  s_8e47e58ef792e1::t_b6357b2fca0f4e 830
+server/sessions.ts
+  s_8e47e58ef792e1::t_ba968174b24207 765-769,775
+test/session-replay.test.ts
+  s_8e47e58ef792e1::t_4364d4af6786bc 61-80
+  s_8e47e58ef792e1::t_01204a5d9b3dad 11,14
+  s_8e47e58ef792e1::t_c1006f618cacd2 32-33
+server/types.ts
+  s_8e47e58ef792e1::t_a75438991b6e08 310-315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "4e99675103d193b1220e81d70b9d2e2cca364764",
+  "prompts": {},
+  "sessions": {
+    "s_8e47e58ef792e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8c96e46-a41f-4160-8319-11ffa90ca8ee",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
