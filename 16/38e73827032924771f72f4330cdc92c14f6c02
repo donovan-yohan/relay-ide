@@ -1,0 +1,43 @@
+frontend/src/lib/launch-environment.ts
+  s_afc3e94f2d047a::t_30375aaf999e01 1-118
+frontend/src/components/dialogs/EnvPickerDialog.tsx
+  s_afc3e94f2d047a::t_8e0f8fab58b4d7 1-244
+frontend/src/lib/actions/definitions/session.ts
+  s_afc3e94f2d047a::t_a4b7018e4cb71c 86-101,112
+frontend/src/lib/stores/ui.ts
+  s_afc3e94f2d047a::t_e52e3d872a0101 423-425
+frontend/src/App.tsx
+  s_afc3e94f2d047a::t_c9f723d65fac17 1311-1318
+  s_afc3e94f2d047a::t_9544787b56124d 85-86
+test/components/EnvPickerPaletteAction.test.ts
+  s_afc3e94f2d047a::t_14a04da893e250 1-334
+frontend/src/lib/repo-to-environment.ts
+  s_afc3e94f2d047a::t_1f96ff0df01e3b 1-113
+test/components/launch-environment.test.ts
+  s_afc3e94f2d047a::t_613f952bffa93f 1-154
+frontend/src/lib/url-nav.ts
+  s_afc3e94f2d047a::t_b075778f1b9270 21-25,48-49
+frontend/src/components/dialogs/EnvPickerDialog.css
+  s_afc3e94f2d047a::t_24f81d7c5d8d9c 1-85
+frontend/src/hooks/useActionRegistry.ts
+  s_afc3e94f2d047a::t_7b7df7c5b343a4 18
+  s_afc3e94f2d047a::t_c1df78b6233d6a 219-225
+test/components/repo-to-environment.test.ts
+  s_afc3e94f2d047a::t_b35b055ac19861 1-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "1638e73827032924771f72f4330cdc92c14f6c02",
+  "prompts": {},
+  "sessions": {
+    "s_afc3e94f2d047a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae8ff4ed-36fb-4e20-817b-340ec76498bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Donovan Yohan <34756395+donovan-yohan@users.noreply.github.com>"
+    }
+  }
+}
