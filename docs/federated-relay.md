@@ -521,6 +521,28 @@ Cookie: token={auth-cookie}
 
 Response groups repo instances by canonical git identity, showing per-node paths, branch counts, worktree counts, and online status. In #444 terms this is a repo-kind Project inventory plus git-specific Instance/Bench metadata, not the complete future Project inventory.
 
+## File Resource Refs (#616 slice 1)
+
+`shared/file-resource-ref.ts` defines `FileResourceRef`, the addressable handle for a file or directory on a paired node. Subsequent #616 slices (preview blocks, agent prompt attachments, write/edit flows) consume refs as their pointer shape:
+
+```ts
+interface FileResourceRef {
+  nodeId: NodeId;
+  path: string;                   // absolute, POSIX-normalized
+  capturedAt: string;             // ISO 8601 UTC
+  intent: 'read' | 'list' | 'stat' | 'tail';
+  size?: number;                  // mint-time hint
+  sha256?: string;                // mint-time hash (only if `fs.read` ran)
+  mtimeMs?: number;
+  repoBinding?: { repoPath; worktreePath?; branch? };
+  maxBytes?: number;
+}
+```
+
+Refs are forward-looking pointers, not capability grants. The hub policy evaluator still enforces actual access at fetch time. The `intent` field signals which `fs.*` verb the ref is meant to invoke so capability checks can be planned up front (`rpc:fs:read` / `rpc:fs:list` / `rpc:fs:stat` / `rpc:fs:tail`).
+
+Helpers `createFileResourceRef`, `parseFileResourceRef`, `fileResourceRefEquals`, and `fileResourceRefSummary` live alongside the type. `createFileResourceRef` rejects relative paths, paths that escape root via `..`, malformed sha256 hex, non-ISO `capturedAt`, and unknown intents.
+
 ## Bootstrap and Service Modes
 
 ### Supported Service Modes
