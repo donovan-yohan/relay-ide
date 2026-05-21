@@ -255,25 +255,31 @@ describe('agent continuation shared contract', () => {
     expect(isAgentResumeBundle(bundle)).toBe(true);
   });
 
-  it('ignores native requestedMode when no harness is present', () => {
-    const bundle = generateHandoffBrief({
-      id: 'resume-bundle-requested-native-without-harness',
-      createdAt: now,
-      workContext: baseWorkContext(),
-      destination: {
-        nodeId: destinationNodeId,
-        cwd: destinationCwd,
-      },
-      requestedMode: 'native-cross-node',
-      readiness: readiness(true),
-    });
+  it('ignores native or relay requestedMode when no harness is present', () => {
+    for (const requestedMode of [
+      'native-same-node',
+      'native-cross-node',
+      'relay-managed-timeline',
+    ] as const) {
+      const bundle = generateHandoffBrief({
+        id: `resume-bundle-requested-${requestedMode}-without-harness`,
+        createdAt: now,
+        workContext: baseWorkContext(),
+        destination: {
+          nodeId: destinationNodeId,
+          cwd: destinationCwd,
+        },
+        requestedMode,
+        readiness: readiness(true),
+      });
 
-    expect(bundle.mode).toBe('summary-only');
-    expect(bundle.confidence).toBe('low');
-    expect(bundle.harness).toBeUndefined();
-    expect(bundle.instruction.provider).toBeUndefined();
-    expect(bundle.exportPlan.nativeSessionRef).toBeUndefined();
-    expect(isAgentResumeBundle(bundle)).toBe(true);
+      expect(bundle.mode).toBe('summary-only');
+      expect(bundle.confidence).toBe('low');
+      expect(bundle.harness).toBeUndefined();
+      expect(bundle.instruction.provider).toBeUndefined();
+      expect(bundle.exportPlan.nativeSessionRef).toBeUndefined();
+      expect(isAgentResumeBundle(bundle)).toBe(true);
+    }
   });
 
   it('accepts native same-node and native cross-node descriptors as schema data', () => {
@@ -337,6 +343,65 @@ describe('agent continuation shared contract', () => {
             },
           }).instruction,
           transcript: 'raw hidden text',
+        },
+      })
+    ).toBe(false);
+  });
+
+  it('rejects continuation privacy metadata with invalid enum strings', () => {
+    const bundle = generateHandoffBrief({
+      id: 'resume-bundle-invalid-privacy',
+      createdAt: now,
+      workContext: baseWorkContext(),
+      destination: {
+        nodeId: destinationNodeId,
+        cwd: destinationCwd,
+      },
+    });
+
+    expect(isAgentResumeBundle(bundle)).toBe(true);
+
+    expect(
+      isAgentResumeBundle({
+        ...bundle,
+        exportPlan: {
+          ...bundle.exportPlan,
+          artifactRefs: bundle.exportPlan.artifactRefs.map((artifact, index) =>
+            index === 0
+              ? {
+                  ...artifact,
+                  privacy: {
+                    ...artifact.privacy,
+                    classification: 'totally-not-an-enum',
+                    retention: 'also-invalid',
+                  },
+                }
+              : artifact
+          ),
+        },
+      })
+    ).toBe(false);
+  });
+
+  it('rejects bundles with instruction confidence mismatched from the bundle', () => {
+    const bundle = generateHandoffBrief({
+      id: 'resume-bundle-mismatched-instruction-confidence',
+      createdAt: now,
+      workContext: baseWorkContext(),
+      destination: {
+        nodeId: destinationNodeId,
+        cwd: destinationCwd,
+      },
+    });
+
+    expect(isAgentResumeBundle(bundle)).toBe(true);
+
+    expect(
+      isAgentResumeBundle({
+        ...bundle,
+        instruction: {
+          ...bundle.instruction,
+          confidence: bundle.confidence === 'low' ? 'high' : 'low',
         },
       })
     ).toBe(false);

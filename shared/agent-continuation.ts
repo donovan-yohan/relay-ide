@@ -1,12 +1,13 @@
 import { HANDOFF_SCHEMA_VERSION } from './handoff.js';
 import type { GlobalSessionId, NodeId } from './identity.js';
-import type {
-  ArtifactRef,
-  SessionRef,
-  TaskRef,
-  WorkContext,
-  WorkContextId,
-  WorkContextPrivacyMetadata,
+import {
+  isWorkContextPrivacyMetadata,
+  type ArtifactRef,
+  type SessionRef,
+  type TaskRef,
+  type WorkContext,
+  type WorkContextId,
+  type WorkContextPrivacyMetadata,
 } from './work-context.js';
 
 export const RESUME_MODES = [
@@ -334,20 +335,6 @@ function hasNoForbiddenRawKeys(value: unknown): boolean {
   );
 }
 
-function isPrivacyMetadata(
-  value: unknown
-): value is WorkContextPrivacyMetadata {
-  if (!isRecord(value) || !isRecord(value.redaction)) return false;
-  return (
-    typeof value.classification === 'string' &&
-    typeof value.retention === 'string' &&
-    typeof value.rawPayloadStored === 'boolean' &&
-    typeof value.redaction.redacted === 'boolean' &&
-    typeof value.redaction.strategy === 'string' &&
-    isStringArray(value.redaction.classes)
-  );
-}
-
 export function isResumeMode(value: unknown): value is ResumeMode {
   return isEnumValue(value, RESUME_MODE_SET);
 }
@@ -382,7 +369,8 @@ function isResumeStateLocation(value: unknown): value is ResumeStateLocation {
     typeof value.portable === 'boolean' &&
     typeof value.includeByDefault === 'boolean' &&
     (value.exclude === undefined || isSafeExcludeMetadata(value.exclude)) &&
-    (value.privacy === undefined || isPrivacyMetadata(value.privacy))
+    (value.privacy === undefined ||
+      isWorkContextPrivacyMetadata(value.privacy))
   );
 }
 
@@ -464,7 +452,7 @@ function isResumeArtifactSummary(
     isOptionalString(value.uri) &&
     isOptionalString(value.path) &&
     isOptionalString(value.summary) &&
-    isPrivacyMetadata(value.privacy)
+    isWorkContextPrivacyMetadata(value.privacy)
   );
 }
 
@@ -562,6 +550,7 @@ export function isAgentResumeBundle(
       isResumeVerification(value.verification)) &&
     value.exportPlan.workContextId === value.workContextId &&
     value.instruction.mode === value.mode &&
+    value.instruction.confidence === value.confidence &&
     value.exportPlan.resumeMode === value.mode &&
     value.exportPlan.confidence === value.confidence
   );
