@@ -110,7 +110,7 @@ export interface WorkContextBlockExcerpt {
 export interface FileBlockExcerpt {
   kind: 'file';
   fileRefKind: 'file';
-  mode?: 'read' | 'diff' | undefined;
+  mode?: 'read' | 'edit' | 'diff' | undefined;
 }
 
 /**

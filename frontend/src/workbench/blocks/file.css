@@ -117,3 +117,78 @@
   color: var(--status-error);
   font-family: var(--font-mono);
 }
+
+/* ===== FileBlock edit mode (slice 4) ===== */
+
+.block-file__edit {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.block-file__edit-textarea {
+  flex: 1;
+  width: 100%;
+  margin: 0;
+  padding: var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text);
+  background: var(--bg);
+  border: none;
+  resize: none;
+  outline: none;
+}
+
+.block-file__edit-textarea:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.block-file__edit-diff {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.block-file__edit-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.block-file__edit-button {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: var(--space-2xs) var(--space-sm);
+  cursor: pointer;
+}
+
+.block-file__edit-button:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.block-file__edit-button--primary {
+  border-color: var(--text);
+}
+
+.block-file__edit-gate {
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--font-size-xs);
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  border-top: 1px solid var(--border);
+}
+
+.block-file__edit-reload {
+  margin-left: var(--space-sm);
+}

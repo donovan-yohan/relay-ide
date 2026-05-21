@@ -169,7 +169,7 @@ describe('WorkbenchBlockDescriptor discriminated union narrowing', () => {
       if ('id' in ref) {
         assertType<'file'>(ref.kind);
       }
-      assertType<'read' | 'diff' | undefined>(desc.meta.mode);
+      assertType<'read' | 'edit' | 'diff' | undefined>(desc.meta.mode);
     }
   });
 
