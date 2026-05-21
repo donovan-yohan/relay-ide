@@ -14,9 +14,10 @@
 - Defer broad bidirectional sync. Relay does not yet have a single-writer
   story, merge-conflict UX, or partial-failure recovery model for mirrored
   folders.
-- Safe v1 subset: one explicit file copy from `(sourceNodeId, sourcePath)` to
-  `(destNodeId, destPath)`, with `mode: 'create' | 'overwrite'`, no append, no
-  directory recursion, a bounded per-file cap, and hash-based overwrite
+- Safe v1 subset: one explicit regular-file copy from `(sourceNodeId,
+sourcePath)` to `(destNodeId, destPath)`, with `mode: 'create' |
+'overwrite'`, no append, no directory recursion, a bounded per-file cap,
+  hash/snapshot-based source preconditions, and hash-based overwrite
   preconditions.
 - Authorize it as two grants: `rpc:fs:read` on the source node and
   `rpc:fs:write` on the destination node. Do not add a new cross-node bit for
@@ -87,9 +88,10 @@ interface CrossNodeCopyRequest {
 
 `FileResourceRef` already carries the source `nodeId`, absolute node-scoped
 `path`, `capturedAt`, optional size/hash/mtime hints, optional repo/worktree
-binding, and optional `maxBytes`. Those hints are not authority: the hub must
-re-stat/re-read through File RPC before acting, because the source may have
-changed since the ref was minted.
+binding, and optional `maxBytes`. Those hints are not authority, but they are
+preconditions when present: the hub must re-validate them through File RPC before
+acting and return a first-class stale-source/source-changed conflict if the live
+source no longer matches the ref that was minted.
 
 ### Semantics
 
@@ -98,9 +100,13 @@ changed since the ref was minted.
    File RPC path rules. Do not infer path mapping or mirror roots here.
 3. Evaluate source `rpc:fs:read` and destination `rpc:fs:write` grants before
    starting either leg.
-4. Stat the source. It must be a regular file and `size <= maxBytes`.
+4. `lstat` the source without following symlinks. It must be a regular file,
+   `size <= maxBytes`, and match any expected source snapshot metadata carried
+   by the request/ref.
 5. Read the source file into a bounded hub-side buffer while computing SHA-256.
-6. Stat the destination:
+   Before attempting any destination write, compare the computed hash to any
+   expected source `sha256`/snapshot hash from the ref or handoff plan.
+6. `lstat` the destination path/parent without following symlinks:
    - `mode: 'create'`: destination must not exist.
    - `mode: 'overwrite'`: destination must exist as a regular file and its
      current SHA-256 must equal `expectedHash`.
@@ -110,6 +116,17 @@ changed since the ref was minted.
 8. Emit one composite audit envelope with the manifest, byte count, hashes, and
    final outcome.
 
+### Source snapshot preconditions
+
+Dry-run/handoff planning must capture the expected source artifact identity for
+every file it plans to apply: node id, path hash, size, mtime/captured-at hints
+when available, and a SHA-256 content hash or explicit snapshot id. Apply is not
+allowed to silently copy "whatever is there now." It must validate the live
+source against the captured source metadata/hash/snapshot identity before the
+destination write. If the source changed, disappeared, became too large, or
+changed kind, the operation returns a typed conflict such as
+`COPY_SOURCE_CHANGED`/`COPY_SOURCE_STALE` and leaves the destination untouched.
+
 ### Conflict behavior
 
 | Condition                                                     | Result                                                           |
@@ -117,8 +134,9 @@ changed since the ref was minted.
 | `create` and destination exists                               | `COPY_DEST_EXISTS`; no read/write beyond cheap stat is required. |
 | `overwrite` and `expectedHash` missing                        | `COPY_EXPECTED_HASH_REQUIRED`; no write.                         |
 | `overwrite` and destination hash differs                      | `COPY_DEST_CHANGED`; no write.                                   |
+| Source hash/snapshot metadata differs from the captured ref   | `COPY_SOURCE_CHANGED`/`COPY_SOURCE_STALE`; no destination write. |
 | Source exceeds `maxBytes`                                     | `COPY_SOURCE_TOO_LARGE`; no destination write.                   |
-| Source or destination is a directory/symlink/unsupported kind | typed failure; no traversal or symlink following.                |
+| Source or destination is a directory/symlink/unsupported kind | `COPY_UNSUPPORTED_KIND`; no traversal or symlink following.      |
 
 There is intentionally no `append`. Append makes partial writes observable,
 complicates retry, and is not needed for the handoff substrate. If a later log
@@ -173,20 +191,20 @@ Recommended shape:
   "eventType": "RPC_FS_COPY_ACROSS_NODES",
   "decision": "allow",
   "reasonCode": "COPY_COMPLETED",
-  "peer": {
-    "requester": { "kind": "browser-session", "id": "..." },
-    "source": { "nodeId": "macbook", "pathHash": "sha256:..." },
-    "dest": { "nodeId": "hub", "pathHash": "sha256:..." }
-  },
+  "peer": { "kind": "local-user", "displayName": "..." },
   "intent": {
     "kind": "rpc:fs:copy",
     "mode": "overwrite",
     "workContextId": "wc_...",
-    "sourceRefHash": "sha256:...",
+    "sourceNodeId": "macbook",
+    "sourcePathHash": "sha256:...",
+    "sourceSnapshotId": "snapshot_...",
+    "expectedSourceHash": "sha256:source...",
+    "destNodeId": "hub",
     "destPathHash": "sha256:...",
-    "expectedDestHash": "sha256:old...",
-    "resultHash": "sha256:new...",
-    "bytes": 48192,
+    "expectedHash": "sha256:old...",
+    "newHash": "sha256:new...",
+    "bytesWritten": 48192,
     "maxBytes": 1048576
   },
   "requiredBits": ["rpc:fs:read", "rpc:fs:write"],
@@ -200,9 +218,14 @@ Recommended shape:
 
 The stored audit row should follow `docs/SECURITY_POLICY.md`: compact ids,
 reason codes, hashes, byte counts, policy refs, `prevHash`, and `entryHash`.
-Do not persist raw file bytes, raw env, provider auth, or unbounded payloads in
-the audit database. Display surfaces can resolve hashes/refs through normal
-artifact or file-preview permissions when appropriate.
+Keep `peer` as the flat requester identity used by `HubPolicyPeerIdentity`/
+`SecurityAuditPeer`; put source/destination node ids and path hashes in the
+copy intent or material block so existing audit consumers do not have to parse a
+new nested peer shape. Align field names with existing File RPC primitives:
+`expectedHash`, `newHash`, and `bytesWritten`. Do not persist raw file bytes,
+raw env, provider auth, or unbounded payloads in the audit database. Display
+surfaces can resolve hashes/refs through normal artifact or file-preview
+permissions when appropriate.
 
 Why not two rows? A two-row source-read + dest-write chain mirrors the low-level
 implementation, but it makes atomic intent invisible. If the destination write
@@ -218,16 +241,16 @@ The v1 recovery rule is boring on purpose: retry the same request only when the
 same preconditions still hold. No partial destination file should become
 observable.
 
-| Failure                                                | Behavior                                                                                                                                                            | Recovery                                                                                        |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Source grant denied                                    | Return `COPY_SOURCE_DENIED`; no destination grant/write attempted unless policy UI needs a dry-run explanation.                                                     | Ask for/adjust source read grant, then retry.                                                   |
-| Destination grant denied                               | Return `COPY_DEST_DENIED`; no source read unless a dry-run explicitly requested both decisions.                                                                     | Ask for/adjust destination write grant, then retry.                                             |
-| Source read fails after destination grant              | Return `COPY_SOURCE_READ_FAILED`; no destination write attempted.                                                                                                   | Retry after source node/path is healthy; same destination precondition still applies.           |
-| Destination write fails after source read              | Return `COPY_DEST_WRITE_FAILED`; discard buffered bytes server-side. Atomic write temp file is unlinked or ignored; destination path remains unchanged.             | Retry with the same `expectedHash`; if destination changed, retry fails as `COPY_DEST_CHANGED`. |
-| Network drop during source read                        | Return `COPY_SOURCE_READ_FAILED` or `COPY_CANCELLED` depending on caller cancellation.                                                                              | Retry from start. No resume in v1.                                                              |
-| Network drop during destination write                  | Return `COPY_DEST_WRITE_FAILED`/`COPY_CANCELLED`; atomic temp file never renames.                                                                                   | Retry with the same `expectedHash`; safe because nothing partial landed.                        |
-| Hub crash after source read before dest write          | No copy completion audit row; destination unchanged.                                                                                                                | Retry from start. The source may be re-read and re-hashed.                                      |
-| Hub crash after destination rename before audit append | Treat as high-risk audit failure per security policy. Prod/destructive flows fail closed; recovery requires audit verification and operator-visible reconciliation. |
+| Failure                                                | Behavior                                                                                                                                                | Recovery                                                                                        |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Source grant denied                                    | Return `COPY_SOURCE_DENIED`; no destination grant/write attempted unless policy UI needs a dry-run explanation.                                         | Ask for/adjust source read grant, then retry.                                                   |
+| Destination grant denied                               | Return `COPY_DEST_DENIED`; no source read unless a dry-run explicitly requested both decisions.                                                         | Ask for/adjust destination write grant, then retry.                                             |
+| Source read fails after destination grant              | Return `COPY_SOURCE_READ_FAILED`; no destination write attempted.                                                                                       | Retry after source node/path is healthy; same destination precondition still applies.           |
+| Destination write fails after source read              | Return `COPY_DEST_WRITE_FAILED`; discard buffered bytes server-side. Atomic write temp file is unlinked or ignored; destination path remains unchanged. | Retry with the same `expectedHash`; if destination changed, retry fails as `COPY_DEST_CHANGED`. |
+| Network drop during source read                        | Return `COPY_SOURCE_READ_FAILED` or `COPY_CANCELLED` depending on caller cancellation.                                                                  | Retry from start. No resume in v1.                                                              |
+| Network drop during destination write                  | Return `COPY_DEST_WRITE_FAILED`/`COPY_CANCELLED`; atomic temp file never renames.                                                                       | Retry with the same `expectedHash`; safe because nothing partial landed.                        |
+| Hub crash after source read before dest write          | No copy completion audit row; destination unchanged.                                                                                                    | Retry from start. The source may be re-read and re-hashed.                                      |
+| Hub crash after destination rename before audit append | Treat as high-risk audit failure per security policy. Prod/destructive flows fail closed.                                                               | Recovery requires audit verification and operator-visible reconciliation.                       |
 
 The hub should prefer ordering that avoids unnecessary reads: destination
 existence/hash checks can happen before source read when cheap, especially for
@@ -239,17 +262,18 @@ and outcome invariant.
 
 ## 6. V1 non-goals
 
-| Non-goal                      | Rationale                                                                                                                                                                     |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Streaming copy                | Bounded hub buffering is simpler to reason about and lets v1 guarantee no partial destination file. Streaming can be revisited after resumable/audited transfer state exists. |
-| Resume                        | Resume needs chunk manifests, byte-range verification, temp-file lifecycle, and retry windows. Overkill for a per-file bounded copy.                                          |
-| Directory traversal/recursion | Tree copy reintroduces sync problems: excludes, conflicts, symlinks, partial application, and secret/cache discovery.                                                         |
-| Symlinks                      | Cross-node symlink meaning is host-specific and can escape allowed roots. V1 regular files only.                                                                              |
-| Metadata preservation         | Mode, owner, group, xattrs, ACLs, and mtime have different semantics across macOS/Linux/WSL. Preserve content bytes only.                                                     |
-| Append                        | Append makes partial writes visible and unsafe to retry.                                                                                                                      |
-| Delete/rename/move            | These are destructive filesystem operations with separate UX/audit needs.                                                                                                     |
-| Broad folder sync/rsync       | `rsync` may be a future engine, but the product contract must be a scoped handoff/copy plan with grants, conflicts, excludes, hashes, and audit.                              |
-| Process migration             | Relay copies bytes and launches/attaches sessions; it does not move a running tmux/Claude/Codex/Hermes process image between machines.                                        |
+| Non-goal                      | Rationale                                                                                                                                                                                |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Streaming copy                | Bounded hub buffering is simpler to reason about and lets v1 guarantee no partial destination file. Streaming can be revisited after resumable/audited transfer state exists.            |
+| Resume                        | Resume needs chunk manifests, byte-range verification, temp-file lifecycle, and retry windows. Overkill for a per-file bounded copy.                                                     |
+| Directory traversal/recursion | Tree copy reintroduces sync problems: excludes, conflicts, symlinks, partial application, and secret/cache discovery.                                                                    |
+| Symlinks                      | Cross-node symlink meaning is host-specific and can escape allowed roots. V1 rejects symlink traversal and symlink-as-source/destination unless a future explicit policy says otherwise. |
+| Metadata preservation         | Mode, owner, group, xattrs, ACLs, and mtime have different semantics across macOS/Linux/WSL. Preserve content bytes only.                                                                |
+| Append                        | Append makes partial writes visible and unsafe to retry.                                                                                                                                 |
+| Delete/rename/move            | These are destructive filesystem operations with separate UX/audit needs.                                                                                                                |
+| Broad folder sync/rsync       | `rsync` may be a future engine, but the product contract must be a scoped handoff/copy plan with grants, conflicts, excludes, hashes, and audit.                                         |
+| Secret sync                   | No syncing `.env`, SSH keys, token stores, provider auth, credentials, Hermes profile DBs, or auth/session caches. Secrets need an explicit vault/policy flow, not file copy.            |
+| Process migration             | Relay copies bytes and launches/attaches sessions; it does not move a running tmux/Claude/Codex/Hermes process image between machines.                                                   |
 
 ---
 
@@ -283,7 +307,7 @@ Relay divergences:
 
 ## 8. Relationship to #683 cold handoff to hub
 
-#683 is the laptop-closing use case: move local WIP to a hub-hosted environment
+Issue `#683` is the laptop-closing use case: move local WIP to a hub-hosted environment
 so work can continue after the laptop sleeps. This spike informs the transfer
 substrate by defining the smallest safe cross-node mutation: explicit source,
 explicit destination, bounded bytes, conflict precondition, two grants, and a
