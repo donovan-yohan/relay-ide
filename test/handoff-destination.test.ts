@@ -5,6 +5,7 @@ import {
   detectHandoffDestinationConflicts,
   proposeHandoffDestination,
   resolveHandoffPathMappings,
+  validateHandoffDestinationRoot,
   validateHandoffMirrorRoot,
   type HandoffMirrorRoot,
 } from '../shared/handoff-destination.js';
@@ -251,6 +252,14 @@ describe('handoff destination mapping', () => {
     });
 
     expect(broad.ok).toBe(false);
+    const broadDestination = validateHandoffDestinationRoot({
+      path: '/',
+      allowedDestinationRoots: [],
+    });
+    expect(broadDestination).toEqual({
+      ok: false,
+      reason: '/ is too broad for handoff mirroring',
+    });
     expect(traversal.conflicts.map((item) => item.code)).toEqual([
       'MISSING_PATH_MAPPING',
       'UNSAFE_PATH_MAPPING',
@@ -322,6 +331,70 @@ describe('handoff destination mapping', () => {
     expect(conflicts[1].message).toContain('destination branch');
     expect(conflicts[2].message).toContain('3 tracked/conflicted');
     expect(conflicts[3].message).toContain('shared/handoff.ts');
+  });
+
+  it('resolves untracked collision paths from the destination worktree root, not cwd subdirectories', () => {
+    const dirty: RepoInventoryDirtySummary = {
+      ...cleanDirty(),
+      untrackedCount: 1,
+      files: [{ path: 'shared/handoff.ts', status: 'untracked' }],
+    };
+    const conflicts = detectHandoffDestinationConflicts({
+      source: source(),
+      destination: environmentOption({
+        cwd: `${destinationWorktree}/packages/app`,
+      }),
+      destinationInventory: inventory({}, { dirty }),
+      sourcePaths: [`${sourceCwd}/shared/handoff.ts`],
+      mirrorRoots: [mirrorRoot()],
+      allowedDestinationRoots: ['/srv/relay'],
+    });
+
+    expect(conflicts).toEqual([
+      {
+        code: 'UNTRACKED_COLLISION',
+        message:
+          'destination untracked path may be overwritten: shared/handoff.ts',
+        nodeId: destinationNodeId,
+        reasonCode: 'FAILED_DESTINATION_CONFLICT',
+      },
+    ]);
+  });
+
+  it('ignores unrelated untracked paths when mapped writes target different destinations', () => {
+    const dirty: RepoInventoryDirtySummary = {
+      ...cleanDirty(),
+      untrackedCount: 1,
+      files: [{ path: 'docs/notes.md', status: 'untracked' }],
+    };
+    const conflicts = detectHandoffDestinationConflicts({
+      source: source(),
+      destination: environmentOption({
+        cwd: `${destinationWorktree}/packages/app`,
+      }),
+      destinationInventory: inventory({}, { dirty }),
+      sourcePaths: [`${sourceCwd}/shared/handoff.ts`],
+      mirrorRoots: [mirrorRoot()],
+      allowedDestinationRoots: ['/srv/relay'],
+    });
+
+    expect(conflicts).toEqual([]);
+  });
+
+  it('does not report untracked collisions for metadata-only handoffs without mapped writes', () => {
+    const dirty: RepoInventoryDirtySummary = {
+      ...cleanDirty(),
+      untrackedCount: 1,
+      files: [{ path: 'shared/handoff.ts', status: 'untracked' }],
+    };
+    const conflicts = detectHandoffDestinationConflicts({
+      source: source(),
+      destination: environmentOption(),
+      destinationInventory: inventory({}, { dirty }),
+      allowedDestinationRoots: ['/srv/relay'],
+    });
+
+    expect(conflicts).toEqual([]);
   });
 
   it('detects stale/offline destination and missing capabilities with deterministic output', () => {

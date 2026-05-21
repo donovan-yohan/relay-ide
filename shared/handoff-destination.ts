@@ -147,7 +147,7 @@ export function validateHandoffDestinationRoot(input: {
   allowedDestinationRoots: string[];
 }): { ok: true; path: string } | { ok: false; reason: string } {
   const normalized = normalizeAbsolutePath(input.path);
-  if (!normalized || !isNonEmptyAbsolutePath(normalized)) {
+  if (!normalized) {
     return { ok: false, reason: 'destination path must be absolute' };
   }
   if (normalized !== input.path.replace(/\/+$/u, '') && input.path !== '/') {
@@ -161,6 +161,9 @@ export function validateHandoffDestinationRoot(input: {
       ok: false,
       reason: `${normalized} is too broad for handoff mirroring`,
     };
+  }
+  if (!isNonEmptyAbsolutePath(normalized)) {
+    return { ok: false, reason: 'destination path must be absolute' };
   }
   if (input.allowedDestinationRoots.length === 0) {
     return { ok: true, path: normalized };
@@ -445,12 +448,26 @@ function headShaForDestination(
   )?.divergence?.headSha;
 }
 
+function rootPathForDestination(
+  destination: EnvironmentOption,
+  inventory: RepoInventoryRepoInstance
+): string {
+  if (!destination.bench) return inventory.localPath;
+  return (
+    inventory.worktrees.find(
+      (worktree) =>
+        worktree.worktreeInstanceId === destination.bench?.worktreeInstanceId
+    )?.localPath ?? destination.bench.localPath
+  );
+}
+
 function detectUntrackedCollisions(input: {
   dirty: RepoInventoryDirtySummary;
-  destination: EnvironmentOption;
+  destinationRoot: string;
   mappings: HandoffPathMapping[];
   nodeId: NodeId;
 }): HandoffConflict[] {
+  if (input.mappings.length === 0) return [];
   const untrackedFiles = input.dirty.files.filter(
     (file) => file.status === 'untracked'
   );
@@ -459,11 +476,13 @@ function detectUntrackedCollisions(input: {
   const mappedDestinations = new Set(
     input.mappings.map((mapping) => mapping.destination.path)
   );
-  const cwd =
-    normalizeAbsolutePath(input.destination.cwd) ?? input.destination.cwd;
+  const destinationRoot =
+    normalizeAbsolutePath(input.destinationRoot) ?? input.destinationRoot;
   const collisions = untrackedFiles.filter((file) => {
-    const path = file.path.startsWith('/') ? file.path : `${cwd}/${file.path}`;
-    return mappedDestinations.size === 0 || mappedDestinations.has(path);
+    const path = file.path.startsWith('/')
+      ? file.path
+      : `${destinationRoot}/${file.path}`;
+    return mappedDestinations.has(path);
   });
   if (collisions.length > 0) {
     return collisions.map((file) =>
@@ -475,6 +494,7 @@ function detectUntrackedCollisions(input: {
       )
     );
   }
+  if (!input.dirty.truncated) return [];
   return [
     conflict(
       'UNTRACKED_COLLISION',
@@ -585,6 +605,10 @@ export function detectHandoffDestinationConflicts(
       inventory
     );
     const dirty = dirtySummaryForDestination(input.destination, inventory);
+    const destinationRoot = rootPathForDestination(
+      input.destination,
+      inventory
+    );
 
     if (
       input.sourceBaseCommit &&
@@ -632,7 +656,7 @@ export function detectHandoffDestinationConflicts(
       conflicts.push(
         ...detectUntrackedCollisions({
           dirty,
-          destination: input.destination,
+          destinationRoot,
           mappings: mappingResult.mappings,
           nodeId: destinationNodeId,
         })
