@@ -1,4 +1,10 @@
-import { mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isSafePath,
+  MAX_UNTRACKED_FILE_BYTES,
   parseGitStatus,
   planHandoffSnapshot,
   type ExecFileAsyncLike,
@@ -242,6 +249,30 @@ describe('planHandoffSnapshot — dirty tracked diff', () => {
     expect(result.fileCount).toBe(1);
     expect(result.byteCount).toBeGreaterThan(0);
     expect(result.conflicts).toHaveLength(0);
+  });
+
+  it('adds approved untracked bytes to tracked patch byte count', async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'relay-handoff-byte-count-'));
+    const untrackedContent = 'safe sidecar content\n';
+    writeFileSync(join(repoPath, 'notes.md'), untrackedContent);
+    const diff =
+      'diff --git a/src/server/git.ts b/src/server/git.ts\n+new line\n';
+    const exec = makeExec({
+      revparseHead: 'deadbeefdeadbeef\n',
+      revparseAbbrev: 'feat/123\n',
+      status: statusLine(' M src/server/git.ts') + statusLine('?? notes.md'),
+      diff,
+    });
+
+    const result = await planHandoffSnapshot({
+      repoPath,
+      nodeId: NODE_ID,
+      exec,
+    });
+
+    expect(result.includedGroups).toContain('tracked-patch');
+    expect(result.includedGroups).toContain('approved-untracked');
+    expect(result.byteCount).toBe(diff.length + untrackedContent.length);
   });
 
   it('detects staged modification and includes staged-metadata group', async () => {
@@ -580,6 +611,86 @@ describe('planHandoffSnapshot — path safety', () => {
         conflictCode: 'UNSAFE_PATH_MAPPING',
         reason: 'unsafe-path',
       },
+    ]);
+  });
+
+  it('excludes oversized untracked files as typed cache exclusions', async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'relay-handoff-oversized-'));
+    writeFileSync(join(repoPath, 'huge.bin'), '');
+    truncateSync(join(repoPath, 'huge.bin'), MAX_UNTRACKED_FILE_BYTES + 1);
+    const exec = makeExec({
+      revparseHead: 'abc\n',
+      revparseAbbrev: 'main\n',
+      status: statusLine('?? huge.bin'),
+      diff: '',
+    });
+
+    const result = await planHandoffSnapshot({
+      repoPath,
+      nodeId: NODE_ID,
+      exec,
+    });
+
+    expect(result.untrackedCandidates).toEqual([
+      {
+        path: 'huge.bin',
+        included: false,
+        excludeConflictCode: 'CACHE_EXCLUDED',
+      },
+    ]);
+    expect(result.excludedPaths).toEqual([
+      {
+        path: 'huge.bin',
+        conflictCode: 'CACHE_EXCLUDED',
+        reason: 'oversized',
+      },
+    ]);
+    expect(result.conflicts).toEqual([
+      expect.objectContaining({
+        code: 'CACHE_EXCLUDED',
+        message: expect.stringContaining('huge.bin'),
+      }),
+    ]);
+    expect(result.includedGroups).not.toContain('approved-untracked');
+    expect(result.excludedGroups).toContain('excluded-cache');
+    expect(result.byteCount).toBe(0);
+  });
+
+  it('excludes unsupported untracked path kinds as unsafe mappings', async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'relay-handoff-unsupported-'));
+    mkdirSync(join(repoPath, 'scratch'));
+    const exec = makeExec({
+      revparseHead: 'abc\n',
+      revparseAbbrev: 'main\n',
+      status: statusLine('?? scratch/'),
+      diff: '',
+    });
+
+    const result = await planHandoffSnapshot({
+      repoPath,
+      nodeId: NODE_ID,
+      exec,
+    });
+
+    expect(result.untrackedCandidates).toEqual([
+      {
+        path: 'scratch/',
+        included: false,
+        excludeConflictCode: 'UNSAFE_PATH_MAPPING',
+      },
+    ]);
+    expect(result.excludedPaths).toEqual([
+      {
+        path: 'scratch/',
+        conflictCode: 'UNSAFE_PATH_MAPPING',
+        reason: 'unsupported-kind',
+      },
+    ]);
+    expect(result.conflicts).toEqual([
+      expect.objectContaining({
+        code: 'UNSAFE_PATH_MAPPING',
+        message: expect.stringContaining('unsupported filesystem kind'),
+      }),
     ]);
   });
 });

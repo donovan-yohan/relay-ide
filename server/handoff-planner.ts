@@ -56,8 +56,12 @@ export interface ExcludedPathSummary {
     | 'cache'
     | 'ignored'
     | 'raw-log'
-    | 'unsafe-path';
+    | 'unsafe-path'
+    | 'unsupported-kind'
+    | 'oversized';
 }
+
+export const MAX_UNTRACKED_FILE_BYTES = 10 * 1024 * 1024;
 
 export interface HandoffPlannerDryRun {
   branchName: string | null;
@@ -389,7 +393,41 @@ export async function planHandoffSnapshot(
           excludeConflictCode: 'UNSAFE_PATH_MAPPING',
         };
       }
+      if (stat && !stat.isFile()) {
+        excludedPaths.push({
+          path,
+          conflictCode: 'UNSAFE_PATH_MAPPING',
+          reason: 'unsupported-kind',
+        });
+        conflicts.push({
+          code: 'UNSAFE_PATH_MAPPING',
+          message: `untracked path has unsupported filesystem kind: ${path}`,
+          nodeId,
+        });
+        return {
+          path,
+          included: false,
+          excludeConflictCode: 'UNSAFE_PATH_MAPPING',
+        };
+      }
       if (stat?.isFile()) {
+        if (stat.size > MAX_UNTRACKED_FILE_BYTES) {
+          excludedPaths.push({
+            path,
+            conflictCode: 'CACHE_EXCLUDED',
+            reason: 'oversized',
+          });
+          conflicts.push({
+            code: 'CACHE_EXCLUDED',
+            message: `untracked file exceeds ${MAX_UNTRACKED_FILE_BYTES} byte snapshot limit: ${path}`,
+            nodeId,
+          });
+          return {
+            path,
+            included: false,
+            excludeConflictCode: 'CACHE_EXCLUDED',
+          };
+        }
         untrackedByteCount += stat.size;
       }
       return { path, included: true };
@@ -428,7 +466,7 @@ export async function planHandoffSnapshot(
         cwd: repoPath,
         timeout: 10000,
       });
-      byteCount = stdout.length;
+      byteCount += stdout.length;
     } catch {
       // best effort
     }
