@@ -740,7 +740,12 @@ function transitionsLeadToCurrentState(
   state: HandoffRunState
 ): boolean {
   if (transitions.length === 0) return state === 'planned';
-  return transitions[transitions.length - 1]?.to === state;
+  let previousState: HandoffRunState = 'planned';
+  for (const transition of transitions) {
+    if (transition.from !== previousState) return false;
+    previousState = transition.to;
+  }
+  return previousState === state;
 }
 
 export function isHandoffRun(value: unknown): value is HandoffRun {

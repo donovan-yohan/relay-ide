@@ -432,6 +432,27 @@ describe('handoff shared contract', () => {
     expect(isHandoffRun(staleCurrentState)).toBe(false);
   });
 
+  it('rejects disconnected run transition histories', () => {
+    const disconnectedHistory = baseRun({
+      state: 'launching',
+      transitions: [
+        {
+          from: 'planned',
+          to: 'snapshotting',
+          at: later,
+          reasonCode: 'SNAPSHOT_CAPTURED',
+        },
+        {
+          from: 'applying',
+          to: 'launching',
+          at: later,
+          reasonCode: 'LAUNCH_STARTED',
+        },
+      ],
+    });
+    expect(isHandoffRun(disconnectedHistory)).toBe(false);
+  });
+
   it('rejects raw secret/auth/transcript payload storage', () => {
     const rawRequest = {
       ...baseRequest(),
