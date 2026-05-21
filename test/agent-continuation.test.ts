@@ -255,6 +255,27 @@ describe('agent continuation shared contract', () => {
     expect(isAgentResumeBundle(bundle)).toBe(true);
   });
 
+  it('ignores native requestedMode when no harness is present', () => {
+    const bundle = generateHandoffBrief({
+      id: 'resume-bundle-requested-native-without-harness',
+      createdAt: now,
+      workContext: baseWorkContext(),
+      destination: {
+        nodeId: destinationNodeId,
+        cwd: destinationCwd,
+      },
+      requestedMode: 'native-cross-node',
+      readiness: readiness(true),
+    });
+
+    expect(bundle.mode).toBe('summary-only');
+    expect(bundle.confidence).toBe('low');
+    expect(bundle.harness).toBeUndefined();
+    expect(bundle.instruction.provider).toBeUndefined();
+    expect(bundle.exportPlan.nativeSessionRef).toBeUndefined();
+    expect(isAgentResumeBundle(bundle)).toBe(true);
+  });
+
   it('accepts native same-node and native cross-node descriptors as schema data', () => {
     const sameNode = harness('claude-same-node', [
       'summary-only',

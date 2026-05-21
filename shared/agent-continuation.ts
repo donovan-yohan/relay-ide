@@ -620,7 +620,9 @@ function pickMode(
 ): ResumeMode {
   if (
     requestedMode &&
-    (!harness || harness.supportedResumeModes.includes(requestedMode))
+    (requestedMode === 'summary-only' ||
+      (harness !== undefined &&
+        harness.supportedResumeModes.includes(requestedMode)))
   ) {
     return requestedMode;
   }
