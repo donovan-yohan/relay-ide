@@ -229,6 +229,46 @@ describe('handoff destination mapping', () => {
     ]);
   });
 
+  it('does not path-match mirror roots scoped to another source node', () => {
+    const result = resolveHandoffPathMappings({
+      sourceNodeId,
+      destinationNodeId,
+      sourcePaths: [`${sourceCwd}/shared/handoff.ts`],
+      mirrorRoots: [mirrorRoot({ sourceNodeId: 'other-source-node' })],
+      allowedDestinationRoots: ['/srv/relay'],
+    });
+
+    expect(result.mappings).toEqual([]);
+    expect(result.conflicts).toEqual([
+      {
+        code: 'MISSING_PATH_MAPPING',
+        message: `no configured path mapping for source path ${sourceCwd}/shared/handoff.ts`,
+        nodeId: destinationNodeId,
+        reasonCode: 'FAILED_MISSING_PATH_MAPPING',
+      },
+    ]);
+  });
+
+  it('does not path-match mirror roots scoped to another destination node', () => {
+    const result = resolveHandoffPathMappings({
+      sourceNodeId,
+      destinationNodeId,
+      sourcePaths: [`${sourceCwd}/shared/handoff.ts`],
+      mirrorRoots: [mirrorRoot({ destinationNodeId: 'other-destination-node' })],
+      allowedDestinationRoots: ['/srv/relay'],
+    });
+
+    expect(result.mappings).toEqual([]);
+    expect(result.conflicts).toEqual([
+      {
+        code: 'MISSING_PATH_MAPPING',
+        message: `no configured path mapping for source path ${sourceCwd}/shared/handoff.ts`,
+        nodeId: destinationNodeId,
+        reasonCode: 'FAILED_MISSING_PATH_MAPPING',
+      },
+    ]);
+  });
+
   it('blocks unsafe mapping roots, traversal, and broad home mirroring', () => {
     const broad = validateHandoffMirrorRoot({
       mirrorRoot: mirrorRoot({ sourceRoot: '/Users/ebi' }),

@@ -310,8 +310,13 @@ export function resolveHandoffPathMappings(
   const conflicts: HandoffConflict[] = [];
   const mappings: HandoffPathMapping[] = [];
   const normalizedRoots = new Map<HandoffMirrorRoot, HandoffMirrorRoot>();
+  const scopedMirrorRoots = input.mirrorRoots.filter(
+    (mirrorRoot) =>
+      mirrorRoot.sourceNodeId === input.sourceNodeId &&
+      mirrorRoot.destinationNodeId === input.destinationNodeId
+  );
 
-  for (const mirrorRoot of input.mirrorRoots) {
+  for (const mirrorRoot of scopedMirrorRoots) {
     const validation = validateHandoffMirrorRoot({
       mirrorRoot,
       allowedDestinationRoots: input.allowedDestinationRoots,
@@ -345,7 +350,7 @@ export function resolveHandoffPathMappings(
     }
     const rawMirrorRoot = findMirrorRootForPath(
       normalizedSource,
-      input.mirrorRoots
+      scopedMirrorRoots
     );
     const mirrorRoot = rawMirrorRoot
       ? normalizedRoots.get(rawMirrorRoot)
