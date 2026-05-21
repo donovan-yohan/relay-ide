@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  GIT_DIFF_MAX_BUFFER_BYTES,
   isSafePath,
   MAX_UNTRACKED_FILE_BYTES,
   parseGitStatus,
@@ -21,6 +22,12 @@ import {
 
 const REPO_PATH = '/repos/relay-ide';
 const NODE_ID = 'local';
+
+type ExecCall = {
+  file: string;
+  args: string[];
+  options: Parameters<ExecFileAsyncLike>[2];
+};
 
 // Builds a NUL-delimited porcelain=v1 -z status string from an array of entries.
 // Each entry is the raw text (e.g. "M  src/foo.ts" or "?? newfile.ts").
@@ -273,6 +280,52 @@ describe('planHandoffSnapshot — dirty tracked diff', () => {
     expect(result.includedGroups).toContain('tracked-patch');
     expect(result.includedGroups).toContain('approved-untracked');
     expect(result.byteCount).toBe(diff.length + untrackedContent.length);
+  });
+
+  it('passes an explicit maxBuffer when collecting tracked diff bytes', async () => {
+    const calls: ExecCall[] = [];
+    const exec: ExecFileAsyncLike = async (file, args, options) => {
+      calls.push({ file, args, options });
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+        return { stdout: 'deadbeefdeadbeef\n', stderr: '' };
+      }
+      if (args[0] === 'rev-parse') return { stdout: 'feat/123\n', stderr: '' };
+      if (args[0] === 'status') {
+        return { stdout: statusLine(' M src/server/git.ts'), stderr: '' };
+      }
+      if (args[0] === 'diff') return { stdout: '+changed\n', stderr: '' };
+      throw new Error(`unexpected git command: ${args.join(' ')}`);
+    };
+
+    await planHandoffSnapshot({ repoPath: REPO_PATH, nodeId: NODE_ID, exec });
+
+    const diffCall = calls.find((call) => call.args[0] === 'diff');
+    expect(diffCall?.file).toBe('git');
+    expect(diffCall?.args).toEqual(['diff', 'HEAD']);
+    expect(diffCall?.options).toMatchObject({
+      cwd: REPO_PATH,
+      timeout: 10000,
+      maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
+    });
+  });
+
+  it('counts tracked diff bytes instead of UTF-16 code units', async () => {
+    const diff = '+emoji 🦀\n+kanji 日本\n';
+    const exec = makeExec({
+      revparseHead: 'deadbeefdeadbeef\n',
+      revparseAbbrev: 'feat/123\n',
+      status: statusLine(' M src/server/git.ts'),
+      diff,
+    });
+
+    const result = await planHandoffSnapshot({
+      repoPath: REPO_PATH,
+      nodeId: NODE_ID,
+      exec,
+    });
+
+    expect(Buffer.byteLength(diff)).toBeGreaterThan(diff.length);
+    expect(result.byteCount).toBe(Buffer.byteLength(diff));
   });
 
   it('detects staged modification and includes staged-metadata group', async () => {

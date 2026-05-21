@@ -16,7 +16,7 @@ const execFileAsync = promisify(execFile);
 export type ExecFileAsyncLike = (
   file: string,
   args: string[],
-  options: { cwd: string; timeout?: number }
+  options: { cwd: string; timeout?: number; maxBuffer?: number }
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export interface HandoffPlannerInput {
@@ -62,6 +62,7 @@ export interface ExcludedPathSummary {
 }
 
 export const MAX_UNTRACKED_FILE_BYTES = 10 * 1024 * 1024;
+export const GIT_DIFF_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 
 export interface HandoffPlannerDryRun {
   branchName: string | null;
@@ -465,8 +466,9 @@ export async function planHandoffSnapshot(
       const { stdout } = await run('git', ['diff', 'HEAD'], {
         cwd: repoPath,
         timeout: 10000,
+        maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
       });
-      byteCount += stdout.length;
+      byteCount += Buffer.byteLength(stdout);
     } catch {
       // best effort
     }
