@@ -66,6 +66,11 @@ const BINARY_EXTENSIONS = new Set([
 
 type FileBlockMode = 'read' | 'edit' | 'diff';
 
+const FILE_RPC_WRITE_HASH_MISMATCH_CODE = 'FILE_RPC_WRITE_HASH_MISMATCH';
+const FILE_RPC_INVALID_REQUEST_CODE = 'INVALID_REQUEST';
+const FILE_RPC_EXPECTED_HASH_MISMATCH_REASON_CODE =
+  'FILE_RPC_EXPECTED_HASH_MISMATCH';
+
 function isBinaryPath(path: string): boolean {
   const dot = path.lastIndexOf('.');
   if (dot === -1) return false;
@@ -77,6 +82,16 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} b`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} kb`;
   return `${(n / (1024 * 1024)).toFixed(1)} mb`;
+}
+
+function isWriteHashMismatchError(err: unknown): boolean {
+  if (!(err instanceof HttpError)) return false;
+  const reasonCode = err.details?.reasonCode;
+  return (
+    err.code === FILE_RPC_WRITE_HASH_MISMATCH_CODE ||
+    (err.code === FILE_RPC_INVALID_REQUEST_CODE &&
+      reasonCode === FILE_RPC_EXPECTED_HASH_MISMATCH_REASON_CODE)
+  );
 }
 
 function errorMessage(err: unknown): string {
@@ -93,7 +108,7 @@ function errorMessage(err: unknown): string {
     )
       return 'file not found';
     if (code === 'FILE_RPC_SESSION_REQUIRED') return 'session required';
-    if (code === 'FILE_RPC_WRITE_HASH_MISMATCH')
+    if (isWriteHashMismatchError(err))
       return 'file changed since last read — reload before saving';
     if (code === 'FILE_RPC_WRITE_PERMISSION_DENIED')
       return 'write permission denied on node';
@@ -342,7 +357,10 @@ function FileBlockFetcher({
  *   2. "confirm write" → POST fs.write with `mode: 'overwrite'` and an
  *      `expectedHash` derived from the initial content (sha256 of the read
  *      response). Server enforces optimistic concurrency: a mismatch surfaces
- *      as `FILE_RPC_WRITE_HASH_MISMATCH` → inline error copy prompts a reload.
+ *      as `FILE_RPC_WRITE_HASH_MISMATCH` or the server's real
+ *      `INVALID_REQUEST` + `details.reasonCode =
+ *      FILE_RPC_EXPECTED_HASH_MISMATCH` shape → inline error copy prompts a
+ *      reload.
  *   3. On success, parent refetches stat+read so the editor re-seeds.
  *
  * No raw-bytes display, no preview escapes — write content stays in the
@@ -469,16 +487,15 @@ function FileBlockEditor({
       {mutation.isError && (
         <div className="block-file__error">
           {errorMessage(mutation.error)}
-          {mutation.error instanceof HttpError &&
-            mutation.error.code === 'FILE_RPC_WRITE_HASH_MISMATCH' && (
-              <button
-                type="button"
-                className="block-file__edit-button block-file__edit-reload"
-                onClick={onSaved}
-              >
-                reload
-              </button>
-            )}
+          {isWriteHashMismatchError(mutation.error) && (
+            <button
+              type="button"
+              className="block-file__edit-button block-file__edit-reload"
+              onClick={onSaved}
+            >
+              reload
+            </button>
+          )}
         </div>
       )}
     </div>

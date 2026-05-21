@@ -481,6 +481,17 @@ describe('file renderer', () => {
     expect(src).toContain('file changed since last read');
   });
 
+  it('handles real server stale expectedHash reasonCode shape', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain(
+      "const FILE_RPC_INVALID_REQUEST_CODE = 'INVALID_REQUEST'"
+    );
+    expect(src).toContain('FILE_RPC_EXPECTED_HASH_MISMATCH');
+    expect(src).toContain('err.details?.reasonCode');
+    expect(src).toContain('isWriteHashMismatchError(err)');
+    expect(src).toContain('isWriteHashMismatchError(mutation.error)');
+  });
+
   it('handles FILE_RPC_WRITE_PERMISSION_DENIED error code', () => {
     const src = readBlock('file.tsx');
     expect(src).toContain('FILE_RPC_WRITE_PERMISSION_DENIED');
