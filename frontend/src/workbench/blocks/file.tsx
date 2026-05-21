@@ -385,9 +385,10 @@ function FileBlockEditor({
   const [showingDiff, setShowingDiff] = React.useState(false);
   const [expectedHash, setExpectedHash] = React.useState<string | null>(null);
 
-  // Hash the initial content once so the server can detect concurrent edits.
+  // Hash the current baseline so the server can detect concurrent edits.
   React.useEffect(() => {
     let cancelled = false;
+    setExpectedHash(null);
     void sha256Hex(initialContent).then((hash) => {
       if (!cancelled) setExpectedHash(hash);
     });
@@ -413,6 +414,18 @@ function FileBlockEditor({
       onSaved();
     },
   });
+
+  const resetMutation = mutation.reset;
+
+  // Refetch/reload can replace the parent read result without remounting this
+  // editor. Treat a changed initialContent as a new server baseline: discard the
+  // stale draft/diff/error from the old baseline, but leave normal typing alone
+  // while initialContent is unchanged.
+  React.useEffect(() => {
+    setDraft(initialContent);
+    setShowingDiff(false);
+    resetMutation();
+  }, [initialContent, resetMutation]);
 
   const unchanged = draft === initialContent;
   const diff = React.useMemo(() => {
