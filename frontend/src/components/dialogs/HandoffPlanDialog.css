@@ -147,13 +147,27 @@
 }
 
 .handoff-plan-status[data-status='blocked'],
-.handoff-plan-status[data-status='offline'] {
+.handoff-plan-status[data-status='offline'],
+.handoff-plan-status[data-status='capability-denied'],
+.handoff-plan-status[data-status='hub-unavailable'],
+.handoff-plan-status[data-status='error'] {
   border-left-color: var(--status-error);
 }
 
 .handoff-plan-status[data-status='needs-grants'],
-.handoff-plan-status[data-status='stale'] {
+.handoff-plan-status[data-status='stale'],
+.handoff-plan-status[data-status='source-stale'],
+.handoff-plan-status[data-status='creating'] {
   border-left-color: var(--status-warning);
+}
+
+.handoff-plan-status[data-status='loading'],
+.handoff-plan-status[data-status='empty'] {
+  border-left-color: var(--status-info);
+}
+
+.handoff-plan-status[data-status='created'] {
+  border-left-color: var(--status-success);
 }
 
 .handoff-plan-section {

@@ -1337,6 +1337,8 @@ export default function App() {
       <HandoffPlanDialog
         open={activeModal?.modal === 'handoff-plan'}
         onClose={handleModalClose}
+        mode="live"
+        activeSession={activeSession ?? null}
       />
 
       {/* Full-page diff overlay */}
