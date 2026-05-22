@@ -73,6 +73,35 @@ function createIdFactory(): () => string {
   return () => `handoff-test-id-${++id}`;
 }
 
+function allowedGrants(): HandoffRequiredGrant[] {
+  return [
+    {
+      leg: 'source-read',
+      nodeId: SOURCE_NODE,
+      capability: 'rpc:fs:read',
+      decision: 'allow',
+    },
+    {
+      leg: 'destination-write',
+      nodeId: DESTINATION_NODE,
+      capability: 'rpc:fs:write',
+      decision: 'allow',
+    },
+    {
+      leg: 'destination-session-create',
+      nodeId: DESTINATION_NODE,
+      capability: 'session:create:agent',
+      decision: 'allow',
+    },
+    {
+      leg: 'destination-exec',
+      nodeId: DESTINATION_NODE,
+      capability: 'pty:exec:arbitrary',
+      decision: 'allow',
+    },
+  ];
+}
+
 async function applyFixture(input: {
   source: string;
   destination: string;
@@ -98,7 +127,7 @@ async function applyFixture(input: {
     destinationNodeId: DESTINATION_NODE,
     baseCommit: input.baseCommit,
     approvedUntrackedPaths: input.approvedUntrackedPaths,
-    requiredGrants: input.requiredGrants,
+    requiredGrants: input.requiredGrants ?? allowedGrants(),
     expectedDryRun: dryRun,
     maxUntrackedFileBytes: input.maxUntrackedFileBytes,
     exec: input.exec,
@@ -267,6 +296,7 @@ describe('applyHandoffTransfer', () => {
       destinationNodeId: DESTINATION_NODE,
       baseCommit,
       expectedDryRun,
+      requiredGrants: allowedGrants(),
       now: () => '2026-05-21T12:00:00.000Z',
       createId: createIdFactory(),
     });
@@ -299,6 +329,7 @@ describe('applyHandoffTransfer', () => {
       baseCommit,
       approvedUntrackedPaths: ['notes.md'],
       expectedDryRun,
+      requiredGrants: allowedGrants(),
       now: () => '2026-05-21T12:00:00.000Z',
       createId: createIdFactory(),
     });

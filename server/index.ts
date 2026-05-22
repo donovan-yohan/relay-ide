@@ -122,6 +122,7 @@ import {
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
+import { createHandoffRouter, type HandoffCapabilityContext } from './handoffs.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
 import {
   aggregateRemoteSessions,
@@ -1326,6 +1327,13 @@ async function main(): Promise<void> {
     return match?.[1]?.trim() ?? '';
   }
 
+  function validatedHandoffCapabilities(_req: express.Request): HandoffCapabilityContext | null {
+    // Scoped CLI tokens currently prove only bearer possession, not capability grants.
+    // Never promote caller-controlled x-relay-capabilities into a validated handoff
+    // context; until token/policy grants are wired, handoff routes fail closed.
+    return null;
+  }
+
   function isCliGatewayV1Request(req: express.Request): boolean {
     return req.header('x-relay-cli-gateway') === 'v1';
   }
@@ -1376,14 +1384,15 @@ async function main(): Promise<void> {
   };
 
   const requireCliGatewayAuth: express.RequestHandler = (req, res, next) => {
-    if (process.env.NO_PIN === '1' || authenticatedCookieToken(req)) {
+    if (isCliGatewayV1Request(req) && validateScopedToken(bearerScopedToken(req))) {
       next();
       return;
     }
-    if (
-      req.header('x-relay-cli-gateway') === 'v1' &&
-      validateScopedToken(bearerScopedToken(req))
-    ) {
+    if (process.env.NO_PIN === '1') {
+      next();
+      return;
+    }
+    if (authenticatedCookieToken(req)) {
       next();
       return;
     }
@@ -1833,6 +1842,20 @@ async function main(): Promise<void> {
   app.use('/analytics', requireAuth, createAnalyticsRouter(configDir));
   app.use('/api/analytics', requireAuth, createSessionAnalyticsRouter());
   app.use('/telemetry', requireAuth, createTelemetryRouter());
+  app.use(
+    '/handoffs',
+    createHandoffRouter({
+      requireAuth: requireCliGatewayAuth,
+      getCapabilities: validatedHandoffCapabilities,
+      workContextStore,
+      getSession: (nodeId, sessionId) => {
+        if (nodeId !== 'local') return undefined;
+        return localRelayNode.sessions
+          .list()
+          .find((session) => session.id === sessionId);
+      },
+    })
+  );
   app.use(
     '/work-contexts',
     createWorkContextRouter({

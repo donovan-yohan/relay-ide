@@ -507,6 +507,39 @@ function upstreamErrorRecord(upstream: Record<string, unknown> | undefined): Rec
     : upstream;
 }
 
+function normalizeHandoffGatewayErrorCode(
+  code: string | undefined
+): RelayCliGatewayErrorCode | null {
+  switch (code) {
+    case 'SOURCE_STALE_OR_OFFLINE':
+      return 'NODE_OFFLINE';
+    case 'STALE_PLAN':
+      return 'SESSION_CONFLICT';
+    case 'DESTINATION_UNAVAILABLE':
+      return 'SERVER_UNAVAILABLE';
+    case 'MISSING_CONFIRMED_GRANT':
+    case 'CAPABILITY_DENIED':
+      return 'FORBIDDEN';
+    default:
+      return null;
+  }
+}
+
+const gatewayPassthroughErrorCodes = new Set<RelayCliGatewayErrorCode>([
+  'NODE_OFFLINE',
+  'SESSION_EXPIRED',
+  'SESSION_REVOKED',
+  'SESSION_MISMATCH',
+  'SESSION_NON_RENEWABLE',
+  'UNSUPPORTED',
+]);
+
+function isGatewayPassthroughErrorCode(
+  code: string | undefined
+): code is RelayCliGatewayErrorCode {
+  return gatewayPassthroughErrorCodes.has(code as RelayCliGatewayErrorCode);
+}
+
 export function normalizeGatewayErrorCode(
   status: number,
   upstream: Record<string, unknown> | undefined
@@ -515,12 +548,9 @@ export function normalizeGatewayErrorCode(
   const reason = typeof body?.['reasonCode'] === 'string' ? body['reasonCode'] : undefined;
   const code = typeof body?.['code'] === 'string' ? body['code'] : undefined;
   if (code === 'CONFIRMATION_REQUIRED' || reason === 'CONFIRMATION_REQUIRED') return 'CONFIRMATION_REQUIRED';
-  if (code === 'NODE_OFFLINE') return 'NODE_OFFLINE';
-  if (code === 'SESSION_EXPIRED') return 'SESSION_EXPIRED';
-  if (code === 'SESSION_REVOKED') return 'SESSION_REVOKED';
-  if (code === 'SESSION_MISMATCH') return 'SESSION_MISMATCH';
-  if (code === 'SESSION_NON_RENEWABLE') return 'SESSION_NON_RENEWABLE';
-  if (code === 'UNSUPPORTED') return 'UNSUPPORTED';
+  const handoffCode = normalizeHandoffGatewayErrorCode(code);
+  if (handoffCode) return handoffCode;
+  if (isGatewayPassthroughErrorCode(code)) return code;
   if (reason === 'HAND_BACK_ACK_REQUIRED') return 'INTERVENTION_ACK_REQUIRED';
   if (reason === 'STALE_INTERVENTION_ACK') return 'INTERVENTION_ACK_STALE';
   if (reason === 'CONTROL_STATE_STALE') return 'CONTROL_STATE_STALE';

@@ -77,6 +77,13 @@ describe('CLI gateway contract', () => {
       'files.stat',
       'files.read',
       'files.write',
+      'work-contexts.get',
+      'handoffs.plan',
+      'handoffs.create',
+      'handoffs.status',
+      'handoffs.cancel',
+      'handoffs.resume',
+      'artifacts.read',
       'events.subscribe',
     ]);
 
@@ -251,6 +258,13 @@ describe('CLI gateway contract', () => {
       'files.stat',
       'files.read',
       'files.write',
+      'work-contexts.get',
+      'handoffs.plan',
+      'handoffs.create',
+      'handoffs.status',
+      'handoffs.cancel',
+      'handoffs.resume',
+      'artifacts.read',
       'events.subscribe',
     ] as const;
 
@@ -282,6 +296,21 @@ describe('CLI gateway contract', () => {
         error: { code: 'NODE_OFFLINE', retryable: true, details: { path: '/internal' } },
       })
     ).toBe('NODE_OFFLINE');
+    expect(
+      normalizeGatewayErrorCode(409, {
+        error: { code: 'SOURCE_STALE_OR_OFFLINE', retryable: true, reasonCode: 'FAILED_STALE_SOURCE' },
+      })
+    ).toBe('NODE_OFFLINE');
+    expect(
+      normalizeGatewayErrorCode(409, {
+        error: { code: 'STALE_PLAN', retryable: true },
+      })
+    ).toBe('SESSION_CONFLICT');
+    expect(
+      normalizeGatewayErrorCode(403, {
+        error: { code: 'MISSING_CONFIRMED_GRANT', retryable: false },
+      })
+    ).toBe('FORBIDDEN');
     expect(
       gatewayErrorRetryable(404, { error: { code: 'NODE_OFFLINE', retryable: true } })
     ).toBe(true);
@@ -404,6 +433,49 @@ describe('CLI gateway contract', () => {
       },
     });
     expect(write.errorCodes).toEqual(expect.arrayContaining(['NODE_OFFLINE', 'FORBIDDEN', 'CONFIRMATION_REQUIRED']));
+  });
+
+  it('advertises handoff/work-context/artifact gateway commands with cold-handoff safety gates', () => {
+    expect(commandSpec('work-contexts.get')).toMatchObject({
+      capabilityHints: ['session:read'],
+      transport: 'hub-http',
+    });
+
+    const plan = commandSpec('handoffs.plan');
+    expect(plan).toMatchObject({
+      capabilityHints: ['session:read', 'rpc:fs:read'],
+      transport: 'hub-http',
+    });
+    expect(plan.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['request'],
+    });
+    expect(plan.outputSchema).toMatchObject({
+      properties: {
+        data: { properties: { readOnly: { const: true } } },
+      },
+    });
+
+    const create = commandSpec('handoffs.create');
+    expect(create.capabilityHints).toEqual([
+      'rpc:fs:read',
+      'rpc:fs:write',
+      'session:create:agent',
+      'session:create:terminal',
+      'pty:exec:arbitrary',
+    ]);
+    expect(create.inputSchema).toMatchObject({
+      required: ['confirmedGrants', 'sourceRepoPath', 'destinationRepoPath'],
+      anyOf: [{ required: ['planId'] }, { required: ['plan'] }],
+    });
+    expect(create.summary).toContain('refuses fake success');
+    expect(create.errorCodes).toEqual(
+      expect.arrayContaining(['FORBIDDEN', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'])
+    );
+
+    expect(commandSpec('handoffs.status').summary).toContain('bounded/redacted');
+    expect(commandSpec('handoffs.resume').summary).toContain('without raw transcript');
+    expect(commandSpec('artifacts.read').summary).toContain('raw logs/secrets/transcripts are unavailable');
   });
 
   it('encodes sessions.input source exclusivity for schema-generated adapters', () => {

@@ -331,6 +331,27 @@ function parseGatewayCreateInput(
   return input;
 }
 
+function parseGatewayInputObject(
+  commandName: RelayCliGatewayCommand,
+  commandArgs: string[]
+): Record<string, unknown> {
+  const inputJson = gatewayArg(commandArgs, '--input-json');
+  if (inputJson) return parseGatewayJson(commandName, inputJson);
+  const inputFile = gatewayArg(commandArgs, '--input-file');
+  if (inputFile) {
+    try {
+      return parseGatewayJson(
+        commandName,
+        fs.readFileSync(path.resolve(inputFile), 'utf8')
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      gatewayInvalid(commandName, `could not read --input-file: ${message}`);
+    }
+  }
+  return {};
+}
+
 async function gatewayHttpJson(input: {
   commandName: RelayCliGatewayCommand;
   pathName: string;
@@ -419,7 +440,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|events subscribe) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|artifacts read|events subscribe) --json'
   );
   process.exit(1);
 }
@@ -1467,6 +1488,99 @@ async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
   printGatewayEnvelope(gatewayOk(commandName, result), 0);
 }
 
+async function runGatewayWorkContexts(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const workContextArgs = gatewayArgs.slice(2);
+  if (subcommand !== 'get') {
+    gatewayInvalid('work-contexts.get', 'unknown work-contexts command', { args: gatewayArgs });
+  }
+  const id = gatewayArg(workContextArgs, '--id') ?? workContextArgs[0];
+  if (!id || id.startsWith('--')) gatewayInvalid('work-contexts.get', '--id is required');
+  const result = await gatewayHttpJson({
+    commandName: 'work-contexts.get',
+    pathName: `/work-contexts/${encodeURIComponent(id)}`,
+    capabilities: ['session:read'],
+  });
+  printGatewayEnvelope(gatewayOk('work-contexts.get', result), 0);
+}
+
+async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const handoffArgs = gatewayArgs.slice(2);
+  if (subcommand === 'plan') {
+    const input = parseGatewayInputObject('handoffs.plan', handoffArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'handoffs.plan',
+      pathName: '/handoffs/plan',
+      method: 'POST',
+      body: input,
+      capabilities: ['session:read', 'rpc:fs:read'],
+    });
+    printGatewayEnvelope(gatewayOk('handoffs.plan', result), 0);
+  }
+  if (subcommand === 'create') {
+    const input = parseGatewayInputObject('handoffs.create', handoffArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'handoffs.create',
+      pathName: '/handoffs/create',
+      method: 'POST',
+      body: input,
+      capabilities: ['rpc:fs:read', 'rpc:fs:write', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
+    });
+    printGatewayEnvelope(gatewayOk('handoffs.create', result), 0);
+  }
+  if (subcommand === 'status') {
+    const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
+    if (!runId || runId.startsWith('--')) gatewayInvalid('handoffs.status', '--run-id is required');
+    const result = await gatewayHttpJson({
+      commandName: 'handoffs.status',
+      pathName: `/handoffs/${encodeURIComponent(runId)}/status`,
+      capabilities: ['session:read'],
+    });
+    printGatewayEnvelope(gatewayOk('handoffs.status', result), 0);
+  }
+  if (subcommand === 'cancel') {
+    const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
+    if (!runId || runId.startsWith('--')) gatewayInvalid('handoffs.cancel', '--run-id is required');
+    const actorId = gatewayArg(handoffArgs, '--actor-id');
+    const result = await gatewayHttpJson({
+      commandName: 'handoffs.cancel',
+      pathName: `/handoffs/${encodeURIComponent(runId)}/cancel`,
+      method: 'POST',
+      body: actorId ? { actorId } : {},
+      capabilities: ['session:read'],
+    });
+    printGatewayEnvelope(gatewayOk('handoffs.cancel', result), 0);
+  }
+  if (subcommand === 'resume') {
+    const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
+    if (!runId || runId.startsWith('--')) gatewayInvalid('handoffs.resume', '--run-id is required');
+    const result = await gatewayHttpJson({
+      commandName: 'handoffs.resume',
+      pathName: `/handoffs/${encodeURIComponent(runId)}/resume`,
+      capabilities: ['session:read'],
+    });
+    printGatewayEnvelope(gatewayOk('handoffs.resume', result), 0);
+  }
+  gatewayInvalid('handoffs.plan', 'unknown handoffs command', { args: gatewayArgs });
+}
+
+async function runGatewayArtifacts(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const artifactArgs = gatewayArgs.slice(2);
+  if (subcommand !== 'read') {
+    gatewayInvalid('artifacts.read', 'unknown artifacts command', { args: gatewayArgs });
+  }
+  const ref = gatewayArg(artifactArgs, '--ref') ?? artifactArgs[0];
+  if (!ref || ref.startsWith('--')) gatewayInvalid('artifacts.read', '--ref is required');
+  const result = await gatewayHttpJson({
+    commandName: 'artifacts.read',
+    pathName: `/handoffs/artifacts/${encodeURIComponent(ref)}`,
+    capabilities: ['session:read'],
+  });
+  printGatewayEnvelope(gatewayOk('artifacts.read', result), 0);
+}
+
 function parseEventsSubscribeTopic(
   value: string | undefined
 ): EventsSubscribeTopic {
@@ -1760,6 +1874,9 @@ async function runGatewayV1(): Promise<never> {
   if (top === 'nodes') return runGatewayNodes(gatewayArgs);
   if (top === 'sessions') return runGatewaySessions(gatewayArgs);
   if (top === 'files') return runGatewayFiles(gatewayArgs);
+  if (top === 'work-contexts') return runGatewayWorkContexts(gatewayArgs);
+  if (top === 'handoffs') return runGatewayHandoffs(gatewayArgs);
+  if (top === 'artifacts') return runGatewayArtifacts(gatewayArgs);
   if (top === 'events') return runGatewayEvents(gatewayArgs);
   gatewayInvalid('contract.list', 'unknown v1 gateway command', {
     args: gatewayArgs,

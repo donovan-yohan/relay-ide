@@ -23,6 +23,13 @@ export type RelayCliGatewayCommand =
   | 'files.stat'
   | 'files.read'
   | 'files.write'
+  | 'work-contexts.get'
+  | 'handoffs.plan'
+  | 'handoffs.create'
+  | 'handoffs.status'
+  | 'handoffs.cancel'
+  | 'handoffs.resume'
+  | 'artifacts.read'
   | 'events.subscribe';
 
 export type RelayCliGatewayErrorCode =
@@ -719,6 +726,124 @@ const eventsSubscribeInputSchema: RelayJsonSchema = {
   required: ['topic'],
 };
 
+const workContextGetInputSchema: RelayJsonSchema = {
+  title: 'WorkContextGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema },
+  required: ['id'],
+};
+
+const handoffPlanInputSchema: RelayJsonSchema = {
+  title: 'HandoffPlanInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    request: { type: 'object', additionalProperties: true },
+    sourceRepoPath: stringSchema,
+    approvedUntrackedPaths: { type: 'array', items: stringSchema },
+    sourceBranchName: stringSchema,
+  },
+  required: ['request'],
+};
+
+const handoffCreateInputSchema: RelayJsonSchema = {
+  title: 'HandoffCreateInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    planId: stringSchema,
+    plan: { type: 'object', additionalProperties: true },
+    confirmedGrants: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    sourceRepoPath: stringSchema,
+    destinationRepoPath: stringSchema,
+    approvedUntrackedPaths: { type: 'array', items: stringSchema },
+    actorId: stringSchema,
+  },
+  required: ['confirmedGrants', 'sourceRepoPath', 'destinationRepoPath'],
+  anyOf: [{ required: ['planId'] }, { required: ['plan'] }],
+};
+
+const handoffRunIdInputSchema: RelayJsonSchema = {
+  title: 'HandoffRunIdInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { runId: stringSchema, actorId: stringSchema },
+  required: ['runId'],
+};
+
+const artifactReadInputSchema: RelayJsonSchema = {
+  title: 'ArtifactReadInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { ref: stringSchema },
+  required: ['ref'],
+};
+
+const handoffPlanOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    plan: { type: 'object', additionalProperties: true },
+    dryRun: { type: 'object', additionalProperties: true },
+    readOnly: { const: true },
+  },
+  required: ['plan', 'readOnly'],
+};
+
+const handoffCreateOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    run: { type: 'object', additionalProperties: true },
+    artifacts: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+  required: ['run', 'artifacts'],
+};
+
+const handoffStatusOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    run: { type: 'object', additionalProperties: true },
+    progress: { type: 'object', additionalProperties: true },
+    redaction: { type: 'object', additionalProperties: true },
+  },
+  required: ['run', 'progress', 'redaction'],
+};
+
+const handoffResumeOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    run: { type: 'object', additionalProperties: true },
+    resume: { type: 'object', additionalProperties: true },
+  },
+  required: ['run', 'resume'],
+};
+
+const artifactReadOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    artifact: { type: 'object', additionalProperties: true },
+  },
+  required: ['artifact'],
+};
+
+const gatewayHandoffErrorCodes = [
+  'UNAUTHORIZED',
+  'INVALID_ARGUMENT',
+  'INVALID_JSON',
+  'NOT_FOUND',
+  'FORBIDDEN',
+  'SESSION_CONFLICT',
+  'NODE_OFFLINE',
+  'SERVER_UNAVAILABLE',
+  'UPSTREAM_ERROR',
+  'INTERNAL',
+] as const satisfies readonly RelayCliGatewayErrorCode[];
+
 const eventsSubscribeFrameSchema: RelayJsonSchema = {
   title: 'EventsSubscribeFrame',
   type: 'object',
@@ -1205,6 +1330,95 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'CONFIRMATION_REQUIRED',
       'UPSTREAM_ERROR',
     ],
+  },
+  {
+    name: 'work-contexts.get',
+    cli: ['relay-ide', 'v1', 'work-contexts', 'get', '--id', '<work-context-id>', '--json'],
+    summary: 'Read one WorkContext by stable identity for handoff/self-service agents.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: workContextGetInputSchema,
+    outputSchema: okOutput('WorkContextsGetOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { workContext: { type: 'object', additionalProperties: true } },
+      required: ['workContext'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'NOT_FOUND', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'handoffs.plan',
+    cli: ['relay-ide', 'v1', 'handoffs', 'plan', '--input-json', '<json>', '--json'],
+    summary: 'Dry-run a cold handoff plan. Read-only; never mutates source or destination.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'rpc:fs:read'],
+    inputSchema: handoffPlanInputSchema,
+    outputSchema: okOutput('HandoffsPlanOutput', handoffPlanOutputSchema),
+    errorCodes: gatewayHandoffErrorCodes,
+  },
+  {
+    name: 'handoffs.create',
+    cli: ['relay-ide', 'v1', 'handoffs', 'create', '--input-json', '<json>', '--json'],
+    summary: 'Execute a confirmed cold handoff through the transfer/apply engine; refuses fake success.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['rpc:fs:read', 'rpc:fs:write', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
+    inputSchema: handoffCreateInputSchema,
+    outputSchema: okOutput('HandoffsCreateOutput', handoffCreateOutputSchema),
+    errorCodes: gatewayHandoffErrorCodes,
+  },
+  {
+    name: 'handoffs.status',
+    cli: ['relay-ide', 'v1', 'handoffs', 'status', '--run-id', '<run-id>', '--json'],
+    summary: 'Read bounded/redacted HandoffRun state and progress.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: handoffRunIdInputSchema,
+    outputSchema: okOutput('HandoffsStatusOutput', handoffStatusOutputSchema),
+    errorCodes: gatewayHandoffErrorCodes,
+  },
+  {
+    name: 'handoffs.cancel',
+    cli: ['relay-ide', 'v1', 'handoffs', 'cancel', '--run-id', '<run-id>', '--json'],
+    summary: 'Cancel a non-terminal handoff run without applying additional mutations.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: handoffRunIdInputSchema,
+    outputSchema: okOutput('HandoffsCancelOutput', handoffStatusOutputSchema),
+    errorCodes: gatewayHandoffErrorCodes,
+  },
+  {
+    name: 'handoffs.resume',
+    cli: ['relay-ide', 'v1', 'handoffs', 'resume', '--run-id', '<run-id>', '--json'],
+    summary: 'Read cold handoff resume bundle refs without raw transcript/provider-auth export.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: handoffRunIdInputSchema,
+    outputSchema: okOutput('HandoffsResumeOutput', handoffResumeOutputSchema),
+    errorCodes: gatewayHandoffErrorCodes,
+  },
+  {
+    name: 'artifacts.read',
+    cli: ['relay-ide', 'v1', 'artifacts', 'read', '--ref', '<artifact-ref>', '--json'],
+    summary: 'Read a bounded handoff artifact reference; raw logs/secrets/transcripts are unavailable.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: artifactReadInputSchema,
+    outputSchema: okOutput('ArtifactsReadOutput', artifactReadOutputSchema),
+    errorCodes: gatewayHandoffErrorCodes,
   },
   {
     name: 'events.subscribe',
