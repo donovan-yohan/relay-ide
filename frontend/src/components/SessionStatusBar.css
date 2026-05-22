@@ -87,6 +87,22 @@
   text-align: right;
 }
 
+.status-handoff {
+  min-height: 24px;
+  padding: 2px 8px;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.status-handoff:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 @media (max-width: 600px) {
   .status-model,
   .status-tokens,
@@ -98,6 +114,10 @@
 
   .status-activity {
     max-width: 48vw;
+  }
+
+  .status-handoff {
+    min-height: 44px;
   }
 }
 

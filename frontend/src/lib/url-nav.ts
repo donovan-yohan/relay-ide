@@ -23,6 +23,9 @@ export type ModalRoute =
   // ActiveModal, but it is intentionally NOT persisted to the URL — opening
   // it via deep link would race the env-inventory feed.
   | { modal: 'env-picker' }
+  // #692: handoff dry-run is also transient/in-memory. Deep-linking a fixture
+  // modal would imply live #691 planner availability that does not exist yet.
+  | { modal: 'handoff-plan' }
   | null;
 
 /** Parse `window.location.search` into a ModalRoute. */
@@ -47,6 +50,8 @@ export function buildQuery(modal: ModalRoute): string {
   if (modal.modal === 'add-repo') return '?add-repo';
   // #630: env-picker is in-memory only; no URL representation.
   if (modal.modal === 'env-picker') return '';
+  // #692: handoff dry-run is in-memory only until live planner APIs land.
+  if (modal.modal === 'handoff-plan') return '';
   return '';
 }
 

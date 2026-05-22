@@ -17,6 +17,7 @@ import {
   sessionRename,
   sessionStartWorkInEnv,
 } from '../lib/actions/definitions/session.js';
+import { sessionHandoffToHub } from '../lib/actions/definitions/handoff.js';
 import { createFrameworkAction } from '../lib/actions/definitions/frameworks.js';
 import { isFrameworkAvailable } from '../components/dialogs/CustomizeSessionDialog.js';
 import {
@@ -226,6 +227,13 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
         ...sessionStartWorkInEnv,
         handler: () =>
           useUiStore.getState().setActiveModal({ modal: 'env-picker' }),
+      },
+      {
+        // #692: fixture-backed dry-run only. Opening this action must never
+        // transfer state or start a hub session until #691 execute wiring lands.
+        ...sessionHandoffToHub,
+        handler: () =>
+          useUiStore.getState().setActiveModal({ modal: 'handoff-plan' }),
       },
       {
         ...sessionCustomize,
