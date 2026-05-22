@@ -122,6 +122,7 @@ import {
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
+import { createHandoffRouter } from './handoffs.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
 import {
   aggregateRemoteSessions,
@@ -1833,6 +1834,19 @@ async function main(): Promise<void> {
   app.use('/analytics', requireAuth, createAnalyticsRouter(configDir));
   app.use('/api/analytics', requireAuth, createSessionAnalyticsRouter());
   app.use('/telemetry', requireAuth, createTelemetryRouter());
+  app.use(
+    '/handoffs',
+    createHandoffRouter({
+      requireAuth: requireCliGatewayAuth,
+      workContextStore,
+      getSession: (nodeId, sessionId) => {
+        if (nodeId !== 'local') return undefined;
+        return localRelayNode.sessions
+          .list()
+          .find((session) => session.id === sessionId);
+      },
+    })
+  );
   app.use(
     '/work-contexts',
     createWorkContextRouter({

@@ -325,7 +325,28 @@ function failResult(
 function deniedGrantConflicts(
   grants: readonly HandoffRequiredGrant[] | undefined
 ): HandoffConflict[] {
-  return (grants ?? [])
+  const grantList = grants ?? [];
+  const allowedLegs = new Set(
+    grantList.filter((grant) => grant.decision === 'allow').map((grant) => grant.leg)
+  );
+  const requiredLegs: readonly HandoffRequiredGrant['leg'][] = [
+    'source-read',
+    'destination-write',
+    'destination-session-create',
+    'destination-exec',
+  ];
+  const missing = requiredLegs
+    .filter((leg) => !allowedLegs.has(leg))
+    .map((leg) => {
+      const grant = grantList.find((candidate) => candidate.leg === leg);
+      return makeConflict(
+        'MISSING_CAPABILITY_GRANT',
+        `handoff grant ${leg} is not confirmed`,
+        grant?.nodeId ?? 'unknown',
+        'FAILED_MISSING_GRANT'
+      );
+    });
+  const denied = grantList
     .filter((grant) => grant.decision !== 'allow')
     .map((grant) =>
       makeConflict(
@@ -335,6 +356,7 @@ function deniedGrantConflicts(
         'FAILED_MISSING_GRANT'
       )
     );
+  return [...missing, ...denied];
 }
 
 async function prepareApprovedUntrackedFiles(input: {

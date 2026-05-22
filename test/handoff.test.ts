@@ -206,6 +206,14 @@ function basePlan(overrides: Partial<HandoffPlan> = {}): HandoffPlan {
         grantRef: 'acl:dest:session',
         scope: { kind: 'node' },
       },
+      {
+        leg: 'destination-exec',
+        nodeId: destinationNodeId,
+        capability: 'pty:exec:arbitrary',
+        decision: 'allow',
+        grantRef: 'acl:dest:exec',
+        scope: { kind: 'node' },
+      },
     ],
     launchPreview: {
       nodeId: destinationNodeId,

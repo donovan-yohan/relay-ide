@@ -613,8 +613,8 @@ function hasRequiredGrantLegs(grants: HandoffRequiredGrant[]): boolean {
   return (
     legs.has(HANDOFF_GRANT_LEG_SOURCE_READ) &&
     legs.has(HANDOFF_GRANT_LEG_DESTINATION_WRITE) &&
-    (legs.has(HANDOFF_GRANT_LEG_DESTINATION_SESSION_CREATE) ||
-      legs.has(HANDOFF_GRANT_LEG_DESTINATION_EXEC))
+    legs.has(HANDOFF_GRANT_LEG_DESTINATION_SESSION_CREATE) &&
+    legs.has(HANDOFF_GRANT_LEG_DESTINATION_EXEC)
   );
 }
 
