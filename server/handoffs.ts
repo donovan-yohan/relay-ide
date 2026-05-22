@@ -382,6 +382,40 @@ function artifactRefsForWorkContext(
   }));
 }
 
+function handoffStateArtifactRefsForWorkContext(input: {
+  plan: HandoffPlan;
+  run: HandoffRun;
+  producedAt: string;
+  actorId?: string;
+}): ArtifactRef[] {
+  const privacy = createWorkContextPrivacyMetadata({ classification: 'internal' });
+  const refs: ArtifactRef[] = [
+    {
+      id: `handoff-run:${input.run.id}`,
+      kind: 'report',
+      title: 'HandoffRun',
+      summary: `HandoffRun ${input.run.id} ${input.run.state}/${input.run.reasonCode ?? 'unknown'} for plan ${input.plan.id}`,
+      uri: `handoff-run:${input.run.id}`,
+      ...(input.actorId ? { producedByActorId: input.actorId } : {}),
+      producedAt: input.producedAt,
+      privacy,
+    },
+  ];
+  if (input.run.snapshotId) {
+    refs.push({
+      id: `handoff-snapshot:${input.run.snapshotId}`,
+      kind: 'report',
+      title: 'HandoffSnapshot',
+      summary: `Applied handoff snapshot ${input.run.snapshotId} for run ${input.run.id}`,
+      uri: `handoff-snapshot:${input.run.snapshotId}`,
+      ...(input.actorId ? { producedByActorId: input.actorId } : {}),
+      producedAt: input.producedAt,
+      privacy,
+    });
+  }
+  return refs;
+}
+
 function auditRefsForWorkContext(
   run: HandoffRun,
   actorId?: string
@@ -842,6 +876,14 @@ export class HandoffService {
     });
     if (!launch.ok) {
       const failed = this.failLaunchRun(baseRun, launch, input.actorId);
+      this.recordWorkContextLaunchFailure({
+        plan: input.plan,
+        run: failed.run,
+        artifacts: input.artifacts,
+        launch,
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+        at: failed.run.completedAt ?? failed.run.updatedAt,
+      });
       const status =
         launch.code === 'NODE_UNAVAILABLE' ? 404 :
         launch.code === 'HUB_UNAVAILABLE' ? 503 :
@@ -924,6 +966,50 @@ export class HandoffService {
     };
   }
 
+  private recordWorkContextLaunchFailure(input: {
+    plan: HandoffPlan;
+    run: HandoffRun;
+    artifacts: HandoffArtifactSummary[];
+    launch: {
+      code: 'HUB_UNAVAILABLE' | 'NODE_UNAVAILABLE' | 'LAUNCH_UNSUPPORTED' | 'LAUNCH_FAILED';
+      message: string;
+    };
+    actorId?: string;
+    at: string;
+  }): void {
+    const store = this.deps.workContextStore;
+    if (!store) return;
+    const existing = store.get(input.plan.route.workContextId);
+    if (!existing) return;
+    const artifactRefs = [
+      ...artifactRefsForWorkContext(
+        input.artifacts,
+        input.at,
+        input.actorId
+      ),
+      ...handoffStateArtifactRefsForWorkContext({
+        plan: input.plan,
+        run: input.run,
+        producedAt: input.at,
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+      }),
+    ];
+    const auditRefs = auditRefsForWorkContext(input.run, input.actorId);
+    store.update(input.plan.route.workContextId, {
+      artifacts: dedupeById([...existing.artifacts, ...artifactRefs]),
+      auditRefs: dedupeById([...existing.auditRefs, ...auditRefs]),
+    });
+    const lifecycleEvent: WorkContextLifecycleEventInput = {
+      type: 'handoff.closed',
+      occurredAt: input.at,
+      correlationId: input.run.id,
+      artifacts: artifactRefs,
+      summary: `Destination session launch failed for cold handoff ${input.run.id}: ${input.launch.code}; retry launch is available without rerunning transfer. Source state: ${(input.run.sourceDispositions ?? [input.run.sourceDisposition]).join(', ')}`,
+    };
+    if (input.actorId) lifecycleEvent.actorId = input.actorId;
+    store.recordLifecycleEvent(input.plan.route.workContextId, lifecycleEvent);
+  }
+
   private recordWorkContextLaunch(input: {
     plan: HandoffPlan;
     run: HandoffRun;
@@ -936,11 +1022,19 @@ export class HandoffService {
     if (!store) return;
     const existing = store.get(input.plan.route.workContextId);
     if (!existing) return;
-    const artifactRefs = artifactRefsForWorkContext(
-      input.artifacts,
-      input.at,
-      input.actorId
-    );
+    const artifactRefs = [
+      ...artifactRefsForWorkContext(
+        input.artifacts,
+        input.at,
+        input.actorId
+      ),
+      ...handoffStateArtifactRefsForWorkContext({
+        plan: input.plan,
+        run: input.run,
+        producedAt: input.at,
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+      }),
+    ];
     const auditRefs = auditRefsForWorkContext(input.run, input.actorId);
     store.update(input.plan.route.workContextId, {
       artifacts: dedupeById([...existing.artifacts, ...artifactRefs]),
