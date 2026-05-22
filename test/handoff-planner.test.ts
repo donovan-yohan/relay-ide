@@ -274,6 +274,7 @@ describe('planHandoffSnapshot — dirty tracked diff', () => {
     const result = await planHandoffSnapshot({
       repoPath,
       nodeId: NODE_ID,
+      approvedUntrackedPaths: ['notes.md'],
       exec,
     });
 
@@ -370,7 +371,7 @@ describe('planHandoffSnapshot — dirty tracked diff', () => {
 });
 
 describe('planHandoffSnapshot — untracked candidates', () => {
-  it('includes a safe untracked file', async () => {
+  it('requires explicit approval for a safe untracked file by default', async () => {
     const exec = makeExec({
       revparseHead: 'abc\n',
       revparseAbbrev: 'main\n',
@@ -385,7 +386,31 @@ describe('planHandoffSnapshot — untracked candidates', () => {
     });
 
     expect(result.untrackedCandidates).toEqual([
-      { path: 'notes.md', included: true },
+      { path: 'notes.md', included: false, approvalStatus: 'requires-review' },
+    ]);
+    expect(result.includedGroups).not.toContain('approved-untracked');
+    expect(result.transferMode).toBe('metadata-only');
+    expect(result.fileCount).toBe(0);
+    expect(result.isClean).toBe(false);
+  });
+
+  it('includes a safe untracked file only when explicitly approved', async () => {
+    const exec = makeExec({
+      revparseHead: 'abc\n',
+      revparseAbbrev: 'main\n',
+      status: statusLine('?? notes.md'),
+      diff: '',
+    });
+
+    const result = await planHandoffSnapshot({
+      repoPath: REPO_PATH,
+      nodeId: NODE_ID,
+      approvedUntrackedPaths: ['notes.md'],
+      exec,
+    });
+
+    expect(result.untrackedCandidates).toEqual([
+      { path: 'notes.md', included: true, approvalStatus: 'approved' },
     ]);
     expect(result.includedGroups).toContain('approved-untracked');
     expect(result.transferMode).toBe('approved-untracked-files');
@@ -516,9 +541,9 @@ describe('planHandoffSnapshot — untracked candidates', () => {
     const result = await planHandoffSnapshot({
       repoPath: REPO_PATH,
       nodeId: NODE_ID,
+      approvedUntrackedPaths: ['notes.md'],
       exec,
     });
-
     const included = result.untrackedCandidates.filter((c) => c.included);
     const excluded = result.untrackedCandidates.filter((c) => !c.included);
     expect(included).toHaveLength(1);
@@ -655,6 +680,7 @@ describe('planHandoffSnapshot — path safety', () => {
       {
         path: 'linked.txt',
         included: false,
+        approvalStatus: 'default-excluded',
         excludeConflictCode: 'UNSAFE_PATH_MAPPING',
       },
     ]);
@@ -720,6 +746,7 @@ describe('planHandoffSnapshot — path safety', () => {
       {
         path: 'huge.bin',
         included: false,
+        approvalStatus: 'default-excluded',
         excludeConflictCode: 'CACHE_EXCLUDED',
       },
     ]);
@@ -761,6 +788,7 @@ describe('planHandoffSnapshot — path safety', () => {
       {
         path: 'scratch/',
         included: false,
+        approvalStatus: 'default-excluded',
         excludeConflictCode: 'UNSAFE_PATH_MAPPING',
       },
     ]);
@@ -886,6 +914,7 @@ describe('planHandoffSnapshot — determinism', () => {
     const result: HandoffPlannerDryRun = await planHandoffSnapshot({
       repoPath: REPO_PATH,
       nodeId: NODE_ID,
+      approvedUntrackedPaths: ['safe.md'],
       exec,
     });
 

@@ -24,9 +24,19 @@ export interface HandoffPlannerInput {
   repoPath: string;
   /** Node identity for conflict attribution. */
   nodeId: NodeId;
+  /** Explicit allowlist of untracked repo-relative paths approved for transfer. */
+  approvedUntrackedPaths?: readonly string[];
   /** Injected exec for testing; defaults to execFile. */
   exec?: ExecFileAsyncLike;
 }
+
+export type UntrackedApprovalStatus =
+  | 'approved'
+  | 'requires-review'
+  | 'default-excluded';
+
+const DEFAULT_EXCLUDED_APPROVAL_STATUS: UntrackedApprovalStatus =
+  'default-excluded';
 
 export type TrackedFileStatus =
   | 'modified'
@@ -44,6 +54,7 @@ export interface TrackedFileSummary {
 export interface UntrackedCandidate {
   path: string;
   included: boolean;
+  approvalStatus: UntrackedApprovalStatus;
   excludeConflictCode?: HandoffConflictCode;
 }
 
@@ -291,6 +302,11 @@ export async function planHandoffSnapshot(
   const { repoPath, nodeId } = input;
   const run: ExecFileAsyncLike =
     input.exec ?? (execFileAsync as ExecFileAsyncLike);
+  const approvedUntrackedPaths = new Set(
+    (input.approvedUntrackedPaths ?? []).filter((path) =>
+      isSafePath(repoPath, path)
+    )
+  );
 
   const conflicts: HandoffConflict[] = [];
 
@@ -405,6 +421,7 @@ export async function planHandoffSnapshot(
         return {
           path,
           included: false,
+          approvalStatus: DEFAULT_EXCLUDED_APPROVAL_STATUS,
           excludeConflictCode: classification.conflictCode,
         };
       }
@@ -418,6 +435,7 @@ export async function planHandoffSnapshot(
         return {
           path,
           included: false,
+          approvalStatus: DEFAULT_EXCLUDED_APPROVAL_STATUS,
           excludeConflictCode: 'UNSAFE_PATH_MAPPING',
         };
       }
@@ -435,6 +453,7 @@ export async function planHandoffSnapshot(
         return {
           path,
           included: false,
+          approvalStatus: DEFAULT_EXCLUDED_APPROVAL_STATUS,
           excludeConflictCode: 'UNSAFE_PATH_MAPPING',
         };
       }
@@ -453,12 +472,20 @@ export async function planHandoffSnapshot(
           return {
             path,
             included: false,
+            approvalStatus: DEFAULT_EXCLUDED_APPROVAL_STATUS,
             excludeConflictCode: 'CACHE_EXCLUDED',
           };
         }
+      }
+      const included = approvedUntrackedPaths.has(path);
+      if (included && stat?.isFile()) {
         untrackedByteCount += stat.size;
       }
-      return { path, included: true };
+      return {
+        path,
+        included,
+        approvalStatus: included ? 'approved' : 'requires-review',
+      };
     }
   );
 
