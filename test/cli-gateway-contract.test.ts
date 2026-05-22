@@ -461,8 +461,13 @@ describe('CLI gateway contract', () => {
       'rpc:fs:read',
       'rpc:fs:write',
       'session:create:agent',
+      'session:create:terminal',
       'pty:exec:arbitrary',
     ]);
+    expect(create.inputSchema).toMatchObject({
+      required: ['confirmedGrants', 'sourceRepoPath', 'destinationRepoPath'],
+      anyOf: [{ required: ['planId'] }, { required: ['plan'] }],
+    });
     expect(create.summary).toContain('refuses fake success');
     expect(create.errorCodes).toEqual(
       expect.arrayContaining(['FORBIDDEN', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'])

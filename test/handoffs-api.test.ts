@@ -1,3 +1,4 @@
+import express from 'express';
 import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_LOCAL_NODE_ID, createRepoInstanceId, createWorktreeInstanceId } from '../shared/identity.js';
@@ -8,8 +9,9 @@ import {
   type HandoffRequiredGrant,
 } from '../shared/handoff.js';
 import { ENVIRONMENT_OPTION_SCHEMA_VERSION } from '../shared/environment-option.js';
-import { HandoffService, HANDOFF_PLAN_MAX_AGE_MS } from '../server/handoffs.js';
+import { HandoffService, HANDOFF_PLAN_MAX_AGE_MS, createHandoffRouter } from '../server/handoffs.js';
 import type { HandoffPlannerDryRun } from '../server/handoff-planner.js';
+import { createTestServer } from './helpers/test-server.js';
 
 const now = '2026-05-21T10:00:00.000Z';
 const sourceNodeId = DEFAULT_LOCAL_NODE_ID;
@@ -109,6 +111,17 @@ function confirmedGrants(): HandoffRequiredGrant[] {
   ];
 }
 
+async function startHandoffApi(service: HandoffService): Promise<{ url: string; close: () => Promise<void> }> {
+  const app = express();
+  app.use(express.json());
+  app.use('/handoffs', createHandoffRouter({ service }));
+  return createTestServer(app);
+}
+
+function headerFor(capabilities: readonly string[]): string {
+  return capabilities.join(',');
+}
+
 describe('handoff API service', () => {
   it('plans read-only handoffs with all required execute grant legs unconfirmed', async () => {
     const service = new HandoffService({ now: () => new Date(now), createId: () => 'plan-1' });
@@ -203,5 +216,113 @@ describe('handoff API service', () => {
     if (planned.ok) return;
     expect(planned.error.body.error.code).toBe('SOURCE_STALE_OR_OFFLINE');
     expect(planned.error.body.error.reasonCode).toBe('FAILED_STALE_SOURCE');
+  });
+
+  it('rejects confirmed grants that try to mutate the planned node/capability/scope envelope', async () => {
+    let nextId = 0;
+    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
+    const planned = await service.plan({ request: request(), dryRun: dryRun() });
+    if (!planned.ok) throw new Error('plan failed unexpectedly');
+
+    const malicious = confirmedGrants().map((grant) =>
+      grant.leg === 'destination-write'
+        ? {
+            ...grant,
+            nodeId: sourceNodeId,
+            capability: 'rpc:fs:read' as const,
+            scope: { kind: 'path' as const, pathPrefixes: [sourceCwd] },
+          }
+        : grant
+    );
+
+    const created = await service.create({ planId: planned.plan.id, confirmedGrants: malicious });
+
+    expect(created.ok).toBe(false);
+    if (created.ok) return;
+    expect(created.error.body.error.code).toBe('CAPABILITY_DENIED');
+    expect(created.run?.state).toBe('failed');
+    expect(created.run?.conflicts[0]?.message).toContain('does not match the planned');
+  });
+
+  it('rejects execute when source/destination paths do not match the stored plan', async () => {
+    let nextId = 0;
+    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
+    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
+    if (!planned.ok) throw new Error('plan failed unexpectedly');
+
+    const sourceMismatch = await service.create({
+      planId: planned.plan.id,
+      confirmedGrants: confirmedGrants(),
+      sourceRepoPath: '/tmp/other-source',
+      destinationRepoPath: destinationCwd,
+    });
+    expect(sourceMismatch.ok).toBe(false);
+    if (sourceMismatch.ok) return;
+    expect(sourceMismatch.error.body.error).toMatchObject({
+      code: 'INVALID_REQUEST',
+      details: { field: 'sourceRepoPath' },
+    });
+
+    const destinationMismatch = await service.create({
+      planId: planned.plan.id,
+      confirmedGrants: confirmedGrants(),
+      sourceRepoPath: sourceCwd,
+      destinationRepoPath: '/tmp/other-destination',
+    });
+    expect(destinationMismatch.ok).toBe(false);
+    if (destinationMismatch.ok) return;
+    expect(destinationMismatch.error.body.error).toMatchObject({
+      code: 'INVALID_REQUEST',
+      details: { field: 'destinationRepoPath' },
+    });
+  });
+
+  it('fails closed when handoff routes have no capability context and gates status/artifact routes', async () => {
+    let nextId = 0;
+    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
+    const planned = await service.plan({ request: request(), dryRun: dryRun() });
+    if (!planned.ok) throw new Error('plan failed unexpectedly');
+    const failed = await service.create({ planId: planned.plan.id });
+    if (failed.ok || !failed.run) throw new Error('expected failed run for status fixture');
+    const { url, close } = await startHandoffApi(service);
+    try {
+      const denied = await fetch(`${url}/handoffs/${failed.run.id}/status`);
+      expect(denied.status).toBe(403);
+      expect((await denied.json()).error.code).toBe('CAPABILITY_DENIED');
+
+      const allowed = await fetch(`${url}/handoffs/${failed.run.id}/status`, {
+        headers: { 'x-relay-capabilities': headerFor(['session:read']) },
+      });
+      expect(allowed.status).toBe(200);
+      expect((await allowed.json()).redaction).toMatchObject({ rawSecretsAvailable: false });
+
+      const artifactDenied = await fetch(`${url}/handoffs/artifacts/handoff-artifact:${failed.run.id}:resume-bundle`);
+      expect(artifactDenied.status).toBe(403);
+
+      const terminalPlan = {
+        ...planned.plan,
+        launchPreview: {
+          ...planned.plan.launchPreview,
+          runtime: { ...planned.plan.launchPreview.runtime, kind: 'terminal' as const },
+        },
+      };
+      const terminalCreateDenied = await fetch(`${url}/handoffs/create`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-relay-capabilities': headerFor([
+            'rpc:fs:read',
+            'rpc:fs:write',
+            'session:create:agent',
+            'pty:exec:arbitrary',
+          ]),
+        },
+        body: JSON.stringify({ plan: terminalPlan, confirmedGrants: confirmedGrants() }),
+      });
+      expect(terminalCreateDenied.status).toBe(403);
+      expect((await terminalCreateDenied.json()).error.details.missingCapabilities).toEqual(['session:create:terminal']);
+    } finally {
+      await close();
+    }
   });
 });

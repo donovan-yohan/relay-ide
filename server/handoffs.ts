@@ -25,6 +25,8 @@ import type { WorkContextStore } from './work-contexts.js';
 export const HANDOFF_PLAN_MAX_AGE_MS = 5 * 60 * 1000;
 export const HANDOFF_STATUS_MAX_CONFLICTS = 25;
 
+const SESSION_READ_CAPABILITY = 'session:read';
+
 const REQUIRED_EXECUTE_GRANT_LEGS: readonly HandoffRequiredGrantLeg[] = [
   'source-read',
   'destination-write',
@@ -184,6 +186,34 @@ function hasRequiredExecuteGrantLegs(grants: readonly HandoffRequiredGrant[]): b
   return REQUIRED_EXECUTE_GRANT_LEGS.every((leg) => allowed.has(leg));
 }
 
+function scopesMatch(a: HandoffRequiredGrant['scope'], b: HandoffRequiredGrant['scope']): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+function confirmedGrantEnvelopeConflicts(
+  plan: HandoffPlan,
+  confirmedGrants: readonly HandoffRequiredGrant[] | undefined
+): HandoffConflict[] {
+  if (!confirmedGrants || confirmedGrants.length === 0) return [];
+  const plannedByLeg = new Map(plan.requiredGrants.map((grant) => [grant.leg, grant]));
+  const conflicts: HandoffConflict[] = [];
+  for (const confirmed of confirmedGrants) {
+    const planned = plannedByLeg.get(confirmed.leg);
+    if (!planned) {
+      conflicts.push(conflict('MISSING_CAPABILITY_GRANT', `confirmed grant leg ${confirmed.leg} is not in the planned grant set`, plan.route.destinationNodeId, 'FAILED_MISSING_GRANT'));
+      continue;
+    }
+    if (
+      confirmed.nodeId !== planned.nodeId ||
+      confirmed.capability !== planned.capability ||
+      (confirmed.scope !== undefined && !scopesMatch(confirmed.scope, planned.scope))
+    ) {
+      conflicts.push(conflict('MISSING_CAPABILITY_GRANT', `confirmed grant ${confirmed.leg} does not match the planned node/capability/scope envelope`, planned.nodeId, 'FAILED_MISSING_GRANT'));
+    }
+  }
+  return conflicts;
+}
+
 function missingConfirmedGrantConflicts(plan: HandoffPlan): HandoffConflict[] {
   const allowed = new Set(
     plan.requiredGrants
@@ -244,11 +274,38 @@ function applyConfirmedGrants(
   const byLeg = new Map(confirmedGrants.map((grant) => [grant.leg, grant]));
   return {
     ...plan,
-    requiredGrants: plan.requiredGrants.map((grant) => ({
-      ...grant,
-      ...(byLeg.get(grant.leg) ?? {}),
-    })),
+    requiredGrants: plan.requiredGrants.map((plannedGrant) => {
+      const confirmed = byLeg.get(plannedGrant.leg);
+      if (!confirmed) return plannedGrant;
+      return {
+        ...plannedGrant,
+        ...(confirmed.decision !== undefined ? { decision: confirmed.decision } : {}),
+        ...(confirmed.grantRef !== undefined ? { grantRef: confirmed.grantRef } : {}),
+      };
+    }),
   };
+}
+
+function validateTransferPathBindings(
+  plan: HandoffPlan,
+  stored: StoredPlan | undefined,
+  input: Pick<HandoffCreateInput, 'sourceRepoPath' | 'destinationRepoPath'>
+): ReturnType<typeof apiError> | null {
+  if (!stored) return null;
+  if (input.sourceRepoPath && stored.sourceRepoPath && input.sourceRepoPath !== stored.sourceRepoPath) {
+    return apiError('INVALID_REQUEST', 'handoff execute sourceRepoPath does not match the stored plan source path', 400, {
+      planId: plan.id,
+      field: 'sourceRepoPath',
+    });
+  }
+  const expectedDestinationRepoPath = plan.destinationProposal.cwd || stored.request.destination.cwd;
+  if (input.destinationRepoPath && input.destinationRepoPath !== expectedDestinationRepoPath) {
+    return apiError('INVALID_REQUEST', 'handoff execute destinationRepoPath does not match the planned destination path', 400, {
+      planId: plan.id,
+      field: 'destinationRepoPath',
+    });
+  }
+  return null;
 }
 
 function dryRunConflictReason(conflicts: readonly HandoffConflict[]): HandoffApiErrorCode | null {
@@ -404,6 +461,19 @@ export class HandoffService {
         };
       }
     }
+    const envelopeConflicts = confirmedGrantEnvelopeConflicts(rawPlan, input.confirmedGrants);
+    if (envelopeConflicts.length > 0) {
+      const run = this.createFailedRun(rawPlan, envelopeConflicts, 'FAILED_MISSING_GRANT', input.actorId, input.now);
+      return {
+        ok: false,
+        error: apiError('CAPABILITY_DENIED', 'confirmed handoff grants must match the immutable planned grant envelope', 403, {
+          planId: rawPlan.id,
+          conflicts: envelopeConflicts.slice(0, HANDOFF_STATUS_MAX_CONFLICTS),
+        }, 'FAILED_MISSING_GRANT'),
+        run,
+      };
+    }
+
     const plan = applyConfirmedGrants(rawPlan, input.confirmedGrants);
     const grantConflicts = missingConfirmedGrantConflicts(plan);
     if (!hasRequiredExecuteGrantLegs(plan.requiredGrants)) {
@@ -417,6 +487,9 @@ export class HandoffService {
         run,
       };
     }
+
+    const pathBindingError = validateTransferPathBindings(plan, stored, input);
+    if (pathBindingError) return { ok: false, error: pathBindingError };
 
     if (input.sourceRepoPath && input.destinationRepoPath && stored?.dryRun?.baseCommit) {
       const transferInput: HandoffTransferApplyInput = {
@@ -547,6 +620,10 @@ export class HandoffService {
     return null;
   }
 
+  getPlan(planId: string): HandoffPlan | null {
+    return this.plans.get(planId)?.plan ?? null;
+  }
+
   private createFailedRun(
     plan: HandoffPlan,
     conflicts: HandoffConflict[],
@@ -623,10 +700,27 @@ function capabilityHeader(req: Parameters<RequestHandler>[0]): Set<string> | nul
 
 function requireCapabilities(req: Parameters<RequestHandler>[0], capabilities: readonly string[]): ReturnType<typeof apiError> | null {
   const provided = capabilityHeader(req);
-  if (!provided) return null;
+  if (!provided) {
+    return apiError('CAPABILITY_DENIED', 'missing validated capability context for handoff route', 403, { missingCapabilities: capabilities });
+  }
   const missing = capabilities.filter((capability) => !provided.has(capability));
   if (missing.length === 0) return null;
   return apiError('CAPABILITY_DENIED', `missing required capability: ${missing[0]}`, 403, { missingCapabilities: missing });
+}
+
+function createRouteCapabilities(plan: HandoffPlan | null): readonly string[] {
+  const sessionCreateCapability = plan?.launchPreview.runtime.kind === 'terminal'
+    ? 'session:create:terminal'
+    : 'session:create:agent';
+  return ['rpc:fs:read', 'rpc:fs:write', sessionCreateCapability, 'pty:exec:arbitrary'];
+}
+
+function planFromCreateBody(body: Record<string, unknown>, service: HandoffService): HandoffPlan | null {
+  const inlinePlan = body['plan'];
+  if (isHandoffPlan(inlinePlan)) return inlinePlan;
+  const planId = body['planId'];
+  if (typeof planId === 'string') return service.getPlan(planId);
+  return null;
 }
 
 export function createHandoffRouter(input: {
@@ -645,7 +739,7 @@ export function createHandoffRouter(input: {
     });
 
   router.post('/plan', auth, async (req, res) => {
-    const denied = requireCapabilities(req, ['session:read', 'rpc:fs:read']);
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY, 'rpc:fs:read']);
     if (denied) {
       res.status(denied.status).json(denied.body);
       return;
@@ -665,17 +759,12 @@ export function createHandoffRouter(input: {
   });
 
   router.post('/create', auth, async (req, res) => {
-    const denied = requireCapabilities(req, [
-      'rpc:fs:read',
-      'rpc:fs:write',
-      'session:create:agent',
-      'pty:exec:arbitrary',
-    ]);
+    const body = bodyRecord(req);
+    const denied = requireCapabilities(req, createRouteCapabilities(planFromCreateBody(body, service)));
     if (denied) {
       res.status(denied.status).json(denied.body);
       return;
     }
-    const body = bodyRecord(req);
     const result = await service.create({
       ...(typeof body['planId'] === 'string' ? { planId: body['planId'] } : {}),
       ...(body['plan'] ? { plan: body['plan'] as HandoffPlan } : {}),
@@ -693,6 +782,11 @@ export function createHandoffRouter(input: {
   });
 
   router.get('/:runId/status', auth, (req, res) => {
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY]);
+    if (denied) {
+      res.status(denied.status).json(denied.body);
+      return;
+    }
     const status = service.getStatus(req.params['runId'] ?? '');
     if (!status) {
       const error = apiError('HANDOFF_RUN_NOT_FOUND', 'handoff run was not found', 404, { runId: req.params['runId'] });
@@ -703,6 +797,11 @@ export function createHandoffRouter(input: {
   });
 
   router.post('/:runId/cancel', auth, (req, res) => {
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY]);
+    if (denied) {
+      res.status(denied.status).json(denied.body);
+      return;
+    }
     const status = service.cancel(req.params['runId'] ?? '', bodyRecord(req)['actorId'] as string | undefined);
     if (!status) {
       const error = apiError('HANDOFF_RUN_NOT_FOUND', 'handoff run was not found', 404, { runId: req.params['runId'] });
@@ -713,6 +812,11 @@ export function createHandoffRouter(input: {
   });
 
   router.get('/:runId/resume', auth, (req, res) => {
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY]);
+    if (denied) {
+      res.status(denied.status).json(denied.body);
+      return;
+    }
     const resume = service.resume(req.params['runId'] ?? '');
     if (!resume) {
       const error = apiError('HANDOFF_RUN_NOT_FOUND', 'handoff run was not found', 404, { runId: req.params['runId'] });
@@ -723,6 +827,11 @@ export function createHandoffRouter(input: {
   });
 
   router.get('/artifacts/:ref', auth, (req, res) => {
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY]);
+    if (denied) {
+      res.status(denied.status).json(denied.body);
+      return;
+    }
     const artifact = service.readArtifact(req.params['ref'] ?? '');
     if (!artifact) {
       const error = apiError('HANDOFF_ARTIFACT_NOT_FOUND', 'handoff artifact ref was not found', 404, { ref: req.params['ref'] });

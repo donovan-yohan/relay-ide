@@ -760,6 +760,8 @@ const handoffCreateInputSchema: RelayJsonSchema = {
     approvedUntrackedPaths: { type: 'array', items: stringSchema },
     actorId: stringSchema,
   },
+  required: ['confirmedGrants', 'sourceRepoPath', 'destinationRepoPath'],
+  anyOf: [{ required: ['planId'] }, { required: ['plan'] }],
 };
 
 const handoffRunIdInputSchema: RelayJsonSchema = {
@@ -1365,7 +1367,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
-    capabilityHints: ['rpc:fs:read', 'rpc:fs:write', 'session:create:agent', 'pty:exec:arbitrary'],
+    capabilityHints: ['rpc:fs:read', 'rpc:fs:write', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
     inputSchema: handoffCreateInputSchema,
     outputSchema: okOutput('HandoffsCreateOutput', handoffCreateOutputSchema),
     errorCodes: gatewayHandoffErrorCodes,

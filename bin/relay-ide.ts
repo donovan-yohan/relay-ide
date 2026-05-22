@@ -1525,7 +1525,7 @@ async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
       pathName: '/handoffs/create',
       method: 'POST',
       body: input,
-      capabilities: ['rpc:fs:read', 'rpc:fs:write', 'session:create:agent', 'pty:exec:arbitrary'],
+      capabilities: ['rpc:fs:read', 'rpc:fs:write', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
     });
     printGatewayEnvelope(gatewayOk('handoffs.create', result), 0);
   }
