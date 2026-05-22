@@ -303,6 +303,80 @@ describe('agent continuation shared contract', () => {
     ).toBe(false);
   });
 
+  it('rejects unsafe state locations unless they are explicitly excluded', () => {
+    const descriptor = harness('claude-unsafe-state-validation', [
+      'summary-only',
+      'native-same-node',
+    ]);
+
+    expect(isHarnessDescriptor(descriptor)).toBe(true);
+    expect(
+      isHarnessDescriptor({
+        ...descriptor,
+        safeStateLocations: [
+          ...descriptor.safeStateLocations,
+          {
+            kind: 'raw-transcript',
+            ref: '~/.claude/projects/session.jsonl',
+            summary: 'raw transcripts are unsafe even with exclude metadata',
+            portable: false,
+            includeByDefault: false,
+            exclude: {
+              class: 'raw-transcript',
+              reason: 'raw transcripts are not safe state locations',
+            },
+          },
+        ],
+      })
+    ).toBe(false);
+    expect(
+      isHarnessDescriptor({
+        ...descriptor,
+        unsafeStateLocations: [
+          {
+            kind: 'provider-auth-store',
+            ref: '~/.claude/auth.json',
+            summary: 'provider auth should not be portable or copied by default',
+            portable: true,
+            includeByDefault: true,
+          },
+        ],
+      })
+    ).toBe(false);
+    expect(
+      isHarnessDescriptor({
+        ...descriptor,
+        unsafeStateLocations: [
+          {
+            kind: 'raw-transcript',
+            ref: '~/.claude/projects/session.jsonl',
+            summary: 'raw transcript without explicit exclude metadata',
+            portable: false,
+            includeByDefault: false,
+          },
+        ],
+      })
+    ).toBe(false);
+    expect(
+      isHarnessDescriptor({
+        ...descriptor,
+        unsafeStateLocations: [
+          {
+            kind: 'raw-transcript',
+            ref: '~/.claude/projects/session.jsonl',
+            summary: 'raw transcript with mismatched exclude class',
+            portable: false,
+            includeByDefault: false,
+            exclude: {
+              class: 'provider-auth',
+              reason: 'wrong exclusion class for raw transcripts',
+            },
+          },
+        ],
+      })
+    ).toBe(false);
+  });
+
   it('rejects forbidden raw auth/profile/transcript keys anywhere in continuation shapes', () => {
     const plan = generateHandoffBrief({
       id: 'resume-bundle-forbidden',

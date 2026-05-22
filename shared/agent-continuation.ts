@@ -226,6 +226,15 @@ const RESUME_MODE_SET = new Set<string>(RESUME_MODES);
 const RESUME_CONFIDENCE_SET = new Set<string>(RESUME_CONFIDENCES);
 const RESUME_EXCLUDE_CLASS_SET = new Set<string>(RESUME_EXCLUDE_CLASSES);
 const STATE_LOCATION_KIND_SET = new Set<string>(RESUME_STATE_LOCATION_KINDS);
+const UNSAFE_STATE_LOCATION_EXCLUDE_CLASS: Partial<
+  Record<ResumeStateLocationKind, ResumeExcludeClass>
+> = {
+  'provider-auth-store': 'provider-auth',
+  'profile-db': 'profile-db',
+  'raw-transcript': 'raw-transcript',
+  environment: 'env',
+  cache: 'cache',
+};
 const READINESS_SIGNAL_KIND_SET = new Set<string>(
   RESUME_READINESS_SIGNAL_KINDS
 );
@@ -374,6 +383,28 @@ function isResumeStateLocation(value: unknown): value is ResumeStateLocation {
   );
 }
 
+function isSafeResumeStateLocation(
+  value: unknown
+): value is ResumeStateLocation {
+  return (
+    isResumeStateLocation(value) &&
+    UNSAFE_STATE_LOCATION_EXCLUDE_CLASS[value.kind] === undefined
+  );
+}
+
+function isUnsafeResumeStateLocation(
+  value: unknown
+): value is ResumeStateLocation {
+  if (!isResumeStateLocation(value)) return false;
+  const expectedExcludeClass = UNSAFE_STATE_LOCATION_EXCLUDE_CLASS[value.kind];
+  return (
+    expectedExcludeClass !== undefined &&
+    value.portable === false &&
+    value.includeByDefault === false &&
+    value.exclude?.class === expectedExcludeClass
+  );
+}
+
 function isDestinationReadinessSignal(
   value: unknown
 ): value is DestinationReadinessSignal {
@@ -409,9 +440,9 @@ export function isHarnessDescriptor(
     isOptionalString(value.displayName) &&
     isEnumArray(value.supportedResumeModes, RESUME_MODE_SET) &&
     Array.isArray(value.safeStateLocations) &&
-    value.safeStateLocations.every(isResumeStateLocation) &&
+    value.safeStateLocations.every(isSafeResumeStateLocation) &&
     Array.isArray(value.unsafeStateLocations) &&
-    value.unsafeStateLocations.every(isResumeStateLocation) &&
+    value.unsafeStateLocations.every(isUnsafeResumeStateLocation) &&
     (value.nativeResumeCommand === undefined ||
       isNativeResumeCommandMetadata(value.nativeResumeCommand)) &&
     Array.isArray(value.destinationReadiness) &&
