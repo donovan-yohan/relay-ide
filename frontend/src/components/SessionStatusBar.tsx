@@ -145,7 +145,7 @@ export function SessionStatusBar({
           <button
             className="status-handoff"
             type="button"
-            title="open fixture dry-run handoff plan"
+            title="open cold handoff dry-run plan"
             onClick={onHandoffClick}
           >
             handoff
