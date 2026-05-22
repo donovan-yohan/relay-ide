@@ -107,6 +107,10 @@ interface StoredRun {
   artifacts: HandoffArtifactSummary[];
 }
 
+export type HandoffCapabilityContext = readonly string[] | ReadonlySet<string>;
+
+export type HandoffCapabilityProvider = (req: Parameters<RequestHandler>[0]) => HandoffCapabilityContext | null | undefined;
+
 export interface HandoffArtifactSummary {
   id: string;
   runId?: string;
@@ -692,14 +696,18 @@ function bodyRecord(req: Parameters<RequestHandler>[0]): Record<string, unknown>
     : {};
 }
 
-function capabilityHeader(req: Parameters<RequestHandler>[0]): Set<string> | null {
-  const raw = req.header('x-relay-capabilities');
-  if (!raw) return null;
-  return new Set(raw.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean));
+function capabilitySet(context: HandoffCapabilityContext | null | undefined): Set<string> | null {
+  if (!context) return null;
+  const items = Array.isArray(context) ? context : Array.from(context);
+  return new Set(items.map((item) => item.trim()).filter(Boolean));
 }
 
-function requireCapabilities(req: Parameters<RequestHandler>[0], capabilities: readonly string[]): ReturnType<typeof apiError> | null {
-  const provided = capabilityHeader(req);
+function requireCapabilities(
+  req: Parameters<RequestHandler>[0],
+  capabilities: readonly string[],
+  capabilityContext: HandoffCapabilityProvider
+): ReturnType<typeof apiError> | null {
+  const provided = capabilitySet(capabilityContext(req));
   if (!provided) {
     return apiError('CAPABILITY_DENIED', 'missing validated capability context for handoff route', 403, { missingCapabilities: capabilities });
   }
@@ -726,11 +734,13 @@ function planFromCreateBody(body: Record<string, unknown>, service: HandoffServi
 export function createHandoffRouter(input: {
   service?: HandoffService;
   requireAuth?: RequestHandler;
+  getCapabilities?: HandoffCapabilityProvider;
   workContextStore?: WorkContextStore;
   getSession?: (nodeId: string, sessionId: string) => unknown | undefined;
 } = {}): Router {
   const router = Router();
   const auth = input.requireAuth ?? ((_req, _res, next) => next());
+  const capabilityContext = input.getCapabilities ?? (() => null);
   const service =
     input.service ??
     new HandoffService({
@@ -739,7 +749,7 @@ export function createHandoffRouter(input: {
     });
 
   router.post('/plan', auth, async (req, res) => {
-    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY, 'rpc:fs:read']);
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY, 'rpc:fs:read'], capabilityContext);
     if (denied) {
       res.status(denied.status).json(denied.body);
       return;
@@ -760,7 +770,7 @@ export function createHandoffRouter(input: {
 
   router.post('/create', auth, async (req, res) => {
     const body = bodyRecord(req);
-    const denied = requireCapabilities(req, createRouteCapabilities(planFromCreateBody(body, service)));
+    const denied = requireCapabilities(req, createRouteCapabilities(planFromCreateBody(body, service)), capabilityContext);
     if (denied) {
       res.status(denied.status).json(denied.body);
       return;
@@ -782,7 +792,7 @@ export function createHandoffRouter(input: {
   });
 
   router.get('/:runId/status', auth, (req, res) => {
-    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY]);
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY], capabilityContext);
     if (denied) {
       res.status(denied.status).json(denied.body);
       return;
@@ -797,7 +807,7 @@ export function createHandoffRouter(input: {
   });
 
   router.post('/:runId/cancel', auth, (req, res) => {
-    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY]);
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY], capabilityContext);
     if (denied) {
       res.status(denied.status).json(denied.body);
       return;
@@ -812,7 +822,7 @@ export function createHandoffRouter(input: {
   });
 
   router.get('/:runId/resume', auth, (req, res) => {
-    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY]);
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY], capabilityContext);
     if (denied) {
       res.status(denied.status).json(denied.body);
       return;
@@ -827,7 +837,7 @@ export function createHandoffRouter(input: {
   });
 
   router.get('/artifacts/:ref', auth, (req, res) => {
-    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY]);
+    const denied = requireCapabilities(req, [SESSION_READ_CAPABILITY], capabilityContext);
     if (denied) {
       res.status(denied.status).json(denied.body);
       return;

@@ -122,7 +122,7 @@ import {
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
-import { createHandoffRouter } from './handoffs.js';
+import { createHandoffRouter, type HandoffCapabilityContext } from './handoffs.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
 import {
   aggregateRemoteSessions,
@@ -1321,10 +1321,29 @@ async function main(): Promise<void> {
     );
   }
 
+  const HANDOFF_CAPABILITIES_LOCAL = 'relayHandoffCapabilities';
+
   function bearerScopedToken(req: express.Request): string {
     const authHeader = req.header('authorization') ?? '';
     const match = authHeader.match(/^Bearer\s+(.+)$/i);
     return match?.[1]?.trim() ?? '';
+  }
+
+  function handoffCapabilitiesFromRequestHeader(req: express.Request): HandoffCapabilityContext | null {
+    const raw = req.header('x-relay-capabilities');
+    if (!raw) return null;
+    return raw.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  function bindValidatedHandoffCapabilities(req: express.Request, res: express.Response): void {
+    const capabilities = handoffCapabilitiesFromRequestHeader(req);
+    if (capabilities) res.locals[HANDOFF_CAPABILITIES_LOCAL] = capabilities;
+  }
+
+  function validatedHandoffCapabilities(req: express.Request): HandoffCapabilityContext | null {
+    const value = req.res?.locals[HANDOFF_CAPABILITIES_LOCAL];
+    if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return null;
+    return value;
   }
 
   function isCliGatewayV1Request(req: express.Request): boolean {
@@ -1377,14 +1396,16 @@ async function main(): Promise<void> {
   };
 
   const requireCliGatewayAuth: express.RequestHandler = (req, res, next) => {
-    if (process.env.NO_PIN === '1' || authenticatedCookieToken(req)) {
+    if (isCliGatewayV1Request(req) && validateScopedToken(bearerScopedToken(req))) {
+      bindValidatedHandoffCapabilities(req, res);
       next();
       return;
     }
-    if (
-      req.header('x-relay-cli-gateway') === 'v1' &&
-      validateScopedToken(bearerScopedToken(req))
-    ) {
+    if (process.env.NO_PIN === '1') {
+      next();
+      return;
+    }
+    if (authenticatedCookieToken(req)) {
       next();
       return;
     }
@@ -1838,6 +1859,7 @@ async function main(): Promise<void> {
     '/handoffs',
     createHandoffRouter({
       requireAuth: requireCliGatewayAuth,
+      getCapabilities: validatedHandoffCapabilities,
       workContextStore,
       getSession: (nodeId, sessionId) => {
         if (nodeId !== 'local') return undefined;

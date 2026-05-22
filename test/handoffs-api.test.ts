@@ -111,10 +111,13 @@ function confirmedGrants(): HandoffRequiredGrant[] {
   ];
 }
 
-async function startHandoffApi(service: HandoffService): Promise<{ url: string; close: () => Promise<void> }> {
+async function startHandoffApi(
+  service: HandoffService,
+  getCapabilities?: Parameters<typeof createHandoffRouter>[0]['getCapabilities']
+): Promise<{ url: string; close: () => Promise<void> }> {
   const app = express();
   app.use(express.json());
-  app.use('/handoffs', createHandoffRouter({ service }));
+  app.use('/handoffs', createHandoffRouter({ service, ...(getCapabilities ? { getCapabilities } : {}) }));
   return createTestServer(app);
 }
 
@@ -290,39 +293,63 @@ describe('handoff API service', () => {
       expect(denied.status).toBe(403);
       expect((await denied.json()).error.code).toBe('CAPABILITY_DENIED');
 
-      const allowed = await fetch(`${url}/handoffs/${failed.run.id}/status`, {
+      const forgedStatus = await fetch(`${url}/handoffs/${failed.run.id}/status`, {
         headers: { 'x-relay-capabilities': headerFor(['session:read']) },
       });
-      expect(allowed.status).toBe(200);
-      expect((await allowed.json()).redaction).toMatchObject({ rawSecretsAvailable: false });
+      expect(forgedStatus.status).toBe(403);
+      expect((await forgedStatus.json()).error.code).toBe('CAPABILITY_DENIED');
 
-      const artifactDenied = await fetch(`${url}/handoffs/artifacts/handoff-artifact:${failed.run.id}:resume-bundle`);
-      expect(artifactDenied.status).toBe(403);
-
-      const terminalPlan = {
-        ...planned.plan,
-        launchPreview: {
-          ...planned.plan.launchPreview,
-          runtime: { ...planned.plan.launchPreview.runtime, kind: 'terminal' as const },
-        },
-      };
-      const terminalCreateDenied = await fetch(`${url}/handoffs/create`, {
+      const forgedPlan = await fetch(`${url}/handoffs/plan`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-relay-capabilities': headerFor([
-            'rpc:fs:read',
-            'rpc:fs:write',
-            'session:create:agent',
-            'pty:exec:arbitrary',
-          ]),
+          'x-relay-capabilities': headerFor(['session:read', 'rpc:fs:read']),
         },
+        body: JSON.stringify({ request: request() }),
+      });
+      expect(forgedPlan.status).toBe(403);
+      expect((await forgedPlan.json()).error.code).toBe('CAPABILITY_DENIED');
+
+      const artifactDenied = await fetch(`${url}/handoffs/artifacts/handoff-artifact:${failed.run.id}:resume-bundle`);
+      expect(artifactDenied.status).toBe(403);
+    } finally {
+      await close();
+    }
+
+    const trustedRead = await startHandoffApi(service, () => ['session:read']);
+    try {
+      const allowed = await fetch(`${trustedRead.url}/handoffs/${failed.run.id}/status`, {
+        headers: { 'x-relay-capabilities': headerFor(['not-used']) },
+      });
+      expect(allowed.status).toBe(200);
+      expect((await allowed.json()).redaction).toMatchObject({ rawSecretsAvailable: false });
+    } finally {
+      await trustedRead.close();
+    }
+
+    const terminalPlan = {
+      ...planned.plan,
+      launchPreview: {
+        ...planned.plan.launchPreview,
+        runtime: { ...planned.plan.launchPreview.runtime, kind: 'terminal' as const },
+      },
+    };
+    const trustedCreate = await startHandoffApi(service, () => [
+      'rpc:fs:read',
+      'rpc:fs:write',
+      'session:create:agent',
+      'pty:exec:arbitrary',
+    ]);
+    try {
+      const terminalCreateDenied = await fetch(`${trustedCreate.url}/handoffs/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ plan: terminalPlan, confirmedGrants: confirmedGrants() }),
       });
       expect(terminalCreateDenied.status).toBe(403);
       expect((await terminalCreateDenied.json()).error.details.missingCapabilities).toEqual(['session:create:terminal']);
     } finally {
-      await close();
+      await trustedCreate.close();
     }
   });
 });
