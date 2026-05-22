@@ -1321,29 +1321,17 @@ async function main(): Promise<void> {
     );
   }
 
-  const HANDOFF_CAPABILITIES_LOCAL = 'relayHandoffCapabilities';
-
   function bearerScopedToken(req: express.Request): string {
     const authHeader = req.header('authorization') ?? '';
     const match = authHeader.match(/^Bearer\s+(.+)$/i);
     return match?.[1]?.trim() ?? '';
   }
 
-  function handoffCapabilitiesFromRequestHeader(req: express.Request): HandoffCapabilityContext | null {
-    const raw = req.header('x-relay-capabilities');
-    if (!raw) return null;
-    return raw.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
-  }
-
-  function bindValidatedHandoffCapabilities(req: express.Request, res: express.Response): void {
-    const capabilities = handoffCapabilitiesFromRequestHeader(req);
-    if (capabilities) res.locals[HANDOFF_CAPABILITIES_LOCAL] = capabilities;
-  }
-
-  function validatedHandoffCapabilities(req: express.Request): HandoffCapabilityContext | null {
-    const value = req.res?.locals[HANDOFF_CAPABILITIES_LOCAL];
-    if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return null;
-    return value;
+  function validatedHandoffCapabilities(_req: express.Request): HandoffCapabilityContext | null {
+    // Scoped CLI tokens currently prove only bearer possession, not capability grants.
+    // Never promote caller-controlled x-relay-capabilities into a validated handoff
+    // context; until token/policy grants are wired, handoff routes fail closed.
+    return null;
   }
 
   function isCliGatewayV1Request(req: express.Request): boolean {
@@ -1397,7 +1385,6 @@ async function main(): Promise<void> {
 
   const requireCliGatewayAuth: express.RequestHandler = (req, res, next) => {
     if (isCliGatewayV1Request(req) && validateScopedToken(bearerScopedToken(req))) {
-      bindValidatedHandoffCapabilities(req, res);
       next();
       return;
     }

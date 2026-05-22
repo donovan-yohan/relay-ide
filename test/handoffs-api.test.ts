@@ -9,8 +9,14 @@ import {
   type HandoffRequiredGrant,
 } from '../shared/handoff.js';
 import { ENVIRONMENT_OPTION_SCHEMA_VERSION } from '../shared/environment-option.js';
-import { HandoffService, HANDOFF_PLAN_MAX_AGE_MS, createHandoffRouter } from '../server/handoffs.js';
+import {
+  HandoffService,
+  HANDOFF_PLAN_MAX_AGE_MS,
+  createHandoffRouter,
+  type HandoffCapabilityProvider,
+} from '../server/handoffs.js';
 import type { HandoffPlannerDryRun } from '../server/handoff-planner.js';
+import { generateScopedToken, validateScopedToken } from '../server/browser-content.js';
 import { createTestServer } from './helpers/test-server.js';
 
 const now = '2026-05-21T10:00:00.000Z';
@@ -113,12 +119,37 @@ function confirmedGrants(): HandoffRequiredGrant[] {
 
 async function startHandoffApi(
   service: HandoffService,
-  getCapabilities?: Parameters<typeof createHandoffRouter>[0]['getCapabilities']
+  getCapabilities?: HandoffCapabilityProvider
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const app = express();
   app.use(express.json());
   app.use('/handoffs', createHandoffRouter({ service, ...(getCapabilities ? { getCapabilities } : {}) }));
   return createTestServer(app);
+}
+
+async function startScopedTokenHandoffApi(
+  service: HandoffService
+): Promise<{ url: string; close: () => Promise<void>; token: string }> {
+  const token = generateScopedToken();
+  const app = express();
+  app.use(express.json());
+  app.use(
+    '/handoffs',
+    createHandoffRouter({
+      service,
+      requireAuth: (req, res, next) => {
+        const authHeader = req.header('authorization') ?? '';
+        const bearer = authHeader.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? '';
+        if (!validateScopedToken(bearer)) {
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+        next();
+      },
+      getCapabilities: () => null,
+    })
+  );
+  return { ...(await createTestServer(app)), token };
 }
 
 function headerFor(capabilities: readonly string[]): string {
@@ -278,6 +309,63 @@ describe('handoff API service', () => {
       code: 'INVALID_REQUEST',
       details: { field: 'destinationRepoPath' },
     });
+  });
+
+  it('fails closed when a scoped CLI token forges handoff capability headers', async () => {
+    let nextId = 0;
+    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
+    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
+    if (!planned.ok) throw new Error('plan failed unexpectedly');
+    const { url, close, token } = await startScopedTokenHandoffApi(service);
+    const forgedHeaders = {
+      authorization: `Bearer ${token}`,
+      'x-relay-cli-gateway': 'v1',
+      'x-relay-capabilities': headerFor([
+        'session:read',
+        'rpc:fs:read',
+        'rpc:fs:write',
+        'session:create:agent',
+        'pty:exec:arbitrary',
+      ]),
+    };
+
+    try {
+      const forgedPlan = await fetch(`${url}/handoffs/plan`, {
+        method: 'POST',
+        headers: { ...forgedHeaders, 'content-type': 'application/json' },
+        body: JSON.stringify({ request: request(), sourceRepoPath: sourceCwd }),
+      });
+      expect(forgedPlan.status).toBe(403);
+      expect((await forgedPlan.json()).error).toMatchObject({
+        code: 'CAPABILITY_DENIED',
+        details: { missingCapabilities: ['session:read', 'rpc:fs:read'] },
+      });
+
+      const forgedCreate = await fetch(`${url}/handoffs/create`, {
+        method: 'POST',
+        headers: { ...forgedHeaders, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          planId: planned.plan.id,
+          confirmedGrants: confirmedGrants(),
+          sourceRepoPath: sourceCwd,
+          destinationRepoPath: destinationCwd,
+        }),
+      });
+      expect(forgedCreate.status).toBe(403);
+      expect((await forgedCreate.json()).error).toMatchObject({
+        code: 'CAPABILITY_DENIED',
+        details: {
+          missingCapabilities: [
+            'rpc:fs:read',
+            'rpc:fs:write',
+            'session:create:agent',
+            'pty:exec:arbitrary',
+          ],
+        },
+      });
+    } finally {
+      await close();
+    }
   });
 
   it('fails closed when handoff routes have no capability context and gates status/artifact routes', async () => {
