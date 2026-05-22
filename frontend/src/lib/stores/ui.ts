@@ -423,6 +423,9 @@ export type ActiveModal =
   // #630: command-palette entry "start work in environment…" sets this
   // variant; App renders the EnvPickerDialog which embeds EnvironmentPicker.
   | { modal: 'env-picker' }
+  // #692: fixture-backed hub handoff dry-run surface. This is intentionally
+  // modal-only until the live #691 execute API is wired.
+  | { modal: 'handoff-plan' }
   | null;
 
 // ── State interface ────────────────────────────────────────────────────────

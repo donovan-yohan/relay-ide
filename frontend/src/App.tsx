@@ -83,6 +83,7 @@ import type { AddWorkspaceDialogHandle } from './components/dialogs/AddWorkspace
 import WorkspaceSettingsDialog from './components/dialogs/WorkspaceSettingsDialog.js';
 import type { WorkspaceSettingsDialogHandle } from './components/dialogs/WorkspaceSettingsDialog.js';
 import EnvPickerDialog from './components/dialogs/EnvPickerDialog.js';
+import HandoffPlanDialog from './components/dialogs/HandoffPlanDialog.js';
 import { reposToEnvironmentOptions } from './lib/repo-to-environment.js';
 import AnalyticsDashboard from './components/AnalyticsDashboard.js';
 import SessionDetail from './components/SessionDetail.js';
@@ -800,6 +801,11 @@ function TerminalAreaContent({
                     sessionId={activeSessionId}
                     currentActivity={activeSession?.currentActivity ?? null}
                     framework={activeSession?.agent}
+                    onHandoffClick={() =>
+                      useUiStore
+                        .getState()
+                        .setActiveModal({ modal: 'handoff-plan' })
+                    }
                   />
                 )}
 
@@ -1326,6 +1332,10 @@ export default function App() {
       <EnvPickerDialog
         open={activeModal?.modal === 'env-picker'}
         options={envPickerOptions}
+        onClose={handleModalClose}
+      />
+      <HandoffPlanDialog
+        open={activeModal?.modal === 'handoff-plan'}
         onClose={handleModalClose}
       />
 

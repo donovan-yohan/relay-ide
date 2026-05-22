@@ -469,6 +469,16 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
           </TuiButton>
           <TuiButton
             size="sm"
+            variant="info"
+            title="open fixture dry-run handoff plan"
+            onClick={() =>
+              useUiStore.getState().setActiveModal({ modal: 'handoff-plan' })
+            }
+          >
+            handoff
+          </TuiButton>
+          <TuiButton
+            size="sm"
             variant="ghost"
             disabled
             title="pause/retry require explicit control capability contracts before mobile can route them"
