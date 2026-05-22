@@ -1416,6 +1416,9 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
+    // Static gateway manifests cannot know whether the stored retry target is
+    // agent or terminal; advertise the superset for tool generators while the
+    // hub route enforces the stored plan's runtime-specific create capability.
     capabilityHints: ['session:read', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
     inputSchema: handoffRunIdInputSchema,
     outputSchema: okOutput('HandoffsLaunchOutput', handoffCreateOutputSchema),

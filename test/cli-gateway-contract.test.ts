@@ -83,6 +83,7 @@ describe('CLI gateway contract', () => {
       'handoffs.status',
       'handoffs.cancel',
       'handoffs.resume',
+      'handoffs.launch',
       'artifacts.read',
       'events.subscribe',
     ]);
@@ -264,6 +265,7 @@ describe('CLI gateway contract', () => {
       'handoffs.status',
       'handoffs.cancel',
       'handoffs.resume',
+      'handoffs.launch',
       'artifacts.read',
       'events.subscribe',
     ] as const;

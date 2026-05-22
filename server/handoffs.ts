@@ -776,7 +776,7 @@ export class HandoffService {
         });
         this.runs.set(launched.run.id, {
           run: sanitizeRun(launched.run),
-          auditEvents: launched.auditEvents,
+          auditEvents: [...result.auditEvents, ...launched.auditEvents],
           artifacts: launched.artifacts,
         });
         if (launched.ok) {
@@ -894,6 +894,37 @@ export class HandoffService {
         artifacts: input.artifacts,
         auditEvents: failed.auditEvents,
         error: apiError(launch.code, launch.message, status, launch.details, 'FAILED_LAUNCH'),
+      };
+    }
+
+    if (!launch.acknowledgedBrief) {
+      const failed = this.failLaunchRun(baseRun, {
+        code: 'LAUNCH_FAILED',
+        message: 'destination session launched but did not acknowledge the bounded handoff brief',
+        details: {
+          runId: baseRun.id,
+          planId: input.plan.id,
+          sessionId: launch.session.id,
+          nodeId: launch.session.nodeId ?? input.plan.route.destinationNodeId,
+        },
+      }, input.actorId);
+      this.recordWorkContextLaunchFailure({
+        plan: input.plan,
+        run: failed.run,
+        artifacts: input.artifacts,
+        launch: {
+          code: 'LAUNCH_FAILED',
+          message: failed.message,
+        },
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+        at: failed.run.completedAt ?? failed.run.updatedAt,
+      });
+      return {
+        ok: false,
+        run: failed.run,
+        artifacts: input.artifacts,
+        auditEvents: failed.auditEvents,
+        error: apiError('LAUNCH_FAILED', failed.message, 500, failed.details, 'FAILED_LAUNCH'),
       };
     }
 
@@ -1157,7 +1188,7 @@ export class HandoffService {
     });
     this.runs.set(launched.run.id, {
       run: sanitizeRun(launched.run),
-      auditEvents: launched.auditEvents,
+      auditEvents: [...stored.auditEvents, ...launched.auditEvents],
       artifacts: launched.artifacts,
     });
     if (launched.ok) {
@@ -1191,6 +1222,12 @@ export class HandoffService {
     return this.plans.get(planId)?.plan ?? null;
   }
 
+  getPlanForRun(runId: string): HandoffPlan | null {
+    const stored = this.runs.get(runId);
+    if (!stored?.run.planId) return null;
+    return this.getPlan(stored.run.planId);
+  }
+
   private createFailedRun(
     plan: HandoffPlan,
     conflicts: HandoffConflict[],
@@ -1206,7 +1243,7 @@ export class HandoffService {
       planId: plan.id,
       state: 'failed',
       sourceDisposition: 'handoff-failed',
-      sourceDispositions: ['left-running', 'handoff-failed'],
+      sourceDispositions: mergeSourceDispositions([plan.source.disposition], ['handoff-failed']),
       reasonCode,
       conflicts,
       transitions: [
@@ -1285,6 +1322,19 @@ function createRouteCapabilities(plan: HandoffPlan | null): readonly string[] {
     ? 'session:create:terminal'
     : 'session:create:agent';
   return ['rpc:fs:read', 'rpc:fs:write', sessionCreateCapability, 'pty:exec:arbitrary'];
+}
+
+function launchRouteCapabilities(plan: HandoffPlan | null): readonly string[] {
+  if (!plan) return [SESSION_READ_CAPABILITY];
+  const runtimeCapabilities = plan.launchPreview.runtime.requiredCapabilities.length > 0
+    ? plan.launchPreview.runtime.requiredCapabilities
+    : [
+        plan.launchPreview.runtime.kind === 'terminal'
+          ? 'session:create:terminal'
+          : 'session:create:agent',
+        'pty:exec:arbitrary',
+      ];
+  return Array.from(new Set([SESSION_READ_CAPABILITY, ...runtimeCapabilities]));
 }
 
 function planFromCreateBody(body: Record<string, unknown>, service: HandoffService): HandoffPlan | null {
@@ -1405,9 +1455,10 @@ export function createHandoffRouter(input: {
   });
 
   router.post('/:runId/launch', auth, async (req, res) => {
+    const runId = req.params['runId'] ?? '';
     const denied = requireCapabilities(
       req,
-      ['session:read', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
+      launchRouteCapabilities(service.getPlanForRun(runId)),
       capabilityContext
     );
     if (denied) {
@@ -1416,7 +1467,7 @@ export function createHandoffRouter(input: {
     }
     const body = bodyRecord(req);
     const result = await service.retryLaunch(
-      req.params['runId'] ?? '',
+      runId,
       typeof body['actorId'] === 'string' ? body['actorId'] : undefined
     );
     if (!result.ok) {

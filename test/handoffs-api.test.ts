@@ -320,6 +320,84 @@ describe('handoff API service', () => {
     expect(service.resume(created.run.id)?.resume.retryLaunchAvailable).toBe(false);
   });
 
+  it('fails launch verification when the destination does not acknowledge the bounded brief', async () => {
+    const service = new HandoffService({
+      now: () => new Date(now),
+      createId: () => 'plan-launch-unacknowledged',
+      applyTransfer: async (input) => ({
+        ok: true,
+        run: appliedRun(input.planId ?? 'missing-plan-id', input.requestId),
+        auditEvents: [],
+        trackedPatch: { byteCount: 0, sha256: '0'.repeat(64), applied: false },
+        approvedUntrackedFiles: [],
+      }),
+      launchDestinationSession: async () => ({
+        ok: true,
+        acknowledgedBrief: false,
+        session: {
+          id: 'dest-session-unacknowledged',
+          type: 'agent',
+          agent: 'hermes',
+          mode: 'pty',
+          cwd: destinationCwd,
+          displayName: 'Agent unacknowledged',
+          createdAt: now,
+          lastActivity: now,
+          idle: false,
+          customCommand: null,
+          nodeId: destinationNodeId,
+          status: 'active',
+          needsBranchRename: false,
+          agentState: 'idle',
+        } as never,
+      }),
+    });
+    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
+    if (!planned.ok) throw new Error('plan failed unexpectedly');
+
+    const created = await service.create({
+      planId: planned.plan.id,
+      confirmedGrants: confirmedGrants(),
+      sourceRepoPath: sourceCwd,
+      destinationRepoPath: destinationCwd,
+    });
+
+    expect(created.ok).toBe(false);
+    if (created.ok) return;
+    expect(created.error.body.error).toMatchObject({
+      code: 'LAUNCH_FAILED',
+      reasonCode: 'FAILED_LAUNCH',
+    });
+    expect(created.error.body.error.message).toContain('did not acknowledge');
+    expect(created.run?.state).toBe('failed');
+    expect(created.run?.reasonCode).toBe('FAILED_LAUNCH');
+    expect(created.run?.transitions.map((entry) => entry.to)).toEqual([
+      'snapshotting',
+      'transferring',
+      'applying',
+      'launching',
+      'failed',
+    ]);
+    expect(service.resume(created.run?.id ?? '')?.resume.retryLaunchAvailable).toBe(true);
+  });
+
+  it('records the planned source disposition in pre-transfer failed runs', async () => {
+    let nextId = 0;
+    const service = new HandoffService({ now: () => new Date(now), createId: () => `id-${++nextId}` });
+    const planned = await service.plan({
+      request: requestWithSourceDisposition('stop-requested'),
+      dryRun: dryRun(),
+    });
+    if (!planned.ok) throw new Error('plan failed unexpectedly');
+
+    const created = await service.create({ planId: planned.plan.id });
+
+    expect(created.ok).toBe(false);
+    if (created.ok) return;
+    expect(created.run?.sourceDisposition).toBe('handoff-failed');
+    expect(created.run?.sourceDispositions).toEqual(['stop-requested', 'handoff-failed']);
+  });
+
   it('fails with a typed launch error after apply when destination launch is unavailable', async () => {
     const service = new HandoffService({
       now: () => new Date(now),
@@ -435,6 +513,74 @@ describe('handoff API service', () => {
       'stop-requested',
       'handed-off',
     ]);
+  });
+
+  it('gates launch retry with runtime-specific create capabilities', async () => {
+    let launchCalls = 0;
+    const service = new HandoffService({
+      now: () => new Date(now),
+      createId: () => 'plan-route-runtime-launch',
+      applyTransfer: async (input) => ({
+        ok: true,
+        run: appliedRun(input.planId ?? 'missing-plan-id', input.requestId),
+        auditEvents: [],
+        trackedPatch: { byteCount: 0, sha256: '0'.repeat(64), applied: false },
+        approvedUntrackedFiles: [],
+      }),
+      launchDestinationSession: async () => {
+        launchCalls += 1;
+        if (launchCalls === 1) {
+          return {
+            ok: false,
+            code: 'LAUNCH_FAILED',
+            message: 'agent runtime exited before acknowledging brief',
+          };
+        }
+        return {
+          ok: true,
+          acknowledgedBrief: true,
+          session: {
+            id: 'dest-session-route-retry',
+            type: 'agent',
+            agent: 'hermes',
+            mode: 'pty',
+            cwd: destinationCwd,
+            displayName: 'Agent route retry',
+            createdAt: now,
+            lastActivity: now,
+            idle: false,
+            customCommand: null,
+            nodeId: destinationNodeId,
+            status: 'active',
+            needsBranchRename: false,
+            agentState: 'idle',
+          } as never,
+        };
+      },
+    });
+    const planned = await service.plan({ request: request(), dryRun: dryRun(), sourceRepoPath: sourceCwd });
+    if (!planned.ok) throw new Error('plan failed unexpectedly');
+    const failed = await service.create({
+      planId: planned.plan.id,
+      confirmedGrants: confirmedGrants(),
+      sourceRepoPath: sourceCwd,
+      destinationRepoPath: destinationCwd,
+    });
+    expect(failed.ok).toBe(false);
+    if (failed.ok || !failed.run) return;
+
+    const api = await startHandoffApi(service, () => [
+      'session:read',
+      'session:create:agent',
+      'pty:exec:arbitrary',
+    ]);
+    try {
+      const retried = await fetch(`${api.url}/handoffs/${failed.run.id}/launch`, { method: 'POST' });
+      expect(retried.status).toBe(200);
+      expect((await retried.json()).run).toMatchObject({ state: 'complete', reasonCode: 'VERIFY_COMPLETED' });
+    } finally {
+      await api.close();
+    }
   });
 
   it('requires stale plans to be refreshed before execute', async () => {
