@@ -667,6 +667,38 @@ describe('planHandoffSnapshot — path safety', () => {
     ]);
   });
 
+  it('excludes staged symlink pointing outside repo as unsafe mapping', async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'relay-handoff-staged-symlink-'));
+    symlinkSync('/etc/passwd', join(repoPath, 'linked-outside'));
+    const exec = makeExec({
+      revparseHead: 'abc\n',
+      revparseAbbrev: 'main\n',
+      status: statusLine('A  linked-outside'),
+      diff: '',
+    });
+
+    const result = await planHandoffSnapshot({
+      repoPath,
+      nodeId: NODE_ID,
+      exec,
+    });
+
+    expect(result.stagedFiles.map((file) => file.path)).not.toContain(
+      'linked-outside'
+    );
+    expect(result.includedGroups).not.toContain('tracked-patch');
+    expect(result.excludedPaths).toContainEqual({
+      path: 'linked-outside',
+      conflictCode: 'UNSAFE_PATH_MAPPING',
+      reason: 'unsafe-path',
+    });
+    const conflict = result.conflicts.find(
+      (candidate) => candidate.code === 'UNSAFE_PATH_MAPPING'
+    );
+    expect(conflict).toBeDefined();
+    expect(conflict?.message).toContain('linked-outside');
+  });
+
   it('excludes oversized untracked files as typed cache exclusions', async () => {
     const repoPath = mkdtempSync(join(tmpdir(), 'relay-handoff-oversized-'));
     writeFileSync(join(repoPath, 'huge.bin'), '');

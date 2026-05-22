@@ -348,8 +348,8 @@ export async function planHandoffSnapshot(
   }
 
   const {
-    stagedFiles,
-    unstagedFiles,
+    stagedFiles: rawStagedFiles,
+    unstagedFiles: rawUnstagedFiles,
     untrackedPaths,
     ignoredPaths,
     unsafePaths,
@@ -365,6 +365,33 @@ export async function planHandoffSnapshot(
 
   // Classify untracked candidates against exclusion rules.
   const excludedPaths: ExcludedPathSummary[] = [];
+  const excludedTrackedSymlinkPaths = new Set<string>();
+
+  const excludeTrackedSymlinks = (
+    files: TrackedFileSummary[]
+  ): TrackedFileSummary[] =>
+    files.filter((file) => {
+      const stat = inspectExistingPath(repoPath, file.path);
+      if (!stat?.isSymbolicLink()) return true;
+
+      if (!excludedTrackedSymlinkPaths.has(file.path)) {
+        excludedTrackedSymlinkPaths.add(file.path);
+        excludedPaths.push({
+          path: file.path,
+          conflictCode: 'UNSAFE_PATH_MAPPING',
+          reason: 'unsafe-path',
+        });
+        conflicts.push({
+          code: 'UNSAFE_PATH_MAPPING',
+          message: `tracked symlink cannot be transferred as a patch: ${file.path}`,
+          nodeId,
+        });
+      }
+      return false;
+    });
+
+  const stagedFiles = excludeTrackedSymlinks(rawStagedFiles);
+  const unstagedFiles = excludeTrackedSymlinks(rawUnstagedFiles);
   let untrackedByteCount = 0;
   const untrackedCandidates: UntrackedCandidate[] = untrackedPaths.map(
     (path) => {
