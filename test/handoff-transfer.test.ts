@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,7 +14,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { isHandoffRun, type HandoffRequiredGrant } from '../shared/handoff.js';
-import { planHandoffSnapshot } from '../server/handoff-planner.js';
+import { planHandoffSnapshot, type ExecFileAsyncLike } from '../server/handoff-planner.js';
 import { applyHandoffTransfer } from '../server/handoff-transfer.js';
 
 const SOURCE_NODE = 'local-node';
@@ -79,11 +80,13 @@ async function applyFixture(input: {
   approvedUntrackedPaths?: readonly string[];
   requiredGrants?: readonly HandoffRequiredGrant[];
   maxUntrackedFileBytes?: number;
+  exec?: ExecFileAsyncLike;
 }) {
   const dryRun = await planHandoffSnapshot({
     repoPath: input.source,
     nodeId: SOURCE_NODE,
     approvedUntrackedPaths: input.approvedUntrackedPaths,
+    exec: input.exec,
   });
   return applyHandoffTransfer({
     requestId: 'handoff-request-test',
@@ -98,6 +101,7 @@ async function applyFixture(input: {
     requiredGrants: input.requiredGrants,
     expectedDryRun: dryRun,
     maxUntrackedFileBytes: input.maxUntrackedFileBytes,
+    exec: input.exec,
     now: () => '2026-05-21T12:00:00.000Z',
     createId: createIdFactory(),
   });
@@ -241,6 +245,128 @@ describe('applyHandoffTransfer', () => {
     expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(
       beforeTracked
     );
+  });
+
+  it('rejects same-size tracked source changes after planning', async () => {
+    const { source, destination, baseCommit } = makeRepos();
+    writeFileSync(join(source, 'src', 'app.ts'), 'export const value = 2;\n');
+    const expectedDryRun = await planHandoffSnapshot({
+      repoPath: source,
+      nodeId: SOURCE_NODE,
+    });
+    writeFileSync(join(source, 'src', 'app.ts'), 'export const value = 3;\n');
+    const beforeTracked = readFileSync(join(destination, 'src', 'app.ts'), 'utf8');
+
+    const result = await applyHandoffTransfer({
+      requestId: 'handoff-request-test',
+      planId: 'handoff-plan-test',
+      snapshotId: 'handoff-snapshot-test',
+      sourceRepoPath: source,
+      destinationRepoPath: destination,
+      sourceNodeId: SOURCE_NODE,
+      destinationNodeId: DESTINATION_NODE,
+      baseCommit,
+      expectedDryRun,
+      now: () => '2026-05-21T12:00:00.000Z',
+      createId: createIdFactory(),
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected stale-source failure');
+    expect(result.conflicts[0]).toMatchObject({ code: 'STALE_SOURCE' });
+    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(beforeTracked);
+    expect(git(destination, ['status', '--porcelain=v1'])).toBe('');
+  });
+
+  it('rejects same-size approved untracked source changes after planning', async () => {
+    const { source, destination, baseCommit } = makeRepos();
+    writeFileSync(join(source, 'notes.md'), 'aaaa\n');
+    const expectedDryRun = await planHandoffSnapshot({
+      repoPath: source,
+      nodeId: SOURCE_NODE,
+      approvedUntrackedPaths: ['notes.md'],
+    });
+    writeFileSync(join(source, 'notes.md'), 'bbbb\n');
+
+    const result = await applyHandoffTransfer({
+      requestId: 'handoff-request-test',
+      planId: 'handoff-plan-test',
+      snapshotId: 'handoff-snapshot-test',
+      sourceRepoPath: source,
+      destinationRepoPath: destination,
+      sourceNodeId: SOURCE_NODE,
+      destinationNodeId: DESTINATION_NODE,
+      baseCommit,
+      approvedUntrackedPaths: ['notes.md'],
+      expectedDryRun,
+      now: () => '2026-05-21T12:00:00.000Z',
+      createId: createIdFactory(),
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected stale-source failure');
+    expect(result.conflicts[0]).toMatchObject({ code: 'STALE_SOURCE' });
+    expect(existsSync(join(destination, 'notes.md'))).toBe(false);
+    expect(git(destination, ['status', '--porcelain=v1'])).toBe('');
+  });
+
+  it('rolls back tracked and untracked writes when apply fails after mutation starts', async () => {
+    const { source, destination, baseCommit } = makeRepos();
+    writeFileSync(join(source, 'src', 'app.ts'), 'export const value = 7;\n');
+    writeFileSync(join(source, 'notes.md'), 'source note\n');
+    const beforeTracked = readFileSync(join(destination, 'src', 'app.ts'), 'utf8');
+    let lockedDestination = false;
+    const exec: ExecFileAsyncLike = async (file, args, options) => {
+      const stdout = execFileSync(file, args, {
+        cwd: options.cwd,
+        encoding: 'utf8',
+        maxBuffer: options.maxBuffer,
+        timeout: options.timeout,
+      });
+      if (
+        file === 'git' &&
+        args[0] === 'apply' &&
+        args.length === 2 &&
+        options.cwd === destination
+      ) {
+        chmodSync(destination, 0o555);
+        lockedDestination = true;
+      }
+      return { stdout, stderr: '' };
+    };
+
+    try {
+      const result = await applyFixture({
+        source,
+        destination,
+        baseCommit,
+        approvedUntrackedPaths: ['notes.md'],
+        exec,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('expected apply failure');
+      expect(result.conflicts[0]).toMatchObject({ code: 'DESTINATION_CONFLICT' });
+    } finally {
+      if (lockedDestination) chmodSync(destination, 0o755);
+    }
+    expect(readFileSync(join(destination, 'src', 'app.ts'), 'utf8')).toBe(
+      beforeTracked
+    );
+    expect(existsSync(join(destination, 'notes.md'))).toBe(false);
+    expect(git(destination, ['status', '--porcelain=v1'])).toBe('');
+  });
+
+  it('returns a typed failure when the destination is unavailable', async () => {
+    const { source, destination, baseCommit } = makeRepos();
+    writeFileSync(join(source, 'src', 'app.ts'), 'export const value = 8;\n');
+    rmSync(destination, { recursive: true, force: true });
+
+    const result = await applyFixture({ source, destination, baseCommit });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected unavailable destination failure');
+    expect(result.conflicts[0]).toMatchObject({ code: 'DESTINATION_UNAVAILABLE' });
   });
 
   it('rejects denied grants and oversized approved files before destination writes', async () => {

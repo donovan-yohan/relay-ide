@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { lstatSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { lstatSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -74,6 +75,13 @@ export interface ExcludedPathSummary {
 
 export const MAX_UNTRACKED_FILE_BYTES = 10 * 1024 * 1024;
 export const GIT_DIFF_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
+export const MAX_APPROVED_UNTRACKED_TOTAL_BYTES = GIT_DIFF_MAX_BUFFER_BYTES;
+
+export interface HandoffPayloadFileSummary {
+  path: string;
+  byteCount: number;
+  sha256: string;
+}
 
 export interface HandoffPlannerDryRun {
   branchName: string | null;
@@ -90,6 +98,10 @@ export interface HandoffPlannerDryRun {
   fileCount: number;
   /** Approximate transferable byte count for included tracked patches and approved files. */
   byteCount: number;
+  /** SHA256 of the exact tracked patch payload planned for transfer. */
+  trackedPatchSha256?: string;
+  /** SHA256 summaries for exact approved untracked payloads planned for transfer. */
+  approvedUntrackedFiles?: HandoffPayloadFileSummary[];
   transferMode: HandoffTransferMode;
   conflicts: HandoffConflict[];
 }
@@ -185,6 +197,14 @@ function inspectExistingPath(repoPath: string, relativePath: string) {
   } catch {
     return null;
   }
+}
+
+function hashBuffer(buffer: Buffer | string): string {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+function comparePaths(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /**
@@ -296,6 +316,7 @@ export function parseGitStatus(
  * worktree. Non-git repos result in STALE_SOURCE conflicts and empty file
  * sets; non-git mode is not supported and remains a follow-up.
  */
+// eslint-disable-next-line complexity -- linear git/filesystem decision table; safety branches are intentionally explicit.
 export async function planHandoffSnapshot(
   input: HandoffPlannerInput
 ): Promise<HandoffPlannerDryRun> {
@@ -409,8 +430,11 @@ export async function planHandoffSnapshot(
   const stagedFiles = excludeTrackedSymlinks(rawStagedFiles);
   const unstagedFiles = excludeTrackedSymlinks(rawUnstagedFiles);
   let untrackedByteCount = 0;
-  const untrackedCandidates: UntrackedCandidate[] = untrackedPaths.map(
-    (path) => {
+  const approvedUntrackedFiles: HandoffPayloadFileSummary[] = [];
+  const untrackedCandidates: UntrackedCandidate[] = untrackedPaths
+    .slice()
+    .sort(comparePaths)
+    .map((path) => {
       const classification = classifyPath(path);
       if (classification !== null) {
         excludedPaths.push({
@@ -480,14 +504,27 @@ export async function planHandoffSnapshot(
       const included = approvedUntrackedPaths.has(path);
       if (included && stat?.isFile()) {
         untrackedByteCount += stat.size;
+        try {
+          const data = readFileSync(resolve(repoPath, path));
+          approvedUntrackedFiles.push({
+            path,
+            byteCount: data.byteLength,
+            sha256: hashBuffer(data),
+          });
+        } catch {
+          conflicts.push({
+            code: 'STALE_SOURCE',
+            message: `approved untracked file became unreadable while planning: ${path}`,
+            nodeId,
+          });
+        }
       }
       return {
         path,
         included,
         approvalStatus: included ? 'approved' : 'requires-review',
       };
-    }
-  );
+    });
 
   for (const path of ignoredPaths) {
     const classification = classifyPath(path) ?? {
@@ -498,6 +535,14 @@ export async function planHandoffSnapshot(
       path,
       conflictCode: classification.conflictCode,
       reason: classification.reason,
+    });
+  }
+
+  if (untrackedByteCount > MAX_APPROVED_UNTRACKED_TOTAL_BYTES) {
+    conflicts.push({
+      code: 'CACHE_EXCLUDED',
+      message: `approved untracked files exceed ${MAX_APPROVED_UNTRACKED_TOTAL_BYTES} byte aggregate snapshot limit`,
+      nodeId,
     });
   }
 
@@ -521,22 +566,24 @@ export async function planHandoffSnapshot(
   // Estimate size as included tracked patch bytes plus known safe untracked file bytes.
   const safeTrackedPaths = [
     ...new Set([...stagedFiles, ...unstagedFiles].map((file) => file.path)),
-  ];
+  ].sort(comparePaths);
   let byteCount = untrackedByteCount;
+  let trackedPatchSha256: string | undefined;
   if (safeTrackedPaths.length > 0) {
     try {
-      const { stdout } = await run(
-        'git',
-        ['diff', 'HEAD', '--', ...safeTrackedPaths],
-        {
-          cwd: repoPath,
-          timeout: 10000,
-          maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
-        }
-      );
+      const { stdout } = await run('git', ['diff', 'HEAD'], {
+        cwd: repoPath,
+        timeout: 10000,
+        maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
+      });
       byteCount += Buffer.byteLength(stdout);
+      trackedPatchSha256 = hashBuffer(stdout);
     } catch {
-      // best effort
+      conflicts.push({
+        code: 'STALE_SOURCE',
+        message: 'git diff failed; tracked patch payload could not be planned',
+        nodeId,
+      });
     }
   }
 
@@ -591,6 +638,8 @@ export async function planHandoffSnapshot(
     excludedGroups,
     fileCount,
     byteCount,
+    ...(trackedPatchSha256 ? { trackedPatchSha256 } : {}),
+    ...(approvedUntrackedFiles.length > 0 ? { approvedUntrackedFiles } : {}),
     transferMode,
     conflicts,
   };

@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  rmdir,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -24,6 +25,8 @@ import {
 import type { NodeId } from '../shared/identity.js';
 import {
   isSafePath,
+  GIT_DIFF_MAX_BUFFER_BYTES,
+  MAX_APPROVED_UNTRACKED_TOTAL_BYTES,
   MAX_UNTRACKED_FILE_BYTES,
   planHandoffSnapshot,
   type ExecFileAsyncLike,
@@ -31,7 +34,7 @@ import {
 } from './handoff-planner.js';
 
 const execFileAsync = promisify(execFile);
-const GIT_APPLY_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+const GIT_TRANSFER_MAX_BUFFER_BYTES = GIT_DIFF_MAX_BUFFER_BYTES;
 
 export interface HandoffTransferApplyInput {
   requestId: string;
@@ -115,6 +118,18 @@ function hashBuffer(buffer: Buffer | string): string {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
+function comparePaths(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sortUniquePaths(paths: string[]): string[] {
+  return [...new Set(paths)].sort(comparePaths);
+}
+
 function makeConflict(
   code: HandoffConflict['code'],
   message: string,
@@ -136,6 +151,8 @@ function dryRunFingerprint(dryRun: HandoffPlannerDryRun): string {
     excludedGroups: dryRun.excludedGroups,
     fileCount: dryRun.fileCount,
     byteCount: dryRun.byteCount,
+    trackedPatchSha256: dryRun.trackedPatchSha256,
+    approvedUntrackedFiles: dryRun.approvedUntrackedFiles,
     transferMode: dryRun.transferMode,
   });
 }
@@ -166,6 +183,58 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function missingParentDirs(
+  repoPath: string,
+  destinationPath: string
+): Promise<string[]> {
+  const root = resolve(repoPath);
+  const rootPrefix = root.endsWith('/') ? root : `${root}/`;
+  const dirs: string[] = [];
+  let current = dirname(destinationPath);
+  while (current !== root && current.startsWith(rootPrefix)) {
+    if (!(await pathExists(current))) dirs.push(current);
+    current = dirname(current);
+  }
+  return dirs;
+}
+
+async function rollbackDestinationApply(input: {
+  exec: ExecFileAsyncLike;
+  destinationRepoPath: string;
+  patchPath: string | null;
+  trackedPatchApplied: boolean;
+  writtenUntrackedFiles: PreparedUntrackedFile[];
+  createdDirs: string[];
+}): Promise<string[]> {
+  const errors: string[] = [];
+  for (const file of input.writtenUntrackedFiles.slice().reverse()) {
+    try {
+      await rm(file.destinationPath, { force: true });
+    } catch (error) {
+      errors.push(`remove ${file.path}: ${errorMessage(error)}`);
+    }
+  }
+  if (input.trackedPatchApplied && input.patchPath) {
+    try {
+      await runGit(input.exec, input.destinationRepoPath, [
+        'apply',
+        '--reverse',
+        input.patchPath,
+      ]);
+    } catch (error) {
+      errors.push(`reverse tracked patch: ${errorMessage(error)}`);
+    }
+  }
+  for (const dir of input.createdDirs.slice().reverse()) {
+    try {
+      await rmdir(dir);
+    } catch {
+      // Directory did not exist, was not empty, or predated rollback; leave it.
+    }
+  }
+  return errors;
 }
 
 function safeRepoPath(repoPath: string, relativePath: string): string | null {
@@ -281,9 +350,10 @@ async function prepareApprovedUntrackedFiles(input: {
 > {
   const files: PreparedUntrackedFile[] = [];
   const conflicts: HandoffConflict[] = [];
+  let totalBytes = 0;
   const candidates = input.dryRun.untrackedCandidates
     .filter((candidate) => candidate.included)
-    .sort((a, b) => a.path.localeCompare(b.path));
+    .sort((a, b) => comparePaths(a.path, b.path));
 
   for (const candidate of candidates) {
     const sourcePath = safeRepoPath(input.sourceRepoPath, candidate.path);
@@ -335,7 +405,20 @@ async function prepareApprovedUntrackedFiles(input: {
       continue;
     }
 
-    const data = await readFile(sourcePath);
+    let data: Buffer;
+    try {
+      data = await readFile(sourcePath);
+    } catch (error) {
+      conflicts.push(
+        makeConflict(
+          'STALE_SOURCE',
+          `approved untracked file became unreadable while snapshotting: ${candidate.path}: ${errorMessage(error)}`,
+          input.sourceNodeId,
+          'FAILED_STALE_SOURCE'
+        )
+      );
+      continue;
+    }
     if (data.byteLength !== sourceStat.size) {
       conflicts.push(
         makeConflict(
@@ -343,6 +426,18 @@ async function prepareApprovedUntrackedFiles(input: {
           `approved untracked file changed while snapshotting: ${candidate.path}`,
           input.sourceNodeId,
           'FAILED_STALE_SOURCE'
+        )
+      );
+      continue;
+    }
+    totalBytes += data.byteLength;
+    if (totalBytes > MAX_APPROVED_UNTRACKED_TOTAL_BYTES) {
+      conflicts.push(
+        makeConflict(
+          'CACHE_EXCLUDED',
+          `approved untracked files exceed ${MAX_APPROVED_UNTRACKED_TOTAL_BYTES} byte aggregate transfer limit`,
+          input.sourceNodeId,
+          'FAILED_DESTINATION_CONFLICT'
         )
       );
       continue;
@@ -361,6 +456,7 @@ async function prepareApprovedUntrackedFiles(input: {
   return { ok: true, files };
 }
 
+// eslint-disable-next-line complexity -- transfer/apply is a linear safety decision table with explicit typed failures.
 export async function applyHandoffTransfer(
   input: HandoffTransferApplyInput
 ): Promise<HandoffTransferApplyResult> {
@@ -400,11 +496,31 @@ export async function applyHandoffTransfer(
     nodeId: input.sourceNodeId,
     exec,
   } satisfies Parameters<typeof planHandoffSnapshot>[0];
-  const dryRun = await planHandoffSnapshot(
-    input.approvedUntrackedPaths === undefined
-      ? plannerInput
-      : { ...plannerInput, approvedUntrackedPaths: input.approvedUntrackedPaths }
-  );
+  let dryRun: HandoffPlannerDryRun;
+  try {
+    dryRun = await planHandoffSnapshot(
+      input.approvedUntrackedPaths === undefined
+        ? plannerInput
+        : { ...plannerInput, approvedUntrackedPaths: input.approvedUntrackedPaths }
+    );
+  } catch (error) {
+    return failResult(
+      run,
+      auditEvents,
+      [
+        makeConflict(
+          'STALE_SOURCE',
+          `source snapshot planning failed: ${errorMessage(error)}`,
+          input.sourceNodeId,
+          'FAILED_STALE_SOURCE'
+        ),
+      ],
+      'FAILED_STALE_SOURCE',
+      now,
+      input.actorId,
+      createId
+    );
+  }
   if (dryRun.conflicts.length > 0) {
     return failResult(
       run,
@@ -457,22 +573,54 @@ export async function applyHandoffTransfer(
     }
   }
 
-  const trackedPaths = [
-    ...new Set(
-      [...dryRun.stagedFiles, ...dryRun.unstagedFiles].map((file) => file.path)
-    ),
-  ].sort();
-  const patch =
-    trackedPaths.length > 0
-      ? await runGit(
-          exec,
-          input.sourceRepoPath,
-          ['diff', 'HEAD', '--', ...trackedPaths],
-          { maxBuffer: GIT_APPLY_MAX_BUFFER_BYTES }
-        )
-      : '';
+  const trackedPaths = sortUniquePaths(
+    [...dryRun.stagedFiles, ...dryRun.unstagedFiles].map((file) => file.path)
+  );
+  let patch = '';
+  if (trackedPaths.length > 0) {
+    try {
+      patch = await runGit(exec, input.sourceRepoPath, ['diff', 'HEAD'], {
+        maxBuffer: GIT_TRANSFER_MAX_BUFFER_BYTES,
+      });
+    } catch (error) {
+      return failResult(
+        run,
+        auditEvents,
+        [
+          makeConflict(
+            'STALE_SOURCE',
+            `source tracked patch generation failed: ${errorMessage(error)}`,
+            input.sourceNodeId,
+            'FAILED_STALE_SOURCE'
+          ),
+        ],
+        'FAILED_STALE_SOURCE',
+        now,
+        input.actorId,
+        createId
+      );
+    }
+  }
   const patchBuffer = Buffer.from(patch);
   const patchSha256 = hashBuffer(patchBuffer);
+  if (trackedPaths.length > 0 && dryRun.trackedPatchSha256 !== patchSha256) {
+    return failResult(
+      run,
+      auditEvents,
+      [
+        makeConflict(
+          'STALE_SOURCE',
+          'source tracked patch changed while preparing transfer',
+          input.sourceNodeId,
+          'FAILED_STALE_SOURCE'
+        ),
+      ],
+      'FAILED_STALE_SOURCE',
+      now,
+      input.actorId,
+      createId
+    );
+  }
 
   const untracked = await prepareApprovedUntrackedFiles({
     dryRun,
@@ -488,6 +636,35 @@ export async function applyHandoffTransfer(
       auditEvents,
       untracked.conflicts,
       untracked.conflicts[0]?.reasonCode ?? 'FAILED_DESTINATION_CONFLICT',
+      now,
+      input.actorId,
+      createId
+    );
+  }
+  const plannedUntracked = new Map(
+    (dryRun.approvedUntrackedFiles ?? []).map((file) => [file.path, file])
+  );
+  const untrackedHashMismatch = untracked.files.find((file) => {
+    const planned = plannedUntracked.get(file.path);
+    return (
+      planned === undefined ||
+      planned.byteCount !== file.byteCount ||
+      planned.sha256 !== file.sha256
+    );
+  });
+  if (untrackedHashMismatch) {
+    return failResult(
+      run,
+      auditEvents,
+      [
+        makeConflict(
+          'STALE_SOURCE',
+          `approved untracked file changed after handoff planning: ${untrackedHashMismatch.path}`,
+          input.sourceNodeId,
+          'FAILED_STALE_SOURCE'
+        ),
+      ],
+      'FAILED_STALE_SOURCE',
       now,
       input.actorId,
       createId
@@ -518,9 +695,31 @@ export async function applyHandoffTransfer(
     ],
   });
 
-  const destinationHead = (
-    await runGit(exec, input.destinationRepoPath, ['rev-parse', 'HEAD'])
-  ).trim();
+  let destinationHead: string;
+  try {
+    destinationHead = (
+      await runGit(exec, input.destinationRepoPath, ['rev-parse', 'HEAD'], {
+        maxBuffer: GIT_TRANSFER_MAX_BUFFER_BYTES,
+      })
+    ).trim();
+  } catch (error) {
+    return failResult(
+      run,
+      auditEvents,
+      [
+        makeConflict(
+          'DESTINATION_UNAVAILABLE',
+          `destination HEAD could not be resolved: ${errorMessage(error)}`,
+          input.destinationNodeId,
+          'FAILED_DESTINATION_UNAVAILABLE'
+        ),
+      ],
+      'FAILED_DESTINATION_UNAVAILABLE',
+      now,
+      input.actorId,
+      createId
+    );
+  }
   if (destinationHead !== input.baseCommit) {
     return failResult(
       run,
@@ -540,12 +739,32 @@ export async function applyHandoffTransfer(
     );
   }
 
-  const destinationStatus = await runGit(exec, input.destinationRepoPath, [
-    'status',
-    '--porcelain=v1',
-    '-z',
-    '--untracked-files=all',
-  ]);
+  let destinationStatus: string;
+  try {
+    destinationStatus = await runGit(
+      exec,
+      input.destinationRepoPath,
+      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      { maxBuffer: GIT_TRANSFER_MAX_BUFFER_BYTES }
+    );
+  } catch (error) {
+    return failResult(
+      run,
+      auditEvents,
+      [
+        makeConflict(
+          'DESTINATION_UNAVAILABLE',
+          `destination status could not be resolved: ${errorMessage(error)}`,
+          input.destinationNodeId,
+          'FAILED_DESTINATION_UNAVAILABLE'
+        ),
+      ],
+      'FAILED_DESTINATION_UNAVAILABLE',
+      now,
+      input.actorId,
+      createId
+    );
+  }
   if (destinationStatus.length > 0) {
     return failResult(
       run,
@@ -609,7 +828,7 @@ export async function applyHandoffTransfer(
       [
         makeConflict(
           'DESTINATION_CONFLICT',
-          `tracked patch does not apply cleanly: ${error instanceof Error ? error.message : String(error)}`,
+          `tracked patch does not apply cleanly: ${errorMessage(error)}`,
           input.destinationNodeId,
           'FAILED_DESTINATION_CONFLICT'
         ),
@@ -631,13 +850,23 @@ export async function applyHandoffTransfer(
     createId
   );
 
+  let trackedPatchApplied = false;
+  const writtenUntrackedFiles: PreparedUntrackedFile[] = [];
+  const createdDirs: string[] = [];
   try {
     if (patchPath) {
       await runGit(exec, input.destinationRepoPath, ['apply', patchPath]);
+      trackedPatchApplied = true;
     }
     for (const file of untracked.files) {
+      const missingDirs = await missingParentDirs(
+        input.destinationRepoPath,
+        file.destinationPath
+      );
       await mkdir(dirname(file.destinationPath), { recursive: true });
+      createdDirs.push(...missingDirs);
       await writeFile(file.destinationPath, file.data, { flag: 'wx' });
+      writtenUntrackedFiles.push(file);
       auditEvents.push({
         id: createId(),
         runId: run.id,
@@ -651,13 +880,25 @@ export async function applyHandoffTransfer(
       });
     }
   } catch (error) {
+    const rollbackErrors = await rollbackDestinationApply({
+      exec,
+      destinationRepoPath: input.destinationRepoPath,
+      patchPath,
+      trackedPatchApplied,
+      writtenUntrackedFiles,
+      createdDirs,
+    });
+    const rollbackSuffix =
+      rollbackErrors.length > 0
+        ? `; rollback errors: ${rollbackErrors.join('; ')}`
+        : '';
     return failResult(
       run,
       auditEvents,
       [
         makeConflict(
           'DESTINATION_CONFLICT',
-          `failed while applying handoff snapshot: ${error instanceof Error ? error.message : String(error)}`,
+          `failed while applying handoff snapshot: ${errorMessage(error)}${rollbackSuffix}`,
           input.destinationNodeId,
           'FAILED_DESTINATION_CONFLICT'
         ),
