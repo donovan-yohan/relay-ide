@@ -41,10 +41,12 @@ export type HandoffSourceDisposition =
 export const HANDOFF_CONFLICT_CODES = [
   'STALE_SOURCE',
   'MISSING_CAPABILITY_GRANT',
+  'DESTINATION_UNAVAILABLE',
   'BASE_MISMATCH',
   'DESTINATION_DIRTY',
   'DESTINATION_CONFLICT',
   'UNTRACKED_COLLISION',
+  'MISSING_PATH_MAPPING',
   'SECRET_EXCLUDED',
   'CACHE_EXCLUDED',
   'UNSAFE_PATH_MAPPING',
@@ -67,8 +69,10 @@ export const HANDOFF_REASON_CODES = [
   'CANCELLED_BY_OPERATOR',
   'FAILED_STALE_SOURCE',
   'FAILED_MISSING_GRANT',
+  'FAILED_DESTINATION_UNAVAILABLE',
   'FAILED_BASE_MISMATCH',
   'FAILED_DESTINATION_CONFLICT',
+  'FAILED_MISSING_PATH_MAPPING',
   'FAILED_UNSAFE_PATH_MAPPING',
   'FAILED_LAUNCH',
 ] as const;
@@ -185,6 +189,9 @@ export interface HandoffDestinationProposal {
   repoInstanceId?: RepoInstanceId;
   worktreeInstanceId?: WorktreeInstanceId;
   branchName?: string;
+  action?: 'reuse-worktree' | 'create-worktree' | 'use-cwd';
+  sourceCwd?: string;
+  sourceNodeId?: NodeId;
   summary: string;
 }
 
@@ -539,6 +546,12 @@ function isDestinationProposal(
     isOptionalString(value.repoInstanceId) &&
     isOptionalString(value.worktreeInstanceId) &&
     isOptionalString(value.branchName) &&
+    (value.action === undefined ||
+      value.action === 'reuse-worktree' ||
+      value.action === 'create-worktree' ||
+      value.action === 'use-cwd') &&
+    isOptionalString(value.sourceCwd) &&
+    isOptionalString(value.sourceNodeId) &&
     hasString(value.summary)
   );
 }
