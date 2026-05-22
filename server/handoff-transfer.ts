@@ -139,6 +139,13 @@ function makeConflict(
   return { code, message, nodeId, ...(reasonCode ? { reasonCode } : {}) };
 }
 
+function mergeSourceDispositions(
+  current: readonly HandoffRun['sourceDisposition'][],
+  next: readonly HandoffRun['sourceDisposition'][]
+): HandoffRun['sourceDisposition'][] {
+  return Array.from(new Set([...current, ...next]));
+}
+
 function dryRunFingerprint(dryRun: HandoffPlannerDryRun): string {
   return JSON.stringify({
     branchName: dryRun.branchName,
@@ -254,6 +261,7 @@ function createRun(input: HandoffTransferApplyInput, now: string): HandoffRun {
     ...(input.snapshotId ? { snapshotId: input.snapshotId } : {}),
     state: 'planned',
     sourceDisposition: 'left-running',
+    sourceDispositions: ['left-running'],
     conflicts: [],
     transitions: [],
     createdAt: now,
@@ -305,6 +313,12 @@ function failResult(
   createId: () => string
 ): HandoffTransferApplyFailure {
   run.conflicts = conflicts;
+  const previousSourceDispositions = run.sourceDispositions ?? [run.sourceDisposition];
+  run.sourceDisposition = 'handoff-failed';
+  run.sourceDispositions = mergeSourceDispositions(
+    previousSourceDispositions,
+    ['handoff-failed']
+  );
   const at = now();
   transitionRun(run, 'failed', reasonCode, at, actorId, auditEvents, createId);
   const failureEvent: HandoffTransferAuditEvent = {

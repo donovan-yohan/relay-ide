@@ -285,7 +285,13 @@ export interface HandoffRun {
   planId?: string;
   snapshotId?: string;
   state: HandoffRunState;
+  /**
+   * Compatibility summary of the source process state. New handoff flows should
+   * prefer `sourceDispositions` so `handed-off` can coexist with an honestly
+   * reported live/stale source process state instead of implying migration.
+   */
   sourceDisposition: HandoffSourceDisposition;
+  sourceDispositions?: HandoffSourceDisposition[];
   reasonCode?: HandoffReasonCode;
   conflicts: HandoffConflict[];
   transitions: HandoffRunTransition[];
@@ -776,6 +782,8 @@ export function isHandoffRun(value: unknown): value is HandoffRun {
     isOptionalString(value.snapshotId) &&
     isHandoffRunState(value.state) &&
     isHandoffSourceDisposition(value.sourceDisposition) &&
+    (value.sourceDispositions === undefined ||
+      isEnumArray(value.sourceDispositions, SOURCE_DISPOSITION_SET)) &&
     (value.reasonCode === undefined || isHandoffReasonCode(value.reasonCode)) &&
     Array.isArray(value.conflicts) &&
     value.conflicts.every(isConflict) &&

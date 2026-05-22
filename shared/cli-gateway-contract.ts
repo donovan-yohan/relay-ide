@@ -29,6 +29,7 @@ export type RelayCliGatewayCommand =
   | 'handoffs.status'
   | 'handoffs.cancel'
   | 'handoffs.resume'
+  | 'handoffs.launch'
   | 'artifacts.read'
   | 'events.subscribe';
 
@@ -1406,6 +1407,18 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['session:read'],
     inputSchema: handoffRunIdInputSchema,
     outputSchema: okOutput('HandoffsResumeOutput', handoffResumeOutputSchema),
+    errorCodes: gatewayHandoffErrorCodes,
+  },
+  {
+    name: 'handoffs.launch',
+    cli: ['relay-ide', 'v1', 'handoffs', 'launch', '--run-id', '<run-id>', '--json'],
+    summary: 'Retry hub-side destination session launch for an applied cold handoff after a typed launch failure.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
+    inputSchema: handoffRunIdInputSchema,
+    outputSchema: okOutput('HandoffsLaunchOutput', handoffCreateOutputSchema),
     errorCodes: gatewayHandoffErrorCodes,
   },
   {
