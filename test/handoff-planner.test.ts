@@ -302,12 +302,7 @@ describe('planHandoffSnapshot — dirty tracked diff', () => {
 
     const diffCall = calls.find((call) => call.args[0] === 'diff');
     expect(diffCall?.file).toBe('git');
-    expect(diffCall?.args).toEqual([
-      'diff',
-      'HEAD',
-      '--',
-      'src/server/git.ts',
-    ]);
+    expect(diffCall?.args).toEqual(['diff', 'HEAD']);
     expect(diffCall?.options).toMatchObject({
       cwd: REPO_PATH,
       timeout: 10000,
@@ -315,7 +310,7 @@ describe('planHandoffSnapshot — dirty tracked diff', () => {
     });
   });
 
-  it('excludes staged symlink patch bytes from mixed tracked byte accounting', async () => {
+  it('accounts for whole tracked patch bytes when excluding staged symlink metadata', async () => {
     const repoPath = mkdtempSync(join(tmpdir(), 'relay-handoff-mixed-symlink-'));
     symlinkSync('/etc/passwd', join(repoPath, 'linked-outside'));
     const calls: ExecCall[] = [];
@@ -348,14 +343,8 @@ describe('planHandoffSnapshot — dirty tracked diff', () => {
     const result = await planHandoffSnapshot({ repoPath, nodeId: NODE_ID, exec });
 
     const diffCall = calls.find((call) => call.args[0] === 'diff');
-    expect(diffCall?.args).toEqual([
-      'diff',
-      'HEAD',
-      '--',
-      'src/server/git.ts',
-    ]);
-    expect(result.byteCount).toBe(Buffer.byteLength(safeDiff));
-    expect(result.byteCount).toBeLessThan(Buffer.byteLength(fullDiff));
+    expect(diffCall?.args).toEqual(['diff', 'HEAD']);
+    expect(result.byteCount).toBe(Buffer.byteLength(fullDiff));
     expect(result.fileCount).toBe(1);
     expect(result.transferMode).toBe('tracked-patch');
     expect(result.includedGroups).toContain('tracked-patch');

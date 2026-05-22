@@ -335,7 +335,7 @@ const ALLOWED_TRANSITIONS: Record<HandoffRunState, readonly HandoffRunState[]> =
     planned: ['snapshotting', 'failed', 'cancelled'],
     snapshotting: ['transferring', 'failed', 'cancelled'],
     transferring: ['applying', 'failed', 'cancelled'],
-    applying: ['launching', 'failed', 'cancelled'],
+    applying: ['complete', 'launching', 'failed', 'cancelled'],
     launching: ['verifying', 'failed', 'cancelled'],
     verifying: ['complete', 'failed', 'cancelled'],
     complete: [],
