@@ -122,7 +122,11 @@ import {
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
-import { createHandoffRouter, type HandoffCapabilityContext } from './handoffs.js';
+import {
+  createHandoffRouter,
+  type HandoffCapabilityContext,
+  type HandoffDestinationLaunchInput,
+} from './handoffs.js';
 import { createHubNodeLinkManager } from './hub-node-link.js';
 import {
   aggregateRemoteSessions,
@@ -875,6 +879,161 @@ export function validateSessionCreateRequest(
   if (workContextStore.get(workContextId)) return true;
   res.status(404).json({ error: 'work_context_not_found' });
   return false;
+}
+
+function configuredRepoForCwd(config: Config, cwd: string): string | null {
+  const repos = config.repos ?? [];
+  return (
+    repos
+      .filter((repo) => cwd === repo || cwd.startsWith(`${repo}${path.sep}`))
+      .sort((a, b) => b.length - a.length)[0] ?? null
+  );
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function terminalBriefCommand(brief: string): string {
+  return `printf '%s\\n' ${shellSingleQuote(brief)}\n`;
+}
+
+function createHandoffDestinationLauncher(params: {
+  startupConfig: Config;
+  configDir: string;
+  getConfig: () => Config;
+  watchCwd: (cwd: string) => void;
+}): (input: HandoffDestinationLaunchInput) => Promise<{
+  ok: true;
+  session: ReturnType<typeof localRelayNode.sessions.list>[number];
+  acknowledgedBrief: boolean;
+} | {
+  ok: false;
+  code: 'HUB_UNAVAILABLE' | 'NODE_UNAVAILABLE' | 'LAUNCH_UNSUPPORTED' | 'LAUNCH_FAILED';
+  message: string;
+  details?: Record<string, unknown>;
+}> {
+  return async (input) => {
+    const destination = input.plan.destinationProposal;
+    if (destination.nodeId !== 'local') {
+      return {
+        ok: false,
+        code: 'NODE_UNAVAILABLE',
+        message: `destination node ${destination.nodeId} is not attached for hub-side launch`,
+        details: { nodeId: destination.nodeId },
+      };
+    }
+    if (!fs.existsSync(destination.cwd)) {
+      return {
+        ok: false,
+        code: 'NODE_UNAVAILABLE',
+        message: `destination cwd does not exist: ${destination.cwd}`,
+        details: { cwd: destination.cwd },
+      };
+    }
+
+    const freshConfig = params.getConfig();
+    const repoPath = configuredRepoForCwd(freshConfig, destination.cwd);
+    if (!repoPath) {
+      return {
+        ok: false,
+        code: 'LAUNCH_UNSUPPORTED',
+        message: 'destination cwd is not inside a configured Relay repo; refusing path-only launch',
+        details: { cwd: destination.cwd },
+      };
+    }
+
+    const cwd = destination.cwd;
+    const worktreePath = cwd === repoPath ? null : cwd;
+    const repoName = sessionNameFromRepoPath(repoPath);
+    const portVariables = getRepoPortVariables(freshConfig, repoPath);
+    const capacityResponse = buildPtyCapacityResponse(
+      activePtySessionCount(),
+      freshConfig.maxPtySessions
+    );
+    if (capacityResponse) {
+      return {
+        ok: false,
+        code: 'LAUNCH_FAILED',
+        message: capacityResponse.message,
+        details: { ...capacityResponse },
+      };
+    }
+
+    try {
+      if (input.request.desiredRuntime.kind === 'terminal') {
+        const session = createTerminalSessionRecord({
+          repoName,
+          repoPath,
+          worktreePath,
+          cwd,
+          safeCols: undefined,
+          safeRows: undefined,
+          sessionLane: undefined,
+          portVariables,
+        });
+        localRelayNode.sessions.write(session.id, terminalBriefCommand(input.handoffBrief));
+        params.watchCwd(session.cwd);
+        return { ok: true, session, acknowledgedBrief: true };
+      }
+
+      const requestedAgent = input.request.desiredRuntime.providerId as AgentType | undefined;
+      const resolved = resolveSessionSettings(freshConfig, repoPath, {
+        agent: requestedAgent,
+        continuePolicy: 'never',
+      });
+      const availability = validateAgentFrameworkAvailable(freshConfig, resolved.agent);
+      if (!availability.ok) {
+        return {
+          ok: false,
+          code: 'LAUNCH_UNSUPPORTED',
+          message: availability.body.message ?? availability.body.error ?? 'agent framework is unavailable',
+          details: availability.body,
+        };
+      }
+      const args = buildAgentArgs(
+        resolved.agent,
+        resolved.claudeArgs,
+        resolved.yolo,
+        resolved.continuePolicy
+      );
+      const displayName = sessions.nextAgentName();
+      const branchName = destination.branchName ?? '';
+      const session = createAgentSessionRecord({
+        repoName,
+        repoPath,
+        worktreePath,
+        cwd,
+        requestBranchName: branchName,
+        displayName,
+        tmuxDisplayName: branchName ? `${repoName}-${branchName}` : repoName,
+        args,
+        resolvedAgent: resolved.agent,
+        resolvedUseTmux: resolved.useTmux,
+        resolvedYolo: resolved.yolo,
+        resolvedClaudeArgs: resolved.claudeArgs,
+        resolvedContinuePolicy: resolved.continuePolicy,
+        safeCols: undefined,
+        safeRows: undefined,
+        needsBranchRename: false,
+        branchRenamePrompt: '',
+        computedInitialPrompt: input.handoffBrief,
+        claudeFullscreen: params.startupConfig.claudeFullscreen,
+        sessionLane: undefined,
+        portVariables,
+        scrollbackBytes: resolved.scrollbackBytes,
+      });
+      params.watchCwd(session.cwd);
+      return { ok: true, session, acknowledgedBrief: true };
+    } catch (err) {
+      return {
+        ok: false,
+        code: 'LAUNCH_FAILED',
+        message: err instanceof Error ? err.message : 'destination session launch failed',
+        details: { cwd, repoPath, configDir: params.configDir },
+      };
+    }
+  };
 }
 
 function sessionNameFromRepoPath(repoPath: string): string {
@@ -1854,6 +2013,12 @@ async function main(): Promise<void> {
           .list()
           .find((session) => session.id === sessionId);
       },
+      launchDestinationSession: createHandoffDestinationLauncher({
+        startupConfig,
+        configDir,
+        getConfig,
+        watchCwd: (cwd) => gitWatcher.watch(cwd),
+      }),
     })
   );
   app.use(

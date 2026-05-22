@@ -440,7 +440,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|artifacts read|events subscribe) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|events subscribe) --json'
   );
   process.exit(1);
 }
@@ -1561,6 +1561,19 @@ async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
       capabilities: ['session:read'],
     });
     printGatewayEnvelope(gatewayOk('handoffs.resume', result), 0);
+  }
+  if (subcommand === 'launch') {
+    const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
+    if (!runId || runId.startsWith('--')) gatewayInvalid('handoffs.launch', '--run-id is required');
+    const actorId = gatewayArg(handoffArgs, '--actor-id');
+    const result = await gatewayHttpJson({
+      commandName: 'handoffs.launch',
+      pathName: `/handoffs/${encodeURIComponent(runId)}/launch`,
+      method: 'POST',
+      body: actorId ? { actorId } : {},
+      capabilities: ['session:read', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
+    });
+    printGatewayEnvelope(gatewayOk('handoffs.launch', result), 0);
   }
   gatewayInvalid('handoffs.plan', 'unknown handoffs command', { args: gatewayArgs });
 }

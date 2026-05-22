@@ -15,12 +15,23 @@ import {
   type HandoffRun,
   type HandoffRunTransition,
   type HandoffSnapshotGroup,
+  type HandoffSourceDisposition,
 } from '../shared/handoff.js';
 import { proposeHandoffDestination } from '../shared/handoff-destination.js';
+import {
+  createWorkContextPrivacyMetadata,
+  type ArtifactRef,
+  type AuditEventRef,
+} from '../shared/work-context.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
 import { planHandoffSnapshot, type HandoffPlannerDryRun } from './handoff-planner.js';
-import { applyHandoffTransfer, type HandoffTransferApplyInput } from './handoff-transfer.js';
-import type { WorkContextStore } from './work-contexts.js';
+import {
+  applyHandoffTransfer,
+  type HandoffTransferApplyInput,
+  type HandoffTransferApplyResult,
+} from './handoff-transfer.js';
+import type { WorkContextLifecycleEventInput, WorkContextStore } from './work-contexts.js';
+import type { SessionSummary } from './types.js';
 
 export const HANDOFF_PLAN_MAX_AGE_MS = 5 * 60 * 1000;
 export const HANDOFF_STATUS_MAX_CONFLICTS = 25;
@@ -39,10 +50,15 @@ export type HandoffApiErrorCode =
   | 'INVALID_PLAN_ID'
   | 'INVALID_WORK_CONTEXT_ID'
   | 'INVALID_SESSION_ID'
+  | 'INVALID_RUN_STATE'
   | 'STALE_PLAN'
   | 'CAPABILITY_DENIED'
   | 'SOURCE_STALE_OR_OFFLINE'
+  | 'HUB_UNAVAILABLE'
+  | 'NODE_UNAVAILABLE'
   | 'DESTINATION_UNAVAILABLE'
+  | 'LAUNCH_UNSUPPORTED'
+  | 'LAUNCH_FAILED'
   | 'MISSING_CONFIRMED_GRANT'
   | 'HANDOFF_RUN_NOT_FOUND'
   | 'HANDOFF_ARTIFACT_NOT_FOUND'
@@ -124,9 +140,35 @@ export interface HandoffArtifactSummary {
   transcriptExportAvailable: false;
 }
 
+export interface HandoffDestinationLaunchInput {
+  plan: HandoffPlan;
+  request: HandoffRequest;
+  run: HandoffRun;
+  artifacts: HandoffArtifactSummary[];
+  handoffBrief: string;
+}
+
+export type HandoffDestinationLaunchResult =
+  | { ok: true; session: SessionSummary; acknowledgedBrief: boolean }
+  | {
+      ok: false;
+      code: 'HUB_UNAVAILABLE' | 'NODE_UNAVAILABLE' | 'LAUNCH_UNSUPPORTED' | 'LAUNCH_FAILED';
+      message: string;
+      details?: Record<string, unknown>;
+    };
+
 export interface HandoffServiceDeps {
-  workContextStore?: Pick<WorkContextStore, 'get'>;
+  workContextStore?: Pick<
+    WorkContextStore,
+    'get' | 'associateSession' | 'recordLifecycleEvent' | 'update'
+  >;
   getSession?: (nodeId: string, sessionId: string) => unknown | undefined;
+  launchDestinationSession?: (
+    input: HandoffDestinationLaunchInput
+  ) => Promise<HandoffDestinationLaunchResult> | HandoffDestinationLaunchResult;
+  applyTransfer?: (
+    input: HandoffTransferApplyInput
+  ) => Promise<HandoffTransferApplyResult>;
   now?: () => Date;
   createId?: () => string;
 }
@@ -160,7 +202,13 @@ function apiError(
       error: {
         code,
         message,
-        retryable: code === 'SOURCE_STALE_OR_OFFLINE' || code === 'DESTINATION_UNAVAILABLE' || code === 'STALE_PLAN',
+        retryable:
+          code === 'SOURCE_STALE_OR_OFFLINE' ||
+          code === 'DESTINATION_UNAVAILABLE' ||
+          code === 'NODE_UNAVAILABLE' ||
+          code === 'HUB_UNAVAILABLE' ||
+          code === 'LAUNCH_FAILED' ||
+          code === 'STALE_PLAN',
         ...(reasonCode ? { reasonCode } : {}),
         ...(details ? { details } : {}),
       },
@@ -183,6 +231,211 @@ function sanitizeRun(run: HandoffRun): HandoffRun {
     conflicts: run.conflicts.slice(0, HANDOFF_STATUS_MAX_CONFLICTS),
     transitions: run.transitions.slice(-HANDOFF_STATUS_MAX_CONFLICTS),
   };
+}
+
+function mergeSourceDispositions(
+  current: readonly HandoffSourceDisposition[],
+  next: readonly HandoffSourceDisposition[]
+): HandoffSourceDisposition[] {
+  return Array.from(new Set([...current, ...next]));
+}
+
+function transition(
+  run: HandoffRun,
+  to: HandoffRun['state'],
+  reasonCode: HandoffReasonCode,
+  at: string,
+  actorId?: string
+): HandoffRunTransition {
+  const item: HandoffRunTransition = {
+    from: run.state,
+    to,
+    at,
+    reasonCode,
+    ...(actorId ? { actorId } : {}),
+  };
+  run.transitions = [...run.transitions, item];
+  run.state = to;
+  run.reasonCode = reasonCode;
+  run.updatedAt = at;
+  if (to === 'complete' || to === 'failed' || to === 'cancelled') {
+    run.completedAt = at;
+  } else {
+    delete run.completedAt;
+  }
+  return item;
+}
+
+function openRunCopy(
+  run: HandoffRun,
+  patchInput: Omit<Partial<HandoffRun>, 'completedAt'> = {}
+): HandoffRun {
+  const copy: HandoffRun = {
+    schemaVersion: run.schemaVersion,
+    id: run.id,
+    requestId: run.requestId,
+    ...(run.planId ? { planId: run.planId } : {}),
+    ...(run.snapshotId ? { snapshotId: run.snapshotId } : {}),
+    state: run.state,
+    sourceDisposition: run.sourceDisposition,
+    ...(run.sourceDispositions ? { sourceDispositions: run.sourceDispositions } : {}),
+    ...(run.reasonCode ? { reasonCode: run.reasonCode } : {}),
+    conflicts: run.conflicts,
+    transitions: run.transitions,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
+  return { ...copy, ...patchInput };
+}
+
+function rewindApplyComplete(run: HandoffRun): HandoffRun {
+  const transitions = run.transitions.slice();
+  const last = transitions.at(-1);
+  if (
+    run.state === 'complete' &&
+    last?.from === 'applying' &&
+    last.to === 'complete' &&
+    last.reasonCode === 'APPLY_COMPLETED'
+  ) {
+    transitions.pop();
+    return openRunCopy(run, {
+      state: 'applying',
+      reasonCode: 'APPLY_COMPLETED',
+      transitions,
+      updatedAt: transitions.at(-1)?.at ?? run.updatedAt,
+    });
+  }
+  return run;
+}
+
+function sourceDispositionsForAppliedRun(
+  plan: HandoffPlan,
+  run: HandoffRun
+): HandoffSourceDisposition[] {
+  return mergeSourceDispositions(
+    run.sourceDispositions ?? [run.sourceDisposition],
+    [plan.source.disposition]
+  );
+}
+
+function sourceDispositionsForLaunch(
+  plan: HandoffPlan,
+  run: HandoffRun
+): HandoffSourceDisposition[] {
+  return mergeSourceDispositions(
+    sourceDispositionsForAppliedRun(plan, run),
+    ['handed-off']
+  );
+}
+
+function rewindLaunchAttempt(run: HandoffRun): HandoffRun {
+  const launchIndex = run.transitions.findLastIndex(
+    (entry) => entry.to === 'launching'
+  );
+  if (launchIndex < 0) return run;
+  const transitions = run.transitions.slice(0, launchIndex);
+  const sourceDispositions = (run.sourceDispositions ?? [run.sourceDisposition]).filter(
+    (entry) => entry !== 'handoff-failed'
+  );
+  return openRunCopy(run, {
+    state: 'applying',
+    reasonCode: transitions.at(-1)?.reasonCode ?? 'APPLY_COMPLETED',
+    conflicts: run.conflicts.filter((entry) => entry.code !== 'LAUNCH_FAILURE'),
+    transitions,
+    sourceDisposition: sourceDispositions[0] ?? 'left-running',
+    sourceDispositions: sourceDispositions.length ? sourceDispositions : ['left-running'],
+    updatedAt: transitions.at(-1)?.at ?? run.updatedAt,
+  });
+}
+
+function buildHandoffBrief(input: {
+  plan: HandoffPlan;
+  run: HandoffRun;
+  artifacts: HandoffArtifactSummary[];
+}): string {
+  const { plan, run, artifacts } = input;
+  const artifactRefs = artifacts.map((artifact) => artifact.id).join(', ') || 'none';
+  return [
+    `Relay cold handoff ${run.id} is applied for WorkContext ${plan.route.workContextId}.`,
+    `Destination cwd: ${plan.destinationProposal.cwd}. Source session: ${plan.source.nodeId}/${plan.source.sessionId}.`,
+    `Source disposition is not process migration: ${(run.sourceDispositions ?? [run.sourceDisposition]).join(', ')}.`,
+    `Artifact refs: ${artifactRefs}. Raw transcripts, provider auth, env/secrets, Hermes DBs, and broad home-folder mirrors are intentionally unavailable.`,
+    'Before editing: inspect git status and the handoff artifact refs, then continue from this bounded brief only.',
+  ].join('\n');
+}
+
+function artifactRefsForWorkContext(
+  artifacts: readonly HandoffArtifactSummary[],
+  producedAt: string,
+  actorId?: string
+): ArtifactRef[] {
+  const privacy = createWorkContextPrivacyMetadata({ classification: 'internal' });
+  return artifacts.map((artifact) => ({
+    id: artifact.id,
+    kind: artifact.group === 'resume-bundle' ? 'report' : 'log-ref',
+    title: artifact.group,
+    summary: artifact.summary,
+    uri: artifact.id,
+    ...(actorId ? { producedByActorId: actorId } : {}),
+    producedAt,
+    privacy,
+  }));
+}
+
+function handoffStateArtifactRefsForWorkContext(input: {
+  plan: HandoffPlan;
+  run: HandoffRun;
+  producedAt: string;
+  actorId?: string;
+}): ArtifactRef[] {
+  const privacy = createWorkContextPrivacyMetadata({ classification: 'internal' });
+  const refs: ArtifactRef[] = [
+    {
+      id: `handoff-run:${input.run.id}`,
+      kind: 'report',
+      title: 'HandoffRun',
+      summary: `HandoffRun ${input.run.id} ${input.run.state}/${input.run.reasonCode ?? 'unknown'} for plan ${input.plan.id}`,
+      uri: `handoff-run:${input.run.id}`,
+      ...(input.actorId ? { producedByActorId: input.actorId } : {}),
+      producedAt: input.producedAt,
+      privacy,
+    },
+  ];
+  if (input.run.snapshotId) {
+    refs.push({
+      id: `handoff-snapshot:${input.run.snapshotId}`,
+      kind: 'report',
+      title: 'HandoffSnapshot',
+      summary: `Applied handoff snapshot ${input.run.snapshotId} for run ${input.run.id}`,
+      uri: `handoff-snapshot:${input.run.snapshotId}`,
+      ...(input.actorId ? { producedByActorId: input.actorId } : {}),
+      producedAt: input.producedAt,
+      privacy,
+    });
+  }
+  return refs;
+}
+
+function auditRefsForWorkContext(
+  run: HandoffRun,
+  actorId?: string
+): AuditEventRef[] {
+  const privacy = createWorkContextPrivacyMetadata({ classification: 'internal' });
+  return run.transitions.map((entry, idx) => ({
+    id: `handoff-audit:${run.id}:${idx}`,
+    eventId: `${run.id}:${idx}`,
+    type: 'handoff-run-transition',
+    occurredAt: entry.at,
+    ...(actorId ? { actorId } : {}),
+    correlationId: run.id,
+    privacy,
+  }));
+}
+
+function dedupeById<T extends { id: string }>(items: readonly T[]): T[] {
+  const byId = new Map<string, T>();
+  for (const item of items) byId.set(item.id, item);
+  return Array.from(byId.values());
 }
 
 function hasRequiredExecuteGrantLegs(grants: readonly HandoffRequiredGrant[]): boolean {
@@ -511,10 +764,35 @@ export class HandoffService {
       if (input.actorId) transferInput.actorId = input.actorId;
       const approvedUntrackedPaths = input.approvedUntrackedPaths ?? stored.approvedUntrackedPaths;
       if (approvedUntrackedPaths) transferInput.approvedUntrackedPaths = approvedUntrackedPaths;
-      const result = await applyHandoffTransfer(transferInput);
+      const result = await (this.deps.applyTransfer ?? applyHandoffTransfer)(transferInput);
       const artifacts = this.artifactsForRun(result.run.id, plan.id, result.auditEvents);
+      if (result.ok) {
+        const launched = await this.launchAppliedRun({
+          plan,
+          request: stored.request,
+          run: result.run,
+          artifacts,
+          ...(input.actorId ? { actorId: input.actorId } : {}),
+        });
+        this.runs.set(launched.run.id, {
+          run: sanitizeRun(launched.run),
+          auditEvents: [...result.auditEvents, ...launched.auditEvents],
+          artifacts: launched.artifacts,
+        });
+        if (launched.ok) {
+          return {
+            ok: true,
+            run: sanitizeRun(launched.run),
+            artifacts: launched.artifacts,
+          };
+        }
+        return {
+          ok: false,
+          error: launched.error,
+          run: sanitizeRun(launched.run),
+        };
+      }
       this.runs.set(result.run.id, { run: sanitizeRun(result.run), auditEvents: result.auditEvents, artifacts });
-      if (result.ok) return { ok: true, run: sanitizeRun(result.run), artifacts };
       return {
         ok: false,
         error: apiError('SOURCE_STALE_OR_OFFLINE', 'handoff transfer/apply failed with typed conflicts', 409, {
@@ -544,6 +822,268 @@ export class HandoffService {
       error: apiError('DESTINATION_UNAVAILABLE', 'transfer/apply engine was not invoked; no fake execute success emitted', 503, { runId: run.id }, 'FAILED_DESTINATION_UNAVAILABLE'),
       run,
     };
+  }
+
+  private async launchAppliedRun(input: {
+    plan: HandoffPlan;
+    request: HandoffRequest;
+    run: HandoffRun;
+    artifacts: HandoffArtifactSummary[];
+    actorId?: string;
+  }): Promise<
+    | { ok: true; run: HandoffRun; artifacts: HandoffArtifactSummary[]; auditEvents: unknown[] }
+    | {
+        ok: false;
+        run: HandoffRun;
+        artifacts: HandoffArtifactSummary[];
+        auditEvents: unknown[];
+        error: ReturnType<typeof apiError>;
+      }
+  > {
+    const launcher = this.deps.launchDestinationSession;
+    const baseRun = rewindApplyComplete(input.run);
+    baseRun.sourceDisposition = input.plan.source.disposition;
+    baseRun.sourceDispositions = sourceDispositionsForAppliedRun(input.plan, baseRun);
+    const startedAt = nowIso(this.deps);
+    transition(baseRun, 'launching', 'LAUNCH_STARTED', startedAt, input.actorId);
+    const handoffBrief = buildHandoffBrief({
+      plan: input.plan,
+      run: baseRun,
+      artifacts: input.artifacts,
+    });
+
+    if (!launcher) {
+      const failed = this.failLaunchRun(baseRun, {
+        code: 'LAUNCH_UNSUPPORTED',
+        message: 'destination launch is not wired for this hub; applied artifacts are preserved for retry',
+        details: { runId: baseRun.id, planId: input.plan.id },
+      }, input.actorId);
+      return {
+        ok: false,
+        run: failed.run,
+        artifacts: input.artifacts,
+        auditEvents: failed.auditEvents,
+        error: apiError('LAUNCH_UNSUPPORTED', failed.message, 501, failed.details, 'FAILED_LAUNCH'),
+      };
+    }
+
+    const launch = await launcher({
+      plan: input.plan,
+      request: input.request,
+      run: baseRun,
+      artifacts: input.artifacts,
+      handoffBrief,
+    });
+    if (!launch.ok) {
+      const failed = this.failLaunchRun(baseRun, launch, input.actorId);
+      this.recordWorkContextLaunchFailure({
+        plan: input.plan,
+        run: failed.run,
+        artifacts: input.artifacts,
+        launch,
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+        at: failed.run.completedAt ?? failed.run.updatedAt,
+      });
+      const status =
+        launch.code === 'NODE_UNAVAILABLE' ? 404 :
+        launch.code === 'HUB_UNAVAILABLE' ? 503 :
+        launch.code === 'LAUNCH_UNSUPPORTED' ? 501 : 500;
+      return {
+        ok: false,
+        run: failed.run,
+        artifacts: input.artifacts,
+        auditEvents: failed.auditEvents,
+        error: apiError(launch.code, launch.message, status, launch.details, 'FAILED_LAUNCH'),
+      };
+    }
+
+    if (!launch.acknowledgedBrief) {
+      const failed = this.failLaunchRun(baseRun, {
+        code: 'LAUNCH_FAILED',
+        message: 'destination session launched but did not acknowledge the bounded handoff brief',
+        details: {
+          runId: baseRun.id,
+          planId: input.plan.id,
+          sessionId: launch.session.id,
+          nodeId: launch.session.nodeId ?? input.plan.route.destinationNodeId,
+        },
+      }, input.actorId);
+      this.recordWorkContextLaunchFailure({
+        plan: input.plan,
+        run: failed.run,
+        artifacts: input.artifacts,
+        launch: {
+          code: 'LAUNCH_FAILED',
+          message: failed.message,
+        },
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+        at: failed.run.completedAt ?? failed.run.updatedAt,
+      });
+      return {
+        ok: false,
+        run: failed.run,
+        artifacts: input.artifacts,
+        auditEvents: failed.auditEvents,
+        error: apiError('LAUNCH_FAILED', failed.message, 500, failed.details, 'FAILED_LAUNCH'),
+      };
+    }
+
+    const verifyingAt = nowIso(this.deps);
+    transition(baseRun, 'verifying', 'LAUNCH_COMPLETED', verifyingAt, input.actorId);
+    const completedAt = nowIso(this.deps);
+    transition(baseRun, 'complete', 'VERIFY_COMPLETED', completedAt, input.actorId);
+    baseRun.sourceDisposition = 'handed-off';
+    baseRun.sourceDispositions = sourceDispositionsForLaunch(input.plan, input.run);
+    this.recordWorkContextLaunch({
+      plan: input.plan,
+      run: baseRun,
+      session: launch.session,
+      artifacts: input.artifacts,
+      ...(input.actorId ? { actorId: input.actorId } : {}),
+      at: completedAt,
+    });
+    return {
+      ok: true,
+      run: baseRun,
+      artifacts: input.artifacts,
+      auditEvents: [],
+    };
+  }
+
+  private failLaunchRun(
+    run: HandoffRun,
+    launch: {
+      code: 'HUB_UNAVAILABLE' | 'NODE_UNAVAILABLE' | 'LAUNCH_UNSUPPORTED' | 'LAUNCH_FAILED';
+      message: string;
+      details?: Record<string, unknown>;
+    },
+    actorId?: string
+  ): {
+    run: HandoffRun;
+    auditEvents: unknown[];
+    message: string;
+    details?: Record<string, unknown>;
+  } {
+    const conflictEntry = conflict(
+      'LAUNCH_FAILURE',
+      launch.message,
+      run.planId ?? 'hub',
+      'FAILED_LAUNCH'
+    );
+    run.sourceDispositions = mergeSourceDispositions(
+      run.sourceDispositions ?? [run.sourceDisposition],
+      ['handoff-failed']
+    );
+    run.conflicts = [...run.conflicts, conflictEntry];
+    run.sourceDisposition = 'handoff-failed';
+    const failedAt = nowIso(this.deps);
+    transition(run, 'failed', 'FAILED_LAUNCH', failedAt, actorId);
+    return {
+      run,
+      auditEvents: [
+        {
+          id: createId(this.deps, 'handoff-launch-event'),
+          runId: run.id,
+          at: failedAt,
+          phase: 'failed',
+          type: 'handoff-launch-failed',
+          reasonCode: 'FAILED_LAUNCH',
+          code: launch.code,
+          message: launch.message,
+        },
+      ],
+      message: launch.message,
+      ...(launch.details ? { details: launch.details } : {}),
+    };
+  }
+
+  private recordWorkContextLaunchFailure(input: {
+    plan: HandoffPlan;
+    run: HandoffRun;
+    artifacts: HandoffArtifactSummary[];
+    launch: {
+      code: 'HUB_UNAVAILABLE' | 'NODE_UNAVAILABLE' | 'LAUNCH_UNSUPPORTED' | 'LAUNCH_FAILED';
+      message: string;
+    };
+    actorId?: string;
+    at: string;
+  }): void {
+    const store = this.deps.workContextStore;
+    if (!store) return;
+    const existing = store.get(input.plan.route.workContextId);
+    if (!existing) return;
+    const artifactRefs = [
+      ...artifactRefsForWorkContext(
+        input.artifacts,
+        input.at,
+        input.actorId
+      ),
+      ...handoffStateArtifactRefsForWorkContext({
+        plan: input.plan,
+        run: input.run,
+        producedAt: input.at,
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+      }),
+    ];
+    const auditRefs = auditRefsForWorkContext(input.run, input.actorId);
+    store.update(input.plan.route.workContextId, {
+      artifacts: dedupeById([...existing.artifacts, ...artifactRefs]),
+      auditRefs: dedupeById([...existing.auditRefs, ...auditRefs]),
+    });
+    const lifecycleEvent: WorkContextLifecycleEventInput = {
+      type: 'handoff.closed',
+      occurredAt: input.at,
+      correlationId: input.run.id,
+      artifacts: artifactRefs,
+      summary: `Destination session launch failed for cold handoff ${input.run.id}: ${input.launch.code}; retry launch is available without rerunning transfer. Source state: ${(input.run.sourceDispositions ?? [input.run.sourceDisposition]).join(', ')}`,
+    };
+    if (input.actorId) lifecycleEvent.actorId = input.actorId;
+    store.recordLifecycleEvent(input.plan.route.workContextId, lifecycleEvent);
+  }
+
+  private recordWorkContextLaunch(input: {
+    plan: HandoffPlan;
+    run: HandoffRun;
+    session: SessionSummary;
+    artifacts: HandoffArtifactSummary[];
+    actorId?: string;
+    at: string;
+  }): void {
+    const store = this.deps.workContextStore;
+    if (!store) return;
+    const existing = store.get(input.plan.route.workContextId);
+    if (!existing) return;
+    const artifactRefs = [
+      ...artifactRefsForWorkContext(
+        input.artifacts,
+        input.at,
+        input.actorId
+      ),
+      ...handoffStateArtifactRefsForWorkContext({
+        plan: input.plan,
+        run: input.run,
+        producedAt: input.at,
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+      }),
+    ];
+    const auditRefs = auditRefsForWorkContext(input.run, input.actorId);
+    store.update(input.plan.route.workContextId, {
+      artifacts: dedupeById([...existing.artifacts, ...artifactRefs]),
+      auditRefs: dedupeById([...existing.auditRefs, ...auditRefs]),
+    });
+    store.associateSession(input.plan.route.workContextId, {
+      session: input.session,
+      relationship: 'handoff-destination',
+    });
+    const lifecycleEvent: WorkContextLifecycleEventInput = {
+      type: 'session.started',
+      occurredAt: input.at,
+      correlationId: input.run.id,
+      artifacts: artifactRefs,
+      summary: `Started destination session ${input.session.nodeId ?? input.plan.route.destinationNodeId}/${input.session.id} for cold handoff ${input.run.id}; source state: ${(input.run.sourceDispositions ?? [input.run.sourceDisposition]).join(', ')}`,
+    };
+    if (input.actorId) lifecycleEvent.actorId = input.actorId;
+    store.recordLifecycleEvent(input.plan.route.workContextId, lifecycleEvent);
   }
 
   getStatus(runId: string): HandoffRunStatus | null {
@@ -590,7 +1130,7 @@ export class HandoffService {
     return this.getStatus(runId);
   }
 
-  resume(runId: string): { run: HandoffRun; resume: { summary: string; artifactRefs: string[]; rawTranscriptAvailable: false } } | null {
+  resume(runId: string): { run: HandoffRun; resume: { summary: string; artifactRefs: string[]; rawTranscriptAvailable: false; retryLaunchAvailable: boolean } } | null {
     const stored = this.runs.get(runId);
     if (!stored) return null;
     return {
@@ -599,8 +1139,62 @@ export class HandoffService {
         summary: `Resume cold handoff ${runId} from state ${stored.run.state}; use artifact refs only, never raw transcript/provider auth.`,
         artifactRefs: stored.artifacts.map((artifact) => artifact.id),
         rawTranscriptAvailable: false,
+        retryLaunchAvailable:
+          stored.run.state === 'failed' && stored.run.reasonCode === 'FAILED_LAUNCH',
       },
     };
+  }
+
+  async retryLaunch(runId: string, actorId?: string): Promise<
+    | { ok: true; run: HandoffRun; artifacts: HandoffArtifactSummary[] }
+    | { ok: false; error: ReturnType<typeof apiError>; run?: HandoffRun }
+  > {
+    const stored = this.runs.get(runId);
+    if (!stored) {
+      return {
+        ok: false,
+        error: apiError('HANDOFF_RUN_NOT_FOUND', 'handoff run was not found', 404, { runId }),
+      };
+    }
+    if (!stored.run.planId) {
+      return {
+        ok: false,
+        error: apiError('INVALID_PLAN_ID', 'handoff run has no plan id for launch retry', 404, { runId }),
+        run: sanitizeRun(stored.run),
+      };
+    }
+    const storedPlan = this.plans.get(stored.run.planId);
+    if (!storedPlan) {
+      return {
+        ok: false,
+        error: apiError('INVALID_PLAN_ID', 'handoff plan was not found for launch retry', 404, { runId, planId: stored.run.planId }),
+        run: sanitizeRun(stored.run),
+      };
+    }
+    if (!(stored.run.state === 'failed' && stored.run.reasonCode === 'FAILED_LAUNCH')) {
+      return {
+        ok: false,
+        error: apiError('INVALID_RUN_STATE', 'handoff launch retry is available only after a launch failure', 409, { runId, state: stored.run.state, reasonCode: stored.run.reasonCode }),
+        run: sanitizeRun(stored.run),
+      };
+    }
+    const retryRun = rewindLaunchAttempt(stored.run);
+    const launched = await this.launchAppliedRun({
+      plan: storedPlan.plan,
+      request: storedPlan.request,
+      run: retryRun,
+      artifacts: stored.artifacts,
+      ...(actorId ? { actorId } : {}),
+    });
+    this.runs.set(launched.run.id, {
+      run: sanitizeRun(launched.run),
+      auditEvents: [...stored.auditEvents, ...launched.auditEvents],
+      artifacts: launched.artifacts,
+    });
+    if (launched.ok) {
+      return { ok: true, run: sanitizeRun(launched.run), artifacts: launched.artifacts };
+    }
+    return { ok: false, error: launched.error, run: sanitizeRun(launched.run) };
   }
 
   readArtifact(ref: string): HandoffArtifactSummary | null {
@@ -628,6 +1222,12 @@ export class HandoffService {
     return this.plans.get(planId)?.plan ?? null;
   }
 
+  getPlanForRun(runId: string): HandoffPlan | null {
+    const stored = this.runs.get(runId);
+    if (!stored?.run.planId) return null;
+    return this.getPlan(stored.run.planId);
+  }
+
   private createFailedRun(
     plan: HandoffPlan,
     conflicts: HandoffConflict[],
@@ -643,6 +1243,7 @@ export class HandoffService {
       planId: plan.id,
       state: 'failed',
       sourceDisposition: 'handoff-failed',
+      sourceDispositions: mergeSourceDispositions([plan.source.disposition], ['handoff-failed']),
       reasonCode,
       conflicts,
       transitions: [
@@ -723,6 +1324,19 @@ function createRouteCapabilities(plan: HandoffPlan | null): readonly string[] {
   return ['rpc:fs:read', 'rpc:fs:write', sessionCreateCapability, 'pty:exec:arbitrary'];
 }
 
+function launchRouteCapabilities(plan: HandoffPlan | null): readonly string[] {
+  if (!plan) return [SESSION_READ_CAPABILITY];
+  const runtimeCapabilities = plan.launchPreview.runtime.requiredCapabilities.length > 0
+    ? plan.launchPreview.runtime.requiredCapabilities
+    : [
+        plan.launchPreview.runtime.kind === 'terminal'
+          ? 'session:create:terminal'
+          : 'session:create:agent',
+        'pty:exec:arbitrary',
+      ];
+  return Array.from(new Set([SESSION_READ_CAPABILITY, ...runtimeCapabilities]));
+}
+
 function planFromCreateBody(body: Record<string, unknown>, service: HandoffService): HandoffPlan | null {
   const inlinePlan = body['plan'];
   if (isHandoffPlan(inlinePlan)) return inlinePlan;
@@ -737,6 +1351,9 @@ export function createHandoffRouter(input: {
   getCapabilities?: HandoffCapabilityProvider;
   workContextStore?: WorkContextStore;
   getSession?: (nodeId: string, sessionId: string) => unknown | undefined;
+  launchDestinationSession?: (
+    input: HandoffDestinationLaunchInput
+  ) => Promise<HandoffDestinationLaunchResult> | HandoffDestinationLaunchResult;
 } = {}): Router {
   const router = Router();
   const auth = input.requireAuth ?? ((_req, _res, next) => next());
@@ -746,6 +1363,7 @@ export function createHandoffRouter(input: {
     new HandoffService({
       ...(input.workContextStore ? { workContextStore: input.workContextStore } : {}),
       ...(input.getSession ? { getSession: input.getSession } : {}),
+      ...(input.launchDestinationSession ? { launchDestinationSession: input.launchDestinationSession } : {}),
     });
 
   router.post('/plan', auth, async (req, res) => {
@@ -834,6 +1452,32 @@ export function createHandoffRouter(input: {
       return;
     }
     res.json(resume);
+  });
+
+  router.post('/:runId/launch', auth, async (req, res) => {
+    const runId = req.params['runId'] ?? '';
+    const denied = requireCapabilities(
+      req,
+      launchRouteCapabilities(service.getPlanForRun(runId)),
+      capabilityContext
+    );
+    if (denied) {
+      res.status(denied.status).json(denied.body);
+      return;
+    }
+    const body = bodyRecord(req);
+    const result = await service.retryLaunch(
+      runId,
+      typeof body['actorId'] === 'string' ? body['actorId'] : undefined
+    );
+    if (!result.ok) {
+      res.status(result.error.status).json({
+        ...result.error.body,
+        ...(result.run ? { run: result.run } : {}),
+      });
+      return;
+    }
+    res.json({ run: result.run, artifacts: result.artifacts });
   });
 
   router.get('/artifacts/:ref', auth, (req, res) => {
