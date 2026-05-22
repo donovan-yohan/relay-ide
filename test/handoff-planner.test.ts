@@ -302,12 +302,75 @@ describe('planHandoffSnapshot — dirty tracked diff', () => {
 
     const diffCall = calls.find((call) => call.args[0] === 'diff');
     expect(diffCall?.file).toBe('git');
-    expect(diffCall?.args).toEqual(['diff', 'HEAD']);
+    expect(diffCall?.args).toEqual([
+      'diff',
+      'HEAD',
+      '--',
+      'src/server/git.ts',
+    ]);
     expect(diffCall?.options).toMatchObject({
       cwd: REPO_PATH,
       timeout: 10000,
       maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
     });
+  });
+
+  it('excludes staged symlink patch bytes from mixed tracked byte accounting', async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), 'relay-handoff-mixed-symlink-'));
+    symlinkSync('/etc/passwd', join(repoPath, 'linked-outside'));
+    const calls: ExecCall[] = [];
+    const safeDiff =
+      'diff --git a/src/server/git.ts b/src/server/git.ts\n+safe line\n';
+    const fullDiff =
+      safeDiff + 'diff --git a/linked-outside b/linked-outside\n+unsafe symlink\n';
+    const exec: ExecFileAsyncLike = async (file, args, options) => {
+      calls.push({ file, args, options });
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+        return { stdout: 'deadbeefdeadbeef\n', stderr: '' };
+      }
+      if (args[0] === 'rev-parse') return { stdout: 'feat/123\n', stderr: '' };
+      if (args[0] === 'status') {
+        return {
+          stdout:
+            statusLine(' M src/server/git.ts') + statusLine('A  linked-outside'),
+          stderr: '',
+        };
+      }
+      if (args[0] === 'diff') {
+        return {
+          stdout: args.includes('--') ? safeDiff : fullDiff,
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git command: ${args.join(' ')}`);
+    };
+
+    const result = await planHandoffSnapshot({ repoPath, nodeId: NODE_ID, exec });
+
+    const diffCall = calls.find((call) => call.args[0] === 'diff');
+    expect(diffCall?.args).toEqual([
+      'diff',
+      'HEAD',
+      '--',
+      'src/server/git.ts',
+    ]);
+    expect(result.byteCount).toBe(Buffer.byteLength(safeDiff));
+    expect(result.byteCount).toBeLessThan(Buffer.byteLength(fullDiff));
+    expect(result.fileCount).toBe(1);
+    expect(result.transferMode).toBe('tracked-patch');
+    expect(result.includedGroups).toContain('tracked-patch');
+    expect(result.includedGroups).not.toContain('staged-metadata');
+    expect(result.excludedPaths).toContainEqual({
+      path: 'linked-outside',
+      conflictCode: 'UNSAFE_PATH_MAPPING',
+      reason: 'unsafe-path',
+    });
+    expect(result.conflicts).toContainEqual(
+      expect.objectContaining({
+        code: 'UNSAFE_PATH_MAPPING',
+        message: expect.stringContaining('linked-outside'),
+      })
+    );
   });
 
   it('counts tracked diff bytes instead of UTF-16 code units', async () => {
@@ -608,11 +671,11 @@ describe('planHandoffSnapshot — secret exclusion patterns', () => {
     });
   }
 
-  it('adds a SECRET_EXCLUDED conflict when a tracked file matches secret pattern', async () => {
+  it('adds a single SECRET_EXCLUDED conflict when a tracked secret has staged and unstaged changes', async () => {
     const exec = makeExec({
       revparseHead: 'abc\n',
       revparseAbbrev: 'main\n',
-      status: statusLine('M  .env'),
+      status: statusLine('MM .env'),
       diff: '-OLD=val\n+NEW=val\n',
     });
 
@@ -622,11 +685,11 @@ describe('planHandoffSnapshot — secret exclusion patterns', () => {
       exec,
     });
 
-    const secretConflict = result.conflicts.find(
+    const secretConflicts = result.conflicts.filter(
       (c) => c.code === 'SECRET_EXCLUDED'
     );
-    expect(secretConflict).toBeDefined();
-    expect(secretConflict?.message).toContain('.env');
+    expect(secretConflicts).toHaveLength(1);
+    expect(secretConflicts[0]?.message).toContain('.env');
   });
 });
 

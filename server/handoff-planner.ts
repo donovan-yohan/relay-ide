@@ -88,7 +88,7 @@ export interface HandoffPlannerDryRun {
   excludedGroups: HandoffSnapshotGroup[];
   /** Staged + unstaged tracked files plus approved untracked candidates. */
   fileCount: number;
-  /** Approximate patch byte count (git diff HEAD stdout size). */
+  /** Approximate transferable byte count for included tracked patches and approved files. */
   byteCount: number;
   transferMode: HandoffTransferMode;
   conflicts: HandoffConflict[];
@@ -503,8 +503,13 @@ export async function planHandoffSnapshot(
 
   // Warn when tracked files match secret patterns (they'll appear in the patch).
   const allTracked = [...stagedFiles, ...unstagedFiles];
+  const emittedSecretTrackedConflicts = new Set<string>();
   for (const f of allTracked) {
-    if (classifyPath(f.path)?.conflictCode === 'SECRET_EXCLUDED') {
+    if (
+      classifyPath(f.path)?.conflictCode === 'SECRET_EXCLUDED' &&
+      !emittedSecretTrackedConflicts.has(f.path)
+    ) {
+      emittedSecretTrackedConflicts.add(f.path);
       conflicts.push({
         code: 'SECRET_EXCLUDED',
         message: `tracked file matches secret exclusion pattern and will appear in patch: ${f.path}`,
@@ -513,15 +518,22 @@ export async function planHandoffSnapshot(
     }
   }
 
-  // Estimate size as patch bytes plus known safe untracked file bytes.
+  // Estimate size as included tracked patch bytes plus known safe untracked file bytes.
+  const safeTrackedPaths = [
+    ...new Set([...stagedFiles, ...unstagedFiles].map((file) => file.path)),
+  ];
   let byteCount = untrackedByteCount;
-  if (stagedFiles.length > 0 || unstagedFiles.length > 0) {
+  if (safeTrackedPaths.length > 0) {
     try {
-      const { stdout } = await run('git', ['diff', 'HEAD'], {
-        cwd: repoPath,
-        timeout: 10000,
-        maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
-      });
+      const { stdout } = await run(
+        'git',
+        ['diff', 'HEAD', '--', ...safeTrackedPaths],
+        {
+          cwd: repoPath,
+          timeout: 10000,
+          maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
+        }
+      );
       byteCount += Buffer.byteLength(stdout);
     } catch {
       // best effort
