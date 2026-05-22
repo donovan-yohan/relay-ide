@@ -102,3 +102,17 @@ export {
   type HandoffSourceRef,
   type HandoffTransferMode,
 } from './handoff.js';
+
+export {
+  detectHandoffDestinationConflicts,
+  proposeHandoffDestination,
+  resolveHandoffPathMappings,
+  validateHandoffDestinationRoot,
+  validateHandoffMirrorRoot,
+  type HandoffDestinationAction,
+  type HandoffDestinationConflictInput,
+  type HandoffDestinationProposalInput,
+  type HandoffMirrorRoot,
+  type HandoffPathMappingInput,
+  type HandoffPathMappingResult,
+} from './handoff-destination.js';
