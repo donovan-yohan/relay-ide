@@ -8,6 +8,7 @@ export interface SessionStatusBarProps {
   sessionId: string | null;
   currentActivity?: CurrentActivity | null;
   framework?: string | null | undefined;
+  onHandoffClick?: () => void;
 }
 
 const BAR_WIDTH = 10;
@@ -92,6 +93,7 @@ export function SessionStatusBar({
   sessionId,
   currentActivity = null,
   framework,
+  onHandoffClick,
 }: SessionStatusBarProps) {
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
   const { telemetry, accountTelemetry, frameworkLabel } =
@@ -139,6 +141,16 @@ export function SessionStatusBar({
       </div>
 
       <div className="status-right">
+        {onHandoffClick && (
+          <button
+            className="status-handoff"
+            type="button"
+            title="open fixture dry-run handoff plan"
+            onClick={onHandoffClick}
+          >
+            handoff
+          </button>
+        )}
         <span
           className="status-rate-limits status-segment"
           title={
