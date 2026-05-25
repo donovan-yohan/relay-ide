@@ -215,6 +215,29 @@ describe('CLI gateway contract', () => {
     });
   });
 
+  it('keeps supervisor.snapshot success data aligned with the public contract schema', () => {
+    const payload = {
+      snapshot: { command: 'supervisor.snapshot' },
+      audit: { command: 'supervisor.snapshot' },
+    };
+    const envelope = gatewayOk('supervisor.snapshot', payload);
+
+    expect(envelope).toMatchObject({ ok: true, command: 'supervisor.snapshot' });
+    expect(envelope.data).toEqual(payload);
+    expect(Object.keys(envelope.data).sort()).toEqual(['audit', 'snapshot']);
+    expect(hasOwn(envelope.data, 'ok')).toBe(false);
+
+    const outputSchema = commandSpec('supervisor.snapshot').outputSchema;
+    expect(objectMatchesSchemaKeywords(outputSchema, envelope as unknown as Record<string, unknown>)).toBe(
+      true
+    );
+
+    const dataSchema = outputSchema.properties?.data;
+    if (!dataSchema) throw new Error('supervisor.snapshot output schema must define data');
+    expect(objectMatchesSchemaKeywords(dataSchema, envelope.data)).toBe(true);
+    expect(objectMatchesSchemaKeywords(dataSchema, { ok: true, ...payload })).toBe(false);
+  });
+
   it('fails closed in the create schema and does not advertise unimplemented agent peer round-trips', () => {
     const create = commandSpec('sessions.create');
     expect(create.inputSchema).toMatchObject({

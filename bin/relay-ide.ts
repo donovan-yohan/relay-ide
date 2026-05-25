@@ -1649,7 +1649,10 @@ async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
       1
     );
   }
-  printGatewayEnvelope(gatewayOk('supervisor.snapshot', result), 0);
+  printGatewayEnvelope(
+    gatewayOk('supervisor.snapshot', { snapshot: result.snapshot, audit: result.audit }),
+    0
+  );
 }
 
 async function runGatewayArtifacts(gatewayArgs: string[]): Promise<never> {
