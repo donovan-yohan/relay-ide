@@ -13,6 +13,8 @@ import { sidebarActions } from '../frontend/src/lib/actions/definitions/sidebar.
 import { dashboardActions } from '../frontend/src/lib/actions/definitions/dashboard.js';
 import { terminalActions } from '../frontend/src/lib/actions/definitions/terminal.js';
 import { navigationActions } from '../frontend/src/lib/actions/definitions/navigation.js';
+import { cliGatewayCommandActions } from '../frontend/src/lib/actions/definitions/cli-gateway.js';
+import { stableCommandNames } from '../shared/cli-gateway-contract.js';
 
 // Full allowlist: 60 palettable action IDs (15 Phase 2 + 44 Phase 3 + 1 from #630)
 const ACTION_ALLOWLIST = [
@@ -138,6 +140,26 @@ describe('Action Coverage', () => {
       expect(meta.label).toBeTruthy();
       expect(meta.category).toBeTruthy();
       expect(meta.label).toBe(meta.label.toLowerCase());
+    }
+  });
+
+  it('projects stable CLI gateway commands into disabled Command Center metadata', () => {
+    expect(cliGatewayCommandActions.map((action) => action.relayCommand.name)).toEqual(
+      stableCommandNames()
+    );
+    expect(cliGatewayCommandActions.map((action) => action.id)).toEqual(
+      stableCommandNames().map((name) => `gateway.${name}`)
+    );
+
+    for (const action of cliGatewayCommandActions) {
+      expect(action.category).toBe('gateway');
+      expect(action.label).toBe(action.label.toLowerCase());
+      expect(action.description).toBe(action.relayCommand.summary);
+      expect(action.aliases).toEqual(
+        expect.arrayContaining([action.relayCommand.name, action.relayCommand.sideEffect])
+      );
+      expect(action.when?.({ view: 'workspace' })).toBe(false);
+      expect(action.disabledReason?.({ view: 'workspace' })).toContain('relay-ide v1');
     }
   });
 

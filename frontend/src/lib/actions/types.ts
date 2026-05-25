@@ -8,7 +8,8 @@ export type ActionCategory =
   | 'navigation'
   | 'dashboard'
   | 'org'
-  | 'ticket';
+  | 'ticket'
+  | 'gateway';
 
 export type ActionContext = {
   view: 'workspace' | 'session' | 'dashboard' | 'settings' | 'org';
