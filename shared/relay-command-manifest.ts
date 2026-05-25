@@ -9,6 +9,24 @@ import type { RelayCapabilityBit } from './security-policy.js';
 export type RelayCommandSurface = 'web' | 'cli' | 'agent';
 export type RelayCommandSideEffect = 'read' | 'write' | 'destructive' | 'stream';
 export type RelayCommandScopeKind = 'node' | 'repo' | 'worktree' | 'work-context' | 'session';
+export type RelayCommandControlRequirement =
+  | 'fresh-control-state'
+  | 'latest-intervention-ack'
+  | 'confirmation-challenge';
+export type RelayCommandAuditExpectation =
+  | 'schema-only'
+  | 'bounded-redacted'
+  | 'hashes-only'
+  | 'action-summary'
+  | 'stream-redacted';
+
+export interface RelayCommandAuditRedaction {
+  expectation: RelayCommandAuditExpectation;
+  storesRawPrompt: false;
+  storesRawTranscript: false;
+  storesRawPtyInput: false;
+  storesRawProviderState: false;
+}
 
 export interface RelayCommandHandler {
   /** Public CLI argv projection for the stable `relay-ide v1 ... --json` gateway. */
@@ -33,6 +51,8 @@ export interface RelayCommandDefinition {
   capabilityHints: readonly RelayCapabilityBit[];
   sideEffect: RelayCommandSideEffect;
   requiresConfirmation: boolean;
+  controlRequirements: readonly RelayCommandControlRequirement[];
+  auditRedaction: RelayCommandAuditRedaction;
   scopeKinds: readonly RelayCommandScopeKind[];
   handler: RelayCommandHandler;
   stable: boolean;
@@ -74,6 +94,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'handoffs.resume': 'handoff resume bundle',
   'handoffs.launch': 'launch handoff destination',
   'artifacts.read': 'read handoff artifact',
+  'supervisor.snapshot': 'supervisor snapshot',
   'events.subscribe': 'subscribe gateway events',
 };
 
@@ -100,6 +121,7 @@ function scopeKindsForGatewayCommand(name: RelayCliGatewayCommand): readonly Rel
   if (name.startsWith('work-contexts.')) return ['work-context'];
   if (name.startsWith('handoffs.')) return ['repo', 'worktree', 'work-context', 'session'];
   if (name.startsWith('artifacts.')) return ['work-context'];
+  if (name.startsWith('supervisor.')) return ['session'];
   if (name.startsWith('events.')) return ['node', 'session'];
   if (name.startsWith('sessions.')) return ['session'];
   return [];
@@ -113,6 +135,42 @@ function requiresConfirmationForGatewayCommand(spec: RelayCliGatewayCommandSpec)
     spec.capabilityHints.includes('pty:exec:arbitrary') ||
     spec.capabilityHints.includes('rpc:fs:write')
   );
+}
+
+function controlRequirementsForGatewayCommand(
+  spec: RelayCliGatewayCommandSpec
+): readonly RelayCommandControlRequirement[] {
+  const requirements: RelayCommandControlRequirement[] = [];
+  if (requiresConfirmationForGatewayCommand(spec)) requirements.push('confirmation-challenge');
+  if (spec.name === 'supervisor.snapshot') {
+    requirements.push('fresh-control-state', 'latest-intervention-ack');
+  }
+  if (spec.name === 'sessions.handBack') requirements.push('latest-intervention-ack');
+  return requirements;
+}
+
+function auditExpectationForGatewayCommand(
+  spec: RelayCliGatewayCommandSpec
+): RelayCommandAuditExpectation {
+  if (spec.name === 'contract.list' || spec.name === 'contract.schema' || spec.name === 'nodes.manifest') {
+    return 'schema-only';
+  }
+  if (spec.name === 'sessions.stream' || spec.name === 'events.subscribe') return 'stream-redacted';
+  if (spec.name === 'supervisor.snapshot') return 'hashes-only';
+  if (sideEffectForGatewayCommand(spec) === 'read') return 'bounded-redacted';
+  return 'action-summary';
+}
+
+function auditRedactionForGatewayCommand(
+  spec: RelayCliGatewayCommandSpec
+): RelayCommandAuditRedaction {
+  return {
+    expectation: auditExpectationForGatewayCommand(spec),
+    storesRawPrompt: false,
+    storesRawTranscript: false,
+    storesRawPtyInput: false,
+    storesRawProviderState: false,
+  };
 }
 
 export function relayCommandDefinitionFromCliGatewaySpec(
@@ -130,6 +188,8 @@ export function relayCommandDefinitionFromCliGatewaySpec(
     capabilityHints: spec.capabilityHints as readonly RelayCapabilityBit[],
     sideEffect: sideEffectForGatewayCommand(spec),
     requiresConfirmation: requiresConfirmationForGatewayCommand(spec),
+    controlRequirements: controlRequirementsForGatewayCommand(spec),
+    auditRedaction: auditRedactionForGatewayCommand(spec),
     scopeKinds: scopeKindsForGatewayCommand(spec.name),
     handler: { cli: spec.cli },
     stable: spec.stable,

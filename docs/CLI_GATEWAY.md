@@ -18,6 +18,7 @@ relay-ide v1 files list --session-id <session-id> --path <path> --json
 relay-ide v1 files stat --session-id <session-id> --path <path> --json
 relay-ide v1 files read --session-id <session-id> --path <path> --max-bytes 32768 --max-lines 2000 --json
 relay-ide v1 files write --session-id <session-id> --path <path> --mode <create|overwrite|append> --file <local-path|-> --json
+relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
 relay-ide v1 events subscribe --topic <sessions|nodes|audit> --json
 ```
 
@@ -85,13 +86,13 @@ Current command surfaces are intentionally separate:
 | Stable CLI gateway commands | Versioned `relay-ide v1 ... --json` commands in `RELAY_CLI_GATEWAY_CONTRACT`. | Public CLI JSON gateway; this is the adapter-facing contract. |
 | Agent-callable commands | Gateway commands safe to expose to Claude/Codex/Hermes/MCP/ACP-style adapters through generated schemas. | Generated from the shared command manifest and executed through `relay-ide v1 ... --json`, never private node-link/browser routes. |
 
-The Command Center may search and describe stable gateway commands using the shared manifest before browser execution is wired. Until a `handler.uiAction` or explicit UI execution bridge exists, these entries must stay disabled/degraded in the palette and point operators to the stable CLI argv. Do not mark every internal UI button as agent-callable, and do not add Claude/Codex/Hermes-specific schemas by hand; add or change the Relay-owned command definition first.
+The Command Center may search and describe stable gateway commands using the shared manifest before browser execution is wired. The manifest carries the stable command id, CLI projection, side-effect class, capability hints, confirmation/control requirements, scope kinds, and audit redaction expectations. Until a `handler.uiAction` or explicit UI execution bridge exists, these entries must stay disabled/degraded in the palette and point operators to the stable CLI argv. Do not mark every internal UI button as agent-callable, and do not add Claude/Codex/Hermes-specific schemas by hand; add or change the Relay-owned command definition first.
 
 ## Auth and hub access
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.
 
-Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`) use the same local server token path as existing CLI session commands:
+Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, and `events.*`) use the same local server token path as existing CLI session commands:
 
 - `RELAY_IDE_BROWSER_TOKEN` supplies the bearer token.
 - `--port` or `RELAY_IDE_PORT` selects the local hub port; otherwise Relay uses the default port.
@@ -216,6 +217,18 @@ relay-ide v1 sessions input --id remote-session-1 --data 'printf relay-ok\\n\n' 
 Provider-native session state adapters are intentionally internal in this slice. `shared/cli-gateway-contract.ts` does not expose stable v1 `providers.*` or `native-sessions.*` commands yet. External adapters must continue to treat missing provider-state verbs as unsupported rather than calling private REST routes or reading provider stores themselves.
 
 When promoted to v1, the surface must preserve the same boundary as `AgentHarnessStateAdapter`: detection/list/import/read-state are read-only, snapshots are redacted and bounded, and open/resume returns copyable argv data without executing the provider CLI.
+
+## Supervisor snapshot boundary
+
+`relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json` is the first stable typed supervisor path. It is read-only and command-mediated: callers get a bounded `supervisor.snapshot` envelope containing session identity, control-state summary, provider capability boundary, optional redacted intervention summaries, partial-failure metadata, and an audit summary. It requires `session:read` plus `tab:intervention:read` because a safe supervisor read must include whether human intervention metadata exists; missing either bit returns `FORBIDDEN`.
+
+The optional `expectedControlMode` and `latestSeenInterventionEventId` inputs are preflight guards for future typed actions. If the target control state is stale/mismatched, Relay returns `CONTROL_STATE_STALE`. If a human intervention exists that the caller has not observed, Relay returns `INTERVENTION_ACK_REQUIRED`. Both are typed denials, not best-effort warnings.
+
+This is deliberately distinct from PTY input and terminal substrates:
+
+- `supervisor.snapshot` never writes to the session, never submits text, never accepts provider permission prompts, and never stores raw prompts, raw transcripts, raw PTY input, or raw provider state in audit.
+- `sessions input` remains the raw PTY input path for narrow smoke/debug use. It is not a typed supervisor action and must not be used as the blessed agent-to-agent command API.
+- rmux/tmux panes may be adapter/runtime substrates, but raw rmux/tmux command execution is not stable Relay API. Add or extend a Relay-owned command first, then let adapters map it to a substrate behind the capability/control/audit checks.
 
 ## Read-only file RPC commands
 

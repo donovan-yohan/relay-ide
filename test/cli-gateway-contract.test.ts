@@ -91,6 +91,7 @@ describe('CLI gateway contract', () => {
       'handoffs.resume',
       'handoffs.launch',
       'artifacts.read',
+      'supervisor.snapshot',
       'events.subscribe',
     ]);
 
@@ -142,20 +143,45 @@ describe('CLI gateway contract', () => {
       expect(command.handler.cli).toEqual(spec.cli);
       expect(['read', 'write', 'destructive', 'stream']).toContain(command.sideEffect);
       expect(Array.isArray(command.scopeKinds)).toBe(true);
+      expect(Array.isArray(command.controlRequirements)).toBe(true);
+      expect([
+        'schema-only',
+        'bounded-redacted',
+        'hashes-only',
+        'action-summary',
+        'stream-redacted',
+      ]).toContain(command.auditRedaction.expectation);
+      expect(command.auditRedaction).toMatchObject({
+        storesRawPrompt: false,
+        storesRawTranscript: false,
+        storesRawPtyInput: false,
+        storesRawProviderState: false,
+      });
     }
 
     expect(relayCommandDefinition('files.write')).toMatchObject({
       sideEffect: 'write',
       requiresConfirmation: true,
+      controlRequirements: ['confirmation-challenge'],
+      auditRedaction: { expectation: 'action-summary' },
       scopeKinds: ['session'],
     });
     expect(relayCommandDefinition('sessions.stream')).toMatchObject({
       sideEffect: 'stream',
       requiresConfirmation: false,
+      auditRedaction: { expectation: 'stream-redacted' },
     });
     expect(relayCommandDefinition('handoffs.create')).toMatchObject({
       sideEffect: 'destructive',
       requiresConfirmation: true,
+      controlRequirements: ['confirmation-challenge'],
+    });
+    expect(relayCommandDefinition('supervisor.snapshot')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      controlRequirements: ['fresh-control-state', 'latest-intervention-ack'],
+      auditRedaction: { expectation: 'hashes-only' },
+      scopeKinds: ['session'],
     });
   });
 
@@ -329,6 +355,7 @@ describe('CLI gateway contract', () => {
       'handoffs.resume',
       'handoffs.launch',
       'artifacts.read',
+      'supervisor.snapshot',
       'events.subscribe',
     ] as const;
 
@@ -540,6 +567,23 @@ describe('CLI gateway contract', () => {
     expect(commandSpec('handoffs.status').summary).toContain('bounded/redacted');
     expect(commandSpec('handoffs.resume').summary).toContain('without raw transcript');
     expect(commandSpec('artifacts.read').summary).toContain('raw logs/secrets/transcripts are unavailable');
+
+    const supervisor = commandSpec('supervisor.snapshot');
+    expect(supervisor).toMatchObject({
+      capabilityHints: ['session:read', 'tab:intervention:read'],
+      transport: 'hub-http',
+    });
+    expect(supervisor.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        expectedControlMode: { enum: ['agent-driven', 'human-driven', 'co-driven'] },
+      },
+    });
+    expect(supervisor.errorCodes).toEqual(
+      expect.arrayContaining(['FORBIDDEN', 'CONTROL_STATE_STALE', 'INTERVENTION_ACK_REQUIRED'])
+    );
+    expect(supervisor.summary).toContain('never sends raw PTY input');
   });
 
   it('encodes sessions.input source exclusivity for schema-generated adapters', () => {
