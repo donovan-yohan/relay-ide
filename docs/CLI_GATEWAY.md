@@ -211,6 +211,12 @@ relay-ide v1 sessions input --id remote-session-1 --data 'printf relay-ok\\n\n' 
 
 `stream` and `input` detach only their CLI/WebSocket handle. They do not kill the underlying Relay session or tmux process. Missing sessions, expired envelopes, rejected policy, offline nodes, and closed attach sockets surface as typed gateway error envelopes; adapter authors must not fall back to private `/hub/node-link` messages.
 
+## Provider-native state commands
+
+Provider-native session state adapters are intentionally internal in this slice. `shared/cli-gateway-contract.ts` does not expose stable v1 `providers.*` or `native-sessions.*` commands yet. External adapters must continue to treat missing provider-state verbs as unsupported rather than calling private REST routes or reading provider stores themselves.
+
+When promoted to v1, the surface must preserve the same boundary as `AgentHarnessStateAdapter`: detection/list/import/read-state are read-only, snapshots are redacted and bounded, and open/resume returns copyable argv data without executing the provider CLI.
+
 ## Read-only file RPC commands
 
 The `files.*` commands route through the existing scoped #505 File RPC surface:

@@ -119,9 +119,31 @@ Approval:
 6. Emit approval item update and live state back to `working`.
 7. Reject all pending resolvers on disconnect/interrupt.
 
-## 8. Testing pattern
+## 8. Provider-native session state adapters
 
-Each provider needs golden trace tests under `test/server/protocol-adapters/<provider>-adapter.test.ts`.
+Provider-native state adapters are separate from live `ProtocolAdapterV2` runtimes. They read provider-owned stores to produce a bounded Relay read model, but they do not control the native CLI and they must not write provider state.
+
+The server-side contract is `AgentHarnessStateAdapter` (`server/harness-state-adapter.ts`) with:
+
+- `detectInstall()` — reports installed/unavailable/unsupported and safe diagnostics.
+- `listNativeSessions(scope?)` — returns provider, native id, source path, cwd/repo/work-context hints when present, timestamps, and redacted preview metadata.
+- `readProviderState(ref)` — returns a hash/size/event-type snapshot with `rawPayloadStored: false`; raw JSONL/database rows are not persisted as Relay artifacts.
+- `importSession(ref)` — normalizes provider state into an `AgentSessionV2` read model plus `AgentPatchV2` snapshot patches. Imports include a `providerExtension` audit/divider marker naming the source provider, source kind, import time, hash, and `readOnly: true`.
+- `resumeCommand(ref)` — returns copyable argv data only. It never executes the command.
+- `capabilities` — explicitly separates transcript import, provider-state read, native resume command generation, live event streaming, approval response, and tool-call exposure.
+
+Read-only-first invariants:
+
+- Do not mutate `.claude`, `.codex`, `.hermes`, `.opencode`, or any other proprietary provider store in this slice.
+- Do not cross-provider migrate context; importing Claude state produces a Claude read model, not a Codex/Hermes/OpenCode session.
+- Redact previews, tool inputs, command metadata, approval payloads, and secret-looking strings before surfacing them through summaries/snapshots.
+- Treat native resume/open as explicit operator/agent intent. Adapter code may generate `['claude', '--resume', '<id>']`; it may not spawn it.
+
+The first implementation is `ClaudeJsonlStateAdapter`, which imports Claude JSONL fixtures and keeps live streaming/approval response disabled.
+
+## 9. Testing pattern
+
+Each provider needs golden trace tests under `test/server/protocol-adapters/<provider>-adapter.test.ts`. Provider-native state adapters use adjacent golden fixture tests under `test/server/provider-state/`.
 
 Minimum cases:
 
@@ -140,7 +162,7 @@ Minimum cases:
 
 Use a deterministic dependency seam for provider transport. Tests should feed native events directly without spawning real CLIs.
 
-## 9. Stacked PR checklist
+## 10. Stacked PR checklist
 
 For each provider:
 
@@ -152,6 +174,6 @@ For each provider:
 6. Run `npm run check`, targeted tests, and `npm run build`.
 7. Push and open a draft PR targeting the previous provider stack.
 
-## 10. Deletion policy
+## 11. Deletion policy
 
 When a provider is fully V2-native, delete replaced V1 code in the same provider stack. If a temporary bridge is used to keep the stack moving, the PR must explicitly label it as temporary and include the deletion target in its body.
