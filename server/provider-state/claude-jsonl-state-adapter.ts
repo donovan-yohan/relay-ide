@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, readdir, readFile, stat } from 'node:fs/promises';
+import { access, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
@@ -12,6 +12,7 @@ import type {
 import type {
   AgentHarnessStateCapabilities,
   NativeSessionImportResult,
+  NativeSessionImportTruncation,
   NativeSessionListScope,
   NativeSessionPreview,
   NativeSessionRef,
@@ -35,6 +36,7 @@ const MAX_LIST_FILES = 500;
 const MAX_SCAN_DEPTH = 6;
 const PREVIEW_LIMIT = 240;
 const TEXT_LIMIT = 32_000;
+const MAX_IMPORT_TRANSCRIPT_BYTES = 256_000;
 
 interface ParsedJsonlLine {
   lineNumber: number;
@@ -46,6 +48,11 @@ interface ClaudeJsonlFile {
   bytes: number;
   hashSha256: string;
   lines: ParsedJsonlLine[];
+}
+
+interface ImportedTurns {
+  turns: AgentTurnV2[];
+  truncation?: NativeSessionImportTruncation;
 }
 
 interface ClaudeAdapterOptions {
@@ -198,7 +205,15 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       },
     });
 
-    session.turns = buildTurns(file, sessionId, importedAt);
+    const importedTurns = buildTurns(file, sessionId, importedAt);
+    session.turns = importedTurns.turns;
+    if (importedTurns.truncation) {
+      session.config.providerOptions = {
+        ...session.config.providerOptions,
+        importTruncation: importedTurns.truncation,
+      };
+      annotateAuditMarker(session.turns, importedTurns.truncation);
+    }
 
     const patches: AgentPatchV2[] = [
       {
@@ -209,14 +224,16 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       },
     ];
 
-    return {
+    const result: NativeSessionImportResult = {
       provider: this.provider,
       nativeId: summary.nativeId,
       importedAt,
       sourcePath: file.path,
       session,
       patches,
+      ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
     };
+    return result;
   }
 
   resumeCommand(ref: NativeSessionRef): string[] {
@@ -228,7 +245,7 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       throw new Error(`Claude adapter cannot read provider '${ref.provider}'.`);
     }
     if (ref.sourcePath) {
-      return readClaudeJsonl(ref.sourcePath);
+      return readClaudeJsonl(await this.resolveSafeSourcePath(ref.sourcePath));
     }
 
     const sessions = await this.listNativeSessions(
@@ -238,7 +255,29 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
     if (!found) {
       throw new Error(`Claude native session '${ref.nativeId}' was not found.`);
     }
-    return readClaudeJsonl(found.sourcePath);
+    return readClaudeJsonl(await this.resolveSafeSourcePath(found.sourcePath));
+  }
+
+  private async resolveSafeSourcePath(sourcePath: string): Promise<string> {
+    const resolvedSourcePath = path.resolve(sourcePath);
+    if (path.extname(resolvedSourcePath) !== '.jsonl') {
+      throw new Error('Claude native session sourcePath must point to a .jsonl file.');
+    }
+
+    const [rootRealPath, sourceRealPath] = await Promise.all([
+      realpath(this.stateRoot),
+      realpath(resolvedSourcePath),
+    ]);
+    if (path.extname(sourceRealPath) !== '.jsonl') {
+      throw new Error('Claude native session sourcePath must resolve to a .jsonl file.');
+    }
+
+    const relative = path.relative(rootRealPath, sourceRealPath);
+    if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('Claude native session sourcePath must resolve under the configured state root.');
+    }
+
+    return sourceRealPath;
   }
 
   private nowIso(): string {
@@ -342,7 +381,7 @@ function buildTurns(
   file: ClaudeJsonlFile,
   sessionId: string,
   importedAt: string
-): AgentTurnV2[] {
+): ImportedTurns {
   const turns: AgentTurnV2[] = [
     {
       id: 'native-import-audit',
@@ -444,10 +483,56 @@ function buildTurns(
     turn.completedAt = turn.completedAt ?? turn.startedAt;
   }
 
+  const truncation = trimImportedTurns(turns);
+
   // sessionId is passed so future patch-based import helpers can keep stable
   // IDs without changing this reducer path. Keep the invariant alive, crab tax.
   void sessionId;
-  return turns;
+  return truncation ? { turns, truncation } : { turns };
+}
+
+function trimImportedTurns(turns: AgentTurnV2[]): NativeSessionImportTruncation | undefined {
+  let approximateTranscriptBytes = transcriptBytes(turns);
+  if (approximateTranscriptBytes <= MAX_IMPORT_TRANSCRIPT_BYTES) return undefined;
+
+  const originalTurns = turns.length;
+  let droppedTurns = 0;
+  let droppedItems = 0;
+
+  while (approximateTranscriptBytes > MAX_IMPORT_TRANSCRIPT_BYTES && turns.length > 1) {
+    const [removed] = turns.splice(1, 1);
+    if (!removed) break;
+    droppedTurns += 1;
+    droppedItems += removed.items.length;
+    approximateTranscriptBytes = transcriptBytes(turns);
+  }
+
+  return {
+    truncated: true,
+    strategy: 'fifo-oldest-non-audit',
+    maxTranscriptBytes: MAX_IMPORT_TRANSCRIPT_BYTES,
+    approximateTranscriptBytes,
+    originalTurns,
+    retainedTurns: turns.length,
+    droppedTurns,
+    droppedItems,
+  };
+}
+
+function annotateAuditMarker(
+  turns: AgentTurnV2[],
+  truncation: NativeSessionImportTruncation
+): void {
+  const marker = turns[0]?.items[0];
+  if (!marker || marker.type !== 'providerExtension') return;
+  marker.payload = {
+    ...marker.payload,
+    importTruncation: truncation,
+  };
+}
+
+function transcriptBytes(turns: AgentTurnV2[]): number {
+  return Buffer.byteLength(JSON.stringify(turns), 'utf8');
 }
 
 function appendAssistantBlocks(

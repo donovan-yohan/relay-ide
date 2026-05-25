@@ -109,6 +109,17 @@ export interface ProviderStateSnapshot {
   };
 }
 
+export interface NativeSessionImportTruncation {
+  truncated: true;
+  strategy: 'fifo-oldest-non-audit';
+  maxTranscriptBytes: number;
+  approximateTranscriptBytes: number;
+  originalTurns: number;
+  retainedTurns: number;
+  droppedTurns: number;
+  droppedItems: number;
+}
+
 export interface NativeSessionImportResult {
   provider: NativeSessionProvider;
   nativeId: string;
@@ -116,4 +127,5 @@ export interface NativeSessionImportResult {
   sourcePath: string;
   session: AgentSessionV2;
   patches: AgentPatchV2[];
+  importTruncation?: NativeSessionImportTruncation;
 }
