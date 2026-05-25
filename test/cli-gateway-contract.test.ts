@@ -217,8 +217,25 @@ describe('CLI gateway contract', () => {
 
   it('keeps supervisor.snapshot success data aligned with the public contract schema', () => {
     const payload = {
-      snapshot: { command: 'supervisor.snapshot' },
-      audit: { command: 'supervisor.snapshot' },
+      snapshot: {
+        command: 'supervisor.snapshot',
+        redaction: {
+          rawPtyInputAvailable: false,
+          rawTranscriptAvailable: false,
+          rawPromptAvailable: false,
+          rawProviderStateAvailable: false,
+          auditStoresHashesOnly: true,
+        },
+      },
+      audit: {
+        command: 'supervisor.snapshot',
+        redaction: {
+          rawPromptStored: false,
+          rawTranscriptStored: false,
+          rawPtyInputStored: false,
+          rawProviderStateStored: false,
+        },
+      },
     };
     const envelope = gatewayOk('supervisor.snapshot', payload);
 
@@ -236,6 +253,26 @@ describe('CLI gateway contract', () => {
     if (!dataSchema) throw new Error('supervisor.snapshot output schema must define data');
     expect(objectMatchesSchemaKeywords(dataSchema, envelope.data)).toBe(true);
     expect(objectMatchesSchemaKeywords(dataSchema, { ok: true, ...payload })).toBe(false);
+
+    const snapshotSchema = dataSchema.properties?.snapshot;
+    const auditSchema = dataSchema.properties?.audit;
+    if (!snapshotSchema?.properties?.redaction) throw new Error('snapshot redaction schema required');
+    if (!auditSchema?.properties?.redaction) throw new Error('audit redaction schema required');
+    expect(snapshotSchema.required).toEqual(['command', 'redaction']);
+    expect(snapshotSchema.properties.redaction.required).toEqual([
+      'rawPtyInputAvailable',
+      'rawTranscriptAvailable',
+      'rawPromptAvailable',
+      'rawProviderStateAvailable',
+      'auditStoresHashesOnly',
+    ]);
+    expect(auditSchema.required).toEqual(['command', 'redaction']);
+    expect(auditSchema.properties.redaction.required).toEqual([
+      'rawPromptStored',
+      'rawTranscriptStored',
+      'rawPtyInputStored',
+      'rawProviderStateStored',
+    ]);
   });
 
   it('fails closed in the create schema and does not advertise unimplemented agent peer round-trips', () => {

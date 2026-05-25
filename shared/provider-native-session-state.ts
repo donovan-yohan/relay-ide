@@ -113,7 +113,7 @@ export interface ProviderStateSnapshot {
 
 export interface NativeSessionJsonlReadTruncation {
   truncated: true;
-  reason: 'line-limit' | 'event-limit';
+  reason: 'byte-limit' | 'line-limit' | 'event-limit';
   maxBytes: number;
   maxLines: number;
   maxEvents: number;

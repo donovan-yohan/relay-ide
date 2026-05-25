@@ -231,6 +231,43 @@ describe('ClaudeJsonlStateAdapter', () => {
     expect(result.patches.every(isAgentPatchV2)).toBe(true);
   });
 
+  it('keeps mid-conversation assistant/tool-result records on one synthetic turn', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'relay-claude-jsonl-midturn-'));
+    const projectDir = path.join(root, 'projects', '-tmp-repo');
+    await mkdir(projectDir, { recursive: true });
+    const sessionPath = path.join(projectDir, 'midturn.jsonl');
+    const lines = [
+      {
+        type: 'assistant',
+        sessionId: 'midturn',
+        timestamp: '2026-01-01T00:00:01.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'already working' }] },
+      },
+      {
+        type: 'user',
+        sessionId: 'midturn',
+        timestamp: '2026-01-01T00:00:02.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', content: 'tool finished' }] },
+      },
+    ];
+    await writeFile(sessionPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
+    const adapter = new ClaudeJsonlStateAdapter({
+      stateRoot: root,
+      now: () => new Date('2026-01-01T00:10:00.000Z'),
+    });
+
+    const result = await adapter.importSession({ provider: 'claude', nativeId: 'midturn', sourcePath: sessionPath });
+    const nonAuditTurns = result.session.turns.filter((turn) => turn.id !== 'native-import-audit');
+
+    expect(nonAuditTurns).toHaveLength(1);
+    expect(nonAuditTurns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'assistantMessage', text: 'already working' }),
+        expect.objectContaining({ type: 'providerExtension', namespace: 'claude' }),
+      ])
+    );
+  });
+
   it('trims oversized imports FIFO while preserving the audit marker and reporting truncation', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'relay-claude-jsonl-large-'));
     const projectDir = path.join(root, 'projects', '-tmp-repo');

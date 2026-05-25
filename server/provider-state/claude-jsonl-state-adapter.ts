@@ -501,7 +501,8 @@ function buildTurns(
     const blocks = messageBlocks(record);
 
     if (role === 'user' && isToolResultOnly(blocks)) {
-      const turn = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      const turn: AgentTurnV2 = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      activeTurn = turn;
       const text = redactText(blockText(blocks));
       turn.items.push({
         id: `native-tool-result-${++extensionSeq}`,
@@ -550,7 +551,8 @@ function buildTurns(
     }
 
     if (role === 'assistant') {
-      const turn = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      const turn: AgentTurnV2 = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      activeTurn = turn;
       appendAssistantBlocks(turn, blocks, timestamp, ++assistantSeq);
       turn.completedAt = timestamp;
       continue;
