@@ -89,6 +89,7 @@ import {
   navSwitchToTab,
   navOpenFile,
 } from '../lib/actions/definitions/navigation.js';
+import { cliGatewayCommandActions } from '../lib/actions/definitions/cli-gateway.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
@@ -557,6 +558,13 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           // For now a noop — same reasoning as workspaceOpenFileBrowser above.
         },
       },
+
+      // ── Stable CLI gateway projection (#716) ────────────────────────────────
+      // These are searchable Command Center descriptions for the public
+      // relay-ide v1 ... --json contract. They stay disabled until a future
+      // slice wires safe UI execution; agents must keep using the v1 CLI
+      // gateway rather than private node-link/browser routes.
+      ...cliGatewayCommandActions.map((def) => ({ ...def, handler: () => {} })),
 
       // ── Noop placeholders ────────────────────────────────────────────────────
       ...noopActions,

@@ -275,7 +275,9 @@ function buildResults(
       });
     for (const a of registryCommands)
       items.push(actionToPaletteCommand(a, actionContext));
-    for (const { action, reason } of degradedCommands)
+    for (const { action, reason } of degradedCommands.filter(
+      (entry) => entry.action.category !== 'gateway'
+    ))
       items.push({
         type: 'command',
         id: `cmd-${action.id}`,

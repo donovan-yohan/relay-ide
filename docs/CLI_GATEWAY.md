@@ -73,6 +73,20 @@ The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvel
 
 The schema is the source of truth for adapter generation. A command missing from this manifest is not stable adapter API, even if an internal REST/WebSocket route exists.
 
+## Command taxonomy
+
+Relay command metadata is defined in [`shared/relay-command-manifest.ts`](../shared/relay-command-manifest.ts) as a projection of this v1 gateway contract. That module adds product-facing fields on top of each stable gateway command: `id`/`name`, label, description/summary, supported surfaces, input/output schemas, capability hints, side-effect class, confirmation requirement, scope kinds, and the public handler projection.
+
+Current command surfaces are intentionally separate:
+
+| Surface | Meaning | Execution path |
+| --- | --- | --- |
+| UI-only Command Center actions | Browser affordances such as navigation, settings, local palette helpers, and workflow entry points that are not stable agent API. | Frontend action registry only; do not generate agent tools from these. |
+| Stable CLI gateway commands | Versioned `relay-ide v1 ... --json` commands in `RELAY_CLI_GATEWAY_CONTRACT`. | Public CLI JSON gateway; this is the adapter-facing contract. |
+| Agent-callable commands | Gateway commands safe to expose to Claude/Codex/Hermes/MCP/ACP-style adapters through generated schemas. | Generated from the shared command manifest and executed through `relay-ide v1 ... --json`, never private node-link/browser routes. |
+
+The Command Center may search and describe stable gateway commands using the shared manifest before browser execution is wired. Until a `handler.uiAction` or explicit UI execution bridge exists, these entries must stay disabled/degraded in the palette and point operators to the stable CLI argv. Do not mark every internal UI button as agent-callable, and do not add Claude/Codex/Hermes-specific schemas by hand; add or change the Relay-owned command definition first.
+
 ## Auth and hub access
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.

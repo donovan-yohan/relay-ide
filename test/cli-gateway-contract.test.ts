@@ -10,6 +10,12 @@ import {
   type RelayJsonSchema,
 } from '../shared/cli-gateway-contract.js';
 import {
+  RELAY_COMMAND_MANIFEST,
+  relayCommandDefinition,
+  relayCommandDefinitionsForSurface,
+} from '../shared/relay-command-manifest.js';
+import { RELAY_CAPABILITY_BITS } from '../shared/security-policy.js';
+import {
   gatewayCliInvalidArgumentError,
   gatewayCliInvalidJsonError,
   gatewayErrorRetryable,
@@ -95,6 +101,62 @@ describe('CLI gateway contract', () => {
       expect(spec.outputSchema).toBeDefined();
       expect(spec.errorCodes.length).toBeGreaterThan(0);
     }
+  });
+
+  it('projects every stable gateway command into shared Relay command metadata', () => {
+    const stableNames = stableCommandNames();
+    expect(RELAY_COMMAND_MANIFEST).toMatchObject({
+      schemaVersion: 1,
+      generatedFrom: 'shared/cli-gateway-contract.ts',
+    });
+    expect(RELAY_COMMAND_MANIFEST.commands.map((command) => command.name)).toEqual(stableNames);
+    expect(relayCommandDefinitionsForSurface('cli').map((command) => command.name)).toEqual(
+      stableNames
+    );
+    expect(relayCommandDefinitionsForSurface('agent').map((command) => command.name)).toEqual(
+      stableNames
+    );
+    expect(relayCommandDefinitionsForSurface('web').map((command) => command.name)).toEqual(
+      stableNames
+    );
+
+    for (const name of stableNames) {
+      const spec = commandSpec(name);
+      const command = relayCommandDefinition(name);
+      expect(command).toMatchObject({
+        id: name,
+        name,
+        stable: true,
+        source: 'cli-gateway-v1',
+        surfaces: ['cli', 'agent', 'web'],
+      });
+      expect(command.label.length).toBeGreaterThan(0);
+      expect(command.description).toBe(spec.summary);
+      expect(command.summary).toBe(spec.summary);
+      expect(command.inputSchema).toBe(spec.inputSchema);
+      expect(command.outputSchema).toBe(spec.outputSchema);
+      expect(command.capabilityHints).toEqual(spec.capabilityHints);
+      for (const hint of command.capabilityHints) {
+        expect(RELAY_CAPABILITY_BITS).toContain(hint);
+      }
+      expect(command.handler.cli).toEqual(spec.cli);
+      expect(['read', 'write', 'destructive', 'stream']).toContain(command.sideEffect);
+      expect(Array.isArray(command.scopeKinds)).toBe(true);
+    }
+
+    expect(relayCommandDefinition('files.write')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: true,
+      scopeKinds: ['session'],
+    });
+    expect(relayCommandDefinition('sessions.stream')).toMatchObject({
+      sideEffect: 'stream',
+      requiresConfirmation: false,
+    });
+    expect(relayCommandDefinition('handoffs.create')).toMatchObject({
+      sideEffect: 'destructive',
+      requiresConfirmation: true,
+    });
   });
 
   it('keeps success and error envelopes machine-readable and versioned', () => {
