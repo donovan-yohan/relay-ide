@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { access, readdir, readFile, stat } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { access, lstat, readdir, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
@@ -12,6 +12,8 @@ import type {
 import type {
   AgentHarnessStateCapabilities,
   NativeSessionImportResult,
+  NativeSessionImportTruncation,
+  NativeSessionJsonlReadTruncation,
   NativeSessionListScope,
   NativeSessionPreview,
   NativeSessionRef,
@@ -35,6 +37,10 @@ const MAX_LIST_FILES = 500;
 const MAX_SCAN_DEPTH = 6;
 const PREVIEW_LIMIT = 240;
 const TEXT_LIMIT = 32_000;
+const MAX_JSONL_BYTES = 5_000_000;
+const MAX_JSONL_LINES = 20_000;
+const MAX_JSONL_EVENTS = 5_000;
+const MAX_IMPORT_TRANSCRIPT_BYTES = 256_000;
 
 interface ParsedJsonlLine {
   lineNumber: number;
@@ -46,6 +52,12 @@ interface ClaudeJsonlFile {
   bytes: number;
   hashSha256: string;
   lines: ParsedJsonlLine[];
+  readTruncation?: NativeSessionJsonlReadTruncation;
+}
+
+interface ImportedTurns {
+  turns: AgentTurnV2[];
+  truncation?: NativeSessionImportTruncation;
 }
 
 interface ClaudeAdapterOptions {
@@ -124,12 +136,17 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
     const summaries: NativeSessionSummary[] = [];
 
     for (const filePath of files) {
-      const parsed = await readClaudeJsonl(filePath);
-      const summary = summarizeClaudeJsonl(parsed, this.capabilities);
-      if (scope.cwd && summary.cwd !== scope.cwd) continue;
-      if (scope.workContextId && summary.workContextId !== scope.workContextId)
-        continue;
-      summaries.push(summary);
+      try {
+        const parsed = await readClaudeJsonl(filePath);
+        const summary = summarizeClaudeJsonl(parsed, this.capabilities);
+        if (scope.cwd && summary.cwd !== scope.cwd) continue;
+        if (scope.workContextId && summary.workContextId !== scope.workContextId)
+          continue;
+        summaries.push(summary);
+      } catch {
+        // Skip unreadable or over-limit provider files during discovery. Direct
+        // reads still fail closed with the precise error.
+      }
     }
 
     return summaries.sort((a, b) => {
@@ -157,6 +174,7 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
         ...(timestamps.first ? { firstTimestamp: timestamps.first } : {}),
         ...(timestamps.last ? { lastTimestamp: timestamps.last } : {}),
         preview: summary.preview,
+        ...(file.readTruncation ? { readTruncation: file.readTruncation } : {}),
       },
       redaction: {
         rawPayloadStored: false,
@@ -198,7 +216,19 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       },
     });
 
-    session.turns = buildTurns(file, sessionId, importedAt);
+    const importedTurns = buildTurns(file, sessionId, importedAt);
+    session.turns = importedTurns.turns;
+    if (importedTurns.truncation || file.readTruncation) {
+      session.config.providerOptions = {
+        ...session.config.providerOptions,
+        ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
+        ...(file.readTruncation ? { sourceReadTruncation: file.readTruncation } : {}),
+      };
+      annotateAuditMarker(session.turns, {
+        ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
+        ...(file.readTruncation ? { sourceReadTruncation: file.readTruncation } : {}),
+      });
+    }
 
     const patches: AgentPatchV2[] = [
       {
@@ -209,14 +239,17 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       },
     ];
 
-    return {
+    const result: NativeSessionImportResult = {
       provider: this.provider,
       nativeId: summary.nativeId,
       importedAt,
       sourcePath: file.path,
       session,
       patches,
+      ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
+      ...(file.readTruncation ? { sourceReadTruncation: file.readTruncation } : {}),
     };
+    return result;
   }
 
   resumeCommand(ref: NativeSessionRef): string[] {
@@ -228,7 +261,7 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       throw new Error(`Claude adapter cannot read provider '${ref.provider}'.`);
     }
     if (ref.sourcePath) {
-      return readClaudeJsonl(ref.sourcePath);
+      return readClaudeJsonl(await this.resolveSafeSourcePath(ref.sourcePath));
     }
 
     const sessions = await this.listNativeSessions(
@@ -238,7 +271,35 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
     if (!found) {
       throw new Error(`Claude native session '${ref.nativeId}' was not found.`);
     }
-    return readClaudeJsonl(found.sourcePath);
+    return readClaudeJsonl(await this.resolveSafeSourcePath(found.sourcePath));
+  }
+
+  private async resolveSafeSourcePath(sourcePath: string): Promise<string> {
+    const rootRealPath = await realpath(this.stateRoot);
+    const candidatePath = path.isAbsolute(sourcePath)
+      ? path.resolve(sourcePath)
+      : path.resolve(rootRealPath, sourcePath);
+    if (path.extname(candidatePath) !== '.jsonl') {
+      throw new Error('Claude native session sourcePath must point to a .jsonl file.');
+    }
+
+    const sourceInfo = await lstat(candidatePath);
+    if (sourceInfo.isSymbolicLink()) {
+      throw new Error('Claude native session sourcePath must not be a symlink.');
+    }
+    if (!sourceInfo.isFile()) {
+      throw new Error('Claude native session sourcePath must point to a regular .jsonl file.');
+    }
+
+    const sourceRealPath = await realpath(candidatePath);
+    if (path.extname(sourceRealPath) !== '.jsonl') {
+      throw new Error('Claude native session sourcePath must resolve to a .jsonl file.');
+    }
+    if (!isPathInside(rootRealPath, sourceRealPath)) {
+      throw new Error('Claude native session sourcePath must resolve under the configured state root.');
+    }
+
+    return sourceRealPath;
   }
 
   private nowIso(): string {
@@ -278,27 +339,83 @@ async function findJsonlFiles(
 }
 
 async function readClaudeJsonl(filePath: string): Promise<ClaudeJsonlFile> {
-  const [content, info] = await Promise.all([readFile(filePath, 'utf8'), stat(filePath)]);
-  const hashSha256 = createHash('sha256').update(content).digest('hex');
-  const lines: ParsedJsonlLine[] = [];
+  const info = await lstat(filePath);
+  if (info.isSymbolicLink()) {
+    throw new Error('Claude JSONL source must not be a symlink.');
+  }
+  if (!info.isFile()) {
+    throw new Error('Claude JSONL source must be a regular file.');
+  }
+  if (info.size > MAX_JSONL_BYTES) {
+    throw new Error(`Claude JSONL source exceeds ${MAX_JSONL_BYTES} bytes.`);
+  }
 
-  content.split(/\r?\n/).forEach((line, index) => {
+  const hash = createHash('sha256');
+  const lines: ParsedJsonlLine[] = [];
+  let readTruncation: NativeSessionJsonlReadTruncation | undefined;
+  let pending = '';
+  let seenLines = 0;
+  let parsedEvents = 0;
+
+  const processLine = (line: string): void => {
+    seenLines += 1;
     const trimmed = line.trim();
     if (!trimmed) return;
+    if (seenLines > MAX_JSONL_LINES) {
+      readTruncation = readTruncation ?? jsonlReadTruncation('line-limit', seenLines, parsedEvents);
+      return;
+    }
+    if (parsedEvents >= MAX_JSONL_EVENTS) {
+      readTruncation = readTruncation ?? jsonlReadTruncation('event-limit', seenLines, parsedEvents);
+      return;
+    }
     try {
       const value = JSON.parse(trimmed) as unknown;
-      if (isRecord(value)) lines.push({ lineNumber: index + 1, value });
+      if (isRecord(value)) {
+        parsedEvents += 1;
+        lines.push({ lineNumber: seenLines, value });
+      }
     } catch {
-      // Ignore corrupt lines during read-only listing/import. The snapshot hash
-      // still covers them, and future diagnostics can surface parse errors.
+      // Ignore corrupt lines during read-only listing/import. The bounded hash
+      // still covers the file, and future diagnostics can surface parse errors.
     }
-  });
+  };
+
+  for await (const chunk of createReadStream(filePath, { encoding: 'utf8' })) {
+    hash.update(chunk, 'utf8');
+    pending += chunk;
+    let newlineIndex = pending.indexOf('\n');
+    while (newlineIndex !== -1) {
+      const line = pending.slice(0, newlineIndex).replace(/\r$/, '');
+      processLine(line);
+      pending = pending.slice(newlineIndex + 1);
+      newlineIndex = pending.indexOf('\n');
+    }
+  }
+  if (pending.length > 0) processLine(pending.replace(/\r$/, ''));
 
   return {
     path: filePath,
     bytes: info.size,
-    hashSha256,
+    hashSha256: hash.digest('hex'),
     lines,
+    ...(readTruncation ? { readTruncation } : {}),
+  };
+}
+
+function jsonlReadTruncation(
+  reason: NativeSessionJsonlReadTruncation['reason'],
+  totalLinesSeen: number,
+  parsedEvents: number
+): NativeSessionJsonlReadTruncation {
+  return {
+    truncated: true,
+    reason,
+    maxBytes: MAX_JSONL_BYTES,
+    maxLines: MAX_JSONL_LINES,
+    maxEvents: MAX_JSONL_EVENTS,
+    totalLinesSeen,
+    parsedEvents,
   };
 }
 
@@ -333,6 +450,7 @@ function summarizeClaudeJsonl(
       hashSha256: file.hashSha256,
       nativeSessionId: nativeId,
       eventTypes: collectEventTypes(file.lines),
+      ...(file.readTruncation ? { readTruncation: file.readTruncation } : {}),
     },
     capabilities,
   };
@@ -342,7 +460,7 @@ function buildTurns(
   file: ClaudeJsonlFile,
   sessionId: string,
   importedAt: string
-): AgentTurnV2[] {
+): ImportedTurns {
   const turns: AgentTurnV2[] = [
     {
       id: 'native-import-audit',
@@ -444,10 +562,56 @@ function buildTurns(
     turn.completedAt = turn.completedAt ?? turn.startedAt;
   }
 
+  const truncation = trimImportedTurns(turns);
+
   // sessionId is passed so future patch-based import helpers can keep stable
   // IDs without changing this reducer path. Keep the invariant alive, crab tax.
   void sessionId;
-  return turns;
+  return truncation ? { turns, truncation } : { turns };
+}
+
+function trimImportedTurns(turns: AgentTurnV2[]): NativeSessionImportTruncation | undefined {
+  let approximateTranscriptBytes = transcriptBytes(turns);
+  if (approximateTranscriptBytes <= MAX_IMPORT_TRANSCRIPT_BYTES) return undefined;
+
+  const originalTurns = turns.length;
+  let droppedTurns = 0;
+  let droppedItems = 0;
+
+  while (approximateTranscriptBytes > MAX_IMPORT_TRANSCRIPT_BYTES && turns.length > 1) {
+    const [removed] = turns.splice(1, 1);
+    if (!removed) break;
+    droppedTurns += 1;
+    droppedItems += removed.items.length;
+    approximateTranscriptBytes = transcriptBytes(turns);
+  }
+
+  return {
+    truncated: true,
+    strategy: 'fifo-oldest-non-audit',
+    maxTranscriptBytes: MAX_IMPORT_TRANSCRIPT_BYTES,
+    approximateTranscriptBytes,
+    originalTurns,
+    retainedTurns: turns.length,
+    droppedTurns,
+    droppedItems,
+  };
+}
+
+function annotateAuditMarker(
+  turns: AgentTurnV2[],
+  metadata: Record<string, unknown>
+): void {
+  const marker = turns[0]?.items[0];
+  if (!marker || marker.type !== 'providerExtension') return;
+  marker.payload = {
+    ...marker.payload,
+    ...metadata,
+  };
+}
+
+function transcriptBytes(turns: AgentTurnV2[]): number {
+  return Buffer.byteLength(JSON.stringify(turns), 'utf8');
 }
 
 function appendAssistantBlocks(
@@ -566,6 +730,11 @@ function createSyntheticTurn(
   };
   turns.push(turn);
   return turn;
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 function normalizeRef(
