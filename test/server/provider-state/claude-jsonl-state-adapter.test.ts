@@ -138,7 +138,53 @@ describe('ClaudeJsonlStateAdapter', () => {
     ).rejects.toThrow(/jsonl/i);
     await expect(
       adapter.readProviderState({ provider: 'claude', nativeId: 'outside', sourcePath: linkPath })
-    ).rejects.toThrow(/state root/i);
+    ).rejects.toThrow(/symlink/i);
+  });
+
+  it('rejects JSONL source files above the explicit byte limit before import', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'relay-claude-jsonl-oversize-'));
+    const projectDir = path.join(root, 'projects', '-tmp-repo');
+    await mkdir(projectDir, { recursive: true });
+    const sessionPath = path.join(projectDir, 'huge-session.jsonl');
+    await writeFile(
+      sessionPath,
+      `${JSON.stringify({ type: 'summary', sessionId: 'huge-session' })}\n${'x'.repeat(5_100_000)}`
+    );
+    const adapter = new ClaudeJsonlStateAdapter({ stateRoot: root });
+
+    await expect(
+      adapter.importSession({ provider: 'claude', nativeId: 'huge-session', sourcePath: sessionPath })
+    ).rejects.toThrow(/exceeds/i);
+  });
+
+  it('truncates JSONL parsing at the explicit event limit and reports source metadata', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'relay-claude-jsonl-event-limit-'));
+    const projectDir = path.join(root, 'projects', '-tmp-repo');
+    await mkdir(projectDir, { recursive: true });
+    const sessionPath = path.join(projectDir, 'event-limit-session.jsonl');
+    const lines = Array.from({ length: 5_010 }, (_, index) => ({
+      type: 'summary',
+      sessionId: 'event-limit-session',
+      summary: `event-${index}`,
+      timestamp: '2026-01-01T00:00:00.000Z',
+    }));
+    await writeFile(sessionPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
+    const adapter = new ClaudeJsonlStateAdapter({ stateRoot: root });
+
+    const snapshot = await adapter.readProviderState({
+      provider: 'claude',
+      nativeId: 'event-limit-session',
+      sourcePath: sessionPath,
+    });
+
+    expect(snapshot.summary.lineCount).toBe(5_000);
+    expect(snapshot.summary.readTruncation).toMatchObject({
+      truncated: true,
+      reason: 'event-limit',
+      maxEvents: 5_000,
+      parsedEvents: 5_000,
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('event-5009');
   });
 
   it('imports a Claude JSONL fixture into an AgentSessionV2 read model with an audit marker', async () => {
@@ -183,6 +229,43 @@ describe('ClaudeJsonlStateAdapter', () => {
     expect(JSON.stringify(result.session)).not.toContain('ghp_deadbeef12345678');
     expect(result.patches).toHaveLength(1);
     expect(result.patches.every(isAgentPatchV2)).toBe(true);
+  });
+
+  it('keeps mid-conversation assistant/tool-result records on one synthetic turn', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'relay-claude-jsonl-midturn-'));
+    const projectDir = path.join(root, 'projects', '-tmp-repo');
+    await mkdir(projectDir, { recursive: true });
+    const sessionPath = path.join(projectDir, 'midturn.jsonl');
+    const lines = [
+      {
+        type: 'assistant',
+        sessionId: 'midturn',
+        timestamp: '2026-01-01T00:00:01.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'already working' }] },
+      },
+      {
+        type: 'user',
+        sessionId: 'midturn',
+        timestamp: '2026-01-01T00:00:02.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', content: 'tool finished' }] },
+      },
+    ];
+    await writeFile(sessionPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
+    const adapter = new ClaudeJsonlStateAdapter({
+      stateRoot: root,
+      now: () => new Date('2026-01-01T00:10:00.000Z'),
+    });
+
+    const result = await adapter.importSession({ provider: 'claude', nativeId: 'midturn', sourcePath: sessionPath });
+    const nonAuditTurns = result.session.turns.filter((turn) => turn.id !== 'native-import-audit');
+
+    expect(nonAuditTurns).toHaveLength(1);
+    expect(nonAuditTurns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'assistantMessage', text: 'already working' }),
+        expect.objectContaining({ type: 'providerExtension', namespace: 'claude' }),
+      ])
+    );
   });
 
   it('trims oversized imports FIFO while preserving the audit marker and reporting truncation', async () => {

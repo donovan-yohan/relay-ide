@@ -16,7 +16,8 @@ import {
   type HubNodeSummary,
 } from '../shared/relay-node-protocol.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
-import type { Config } from '../server/types.js';
+import type { Config, SessionSummary } from '../server/types.js';
+import { createSupervisorSnapshot } from '../server/supervisor-snapshot.js';
 import { createNodeLinkClient } from '../server/node-link-client.js';
 import { createNodeLinkPtyHost } from '../server/node-link-pty-host.js';
 import { createNodeLinkRpcHost } from '../server/node-link-rpc-host.js';
@@ -214,7 +215,23 @@ function printGatewayEnvelope(
   envelope: RelayCliGatewayEnvelope,
   exitCode: number
 ): never {
-  console.log(JSON.stringify(envelope, null, 2));
+  const payload = Buffer.from(`${JSON.stringify(envelope, null, 2)}\n`, 'utf8');
+  let offset = 0;
+  const waitBuffer = new SharedArrayBuffer(4);
+  const waitView = new Int32Array(waitBuffer);
+  while (offset < payload.length) {
+    try {
+      offset += fs.writeSync(
+        process.stdout.fd,
+        payload,
+        offset,
+        Math.min(16 * 1024, payload.length - offset)
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EAGAIN') throw error;
+      Atomics.wait(waitView, 0, 0, 10);
+    }
+  }
   process.exit(exitCode);
 }
 
@@ -440,7 +457,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|events subscribe) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|events subscribe) --json'
   );
   process.exit(1);
 }
@@ -1578,6 +1595,66 @@ async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
   gatewayInvalid('handoffs.plan', 'unknown handoffs command', { args: gatewayArgs });
 }
 
+async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const supervisorArgs = gatewayArgs.slice(2);
+  if (subcommand !== 'snapshot') {
+    gatewayInvalid('supervisor.snapshot', 'unknown supervisor command', { args: gatewayArgs });
+  }
+  const id = requireGatewaySessionId('supervisor.snapshot', supervisorArgs);
+  const expectedControlMode = gatewayArg(supervisorArgs, '--expected-control-mode');
+  const policy: {
+    expectedControlMode?: 'agent-driven' | 'human-driven' | 'co-driven';
+    latestSeenInterventionEventId?: string;
+  } = {};
+  if (expectedControlMode !== undefined) {
+    if (
+      expectedControlMode !== 'agent-driven' &&
+      expectedControlMode !== 'human-driven' &&
+      expectedControlMode !== 'co-driven'
+    ) {
+      gatewayInvalid('supervisor.snapshot', '--expected-control-mode is invalid', {
+        field: 'expectedControlMode',
+        value: expectedControlMode,
+      });
+    }
+    policy.expectedControlMode = expectedControlMode;
+  }
+  const latestSeenInterventionEventId = gatewayArg(
+    supervisorArgs,
+    '--latest-seen-intervention-event-id'
+  );
+  if (latestSeenInterventionEventId) {
+    policy.latestSeenInterventionEventId = latestSeenInterventionEventId;
+  }
+
+  const session = await gatewayHttpJson({
+    commandName: 'supervisor.snapshot',
+    pathName: `/sessions/${encodeURIComponent(id)}`,
+    capabilities: ['session:read', 'tab:intervention:read'],
+  });
+  const result = await createSupervisorSnapshot({
+    session: session as SessionSummary,
+    grantedCapabilities: ['session:read', 'tab:intervention:read'],
+    policy,
+  });
+  if (!result.ok) {
+    printGatewayEnvelope(
+      gatewayError('supervisor.snapshot', {
+        code: result.error.code,
+        message: result.error.message,
+        retryable: result.error.retryable,
+        details: { audit: result.audit },
+      }),
+      1
+    );
+  }
+  printGatewayEnvelope(
+    gatewayOk('supervisor.snapshot', { snapshot: result.snapshot, audit: result.audit }),
+    0
+  );
+}
+
 async function runGatewayArtifacts(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const artifactArgs = gatewayArgs.slice(2);
@@ -1890,6 +1967,7 @@ async function runGatewayV1(): Promise<never> {
   if (top === 'work-contexts') return runGatewayWorkContexts(gatewayArgs);
   if (top === 'handoffs') return runGatewayHandoffs(gatewayArgs);
   if (top === 'artifacts') return runGatewayArtifacts(gatewayArgs);
+  if (top === 'supervisor') return runGatewaySupervisor(gatewayArgs);
   if (top === 'events') return runGatewayEvents(gatewayArgs);
   gatewayInvalid('contract.list', 'unknown v1 gateway command', {
     args: gatewayArgs,

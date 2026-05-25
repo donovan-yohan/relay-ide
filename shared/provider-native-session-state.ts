@@ -85,6 +85,7 @@ export interface NativeSessionSummary {
     hashSha256?: string;
     nativeSessionId?: string;
     eventTypes?: string[];
+    readTruncation?: NativeSessionJsonlReadTruncation;
   };
   capabilities: AgentHarnessStateCapabilities;
 }
@@ -101,12 +102,23 @@ export interface ProviderStateSnapshot {
     firstTimestamp?: string;
     lastTimestamp?: string;
     preview: NativeSessionPreview;
+    readTruncation?: NativeSessionJsonlReadTruncation;
   };
   redaction: {
     rawPayloadStored: false;
     strategy: 'preview';
     classes: ('credential' | 'secret' | 'payload' | 'transcript')[];
   };
+}
+
+export interface NativeSessionJsonlReadTruncation {
+  truncated: true;
+  reason: 'byte-limit' | 'line-limit' | 'event-limit';
+  maxBytes: number;
+  maxLines: number;
+  maxEvents: number;
+  totalLinesSeen: number;
+  parsedEvents: number;
 }
 
 export interface NativeSessionImportTruncation {
@@ -128,4 +140,5 @@ export interface NativeSessionImportResult {
   session: AgentSessionV2;
   patches: AgentPatchV2[];
   importTruncation?: NativeSessionImportTruncation;
+  sourceReadTruncation?: NativeSessionJsonlReadTruncation;
 }

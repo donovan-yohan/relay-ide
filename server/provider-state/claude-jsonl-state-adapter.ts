@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { access, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { access, lstat, readdir, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { emptyAgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
@@ -13,6 +13,7 @@ import type {
   AgentHarnessStateCapabilities,
   NativeSessionImportResult,
   NativeSessionImportTruncation,
+  NativeSessionJsonlReadTruncation,
   NativeSessionListScope,
   NativeSessionPreview,
   NativeSessionRef,
@@ -36,6 +37,9 @@ const MAX_LIST_FILES = 500;
 const MAX_SCAN_DEPTH = 6;
 const PREVIEW_LIMIT = 240;
 const TEXT_LIMIT = 32_000;
+const MAX_JSONL_BYTES = 5_000_000;
+const MAX_JSONL_LINES = 20_000;
+const MAX_JSONL_EVENTS = 5_000;
 const MAX_IMPORT_TRANSCRIPT_BYTES = 256_000;
 
 interface ParsedJsonlLine {
@@ -48,6 +52,7 @@ interface ClaudeJsonlFile {
   bytes: number;
   hashSha256: string;
   lines: ParsedJsonlLine[];
+  readTruncation?: NativeSessionJsonlReadTruncation;
 }
 
 interface ImportedTurns {
@@ -131,12 +136,17 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
     const summaries: NativeSessionSummary[] = [];
 
     for (const filePath of files) {
-      const parsed = await readClaudeJsonl(filePath);
-      const summary = summarizeClaudeJsonl(parsed, this.capabilities);
-      if (scope.cwd && summary.cwd !== scope.cwd) continue;
-      if (scope.workContextId && summary.workContextId !== scope.workContextId)
-        continue;
-      summaries.push(summary);
+      try {
+        const parsed = await readClaudeJsonl(filePath);
+        const summary = summarizeClaudeJsonl(parsed, this.capabilities);
+        if (scope.cwd && summary.cwd !== scope.cwd) continue;
+        if (scope.workContextId && summary.workContextId !== scope.workContextId)
+          continue;
+        summaries.push(summary);
+      } catch {
+        // Skip unreadable or over-limit provider files during discovery. Direct
+        // reads still fail closed with the precise error.
+      }
     }
 
     return summaries.sort((a, b) => {
@@ -164,6 +174,7 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
         ...(timestamps.first ? { firstTimestamp: timestamps.first } : {}),
         ...(timestamps.last ? { lastTimestamp: timestamps.last } : {}),
         preview: summary.preview,
+        ...(file.readTruncation ? { readTruncation: file.readTruncation } : {}),
       },
       redaction: {
         rawPayloadStored: false,
@@ -207,12 +218,16 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
 
     const importedTurns = buildTurns(file, sessionId, importedAt);
     session.turns = importedTurns.turns;
-    if (importedTurns.truncation) {
+    if (importedTurns.truncation || file.readTruncation) {
       session.config.providerOptions = {
         ...session.config.providerOptions,
-        importTruncation: importedTurns.truncation,
+        ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
+        ...(file.readTruncation ? { sourceReadTruncation: file.readTruncation } : {}),
       };
-      annotateAuditMarker(session.turns, importedTurns.truncation);
+      annotateAuditMarker(session.turns, {
+        ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
+        ...(file.readTruncation ? { sourceReadTruncation: file.readTruncation } : {}),
+      });
     }
 
     const patches: AgentPatchV2[] = [
@@ -232,6 +247,7 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
       session,
       patches,
       ...(importedTurns.truncation ? { importTruncation: importedTurns.truncation } : {}),
+      ...(file.readTruncation ? { sourceReadTruncation: file.readTruncation } : {}),
     };
     return result;
   }
@@ -259,21 +275,27 @@ export class ClaudeJsonlStateAdapter implements AgentHarnessStateAdapter {
   }
 
   private async resolveSafeSourcePath(sourcePath: string): Promise<string> {
-    const resolvedSourcePath = path.resolve(sourcePath);
-    if (path.extname(resolvedSourcePath) !== '.jsonl') {
+    const rootRealPath = await realpath(this.stateRoot);
+    const candidatePath = path.isAbsolute(sourcePath)
+      ? path.resolve(sourcePath)
+      : path.resolve(rootRealPath, sourcePath);
+    if (path.extname(candidatePath) !== '.jsonl') {
       throw new Error('Claude native session sourcePath must point to a .jsonl file.');
     }
 
-    const [rootRealPath, sourceRealPath] = await Promise.all([
-      realpath(this.stateRoot),
-      realpath(resolvedSourcePath),
-    ]);
+    const sourceInfo = await lstat(candidatePath);
+    if (sourceInfo.isSymbolicLink()) {
+      throw new Error('Claude native session sourcePath must not be a symlink.');
+    }
+    if (!sourceInfo.isFile()) {
+      throw new Error('Claude native session sourcePath must point to a regular .jsonl file.');
+    }
+
+    const sourceRealPath = await realpath(candidatePath);
     if (path.extname(sourceRealPath) !== '.jsonl') {
       throw new Error('Claude native session sourcePath must resolve to a .jsonl file.');
     }
-
-    const relative = path.relative(rootRealPath, sourceRealPath);
-    if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+    if (!isPathInside(rootRealPath, sourceRealPath)) {
       throw new Error('Claude native session sourcePath must resolve under the configured state root.');
     }
 
@@ -317,27 +339,83 @@ async function findJsonlFiles(
 }
 
 async function readClaudeJsonl(filePath: string): Promise<ClaudeJsonlFile> {
-  const [content, info] = await Promise.all([readFile(filePath, 'utf8'), stat(filePath)]);
-  const hashSha256 = createHash('sha256').update(content).digest('hex');
-  const lines: ParsedJsonlLine[] = [];
+  const info = await lstat(filePath);
+  if (info.isSymbolicLink()) {
+    throw new Error('Claude JSONL source must not be a symlink.');
+  }
+  if (!info.isFile()) {
+    throw new Error('Claude JSONL source must be a regular file.');
+  }
+  if (info.size > MAX_JSONL_BYTES) {
+    throw new Error(`Claude JSONL source exceeds ${MAX_JSONL_BYTES} bytes.`);
+  }
 
-  content.split(/\r?\n/).forEach((line, index) => {
+  const hash = createHash('sha256');
+  const lines: ParsedJsonlLine[] = [];
+  let readTruncation: NativeSessionJsonlReadTruncation | undefined;
+  let pending = '';
+  let seenLines = 0;
+  let parsedEvents = 0;
+
+  const processLine = (line: string): void => {
+    seenLines += 1;
     const trimmed = line.trim();
     if (!trimmed) return;
+    if (seenLines > MAX_JSONL_LINES) {
+      readTruncation = readTruncation ?? jsonlReadTruncation('line-limit', seenLines, parsedEvents);
+      return;
+    }
+    if (parsedEvents >= MAX_JSONL_EVENTS) {
+      readTruncation = readTruncation ?? jsonlReadTruncation('event-limit', seenLines, parsedEvents);
+      return;
+    }
     try {
       const value = JSON.parse(trimmed) as unknown;
-      if (isRecord(value)) lines.push({ lineNumber: index + 1, value });
+      if (isRecord(value)) {
+        parsedEvents += 1;
+        lines.push({ lineNumber: seenLines, value });
+      }
     } catch {
-      // Ignore corrupt lines during read-only listing/import. The snapshot hash
-      // still covers them, and future diagnostics can surface parse errors.
+      // Ignore corrupt lines during read-only listing/import. The bounded hash
+      // still covers the file, and future diagnostics can surface parse errors.
     }
-  });
+  };
+
+  for await (const chunk of createReadStream(filePath, { encoding: 'utf8' })) {
+    hash.update(chunk, 'utf8');
+    pending += chunk;
+    let newlineIndex = pending.indexOf('\n');
+    while (newlineIndex !== -1) {
+      const line = pending.slice(0, newlineIndex).replace(/\r$/, '');
+      processLine(line);
+      pending = pending.slice(newlineIndex + 1);
+      newlineIndex = pending.indexOf('\n');
+    }
+  }
+  if (pending.length > 0) processLine(pending.replace(/\r$/, ''));
 
   return {
     path: filePath,
     bytes: info.size,
-    hashSha256,
+    hashSha256: hash.digest('hex'),
     lines,
+    ...(readTruncation ? { readTruncation } : {}),
+  };
+}
+
+function jsonlReadTruncation(
+  reason: NativeSessionJsonlReadTruncation['reason'],
+  totalLinesSeen: number,
+  parsedEvents: number
+): NativeSessionJsonlReadTruncation {
+  return {
+    truncated: true,
+    reason,
+    maxBytes: MAX_JSONL_BYTES,
+    maxLines: MAX_JSONL_LINES,
+    maxEvents: MAX_JSONL_EVENTS,
+    totalLinesSeen,
+    parsedEvents,
   };
 }
 
@@ -372,6 +450,7 @@ function summarizeClaudeJsonl(
       hashSha256: file.hashSha256,
       nativeSessionId: nativeId,
       eventTypes: collectEventTypes(file.lines),
+      ...(file.readTruncation ? { readTruncation: file.readTruncation } : {}),
     },
     capabilities,
   };
@@ -422,7 +501,8 @@ function buildTurns(
     const blocks = messageBlocks(record);
 
     if (role === 'user' && isToolResultOnly(blocks)) {
-      const turn = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      const turn: AgentTurnV2 = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      activeTurn = turn;
       const text = redactText(blockText(blocks));
       turn.items.push({
         id: `native-tool-result-${++extensionSeq}`,
@@ -471,7 +551,8 @@ function buildTurns(
     }
 
     if (role === 'assistant') {
-      const turn = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      const turn: AgentTurnV2 = activeTurn ?? createSyntheticTurn(turns, timestamp, importedAt);
+      activeTurn = turn;
       appendAssistantBlocks(turn, blocks, timestamp, ++assistantSeq);
       turn.completedAt = timestamp;
       continue;
@@ -521,13 +602,13 @@ function trimImportedTurns(turns: AgentTurnV2[]): NativeSessionImportTruncation 
 
 function annotateAuditMarker(
   turns: AgentTurnV2[],
-  truncation: NativeSessionImportTruncation
+  metadata: Record<string, unknown>
 ): void {
   const marker = turns[0]?.items[0];
   if (!marker || marker.type !== 'providerExtension') return;
   marker.payload = {
     ...marker.payload,
-    importTruncation: truncation,
+    ...metadata,
   };
 }
 
@@ -651,6 +732,11 @@ function createSyntheticTurn(
   };
   turns.push(turn);
   return turn;
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 function normalizeRef(

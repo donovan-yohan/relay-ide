@@ -31,6 +31,7 @@ export type RelayCliGatewayCommand =
   | 'handoffs.resume'
   | 'handoffs.launch'
   | 'artifacts.read'
+  | 'supervisor.snapshot'
   | 'events.subscribe';
 
 export type RelayCliGatewayErrorCode =
@@ -781,6 +782,27 @@ const artifactReadInputSchema: RelayJsonSchema = {
   required: ['ref'],
 };
 
+const supervisorSnapshotInputSchema: RelayJsonSchema = {
+  title: 'SupervisorSnapshotInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    expectedControlMode: {
+      type: 'string',
+      enum: ['agent-driven', 'human-driven', 'co-driven'],
+      description:
+        'Optional caller-observed control mode. When supplied, stale or mismatched control state is refused.',
+    },
+    latestSeenInterventionEventId: {
+      ...stringSchema,
+      description:
+        'Optional caller-observed intervention event id. Must match the latest target intervention before typed supervisor actions continue.',
+    },
+  },
+  required: ['id'],
+};
+
 const handoffPlanOutputSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
@@ -832,6 +854,64 @@ const artifactReadOutputSchema: RelayJsonSchema = {
   required: ['artifact'],
 };
 
+const supervisorSnapshotOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    snapshot: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        command: { const: 'supervisor.snapshot' },
+        redaction: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            rawPtyInputAvailable: { const: false },
+            rawTranscriptAvailable: { const: false },
+            rawPromptAvailable: { const: false },
+            rawProviderStateAvailable: { const: false },
+            auditStoresHashesOnly: { const: true },
+          },
+          required: [
+            'rawPtyInputAvailable',
+            'rawTranscriptAvailable',
+            'rawPromptAvailable',
+            'rawProviderStateAvailable',
+            'auditStoresHashesOnly',
+          ],
+        },
+      },
+      required: ['command', 'redaction'],
+    },
+    audit: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        command: { const: 'supervisor.snapshot' },
+        redaction: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            rawPromptStored: { const: false },
+            rawTranscriptStored: { const: false },
+            rawPtyInputStored: { const: false },
+            rawProviderStateStored: { const: false },
+          },
+          required: [
+            'rawPromptStored',
+            'rawTranscriptStored',
+            'rawPtyInputStored',
+            'rawProviderStateStored',
+          ],
+        },
+      },
+      required: ['command', 'redaction'],
+    },
+  },
+  required: ['snapshot', 'audit'],
+};
+
 const gatewayHandoffErrorCodes = [
   'UNAUTHORIZED',
   'INVALID_ARGUMENT',
@@ -840,6 +920,19 @@ const gatewayHandoffErrorCodes = [
   'FORBIDDEN',
   'SESSION_CONFLICT',
   'NODE_OFFLINE',
+  'SERVER_UNAVAILABLE',
+  'UPSTREAM_ERROR',
+  'INTERNAL',
+] as const satisfies readonly RelayCliGatewayErrorCode[];
+
+const gatewaySupervisorErrorCodes = [
+  'UNAUTHORIZED',
+  'INVALID_ARGUMENT',
+  'INVALID_JSON',
+  'NOT_FOUND',
+  'FORBIDDEN',
+  'CONTROL_STATE_STALE',
+  'INTERVENTION_ACK_REQUIRED',
   'SERVER_UNAVAILABLE',
   'UPSTREAM_ERROR',
   'INTERNAL',
@@ -1435,6 +1528,19 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     inputSchema: artifactReadInputSchema,
     outputSchema: okOutput('ArtifactsReadOutput', artifactReadOutputSchema),
     errorCodes: gatewayHandoffErrorCodes,
+  },
+  {
+    name: 'supervisor.snapshot',
+    cli: ['relay-ide', 'v1', 'supervisor', 'snapshot', '--id', '<session-id>', '--json'],
+    summary:
+      'Read a typed supervisor snapshot for one session with control-mode preflight, intervention ack checks, and redacted audit metadata; never sends raw PTY input.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'tab:intervention:read'],
+    inputSchema: supervisorSnapshotInputSchema,
+    outputSchema: okOutput('SupervisorSnapshotOutput', supervisorSnapshotOutputSchema),
+    errorCodes: gatewaySupervisorErrorCodes,
   },
   {
     name: 'events.subscribe',

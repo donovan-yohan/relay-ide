@@ -333,5 +333,7 @@ Browser-facing channels require authentication via `token` cookie verified durin
 | ADR-014 | Repo Identity Aggregation (canonical git/GitHub remote identity across nodes; local paths node-specific)                                                                             |
 | ADR-015 | Core relay primitives are domain-agnostic; repo/git is a feature layer ([`docs/adrs/ADR-015-core-primitives-domain-agnostic.md`](./adrs/ADR-015-core-primitives-domain-agnostic.md)) |
 | ADR-016 | Node-to-node isolation invariant; inter-node traffic flows through the hub ([`docs/adrs/ADR-016-node-to-node-isolation.md`](./adrs/ADR-016-node-to-node-isolation.md))               |
+| ADR-017 | Agent brains are hub-level peers of Relay sessions, not protocol clients ([`docs/adrs/ADR-017-brain-as-peer-cli-session-events.md`](./adrs/ADR-017-brain-as-peer-cli-session-events.md)) |
+| ADR-018 | Command-mediated handoff and supervisor contract ([`docs/adrs/ADR-018-command-mediated-handoff-supervisor.md`](./adrs/ADR-018-command-mediated-handoff-supervisor.md)) |
 
 > ADR-002 (vanilla JS frontend) was superseded by the Svelte 5 migration, which was subsequently superseded by the React 19 migration. `hooks.ts` does not yet have a dedicated ADR.

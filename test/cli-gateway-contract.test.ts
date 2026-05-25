@@ -91,6 +91,7 @@ describe('CLI gateway contract', () => {
       'handoffs.resume',
       'handoffs.launch',
       'artifacts.read',
+      'supervisor.snapshot',
       'events.subscribe',
     ]);
 
@@ -142,20 +143,45 @@ describe('CLI gateway contract', () => {
       expect(command.handler.cli).toEqual(spec.cli);
       expect(['read', 'write', 'destructive', 'stream']).toContain(command.sideEffect);
       expect(Array.isArray(command.scopeKinds)).toBe(true);
+      expect(Array.isArray(command.controlRequirements)).toBe(true);
+      expect([
+        'schema-only',
+        'bounded-redacted',
+        'hashes-only',
+        'action-summary',
+        'stream-redacted',
+      ]).toContain(command.auditRedaction.expectation);
+      expect(command.auditRedaction).toMatchObject({
+        storesRawPrompt: false,
+        storesRawTranscript: false,
+        storesRawPtyInput: false,
+        storesRawProviderState: false,
+      });
     }
 
     expect(relayCommandDefinition('files.write')).toMatchObject({
       sideEffect: 'write',
       requiresConfirmation: true,
+      controlRequirements: ['confirmation-challenge'],
+      auditRedaction: { expectation: 'action-summary' },
       scopeKinds: ['session'],
     });
     expect(relayCommandDefinition('sessions.stream')).toMatchObject({
       sideEffect: 'stream',
       requiresConfirmation: false,
+      auditRedaction: { expectation: 'stream-redacted' },
     });
     expect(relayCommandDefinition('handoffs.create')).toMatchObject({
       sideEffect: 'destructive',
       requiresConfirmation: true,
+      controlRequirements: ['confirmation-challenge'],
+    });
+    expect(relayCommandDefinition('supervisor.snapshot')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      controlRequirements: ['fresh-control-state', 'latest-intervention-ack'],
+      auditRedaction: { expectation: 'hashes-only' },
+      scopeKinds: ['session'],
     });
   });
 
@@ -187,6 +213,66 @@ describe('CLI gateway contract', () => {
         details: { field: 'cwd' },
       },
     });
+  });
+
+  it('keeps supervisor.snapshot success data aligned with the public contract schema', () => {
+    const payload = {
+      snapshot: {
+        command: 'supervisor.snapshot',
+        redaction: {
+          rawPtyInputAvailable: false,
+          rawTranscriptAvailable: false,
+          rawPromptAvailable: false,
+          rawProviderStateAvailable: false,
+          auditStoresHashesOnly: true,
+        },
+      },
+      audit: {
+        command: 'supervisor.snapshot',
+        redaction: {
+          rawPromptStored: false,
+          rawTranscriptStored: false,
+          rawPtyInputStored: false,
+          rawProviderStateStored: false,
+        },
+      },
+    };
+    const envelope = gatewayOk('supervisor.snapshot', payload);
+
+    expect(envelope).toMatchObject({ ok: true, command: 'supervisor.snapshot' });
+    expect(envelope.data).toEqual(payload);
+    expect(Object.keys(envelope.data).sort()).toEqual(['audit', 'snapshot']);
+    expect(hasOwn(envelope.data, 'ok')).toBe(false);
+
+    const outputSchema = commandSpec('supervisor.snapshot').outputSchema;
+    expect(objectMatchesSchemaKeywords(outputSchema, envelope as unknown as Record<string, unknown>)).toBe(
+      true
+    );
+
+    const dataSchema = outputSchema.properties?.data;
+    if (!dataSchema) throw new Error('supervisor.snapshot output schema must define data');
+    expect(objectMatchesSchemaKeywords(dataSchema, envelope.data)).toBe(true);
+    expect(objectMatchesSchemaKeywords(dataSchema, { ok: true, ...payload })).toBe(false);
+
+    const snapshotSchema = dataSchema.properties?.snapshot;
+    const auditSchema = dataSchema.properties?.audit;
+    if (!snapshotSchema?.properties?.redaction) throw new Error('snapshot redaction schema required');
+    if (!auditSchema?.properties?.redaction) throw new Error('audit redaction schema required');
+    expect(snapshotSchema.required).toEqual(['command', 'redaction']);
+    expect(snapshotSchema.properties.redaction.required).toEqual([
+      'rawPtyInputAvailable',
+      'rawTranscriptAvailable',
+      'rawPromptAvailable',
+      'rawProviderStateAvailable',
+      'auditStoresHashesOnly',
+    ]);
+    expect(auditSchema.required).toEqual(['command', 'redaction']);
+    expect(auditSchema.properties.redaction.required).toEqual([
+      'rawPromptStored',
+      'rawTranscriptStored',
+      'rawPtyInputStored',
+      'rawProviderStateStored',
+    ]);
   });
 
   it('fails closed in the create schema and does not advertise unimplemented agent peer round-trips', () => {
@@ -329,6 +415,7 @@ describe('CLI gateway contract', () => {
       'handoffs.resume',
       'handoffs.launch',
       'artifacts.read',
+      'supervisor.snapshot',
       'events.subscribe',
     ] as const;
 
@@ -540,6 +627,23 @@ describe('CLI gateway contract', () => {
     expect(commandSpec('handoffs.status').summary).toContain('bounded/redacted');
     expect(commandSpec('handoffs.resume').summary).toContain('without raw transcript');
     expect(commandSpec('artifacts.read').summary).toContain('raw logs/secrets/transcripts are unavailable');
+
+    const supervisor = commandSpec('supervisor.snapshot');
+    expect(supervisor).toMatchObject({
+      capabilityHints: ['session:read', 'tab:intervention:read'],
+      transport: 'hub-http',
+    });
+    expect(supervisor.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        expectedControlMode: { enum: ['agent-driven', 'human-driven', 'co-driven'] },
+      },
+    });
+    expect(supervisor.errorCodes).toEqual(
+      expect.arrayContaining(['FORBIDDEN', 'CONTROL_STATE_STALE', 'INTERVENTION_ACK_REQUIRED'])
+    );
+    expect(supervisor.summary).toContain('never sends raw PTY input');
   });
 
   it('encodes sessions.input source exclusivity for schema-generated adapters', () => {
