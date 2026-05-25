@@ -154,6 +154,17 @@ simulate end-to-end:
   reattaches; durability stays `running-attached` (or briefly flips
   through `running-detached` if the WS is rebuilt slowly).
 
+## Provider-native import boundary
+
+Provider-native session adapters complement durability replay; they do not replace it. Relay may inspect provider-owned state stores such as Claude JSONL files to derive a bounded `AgentSessionV2` read model and safe resume/open argv, but the provider store remains the source of truth for that native CLI.
+
+Rules for this slice:
+
+- provider stores are read-only; Relay must not write `.claude`, `.codex`, `.hermes`, `.opencode`, or equivalent native state paths;
+- imported read models include an audit/divider marker with provider, source kind, import time, and content hash;
+- snapshots expose hashes, sizes, event types, timestamps, and redacted previews, not raw provider rows;
+- resume/open commands are copyable data only and are never executed by the adapter.
+
 ## Out of scope (later #614 slices)
 
 - Cross-node/remote replay forwarding.
