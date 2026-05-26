@@ -103,6 +103,52 @@ describe('probeRmuxCapability', () => {
     });
   });
 
+  it('fails explicit unresolved helper override instead of falling back to PATH rmux', () => {
+    const probe = probeRmuxCapability({
+      env: { PATH: '/bin', RMUX_SDK_DAEMON_BINARY: 'definitely-not-rmux-helper' },
+      platform: 'linux',
+      arch: 'x64',
+      resolveExecutable: (command) => (command === 'rmux' ? '/bin/rmux' : null),
+      spawn: (command) => {
+        expect(command).toBe('definitely-not-rmux-helper');
+        return spawnResult({
+          status: null,
+          error: new Error('spawn definitely-not-rmux-helper ENOENT'),
+        });
+      },
+    });
+
+    expect(probe).toMatchObject({
+      status: 'probe-failed',
+      binaryPath: '/bin/rmux',
+      binaryPresent: true,
+      helperPresent: false,
+    });
+    expect(probe).not.toHaveProperty('helperPath');
+    expect(probe.message).toContain('definitely-not-rmux-helper');
+  });
+
+  it('resolves absolute helper overrides using the injected platform', () => {
+    const probe = probeRmuxCapability({
+      env: { PATH: 'C:\\Windows\\System32', RMUX_SDK_DAEMON_BINARY: 'C:\\Tools\\rmux-helper.exe' },
+      platform: 'win32',
+      arch: 'x64',
+      resolveExecutable: (command) => (command === 'rmux' ? 'C:\\Tools\\rmux.exe' : null),
+      spawn: (command) => {
+        expect(command).toBe('C:\\Tools\\rmux-helper.exe');
+        return spawnResult({ stdout: 'rmux 0.1.0\n' });
+      },
+    });
+
+    expect(probe).toMatchObject({
+      status: 'available-experimental',
+      binaryPath: 'C:\\Tools\\rmux.exe',
+      helperPath: 'C:\\Tools\\rmux-helper.exe',
+      binaryPresent: true,
+      helperPresent: true,
+    });
+  });
+
   it('marks old rmux versions as available-but-unsupported', () => {
     const probe = probeRmuxCapability({
       env: { PATH: '/bin' },

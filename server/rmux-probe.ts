@@ -209,21 +209,32 @@ function failureMessage(result: SpawnSyncReturns<string>): string {
   return `rmux --version exited with status ${result.status ?? 'unknown'}`;
 }
 
+function isPlatformAbsolutePath(value: string, platform: NodeJS.Platform): boolean {
+  return platform === 'win32' ? path.win32.isAbsolute(value) : path.posix.isAbsolute(value);
+}
+
 function resolveRmuxPaths(
   resolveExecutable: (name: string, env: NodeJS.ProcessEnv) => string | null,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform
 ): RmuxResolvedPaths {
   const binaryPath = resolveExecutable('rmux', env) ?? undefined;
   const configuredHelper = env[RMUX_BINARY_ENV];
-  const helperPath = configuredHelper
-    ? path.isAbsolute(configuredHelper)
-      ? configuredHelper
-      : (resolveExecutable(configuredHelper, env) ?? undefined)
-    : binaryPath;
+  if (!configuredHelper) {
+    return {
+      binaryPath,
+      helperPath: binaryPath,
+      command: binaryPath,
+    };
+  }
+
+  const helperPath = isPlatformAbsolutePath(configuredHelper, platform)
+    ? configuredHelper
+    : (resolveExecutable(configuredHelper, env) ?? undefined);
   return {
     binaryPath,
     helperPath,
-    command: helperPath ?? binaryPath,
+    command: helperPath ?? configuredHelper,
   };
 }
 
@@ -298,7 +309,7 @@ export function probeRmuxCapability(deps: RmuxProbeDeps = {}): RmuxCapabilityPro
   const resolveExecutable = deps.resolveExecutable ?? resolveExecutablePath;
   const spawn = deps.spawn ?? ((command, args, options) => spawnSync(command, args, options));
   const ipc = endpointFromEnv(env[RMUX_ENDPOINT_ENV], platform) ?? platformDefaultIpcShape(platform);
-  const paths = resolveRmuxPaths(resolveExecutable, env);
+  const paths = resolveRmuxPaths(resolveExecutable, env, platform);
 
   if (!paths.command) return unavailableProbe(platform, arch, ipc);
 
