@@ -185,10 +185,8 @@ import {
   INTERVENTION_READ_CAPABILITY,
   toInterventionReadResponse,
 } from './session-control-api.js';
-import {
-  executeSupervisorAction,
-  listSupervisorSessions,
-} from './supervisor-actions.js';
+import { executeSupervisorAction } from './supervisor-actions.js';
+import { handleSupervisorSessionsRequest } from './supervisor-route-handlers.js';
 import {
   supervisorActionRequiredCapabilities,
   type SupervisorActionError,
@@ -2633,8 +2631,8 @@ async function main(): Promise<void> {
     }
   );
 
-  app.get('/supervisor/sessions', requireScopedSessionAuth, (_req, res) => {
-    res.json(listSupervisorSessions(localRelayNode.sessions.list()));
+  app.get('/supervisor/sessions', requireScopedSessionAuth, (req, res) => {
+    handleSupervisorSessionsRequest(req, res, localRelayNode.sessions);
   });
 
   app.post(

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { executeSupervisorAction, listSupervisorSessions } from '../server/supervisor-actions.js';
+import {
+  executeSupervisorAction,
+  listSupervisorSessions,
+  type SupervisorActionSessionBoundary,
+} from '../server/supervisor-actions.js';
 import type { Session, SessionSummary } from '../server/types.js';
 
 function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
@@ -30,7 +34,7 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   } as SessionSummary;
 }
 
-function boundary(sessions: Record<string, SessionSummary>, writes: string[] = []) {
+function boundary(sessions: Record<string, SessionSummary>, writes: string[] = []): SupervisorActionSessionBoundary {
   return {
     list: () => Object.values(sessions),
     get: (id: string) => sessions[id] as Session | undefined,
@@ -96,6 +100,103 @@ describe('typed supervisor actions', () => {
       redacted: true,
     });
     expect(JSON.stringify(sendText)).not.toContain('hello');
+  });
+
+  it.each(['sendText', 'submit'] as const)(
+    'reports capability-denied %s without writing to targets',
+    (action) => {
+      const writes: string[] = [];
+      const result = executeSupervisorAction({
+        boundary: boundary({ 'sess-1': session() }, writes),
+        action,
+        targetIds: ['sess-1'],
+        text: action === 'sendText' ? 'hello' : undefined,
+        deniedByCapability: {
+          code: 'FORBIDDEN',
+          reasonCode: 'CAPABILITY_REQUIRED',
+          message: 'missing required capability: tab:intervention:send-text',
+          retryable: false,
+          details: { capability: 'tab:intervention:send-text' },
+        },
+      });
+
+      expect(writes).toEqual([]);
+      expect(result.counts).toEqual({
+        requested: 1,
+        succeeded: 0,
+        denied: 1,
+        failed: 0,
+        skipped: 0,
+      });
+      expect(result.audit).toMatchObject({
+        partialFailure: true,
+        rawContentStored: false,
+        counts: { denied: 1 },
+      });
+      expect(result.results[0]?.error).toMatchObject({
+        code: 'FORBIDDEN',
+        reasonCode: 'CAPABILITY_REQUIRED',
+      });
+      expect(result.redaction).toEqual({
+        rawContentAvailable: false,
+        rawContentStored: false,
+        hashesOnly: true,
+      });
+      expect(JSON.stringify(result)).not.toContain('hello');
+    }
+  );
+
+  it('preserves successful target results when another supervisor action target fails upstream', () => {
+    const writes: string[] = [];
+    const sessions = {
+      'sess-1': session({ id: 'sess-1' }),
+      'sess-2': session({ id: 'sess-2' }),
+    };
+    const actionBoundary = boundary(sessions, writes);
+    actionBoundary.supervisorWrite = (id: string, input: { payload: string }) => {
+      if (id === 'sess-2') throw new Error('pty is gone');
+      writes.push(`${id}:${input.payload}`);
+      return { eventId: `evt-${id}`, modeBefore: 'agent-driven', modeAfter: 'co-driven' };
+    };
+
+    const result = executeSupervisorAction({
+      boundary: actionBoundary,
+      action: 'sendText',
+      targetIds: ['sess-1', 'sess-2'],
+      text: 'hello',
+    });
+
+    expect(writes).toEqual(['sess-1:hello']);
+    expect(result.counts).toEqual({
+      requested: 2,
+      succeeded: 1,
+      denied: 0,
+      failed: 1,
+      skipped: 0,
+    });
+    expect(result.audit).toMatchObject({
+      partialFailure: true,
+      rawContentStored: false,
+      content: {
+        rawContentAvailable: false,
+        hashSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        byteCount: 5,
+        charCount: 5,
+        redacted: true,
+      },
+    });
+    expect(result.results[0]).toMatchObject({ sessionId: 'sess-1', ok: true });
+    expect(result.results[1]).toMatchObject({
+      sessionId: 'sess-2',
+      ok: false,
+      error: {
+        code: 'UPSTREAM_ERROR',
+        reasonCode: 'UPSTREAM_WRITE_FAILED',
+        message: 'pty is gone',
+        retryable: true,
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('hello');
   });
 
   it('refuses control sequences and stale sessions before writing', () => {

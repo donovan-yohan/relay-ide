@@ -14,7 +14,6 @@ import {
   type SupervisorSessionsResponse,
 } from '../shared/supervisor-actions.js';
 import { DEFAULT_LOCAL_NODE_ID, createGlobalSessionId } from '../shared/identity.js';
-import { recordSupervisorAction } from './control-engine.js';
 import type { Session, SessionSummary } from './types.js';
 
 const MAX_SUPERVISOR_TEXT_CHARS = 1000;
@@ -122,10 +121,11 @@ function validateLiteralText(text: unknown): { ok: true; text: string } | { ok: 
   return { ok: true, text };
 }
 
-function targetPreflight(session: Session | undefined, requestedId: string): SupervisorActionError | undefined {
-  if (!session) {
-    return error('NOT_FOUND', 'SESSION_NOT_FOUND', 'session was not found or is not locally writable', false, { sessionId: requestedId });
-  }
+function missingSessionError(requestedId: string): SupervisorActionError {
+  return error('NOT_FOUND', 'SESSION_NOT_FOUND', 'session was not found or is not locally writable', false, { sessionId: requestedId });
+}
+
+function targetPreflight(session: Session): SupervisorActionError | undefined {
   const control = normalizeControlStateSummary(session.controlState);
   if (session.status === 'disconnected') {
     return error('SESSION_CONFLICT', 'SESSION_DISCONNECTED', 'cannot run supervisor action on a disconnected session', false, { sessionId: session.id });
@@ -222,13 +222,17 @@ export function executeSupervisorAction(input: {
       results.push({ ...identity, ok: false, action: input.action, error: payloadValidationError });
       continue;
     }
-    const preflight = targetPreflight(session, id);
+    if (!session) {
+      results.push({ ...identity, ok: false, action: input.action, error: missingSessionError(id) });
+      continue;
+    }
+    const preflight = targetPreflight(session);
     if (preflight) {
       results.push({ ...identity, ok: false, action: input.action, error: preflight });
       continue;
     }
     try {
-      const write = input.boundary.supervisorWrite(session!.id, {
+      const write = input.boundary.supervisorWrite(session.id, {
         action: input.action,
         actor,
         payload,
@@ -249,7 +253,7 @@ export function executeSupervisorAction(input: {
         ...identity,
         ok: false,
         action: input.action,
-        error: error('UPSTREAM_ERROR', 'UPSTREAM_WRITE_FAILED', message, true, { sessionId: session!.id }),
+        error: error('UPSTREAM_ERROR', 'UPSTREAM_WRITE_FAILED', message, true, { sessionId: session.id }),
       });
     }
   }
@@ -278,27 +282,4 @@ export function executeSupervisorAction(input: {
       hashesOnly: true,
     },
   };
-}
-
-export function supervisorWriteSession(
-  session: Session,
-  input: { action: SupervisorActionType; actor: ControlActor; payload: string }
-): { eventId: string; modeBefore?: ControlMode; modeAfter?: ControlMode } {
-  if (session.mode !== 'pty') {
-    throw new Error(`Session ${session.id} is not a PTY session`);
-  }
-  const event = recordSupervisorAction(session, input);
-  if (event.type !== 'tab.intervention') {
-    throw new Error(`Supervisor action did not produce an intervention event for ${session.id}`);
-  }
-  session.pty.write(input.payload);
-  session.lastActivity = new Date().toISOString();
-  const result: { eventId: string; modeBefore?: ControlMode; modeAfter?: ControlMode } = {
-    eventId: event.eventId,
-    modeBefore: event.intervention.modeBefore,
-    ...(event.intervention.modeAfter === undefined
-      ? {}
-      : { modeAfter: event.intervention.modeAfter }),
-  };
-  return result;
 }
