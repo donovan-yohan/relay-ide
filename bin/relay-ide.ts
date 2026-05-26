@@ -457,7 +457,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|events subscribe) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
   );
   process.exit(1);
 }
@@ -1595,13 +1595,74 @@ async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
   gatewayInvalid('handoffs.plan', 'unknown handoffs command', { args: gatewayArgs });
 }
 
-async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
-  const subcommand = gatewayArgs[1];
-  const supervisorArgs = gatewayArgs.slice(2);
-  if (subcommand !== 'snapshot') {
-    gatewayInvalid('supervisor.snapshot', 'unknown supervisor command', { args: gatewayArgs });
+async function runGatewaySupervisorSessions(): Promise<never> {
+  const result = await gatewayHttpJson({
+    commandName: 'supervisor.sessions',
+    pathName: '/supervisor/sessions',
+    capabilities: ['session:read', 'tab:intervention:read'],
+  });
+  printGatewayEnvelope(gatewayOk('supervisor.sessions', result), 0);
+}
+
+function parseGatewaySupervisorActionBody(
+  commandName: 'supervisor.sendText' | 'supervisor.submit',
+  supervisorArgs: string[]
+): Record<string, unknown> {
+  const body = parseGatewayInputObject(commandName, supervisorArgs);
+  const id = gatewayArg(supervisorArgs, '--id') ?? supervisorArgs[0];
+  if (id && !id.startsWith('--') && body['id'] === undefined && body['targetIds'] === undefined) {
+    body['id'] = id;
   }
-  const id = requireGatewaySessionId('supervisor.snapshot', supervisorArgs);
+  const targetIds = gatewayArg(supervisorArgs, '--target-ids');
+  if (targetIds && body['targetIds'] === undefined) {
+    body['targetIds'] = targetIds.split(',').map((entry) => entry.trim()).filter(Boolean);
+  }
+  const text = gatewayArg(supervisorArgs, '--text');
+  if (commandName === 'supervisor.sendText' && text !== undefined && body['text'] === undefined) {
+    body['text'] = text;
+  }
+  return body;
+}
+
+function validateGatewaySupervisorActionBody(
+  commandName: 'supervisor.sendText' | 'supervisor.submit',
+  body: Record<string, unknown>
+): void {
+  if (
+    commandName === 'supervisor.sendText' &&
+    (typeof body['text'] !== 'string' || body['text'].length === 0)
+  ) {
+    gatewayInvalid(commandName, '--text is required for supervisor send-text', { field: 'text' });
+  }
+  if (typeof body['id'] !== 'string' && !Array.isArray(body['targetIds'])) {
+    gatewayInvalid(commandName, '--id or --target-ids is required', { field: 'id' });
+  }
+}
+
+async function runGatewaySupervisorAction(
+  subcommand: string,
+  supervisorArgs: string[]
+): Promise<never> {
+  const commandName = subcommand === 'submit' ? 'supervisor.submit' : 'supervisor.sendText';
+  const body = parseGatewaySupervisorActionBody(commandName, supervisorArgs);
+  validateGatewaySupervisorActionBody(commandName, body);
+  const result = await gatewayHttpJson({
+    commandName,
+    pathName: `/supervisor/actions/${commandName === 'supervisor.submit' ? 'submit' : 'sendText'}`,
+    method: 'POST',
+    body,
+    capabilities:
+      commandName === 'supervisor.submit'
+        ? ['session:attach', 'tab:intervention:submit']
+        : ['session:attach', 'tab:intervention:send-text'],
+  });
+  printGatewayEnvelope(gatewayOk(commandName, result), 0);
+}
+
+function parseGatewaySupervisorSnapshotPolicy(supervisorArgs: string[]): {
+  expectedControlMode?: 'agent-driven' | 'human-driven' | 'co-driven';
+  latestSeenInterventionEventId?: string;
+} {
   const expectedControlMode = gatewayArg(supervisorArgs, '--expected-control-mode');
   const policy: {
     expectedControlMode?: 'agent-driven' | 'human-driven' | 'co-driven';
@@ -1624,10 +1685,12 @@ async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
     supervisorArgs,
     '--latest-seen-intervention-event-id'
   );
-  if (latestSeenInterventionEventId) {
-    policy.latestSeenInterventionEventId = latestSeenInterventionEventId;
-  }
+  if (latestSeenInterventionEventId) policy.latestSeenInterventionEventId = latestSeenInterventionEventId;
+  return policy;
+}
 
+async function runGatewaySupervisorSnapshot(supervisorArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('supervisor.snapshot', supervisorArgs);
   const session = await gatewayHttpJson({
     commandName: 'supervisor.snapshot',
     pathName: `/sessions/${encodeURIComponent(id)}`,
@@ -1636,9 +1699,9 @@ async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
   const result = await createSupervisorSnapshot({
     session: session as SessionSummary,
     grantedCapabilities: ['session:read', 'tab:intervention:read'],
-    policy,
+    policy: parseGatewaySupervisorSnapshotPolicy(supervisorArgs),
   });
-  if (!result.ok) {
+  if (result.ok === false) {
     printGatewayEnvelope(
       gatewayError('supervisor.snapshot', {
         code: result.error.code,
@@ -1653,6 +1716,17 @@ async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
     gatewayOk('supervisor.snapshot', { snapshot: result.snapshot, audit: result.audit }),
     0
   );
+}
+
+async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const supervisorArgs = gatewayArgs.slice(2);
+  if (subcommand === 'sessions') return runGatewaySupervisorSessions();
+  if (subcommand === 'send-text' || subcommand === 'sendText' || subcommand === 'submit') {
+    return runGatewaySupervisorAction(subcommand, supervisorArgs);
+  }
+  if (subcommand === 'snapshot') return runGatewaySupervisorSnapshot(supervisorArgs);
+  gatewayInvalid('supervisor.snapshot', 'unknown supervisor command', { args: gatewayArgs });
 }
 
 async function runGatewayArtifacts(gatewayArgs: string[]): Promise<never> {

@@ -5,17 +5,14 @@ import type {
   ControlMode,
   InterventionRecord,
 } from '../shared/control-state.js';
+import type { RelayCapabilityBit } from '../shared/security-policy.js';
 
 export const CONTROL_READ_CAPABILITY = 'session:read' as const;
 export const INTERVENTION_READ_CAPABILITY = 'tab:intervention:read' as const;
 export const CONTROL_WRITE_CAPABILITY = 'tab:mode:set-agent' as const;
 export const CONTROL_SESSION_CAPABILITY = 'session:attach' as const;
 
-export type SessionControlCapability =
-  | typeof CONTROL_READ_CAPABILITY
-  | typeof INTERVENTION_READ_CAPABILITY
-  | typeof CONTROL_WRITE_CAPABILITY
-  | typeof CONTROL_SESSION_CAPABILITY;
+export type SessionControlCapability = RelayCapabilityBit;
 
 export interface ControlCapabilityDecision {
   decision: 'allow' | 'deny';

@@ -95,6 +95,9 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'handoffs.launch': 'launch handoff destination',
   'artifacts.read': 'read handoff artifact',
   'supervisor.snapshot': 'supervisor snapshot',
+  'supervisor.sessions': 'supervisor sessions',
+  'supervisor.sendText': 'supervisor send text',
+  'supervisor.submit': 'supervisor submit',
   'events.subscribe': 'subscribe gateway events',
 };
 
@@ -107,6 +110,8 @@ function sideEffectForGatewayCommand(spec: RelayCliGatewayCommandSpec): RelayCom
     spec.name === 'sessions.detach' ||
     spec.name === 'sessions.input' ||
     spec.name === 'sessions.handBack' ||
+    spec.name === 'supervisor.sendText' ||
+    spec.name === 'supervisor.submit' ||
     spec.name === 'files.write' ||
     spec.name === 'handoffs.cancel'
   ) {
@@ -145,6 +150,9 @@ function controlRequirementsForGatewayCommand(
   if (spec.name === 'supervisor.snapshot') {
     requirements.push('fresh-control-state', 'latest-intervention-ack');
   }
+  if (spec.name === 'supervisor.sendText' || spec.name === 'supervisor.submit') {
+    requirements.push('fresh-control-state');
+  }
   if (spec.name === 'sessions.handBack') requirements.push('latest-intervention-ack');
   return requirements;
 }
@@ -156,7 +164,7 @@ function auditExpectationForGatewayCommand(
     return 'schema-only';
   }
   if (spec.name === 'sessions.stream' || spec.name === 'events.subscribe') return 'stream-redacted';
-  if (spec.name === 'supervisor.snapshot') return 'hashes-only';
+  if (spec.name === 'supervisor.snapshot' || spec.name === 'supervisor.sendText' || spec.name === 'supervisor.submit') return 'hashes-only';
   if (sideEffectForGatewayCommand(spec) === 'read') return 'bounded-redacted';
   return 'action-summary';
 }

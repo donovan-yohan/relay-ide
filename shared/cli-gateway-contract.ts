@@ -32,6 +32,9 @@ export type RelayCliGatewayCommand =
   | 'handoffs.launch'
   | 'artifacts.read'
   | 'supervisor.snapshot'
+  | 'supervisor.sessions'
+  | 'supervisor.sendText'
+  | 'supervisor.submit'
   | 'events.subscribe';
 
 export type RelayCliGatewayErrorCode =
@@ -803,6 +806,39 @@ const supervisorSnapshotInputSchema: RelayJsonSchema = {
   required: ['id'],
 };
 
+const supervisorSessionsInputSchema: RelayJsonSchema = {
+  title: 'SupervisorSessionsInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {},
+};
+
+const supervisorSendTextInputSchema: RelayJsonSchema = {
+  title: 'SupervisorSendTextInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    targetIds: { type: 'array', items: stringSchema },
+    text: stringSchema,
+    actor: { type: 'object', additionalProperties: true },
+  },
+  required: ['text'],
+  oneOf: [{ required: ['id'] }, { required: ['targetIds'] }],
+};
+
+const supervisorSubmitInputSchema: RelayJsonSchema = {
+  title: 'SupervisorSubmitInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    targetIds: { type: 'array', items: stringSchema },
+    actor: { type: 'object', additionalProperties: true },
+  },
+  oneOf: [{ required: ['id'] }, { required: ['targetIds'] }],
+};
+
 const handoffPlanOutputSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
@@ -911,6 +947,40 @@ const supervisorSnapshotOutputSchema: RelayJsonSchema = {
   },
   required: ['snapshot', 'audit'],
 };
+
+const supervisorSessionsOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    command: { const: 'supervisor.sessions' },
+    sessions: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    count: { type: 'number', minimum: 0 },
+  },
+  required: ['command', 'sessions', 'count'],
+};
+
+const supervisorActionOutputSchema = (command: string): RelayJsonSchema => ({
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    command: { const: command },
+    action: { type: 'string', enum: ['sendText', 'submit'] },
+    results: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    counts: { type: 'object', additionalProperties: true },
+    audit: { type: 'object', additionalProperties: true },
+    redaction: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        rawContentAvailable: { const: false },
+        rawContentStored: { const: false },
+        hashesOnly: { const: true },
+      },
+      required: ['rawContentAvailable', 'rawContentStored', 'hashesOnly'],
+    },
+  },
+  required: ['command', 'action', 'results', 'counts', 'audit', 'redaction'],
+});
 
 const gatewayHandoffErrorCodes = [
   'UNAUTHORIZED',
@@ -1540,6 +1610,42 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['session:read', 'tab:intervention:read'],
     inputSchema: supervisorSnapshotInputSchema,
     outputSchema: okOutput('SupervisorSnapshotOutput', supervisorSnapshotOutputSchema),
+    errorCodes: gatewaySupervisorErrorCodes,
+  },
+  {
+    name: 'supervisor.sessions',
+    cli: ['relay-ide', 'v1', 'supervisor', 'sessions', '--json'],
+    summary: 'List sessions eligible for typed supervisor actions with per-action reasons.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'tab:intervention:read'],
+    inputSchema: supervisorSessionsInputSchema,
+    outputSchema: okOutput('SupervisorSessionsOutput', supervisorSessionsOutputSchema),
+    errorCodes: gatewaySupervisorErrorCodes,
+  },
+  {
+    name: 'supervisor.sendText',
+    cli: ['relay-ide', 'v1', 'supervisor', 'send-text', '--id', '<session-id>', '--text', '<text>', '--json'],
+    summary: 'Send bounded literal text to one or more PTY sessions as a typed supervisor intervention.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:attach', 'tab:intervention:send-text'],
+    inputSchema: supervisorSendTextInputSchema,
+    outputSchema: okOutput('SupervisorSendTextOutput', supervisorActionOutputSchema('supervisor.sendText')),
+    errorCodes: gatewaySupervisorErrorCodes,
+  },
+  {
+    name: 'supervisor.submit',
+    cli: ['relay-ide', 'v1', 'supervisor', 'submit', '--id', '<session-id>', '--json'],
+    summary: 'Submit Enter to one or more PTY sessions as a typed supervisor intervention.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:attach', 'tab:intervention:submit'],
+    inputSchema: supervisorSubmitInputSchema,
+    outputSchema: okOutput('SupervisorSubmitOutput', supervisorActionOutputSchema('supervisor.submit')),
     errorCodes: gatewaySupervisorErrorCodes,
   },
   {

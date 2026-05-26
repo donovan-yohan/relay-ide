@@ -8,6 +8,7 @@ import {
   clearPendingControlBurstsForTests,
   maybeAutoRevertToAgentDriven,
   recordHumanPtyInput,
+  recordSupervisorAction,
   redactInterventionPayload,
 } from '../server/control-engine.js';
 import {
@@ -231,6 +232,38 @@ describe('control transition engine', () => {
     const control = redactInterventionPayload('\u001b[200~paste\u001b[201~');
     expect(control.payloadPreview).toContain('redacted:control-sequence');
     expect(control.redaction.classes).toContain('control-sequence');
+  });
+
+  it('records typed supervisor actions as co-driven intervention events without exposing raw payloads', () => {
+    const session = makeSession();
+    const records: InterventionRecord[] = [];
+    const events: TabControlEvent[] = [];
+    const actor: ControlActor = { kind: 'human', id: 'supervisor-1', displayName: 'Supervisor' };
+    const options = captureOptions(records, events);
+
+    const event = recordSupervisorAction(session, { action: 'sendText', actor, payload: 'password=raw-secret-value' }, options);
+
+    expect(session.controlState).toMatchObject({
+      controlMode: 'co-driven',
+      lastInterventionEventId: event.eventId,
+      controlReason: 'supervisor sendText',
+    });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      source: 'supervisor-action',
+      kind: 'supervisor-send-text',
+      modeBefore: 'agent-driven',
+      modeAfter: 'co-driven',
+      ackedAt: baseNow.toISOString(),
+    });
+    expect(records[0]?.payloadPreview).toContain('[redacted:secret-like]');
+    expect(JSON.stringify(records[0])).not.toContain('raw-secret-value');
+    expect(events.map((entry) => entry.type)).toEqual(['tab.mode-changed', 'tab.intervention']);
+    expect(event).toMatchObject({
+      type: 'tab.intervention',
+      controlMode: 'co-driven',
+      intervention: { kind: 'supervisor-send-text' },
+    });
   });
 
   it('creates visible intervention and transition events for join, take-over, and hand-back actions', () => {

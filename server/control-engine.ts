@@ -25,6 +25,7 @@ import {
 } from './intervention-log.js';
 
 export type ControlModeAction = 'join' | 'take-over' | 'hand-back';
+export type SupervisorInterventionAction = 'sendText' | 'submit';
 
 export interface ControlEngineOptions {
   inputDebounceMs?: number;
@@ -496,6 +497,62 @@ export function applyControlModeAction(
   }
   events.push(emitIntervention(session, actor, modeAfter, record, action, options));
   return events;
+}
+
+export function recordSupervisorAction(
+  session: Session,
+  input: {
+    action: SupervisorInterventionAction;
+    actor: ControlActor;
+    payload: string;
+  },
+  options: ControlEngineOptions = {}
+): TabControlEvent {
+  flushBurstForSession(session, options);
+  const before = normalizeControlStateSummary(session.controlState);
+  const modeAfter: ControlMode = 'co-driven';
+  const record = buildRecord({
+    session,
+    actor: input.actor,
+    source: 'supervisor-action',
+    kind:
+      input.action === 'sendText'
+        ? 'supervisor-send-text'
+        : 'supervisor-submit',
+    payload: input.payload,
+    modeBefore: before.controlMode,
+    modeAfter,
+    options,
+    acked: true,
+  });
+  const append = options.append ?? appendIntervention;
+  append(record);
+  updateControlState({
+    session,
+    controlMode: modeAfter,
+    actor: input.actor,
+    eventId: record.id,
+    occurredAt: record.timestamp,
+    reason: `supervisor ${input.action}`,
+  });
+  if (before.controlMode !== modeAfter) {
+    emitModeChanged(
+      session,
+      input.actor,
+      before.controlMode,
+      modeAfter,
+      `supervisor ${input.action}`,
+      options
+    );
+  }
+  return emitIntervention(
+    session,
+    input.actor,
+    modeAfter,
+    record,
+    `supervisor ${input.action}`,
+    options
+  );
 }
 
 export function acknowledgeHumanInput(

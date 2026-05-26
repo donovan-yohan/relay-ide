@@ -17,6 +17,8 @@ describe('security policy schema', () => {
     });
 
     expect(isRelayCapabilityBit('rpc:fs:read')).toBe(true);
+    expect(isRelayCapabilityBit('tab:intervention:send-text')).toBe(true);
+    expect(isRelayCapabilityBit('tab:intervention:submit')).toBe(true);
     expect(isRelayCapabilityBit('rpc:fs:format-disk')).toBe(false);
     expect(resolveAclCapability(acl, 'rpc:fs:read')).toMatchObject({
       known: true,
@@ -41,7 +43,7 @@ describe('security policy schema', () => {
     const acl: RelayNodeAcl = {
       ...base,
       grants: {
-        allowed: ['session:read', 'session:control:kill', 'rpc:fs:write', 'rpc:git:write'],
+        allowed: ['session:read', 'session:control:kill', 'tab:intervention:send-text', 'tab:intervention:submit', 'rpc:fs:write', 'rpc:git:write'],
         requiresConfirmation: ['rpc:fs:delete'],
       },
     };
@@ -52,6 +54,8 @@ describe('security policy schema', () => {
     expect(overlaid.grants.requiresConfirmation).toEqual(
       expect.arrayContaining([
         'session:control:kill',
+        'tab:intervention:send-text',
+        'tab:intervention:submit',
         'rpc:fs:write',
         'rpc:git:write',
         'rpc:fs:delete',

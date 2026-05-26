@@ -185,6 +185,15 @@ import {
   INTERVENTION_READ_CAPABILITY,
   toInterventionReadResponse,
 } from './session-control-api.js';
+import {
+  executeSupervisorAction,
+  listSupervisorSessions,
+} from './supervisor-actions.js';
+import {
+  supervisorActionRequiredCapabilities,
+  type SupervisorActionError,
+  type SupervisorActionType,
+} from '../shared/supervisor-actions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2621,6 +2630,72 @@ async function main(): Promise<void> {
       );
       const records = localRelayNode.sessions.getInterventions(id, { limit });
       res.json(toInterventionReadResponse({ records, limit }));
+    }
+  );
+
+  app.get('/supervisor/sessions', requireScopedSessionAuth, (_req, res) => {
+    res.json(listSupervisorSessions(localRelayNode.sessions.list()));
+  });
+
+  app.post(
+    '/supervisor/actions/:action',
+    requireScopedSessionAuth,
+    (req, res) => {
+      const actionParam = req.params['action'];
+      const action: SupervisorActionType | undefined =
+        actionParam === 'sendText' || actionParam === 'submit'
+          ? actionParam
+          : undefined;
+      if (!action) {
+        res.status(400).json({
+          error: {
+            code: 'INVALID_ARGUMENT',
+            reasonCode: 'INVALID_ARGUMENT',
+            message: 'supervisor action must be sendText or submit',
+            retryable: false,
+          },
+        });
+        return;
+      }
+      const body =
+        typeof req.body === 'object' && req.body !== null
+          ? (req.body as Record<string, unknown>)
+          : {};
+      const rawTargetIds = Array.isArray(body['targetIds'])
+        ? body['targetIds']
+        : typeof body['id'] === 'string'
+          ? [body['id']]
+          : [];
+      const targetIds = rawTargetIds.filter(
+        (entry): entry is string => typeof entry === 'string'
+      );
+      const decision = capabilitiesDecisionFromRequest(
+        req,
+        supervisorActionRequiredCapabilities(action)
+      );
+      const deniedByCapability: SupervisorActionError | undefined =
+        decision.decision === 'allow'
+          ? undefined
+          : {
+              code: 'FORBIDDEN',
+              reasonCode: 'CAPABILITY_REQUIRED',
+              message: decision.message ?? `missing required capability: ${decision.capability}`,
+              retryable: false,
+              details: {
+                capability: decision.capability,
+                placeholder: decision.placeholder,
+              },
+            };
+      const actor = actorFromRequestBody(body['actor']);
+      const result = executeSupervisorAction({
+        boundary: localRelayNode.sessions,
+        action,
+        targetIds,
+        text: body['text'],
+        ...(actor === undefined ? {} : { actor }),
+        ...(deniedByCapability === undefined ? {} : { deniedByCapability }),
+      });
+      res.json(result);
     }
   );
 

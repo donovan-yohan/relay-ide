@@ -92,6 +92,9 @@ describe('CLI gateway contract', () => {
       'handoffs.launch',
       'artifacts.read',
       'supervisor.snapshot',
+      'supervisor.sessions',
+      'supervisor.sendText',
+      'supervisor.submit',
       'events.subscribe',
     ]);
 
@@ -180,6 +183,26 @@ describe('CLI gateway contract', () => {
       sideEffect: 'read',
       requiresConfirmation: false,
       controlRequirements: ['fresh-control-state', 'latest-intervention-ack'],
+      auditRedaction: { expectation: 'hashes-only' },
+      scopeKinds: ['session'],
+    });
+    expect(relayCommandDefinition('supervisor.sessions')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['session'],
+    });
+    expect(relayCommandDefinition('supervisor.sendText')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      controlRequirements: ['fresh-control-state'],
+      auditRedaction: { expectation: 'hashes-only' },
+      scopeKinds: ['session'],
+    });
+    expect(relayCommandDefinition('supervisor.submit')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      controlRequirements: ['fresh-control-state'],
       auditRedaction: { expectation: 'hashes-only' },
       scopeKinds: ['session'],
     });

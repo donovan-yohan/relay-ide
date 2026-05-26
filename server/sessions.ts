@@ -71,6 +71,7 @@ import {
   normalizeControlStateSummary,
   type ControlStateSummary,
   type ControlActor,
+  type ControlMode,
   type TabControlEvent,
   type InterventionRecord,
 } from '../shared/control-state.js';
@@ -87,7 +88,9 @@ import {
   applyControlModeAction,
   maybeAutoRevertToAgentDriven,
   recordHumanPtyInput,
+  recordSupervisorAction,
   type ControlModeAction,
+  type SupervisorInterventionAction,
 } from './control-engine.js';
 import {
   listInterventions,
@@ -994,6 +997,36 @@ function write(id: string, data: string): void {
   } else {
     logger.warn(`write() called on web session ${id} — no-op`);
   }
+}
+
+function supervisorWrite(
+  id: string,
+  input: {
+    action: SupervisorInterventionAction;
+    actor: ControlActor;
+    payload: string;
+  }
+): { eventId: string; modeBefore?: ControlMode; modeAfter?: ControlMode } {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  if (session.mode !== 'pty') {
+    throw new Error(`Session ${id} is not a PTY session`);
+  }
+  const event = recordSupervisorAction(session, input, controlEngineOptions());
+  if (event.type !== 'tab.intervention') {
+    throw new Error(`Supervisor action did not produce an intervention event for ${id}`);
+  }
+  session.pty.write(input.payload);
+  session.lastActivity = new Date().toISOString();
+  return {
+    eventId: event.eventId,
+    modeBefore: event.intervention.modeBefore,
+    ...(event.intervention.modeAfter === undefined
+      ? {}
+      : { modeAfter: event.intervention.modeAfter }),
+  };
 }
 
 function createRoutedPtyControlState(
@@ -2249,6 +2282,7 @@ export {
   captureTmuxPane,
   updateDisplayName,
   write,
+  supervisorWrite,
   recordRoutedPtyInput,
   controlAction,
   acknowledgeInterventions,
