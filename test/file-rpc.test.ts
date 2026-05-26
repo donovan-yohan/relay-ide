@@ -129,6 +129,51 @@ describe('read-only File RPC foundation', () => {
     });
   });
 
+  it('executes local base64 reads for bounded binary previews', async () => {
+    const root = fixtureRoot();
+    const imageFile = path.join(root, 'tiny.png');
+    const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+    fs.writeFileSync(imageFile, imageBytes);
+
+    const read = await executeLocalFileRpc('read', {
+      sessionId: 'session_a',
+      root,
+      cwd: root,
+      path: imageFile,
+      maxBytes: 4,
+      maxLines: 1,
+      encoding: 'base64',
+    });
+
+    expect(read).toMatchObject({
+      operation: 'read',
+      encoding: 'base64',
+      content: imageBytes.subarray(0, 4).toString('base64'),
+      bytesRead: 4,
+      truncatedBytes: true,
+      truncatedLines: false,
+      maxBytes: 4,
+      maxLines: 1,
+    });
+  });
+
+  it('rejects unsupported read encodings before filesystem access', async () => {
+    const root = fixtureRoot();
+
+    const read = await executeLocalFileRpc('read', {
+      sessionId: 'session_a',
+      root,
+      cwd: root,
+      path: path.join(root, 'README.md'),
+      encoding: 'hex',
+    });
+
+    expect(read).toMatchObject({
+      code: 'INVALID_REQUEST',
+      details: { reasonCode: 'FILE_RPC_INVALID_REQUEST', field: 'encoding' },
+    });
+  });
+
   it('continues reading after short file-handle reads before reporting truncation', async () => {
     const root = fixtureRoot();
     const file = path.join(root, 'short-read.txt');
