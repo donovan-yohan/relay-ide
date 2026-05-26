@@ -4,7 +4,7 @@
  * Covers:
  *   1. summarizeWorkbenchBlocks
  *      - Empty layout → empty summary, no truncation
- *      - Layout with all 7 block kinds → correct per-kind excerpts
+ *      - Layout with all 8 block kinds → correct per-kind excerpts
  *      - Layout exceeding block cap → truncates to MAX_BLOCKS, truncated=true
  *      - Layout exceeding byte cap → truncates safely, truncated=true
  *      - No secret/env/transcript leakage (grep output for forbidden patterns)
@@ -138,6 +138,7 @@ import {
   createWorkbenchProposeBlockRouter,
 } from '../server/workbench-prompt-hooks.js';
 import { writeWorkbenchLayout } from '../server/workbench-layout.js';
+import { getPromptFanoutRunFixture } from '../shared/prompt-fanout-fixtures.js';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -182,6 +183,25 @@ function makeAgentPlacement(): WorkbenchBlockPlacement {
     },
     position: { x: 410, y: 0 },
     size: { width: 400, height: 300 },
+    minimized: false,
+  };
+}
+
+function makePromptFanoutPlacement(): WorkbenchBlockPlacement {
+  return {
+    descriptor: {
+      kind: 'prompt-fanout',
+      id: 'block-prompt-fanout',
+      title: 'Prompt Fanout',
+      capabilityRequirements: [],
+      meta: {
+        fixture: 'all-success',
+        run: getPromptFanoutRunFixture('all-success'),
+        dryRunOnly: true,
+      },
+    },
+    position: { x: 820, y: 0 },
+    size: { width: 500, height: 300 },
     minimized: false,
   };
 }
@@ -309,10 +329,11 @@ describe('summarizeWorkbenchBlocks', () => {
     expect(summary.workspaceScope.id).toBe('ws:test');
   });
 
-  it('summarizes all 7 block kinds correctly', () => {
+  it('summarizes all 8 block kinds correctly', () => {
     const layout = makeLayout([
       makeTerminalPlacement(),
       makeAgentPlacement(),
+      makePromptFanoutPlacement(),
       makeWorkContextPlacement(),
       makeFilePlacement(),
       makeArtifactPlacement(),
@@ -320,9 +341,9 @@ describe('summarizeWorkbenchBlocks', () => {
       makeCustomPlacement(),
     ]);
     const summary = summarizeWorkbenchBlocks(layout);
-    expect(summary.blocks).toHaveLength(7);
+    expect(summary.blocks).toHaveLength(8);
     expect(summary.truncated).toBe(false);
-    expect(summary.totalBlocks).toBe(7);
+    expect(summary.totalBlocks).toBe(8);
 
     const terminal = summary.blocks.find((b) => b.kind === 'terminal');
     expect(terminal?.excerpt).toMatchObject({
@@ -335,6 +356,17 @@ describe('summarizeWorkbenchBlocks', () => {
       kind: 'agent',
       actorId: 'actor-xyz',
       actorDisplayName: 'Claude Code',
+    });
+
+    const promptFanout = summary.blocks.find(
+      (b) => b.kind === 'prompt-fanout'
+    );
+    expect(promptFanout?.excerpt).toMatchObject({
+      kind: 'prompt-fanout',
+      runId: 'pfr:all-success',
+      state: 'completed',
+      selectedTargetCount: 2,
+      resultCount: 2,
     });
 
     const wc = summary.blocks.find((b) => b.kind === 'work-context');

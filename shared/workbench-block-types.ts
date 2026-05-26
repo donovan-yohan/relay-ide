@@ -34,6 +34,8 @@ import type {
 } from './work-context.js';
 import type { WorkbenchBlockEnvironmentRef } from './workbench-block-environment.js';
 import type { FileResourceRef } from './file-resource-ref.js';
+import type { PromptFanoutFixtureKey } from './prompt-fanout-fixtures.js';
+import type { PromptFanoutRun } from './prompt-fanout-run.js';
 
 // ---------------------------------------------------------------------------
 // Re-exported re-used types for convenience
@@ -128,6 +130,7 @@ export type JsonValue =
 export type WorkbenchBlockKind =
   | 'terminal'
   | 'agent'
+  | 'prompt-fanout'
   | 'work-context'
   | 'file'
   | 'artifact'
@@ -193,6 +196,22 @@ export interface AgentBlockDescriptor extends WorkbenchBlockDescriptorBase {
      * Uses the local `ActorRef` placeholder — see note above.
      */
     actorRef: ActorRef;
+  };
+}
+
+/** Renders a mock PromptFanoutRun comparison across selected targets. */
+export interface PromptFanoutBlockDescriptor
+  extends WorkbenchBlockDescriptorBase {
+  kind: 'prompt-fanout';
+  meta: {
+    /** Inline run payload for mock/API-backed shells. */
+    run?: PromptFanoutRun;
+    /** Fixture key used when no inline run is supplied. */
+    fixture?: PromptFanoutFixtureKey;
+    /** Force the renderer's loading state for testable shell coverage. */
+    loading?: boolean;
+    /** Explicitly marks this block as dry-run only; no terminal send path. */
+    dryRunOnly?: boolean;
   };
 }
 
@@ -287,6 +306,7 @@ export interface CustomBlockDescriptor extends WorkbenchBlockDescriptorBase {
 export type WorkbenchBlockDescriptor =
   | TerminalBlockDescriptor
   | AgentBlockDescriptor
+  | PromptFanoutBlockDescriptor
   | WorkContextBlockDescriptor
   | FileBlockDescriptor
   | ArtifactBlockDescriptor
