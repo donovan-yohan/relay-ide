@@ -172,6 +172,66 @@ describe('work-context renderer', () => {
 });
 
 // ---------------------------------------------------------------------------
+// prompt-fanout renderer
+// ---------------------------------------------------------------------------
+
+describe('prompt-fanout renderer', () => {
+  it('file exists', () => {
+    expect(blockExists('prompt-fanout.tsx')).toBe(true);
+  });
+
+  it('css file exists', () => {
+    expect(blockExists('prompt-fanout.css')).toBe(true);
+  });
+
+  it('exports PromptFanoutBlock', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('export const PromptFanoutBlock');
+  });
+
+  it('is typed as WorkbenchBlockRenderer<"prompt-fanout">', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain(`WorkbenchBlockRenderer<'prompt-fanout'>`);
+  });
+
+  it('uses PromptFanoutRun fixtures and schema helpers', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('getPromptFanoutRunFixture');
+    expect(src).toContain('selectedPromptFanoutTargets');
+    expect(src).toContain('unselectedPromptFanoutTargets');
+  });
+
+  it('has visible loading, empty, denied, and partial-failure states', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('block-prompt-fanout--loading');
+    expect(src).toContain('block-prompt-fanout--empty');
+    expect(src).toContain('block-prompt-fanout--denied');
+    expect(src).toContain('block-prompt-fanout--partial-failure');
+  });
+
+  it('distinguishes selected targets from all sessions', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('selected targets');
+    expect(src).toContain('all sessions not selected');
+    expect(src).toContain('no broadcast-to-all default');
+  });
+
+  it('dry-run action emits audit event without terminal input', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('prompt-fanout.dry-run');
+    expect(src).toContain('sendsTerminalInput: false');
+    expect(src).not.toContain('sendInput');
+    expect(src).not.toContain('writeTerminal');
+  });
+
+  it('CSS has block-prompt-fanout classes', () => {
+    const css = readBlock('prompt-fanout.css');
+    expect(css).toContain('.block-prompt-fanout');
+    expect(css).toContain('.block-prompt-fanout__dry-run');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // custom renderer (slice 4 — sandboxed proposal/approval flow)
 // ---------------------------------------------------------------------------
 
@@ -714,13 +774,14 @@ describe('agent renderer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// All 7 renderers: verify they all export their named renderer
+// All 8 renderers: verify they all export their named renderer
 // ---------------------------------------------------------------------------
 
-describe('all 7 renderers exist and export named components', () => {
+describe('all 8 renderers exist and export named components', () => {
   const renderers = [
     { file: 'terminal.tsx', export: 'TerminalBlock' },
     { file: 'agent.tsx', export: 'AgentBlock' },
+    { file: 'prompt-fanout.tsx', export: 'PromptFanoutBlock' },
     { file: 'work-context.tsx', export: 'WorkContextBlock' },
     { file: 'file.tsx', export: 'FileBlock' },
     { file: 'artifact.tsx', export: 'ArtifactBlock' },

@@ -53,11 +53,12 @@ describe('block-registry source structure', () => {
     expect(src).toContain('export async function initFirstPartyBlocks');
   });
 
-  it('registers all 7 first-party kinds in initFirstPartyBlocks', () => {
+  it('registers all 8 first-party kinds in initFirstPartyBlocks', () => {
     const src = readFileSync(registryPath, 'utf-8');
     const kinds = [
       'terminal',
       'agent',
+      'prompt-fanout',
       'work-context',
       'file',
       'artifact',

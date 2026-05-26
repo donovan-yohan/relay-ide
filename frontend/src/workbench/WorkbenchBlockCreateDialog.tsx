@@ -106,6 +106,7 @@ export interface WorkbenchBlockCreateDialogProps {
 const ALL_SUPPORTED_KINDS: WorkbenchBlockDescriptor['kind'][] = [
   'terminal',
   'agent',
+  'prompt-fanout',
   'file',
   'markdown',
   'work-context',
