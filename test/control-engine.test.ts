@@ -256,7 +256,11 @@ describe('control transition engine', () => {
       modeAfter: 'co-driven',
       ackedAt: baseNow.toISOString(),
     });
-    expect(records[0]?.payloadPreview).toContain('[redacted:secret-like]');
+    expect(records[0]?.redaction).toMatchObject({
+      redacted: true,
+      classes: ['secret-like'],
+    });
+    expect(records[0]).not.toHaveProperty('payloadPreview');
     expect(JSON.stringify(records[0])).not.toContain('raw-secret-value');
     expect(events.map((entry) => entry.type)).toEqual(['tab.mode-changed', 'tab.intervention']);
     expect(event).toMatchObject({
@@ -435,6 +439,29 @@ describe('persistent intervention log', () => {
   afterEach(() => {
     closeInterventionLog();
     fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it('persists supervisor action records as hashes-only metadata without raw payload previews', () => {
+    const session = makeSession({ id: 'supervisor-plain', nodeId: 'node-a' });
+    const actor: ControlActor = { kind: 'human', id: 'supervisor-1', displayName: 'Supervisor' };
+
+    recordSupervisorAction(session, { action: 'sendText', actor, payload: 'hello' });
+
+    const [record] = listInterventions({ sessionId: 'supervisor-plain', nodeId: 'node-a' });
+    expect(record).toMatchObject({
+      source: 'supervisor-action',
+      kind: 'supervisor-send-text',
+      redaction: {
+        redacted: false,
+        byteCount: 5,
+        charCount: 5,
+        lineCount: 1,
+        classes: ['plain-text'],
+      },
+    });
+    expect(record?.redaction.hashSha256).toHaveLength(64);
+    expect(record).not.toHaveProperty('payloadPreview');
+    expect(JSON.stringify(record)).not.toContain('hello');
   });
 
   it('persists structured records, lists by session/node, and acks human input', () => {

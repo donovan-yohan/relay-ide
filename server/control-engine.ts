@@ -230,6 +230,7 @@ function buildRecord(input: {
   modeAfter?: ControlMode;
   options?: ControlEngineOptions;
   acked?: boolean;
+  includePayloadPreview?: boolean;
 }): InterventionRecord {
   const identity = identityForSession(input.session);
   const payload = input.payload ?? '';
@@ -249,7 +250,9 @@ function buildRecord(input: {
     redaction: redacted.redaction,
     modeBefore: input.modeBefore,
     ...(input.modeAfter ? { modeAfter: input.modeAfter } : {}),
-    ...(redacted.payloadPreview ? { payloadPreview: redacted.payloadPreview } : {}),
+    ...(input.includePayloadPreview !== false && redacted.payloadPreview
+      ? { payloadPreview: redacted.payloadPreview }
+      : {}),
   };
   if (input.acked) {
     record.ackedBy = input.actor;
@@ -524,6 +527,7 @@ export function recordSupervisorAction(
     modeAfter,
     options,
     acked: true,
+    includePayloadPreview: false,
   });
   const append = options.append ?? appendIntervention;
   append(record);
