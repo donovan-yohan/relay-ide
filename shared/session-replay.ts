@@ -177,8 +177,7 @@ export function createTerminalStreamState(input: {
     nextSeq: 0,
     cursor: input.bytesDropped ?? 0,
     oldestCursor: input.bytesDropped ?? 0,
-    capacityBytes:
-      input.capacityBytes ?? DEFAULT_SESSION_REPLAY_CAPACITY_BYTES,
+    capacityBytes: input.capacityBytes ?? DEFAULT_SESSION_REPLAY_CAPACITY_BYTES,
     bytesDropped: input.bytesDropped ?? 0,
     frames: [],
     activeResizeOwnerId: null,
@@ -194,22 +193,32 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function envelopeBase<K extends TerminalStreamPayloadKind>(
+  state: TerminalStreamState,
+  kind: K,
+  cursor: number,
+  replay: boolean,
+  seq: number
+): TerminalStreamEnvelopeBase<K> {
+  return {
+    type: 'terminal-stream',
+    version: TERMINAL_STREAM_PROTOCOL_VERSION,
+    sessionId: state.sessionId,
+    seq,
+    cursor,
+    kind,
+    timestamp: nowIso(),
+    replay,
+  };
+}
+
 function nextEnvelopeBase<K extends TerminalStreamPayloadKind>(
   state: TerminalStreamState,
   kind: K,
   cursor: number,
   replay: boolean
 ): TerminalStreamEnvelopeBase<K> {
-  return {
-    type: 'terminal-stream',
-    version: TERMINAL_STREAM_PROTOCOL_VERSION,
-    sessionId: state.sessionId,
-    seq: state.nextSeq++,
-    cursor,
-    kind,
-    timestamp: nowIso(),
-    replay,
-  };
+  return envelopeBase(state, kind, cursor, replay, state.nextSeq++);
 }
 
 export function appendTerminalStreamData(
@@ -279,16 +288,42 @@ export function terminalStreamMetadata(
 ): TerminalStreamMetadataEnvelope {
   return {
     ...nextEnvelopeBase(state, 'metadata', cursor, replay),
-    payload: {
-      runtime: 'node-pty/tmux',
-      capacityBytes: state.capacityBytes,
-      bytesDropped: state.bytesDropped,
-      oldestCursor: state.oldestCursor,
-      latestCursor: state.cursor,
-      resizePolicy: 'single-active-owner',
-      activeResizeOwnerId: state.activeResizeOwnerId,
-      lastResize: state.lastResize,
-    },
+    payload: terminalStreamMetadataPayload(state),
+  };
+}
+
+function terminalStreamMetadataPayload(
+  state: TerminalStreamState
+): TerminalStreamMetadataPayload {
+  return {
+    runtime: 'node-pty/tmux',
+    capacityBytes: state.capacityBytes,
+    bytesDropped: state.bytesDropped,
+    oldestCursor: state.oldestCursor,
+    latestCursor: state.cursor,
+    resizePolicy: 'single-active-owner',
+    activeResizeOwnerId: state.activeResizeOwnerId,
+    lastResize: state.lastResize,
+  };
+}
+
+function replayEnvelopeBase<K extends TerminalStreamPayloadKind>(
+  state: TerminalStreamState,
+  seq: number,
+  kind: K,
+  cursor: number
+): TerminalStreamEnvelopeBase<K> {
+  return envelopeBase(state, kind, cursor, true, seq);
+}
+
+function replayMetadataEnvelope(
+  state: TerminalStreamState,
+  seq: number,
+  cursor: number
+): TerminalStreamMetadataEnvelope {
+  return {
+    ...replayEnvelopeBase(state, seq, 'metadata', cursor),
+    payload: terminalStreamMetadataPayload(state),
   };
 }
 
@@ -323,6 +358,11 @@ export function buildTerminalStreamReplay(
   requestedCursor: number | null
 ): TerminalStreamEnvelope[] {
   const envelopes: TerminalStreamEnvelope[] = [];
+  let replaySeq = state.nextSeq;
+  const nextReplayBase = <K extends TerminalStreamPayloadKind>(
+    kind: K,
+    cursor: number
+  ) => replayEnvelopeBase(state, replaySeq++, kind, cursor);
   const replayFrom = requestedCursor ?? state.oldestCursor;
   const tooOld = requestedCursor !== null && replayFrom < state.oldestCursor;
   const tooNew = requestedCursor !== null && replayFrom > state.cursor;
@@ -332,13 +372,13 @@ export function buildTerminalStreamReplay(
       ? state.cursor
       : Math.max(state.oldestCursor, replayFrom);
 
-  envelopes.push(terminalStreamMetadata(state, true, startCursor));
+  envelopes.push(replayMetadataEnvelope(state, replaySeq++, startCursor));
   if (tooOld || tooNew) {
     const reason: TerminalStreamLagReason = tooOld
       ? 'cursor-too-old'
       : 'cursor-too-new';
     envelopes.push({
-      ...nextEnvelopeBase(state, 'lag', startCursor, true),
+      ...nextReplayBase('lag', startCursor),
       payload: {
         reason,
         requestedCursor,
@@ -353,20 +393,21 @@ export function buildTerminalStreamReplay(
     });
   } else if (requestedCursor !== null && requestedCursor < state.cursor) {
     envelopes.push({
-      ...nextEnvelopeBase(state, 'lag', startCursor, true),
+      ...nextReplayBase('lag', startCursor),
       payload: {
         reason: 'server-backfill',
         requestedCursor,
         oldestCursor: state.oldestCursor,
         latestCursor: state.cursor,
         bytesDropped: state.bytesDropped,
-        message: 'server is backfilling terminal output from the requested cursor',
+        message:
+          'server is backfilling terminal output from the requested cursor',
       },
     });
   }
 
   envelopes.push({
-    ...nextEnvelopeBase(state, 'replay-start', startCursor, true),
+    ...nextReplayBase('replay-start', startCursor),
     payload: {
       requestedCursor,
       startCursor,
@@ -381,7 +422,7 @@ export function buildTerminalStreamReplay(
       if (frame.payload.range.end <= startCursor) continue;
       if (frame.payload.range.start >= startCursor) {
         envelopes.push({
-          ...nextEnvelopeBase(state, 'data', frame.payload.range.end, true),
+          ...nextReplayBase('data', frame.payload.range.end),
           payload: frame.payload,
         });
         replayedFrames++;
@@ -390,7 +431,7 @@ export function buildTerminalStreamReplay(
       const offset = startCursor - frame.payload.range.start;
       const data = frame.payload.data.slice(offset);
       envelopes.push({
-        ...nextEnvelopeBase(state, 'data', frame.payload.range.end, true),
+        ...nextReplayBase('data', frame.payload.range.end),
         payload: {
           ...frame.payload,
           data,
@@ -403,7 +444,7 @@ export function buildTerminalStreamReplay(
   }
 
   envelopes.push({
-    ...nextEnvelopeBase(state, 'replay-end', state.cursor, true),
+    ...nextReplayBase('replay-end', state.cursor),
     payload: { cursor: state.cursor, replayedFrames },
   });
   return envelopes;

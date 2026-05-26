@@ -69,7 +69,8 @@ function ensureTerminalStreamState(session: Extract<Session, { mode: 'pty' }>) {
       bytesDropped: session.scrollbackBytesEvicted,
     });
   }
-  if (!session.terminalStreamSubscribers) session.terminalStreamSubscribers = [];
+  if (!session.terminalStreamSubscribers)
+    session.terminalStreamSubscribers = [];
   return session.terminalStream;
 }
 
@@ -81,6 +82,12 @@ function parseReplayCursor(raw: string | null): number | null {
 
 function parseResizeOwner(value: unknown): TerminalStreamResizeOwner {
   return value === 'passive' ? 'passive' : 'active';
+}
+
+function parseResizeDimension(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
 }
 
 interface LocalPtyAttachContext {
@@ -751,7 +758,9 @@ function setupWebSocket(
         clientId:
           parseClientId(requestUrl.searchParams.get('clientId')) ??
           createTerminalStreamClientId(),
-        resizeOwner: parseResizeOwner(requestUrl.searchParams.get('resizeOwner')),
+        resizeOwner: parseResizeOwner(
+          requestUrl.searchParams.get('resizeOwner')
+        ),
       });
       wss.emit('connection', ws, request);
     });
@@ -805,26 +814,38 @@ function setupWebSocket(
         const str = msg.toString();
         try {
           const parsed = JSON.parse(str);
-          if (parsed.type === 'ping') {
-            replyPing(ws);
-            return;
-          }
-          if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
-            const owner = parseResizeOwner(parsed.owner ?? attachContext.resizeOwner);
-            const resizeEnvelope = recordTerminalStreamResize(terminalStream, {
-              cols: parsed.cols,
-              rows: parsed.rows,
-              owner,
-              sourceClientId:
-                parseClientId(parsed.clientId) ?? attachContext.clientId,
-            });
-            if (resizeEnvelope.payload.applied) {
-              sessions.resize(session.id, parsed.cols, parsed.rows);
+          if (parsed && typeof parsed === 'object') {
+            const payload = parsed as Record<string, unknown>;
+            if (payload['type'] === 'ping') {
+              replyPing(ws);
+              return;
             }
-            for (const cb of session.terminalStreamSubscribers ?? []) {
-              cb(resizeEnvelope);
+            if (payload['type'] === 'resize') {
+              const cols = parseResizeDimension(payload['cols']);
+              const rows = parseResizeDimension(payload['rows']);
+              if (cols === null || rows === null) return;
+              const owner = parseResizeOwner(
+                payload['owner'] ?? attachContext.resizeOwner
+              );
+              const resizeEnvelope = recordTerminalStreamResize(
+                terminalStream,
+                {
+                  cols,
+                  rows,
+                  owner,
+                  sourceClientId:
+                    parseClientId(payload['clientId']) ??
+                    attachContext.clientId,
+                }
+              );
+              if (resizeEnvelope.payload.applied) {
+                sessions.resize(session.id, cols, rows);
+              }
+              for (const cb of session.terminalStreamSubscribers ?? []) {
+                cb(resizeEnvelope);
+              }
+              return;
             }
-            return;
           }
         } catch (_) {
           // ignore

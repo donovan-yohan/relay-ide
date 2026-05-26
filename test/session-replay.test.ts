@@ -111,6 +111,7 @@ describe('terminal stream v2 replay envelopes', () => {
     const state = createTerminalStreamState({ sessionId: 'sess-replay' });
     appendTerminalStreamData(state, 'hello');
     appendTerminalStreamData(state, ' world');
+    const beforeReplayNextSeq = state.nextSeq;
 
     const replay = buildTerminalStreamReplay(state, 5);
 
@@ -133,7 +134,13 @@ describe('terminal stream v2 replay envelopes', () => {
       expect(replayedData.payload.range).toEqual({ start: 5, end: 11 });
     }
     expect(replay.map((envelope) => envelope.seq)).toEqual([2, 3, 4, 5, 6]);
-    expect(replay.map((envelope) => envelope.cursor)).toEqual([5, 5, 5, 11, 11]);
+    expect(replay.map((envelope) => envelope.cursor)).toEqual([
+      5, 5, 5, 11, 11,
+    ]);
+    expect(state.nextSeq).toBe(beforeReplayNextSeq);
+
+    const liveAfterReplay = appendTerminalStreamData(state, '!');
+    expect(liveAfterReplay.seq).toBe(beforeReplayNextSeq);
   });
 
   it('marks too-old cursors stale and replays from the oldest retained cursor', () => {
