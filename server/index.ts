@@ -146,11 +146,18 @@ import {
   type ContextInboxStore,
 } from './features/context-inbox-router.js';
 import { createContextInboxStoreAdapter } from './features/context-inbox-store-adapter.js';
-import { createAnchorFileFetcher } from './anchor-file-fetcher.js';
+import {
+  createAnchorFileFetcher,
+  createAnchorContentFetcher,
+} from './anchor-file-fetcher.js';
 import {
   registerAnchorFileFetcher,
   type AnchorFileFetcher,
 } from './anchor-resolution.js';
+import {
+  registerFileRangeContentFetcher,
+  type FileRangeContentFetcher,
+} from './context-adapters/file-range.js';
 import { collectLocalRepoInventory } from './repo-inventory.js';
 import type {
   AgentType,
@@ -1733,9 +1740,19 @@ async function main(): Promise<void> {
     sessionEnvelopes: sessionEnvelopeRegistry,
   });
   // Anchor resolution (#766) decorates a packet's `AnchorState` at read time.
-  // The consumer endpoint lands in the #760 adapter lane; until then the fetcher
-  // is registered as the hub's anchor-resolution dependency.
+  // The #760 lane wires that decoration into `context.get`/`inbox.*` via the
+  // context-inbox router (it calls `resolveAnchorWithRegisteredFetcher`).
   registerAnchorFileFetcher(anchorFileFetcher);
+  // #760: production `FileRangeContentFetcher` for the file-range adapter's
+  // CONTENT expansion. Reuses the same session-scoped File RPC `read` path under
+  // `rpc:fs:read`; shares the live registry/link/envelope handles. Registered so
+  // `expandFileRangePacket` can read a bounded slice without threading deps.
+  const anchorContentFetcher: FileRangeContentFetcher = createAnchorContentFetcher({
+    registry: hubNodeRegistry,
+    nodeLinks: hubNodeLinks,
+    sessionEnvelopes: sessionEnvelopeRegistry,
+  });
+  registerFileRangeContentFetcher(anchorContentFetcher);
   app.use(
     createCliGatewayEventsRouter(express, {
       cliGatewayAuth: requireCliGatewayAuth,

@@ -43,6 +43,11 @@ import {
   hashAnchorContent,
 } from './anchor-resolution.js';
 import type {
+  FileRangeContentFetcher,
+  FileRangeContentResult,
+  FileRangeContentTarget,
+} from './context-adapters/file-range.js';
+import type {
   FileRpcReadResponse,
   FileRpcStatResponse,
 } from '../shared/file-rpc.js';
@@ -256,5 +261,107 @@ function mapPayload(
     grantedCapability: ANCHOR_RESOLUTION_CAPABILITY,
     ...(typeof response.bytesRead === 'number' ? { size: response.bytesRead } : {}),
     ...(contentSha256 !== undefined ? { contentSha256 } : {}),
+  };
+}
+
+// ── #760: content fetcher (File-RPC-under-capability `read` that RETURNS bytes) ─
+//
+// The #766 `AnchorFileFetcher` above discards the read content (it only keeps
+// the freshness sha for staleness comparison). The #760 file-range adapter
+// needs the actual bounded text slice, so this builds a sibling fetcher that
+// returns the UTF-8 content alongside the same freshness decorations. It reuses
+// the IDENTICAL scope-resolution + policy machinery (`resolveScopedReadRequest`
+// + `evaluateHubPolicy` under `rpc:fs:read`) so the security posture is shared,
+// not re-implemented. C1: `target.path` is passed VERBATIM (no decodeURIComponent).
+
+/** Map an authorized File RPC `read` response onto a `FileRangeContentResult`. */
+function mapContentPayload(payload: unknown): FileRangeContentResult {
+  const record = asRecord(payload);
+  if (!record) {
+    return { found: false, grantedCapability: ANCHOR_RESOLUTION_CAPABILITY };
+  }
+  const response = record as unknown as FileRpcReadResponse;
+  if (typeof response.content !== 'string') {
+    return { found: false, grantedCapability: ANCHOR_RESOLUTION_CAPABILITY };
+  }
+  // The adapter slices line ranges over UTF-8 text; a base64 (binary) read is
+  // not line-sliceable, so decode it to a UTF-8 view for the bounded slice.
+  const text =
+    response.encoding === 'base64'
+      ? Buffer.from(response.content, 'base64').toString('utf8')
+      : response.content;
+  const buffer = Buffer.from(text, 'utf8');
+  // A truncated read cannot yield a trustworthy whole-file hash (mirrors the
+  // staleness fetcher); omit the sha so the resolver falls back to size/mtime.
+  const contentSha256 = response.truncatedBytes ? undefined : hashAnchorContent(buffer);
+  return {
+    found: true,
+    grantedCapability: ANCHOR_RESOLUTION_CAPABILITY,
+    content: text,
+    ...(typeof response.bytesRead === 'number' ? { bytesRead: response.bytesRead, size: response.bytesRead } : {}),
+    ...(contentSha256 !== undefined ? { contentSha256 } : {}),
+    ...(typeof response.truncatedBytes === 'boolean' ? { truncatedBytes: response.truncatedBytes } : {}),
+  };
+}
+
+/**
+ * Build the production `FileRangeContentFetcher` for the #760 adapter. Always a
+ * `read` (the adapter needs bytes). Returns `null` when the node is not live,
+ * no in-scope session exists, or policy denies — mapped by the adapter to
+ * `unavailable`/`missing` (never a confidently-wrong slice; C1).
+ */
+export function createAnchorContentFetcher(
+  deps: AnchorFileFetcherDeps
+): FileRangeContentFetcher {
+  const now = deps.now ?? (() => new Date());
+
+  return async function fetchAnchorContent(
+    target: FileRangeContentTarget
+  ): Promise<FileRangeContentResult | null> {
+    const node = liveNode(deps.registry, deps.nodeLinks, target.nodeId);
+    if (!node) return null;
+
+    const resolved = resolveScopedReadRequest({
+      sessions: deps.sessionEnvelopes.listSummaries(),
+      node,
+      nodeId: target.nodeId,
+      path: target.path, // C1: verbatim.
+      operation: 'read',
+      maxBytes: target.maxBytes,
+    });
+    if (!resolved || !resolved.request.ok) return null;
+
+    const policyScope = resolved.request.value.policyScope;
+    const fileRequest = resolved.request.value.request;
+    const decision = evaluateHubPolicy({
+      peer: { kind: 'hub' },
+      node,
+      nodeId: target.nodeId,
+      intent: { action: 'rpc.fs.read', target: target.nodeId },
+      scope: policyScope,
+      requiredCapabilities: requiredCapabilitiesForRpcIntent('rpc.fs.read'),
+      sessionId: resolved.session.sessionId,
+      ...(resolved.session.correlationId
+        ? { correlationId: resolved.session.correlationId }
+        : {}),
+      ...(resolved.session.expiresAt !== null
+        ? { expiresAt: resolved.session.expiresAt }
+        : {}),
+      ...(resolved.session.revokedAt !== null
+        ? { revokedAt: resolved.session.revokedAt }
+        : {}),
+      params: { ...fileRequest },
+      now: now(),
+    });
+    if (decision.decision !== 'allow') return null;
+
+    let payload: unknown;
+    try {
+      payload = await deps.nodeLinks.request(target.nodeId, 'fs.read', fileRequest);
+    } catch {
+      // A node error (e.g. NOT_FOUND) on an authorized read → file gone.
+      return { found: false, grantedCapability: ANCHOR_RESOLUTION_CAPABILITY };
+    }
+    return mapContentPayload(payload);
   };
 }
