@@ -326,6 +326,30 @@ describe('context/inbox gateway router', () => {
     expect(noKind.status).toBe(400);
     expect(noKind.body.error.code).toBe('INVALID_ARGUMENT');
 
+    const invalidAnchor = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'file-anchor',
+        anchor: {
+          ref: { path: 'relative.ts', intent: 'bogus' },
+          lineRange: { startLine: 3, endLine: 2 },
+        },
+        createdBy: 'agent_1',
+      },
+    });
+    expect(invalidAnchor.status).toBe(400);
+    expect(invalidAnchor.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(invalidAnchor.body.error.message).toContain('anchor.ref.nodeId');
+    expect(invalidAnchor.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(invalidAnchor.body.error.details.fieldErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'anchor.ref.nodeId' }),
+        expect.objectContaining({ field: 'anchor.ref.path' }),
+        expect.objectContaining({ field: 'anchor.ref.intent' }),
+        expect.objectContaining({ field: 'anchor.lineRange.endLine' }),
+      ])
+    );
+
     const noTarget = await req('POST', '/inbox', {
       caps: 'inbox:write',
       body: { contextPacketIds: [], createdBy: 'agent_1' },
@@ -363,15 +387,18 @@ describe('context/inbox gateway router — #760 derived AnchorState decoration',
     return created.body.contextPacket.id as string;
   }
 
-  it('context.get decorates a file-anchor packet with derived anchorState', async () => {
-    await mount(createFakeStore(), resolverReturning('stale'));
-    const id = await createFileAnchor();
-    const got = await req('GET', `/context/${encodeURIComponent(id)}`, { caps: 'context:read' });
-    expect(got.status).toBe(200);
-    expect(got.body.contextPacket.kind).toBe('file-anchor');
-    // DERIVED at read time, surfaced — never stored.
-    expect(got.body.contextPacket.anchorState).toBe('stale');
-  });
+  it.each(['unchanged', 'stale'] as const)(
+    'context.get decorates a file-anchor packet with derived %s anchorState',
+    async (state) => {
+      await mount(createFakeStore(), resolverReturning(state));
+      const id = await createFileAnchor();
+      const got = await req('GET', `/context/${encodeURIComponent(id)}`, { caps: 'context:read' });
+      expect(got.status).toBe(200);
+      expect(got.body.contextPacket.kind).toBe('file-anchor');
+      // DERIVED at read time, surfaced — never stored.
+      expect(got.body.contextPacket.anchorState).toBe(state);
+    }
+  );
 
   it('context.get leaves a note packet undecorated', async () => {
     await mount(createFakeStore(), resolverReturning('unchanged'));

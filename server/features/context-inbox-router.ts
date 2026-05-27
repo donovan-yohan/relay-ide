@@ -50,6 +50,7 @@ import {
   type DecoratedContextPacket,
 } from '../context-adapters/file-range.js';
 import { resolveAnchorWithRegisteredFetcher } from '../anchor-resolution.js';
+import { FILE_RESOURCE_REF_INTENTS } from '../../shared/file-resource-ref.js';
 
 // ---------------------------------------------------------------------------
 // Store seam — implemented by #758, depended on here as an interface.
@@ -288,6 +289,246 @@ function readLimit(value: unknown): number | undefined {
   return Math.min(Math.max(Math.trunc(parsed), 1), 200);
 }
 
+interface FieldValidationHint {
+  field: string;
+  message: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const SHA256_HEX_RE = /^[a-f0-9]{64}$/i;
+
+function pathEscapesRoot(value: string): boolean {
+  const parts: string[] = [];
+  for (const segment of value.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      if (parts.length === 0) return true;
+      parts.pop();
+      continue;
+    }
+    parts.push(segment);
+  }
+  return false;
+}
+
+function pushStringPathHint(
+  hints: FieldValidationHint[],
+  field: string,
+  value: unknown,
+  message: string
+): void {
+  if (!isNonEmptyString(value)) {
+    hints.push({ field, message });
+  } else if (!value.startsWith('/')) {
+    hints.push({ field, message: 'must be absolute and start with /' });
+  } else if (pathEscapesRoot(value)) {
+    hints.push({ field, message: 'must not escape the filesystem root with .. segments' });
+  }
+}
+
+function pushTimestampAndHashHints(
+  hints: FieldValidationHint[],
+  payload: Record<string, unknown>,
+  fieldPrefix: string
+): void {
+  const rawCapturedAt = payload['capturedAt'];
+  if (
+    rawCapturedAt !== undefined &&
+    (typeof rawCapturedAt !== 'string' || !ISO_TIMESTAMP_RE.test(rawCapturedAt))
+  ) {
+    hints.push({ field: `${fieldPrefix}.capturedAt`, message: 'must be an ISO 8601 UTC timestamp when set' });
+  }
+
+  const rawSha = payload['sha256'];
+  if (rawSha !== undefined && (typeof rawSha !== 'string' || !SHA256_HEX_RE.test(rawSha))) {
+    hints.push({ field: `${fieldPrefix}.sha256`, message: 'must be 64 hex characters when set' });
+  }
+}
+
+function pushNumericHints(
+  hints: FieldValidationHint[],
+  payload: Record<string, unknown>,
+  fieldPrefix: string
+): void {
+  for (const numericField of ['size', 'mtimeMs'] as const) {
+    const value = payload[numericField];
+    if (
+      value !== undefined &&
+      (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
+    ) {
+      hints.push({ field: `${fieldPrefix}.${numericField}`, message: 'must be a non-negative finite number when set' });
+    }
+  }
+
+  const maxBytes = payload['maxBytes'];
+  if (
+    maxBytes !== undefined &&
+    (typeof maxBytes !== 'number' || !Number.isFinite(maxBytes) || maxBytes <= 0)
+  ) {
+    hints.push({ field: `${fieldPrefix}.maxBytes`, message: 'must be a positive finite number when set' });
+  }
+}
+
+function pushRepoBindingHints(
+  hints: FieldValidationHint[],
+  payload: Record<string, unknown>,
+  fieldPrefix: string
+): void {
+  const repoBinding = payload['repoBinding'];
+  if (repoBinding === undefined) return;
+  if (!isRecord(repoBinding)) {
+    hints.push({ field: `${fieldPrefix}.repoBinding`, message: 'must be an object when set' });
+    return;
+  }
+
+  pushStringPathHint(
+    hints,
+    `${fieldPrefix}.repoBinding.repoPath`,
+    repoBinding['repoPath'],
+    'is required and must be an absolute path'
+  );
+
+  const worktreePath = repoBinding['worktreePath'];
+  if (worktreePath !== undefined && worktreePath !== null) {
+    pushStringPathHint(
+      hints,
+      `${fieldPrefix}.repoBinding.worktreePath`,
+      worktreePath,
+      'must be an absolute path or null when set'
+    );
+  }
+
+  const branch = repoBinding['branch'];
+  if (branch !== undefined && branch !== null && typeof branch !== 'string') {
+    hints.push({ field: `${fieldPrefix}.repoBinding.branch`, message: 'must be a string or null when set' });
+  }
+}
+
+function validateFileResourceRefPayload(
+  payload: unknown,
+  fieldPrefix: string
+): FieldValidationHint[] {
+  const hints: FieldValidationHint[] = [];
+  if (!isRecord(payload)) {
+    return [
+      {
+        field: fieldPrefix,
+        message: 'must be an object with nodeId, absolute path, and intent',
+      },
+    ];
+  }
+
+  if (!isNonEmptyString(payload['nodeId'])) {
+    hints.push({ field: `${fieldPrefix}.nodeId`, message: 'is required and must be a non-empty string' });
+  }
+
+  pushStringPathHint(
+    hints,
+    `${fieldPrefix}.path`,
+    payload['path'],
+    'is required and must be a non-empty absolute path'
+  );
+
+  const rawIntent = payload['intent'];
+  if (
+    typeof rawIntent !== 'string' ||
+    !(FILE_RESOURCE_REF_INTENTS as readonly string[]).includes(rawIntent)
+  ) {
+    hints.push({
+      field: `${fieldPrefix}.intent`,
+      message: `must be one of ${FILE_RESOURCE_REF_INTENTS.join('|')}`,
+    });
+  }
+
+  pushTimestampAndHashHints(hints, payload, fieldPrefix);
+  pushNumericHints(hints, payload, fieldPrefix);
+  pushRepoBindingHints(hints, payload, fieldPrefix);
+  return hints;
+}
+
+function validateLineRangePayload(
+  payload: unknown,
+  fieldPrefix: string
+): FieldValidationHint[] {
+  if (!isRecord(payload)) return [{ field: fieldPrefix, message: 'must be an object with startLine and endLine' }];
+  const hints: FieldValidationHint[] = [];
+  const startLine = payload['startLine'];
+  const endLine = payload['endLine'];
+  if (typeof startLine !== 'number' || !Number.isInteger(startLine) || startLine < 1) {
+    hints.push({ field: `${fieldPrefix}.startLine`, message: 'must be an integer >= 1' });
+  }
+  if (typeof endLine !== 'number' || !Number.isInteger(endLine) || endLine < 1) {
+    hints.push({ field: `${fieldPrefix}.endLine`, message: 'must be an integer >= 1' });
+  } else if (typeof startLine === 'number' && Number.isInteger(startLine) && endLine < startLine) {
+    hints.push({ field: `${fieldPrefix}.endLine`, message: 'must be >= startLine' });
+  }
+  return hints;
+}
+
+function validateByteRangePayload(
+  payload: unknown,
+  fieldPrefix: string
+): FieldValidationHint[] {
+  if (!isRecord(payload)) return [{ field: fieldPrefix, message: 'must be an object with startByte and endByte' }];
+  const hints: FieldValidationHint[] = [];
+  const startByte = payload['startByte'];
+  const endByte = payload['endByte'];
+  if (typeof startByte !== 'number' || !Number.isInteger(startByte) || startByte < 0) {
+    hints.push({ field: `${fieldPrefix}.startByte`, message: 'must be an integer >= 0' });
+  }
+  if (typeof endByte !== 'number' || !Number.isInteger(endByte) || endByte < 0) {
+    hints.push({ field: `${fieldPrefix}.endByte`, message: 'must be an integer >= 0' });
+  } else if (typeof startByte === 'number' && Number.isInteger(startByte) && endByte <= startByte) {
+    hints.push({ field: `${fieldPrefix}.endByte`, message: 'must be > startByte' });
+  }
+  return hints;
+}
+
+function validateAnchorPayload(payload: unknown): FieldValidationHint[] {
+  const hints: FieldValidationHint[] = [];
+  if (!isRecord(payload)) {
+    return [{ field: 'anchor', message: 'is required and must be an object for kind=file-anchor' }];
+  }
+  hints.push(...validateFileResourceRefPayload(payload['ref'], 'anchor.ref'));
+  const hasLineRange = payload['lineRange'] !== undefined;
+  const hasByteRange = payload['byteRange'] !== undefined;
+  if (!hasLineRange && !hasByteRange) {
+    hints.push({ field: 'anchor', message: 'must include lineRange or byteRange' });
+  }
+  if (hasLineRange) hints.push(...validateLineRangePayload(payload['lineRange'], 'anchor.lineRange'));
+  if (hasByteRange) hints.push(...validateByteRangePayload(payload['byteRange'], 'anchor.byteRange'));
+  if (payload['quote'] !== undefined && typeof payload['quote'] !== 'string') {
+    hints.push({ field: 'anchor.quote', message: 'must be a string when set' });
+  }
+  return hints;
+}
+
+function validateContextCreatePayload(
+  kind: ContextPacketKind,
+  body: Record<string, unknown>
+): FieldValidationHint[] {
+  switch (kind) {
+    case 'file-anchor':
+      return validateAnchorPayload(body['anchor']);
+    case 'file-ref':
+      return validateFileResourceRefPayload(body['fileRef'], 'fileRef');
+    case 'note':
+      return readString(body['note']) ? [] : [{ field: 'note', message: 'is required for kind=note' }];
+    case 'diff-ref':
+    case 'log-ref':
+    default:
+      return [];
+  }
+}
+
 const TERMINAL_STATE_SET = new Set<SessionInboxMessageState>(TERMINAL_INBOX_MESSAGE_STATES);
 
 /** Map a guarded-update failure onto the right gateway error response. */
@@ -380,6 +621,18 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
       sendGatewayError(res, 'INVALID_ARGUMENT', 'kind is required and must be a known ContextPacketKind', false, {
         field: 'kind',
       });
+      return;
+    }
+    const fieldErrors = validateContextCreatePayload(kind, body);
+    if (fieldErrors.length > 0) {
+      const [first] = fieldErrors;
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        `invalid ${kind} context packet: ${first?.field ?? 'payload'} ${first?.message ?? 'is invalid'}`,
+        false,
+        { reasonCode: 'INVALID_CONTEXT_PACKET', fieldErrors }
+      );
       return;
     }
     const createdBy = readString(body['createdBy']) ?? 'cli-gateway';
