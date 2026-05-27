@@ -14,6 +14,7 @@ import WorkspaceGroup from './WorkspaceGroup.js';
 import { HubNodeDashboardPanel } from './HubNodeDashboard.js';
 import RepoItem from './RepoItem.js';
 import { SessionHistoryPanel } from './SessionHistoryPanel.js';
+import { ViewSpineTree } from './ViewSpineTree.js';
 import { TuiButton } from './TuiButton.js';
 import {
   DndContext,
@@ -410,6 +411,7 @@ export function Sidebar({
   const sidebarWidth = useUiStore((s) => s.sidebarWidth);
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const analyticsView = useUiStore((s) => s.analyticsView);
+  const viewSpineEnabled = useUiStore((s) => s.viewSpineEnabled);
   const closeSidebar = useUiStore((s) => s.closeSidebar);
   const toggleSidebarCollapsed = useUiStore((s) => s.toggleSidebarCollapsed);
   const repos = useSessionsStore((s) => s.repos);
@@ -540,6 +542,12 @@ export function Sidebar({
               repoName={historyRepo.name}
               onBack={handleCloseHistory}
             />
+          ) : viewSpineEnabled ? (
+            // #732/#729: flag-gated, read-only, client-derived view-spine tree.
+            // OFF path below is byte-identical to today.
+            <div className="sidebar-workspace-list">
+              <ViewSpineTree />
+            </div>
           ) : (
             <div className="sidebar-workspace-list">
               <HubNodeDashboardPanel />
