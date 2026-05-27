@@ -10,6 +10,8 @@ export const RELAY_CAPABILITY_BITS = [
   'session:control:kill',
   'tab:mode:set-agent',
   'tab:intervention:read',
+  'tab:intervention:send-text',
+  'tab:intervention:submit',
   'rpc:fs:list',
   'rpc:fs:read',
   'rpc:fs:tail',
@@ -54,6 +56,8 @@ export const LEGACY_DEFAULT_ALLOWED_CAPABILITIES = [
 
 export const HIGH_RISK_CAPABILITIES = [
   'session:control:kill',
+  'tab:intervention:send-text',
+  'tab:intervention:submit',
   'rpc:fs:write',
   'rpc:fs:delete',
   'rpc:git:write',

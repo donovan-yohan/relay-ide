@@ -8,6 +8,7 @@ import {
   clearPendingControlBurstsForTests,
   maybeAutoRevertToAgentDriven,
   recordHumanPtyInput,
+  recordSupervisorAction,
   redactInterventionPayload,
 } from '../server/control-engine.js';
 import {
@@ -233,6 +234,42 @@ describe('control transition engine', () => {
     expect(control.redaction.classes).toContain('control-sequence');
   });
 
+  it('records typed supervisor actions as co-driven intervention events without exposing raw payloads', () => {
+    const session = makeSession();
+    const records: InterventionRecord[] = [];
+    const events: TabControlEvent[] = [];
+    const actor: ControlActor = { kind: 'human', id: 'supervisor-1', displayName: 'Supervisor' };
+    const options = captureOptions(records, events);
+
+    const event = recordSupervisorAction(session, { action: 'sendText', actor, payload: 'password=raw-secret-value' }, options);
+
+    expect(session.controlState).toMatchObject({
+      controlMode: 'co-driven',
+      lastInterventionEventId: event.eventId,
+      controlReason: 'supervisor sendText',
+    });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      source: 'supervisor-action',
+      kind: 'supervisor-send-text',
+      modeBefore: 'agent-driven',
+      modeAfter: 'co-driven',
+      ackedAt: baseNow.toISOString(),
+    });
+    expect(records[0]?.redaction).toMatchObject({
+      redacted: true,
+      classes: ['secret-like'],
+    });
+    expect(records[0]).not.toHaveProperty('payloadPreview');
+    expect(JSON.stringify(records[0])).not.toContain('raw-secret-value');
+    expect(events.map((entry) => entry.type)).toEqual(['tab.mode-changed', 'tab.intervention']);
+    expect(event).toMatchObject({
+      type: 'tab.intervention',
+      controlMode: 'co-driven',
+      intervention: { kind: 'supervisor-send-text' },
+    });
+  });
+
   it('creates visible intervention and transition events for join, take-over, and hand-back actions', () => {
     const session = makeSession();
     const records: InterventionRecord[] = [];
@@ -402,6 +439,29 @@ describe('persistent intervention log', () => {
   afterEach(() => {
     closeInterventionLog();
     fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it('persists supervisor action records as hashes-only metadata without raw payload previews', () => {
+    const session = makeSession({ id: 'supervisor-plain', nodeId: 'node-a' });
+    const actor: ControlActor = { kind: 'human', id: 'supervisor-1', displayName: 'Supervisor' };
+
+    recordSupervisorAction(session, { action: 'sendText', actor, payload: 'hello' });
+
+    const [record] = listInterventions({ sessionId: 'supervisor-plain', nodeId: 'node-a' });
+    expect(record).toMatchObject({
+      source: 'supervisor-action',
+      kind: 'supervisor-send-text',
+      redaction: {
+        redacted: false,
+        byteCount: 5,
+        charCount: 5,
+        lineCount: 1,
+        classes: ['plain-text'],
+      },
+    });
+    expect(record?.redaction.hashSha256).toHaveLength(64);
+    expect(record).not.toHaveProperty('payloadPreview');
+    expect(JSON.stringify(record)).not.toContain('hello');
   });
 
   it('persists structured records, lists by session/node, and acks human input', () => {

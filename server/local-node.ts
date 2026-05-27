@@ -4,11 +4,13 @@ import type { CreateParams } from './sessions.js';
 import type { CreateWebParams } from './web-session-handler.js';
 import type { SessionRenewResult } from './session-envelope-registry.js';
 import type { Session, SessionSummary } from './types.js';
+import type { SupervisorInterventionAction } from './control-engine.js';
 import type { SessionReplaySnapshot } from '../shared/session-replay.js';
 import type {
   InterventionRecord,
   TabControlEvent,
   ControlActor,
+  ControlMode,
 } from '../shared/control-state.js';
 import type { SessionControlError } from './session-control-api.js';
 import {
@@ -39,6 +41,14 @@ export interface NodeSessionBoundary {
     displayName: string
   ): { id: string; displayName: string };
   write(id: string, data: string): void;
+  supervisorWrite(
+    id: string,
+    input: {
+      action: SupervisorInterventionAction;
+      actor: ControlActor;
+      payload: string;
+    }
+  ): { eventId: string; modeBefore?: ControlMode; modeAfter?: ControlMode };
   getInterventions(
     id: string,
     options?: { nodeId?: string; limit?: number }
@@ -86,6 +96,7 @@ const defaultSessionBoundary: NodeSessionBoundary = {
   kill: sessionsModule.kill,
   updateDisplayName: sessionsModule.updateDisplayName,
   write: sessionsModule.write,
+  supervisorWrite: sessionsModule.supervisorWrite,
   getInterventions: sessionsModule.getInterventions,
   getReplaySnapshot: sessionsModule.getReplaySnapshot,
   handBackToAgent: sessionsModule.handBackToAgent,

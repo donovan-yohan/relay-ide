@@ -278,6 +278,14 @@ function controlEventAuditParams(event: TabControlEvent): Record<string, unknown
 }
 
 function controlEventRequiredBits(event: TabControlEvent): RelayCapabilityBit[] {
+  if (event.type === 'tab.intervention') {
+    if (event.intervention.kind === 'supervisor-send-text') {
+      return ['session:attach', 'tab:intervention:send-text'];
+    }
+    if (event.intervention.kind === 'supervisor-submit') {
+      return ['session:attach', 'tab:intervention:submit'];
+    }
+  }
   const modeAfter =
     event.type === 'tab.mode-changed'
       ? event.controlMode
