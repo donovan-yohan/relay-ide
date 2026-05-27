@@ -14,6 +14,8 @@ import WorkspaceGroup from './WorkspaceGroup.js';
 import { HubNodeDashboardPanel } from './HubNodeDashboard.js';
 import RepoItem from './RepoItem.js';
 import { SessionHistoryPanel } from './SessionHistoryPanel.js';
+import { ViewSpineTree } from './ViewSpineTree.js';
+import type { BenchCreatePayload } from '../lib/state/view-tree.js';
 import { TuiButton } from './TuiButton.js';
 import {
   DndContext,
@@ -390,6 +392,10 @@ export interface SidebarProps {
   onResumeWorktree?: (wt: WorktreeInfo) => void;
   onLaunchWorkspaceSession?: (workspaceId: string) => void;
   onLaunchRepoSession?: (repoPath: string) => void;
+  /** #731: create an agent Tab anchored to a view-spine Bench. Payload carries
+   *  the node anchor + the configured repo/worktree context the backend
+   *  validates (`BenchCreatePayload`). */
+  onViewSpineCreateTab?: (payload: BenchCreatePayload) => void;
   onOpenAnalytics: () => void;
 }
 
@@ -403,6 +409,7 @@ export function Sidebar({
   onResumeWorktree,
   onLaunchWorkspaceSession,
   onLaunchRepoSession,
+  onViewSpineCreateTab,
   onOpenAnalytics,
 }: SidebarProps) {
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
@@ -410,6 +417,7 @@ export function Sidebar({
   const sidebarWidth = useUiStore((s) => s.sidebarWidth);
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const analyticsView = useUiStore((s) => s.analyticsView);
+  const viewSpineEnabled = useUiStore((s) => s.viewSpineEnabled);
   const closeSidebar = useUiStore((s) => s.closeSidebar);
   const toggleSidebarCollapsed = useUiStore((s) => s.toggleSidebarCollapsed);
   const repos = useSessionsStore((s) => s.repos);
@@ -540,6 +548,12 @@ export function Sidebar({
               repoName={historyRepo.name}
               onBack={handleCloseHistory}
             />
+          ) : viewSpineEnabled ? (
+            // #732/#729: flag-gated, read-only, client-derived view-spine tree.
+            // OFF path below is byte-identical to today.
+            <div className="sidebar-workspace-list">
+              <ViewSpineTree onCreateTab={onViewSpineCreateTab} />
+            </div>
           ) : (
             <div className="sidebar-workspace-list">
               <HubNodeDashboardPanel />
