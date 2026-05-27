@@ -297,12 +297,14 @@ describe('hub node dashboard state', () => {
     // in every tier (denied in sandbox, allowed in dev, denied in prod).
     // #592 added `session:control:kill` following the same tier pattern:
     // allowed in dev, denied in sandbox + prod.
+    // #704 added two typed supervisor action bits; all default node tiers
+    // deny them unless a user grants the scoped supervisor capabilities.
     expect(
       rows.map((row) => [row.security.trustTier, row.security.postureLabel])
     ).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 16'],
-      ['dev', 'allow 11 · challenge 0 · deny 6'],
-      ['prod', 'allow 1 · challenge 2 · deny 14'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 18'],
+      ['dev', 'allow 11 · challenge 0 · deny 8'],
+      ['prod', 'allow 1 · challenge 2 · deny 16'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',
