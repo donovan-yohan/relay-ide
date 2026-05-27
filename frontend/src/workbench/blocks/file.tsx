@@ -105,7 +105,8 @@ function formatBytes(n: number): string {
 
 function formatFreshness(mtimeMs?: number, capturedAt?: string): string {
   if (typeof mtimeMs === 'number' && Number.isFinite(mtimeMs)) {
-    return new Date(mtimeMs).toISOString();
+    const date = new Date(mtimeMs);
+    if (Number.isFinite(date.getTime())) return date.toISOString();
   }
   return capturedAt ?? 'unknown';
 }
