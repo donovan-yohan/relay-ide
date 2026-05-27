@@ -26,6 +26,7 @@ import {
 } from '../lib/state/view-tree.js';
 import { useIaWorkspaces } from '../lib/hooks/use-ia-workspaces.js';
 import { WorkspaceBar } from './WorkspaceBar.js';
+import { BenchCreate } from './BenchCreate.js';
 import './ViewSpineTree.css';
 
 /** Create a Tab anchored to a Bench's (nodeId, cwd). Wired to the EXISTING
@@ -125,11 +126,27 @@ function BenchRow({
   );
 }
 
+/** Default cwd a "+ bench" form pre-fills for this instance:
+ *  - repo-instance: the first git bench's configured parent repo path (a
+ *    worktree path under the repo is the canonical bench cwd), so the user only
+ *    edits the suffix.
+ *  - node-instance: empty (arbitrary absolute cwd — `$HOME`, `/tmp/…`). */
+function defaultBenchCwd(
+  instance: ViewTreeInstance,
+  projectKind: ViewTreeProject['kind']
+): string {
+  if (projectKind !== 'repo') return '';
+  const gitBench = instance.benches.find((b) => b.repoPath);
+  return gitBench?.repoPath ?? '';
+}
+
 function InstanceRow({
   instance,
+  projectKind,
   onCreateTab,
 }: {
   instance: ViewTreeInstance;
+  projectKind: ViewTreeProject['kind'];
   onCreateTab?: ViewSpineCreateTab | undefined;
 }) {
   return (
@@ -158,6 +175,13 @@ function InstanceRow({
           ))}
         </ul>
       ) : null}
+      {/* #730 "+ bench": persisted bench overlays (cwd + env) for this instance
+          plus the create flow. Wired to the #735 `/hub/ia/benches` CRUD API. */}
+      <BenchCreate
+        instanceId={instance.id}
+        projectKind={projectKind}
+        defaultCwd={defaultBenchCwd(instance, projectKind)}
+      />
     </li>
   );
 }
@@ -258,6 +282,7 @@ function ProjectRow({
           <InstanceRow
             key={instance.id}
             instance={instance}
+            projectKind={project.kind}
             onCreateTab={onCreateTab}
           />
         ))}
