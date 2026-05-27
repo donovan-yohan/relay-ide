@@ -1,0 +1,252 @@
+/* #730 Bench creation flow. Reuses existing design tokens (no new colors) and
+   sits under each Instance row in the view-spine tree. Touch targets ≥44px for
+   the create/cancel actions and ≥36px for inputs. */
+
+.bench-create {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 8px 6px 36px;
+}
+
+.bench-create-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  opacity: 0.8;
+  padding: 2px 0;
+}
+
+/* ── Persisted overlay rows ──────────────────────────────────────────────── */
+.bench-overlay-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bench-overlay-row .session-row-primary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.bench-overlay-env-badge {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 0 4px;
+  flex: 0 0 auto;
+}
+
+.bench-overlay-cwd {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+.bench-overlay-delete {
+  min-width: 28px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.bench-overlay-delete:hover:not(:disabled) {
+  color: var(--danger, var(--accent));
+  background: var(--surface-hover);
+}
+
+.bench-overlay-delete:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* ── Create form ─────────────────────────────────────────────────────────── */
+.bench-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.bench-create-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bench-create-label {
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.bench-create-input {
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-sm);
+  padding: 6px 8px;
+  min-height: 36px;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.bench-create-input:focus {
+  border-color: var(--accent);
+}
+
+.bench-create-input[aria-invalid='true'] {
+  border-color: var(--danger, var(--accent));
+}
+
+.bench-create-validation {
+  font-size: var(--font-size-xs);
+  color: var(--danger, var(--accent));
+  padding: 0 2px;
+}
+
+/* ── env override rows ───────────────────────────────────────────────────── */
+.bench-create-env {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bench-create-env-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bench-create-env-key {
+  flex: 0 0 38%;
+}
+
+.bench-create-env-value {
+  flex: 1 1 auto;
+}
+
+.bench-create-env-eq {
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  flex: 0 0 auto;
+}
+
+.bench-create-env-remove {
+  min-width: 32px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.bench-create-env-remove:hover:not(:disabled) {
+  color: var(--danger, var(--accent));
+}
+
+.bench-create-env-remove:disabled,
+.bench-create-env-add:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bench-create-env-add {
+  align-self: flex-start;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  padding: 4px 8px;
+  min-height: 32px;
+  cursor: pointer;
+}
+
+.bench-create-env-add:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ── actions ─────────────────────────────────────────────────────────────── */
+.bench-create-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.bench-create-submit,
+.bench-create-cancel {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  padding: 0 12px;
+  min-height: 44px;
+  cursor: pointer;
+  transition:
+    color 0.1s,
+    border-color 0.1s;
+}
+
+.bench-create-submit:hover:not(:disabled),
+.bench-create-cancel:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.bench-create-submit:disabled,
+.bench-create-cancel:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── inline error ────────────────────────────────────────────────────────── */
+.bench-create-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--font-size-xs);
+  color: var(--danger, var(--accent));
+  padding: 2px 0;
+}
+
+.bench-create-retry {
+  background: none;
+  border: 1px solid currentColor;
+  color: inherit;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.bench-create-retry:hover {
+  background: var(--surface-hover);
+}
