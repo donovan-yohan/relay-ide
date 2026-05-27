@@ -199,3 +199,41 @@ export async function resolveAnchor(
 
   return { state: resolveAnchorState(captured, current), current };
 }
+
+// ── Hub-level fetcher registration (#759 integration) ───────────────────────
+//
+// The production `AnchorFileFetcher` (File-RPC-under-capability) is constructed
+// once at hub boot in `server/index.ts` from the live registry/link/envelope
+// handles. Consumers that resolve an anchor's `AnchorState` at read time (the
+// inbox-decoration / #760 adapter follow-up) retrieve it here rather than
+// threading the deps through every call site. Registering it makes the #759
+// wiring a real, retrievable hub dependency, not dead code.
+
+let registeredFetcher: AnchorFileFetcher | null = null;
+
+/** Register the hub's production anchor fetcher (called once at boot). */
+export function registerAnchorFileFetcher(fetcher: AnchorFileFetcher): void {
+  registeredFetcher = fetcher;
+}
+
+/**
+ * Retrieve the registered hub anchor fetcher, or `null` if the hub has not
+ * booted / wired it (e.g. unit tests of an unrelated surface). A `null` fetcher
+ * means anchor resolution is unavailable; callers should treat anchors as
+ * unresolved rather than synthesizing a local read.
+ */
+export function getAnchorFileFetcher(): AnchorFileFetcher | null {
+  return registeredFetcher;
+}
+
+/**
+ * Resolve an anchor using the hub-registered fetcher. Returns `null` when no
+ * fetcher is registered (hub not booted) so the caller can distinguish
+ * "unavailable" from a resolved `missing`.
+ */
+export async function resolveAnchorWithRegisteredFetcher(
+  captured: AnchorRef
+): Promise<ResolveAnchorOutcome | null> {
+  if (!registeredFetcher) return null;
+  return resolveAnchor(captured, registeredFetcher);
+}

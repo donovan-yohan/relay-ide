@@ -145,6 +145,12 @@ import {
   createContextInboxRouter,
   type ContextInboxStore,
 } from './features/context-inbox-router.js';
+import { createContextInboxStoreAdapter } from './features/context-inbox-store-adapter.js';
+import { createAnchorFileFetcher } from './anchor-file-fetcher.js';
+import {
+  registerAnchorFileFetcher,
+  type AnchorFileFetcher,
+} from './anchor-resolution.js';
 import { collectLocalRepoInventory } from './repo-inventory.js';
 import type {
   AgentType,
@@ -1271,6 +1277,17 @@ function buildSessionConfig(
   };
 }
 
+/**
+ * Wrap the #758 `ContextPacketStore` in the #765 router's `ContextInboxStore`
+ * adapter, or `null` when the store failed to init (routes then 503). Extracted
+ * from `main()` to keep that boot function under the cognitive-complexity gate.
+ */
+function deriveContextInboxStore(
+  store: ContextPacketStore | null
+): ContextInboxStore | null {
+  return store ? createContextInboxStoreAdapter(store) : null;
+}
+
 async function main(): Promise<void> {
   // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits.
   // Ignore SIGHUP: keep server alive if controlling terminal disconnects.
@@ -1694,15 +1711,31 @@ async function main(): Promise<void> {
   // non-destructive). Consumes the `iaStore` handle wired above; degrades to
   // 503 if the store failed to init.
   app.use(createIaWorkspaceRouter({ requireAuth, iaStore }));
-  // #765 / ADR-019: context.* / inbox.* gateway verbs. The concrete
-  // SQLite-behind-gateway store is built in the parallel #758 lane; this lane
-  // mounts the router against the shared `ContextInboxStore` seam. The
-  // orchestrator swaps `null` for #758's store handle at integration; until
-  // then the routes return 503 SERVER_UNAVAILABLE rather than failing boot.
-  const contextInboxStore: ContextInboxStore | null = null;
+  // #765 / ADR-019: context.* / inbox.* gateway verbs. #759 wires the router
+  // to the concrete #758 `ContextPacketStore` via the integration adapter
+  // (method renames, throw→result-union remap, PULL-as-delivery flip). When the
+  // #758 store failed to init (`contextPacketStore` is null) the routes degrade
+  // to 503 SERVER_UNAVAILABLE rather than failing boot.
+  const contextInboxStore = deriveContextInboxStore(contextPacketStore);
   app.use(
     createContextInboxRouter({ requireAuth: requireCliGatewayAuth, store: contextInboxStore })
   );
+  // #766/#759: production `AnchorFileFetcher` wired to the session-scoped File
+  // RPC path under `rpc:fs:read`. Resolves an anchor's `current` ref by routing
+  // an `fs.read`/`fs.stat` through a live scoped session on the owning node
+  // whose root contains the path; never local-stats (C1). The anchor
+  // `stale`-derivation consumer (inbox decoration / #760) calls `resolveAnchor`
+  // with this fetcher; built here so it shares the live registry/link/envelope
+  // handles and is exposed for that follow-up wiring.
+  const anchorFileFetcher: AnchorFileFetcher = createAnchorFileFetcher({
+    registry: hubNodeRegistry,
+    nodeLinks: hubNodeLinks,
+    sessionEnvelopes: sessionEnvelopeRegistry,
+  });
+  // Anchor resolution (#766) decorates a packet's `AnchorState` at read time.
+  // The consumer endpoint lands in the #760 adapter lane; until then the fetcher
+  // is registered as the hub's anchor-resolution dependency.
+  registerAnchorFileFetcher(anchorFileFetcher);
   app.use(
     createCliGatewayEventsRouter(express, {
       cliGatewayAuth: requireCliGatewayAuth,
