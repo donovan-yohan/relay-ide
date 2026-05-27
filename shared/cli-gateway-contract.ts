@@ -1,5 +1,9 @@
 import { RELAY_NODE_LINK_PROTOCOL_VERSION } from './relay-node-protocol.js';
 import { RELAY_SECURITY_POLICY_VERSION } from './security-policy.js';
+import {
+  CONTEXT_PACKET_KINDS,
+  SESSION_INBOX_MESSAGE_STATES,
+} from './context-packet.js';
 
 export const RELAY_CLI_GATEWAY_MAJOR = 'v1' as const;
 export const RELAY_CLI_GATEWAY_CONTRACT_VERSION = '1.0' as const;
@@ -24,6 +28,15 @@ export type RelayCliGatewayCommand =
   | 'files.read'
   | 'files.write'
   | 'work-contexts.get'
+  | 'context.create'
+  | 'context.get'
+  | 'context.list'
+  | 'inbox.send'
+  | 'inbox.list'
+  | 'inbox.get'
+  | 'inbox.ack'
+  | 'inbox.resolve'
+  | 'inbox.ignore'
   | 'handoffs.plan'
   | 'handoffs.create'
   | 'handoffs.status'
@@ -738,6 +751,173 @@ const workContextGetInputSchema: RelayJsonSchema = {
   properties: { id: stringSchema },
   required: ['id'],
 };
+
+// ---------------------------------------------------------------------------
+// context.* / inbox.* (#765, ADR-019)
+//
+// Ref-only, hub-mediated SQLite-behind-gateway context packets + session inbox.
+// Schemas are intentionally `additionalProperties: true` on the nested envelope
+// objects so the #758 store can evolve the canonical `ContextPacket` /
+// `SessionInboxMessage` blob shapes without a contract bump; the gateway verbs
+// pin only the addressing/lifecycle fields they own. Delivery is PULL: only
+// `inbox.list` / `inbox.get` flip `queued → delivered`.
+// ---------------------------------------------------------------------------
+
+const contextPacketEnvelopeSchema: RelayJsonSchema = {
+  title: 'ContextPacket',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    kind: { type: 'string', enum: CONTEXT_PACKET_KINDS },
+    note: stringSchema,
+    createdBy: stringSchema,
+    createdAt: { type: 'string', format: 'date-time' },
+  },
+  required: ['id', 'kind', 'createdBy', 'createdAt'],
+};
+
+const inboxMessageEnvelopeSchema: RelayJsonSchema = {
+  title: 'SessionInboxMessage',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    targetSessionId: stringSchema,
+    targetWorkContextId: stringSchema,
+    contextPacketIds: { type: 'array', items: stringSchema },
+    text: stringSchema,
+    state: { type: 'string', enum: SESSION_INBOX_MESSAGE_STATES },
+    createdBy: stringSchema,
+    createdAt: { type: 'string', format: 'date-time' },
+  },
+  required: ['id', 'contextPacketIds', 'state', 'createdBy', 'createdAt'],
+};
+
+const contextCreateInputSchema: RelayJsonSchema = {
+  title: 'ContextCreateInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', enum: CONTEXT_PACKET_KINDS },
+    anchor: { type: 'object', additionalProperties: true },
+    fileRef: { type: 'object', additionalProperties: true },
+    note: stringSchema,
+    binding: { type: 'object', additionalProperties: true },
+    createdBy: stringSchema,
+  },
+  required: ['kind'],
+};
+
+const contextGetInputSchema: RelayJsonSchema = {
+  title: 'ContextGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema },
+  required: ['id'],
+};
+
+const contextListInputSchema: RelayJsonSchema = {
+  title: 'ContextListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    nodeId: stringSchema,
+    workspaceId: stringSchema,
+    limit: { type: 'number', minimum: 1, maximum: 200 },
+  },
+};
+
+const inboxSendInputSchema: RelayJsonSchema = {
+  title: 'InboxSendInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    targetSessionId: stringSchema,
+    targetWorkContextId: stringSchema,
+    contextPacketIds: { type: 'array', items: stringSchema },
+    text: stringSchema,
+    createdBy: stringSchema,
+  },
+  anyOf: [{ required: ['targetSessionId'] }, { required: ['targetWorkContextId'] }],
+};
+
+const inboxListInputSchema: RelayJsonSchema = {
+  title: 'InboxListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    targetSessionId: stringSchema,
+    targetWorkContextId: stringSchema,
+    state: { type: 'string', enum: SESSION_INBOX_MESSAGE_STATES },
+    limit: { type: 'number', minimum: 1, maximum: 200 },
+  },
+  anyOf: [{ required: ['targetSessionId'] }, { required: ['targetWorkContextId'] }],
+};
+
+const inboxGetInputSchema: RelayJsonSchema = {
+  title: 'InboxGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema },
+  required: ['id'],
+};
+
+const inboxTransitionInputSchema: RelayJsonSchema = {
+  title: 'InboxTransitionInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema, actorId: stringSchema },
+  required: ['id'],
+};
+
+const contextPacketDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { contextPacket: contextPacketEnvelopeSchema },
+  required: ['contextPacket'],
+};
+
+const contextListDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { contextPackets: { type: 'array', items: contextPacketEnvelopeSchema } },
+  required: ['contextPackets'],
+};
+
+const inboxMessageDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { message: inboxMessageEnvelopeSchema },
+  required: ['message'],
+};
+
+const inboxListDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { messages: { type: 'array', items: inboxMessageEnvelopeSchema } },
+  required: ['messages'],
+};
+
+const contextInboxReadErrorCodes = [
+  'UNAUTHORIZED',
+  'INVALID_ARGUMENT',
+  'NOT_FOUND',
+  'FORBIDDEN',
+  'SERVER_UNAVAILABLE',
+  'UPSTREAM_ERROR',
+] as const satisfies readonly RelayCliGatewayErrorCode[];
+
+const contextInboxWriteErrorCodes = [
+  'UNAUTHORIZED',
+  'INVALID_ARGUMENT',
+  'INVALID_JSON',
+  'NOT_FOUND',
+  'FORBIDDEN',
+  'SESSION_CONFLICT',
+  'SERVER_UNAVAILABLE',
+  'UPSTREAM_ERROR',
+] as const satisfies readonly RelayCliGatewayErrorCode[];
 
 const handoffPlanInputSchema: RelayJsonSchema = {
   title: 'HandoffPlanInput',
@@ -1516,6 +1696,118 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       required: ['workContext'],
     }),
     errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'NOT_FOUND', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'context.create',
+    cli: ['relay-ide', 'v1', 'context', 'create', '--input-json', '<json>', '--json'],
+    summary: 'Create a ref-only context packet (file-anchor/file-ref/note) in the hub store.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: contextCreateInputSchema,
+    outputSchema: okOutput('ContextCreateOutput', contextPacketDataSchema),
+    errorCodes: contextInboxWriteErrorCodes,
+  },
+  {
+    name: 'context.get',
+    cli: ['relay-ide', 'v1', 'context', 'get', '--id', '<context-packet-id>', '--json'],
+    summary: 'Read one context packet by stable id. Ref-only; never returns raw file bytes.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: contextGetInputSchema,
+    outputSchema: okOutput('ContextGetOutput', contextPacketDataSchema),
+    errorCodes: contextInboxReadErrorCodes,
+  },
+  {
+    name: 'context.list',
+    cli: ['relay-ide', 'v1', 'context', 'list', '--json'],
+    summary: 'List context packets, optionally filtered by node/workspace binding.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: contextListInputSchema,
+    outputSchema: okOutput('ContextListOutput', contextListDataSchema),
+    errorCodes: contextInboxReadErrorCodes,
+  },
+  {
+    name: 'inbox.send',
+    cli: ['relay-ide', 'v1', 'inbox', 'send', '--input-json', '<json>', '--json'],
+    summary:
+      'Queue a session/WorkContext inbox message referencing context packets. Never pushes into sessions.input; delivery is PULL.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['inbox:write'],
+    inputSchema: inboxSendInputSchema,
+    outputSchema: okOutput('InboxSendOutput', inboxMessageDataSchema),
+    errorCodes: contextInboxWriteErrorCodes,
+  },
+  {
+    name: 'inbox.list',
+    cli: ['relay-ide', 'v1', 'inbox', 'list', '--target-session-id', '<global-session-id>', '--json'],
+    summary:
+      'List inbox messages for a session/WorkContext. PULL delivery: queued messages flip to delivered as a side effect of being fetched.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['inbox:read'],
+    inputSchema: inboxListInputSchema,
+    outputSchema: okOutput('InboxListOutput', inboxListDataSchema),
+    errorCodes: contextInboxReadErrorCodes,
+  },
+  {
+    name: 'inbox.get',
+    cli: ['relay-ide', 'v1', 'inbox', 'get', '--id', '<inbox-message-id>', '--json'],
+    summary:
+      'Read one inbox message by id. PULL delivery: a queued message flips to delivered as a side effect of being fetched.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['inbox:read'],
+    inputSchema: inboxGetInputSchema,
+    outputSchema: okOutput('InboxGetOutput', inboxMessageDataSchema),
+    errorCodes: contextInboxReadErrorCodes,
+  },
+  {
+    name: 'inbox.ack',
+    cli: ['relay-ide', 'v1', 'inbox', 'ack', '--id', '<inbox-message-id>', '--json'],
+    summary:
+      'Acknowledge an inbox message (delivered → acknowledged). Idempotent; rejects transitions out of terminal states.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['inbox:write'],
+    inputSchema: inboxTransitionInputSchema,
+    outputSchema: okOutput('InboxAckOutput', inboxMessageDataSchema),
+    errorCodes: contextInboxWriteErrorCodes,
+  },
+  {
+    name: 'inbox.resolve',
+    cli: ['relay-ide', 'v1', 'inbox', 'resolve', '--id', '<inbox-message-id>', '--json'],
+    summary: 'Resolve an inbox message (terminal). Rejects transitions out of an already-terminal state.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['inbox:write'],
+    inputSchema: inboxTransitionInputSchema,
+    outputSchema: okOutput('InboxResolveOutput', inboxMessageDataSchema),
+    errorCodes: contextInboxWriteErrorCodes,
+  },
+  {
+    name: 'inbox.ignore',
+    cli: ['relay-ide', 'v1', 'inbox', 'ignore', '--id', '<inbox-message-id>', '--json'],
+    summary: 'Ignore an inbox message (terminal). Rejects transitions out of an already-terminal state.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['inbox:write'],
+    inputSchema: inboxTransitionInputSchema,
+    outputSchema: okOutput('InboxIgnoreOutput', inboxMessageDataSchema),
+    errorCodes: contextInboxWriteErrorCodes,
   },
   {
     name: 'handoffs.plan',

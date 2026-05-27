@@ -461,7 +461,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
   );
   process.exit(1);
 }
@@ -1525,6 +1525,113 @@ async function runGatewayWorkContexts(gatewayArgs: string[]): Promise<never> {
   printGatewayEnvelope(gatewayOk('work-contexts.get', result), 0);
 }
 
+async function runGatewayContext(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const contextArgs = gatewayArgs.slice(2);
+  if (subcommand === 'create') {
+    const input = parseGatewayInputObject('context.create', contextArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'context.create',
+      pathName: '/context',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('context.create', result), 0);
+  }
+  if (subcommand === 'get') {
+    const id = gatewayArg(contextArgs, '--id') ?? contextArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid('context.get', '--id is required');
+    const result = await gatewayHttpJson({
+      commandName: 'context.get',
+      pathName: `/context/${encodeURIComponent(id)}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('context.get', result), 0);
+  }
+  if (subcommand === 'list') {
+    const query = new URLSearchParams();
+    const nodeId = gatewayArg(contextArgs, '--node-id');
+    const workspaceId = gatewayArg(contextArgs, '--workspace-id');
+    const limit = gatewayArg(contextArgs, '--limit');
+    if (nodeId) query.set('nodeId', nodeId);
+    if (workspaceId) query.set('workspaceId', workspaceId);
+    if (limit) query.set('limit', limit);
+    const suffix = query.toString();
+    const result = await gatewayHttpJson({
+      commandName: 'context.list',
+      pathName: suffix ? `/context?${suffix}` : '/context',
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('context.list', result), 0);
+  }
+  gatewayInvalid('context.get', 'unknown context command', { args: gatewayArgs });
+}
+
+async function runGatewayInbox(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const inboxArgs = gatewayArgs.slice(2);
+  if (subcommand === 'send') {
+    const input = parseGatewayInputObject('inbox.send', inboxArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'inbox.send',
+      pathName: '/inbox',
+      method: 'POST',
+      body: input,
+      capabilities: ['inbox:write'],
+    });
+    printGatewayEnvelope(gatewayOk('inbox.send', result), 0);
+  }
+  if (subcommand === 'list') {
+    const query = new URLSearchParams();
+    const targetSessionId = gatewayArg(inboxArgs, '--target-session-id');
+    const targetWorkContextId = gatewayArg(inboxArgs, '--target-work-context-id');
+    const state = gatewayArg(inboxArgs, '--state');
+    const limit = gatewayArg(inboxArgs, '--limit');
+    if (targetSessionId) query.set('targetSessionId', targetSessionId);
+    if (targetWorkContextId) query.set('targetWorkContextId', targetWorkContextId);
+    if (state) query.set('state', state);
+    if (limit) query.set('limit', limit);
+    const suffix = query.toString();
+    const result = await gatewayHttpJson({
+      commandName: 'inbox.list',
+      pathName: suffix ? `/inbox?${suffix}` : '/inbox',
+      capabilities: ['inbox:read'],
+    });
+    printGatewayEnvelope(gatewayOk('inbox.list', result), 0);
+  }
+  if (subcommand === 'get') {
+    const id = gatewayArg(inboxArgs, '--id') ?? inboxArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid('inbox.get', '--id is required');
+    const result = await gatewayHttpJson({
+      commandName: 'inbox.get',
+      pathName: `/inbox/${encodeURIComponent(id)}`,
+      capabilities: ['inbox:read'],
+    });
+    printGatewayEnvelope(gatewayOk('inbox.get', result), 0);
+  }
+  if (subcommand === 'ack' || subcommand === 'resolve' || subcommand === 'ignore') {
+    const commandName =
+      subcommand === 'ack'
+        ? 'inbox.ack'
+        : subcommand === 'resolve'
+          ? 'inbox.resolve'
+          : 'inbox.ignore';
+    const id = gatewayArg(inboxArgs, '--id') ?? inboxArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    const actorId = gatewayArg(inboxArgs, '--actor-id');
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/inbox/${encodeURIComponent(id)}/${subcommand}`,
+      method: 'POST',
+      body: actorId ? { actorId } : {},
+      capabilities: ['inbox:write'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  gatewayInvalid('inbox.get', 'unknown inbox command', { args: gatewayArgs });
+}
+
 async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const handoffArgs = gatewayArgs.slice(2);
@@ -2062,6 +2169,8 @@ async function runGatewayV1(): Promise<never> {
   if (top === 'sessions') return runGatewaySessions(gatewayArgs);
   if (top === 'files') return runGatewayFiles(gatewayArgs);
   if (top === 'work-contexts') return runGatewayWorkContexts(gatewayArgs);
+  if (top === 'context') return runGatewayContext(gatewayArgs);
+  if (top === 'inbox') return runGatewayInbox(gatewayArgs);
   if (top === 'handoffs') return runGatewayHandoffs(gatewayArgs);
   if (top === 'artifacts') return runGatewayArtifacts(gatewayArgs);
   if (top === 'supervisor') return runGatewaySupervisor(gatewayArgs);

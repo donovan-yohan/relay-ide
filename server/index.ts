@@ -141,6 +141,10 @@ import {
 import { createRepoInventoryFeature } from './features/repo-inventory.js';
 import { createRepoFeatureRouter } from './features/repo-router.js';
 import { createIaWorkspaceRouter } from './features/ia-workspace-router.js';
+import {
+  createContextInboxRouter,
+  type ContextInboxStore,
+} from './features/context-inbox-router.js';
 import { collectLocalRepoInventory } from './repo-inventory.js';
 import type {
   AgentType,
@@ -1690,6 +1694,15 @@ async function main(): Promise<void> {
   // non-destructive). Consumes the `iaStore` handle wired above; degrades to
   // 503 if the store failed to init.
   app.use(createIaWorkspaceRouter({ requireAuth, iaStore }));
+  // #765 / ADR-019: context.* / inbox.* gateway verbs. The concrete
+  // SQLite-behind-gateway store is built in the parallel #758 lane; this lane
+  // mounts the router against the shared `ContextInboxStore` seam. The
+  // orchestrator swaps `null` for #758's store handle at integration; until
+  // then the routes return 503 SERVER_UNAVAILABLE rather than failing boot.
+  const contextInboxStore: ContextInboxStore | null = null;
+  app.use(
+    createContextInboxRouter({ requireAuth: requireCliGatewayAuth, store: contextInboxStore })
+  );
   app.use(
     createCliGatewayEventsRouter(express, {
       cliGatewayAuth: requireCliGatewayAuth,
