@@ -35,6 +35,11 @@ import {
   type RepoInventoryReport,
 } from '../../shared/repo-inventory.js';
 import {
+  buildIaTree,
+  type IaNodeStatus,
+  type IaWorkspaceGroupInput,
+} from './ia-tree.js';
+import {
   expiresAtFromLifecycleInput,
   lifecycleInputError,
   sessionEnvelopeRegistry,
@@ -50,6 +55,12 @@ export interface RepoFeatureRouterOptions {
   sessionEnvelopes?: InMemorySessionEnvelopeRegistry;
   confirmations?: ConfirmationChallengeStore;
   auditSink?: RoutedSessionAuditSink;
+  /**
+   * Legacy workspace groups (config.workspaces) used ONLY to group derived
+   * projects in `GET /hub/ia/tree`. Config-agnostic by injection so this router
+   * never reaches into config directly. Optional: omit → no grouping.
+   */
+  listWorkspaceGroups?: () => IaWorkspaceGroupInput[];
   now?: () => Date;
 }
 
@@ -113,6 +124,42 @@ export function createRepoFeatureRouter(
         reports.push(await options.collectLocalRepoInventory());
       }
       res.json(summarizeRepoIdentityGroups(reports, now()));
+    } catch (error) {
+      sendRegistryError(registry, res, error);
+    }
+  });
+
+  // GET /hub/ia/tree (#734): server-side DERIVED six-layer IA read model —
+  // Project (with ProjectIdentity) → Instance → Bench — from the SAME
+  // authoritative cross-node inventory reports `/hub/repo-inventory` uses,
+  // joined with hub node status (online/stale/offline) and optional workspace
+  // grouping. Non-destructive: pure read/derive, no persistence/migration. This
+  // is the server source-of-truth the frontend `view-tree` derive can later
+  // consume instead of deriving client-side.
+  router.get('/hub/ia/tree', requireAuth, async (_req, res) => {
+    try {
+      const reports = [...repoInventoryFeature.listInventoryReports()];
+      if (options.collectLocalRepoInventory) {
+        reports.push(await options.collectLocalRepoInventory());
+      }
+      // Join hub node status for host labels + online/stale/offline. Local node
+      // is implicitly online and may be absent from the registry list — the
+      // builder handles that (degrades cleanly, never crashes).
+      const nodes: IaNodeStatus[] = registry.listNodes().map((node) => ({
+        nodeId: node.nodeId,
+        displayName: node.displayName,
+        status: node.status,
+        lastSeenAt: node.lastSeenAt,
+      }));
+      const tree = buildIaTree({
+        reports,
+        nodes,
+        ...(options.listWorkspaceGroups
+          ? { workspaceGroups: options.listWorkspaceGroups() }
+          : {}),
+        generatedAt: now().toISOString(),
+      });
+      res.json(tree);
     } catch (error) {
       sendRegistryError(registry, res, error);
     }

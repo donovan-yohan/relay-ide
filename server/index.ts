@@ -1602,6 +1602,16 @@ async function main(): Promise<void> {
       collectLocalRepoInventory: collectLocalInventory,
       confirmations: confirmationChallenges,
       sessionEnvelopes: sessionEnvelopeRegistry,
+      // #734: legacy workspace groups feed the optional grouping in
+      // GET /hub/ia/tree. Read-only projection of config.workspaces; the
+      // builder tolerates malformed/missing `repos` arrays.
+      listWorkspaceGroups: () =>
+        (getConfig().workspaces ?? []).map((ws) => ({
+          id: ws.id,
+          name: ws.name,
+          order: ws.order,
+          ...(Array.isArray(ws.repos) ? { repos: ws.repos } : {}),
+        })),
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
