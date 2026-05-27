@@ -72,6 +72,7 @@ import {
   initWorkContextStore,
   type WorkContextStore,
 } from './work-contexts.js';
+import { initIaStore, type IaStore } from './ia-store.js';
 import {
   initInterventionLog,
   closeInterventionLog,
@@ -1444,6 +1445,20 @@ async function main(): Promise<void> {
   }
 
   const workContextStore = initWorkContextStore(configDir);
+
+  // IA persistence substrate (#737): Workspace grouping + Bench overlays. Own
+  // SQLite file; new tables only, non-destructive. Routes that consume it
+  // (#733/#735) land in follow-ups. Guarded so a DB error degrades to "no IA
+  // persistence" rather than failing boot.
+  let iaStore: IaStore | null = null;
+  try {
+    iaStore = initIaStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'IA store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
 
   try {
     initInterventionLog(configDir);
@@ -3728,6 +3743,7 @@ async function main(): Promise<void> {
         flushRelayStateWrites();
         closeRelayStateDb();
         workContextStore.close();
+        iaStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -3808,6 +3824,7 @@ async function main(): Promise<void> {
     flushRelayStateWrites();
     closeRelayStateDb();
     workContextStore.close();
+    iaStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {
