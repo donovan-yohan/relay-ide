@@ -36,6 +36,10 @@ import {
   normalizeControlStateSummary,
   type ControlStateSummary,
 } from '../shared/control-state.js';
+import {
+  appendTerminalStreamData,
+  createTerminalStreamState,
+} from '../shared/session-replay.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 /** Default per-session scrollback cap. Overridable via createPtySession options. */
@@ -952,6 +956,12 @@ function buildSessionObject(
     scrollback,
     scrollbackBytesEvicted: 0,
     scrollbackCapacityBytes,
+    terminalStream: createTerminalStreamState({
+      sessionId: id,
+      capacityBytes: scrollbackCapacityBytes,
+      initialChunks: scrollback,
+    }),
+    terminalStreamSubscribers: [],
     idle: false,
     cwd,
     customCommand:
@@ -1246,6 +1256,14 @@ export function createPtySession(
       resetIdleTimer();
       scrollback.push(data);
       scrollbackRef.bytes += data.length;
+      const terminalStreamEnvelope = session.terminalStream
+        ? appendTerminalStreamData(session.terminalStream, data)
+        : null;
+      if (terminalStreamEnvelope) {
+        for (const cb of session.terminalStreamSubscribers ?? []) {
+          cb(terminalStreamEnvelope);
+        }
+      }
       // Trim oldest entries if over limit; track total bytes evicted so
       // `SessionReplaySnapshot.bytesDropped` can report lost history.
       while (

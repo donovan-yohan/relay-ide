@@ -231,6 +231,39 @@ describe('pausePtyFeed / resumePtyFeed', () => {
     expect(ws.isPtyConnected('sess-a')).toBe(true);
     expect(sockets[0]!.close).not.toHaveBeenCalled();
   });
+
+  it('marks inactive mirrors passive and restores active resize ownership on resume', async () => {
+    const ws = await importWs();
+    const term = fakeTerm();
+    ws.connectPtySocket('sess-a', term, vi.fn(), vi.fn());
+    sockets[0]!.__triggerOpen();
+
+    ws.sendPtyResize('sess-a', 120, 40);
+    expect(JSON.parse(sockets[0]!.send.mock.calls.at(-1)![0])).toMatchObject({
+      type: 'resize',
+      cols: 120,
+      rows: 40,
+      owner: 'active',
+    });
+
+    ws.pausePtyFeed('sess-a');
+    ws.sendPtyResize('sess-a', 80, 24);
+    expect(JSON.parse(sockets[0]!.send.mock.calls.at(-1)![0])).toMatchObject({
+      type: 'resize',
+      cols: 80,
+      rows: 24,
+      owner: 'passive',
+    });
+
+    ws.resumePtyFeed('sess-a');
+    ws.sendPtyResize('sess-a', 132, 43);
+    expect(JSON.parse(sockets[0]!.send.mock.calls.at(-1)![0])).toMatchObject({
+      type: 'resize',
+      cols: 132,
+      rows: 43,
+      owner: 'active',
+    });
+  });
 });
 
 describe('pause ring buffer — 256 KB cap with FIFO eviction', () => {

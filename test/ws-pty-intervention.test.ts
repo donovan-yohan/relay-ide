@@ -9,7 +9,10 @@ import { once } from 'node:events';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import * as sessions from '../server/sessions.js';
-import { closeInterventionLog, initInterventionLog } from '../server/intervention-log.js';
+import {
+  closeInterventionLog,
+  initInterventionLog,
+} from '../server/intervention-log.js';
 import { setupWebSocket } from '../server/ws.js';
 import type { PtySession } from '../server/types.js';
 import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
@@ -34,7 +37,10 @@ async function waitForOpen(ws: WebSocket): Promise<void> {
   ]);
 }
 
-async function waitForInterventionCount(sessionId: string, count: number): Promise<void> {
+async function waitForInterventionCount(
+  sessionId: string,
+  count: number
+): Promise<void> {
   for (let i = 0; i < 50; i++) {
     if (sessions.getInterventions(sessionId).length === count) return;
     await delay(10);
@@ -55,7 +61,10 @@ beforeAll(() => {
 });
 
 afterEach(async () => {
-  const ids = new Set([...createdIds, ...sessions.list().map((session) => session.id)]);
+  const ids = new Set([
+    ...createdIds,
+    ...sessions.list().map((session) => session.id),
+  ]);
   for (const id of Array.from(ids)) {
     try {
       sessions.kill(id);
@@ -88,13 +97,23 @@ afterAll(async () => {
 
 describe('PTY WebSocket intervention control', () => {
   it('records browser PTY input through the control engine without treating ping or resize as input', async () => {
-    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-interventions-'));
-    cleanupFns.push(() => fs.rmSync(configDir, { recursive: true, force: true }));
+    const configDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-ide-interventions-')
+    );
+    cleanupFns.push(() =>
+      fs.rmSync(configDir, { recursive: true, force: true })
+    );
     initInterventionLog(configDir);
     sessions.configure({ configDir, interventionDebounceMs: 5 });
 
     const server = http.createServer();
-    const { wss } = setupWebSocket(server, new Set<string>(), null, undefined, true);
+    const { wss } = setupWebSocket(
+      server,
+      new Set<string>(),
+      null,
+      undefined,
+      true
+    );
     cleanupFns.push(() => closeServer(server));
     cleanupFns.push(() => wss.close());
     await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -135,8 +154,20 @@ describe('PTY WebSocket intervention control', () => {
     ws.send(JSON.stringify({ type: 'resize', cols: 101, rows: 33 }));
     await delay(20);
 
+    for (const invalidResize of [
+      { type: 'resize', cols: 0, rows: 33 },
+      { type: 'resize', cols: 101, rows: 0 },
+      { type: 'resize', cols: '101', rows: 33 },
+      { type: 'resize', cols: 101 },
+    ]) {
+      ws.send(JSON.stringify(invalidResize));
+    }
+    await delay(20);
+
     expect(sessions.getInterventions(result.id)).toEqual([]);
-    expect((sessions.get(result.id) as PtySession).controlState?.controlMode).toBe('agent-driven');
+    expect(
+      (sessions.get(result.id) as PtySession).controlState?.controlMode
+    ).toBe('agent-driven');
 
     ws.send('hello from browser\n');
     await waitForInterventionCount(result.id, 1);
@@ -157,12 +188,18 @@ describe('PTY WebSocket intervention control', () => {
   });
 
   it('records remote routed PTY input through the real sessions recorder', async () => {
-    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-routed-interventions-'));
-    cleanupFns.push(() => fs.rmSync(configDir, { recursive: true, force: true }));
+    const configDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-ide-routed-interventions-')
+    );
+    cleanupFns.push(() =>
+      fs.rmSync(configDir, { recursive: true, force: true })
+    );
     initInterventionLog(configDir);
     sessions.configure({ configDir, interventionDebounceMs: 5 });
 
-    const events: Array<Parameters<Parameters<typeof sessions.onControlEvent>[0]>[0]> = [];
+    const events: Array<
+      Parameters<Parameters<typeof sessions.onControlEvent>[0]>[0]
+    > = [];
     sessions.onControlEvent((event) => events.push(event));
 
     sessions.recordRoutedPtyInput({
@@ -172,7 +209,9 @@ describe('PTY WebSocket intervention control', () => {
     });
 
     await waitForInterventionCount('remote-session-a', 1);
-    const records = sessions.getInterventions('remote-session-a', { nodeId: 'remote-node-a' });
+    const records = sessions.getInterventions('remote-session-a', {
+      nodeId: 'remote-node-a',
+    });
 
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
@@ -186,7 +225,10 @@ describe('PTY WebSocket intervention control', () => {
       modeAfter: 'co-driven',
       payloadPreview: 'echo routed\\n',
     });
-    expect(events.map((event) => event.type)).toEqual(['tab.mode-changed', 'tab.intervention']);
+    expect(events.map((event) => event.type)).toEqual([
+      'tab.mode-changed',
+      'tab.intervention',
+    ]);
     expect(events[0]?.identity).toMatchObject({
       nodeId: 'remote-node-a',
       sessionId: 'remote-session-a',
@@ -195,8 +237,12 @@ describe('PTY WebSocket intervention control', () => {
   });
 
   it('still appends control audit entries when a control-event listener throws', async () => {
-    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-audit-isolation-'));
-    cleanupFns.push(() => fs.rmSync(configDir, { recursive: true, force: true }));
+    const configDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-ide-audit-isolation-')
+    );
+    cleanupFns.push(() =>
+      fs.rmSync(configDir, { recursive: true, force: true })
+    );
     initInterventionLog(configDir);
     const auditEntries: SecurityAuditEntryInput[] = [];
     sessions.configure({
@@ -204,7 +250,9 @@ describe('PTY WebSocket intervention control', () => {
       interventionDebounceMs: 5,
       securityAuditSink: { append: (entry) => auditEntries.push(entry) },
     });
-    const deliveredEvents: Array<Parameters<Parameters<typeof sessions.onControlEvent>[0]>[0]> = [];
+    const deliveredEvents: Array<
+      Parameters<Parameters<typeof sessions.onControlEvent>[0]>[0]
+    > = [];
     sessions.onControlEvent(() => {
       throw new Error('listener boom');
     });
