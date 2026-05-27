@@ -154,13 +154,24 @@ export interface InboxMessageListFilter {
   state?: SessionInboxMessageState;
 }
 
+/**
+ * Filter for `listContextPackets`. All clauses are ANDed. `nodeId`/`workspaceId`
+ * match the denormalized federation-query columns (derived from the packet's
+ * binding/anchor/fileRef at write time); `limit` caps the result set.
+ */
+export interface ContextPacketListFilter {
+  nodeId?: string;
+  workspaceId?: string;
+  limit?: number;
+}
+
 export interface ContextPacketStore {
   close(): void;
 
   // ── Context packets ──────────────────────────────────────────────────────
   createContextPacket(input: ContextPacketCreateInput): ContextPacket;
   getContextPacket(id: ContextPacketId): ContextPacket | null;
-  listContextPackets(): ContextPacket[];
+  listContextPackets(filter?: ContextPacketListFilter): ContextPacket[];
   /** Delete a packet. RESTRICTed if any live inbox message references it. */
   deleteContextPacket(id: ContextPacketId): boolean;
 
@@ -209,10 +220,6 @@ export function createContextPacketStore(dbPath: string): ContextPacketStore {
   const selectPacket = db.prepare(
     `SELECT id, kind, packet_json, node_id, workspace_id, created_by, created_at, updated_at
      FROM context_packets WHERE id = ?`
-  );
-  const selectAllPackets = db.prepare(
-    `SELECT id, kind, packet_json, node_id, workspace_id, created_by, created_at, updated_at
-     FROM context_packets ORDER BY created_at DESC, id ASC`
   );
   const insertPacket = db.prepare(
     `INSERT INTO context_packets (
@@ -300,8 +307,31 @@ export function createContextPacketStore(dbPath: string): ContextPacketStore {
 
     getContextPacket: getPacketById,
 
-    listContextPackets() {
-      return (selectAllPackets.all() as ContextPacketRow[])
+    listContextPackets(filter: ContextPacketListFilter = {}) {
+      const clauses: string[] = [];
+      const params: unknown[] = [];
+      if (filter.nodeId !== undefined) {
+        clauses.push('node_id = ?');
+        params.push(filter.nodeId);
+      }
+      if (filter.workspaceId !== undefined) {
+        clauses.push('workspace_id = ?');
+        params.push(filter.workspaceId);
+      }
+      const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+      // LIMIT is bound rather than interpolated; clamp to a positive integer.
+      const limit =
+        filter.limit !== undefined && Number.isFinite(filter.limit)
+          ? Math.max(1, Math.trunc(filter.limit))
+          : undefined;
+      const limitClause = limit !== undefined ? ' LIMIT ?' : '';
+      const stmt = db.prepare(
+        `SELECT id, kind, packet_json, node_id, workspace_id, created_by, created_at, updated_at
+         FROM context_packets${where}
+         ORDER BY created_at DESC, id ASC${limitClause}`
+      );
+      const args = limit !== undefined ? [...params, limit] : params;
+      return (stmt.all(...args) as ContextPacketRow[])
         .map(rowToPacketSafe)
         .filter((p): p is ContextPacket => p !== null);
     },
