@@ -499,11 +499,15 @@ describe('S4 benchCreatePayload', () => {
 
     // Mirrors the dialog's local-git create so the backend agent contract
     // passes: repoPath is the configured parent repo, the worktree becomes cwd.
+    // #740: also carries the bench identity (instanceId + deterministic benchId)
+    // so the create handler can inherit this Bench's persisted env overlay.
     expect(benchCreatePayload(instance, bench)).toEqual({
       nodeId: DEFAULT_LOCAL_NODE_ID,
       repoPath: '/repos/relay',
       worktreePath: '/repos/relay/.worktrees/feat-x',
       cwd: '/repos/relay/.worktrees/feat-x',
+      instanceId: instance.id,
+      benchId: bench.id,
     });
   });
 
@@ -536,6 +540,8 @@ describe('S4 benchCreatePayload', () => {
       repoPath: '/repos/relay',
       worktreePath: '/repos/relay/.worktrees/feat-y',
       cwd: '/repos/relay/.worktrees/feat-y',
+      instanceId: instance.id,
+      benchId: bench.id,
     });
   });
 
@@ -567,7 +573,7 @@ describe('S4 benchCreatePayload', () => {
     expect(benchCreatePayload(instance, bench)).toBeNull();
   });
 
-  it('carries ONLY (nodeId, repoPath, worktreePath, cwd) — no env/branch/identity inherited', () => {
+  it('carries anchor + bench identity only — no branch/agent/yolo leaked', () => {
     const worktree: WorktreeInfo = {
       name: 'feat-z',
       path: '/repos/relay/.worktrees/feat-z',
@@ -582,16 +588,24 @@ describe('S4 benchCreatePayload', () => {
     const instance = allProjects(tree)[0]!.instances[0]!;
     const bench = instance.benches[0]!;
 
-    // #740/#735 are deferred: the payload must NOT leak branch, env, agent,
-    // yolo, or repo identity into the create call — exactly these four keys.
+    // #740: the payload carries the repo/worktree anchor plus the bench identity
+    // (instanceId + deterministic benchId) used to inherit the Bench env overlay.
+    // It must NOT leak branch, agent, yolo, or env values directly into the
+    // create call — env inheritance is resolved later, by benchId, at create.
     const payload = benchCreatePayload(instance, bench);
     expect(payload).not.toBeNull();
     expect(Object.keys(payload!).sort()).toEqual([
+      'benchId',
       'cwd',
+      'instanceId',
       'nodeId',
       'repoPath',
       'worktreePath',
     ]);
+    // The benchId is the deterministic id of the anchoring bench, so the
+    // create-time overlay lookup matches exactly one persisted overlay.
+    expect(payload!.benchId).toBe(bench.id);
+    expect(payload!.instanceId).toBe(instance.id);
   });
 });
 

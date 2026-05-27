@@ -847,21 +847,28 @@ export function groupBenchOverlaysByInstance(
 // repo (`config.repos`) and the worktree becomes the session cwd
 // (`cwd = worktreePath ?? repoPath`, server/index.ts).
 //
-// NO env-override inheritance (deferred to #740 / backend #735) — the payload
-// carries ONLY the node anchor + the agent-session repo/worktree context the
-// backend requires. No branch, env, agent, yolo, or identity is inherited.
+// #740: the payload now also carries the bench's identity (`instanceId` +
+// deterministic `benchId`) so the create handler can look up that Bench's
+// persisted `envOverrides` overlay and inherit them. Branch, agent, yolo, and
+// identity are still NOT inherited — only env overrides.
 
 /** The anchor + repo context a new agent Tab needs. `repoPath` is the configured
  *  parent repo (validated against `config.repos` by the backend); `worktreePath`
  *  is the bench's worktree (becomes the session cwd); `cwd` mirrors the worktree
- *  for callers/consumers that want it explicit. Consumed by the existing
- *  `createAgentSession({ nodeId, repoPath, worktreePath, cwd })` path — this
- *  helper invents NO new create logic. */
+ *  for callers/consumers that want it explicit. `instanceId`/`benchId` identify
+ *  the anchoring Bench so its persisted env overlay can be inherited (#740).
+ *  Consumed by the `handleViewSpineCreateTab` path — this helper invents NO new
+ *  create logic. */
 export interface BenchCreatePayload {
   nodeId: NodeId;
   repoPath: string;
   worktreePath: string;
   cwd: string;
+  /** Owning Instance id — used to scope the bench-overlay env lookup (#740). */
+  instanceId: InstanceId;
+  /** Deterministic BenchId (`createBenchId(instanceId, cwd)`) — matches the
+   *  persisted overlay whose `envOverrides` the new Tab inherits (#740). */
+  benchId: BenchId;
 }
 
 /** Resolve the agent-session create payload a "+ tab" on `bench` (owned by
@@ -873,8 +880,8 @@ export interface BenchCreatePayload {
  *  payload is `{ nodeId, repoPath, worktreePath, cwd }` — exactly what the
  *  dialog's local-git create sends. */
 export function benchCreatePayload(
-  instance: Pick<ViewTreeInstance, 'nodeId'>,
-  bench: Pick<ViewTreeBench, 'path' | 'repoPath'>
+  instance: Pick<ViewTreeInstance, 'id' | 'nodeId'>,
+  bench: Pick<ViewTreeBench, 'id' | 'path' | 'repoPath'>
 ): BenchCreatePayload | null {
   if (!bench.repoPath) return null;
   return {
@@ -882,5 +889,9 @@ export function benchCreatePayload(
     repoPath: bench.repoPath,
     worktreePath: bench.path,
     cwd: bench.path,
+    // #740: identity so the create handler can inherit this Bench's persisted
+    // env overlay. `bench.id` is already `createBenchId(instance.id, bench.path)`.
+    instanceId: instance.id,
+    benchId: bench.id,
   };
 }
