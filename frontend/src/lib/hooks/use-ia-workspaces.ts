@@ -1,11 +1,14 @@
 // #728: TanStack Query data layer for the IA Workspace bar. Wraps the #733
 // `/hub/ia/workspaces` CRUD client fns (`api.ts`) in a single `['ia-workspaces']`
-// query plus create/update/delete mutations that invalidate that key on success.
+// query plus create/update/delete mutations.
 //
-// Correctness-first: no optimistic cache writes. Each mutation simply
-// invalidates `['ia-workspaces']` so the list refetches authoritative state
-// from the store. Reorder, rename, and project-membership moves all funnel
-// through `updateIaWorkspace` (the API folds them into one PATCH).
+// Correctness-first: no optimistic cache writes. `create`/`delete` are single
+// ops and invalidate `['ia-workspaces']` on success. `update` (rename, reorder,
+// project-membership) does NOT auto-invalidate (#752): reorder and project-move
+// each fire TWO `update` PATCHes that must be SEQUENCED (mutateAsync) and
+// reconciled with a SINGLE refetch at the end — per-mutation invalidation would
+// refetch between the two PATCHes (flicker) and a partial failure would leave
+// the list inconsistent. Callers own the post-sequence `refetch`/`invalidate`.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
@@ -44,12 +47,14 @@ export function useIaWorkspaces() {
     onSuccess: invalidate,
   });
 
+  // #752: NO auto-invalidate — sequenced two-PATCH ops (reorder, project move)
+  // reconcile with ONE caller-driven refetch at the end. Single-op callers
+  // (rename) invalidate explicitly.
   const updateMutation = useMutation({
     mutationFn: (args: {
       id: string;
       patch: { name?: string; order?: number; projectIds?: string[] };
     }) => updateIaWorkspace(args.id, args.patch),
-    onSuccess: invalidate,
   });
 
   const deleteMutation = useMutation({
@@ -62,6 +67,9 @@ export function useIaWorkspaces() {
     isLoading: query.isLoading,
     isError: query.isError,
     refetch: query.refetch,
+    /** Mark `['ia-workspaces']` stale + refetch. Callers use this after a
+     *  single-op update or to reconcile a sequenced op. */
+    invalidate,
     createMutation,
     updateMutation,
     deleteMutation,
