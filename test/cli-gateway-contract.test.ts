@@ -439,6 +439,9 @@ describe('CLI gateway contract', () => {
       'handoffs.launch',
       'artifacts.read',
       'supervisor.snapshot',
+      'supervisor.sessions',
+      'supervisor.sendText',
+      'supervisor.submit',
       'events.subscribe',
     ] as const;
 

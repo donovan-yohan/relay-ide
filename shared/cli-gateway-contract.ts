@@ -959,28 +959,33 @@ const supervisorSessionsOutputSchema: RelayJsonSchema = {
   required: ['command', 'sessions', 'count'],
 };
 
-const supervisorActionOutputSchema = (command: string): RelayJsonSchema => ({
-  type: 'object',
-  additionalProperties: true,
-  properties: {
-    command: { const: command },
-    action: { type: 'string', enum: ['sendText', 'submit'] },
-    results: { type: 'array', items: { type: 'object', additionalProperties: true } },
-    counts: { type: 'object', additionalProperties: true },
-    audit: { type: 'object', additionalProperties: true },
-    redaction: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        rawContentAvailable: { const: false },
-        rawContentStored: { const: false },
-        hashesOnly: { const: true },
+const supervisorActionOutputSchema = (
+  command: 'supervisor.sendText' | 'supervisor.submit'
+): RelayJsonSchema => {
+  const action = command === 'supervisor.submit' ? 'submit' : 'sendText';
+  return {
+    type: 'object',
+    additionalProperties: true,
+    properties: {
+      command: { const: command },
+      action: { const: action },
+      results: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      counts: { type: 'object', additionalProperties: true },
+      audit: { type: 'object', additionalProperties: true },
+      redaction: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          rawContentAvailable: { const: false },
+          rawContentStored: { const: false },
+          hashesOnly: { const: true },
+        },
+        required: ['rawContentAvailable', 'rawContentStored', 'hashesOnly'],
       },
-      required: ['rawContentAvailable', 'rawContentStored', 'hashesOnly'],
     },
-  },
-  required: ['command', 'action', 'results', 'counts', 'audit', 'redaction'],
-});
+    required: ['command', 'action', 'results', 'counts', 'audit', 'redaction'],
+  };
+};
 
 const gatewayHandoffErrorCodes = [
   'UNAUTHORIZED',

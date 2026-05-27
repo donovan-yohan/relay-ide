@@ -1634,8 +1634,27 @@ function validateGatewaySupervisorActionBody(
   ) {
     gatewayInvalid(commandName, '--text is required for supervisor send-text', { field: 'text' });
   }
-  if (typeof body['id'] !== 'string' && !Array.isArray(body['targetIds'])) {
-    gatewayInvalid(commandName, '--id or --target-ids is required', { field: 'id' });
+  const id = body['id'];
+  const targetIds = body['targetIds'];
+  const hasId = typeof id === 'string' && id.trim().length > 0;
+  if (targetIds !== undefined && !Array.isArray(targetIds)) {
+    gatewayInvalid(commandName, '--target-ids must be a non-empty list of session ids', {
+      field: 'targetIds',
+    });
+  }
+  const hasTargetIds = Array.isArray(targetIds);
+  if (hasTargetIds) {
+    const validTargetIds =
+      targetIds.length > 0 &&
+      targetIds.every((entry) => typeof entry === 'string' && entry.trim().length > 0);
+    if (!validTargetIds) {
+      gatewayInvalid(commandName, '--target-ids must be a non-empty list of session ids', {
+        field: 'targetIds',
+      });
+    }
+  }
+  if (hasId === hasTargetIds) {
+    gatewayInvalid(commandName, 'exactly one of --id or --target-ids is required', { field: 'id' });
   }
 }
 

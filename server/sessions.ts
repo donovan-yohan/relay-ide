@@ -1014,11 +1014,16 @@ function supervisorWrite(
   if (session.mode !== 'pty') {
     throw new Error(`Session ${id} is not a PTY session`);
   }
+  try {
+    session.pty.write(input.payload);
+  } catch (error) {
+    logger.warn(`supervisorWrite() failed to write to PTY session ${id}: ${String(error)}`);
+    throw error;
+  }
   const event = recordSupervisorAction(session, input, controlEngineOptions());
   if (event.type !== 'tab.intervention') {
     throw new Error(`Supervisor action did not produce an intervention event for ${id}`);
   }
-  session.pty.write(input.payload);
   session.lastActivity = new Date().toISOString();
   return {
     eventId: event.eventId,

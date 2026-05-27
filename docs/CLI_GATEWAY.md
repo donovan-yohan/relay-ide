@@ -23,6 +23,7 @@ relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
 relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json
 relay-ide v1 supervisor send-text --target-ids <session-id-1,session-id-2> --text <literal-text> --json
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --json
+relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
 relay-ide v1 events subscribe --topic <sessions|nodes|audit> --json
 ```
 
