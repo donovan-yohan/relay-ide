@@ -204,7 +204,8 @@
   font-family: var(--font-mono, monospace);
   font-size: var(--font-size-xs);
   padding: 2px 4px;
-  min-height: 28px;
+  /* #752: meet the ≥44px touch target the row icon buttons already use. */
+  min-height: 44px;
   cursor: pointer;
   outline: none;
   max-width: 120px;

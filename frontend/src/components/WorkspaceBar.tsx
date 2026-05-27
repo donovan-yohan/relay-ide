@@ -136,12 +136,16 @@ export function WorkspaceBar() {
     isLoading,
     isError,
     refetch,
+    invalidate,
     createMutation,
     updateMutation,
     deleteMutation,
   } = useIaWorkspaces();
   const [newName, setNewName] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
+  // #752: a reorder sequences TWO PATCHes; this flag keeps the controls disabled
+  // across BOTH (not just the one currently in flight) until the single refetch.
+  const [reordering, setReordering] = useState(false);
 
   // Any pending mutation disables the controls (in-flight guard). Ordered by
   // `order` asc then id (the API already returns this order, but re-sort defends
@@ -149,7 +153,8 @@ export function WorkspaceBar() {
   const pending =
     createMutation.isPending ||
     updateMutation.isPending ||
-    deleteMutation.isPending;
+    deleteMutation.isPending ||
+    reordering;
   const ordered = [...workspaces].sort(
     (a, b) => a.order - b.order || a.id.localeCompare(b.id)
   );
@@ -176,9 +181,12 @@ export function WorkspaceBar() {
 
   function handleRename(workspace: IaWorkspace, name: string) {
     clearError();
+    // Single-op update: invalidate explicitly on success (the hook no longer
+    // auto-invalidates `update`, since reorder/assign sequence two PATCHes).
     updateMutation.mutate(
       { id: workspace.id, patch: { name } },
       {
+        onSuccess: invalidate,
         onError: (err) => {
           logger.warn('rename workspace failed', err);
           setActionError(errorMessage(err, 'could not rename workspace'));
@@ -187,28 +195,28 @@ export function WorkspaceBar() {
     );
   }
 
-  // Reorder by swapping the `order` of two adjacent workspaces. Two PATCHes;
-  // correctness-first (no optimistic UI). The list invalidates and refetches.
-  function handleSwap(a: IaWorkspace, b: IaWorkspace) {
+  // #752: Reorder by swapping the `order` of two adjacent workspaces. The two
+  // PATCHes are SEQUENCED via `mutateAsync` (await the first, then the second)
+  // with a SINGLE guarded refetch at the end — never per-mutation invalidation
+  // (which would refetch between the PATCHes and flicker, or surface equal
+  // `order`). On partial failure (PATCH 1 ok, PATCH 2 throws) we surface a clear
+  // error AND refetch to reconcile, so the list never silently desyncs.
+  async function handleSwap(a: IaWorkspace, b: IaWorkspace) {
+    if (pending) return;
     clearError();
-    updateMutation.mutate(
-      { id: a.id, patch: { order: b.order } },
-      {
-        onError: (err) => {
-          logger.warn('reorder workspace failed', err);
-          setActionError(errorMessage(err, 'could not reorder workspace'));
-        },
-      }
-    );
-    updateMutation.mutate(
-      { id: b.id, patch: { order: a.order } },
-      {
-        onError: (err) => {
-          logger.warn('reorder workspace failed', err);
-          setActionError(errorMessage(err, 'could not reorder workspace'));
-        },
-      }
-    );
+    setReordering(true);
+    try {
+      await updateMutation.mutateAsync({ id: a.id, patch: { order: b.order } });
+      await updateMutation.mutateAsync({ id: b.id, patch: { order: a.order } });
+    } catch (err) {
+      logger.warn('reorder workspace failed', err);
+      setActionError(errorMessage(err, 'could not reorder workspace'));
+    } finally {
+      // One refetch reconciles whatever landed (full success OR partial), so the
+      // UI always reflects authoritative store state.
+      setReordering(false);
+      void refetch();
+    }
   }
 
   function handleDelete(workspace: IaWorkspace) {
@@ -245,11 +253,11 @@ export function WorkspaceBar() {
               onRename={(name) => handleRename(ws, name)}
               onMoveUp={() => {
                 const prev = ordered[index - 1];
-                if (prev) handleSwap(ws, prev);
+                if (prev) void handleSwap(ws, prev);
               }}
               onMoveDown={() => {
                 const next = ordered[index + 1];
-                if (next) handleSwap(ws, next);
+                if (next) void handleSwap(ws, next);
               }}
               onDelete={() => handleDelete(ws)}
             />

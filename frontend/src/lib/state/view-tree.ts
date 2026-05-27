@@ -705,6 +705,138 @@ export function applyLens(tree: ViewTree, lens: ViewLens): ViewTree {
   };
 }
 
+// ── #773: dedup derived benches vs. persisted bench overlays ──────────────────
+// An Instance row renders TWO bench sources: benches DERIVED from worktrees
+// (`ViewTreeBench`, keyed on cwd/worktree path) and #735 PERSISTED overlays
+// (`/hub/ia/benches`, keyed on `cwd`). A worktree bench and an overlay targeting
+// the SAME cwd are the same Bench and must render as ONE row — today they
+// double-count. This pure merge keys BOTH by cwd and, on collision, prefers the
+// overlay (it carries the user's label + env) while inheriting the derived
+// bench's git/branch/tab/recency context.
+//
+// C1: cwd is the dedup key VERBATIM — never `decodeURIComponent`-ed.
+
+/** Minimal persisted bench-overlay shape this merge needs (matches the #735
+ *  `/hub/ia/benches` `IaBench`). Kept structural so callers can pass the API
+ *  client's `IaBench` without an import cycle. */
+export interface BenchOverlayInput {
+  id: string;
+  instanceId: string;
+  cwd: string;
+  label: string | null;
+  envOverrides: Record<string, string>;
+}
+
+/** A merged bench row: a derived bench, a persisted overlay, or both fused at
+ *  the same cwd. Carries the union of fields the renderer needs so it can render
+ *  one row per cwd. `overlayId` is set when an overlay backs this row (delete
+ *  affordance); `bench` is set when a derived worktree backs it ("+ tab" anchor,
+ *  branch, tab count). */
+export interface MergedBench {
+  /** Stable React key + dedup identity. The cwd this bench is anchored to. */
+  cwd: string;
+  /** Display label: overlay label (when set) else the derived/basename label. */
+  label: string;
+  /** Persisted overlay id, when an overlay backs this row (enables delete). */
+  overlayId: string | null;
+  /** Env overrides from the overlay (empty when overlay-less). */
+  envOverrides: Record<string, string>;
+  /** Underlying derived bench, when a worktree backs this row. `null` for an
+   *  overlay-only bench (no worktree → no "+ tab" anchor, no branch). */
+  bench: ViewTreeBench | null;
+}
+
+function overlayFallbackLabel(cwd: string): string {
+  const trimmed = cwd.replace(/[\\/]+$/, '');
+  const seg = trimmed.split(/[\\/]/).pop();
+  return seg && seg.length > 0 ? seg : cwd;
+}
+
+/**
+ * Merge an instance's derived benches with its persisted overlays into ONE row
+ * list keyed by cwd. PURE: never mutates inputs, never fetches.
+ *
+ * Rules:
+ *   - Derived benches whose `path` equals an overlay's `cwd` fuse into a single
+ *     row. The OVERLAY is preferred: its label (when non-empty) + env win, but
+ *     the row keeps the derived `bench` so the renderer still has branch/git,
+ *     tab count, and the "+ tab" anchor.
+ *   - An overlay with no matching derived bench renders overlay-only (`bench:
+ *     null`): no branch, no "+ tab" (no worktree anchor).
+ *   - A derived bench with no overlay renders as before (`overlayId: null`).
+ *   - Order: derived benches keep their incoming (build/lens) order first; then
+ *     overlay-only benches in their incoming order. A fused overlay does NOT
+ *     reorder its derived row.
+ */
+export function mergeInstanceBenches(
+  derived: ViewTreeBench[],
+  overlays: BenchOverlayInput[]
+): MergedBench[] {
+  // Index overlays by cwd (last write wins — the store keys benches uniquely by
+  // (instanceId, cwd), so collisions are not expected, but be deterministic).
+  const overlayByCwd = new Map<string, BenchOverlayInput>();
+  for (const overlay of overlays) overlayByCwd.set(overlay.cwd, overlay);
+
+  const merged: MergedBench[] = [];
+  const fusedCwds = new Set<string>();
+
+  // Derived benches first, fusing any overlay sharing the cwd.
+  for (const bench of derived) {
+    const overlay = overlayByCwd.get(bench.path);
+    if (overlay) {
+      fusedCwds.add(bench.path);
+      const overlayLabel =
+        overlay.label && overlay.label.length > 0 ? overlay.label : null;
+      merged.push({
+        cwd: bench.path,
+        label: overlayLabel ?? bench.label,
+        overlayId: overlay.id,
+        envOverrides: overlay.envOverrides,
+        bench,
+      });
+    } else {
+      merged.push({
+        cwd: bench.path,
+        label: bench.label,
+        overlayId: null,
+        envOverrides: {},
+        bench,
+      });
+    }
+  }
+
+  // Overlay-only benches (no derived worktree at that cwd).
+  for (const overlay of overlays) {
+    if (fusedCwds.has(overlay.cwd)) continue;
+    const overlayLabel =
+      overlay.label && overlay.label.length > 0 ? overlay.label : null;
+    merged.push({
+      cwd: overlay.cwd,
+      label: overlayLabel ?? overlayFallbackLabel(overlay.cwd),
+      overlayId: overlay.id,
+      envOverrides: overlay.envOverrides,
+      bench: null,
+    });
+  }
+
+  return merged;
+}
+
+/** Group a flat list of persisted bench overlays by their `instanceId`, so a
+ *  SINGLE unfiltered `GET /hub/ia/benches` can fan out to per-instance rows
+ *  client-side (replacing N per-instance GETs). PURE. */
+export function groupBenchOverlaysByInstance(
+  overlays: BenchOverlayInput[]
+): Map<string, BenchOverlayInput[]> {
+  const byInstance = new Map<string, BenchOverlayInput[]>();
+  for (const overlay of overlays) {
+    const list = byInstance.get(overlay.instanceId);
+    if (list) list.push(overlay);
+    else byInstance.set(overlay.instanceId, [overlay]);
+  }
+  return byInstance;
+}
+
 // ── S4: "+ tab" anchored to a Bench (#731) ───────────────────────────────────
 // PURE resolver of the create payload a "+ tab" affordance hands to the EXISTING
 // session-create entrypoint (`createAgentSession` → `createSession`, the #473
