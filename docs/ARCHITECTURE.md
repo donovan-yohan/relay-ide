@@ -18,6 +18,8 @@ The system has two compilation targets: a TypeScript + ESM backend (Express + no
 
 Relay's product information architecture is now described as **View -> Workspace -> Project -> Instance -> Bench -> Tab**. This vocabulary is a source-of-truth for docs and implementation planning; it does not mean every layer must be visible in every UI state. The single-repo golden path should stay compact, while remote, non-repo, and multi-node states expose the layer needed to avoid false repo/worktree assumptions.
 
+A first user-facing slice exists as the **view-spine MVP** (#444): a read-only, client-derived `Workspace -> Project -> Instance -> Bench` sidebar tree behind the default-OFF `view-spine` flag. It derives over existing store data only (`frontend/src/lib/state/view-tree.ts`) — no new persistence, no new server endpoints — so it is a projection, not the persisted six-layer model. The backend source-of-truth lane (persistence/CRUD/migration, #733–#737) is still pending; see `docs/FRONTEND.md` for the flag, derive adapter, lenses, and deferred scope.
+
 The #552 workbench/control-plane nouns in `docs/WORKBENCH_BOUNDARY.md` are compatible with this tree rather than a replacement for it: `WorkContext` is the cross-cutting work envelope, `RepoInstance` maps to a git-specific Instance, `WorktreeInstance` maps to a git-specific Bench, and `Session`/browser Tab remain separate process/surface concepts.
 
 | Layer         | What it answers                                       | Current / compatibility boundary                                                                                                                                                                                       |
@@ -136,7 +138,7 @@ React 19 SPA built by Vite, output to `dist/frontend/`. Express serves the compi
 | Path                                  | Role                                                                                                                                                                                        |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `frontend/src/components/`            | React 19 TSX components (Terminal, Sidebar, RepoItem, PrTopBar, WorkspaceArea, RepoDashboard, CommandPalette, dialogs, etc.)                                                                |
-| `frontend/src/lib/state/`             | Pure logic modules (`display-state.ts` — 6-state display state machine, `sidebar-items.ts` — unified SidebarItem construction with reconciliation, `attention.ts` — state priority scoring) |
+| `frontend/src/lib/state/`             | Pure logic modules (`display-state.ts` — 6-state display state machine, `sidebar-items.ts` — unified SidebarItem construction with reconciliation, `attention.ts` — state priority scoring, `view-tree.ts` — read-only #444 view-spine derive over existing store data) |
 | `frontend/src/hooks/`                 | React hooks for state and side effects (`useEventSocket`, `useSessionHandlers`, `useActionRegistry`, `useRepoAggregation`, etc.)                                                            |
 | `frontend/src/lib/api.ts`             | REST API client functions                                                                                                                                                                   |
 | `frontend/src/lib/ws.ts`              | WebSocket connection management (PTY relay + event channel)                                                                                                                                 |
@@ -202,7 +204,7 @@ Planned/deferred, not shipped:
 - #428 File RPC (`fs.read`, `fs.list`, `fs.write`, `fs.tail`) remains in spikes/design docs, not source.
 - #476 hub/node log proxy (`logs.tail`, node-log streaming, diagnostic bundles beyond current CLI `node status|logs|doctor`) is not implemented.
 - #427 trust-tier/capability/ACL schema and legacy defaults are implemented in `shared/security-policy.ts` and `server/hub-node-registry.ts`. The hash-chained audit sink/verifier primitive is implemented in `shared/security-audit.ts` and `server/security-audit-log.ts`. Policy evaluator gates, two-token confirmation, manual/online credential rotation, and redacted rotation proof audit are implemented; scheduled/default credential rotation and external audit shipping remain configurable/deferred.
-- #444 six-layer IA (`View -> Workspace -> Project -> Instance -> Bench -> Tab`) is not the persisted/current backend model.
+- #444 six-layer IA (`View -> Workspace -> Project -> Instance -> Bench -> Tab`) is not the persisted/current backend model. A read-only, flag-gated frontend MVP (`view-spine`, default OFF) derives `Workspace -> Project -> Instance -> Bench` from existing store data, but the backend persistence lane (#733–#737) is still pending.
 
 PTY flow:
 
