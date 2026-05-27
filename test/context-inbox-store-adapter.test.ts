@@ -94,6 +94,24 @@ describe('context-inbox store adapter — PULL-as-delivery flip', () => {
     expect(store.getInboxMessage(msg.id)?.state).toBe('delivered');
   });
 
+  it('listInboxMessages with a limit flips only returned queued rows', () => {
+    const first = seedMessage(SESSION_A);
+    const second = seedMessage(SESSION_A);
+    const third = seedMessage(SESSION_A);
+
+    const listed = adapter.listInboxMessages({ targetSessionId: SESSION_A, limit: 2 });
+
+    expect(listed).toHaveLength(2);
+    const listedIds = new Set(listed.map((m) => m.id));
+    expect(listed.every((m) => m.state === 'delivered')).toBe(true);
+    for (const message of [first, second, third]) {
+      expect(store.getInboxMessage(message.id)?.state).toBe(
+        listedIds.has(message.id) ? 'delivered' : 'queued'
+      );
+    }
+    expect([first, second, third].filter((m) => !listedIds.has(m.id))).toHaveLength(1);
+  });
+
   it('re-fetching a delivered message is idempotent (no-op, timestamp preserved)', () => {
     const msg = seedMessage();
     const first = adapter.getInboxMessage(msg.id);
