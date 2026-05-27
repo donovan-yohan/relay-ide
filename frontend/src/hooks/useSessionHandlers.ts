@@ -219,12 +219,18 @@ export function useSessionHandlers({
 
   // #731: "+ tab" anchored to a view-spine Bench. Reuses the EXISTING
   // node-aware create entrypoint (`createAgentSession` → `createSession`, the
-  // #473 local/remote/free flow) with ONLY the bench's (nodeId, cwd) anchor —
-  // NO env-override inheritance (deferred to #740 / backend #735). Offline/
-  // remote-unavailable benches fail through the same toast path as every other
-  // create; no bespoke error UI.
+  // #473 local/remote/free flow). The bench resolves to the agent-session repo
+  // context the backend requires (`repoPath` ∈ config.repos, worktree → cwd) —
+  // mirroring the dialog's local-git create. NO env-override inheritance
+  // (deferred to #740 / backend #735). Offline/remote-unavailable benches fail
+  // through the same toast path as every other create; no bespoke error UI.
   const handleViewSpineCreateTab = useCallback(
-    async (payload: { nodeId: NodeId; cwd: string }) => {
+    async (payload: {
+      nodeId: NodeId;
+      repoPath: string;
+      worktreePath: string;
+      cwd: string;
+    }) => {
       const loadingKey = `view-spine-tab:${payload.nodeId}:${payload.cwd}`;
       if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
       useSessionsStore.getState().setLoading(loadingKey);
@@ -234,6 +240,8 @@ export function useSessionHandlers({
         );
         const { session, error } = await createAgentSession({
           nodeId: payload.nodeId,
+          repoPath: payload.repoPath,
+          worktreePath: payload.worktreePath,
           cwd: payload.cwd,
           type: 'agent',
           cols,

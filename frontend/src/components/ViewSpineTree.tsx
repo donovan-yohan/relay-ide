@@ -62,17 +62,25 @@ function BenchRow({
   // benches stay clickable) while a create is pending. Errors surface through
   // the existing create path's toast — no bespoke error UI here.
   const [creating, setCreating] = useState(false);
+  // Resolve the create payload up front. `null` for a non-git/directory bench
+  // (no config.repos anchor → agent session impossible), which withholds the
+  // "+ tab" affordance entirely. Memoized so the render decision and the click
+  // handler agree.
+  const createPayload = useMemo(
+    () => benchCreatePayload(instance, bench),
+    [instance, bench]
+  );
   const handleCreate = useCallback(async () => {
-    if (!onCreateTab || creating) return;
+    if (!onCreateTab || !createPayload || creating) return;
     setCreating(true);
     try {
-      // Resolve the (nodeId, cwd) anchor with the PURE helper, then hand it to
-      // the existing node-aware create entrypoint. NO env-override inheritance.
-      await onCreateTab(benchCreatePayload(instance, bench));
+      // Hand the resolved (nodeId, repoPath, worktreePath, cwd) payload to the
+      // existing node-aware create entrypoint. NO env-override inheritance.
+      await onCreateTab(createPayload);
     } finally {
       setCreating(false);
     }
-  }, [onCreateTab, creating, instance, bench]);
+  }, [onCreateTab, createPayload, creating]);
 
   return (
     <li className="session-row inactive state-inactive view-spine-bench">
@@ -91,10 +99,11 @@ function BenchRow({
           </span>
         </div>
       ) : null}
-      {/* #731 "+ tab" anchored to THIS bench's (nodeId, cwd). Reuses the
-          `.add-worktree-row`/`.add-worktree-btn` styling ONLY — it wires to
-          session/tab CREATION, NOT worktree creation (distinct copy `+ tab`). */}
-      {onCreateTab ? (
+      {/* #731 "+ tab" anchored to THIS bench's (nodeId, repoPath, worktree).
+          Reuses the `.add-worktree-row`/`.add-worktree-btn` styling ONLY — it
+          wires to session/tab CREATION, NOT worktree creation (distinct copy
+          `+ tab`). Withheld for non-git benches (no agent-capable repo anchor). */}
+      {onCreateTab && createPayload ? (
         <div
           className={['add-worktree-row', creating && 'disabled']
             .filter(Boolean)

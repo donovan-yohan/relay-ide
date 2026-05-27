@@ -9,13 +9,13 @@ import {
 } from '../lib/stores/ui.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import type { Repo, WorktreeInfo, PullRequest } from '../lib/types.js';
-import type { NodeId } from '../../../shared/identity.js';
 import { fetchOrgPrs } from '../lib/api.js';
 import WorkspaceGroup from './WorkspaceGroup.js';
 import { HubNodeDashboardPanel } from './HubNodeDashboard.js';
 import RepoItem from './RepoItem.js';
 import { SessionHistoryPanel } from './SessionHistoryPanel.js';
 import { ViewSpineTree } from './ViewSpineTree.js';
+import type { BenchCreatePayload } from '../lib/state/view-tree.js';
 import { TuiButton } from './TuiButton.js';
 import {
   DndContext,
@@ -392,8 +392,10 @@ export interface SidebarProps {
   onResumeWorktree?: (wt: WorktreeInfo) => void;
   onLaunchWorkspaceSession?: (workspaceId: string) => void;
   onLaunchRepoSession?: (repoPath: string) => void;
-  /** #731: create a Tab anchored to a view-spine Bench's (nodeId, cwd). */
-  onViewSpineCreateTab?: (payload: { nodeId: NodeId; cwd: string }) => void;
+  /** #731: create an agent Tab anchored to a view-spine Bench. Payload carries
+   *  the node anchor + the configured repo/worktree context the backend
+   *  validates (`BenchCreatePayload`). */
+  onViewSpineCreateTab?: (payload: BenchCreatePayload) => void;
   onOpenAnalytics: () => void;
 }
 

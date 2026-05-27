@@ -65,6 +65,11 @@ export interface ViewTreeBench {
   id: BenchId;
   /** Anchored cwd/worktree path. */
   path: string;
+  /** Configured PARENT repo path this bench belongs to — the value the backend
+   *  validates against `config.repos` for an agent session (#731). Mirrors what
+   *  the dialog sends as `environment.repoPath`. `null` for non-git/directory
+   *  benches, which have no agent-capable repo anchor. */
+  repoPath: string | null;
   /** Last path segment, for the `.session-name` label. */
   label: string;
   /** Branch name — present ONLY for git benches; omit element otherwise. */
@@ -275,6 +280,10 @@ function ensureBench(
   project: MutableProject,
   instance: MutableInstance,
   path: string,
+  /** Configured parent repo path this bench was derived from (worktree's
+   *  `repoPath` or session's `repoPath`). Carried so "+ tab" can send the
+   *  agent-session `repoPath` the backend validates (#731). */
+  repoPath: string,
   branch: string | null,
   activity: string | null
 ): ViewTreeBench {
@@ -288,6 +297,10 @@ function ensureBench(
   const bench: ViewTreeBench = {
     id: createBenchId(instance.id, path),
     path,
+    // Only git benches expose an agent-capable repo anchor; directory benches
+    // carry `null` so the "+ tab" affordance is withheld (no config.repos
+    // entry to validate against).
+    repoPath: project.isGit ? repoPath : null,
     label: basename(path),
     // Branch element is rendered ONLY for git projects — omit by construction
     // for directory projects so identity/branch leakage is impossible.
@@ -356,6 +369,7 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
       project,
       instance,
       wt.path,
+      wt.repoPath,
       wt.branchName || null,
       wt.lastActivity || null
     );
@@ -417,6 +431,7 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
         project,
         instance,
         session.worktreePath,
+        session.repoPath,
         session.branchName || null,
         activity
       );
@@ -487,7 +502,10 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
     .map((ws) => {
       const seen = new Set<ProjectId>();
       const projects: ViewTreeProject[] = [];
-      for (const repoPath of ws.repos) {
+      // Legacy/malformed persisted workspaces can omit `repos`. Guard exactly
+      // like the OFF path (`Sidebar.tsx`) so the ON path is equally defensive.
+      const repoPaths = Array.isArray(ws.repos) ? ws.repos : [];
+      for (const repoPath of repoPaths) {
         const projectId = projectIdByRepoPath.get(repoPath);
         if (!projectId) continue;
         if (seen.has(projectId)) continue; // dedup repos sharing a remote
@@ -603,29 +621,50 @@ export function applyLens(tree: ViewTree, lens: ViewLens): ViewTree {
   };
 }
 
-// ── S4: "+ tab" anchored to a Bench (#731, reduced) ──────────────────────────
+// ── S4: "+ tab" anchored to a Bench (#731) ───────────────────────────────────
 // PURE resolver of the create payload a "+ tab" affordance hands to the EXISTING
 // session-create entrypoint (`createAgentSession` → `createSession`, the #473
-// local/remote/free flow). A Bench is anchored to a single (nodeId, cwd); the
-// nodeId lives on its owning Instance, the cwd is the bench's path. NO
-// env-override inheritance (deferred to #740 / backend #735) — the payload
-// carries ONLY the anchor, mirroring the remote-node branch of
-// `createSessionFromForm` (cwd-only, node-scoped).
+// local/remote/free flow). A Bench is anchored to a single (nodeId, worktree);
+// the nodeId lives on its owning Instance. The payload MIRRORS the local-git
+// branch of `createSessionFromForm` (the dialog) so it satisfies the backend
+// `validateSessionCreateRequest` agent contract: `repoPath` MUST be a configured
+// repo (`config.repos`) and the worktree becomes the session cwd
+// (`cwd = worktreePath ?? repoPath`, server/index.ts).
+//
+// NO env-override inheritance (deferred to #740 / backend #735) — the payload
+// carries ONLY the node anchor + the agent-session repo/worktree context the
+// backend requires. No branch, env, agent, yolo, or identity is inherited.
 
-/** The minimal anchor a new Tab needs: which node hosts it and which cwd it
- *  opens in. Consumed by the existing `createAgentSession({ nodeId, cwd })`
- *  path — this helper invents NO new create logic. */
+/** The anchor + repo context a new agent Tab needs. `repoPath` is the configured
+ *  parent repo (validated against `config.repos` by the backend); `worktreePath`
+ *  is the bench's worktree (becomes the session cwd); `cwd` mirrors the worktree
+ *  for callers/consumers that want it explicit. Consumed by the existing
+ *  `createAgentSession({ nodeId, repoPath, worktreePath, cwd })` path — this
+ *  helper invents NO new create logic. */
 export interface BenchCreatePayload {
   nodeId: NodeId;
+  repoPath: string;
+  worktreePath: string;
   cwd: string;
 }
 
-/** Resolve the `(nodeId, cwd)` a "+ tab" on `bench` (owned by `instance`)
- *  should create against. Pure: no I/O, no React. The nodeId comes from the
- *  Instance (the host materialization), the cwd is the bench's anchored path. */
+/** Resolve the agent-session create payload a "+ tab" on `bench` (owned by
+ *  `instance`) should create against. Pure: no I/O, no React.
+ *
+ *  Returns `null` for a NON-git/directory bench (`bench.repoPath === null`):
+ *  there is no `config.repos`-validated repo anchor, so an agent session cannot
+ *  be created and the "+ tab" affordance is withheld. For a git bench the
+ *  payload is `{ nodeId, repoPath, worktreePath, cwd }` — exactly what the
+ *  dialog's local-git create sends. */
 export function benchCreatePayload(
   instance: Pick<ViewTreeInstance, 'nodeId'>,
-  bench: Pick<ViewTreeBench, 'path'>
-): BenchCreatePayload {
-  return { nodeId: instance.nodeId, cwd: bench.path };
+  bench: Pick<ViewTreeBench, 'path' | 'repoPath'>
+): BenchCreatePayload | null {
+  if (!bench.repoPath) return null;
+  return {
+    nodeId: instance.nodeId,
+    repoPath: bench.repoPath,
+    worktreePath: bench.path,
+    cwd: bench.path,
+  };
 }

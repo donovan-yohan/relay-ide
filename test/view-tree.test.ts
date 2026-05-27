@@ -270,6 +270,9 @@ describe('benches and grouping', () => {
     expect(bench.path).toBe('/repos/relay/.worktrees/feat-x');
     expect(bench.isGit).toBe(true);
     expect(bench.branch).toBe('feature/x');
+    // #731: a git bench carries its configured PARENT repo path (the worktree's
+    // `repoPath`), which the backend validates against `config.repos`.
+    expect(bench.repoPath).toBe('/repos/relay');
   });
 
   it('directory-project benches omit branch entirely', () => {
@@ -295,6 +298,9 @@ describe('benches and grouping', () => {
     const bench = allProjects(tree)[0]!.instances[0]!.benches[0]!;
     expect(bench.isGit).toBe(false);
     expect(bench.branch).toBeNull();
+    // #731: a non-git/directory bench carries NO repo anchor — there is no
+    // `config.repos`-validated path to start an agent session against.
+    expect(bench.repoPath).toBeNull();
   });
 
   it('places workspace-group repos under their group and leaves others ungrouped', () => {
@@ -476,7 +482,7 @@ describe('S2 Views lenses', () => {
 
 // ── S4: "+ tab" create-payload resolver (#731) ────────────────────────────────
 describe('S4 benchCreatePayload', () => {
-  it('anchors a local git bench to its (nodeId, worktree cwd)', () => {
+  it('builds a local git agent payload (nodeId, repoPath, worktreePath, cwd)', () => {
     const worktree: WorktreeInfo = {
       name: 'feat-x',
       path: '/repos/relay/.worktrees/feat-x',
@@ -491,8 +497,12 @@ describe('S4 benchCreatePayload', () => {
     const instance = allProjects(tree)[0]!.instances[0]!;
     const bench = instance.benches[0]!;
 
+    // Mirrors the dialog's local-git create so the backend agent contract
+    // passes: repoPath is the configured parent repo, the worktree becomes cwd.
     expect(benchCreatePayload(instance, bench)).toEqual({
       nodeId: DEFAULT_LOCAL_NODE_ID,
+      repoPath: '/repos/relay',
+      worktreePath: '/repos/relay/.worktrees/feat-x',
       cwd: '/repos/relay/.worktrees/feat-x',
     });
   });
@@ -523,11 +533,41 @@ describe('S4 benchCreatePayload', () => {
     // guards against creating the tab on the wrong machine.
     expect(benchCreatePayload(instance, bench)).toEqual({
       nodeId: 'macbook',
+      repoPath: '/repos/relay',
+      worktreePath: '/repos/relay/.worktrees/feat-y',
       cwd: '/repos/relay/.worktrees/feat-y',
     });
   });
 
-  it('carries ONLY the (nodeId, cwd) anchor — no env/branch/identity inherited', () => {
+  it('returns null for a non-git/directory bench (no agent-capable anchor)', () => {
+    const dir = repo({
+      path: '/dirs/scratch',
+      name: 'scratch',
+      isGitRepo: false,
+      kind: 'directory',
+      repoIdentity: null,
+    });
+    const tree = build({
+      repos: [dir],
+      sessions: [
+        session({
+          id: 'w',
+          repoPath: '/dirs/scratch',
+          worktreePath: '/dirs/scratch/sub',
+          cwd: '/dirs/scratch/sub',
+        }),
+      ],
+    });
+    const instance = allProjects(tree)[0]!.instances[0]!;
+    const bench = instance.benches[0]!;
+
+    // A directory bench has no `config.repos`-validated repo path → an agent
+    // session is impossible, so the helper withholds a payload (UI hides +tab).
+    expect(bench.repoPath).toBeNull();
+    expect(benchCreatePayload(instance, bench)).toBeNull();
+  });
+
+  it('carries ONLY (nodeId, repoPath, worktreePath, cwd) — no env/branch/identity inherited', () => {
     const worktree: WorktreeInfo = {
       name: 'feat-z',
       path: '/repos/relay/.worktrees/feat-z',
@@ -542,11 +582,43 @@ describe('S4 benchCreatePayload', () => {
     const instance = allProjects(tree)[0]!.instances[0]!;
     const bench = instance.benches[0]!;
 
-    // #740/#735 are deferred: the payload must NOT leak branch, env, or repo
-    // identity into the create call — exactly two keys.
-    expect(Object.keys(benchCreatePayload(instance, bench)).sort()).toEqual([
+    // #740/#735 are deferred: the payload must NOT leak branch, env, agent,
+    // yolo, or repo identity into the create call — exactly these four keys.
+    const payload = benchCreatePayload(instance, bench);
+    expect(payload).not.toBeNull();
+    expect(Object.keys(payload!).sort()).toEqual([
       'cwd',
       'nodeId',
+      'repoPath',
+      'worktreePath',
     ]);
+  });
+});
+
+describe('S4 workspace-group ws.repos guard', () => {
+  it('tolerates a persisted workspace whose `repos` field is missing/non-array', () => {
+    const grouped = repo({
+      path: '/repos/grouped',
+      name: 'grouped',
+      repoIdentity: 'github.com/acme/grouped',
+    });
+    // Legacy/malformed persisted workspace: `repos` omitted. The ON path must
+    // not throw (mirrors the OFF path's `Array.isArray` guard in Sidebar.tsx).
+    const malformed = {
+      id: 'ws-legacy',
+      name: 'Legacy',
+      order: 0,
+    } as unknown as Workspace;
+
+    expect(() =>
+      build({ repos: [grouped], workspaceGroups: [malformed] })
+    ).not.toThrow();
+
+    const tree = build({ repos: [grouped], workspaceGroups: [malformed] });
+    // No repos → the group is present but empty; the repo falls through to the
+    // ungrouped lane rather than crashing the projection.
+    expect(tree.workspaces).toHaveLength(1);
+    expect(tree.workspaces[0]!.projects).toEqual([]);
+    expect(tree.ungroupedProjects.map((p) => p.label)).toEqual(['grouped']);
   });
 });
