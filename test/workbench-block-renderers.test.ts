@@ -27,9 +27,14 @@ import type { FileResourceRef } from '../shared/file-resource-ref.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
 const blocksDir = join(projectRoot, 'frontend/src/workbench/blocks');
+const frontendLibDir = join(projectRoot, 'frontend/src/lib');
 
 function readBlock(name: string) {
   return readFileSync(join(blocksDir, name), 'utf-8');
+}
+
+function readFrontendLib(name: string) {
+  return readFileSync(join(frontendLibDir, name), 'utf-8');
 }
 
 function blockExists(name: string) {
@@ -486,6 +491,61 @@ describe('file renderer', () => {
     const src = readBlock('file.tsx');
     expect(src).toContain('sessionId');
     expect(src).toContain('session required');
+  });
+
+  it('renders bounded directory previews through fs.list', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('fetchNodeFsList');
+    expect(src).toContain("'fs.list'");
+    expect(src).toContain('FILE_RPC_DEFAULT_LIST_ENTRIES');
+    expect(src).toContain("stat.type === 'directory'");
+    expect(src).toContain('block-file__directory');
+    expect(src).toContain('empty directory');
+    expect(src).toContain('entries.map');
+  });
+
+  it('uses a bounded tail helper for log previews', () => {
+    const src = readBlock('file.tsx');
+    const api = readFrontendLib('api.ts');
+    expect(src).toContain('fetchNodeFsTail');
+    expect(src).toContain("fileRef.intent === 'tail'");
+    expect(src).toContain("'fs.tail'");
+    expect(src).toContain('FILE_RPC_MAX_TAIL_BYTES');
+    expect(src).toContain('FILE_RPC_MAX_TAIL_LINES');
+    expect(src).toContain('block-file__tail-meta');
+    expect(api).toContain('export async function fetchNodeFsTail');
+    expect(api).toContain('/files/tail');
+  });
+
+  it('renders common image previews from bounded base64 reads', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('IMAGE_MIME_BY_EXTENSION');
+    expect(src).toContain("encoding: 'base64'");
+    expect(src).toContain('data:${imageMime};base64');
+    expect(src).toContain('block-file__image');
+    expect(src).toContain('block-file__image-img');
+    expect(src).toContain('image too large to preview');
+  });
+
+  it('renders PDF and unsupported fallbacks without parsing bytes', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('isPdfPath');
+    expect(src).toContain('pdf preview unavailable');
+    expect(src).toContain('unsupported preview');
+    expect(src).toContain('open/download from file browser');
+    expect(src).toContain('block-file__unsupported');
+  });
+
+  it('renders a metadata row with identity, freshness, binding, and grant state', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('block-file__metadata');
+    expect(src).toContain('node:');
+    expect(src).toContain('intent:');
+    expect(src).toContain('fresh:');
+    expect(src).toContain('grant:');
+    expect(src).toContain('repo:');
+    expect(src).toContain('worktree:');
+    expect(src).toContain('non-git cwd');
   });
 
   // ---------------------------------------------------------------------------

@@ -209,7 +209,24 @@ function buildReadRequest(
   if (typeof maxBytes !== 'number') return maxBytes;
   const maxLines = optionalBoundedInteger(fields['maxLines'], FILE_RPC_MAX_READ_LINES, 'maxLines');
   if (maxLines !== undefined && typeof maxLines !== 'number') return maxLines;
-  return { ...base, maxBytes, ...(maxLines !== undefined ? { maxLines } : {}) };
+  const encodingRaw = fields['encoding'];
+  if (
+    encodingRaw !== undefined &&
+    encodingRaw !== null &&
+    encodingRaw !== 'utf8' &&
+    encodingRaw !== 'base64'
+  ) {
+    return invalidRequest('FILE_RPC_INVALID_REQUEST', 'encoding must be "utf8" or "base64"', {
+      field: 'encoding',
+    });
+  }
+  const encoding = encodingRaw === 'base64' ? 'base64' : 'utf8';
+  return {
+    ...base,
+    maxBytes,
+    ...(maxLines !== undefined ? { maxLines } : {}),
+    ...(encoding !== 'utf8' ? { encoding } : {}),
+  };
 }
 
 function buildTailRequest(
@@ -562,10 +579,12 @@ async function executeRead(request: FileRpcRequest): Promise<FileRpcReadResponse
       bytesRead += read.bytesRead;
     }
     const visibleBytes = Math.min(bytesRead, maxBytes);
-    let content = buffer.subarray(0, visibleBytes).toString('utf8');
+    const visibleBuffer = buffer.subarray(0, visibleBytes);
+    const encoding = 'encoding' in request && request.encoding === 'base64' ? 'base64' : 'utf8';
+    let content = encoding === 'base64' ? visibleBuffer.toString('base64') : visibleBuffer.toString('utf8');
     const truncatedBytes = bytesRead > maxBytes;
     let truncatedLines = false;
-    if (maxLines !== undefined) {
+    if (encoding === 'utf8' && maxLines !== undefined) {
       const lines = content.split('\n');
       if (lines.length > maxLines) {
         content = lines.slice(0, maxLines).join('\n');
@@ -577,7 +596,7 @@ async function executeRead(request: FileRpcRequest): Promise<FileRpcReadResponse
       root: request.root,
       cwd: request.cwd,
       path: request.path,
-      encoding: 'utf8',
+      encoding,
       content,
       bytesRead: visibleBytes,
       truncatedBytes,

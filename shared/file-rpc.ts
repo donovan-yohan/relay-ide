@@ -54,6 +54,8 @@ export type FileRpcStatRequest = FileRpcBaseRequest;
 export interface FileRpcReadRequest extends FileRpcBaseRequest {
   maxBytes: number;
   maxLines?: number;
+  /** UTF-8 text by default; base64 is used for bounded binary/image previews. */
+  encoding?: 'utf8' | 'base64';
 }
 
 export interface FileRpcTailRequest extends FileRpcBaseRequest {
@@ -113,7 +115,7 @@ export interface FileRpcReadResponse {
   root: string;
   cwd: string;
   path: string;
-  encoding: 'utf8';
+  encoding: 'utf8' | 'base64';
   content: string;
   bytesRead: number;
   truncatedBytes: boolean;
