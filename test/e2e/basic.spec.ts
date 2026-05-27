@@ -1,7 +1,17 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 const isExpectedError = (msg: string) => {
   return msg.includes('401 (Unauthorized)') || msg.includes('auth');
+};
+
+const waitForAppReady = async (page: Page) => {
+  if (process.env.NO_PIN === '1') {
+    await expect(page.locator('.main-app')).toBeVisible({ timeout: 10000 });
+  } else {
+    await expect(page.getByRole('button', { name: /set PIN/i })).toBeVisible({
+      timeout: 10000,
+    });
+  }
 };
 
 test.describe('smoke', () => {
@@ -20,6 +30,7 @@ test.describe('smoke', () => {
     await page.goto('/');
 
     await expect(page).toHaveTitle(/relay/i);
+    await waitForAppReady(page);
 
     expect(errors).toHaveLength(0);
   });
@@ -29,11 +40,12 @@ test.describe('smoke', () => {
 
     const setPinButton = page.getByRole('button', { name: /set PIN/i });
 
+    await waitForAppReady(page);
+
     if (process.env.NO_PIN === '1') {
-      await expect(page.locator('.main-app')).toBeVisible({ timeout: 10000 });
       await expect(setPinButton).toHaveCount(0);
     } else {
-      await expect(setPinButton).toBeVisible({ timeout: 10000 });
+      await expect(setPinButton).toBeVisible();
     }
   });
 
@@ -54,10 +66,7 @@ test.describe('smoke', () => {
     });
 
     await page.goto('/');
-
-    await page.waitForLoadState('networkidle');
-
-    await page.waitForTimeout(2000);
+    await waitForAppReady(page);
 
     expect(errors).toHaveLength(0);
   });
@@ -66,8 +75,7 @@ test.describe('smoke', () => {
 test.describe('visual regression', () => {
   test('screenshot comparison', async ({ page }) => {
     await page.goto('/');
-
-    await page.waitForLoadState('networkidle');
+    await waitForAppReady(page);
 
     await expect(page).toHaveScreenshot('homepage.png', {
       maxDiffPixels: 1000,
@@ -79,6 +87,7 @@ test.describe('visual regression', () => {
     await page.setViewportSize({ width: 375, height: 667 });
 
     await page.goto('/');
+    await waitForAppReady(page);
 
     await expect(page).toHaveScreenshot('mobile-homepage.png', {
       maxDiffPixels: 1000,
@@ -90,6 +99,7 @@ test.describe('visual regression', () => {
     await page.setViewportSize({ width: 768, height: 1024 });
 
     await page.goto('/');
+    await waitForAppReady(page);
 
     await expect(page).toHaveScreenshot('tablet-homepage.png', {
       maxDiffPixels: 1000,
@@ -101,6 +111,7 @@ test.describe('visual regression', () => {
     await page.setViewportSize({ width: 1920, height: 1080 });
 
     await page.goto('/');
+    await waitForAppReady(page);
 
     await expect(page).toHaveScreenshot('desktop-homepage.png', {
       maxDiffPixels: 1000,
