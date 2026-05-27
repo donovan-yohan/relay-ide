@@ -73,6 +73,7 @@ import {
   type WorkContextStore,
 } from './work-contexts.js';
 import { initIaStore, type IaStore } from './ia-store.js';
+import { runBootWorkspaceMigration } from './ia-workspace-migration.js';
 import {
   initContextPacketStore,
   type ContextPacketStore,
@@ -1492,6 +1493,22 @@ async function main(): Promise<void> {
       err instanceof Error ? err.message : err
     );
   }
+
+  // #736: one-time, idempotent boot migration of legacy `config.workspaces`
+  // groupings → persisted IA Workspaces (`ia.db`). NON-DESTRUCTIVE: reads
+  // `config.workspaces` + the local repo inventory, writes ONLY to `ia.db`.
+  // Idempotent via a `migration_state` marker + deterministic, upsert-if-absent
+  // ids (see `ia-workspace-migration.ts`). Internally guarded so any failure
+  // logs + skips and NEVER crashes boot — the legacy sidebar fallback stays.
+  await runBootWorkspaceMigration({
+    iaStore,
+    getConfig,
+    collectLocalRepoInventory: () =>
+      collectLocalRepoInventory({
+        config: getConfig(),
+        configPath: CONFIG_PATH,
+      }),
+  });
 
   // Context-packet + session-inbox store (#758, ADR-019). Own SQLite file
   // (`context-packets.db`); new tables only, non-destructive. CLI verbs/routes

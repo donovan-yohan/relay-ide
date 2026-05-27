@@ -192,6 +192,23 @@ function projectIdFor(identity: ProjectIdentity): ProjectId {
     : createProjectId(identity);
 }
 
+/**
+ * The EXACT repo → ProjectId mapping `buildIaTree` uses internally, exported so
+ * the #736 boot migration produces ProjectIds that line up byte-for-byte with
+ * the ProjectIds `GET /hub/ia/tree` emits for the same repos. Reusing this is
+ * load-bearing: if the migration derived ids any other way, the persisted
+ * Workspace `projectIds` would not match the derived projects and the grouping
+ * would silently point at nothing.
+ *
+ * PURE: no I/O, no clock. Same `projectIdentityFor` (git remote → `repo`-kind,
+ * non-git/blank → `directory`-kind keyed on node+localPath) then `projectIdFor`.
+ */
+export function repoInstanceProjectId(
+  repo: RepoInventoryRepoInstance
+): ProjectId {
+  return projectIdFor(projectIdentityFor(repo));
+}
+
 function hostLabelFor(
   nodeId: NodeId,
   nodesById: Map<NodeId, IaNodeStatus>

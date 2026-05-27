@@ -53,8 +53,21 @@ CREATE INDEX IF NOT EXISTS idx_ia_bench_overlays_instance
   ON ia_bench_overlays(instance_id);
 `;
 
+// v2 (#736): a tiny key/value marker table so the boot migration of legacy
+// `config.workspaces` → IA Workspaces can record "this migration already ran"
+// and short-circuit on every subsequent boot. Append-only schema bump (new
+// table, CREATE IF NOT EXISTS) — strictly non-destructive to v1 data.
+const SCHEMA_V2 = `
+CREATE TABLE IF NOT EXISTS ia_migration_state (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`;
+
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
   { version: 1, sql: SCHEMA_V1 },
+  { version: 2, sql: SCHEMA_V2 },
 ];
 
 interface WorkspaceRow {
@@ -124,6 +137,12 @@ export interface IaStore {
   /** Insert or update a bench overlay. Preserves `createdAt` on update. */
   upsertBenchOverlay(input: BenchOverlayUpsertInput): BenchOverlay;
   deleteBenchOverlay(id: BenchId): boolean;
+
+  // ── Migration marker (#736) ─────────────────────────────────────────────
+  /** Read a migration-state marker value, or `null` if unset. */
+  getMigrationState(key: string): string | null;
+  /** Set (idempotent upsert) a migration-state marker value. */
+  setMigrationState(key: string, value: string): void;
 }
 
 export class IaStoreError extends Error {
@@ -191,6 +210,17 @@ export function createIaStore(dbPath: string): IaStore {
   );
   const deleteBenchOverlayStmt = db.prepare(
     'DELETE FROM ia_bench_overlays WHERE id = ?'
+  );
+
+  const selectMigrationStateStmt = db.prepare(
+    'SELECT value FROM ia_migration_state WHERE key = ?'
+  );
+  const upsertMigrationStateStmt = db.prepare(
+    `INSERT INTO ia_migration_state (key, value, updated_at)
+     VALUES (@key, @value, @updatedAt)
+     ON CONFLICT(key) DO UPDATE SET
+       value      = excluded.value,
+       updated_at = excluded.updated_at`
   );
 
   function getWorkspaceById(id: WorkspaceId): Workspace | null {
@@ -286,6 +316,21 @@ export function createIaStore(dbPath: string): IaStore {
     deleteBenchOverlay(id: BenchId) {
       const info = deleteBenchOverlayStmt.run(id);
       return info.changes > 0;
+    },
+
+    getMigrationState(key: string) {
+      const row = selectMigrationStateStmt.get(key) as
+        | { value: string }
+        | undefined;
+      return row ? row.value : null;
+    },
+
+    setMigrationState(key: string, value: string) {
+      upsertMigrationStateStmt.run({
+        key,
+        value,
+        updatedAt: new Date().toISOString(),
+      });
     },
   };
 }
