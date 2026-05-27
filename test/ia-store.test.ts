@@ -302,6 +302,32 @@ describe('ia-store: durability + migration', () => {
     expect(s2.getBenchOverlay(benchId)!.envOverrides).toEqual({ K: 'v' });
   });
 
+  it('fails soft on corrupt JSON columns instead of throwing (external tampering)', () => {
+    const dbPath = path.join(makeDir(), 'ia.db');
+    const wsId = createWorkspaceId('corrupt');
+    const benchId = createBenchId(INSTANCE_ID, '/work/widget/corrupt');
+
+    const s1 = createIaStore(dbPath);
+    s1.upsertWorkspace({ id: wsId, name: 'Corrupt', order: 1, projectIds: ['proj:repo:x'] });
+    s1.upsertBenchOverlay({ id: benchId, envOverrides: { K: 'v' } });
+    s1.close();
+
+    // Simulate out-of-band corruption of the JSON payload columns.
+    const raw = new Database(dbPath);
+    raw.prepare('UPDATE ia_workspaces SET project_ids_json = ? WHERE id = ?').run('{not json', wsId);
+    raw.prepare('UPDATE ia_bench_overlays SET env_overrides_json = ? WHERE id = ?').run('{not json', benchId);
+    raw.close();
+
+    const s2 = createIaStore(dbPath);
+    openStores.push(s2);
+    // Single-row getters must not throw; they degrade to empty collections.
+    expect(s2.getWorkspace(wsId)!.projectIds).toEqual([]);
+    expect(s2.getBenchOverlay(benchId)!.envOverrides).toEqual({});
+    // List paths stay safe too.
+    expect(() => s2.listWorkspaces()).not.toThrow();
+    expect(() => s2.listBenchOverlays()).not.toThrow();
+  });
+
   it('migration is idempotent: re-running createIaStore on existing DB is a no-op', () => {
     const dbPath = path.join(makeDir(), 'ia.db');
     const a = createIaStore(dbPath);

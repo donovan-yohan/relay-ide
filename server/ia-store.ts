@@ -385,13 +385,24 @@ function normalizeEnvOverrides(
 }
 
 function parseStringArray(json: string): string[] {
-  const parsed = JSON.parse(json) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json) as unknown;
+  } catch {
+    // Corrupt column (only reachable via external DB tampering) — fail soft.
+    return [];
+  }
   if (!Array.isArray(parsed)) return [];
   return parsed.filter((v): v is string => typeof v === 'string');
 }
 
 function parseStringRecord(json: string): Record<string, string> {
-  const parsed = JSON.parse(json) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json) as unknown;
+  } catch {
+    return {};
+  }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return {};
   }
