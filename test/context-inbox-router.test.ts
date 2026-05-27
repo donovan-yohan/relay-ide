@@ -17,10 +17,14 @@ import {
   TERMINAL_INBOX_MESSAGE_STATES,
   createContextPacketId,
   createInboxMessageId,
+  type AnchorRef,
   type ContextPacket,
   type SessionInboxMessage,
   type SessionInboxMessageState,
 } from '../shared/context-packet.js';
+import { createFileResourceRef } from '../shared/file-resource-ref.js';
+import type { AnchorStateResolver } from '../server/context-adapters/file-range.js';
+import type { ResolveAnchorOutcome } from '../server/anchor-resolution.js';
 
 // ---------------------------------------------------------------------------
 // In-memory store implementing the #765 seam (#758 builds the SQLite version).
@@ -151,13 +155,19 @@ const ALL_CAPS = 'context:read,context:write,inbox:read,inbox:write';
 let server: Server;
 let baseUrl: string;
 
-function mount(store: ContextInboxStore | null): Promise<void> {
+function mount(
+  store: ContextInboxStore | null,
+  resolveAnchorState?: AnchorStateResolver
+): Promise<void> {
   const app = express();
   app.use(express.json());
   app.use(
     createContextInboxRouter({
       requireAuth: (_req, _res, next) => next(),
       store,
+      // Default to a resolver that never resolves (null) so existing tests stay
+      // undecorated; the #760 decoration tests inject a real resolver.
+      resolveAnchorState: resolveAnchorState ?? (async () => null),
     })
   );
   return new Promise<void>((resolve) => {
@@ -167,6 +177,20 @@ function mount(store: ContextInboxStore | null): Promise<void> {
       resolve();
     });
   });
+}
+
+function fileAnchorRef(): AnchorRef {
+  return {
+    ref: createFileResourceRef({
+      nodeId: 'node1',
+      path: '/repo/src/index.ts',
+      intent: 'read',
+      sha256: 'a'.repeat(64),
+      mtimeMs: 1_000,
+    }),
+    lineRange: { startLine: 10, endLine: 20 },
+    quote: 'const answer = 42;',
+  };
 }
 
 async function req(
@@ -321,5 +345,71 @@ describe('context/inbox gateway router without a store', () => {
     const res = await req('GET', '/context', { caps: 'context:read' });
     expect(res.status).toBe(503);
     expect(res.body.error.code).toBe('SERVER_UNAVAILABLE');
+  });
+});
+
+// #760: derived `AnchorState` decoration wired into the read paths.
+describe('context/inbox gateway router — #760 derived AnchorState decoration', () => {
+  function resolverReturning(state: 'unchanged' | 'stale' | 'missing'): AnchorStateResolver {
+    return async (): Promise<ResolveAnchorOutcome> => ({ state, current: null });
+  }
+
+  async function createFileAnchor(): Promise<string> {
+    const created = await req('POST', '/context', {
+      caps: 'context:write',
+      body: { kind: 'file-anchor', anchor: fileAnchorRef(), createdBy: 'agent_1' },
+    });
+    expect(created.status).toBe(201);
+    return created.body.contextPacket.id as string;
+  }
+
+  it('context.get decorates a file-anchor packet with derived anchorState', async () => {
+    await mount(createFakeStore(), resolverReturning('stale'));
+    const id = await createFileAnchor();
+    const got = await req('GET', `/context/${encodeURIComponent(id)}`, { caps: 'context:read' });
+    expect(got.status).toBe(200);
+    expect(got.body.contextPacket.kind).toBe('file-anchor');
+    // DERIVED at read time, surfaced — never stored.
+    expect(got.body.contextPacket.anchorState).toBe('stale');
+  });
+
+  it('context.get leaves a note packet undecorated', async () => {
+    await mount(createFakeStore(), resolverReturning('unchanged'));
+    const created = await req('POST', '/context', {
+      caps: 'context:write',
+      body: { kind: 'note', note: 'no anchor here', createdBy: 'agent_1' },
+    });
+    const id = created.body.contextPacket.id as string;
+    const got = await req('GET', `/context/${encodeURIComponent(id)}`, { caps: 'context:read' });
+    expect(got.body.contextPacket.anchorState).toBeUndefined();
+  });
+
+  it('inbox.get attaches decorated referenced file-anchor packets', async () => {
+    await mount(createFakeStore(), resolverReturning('unchanged'));
+    const packetId = await createFileAnchor();
+    const sent = await req('POST', '/inbox', {
+      caps: 'inbox:write',
+      body: { targetSessionId: 'node1:s9', contextPacketIds: [packetId], createdBy: 'agent_1' },
+    });
+    const msgId = sent.body.message.id as string;
+    const got = await req('GET', `/inbox/${encodeURIComponent(msgId)}`, { caps: 'inbox:read' });
+    expect(got.status).toBe(200);
+    expect(got.body.message.contextPackets).toHaveLength(1);
+    expect(got.body.message.contextPackets[0].anchorState).toBe('unchanged');
+  });
+
+  it('inbox.list decorates referenced packets and still PULL-delivers', async () => {
+    await mount(createFakeStore(), resolverReturning('missing'));
+    const packetId = await createFileAnchor();
+    await req('POST', '/inbox', {
+      caps: 'inbox:write',
+      body: { targetSessionId: 'node1:s10', contextPacketIds: [packetId], createdBy: 'agent_1' },
+    });
+    const listed = await req('GET', '/inbox?targetSessionId=node1:s10', { caps: 'inbox:read' });
+    expect(listed.status).toBe(200);
+    expect(listed.body.messages).toHaveLength(1);
+    // PULL delivery still happens alongside decoration.
+    expect(listed.body.messages[0].state).toBe('delivered');
+    expect(listed.body.messages[0].contextPackets[0].anchorState).toBe('missing');
   });
 });
