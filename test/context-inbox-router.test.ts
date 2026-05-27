@@ -350,6 +350,49 @@ describe('context/inbox gateway router', () => {
       ])
     );
 
+    const invalidBinding = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'note',
+        note: 'valid note should not accept invalid binding',
+        binding: {
+          workspaceId: 123,
+          nodeId: '',
+          repoInstanceId: null,
+          worktreeInstanceId: false,
+        },
+        createdBy: 'agent_1',
+      },
+    });
+    expect(invalidBinding.status).toBe(400);
+    expect(invalidBinding.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(invalidBinding.body.error.message).toContain('binding.workspaceId');
+    expect(invalidBinding.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(invalidBinding.body.error.details.fieldErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'binding.workspaceId' }),
+        expect.objectContaining({ field: 'binding.nodeId' }),
+        expect.objectContaining({ field: 'binding.repoInstanceId' }),
+        expect.objectContaining({ field: 'binding.worktreeInstanceId' }),
+      ])
+    );
+
+    const nonObjectBinding = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'note',
+        note: 'valid note should not accept array binding',
+        binding: ['workspace-1'],
+        createdBy: 'agent_1',
+      },
+    });
+    expect(nonObjectBinding.status).toBe(400);
+    expect(nonObjectBinding.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(nonObjectBinding.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(nonObjectBinding.body.error.details.fieldErrors).toEqual([
+      expect.objectContaining({ field: 'binding' }),
+    ]);
+
     const noTarget = await req('POST', '/inbox', {
       caps: 'inbox:write',
       body: { contextPacketIds: [], createdBy: 'agent_1' },

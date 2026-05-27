@@ -511,21 +511,45 @@ function validateAnchorPayload(payload: unknown): FieldValidationHint[] {
   return hints;
 }
 
+function validateContextBindingPayload(payload: unknown): FieldValidationHint[] {
+  if (payload === undefined) return [];
+  if (!isRecord(payload)) return [{ field: 'binding', message: 'must be an object when set' }];
+
+  const hints: FieldValidationHint[] = [];
+  for (const field of [
+    'workspaceId',
+    'nodeId',
+    'repoInstanceId',
+    'worktreeInstanceId',
+  ] as const) {
+    if (payload[field] !== undefined && !isNonEmptyString(payload[field])) {
+      hints.push({ field: `binding.${field}`, message: 'must be a non-empty string when set' });
+    }
+  }
+  return hints;
+}
+
 function validateContextCreatePayload(
   kind: ContextPacketKind,
   body: Record<string, unknown>
 ): FieldValidationHint[] {
+  const hints = validateContextBindingPayload(body['binding']);
   switch (kind) {
     case 'file-anchor':
-      return validateAnchorPayload(body['anchor']);
+      hints.push(...validateAnchorPayload(body['anchor']));
+      return hints;
     case 'file-ref':
-      return validateFileResourceRefPayload(body['fileRef'], 'fileRef');
+      hints.push(...validateFileResourceRefPayload(body['fileRef'], 'fileRef'));
+      return hints;
     case 'note':
-      return readString(body['note']) ? [] : [{ field: 'note', message: 'is required for kind=note' }];
+      if (!readString(body['note'])) {
+        hints.push({ field: 'note', message: 'is required for kind=note' });
+      }
+      return hints;
     case 'diff-ref':
     case 'log-ref':
     default:
-      return [];
+      return hints;
   }
 }
 
