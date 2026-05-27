@@ -43,6 +43,13 @@ import {
   type SessionInboxMessageId,
   type SessionInboxMessageState,
 } from '../../shared/context-packet.js';
+import {
+  decoratePacketAnchorState,
+  decoratePacketsAnchorState,
+  type AnchorStateResolver,
+  type DecoratedContextPacket,
+} from '../context-adapters/file-range.js';
+import { resolveAnchorWithRegisteredFetcher } from '../anchor-resolution.js';
 
 // ---------------------------------------------------------------------------
 // Store seam — implemented by #758, depended on here as an interface.
@@ -138,6 +145,13 @@ export interface ContextInboxStore {
 export interface ContextInboxRouterDeps {
   store: ContextInboxStore | null;
   requireAuth?: RequestHandler;
+  /**
+   * #760: resolve a `file-anchor` packet's DERIVED `AnchorState` at read time.
+   * Defaults to the hub-registered #766 resolver. A `null` resolution (no
+   * fetcher / no in-scope session) leaves the packet UNDECORATED rather than
+   * guessing. `AnchorState` is never stored — it is computed on every read.
+   */
+  resolveAnchorState?: AnchorStateResolver;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +321,11 @@ function sendUpdateFailure(
 export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   const router = Router();
   const auth = deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
+  // #760: derived `AnchorState` decoration resolver. Defaults to the hub
+  // registry; `resolveAnchorWithRegisteredFetcher` returns `null` when the hub
+  // has not wired a fetcher, in which case packets pass through undecorated.
+  const resolveAnchorState: AnchorStateResolver =
+    deps.resolveAnchorState ?? resolveAnchorWithRegisteredFetcher;
 
   /** Resolve the store or send 503; centralizes the null guard. */
   function store(res: Response): ContextInboxStore | null {
@@ -317,6 +336,37 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
       return null;
     }
     return deps.store;
+  }
+
+  /**
+   * #760: collect the decorated `file-anchor` packets a message references, so
+   * `inbox.get`/`inbox.list` can surface each referenced packet's derived
+   * `AnchorState` without the agent issuing a follow-up `context.get`. Only
+   * `file-anchor` packets are decorated; missing/non-anchor packets are skipped.
+   * Returns `[]` when the message references no resolvable file-anchor packets.
+   */
+  async function decoratedAnchorPacketsFor(
+    s: ContextInboxStore,
+    message: SessionInboxMessage
+  ): Promise<DecoratedContextPacket[]> {
+    const anchorPackets: ContextPacket[] = [];
+    for (const id of message.contextPacketIds) {
+      const packet = s.getPacket(id);
+      if (packet && packet.kind === 'file-anchor' && packet.anchor) {
+        anchorPackets.push(packet);
+      }
+    }
+    if (anchorPackets.length === 0) return [];
+    return decoratePacketsAnchorState(anchorPackets, resolveAnchorState);
+  }
+
+  /** Attach decorated referenced packets to a message envelope (additive). */
+  async function decorateMessage(
+    s: ContextInboxStore,
+    message: SessionInboxMessage
+  ): Promise<SessionInboxMessage & { contextPackets?: DecoratedContextPacket[] }> {
+    const contextPackets = await decoratedAnchorPacketsFor(s, message);
+    return contextPackets.length > 0 ? { ...message, contextPackets } : message;
   }
 
   // -- context.create ------------------------------------------------------
@@ -364,7 +414,9 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   });
 
   // -- context.get ---------------------------------------------------------
-  router.get('/context/:id', auth, (req, res) => {
+  // #760: decorate a returned `file-anchor` packet with its DERIVED, NON-STORED
+  // `AnchorState` (the runtime consumer of #766 flagged as missing by #759).
+  router.get('/context/:id', auth, (req, res, next) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const s = store(res);
     if (!s) return;
@@ -373,7 +425,9 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
       sendGatewayError(res, 'NOT_FOUND', 'context packet not found');
       return;
     }
-    res.json({ contextPacket });
+    decoratePacketAnchorState(contextPacket, resolveAnchorState)
+      .then((decorated) => res.json({ contextPacket: decorated }))
+      .catch(next);
   });
 
   // -- inbox.send ----------------------------------------------------------
@@ -407,7 +461,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
 
   // -- inbox.list ----------------------------------------------------------
   // PULL delivery: the store flips queued → delivered as a read side effect.
-  router.get('/inbox', auth, (req, res) => {
+  router.get('/inbox', auth, (req, res, next) => {
     if (denyMissingCapability(req, res, [INBOX_READ])) return;
     const s = store(res);
     if (!s) return;
@@ -426,12 +480,18 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     const limit = readLimit(req.query['limit']);
     if (state) filter.state = state;
     if (limit !== undefined) filter.limit = limit;
-    res.json({ messages: s.listInboxMessages(filter) });
+    // PULL delivery runs first (the store flips queued → delivered), then each
+    // message's referenced file-anchor packets are decorated with derived state.
+    const messages = s.listInboxMessages(filter);
+    Promise.all(messages.map((m) => decorateMessage(s, m)))
+      .then((decorated) => res.json({ messages: decorated }))
+      .catch(next);
   });
 
   // -- inbox.get -----------------------------------------------------------
   // PULL delivery: the store flips queued → delivered as a read side effect.
-  router.get('/inbox/:id', auth, (req, res) => {
+  // #760: referenced file-anchor packets are decorated with derived AnchorState.
+  router.get('/inbox/:id', auth, (req, res, next) => {
     if (denyMissingCapability(req, res, [INBOX_READ])) return;
     const s = store(res);
     if (!s) return;
@@ -440,7 +500,9 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
       sendGatewayError(res, 'NOT_FOUND', 'inbox message not found');
       return;
     }
-    res.json({ message });
+    decorateMessage(s, message)
+      .then((decorated) => res.json({ message: decorated }))
+      .catch(next);
   });
 
   // -- inbox.ack / inbox.resolve / inbox.ignore ----------------------------
