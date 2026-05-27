@@ -6,6 +6,8 @@ import {
   fileResourceRefSummary,
   type FileResourceRef,
 } from './file-resource-ref.js';
+import type { AnchorRef } from './context-packet.js';
+import { parseAnchorRef, anchorRefSummary } from './context-packet.js';
 
 /**
  * `PromptAttachment` is the typed shape an agent or human attaches to an
@@ -17,9 +19,14 @@ import {
  * size-bounded.
  *
  * The discriminated union is intentionally open — `'diff-ref'` and
- * `'log-ref'` kinds will land in follow-on #616 slices.
+ * `'log-ref'` kinds will land in follow-on #616 slices. ADR-019 (#758) adds
+ * the `'file-anchor'` sibling kind (a `FileResourceRef` + range + captured
+ * quote) for anchored context packets rather than threading a `range?` onto
+ * the existing `'file-ref'` path — see `shared/context-packet.ts`.
  */
-export type PromptAttachment = PromptAttachmentFileRef;
+export type PromptAttachment =
+  | PromptAttachmentFileRef
+  | PromptAttachmentFileAnchor;
 
 export interface PromptAttachmentFileRef {
   kind: 'file-ref';
@@ -28,8 +35,22 @@ export interface PromptAttachmentFileRef {
   summary?: string;
 }
 
+/**
+ * A ranged file attachment: the `AnchorRef` (file pointer + line/byte range +
+ * captured quote) from `shared/context-packet.ts`. Distinct identity from
+ * `file-ref`: a whole-file ref and a ranged ref are different attachments,
+ * not the same one with an optional field (ADR-019 D2).
+ */
+export interface PromptAttachmentFileAnchor {
+  kind: 'file-anchor';
+  anchor: AnchorRef;
+  /** Optional short human-readable summary for chips/audit rows. */
+  summary?: string;
+}
+
 export const PROMPT_ATTACHMENT_KINDS: readonly PromptAttachment['kind'][] = [
   'file-ref',
+  'file-anchor',
 ] as const;
 
 /**
@@ -46,11 +67,35 @@ export interface CreatePromptAttachmentFileRefArgs {
   summary?: string;
 }
 
-export type CreatePromptAttachmentArgs = CreatePromptAttachmentFileRefArgs;
+export interface CreatePromptAttachmentFileAnchorArgs {
+  kind: 'file-anchor';
+  anchor: AnchorRef;
+  summary?: string;
+}
+
+export type CreatePromptAttachmentArgs =
+  | CreatePromptAttachmentFileRefArgs
+  | CreatePromptAttachmentFileAnchorArgs;
 
 export function createPromptAttachment(
   args: CreatePromptAttachmentArgs
 ): PromptAttachment {
+  if (args.kind === 'file-anchor') {
+    // Re-validate through the canonical anchor parser so a caller-built
+    // anchor is normalized (range checked, quote byte-bounded) here too.
+    const anchor = parseAnchorRef(args.anchor);
+    if (!anchor) {
+      throw new Error('PromptAttachment.anchor is invalid for kind=file-anchor');
+    }
+    const out: PromptAttachmentFileAnchor = {
+      kind: 'file-anchor',
+      anchor,
+    };
+    if (typeof args.summary === 'string' && args.summary.length > 0) {
+      out.summary = args.summary;
+    }
+    return out;
+  }
   if (args.kind !== 'file-ref') {
     throw new Error(
       `PromptAttachment.kind must be one of ${PROMPT_ATTACHMENT_KINDS.join('|')}, got: ${String((args as { kind?: unknown }).kind)}`
@@ -84,6 +129,19 @@ export function parsePromptAttachment(
 ): PromptAttachment | null {
   if (!payload || typeof payload !== 'object') return null;
   const p = payload as Record<string, unknown>;
+  if (p['kind'] === 'file-anchor') {
+    const anchor = parseAnchorRef(p['anchor']);
+    if (!anchor) return null;
+    try {
+      return createPromptAttachment({
+        kind: 'file-anchor',
+        anchor,
+        ...(typeof p['summary'] === 'string' ? { summary: p['summary'] } : {}),
+      });
+    } catch {
+      return null;
+    }
+  }
   if (p['kind'] !== 'file-ref') return null;
   const ref = parseFileResourceRef(p['ref']);
   if (!ref) return null;
@@ -137,6 +195,39 @@ export function promptAttachmentToArtifactRef(
   attachment: PromptAttachment,
   args: PromptAttachmentToArtifactRefArgs
 ): ArtifactRef {
+  if (attachment.kind === 'file-anchor') {
+    // Anchored attachment: bridge the underlying FileResourceRef + range to a
+    // bounded `file` artifact. The range rides the summary/title (the #763 pin
+    // path), never expanding the captured quote into a raw payload.
+    const aref = attachment.anchor.ref;
+    const aHasHash =
+      typeof aref.sha256 === 'string' && aref.sha256.length === 64;
+    const aSummary = attachment.summary ?? anchorRefSummary(attachment.anchor);
+    const aPrivacy = createWorkContextPrivacyMetadata({
+      classification: 'internal',
+      retention: 'session',
+      rawPayloadStored: false,
+      redaction: {
+        redacted: false,
+        strategy: aHasHash ? 'hash' : 'summary',
+        classes: ['artifact'],
+        ...(typeof aref.size === 'number' ? { byteCount: aref.size } : {}),
+        ...(aHasHash ? { hashSha256: aref.sha256 } : {}),
+        preview: aSummary,
+      },
+    });
+    const aOut: ArtifactRef = {
+      id: args.id,
+      kind: 'file',
+      title: aSummary,
+      path: aref.path,
+      summary: aSummary,
+      producedAt: args.producedAt ?? new Date().toISOString(),
+      privacy: aPrivacy,
+    };
+    if (args.producedByActorId) aOut.producedByActorId = args.producedByActorId;
+    return aOut;
+  }
   if (attachment.kind !== 'file-ref') {
     throw new Error(
       `promptAttachmentToArtifactRef: unsupported kind ${String((attachment as { kind?: unknown }).kind)}`
