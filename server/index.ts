@@ -136,6 +136,7 @@ import {
 } from './hub-session-aggregator.js';
 import { createRepoInventoryFeature } from './features/repo-inventory.js';
 import { createRepoFeatureRouter } from './features/repo-router.js';
+import { createIaWorkspaceRouter } from './features/ia-workspace-router.js';
 import { collectLocalRepoInventory } from './repo-inventory.js';
 import type {
   AgentType,
@@ -1663,6 +1664,10 @@ async function main(): Promise<void> {
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
+  // #733: Workspace CRUD on the #737 IA store (own `ia.db`, new tables only,
+  // non-destructive). Consumes the `iaStore` handle wired above; degrades to
+  // 503 if the store failed to init.
+  app.use(createIaWorkspaceRouter({ requireAuth, iaStore }));
   app.use(
     createCliGatewayEventsRouter(express, {
       cliGatewayAuth: requireCliGatewayAuth,
