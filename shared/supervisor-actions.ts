@@ -1,4 +1,8 @@
-import type { ControlActor, ControlFreshness, ControlMode } from './control-state.js';
+import type {
+  ControlActor,
+  ControlFreshness,
+  ControlMode,
+} from './control-state.js';
 import type { RelayCapabilityBit } from './security-policy.js';
 
 export const SUPERVISOR_SESSIONS_COMMAND_ID = 'supervisor.sessions' as const;
@@ -38,6 +42,8 @@ export type SupervisorActionReasonCode =
   | 'CONTROL_STATE_STALE'
   | 'CONTROL_STATE_UNKNOWN'
   | 'SESSION_MODE_UNSUPPORTED'
+  | 'TARGET_SELECTOR_REQUIRED'
+  | 'TARGET_SELECTOR_INVALID'
   | 'TEXT_REQUIRED'
   | 'TEXT_TOO_LARGE'
   | 'TEXT_MUST_BE_LITERAL'
@@ -123,7 +129,10 @@ export interface SupervisorSessionEligibility {
   status?: string;
   controlMode?: ControlMode;
   controlFreshness?: ControlFreshness;
-  actions: Record<SupervisorActionType, { allowed: boolean; reasonCode?: SupervisorActionReasonCode }>;
+  actions: Record<
+    SupervisorActionType,
+    { allowed: boolean; reasonCode?: SupervisorActionReasonCode }
+  >;
 }
 
 export interface SupervisorSessionsResponse {
@@ -142,7 +151,9 @@ export function supervisorActionRequiredCapabilities(
 
 export function supervisorActionCommandId(
   action: SupervisorActionType
-): typeof SUPERVISOR_SEND_TEXT_COMMAND_ID | typeof SUPERVISOR_SUBMIT_COMMAND_ID {
+):
+  | typeof SUPERVISOR_SEND_TEXT_COMMAND_ID
+  | typeof SUPERVISOR_SUBMIT_COMMAND_ID {
   return action === 'sendText'
     ? SUPERVISOR_SEND_TEXT_COMMAND_ID
     : SUPERVISOR_SUBMIT_COMMAND_ID;
