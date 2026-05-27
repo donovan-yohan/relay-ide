@@ -1661,6 +1661,9 @@ async function main(): Promise<void> {
             order: typeof ws.order === 'number' ? ws.order : 0,
             ...(Array.isArray(ws.repos) ? { repos: ws.repos } : {}),
           })),
+      // #735: Bench overlay CRUD (env/label + arbitrary-cwd benches) backed by
+      // the #737 IA store. Null when the store failed to init → routes 503.
+      iaStore,
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
