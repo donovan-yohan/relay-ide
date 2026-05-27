@@ -9,6 +9,7 @@ import {
 } from '../lib/stores/ui.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import type { Repo, WorktreeInfo, PullRequest } from '../lib/types.js';
+import type { NodeId } from '../../../shared/identity.js';
 import { fetchOrgPrs } from '../lib/api.js';
 import WorkspaceGroup from './WorkspaceGroup.js';
 import { HubNodeDashboardPanel } from './HubNodeDashboard.js';
@@ -391,6 +392,8 @@ export interface SidebarProps {
   onResumeWorktree?: (wt: WorktreeInfo) => void;
   onLaunchWorkspaceSession?: (workspaceId: string) => void;
   onLaunchRepoSession?: (repoPath: string) => void;
+  /** #731: create a Tab anchored to a view-spine Bench's (nodeId, cwd). */
+  onViewSpineCreateTab?: (payload: { nodeId: NodeId; cwd: string }) => void;
   onOpenAnalytics: () => void;
 }
 
@@ -404,6 +407,7 @@ export function Sidebar({
   onResumeWorktree,
   onLaunchWorkspaceSession,
   onLaunchRepoSession,
+  onViewSpineCreateTab,
   onOpenAnalytics,
 }: SidebarProps) {
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
@@ -546,7 +550,7 @@ export function Sidebar({
             // #732/#729: flag-gated, read-only, client-derived view-spine tree.
             // OFF path below is byte-identical to today.
             <div className="sidebar-workspace-list">
-              <ViewSpineTree />
+              <ViewSpineTree onCreateTab={onViewSpineCreateTab} />
             </div>
           ) : (
             <div className="sidebar-workspace-list">

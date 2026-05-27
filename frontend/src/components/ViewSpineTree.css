@@ -94,3 +94,44 @@
   margin-top: 0;
   flex-shrink: 0;
 }
+
+/* #731 "+ tab" affordance. Reuses the `.add-worktree-row`/`.add-worktree-btn`
+   look (muted, low-opacity, brightens on hover, `creating…` disabled tone) but
+   the rules are scoped under `.view-spine-tree` so they ship even when RepoItem
+   (the original owner of these classes) is not mounted. The row sits indented
+   under its bench's children and keeps a ≥44px touch target. */
+.view-spine-bench .add-worktree-row {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 2px 8px 2px var(--icon-slot-width);
+  cursor: pointer;
+}
+
+.view-spine-bench .add-worktree-btn {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0.5;
+  cursor: pointer;
+  transition:
+    opacity 0.1s,
+    color 0.1s;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.view-spine-bench .add-worktree-row:hover .add-worktree-btn {
+  opacity: 1;
+  color: var(--text);
+}
+
+.view-spine-bench .add-worktree-row.disabled {
+  pointer-events: none;
+}
+
+.view-spine-bench .add-worktree-row.disabled .add-worktree-btn {
+  opacity: 0.7;
+  color: var(--accent);
+}

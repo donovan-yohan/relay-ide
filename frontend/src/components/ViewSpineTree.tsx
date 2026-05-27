@@ -2,7 +2,7 @@
 // client-derived view-tree (`lib/state/view-tree.ts`). Reuses EXISTING sidebar
 // primitives only — no new visual chrome, no new animations. Leaves are COUNTS,
 // not interactive rows. Default OFF; only mounted when `viewSpineEnabled`.
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { fetchHubNodes } from '../lib/api.js';
@@ -11,8 +11,10 @@ import { MarqueeText } from './MarqueeText.js';
 import { CipherText } from './CipherText.js';
 import {
   applyLens,
+  benchCreatePayload,
   buildViewTree,
   DEFAULT_VIEW_LENS,
+  type BenchCreatePayload,
   type InstanceHostStatus,
   type ViewLens,
   type ViewTreeBench,
@@ -22,6 +24,11 @@ import {
   type ViewTreeNodeStatus,
 } from '../lib/state/view-tree.js';
 import './ViewSpineTree.css';
+
+/** Create a Tab anchored to a Bench's (nodeId, cwd). Wired to the EXISTING
+ *  node-aware session-create entrypoint by `App` — NOT a new create flow, and
+ *  NOT the worktree-creation path (`onNewWorktree`). */
+export type ViewSpineCreateTab = (payload: BenchCreatePayload) => void;
 
 // Ad-hoc, ephemeral lenses (#727). Order is the visual + arrow-key order.
 const LENSES: ReadonlyArray<{ id: ViewLens; label: string }> = [
@@ -42,7 +49,31 @@ function CountBadge({ count }: { count: number }) {
   return <span className="session-count-badge">{count}</span>;
 }
 
-function BenchRow({ bench }: { bench: ViewTreeBench }) {
+function BenchRow({
+  instance,
+  bench,
+  onCreateTab,
+}: {
+  instance: ViewTreeInstance;
+  bench: ViewTreeBench;
+  onCreateTab?: ViewSpineCreateTab | undefined;
+}) {
+  // Per-bench in-flight guard so the affordance disables itself (and other
+  // benches stay clickable) while a create is pending. Errors surface through
+  // the existing create path's toast — no bespoke error UI here.
+  const [creating, setCreating] = useState(false);
+  const handleCreate = useCallback(async () => {
+    if (!onCreateTab || creating) return;
+    setCreating(true);
+    try {
+      // Resolve the (nodeId, cwd) anchor with the PURE helper, then hand it to
+      // the existing node-aware create entrypoint. NO env-override inheritance.
+      await onCreateTab(benchCreatePayload(instance, bench));
+    } finally {
+      setCreating(false);
+    }
+  }, [onCreateTab, creating, instance, bench]);
+
   return (
     <li className="session-row inactive state-inactive view-spine-bench">
       <div className="session-row-primary">
@@ -60,11 +91,35 @@ function BenchRow({ bench }: { bench: ViewTreeBench }) {
           </span>
         </div>
       ) : null}
+      {/* #731 "+ tab" anchored to THIS bench's (nodeId, cwd). Reuses the
+          `.add-worktree-row`/`.add-worktree-btn` styling ONLY — it wires to
+          session/tab CREATION, NOT worktree creation (distinct copy `+ tab`). */}
+      {onCreateTab ? (
+        <div
+          className={['add-worktree-row', creating && 'disabled']
+            .filter(Boolean)
+            .join(' ')}
+          data-track="view-spine.new-tab"
+          onClick={() => {
+            void handleCreate();
+          }}
+        >
+          <button className="add-worktree-btn" type="button" tabIndex={-1}>
+            {creating ? 'creating…' : '+ tab'}
+          </button>
+        </div>
+      ) : null}
     </li>
   );
 }
 
-function InstanceRow({ instance }: { instance: ViewTreeInstance }) {
+function InstanceRow({
+  instance,
+  onCreateTab,
+}: {
+  instance: ViewTreeInstance;
+  onCreateTab?: ViewSpineCreateTab | undefined;
+}) {
   return (
     <li className="session-row view-spine-instance">
       <div className="session-row-primary">
@@ -82,7 +137,12 @@ function InstanceRow({ instance }: { instance: ViewTreeInstance }) {
       {instance.benches.length > 0 ? (
         <ul className="session-list view-spine-bench-list">
           {instance.benches.map((bench) => (
-            <BenchRow key={bench.id} bench={bench} />
+            <BenchRow
+              key={bench.id}
+              instance={instance}
+              bench={bench}
+              onCreateTab={onCreateTab}
+            />
           ))}
         </ul>
       ) : null}
@@ -90,7 +150,13 @@ function InstanceRow({ instance }: { instance: ViewTreeInstance }) {
   );
 }
 
-function ProjectRow({ project }: { project: ViewTreeProject }) {
+function ProjectRow({
+  project,
+  onCreateTab,
+}: {
+  project: ViewTreeProject;
+  onCreateTab?: ViewSpineCreateTab | undefined;
+}) {
   const initialColor = useMemo(
     () => deriveColor(project.colorSeed),
     [project.colorSeed]
@@ -128,7 +194,11 @@ function ProjectRow({ project }: { project: ViewTreeProject }) {
       </div>
       <ul className="session-list">
         {project.instances.map((instance) => (
-          <InstanceRow key={instance.id} instance={instance} />
+          <InstanceRow
+            key={instance.id}
+            instance={instance}
+            onCreateTab={onCreateTab}
+          />
         ))}
       </ul>
       <div className="repo-divider" />
@@ -236,7 +306,13 @@ function LensSelector({
   );
 }
 
-export function ViewSpineTree() {
+export function ViewSpineTree({
+  onCreateTab,
+}: {
+  /** #731: create a Tab anchored to a Bench's (nodeId, cwd). Read-only when
+   *  omitted — the "+ tab" affordance only renders when this is provided. */
+  onCreateTab?: ViewSpineCreateTab | undefined;
+} = {}) {
   const repos = useSessionsStore((s) => s.repos);
   const worktrees = useSessionsStore((s) => s.worktrees);
   const sessions = useSessionsStore((s) => s.sessions);
@@ -336,7 +412,11 @@ export function ViewSpineTree() {
             <section key={ws.id} className="view-spine-workspace">
               <div className="sidebar-ungrouped-label">{ws.name}</div>
               {ws.projects.map((project) => (
-                <ProjectRow key={project.id} project={project} />
+                <ProjectRow
+                  key={project.id}
+                  project={project}
+                  onCreateTab={onCreateTab}
+                />
               ))}
             </section>
           ) : null
@@ -348,7 +428,11 @@ export function ViewSpineTree() {
               <div className="sidebar-ungrouped-label">ungrouped</div>
             ) : null}
             {tree.ungroupedProjects.map((project) => (
-              <ProjectRow key={project.id} project={project} />
+              <ProjectRow
+                key={project.id}
+                project={project}
+                onCreateTab={onCreateTab}
+              />
             ))}
           </section>
         ) : null}

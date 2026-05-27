@@ -602,3 +602,30 @@ export function applyLens(tree: ViewTree, lens: ViewLens): ViewTree {
     freeLane: [...tree.freeLane].sort(byRecencyDesc),
   };
 }
+
+// ── S4: "+ tab" anchored to a Bench (#731, reduced) ──────────────────────────
+// PURE resolver of the create payload a "+ tab" affordance hands to the EXISTING
+// session-create entrypoint (`createAgentSession` → `createSession`, the #473
+// local/remote/free flow). A Bench is anchored to a single (nodeId, cwd); the
+// nodeId lives on its owning Instance, the cwd is the bench's path. NO
+// env-override inheritance (deferred to #740 / backend #735) — the payload
+// carries ONLY the anchor, mirroring the remote-node branch of
+// `createSessionFromForm` (cwd-only, node-scoped).
+
+/** The minimal anchor a new Tab needs: which node hosts it and which cwd it
+ *  opens in. Consumed by the existing `createAgentSession({ nodeId, cwd })`
+ *  path — this helper invents NO new create logic. */
+export interface BenchCreatePayload {
+  nodeId: NodeId;
+  cwd: string;
+}
+
+/** Resolve the `(nodeId, cwd)` a "+ tab" on `bench` (owned by `instance`)
+ *  should create against. Pure: no I/O, no React. The nodeId comes from the
+ *  Instance (the host materialization), the cwd is the bench's anchored path. */
+export function benchCreatePayload(
+  instance: Pick<ViewTreeInstance, 'nodeId'>,
+  bench: Pick<ViewTreeBench, 'path'>
+): BenchCreatePayload {
+  return { nodeId: instance.nodeId, cwd: bench.path };
+}

@@ -4,6 +4,7 @@ import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import { parseInstanceId, parseProjectId } from '../shared/project.js';
 import {
   applyLens,
+  benchCreatePayload,
   buildViewTree,
   DEFAULT_VIEW_LENS,
   type BuildViewTreeInput,
@@ -470,5 +471,82 @@ describe('S2 Views lenses', () => {
     const local = applyLens(tree, 'this-host');
     expect(local.freeLane.map((e) => e.label)).toEqual(['local']);
     expect(local.freeLane[0]!.isLocal).toBe(true);
+  });
+});
+
+// ── S4: "+ tab" create-payload resolver (#731) ────────────────────────────────
+describe('S4 benchCreatePayload', () => {
+  it('anchors a local git bench to its (nodeId, worktree cwd)', () => {
+    const worktree: WorktreeInfo = {
+      name: 'feat-x',
+      path: '/repos/relay/.worktrees/feat-x',
+      repoName: 'relay',
+      repoPath: '/repos/relay',
+      displayName: 'feat-x',
+      lastActivity: '2026-05-27T00:00:00.000Z',
+      branchName: 'feature/x',
+      nodeId: DEFAULT_LOCAL_NODE_ID,
+    };
+    const tree = build({ repos: [repo()], worktrees: [worktree] });
+    const instance = allProjects(tree)[0]!.instances[0]!;
+    const bench = instance.benches[0]!;
+
+    expect(benchCreatePayload(instance, bench)).toEqual({
+      nodeId: DEFAULT_LOCAL_NODE_ID,
+      cwd: '/repos/relay/.worktrees/feat-x',
+    });
+  });
+
+  it('routes a remote bench to its node id (correct cross-node routing)', () => {
+    const remoteRepo = repo({ nodeId: 'macbook' });
+    const worktree: WorktreeInfo = {
+      name: 'feat-y',
+      path: '/repos/relay/.worktrees/feat-y',
+      repoName: 'relay',
+      repoPath: '/repos/relay',
+      displayName: 'feat-y',
+      lastActivity: '2026-05-27T00:00:00.000Z',
+      branchName: 'feature/y',
+      nodeId: 'macbook',
+    };
+    const tree = build({
+      repos: [remoteRepo],
+      worktrees: [worktree],
+      nodes: [node({ nodeId: 'macbook', status: 'online' })],
+    });
+    const instance = allProjects(tree)[0]!.instances.find(
+      (i) => i.nodeId === 'macbook'
+    )!;
+    const bench = instance.benches[0]!;
+
+    // The payload routes to the bench's host node, NOT the local default —
+    // guards against creating the tab on the wrong machine.
+    expect(benchCreatePayload(instance, bench)).toEqual({
+      nodeId: 'macbook',
+      cwd: '/repos/relay/.worktrees/feat-y',
+    });
+  });
+
+  it('carries ONLY the (nodeId, cwd) anchor — no env/branch/identity inherited', () => {
+    const worktree: WorktreeInfo = {
+      name: 'feat-z',
+      path: '/repos/relay/.worktrees/feat-z',
+      repoName: 'relay',
+      repoPath: '/repos/relay',
+      displayName: 'feat-z',
+      lastActivity: '2026-05-27T00:00:00.000Z',
+      branchName: 'feature/z',
+      nodeId: DEFAULT_LOCAL_NODE_ID,
+    };
+    const tree = build({ repos: [repo()], worktrees: [worktree] });
+    const instance = allProjects(tree)[0]!.instances[0]!;
+    const bench = instance.benches[0]!;
+
+    // #740/#735 are deferred: the payload must NOT leak branch, env, or repo
+    // identity into the create call — exactly two keys.
+    expect(Object.keys(benchCreatePayload(instance, bench)).sort()).toEqual([
+      'cwd',
+      'nodeId',
+    ]);
   });
 });
