@@ -86,6 +86,20 @@ Full suite always runs in CI (`npm test` in `.github/workflows/publish.yml`).
 
 Playwright component tests live in `test/e2e/`. They are excluded from `npm test` via `vitest.config.ts` (`exclude: ['test/e2e/**']`) and run separately.
 
+For local/devbox smoke runs, prefer a system browser instead of Playwright's
+downloaded browser cache. On Debian-based devboxes install Chromium once, then
+point Playwright at it:
+
+```bash
+sudo apt-get update && sudo apt-get install -y chromium
+PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium npm run test:e2e -- --grep smoke
+```
+
+GitHub-hosted CI uses the preinstalled Chrome channel. Avoid putting
+`npx playwright install --with-deps chromium` in the required smoke gate unless a
+runner image truly lacks a browser; browser provisioning has previously wedged
+after download and blocked unrelated PRs.
+
 ## Mobile Input Testing
 
 The mobile input event-intent pipeline is extracted into `shared/mobile-input-pipeline.ts` and tested via JSON event fixtures.
