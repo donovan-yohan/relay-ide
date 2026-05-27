@@ -636,3 +636,193 @@ describe('S4 workspace-group ws.repos guard', () => {
     expect(tree.ungroupedProjects.map((p) => p.label)).toEqual(['grouped']);
   });
 });
+
+// ── #739: interactive Tab leaves + attention bubbling ─────────────────────────
+
+describe('#739 tab leaves', () => {
+  it('lists individual Tabs per bench with a stable select key + label + branch', () => {
+    const tree = build({
+      repos: [repo()],
+      sessions: [
+        session({
+          id: 'a',
+          repoPath: '/repos/relay',
+          worktreePath: '/repos/relay/.worktrees/x',
+          branchName: 'feature/x',
+          displayName: 'agent one',
+          cwd: '/repos/relay/.worktrees/x',
+        }),
+        session({
+          id: 'b',
+          repoPath: '/repos/relay',
+          worktreePath: '/repos/relay/.worktrees/x',
+          branchName: 'feature/x',
+          displayName: 'agent two',
+          cwd: '/repos/relay/.worktrees/x',
+        }),
+      ],
+    });
+    const bench = allProjects(tree)[0]!.instances[0]!.benches[0]!;
+    expect(bench.tab.count).toBe(2);
+    expect(bench.tab.leaves.map((l) => l.label)).toEqual([
+      'agent one',
+      'agent two',
+    ]);
+    // Select key is the scoped session key (node-scoped global id form here).
+    expect(bench.tab.leaves[0]!.selectKey).toContain('a');
+    expect(bench.tab.leaves[0]!.branch).toBe('feature/x');
+  });
+
+  it('root-anchored sessions become instance root tab leaves', () => {
+    const tree = build({
+      repos: [repo()],
+      sessions: [
+        session({
+          id: 'root',
+          repoPath: '/repos/relay',
+          displayName: 'root agent',
+          cwd: '/repos/relay',
+        }),
+      ],
+    });
+    const instance = allProjects(tree)[0]!.instances[0]!;
+    expect(instance.rootTab.count).toBe(1);
+    expect(instance.rootTab.leaves.map((l) => l.label)).toEqual(['root agent']);
+  });
+
+  it('directory/free tab leaves carry NO branch (leak guard)', () => {
+    const tree = build({
+      sessions: [
+        session({
+          id: 'free',
+          cwd: '/tmp/scratch',
+          branchName: 'should-not-leak',
+          displayName: 'scratch session',
+        }),
+      ],
+    });
+    const entry = tree.freeLane[0]!;
+    expect(entry.tab.leaves).toHaveLength(1);
+    expect(entry.tab.leaves[0]!.branch).toBeNull();
+    // No field VALUE leaks the branch string.
+    expect(JSON.stringify(entry.tab.leaves[0])).not.toContain('should-not-leak');
+  });
+});
+
+describe('#739 attention rollup', () => {
+  // A session whose agentState puts it in a given attention/non-attention state.
+  const attn = (id: string, agentState: SessionSummary['agentState'], extra: Partial<SessionSummary> = {}) =>
+    session({
+      id,
+      repoPath: '/repos/relay',
+      worktreePath: `/repos/relay/.worktrees/${id}`,
+      cwd: `/repos/relay/.worktrees/${id}`,
+      agentState,
+      idle: agentState === 'idle',
+      ...extra,
+    });
+
+  it('no-attention case: idle tabs leave bench/instance/project quiet', () => {
+    const tree = build({
+      repos: [repo()],
+      sessions: [attn('a', 'idle'), attn('b', 'idle')],
+    });
+    const project = allProjects(tree)[0]!;
+    const instance = project.instances[0]!;
+    for (const bench of instance.benches) {
+      expect(bench.attention.state).toBeNull();
+      expect(bench.attention.count).toBe(0);
+    }
+    expect(instance.attention.state).toBeNull();
+    expect(instance.attention.count).toBe(0);
+    expect(project.attention.state).toBeNull();
+    expect(project.attention.count).toBe(0);
+  });
+
+  it('bubbles a single attention tab bench → instance → project', () => {
+    const tree = build({
+      repos: [repo()],
+      sessions: [attn('a', 'idle'), attn('b', 'permission-prompt')],
+    });
+    const project = allProjects(tree)[0]!;
+    const instance = project.instances[0]!;
+    const benchB = instance.benches.find((x) =>
+      x.path.endsWith('/b')
+    )!;
+    const benchA = instance.benches.find((x) =>
+      x.path.endsWith('/a')
+    )!;
+    // Only bench b's tab needs attention.
+    expect(benchA.attention.state).toBeNull();
+    expect(benchA.attention.count).toBe(0);
+    expect(benchB.attention.state).toBe('permission');
+    expect(benchB.attention.count).toBe(1);
+    // Instance + project see exactly one attention tab.
+    expect(instance.attention.state).toBe('permission');
+    expect(instance.attention.count).toBe(1);
+    expect(project.attention.state).toBe('permission');
+    expect(project.attention.count).toBe(1);
+  });
+
+  it('picks the HIGHEST-priority attention state and SUMS counts up the tree', () => {
+    const tree = build({
+      repos: [repo()],
+      sessions: [
+        // error (priority 800) on bench a
+        attn('a', 'error'),
+        // permission (priority 1000) on bench b → wins
+        attn('b', 'permission-prompt'),
+        // a second attention tab on bench b → count rolls up to 3 total
+        session({
+          id: 'b2',
+          repoPath: '/repos/relay',
+          worktreePath: '/repos/relay/.worktrees/b',
+          cwd: '/repos/relay/.worktrees/b',
+          agentState: 'error',
+          idle: false,
+        }),
+      ],
+    });
+    const project = allProjects(tree)[0]!;
+    const instance = project.instances[0]!;
+    const benchB = instance.benches.find((x) => x.path.endsWith('/b'))!;
+    // bench b: permission beats error; 2 attention tabs.
+    expect(benchB.attention.state).toBe('permission');
+    expect(benchB.attention.count).toBe(2);
+    // project: highest = permission; total attention tabs = 3 (a + b + b2).
+    expect(project.attention.state).toBe('permission');
+    expect(project.attention.count).toBe(3);
+  });
+
+  it('rolls attention across multiple instances of one project', () => {
+    const tree = build({
+      repos: [repo()],
+      nodes: [node({ nodeId: 'macbook', status: 'online' })],
+      sessions: [
+        // local instance: idle
+        attn('local', 'idle'),
+        // remote instance: needs-answer
+        attn('remote', 'permission-prompt', {
+          nodeId: 'macbook',
+          permissionType: 'question',
+        }),
+      ],
+    });
+    const project = allProjects(tree)[0]!;
+    expect(project.instances.length).toBeGreaterThanOrEqual(2);
+    // needs-answer bubbles to the project even though it's on a remote instance.
+    expect(project.attention.state).toBe('needs-answer');
+    expect(project.attention.count).toBe(1);
+  });
+
+  it('bubbles attention for free-lane tabs', () => {
+    const tree = build({
+      sessions: [
+        session({ id: 'free', cwd: '/tmp/w', agentState: 'permission-prompt', idle: false }),
+      ],
+    });
+    const entry = tree.freeLane[0]!;
+    expect(entry.attention.state).toBe('permission');
+    expect(entry.attention.count).toBe(1);
+  });
+});

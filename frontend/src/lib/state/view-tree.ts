@@ -13,7 +13,11 @@
 //   (Project, nodeId)   → Instance  (host label: local = `this host`, remote =
 //                                     node displayName; online/stale join).
 //   WorktreeInfo        → Bench      (createBenchId(instanceId, path)).
-//   SessionSummary[]    → Tab COUNTS grouped under (nodeId, worktreePath ?? cwd).
+//   SessionSummary[]    → Tab LEAVES (+ count) grouped under
+//                                     (nodeId, worktreePath ?? cwd). #739 makes
+//                                     the leaf layer interactive: individual Tabs
+//                                     are selectable rows and per-tab attention
+//                                     bubbles up Bench → Instance → Project.
 //   Workspace {repos[]} → Workspace grouping (repo paths → projects).
 //   repoPath-less sess. → SEPARATE free/remote lane (NOT nested under a repo).
 
@@ -42,6 +46,10 @@ import type {
   Workspace,
   WorktreeInfo,
 } from '../types.js';
+import type { DisplayState } from './display-state.js';
+import { isAttentionState } from './display-state.js';
+import { highestPriorityState } from './attention.js';
+import { scopedSessionKey } from '../session-keys.js';
 
 /** Subset of `HubNodeSummary` the projection needs. Keeps the adapter testable
  *  without constructing a full manifest summary. */
@@ -56,9 +64,42 @@ export interface ViewTreeNodeStatus {
  *  `null` when the project-type does not imply a host (and the dot is omitted). */
 export type InstanceHostStatus = HubNodeStatus | null;
 
-export interface ViewTreeTab {
-  /** Count only — leaves are not interactive rows. */
+/** #739: an individual Tab (session) leaf — an interactive, selectable row.
+ *  `selectKey` is the SAME scoped session key the legacy sidebar selects on
+ *  (`scopedSessionKey`), so the leaf click reuses the existing active-session
+ *  action verbatim. `state` is the per-tab lifecycle glyph for `SessionIndicator`,
+ *  derived purely from the `SessionSummary` (no store reconciliation). */
+export interface ViewTreeTabLeaf {
+  /** Stable React key + dedup identity (scoped session key). */
+  selectKey: string;
+  /** Display label: session displayName, else its repo/cwd basename. */
+  label: string;
+  /** Branch this tab runs on, when known (git benches only). */
+  branch: string | null;
+  /** Per-tab lifecycle state for the `SessionIndicator` glyph. */
+  state: DisplayState;
+  /** Whether this tab needs attention (drives the bubble rollup). */
+  attention: boolean;
+  /** Tab activity (ISO), `null` when unknown. */
+  lastActivity: string | null;
+}
+
+/** Per-tab attention rolled up to a node of the tree. `state` is the
+ *  highest-priority attention state among descendant tabs (null = none in an
+ *  attention state); `count` is how many descendant tabs need attention. Mirrors
+ *  the legacy `.repo-attention-badge` anatomy (`SessionIndicator` + count). */
+export interface ViewTreeAttention {
+  /** Highest-priority attention state among descendants, or null when none. */
+  state: DisplayState | null;
+  /** Number of descendant tabs in an attention state. */
   count: number;
+}
+
+export interface ViewTreeTab {
+  /** Count of tabs grouped here (kept for the count badge). */
+  count: number;
+  /** #739: the individual Tabs, as selectable leaves. */
+  leaves: ViewTreeTabLeaf[];
 }
 
 export interface ViewTreeBench {
@@ -76,8 +117,10 @@ export interface ViewTreeBench {
   branch: string | null;
   /** Whether this bench's host is a git repo (drives `.secondary-branch`). */
   isGit: boolean;
-  /** Tab count grouped under this bench-equivalent. */
+  /** Tab count + leaves grouped under this bench-equivalent. */
   tab: ViewTreeTab;
+  /** #739: per-tab attention rolled up to this bench (highest state + count). */
+  attention: ViewTreeAttention;
   /** Most-recent session/worktree activity rolled up here (ISO). `null` when no
    *  recency is known. Drives the `recent` lens; derived during build, NOT a
    *  new fetch. */
@@ -93,8 +136,12 @@ export interface ViewTreeInstance {
   /** Online/stale presence; null when project-type has no host. */
   status: InstanceHostStatus;
   benches: ViewTreeBench[];
-  /** Tab count at the instance root (sessions anchored to the repo, no worktree). */
+  /** Tab count + leaves at the instance root (sessions anchored to the repo, no
+   *  worktree). */
   rootTab: ViewTreeTab;
+  /** #739: per-tab attention rolled up across this instance's benches + root
+   *  tabs (highest state + total count). */
+  attention: ViewTreeAttention;
   /** Max activity across this instance's benches + root sessions (ISO), `null`
    *  when unknown. Rolls up into the project's recency. */
   lastActivity: string | null;
@@ -111,6 +158,9 @@ export interface ViewTreeProject {
   /** Color seed (repo/dir name). `.initial-block` color uses this. */
   colorSeed: string;
   instances: ViewTreeInstance[];
+  /** #739: per-tab attention rolled up across all of this project's instances
+   *  (highest state + total count). Drives the project-level attention badge. */
+  attention: ViewTreeAttention;
   /** Max activity across all of this project's instances (ISO), `null` when
    *  unknown. Drives the `recent` lens ordering of projects. */
   lastActivity: string | null;
@@ -136,8 +186,10 @@ export interface ViewTreeFreeEntry {
   cwd: string;
   /** Last cwd segment for the row label. */
   label: string;
-  /** Tab count grouped under (nodeId, cwd). */
+  /** Tab count + leaves grouped under (nodeId, cwd). */
   tab: ViewTreeTab;
+  /** #739: per-tab attention rolled up for this free group (highest + count). */
+  attention: ViewTreeAttention;
   /** Most-recent session activity for this free group (ISO), `null` when
    *  unknown. Drives the `recent` lens ordering of the free lane. */
   lastActivity: string | null;
@@ -183,6 +235,83 @@ function basename(path: string): string {
   const seg = trimmed.split('/').pop();
   return seg && seg.length > 0 ? seg : path;
 }
+
+// ── #739: per-tab lifecycle state + attention rollup (PURE) ───────────────────
+// A Tab leaf's glyph is derived straight from its `SessionSummary` — NO store
+// reconciliation (the read-only tree owns no seen/unseen memory). This mirrors
+// `sidebar-items.ts#sessionToBackendState` + `initialDisplayState` collapsed into
+// one mapping so an individual session maps to a `SessionIndicator` state. The
+// only divergence from the legacy per-GROUP reconciled state: an idle tab shows
+// `seen-idle` (no unseen memory), so the read-only tree never invents an
+// attention bubble the sidebar wouldn't also raise on its first paint.
+
+/** Map a single session to its `SessionIndicator` lifecycle state, purely. */
+function sessionDisplayState(session: SessionSummary): DisplayState {
+  const { agentState, idle, permissionType, createdAt } = session;
+  if (agentState === 'permission-prompt') {
+    return permissionType === 'question' ? 'needs-answer' : 'permission';
+  }
+  if (agentState === 'error') return 'error';
+  if (agentState === 'processing') return 'running';
+  if (agentState === 'initializing') return 'initializing';
+  // Brand-new sessions without a defined agentState read as initializing (not
+  // running) to avoid flashing an active glyph at 0s — same guard as the sidebar.
+  const isVeryNew = createdAt
+    ? Date.now() - new Date(createdAt).getTime() < 30_000
+    : false;
+  if (!agentState && !idle && isVeryNew) return 'initializing';
+  if (!agentState && !idle) return 'running';
+  // Idle: no unseen memory in the read-only tree → seen-idle (non-attention).
+  return 'seen-idle';
+}
+
+/** Build the interactive Tab leaf for a session. Label/branch presentation
+ *  matches the legacy sidebar (displayName, then cwd basename). */
+function tabLeafFor(
+  session: SessionSummary,
+  isGit: boolean
+): ViewTreeTabLeaf {
+  const state = sessionDisplayState(session);
+  return {
+    selectKey: scopedSessionKey(session),
+    label: session.displayName || basename(session.cwd),
+    // Branch only surfaces for git benches — mirrors the bench-level guard so a
+    // directory/free tab never leaks a branch.
+    branch: isGit ? (session.branchName || null) : null,
+    state,
+    attention: isAttentionState(state),
+    lastActivity: session.lastActivity || null,
+  };
+}
+
+/** Roll a flat list of tab leaves up into an attention summary: highest-priority
+ *  attention state among them + the count of attention tabs. PURE. */
+function rollUpAttention(leaves: ViewTreeTabLeaf[]): ViewTreeAttention {
+  const attentionStates = leaves
+    .filter((leaf) => leaf.attention)
+    .map((leaf) => leaf.state);
+  return {
+    state: highestPriorityState(attentionStates),
+    count: attentionStates.length,
+  };
+}
+
+/** Combine two already-derived attention summaries (child → parent rollup).
+ *  PURE. */
+function mergeAttention(
+  a: ViewTreeAttention,
+  b: ViewTreeAttention
+): ViewTreeAttention {
+  const states = [a.state, b.state].filter(
+    (s): s is DisplayState => s !== null
+  );
+  return {
+    state: highestPriorityState(states),
+    count: a.count + b.count,
+  };
+}
+
+const NO_ATTENTION: ViewTreeAttention = { state: null, count: 0 };
 
 function projectIdentityFor(repo: Repo): ProjectIdentity {
   const isGit = repo.isGitRepo && repo.kind !== 'directory';
@@ -237,6 +366,8 @@ interface MutableInstance {
   status: InstanceHostStatus;
   benchesByPath: Map<string, ViewTreeBench>;
   rootTabCount: number;
+  /** #739: root-anchored Tab leaves (sessions at the repo root, no worktree). */
+  rootLeaves: ViewTreeTabLeaf[];
   /** Rolled-up recency for root sessions (benches carry their own). */
   rootLastActivity: string | null;
 }
@@ -270,6 +401,7 @@ function ensureInstance(
     status: statusFor(nodeId, nodesById),
     benchesByPath: new Map(),
     rootTabCount: 0,
+    rootLeaves: [],
     rootLastActivity: null,
   };
   project.instancesByNode.set(nodeId, instance);
@@ -306,7 +438,9 @@ function ensureBench(
     // for directory projects so identity/branch leakage is impossible.
     isGit: project.isGit,
     branch: project.isGit ? (branch ?? null) : null,
-    tab: { count: 0 },
+    tab: { count: 0, leaves: [] },
+    // Attention is rolled up from the bench's leaves at finalize time.
+    attention: NO_ATTENTION,
     lastActivity: activity ?? null,
   };
   instance.benchesByPath.set(path, bench);
@@ -379,12 +513,21 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
   const freeByKey = new Map<string, ViewTreeFreeEntry>();
 
   /** Add a repoPath-less (or orphaned) session to the free lane, rolling up its
-   *  recency. Shared by the two no-anchor branches below. */
-  function addToFreeLane(nodeId: NodeId, cwd: string, activity: string | null) {
+   *  recency + a (branch-less, identity-less) Tab leaf. Shared by the two
+   *  no-anchor branches below. */
+  function addToFreeLane(
+    nodeId: NodeId,
+    cwd: string,
+    session: SessionSummary
+  ) {
+    const activity = session.lastActivity || null;
     const key = `${nodeId} ${cwd}`;
+    // Free leaves are NON-git by construction → no branch leak (C2).
+    const leaf = tabLeafFor(session, false);
     const existing = freeByKey.get(key);
     if (existing) {
       existing.tab.count += 1;
+      existing.tab.leaves.push(leaf);
       existing.lastActivity = maxActivity(existing.lastActivity, activity);
       return;
     }
@@ -397,7 +540,9 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
       status: statusFor(nodeId, nodesById),
       cwd,
       label: basename(cwd),
-      tab: { count: 1 },
+      tab: { count: 1, leaves: [leaf] },
+      // Rolled up from leaves at finalize time.
+      attention: NO_ATTENTION,
       lastActivity: activity ?? null,
     });
   }
@@ -409,7 +554,7 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
     // Free/remote no-anchor sessions (no repoPath): SEPARATE top-level lane.
     // Carry NO branch and NO repo identity by construction (leak guard C2).
     if (!session.repoPath) {
-      addToFreeLane(nodeId, session.worktreePath ?? session.cwd, activity);
+      addToFreeLane(nodeId, session.worktreePath ?? session.cwd, session);
       continue;
     }
 
@@ -419,7 +564,7 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
     if (!projectId) {
       // repoPath set but no matching repo row — treat as free-lane to avoid
       // inventing a project. Still carries no branch/identity.
-      addToFreeLane(nodeId, session.worktreePath ?? session.cwd, activity);
+      addToFreeLane(nodeId, session.worktreePath ?? session.cwd, session);
       continue;
     }
     const project = projectsById.get(projectId);
@@ -436,13 +581,15 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
         activity
       );
       bench.tab.count += 1;
+      bench.tab.leaves.push(tabLeafFor(session, project.isGit));
     } else {
-      // Anchored at the repo root → instance root tab count.
+      // Anchored at the repo root → instance root tab count + leaf.
       instance.rootLastActivity = maxActivity(
         instance.rootLastActivity,
         activity
       );
       instance.rootTabCount += 1;
+      instance.rootLeaves.push(tabLeafFor(session, project.isGit));
     }
   }
 
@@ -455,13 +602,19 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
         return a.hostLabel.localeCompare(b.hostLabel);
       })
       .map((inst) => {
-        const benches = [...inst.benchesByPath.values()].sort((a, b) =>
-          a.path.localeCompare(b.path)
-        );
+        const benches = [...inst.benchesByPath.values()]
+          .sort((a, b) => a.path.localeCompare(b.path))
+          // #739: roll each bench's leaves up into its attention summary.
+          .map((b) => ({ ...b, attention: rollUpAttention(b.tab.leaves) }));
         // Instance recency = max(root sessions, all bench activity).
         const lastActivity = benches.reduce<string | null>(
           (acc, b) => maxActivity(acc, b.lastActivity),
           inst.rootLastActivity
+        );
+        // #739: instance attention = root tabs ∪ all benches.
+        const attention = benches.reduce<ViewTreeAttention>(
+          (acc, b) => mergeAttention(acc, b.attention),
+          rollUpAttention(inst.rootLeaves)
         );
         return {
           id: inst.id,
@@ -469,8 +622,9 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
           hostLabel: inst.hostLabel,
           isLocal: inst.isLocal,
           status: inst.status,
-          rootTab: { count: inst.rootTabCount },
+          rootTab: { count: inst.rootTabCount, leaves: inst.rootLeaves },
           benches,
+          attention,
           lastActivity,
         };
       });
@@ -479,6 +633,11 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
       (acc, inst) => maxActivity(acc, inst.lastActivity),
       null
     );
+    // #739: project attention = merge across all instances.
+    const attention = instances.reduce<ViewTreeAttention>(
+      (acc, inst) => mergeAttention(acc, inst.attention),
+      NO_ATTENTION
+    );
     return {
       id: project.id,
       identity: project.identity,
@@ -486,6 +645,7 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
       label: project.label,
       colorSeed: project.colorSeed,
       instances,
+      attention,
       lastActivity,
     };
   }
@@ -528,9 +688,10 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
   }
   ungroupedProjects.sort((a, b) => a.label.localeCompare(b.label));
 
-  const freeLane = [...freeByKey.values()].sort((a, b) =>
-    a.key.localeCompare(b.key)
-  );
+  const freeLane = [...freeByKey.values()]
+    // #739: roll each free entry's leaves up into its attention summary.
+    .map((entry) => ({ ...entry, attention: rollUpAttention(entry.tab.leaves) }))
+    .sort((a, b) => a.key.localeCompare(b.key));
 
   return { workspaces, ungroupedProjects, freeLane };
 }

@@ -135,3 +135,55 @@
   opacity: 0.7;
   color: var(--accent);
 }
+
+/* ── #739 interactive Tab leaves + attention bubbling ──────────────────────────
+   Individual Tabs (sessions) render as selectable rows one indent below their
+   Bench (or directly under an Instance for root-anchored tabs / a free entry).
+   Reuses the shared `.session-row` anatomy + `SessionIndicator` glyph + the
+   `.repo-attention-badge` pattern — no new colors or animations. */
+
+/* Leaf list sits one level deeper than the bench list. Bench leaves inherit the
+   bench-list indent and add one more slot; instance/free leaves get their own
+   indent below their parent row. */
+.view-spine-bench .view-spine-tab-leaf-list {
+  padding-left: var(--icon-slot-width);
+}
+.view-spine-instance > .view-spine-tab-leaf-list,
+.view-spine-free-row > .view-spine-tab-leaf-list {
+  padding-left: var(--icon-slot-width);
+}
+
+/* Leaf rows keep the ≥44px touch target from `.session-row`. Non-interactive by
+   default (read-only render); the `.selectable` variant adds the pointer +
+   hover/focus affordances so a tap focuses the tab. */
+.view-spine-tab-leaf {
+  cursor: default;
+  min-height: 44px;
+}
+.view-spine-tab-leaf.selectable {
+  cursor: pointer;
+}
+.view-spine-tab-leaf.selectable:hover {
+  background: var(--surface-hover);
+}
+.view-spine-tab-leaf.selectable:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* The bench/instance collapse chevron is a real <button>; strip the UA chrome so
+   it matches the borrowed `.collapse-chevron` look. */
+.view-spine-bench .collapse-chevron {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+.view-spine-bench .collapse-chevron:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Bubbled attention badge — keep it from being squeezed in a tight row. */
+.view-spine-tree .repo-attention-badge {
+  flex-shrink: 0;
+}
