@@ -113,10 +113,9 @@ function createFakeStore(): ContextInboxStore & { _markDelivered: boolean } {
         all = all.filter((m) => m.targetWorkContextId === filter.targetWorkContextId);
       }
       if (filter.state) all = all.filter((m) => m.state === filter.state);
-      // PULL delivery side effect.
-      all = all.map((m) => deliverOnPull(m));
       if (filter.limit !== undefined) all = all.slice(0, filter.limit);
-      return all;
+      // PULL delivery side effect applies only to rows returned by the list.
+      return all.map((m) => deliverOnPull(m));
     },
     getInboxMessage(id: string): SessionInboxMessage | null {
       const message = messages.get(id);

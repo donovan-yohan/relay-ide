@@ -167,10 +167,8 @@ export function createContextInboxStoreAdapter(
           : {}),
         ...(filter.state ? { state: filter.state } : {}),
       });
-      const delivered = messages.map((m) => deliverOnPull(store, m));
-      // Apply `limit` after the flip so the row count is stable regardless of
-      // delivery side effects (the store has no LIMIT clause on this read).
-      return filter.limit !== undefined ? delivered.slice(0, filter.limit) : delivered;
+      const visible = filter.limit !== undefined ? messages.slice(0, filter.limit) : messages;
+      return visible.map((m) => deliverOnPull(store, m));
     },
 
     // PULL delivery: getting a queued message by id flips it to delivered.
