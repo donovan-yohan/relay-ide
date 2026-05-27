@@ -13,6 +13,7 @@ import {
   applyLens,
   benchCreatePayload,
   buildViewTree,
+  groupProjectsByWorkspace,
   DEFAULT_VIEW_LENS,
   type BenchCreatePayload,
   type InstanceHostStatus,
@@ -23,6 +24,8 @@ import {
   type ViewTreeProject,
   type ViewTreeNodeStatus,
 } from '../lib/state/view-tree.js';
+import { useIaWorkspaces } from '../lib/hooks/use-ia-workspaces.js';
+import { WorkspaceBar } from './WorkspaceBar.js';
 import './ViewSpineTree.css';
 
 /** Create a Tab anchored to a Bench's (nodeId, cwd). Wired to the EXISTING
@@ -159,12 +162,58 @@ function InstanceRow({
   );
 }
 
+/** Per-project "move to workspace" control. Lists the persisted workspaces plus
+ *  an "ungrouped" option; selecting one PATCHes membership (#733). Withheld when
+ *  no `assign` handler is supplied (read-only render). */
+export interface ProjectAssignControl {
+  /** Persisted workspace options (id + label), in display order. */
+  options: ReadonlyArray<{ id: string; name: string }>;
+  /** The workspace id currently owning this project, or '' for ungrouped. */
+  currentWorkspaceId: string;
+  /** Move the project to the given workspace id, or '' to ungroup. */
+  onAssign: (workspaceId: string) => void;
+  /** Disable while a workspace mutation is in flight. */
+  busy: boolean;
+}
+
+function ProjectAssignSelect({
+  project,
+  assign,
+}: {
+  project: ViewTreeProject;
+  assign: ProjectAssignControl;
+}) {
+  return (
+    <select
+      className="workspace-bar__assign"
+      value={assign.currentWorkspaceId}
+      disabled={assign.busy}
+      aria-label={`assign ${project.label} to a workspace`}
+      title="move to workspace"
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => {
+        e.stopPropagation();
+        assign.onAssign(e.currentTarget.value);
+      }}
+    >
+      <option value="">ungrouped</option>
+      {assign.options.map((opt) => (
+        <option key={opt.id} value={opt.id}>
+          {opt.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function ProjectRow({
   project,
   onCreateTab,
+  assign,
 }: {
   project: ViewTreeProject;
   onCreateTab?: ViewSpineCreateTab | undefined;
+  assign?: ProjectAssignControl | undefined;
 }) {
   const initialColor = useMemo(
     () => deriveColor(project.colorSeed),
@@ -200,6 +249,9 @@ function ProjectRow({
             <span className="session-count-badge">{instanceCount}</span>
           ) : null}
         </div>
+        {assign ? (
+          <ProjectAssignSelect project={project} assign={assign} />
+        ) : null}
       </div>
       <ul className="session-list">
         {project.instances.map((instance) => (
@@ -367,6 +419,94 @@ export function ViewSpineTree({
 
   const tree = useMemo(() => applyLens(derived, lens), [derived, lens]);
 
+  // #728: the persisted six-layer Workspace layer (#733 CRUD). The bar manages
+  // workspace lifecycle; here we OVERLAY persisted membership on the derived
+  // tree. All derived projects (from the legacy workspace groups + the legacy
+  // ungrouped lane) are flattened — preserving the lens-applied order — and
+  // RE-grouped by persisted `projectIds`. Unassigned projects fall back to
+  // ungrouped. NO legacy auto-import: the legacy `workspaceGroups` grouping is
+  // collapsed away for render, never migrated into persisted Workspaces.
+  const { workspaces: persistedWorkspaces, updateMutation } = useIaWorkspaces();
+  const assignBusy = updateMutation.isPending;
+
+  const flatProjects = useMemo(
+    () => [
+      ...tree.workspaces.flatMap((ws) => ws.projects),
+      ...tree.ungroupedProjects,
+    ],
+    [tree]
+  );
+
+  const grouped = useMemo(
+    () => groupProjectsByWorkspace(flatProjects, persistedWorkspaces),
+    [flatProjects, persistedWorkspaces]
+  );
+
+  // The workspace each project currently belongs to (first claimant by order),
+  // so the per-project assign control can show the right selection.
+  const workspaceIdByProject = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const ws of grouped.workspaces) {
+      for (const project of ws.projects) {
+        if (!map.has(project.id)) map.set(project.id, ws.id);
+      }
+    }
+    return map;
+  }, [grouped]);
+
+  const assignOptions = useMemo(
+    () =>
+      [...persistedWorkspaces]
+        .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+        .map((ws) => ({ id: ws.id, name: ws.name })),
+    [persistedWorkspaces]
+  );
+
+  // Move a project into `targetWorkspaceId` (or '' to ungroup). PATCHes the
+  // membership of the source (remove) and target (append) workspaces. The
+  // membership list is replaced wholesale per the #733 contract.
+  const assignProjectTo = useCallback(
+    (projectId: string, targetWorkspaceId: string) => {
+      const currentId = workspaceIdByProject.get(projectId) ?? '';
+      if (currentId === targetWorkspaceId) return;
+      // Remove from the current owner (if any).
+      if (currentId) {
+        const source = persistedWorkspaces.find((w) => w.id === currentId);
+        if (source) {
+          updateMutation.mutate({
+            id: source.id,
+            patch: {
+              projectIds: source.projectIds.filter((id) => id !== projectId),
+            },
+          });
+        }
+      }
+      // Append to the target (if not ungrouping). Guard against dupes.
+      if (targetWorkspaceId) {
+        const target = persistedWorkspaces.find(
+          (w) => w.id === targetWorkspaceId
+        );
+        if (target && !target.projectIds.includes(projectId)) {
+          updateMutation.mutate({
+            id: target.id,
+            patch: { projectIds: [...target.projectIds, projectId] },
+          });
+        }
+      }
+    },
+    [persistedWorkspaces, updateMutation, workspaceIdByProject]
+  );
+
+  const makeAssign = useCallback(
+    (project: ViewTreeProject): ProjectAssignControl => ({
+      options: assignOptions,
+      currentWorkspaceId: workspaceIdByProject.get(project.id) ?? '',
+      onAssign: (workspaceId) => assignProjectTo(project.id, workspaceId),
+      busy: assignBusy,
+    }),
+    [assignOptions, workspaceIdByProject, assignProjectTo, assignBusy]
+  );
+
   // The Views selector is part of the sidebar header chrome: it renders in EVERY
   // state (loading, empty, content) so switching lenses is always available,
   // even when the active lens yields zero nodes.
@@ -377,6 +517,7 @@ export function ViewSpineTree({
     return (
       <div className="view-spine-tree">
         {selector}
+        <WorkspaceBar />
         <div className="view-spine-scroll">
           <ul className="session-list">
             <li className="session-row loading">
@@ -392,15 +533,16 @@ export function ViewSpineTree({
     );
   }
 
-  const hasContent =
-    tree.workspaces.some((ws) => ws.projects.length > 0) ||
-    tree.ungroupedProjects.length > 0 ||
-    tree.freeLane.length > 0;
+  const hasGroupedContent =
+    grouped.workspaces.some((ws) => ws.projects.length > 0) ||
+    grouped.ungroupedProjects.length > 0;
+  const hasContent = hasGroupedContent || tree.freeLane.length > 0;
 
   if (!hasContent) {
     return (
       <div className="view-spine-tree">
         {selector}
+        <WorkspaceBar />
         <div className="view-spine-scroll">
           <div className="sidebar-empty-state">
             <span>
@@ -412,11 +554,16 @@ export function ViewSpineTree({
     );
   }
 
+  const hasPersistedGroups = grouped.workspaces.some(
+    (ws) => ws.projects.length > 0
+  );
+
   return (
     <div className="view-spine-tree">
       {selector}
+      <WorkspaceBar />
       <div className="view-spine-scroll">
-        {tree.workspaces.map((ws) =>
+        {grouped.workspaces.map((ws) =>
           ws.projects.length > 0 ? (
             <section key={ws.id} className="view-spine-workspace">
               <div className="sidebar-ungrouped-label">{ws.name}</div>
@@ -425,22 +572,24 @@ export function ViewSpineTree({
                   key={project.id}
                   project={project}
                   onCreateTab={onCreateTab}
+                  assign={makeAssign(project)}
                 />
               ))}
             </section>
           ) : null
         )}
 
-        {tree.ungroupedProjects.length > 0 ? (
+        {grouped.ungroupedProjects.length > 0 ? (
           <section className="view-spine-workspace">
-            {tree.workspaces.some((ws) => ws.projects.length > 0) ? (
+            {hasPersistedGroups ? (
               <div className="sidebar-ungrouped-label">ungrouped</div>
             ) : null}
-            {tree.ungroupedProjects.map((project) => (
+            {grouped.ungroupedProjects.map((project) => (
               <ProjectRow
                 key={project.id}
                 project={project}
                 onCreateTab={onCreateTab}
+                assign={makeAssign(project)}
               />
             ))}
           </section>

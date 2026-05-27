@@ -535,6 +535,90 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
   return { workspaces, ungroupedProjects, freeLane };
 }
 
+// ── #728: persisted Workspace grouping (grouping-of-Projects) ─────────────────
+// PURE projection of the persisted six-layer **Workspace** entities (#733 CRUD,
+// `shared/workspace.ts`) over the already-derived `ViewTreeProject[]`. This is
+// DISTINCT from the legacy `Workspace.repos[]` grouping above (which keys on
+// repo paths): persisted Workspaces carry an ordered `projectIds` membership of
+// ProjectIds (the SAME ids `buildViewTree` mints on `ViewTreeProject.id`).
+//
+// Membership rules (no I/O, no fetch):
+//   - Workspaces render in `order` asc, then id asc (stable, mirrors the store).
+//   - Within a workspace, projects render in the workspace's `projectIds` order;
+//     a projectId that no longer resolves to a derived project is skipped (the
+//     project may have gone offline / been removed — membership is non-binding).
+//   - A project may belong to AT MOST one workspace for render purposes; the
+//     FIRST workspace (by order) claiming it wins, so a stale duplicate id in a
+//     later workspace does not double-render the project.
+//   - Any derived project NOT claimed by a workspace falls back to `ungrouped`,
+//     sorted by label for determinism.
+
+/** A persisted-Workspace grouping of derived projects. Mirrors the shape the
+ *  legacy `ViewTreeWorkspaceGroup` uses so the renderer treats both uniformly. */
+export interface PersistedWorkspaceGroup {
+  id: WorkspaceId;
+  name: string;
+  order: number;
+  projects: ViewTreeProject[];
+}
+
+/** Minimal persisted-Workspace shape this projection needs (matches the #733
+ *  API / `shared/workspace.ts`). Kept structural so callers can pass the API
+ *  client's `IaWorkspace` without an import cycle. */
+export interface PersistedWorkspaceInput {
+  id: WorkspaceId;
+  name: string;
+  order: number;
+  projectIds: string[];
+}
+
+export interface GroupedByWorkspace {
+  workspaces: PersistedWorkspaceGroup[];
+  ungroupedProjects: ViewTreeProject[];
+}
+
+/**
+ * Group derived projects under their persisted Workspace membership. PURE:
+ * never mutates inputs, never fetches. Projects unclaimed by any workspace fall
+ * back to `ungroupedProjects` (sorted by label). See the membership rules above.
+ */
+export function groupProjectsByWorkspace(
+  projects: ViewTreeProject[],
+  persisted: PersistedWorkspaceInput[]
+): GroupedByWorkspace {
+  const projectsById = new Map<ProjectId, ViewTreeProject>(
+    projects.map((p) => [p.id, p])
+  );
+  const claimed = new Set<ProjectId>();
+
+  const workspaces: PersistedWorkspaceGroup[] = [...persisted]
+    .sort((a, b) => (a.order - b.order) || a.id.localeCompare(b.id))
+    .map((ws) => {
+      const seen = new Set<ProjectId>();
+      const grouped: ViewTreeProject[] = [];
+      // `projectIds` can be absent/malformed on a legacy/partial record — guard
+      // exactly like the legacy grouping path does for `repos`.
+      const ids = Array.isArray(ws.projectIds) ? ws.projectIds : [];
+      for (const rawId of ids) {
+        const id = rawId as ProjectId;
+        if (seen.has(id)) continue; // dedup within a workspace
+        const project = projectsById.get(id);
+        if (!project) continue; // membership references an unknown/absent project
+        if (claimed.has(id)) continue; // earlier workspace already owns it
+        seen.add(id);
+        claimed.add(id);
+        grouped.push(project);
+      }
+      return { id: ws.id, name: ws.name, order: ws.order, projects: grouped };
+    });
+
+  const ungroupedProjects = projects
+    .filter((p) => !claimed.has(p.id))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  return { workspaces, ungroupedProjects };
+}
+
 // ── S2: Views lenses (#727) ───────────────────────────────────────────────────
 // Ad-hoc, ephemeral, PURE-FILTER lenses over the already-derived tree. No
 // persistence, no new fetch, no saved Views. `applyLens` is a pure function:
