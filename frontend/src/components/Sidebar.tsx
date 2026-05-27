@@ -552,7 +552,10 @@ export function Sidebar({
             // #732/#729: flag-gated, read-only, client-derived view-spine tree.
             // OFF path below is byte-identical to today.
             <div className="sidebar-workspace-list">
-              <ViewSpineTree onCreateTab={onViewSpineCreateTab} />
+              <ViewSpineTree
+                onCreateTab={onViewSpineCreateTab}
+                onSelectTab={onSelectSession}
+              />
             </div>
           ) : (
             <div className="sidebar-workspace-list">

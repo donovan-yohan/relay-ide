@@ -9,6 +9,7 @@ import { fetchHubNodes } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
 import { MarqueeText } from './MarqueeText.js';
 import { CipherText } from './CipherText.js';
+import { SessionIndicator } from './SessionIndicator.js';
 import {
   applyLens,
   benchCreatePayload,
@@ -22,10 +23,12 @@ import {
   type InstanceHostStatus,
   type MergedBench,
   type ViewLens,
+  type ViewTreeAttention,
   type ViewTreeFreeEntry,
   type ViewTreeInstance,
   type ViewTreeProject,
   type ViewTreeNodeStatus,
+  type ViewTreeTabLeaf,
 } from '../lib/state/view-tree.js';
 import { useIaWorkspaces } from '../lib/hooks/use-ia-workspaces.js';
 import {
@@ -48,6 +51,11 @@ function benchErrorMessage(err: unknown, fallback: string): string {
  *  NOT the worktree-creation path (`onNewWorktree`). */
 export type ViewSpineCreateTab = (payload: BenchCreatePayload) => void;
 
+/** #739: focus/select an individual Tab (session). Wired by `App` to the
+ *  EXISTING active-session action (`handleSelectSession`) — NOT a new flow. The
+ *  argument is the scoped session key the legacy sidebar already selects on. */
+export type ViewSpineSelectTab = (selectKey: string) => void;
+
 // Ad-hoc, ephemeral lenses (#727). Order is the visual + arrow-key order.
 const LENSES: ReadonlyArray<{ id: ViewLens; label: string }> = [
   { id: 'recent', label: 'recent' },
@@ -67,15 +75,98 @@ function CountBadge({ count }: { count: number }) {
   return <span className="session-count-badge">{count}</span>;
 }
 
+// #739: bubbled attention badge — reuses the legacy `.repo-attention-badge`
+// anatomy (a `SessionIndicator` glyph + descendant attention count). Rendered on
+// a Bench/Instance/Project when any descendant Tab needs attention; null when
+// none, so non-attention nodes stay visually quiet.
+function AttentionBadge({ attention }: { attention: ViewTreeAttention }) {
+  if (!attention.state || attention.count <= 0) return null;
+  return (
+    <span
+      className="repo-attention-badge"
+      title={`${attention.count} tab(s) need attention`}
+    >
+      <SessionIndicator state={attention.state} />
+      {attention.count}
+    </span>
+  );
+}
+
+// #739: an individual Tab (session) leaf — a selectable row reusing the legacy
+// sidebar session-row anatomy (`SessionIndicator` glyph + name + attention bold
+// + branch). Click selects/focuses that Tab via the EXISTING active-session
+// action. Indented one level below its Bench. Keyboard-accessible (button-like
+// role, Enter/Space activate), touch ≥44px (`.view-spine-tab-leaf` CSS).
+function TabLeafRow({
+  leaf,
+  onSelectTab,
+}: {
+  leaf: ViewTreeTabLeaf;
+  onSelectTab?: ViewSpineSelectTab | undefined;
+}) {
+  const selectable = !!onSelectTab;
+  const activate = () => {
+    if (onSelectTab) onSelectTab(leaf.selectKey);
+  };
+  return (
+    <li
+      className={[
+        'session-row view-spine-tab-leaf',
+        `state-${leaf.state}`,
+        leaf.attention && 'attention',
+        selectable && 'selectable',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      data-track="view-spine.tab.click"
+      role={selectable ? 'button' : undefined}
+      tabIndex={selectable ? 0 : undefined}
+      aria-label={selectable ? `focus tab ${leaf.label}` : undefined}
+      onClick={selectable ? activate : undefined}
+      onKeyDown={
+        selectable
+          ? (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                activate();
+              }
+            }
+          : undefined
+      }
+    >
+      <div className="session-row-primary">
+        <SessionIndicator state={leaf.state} />
+        <span
+          className={['session-name', leaf.attention && 'bold']
+            .filter(Boolean)
+            .join(' ')}
+        >
+          <MarqueeText>{leaf.label}</MarqueeText>
+        </span>
+      </div>
+      {leaf.branch ? (
+        <div className="session-row-secondary">
+          <span className="secondary-branch">
+            <MarqueeText>{leaf.branch}</MarqueeText>
+          </span>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
 // #773: one row per cwd, fusing a derived worktree bench with a persisted
 // overlay sharing that cwd. Renders the union: branch + tab count + "+ tab"
 // (when a derived worktree backs it), env badge + delete (when an overlay backs
 // it), and the verbatim cwd secondary line for overlay-backed rows.
+// #739: a Bench with tabs is now expand/collapsible, listing its individual Tabs
+// as selectable leaves; per-tab attention bubbles up via `AttentionBadge`.
 function BenchRow({
   instance,
   merged,
   busy,
   onCreateTab,
+  onSelectTab,
   onDeleteOverlay,
 }: {
   instance: ViewTreeInstance;
@@ -83,11 +174,19 @@ function BenchRow({
   /** Overlay delete in flight (disables this row's delete affordance). */
   busy: boolean;
   onCreateTab?: ViewSpineCreateTab | undefined;
+  /** #739: focus/select an individual Tab leaf. */
+  onSelectTab?: ViewSpineSelectTab | undefined;
   /** Delete the persisted overlay backing this row. Only invoked when
    *  `merged.overlayId` is set. */
   onDeleteOverlay: (overlayId: string) => void;
 }) {
   const { bench } = merged;
+  // #739: the individual Tab leaves under this bench (empty for an overlay-only
+  // row with no derived worktree → no sessions). Default expanded so attention
+  // tabs are visible without an extra click; collapsible to reduce noise.
+  const leaves = bench?.tab.leaves ?? [];
+  const hasLeaves = leaves.length > 0;
+  const [expanded, setExpanded] = useState(true);
   // Per-bench in-flight guard so the affordance disables itself (and other
   // benches stay clickable) while a create is pending. Errors surface through
   // the existing create path's toast — no bespoke error UI here.
@@ -130,10 +229,36 @@ function BenchRow({
         .join(' ')}
     >
       <div className="session-row-primary">
+        {/* #739: collapse/expand toggle — only when this bench has Tab leaves.
+            Keyboard-accessible (real button), stops propagation so it never
+            triggers a row-level action. */}
+        {hasLeaves ? (
+          <button
+            type="button"
+            className={['collapse-chevron', !expanded && 'collapsed']
+              .filter(Boolean)
+              .join(' ')}
+            aria-expanded={expanded}
+            aria-label={
+              expanded
+                ? `collapse tabs for ${merged.label}`
+                : `expand tabs for ${merged.label}`
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded((v) => !v);
+            }}
+          >
+            {expanded ? '⌄' : '›'}
+          </button>
+        ) : null}
         <span className="session-name">
           <MarqueeText>{merged.label}</MarqueeText>
         </span>
         {bench ? <CountBadge count={bench.tab.count} /> : null}
+        {/* #739: attention bubbles up from the bench's tabs (shown when collapsed
+            OR expanded — the badge is the at-a-glance summary). */}
+        {bench ? <AttentionBadge attention={bench.attention} /> : null}
         {envCount > 0 ? (
           <span
             className="bench-overlay-env-badge"
@@ -172,6 +297,20 @@ function BenchRow({
             <MarqueeText>{merged.cwd}</MarqueeText>
           </span>
         </div>
+      ) : null}
+      {/* #739: individual Tab leaves, indented one level below the bench. Each
+          is a selectable row that focuses the session via the existing
+          active-session action. Hidden when collapsed. */}
+      {hasLeaves && expanded ? (
+        <ul className="session-list view-spine-tab-leaf-list">
+          {leaves.map((leaf) => (
+            <TabLeafRow
+              key={leaf.selectKey}
+              leaf={leaf}
+              onSelectTab={onSelectTab}
+            />
+          ))}
+        </ul>
       ) : null}
       {/* #731 "+ tab" anchored to THIS bench's (nodeId, repoPath, worktree).
           Reuses the `.add-worktree-row`/`.add-worktree-btn` styling ONLY — it
@@ -216,6 +355,7 @@ function InstanceRow({
   projectKind,
   overlays,
   onCreateTab,
+  onSelectTab,
   onRefetchBenches,
 }: {
   instance: ViewTreeInstance;
@@ -224,6 +364,8 @@ function InstanceRow({
    *  tree-level `GET /hub/ia/benches` (#773 — no per-instance fan-out). */
   overlays: BenchOverlayInput[];
   onCreateTab?: ViewSpineCreateTab | undefined;
+  /** #739: focus/select an individual Tab leaf. */
+  onSelectTab?: ViewSpineSelectTab | undefined;
   /** Refetch the tree-level bench cache (reconcile after a failed mutation). */
   onRefetchBenches: () => void;
 }) {
@@ -265,7 +407,22 @@ function InstanceRow({
           <MarqueeText>{instance.hostLabel}</MarqueeText>
         </span>
         <CountBadge count={instance.rootTab.count} />
+        {/* #739: attention bubbled up from all of this instance's tabs. */}
+        <AttentionBadge attention={instance.attention} />
       </div>
+      {/* #739: root-anchored Tabs (sessions at the repo root, no worktree) listed
+          as selectable leaves directly under the instance. */}
+      {instance.rootTab.leaves.length > 0 ? (
+        <ul className="session-list view-spine-tab-leaf-list">
+          {instance.rootTab.leaves.map((leaf) => (
+            <TabLeafRow
+              key={leaf.selectKey}
+              leaf={leaf}
+              onSelectTab={onSelectTab}
+            />
+          ))}
+        </ul>
+      ) : null}
       {merged.length > 0 ? (
         <ul className="session-list view-spine-bench-list">
           {merged.map((row) => (
@@ -275,6 +432,7 @@ function InstanceRow({
               merged={row}
               busy={deleteMutation.isPending}
               onCreateTab={onCreateTab}
+              onSelectTab={onSelectTab}
               onDeleteOverlay={handleDeleteOverlay}
             />
           ))}
@@ -355,6 +513,7 @@ function ProjectRow({
   project,
   overlaysByInstance,
   onCreateTab,
+  onSelectTab,
   onRefetchBenches,
   assign,
 }: {
@@ -362,6 +521,8 @@ function ProjectRow({
   /** Persisted bench overlays grouped by instanceId (#773 single query). */
   overlaysByInstance: Map<string, BenchOverlayInput[]>;
   onCreateTab?: ViewSpineCreateTab | undefined;
+  /** #739: focus/select an individual Tab leaf. */
+  onSelectTab?: ViewSpineSelectTab | undefined;
   onRefetchBenches: () => void;
   assign?: ProjectAssignControl | undefined;
 }) {
@@ -398,6 +559,8 @@ function ProjectRow({
           {instanceCount > 1 ? (
             <span className="session-count-badge">{instanceCount}</span>
           ) : null}
+          {/* #739: attention bubbled up from every Tab in this project. */}
+          <AttentionBadge attention={project.attention} />
         </div>
         {assign ? (
           <ProjectAssignSelect project={project} assign={assign} />
@@ -411,6 +574,7 @@ function ProjectRow({
             projectKind={project.kind}
             overlays={overlaysByInstance.get(instance.id) ?? []}
             onCreateTab={onCreateTab}
+            onSelectTab={onSelectTab}
             onRefetchBenches={onRefetchBenches}
           />
         ))}
@@ -422,8 +586,15 @@ function ProjectRow({
 
 // Reduced-anatomy row: structurally omits `.initial-block` AND
 // `.secondary-branch` JSX so repo-identity/branch leakage is impossible by
-// construction for repoPath-less (free/remote) sessions.
-function FreeRow({ entry }: { entry: ViewTreeFreeEntry }) {
+// construction for repoPath-less (free/remote) sessions. #739: its Tab leaves are
+// selectable too (branch-less by construction) and attention bubbles up here.
+function FreeRow({
+  entry,
+  onSelectTab,
+}: {
+  entry: ViewTreeFreeEntry;
+  onSelectTab?: ViewSpineSelectTab | undefined;
+}) {
   return (
     <li className="session-row view-spine-free-row">
       <div className="session-row-primary">
@@ -437,7 +608,19 @@ function FreeRow({ entry }: { entry: ViewTreeFreeEntry }) {
           <MarqueeText>{entry.label}</MarqueeText>
         </span>
         <CountBadge count={entry.tab.count} />
+        <AttentionBadge attention={entry.attention} />
       </div>
+      {entry.tab.leaves.length > 0 ? (
+        <ul className="session-list view-spine-tab-leaf-list">
+          {entry.tab.leaves.map((leaf) => (
+            <TabLeafRow
+              key={leaf.selectKey}
+              leaf={leaf}
+              onSelectTab={onSelectTab}
+            />
+          ))}
+        </ul>
+      ) : null}
     </li>
   );
 }
@@ -522,10 +705,14 @@ function LensSelector({
 
 export function ViewSpineTree({
   onCreateTab,
+  onSelectTab,
 }: {
   /** #731: create a Tab anchored to a Bench's (nodeId, cwd). Read-only when
    *  omitted — the "+ tab" affordance only renders when this is provided. */
   onCreateTab?: ViewSpineCreateTab | undefined;
+  /** #739: focus/select an individual Tab leaf. Leaves render as static rows
+   *  when omitted (read-only); the click action only fires when provided. */
+  onSelectTab?: ViewSpineSelectTab | undefined;
 } = {}) {
   const repos = useSessionsStore((s) => s.repos);
   const worktrees = useSessionsStore((s) => s.worktrees);
@@ -789,6 +976,7 @@ export function ViewSpineTree({
                   project={project}
                   overlaysByInstance={overlaysByInstance}
                   onCreateTab={onCreateTab}
+                  onSelectTab={onSelectTab}
                   onRefetchBenches={onRefetchBenches}
                   assign={makeAssign(project)}
                 />
@@ -808,6 +996,7 @@ export function ViewSpineTree({
                 project={project}
                 overlaysByInstance={overlaysByInstance}
                 onCreateTab={onCreateTab}
+                onSelectTab={onSelectTab}
                 onRefetchBenches={onRefetchBenches}
                 assign={makeAssign(project)}
               />
@@ -820,7 +1009,11 @@ export function ViewSpineTree({
             <div className="sidebar-ungrouped-label">free / remote</div>
             <ul className="session-list">
               {tree.freeLane.map((entry) => (
-                <FreeRow key={entry.key} entry={entry} />
+                <FreeRow
+                  key={entry.key}
+                  entry={entry}
+                  onSelectTab={onSelectTab}
+                />
               ))}
             </ul>
           </section>
