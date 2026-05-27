@@ -346,13 +346,14 @@ describe('ia-store: durability + migration', () => {
     openStores.push(c);
     expect(c.listWorkspaces()).toHaveLength(1);
 
-    // schema_version pinned at 1.
+    // schema_version pinned at the latest migration version (v2 adds the #736
+    // ia_migration_state marker table).
     const db = new Database(dbPath);
     try {
       const row = db.prepare('SELECT version FROM schema_version').get() as {
         version: number;
       };
-      expect(row.version).toBe(1);
+      expect(row.version).toBe(2);
     } finally {
       db.close();
     }
@@ -374,6 +375,7 @@ describe('ia-store: durability + migration', () => {
       ).map((r) => r.name);
       expect(tables).toContain('ia_workspaces');
       expect(tables).toContain('ia_bench_overlays');
+      expect(tables).toContain('ia_migration_state');
       expect(tables).toContain('schema_version');
     } finally {
       db.close();
