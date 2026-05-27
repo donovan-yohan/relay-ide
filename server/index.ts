@@ -74,6 +74,10 @@ import {
 } from './work-contexts.js';
 import { initIaStore, type IaStore } from './ia-store.js';
 import {
+  initContextPacketStore,
+  type ContextPacketStore,
+} from './context-packets.js';
+import {
   initInterventionLog,
   closeInterventionLog,
 } from './intervention-log.js';
@@ -1457,6 +1461,21 @@ async function main(): Promise<void> {
   } catch (err) {
     logger.warn(
       'IA store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  // Context-packet + session-inbox store (#758, ADR-019). Own SQLite file
+  // (`context-packets.db`); new tables only, non-destructive. CLI verbs/routes
+  // that consume it (#765) and anchor resolution (#766) land in follow-ups.
+  // Guarded so a DB error degrades to "no context-packet persistence" rather
+  // than failing boot.
+  let contextPacketStore: ContextPacketStore | null = null;
+  try {
+    contextPacketStore = initContextPacketStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Context-packet store disabled: failed to initialize:',
       err instanceof Error ? err.message : err
     );
   }
@@ -3752,6 +3771,7 @@ async function main(): Promise<void> {
         closeRelayStateDb();
         workContextStore.close();
         iaStore?.close();
+        contextPacketStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -3833,6 +3853,7 @@ async function main(): Promise<void> {
     closeRelayStateDb();
     workContextStore.close();
     iaStore?.close();
+    contextPacketStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {

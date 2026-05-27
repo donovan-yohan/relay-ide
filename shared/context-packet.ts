@@ -36,8 +36,11 @@ import type { WorkspaceId } from './workspace.js';
 import type { WorkContextId } from './work-context.js';
 import {
   fileResourceRefEquals,
+  fileResourceRefSummary,
+  parseFileResourceRef,
   type FileResourceRef,
 } from './file-resource-ref.js';
+import { createPromptAttachment } from './prompt-attachment.js';
 import type { PromptAttachment } from './prompt-attachment.js';
 
 // ---------------------------------------------------------------------------
@@ -130,6 +133,111 @@ export interface AnchorRef {
 
 /** Max captured `AnchorRef.quote` length in bytes. Resolver/store truncate. */
 export const MAX_ANCHOR_QUOTE_BYTES = 4096;
+
+// `quote` is a JS (UTF-16) string but `MAX_ANCHOR_QUOTE_BYTES` is a UTF-8 byte
+// budget. A single emoji is one `.length`-2 string but four UTF-8 bytes, so we
+// must measure and truncate by encoded byte length, never `.length`. Use the
+// platform `TextEncoder` (available in browsers and Node ≥ 11) so this module
+// stays browser-safe (no `node:` import).
+const QUOTE_ENCODER = new TextEncoder();
+const QUOTE_DECODER = new TextDecoder();
+
+/** UTF-8 byte length of a string (not its UTF-16 `.length`). */
+export function utf8ByteLength(value: string): number {
+  return QUOTE_ENCODER.encode(value).length;
+}
+
+/**
+ * Truncate `value` to at most `maxBytes` UTF-8 bytes. Truncation happens on a
+ * byte boundary; a multi-byte code point split by the cut is dropped (the
+ * lenient `TextDecoder` would otherwise emit a replacement char). Returns the
+ * input unchanged when it already fits.
+ */
+export function truncateUtf8(value: string, maxBytes: number): string {
+  const encoded = QUOTE_ENCODER.encode(value);
+  if (encoded.length <= maxBytes) return value;
+  // `fatal: false` (the default) emits U+FFFD for a trailing partial code
+  // point; `ignoreBOM` keeps a leading BOM intact. We then strip any trailing
+  // replacement char produced by cutting mid-codepoint.
+  const sliced = QUOTE_DECODER.decode(encoded.slice(0, maxBytes));
+  return sliced.replace(/�+$/u, '');
+}
+
+function isPositiveInt(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function parseLineRange(payload: unknown): LineRange | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const startLine = p['startLine'];
+  const endLine = p['endLine'];
+  // 1-based, inclusive, both >= 1, end >= start.
+  if (typeof startLine !== 'number' || !Number.isInteger(startLine)) return null;
+  if (typeof endLine !== 'number' || !Number.isInteger(endLine)) return null;
+  if (startLine < 1 || endLine < startLine) return null;
+  return { startLine, endLine };
+}
+
+function parseByteRange(payload: unknown): ByteRange | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const startByte = p['startByte'];
+  const endByte = p['endByte'];
+  // 0-based, half-open `[start, end)`, end strictly greater than start.
+  if (!isPositiveInt(startByte)) return null;
+  if (!isPositiveInt(endByte)) return null;
+  if (endByte <= startByte) return null;
+  return { startByte, endByte };
+}
+
+/**
+ * Parse + validate an unknown payload into an `AnchorRef`. Returns `null` on
+ * any validation failure (mirrors `parseFileResourceRef`). Requires a valid
+ * `FileResourceRef` plus at least one of `lineRange`/`byteRange`. The captured
+ * `quote` is truncated to `MAX_ANCHOR_QUOTE_BYTES` UTF-8 bytes (not `.length`).
+ */
+export function parseAnchorRef(payload: unknown): AnchorRef | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const ref = parseFileResourceRef(p['ref']);
+  if (!ref) return null;
+  const lineRange =
+    p['lineRange'] !== undefined ? parseLineRange(p['lineRange']) : null;
+  if (p['lineRange'] !== undefined && lineRange === null) return null;
+  const byteRange =
+    p['byteRange'] !== undefined ? parseByteRange(p['byteRange']) : null;
+  if (p['byteRange'] !== undefined && byteRange === null) return null;
+  // At least one range kind is required for an anchored packet.
+  if (!lineRange && !byteRange) return null;
+  const anchor: AnchorRef = { ref };
+  if (lineRange) anchor.lineRange = lineRange;
+  if (byteRange) anchor.byteRange = byteRange;
+  if (typeof p['quote'] === 'string') {
+    anchor.quote = truncateUtf8(p['quote'], MAX_ANCHOR_QUOTE_BYTES);
+  }
+  return anchor;
+}
+
+/**
+ * Compact human-readable label for an anchor: the underlying ref summary plus
+ * the range (`#L<start>-L<end>` for line ranges, `@<start>-<end>` for byte
+ * ranges). Used for chips/audit rows and the `PromptAttachment` artifact
+ * bridge.
+ */
+export function anchorRefSummary(anchor: AnchorRef): string {
+  const base = fileResourceRefSummary(anchor.ref);
+  if (anchor.lineRange) {
+    const { startLine, endLine } = anchor.lineRange;
+    return startLine === endLine
+      ? `${base}#L${startLine}`
+      : `${base}#L${startLine}-L${endLine}`;
+  }
+  if (anchor.byteRange) {
+    return `${base}@${anchor.byteRange.startByte}-${anchor.byteRange.endByte}`;
+  }
+  return base;
+}
 
 // ---------------------------------------------------------------------------
 // Context packet envelope
@@ -237,6 +345,71 @@ export const SESSION_INBOX_MESSAGE_STATES: readonly SessionInboxMessageState[] =
 export const TERMINAL_INBOX_MESSAGE_STATES: readonly SessionInboxMessageState[] =
   ['resolved', 'ignored'] as const;
 
+/** True if `state` is terminal (`resolved`/`ignored`). */
+export function isTerminalInboxMessageState(
+  state: SessionInboxMessageState
+): boolean {
+  return (TERMINAL_INBOX_MESSAGE_STATES as readonly string[]).includes(state);
+}
+
+/**
+ * Outcome of validating a requested inbox-message state transition.
+ *   - `ok: true, idempotent: false`  — a real forward transition; apply it.
+ *   - `ok: true, idempotent: true`   — `from === to`; a re-touch (a PULL
+ *     `inbox.list` re-fetching an already-delivered row, an agent
+ *     double-acking). Treat as a no-op success, NOT an error. (ADR-019 C2.)
+ *   - `ok: false`                    — illegal: a transition out of a terminal
+ *     state, or a non-monotonic jump (e.g. `acknowledged` → `delivered`).
+ */
+export type InboxTransitionValidation =
+  | { ok: true; idempotent: boolean }
+  | { ok: false; reason: string };
+
+// Forward-reachable target states from each state. Lifecycle:
+//   queued → delivered → acknowledged → (resolved | ignored)
+// Skips are permitted forward (e.g. queued → acknowledged when an agent acks a
+// message it pulled in the same turn, or queued → resolved/ignored to dismiss
+// without acking). Backward moves are rejected; same-state is idempotent.
+const INBOX_FORWARD_TARGETS: Record<
+  SessionInboxMessageState,
+  readonly SessionInboxMessageState[]
+> = {
+  queued: ['delivered', 'acknowledged', 'resolved', 'ignored'],
+  delivered: ['acknowledged', 'resolved', 'ignored'],
+  acknowledged: ['resolved', 'ignored'],
+  resolved: [],
+  ignored: [],
+};
+
+/**
+ * Validate a requested `from → to` inbox-message state transition. The store
+ * (#758) enforces this on every update and #765 reuses it for the `inbox.*`
+ * write verbs. Implements ADR-019 C2:
+ *   - same-state is idempotent success (PULL re-touch / agent double-fetch);
+ *   - any transition OUT of a terminal state is rejected;
+ *   - only forward-reachable transitions are allowed (no backward moves).
+ */
+export function validateInboxTransition(
+  from: SessionInboxMessageState,
+  to: SessionInboxMessageState
+): InboxTransitionValidation {
+  if (!isInboxMessageState(to)) {
+    return { ok: false, reason: 'invalid_target_state' };
+  }
+  if (from === to) {
+    // Idempotent re-touch. Even when `from` is terminal: re-asserting the same
+    // terminal state is a harmless no-op, not a transition out of it.
+    return { ok: true, idempotent: true };
+  }
+  if (isTerminalInboxMessageState(from)) {
+    return { ok: false, reason: 'terminal_state' };
+  }
+  if (!INBOX_FORWARD_TARGETS[from].includes(to)) {
+    return { ok: false, reason: 'illegal_transition' };
+  }
+  return { ok: true, idempotent: false };
+}
+
 /**
  * A message in a session/WorkContext inbox. Targets exactly one of a live
  * session (`GlobalSessionId = nodeId:localSessionId`) or a durable
@@ -303,13 +476,52 @@ export interface SessionInboxMessage {
  * Project a `ContextPacket` onto a `PromptAttachment` for inclusion in an
  * outgoing prompt. `file-anchor` → the new `'file-anchor'` attachment kind;
  * `file-ref` → the existing `'file-ref'` kind; `note` → not attachable
- * (returns null — notes ride the message `text`, not the attachment list).
+ * (returns `null` — notes ride the message `text`, not the attachment list,
+ * per ADR-019 C4). Reserved kinds (`diff-ref`/`log-ref`) have no
+ * `PromptAttachment` surface yet (#760) and also return `null`.
  *
- * Signature only — impl in #758 once the union extension lands.
+ * Returns `null` (rather than throwing) when the packet lacks the data its
+ * kind requires (e.g. a `file-anchor` packet with no `anchor`), so a single
+ * malformed packet drops out of a prompt instead of tearing it down.
  */
-export declare function contextPacketToPromptAttachment(
+export function contextPacketToPromptAttachment(
   packet: ContextPacket
-): PromptAttachment | null;
+): PromptAttachment | null {
+  switch (packet.kind) {
+    case 'file-anchor': {
+      if (!packet.anchor) return null;
+      try {
+        return createPromptAttachment({
+          kind: 'file-anchor',
+          anchor: packet.anchor,
+          ...(packet.note ? { summary: packet.note } : {}),
+        });
+      } catch {
+        return null;
+      }
+    }
+    case 'file-ref': {
+      if (!packet.fileRef) return null;
+      try {
+        return createPromptAttachment({
+          kind: 'file-ref',
+          ref: packet.fileRef,
+          ...(packet.note ? { summary: packet.note } : {}),
+        });
+      } catch {
+        return null;
+      }
+    }
+    // C4: `note` packets carry no attachable ref — the body rides the inbox
+    // message `text`, never the prompt attachment list. Reserved kinds have no
+    // attachment surface in MVP.
+    case 'note':
+    case 'diff-ref':
+    case 'log-ref':
+    default:
+      return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Id helpers (signatures + minimal compiling stubs)
@@ -336,21 +548,198 @@ export function createInboxMessageId(suffix: string): SessionInboxMessageId {
   return `${SESSION_INBOX_MESSAGE_ID_PREFIX}${encodeURIComponent(suffix)}`;
 }
 
+/**
+ * Recover the opaque suffix from a `ContextPacketId`, or `null` if `id` is not
+ * a well-formed `cp:<suffix>` id. Round-trips `createContextPacketId`.
+ */
+export function parseContextPacketId(id: string): { suffix: string } | null {
+  if (typeof id !== 'string' || !id.startsWith(CONTEXT_PACKET_ID_PREFIX)) {
+    return null;
+  }
+  const encoded = id.slice(CONTEXT_PACKET_ID_PREFIX.length);
+  if (encoded.length === 0) return null;
+  try {
+    const suffix = decodeURIComponent(encoded);
+    return hasValue(suffix) ? { suffix } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recover the opaque suffix from a `SessionInboxMessageId`, or `null` if `id`
+ * is not a well-formed `im:<suffix>` id. Round-trips `createInboxMessageId`.
+ */
+export function parseInboxMessageId(id: string): { suffix: string } | null {
+  if (typeof id !== 'string' || !id.startsWith(SESSION_INBOX_MESSAGE_ID_PREFIX)) {
+    return null;
+  }
+  const encoded = id.slice(SESSION_INBOX_MESSAGE_ID_PREFIX.length);
+  if (encoded.length === 0) return null;
+  try {
+    const suffix = decodeURIComponent(encoded);
+    return hasValue(suffix) ? { suffix } : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Parse / validate (signatures only — real validation in #758)
+// Parse / validate
 // ---------------------------------------------------------------------------
+
+function isContextPacketKind(value: unknown): value is ContextPacketKind {
+  return (
+    typeof value === 'string' &&
+    (CONTEXT_PACKET_KINDS as readonly string[]).includes(value)
+  );
+}
+
+function isInboxMessageState(
+  value: unknown
+): value is SessionInboxMessageState {
+  return (
+    typeof value === 'string' &&
+    (SESSION_INBOX_MESSAGE_STATES as readonly string[]).includes(value)
+  );
+}
+
+function parseBinding(payload: unknown): ContextPacketBinding | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const binding: ContextPacketBinding = {};
+  if (typeof p['workspaceId'] === 'string') binding.workspaceId = p['workspaceId'];
+  if (typeof p['nodeId'] === 'string') binding.nodeId = p['nodeId'];
+  if (typeof p['repoInstanceId'] === 'string') {
+    binding.repoInstanceId = p['repoInstanceId'];
+  }
+  if (typeof p['worktreeInstanceId'] === 'string') {
+    binding.worktreeInstanceId = p['worktreeInstanceId'];
+  }
+  return binding;
+}
+
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 
 /**
  * Parse an unknown payload into a `ContextPacket`, returning `null` on any
  * validation failure (mirrors `parseFileResourceRef`/`parsePromptAttachment`).
- * Impl in #758.
+ * Kind-specific shape is enforced:
+ *   - `file-anchor` requires a valid `anchor` (`parseAnchorRef`).
+ *   - `file-ref` requires a valid whole-file `fileRef` (`parseFileResourceRef`).
+ *   - `note` requires a non-empty `note` body.
+ *   - reserved kinds (`diff-ref`/`log-ref`) parse the envelope but carry no
+ *     anchor/ref payload in MVP (#760).
  */
-export declare function parseContextPacket(payload: unknown): ContextPacket | null;
+export function parseContextPacket(payload: unknown): ContextPacket | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  if (typeof p['id'] !== 'string' || !parseContextPacketId(p['id'])) return null;
+  if (!isContextPacketKind(p['kind'])) return null;
+  if (typeof p['createdBy'] !== 'string' || p['createdBy'].length === 0) {
+    return null;
+  }
+  if (typeof p['createdAt'] !== 'string' || !ISO_TIMESTAMP_RE.test(p['createdAt'])) {
+    return null;
+  }
+  const kind = p['kind'];
+  const packet: ContextPacket = {
+    id: p['id'],
+    kind,
+    createdBy: p['createdBy'],
+    createdAt: p['createdAt'],
+  };
 
-/** Parse an unknown payload into a `SessionInboxMessage`. Impl in #758. */
-export declare function parseSessionInboxMessage(
+  if (kind === 'file-anchor') {
+    const anchor = parseAnchorRef(p['anchor']);
+    if (!anchor) return null;
+    packet.anchor = anchor;
+  } else if (kind === 'file-ref') {
+    const fileRef = parseFileResourceRef(p['fileRef']);
+    if (!fileRef) return null;
+    packet.fileRef = fileRef;
+  } else if (kind === 'note') {
+    if (typeof p['note'] !== 'string' || p['note'].trim().length === 0) {
+      return null;
+    }
+  }
+
+  // `note` is the required body for note kind, an optional annotation
+  // otherwise. (Already validated above for `note`.)
+  if (typeof p['note'] === 'string' && p['note'].length > 0) {
+    packet.note = p['note'];
+  }
+  const binding = p['binding'] !== undefined ? parseBinding(p['binding']) : null;
+  if (binding && Object.keys(binding).length > 0) {
+    packet.binding = binding;
+  }
+  return packet;
+}
+
+/**
+ * Parse an unknown payload into a `SessionInboxMessage`, returning `null` on
+ * validation failure. Requires at least one target (`targetSessionId` or
+ * `targetWorkContextId`), a valid lifecycle `state`, well-formed
+ * `contextPacketIds`, and ISO timestamps.
+ */
+export function parseSessionInboxMessage(
   payload: unknown
-): SessionInboxMessage | null;
+): SessionInboxMessage | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  if (typeof p['id'] !== 'string' || !parseInboxMessageId(p['id'])) return null;
+  if (!isInboxMessageState(p['state'])) return null;
+  if (typeof p['createdBy'] !== 'string' || p['createdBy'].length === 0) {
+    return null;
+  }
+  if (typeof p['createdAt'] !== 'string' || !ISO_TIMESTAMP_RE.test(p['createdAt'])) {
+    return null;
+  }
+
+  const targetSessionId =
+    typeof p['targetSessionId'] === 'string' ? p['targetSessionId'] : undefined;
+  const targetWorkContextId =
+    typeof p['targetWorkContextId'] === 'string'
+      ? p['targetWorkContextId']
+      : undefined;
+  // CHECK constraint mirror: at least one target is required.
+  if (!targetSessionId && !targetWorkContextId) return null;
+
+  if (!Array.isArray(p['contextPacketIds'])) return null;
+  const contextPacketIds: ContextPacketId[] = [];
+  for (const raw of p['contextPacketIds']) {
+    if (typeof raw !== 'string' || !parseContextPacketId(raw)) return null;
+    contextPacketIds.push(raw);
+  }
+
+  const message: SessionInboxMessage = {
+    id: p['id'],
+    contextPacketIds,
+    state: p['state'],
+    createdBy: p['createdBy'],
+    createdAt: p['createdAt'],
+  };
+  if (targetSessionId) message.targetSessionId = targetSessionId;
+  if (targetWorkContextId) message.targetWorkContextId = targetWorkContextId;
+  if (typeof p['text'] === 'string' && p['text'].length > 0) {
+    message.text = p['text'];
+  }
+  for (const field of [
+    'deliveredAt',
+    'acknowledgedAt',
+    'resolvedAt',
+    'ignoredAt',
+  ] as const) {
+    const value = p[field];
+    if (typeof value === 'string' && ISO_TIMESTAMP_RE.test(value)) {
+      message[field] = value;
+    }
+  }
+  return message;
+}
+
+/** Alias matching the #758 task naming (`parseInboxMessage`). */
+export const parseInboxMessage = parseSessionInboxMessage;
 
 // ---------------------------------------------------------------------------
 // Anchor resolution (the #766 primitive — signature only)
