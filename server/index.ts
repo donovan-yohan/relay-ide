@@ -1606,12 +1606,14 @@ async function main(): Promise<void> {
       // GET /hub/ia/tree. Read-only projection of config.workspaces; the
       // builder tolerates malformed/missing `repos` arrays.
       listWorkspaceGroups: () =>
-        (getConfig().workspaces ?? []).map((ws) => ({
-          id: ws.id,
-          name: ws.name,
-          order: ws.order,
-          ...(Array.isArray(ws.repos) ? { repos: ws.repos } : {}),
-        })),
+        (getConfig().workspaces ?? [])
+          .filter((ws): ws is NonNullable<typeof ws> => ws != null)
+          .map((ws) => ({
+            id: ws.id,
+            name: ws.name,
+            order: typeof ws.order === 'number' ? ws.order : 0,
+            ...(Array.isArray(ws.repos) ? { repos: ws.repos } : {}),
+          })),
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
