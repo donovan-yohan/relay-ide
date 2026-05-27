@@ -1,0 +1,479 @@
+// #765 / ADR-019: gateway HTTP surface for context packets + session inbox.
+//
+// This router owns the `context.*` / `inbox.*` v1 CLI gateway verbs. It is
+// STRICTLY ref-only and hub-mediated: it never pushes context into a session's
+// raw PTY input. Delivery is PULL — `inbox.list` / `inbox.get` are the only
+// verbs that flip a message `queued → delivered`, as a read side effect.
+//
+// STORE SEAM (parallel lane #758): this router depends only on the narrow
+// `ContextInboxStore` interface declared below — create/get/list packets,
+// send/list/get inbox messages, and a single transition-guarded
+// `updateInboxState`. #758 builds the concrete SQLite-behind-gateway store
+// (mirroring `server/work-contexts.ts`) and the orchestrator wires it into the
+// mount block in `server/index.ts` at integration. Until then this router can
+// be exercised against any in-memory implementation of the interface (see the
+// route-level test).
+//
+// CAPABILITY GATE: the gateway client forwards granted bits in the
+// `x-relay-capabilities` header. Reads require `context:read` / `inbox:read`,
+// writes require `context:write` / `inbox:write`. A missing bit is a 403
+// FORBIDDEN — consistent with `server/cli-gateway-events.ts`. The bits are
+// default-allow (reads) / dev-allow-not-high-risk (writes) per ADR-019 D5, so
+// a headless agent ack loop is never gated behind a confirmation prompt.
+//
+// TERMINAL-STATE GUARD (fugu C2): `inbox.ack` / `inbox.resolve` / `inbox.ignore`
+// call the store's transition-guarded `updateInboxState`; the router never
+// trusts the caller to enforce the lifecycle. Idempotent re-acks succeed; any
+// transition out of a `TERMINAL_INBOX_MESSAGE_STATES` member is rejected as a
+// SESSION_CONFLICT. The same guard is shared with #758's store.
+
+import { Router } from 'express';
+import type { RequestHandler, Request, Response } from 'express';
+
+import type { RelayCliGatewayErrorCode } from '../../shared/cli-gateway-contract.js';
+import type { GlobalSessionId } from '../../shared/identity.js';
+import type { WorkContextId } from '../../shared/work-context.js';
+import {
+  TERMINAL_INBOX_MESSAGE_STATES,
+  type ContextPacket,
+  type ContextPacketBinding,
+  type ContextPacketId,
+  type ContextPacketKind,
+  type SessionInboxMessage,
+  type SessionInboxMessageId,
+  type SessionInboxMessageState,
+} from '../../shared/context-packet.js';
+
+// ---------------------------------------------------------------------------
+// Store seam — implemented by #758, depended on here as an interface.
+// ---------------------------------------------------------------------------
+
+/** Input the router hands the store to mint a packet. */
+export interface CreateContextPacketInput {
+  kind: ContextPacketKind;
+  anchor?: ContextPacket['anchor'];
+  fileRef?: ContextPacket['fileRef'];
+  note?: string;
+  binding?: ContextPacketBinding;
+  createdBy: string;
+}
+
+/** Filter for `listPackets`. All fields optional. */
+export interface ListContextPacketsFilter {
+  nodeId?: string;
+  workspaceId?: string;
+  limit?: number;
+}
+
+/** Input the router hands the store to queue an inbox message. */
+export interface CreateInboxMessageInput {
+  targetSessionId?: GlobalSessionId;
+  targetWorkContextId?: WorkContextId;
+  contextPacketIds: ContextPacketId[];
+  text?: string;
+  createdBy: string;
+}
+
+/** Filter for `listInboxMessages`. At least one target is required by the route. */
+export interface ListInboxMessagesFilter {
+  targetSessionId?: GlobalSessionId;
+  targetWorkContextId?: WorkContextId;
+  state?: SessionInboxMessageState;
+  limit?: number;
+}
+
+/**
+ * Result of a transition-guarded inbox state update. `ok: false` carries a
+ * typed reason so the router can map it to the right gateway error code
+ * WITHOUT re-implementing the lifecycle rules (those live in the store, shared
+ * with #758).
+ */
+export type UpdateInboxStateResult =
+  | { ok: true; message: SessionInboxMessage }
+  | { ok: false; reason: 'not_found' }
+  | {
+      ok: false;
+      reason: 'terminal';
+      currentState: SessionInboxMessageState;
+    }
+  | {
+      ok: false;
+      reason: 'invalid_transition';
+      currentState: SessionInboxMessageState;
+    };
+
+/**
+ * The narrow store contract this router needs. #758 implements it over SQLite.
+ *
+ * `getInboxMessage` / `listInboxMessages` MAY flip `queued → delivered` as a
+ * PULL side effect (the read-as-delivery semantics from ADR-019 D3); that
+ * belongs in the store, not the router, so the projection is consistent across
+ * the future agent `preturn` path.
+ *
+ * `updateInboxState` is the single transition-guarded mutation. The store is
+ * the authority on the lifecycle machine (idempotent re-ack, terminal reject);
+ * the router only forwards the requested target state and maps the result.
+ */
+export interface ContextInboxStore {
+  createPacket(input: CreateContextPacketInput): ContextPacket;
+  getPacket(id: ContextPacketId): ContextPacket | null;
+  listPackets(filter?: ListContextPacketsFilter): ContextPacket[];
+
+  createInboxMessage(input: CreateInboxMessageInput): SessionInboxMessage;
+  listInboxMessages(filter: ListInboxMessagesFilter): SessionInboxMessage[];
+  getInboxMessage(id: SessionInboxMessageId): SessionInboxMessage | null;
+
+  /**
+   * Transition-guarded update. Caller-requested `targetState` is validated by
+   * the store against the `queued → delivered → acknowledged → terminal`
+   * machine; transitions out of a terminal state are refused.
+   */
+  updateInboxState(
+    id: SessionInboxMessageId,
+    targetState: SessionInboxMessageState,
+    actorId?: string
+  ): UpdateInboxStateResult;
+}
+
+export interface ContextInboxRouterDeps {
+  store: ContextInboxStore | null;
+  requireAuth?: RequestHandler;
+}
+
+// ---------------------------------------------------------------------------
+// Capability gate (mirrors server/cli-gateway-events.ts).
+// ---------------------------------------------------------------------------
+
+const CONTEXT_READ = 'context:read';
+const CONTEXT_WRITE = 'context:write';
+const INBOX_READ = 'inbox:read';
+const INBOX_WRITE = 'inbox:write';
+
+function parseCapabilityHeader(value: string | undefined): Set<string> {
+  if (!value) return new Set();
+  return new Set(
+    value
+      .split(/[\s,]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+}
+
+interface GatewayErrorBody {
+  error: {
+    code: RelayCliGatewayErrorCode;
+    message: string;
+    retryable: boolean;
+    details?: Record<string, unknown>;
+  };
+}
+
+function gatewayErrorBody(
+  code: RelayCliGatewayErrorCode,
+  message: string,
+  retryable: boolean,
+  details?: Record<string, unknown>
+): GatewayErrorBody {
+  return { error: { code, message, retryable, ...(details ? { details } : {}) } };
+}
+
+function statusForCode(code: RelayCliGatewayErrorCode): number {
+  switch (code) {
+    case 'UNAUTHORIZED':
+      return 401;
+    case 'FORBIDDEN':
+      return 403;
+    case 'NOT_FOUND':
+      return 404;
+    case 'SESSION_CONFLICT':
+      return 409;
+    case 'SERVER_UNAVAILABLE':
+      return 503;
+    default:
+      return 400;
+  }
+}
+
+function sendGatewayError(
+  res: Response,
+  code: RelayCliGatewayErrorCode,
+  message: string,
+  retryable = false,
+  details?: Record<string, unknown>
+): void {
+  res.status(statusForCode(code)).json(gatewayErrorBody(code, message, retryable, details));
+}
+
+/** Returns true (and sends a 403) when a required capability is missing. */
+function denyMissingCapability(
+  req: Request,
+  res: Response,
+  required: readonly string[]
+): boolean {
+  const provided = parseCapabilityHeader(req.header('x-relay-capabilities'));
+  const missing = required.filter((cap) => !provided.has(cap));
+  if (missing.length === 0) return false;
+  sendGatewayError(res, 'FORBIDDEN', `missing required capability: ${missing[0]}`, false, {
+    capability: missing[0],
+    missingCapabilities: missing,
+  });
+  return true;
+}
+
+function bodyRecord(req: Request): Record<string, unknown> {
+  return typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body)
+    ? (req.body as Record<string, unknown>)
+    : {};
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+}
+
+const CONTEXT_PACKET_KIND_SET = new Set<ContextPacketKind>([
+  'file-anchor',
+  'file-ref',
+  'diff-ref',
+  'log-ref',
+  'note',
+]);
+
+function readPacketKind(value: unknown): ContextPacketKind | undefined {
+  return typeof value === 'string' && CONTEXT_PACKET_KIND_SET.has(value as ContextPacketKind)
+    ? (value as ContextPacketKind)
+    : undefined;
+}
+
+const INBOX_STATE_SET = new Set<SessionInboxMessageState>([
+  'queued',
+  'delivered',
+  'acknowledged',
+  'resolved',
+  'ignored',
+]);
+
+function readInboxState(value: unknown): SessionInboxMessageState | undefined {
+  return typeof value === 'string' && INBOX_STATE_SET.has(value as SessionInboxMessageState)
+    ? (value as SessionInboxMessageState)
+    : undefined;
+}
+
+function readLimit(value: unknown): number | undefined {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+        ? Number(value)
+        : undefined;
+  if (parsed === undefined || !Number.isFinite(parsed)) return undefined;
+  return Math.min(Math.max(Math.trunc(parsed), 1), 200);
+}
+
+const TERMINAL_STATE_SET = new Set<SessionInboxMessageState>(TERMINAL_INBOX_MESSAGE_STATES);
+
+/** Map a guarded-update failure onto the right gateway error response. */
+function sendUpdateFailure(
+  res: Response,
+  result: Exclude<UpdateInboxStateResult, { ok: true }>
+): void {
+  if (result.reason === 'not_found') {
+    sendGatewayError(res, 'NOT_FOUND', 'inbox message not found');
+    return;
+  }
+  if (result.reason === 'terminal') {
+    sendGatewayError(
+      res,
+      'SESSION_CONFLICT',
+      `inbox message is in terminal state '${result.currentState}'`,
+      false,
+      { currentState: result.currentState, terminalStates: [...TERMINAL_INBOX_MESSAGE_STATES] }
+    );
+    return;
+  }
+  sendGatewayError(
+    res,
+    'SESSION_CONFLICT',
+    `invalid inbox state transition from '${result.currentState}'`,
+    false,
+    { currentState: result.currentState }
+  );
+}
+
+export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
+  const router = Router();
+  const auth = deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
+
+  /** Resolve the store or send 503; centralizes the null guard. */
+  function store(res: Response): ContextInboxStore | null {
+    if (!deps.store) {
+      sendGatewayError(res, 'SERVER_UNAVAILABLE', 'context/inbox store is unavailable', true, {
+        reasonCode: 'CONTEXT_STORE_UNAVAILABLE',
+      });
+      return null;
+    }
+    return deps.store;
+  }
+
+  // -- context.create ------------------------------------------------------
+  router.post('/context', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const s = store(res);
+    if (!s) return;
+    const body = bodyRecord(req);
+    const kind = readPacketKind(body['kind']);
+    if (!kind) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'kind is required and must be a known ContextPacketKind', false, {
+        field: 'kind',
+      });
+      return;
+    }
+    const createdBy = readString(body['createdBy']) ?? 'cli-gateway';
+    try {
+      const contextPacket = s.createPacket({
+        kind,
+        ...(body['anchor'] !== undefined ? { anchor: body['anchor'] as ContextPacket['anchor'] } : {}),
+        ...(body['fileRef'] !== undefined ? { fileRef: body['fileRef'] as ContextPacket['fileRef'] } : {}),
+        ...(readString(body['note']) ? { note: body['note'] as string } : {}),
+        ...(body['binding'] !== undefined ? { binding: body['binding'] as ContextPacketBinding } : {}),
+        createdBy,
+      });
+      res.status(201).json({ contextPacket });
+    } catch (err) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', err instanceof Error ? err.message : 'invalid context packet');
+    }
+  });
+
+  // -- context.list --------------------------------------------------------
+  router.get('/context', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const s = store(res);
+    if (!s) return;
+    const filter: ListContextPacketsFilter = {};
+    const nodeId = readString(req.query['nodeId']);
+    const workspaceId = readString(req.query['workspaceId']);
+    const limit = readLimit(req.query['limit']);
+    if (nodeId) filter.nodeId = nodeId;
+    if (workspaceId) filter.workspaceId = workspaceId;
+    if (limit !== undefined) filter.limit = limit;
+    res.json({ contextPackets: s.listPackets(filter) });
+  });
+
+  // -- context.get ---------------------------------------------------------
+  router.get('/context/:id', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const s = store(res);
+    if (!s) return;
+    const contextPacket = s.getPacket(req.params['id'] ?? '');
+    if (!contextPacket) {
+      sendGatewayError(res, 'NOT_FOUND', 'context packet not found');
+      return;
+    }
+    res.json({ contextPacket });
+  });
+
+  // -- inbox.send ----------------------------------------------------------
+  router.post('/inbox', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [INBOX_WRITE])) return;
+    const s = store(res);
+    if (!s) return;
+    const body = bodyRecord(req);
+    const targetSessionId = readString(body['targetSessionId']);
+    const targetWorkContextId = readString(body['targetWorkContextId']);
+    if (!targetSessionId && !targetWorkContextId) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'one of targetSessionId or targetWorkContextId is required', false, {
+        field: 'targetSessionId',
+      });
+      return;
+    }
+    const createdBy = readString(body['createdBy']) ?? 'cli-gateway';
+    try {
+      const message = s.createInboxMessage({
+        ...(targetSessionId ? { targetSessionId } : {}),
+        ...(targetWorkContextId ? { targetWorkContextId } : {}),
+        contextPacketIds: readStringArray(body['contextPacketIds']),
+        ...(readString(body['text']) ? { text: body['text'] as string } : {}),
+        createdBy,
+      });
+      res.status(201).json({ message });
+    } catch (err) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', err instanceof Error ? err.message : 'invalid inbox message');
+    }
+  });
+
+  // -- inbox.list ----------------------------------------------------------
+  // PULL delivery: the store flips queued → delivered as a read side effect.
+  router.get('/inbox', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [INBOX_READ])) return;
+    const s = store(res);
+    if (!s) return;
+    const targetSessionId = readString(req.query['targetSessionId']);
+    const targetWorkContextId = readString(req.query['targetWorkContextId']);
+    if (!targetSessionId && !targetWorkContextId) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'one of targetSessionId or targetWorkContextId is required', false, {
+        field: 'targetSessionId',
+      });
+      return;
+    }
+    const filter: ListInboxMessagesFilter = {};
+    if (targetSessionId) filter.targetSessionId = targetSessionId;
+    if (targetWorkContextId) filter.targetWorkContextId = targetWorkContextId;
+    const state = readInboxState(req.query['state']);
+    const limit = readLimit(req.query['limit']);
+    if (state) filter.state = state;
+    if (limit !== undefined) filter.limit = limit;
+    res.json({ messages: s.listInboxMessages(filter) });
+  });
+
+  // -- inbox.get -----------------------------------------------------------
+  // PULL delivery: the store flips queued → delivered as a read side effect.
+  router.get('/inbox/:id', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [INBOX_READ])) return;
+    const s = store(res);
+    if (!s) return;
+    const message = s.getInboxMessage(req.params['id'] ?? '');
+    if (!message) {
+      sendGatewayError(res, 'NOT_FOUND', 'inbox message not found');
+      return;
+    }
+    res.json({ message });
+  });
+
+  // -- inbox.ack / inbox.resolve / inbox.ignore ----------------------------
+  // All three go through the store's transition-guarded update; the router
+  // never trusts the caller to enforce the lifecycle (fugu C2).
+  function transitionHandler(targetState: SessionInboxMessageState): RequestHandler {
+    return (req, res) => {
+      if (denyMissingCapability(req, res, [INBOX_WRITE])) return;
+      const s = store(res);
+      if (!s) return;
+      const id = req.params['id'] ?? '';
+      if (!id) {
+        sendGatewayError(res, 'INVALID_ARGUMENT', 'id is required', false, { field: 'id' });
+        return;
+      }
+      const actorId = readString(bodyRecord(req)['actorId']);
+      const result = s.updateInboxState(id, targetState, actorId);
+      if (!result.ok) {
+        sendUpdateFailure(res, result);
+        return;
+      }
+      res.json({ message: result.message });
+    };
+  }
+
+  router.post('/inbox/:id/ack', auth, transitionHandler('acknowledged'));
+  router.post('/inbox/:id/resolve', auth, transitionHandler('resolved'));
+  router.post('/inbox/:id/ignore', auth, transitionHandler('ignored'));
+
+  return router;
+}
+
+/** Exported for the store + tests: is this a terminal inbox state? */
+export function isTerminalInboxState(state: SessionInboxMessageState): boolean {
+  return TERMINAL_STATE_SET.has(state);
+}

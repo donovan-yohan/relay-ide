@@ -26,6 +26,15 @@ export const RELAY_CAPABILITY_BITS = [
   // without exposing arbitrary file tail to peers. Always redacted via
   // the diagnostics-bundle pipeline before crossing the wire.
   'logs:read',
+  // #765 / ADR-019: context packets + session inbox (ref-only, hub-mediated).
+  // Reads are default-allow peers of `session:read`; writes are grant-gated
+  // but NOT high-risk (ref-only metadata inserts — no raw payload, no file
+  // mutation, no exec), so they stay silent-allow on dev/sandbox and never
+  // get promoted to a confirmation prompt on prod (would break headless ack).
+  'context:read',
+  'context:write',
+  'inbox:read',
+  'inbox:write',
 ] as const;
 
 export type RelayCapabilityBit = (typeof RELAY_CAPABILITY_BITS)[number];
@@ -52,6 +61,16 @@ export const LEGACY_DEFAULT_ALLOWED_CAPABILITIES = [
   // tier overlay (`applyTrustTierOverlay`) leaves it in the silent-allow
   // set; operators can still revoke per-node by editing the ACL.
   'logs:read',
+  // #765 / ADR-019: context/inbox reads are silent-allow peers of
+  // `session:read` (default pull-model inspection). Writes are granted by
+  // default and, because they are NOT in `HIGH_RISK_CAPABILITIES`, stay
+  // silent-allow even on the `prod` tier — so a headless agent's
+  // `inbox.ack`/`resolve`/`ignore` loop is never gated behind a
+  // confirmation prompt. They remain grant-gated (an ACL edit can revoke).
+  'context:read',
+  'context:write',
+  'inbox:read',
+  'inbox:write',
 ] as const satisfies readonly RelayCapabilityBit[];
 
 export const HIGH_RISK_CAPABILITIES = [

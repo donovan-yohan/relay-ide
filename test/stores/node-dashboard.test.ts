@@ -299,12 +299,18 @@ describe('hub node dashboard state', () => {
     // allowed in dev, denied in sandbox + prod.
     // #704 added two typed supervisor action bits; all default node tiers
     // deny them unless a user grants the scoped supervisor capabilities.
+    // #765 / ADR-019 added four context/inbox bits (context/inbox read+write):
+    // dev silent-allows all four (default-allowed grant set), sandbox denies
+    // all four (grants nothing), and the prod fixture below denies all four
+    // because it does not grant them — but crucially challenge stays at 2:
+    // the writes are NOT high-risk, so prod never promotes them to a
+    // confirmation challenge (the headless ack loop is not gated).
     expect(
       rows.map((row) => [row.security.trustTier, row.security.postureLabel])
     ).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 18'],
-      ['dev', 'allow 11 · challenge 0 · deny 8'],
-      ['prod', 'allow 1 · challenge 2 · deny 16'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 22'],
+      ['dev', 'allow 15 · challenge 0 · deny 8'],
+      ['prod', 'allow 1 · challenge 2 · deny 20'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',

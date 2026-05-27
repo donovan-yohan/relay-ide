@@ -87,6 +87,15 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'files.read': 'read session file',
   'files.write': 'write session file',
   'work-contexts.get': 'work context details',
+  'context.create': 'create context packet',
+  'context.get': 'context packet details',
+  'context.list': 'list context packets',
+  'inbox.send': 'send inbox message',
+  'inbox.list': 'list inbox messages',
+  'inbox.get': 'inbox message details',
+  'inbox.ack': 'acknowledge inbox message',
+  'inbox.resolve': 'resolve inbox message',
+  'inbox.ignore': 'ignore inbox message',
   'handoffs.plan': 'plan cold handoff',
   'handoffs.create': 'create cold handoff',
   'handoffs.status': 'handoff status',
@@ -113,7 +122,12 @@ function sideEffectForGatewayCommand(spec: RelayCliGatewayCommandSpec): RelayCom
     spec.name === 'supervisor.sendText' ||
     spec.name === 'supervisor.submit' ||
     spec.name === 'files.write' ||
-    spec.name === 'handoffs.cancel'
+    spec.name === 'handoffs.cancel' ||
+    spec.name === 'context.create' ||
+    spec.name === 'inbox.send' ||
+    spec.name === 'inbox.ack' ||
+    spec.name === 'inbox.resolve' ||
+    spec.name === 'inbox.ignore'
   ) {
     return 'write';
   }
@@ -124,6 +138,8 @@ function scopeKindsForGatewayCommand(name: RelayCliGatewayCommand): readonly Rel
   if (name.startsWith('nodes.')) return ['node'];
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
+  if (name.startsWith('context.')) return ['work-context', 'session'];
+  if (name.startsWith('inbox.')) return ['session', 'work-context'];
   if (name.startsWith('handoffs.')) return ['repo', 'worktree', 'work-context', 'session'];
   if (name.startsWith('artifacts.')) return ['work-context'];
   if (name.startsWith('supervisor.')) return ['session'];

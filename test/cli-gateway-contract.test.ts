@@ -14,7 +14,13 @@ import {
   relayCommandDefinition,
   relayCommandDefinitionsForSurface,
 } from '../shared/relay-command-manifest.js';
-import { RELAY_CAPABILITY_BITS } from '../shared/security-policy.js';
+import {
+  HIGH_RISK_CAPABILITIES,
+  LEGACY_DEFAULT_ALLOWED_CAPABILITIES,
+  RELAY_CAPABILITY_BITS,
+  createLegacyDefaultNodeAcl,
+  resolveAclCapability,
+} from '../shared/security-policy.js';
 import {
   gatewayCliInvalidArgumentError,
   gatewayCliInvalidJsonError,
@@ -84,6 +90,15 @@ describe('CLI gateway contract', () => {
       'files.read',
       'files.write',
       'work-contexts.get',
+      'context.create',
+      'context.get',
+      'context.list',
+      'inbox.send',
+      'inbox.list',
+      'inbox.get',
+      'inbox.ack',
+      'inbox.resolve',
+      'inbox.ignore',
       'handoffs.plan',
       'handoffs.create',
       'handoffs.status',
@@ -431,6 +446,15 @@ describe('CLI gateway contract', () => {
       'files.read',
       'files.write',
       'work-contexts.get',
+      'context.create',
+      'context.get',
+      'context.list',
+      'inbox.send',
+      'inbox.list',
+      'inbox.get',
+      'inbox.ack',
+      'inbox.resolve',
+      'inbox.ignore',
       'handoffs.plan',
       'handoffs.create',
       'handoffs.status',
@@ -670,6 +694,77 @@ describe('CLI gateway contract', () => {
       expect.arrayContaining(['FORBIDDEN', 'CONTROL_STATE_STALE', 'INTERVENTION_ACK_REQUIRED'])
     );
     expect(supervisor.summary).toContain('never sends raw PTY input');
+  });
+
+  it('advertises context.* / inbox.* verbs with ADR-019 capability + PULL semantics', () => {
+    // Reads are session:read peers; writes use the dedicated context/inbox bits.
+    expect(commandSpec('context.get').capabilityHints).toEqual(['context:read']);
+    expect(commandSpec('context.list').capabilityHints).toEqual(['context:read']);
+    expect(commandSpec('context.create').capabilityHints).toEqual(['context:write']);
+    expect(commandSpec('inbox.list').capabilityHints).toEqual(['inbox:read']);
+    expect(commandSpec('inbox.get').capabilityHints).toEqual(['inbox:read']);
+    expect(commandSpec('inbox.send').capabilityHints).toEqual(['inbox:write']);
+    for (const verb of ['inbox.ack', 'inbox.resolve', 'inbox.ignore'] as const) {
+      expect(commandSpec(verb).capabilityHints).toEqual(['inbox:write']);
+    }
+
+    // PULL delivery is documented on the read verbs; nothing pushes into sessions.input.
+    expect(commandSpec('inbox.list').summary).toContain('PULL delivery');
+    expect(commandSpec('inbox.get').summary).toContain('PULL delivery');
+    expect(commandSpec('inbox.send').summary).toContain('Never pushes into sessions.input');
+
+    // anchored addressing: send/list require a target.
+    expect(commandSpec('inbox.send').inputSchema).toMatchObject({
+      anyOf: [{ required: ['targetSessionId'] }, { required: ['targetWorkContextId'] }],
+    });
+
+    // Manifest side-effects: writes are 'write' (not destructive); reads are 'read'.
+    expect(relayCommandDefinition('context.create').sideEffect).toBe('write');
+    expect(relayCommandDefinition('inbox.ack').sideEffect).toBe('write');
+    expect(relayCommandDefinition('context.get').sideEffect).toBe('read');
+    expect(relayCommandDefinition('inbox.list').sideEffect).toBe('read');
+
+    // CRITICAL (fugu gate): write verbs must NOT require a confirmation
+    // challenge — that would gate a headless agent ack loop. They carry
+    // context/inbox bits, not rpc:fs:write / pty:exec:arbitrary.
+    for (const verb of [
+      'context.create',
+      'inbox.send',
+      'inbox.ack',
+      'inbox.resolve',
+      'inbox.ignore',
+    ] as const) {
+      expect(relayCommandDefinition(verb).requiresConfirmation).toBe(false);
+      expect(relayCommandDefinition(verb).controlRequirements).toEqual([]);
+    }
+  });
+
+  it('places context/inbox capability bits in the correct trust tier (ADR-019 D5)', () => {
+    for (const bit of ['context:read', 'context:write', 'inbox:read', 'inbox:write'] as const) {
+      expect(RELAY_CAPABILITY_BITS).toContain(bit);
+    }
+    // Reads are default-allow peers of session:read.
+    expect(LEGACY_DEFAULT_ALLOWED_CAPABILITIES).toContain('context:read');
+    expect(LEGACY_DEFAULT_ALLOWED_CAPABILITIES).toContain('inbox:read');
+    // Writes are dev-allow (granted by default) but NOT high-risk — so the
+    // prod trust overlay never promotes them to a confirmation prompt.
+    expect(LEGACY_DEFAULT_ALLOWED_CAPABILITIES).toContain('context:write');
+    expect(LEGACY_DEFAULT_ALLOWED_CAPABILITIES).toContain('inbox:write');
+    expect(HIGH_RISK_CAPABILITIES).not.toContain('context:write');
+    expect(HIGH_RISK_CAPABILITIES).not.toContain('inbox:write');
+
+    // On the prod tier the overlay keeps writes silent-allow (not confirmation).
+    const prodAcl = createLegacyDefaultNodeAcl({
+      nodeId: 'node_prod_ctx',
+      createdAt: '2026-05-27T00:00:00.000Z',
+      trustTier: 'prod',
+    });
+    for (const bit of ['context:read', 'context:write', 'inbox:read', 'inbox:write'] as const) {
+      expect(resolveAclCapability(prodAcl, bit)).toMatchObject({
+        known: true,
+        decision: 'allow',
+      });
+    }
   });
 
   it('encodes sessions.input source exclusivity for schema-generated adapters', () => {
