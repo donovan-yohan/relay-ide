@@ -1,0 +1,41 @@
+/* #729 view-spine MVP tree. Reuses RepoItem/Sidebar primitives; this file only
+   carries the indent ladder + tiny status-dot alignment tweaks. No new colors,
+   no new animations — all tones come from existing design tokens. */
+
+.view-spine-tree {
+  display: flex;
+  flex-direction: column;
+}
+
+.view-spine-workspace,
+.view-spine-free-lane {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Instance rows sit one indent level below the project header; benches sit one
+   level below their instance. The ladder uses the shared --icon-slot-width so
+   it tracks the rest of the sidebar's alignment. */
+.view-spine-instance > .session-row-primary {
+  padding-left: var(--icon-slot-width);
+}
+
+.view-spine-bench-list {
+  padding-left: var(--icon-slot-width);
+}
+
+/* Bench/instance rows are read-only (no hover affordance for selection), but
+   keep the ≥44px min-height inherited from .session-row for touch targets. */
+.view-spine-instance,
+.view-spine-bench,
+.view-spine-free-row {
+  cursor: default;
+}
+
+/* Align the host status dot with the row's text baseline. The shared
+   .hub-node-status-dot adds a top margin tuned for the dashboard's grid; reset
+   it here so the dot centers within the flex row. */
+.view-spine-tree .hub-node-status-dot {
+  margin-top: 0;
+  flex-shrink: 0;
+}

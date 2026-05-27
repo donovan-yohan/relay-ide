@@ -1,10 +1,259 @@
-// #732: view-spine MVP placeholder. Flag-gated (default OFF) sidebar body.
-// The client-derived read-only tree (#729) replaces this stub in the next
-// commit. Kept intentionally minimal so the OFF render path is untouched.
-export function ViewSpineTree() {
+// #729 (Epic #444 view-spine MVP): flag-gated, READ-ONLY render of the
+// client-derived view-tree (`lib/state/view-tree.ts`). Reuses EXISTING sidebar
+// primitives only — no new visual chrome, no new animations. Leaves are COUNTS,
+// not interactive rows. Default OFF; only mounted when `viewSpineEnabled`.
+import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useSessionsStore } from '../lib/stores/sessions.js';
+import { fetchHubNodes } from '../lib/api.js';
+import { deriveColor } from '../lib/colors.js';
+import { MarqueeText } from './MarqueeText.js';
+import { CipherText } from './CipherText.js';
+import {
+  buildViewTree,
+  type InstanceHostStatus,
+  type ViewTreeBench,
+  type ViewTreeFreeEntry,
+  type ViewTreeInstance,
+  type ViewTreeProject,
+  type ViewTreeNodeStatus,
+} from '../lib/state/view-tree.js';
+import './ViewSpineTree.css';
+
+// CSS only defines tones for online/stale/offline/revoked; updating falls back
+// to the muted default. Map straight through — class is harmless if unstyled.
+function statusDotClass(status: InstanceHostStatus): string {
+  if (!status) return '';
+  return `hub-node-status-dot status-${status}`;
+}
+
+function CountBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return <span className="session-count-badge">{count}</span>;
+}
+
+function BenchRow({ bench }: { bench: ViewTreeBench }) {
   return (
-    <div className="sidebar-empty-state">
-      <span>view-spine (coming soon)</span>
+    <li className="session-row inactive state-inactive view-spine-bench">
+      <div className="session-row-primary">
+        <span className="session-name">
+          <MarqueeText>{bench.label}</MarqueeText>
+        </span>
+        <CountBadge count={bench.tab.count} />
+      </div>
+      {/* `.secondary-branch` is rendered ONLY for git benches. Directory
+          benches omit the element entirely (no branch leakage). */}
+      {bench.isGit && bench.branch ? (
+        <div className="session-row-secondary">
+          <span className="secondary-branch">
+            <MarqueeText>{bench.branch}</MarqueeText>
+          </span>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function InstanceRow({ instance }: { instance: ViewTreeInstance }) {
+  return (
+    <li className="session-row view-spine-instance">
+      <div className="session-row-primary">
+        {instance.status ? (
+          <span
+            className={statusDotClass(instance.status)}
+            aria-label={`host ${instance.status}`}
+          />
+        ) : null}
+        <span className="session-name">
+          <MarqueeText>{instance.hostLabel}</MarqueeText>
+        </span>
+        <CountBadge count={instance.rootTab.count} />
+      </div>
+      {instance.benches.length > 0 ? (
+        <ul className="session-list view-spine-bench-list">
+          {instance.benches.map((bench) => (
+            <BenchRow key={bench.id} bench={bench} />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+function ProjectRow({ project }: { project: ViewTreeProject }) {
+  const initialColor = useMemo(
+    () => deriveColor(project.colorSeed),
+    [project.colorSeed]
+  );
+  const initial = (project.label.charAt(0) || '?').toUpperCase();
+  // Instance-count badge hidden when ≤1 (single materialization is implicit).
+  const instanceCount = project.instances.length;
+  // A repo/directory project always implies a host; show the rolled-up status
+  // of the first instance as the project-level dot. Omit when no instances.
+  const projectStatus = project.instances[0]?.status ?? null;
+  return (
+    <div className="repo-item view-spine-project">
+      <div className="repo-header">
+        <div className="repo-left">
+          {/* `.initial-block` color ONLY for bound git/dir projects. */}
+          <span className="initial-block" style={{ background: initialColor }}>
+            {initial}
+          </span>
+          <span className="repo-name">
+            <MarqueeText>{project.label}</MarqueeText>
+          </span>
+          {project.kind === 'directory' ? (
+            <span className="repo-kind-chip">dir</span>
+          ) : null}
+          {projectStatus ? (
+            <span
+              className={statusDotClass(projectStatus)}
+              aria-label={`project host ${projectStatus}`}
+            />
+          ) : null}
+          {instanceCount > 1 ? (
+            <span className="session-count-badge">{instanceCount}</span>
+          ) : null}
+        </div>
+      </div>
+      <ul className="session-list">
+        {project.instances.map((instance) => (
+          <InstanceRow key={instance.id} instance={instance} />
+        ))}
+      </ul>
+      <div className="repo-divider" />
+    </div>
+  );
+}
+
+// Reduced-anatomy row: structurally omits `.initial-block` AND
+// `.secondary-branch` JSX so repo-identity/branch leakage is impossible by
+// construction for repoPath-less (free/remote) sessions.
+function FreeRow({ entry }: { entry: ViewTreeFreeEntry }) {
+  return (
+    <li className="session-row view-spine-free-row">
+      <div className="session-row-primary">
+        {entry.status ? (
+          <span
+            className={statusDotClass(entry.status)}
+            aria-label={`host ${entry.status}`}
+          />
+        ) : null}
+        <span className="session-name">
+          <MarqueeText>{entry.label}</MarqueeText>
+        </span>
+        <CountBadge count={entry.tab.count} />
+      </div>
+    </li>
+  );
+}
+
+export function ViewSpineTree() {
+  const repos = useSessionsStore((s) => s.repos);
+  const worktrees = useSessionsStore((s) => s.worktrees);
+  const sessions = useSessionsStore((s) => s.sessions);
+  const workspaceGroups = useSessionsStore((s) => s.workspaceGroups);
+  // Reuse the existing ['hub-nodes'] query (shared TanStack cache, no new
+  // server call) — same key the dashboard/dialogs already populate.
+  const {
+    data: nodes,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ['hub-nodes'],
+    queryFn: fetchHubNodes,
+    staleTime: 60_000,
+  });
+
+  const nodeStatuses: ViewTreeNodeStatus[] = useMemo(
+    () =>
+      (nodes ?? []).map((n) => ({
+        nodeId: n.nodeId,
+        ...(n.displayName ? { displayName: n.displayName } : {}),
+        status: n.status,
+        ...(n.lastSeenAt ? { lastSeenAt: n.lastSeenAt } : {}),
+      })),
+    [nodes]
+  );
+
+  const tree = useMemo(
+    () =>
+      buildViewTree({
+        repos,
+        worktrees,
+        sessions,
+        workspaceGroups,
+        nodes: nodeStatuses,
+      }),
+    [repos, worktrees, sessions, workspaceGroups, nodeStatuses]
+  );
+
+  // Loading: the node join is still resolving and there's nothing derived yet.
+  if (isLoading && repos.length === 0 && sessions.length === 0) {
+    return (
+      <div className="view-spine-tree">
+        <ul className="session-list">
+          <li className="session-row loading">
+            <div className="session-row-primary">
+              <span className="session-name">
+                <CipherText text="deriving view…" loading />
+              </span>
+            </div>
+          </li>
+        </ul>
+      </div>
+    );
+  }
+
+  const hasContent =
+    tree.workspaces.some((ws) => ws.projects.length > 0) ||
+    tree.ungroupedProjects.length > 0 ||
+    tree.freeLane.length > 0;
+
+  if (!hasContent) {
+    return (
+      <div className="view-spine-tree">
+        <div className="sidebar-empty-state">
+          <span>{isError ? 'node status unavailable' : 'nothing to show'}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="view-spine-tree">
+      {tree.workspaces.map((ws) =>
+        ws.projects.length > 0 ? (
+          <section key={ws.id} className="view-spine-workspace">
+            <div className="sidebar-ungrouped-label">{ws.name}</div>
+            {ws.projects.map((project) => (
+              <ProjectRow key={project.id} project={project} />
+            ))}
+          </section>
+        ) : null
+      )}
+
+      {tree.ungroupedProjects.length > 0 ? (
+        <section className="view-spine-workspace">
+          {tree.workspaces.some((ws) => ws.projects.length > 0) ? (
+            <div className="sidebar-ungrouped-label">ungrouped</div>
+          ) : null}
+          {tree.ungroupedProjects.map((project) => (
+            <ProjectRow key={project.id} project={project} />
+          ))}
+        </section>
+      ) : null}
+
+      {tree.freeLane.length > 0 ? (
+        <section className="view-spine-free-lane">
+          <div className="sidebar-ungrouped-label">free / remote</div>
+          <ul className="session-list">
+            {tree.freeLane.map((entry) => (
+              <FreeRow key={entry.key} entry={entry} />
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }
