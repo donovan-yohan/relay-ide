@@ -53,11 +53,14 @@ export interface TabModeChangedEvent extends TabControlEventBase {
 
 export type InterventionSource =
   | 'pty-input'
+  | 'supervisor-action'
   | 'mode-action'
   | 'auto-revert';
 
 export type InterventionKind =
   | 'human-input'
+  | 'supervisor-send-text'
+  | 'supervisor-submit'
   | 'join'
   | 'take-over'
   | 'hand-back'

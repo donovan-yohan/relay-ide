@@ -185,6 +185,10 @@ import {
   INTERVENTION_READ_CAPABILITY,
   toInterventionReadResponse,
 } from './session-control-api.js';
+import {
+  handleSupervisorActionRequest,
+  handleSupervisorSessionsRequest,
+} from './supervisor-route-handlers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -903,16 +907,23 @@ function createHandoffDestinationLauncher(params: {
   configDir: string;
   getConfig: () => Config;
   watchCwd: (cwd: string) => void;
-}): (input: HandoffDestinationLaunchInput) => Promise<{
-  ok: true;
-  session: ReturnType<typeof localRelayNode.sessions.list>[number];
-  acknowledgedBrief: boolean;
-} | {
-  ok: false;
-  code: 'HUB_UNAVAILABLE' | 'NODE_UNAVAILABLE' | 'LAUNCH_UNSUPPORTED' | 'LAUNCH_FAILED';
-  message: string;
-  details?: Record<string, unknown>;
-}> {
+}): (input: HandoffDestinationLaunchInput) => Promise<
+  | {
+      ok: true;
+      session: ReturnType<typeof localRelayNode.sessions.list>[number];
+      acknowledgedBrief: boolean;
+    }
+  | {
+      ok: false;
+      code:
+        | 'HUB_UNAVAILABLE'
+        | 'NODE_UNAVAILABLE'
+        | 'LAUNCH_UNSUPPORTED'
+        | 'LAUNCH_FAILED';
+      message: string;
+      details?: Record<string, unknown>;
+    }
+> {
   return async (input) => {
     const destination = input.plan.destinationProposal;
     if (destination.nodeId !== 'local') {
@@ -938,7 +949,8 @@ function createHandoffDestinationLauncher(params: {
       return {
         ok: false,
         code: 'LAUNCH_UNSUPPORTED',
-        message: 'destination cwd is not inside a configured Relay repo; refusing path-only launch',
+        message:
+          'destination cwd is not inside a configured Relay repo; refusing path-only launch',
         details: { cwd: destination.cwd },
       };
     }
@@ -972,22 +984,33 @@ function createHandoffDestinationLauncher(params: {
           sessionLane: undefined,
           portVariables,
         });
-        localRelayNode.sessions.write(session.id, terminalBriefCommand(input.handoffBrief));
+        localRelayNode.sessions.write(
+          session.id,
+          terminalBriefCommand(input.handoffBrief)
+        );
         params.watchCwd(session.cwd);
         return { ok: true, session, acknowledgedBrief: true };
       }
 
-      const requestedAgent = input.request.desiredRuntime.providerId as AgentType | undefined;
+      const requestedAgent = input.request.desiredRuntime.providerId as
+        | AgentType
+        | undefined;
       const resolved = resolveSessionSettings(freshConfig, repoPath, {
         agent: requestedAgent,
         continuePolicy: 'never',
       });
-      const availability = validateAgentFrameworkAvailable(freshConfig, resolved.agent);
+      const availability = validateAgentFrameworkAvailable(
+        freshConfig,
+        resolved.agent
+      );
       if (!availability.ok) {
         return {
           ok: false,
           code: 'LAUNCH_UNSUPPORTED',
-          message: availability.body.message ?? availability.body.error ?? 'agent framework is unavailable',
+          message:
+            availability.body.message ??
+            availability.body.error ??
+            'agent framework is unavailable',
           details: availability.body,
         };
       }
@@ -1029,7 +1052,10 @@ function createHandoffDestinationLauncher(params: {
       return {
         ok: false,
         code: 'LAUNCH_FAILED',
-        message: err instanceof Error ? err.message : 'destination session launch failed',
+        message:
+          err instanceof Error
+            ? err.message
+            : 'destination session launch failed',
         details: { cwd, repoPath, configDir: params.configDir },
       };
     }
@@ -1486,7 +1512,9 @@ async function main(): Promise<void> {
     return match?.[1]?.trim() ?? '';
   }
 
-  function validatedHandoffCapabilities(_req: express.Request): HandoffCapabilityContext | null {
+  function validatedHandoffCapabilities(
+    _req: express.Request
+  ): HandoffCapabilityContext | null {
     // Scoped CLI tokens currently prove only bearer possession, not capability grants.
     // Never promote caller-controlled x-relay-capabilities into a validated handoff
     // context; until token/policy grants are wired, handoff routes fail closed.
@@ -1543,7 +1571,10 @@ async function main(): Promise<void> {
   };
 
   const requireCliGatewayAuth: express.RequestHandler = (req, res, next) => {
-    if (isCliGatewayV1Request(req) && validateScopedToken(bearerScopedToken(req))) {
+    if (
+      isCliGatewayV1Request(req) &&
+      validateScopedToken(bearerScopedToken(req))
+    ) {
       next();
       return;
     }
@@ -2633,6 +2664,18 @@ async function main(): Promise<void> {
       );
       const records = localRelayNode.sessions.getInterventions(id, { limit });
       res.json(toInterventionReadResponse({ records, limit }));
+    }
+  );
+
+  app.get('/supervisor/sessions', requireScopedSessionAuth, (req, res) => {
+    handleSupervisorSessionsRequest(req, res, localRelayNode.sessions);
+  });
+
+  app.post(
+    '/supervisor/actions/:action',
+    requireScopedSessionAuth,
+    (req, res) => {
+      handleSupervisorActionRequest(req, res, localRelayNode.sessions);
     }
   );
 

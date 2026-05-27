@@ -18,7 +18,12 @@ relay-ide v1 files list --session-id <session-id> --path <path> --json
 relay-ide v1 files stat --session-id <session-id> --path <path> --json
 relay-ide v1 files read --session-id <session-id> --path <path> --max-bytes 32768 --max-lines 2000 --json
 relay-ide v1 files write --session-id <session-id> --path <path> --mode <create|overwrite|append> --file <local-path|-> --json
+relay-ide v1 supervisor sessions --json
 relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
+relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json
+relay-ide v1 supervisor send-text --target-ids <session-id-1,session-id-2> --text <literal-text> --json
+relay-ide v1 supervisor submit --id <session-id-or-global-id> --json
+relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
 relay-ide v1 events subscribe --topic <sessions|nodes|audit> --json
 ```
 
@@ -57,7 +62,7 @@ Error:
 }
 ```
 
-The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvelopeSchema`. It includes auth/connectivity errors, typed create/validation errors, file RPC errors (`NOT_FOUND`, `FORBIDDEN`, `NODE_OFFLINE`, `CONFIRMATION_REQUIRED`), and control hand-back state errors (`CONTROL_STATE_STALE`, `INTERVENTION_ACK_REQUIRED`, `INTERVENTION_ACK_STALE`, `CONTROL_STATE_UNKNOWN`).
+The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvelopeSchema`. It includes auth/connectivity errors, typed create/validation errors, file RPC errors (`NOT_FOUND`, `FORBIDDEN`, `NODE_OFFLINE`, `CONFIRMATION_REQUIRED`), control hand-back state errors (`CONTROL_STATE_STALE`, `INTERVENTION_ACK_REQUIRED`, `INTERVENTION_ACK_STALE`, `CONTROL_STATE_UNKNOWN`), and typed supervisor action errors. Multi-target supervisor action denials can also appear inside a successful action envelope as per-target `results[].error` entries; see [Supervisor typed actions and rmux mapping](#supervisor-typed-actions-and-rmux-mapping-704).
 
 ## Discovery and schemas
 
@@ -218,17 +223,88 @@ Provider-native session state adapters are intentionally internal in this slice.
 
 When promoted to v1, the surface must preserve the same boundary as `AgentHarnessStateAdapter`: detection/list/import/read-state are read-only, snapshots are redacted and bounded, and open/resume returns copyable argv data without executing the provider CLI.
 
-## Supervisor snapshot boundary
+## Supervisor typed actions and rmux mapping (#704)
 
-`relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json` is the first stable typed supervisor path. It is read-only and command-mediated: callers get a bounded `supervisor.snapshot` envelope containing session identity, control-state summary, provider capability boundary, optional redacted intervention summaries, partial-failure metadata, and an audit summary. It requires `session:read` plus `tab:intervention:read` because a safe supervisor read must include whether human intervention metadata exists; missing either bit returns `FORBIDDEN`.
+The stable supervisor surface is Relay-owned command API, not raw PTY, tmux, or rmux API. The implementation source of truth is `shared/cli-gateway-contract.ts`, with shared response types in `shared/supervisor-actions.ts` and server execution in `server/supervisor-actions.ts`.
 
-The optional `expectedControlMode` and `latestSeenInterventionEventId` inputs are preflight guards for future typed actions. If the target control state is stale/mismatched, Relay returns `CONTROL_STATE_STALE`. If a human intervention exists that the caller has not observed, Relay returns `INTERVENTION_ACK_REQUIRED`. Both are typed denials, not best-effort warnings.
+Commands:
 
-This is deliberately distinct from PTY input and terminal substrates:
+| Command | Purpose | Required capabilities |
+| --- | --- | --- |
+| `relay-ide v1 supervisor sessions --json` | Lists sessions and per-action eligibility. | `session:read`, `tab:intervention:read` |
+| `relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json` | Reads one redacted supervisor snapshot. | `session:read`, `tab:intervention:read` |
+| `relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json` | Sends bounded literal text as a typed intervention. | `session:attach`, `tab:intervention:send-text` |
+| `relay-ide v1 supervisor send-text --target-ids <id-1,id-2> --text <literal-text> --json` | Sends the same bounded literal text to multiple sessions and reports per-target results. | `session:attach`, `tab:intervention:send-text` |
+| `relay-ide v1 supervisor submit --id <session-id-or-global-id> --json` | Sends Enter (`\n`) as a typed intervention. | `session:attach`, `tab:intervention:submit` |
+| `relay-ide v1 supervisor submit --target-ids <id-1,id-2> --json` | Sends Enter to multiple sessions and reports per-target results. | `session:attach`, `tab:intervention:submit` |
 
-- `supervisor.snapshot` never writes to the session, never submits text, never accepts provider permission prompts, and never stores raw prompts, raw transcripts, raw PTY input, or raw provider state in audit.
-- `sessions input` remains the raw PTY input path for narrow smoke/debug use. It is not a typed supervisor action and must not be used as the blessed agent-to-agent command API.
-- rmux/tmux panes may be adapter/runtime substrates, but raw rmux/tmux command execution is not stable Relay API. Add or extend a Relay-owned command first, then let adapters map it to a substrate behind the capability/control/audit checks.
+Inputs:
+
+- `supervisor.sessions` takes no input and returns `{ command: "supervisor.sessions", sessions, count }`. Each session includes `sessionId`, optional `globalSessionId`/`nodeId`, `mode`, `status`, optional `controlMode`/`controlFreshness`, and `actions.sendText` / `actions.submit` eligibility. Ineligible actions carry a `reasonCode` such as `SESSION_DISCONNECTED`, `SESSION_MODE_UNSUPPORTED`, `CONTROL_STATE_STALE`, or `CONTROL_STATE_UNKNOWN`.
+- `supervisor.snapshot` requires `id`. Optional `--expected-control-mode <agent-driven|human-driven|co-driven>` and `--latest-seen-intervention-event-id <event-id>` are preflight guards. Stale or mismatched control state returns `CONTROL_STATE_STALE`; an unacknowledged newer intervention returns `INTERVENTION_ACK_REQUIRED`. The snapshot path is read-only: it never writes to the session, accepts prompts, or stores raw prompt/transcript/PTY/provider state.
+- `supervisor.sendText` requires `text` plus exactly one target shape: `id` or `targetIds`. CLI flags are `--id`, positional `<id>`, or comma-separated `--target-ids`; `--input-json` / `--input-file` may provide the same object shape, including optional `actor` metadata. Text must be non-empty literal text, at most 1000 characters, with no CR/LF, ESC, DEL, or control characters except tab. Use `supervisor.submit` for Enter instead of embedding a newline.
+- `supervisor.submit` requires `id` or `targetIds`, accepts optional `actor` metadata via JSON input, and writes exactly `\n`. It does not accept a text payload.
+
+Successful action envelope shape:
+
+```json
+{
+  "ok": true,
+  "contract": "v1",
+  "contractVersion": "1.0",
+  "command": "supervisor.sendText",
+  "data": {
+    "command": "supervisor.sendText",
+    "action": "sendText",
+    "results": [
+      {
+        "sessionId": "sess-1",
+        "globalSessionId": "local:sess-1",
+        "nodeId": "local",
+        "ok": true,
+        "action": "sendText",
+        "bytesWritten": 5,
+        "interventionEventId": "evt-sess-1",
+        "controlModeBefore": "agent-driven",
+        "controlModeAfter": "co-driven"
+      }
+    ],
+    "counts": { "requested": 1, "succeeded": 1, "denied": 0, "failed": 0, "skipped": 0 },
+    "audit": {
+      "action": "sendText",
+      "targetSessionIds": ["sess-1"],
+      "targetCount": 1,
+      "timestamp": "2026-05-16T00:00:00.000Z",
+      "content": {
+        "rawContentAvailable": false,
+        "hashSha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        "byteCount": 5,
+        "charCount": 5,
+        "lineCount": 1,
+        "classes": ["literal-text"],
+        "redacted": true
+      },
+      "rawContentStored": false,
+      "partialFailure": false
+    },
+    "redaction": { "rawContentAvailable": false, "rawContentStored": false, "hashesOnly": true }
+  }
+}
+```
+
+Action failure semantics:
+
+- CLI parse/auth/connectivity failures return a normal `ok: false` gateway envelope and the CLI exits nonzero. Examples: malformed `--input-json`, missing `RELAY_IDE_BROWSER_TOKEN`, unreachable hub, missing `--id`/`--target-ids`, or missing `--text` for `send-text`.
+- Once the action request reaches the hub, target-level problems are reported in the successful action envelope under `data.results[].error` with aggregate `data.counts` and `data.audit.partialFailure`. This preserves multi-target partial success instead of failing the whole command on the first bad target.
+- Per-target errors use typed `code`, `reasonCode`, `message`, `retryable`, and optional `details`. Current reason codes include `CAPABILITY_REQUIRED`, `SESSION_NOT_FOUND`, `SESSION_DISCONNECTED`, `CONTROL_STATE_STALE`, `CONTROL_STATE_UNKNOWN`, `SESSION_MODE_UNSUPPORTED`, `TEXT_REQUIRED`, `TEXT_TOO_LARGE`, `TEXT_MUST_BE_LITERAL`, and `UPSTREAM_WRITE_FAILED`.
+- `counts.denied` is for capability denials (`FORBIDDEN`). Other per-target errors increment `counts.failed`. `counts.skipped` is reserved for future fan-out decisions.
+- Audit stores actor summary, target session IDs/count, action type, timestamp, hashes/counts/classes for content, and the aggregate partial-failure flag. Raw supervisor text is not returned or stored by default.
+
+This is deliberately distinct from raw PTY input and terminal substrates:
+
+- `sessions input` remains the raw PTY input path for narrow smoke/debug use. It writes bytes through the temporary attach path, can wait for output markers, and is useful for adapter handshake tests, but it is not the blessed typed agent-to-agent command API.
+- Existing browser/human PTY input remains a different event/API path from supervisor automation interventions.
+- rmux/tmux panes may become backing substrates for Relay sessions, but adapters must not call rmux actions, rmux broadcast, tmux send-keys, or shell commands as stable Relay API. Add or extend a Relay-owned `relay-ide v1 supervisor ... --json` command first, then map that typed command to the substrate behind Relay capability, control-state, and hashes-only audit checks.
 
 ## Read-only file RPC commands
 
