@@ -517,6 +517,72 @@ export async function fetchActiveWork(): Promise<WorkContextActiveGroup[]> {
   return Array.isArray(data.groups) ? data.groups : [];
 }
 
+// ── #728 IA Workspace bar (consumes the #733 CRUD API) ──────────────────────
+// The six-layer **Workspace** (a durable, user-authored grouping-of-Projects),
+// distinct from the legacy `config.workspaces` repo grouping (`Workspace` in
+// `types.ts`). Shape mirrors `shared/workspace.ts`: `projectIds` is an ordered
+// membership list of ProjectIds, NOT embedded projects. Backed by the IA store
+// (`ia.db`) and mounted at `/hub/ia/workspaces` — STRICTLY non-destructive of
+// any legacy state. Endpoints: GET (list), POST (create), PATCH (partial
+// rename/reorder/membership), DELETE.
+export interface IaWorkspace {
+  id: string;
+  name: string;
+  order: number;
+  projectIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+const IA_WORKSPACES_PATH = '/hub/ia/workspaces';
+
+export async function fetchIaWorkspaces(): Promise<IaWorkspace[]> {
+  const data = await json<{ workspaces?: IaWorkspace[] }>(
+    await fetch(IA_WORKSPACES_PATH)
+  );
+  return Array.isArray(data.workspaces) ? data.workspaces : [];
+}
+
+export async function createIaWorkspace(input: {
+  name: string;
+  projectIds?: string[];
+  order?: number;
+}): Promise<IaWorkspace> {
+  const data = await json<{ workspace: IaWorkspace }>(
+    await fetch(IA_WORKSPACES_PATH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    })
+  );
+  return data.workspace;
+}
+
+export async function updateIaWorkspace(
+  id: string,
+  patch: { name?: string; order?: number; projectIds?: string[] }
+): Promise<IaWorkspace> {
+  const data = await json<{ workspace: IaWorkspace }>(
+    await fetch(`${IA_WORKSPACES_PATH}/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    })
+  );
+  return data.workspace;
+}
+
+export async function deleteIaWorkspace(id: string): Promise<void> {
+  const res = await fetch(
+    `${IA_WORKSPACES_PATH}/${encodeURIComponent(id)}`,
+    { method: 'DELETE' }
+  );
+  // 204 No Content on success; surface a structured error otherwise.
+  if (!res.ok) {
+    throw await httpErrorFromResponse(res, 'Failed to delete workspace');
+  }
+}
+
 function normalizeTelemetryMapEntry(
   mapKey: string,
   raw: Record<string, unknown>
