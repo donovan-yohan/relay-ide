@@ -658,4 +658,4 @@ Decision: keep iterating | abandon and delete | promote to second gated prototyp
 - If abandon: deletion PR/issues and docs cleanup.
 ```
 
-If the prototype cannot show concrete deletion/simplification or a material reliability win over tmux/node-pty, the default decision should be abandon or defer. shiny substrate worship is how we get haunted process trees, and no thanks.
+If the prototype cannot show concrete deletion/simplification or a material reliability win over tmux/node-pty, the default decision should be abandon or defer.
