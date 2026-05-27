@@ -2,7 +2,7 @@
 // client-derived view-tree (`lib/state/view-tree.ts`). Reuses EXISTING sidebar
 // primitives only — no new visual chrome, no new animations. Leaves are COUNTS,
 // not interactive rows. Default OFF; only mounted when `viewSpineEnabled`.
-import { useMemo } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { fetchHubNodes } from '../lib/api.js';
@@ -10,8 +10,11 @@ import { deriveColor } from '../lib/colors.js';
 import { MarqueeText } from './MarqueeText.js';
 import { CipherText } from './CipherText.js';
 import {
+  applyLens,
   buildViewTree,
+  DEFAULT_VIEW_LENS,
   type InstanceHostStatus,
+  type ViewLens,
   type ViewTreeBench,
   type ViewTreeFreeEntry,
   type ViewTreeInstance,
@@ -19,6 +22,13 @@ import {
   type ViewTreeNodeStatus,
 } from '../lib/state/view-tree.js';
 import './ViewSpineTree.css';
+
+// Ad-hoc, ephemeral lenses (#727). Order is the visual + arrow-key order.
+const LENSES: ReadonlyArray<{ id: ViewLens; label: string }> = [
+  { id: 'recent', label: 'recent' },
+  { id: 'all', label: 'all sessions' },
+  { id: 'this-host', label: 'this host' },
+];
 
 // CSS only defines tones for online/stale/offline/revoked; updating falls back
 // to the muted default. Map straight through — class is harmless if unstyled.
@@ -148,6 +158,84 @@ function FreeRow({ entry }: { entry: ViewTreeFreeEntry }) {
   );
 }
 
+// Segmented control reusing the FileTree `.fb__tab`/`.fb__tabs` primitive,
+// scope-renamed to `.view-lens` (rule bodies copied into ViewSpineTree.css with
+// a larger touch target). Roving tabindex: only the active tab is focusable;
+// Left/Right move + activate, Enter/Space (re)activate the focused tab.
+function LensSelector({
+  value,
+  onChange,
+}: {
+  value: ViewLens;
+  onChange: (lens: ViewLens) => void;
+}) {
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const activeIndex = LENSES.findIndex((l) => l.id === value);
+
+  function focusTab(index: number) {
+    const clamped = (index + LENSES.length) % LENSES.length;
+    const lens = LENSES[clamped];
+    if (!lens) return;
+    onChange(lens.id);
+    tabRefs.current[clamped]?.focus();
+  }
+
+  function onKeyDown(event: React.KeyboardEvent, index: number) {
+    switch (event.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        event.preventDefault();
+        focusTab(index + 1);
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        event.preventDefault();
+        focusTab(index - 1);
+        break;
+      case 'Home':
+        event.preventDefault();
+        focusTab(0);
+        break;
+      case 'End':
+        event.preventDefault();
+        focusTab(LENSES.length - 1);
+        break;
+      case 'Enter':
+      case ' ':
+        event.preventDefault();
+        onChange(LENSES[index]!.id);
+        break;
+      default:
+        break;
+    }
+  }
+
+  return (
+    <div className="view-lens__tabs" role="tablist" aria-label="views">
+      {LENSES.map((lens, index) => {
+        const selected = lens.id === value;
+        return (
+          <button
+            key={lens.id}
+            ref={(el) => {
+              tabRefs.current[index] = el;
+            }}
+            type="button"
+            className={`view-lens__tab${selected ? ' active' : ''}`}
+            role="tab"
+            aria-selected={selected}
+            tabIndex={index === activeIndex ? 0 : -1}
+            onClick={() => onChange(lens.id)}
+            onKeyDown={(event) => onKeyDown(event, index)}
+          >
+            {lens.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ViewSpineTree() {
   const repos = useSessionsStore((s) => s.repos);
   const worktrees = useSessionsStore((s) => s.worktrees);
@@ -176,7 +264,11 @@ export function ViewSpineTree() {
     [nodes]
   );
 
-  const tree = useMemo(
+  // Ephemeral lens state: in-memory only, default `recent`, lost on reload (no
+  // persistence by design — #727).
+  const [lens, setLens] = useState<ViewLens>(DEFAULT_VIEW_LENS);
+
+  const derived = useMemo(
     () =>
       buildViewTree({
         repos,
@@ -188,19 +280,29 @@ export function ViewSpineTree() {
     [repos, worktrees, sessions, workspaceGroups, nodeStatuses]
   );
 
+  const tree = useMemo(() => applyLens(derived, lens), [derived, lens]);
+
+  // The Views selector is part of the sidebar header chrome: it renders in EVERY
+  // state (loading, empty, content) so switching lenses is always available,
+  // even when the active lens yields zero nodes.
+  const selector = <LensSelector value={lens} onChange={setLens} />;
+
   // Loading: the node join is still resolving and there's nothing derived yet.
   if (isLoading && repos.length === 0 && sessions.length === 0) {
     return (
       <div className="view-spine-tree">
-        <ul className="session-list">
-          <li className="session-row loading">
-            <div className="session-row-primary">
-              <span className="session-name">
-                <CipherText text="deriving view…" loading />
-              </span>
-            </div>
-          </li>
-        </ul>
+        {selector}
+        <div className="view-spine-scroll">
+          <ul className="session-list">
+            <li className="session-row loading">
+              <div className="session-row-primary">
+                <span className="session-name">
+                  <CipherText text="deriving view…" loading />
+                </span>
+              </div>
+            </li>
+          </ul>
+        </div>
       </div>
     );
   }
@@ -213,8 +315,13 @@ export function ViewSpineTree() {
   if (!hasContent) {
     return (
       <div className="view-spine-tree">
-        <div className="sidebar-empty-state">
-          <span>{isError ? 'node status unavailable' : 'nothing to show'}</span>
+        {selector}
+        <div className="view-spine-scroll">
+          <div className="sidebar-empty-state">
+            <span>
+              {isError ? 'node status unavailable' : 'nothing to show'}
+            </span>
+          </div>
         </div>
       </div>
     );
@@ -222,38 +329,41 @@ export function ViewSpineTree() {
 
   return (
     <div className="view-spine-tree">
-      {tree.workspaces.map((ws) =>
-        ws.projects.length > 0 ? (
-          <section key={ws.id} className="view-spine-workspace">
-            <div className="sidebar-ungrouped-label">{ws.name}</div>
-            {ws.projects.map((project) => (
+      {selector}
+      <div className="view-spine-scroll">
+        {tree.workspaces.map((ws) =>
+          ws.projects.length > 0 ? (
+            <section key={ws.id} className="view-spine-workspace">
+              <div className="sidebar-ungrouped-label">{ws.name}</div>
+              {ws.projects.map((project) => (
+                <ProjectRow key={project.id} project={project} />
+              ))}
+            </section>
+          ) : null
+        )}
+
+        {tree.ungroupedProjects.length > 0 ? (
+          <section className="view-spine-workspace">
+            {tree.workspaces.some((ws) => ws.projects.length > 0) ? (
+              <div className="sidebar-ungrouped-label">ungrouped</div>
+            ) : null}
+            {tree.ungroupedProjects.map((project) => (
               <ProjectRow key={project.id} project={project} />
             ))}
           </section>
-        ) : null
-      )}
+        ) : null}
 
-      {tree.ungroupedProjects.length > 0 ? (
-        <section className="view-spine-workspace">
-          {tree.workspaces.some((ws) => ws.projects.length > 0) ? (
-            <div className="sidebar-ungrouped-label">ungrouped</div>
-          ) : null}
-          {tree.ungroupedProjects.map((project) => (
-            <ProjectRow key={project.id} project={project} />
-          ))}
-        </section>
-      ) : null}
-
-      {tree.freeLane.length > 0 ? (
-        <section className="view-spine-free-lane">
-          <div className="sidebar-ungrouped-label">free / remote</div>
-          <ul className="session-list">
-            {tree.freeLane.map((entry) => (
-              <FreeRow key={entry.key} entry={entry} />
-            ))}
-          </ul>
-        </section>
-      ) : null}
+        {tree.freeLane.length > 0 ? (
+          <section className="view-spine-free-lane">
+            <div className="sidebar-ungrouped-label">free / remote</div>
+            <ul className="session-list">
+              {tree.freeLane.map((entry) => (
+                <FreeRow key={entry.key} entry={entry} />
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </div>
     </div>
   );
 }

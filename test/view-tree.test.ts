@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import { parseInstanceId, parseProjectId } from '../shared/project.js';
 import {
+  applyLens,
   buildViewTree,
+  DEFAULT_VIEW_LENS,
   type BuildViewTreeInput,
   type ViewTreeNodeStatus,
 } from '../frontend/src/lib/state/view-tree.js';
@@ -315,5 +317,158 @@ describe('benches and grouping', () => {
     expect(tree.workspaces).toHaveLength(1);
     expect(tree.workspaces[0]!.projects.map((p) => p.label)).toEqual(['grouped']);
     expect(tree.ungroupedProjects.map((p) => p.label)).toEqual(['loose']);
+  });
+});
+
+// ── S2: Views lenses (#727) ───────────────────────────────────────────────────
+
+describe('S2 Views lenses', () => {
+  // Three distinct git remotes → three ungrouped projects, each with a single
+  // local session whose lastActivity is staggered so recency order is testable.
+  function recencyFixture() {
+    const mk = (name: string, when: string) => ({
+      repo: repo({
+        path: `/repos/${name}`,
+        name,
+        repoIdentity: `github.com/acme/${name}`,
+      }),
+      session: session({
+        id: `s-${name}`,
+        repoPath: `/repos/${name}`,
+        cwd: `/repos/${name}`,
+        lastActivity: when,
+      }),
+    });
+    const alpha = mk('alpha', '2026-05-20T00:00:00.000Z'); // oldest
+    const bravo = mk('bravo', '2026-05-27T12:00:00.000Z'); // newest
+    const charlie = mk('charlie', '2026-05-25T00:00:00.000Z'); // middle
+    return build({
+      repos: [alpha.repo, bravo.repo, charlie.repo],
+      sessions: [alpha.session, bravo.session, charlie.session],
+    });
+  }
+
+  it('default lens is recent', () => {
+    expect(DEFAULT_VIEW_LENS).toBe('recent');
+  });
+
+  it('All lens is identity (same object reference, unchanged)', () => {
+    const tree = recencyFixture();
+    expect(applyLens(tree, 'all')).toBe(tree);
+  });
+
+  it('Recent sorts ungrouped projects by most-recent activity first', () => {
+    const tree = recencyFixture();
+    const recent = applyLens(tree, 'recent');
+    expect(recent.ungroupedProjects.map((p) => p.label)).toEqual([
+      'bravo', // newest
+      'charlie',
+      'alpha', // oldest
+    ]);
+    // Pure: input tree untouched (still alphabetical from the build).
+    expect(tree.ungroupedProjects.map((p) => p.label)).toEqual([
+      'alpha',
+      'bravo',
+      'charlie',
+    ]);
+  });
+
+  it('Recent sorts a project\'s benches by activity, newest first', () => {
+    const old: WorktreeInfo = {
+      name: 'old',
+      path: '/repos/relay/.worktrees/old',
+      repoName: 'relay',
+      repoPath: '/repos/relay',
+      displayName: 'old',
+      lastActivity: '2026-05-20T00:00:00.000Z',
+      branchName: 'feature/old',
+      nodeId: DEFAULT_LOCAL_NODE_ID,
+    };
+    const fresh: WorktreeInfo = {
+      ...old,
+      name: 'fresh',
+      path: '/repos/relay/.worktrees/fresh',
+      displayName: 'fresh',
+      lastActivity: '2026-05-27T00:00:00.000Z',
+      branchName: 'feature/fresh',
+    };
+    const tree = build({ repos: [repo()], worktrees: [old, fresh] });
+    const recent = applyLens(tree, 'recent');
+    const benches = recent.ungroupedProjects[0]!.instances[0]!.benches;
+    expect(benches.map((b) => b.label)).toEqual(['fresh', 'old']);
+  });
+
+  it('Recent is stable for equal/unknown recency (preserves build order)', () => {
+    // Two projects, no sessions → both have null recency; build order is
+    // alphabetical and must be preserved by the stable sort.
+    const tree = build({
+      repos: [
+        repo({ path: '/repos/aaa', name: 'aaa', repoIdentity: 'github.com/acme/aaa' }),
+        repo({ path: '/repos/bbb', name: 'bbb', repoIdentity: 'github.com/acme/bbb' }),
+      ],
+    });
+    const recent = applyLens(tree, 'recent');
+    expect(recent.ungroupedProjects.map((p) => p.label)).toEqual(['aaa', 'bbb']);
+  });
+
+  it('Recent sorts the free lane by activity, newest first', () => {
+    const tree = build({
+      sessions: [
+        session({ id: 'f-old', cwd: '/tmp/old', lastActivity: '2026-05-20T00:00:00.000Z' }),
+        session({ id: 'f-new', cwd: '/tmp/new', lastActivity: '2026-05-27T00:00:00.000Z' }),
+      ],
+    });
+    const recent = applyLens(tree, 'recent');
+    expect(recent.freeLane.map((e) => e.label)).toEqual(['new', 'old']);
+  });
+
+  it('This-host excludes remote instances; drops projects with no local instance', () => {
+    const remote = 'github.com/donovan-yohan/relay-ide';
+    const tree = build({
+      repos: [
+        // Same remote on local + remote node → one project, two instances.
+        repo({ path: '/local/relay', repoIdentity: remote, nodeId: DEFAULT_LOCAL_NODE_ID }),
+        repo({ path: '/remote/relay', repoIdentity: remote, nodeId: 'macbook' }),
+        // Remote-only project → must drop out entirely under this-host.
+        repo({
+          path: '/remote/only',
+          name: 'only',
+          repoIdentity: 'github.com/acme/only',
+          nodeId: 'macbook',
+        }),
+      ],
+      nodes: [node({ nodeId: 'macbook', status: 'online' })],
+    });
+
+    const local = applyLens(tree, 'this-host');
+    const projects = [
+      ...local.workspaces.flatMap((w) => w.projects),
+      ...local.ungroupedProjects,
+    ];
+    // The remote-only project is gone; the shared project survives with only
+    // its local instance.
+    expect(projects.map((p) => p.label).sort()).toEqual(['relay']);
+    const survivor = projects.find((p) => p.label === 'relay')!;
+    expect(survivor.instances).toHaveLength(1);
+    expect(survivor.instances[0]!.isLocal).toBe(true);
+    expect(survivor.instances[0]!.nodeId).toBe(DEFAULT_LOCAL_NODE_ID);
+
+    // Pure: input tree still has both instances on the shared project.
+    const sharedBefore = tree.ungroupedProjects.find((p) => p.label === 'relay')!;
+    expect(sharedBefore.instances).toHaveLength(2);
+  });
+
+  it('This-host filters the free lane to local entries only', () => {
+    const tree = build({
+      sessions: [
+        session({ id: 'local-free', cwd: '/tmp/local', nodeId: DEFAULT_LOCAL_NODE_ID }),
+        session({ id: 'remote-free', cwd: '/tmp/remote', nodeId: 'macbook' }),
+      ],
+      nodes: [node({ nodeId: 'macbook', status: 'online' })],
+    });
+    expect(tree.freeLane).toHaveLength(2);
+    const local = applyLens(tree, 'this-host');
+    expect(local.freeLane.map((e) => e.label)).toEqual(['local']);
+    expect(local.freeLane[0]!.isLocal).toBe(true);
   });
 });

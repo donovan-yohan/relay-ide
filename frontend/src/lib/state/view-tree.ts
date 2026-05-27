@@ -73,6 +73,10 @@ export interface ViewTreeBench {
   isGit: boolean;
   /** Tab count grouped under this bench-equivalent. */
   tab: ViewTreeTab;
+  /** Most-recent session/worktree activity rolled up here (ISO). `null` when no
+   *  recency is known. Drives the `recent` lens; derived during build, NOT a
+   *  new fetch. */
+  lastActivity: string | null;
 }
 
 export interface ViewTreeInstance {
@@ -86,6 +90,9 @@ export interface ViewTreeInstance {
   benches: ViewTreeBench[];
   /** Tab count at the instance root (sessions anchored to the repo, no worktree). */
   rootTab: ViewTreeTab;
+  /** Max activity across this instance's benches + root sessions (ISO), `null`
+   *  when unknown. Rolls up into the project's recency. */
+  lastActivity: string | null;
 }
 
 export type ViewTreeProjectKind = 'repo' | 'directory';
@@ -99,6 +106,9 @@ export interface ViewTreeProject {
   /** Color seed (repo/dir name). `.initial-block` color uses this. */
   colorSeed: string;
   instances: ViewTreeInstance[];
+  /** Max activity across all of this project's instances (ISO), `null` when
+   *  unknown. Drives the `recent` lens ordering of projects. */
+  lastActivity: string | null;
 }
 
 export interface ViewTreeWorkspaceGroup {
@@ -123,6 +133,9 @@ export interface ViewTreeFreeEntry {
   label: string;
   /** Tab count grouped under (nodeId, cwd). */
   tab: ViewTreeTab;
+  /** Most-recent session activity for this free group (ISO), `null` when
+   *  unknown. Drives the `recent` lens ordering of the free lane. */
+  lastActivity: string | null;
 }
 
 export interface ViewTree {
@@ -146,6 +159,18 @@ export interface BuildViewTreeInput {
 function nodeIdOf(value: { nodeId?: NodeId } | undefined): NodeId {
   // Local-mode rows omit nodeId; treat as the default local node.
   return value?.nodeId ?? DEFAULT_LOCAL_NODE_ID;
+}
+
+/** Pick the later of two ISO timestamps. `null` is "no activity known" and
+ *  always loses to a real value. Lexicographic compare is correct for ISO-8601
+ *  with a fixed offset (the summaries use UTC `Z`). */
+function maxActivity(
+  a: string | null | undefined,
+  b: string | null | undefined
+): string | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return a >= b ? a : b;
 }
 
 function basename(path: string): string {
@@ -207,6 +232,8 @@ interface MutableInstance {
   status: InstanceHostStatus;
   benchesByPath: Map<string, ViewTreeBench>;
   rootTabCount: number;
+  /** Rolled-up recency for root sessions (benches carry their own). */
+  rootLastActivity: string | null;
 }
 
 interface MutableProject {
@@ -238,6 +265,7 @@ function ensureInstance(
     status: statusFor(nodeId, nodesById),
     benchesByPath: new Map(),
     rootTabCount: 0,
+    rootLastActivity: null,
   };
   project.instancesByNode.set(nodeId, instance);
   return instance;
@@ -247,12 +275,14 @@ function ensureBench(
   project: MutableProject,
   instance: MutableInstance,
   path: string,
-  branch: string | null
+  branch: string | null,
+  activity: string | null
 ): ViewTreeBench {
   const existing = instance.benchesByPath.get(path);
   if (existing) {
     // Fill in a branch we learn later (e.g. from a session) on a git bench.
     if (existing.isGit && !existing.branch && branch) existing.branch = branch;
+    existing.lastActivity = maxActivity(existing.lastActivity, activity);
     return existing;
   }
   const bench: ViewTreeBench = {
@@ -264,6 +294,7 @@ function ensureBench(
     isGit: project.isGit,
     branch: project.isGit ? (branch ?? null) : null,
     tab: { count: 0 },
+    lastActivity: activity ?? null,
   };
   instance.benchesByPath.set(path, bench);
   return bench;
@@ -321,35 +352,50 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
     const project = projectsById.get(projectId);
     if (!project) continue;
     const instance = ensureInstance(project, nodeIdOf(wt), nodesById);
-    ensureBench(project, instance, wt.path, wt.branchName || null);
+    ensureBench(
+      project,
+      instance,
+      wt.path,
+      wt.branchName || null,
+      wt.lastActivity || null
+    );
   }
 
   // ── Sessions → Tab counts + free lane ─────────────────────────────────────
   const freeByKey = new Map<string, ViewTreeFreeEntry>();
+
+  /** Add a repoPath-less (or orphaned) session to the free lane, rolling up its
+   *  recency. Shared by the two no-anchor branches below. */
+  function addToFreeLane(nodeId: NodeId, cwd: string, activity: string | null) {
+    const key = `${nodeId} ${cwd}`;
+    const existing = freeByKey.get(key);
+    if (existing) {
+      existing.tab.count += 1;
+      existing.lastActivity = maxActivity(existing.lastActivity, activity);
+      return;
+    }
+    const { hostLabel, isLocal } = hostLabelFor(nodeId, nodesById);
+    freeByKey.set(key, {
+      key,
+      nodeId,
+      hostLabel,
+      isLocal,
+      status: statusFor(nodeId, nodesById),
+      cwd,
+      label: basename(cwd),
+      tab: { count: 1 },
+      lastActivity: activity ?? null,
+    });
+  }
+
   for (const session of input.sessions) {
     const nodeId = nodeIdOf(session);
+    const activity = session.lastActivity || null;
 
     // Free/remote no-anchor sessions (no repoPath): SEPARATE top-level lane.
     // Carry NO branch and NO repo identity by construction (leak guard C2).
     if (!session.repoPath) {
-      const cwd = session.worktreePath ?? session.cwd;
-      const key = `${nodeId} ${cwd}`;
-      const existing = freeByKey.get(key);
-      if (existing) {
-        existing.tab.count += 1;
-        continue;
-      }
-      const { hostLabel, isLocal } = hostLabelFor(nodeId, nodesById);
-      freeByKey.set(key, {
-        key,
-        nodeId,
-        hostLabel,
-        isLocal,
-        status: statusFor(nodeId, nodesById),
-        cwd,
-        label: basename(cwd),
-        tab: { count: 1 },
-      });
+      addToFreeLane(nodeId, session.worktreePath ?? session.cwd, activity);
       continue;
     }
 
@@ -359,24 +405,7 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
     if (!projectId) {
       // repoPath set but no matching repo row — treat as free-lane to avoid
       // inventing a project. Still carries no branch/identity.
-      const cwd = session.worktreePath ?? session.cwd;
-      const key = `${nodeId} ${cwd}`;
-      const existing = freeByKey.get(key);
-      if (existing) {
-        existing.tab.count += 1;
-        continue;
-      }
-      const { hostLabel, isLocal } = hostLabelFor(nodeId, nodesById);
-      freeByKey.set(key, {
-        key,
-        nodeId,
-        hostLabel,
-        isLocal,
-        status: statusFor(nodeId, nodesById),
-        cwd,
-        label: basename(cwd),
-        tab: { count: 1 },
-      });
+      addToFreeLane(nodeId, session.worktreePath ?? session.cwd, activity);
       continue;
     }
     const project = projectsById.get(projectId);
@@ -388,11 +417,16 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
         project,
         instance,
         session.worktreePath,
-        session.branchName || null
+        session.branchName || null,
+        activity
       );
       bench.tab.count += 1;
     } else {
       // Anchored at the repo root → instance root tab count.
+      instance.rootLastActivity = maxActivity(
+        instance.rootLastActivity,
+        activity
+      );
       instance.rootTabCount += 1;
     }
   }
@@ -405,17 +439,31 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
         if (a.isLocal !== b.isLocal) return a.isLocal ? -1 : 1;
         return a.hostLabel.localeCompare(b.hostLabel);
       })
-      .map((inst) => ({
-        id: inst.id,
-        nodeId: inst.nodeId,
-        hostLabel: inst.hostLabel,
-        isLocal: inst.isLocal,
-        status: inst.status,
-        rootTab: { count: inst.rootTabCount },
-        benches: [...inst.benchesByPath.values()].sort((a, b) =>
+      .map((inst) => {
+        const benches = [...inst.benchesByPath.values()].sort((a, b) =>
           a.path.localeCompare(b.path)
-        ),
-      }));
+        );
+        // Instance recency = max(root sessions, all bench activity).
+        const lastActivity = benches.reduce<string | null>(
+          (acc, b) => maxActivity(acc, b.lastActivity),
+          inst.rootLastActivity
+        );
+        return {
+          id: inst.id,
+          nodeId: inst.nodeId,
+          hostLabel: inst.hostLabel,
+          isLocal: inst.isLocal,
+          status: inst.status,
+          rootTab: { count: inst.rootTabCount },
+          benches,
+          lastActivity,
+        };
+      });
+    // Project recency = max across all instances.
+    const lastActivity = instances.reduce<string | null>(
+      (acc, inst) => maxActivity(acc, inst.lastActivity),
+      null
+    );
     return {
       id: project.id,
       identity: project.identity,
@@ -423,6 +471,7 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
       label: project.label,
       colorSeed: project.colorSeed,
       instances,
+      lastActivity,
     };
   }
 
@@ -466,4 +515,90 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
   );
 
   return { workspaces, ungroupedProjects, freeLane };
+}
+
+// ── S2: Views lenses (#727) ───────────────────────────────────────────────────
+// Ad-hoc, ephemeral, PURE-FILTER lenses over the already-derived tree. No
+// persistence, no new fetch, no saved Views. `applyLens` is a pure function:
+// (ViewTree, ViewLens) → ViewTree. The default lens is `recent`.
+
+export type ViewLens = 'recent' | 'all' | 'this-host';
+
+export const DEFAULT_VIEW_LENS: ViewLens = 'recent';
+
+/** Descending recency comparator. Items with no known activity (`null`) sort
+ *  last. `Array.prototype.sort` is stable (ES2019+), so equal/`null` recency
+ *  preserves the build's deterministic ordering. */
+function byRecencyDesc(
+  a: { lastActivity: string | null },
+  b: { lastActivity: string | null }
+): number {
+  if (a.lastActivity === b.lastActivity) return 0;
+  if (!a.lastActivity) return 1; // a has no activity → after b
+  if (!b.lastActivity) return -1; // b has no activity → after a
+  // Both ISO strings: later timestamp first.
+  return a.lastActivity < b.lastActivity ? 1 : -1;
+}
+
+/** Recursively sort a project's instances + their benches by recency. Returns a
+ *  new project object (no mutation of the input tree). */
+function sortProjectByRecency(project: ViewTreeProject): ViewTreeProject {
+  const instances = [...project.instances]
+    .map((inst) => ({
+      ...inst,
+      benches: [...inst.benches].sort(byRecencyDesc),
+    }))
+    .sort(byRecencyDesc);
+  return { ...project, instances };
+}
+
+/** Keep only local-node ("this host") instances on a project. Drops the project
+ *  entirely (returns `null`) when no local instance remains. Pure. */
+function localOnlyProject(project: ViewTreeProject): ViewTreeProject | null {
+  const instances = project.instances.filter((inst) => inst.isLocal);
+  if (instances.length === 0) return null;
+  return { ...project, instances };
+}
+
+/**
+ * Apply an ephemeral Views lens to the derived tree. PURE — never mutates the
+ * input, never fetches. Returns a structurally-new `ViewTree`.
+ *
+ * - `all`        → identity (the input tree, unchanged).
+ * - `recent`     → projects/instances/benches/free-lane sorted by most-recent
+ *                  activity first; stable for equal/unknown recency.
+ * - `this-host`  → only local-node instances survive; projects, workspaces, and
+ *                  free entries with nothing local drop out.
+ */
+export function applyLens(tree: ViewTree, lens: ViewLens): ViewTree {
+  if (lens === 'all') return tree;
+
+  if (lens === 'this-host') {
+    const filterProjects = (projects: ViewTreeProject[]): ViewTreeProject[] =>
+      projects
+        .map(localOnlyProject)
+        .filter((p): p is ViewTreeProject => p !== null);
+    return {
+      workspaces: tree.workspaces.map((ws) => ({
+        ...ws,
+        projects: filterProjects(ws.projects),
+      })),
+      ungroupedProjects: filterProjects(tree.ungroupedProjects),
+      freeLane: tree.freeLane.filter((entry) => entry.isLocal),
+    };
+  }
+
+  // lens === 'recent'
+  const sortProjects = (projects: ViewTreeProject[]): ViewTreeProject[] =>
+    [...projects].map(sortProjectByRecency).sort(byRecencyDesc);
+  return {
+    // Workspace groups keep their explicit order, but the projects WITHIN a
+    // group reorder by recency.
+    workspaces: tree.workspaces.map((ws) => ({
+      ...ws,
+      projects: sortProjects(ws.projects),
+    })),
+    ungroupedProjects: sortProjects(tree.ungroupedProjects),
+    freeLane: [...tree.freeLane].sort(byRecencyDesc),
+  };
 }

@@ -5,6 +5,61 @@
 .view-spine-tree {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+}
+
+/* Scroll region under the sticky Views selector; the selector itself does not
+   scroll away. */
+.view-spine-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ── S2 Views selector (#727) ──────────────────────────────────────────────
+   Reuses the FileTree `.fb__tabs`/`.fb__tab` segmented-control primitive; rule
+   bodies copied here and scope-renamed to `.view-lens` so the source stays
+   untouched. Touch target bumped (min-height:32px; padding:6px 10px) for the
+   sidebar context. Lowercase labels, accent border on active, no ellipsis. */
+.view-lens__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.view-lens__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.58rem;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  /* Labels never truncate — wrap rather than ellipsize. */
+  white-space: normal;
+  text-align: left;
+}
+.view-lens__tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.view-lens__tab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.view-lens__tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .view-spine-workspace,
