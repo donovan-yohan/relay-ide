@@ -27,9 +27,14 @@ import type { FileResourceRef } from '../shared/file-resource-ref.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
 const blocksDir = join(projectRoot, 'frontend/src/workbench/blocks');
+const frontendLibDir = join(projectRoot, 'frontend/src/lib');
 
 function readBlock(name: string) {
   return readFileSync(join(blocksDir, name), 'utf-8');
+}
+
+function readFrontendLib(name: string) {
+  return readFileSync(join(frontendLibDir, name), 'utf-8');
 }
 
 function blockExists(name: string) {
@@ -168,6 +173,66 @@ describe('work-context renderer', () => {
     expect(src).not.toContain("'/");
     expect(src).not.toContain('process.cwd');
     expect(src).not.toContain('__dirname');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prompt-fanout renderer
+// ---------------------------------------------------------------------------
+
+describe('prompt-fanout renderer', () => {
+  it('file exists', () => {
+    expect(blockExists('prompt-fanout.tsx')).toBe(true);
+  });
+
+  it('css file exists', () => {
+    expect(blockExists('prompt-fanout.css')).toBe(true);
+  });
+
+  it('exports PromptFanoutBlock', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('export const PromptFanoutBlock');
+  });
+
+  it('is typed as WorkbenchBlockRenderer<"prompt-fanout">', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain(`WorkbenchBlockRenderer<'prompt-fanout'>`);
+  });
+
+  it('uses PromptFanoutRun fixtures and schema helpers', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('getPromptFanoutRunFixture');
+    expect(src).toContain('selectedPromptFanoutTargets');
+    expect(src).toContain('unselectedPromptFanoutTargets');
+  });
+
+  it('has visible loading, empty, denied, and partial-failure states', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('block-prompt-fanout--loading');
+    expect(src).toContain('block-prompt-fanout--empty');
+    expect(src).toContain('block-prompt-fanout--denied');
+    expect(src).toContain('block-prompt-fanout--partial-failure');
+  });
+
+  it('distinguishes selected targets from all sessions', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('selected targets');
+    expect(src).toContain('all sessions not selected');
+    expect(src).toContain('no broadcast-to-all default');
+  });
+
+  it('dry-run action emits audit event without terminal input', () => {
+    const src = readBlock('prompt-fanout.tsx');
+    expect(src).toContain('prompt-fanout.dry-run');
+    expect(src).toContain('sendsTerminalInput: false');
+    expect(src).not.toContain('sendInput');
+    expect(src).not.toContain('writeTerminal');
+  });
+
+  it('CSS has block-prompt-fanout classes', () => {
+    const css = readBlock('prompt-fanout.css');
+    expect(css).toContain('.block-prompt-fanout');
+    expect(css).toContain('.block-prompt-fanout__dry-run');
   });
 });
 
@@ -426,6 +491,61 @@ describe('file renderer', () => {
     const src = readBlock('file.tsx');
     expect(src).toContain('sessionId');
     expect(src).toContain('session required');
+  });
+
+  it('renders bounded directory previews through fs.list', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('fetchNodeFsList');
+    expect(src).toContain("'fs.list'");
+    expect(src).toContain('FILE_RPC_DEFAULT_LIST_ENTRIES');
+    expect(src).toContain("stat.type === 'directory'");
+    expect(src).toContain('block-file__directory');
+    expect(src).toContain('empty directory');
+    expect(src).toContain('entries.map');
+  });
+
+  it('uses a bounded tail helper for log previews', () => {
+    const src = readBlock('file.tsx');
+    const api = readFrontendLib('api.ts');
+    expect(src).toContain('fetchNodeFsTail');
+    expect(src).toContain("fileRef.intent === 'tail'");
+    expect(src).toContain("'fs.tail'");
+    expect(src).toContain('FILE_RPC_MAX_TAIL_BYTES');
+    expect(src).toContain('FILE_RPC_MAX_TAIL_LINES');
+    expect(src).toContain('block-file__tail-meta');
+    expect(api).toContain('export async function fetchNodeFsTail');
+    expect(api).toContain('/files/tail');
+  });
+
+  it('renders common image previews from bounded base64 reads', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('IMAGE_MIME_BY_EXTENSION');
+    expect(src).toContain("encoding: 'base64'");
+    expect(src).toContain('data:${imageMime};base64');
+    expect(src).toContain('block-file__image');
+    expect(src).toContain('block-file__image-img');
+    expect(src).toContain('image too large to preview');
+  });
+
+  it('renders PDF and unsupported fallbacks without parsing bytes', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('isPdfPath');
+    expect(src).toContain('pdf preview unavailable');
+    expect(src).toContain('unsupported preview');
+    expect(src).toContain('open/download from file browser');
+    expect(src).toContain('block-file__unsupported');
+  });
+
+  it('renders a metadata row with identity, freshness, binding, and grant state', () => {
+    const src = readBlock('file.tsx');
+    expect(src).toContain('block-file__metadata');
+    expect(src).toContain('node:');
+    expect(src).toContain('intent:');
+    expect(src).toContain('fresh:');
+    expect(src).toContain('grant:');
+    expect(src).toContain('repo:');
+    expect(src).toContain('worktree:');
+    expect(src).toContain('non-git cwd');
   });
 
   // ---------------------------------------------------------------------------
@@ -714,13 +834,14 @@ describe('agent renderer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// All 7 renderers: verify they all export their named renderer
+// All 8 renderers: verify they all export their named renderer
 // ---------------------------------------------------------------------------
 
-describe('all 7 renderers exist and export named components', () => {
+describe('all 8 renderers exist and export named components', () => {
   const renderers = [
     { file: 'terminal.tsx', export: 'TerminalBlock' },
     { file: 'agent.tsx', export: 'AgentBlock' },
+    { file: 'prompt-fanout.tsx', export: 'PromptFanoutBlock' },
     { file: 'work-context.tsx', export: 'WorkContextBlock' },
     { file: 'file.tsx', export: 'FileBlock' },
     { file: 'artifact.tsx', export: 'ArtifactBlock' },

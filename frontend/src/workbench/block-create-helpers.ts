@@ -14,6 +14,7 @@ import type {
   CustomBlockDescriptor,
   FileBlockDescriptor,
   MarkdownBlockDescriptor,
+  PromptFanoutBlockDescriptor,
   TerminalBlockDescriptor,
   WorkbenchBlockDescriptor,
   WorkContextBlockDescriptor,
@@ -84,6 +85,14 @@ export function buildBlockDescriptor(
             displayName: request.title,
           },
         },
+      };
+      return desc;
+    }
+    case 'prompt-fanout': {
+      const desc: PromptFanoutBlockDescriptor = {
+        ...base,
+        kind: 'prompt-fanout',
+        meta: { fixture: 'all-success', dryRunOnly: true },
       };
       return desc;
     }

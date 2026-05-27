@@ -17,6 +17,7 @@ import type {
   FileBlockDescriptor,
   JsonValue,
   MarkdownBlockDescriptor,
+  PromptFanoutBlockDescriptor,
   TerminalBlockDescriptor,
   WorkContextBlockDescriptor,
   WorkbenchBlockDescriptor,
@@ -26,6 +27,7 @@ import type {
 } from '../shared/workbench-block-types.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
 import type { WorkContextRedactionClass } from '../shared/work-context.js';
+import { getPromptFanoutRunFixture } from '../shared/prompt-fanout-fixtures.js';
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -137,10 +139,25 @@ describe('WorkbenchBlockDescriptor discriminated union narrowing', () => {
     }
   });
 
+  it('narrows to PromptFanoutBlockDescriptor on kind === prompt-fanout', () => {
+    const desc: WorkbenchBlockDescriptor = {
+      kind: 'prompt-fanout',
+      id: 'b-3',
+      title: 'Prompt Fanout',
+      capabilityRequirements: [],
+      meta: { fixture: 'all-success', dryRunOnly: true },
+    };
+
+    if (desc.kind === 'prompt-fanout') {
+      assertType<string | undefined>(desc.meta.fixture);
+      assertType<boolean | undefined>(desc.meta.dryRunOnly);
+    }
+  });
+
   it('narrows to WorkContextBlockDescriptor on kind === work-context', () => {
     const desc: WorkbenchBlockDescriptor = {
       kind: 'work-context',
-      id: 'b-3',
+      id: 'b-4',
       title: 'Issue #619',
       capabilityRequirements: [],
       meta: { workContextRef: 'wc:abc-123' },
@@ -291,13 +308,14 @@ describe('WorkbenchBlockKind union', () => {
     const kinds: WorkbenchBlockKind[] = [
       'terminal',
       'agent',
+      'prompt-fanout',
       'work-context',
       'file',
       'artifact',
       'markdown',
       'custom',
     ];
-    expect(kinds).toHaveLength(7);
+    expect(kinds).toHaveLength(8);
   });
 });
 
@@ -332,6 +350,17 @@ describe('WorkbenchBlockDescriptor JSON round-trip', () => {
         actorRef: { kind: 'actor', id: 'actor-001', displayName: 'claude' },
       },
     } satisfies AgentBlockDescriptor,
+    {
+      kind: 'prompt-fanout',
+      id: 'rt-prompt-fanout',
+      title: 'Prompt fanout',
+      capabilityRequirements: [],
+      meta: {
+        fixture: 'all-success',
+        run: getPromptFanoutRunFixture('all-success'),
+        dryRunOnly: true,
+      },
+    } satisfies PromptFanoutBlockDescriptor,
     {
       kind: 'work-context',
       id: 'rt-work-context',
@@ -396,7 +425,7 @@ describe('WorkbenchBlockDescriptor JSON round-trip', () => {
     }
   });
 
-  it('round-trips produce the correct kind for all 7 variants', () => {
+  it('round-trips produce the correct kind for all 8 variants', () => {
     const roundTripped = cases.map((d) => {
       const parsed = JSON.parse(JSON.stringify(d)) as WorkbenchBlockDescriptor;
       return parsed.kind;
@@ -405,6 +434,7 @@ describe('WorkbenchBlockDescriptor JSON round-trip', () => {
     expect(roundTripped).toEqual([
       'terminal',
       'agent',
+      'prompt-fanout',
       'work-context',
       'file',
       'artifact',

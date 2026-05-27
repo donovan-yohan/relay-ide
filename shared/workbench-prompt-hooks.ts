@@ -29,6 +29,7 @@
  *   - `agent` blocks emit only the `actorRef.id` and `actorRef.displayName`.
  *   - `terminal` blocks emit only the `sessionRef.sessionId`.
  *   - `custom` blocks emit only `rendererId` and `proposalId` (if present).
+ *   - `prompt-fanout` blocks emit run id/state/counts only; never prompt text or responses.
  *   - `work-context` blocks emit only the `workContextRef` id string.
  *   - `artifact` blocks emit only `artifactRef.kind` and `artifactRef.title`.
  *
@@ -47,9 +48,10 @@ import type { RelayCapabilityBit } from './security-policy.js';
 // Known block-kind guard (forward-compat helper)
 // ---------------------------------------------------------------------------
 
-const KNOWN_BLOCK_KINDS: ReadonlySet<WorkbenchBlockKind> = new Set([
+const KNOWN_BLOCK_KINDS: ReadonlySet<WorkbenchBlockKind> = new Set<WorkbenchBlockKind>([
   'terminal',
   'agent',
+  'prompt-fanout',
   'work-context',
   'file',
   'artifact',
@@ -92,6 +94,19 @@ export interface AgentBlockExcerpt {
   kind: 'agent';
   actorId: string;
   actorDisplayName?: string | undefined;
+}
+
+/**
+ * Status excerpt for a `prompt-fanout` block.
+ * Only run identity and counts are safe to surface — never prompt text, raw
+ * responses, errors, target labels, cwd, or provider transcript data.
+ */
+export interface PromptFanoutBlockExcerpt {
+  kind: 'prompt-fanout';
+  runId: string | undefined;
+  state: string | undefined;
+  selectedTargetCount: number | undefined;
+  resultCount: number | undefined;
 }
 
 /**
@@ -145,6 +160,7 @@ export interface CustomBlockExcerpt {
 export type WorkbenchBlockExcerpt =
   | TerminalBlockExcerpt
   | AgentBlockExcerpt
+  | PromptFanoutBlockExcerpt
   | WorkContextBlockExcerpt
   | FileBlockExcerpt
   | ArtifactBlockExcerpt
@@ -221,6 +237,16 @@ function excerptForDescriptor(
         ...(actorRef.displayName
           ? { actorDisplayName: actorRef.displayName }
           : {}),
+      };
+    }
+    case 'prompt-fanout': {
+      const run = descriptor.meta.run;
+      return {
+        kind: 'prompt-fanout',
+        runId: run?.id,
+        state: run?.state,
+        selectedTargetCount: run?.selectedTargetIds.length,
+        resultCount: run?.results.length,
       };
     }
     case 'work-context': {
