@@ -12,6 +12,10 @@ const UTILITY_RAIL_STATE_KEY_PREFIX = 'relay-utility-rail::';
 const DIFF_VIEW_MODE_KEY = 'claude-remote-diff-view-mode';
 const WORD_WRAP_KEY = 'claude-remote-word-wrap';
 const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
+// #732: view-spine MVP feature flag. Default OFF. When OFF the sidebar render
+// is byte-identical to today; ON swaps in the client-derived read-only tree.
+// Dev-only affordance: set `localStorage.relay-view-spine = '1'` and reload.
+const VIEW_SPINE_KEY = 'relay-view-spine';
 
 export const DEFAULT_SIDEBAR_WIDTH = 240;
 export const MIN_SIDEBAR_WIDTH = 180;
@@ -143,6 +147,11 @@ function loadDiffViewMode(): DiffViewMode {
   const stored = ls(DIFF_VIEW_MODE_KEY);
   if (stored === 'unified' || stored === 'side-by-side') return stored;
   return 'unified';
+}
+
+function loadViewSpineEnabled(): boolean {
+  // Truthy only for the explicit opt-in value so a stale '0'/'false' reads OFF.
+  return ls(VIEW_SPINE_KEY) === '1';
 }
 
 function loadTerminalFontSize(): number {
@@ -498,6 +507,8 @@ export interface UiState {
   analyticsView: AnalyticsView;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
+  /** #732: view-spine MVP flag. Default false; backed by localStorage. */
+  viewSpineEnabled: boolean;
   // Actions
   openSidebar: () => void;
   closeSidebar: () => void;
@@ -528,6 +539,8 @@ export interface UiState {
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
+  setViewSpineEnabled: (enabled: boolean) => void;
+  toggleViewSpineEnabled: () => void;
 }
 
 export const useUiStore = create<UiState>()((set, get) => ({
@@ -557,6 +570,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
+  viewSpineEnabled: loadViewSpineEnabled(),
 
   openSidebar: () => set({ sidebarOpen: true }),
   closeSidebar: () => set({ sidebarOpen: false }),
@@ -1062,4 +1076,14 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
 
   isWorkspaceCollapsed: (path) => get().collapsedWorkspaces.has(path),
+
+  setViewSpineEnabled: (enabled) => {
+    if (enabled) lsSave(VIEW_SPINE_KEY, '1');
+    else lsRemove(VIEW_SPINE_KEY);
+    set({ viewSpineEnabled: enabled });
+  },
+
+  toggleViewSpineEnabled: () => {
+    get().setViewSpineEnabled(!get().viewSpineEnabled);
+  },
 }));

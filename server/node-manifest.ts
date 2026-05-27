@@ -9,6 +9,7 @@ import { resolveExecutablePath } from './frameworks.js';
 import { detectServiceManager, detectWslInfo } from './service.js';
 import { decorateManifestWithFrameworks } from './features/frameworks.js';
 import { enrichManifest } from './node-manifest-build.js';
+import { probeRmuxCapability } from './rmux-probe.js';
 import type {
   NodeCapabilities,
   NodeCapabilityProbe,
@@ -168,6 +169,7 @@ function getNodeCapabilities(
     // raw shell that dies on detach. #469 will introduce
     // 'canonical-emulator' for server-side terminal state.
     sessionResume: tmux.status === 'available' ? 'tmux' : 'none',
+    rmux: probeRmuxCapability({ env, platform }),
     agents: {},
   };
 }

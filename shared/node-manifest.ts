@@ -17,6 +17,56 @@ export interface NodeCapabilityProbe {
   authStatus?: NodeAgentAuthStatus;
 }
 
+export type RmuxProbeStatus =
+  | 'unavailable'
+  | 'available-but-unsupported'
+  | 'available-experimental'
+  | 'probe-failed';
+
+export type RmuxIpcKind = 'unix-socket' | 'windows-pipe' | 'unknown';
+
+export interface RmuxIpcShape {
+  kind: RmuxIpcKind;
+  source: 'env' | 'platform-default' | 'unknown';
+  shape: string;
+  endpoint?: string;
+}
+
+export type RmuxR0ChecklistStatus = 'pass' | 'warn' | 'fail' | 'unknown';
+
+export type RmuxR0ChecklistId =
+  | 'version-pinning'
+  | 'crash-restart-behavior'
+  | 'socket-ipc-exposure'
+  | 'permission-boundary'
+  | 'packaging-update-path';
+
+export interface RmuxR0ChecklistItem {
+  id: RmuxR0ChecklistId;
+  status: RmuxR0ChecklistStatus;
+  message: string;
+}
+
+/**
+ * Diagnostic-only rmux probe. This is availability/adoption-gate evidence,
+ * not a runtime backend switch and not a hub capability grant.
+ */
+export interface RmuxCapabilityProbe {
+  id: 'rmux';
+  label: string;
+  status: RmuxProbeStatus;
+  binaryPresent: boolean;
+  helperPresent: boolean;
+  platform: string;
+  arch: string;
+  message: string;
+  binaryPath?: string;
+  helperPath?: string;
+  version?: string;
+  ipc: RmuxIpcShape;
+  r0Checklist: RmuxR0ChecklistItem[];
+}
+
 /**
  * Structured degraded reason emitted in `NodeManifest.degradedReasons`.
  * Consumers can filter by severity and react to specific codes without
@@ -121,6 +171,8 @@ export interface NodeCapabilities {
    * `undefined` as 'none'.
    */
   sessionResume?: NodeSessionResumeKind;
+  /** Optional diagnostic-only rmux probe; absence means pre-rmux-probe node. */
+  rmux?: RmuxCapabilityProbe;
   agents: Record<string, NodeCapabilityProbe>;
 }
 
@@ -279,6 +331,74 @@ function isSessionResumeKind(value: unknown): value is NodeSessionResumeKind {
   return value === 'tmux' || value === 'canonical-emulator' || value === 'none';
 }
 
+function isRmuxProbeStatus(value: unknown): value is RmuxProbeStatus {
+  return (
+    value === 'unavailable' ||
+    value === 'available-but-unsupported' ||
+    value === 'available-experimental' ||
+    value === 'probe-failed'
+  );
+}
+
+function isRmuxIpcKind(value: unknown): value is RmuxIpcKind {
+  return value === 'unix-socket' || value === 'windows-pipe' || value === 'unknown';
+}
+
+function isRmuxIpcShape(value: unknown): value is RmuxIpcShape {
+  if (!isRecord(value)) return false;
+  return (
+    isRmuxIpcKind(value['kind']) &&
+    (value['source'] === 'env' ||
+      value['source'] === 'platform-default' ||
+      value['source'] === 'unknown') &&
+    typeof value['shape'] === 'string' &&
+    isOptionalString(value['endpoint'])
+  );
+}
+
+function isRmuxR0ChecklistId(value: unknown): value is RmuxR0ChecklistId {
+  return (
+    value === 'version-pinning' ||
+    value === 'crash-restart-behavior' ||
+    value === 'socket-ipc-exposure' ||
+    value === 'permission-boundary' ||
+    value === 'packaging-update-path'
+  );
+}
+
+function isRmuxR0ChecklistStatus(value: unknown): value is RmuxR0ChecklistStatus {
+  return value === 'pass' || value === 'warn' || value === 'fail' || value === 'unknown';
+}
+
+function isRmuxR0ChecklistItem(value: unknown): value is RmuxR0ChecklistItem {
+  if (!isRecord(value)) return false;
+  return (
+    isRmuxR0ChecklistId(value['id']) &&
+    isRmuxR0ChecklistStatus(value['status']) &&
+    typeof value['message'] === 'string'
+  );
+}
+
+function isRmuxCapabilityProbe(value: unknown): value is RmuxCapabilityProbe {
+  if (!isRecord(value)) return false;
+  return (
+    value['id'] === 'rmux' &&
+    typeof value['label'] === 'string' &&
+    isRmuxProbeStatus(value['status']) &&
+    typeof value['binaryPresent'] === 'boolean' &&
+    typeof value['helperPresent'] === 'boolean' &&
+    typeof value['platform'] === 'string' &&
+    typeof value['arch'] === 'string' &&
+    typeof value['message'] === 'string' &&
+    isOptionalString(value['binaryPath']) &&
+    isOptionalString(value['helperPath']) &&
+    isOptionalString(value['version']) &&
+    isRmuxIpcShape(value['ipc']) &&
+    Array.isArray(value['r0Checklist']) &&
+    (value['r0Checklist'] as unknown[]).every(isRmuxR0ChecklistItem)
+  );
+}
+
 function isNodeCapabilities(value: unknown): value is NodeCapabilities {
   if (!isRecord(value)) return false;
   for (const key of requiredCapabilityKeys) {
@@ -290,6 +410,9 @@ function isNodeCapabilities(value: unknown): value is NodeCapabilities {
     value['sessionResume'] !== undefined &&
     !isSessionResumeKind(value['sessionResume'])
   ) {
+    return false;
+  }
+  if (value['rmux'] !== undefined && !isRmuxCapabilityProbe(value['rmux'])) {
     return false;
   }
 

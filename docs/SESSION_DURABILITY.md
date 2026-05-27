@@ -76,9 +76,38 @@ routes). Web-mode sessions and unknown ids return 404
 `SESSION_REPLAY_UNAVAILABLE`; remote/routed sessions are out of scope for
 this slice (see #614 slice 3+).
 
-The existing WebSocket attach path keeps streaming raw scrollback bytes to
-xterm clients — this REST snapshot is a separate, optional read for status
-cards, agent adapters, and reattach UX that need a typed view.
+The existing WebSocket attach path now emits the versioned terminal stream v2
+envelope for local PTY/tmux sessions instead of anonymous raw byte frames. The
+browser remains on xterm.js and the default runtime is unchanged; the envelope
+only makes the transport semantics explicit for future adapters.
+
+## Terminal stream v2 envelope
+
+`shared/session-replay.ts` defines `TerminalStreamEnvelope` with
+`type: "terminal-stream"`, `version: 2`, the session id, a monotonic `seq`, a
+cursor, timestamp, replay flag, and typed payload kinds:
+
+- `metadata` announces the existing `node-pty/tmux` runtime, replay capacity,
+  retained cursor range, last resize, and the `single-active-owner` resize
+  policy.
+- `replay-start` / `replay-end` bracket bounded reconnect replay. Clients pass
+  `cursor=<lastSeenCursor>` on `/ws/:sessionId`; omitted cursor replays from
+  the oldest retained frame.
+- `lag` reports explicit stale/repair behavior: `cursor-too-old` starts replay
+  from the oldest retained cursor, `cursor-too-new` skips replay and resumes
+  live output, and `server-backfill` marks normal bounded backfill from a known
+  cursor.
+- `data` carries xterm bytes plus the retained cursor range. The browser still
+  writes the payload to xterm.js; it also tracks the newest cursor for the next
+  reconnect.
+- `resize` records terminal resize attempts. Active clients are the only resize
+  owners whose dimensions are applied to the PTY; passive mirrors receive the
+  event but do not fight terminal geometry.
+
+This contract is the gate for a later rmux adapter: rmux can map its output,
+lag/backfill, render, and resize-owner signals into Relay's envelope without
+changing browser rendering, permission checks, or the current node-pty/tmux
+runtime.
 
 ## Frontend reconnect UX
 

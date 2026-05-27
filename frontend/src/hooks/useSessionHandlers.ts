@@ -8,6 +8,7 @@ import { useToastStore } from '../lib/stores/toasts.js';
 import { sendPtyData } from '../lib/ws.js';
 import { estimateTerminalDimensions } from '../lib/utils.js';
 import type { WorktreeInfo, Repo, PullRequest } from '../lib/types.js';
+import type { NodeId } from '../../../shared/identity.js';
 import {
   createWorktree,
   ConflictError,
@@ -215,6 +216,60 @@ export function useSessionHandlers({
       useSessionsStore.getState().clearLoading(loadingKey);
     }
   }, []);
+
+  // #731: "+ tab" anchored to a view-spine Bench. Reuses the EXISTING
+  // node-aware create entrypoint (`createAgentSession` → `createSession`, the
+  // #473 local/remote/free flow). The bench resolves to the agent-session repo
+  // context the backend requires (`repoPath` ∈ config.repos, worktree → cwd) —
+  // mirroring the dialog's local-git create. NO env-override inheritance
+  // (deferred to #740 / backend #735). Offline/remote-unavailable benches fail
+  // through the same toast path as every other create; no bespoke error UI.
+  const handleViewSpineCreateTab = useCallback(
+    async (payload: {
+      nodeId: NodeId;
+      repoPath: string;
+      worktreePath: string;
+      cwd: string;
+    }) => {
+      const loadingKey = `view-spine-tab:${payload.nodeId}:${payload.cwd}`;
+      if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
+      useSessionsStore.getState().setLoading(loadingKey);
+      try {
+        const { cols, rows } = estimateTerminalDimensions(
+          useUiStore.getState().terminalFontSize
+        );
+        const { session, error } = await createAgentSession({
+          nodeId: payload.nodeId,
+          repoPath: payload.repoPath,
+          worktreePath: payload.worktreePath,
+          cwd: payload.cwd,
+          type: 'agent',
+          cols,
+          rows,
+        });
+        if (session?.id && !(error instanceof ConflictError)) {
+          useSessionsStore
+            .getState()
+            .initSessionNotification(
+              session.id,
+              useConfigStore.getState().defaultNotifications
+            );
+        }
+        if (session?.id) useUiStore.getState().closeSidebar();
+        if (error && !(error instanceof ConflictError)) {
+          logger.error('Failed to create view-spine tab:', error);
+          useToastStore
+            .getState()
+            .showToast(
+              error instanceof Error ? error.message : 'failed to create tab'
+            );
+        }
+      } finally {
+        useSessionsStore.getState().clearLoading(loadingKey);
+      }
+    },
+    []
+  );
 
   const handleQuickTerminal = useCallback(async () => {
     const { currentActiveWorkspace, currentWorktreePath } =
@@ -864,6 +919,7 @@ export function useSessionHandlers({
     handleSelectSession,
     handleSelectWorkspace,
     handleQuickAgent,
+    handleViewSpineCreateTab,
     handleQuickTerminal,
     handleCustomize,
     handleOpenSettings,

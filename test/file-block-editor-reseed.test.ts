@@ -253,3 +253,106 @@ describe('FileBlock edit reload reseed', () => {
     });
   });
 });
+
+describe('FileBlock freshness fallback', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  function readDescriptor(): FileBlockDescriptor {
+    return {
+      kind: 'file',
+      id: 'file-block-freshness-fallback',
+      title: 'current.txt',
+      capabilityRequirements: ['rpc:fs:read'],
+      meta: {
+        mode: 'read',
+        fileRef: {
+          nodeId: 'node-a',
+          path: filePath,
+          capturedAt: '2026-01-01T00:00:00Z',
+          intent: 'read',
+        },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('crypto', webcrypto);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/files/stat')) {
+          return jsonResponse({
+            operation: 'stat',
+            root: '/',
+            cwd: '/tmp',
+            path: filePath,
+            stat: {
+              path: filePath,
+              name: 'current.txt',
+              type: 'file',
+              size: 'hello world'.length,
+              mtimeMs: 1e20,
+              mode: 0o644,
+            },
+          });
+        }
+        if (url.endsWith('/files/read')) {
+          return jsonResponse({
+            operation: 'read',
+            root: '/',
+            cwd: '/tmp',
+            path: filePath,
+            encoding: 'utf8',
+            content: 'hello world',
+            bytesRead: 'hello world'.length,
+            truncatedBytes: false,
+            truncatedLines: false,
+            maxBytes: 65536,
+          });
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      })
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back to capturedAt for finite out-of-range mtimeMs', async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(FileBlock, {
+            descriptor: readDescriptor(),
+            context: blockContext(),
+          })
+        )
+      );
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('hello world');
+      expect(container.textContent).toContain('fresh: 2026-01-01T00:00:00Z');
+      expect(container.textContent).not.toContain('Invalid Date');
+    });
+  });
+});

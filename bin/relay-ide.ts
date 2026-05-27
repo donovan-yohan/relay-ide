@@ -15,7 +15,11 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type HubNodeSummary,
 } from '../shared/relay-node-protocol.js';
-import type { NodeManifest } from '../shared/node-manifest.js';
+import type {
+  NodeManifest,
+  RmuxCapabilityProbe,
+  RmuxR0ChecklistItem,
+} from '../shared/node-manifest.js';
 import type { Config, SessionSummary } from '../server/types.js';
 import { createSupervisorSnapshot } from '../server/supervisor-snapshot.js';
 import { createNodeLinkClient } from '../server/node-link-client.js';
@@ -2922,6 +2926,8 @@ interface NodeDoctorResult {
     description: string;
     severity: string;
   }>;
+  rmuxCapability?: RmuxCapabilityProbe;
+  rmuxR0Checklist?: RmuxR0ChecklistItem[];
   hubUrl?: string;
   hubReachable?: boolean;
   hubError?: string;
@@ -2983,6 +2989,22 @@ function collectNodeDoctorReasons(
   return all;
 }
 
+function printRmuxDoctorHuman(rmux: RmuxCapabilityProbe | undefined): void {
+  if (!rmux) return;
+  logger.info(
+    `rmux optional capability: ${rmux.status} | binary: ${rmux.binaryPresent ? 'yes' : 'no'} | helper: ${rmux.helperPresent ? 'yes' : 'no'} | ipc: ${rmux.ipc.kind}`
+  );
+  if (rmux.version) logger.info(`  rmux version: ${rmux.version}`);
+  if (rmux.binaryPath) logger.info(`  rmux binary: ${rmux.binaryPath}`);
+  if (rmux.helperPath && rmux.helperPath !== rmux.binaryPath)
+    logger.info(`  rmux helper: ${rmux.helperPath}`);
+  logger.info(`  rmux probe: ${rmux.message}`);
+  logger.info(`  rmux ipc shape: ${rmux.ipc.shape}`);
+  for (const item of rmux.r0Checklist) {
+    logger.info(`  rmux R0 ${item.status} ${item.id}: ${item.message}`);
+  }
+}
+
 /** Print the human-readable doctor report. */
 function printNodeDoctorHuman(
   manifest: NodeManifest,
@@ -3003,6 +3025,7 @@ function printNodeDoctorHuman(
   logger.info(
     `service installed: ${st.installed ? 'yes' : 'no'} | running: ${st.running ? 'yes' : 'no'}`
   );
+  printRmuxDoctorHuman(manifest.capabilities.rmux);
   for (const caveat of manifest.serviceManager.caveats) {
     logger.info(`  caveat: ${caveat}`);
   }
@@ -3065,6 +3088,12 @@ async function runNodeDoctor(
         message: manifest.serviceManager.message,
       },
       degradedReasons: allDegraded,
+      ...(manifest.capabilities.rmux !== undefined
+        ? {
+            rmuxCapability: manifest.capabilities.rmux,
+            rmuxR0Checklist: manifest.capabilities.rmux.r0Checklist,
+          }
+        : {}),
       ...(hubUrl !== undefined ? { hubUrl } : {}),
       ...(hubCheck.reachable !== undefined
         ? { hubReachable: hubCheck.reachable }

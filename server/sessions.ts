@@ -64,6 +64,7 @@ import {
 } from '../shared/session-durability.js';
 import {
   DEFAULT_SESSION_REPLAY_CAPACITY_BYTES,
+  dropTerminalStreamPrefixBytes,
   type SessionReplaySnapshot,
 } from '../shared/session-replay.js';
 import {
@@ -169,6 +170,7 @@ function enforceGlobalScrollbackCap(
     // Trim oldest chunks one-by-one until this session's scrollback is clear.
     while (session.scrollback.length > 0 && total > globalScrollbackCapBytes) {
       const chunk = session.scrollback.shift()!;
+      dropTerminalStreamPrefixBytes(session.terminalStream, chunk.length);
       total -= chunk.length;
       freed += chunk.length;
     }

@@ -1,5 +1,9 @@
 import type { IPty } from 'node-pty';
 import type {
+  TerminalStreamEnvelope,
+  TerminalStreamState,
+} from '../shared/session-replay.js';
+import type {
   GlobalSessionId,
   LocalSessionId,
   NodeId,
@@ -313,6 +317,10 @@ export interface PtySession extends BaseSession {
    * Stored so `SessionReplaySnapshot.capacityBytes` reflects the actual cap.
    */
   scrollbackCapacityBytes: number;
+  /** Terminal stream v2 state for cursor-based replay and resize ownership. */
+  terminalStream?: TerminalStreamState;
+  /** Live subscribers for terminal stream v2 envelopes. */
+  terminalStreamSubscribers?: Array<(envelope: TerminalStreamEnvelope) => void>;
   useTmux: boolean;
   tmuxSessionName: string;
   onPtyReplacedCallbacks: Array<(newPty: IPty) => void>;

@@ -4,6 +4,7 @@ import type {
   FileRpcListResponse,
   FileRpcReadResponse,
   FileRpcStatResponse,
+  FileRpcTailResponse,
   FileRpcWriteResponse,
 } from '../../../shared/file-rpc.js';
 import type {
@@ -750,6 +751,7 @@ export interface NodeFsReadArgs {
   path: string;
   maxBytes?: number;
   rangeStart?: number;
+  encoding?: 'utf8' | 'base64';
 }
 
 export async function fetchNodeFsRead(
@@ -759,7 +761,38 @@ export async function fetchNodeFsRead(
   const body: Record<string, unknown> = { path: args.path };
   if (args.maxBytes !== undefined) body.maxBytes = args.maxBytes;
   if (args.rangeStart !== undefined) body.rangeStart = args.rangeStart;
+  if (args.encoding !== undefined) body.encoding = args.encoding;
   return json<FileRpcReadResponse>(
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+export interface NodeFsTailArgs {
+  nodeId: string;
+  sessionId: string;
+  path: string;
+  maxBytes?: number;
+  maxLines?: number;
+  follow?: boolean;
+  maxFollowChunkBytes?: number;
+}
+
+export async function fetchNodeFsTail(
+  args: NodeFsTailArgs
+): Promise<FileRpcTailResponse> {
+  const url = `/hub/nodes/${encodeURIComponent(args.nodeId)}/sessions/${encodeURIComponent(args.sessionId)}/files/tail`;
+  const body: Record<string, unknown> = { path: args.path };
+  if (args.maxBytes !== undefined) body.maxBytes = args.maxBytes;
+  if (args.maxLines !== undefined) body.maxLines = args.maxLines;
+  if (args.follow !== undefined) body.follow = args.follow;
+  if (args.maxFollowChunkBytes !== undefined) {
+    body.maxFollowChunkBytes = args.maxFollowChunkBytes;
+  }
+  return json<FileRpcTailResponse>(
     await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

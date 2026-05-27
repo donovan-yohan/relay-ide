@@ -138,9 +138,12 @@ describe('per-session PTY routing', () => {
     sockets[0]!.__triggerOpen();
     sockets[1]!.__triggerOpen();
     ws.sendPtyResize('sess-a', 80, 24);
-    expect(sockets[0]!.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: 'resize', cols: 80, rows: 24 })
-    );
+    expect(JSON.parse(sockets[0]!.send.mock.calls[0]![0])).toMatchObject({
+      type: 'resize',
+      cols: 80,
+      rows: 24,
+      owner: 'active',
+    });
     expect(sockets[1]!.send).not.toHaveBeenCalled();
   });
 

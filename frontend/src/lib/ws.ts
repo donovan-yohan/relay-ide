@@ -25,6 +25,11 @@ import type { TabControlEvent } from '../../../shared/control-state.js';
 import type { HubNodeStatus } from '../../../shared/relay-node-protocol.js';
 import type { SessionDurabilityState } from '../../../shared/session-durability.js';
 import type { NodeManifest } from '../../../shared/node-manifest.js';
+import {
+  isTerminalStreamEnvelope,
+  type TerminalStreamEnvelope,
+  type TerminalStreamResizeOwner,
+} from '../../../shared/session-replay.js';
 
 const logger = createLogger('pty-ws');
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -318,9 +323,97 @@ interface PtyConnection {
   pauseBufferHead: number;
   /** Total UTF-16 code unit count of live pauseBuffer content. */
   pauseBufferSize: number;
+
+  terminalStreamCursor: number;
+  terminalStreamClientId: string;
+  resizeOwner: TerminalStreamResizeOwner;
 }
 
 const ptyConnections = new Map<string, PtyConnection>();
+
+function createTerminalStreamClientId(): string {
+  return `browser-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
+function appendTerminalStreamParams(
+  path: string,
+  conn: PtyConnection
+): string {
+  const params = new URLSearchParams({
+    clientId: conn.terminalStreamClientId,
+    resizeOwner: conn.resizeOwner,
+  });
+  if (conn.terminalStreamCursor > 0) {
+    params.set('cursor', String(conn.terminalStreamCursor));
+  }
+  return `${path}?${params.toString()}`;
+}
+
+function enqueuePtyOutput(conn: PtyConnection, data: string): void {
+  // While the terminal tab is inactive, route data to the pause ring buffer
+  // instead of the xterm write queue so we don't paint invisible frames.
+  if (conn.renderPaused) {
+    appendToPauseBuffer(conn, data);
+    return;
+  }
+
+  if (conn.queueSize + data.length > MAX_QUEUE_SIZE) {
+    if (!conn.paused) {
+      logger.warn(
+        'flow-control: queue cap reached (session=%s, queue=%d), dropping data',
+        conn.sessionId,
+        conn.queueSize
+      );
+    }
+    return;
+  }
+
+  conn.writeQueue.push(data);
+  conn.queueSize += data.length;
+  if (conn.paused) {
+    logger.debug(
+      'flow-control: queued %d chars while paused (session=%s, pending=%d, queue=%d)',
+      data.length,
+      conn.sessionId,
+      conn.pendingSize,
+      conn.writeQueue.length
+    );
+  }
+  if (!conn.paused) scheduleFlush(conn);
+}
+
+function handleTerminalStreamEnvelope(
+  conn: PtyConnection,
+  envelope: TerminalStreamEnvelope
+): void {
+  conn.terminalStreamCursor = Math.max(conn.terminalStreamCursor, envelope.cursor);
+  if (envelope.kind === 'data') {
+    enqueuePtyOutput(conn, envelope.payload.data);
+    return;
+  }
+  if (envelope.kind === 'lag') {
+    logger.warn(
+      'terminal-stream lag notice (session=%s, reason=%s, requested=%s, oldest=%d, latest=%d)',
+      conn.sessionId,
+      envelope.payload.reason,
+      String(envelope.payload.requestedCursor),
+      envelope.payload.oldestCursor,
+      envelope.payload.latestCursor
+    );
+  }
+}
+
+function parseTerminalStreamMessage(data: string): TerminalStreamEnvelope | null {
+  if (!data.startsWith('{')) return null;
+  try {
+    const parsed: unknown = JSON.parse(data);
+    return isTerminalStreamEnvelope(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 function isWithinServerRestartGrace(): boolean {
   return serverRestartAuthGraceUntil > Date.now();
@@ -497,7 +590,8 @@ export function connectPtySocket(
   sessionId: string,
   term: Terminal,
   onResize: () => void,
-  onSessionEnd: () => void
+  onSessionEnd: () => void,
+  resizeOwner: TerminalStreamResizeOwner = 'active'
 ): void {
   const { registryKey, localSessionId, nodeId } = resolvePtyTarget(sessionId);
   // Tear down any existing connection for this scoped terminal target.
@@ -544,6 +638,9 @@ export function connectPtySocket(
     pauseBuffer: [],
     pauseBufferHead: 0,
     pauseBufferSize: 0,
+    terminalStreamCursor: 0,
+    terminalStreamClientId: createTerminalStreamClientId(),
+    resizeOwner,
   };
   ptyConnections.set(registryKey, conn);
 
@@ -558,7 +655,7 @@ function openPtySocket(conn: PtyConnection): void {
         '/ws/sessions/' +
         encodeURIComponent(conn.localSessionId)
       : '/ws/' + encodeURIComponent(conn.localSessionId);
-  const url = wsProtocol + '//' + location.host + path;
+  const url = wsProtocol + '//' + location.host + appendTerminalStreamParams(path, conn);
   const socket = new WebSocket(url);
   conn.pendingWs = socket;
 
@@ -577,36 +674,13 @@ function openPtySocket(conn: PtyConnection): void {
     if (conn.pongPending) clearPtyPongTimeout(conn);
     if (str === PONG_MSG) return;
 
-    // While the terminal tab is inactive, route data to the pause ring buffer
-    // instead of the xterm write queue so we don't paint invisible frames.
-    if (conn.renderPaused) {
-      appendToPauseBuffer(conn, str);
+    const envelope = parseTerminalStreamMessage(str);
+    if (envelope) {
+      handleTerminalStreamEnvelope(conn, envelope);
       return;
     }
 
-    if (conn.queueSize + str.length > MAX_QUEUE_SIZE) {
-      if (!conn.paused) {
-        logger.warn(
-          'flow-control: queue cap reached (session=%s, queue=%d), dropping data',
-          conn.sessionId,
-          conn.queueSize
-        );
-      }
-      return;
-    }
-
-    conn.writeQueue.push(str);
-    conn.queueSize += str.length;
-    if (conn.paused) {
-      logger.debug(
-        'flow-control: queued %d chars while paused (session=%s, pending=%d, queue=%d)',
-        str.length,
-        conn.sessionId,
-        conn.pendingSize,
-        conn.writeQueue.length
-      );
-    }
-    if (!conn.paused) scheduleFlush(conn);
+    enqueuePtyOutput(conn, str);
   };
 
   socket.onclose = (event) => {
@@ -832,7 +906,15 @@ export function sendPtyResize(
     return;
   }
   if (conn?.ws && conn.ws.readyState === WebSocket.OPEN) {
-    conn.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+    conn.ws.send(
+      JSON.stringify({
+        type: 'resize',
+        cols,
+        rows,
+        owner: conn.resizeOwner,
+        clientId: conn.terminalStreamClientId,
+      })
+    );
   }
 }
 
@@ -851,6 +933,7 @@ export function isPtyConnected(sessionId?: string): boolean {
 export function pausePtyFeed(sessionId: string): void {
   const conn = ptyConnections.get(resolvePtyTarget(sessionId).registryKey);
   if (!conn || conn.renderPaused) return;
+  conn.resizeOwner = 'passive';
   conn.renderPaused = true;
   // Cancel any pending flush so we don't paint after pausing.
   if (conn.rafHandle !== null) {
@@ -872,6 +955,7 @@ export function resumePtyFeed(sessionId: string): void {
   const conn = ptyConnections.get(resolvePtyTarget(sessionId).registryKey);
   if (!conn || !conn.renderPaused) return;
   conn.renderPaused = false;
+  conn.resizeOwner = 'active';
 
   // Move all live pauseBuffer chunks into the write queue individually —
   // no join() allocation since flushWriteQueue will join them anyway.

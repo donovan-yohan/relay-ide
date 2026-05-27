@@ -27,6 +27,13 @@ import {
   createNodeScopedFileEvent,
   createNodeScopedSessionEvent,
 } from '../shared/node-boundary.js';
+import {
+  buildTerminalStreamReplay,
+  createTerminalStreamState,
+  recordTerminalStreamResize,
+  type TerminalStreamEnvelope,
+  type TerminalStreamResizeOwner,
+} from '../shared/session-replay.js';
 
 import {
   sessionEnvelopeRegistry,
@@ -44,6 +51,61 @@ const logger = createLogger('ws');
 
 function replyPing(ws: WebSocket): void {
   if (ws.readyState === ws.OPEN) ws.send('{"type":"pong"}');
+}
+
+function sendTerminalStreamEnvelope(
+  ws: WebSocket,
+  envelope: TerminalStreamEnvelope
+): void {
+  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(envelope));
+}
+
+function ensureTerminalStreamState(session: Extract<Session, { mode: 'pty' }>) {
+  if (!session.terminalStream) {
+    session.terminalStream = createTerminalStreamState({
+      sessionId: session.id,
+      capacityBytes: session.scrollbackCapacityBytes,
+      initialChunks: session.scrollback,
+      bytesDropped: session.scrollbackBytesEvicted,
+    });
+  }
+  if (!session.terminalStreamSubscribers)
+    session.terminalStreamSubscribers = [];
+  return session.terminalStream;
+}
+
+function parseReplayCursor(raw: string | null): number | null {
+  if (raw === null || raw.trim() === '') return null;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function parseResizeOwner(value: unknown): TerminalStreamResizeOwner {
+  return value === 'passive' ? 'passive' : 'active';
+}
+
+function parseResizeDimension(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+interface LocalPtyAttachContext {
+  replayCursor: number | null;
+  clientId: string;
+  resizeOwner: TerminalStreamResizeOwner;
+}
+
+function parseClientId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 128 ? trimmed : null;
+}
+
+function createTerminalStreamClientId(): string {
+  return `client-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
 }
 
 function appendRoutedSessionAudit(
@@ -548,9 +610,8 @@ function setupWebSocket(
   });
 
   server.on('upgrade', (request, socket, head) => {
-    const requestPath = request.url
-      ? new URL(request.url, 'http://relay.local').pathname.replace(/\/$/, '')
-      : '';
+    const requestUrl = new URL(request.url ?? '/', 'http://relay.local');
+    const requestPath = requestUrl.pathname.replace(/\/$/, '');
     if (requestPath === '/hub/node-link') {
       const authenticated = authenticateHubNodeLink(request, hubNodeRegistry);
       if (!authenticated || !hubNodeRegistry) {
@@ -675,7 +736,7 @@ function setupWebSocket(
     }
 
     // PTY channel: /ws/:sessionId
-    const match = request.url && request.url.match(/^\/ws\/([a-f0-9]+)$/);
+    const match = requestPath.match(/^\/ws\/([a-f0-9]+)$/);
     if (!match) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
@@ -692,34 +753,51 @@ function setupWebSocket(
 
     wss.handleUpgrade(request, socket, head, (ws) => {
       sessionMap.set(ws, session);
+      localPtyAttachContext.set(ws, {
+        replayCursor: parseReplayCursor(requestUrl.searchParams.get('cursor')),
+        clientId:
+          parseClientId(requestUrl.searchParams.get('clientId')) ??
+          createTerminalStreamClientId(),
+        resizeOwner: parseResizeOwner(
+          requestUrl.searchParams.get('resizeOwner')
+        ),
+      });
       wss.emit('connection', ws, request);
     });
   });
 
   const sessionMap = new WeakMap<WebSocket, Session>();
+  const localPtyAttachContext = new WeakMap<WebSocket, LocalPtyAttachContext>();
 
   wss.on('connection', (ws: WebSocket, _request: http.IncomingMessage) => {
     const session = sessionMap.get(ws);
     if (!session) return;
 
     if (session.mode === 'pty') {
-      let dataDisposable: { dispose(): void } | null = null;
+      const attachContext = localPtyAttachContext.get(ws) ?? {
+        replayCursor: null,
+        clientId: createTerminalStreamClientId(),
+        resizeOwner: 'active' as const,
+      };
+      const terminalStream = ensureTerminalStreamState(session);
+      const terminalStreamSubscriber = (envelope: TerminalStreamEnvelope) => {
+        sendTerminalStreamEnvelope(ws, envelope);
+      };
+      session.terminalStreamSubscribers?.push(terminalStreamSubscriber);
+
+      for (const envelope of buildTerminalStreamReplay(
+        terminalStream,
+        attachContext.replayCursor
+      )) {
+        sendTerminalStreamEnvelope(ws, envelope);
+      }
+
       let exitDisposable: { dispose(): void } | null = null;
 
       const attachToPty = (ptyProcess: IPty): void => {
-        // Dispose previous handlers
-        dataDisposable?.dispose();
+        // Terminal bytes are emitted through TerminalStreamEnvelope subscribers;
+        // this listener only tracks process exit for the attach handle.
         exitDisposable?.dispose();
-
-        // Replay scrollback
-        for (const chunk of session.scrollback) {
-          if (ws.readyState === ws.OPEN) ws.send(chunk);
-        }
-
-        dataDisposable = ptyProcess.onData((data) => {
-          if (ws.readyState === ws.OPEN) ws.send(data);
-        });
-
         exitDisposable = ptyProcess.onExit(() => {
           if (ws.readyState === ws.OPEN) ws.close(1000);
         });
@@ -736,13 +814,38 @@ function setupWebSocket(
         const str = msg.toString();
         try {
           const parsed = JSON.parse(str);
-          if (parsed.type === 'ping') {
-            replyPing(ws);
-            return;
-          }
-          if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
-            sessions.resize(session.id, parsed.cols, parsed.rows);
-            return;
+          if (parsed && typeof parsed === 'object') {
+            const payload = parsed as Record<string, unknown>;
+            if (payload['type'] === 'ping') {
+              replyPing(ws);
+              return;
+            }
+            if (payload['type'] === 'resize') {
+              const cols = parseResizeDimension(payload['cols']);
+              const rows = parseResizeDimension(payload['rows']);
+              if (cols === null || rows === null) return;
+              const owner = parseResizeOwner(
+                payload['owner'] ?? attachContext.resizeOwner
+              );
+              const resizeEnvelope = recordTerminalStreamResize(
+                terminalStream,
+                {
+                  cols,
+                  rows,
+                  owner,
+                  sourceClientId:
+                    parseClientId(payload['clientId']) ??
+                    attachContext.clientId,
+                }
+              );
+              if (resizeEnvelope.payload.applied) {
+                sessions.resize(session.id, cols, rows);
+              }
+              for (const cb of session.terminalStreamSubscribers ?? []) {
+                cb(resizeEnvelope);
+              }
+              return;
+            }
           }
         } catch (_) {
           // ignore
@@ -763,8 +866,13 @@ function setupWebSocket(
       });
 
       const cleanup = () => {
-        dataDisposable?.dispose();
         exitDisposable?.dispose();
+        const subscriberIdx = session.terminalStreamSubscribers?.indexOf(
+          terminalStreamSubscriber
+        );
+        if (subscriberIdx !== undefined && subscriberIdx !== -1) {
+          session.terminalStreamSubscribers?.splice(subscriberIdx, 1);
+        }
         const idx = session.onPtyReplacedCallbacks.indexOf(ptyReplacedHandler);
         if (idx !== -1) session.onPtyReplacedCallbacks.splice(idx, 1);
       };

@@ -1,0 +1,137 @@
+/* #729 view-spine MVP tree. Reuses RepoItem/Sidebar primitives; this file only
+   carries the indent ladder + tiny status-dot alignment tweaks. No new colors,
+   no new animations — all tones come from existing design tokens. */
+
+.view-spine-tree {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Scroll region under the sticky Views selector; the selector itself does not
+   scroll away. */
+.view-spine-scroll {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ── S2 Views selector (#727) ──────────────────────────────────────────────
+   Reuses the FileTree `.fb__tabs`/`.fb__tab` segmented-control primitive; rule
+   bodies copied here and scope-renamed to `.view-lens` so the source stays
+   untouched. Touch target bumped (min-height:32px; padding:6px 10px) for the
+   sidebar context. Lowercase labels, accent border on active, no ellipsis. */
+.view-lens__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.view-lens__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.58rem;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  /* Labels never truncate — wrap rather than ellipsize. */
+  white-space: normal;
+  text-align: left;
+}
+.view-lens__tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.view-lens__tab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.view-lens__tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.view-spine-workspace,
+.view-spine-free-lane {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Instance rows sit one indent level below the project header; benches sit one
+   level below their instance. The ladder uses the shared --icon-slot-width so
+   it tracks the rest of the sidebar's alignment. */
+.view-spine-instance > .session-row-primary {
+  padding-left: var(--icon-slot-width);
+}
+
+.view-spine-bench-list {
+  padding-left: var(--icon-slot-width);
+}
+
+/* Bench/instance rows are read-only (no hover affordance for selection), but
+   keep the ≥44px min-height inherited from .session-row for touch targets. */
+.view-spine-instance,
+.view-spine-bench,
+.view-spine-free-row {
+  cursor: default;
+}
+
+/* Align the host status dot with the row's text baseline. The shared
+   .hub-node-status-dot adds a top margin tuned for the dashboard's grid; reset
+   it here so the dot centers within the flex row. */
+.view-spine-tree .hub-node-status-dot {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+
+/* #731 "+ tab" affordance. Reuses the `.add-worktree-row`/`.add-worktree-btn`
+   look (muted, low-opacity, brightens on hover, `creating…` disabled tone) but
+   the rules are scoped under `.view-spine-tree` so they ship even when RepoItem
+   (the original owner of these classes) is not mounted. The row sits indented
+   under its bench's children and keeps a ≥44px touch target. */
+.view-spine-bench .add-worktree-row {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 2px 8px 2px var(--icon-slot-width);
+  cursor: pointer;
+}
+
+.view-spine-bench .add-worktree-btn {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0.5;
+  cursor: pointer;
+  transition:
+    opacity 0.1s,
+    color 0.1s;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.view-spine-bench .add-worktree-row:hover .add-worktree-btn {
+  opacity: 1;
+  color: var(--text);
+}
+
+.view-spine-bench .add-worktree-row.disabled {
+  pointer-events: none;
+}
+
+.view-spine-bench .add-worktree-row.disabled .add-worktree-btn {
+  opacity: 0.7;
+  color: var(--accent);
+}
