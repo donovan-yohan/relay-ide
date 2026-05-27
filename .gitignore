@@ -13,6 +13,9 @@ analytics.db-wal
 relay-state.db
 relay-state.db-shm
 relay-state.db-wal
+ia.db
+ia.db-shm
+ia.db-wal
 
 # Runtime port allocator state
 port-assignments.json
