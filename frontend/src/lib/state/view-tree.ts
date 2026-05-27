@@ -866,6 +866,144 @@ export function applyLens(tree: ViewTree, lens: ViewLens): ViewTree {
   };
 }
 
+// ── #738: pins / favorites (PURE re-ordering) ─────────────────────────────────
+// Pin a Project / Bench / Workspace by its STABLE id (ProjectId / BenchId /
+// WorkspaceId). Pinned items float to the TOP of their parent list, preserving
+// the incoming (build/lens) order within the pinned and unpinned partitions so
+// pinning never re-shuffles anything else. PURE: never mutates the input tree,
+// never fetches. Applied AFTER `applyLens` so a pin overrides recency/host
+// ordering only for the rank (pinned-first), not the underlying filter.
+//
+// The pinned set is a flat `Set<string>` of mixed id kinds — ids are globally
+// unique by construction (`ws:` / project-identity / bench prefixes), so one set
+// keys all three layers without collision.
+
+/** Stable partition: items whose id is in `pinned` keep their incoming order but
+ *  move ahead of the rest, which also keep their incoming order. PURE. */
+function pinnedFirst<T>(
+  items: readonly T[],
+  idOf: (item: T) => string,
+  pinned: ReadonlySet<string>
+): T[] {
+  if (pinned.size === 0) return [...items];
+  const head: T[] = [];
+  const tail: T[] = [];
+  for (const item of items) {
+    if (pinned.has(idOf(item))) head.push(item);
+    else tail.push(item);
+  }
+  return [...head, ...tail];
+}
+
+/** Float pinned benches to the top of each of a project's instances. PURE. */
+function applyPinsToProject(
+  project: ViewTreeProject,
+  pinned: ReadonlySet<string>
+): ViewTreeProject {
+  const instances = project.instances.map((inst) => ({
+    ...inst,
+    benches: pinnedFirst(inst.benches, (b) => b.id, pinned),
+  }));
+  return { ...project, instances };
+}
+
+/**
+ * Re-order the tree so pinned items sort to the top of their parent. PURE —
+ * returns a structurally-new `ViewTree`, never mutates the input.
+ *
+ * - Pinned WORKSPACES float to the top of the workspace list.
+ * - Pinned PROJECTS float to the top within their workspace group AND within
+ *   the ungrouped lane (a project belongs to exactly one; pinning lifts it to
+ *   the top of whichever list it's in).
+ * - Pinned BENCHES float to the top within their owning instance.
+ *
+ * An empty `pinned` set is identity (same partition order in, same out).
+ */
+export function applyPins(tree: ViewTree, pinned: ReadonlySet<string>): ViewTree {
+  if (pinned.size === 0) return tree;
+  const sortProjects = (projects: ViewTreeProject[]): ViewTreeProject[] =>
+    pinnedFirst(
+      projects.map((p) => applyPinsToProject(p, pinned)),
+      (p) => p.id,
+      pinned
+    );
+  return {
+    workspaces: pinnedFirst(
+      tree.workspaces.map((ws) => ({
+        ...ws,
+        projects: sortProjects(ws.projects),
+      })),
+      (ws) => ws.id,
+      pinned
+    ),
+    ungroupedProjects: sortProjects(tree.ungroupedProjects),
+    // Free-lane entries are not pinnable (no stable Project/Bench/Workspace id),
+    // so they pass through unchanged.
+    freeLane: [...tree.freeLane],
+  };
+}
+
+/**
+ * Float pinned Workspaces + Projects to the top of an already-GROUPED tree
+ * (`groupProjectsByWorkspace` output). Bench-level pins are applied earlier (on
+ * the `ViewTree`, via `applyPins`) and ride along inside the project objects, so
+ * this only re-ranks the workspace + project lists the persisted grouping
+ * produced. PURE — never mutates inputs.
+ *
+ * Needed because the persisted-Workspace grouping re-orders workspaces by their
+ * stored `order` and re-orders projects by membership, which would otherwise
+ * clobber the pinned-first rank `applyPins` set on the raw tree.
+ */
+export function applyPinsToGrouped(
+  grouped: GroupedByWorkspace,
+  pinned: ReadonlySet<string>
+): GroupedByWorkspace {
+  if (pinned.size === 0) return grouped;
+  return {
+    workspaces: pinnedFirst(
+      grouped.workspaces.map((ws) => ({
+        ...ws,
+        projects: pinnedFirst(ws.projects, (p) => p.id, pinned),
+      })),
+      (ws) => ws.id,
+      pinned
+    ),
+    ungroupedProjects: pinnedFirst(
+      grouped.ungroupedProjects,
+      (p) => p.id,
+      pinned
+    ),
+  };
+}
+
+// ── #738: saved / named Views (PURE selection) ───────────────────────────────
+// A saved View is a user-named snapshot of the current lens (the persistent
+// extension of the #727 ephemeral lenses). It captures ONLY the lens today; pins
+// live in their own persisted set (shared across all Views) so a saved View
+// never has to embed the full pin set. Selecting a saved View applies its lens.
+//
+// Persistence + the store live in `lib/stores/ui.ts` (localStorage, reusing the
+// `ls`/`lsSave`/`lsRemove` helpers). This module owns only the PURE shape +
+// selection helpers so they're unit-testable without a DOM.
+
+/** A user-saved, named View. `id` is a stable local id (generated at save time);
+ *  `lens` is the captured ephemeral lens it restores. */
+export interface SavedView {
+  id: string;
+  name: string;
+  lens: ViewLens;
+}
+
+/** The lens a saved View restores. `null` when the id matches no saved View
+ *  (deleted / corrupt reference) — callers fall back to the default lens. PURE. */
+export function savedViewLens(
+  views: readonly SavedView[],
+  viewId: string
+): ViewLens | null {
+  const match = views.find((v) => v.id === viewId);
+  return match ? match.lens : null;
+}
+
 // ── #773: dedup derived benches vs. persisted bench overlays ──────────────────
 // An Instance row renders TWO bench sources: benches DERIVED from worktrees
 // (`ViewTreeBench`, keyed on cwd/worktree path) and #735 PERSISTED overlays

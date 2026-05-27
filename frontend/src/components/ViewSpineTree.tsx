@@ -12,16 +12,18 @@ import { CipherText } from './CipherText.js';
 import { SessionIndicator } from './SessionIndicator.js';
 import {
   applyLens,
+  applyPins,
+  applyPinsToGrouped,
   benchCreatePayload,
   buildViewTree,
   groupBenchOverlaysByInstance,
   groupProjectsByWorkspace,
   mergeInstanceBenches,
-  DEFAULT_VIEW_LENS,
   type BenchCreatePayload,
   type BenchOverlayInput,
   type InstanceHostStatus,
   type MergedBench,
+  type SavedView,
   type ViewLens,
   type ViewTreeAttention,
   type ViewTreeFreeEntry,
@@ -30,6 +32,7 @@ import {
   type ViewTreeNodeStatus,
   type ViewTreeTabLeaf,
 } from '../lib/state/view-tree.js';
+import { useUiStore } from '../lib/stores/ui.js';
 import { useIaWorkspaces } from '../lib/hooks/use-ia-workspaces.js';
 import {
   useIaBenchesAll,
@@ -56,6 +59,13 @@ export type ViewSpineCreateTab = (payload: BenchCreatePayload) => void;
  *  argument is the scoped session key the legacy sidebar already selects on. */
 export type ViewSpineSelectTab = (selectKey: string) => void;
 
+/** #738: pin state + toggle handed to a row. `isPinned(id)` reads the persisted
+ *  set; `toggle(id)` flips + persists. Read-only callers omit them entirely. */
+export interface PinControls {
+  isPinned: (id: string) => boolean;
+  toggle: (id: string) => void;
+}
+
 // Ad-hoc, ephemeral lenses (#727). Order is the visual + arrow-key order.
 const LENSES: ReadonlyArray<{ id: ViewLens; label: string }> = [
   { id: 'recent', label: 'recent' },
@@ -73,6 +83,40 @@ function statusDotClass(status: InstanceHostStatus): string {
 function CountBadge({ count }: { count: number }) {
   if (count <= 0) return null;
   return <span className="session-count-badge">{count}</span>;
+}
+
+// #738: pin/favorite toggle. A tiny icon button (★ pinned / ☆ unpinned) reusing
+// the muted-icon affordance language already used by the bench delete/chevron —
+// no new color tokens. Pinned items float to the top of their parent via the
+// pure `applyPins` re-order. Keyboard-accessible (real button) + ≥44px touch via
+// `.view-spine-pin-btn` CSS. Stops propagation so it never triggers a row action.
+function PinButton({
+  pinned,
+  label,
+  onToggle,
+}: {
+  pinned: boolean;
+  /** Human label for the accessible name (e.g. the project/bench/workspace name). */
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={['view-spine-pin-btn', pinned && 'pinned']
+        .filter(Boolean)
+        .join(' ')}
+      aria-pressed={pinned}
+      aria-label={pinned ? `unpin ${label}` : `pin ${label}`}
+      title={pinned ? 'unpin' : 'pin to top'}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+    >
+      {pinned ? '★' : '☆'}
+    </button>
+  );
 }
 
 // #739: bubbled attention badge — reuses the legacy `.repo-attention-badge`
@@ -168,6 +212,7 @@ function BenchRow({
   onCreateTab,
   onSelectTab,
   onDeleteOverlay,
+  pins,
 }: {
   instance: ViewTreeInstance;
   merged: MergedBench;
@@ -179,6 +224,8 @@ function BenchRow({
   /** Delete the persisted overlay backing this row. Only invoked when
    *  `merged.overlayId` is set. */
   onDeleteOverlay: (overlayId: string) => void;
+  /** #738: pin state + toggle for the BenchId backing this row. */
+  pins: PinControls;
 }) {
   const { bench } = merged;
   // #739: the individual Tab leaves under this bench (empty for an overlay-only
@@ -259,6 +306,15 @@ function BenchRow({
         {/* #739: attention bubbles up from the bench's tabs (shown when collapsed
             OR expanded — the badge is the at-a-glance summary). */}
         {bench ? <AttentionBadge attention={bench.attention} /> : null}
+        {/* #738: pin/favorite this Bench (only derived benches carry a stable
+            BenchId; overlay-only rows have no pinnable id). */}
+        {bench ? (
+          <PinButton
+            pinned={pins.isPinned(bench.id)}
+            label={merged.label}
+            onToggle={() => pins.toggle(bench.id)}
+          />
+        ) : null}
         {envCount > 0 ? (
           <span
             className="bench-overlay-env-badge"
@@ -357,6 +413,7 @@ function InstanceRow({
   onCreateTab,
   onSelectTab,
   onRefetchBenches,
+  pins,
 }: {
   instance: ViewTreeInstance;
   projectKind: ViewTreeProject['kind'];
@@ -368,6 +425,8 @@ function InstanceRow({
   onSelectTab?: ViewSpineSelectTab | undefined;
   /** Refetch the tree-level bench cache (reconcile after a failed mutation). */
   onRefetchBenches: () => void;
+  /** #738: pin state + toggle, threaded down to each bench row. */
+  pins: PinControls;
 }) {
   // #773: delete lives here (next to the merged row's delete affordance). The
   // create flow stays in `BenchCreate`. Both invalidate the shared bench cache.
@@ -434,6 +493,7 @@ function InstanceRow({
               onCreateTab={onCreateTab}
               onSelectTab={onSelectTab}
               onDeleteOverlay={handleDeleteOverlay}
+              pins={pins}
             />
           ))}
         </ul>
@@ -516,6 +576,7 @@ function ProjectRow({
   onSelectTab,
   onRefetchBenches,
   assign,
+  pins,
 }: {
   project: ViewTreeProject;
   /** Persisted bench overlays grouped by instanceId (#773 single query). */
@@ -525,6 +586,8 @@ function ProjectRow({
   onSelectTab?: ViewSpineSelectTab | undefined;
   onRefetchBenches: () => void;
   assign?: ProjectAssignControl | undefined;
+  /** #738: pin state + toggle for this Project + its descendant benches. */
+  pins: PinControls;
 }) {
   const initialColor = useMemo(
     () => deriveColor(project.colorSeed),
@@ -561,6 +624,13 @@ function ProjectRow({
           ) : null}
           {/* #739: attention bubbled up from every Tab in this project. */}
           <AttentionBadge attention={project.attention} />
+          {/* #738: pin/favorite this Project — floats it to the top of its
+              parent (workspace group or the ungrouped lane). */}
+          <PinButton
+            pinned={pins.isPinned(project.id)}
+            label={project.label}
+            onToggle={() => pins.toggle(project.id)}
+          />
         </div>
         {assign ? (
           <ProjectAssignSelect project={project} assign={assign} />
@@ -576,6 +646,7 @@ function ProjectRow({
             onCreateTab={onCreateTab}
             onSelectTab={onSelectTab}
             onRefetchBenches={onRefetchBenches}
+            pins={pins}
           />
         ))}
       </ul>
@@ -703,6 +774,113 @@ function LensSelector({
   );
 }
 
+// #738: saved/named Views. Lists the user's saved Views as selectable chips
+// (apply on click, × to delete) alongside a "+ save view" affordance that names
+// the CURRENT lens. Reuses the `.view-lens__tab` chip language + the bench
+// delete/create input primitives — no new visual chrome. Empty state: just the
+// save affordance (no chips), so a fresh user sees a clean control. The name
+// input validates non-empty (trimmed) before save is enabled.
+function SavedViewsBar({
+  savedViews,
+  onApply,
+  onDelete,
+  onSave,
+}: {
+  savedViews: readonly SavedView[];
+  onApply: (id: string) => void;
+  onDelete: (id: string) => void;
+  onSave: (name: string) => SavedView | null;
+}) {
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState('');
+  const trimmed = name.trim();
+  const canSave = trimmed.length > 0;
+
+  const commit = () => {
+    if (!canSave) return;
+    onSave(trimmed);
+    setName('');
+    setNaming(false);
+  };
+  const cancel = () => {
+    setName('');
+    setNaming(false);
+  };
+
+  return (
+    <div className="view-spine-saved-views" role="group" aria-label="saved views">
+      {savedViews.map((view) => (
+        <span key={view.id} className="view-spine-saved-view">
+          <button
+            type="button"
+            className="view-spine-saved-view__apply"
+            onClick={() => onApply(view.id)}
+            title={`apply view: ${view.name}`}
+          >
+            {view.name}
+          </button>
+          <button
+            type="button"
+            className="view-spine-saved-view__delete"
+            onClick={() => onDelete(view.id)}
+            aria-label={`delete view ${view.name}`}
+            title="delete view"
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      {naming ? (
+        <span className="view-spine-saved-view-form">
+          <input
+            type="text"
+            className="view-spine-saved-view-input"
+            value={name}
+            autoFocus
+            placeholder="view name"
+            aria-label="new view name"
+            onChange={(e) => setName(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commit();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                cancel();
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="view-spine-saved-view__save"
+            disabled={!canSave}
+            onClick={commit}
+            aria-label="save view"
+          >
+            save
+          </button>
+          <button
+            type="button"
+            className="view-spine-saved-view__cancel"
+            onClick={cancel}
+            aria-label="cancel save view"
+          >
+            ×
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          className="view-spine-saved-view__new"
+          onClick={() => setNaming(true)}
+        >
+          + save view
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ViewSpineTree({
   onCreateTab,
   onSelectTab,
@@ -741,9 +919,24 @@ export function ViewSpineTree({
     [nodes]
   );
 
-  // Ephemeral lens state: in-memory only, default `recent`, lost on reload (no
-  // persistence by design — #727).
-  const [lens, setLens] = useState<ViewLens>(DEFAULT_VIEW_LENS);
+  // #738: lens, pins, and saved Views are now PERSISTED (localStorage via the ui
+  // store) — restored on mount, instead of the #727 in-memory ephemeral lens.
+  const lens = useUiStore((s) => s.viewSpineLens);
+  const setLens = useUiStore((s) => s.setViewSpineLens);
+  const pinnedIds = useUiStore((s) => s.viewSpinePins);
+  const togglePin = useUiStore((s) => s.toggleViewSpinePin);
+  const savedViews = useUiStore((s) => s.viewSpineSavedViews);
+  const saveView = useUiStore((s) => s.saveViewSpineView);
+  const deleteView = useUiStore((s) => s.deleteViewSpineView);
+  const applySavedView = useUiStore((s) => s.applyViewSpineSavedView);
+
+  const pins: PinControls = useMemo(
+    () => ({
+      isPinned: (id: string) => pinnedIds.has(id),
+      toggle: (id: string) => togglePin(id),
+    }),
+    [pinnedIds, togglePin]
+  );
 
   const derived = useMemo(
     () =>
@@ -757,7 +950,11 @@ export function ViewSpineTree({
     [repos, worktrees, sessions, workspaceGroups, nodeStatuses]
   );
 
-  const tree = useMemo(() => applyLens(derived, lens), [derived, lens]);
+  // Lens first (filter/sort), then pins (pinned items float to top of parent).
+  const tree = useMemo(
+    () => applyPins(applyLens(derived, lens), pinnedIds),
+    [derived, lens, pinnedIds]
+  );
 
   // #773: ONE unfiltered `GET /hub/ia/benches` for the whole tree (no
   // per-instance fan-out), grouped by instanceId client-side and passed down to
@@ -800,9 +997,16 @@ export function ViewSpineTree({
     [tree]
   );
 
+  // #738: re-rank pinned Workspaces + Projects AFTER persisted grouping (which
+  // sorts by `order`/membership and would otherwise clobber the pinned-first
+  // rank). Bench pins already rode in via `applyPins` on the raw tree.
   const grouped = useMemo(
-    () => groupProjectsByWorkspace(flatProjects, persistedWorkspaces),
-    [flatProjects, persistedWorkspaces]
+    () =>
+      applyPinsToGrouped(
+        groupProjectsByWorkspace(flatProjects, persistedWorkspaces),
+        pinnedIds
+      ),
+    [flatProjects, persistedWorkspaces, pinnedIds]
   );
 
   // The workspace each project currently belongs to (first claimant by order),
@@ -897,8 +1101,19 @@ export function ViewSpineTree({
 
   // The Views selector is part of the sidebar header chrome: it renders in EVERY
   // state (loading, empty, content) so switching lenses is always available,
-  // even when the active lens yields zero nodes.
-  const selector = <LensSelector value={lens} onChange={setLens} />;
+  // even when the active lens yields zero nodes. #738: the built-in lenses are
+  // joined by the user's saved Views + a "save current as View" affordance.
+  const selector = (
+    <div className="view-spine-views">
+      <LensSelector value={lens} onChange={setLens} />
+      <SavedViewsBar
+        savedViews={savedViews}
+        onApply={applySavedView}
+        onDelete={deleteView}
+        onSave={(name) => saveView(name)}
+      />
+    </div>
+  );
 
   // Loading: the node join is still resolving and there's nothing derived yet.
   if (isLoading && repos.length === 0 && sessions.length === 0) {
@@ -969,7 +1184,16 @@ export function ViewSpineTree({
         {grouped.workspaces.map((ws) =>
           ws.projects.length > 0 ? (
             <section key={ws.id} className="view-spine-workspace">
-              <div className="sidebar-ungrouped-label">{ws.name}</div>
+              <div className="sidebar-ungrouped-label view-spine-workspace-label">
+                <span>{ws.name}</span>
+                {/* #738: pin/favorite this Workspace — floats the whole group to
+                    the top of the workspace list. */}
+                <PinButton
+                  pinned={pins.isPinned(ws.id)}
+                  label={ws.name}
+                  onToggle={() => pins.toggle(ws.id)}
+                />
+              </div>
               {ws.projects.map((project) => (
                 <ProjectRow
                   key={project.id}
@@ -979,6 +1203,7 @@ export function ViewSpineTree({
                   onSelectTab={onSelectTab}
                   onRefetchBenches={onRefetchBenches}
                   assign={makeAssign(project)}
+                  pins={pins}
                 />
               ))}
             </section>
@@ -999,6 +1224,7 @@ export function ViewSpineTree({
                 onSelectTab={onSelectTab}
                 onRefetchBenches={onRefetchBenches}
                 assign={makeAssign(project)}
+                pins={pins}
               />
             ))}
           </section>
