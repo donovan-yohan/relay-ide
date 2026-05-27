@@ -187,3 +187,156 @@
 .view-spine-tree .repo-attention-badge {
   flex-shrink: 0;
 }
+
+/* ── #738 saved Views + pins/favorites ─────────────────────────────────────────
+   Reuses the muted-icon + segmented-chip language already in this file. No new
+   color tokens — pinned uses the existing --accent, idle uses --text-muted. */
+
+/* Header chrome wraps the lens selector + saved-Views bar as one sticky block. */
+.view-spine-views {
+  flex: 0 0 auto;
+}
+
+/* Pin/favorite toggle — a tiny star button sitting at the end of a row's primary
+   line. Muted by default, accent when pinned, brightens on hover/focus. ≥44px
+   touch target via a min hit area while staying visually compact. */
+.view-spine-pin-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0 6px;
+  min-width: 24px;
+  min-height: 24px;
+  opacity: 0.5;
+  cursor: pointer;
+  transition:
+    opacity 0.1s,
+    color 0.1s;
+}
+.view-spine-pin-btn:hover {
+  opacity: 1;
+  color: var(--text);
+}
+.view-spine-pin-btn.pinned {
+  opacity: 1;
+  color: var(--accent);
+}
+.view-spine-pin-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The workspace label gets a flex row so its pin sits at the trailing edge. */
+.view-spine-workspace-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.view-spine-workspace-label > span {
+  min-width: 0;
+}
+
+/* Saved-Views bar — chips for each saved View + the save affordance. Wraps under
+   the lens selector, same padding rhythm. */
+.view-spine-saved-views {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.view-spine-saved-view {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.view-spine-saved-view__apply {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.58rem;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  padding: 5px 8px;
+  min-height: 28px;
+  cursor: pointer;
+}
+.view-spine-saved-view__apply:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.view-spine-saved-view__delete,
+.view-spine-saved-view__cancel {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0 6px;
+  min-height: 28px;
+  cursor: pointer;
+}
+.view-spine-saved-view__delete:hover,
+.view-spine-saved-view__cancel:hover {
+  color: var(--text);
+}
+.view-spine-saved-view__new {
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.58rem;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  padding: 5px 8px;
+  min-height: 28px;
+  cursor: pointer;
+}
+.view-spine-saved-view__new:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.view-spine-saved-view-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.view-spine-saved-view-input {
+  font-family: inherit;
+  font-size: 0.58rem;
+  padding: 4px 6px;
+  min-height: 28px;
+  width: 96px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.view-spine-saved-view-input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+.view-spine-saved-view__save {
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.58rem;
+  text-transform: lowercase;
+  padding: 4px 8px;
+  min-height: 28px;
+  cursor: pointer;
+}
+.view-spine-saved-view__save:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  border-color: var(--border);
+  color: var(--text-muted);
+}
