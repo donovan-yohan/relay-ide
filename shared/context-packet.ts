@@ -748,27 +748,67 @@ export const parseInboxMessage = parseSessionInboxMessage;
 /**
  * Resolve an `AnchorRef`'s `AnchorState` against the file's CURRENT contents.
  *
- * `captured` is the ref as stored on the packet; `current` is a freshly
- * minted `FileResourceRef` for the same location (re-stat/re-read via node
- * RPC under capability). Resolution rule (#766):
- *   - identity mismatch (`!fileResourceRefEquals`) → `'missing'`
- *   - identity match + sha256/mtime drift           → `'stale'`
- *   - identity match + decorations match            → `'unchanged'`
+ * PURE comparison primitive (#766). It performs NO I/O: `captured` is the ref
+ * as stored on the packet and `current` is a freshly minted `FileResourceRef`
+ * for the same location, obtained by the IMPURE caller in
+ * `server/anchor-resolution.ts` by re-stat/re-read through the node File RPC
+ * layer UNDER CAPABILITY (`rpc:fs:read`/`rpc:fs:stat`) — never a local
+ * `fs.stat` (a federated session's file lives on its own node).
  *
- * The reference equality below is the load-bearing reuse from
- * `file-resource-ref.ts`: identity excludes the freshness decorations, so a
+ * Resolution rule:
+ *   - `current === null`                              → `'missing'`
+ *   - identity mismatch (`!fileResourceRefEquals`)    → `'missing'`
+ *   - identity match + freshness decorations drift    → `'stale'`
+ *   - identity match + freshness decorations match    → `'unchanged'`
+ *   - identity match + freshness UNKNOWABLE (C3)      → `'stale'` (conservative)
+ *
+ * Freshness comparison precedence (identity already established):
+ *   1. If BOTH refs carry `sha256` → exact content equality: equal =>
+ *      `'unchanged'`, differ => `'stale'`. sha256 is authoritative.
+ *   2. Else if BOTH refs carry `mtimeMs` → mtime equality: equal =>
+ *      `'unchanged'`, differ => `'stale'`. Weaker than sha but still a real
+ *      freshness signal when content hashing was not performed.
+ *   3. Otherwise freshness is UNKNOWABLE. This is the C3 case: the captured
+ *      anchor was minted WITHOUT read-intent freshness (e.g. a `stat`/`list`
+ *      ref with no sha256 and no comparable mtime), so the resolver CANNOT
+ *      prove the range still points at the captured `quote`. We return the
+ *      CONSERVATIVE `'stale'` rather than silently asserting `'unchanged'` —
+ *      an anchored packet should be minted with `read` intent so freshness is
+ *      always comparable; absent that, the consumer is warned the range may
+ *      have drifted.
+ *
+ * Identity (`fileResourceRefEquals`) is the load-bearing reuse from
+ * `file-resource-ref.ts`: it excludes the freshness decorations, so a
  * re-minted ref for the same file is "the same anchor location" even though
  * its sha256/mtime/capturedAt differ — exactly the comparison the resolver
- * needs. Impl in #766; this stub just documents the contract and keeps the
- * import live.
+ * needs.
+ *
+ * `'shifted'` (range moved but quote relocatable elsewhere in the file) is
+ * EXPLICITLY DEFERRED (ADR-019); a moved range surfaces as `'stale'`.
  */
 export function resolveAnchorState(
   captured: AnchorRef,
   current: FileResourceRef | null
 ): AnchorState {
-  // impl in #766 — sketch only. Real version also compares sha256/mtime to
-  // distinguish 'stale' from 'unchanged'.
   if (!current) return 'missing';
   if (!fileResourceRefEquals(captured.ref, current)) return 'missing';
-  return 'unchanged';
+
+  const capturedSha = captured.ref.sha256;
+  const currentSha = current.sha256;
+  // 1. sha256 is authoritative when both sides carry it.
+  if (capturedSha !== undefined && currentSha !== undefined) {
+    return capturedSha === currentSha ? 'unchanged' : 'stale';
+  }
+
+  // 2. Fall back to mtime when both sides carry it.
+  const capturedMtime = captured.ref.mtimeMs;
+  const currentMtime = current.mtimeMs;
+  if (capturedMtime !== undefined && currentMtime !== undefined) {
+    return capturedMtime === currentMtime ? 'unchanged' : 'stale';
+  }
+
+  // 3. C3: freshness is unknowable (captured without read-intent freshness, or
+  // no comparable decoration). Conservatively report 'stale' — never silently
+  // 'unchanged' when we cannot prove the content is unchanged.
+  return 'stale';
 }
