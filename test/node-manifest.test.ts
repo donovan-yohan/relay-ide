@@ -42,6 +42,12 @@ describe('node manifest', () => {
           tmux: { status: 'available' },
           git: { status: 'available' },
           githubCli: { status: 'unavailable' },
+          rmux: {
+            status: 'unavailable',
+            binaryPresent: false,
+            helperPresent: false,
+            ipc: { kind: 'unix-socket' },
+          },
         },
       });
       // Core manifest no longer hardcodes a specific framework set.
