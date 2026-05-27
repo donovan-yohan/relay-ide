@@ -8,10 +8,10 @@ import { useToastStore } from '../lib/stores/toasts.js';
 import { sendPtyData } from '../lib/ws.js';
 import { estimateTerminalDimensions } from '../lib/utils.js';
 import type { WorktreeInfo, Repo, PullRequest } from '../lib/types.js';
-import type { NodeId } from '../../../shared/identity.js';
 import {
   createWorktree,
   ConflictError,
+  fetchIaBenches,
   fetchWorkspaceSettings,
   fetchWorktreeStatus,
   killSession,
@@ -19,6 +19,7 @@ import {
   renameSession as renameSessionApi,
   launchWorkspaceSession,
 } from '../lib/api.js';
+import type { BenchCreatePayload } from '../lib/state/view-tree.js';
 import {
   derivePrAction,
   buildPrStateInput,
@@ -221,16 +222,15 @@ export function useSessionHandlers({
   // node-aware create entrypoint (`createAgentSession` → `createSession`, the
   // #473 local/remote/free flow). The bench resolves to the agent-session repo
   // context the backend requires (`repoPath` ∈ config.repos, worktree → cwd) —
-  // mirroring the dialog's local-git create. NO env-override inheritance
-  // (deferred to #740 / backend #735). Offline/remote-unavailable benches fail
-  // through the same toast path as every other create; no bespoke error UI.
+  // mirroring the dialog's local-git create. #740: the new Tab also inherits the
+  // anchoring Bench's persisted `envOverrides` overlay (looked up by benchId),
+  // applied additively to the PTY env by the backend (reserved `PATH`/`RELAY_*`
+  // keys are refused). The overlay lookup is best-effort — a fetch failure or
+  // missing overlay just creates with no extra env (unchanged behavior), never
+  // blocking the tab. Offline/remote-unavailable benches fail through the same
+  // toast path as every other create; no bespoke error UI.
   const handleViewSpineCreateTab = useCallback(
-    async (payload: {
-      nodeId: NodeId;
-      repoPath: string;
-      worktreePath: string;
-      cwd: string;
-    }) => {
+    async (payload: BenchCreatePayload) => {
       const loadingKey = `view-spine-tab:${payload.nodeId}:${payload.cwd}`;
       if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
       useSessionsStore.getState().setLoading(loadingKey);
@@ -238,6 +238,21 @@ export function useSessionHandlers({
         const { cols, rows } = estimateTerminalDimensions(
           useUiStore.getState().terminalFontSize
         );
+        // Resolve the anchoring Bench's persisted env overlay (#740). Match by
+        // the deterministic benchId; best-effort so create never blocks on it.
+        let envOverrides: Record<string, string> | undefined;
+        try {
+          const benches = await fetchIaBenches(payload.instanceId);
+          const overlay = benches.find((b) => b.id === payload.benchId);
+          if (overlay && Object.keys(overlay.envOverrides).length > 0) {
+            envOverrides = overlay.envOverrides;
+          }
+        } catch (overlayError) {
+          logger.warn(
+            'view-spine tab: bench env-overlay lookup failed; creating with no inherited env',
+            overlayError
+          );
+        }
         const { session, error } = await createAgentSession({
           nodeId: payload.nodeId,
           repoPath: payload.repoPath,
@@ -246,6 +261,7 @@ export function useSessionHandlers({
           type: 'agent',
           cols,
           rows,
+          ...(envOverrides ? { envOverrides } : {}),
         });
         if (session?.id && !(error instanceof ConflictError)) {
           useSessionsStore

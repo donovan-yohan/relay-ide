@@ -754,6 +754,8 @@ type AgentSessionParams = {
   portVariables?: string[] | undefined;
   /** #614 slice 4: effective scrollback cap from resolveSessionSettings. */
   scrollbackBytes?: number | undefined;
+  /** #740: anchoring Bench's env overrides, applied additively to the PTY env. */
+  envOverrides?: Record<string, string> | undefined;
 };
 
 type TerminalSessionParams = {
@@ -765,6 +767,8 @@ type TerminalSessionParams = {
   safeRows: number | undefined;
   sessionLane: SessionLane | undefined;
   portVariables?: string[] | undefined;
+  /** #740: anchoring Bench's env overrides, applied additively to the PTY env. */
+  envOverrides?: Record<string, string> | undefined;
 };
 
 function createTerminalSessionRecord(
@@ -787,6 +791,7 @@ function createTerminalSessionRecord(
     ...(params.safeRows != null && { rows: params.safeRows }),
     ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
     portVariables: params.portVariables,
+    ...(params.envOverrides ? { envOverrides: params.envOverrides } : {}),
   });
 }
 
@@ -830,6 +835,8 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     ...(params.scrollbackBytes !== undefined
       ? { maxScrollbackBytes: params.scrollbackBytes }
       : {}),
+    // #740: anchoring Bench's env overrides, applied additively to the PTY env.
+    ...(params.envOverrides ? { envOverrides: params.envOverrides } : {}),
   });
 
   if (params.worktreePath) {
@@ -907,6 +914,28 @@ export function validateSessionCreateRequest(
   if (workContextStore.get(workContextId)) return true;
   res.status(404).json({ error: 'work_context_not_found' });
   return false;
+}
+
+/**
+ * Sanitize a caller-supplied `envOverrides` map for a session create (#740: a
+ * Tab inherits its anchoring Bench's persisted env overrides). Keeps only
+ * `string -> string` entries with a non-empty key. Non-records and non-string
+ * values are dropped silently — the PTY layer additively applies what survives
+ * and refuses reserved keys (`PATH`, `RELAY_*`) itself, so a malformed map can
+ * never break session identity. Returns `undefined` when nothing usable
+ * remains (no env added = unchanged behavior).
+ */
+function sanitizeSessionEnvOverrides(
+  raw: unknown
+): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof key !== 'string' || key.length === 0) continue;
+    if (typeof value !== 'string') continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function configuredRepoForCwd(config: Config, cwd: string): string | null {
@@ -3473,6 +3502,7 @@ async function main(): Promise<void> {
       sessionLane,
       ticketContext,
       workContextId,
+      envOverrides: rawEnvOverrides,
     } = createBody as {
       repoPath?: string;
       worktreePath?: string | null;
@@ -3493,6 +3523,7 @@ async function main(): Promise<void> {
       continuePolicy?: ContinuePolicy;
       sessionLane?: SessionLane;
       workContextId?: string;
+      envOverrides?: unknown;
       ticketContext?: {
         ticketId: string;
         title: string;
@@ -3506,6 +3537,10 @@ async function main(): Promise<void> {
 
     // Read config once for the lifetime of this request
     const freshConfig = getConfig();
+
+    // #740: Bench-inherited env overrides (sanitized to string->string). The
+    // PTY layer applies these additively and refuses reserved keys.
+    const sessionEnvOverrides = sanitizeSessionEnvOverrides(rawEnvOverrides);
 
     // For terminal sessions where only cwd/worktreePath is set, fall back to that as repoPath
     // Use repoPath if set; for terminal-only sessions the validated anchor was cwd/worktreePath
@@ -3557,6 +3592,7 @@ async function main(): Promise<void> {
           safeRows,
           sessionLane,
           portVariables,
+          envOverrides: sessionEnvOverrides,
         });
       } catch (err) {
         sendSessionCreateError(res, err, freshConfig.maxPtySessions);
@@ -3694,6 +3730,7 @@ async function main(): Promise<void> {
         sessionLane,
         portVariables,
         scrollbackBytes: resolved.scrollbackBytes,
+        envOverrides: sessionEnvOverrides,
       });
     } catch (err) {
       sendSessionCreateError(res, err, freshConfig.maxPtySessions);

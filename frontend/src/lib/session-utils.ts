@@ -25,6 +25,10 @@ export interface CreateAgentSessionOptions {
   newWorktree?: boolean | undefined;
   branchRenamePrompt?: string | undefined;
   sessionLane?: SessionLane | undefined;
+  /** #740: env overrides inherited from the anchoring Bench, applied additively
+   *  to the spawned PTY env. The backend refuses reserved keys (`PATH`,
+   *  `RELAY_*`). */
+  envOverrides?: Record<string, string> | undefined;
   ticketContext?: {
     ticketId: string;
     title: string;

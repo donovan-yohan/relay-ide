@@ -418,6 +418,15 @@ export type CreatePtyParams = {
   nodeId?: string | undefined;
   /** WorkContext ID to inject as RELAY_WORK_CONTEXT_ID (omitted when not set). */
   workContextId?: string | undefined;
+  /**
+   * Additional env vars layered on top of the base session env (#740: a Tab
+   * inherits its anchoring Bench's persisted `envOverrides`). Applied
+   * ADDITIVELY before Relay-owned identity injection, so Relay's own
+   * `RELAY_*`/`RELAY_HUB_URL` vars and the per-session relayctl PATH shim
+   * always win — caller env can never clobber them. An empty/undefined record
+   * is a no-op (unchanged behavior).
+   */
+  envOverrides?: Record<string, string> | undefined;
   callbacks?:
     | {
         onStateChange?: Array<(sessionId: string, state: AgentState) => void>;
@@ -688,6 +697,53 @@ function injectRelaySessionEnv(
   }
 }
 
+/**
+ * Reserved env keys that bench overrides may NOT set. These are Relay-owned:
+ * `PATH` carries the per-session relayctl shim, and any `RELAY_*` var is part
+ * of the session identity/control contract. A bench override targeting one of
+ * these is dropped (logged once) rather than applied, so a misconfigured bench
+ * can never break session identity or shim discovery.
+ */
+function isReservedEnvKey(key: string): boolean {
+  return key === 'PATH' || key.startsWith('RELAY_');
+}
+
+/**
+ * Layer a Bench's persisted `envOverrides` onto the base PTY env (#740).
+ * Additive: each non-reserved key is set (or overwritten) on both the process
+ * env and the tmux update-environment set. Reserved keys (`PATH`, `RELAY_*`)
+ * are skipped so Relay's own injection always wins. Empty record is a no-op.
+ *
+ * @internal exported as injectBenchEnvOverridesForTest for testing only.
+ */
+function applyBenchEnvOverrides(
+  env: Record<string, string>,
+  tmuxEnv: Record<string, string>,
+  overrides: Record<string, string>
+): void {
+  for (const [key, value] of Object.entries(overrides)) {
+    if (typeof key !== 'string' || key.length === 0) continue;
+    if (typeof value !== 'string') continue;
+    if (isReservedEnvKey(key)) {
+      logger.warn(
+        `Skipping reserved bench env override "${key}" (Relay-owned, not overridable)`
+      );
+      continue;
+    }
+    env[key] = value;
+    tmuxEnv[key] = value;
+  }
+}
+
+/** @internal Exposed for unit tests of bench env-override precedence. */
+export function injectBenchEnvOverridesForTest(
+  env: Record<string, string>,
+  tmuxEnv: Record<string, string>,
+  overrides: Record<string, string>
+): void {
+  applyBenchEnvOverrides(env, tmuxEnv, overrides);
+}
+
 function buildPortInjectionParams(
   repoPath: string | undefined,
   worktreePath: string | null,
@@ -746,7 +802,8 @@ function setupEnvAndHooks(
   paramClaudeFullscreen: boolean | undefined,
   rawArgs: string[],
   portInjectionParams?: PortInjectionParams,
-  relaySessionEnvParams?: RelaySessionEnvParams
+  relaySessionEnvParams?: RelaySessionEnvParams,
+  envOverrides?: Record<string, string> | undefined
 ): HookSetupResult {
   const env = cleanEnv();
   const tmuxEnv: Record<string, string> = {};
@@ -826,8 +883,16 @@ function setupEnvAndHooks(
     injectPortEnvVars(env, tmuxEnv, portInjectionParams);
   }
 
+  // #740: layer the anchoring Bench's persisted env overrides on top of the
+  // base session env. Applied BEFORE Relay identity injection below so the
+  // Relay-owned vars + relayctl PATH shim always win and can never be clobbered
+  // by caller-supplied env.
+  if (envOverrides) {
+    applyBenchEnvOverrides(env, tmuxEnv, envOverrides);
+  }
+
   // Inject Relay-owned session identity env vars. These are set last so they
-  // are never overwritten by hook or port injection above.
+  // are never overwritten by hook, port, or bench-override injection above.
   if (relaySessionEnvParams) {
     injectRelaySessionEnv(env, tmuxEnv, relaySessionEnvParams);
   }
@@ -1098,6 +1163,7 @@ export function createPtySession(
     maxScrollbackBytes: paramMaxScrollbackBytes,
     nodeId: paramNodeId,
     workContextId: paramWorkContextId,
+    envOverrides: paramEnvOverrides,
   } = params;
 
   const maxScrollbackPerSession =
@@ -1142,7 +1208,8 @@ export function createPtySession(
     paramClaudeFullscreen,
     rawArgs,
     portInjectionParams,
-    relaySessionEnvParams
+    relaySessionEnvParams,
+    paramEnvOverrides
   );
 
   const { env, tmuxEnv, hookToken, hooksActive, settingsPath } = hookSetup;

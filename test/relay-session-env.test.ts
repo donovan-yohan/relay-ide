@@ -21,7 +21,10 @@ import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as sessions from '../server/sessions.js';
 import type { PtySession } from '../server/types.js';
-import { injectRelaySessionEnvForTest } from '../server/pty-handler.js';
+import {
+  injectRelaySessionEnvForTest,
+  injectBenchEnvOverridesForTest,
+} from '../server/pty-handler.js';
 
 const execFileAsync = promisify(execFile);
 const createdIds: string[] = [];
@@ -198,6 +201,70 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
   });
 });
 
+// ── #740: Bench env-override application + precedence ──────────────────────
+
+describe('injectBenchEnvOverridesForTest — bench env inheritance (#740)', () => {
+  it('applies non-reserved overrides to both env and tmuxEnv', () => {
+    const env: Record<string, string> = { PATH: '/usr/bin' };
+    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
+    injectBenchEnvOverridesForTest(env, tmuxEnv, {
+      MY_VAR: 'hello',
+      ANOTHER: '42',
+    });
+    expect(env.MY_VAR).toBe('hello');
+    expect(env.ANOTHER).toBe('42');
+    expect(tmuxEnv.MY_VAR).toBe('hello');
+    expect(tmuxEnv.ANOTHER).toBe('42');
+  });
+
+  it('an empty override record is a no-op (unchanged behavior)', () => {
+    const env: Record<string, string> = { PATH: '/usr/bin', EXISTING: 'x' };
+    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
+    injectBenchEnvOverridesForTest(env, tmuxEnv, {});
+    expect(env).toEqual({ PATH: '/usr/bin', EXISTING: 'x' });
+    expect(tmuxEnv).toEqual({ PATH: '/usr/bin' });
+  });
+
+  it('refuses to clobber PATH (relayctl shim is Relay-owned)', () => {
+    const env: Record<string, string> = { PATH: '/usr/bin' };
+    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
+    injectBenchEnvOverridesForTest(env, tmuxEnv, { PATH: '/evil/bin' });
+    expect(env.PATH).toBe('/usr/bin');
+    expect(tmuxEnv.PATH).toBe('/usr/bin');
+  });
+
+  it('refuses to clobber any RELAY_* var (session identity is Relay-owned)', () => {
+    const env: Record<string, string> = {
+      PATH: '/usr/bin',
+      RELAY_NODE_ID: 'local',
+    };
+    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
+    injectBenchEnvOverridesForTest(env, tmuxEnv, {
+      RELAY_NODE_ID: 'spoofed',
+      RELAY_SESSION_ID: 'spoofed',
+      RELAY_HUB_URL: 'http://evil',
+    });
+    expect(env.RELAY_NODE_ID).toBe('local');
+    expect(env.RELAY_SESSION_ID).toBeUndefined();
+    expect(env.RELAY_HUB_URL).toBeUndefined();
+    expect(tmuxEnv.RELAY_NODE_ID).toBeUndefined();
+  });
+
+  it('drops non-string values and blank keys (paranoid sanitize)', () => {
+    const env: Record<string, string> = { PATH: '/usr/bin' };
+    const tmuxEnv: Record<string, string> = {};
+    injectBenchEnvOverridesForTest(env, tmuxEnv, {
+      GOOD: 'ok',
+      '': 'no-key',
+      // @ts-expect-error intentionally non-string to prove it is dropped
+      BAD: 123,
+    });
+    expect(env.GOOD).toBe('ok');
+    expect(env['']).toBeUndefined();
+    expect(env.BAD).toBeUndefined();
+  });
+});
+
 // ── Non-Relay shells do NOT have RELAY_* vars ──────────────────────────────
 
 describe('env isolation — non-Relay shells are clean', () => {
@@ -302,6 +369,77 @@ describe('sessions.create — RELAY_* env vars reach the spawned PTY', () => {
 
     const scrollback = await waitForScrollbackContains(result.id, 'CTX=');
     expect(scrollback).toContain('CTX=NOTSET');
+  });
+
+  // ── #740: Bench-inherited envOverrides reach the spawned PTY ──────────────
+  it('bench envOverrides appear in the spawned PTY env', async () => {
+    const result = sessions.create({
+      repoName: 'env-bench-test',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: process.execPath,
+      args: [
+        '-e',
+        [
+          "console.log('BENCH_VAR=' + (process.env.BENCH_VAR || 'NOTSET'));",
+          'setTimeout(()=>{}, 10000);',
+        ].join(' '),
+      ],
+      tmuxAttach: true,
+      envOverrides: { BENCH_VAR: 'from-bench' },
+    });
+    createdIds.push(result.id);
+
+    const scrollback = await waitForScrollbackContains(result.id, 'BENCH_VAR=');
+    expect(scrollback).toContain('BENCH_VAR=from-bench');
+  });
+
+  it('a bench override cannot clobber RELAY_NODE_ID (Relay identity wins)', async () => {
+    const result = sessions.create({
+      repoName: 'env-bench-precedence',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: process.execPath,
+      args: [
+        '-e',
+        [
+          "console.log('NODE=' + (process.env.RELAY_NODE_ID || ''));",
+          'setTimeout(()=>{}, 10000);',
+        ].join(' '),
+      ],
+      tmuxAttach: true,
+      // Adversarial override: must NOT win over Relay's own identity injection.
+      envOverrides: { RELAY_NODE_ID: 'spoofed' },
+    });
+    createdIds.push(result.id);
+
+    const scrollback = await waitForScrollbackContains(result.id, 'NODE=');
+    expect(scrollback).toContain('NODE=local');
+    expect(scrollback).not.toContain('NODE=spoofed');
+  });
+
+  it('no envOverrides → no extra env added (unchanged behavior)', async () => {
+    const result = sessions.create({
+      repoName: 'env-bench-none',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: process.execPath,
+      args: [
+        '-e',
+        [
+          "console.log('BENCH_VAR=' + (process.env.BENCH_VAR || 'NOTSET'));",
+          'setTimeout(()=>{}, 10000);',
+        ].join(' '),
+      ],
+      tmuxAttach: true,
+    });
+    createdIds.push(result.id);
+
+    const scrollback = await waitForScrollbackContains(result.id, 'BENCH_VAR=');
+    expect(scrollback).toContain('BENCH_VAR=NOTSET');
   });
 });
 

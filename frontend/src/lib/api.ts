@@ -1155,6 +1155,9 @@ export interface CreateSessionBody {
   newWorktree?: boolean | undefined;
   branchRenamePrompt?: string | undefined;
   sessionLane?: SessionLane | undefined;
+  /** #740: Bench-inherited env overrides applied additively to the PTY env.
+   *  Reserved keys (`PATH`, `RELAY_*`) are refused by the backend. */
+  envOverrides?: Record<string, string> | undefined;
   ticketContext?: {
     ticketId: string;
     title: string;
