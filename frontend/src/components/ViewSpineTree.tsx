@@ -13,21 +13,35 @@ import {
   applyLens,
   benchCreatePayload,
   buildViewTree,
+  groupBenchOverlaysByInstance,
   groupProjectsByWorkspace,
+  mergeInstanceBenches,
   DEFAULT_VIEW_LENS,
   type BenchCreatePayload,
+  type BenchOverlayInput,
   type InstanceHostStatus,
+  type MergedBench,
   type ViewLens,
-  type ViewTreeBench,
   type ViewTreeFreeEntry,
   type ViewTreeInstance,
   type ViewTreeProject,
   type ViewTreeNodeStatus,
 } from '../lib/state/view-tree.js';
 import { useIaWorkspaces } from '../lib/hooks/use-ia-workspaces.js';
+import {
+  useIaBenchesAll,
+  useIaBenchMutations,
+} from '../lib/hooks/use-ia-benches.js';
 import { WorkspaceBar } from './WorkspaceBar.js';
 import { BenchCreate } from './BenchCreate.js';
+import { createLogger } from '../lib/logger.js';
 import './ViewSpineTree.css';
+
+const logger = createLogger('view-spine-tree');
+
+function benchErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
 
 /** Create a Tab anchored to a Bench's (nodeId, cwd). Wired to the EXISTING
  *  node-aware session-create entrypoint by `App` — NOT a new create flow, and
@@ -53,25 +67,37 @@ function CountBadge({ count }: { count: number }) {
   return <span className="session-count-badge">{count}</span>;
 }
 
+// #773: one row per cwd, fusing a derived worktree bench with a persisted
+// overlay sharing that cwd. Renders the union: branch + tab count + "+ tab"
+// (when a derived worktree backs it), env badge + delete (when an overlay backs
+// it), and the verbatim cwd secondary line for overlay-backed rows.
 function BenchRow({
   instance,
-  bench,
+  merged,
+  busy,
   onCreateTab,
+  onDeleteOverlay,
 }: {
   instance: ViewTreeInstance;
-  bench: ViewTreeBench;
+  merged: MergedBench;
+  /** Overlay delete in flight (disables this row's delete affordance). */
+  busy: boolean;
   onCreateTab?: ViewSpineCreateTab | undefined;
+  /** Delete the persisted overlay backing this row. Only invoked when
+   *  `merged.overlayId` is set. */
+  onDeleteOverlay: (overlayId: string) => void;
 }) {
+  const { bench } = merged;
   // Per-bench in-flight guard so the affordance disables itself (and other
   // benches stay clickable) while a create is pending. Errors surface through
   // the existing create path's toast — no bespoke error UI here.
   const [creating, setCreating] = useState(false);
   // Resolve the create payload up front. `null` for a non-git/directory bench
-  // (no config.repos anchor → agent session impossible), which withholds the
-  // "+ tab" affordance entirely. Memoized so the render decision and the click
-  // handler agree.
+  // OR an overlay-only row (no derived worktree → no config.repos anchor), which
+  // withholds the "+ tab" affordance entirely. Memoized so the render decision
+  // and the click handler agree.
   const createPayload = useMemo(
-    () => benchCreatePayload(instance, bench),
+    () => (bench ? benchCreatePayload(instance, bench) : null),
     [instance, bench]
   );
   const handleCreate = useCallback(async () => {
@@ -86,27 +112,72 @@ function BenchRow({
     }
   }, [onCreateTab, createPayload, creating]);
 
+  const envCount = Object.keys(merged.envOverrides).length;
+  const isOverlay = merged.overlayId !== null;
+  const showBranch = bench?.isGit && bench.branch;
+  // The verbatim cwd line is shown for overlay-backed rows (so the user sees the
+  // raw absolute path they entered, C1). A derived-only git row shows its branch
+  // instead (no cwd leak beyond the existing #731 behaviour).
+  const showCwd = isOverlay;
+
   return (
-    <li className="session-row inactive state-inactive view-spine-bench">
+    <li
+      className={[
+        'session-row inactive state-inactive view-spine-bench',
+        isOverlay && 'bench-overlay-row',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
       <div className="session-row-primary">
         <span className="session-name">
-          <MarqueeText>{bench.label}</MarqueeText>
+          <MarqueeText>{merged.label}</MarqueeText>
         </span>
-        <CountBadge count={bench.tab.count} />
+        {bench ? <CountBadge count={bench.tab.count} /> : null}
+        {envCount > 0 ? (
+          <span
+            className="bench-overlay-env-badge"
+            title={`${envCount} env override(s)`}
+          >
+            env {envCount}
+          </span>
+        ) : null}
+        {isOverlay ? (
+          <button
+            type="button"
+            className="bench-overlay-delete"
+            disabled={busy}
+            onClick={() => merged.overlayId && onDeleteOverlay(merged.overlayId)}
+            aria-label={`delete bench ${merged.label}`}
+            title="delete bench"
+          >
+            ×
+          </button>
+        ) : null}
       </div>
       {/* `.secondary-branch` is rendered ONLY for git benches. Directory
           benches omit the element entirely (no branch leakage). */}
-      {bench.isGit && bench.branch ? (
+      {showBranch ? (
         <div className="session-row-secondary">
           <span className="secondary-branch">
-            <MarqueeText>{bench.branch}</MarqueeText>
+            <MarqueeText>{bench!.branch}</MarqueeText>
+          </span>
+        </div>
+      ) : null}
+      {/* cwd shown verbatim for overlay-backed rows — the raw absolute path,
+          never decoded (C1). */}
+      {showCwd ? (
+        <div className="session-row-secondary">
+          <span className="bench-overlay-cwd">
+            <MarqueeText>{merged.cwd}</MarqueeText>
           </span>
         </div>
       ) : null}
       {/* #731 "+ tab" anchored to THIS bench's (nodeId, repoPath, worktree).
           Reuses the `.add-worktree-row`/`.add-worktree-btn` styling ONLY — it
           wires to session/tab CREATION, NOT worktree creation (distinct copy
-          `+ tab`). Withheld for non-git benches (no agent-capable repo anchor). */}
+          `+ tab`). Withheld for non-git/overlay-only benches (no agent-capable
+          repo anchor). */}
       {onCreateTab && createPayload ? (
         <div
           className={['add-worktree-row', creating && 'disabled']
@@ -143,12 +214,44 @@ function defaultBenchCwd(
 function InstanceRow({
   instance,
   projectKind,
+  overlays,
   onCreateTab,
+  onRefetchBenches,
 }: {
   instance: ViewTreeInstance;
   projectKind: ViewTreeProject['kind'];
+  /** Persisted bench overlays for THIS instance, pre-grouped from the single
+   *  tree-level `GET /hub/ia/benches` (#773 — no per-instance fan-out). */
+  overlays: BenchOverlayInput[];
   onCreateTab?: ViewSpineCreateTab | undefined;
+  /** Refetch the tree-level bench cache (reconcile after a failed mutation). */
+  onRefetchBenches: () => void;
 }) {
+  // #773: delete lives here (next to the merged row's delete affordance). The
+  // create flow stays in `BenchCreate`. Both invalidate the shared bench cache.
+  const { deleteMutation } = useIaBenchMutations(instance.id);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // #773: fuse derived worktree benches with persisted overlays by cwd → one row
+  // per cwd (overlay preferred, derived branch/tab/anchor inherited).
+  const merged = useMemo(
+    () => mergeInstanceBenches(instance.benches, overlays),
+    [instance.benches, overlays]
+  );
+
+  const handleDeleteOverlay = useCallback(
+    (overlayId: string) => {
+      setDeleteError(null);
+      deleteMutation.mutate(overlayId, {
+        onError: (err) => {
+          logger.warn('delete bench failed', err);
+          setDeleteError(benchErrorMessage(err, 'could not delete bench'));
+        },
+      });
+    },
+    [deleteMutation]
+  );
+
   return (
     <li className="session-row view-spine-instance">
       <div className="session-row-primary">
@@ -163,17 +266,34 @@ function InstanceRow({
         </span>
         <CountBadge count={instance.rootTab.count} />
       </div>
-      {instance.benches.length > 0 ? (
+      {merged.length > 0 ? (
         <ul className="session-list view-spine-bench-list">
-          {instance.benches.map((bench) => (
+          {merged.map((row) => (
             <BenchRow
-              key={bench.id}
+              key={row.cwd}
               instance={instance}
-              bench={bench}
+              merged={row}
+              busy={deleteMutation.isPending}
               onCreateTab={onCreateTab}
+              onDeleteOverlay={handleDeleteOverlay}
             />
           ))}
         </ul>
+      ) : null}
+      {deleteError ? (
+        <div className="bench-create-error" role="alert">
+          <span>{deleteError}</span>
+          <button
+            type="button"
+            className="bench-create-retry"
+            onClick={() => {
+              setDeleteError(null);
+              onRefetchBenches();
+            }}
+          >
+            retry
+          </button>
+        </div>
       ) : null}
       {/* #730 "+ bench": persisted bench overlays (cwd + env) for this instance
           plus the create flow. Wired to the #735 `/hub/ia/benches` CRUD API. */}
@@ -181,6 +301,7 @@ function InstanceRow({
         instanceId={instance.id}
         projectKind={projectKind}
         defaultCwd={defaultBenchCwd(instance, projectKind)}
+        onRefetch={onRefetchBenches}
       />
     </li>
   );
@@ -232,11 +353,16 @@ function ProjectAssignSelect({
 
 function ProjectRow({
   project,
+  overlaysByInstance,
   onCreateTab,
+  onRefetchBenches,
   assign,
 }: {
   project: ViewTreeProject;
+  /** Persisted bench overlays grouped by instanceId (#773 single query). */
+  overlaysByInstance: Map<string, BenchOverlayInput[]>;
   onCreateTab?: ViewSpineCreateTab | undefined;
+  onRefetchBenches: () => void;
   assign?: ProjectAssignControl | undefined;
 }) {
   const initialColor = useMemo(
@@ -283,7 +409,9 @@ function ProjectRow({
             key={instance.id}
             instance={instance}
             projectKind={project.kind}
+            overlays={overlaysByInstance.get(instance.id) ?? []}
             onCreateTab={onCreateTab}
+            onRefetchBenches={onRefetchBenches}
           />
         ))}
       </ul>
@@ -444,6 +572,18 @@ export function ViewSpineTree({
 
   const tree = useMemo(() => applyLens(derived, lens), [derived, lens]);
 
+  // #773: ONE unfiltered `GET /hub/ia/benches` for the whole tree (no
+  // per-instance fan-out), grouped by instanceId client-side and passed down to
+  // each `InstanceRow`. Reconcile on a failed bench mutation via `refetch`.
+  const { data: allBenches, refetch: refetchBenches } = useIaBenchesAll();
+  const overlaysByInstance = useMemo(
+    () => groupBenchOverlaysByInstance((allBenches ?? []) as BenchOverlayInput[]),
+    [allBenches]
+  );
+  const onRefetchBenches = useCallback(() => {
+    void refetchBenches();
+  }, [refetchBenches]);
+
   // #728: the persisted six-layer Workspace layer (#733 CRUD). The bar manages
   // workspace lifecycle; here we OVERLAY persisted membership on the derived
   // tree. All derived projects (from the legacy workspace groups + the legacy
@@ -451,8 +591,19 @@ export function ViewSpineTree({
   // RE-grouped by persisted `projectIds`. Unassigned projects fall back to
   // ungrouped. NO legacy auto-import: the legacy `workspaceGroups` grouping is
   // collapsed away for render, never migrated into persisted Workspaces.
-  const { workspaces: persistedWorkspaces, updateMutation } = useIaWorkspaces();
-  const assignBusy = updateMutation.isPending;
+  const {
+    workspaces: persistedWorkspaces,
+    updateMutation,
+    refetch: refetchWorkspaces,
+  } = useIaWorkspaces();
+  // #752: a project-assign sequences TWO PATCHes (remove from source, append to
+  // target). They're not individually optimistic, so guard the whole sequence
+  // with one in-flight flag and reconcile via a single refetch at the end. A
+  // separate flag (not `updateMutation.isPending`) keeps the controls disabled
+  // across BOTH awaited PATCHes, not just whichever is currently in flight.
+  const [assignInFlight, setAssignInFlight] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const assignBusy = updateMutation.isPending || assignInFlight;
 
   const flatProjects = useMemo(
     () => [
@@ -487,46 +638,71 @@ export function ViewSpineTree({
     [persistedWorkspaces]
   );
 
-  // Move a project into `targetWorkspaceId` (or '' to ungroup). PATCHes the
-  // membership of the source (remove) and target (append) workspaces. The
-  // membership list is replaced wholesale per the #733 contract.
+  // #752: Move a project into `targetWorkspaceId` (or '' to ungroup). This is a
+  // SEQUENCED two-PATCH op: remove the project from its current owner, then
+  // append it to the target. The PATCHes are awaited in order via `mutateAsync`
+  // with a SINGLE guarded refetch at the end — never per-mutation invalidation
+  // (which could refetch between the two PATCHes and flicker, or drop/duplicate
+  // the project mid-sequence). On partial failure we surface a clear error AND
+  // refetch to reconcile, so a moved project never silently desyncs.
   const assignProjectTo = useCallback(
-    (projectId: string, targetWorkspaceId: string) => {
+    async (projectId: string, targetWorkspaceId: string) => {
       const currentId = workspaceIdByProject.get(projectId) ?? '';
       if (currentId === targetWorkspaceId) return;
-      // Remove from the current owner (if any).
-      if (currentId) {
-        const source = persistedWorkspaces.find((w) => w.id === currentId);
-        if (source) {
-          updateMutation.mutate({
-            id: source.id,
-            patch: {
-              projectIds: source.projectIds.filter((id) => id !== projectId),
-            },
-          });
+      if (assignInFlight) return;
+      setAssignError(null);
+      setAssignInFlight(true);
+      try {
+        // Remove from the current owner (if any). The membership list is
+        // replaced wholesale per the #733 contract.
+        if (currentId) {
+          const source = persistedWorkspaces.find((w) => w.id === currentId);
+          if (source) {
+            await updateMutation.mutateAsync({
+              id: source.id,
+              patch: {
+                projectIds: source.projectIds.filter((id) => id !== projectId),
+              },
+            });
+          }
         }
-      }
-      // Append to the target (if not ungrouping). Guard against dupes.
-      if (targetWorkspaceId) {
-        const target = persistedWorkspaces.find(
-          (w) => w.id === targetWorkspaceId
+        // Append to the target (if not ungrouping). Guard against dupes.
+        if (targetWorkspaceId) {
+          const target = persistedWorkspaces.find(
+            (w) => w.id === targetWorkspaceId
+          );
+          if (target && !target.projectIds.includes(projectId)) {
+            await updateMutation.mutateAsync({
+              id: target.id,
+              patch: { projectIds: [...target.projectIds, projectId] },
+            });
+          }
+        }
+      } catch (err) {
+        logger.warn('assign project to workspace failed', err);
+        setAssignError(
+          benchErrorMessage(err, 'could not move project to workspace')
         );
-        if (target && !target.projectIds.includes(projectId)) {
-          updateMutation.mutate({
-            id: target.id,
-            patch: { projectIds: [...target.projectIds, projectId] },
-          });
-        }
+      } finally {
+        // One refetch reconciles whatever landed (full success OR partial).
+        setAssignInFlight(false);
+        void refetchWorkspaces();
       }
     },
-    [persistedWorkspaces, updateMutation, workspaceIdByProject]
+    [
+      persistedWorkspaces,
+      updateMutation,
+      workspaceIdByProject,
+      assignInFlight,
+      refetchWorkspaces,
+    ]
   );
 
   const makeAssign = useCallback(
     (project: ViewTreeProject): ProjectAssignControl => ({
       options: assignOptions,
       currentWorkspaceId: workspaceIdByProject.get(project.id) ?? '',
-      onAssign: (workspaceId) => assignProjectTo(project.id, workspaceId),
+      onAssign: (workspaceId) => void assignProjectTo(project.id, workspaceId),
       busy: assignBusy,
     }),
     [assignOptions, workspaceIdByProject, assignProjectTo, assignBusy]
@@ -588,6 +764,21 @@ export function ViewSpineTree({
       {selector}
       <WorkspaceBar />
       <div className="view-spine-scroll">
+        {assignError ? (
+          <div className="bench-create-error" role="alert">
+            <span>{assignError}</span>
+            <button
+              type="button"
+              className="bench-create-retry"
+              onClick={() => {
+                setAssignError(null);
+                void refetchWorkspaces();
+              }}
+            >
+              retry
+            </button>
+          </div>
+        ) : null}
         {grouped.workspaces.map((ws) =>
           ws.projects.length > 0 ? (
             <section key={ws.id} className="view-spine-workspace">
@@ -596,7 +787,9 @@ export function ViewSpineTree({
                 <ProjectRow
                   key={project.id}
                   project={project}
+                  overlaysByInstance={overlaysByInstance}
                   onCreateTab={onCreateTab}
+                  onRefetchBenches={onRefetchBenches}
                   assign={makeAssign(project)}
                 />
               ))}
@@ -613,7 +806,9 @@ export function ViewSpineTree({
               <ProjectRow
                 key={project.id}
                 project={project}
+                overlaysByInstance={overlaysByInstance}
                 onCreateTab={onCreateTab}
+                onRefetchBenches={onRefetchBenches}
                 assign={makeAssign(project)}
               />
             ))}

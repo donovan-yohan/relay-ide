@@ -4,24 +4,25 @@
 // absolute cwd. Flag-gated by its only mount point (`ViewSpineTree`, which is
 // only rendered when `viewSpineEnabled`).
 //
-// Wired to the #735 `/hub/ia/benches` CRUD API via `useIaBenches`. Renders the
-// PERSISTED bench overlays (so a freshly-created bench appears under its
-// Instance) plus the create form. Scope: CREATE + minimal DELETE; env-override
-// INHERITANCE into tabs is out of scope (#740).
+// Wired to the #735 `/hub/ia/benches` CRUD API via `useIaBenchMutations`. This
+// component owns the CREATE form + the "+ bench" affordance ONLY. The PERSISTED
+// overlay rows are rendered by `InstanceRow` (`ViewSpineTree`) as part of the
+// #773 derived-vs-overlay dedup (one row per cwd), so this component no longer
+// renders a separate overlay list. Scope: CREATE + minimal DELETE (delete is
+// invoked from the merged row); env-override INHERITANCE into tabs is out of
+// scope (#740).
 //
 // C1 (from #735 review): a bench `cwd` is sent and displayed VERBATIM — never
 // `decodeURIComponent`-ed. The raw absolute path the user enters is the path the
 // hub mints the BenchId from.
 //
-// States: empty (no overlays → no list, just the affordance), loading, error
-// (non-destructive inline message + refetch), in-flight (form disabled while a
-// create/delete is pending), validation (cwd rejected client-side mirroring the
-// server). Touch targets ≥44px; full keyboard support (Enter submits, Escape
-// cancels).
+// States: error (non-destructive inline message + refetch), in-flight (form
+// disabled while a create/delete is pending), validation (cwd rejected
+// client-side mirroring the server). Touch targets ≥44px; full keyboard support
+// (Enter submits, Escape cancels).
 import { useMemo, useState } from 'react';
 
-import type { IaBench } from '../lib/api.js';
-import { useIaBenches } from '../lib/hooks/use-ia-benches.js';
+import { useIaBenchMutations } from '../lib/hooks/use-ia-benches.js';
 import {
   benchCwdErrorMessage,
   buildBenchPayload,
@@ -30,7 +31,6 @@ import {
 } from '../lib/state/bench-create.js';
 import type { ViewTreeProject } from '../lib/state/view-tree.js';
 import { createLogger } from '../lib/logger.js';
-import { MarqueeText } from './MarqueeText.js';
 import './BenchCreate.css';
 
 const logger = createLogger('bench-create');
@@ -39,55 +39,7 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
-/** A persisted overlay row. cwd is shown VERBATIM (C1). Label falls back to the
- *  last cwd segment when the overlay carries no explicit label. */
-function BenchOverlayRow({
-  bench,
-  busy,
-  onDelete,
-}: {
-  bench: IaBench;
-  busy: boolean;
-  onDelete: () => void;
-}) {
-  const fallbackLabel =
-    bench.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || bench.cwd;
-  const label = bench.label && bench.label.length > 0 ? bench.label : fallbackLabel;
-  const envCount = Object.keys(bench.envOverrides).length;
-  return (
-    <li className="session-row inactive state-inactive view-spine-bench bench-overlay-row">
-      <div className="session-row-primary">
-        <span className="session-name">
-          <MarqueeText>{label}</MarqueeText>
-        </span>
-        {envCount > 0 ? (
-          <span className="bench-overlay-env-badge" title={`${envCount} env override(s)`}>
-            env {envCount}
-          </span>
-        ) : null}
-        <button
-          type="button"
-          className="bench-overlay-delete"
-          disabled={busy}
-          onClick={onDelete}
-          aria-label={`delete bench ${label}`}
-          title="delete bench"
-        >
-          ×
-        </button>
-      </div>
-      {/* cwd shown verbatim — the raw absolute path, never decoded (C1). */}
-      <div className="session-row-secondary">
-        <span className="bench-overlay-cwd">
-          <MarqueeText>{bench.cwd}</MarqueeText>
-        </span>
-      </div>
-    </li>
-  );
-}
-
 interface BenchCreateFormProps {
-  instanceId: string;
   projectKind: ViewTreeProject['kind'];
   defaultCwd: string;
   busy: boolean;
@@ -100,7 +52,6 @@ interface BenchCreateFormProps {
 }
 
 function BenchCreateForm({
-  instanceId: _instanceId,
   projectKind,
   defaultCwd,
   busy,
@@ -272,25 +223,22 @@ export function BenchCreate({
   instanceId,
   projectKind,
   defaultCwd,
+  onRefetch,
 }: {
   instanceId: string;
   projectKind: ViewTreeProject['kind'];
   /** Pre-filled cwd for a repo-instance (the parent repo path); empty for a
    *  node-instance (arbitrary absolute cwd). */
   defaultCwd: string;
+  /** Refetch the (tree-level) bench cache — used to reconcile after a failed
+   *  create. The list itself is owned by `InstanceRow` (#773 single query). */
+  onRefetch: () => void;
 }) {
-  const {
-    benches,
-    isLoading,
-    isError,
-    refetch,
-    createMutation,
-    deleteMutation,
-  } = useIaBenches(instanceId);
+  const { createMutation } = useIaBenchMutations(instanceId);
   const [open, setOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const busy = createMutation.isPending || deleteMutation.isPending;
+  const busy = createMutation.isPending;
 
   function clearError() {
     setActionError(null);
@@ -319,36 +267,10 @@ export function BenchCreate({
     });
   }
 
-  function handleDelete(bench: IaBench) {
-    clearError();
-    deleteMutation.mutate(bench.id, {
-      onError: (err) => {
-        logger.warn('delete bench failed', err);
-        setActionError(errorMessage(err, 'could not delete bench'));
-      },
-    });
-  }
-
   return (
     <div className="bench-create">
-      {isLoading ? (
-        <div className="bench-create-hint">loading benches…</div>
-      ) : benches.length > 0 ? (
-        <ul className="session-list view-spine-bench-list bench-overlay-list">
-          {benches.map((bench) => (
-            <BenchOverlayRow
-              key={bench.id}
-              bench={bench}
-              busy={busy}
-              onDelete={() => handleDelete(bench)}
-            />
-          ))}
-        </ul>
-      ) : null}
-
       {open ? (
         <BenchCreateForm
-          instanceId={instanceId}
           projectKind={projectKind}
           defaultCwd={defaultCwd}
           busy={busy}
@@ -383,19 +305,8 @@ export function BenchCreate({
             className="bench-create-retry"
             onClick={() => {
               clearError();
-              void refetch();
+              onRefetch();
             }}
-          >
-            retry
-          </button>
-        </div>
-      ) : isError ? (
-        <div className="bench-create-error" role="alert">
-          <span>could not load benches</span>
-          <button
-            type="button"
-            className="bench-create-retry"
-            onClick={() => void refetch()}
           >
             retry
           </button>
