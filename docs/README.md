@@ -20,6 +20,7 @@ This index separates current source-of-truth docs from historical plans and spik
 | Dogfood recovery      | `references/dogfood-recovery.md`  | Relay-develops-Relay proof loop, recovery matrix, diagnostics, no-force-merge gate      |
 | Self-hosting          | `SELF_HOSTING.md`                 | Running Relay from inside Relay with isolated config/ports                              |
 | Security policy       | `SECURITY_POLICY.md`              | Trust tiers, capability bits, hub ACL defaults                                          |
+| rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`         | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                 |
 | Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md`     | Hub/node command shape and npm packaging decisions                                      |
 | Node bootstrap        | `RELAY_NODE_BOOTSTRAP.md`         | Pair/install/update/unpair flows and diagnostics                                        |
 | Federated dev         | `FEDERATED_DEV.md`                | Multi-machine dev workflow and version-skew handling                                    |

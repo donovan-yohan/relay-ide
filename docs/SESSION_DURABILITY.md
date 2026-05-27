@@ -107,7 +107,9 @@ cursor, timestamp, replay flag, and typed payload kinds:
 This contract is the gate for a later rmux adapter: rmux can map its output,
 lag/backfill, render, and resize-owner signals into Relay's envelope without
 changing browser rendering, permission checks, or the current node-pty/tmux
-runtime.
+runtime. The experimental `relay-rmux-helper` JSON/stdin-stdout boundary lives
+in [`RMUX_HELPER_PROTOCOL.md`](RMUX_HELPER_PROTOCOL.md); it is feature-flagged
+prototype guidance, not default runtime adoption.
 
 ## Frontend reconnect UX
 
