@@ -18,6 +18,13 @@ import type { Server } from 'node:http';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import type { WorkContextStore } from '../server/work-contexts.js';
+import {
+  WORK_CONTEXT_SCHEMA_VERSION,
+  createWorkContextPrivacyMetadata,
+  type ArtifactRef,
+  type WorkContext,
+} from '../shared/work-context.js';
 import {
   createContextInboxRouter,
   type ContextInboxStore,
@@ -40,7 +47,97 @@ const RELAYCTL_BIN = fileURLToPath(
   new URL('../dist/bin/relayctl.js', import.meta.url)
 );
 
-const TERMINAL = new Set<SessionInboxMessageState>(TERMINAL_INBOX_MESSAGE_STATES);
+const TERMINAL = new Set<SessionInboxMessageState>(
+  TERMINAL_INBOX_MESSAGE_STATES
+);
+
+const WORK_CONTEXT_ID = 'wc:preturn:test';
+
+function testPrivacy() {
+  return createWorkContextPrivacyMetadata({
+    classification: 'internal',
+    retention: 'project',
+    rawPayloadStored: false,
+  });
+}
+
+function createFakeWorkContext(
+  id: string,
+  artifacts: ArtifactRef[] = []
+): WorkContext {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: WORK_CONTEXT_SCHEMA_VERSION,
+    id,
+    title: id,
+    source: 'test',
+    createdAt: now,
+    updatedAt: now,
+    anchors: {},
+    actors: [],
+    tasks: [],
+    artifacts,
+    auditRefs: [],
+    capabilityGrants: [],
+    privacy: testPrivacy(),
+  };
+}
+
+function createPinnedPacketArtifact(packetId: string): ArtifactRef {
+  return {
+    id: `artifact:context-packet:${packetId}`,
+    kind: 'external',
+    title: `Pinned context packet ${packetId}`,
+    uri: `relay://context-packets/${encodeURIComponent(packetId)}`,
+    privacy: testPrivacy(),
+  };
+}
+
+function createFakeWorkContextStore(initial: WorkContext[]): WorkContextStore {
+  const contexts = new Map(initial.map((context) => [context.id, context]));
+  const required = () => {
+    throw new Error('not implemented for relayctl preturn test');
+  };
+  return {
+    close: () => {},
+    create: (input = {}) => {
+      const context =
+        input.context ??
+        createFakeWorkContext(input.id ?? `wc:${contexts.size}`);
+      contexts.set(context.id, context);
+      return context;
+    },
+    get: (id) => contexts.get(id) ?? null,
+    list: () => [...contexts.values()],
+    update: (id, patchInput) => {
+      const existing = contexts.get(id);
+      if (!existing) throw new Error('WorkContext not found');
+      const updated = {
+        ...existing,
+        ...patchInput,
+        updatedAt: new Date().toISOString(),
+      };
+      contexts.set(id, updated);
+      return updated;
+    },
+    linkContexts: required,
+    associateSession: required,
+    recordLifecycleEvent: (id, input) => {
+      const existing = contexts.get(id);
+      if (!existing) throw new Error('WorkContext not found');
+      const updated = {
+        ...existing,
+        artifacts: [...existing.artifacts, ...(input.artifacts ?? [])],
+        updatedAt: new Date().toISOString(),
+      };
+      contexts.set(id, updated);
+      return updated;
+    },
+    getResumeSnapshot: required,
+    listActiveWork: required,
+    findSessionWorkContextIds: () => [],
+  };
+}
 
 // In-memory store implementing the #765 seam with the SAME PULL-delivery side
 // effect (list/get flip queued → delivered) so the headless flip is observable.
@@ -94,7 +191,9 @@ function createFakeStore(): ContextInboxStore & {
       const id = createInboxMessageId(`pre${messageSeq++}`);
       const message: SessionInboxMessage = {
         id,
-        ...(input.targetSessionId ? { targetSessionId: input.targetSessionId } : {}),
+        ...(input.targetSessionId
+          ? { targetSessionId: input.targetSessionId }
+          : {}),
         ...(input.targetWorkContextId
           ? { targetWorkContextId: input.targetWorkContextId }
           : {}),
@@ -166,9 +265,13 @@ function runPreturn(
 let server: Server;
 let baseUrl: string;
 let store: ReturnType<typeof createFakeStore>;
+let workContextStore: WorkContextStore;
 
 beforeEach(async () => {
   store = createFakeStore();
+  workContextStore = createFakeWorkContextStore([
+    createFakeWorkContext(WORK_CONTEXT_ID),
+  ]);
   const app = express();
   app.use(express.json());
   app.use(
@@ -177,6 +280,7 @@ beforeEach(async () => {
       // router itself only enforces the capability header, which relayctl sends.
       requireAuth: (_req, _res, next) => next(),
       store,
+      workContextStore,
     })
   );
   await new Promise<void>((resolve) => {
@@ -227,7 +331,9 @@ describe('relayctl agent preturn', () => {
     expect(stdout).toContain('please look at this before your next turn');
     expect(stdout).toContain('check the failing assertion in foo.test.ts');
     // PULL semantics: fetching delivered the message.
-    expect(store.raw().find((m) => m.id === messageId)?.state).toBe('delivered');
+    expect(store.raw().find((m) => m.id === messageId)?.state).toBe(
+      'delivered'
+    );
   });
 
   it('does not ack/resolve — only delivers (rendering != resolution)', async () => {
@@ -255,13 +361,78 @@ describe('relayctl agent preturn', () => {
     const parsed = JSON.parse(stdout) as {
       sessionId: string;
       pendingCount: number;
+      pinnedContextCount: number;
       messages: Array<{ state: string }>;
       contextPackets: Array<{ kind: string }>;
+      pinnedContextPackets: Array<{ kind: string }>;
     };
     expect(parsed.sessionId).toBe(SESSION_ID);
     expect(parsed.pendingCount).toBe(1);
+    expect(parsed.pinnedContextCount).toBe(0);
     expect(parsed.messages[0]?.state).toBe('delivered');
     expect(parsed.contextPackets[0]?.kind).toBe('note');
+    expect(parsed.pinnedContextPackets).toEqual([]);
+  });
+
+  it('renders WorkContext-pinned packets in preturn markdown even with no inbox message', async () => {
+    const packet = store.createPacket({
+      kind: 'note',
+      note: 'review the durable WorkContext pin before answering',
+      createdBy: 'reviewer_1',
+    });
+    workContextStore.update(WORK_CONTEXT_ID, {
+      artifacts: [createPinnedPacketArtifact(packet.id)],
+    });
+
+    const { code, stdout } = await runPreturn([], {
+      ...process.env,
+      RELAY_HUB_URL: baseUrl,
+      RELAY_SESSION_ID: SESSION_ID,
+      RELAY_WORK_CONTEXT_ID: WORK_CONTEXT_ID,
+    });
+
+    expect(code).toBe(0);
+    expect(stdout).toContain('No pending inbox messages.');
+    expect(stdout).toContain('Pinned WorkContext context');
+    expect(stdout).toContain(WORK_CONTEXT_ID);
+    expect(stdout).toContain(
+      'review the durable WorkContext pin before answering'
+    );
+  });
+
+  it('includes WorkContext-pinned packets in preturn json', async () => {
+    const packet = store.createPacket({
+      kind: 'note',
+      note: 'json pinned packet',
+      createdBy: 'reviewer_1',
+    });
+    workContextStore.update(WORK_CONTEXT_ID, {
+      artifacts: [createPinnedPacketArtifact(packet.id)],
+    });
+
+    const { code, stdout } = await runPreturn(['--format', 'json'], {
+      ...process.env,
+      RELAY_HUB_URL: baseUrl,
+      RELAY_SESSION_ID: SESSION_ID,
+      RELAY_WORK_CONTEXT_ID: WORK_CONTEXT_ID,
+    });
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      workContextId?: string;
+      pendingCount: number;
+      pinnedContextCount: number;
+      pinnedContextPackets: Array<{ id: string; note?: string }>;
+      contextPackets: Array<{ id: string }>;
+    };
+    expect(parsed.workContextId).toBe(WORK_CONTEXT_ID);
+    expect(parsed.pendingCount).toBe(0);
+    expect(parsed.pinnedContextCount).toBe(1);
+    expect(parsed.pinnedContextPackets[0]?.id).toBe(packet.id);
+    expect(parsed.pinnedContextPackets[0]?.note).toBe('json pinned packet');
+    expect(
+      parsed.contextPackets.some((candidate) => candidate.id === packet.id)
+    ).toBe(true);
   });
 
   it('honours --session override outside the env-injected session', async () => {
@@ -272,7 +443,9 @@ describe('relayctl agent preturn', () => {
     const { code, stdout } = await runPreturn(['--session', SESSION_ID], env);
     expect(code).toBe(0);
     expect(stdout).toContain(SESSION_ID);
-    expect(store.raw().find((m) => m.id === messageId)?.state).toBe('delivered');
+    expect(store.raw().find((m) => m.id === messageId)?.state).toBe(
+      'delivered'
+    );
   });
 
   it('renders an empty-inbox message when nothing is pending', async () => {

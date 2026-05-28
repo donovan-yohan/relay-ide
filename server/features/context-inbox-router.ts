@@ -32,7 +32,12 @@ import type { RequestHandler, Request, Response } from 'express';
 
 import type { RelayCliGatewayErrorCode } from '../../shared/cli-gateway-contract.js';
 import type { GlobalSessionId } from '../../shared/identity.js';
-import type { WorkContextId } from '../../shared/work-context.js';
+import {
+  createWorkContextPrivacyMetadata,
+  type ArtifactRef,
+  type WorkContextId,
+} from '../../shared/work-context.js';
+import type { WorkContextStore } from '../work-contexts.js';
 import {
   TERMINAL_INBOX_MESSAGE_STATES,
   type ContextPacket,
@@ -151,6 +156,7 @@ export interface ContextInboxStore {
 
 export interface ContextInboxRouterDeps {
   store: ContextInboxStore | null;
+  workContextStore?: WorkContextStore;
   requireAuth?: RequestHandler;
   /**
    * #760: resolve a `file-anchor` packet's DERIVED `AnchorState` at read time.
@@ -159,6 +165,61 @@ export interface ContextInboxRouterDeps {
    * guessing. `AnchorState` is never stored — it is computed on every read.
    */
   resolveAnchorState?: AnchorStateResolver;
+}
+
+export const CONTEXT_PACKET_ARTIFACT_URI_PREFIX = 'relay://context-packets/';
+
+function contextPacketArtifactId(id: ContextPacketId): string {
+  return `artifact:context-packet:${id}`;
+}
+
+function contextPacketArtifactUri(id: ContextPacketId): string {
+  return `${CONTEXT_PACKET_ARTIFACT_URI_PREFIX}${encodeURIComponent(id)}`;
+}
+
+function pinnedPacketIdFromArtifact(
+  artifact: ArtifactRef
+): ContextPacketId | null {
+  if (artifact.uri?.startsWith(CONTEXT_PACKET_ARTIFACT_URI_PREFIX)) {
+    try {
+      return decodeURIComponent(
+        artifact.uri.slice(CONTEXT_PACKET_ARTIFACT_URI_PREFIX.length)
+      );
+    } catch {
+      return null;
+    }
+  }
+  const prefix = 'artifact:context-packet:';
+  return artifact.id.startsWith(prefix)
+    ? artifact.id.slice(prefix.length)
+    : null;
+}
+
+function packetPinnedArtifact(
+  packet: ContextPacket,
+  actorId?: string
+): ArtifactRef {
+  return {
+    id: contextPacketArtifactId(packet.id),
+    kind: 'external',
+    title: `Pinned context packet ${packet.id}`,
+    uri: contextPacketArtifactUri(packet.id),
+    producedByActorId: actorId ?? packet.createdBy,
+    producedAt: new Date().toISOString(),
+    summary:
+      packet.note ??
+      `${packet.kind} context packet pinned for WorkContext handoff/review`,
+    privacy: createWorkContextPrivacyMetadata({
+      classification: 'internal',
+      retention: 'project',
+      rawPayloadStored: false,
+      redaction: {
+        redacted: true,
+        strategy: 'summary',
+        classes: ['payload', 'artifact'],
+      },
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -775,6 +836,57 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     return contextPackets.length > 0 ? { ...message, contextPackets } : message;
   }
 
+  function workContexts(res: Response): WorkContextStore | null {
+    if (!deps.workContextStore) {
+      sendGatewayError(
+        res,
+        'SERVER_UNAVAILABLE',
+        'WorkContext store is unavailable',
+        true,
+        {
+          reasonCode: 'WORK_CONTEXT_STORE_UNAVAILABLE',
+        }
+      );
+      return null;
+    }
+    return deps.workContextStore;
+  }
+
+  function pinnedArtifactsFor(
+    workContextId: WorkContextId
+  ): ArtifactRef[] | null {
+    const wc = deps.workContextStore?.get(workContextId);
+    if (!wc) return null;
+    return wc.artifacts.filter((artifact) =>
+      pinnedPacketIdFromArtifact(artifact)
+    );
+  }
+
+  async function pinnedContextPacketsFor(
+    s: ContextInboxStore,
+    workContextId: WorkContextId
+  ): Promise<{
+    contextPackets: DecoratedContextPacket[];
+    artifacts: ArtifactRef[];
+  } | null> {
+    const artifacts = pinnedArtifactsFor(workContextId);
+    if (!artifacts) return null;
+    const packets: ContextPacket[] = [];
+    for (const artifact of artifacts) {
+      const packetId = pinnedPacketIdFromArtifact(artifact);
+      if (!packetId) continue;
+      const packet = s.getPacket(packetId);
+      if (packet) packets.push(packet);
+    }
+    return {
+      contextPackets: await decoratePacketsAnchorState(
+        packets,
+        resolveAnchorState
+      ),
+      artifacts,
+    };
+  }
+
   // -- context.create ------------------------------------------------------
   router.post('/context', auth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
@@ -832,15 +944,158 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     }
   });
 
+  // -- context.pin / context.unpin -----------------------------------------
+  // #763: pinning records a WorkContext artifact ref to an existing packet.
+  // The packet body stays in the context-packet store; WorkContext artifacts are
+  // the durable handoff/review pool. Unpin removes only that artifact ref and
+  // writes an audit lifecycle event; it never deletes the packet itself.
+  router.post('/context/:id/pin', auth, async (req, res, next) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const s = store(res);
+    const wcStore = workContexts(res);
+    if (!s || !wcStore) return;
+    const packetId = req.params['id'] ?? '';
+    const packet = s.getPacket(packetId);
+    if (!packet) {
+      sendGatewayError(res, 'NOT_FOUND', 'context packet not found');
+      return;
+    }
+    const body = bodyRecord(req);
+    const workContextId = readString(body['workContextId']);
+    if (!workContextId) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'workContextId is required',
+        false,
+        { field: 'workContextId' }
+      );
+      return;
+    }
+    const existing = wcStore.get(workContextId);
+    if (!existing) {
+      sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found');
+      return;
+    }
+    const actorId =
+      readString(body['actorId']) ?? readString(body['createdBy']);
+    const artifact = packetPinnedArtifact(packet, actorId);
+    const alreadyPinned = existing.artifacts.some(
+      (item) => item.id === artifact.id || item.uri === artifact.uri
+    );
+    try {
+      let workContext = existing;
+      if (!alreadyPinned) {
+        workContext = wcStore.recordLifecycleEvent(workContextId, {
+          type: 'artifact.recorded',
+          ...(actorId ? { actorId } : {}),
+          artifacts: [artifact],
+          summary: `Pinned context packet ${packet.id} to WorkContext ${workContextId}`,
+        });
+      }
+      const pinned = await pinnedContextPacketsFor(s, workContextId);
+      res.status(alreadyPinned ? 200 : 201).json({
+        workContext,
+        contextPacket: await decoratePacketAnchorState(
+          packet,
+          resolveAnchorState
+        ),
+        pinnedContextPackets: pinned?.contextPackets ?? [],
+        pinnedArtifacts: pinned?.artifacts ?? [],
+        alreadyPinned,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/context/:id/unpin', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const s = store(res);
+    const wcStore = workContexts(res);
+    if (!s || !wcStore) return;
+    const packetId = req.params['id'] ?? '';
+    const body = bodyRecord(req);
+    const workContextId = readString(body['workContextId']);
+    if (!workContextId) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'workContextId is required',
+        false,
+        { field: 'workContextId' }
+      );
+      return;
+    }
+    const existing = wcStore.get(workContextId);
+    if (!existing) {
+      sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found');
+      return;
+    }
+    const artifactId = contextPacketArtifactId(packetId);
+    const artifactUri = contextPacketArtifactUri(packetId);
+    const nextArtifacts = existing.artifacts.filter(
+      (item) => item.id !== artifactId && item.uri !== artifactUri
+    );
+    const removed = nextArtifacts.length !== existing.artifacts.length;
+    const actorId =
+      readString(body['actorId']) ?? readString(body['createdBy']);
+    const updated = removed
+      ? wcStore.update(workContextId, { artifacts: nextArtifacts })
+      : existing;
+    const workContext = removed
+      ? wcStore.recordLifecycleEvent(workContextId, {
+          type: 'artifact.unpinned',
+          ...(actorId ? { actorId } : {}),
+          summary: `Unpinned context packet ${packetId} from WorkContext ${workContextId}; packet retained for GC until unreferenced`,
+        })
+      : updated;
+    const packet = s.getPacket(packetId);
+    res.json({
+      workContext,
+      ...(packet ? { contextPacket: packet } : {}),
+      removed,
+      lifecycle: {
+        packetDeleted: false,
+        gc: 'packet retained; orphan cleanup must only delete packets with no inbox messages and no WorkContext artifact pins',
+      },
+    });
+  });
+
   // -- context.list --------------------------------------------------------
-  router.get('/context', auth, (req, res) => {
+  router.get('/context', auth, (req, res, next) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const s = store(res);
     if (!s) return;
+    const workContextId = readString(req.query['workContextId']);
     const filter: ListContextPacketsFilter = {};
     const nodeId = readString(req.query['nodeId']);
     const workspaceId = readString(req.query['workspaceId']);
     const limit = readLimit(req.query['limit']);
+    if (workContextId) {
+      if (!workContexts(res)) return;
+      pinnedContextPacketsFor(s, workContextId)
+        .then((result) => {
+          if (!result) {
+            sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found');
+            return;
+          }
+          let contextPackets = result.contextPackets;
+          if (nodeId)
+            contextPackets = contextPackets.filter(
+              (packet) => packet.binding?.nodeId === nodeId
+            );
+          if (workspaceId)
+            contextPackets = contextPackets.filter(
+              (packet) => packet.binding?.workspaceId === workspaceId
+            );
+          if (limit !== undefined)
+            contextPackets = contextPackets.slice(0, limit);
+          res.json({ contextPackets, pinnedArtifacts: result.artifacts });
+        })
+        .catch(next);
+      return;
+    }
     if (nodeId) filter.nodeId = nodeId;
     if (workspaceId) filter.workspaceId = workspaceId;
     if (limit !== undefined) filter.limit = limit;

@@ -25,6 +25,18 @@ import {
 import { createFileResourceRef } from '../shared/file-resource-ref.js';
 import type { AnchorStateResolver } from '../server/context-adapters/file-range.js';
 import type { ResolveAnchorOutcome } from '../server/anchor-resolution.js';
+import type {
+  WorkContextStore,
+  WorkContextLifecycleEventInput,
+  WorkContextPatchInput,
+} from '../server/work-contexts.js';
+import {
+  WORK_CONTEXT_SCHEMA_VERSION,
+  createWorkContextPrivacyMetadata,
+  type AuditEventRef,
+  type WorkContext,
+  type WorkContextId,
+} from '../shared/work-context.js';
 
 // ---------------------------------------------------------------------------
 // In-memory store implementing the #765 seam (#758 builds the SQLite version).
@@ -181,6 +193,92 @@ function createFakeStore(): ContextInboxStore & { _markDelivered: boolean } {
   return store;
 }
 
+function createFakeWorkContext(id: WorkContextId): WorkContext {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: WORK_CONTEXT_SCHEMA_VERSION,
+    id,
+    title: 'Pinned context test',
+    createdAt: now,
+    updatedAt: now,
+    source: 'test',
+    anchors: {},
+    actors: [],
+    tasks: [],
+    artifacts: [],
+    auditRefs: [],
+    capabilityGrants: [],
+    privacy: createWorkContextPrivacyMetadata(),
+  };
+}
+
+function createFakeWorkContextStore(
+  ...contexts: WorkContext[]
+): WorkContextStore {
+  const byId = new Map<WorkContextId, WorkContext>(
+    contexts.map((ctx) => [ctx.id, ctx])
+  );
+  function replace(
+    id: WorkContextId,
+    patch: WorkContextPatchInput
+  ): WorkContext {
+    const existing = byId.get(id);
+    if (!existing) throw new Error(`missing WorkContext ${id}`);
+    const updated = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    byId.set(id, updated);
+    return updated;
+  }
+  return {
+    close: () => undefined,
+    create: () => {
+      throw new Error('not implemented');
+    },
+    get: (id: WorkContextId) => byId.get(id) ?? null,
+    list: () => [...byId.values()],
+    update: replace,
+    linkContexts: () => {
+      throw new Error('not implemented');
+    },
+    associateSession: () => {
+      throw new Error('not implemented');
+    },
+    recordLifecycleEvent: (
+      id: WorkContextId,
+      input: WorkContextLifecycleEventInput
+    ) => {
+      const existing = byId.get(id);
+      if (!existing) throw new Error(`missing WorkContext ${id}`);
+      const event: AuditEventRef = {
+        id: `audit:${input.type ?? 'event'}:${existing.auditRefs.length}`,
+        eventId: input.eventId ?? `evt:${existing.auditRefs.length}`,
+        ...(input.type ? { type: input.type } : {}),
+        ...(input.actorId ? { actorId: input.actorId } : {}),
+        ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
+        privacy: createWorkContextPrivacyMetadata(),
+      };
+      const updated = {
+        ...existing,
+        artifacts: input.artifacts
+          ? [...existing.artifacts, ...input.artifacts]
+          : existing.artifacts,
+        auditRefs: [...existing.auditRefs, event],
+        updatedAt: new Date().toISOString(),
+      };
+      byId.set(id, updated);
+      return updated;
+    },
+    getResumeSnapshot: () => {
+      throw new Error('not implemented');
+    },
+    listActiveWork: () => [],
+    findSessionWorkContextIds: () => [],
+  };
+}
+
 const ALL_CAPS = 'context:read,context:write,inbox:read,inbox:write';
 
 let server: Server;
@@ -188,7 +286,8 @@ let baseUrl: string;
 
 function mount(
   store: ContextInboxStore | null,
-  resolveAnchorState?: AnchorStateResolver
+  resolveAnchorState?: AnchorStateResolver,
+  workContextStore?: WorkContextStore
 ): Promise<void> {
   const app = express();
   app.use(express.json());
@@ -196,6 +295,7 @@ function mount(
     createContextInboxRouter({
       requireAuth: (_req, _res, next) => next(),
       store,
+      workContextStore,
       // Default to a resolver that never resolves (null) so existing tests stay
       // undecorated; the #760 decoration tests inject a real resolver.
       resolveAnchorState: resolveAnchorState ?? (async () => null),
@@ -247,7 +347,11 @@ afterEach(async () => {
 
 describe('context/inbox gateway router', () => {
   beforeEach(async () => {
-    await mount(createFakeStore());
+    await mount(
+      createFakeStore(),
+      undefined,
+      createFakeWorkContextStore(createFakeWorkContext('wc:test'))
+    );
   });
 
   it('round-trips context.create → context.get → context.list', async () => {
@@ -269,6 +373,81 @@ describe('context/inbox gateway router', () => {
     const listed = await req('GET', '/context', { caps: 'context:read' });
     expect(listed.status).toBe(200);
     expect(listed.body.contextPackets).toHaveLength(1);
+  });
+
+  it('pins packets into a WorkContext, lists pinned packets by scope, and unpins without deleting the packet', async () => {
+    const created = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'note',
+        note: 'review this during handoff',
+        createdBy: 'agent_1',
+        binding: { nodeId: 'node1', workspaceId: 'workspace-a' },
+      },
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.contextPacket.id as string;
+
+    const pinned = await req('POST', `/context/${encodeURIComponent(id)}/pin`, {
+      caps: 'context:write',
+      body: { workContextId: 'wc:test', actorId: 'agent_1' },
+    });
+    expect(pinned.status).toBe(201);
+    expect(pinned.body.contextPacket.id).toBe(id);
+    expect(pinned.body.alreadyPinned).toBe(false);
+    expect(pinned.body.pinnedContextPackets).toHaveLength(1);
+    expect(pinned.body.pinnedArtifacts[0].uri).toBe(
+      `relay://context-packets/${encodeURIComponent(id)}`
+    );
+    expect(pinned.body.workContext.auditRefs[0].type).toBe('artifact.recorded');
+
+    const idempotent = await req(
+      'POST',
+      `/context/${encodeURIComponent(id)}/pin`,
+      {
+        caps: 'context:write',
+        body: { workContextId: 'wc:test', actorId: 'agent_1' },
+      }
+    );
+    expect(idempotent.status).toBe(200);
+    expect(idempotent.body.alreadyPinned).toBe(true);
+    expect(idempotent.body.pinnedContextPackets).toHaveLength(1);
+
+    const listed = await req(
+      'GET',
+      '/context?workContextId=wc%3Atest&nodeId=node1',
+      { caps: 'context:read' }
+    );
+    expect(listed.status).toBe(200);
+    expect(listed.body.contextPackets).toHaveLength(1);
+    expect(listed.body.contextPackets[0].id).toBe(id);
+    expect(listed.body.pinnedArtifacts).toHaveLength(1);
+
+    const unpinned = await req(
+      'POST',
+      `/context/${encodeURIComponent(id)}/unpin`,
+      {
+        caps: 'context:write',
+        body: { workContextId: 'wc:test', actorId: 'agent_1' },
+      }
+    );
+    expect(unpinned.status).toBe(200);
+    expect(unpinned.body.removed).toBe(true);
+    expect(unpinned.body.lifecycle.packetDeleted).toBe(false);
+    expect(unpinned.body.workContext.auditRefs.at(-1).type).toBe(
+      'artifact.unpinned'
+    );
+
+    const listedAfter = await req('GET', '/context?workContextId=wc%3Atest', {
+      caps: 'context:read',
+    });
+    expect(listedAfter.status).toBe(200);
+    expect(listedAfter.body.contextPackets).toHaveLength(0);
+    const retained = await req('GET', `/context/${encodeURIComponent(id)}`, {
+      caps: 'context:read',
+    });
+    expect(retained.status).toBe(200);
+    expect(retained.body.contextPacket.id).toBe(id);
   });
 
   it('inbox.send queues; inbox.list PULL-delivers (queued → delivered)', async () => {

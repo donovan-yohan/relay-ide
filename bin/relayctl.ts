@@ -303,44 +303,194 @@ function renderPacketMarkdown(packet: PreturnPacket): string {
   }
   return lines.join('\n');
 }
+function renderInboxMessageMarkdown(
+  message: PreturnMessage,
+  index: number,
+  packetsById: Map<string, PreturnPacket>
+): string[] {
+  const lines: string[] = [`## ${index + 1}. ${message.id} (${message.state})`];
+  if (message.createdBy) lines.push(`- from: ${message.createdBy}`);
+  if (message.text) lines.push(`- message: ${message.text}`);
+  if (message.contextPacketIds.length === 0) return [...lines, ''];
+
+  lines.push('- context:');
+  for (const packetId of message.contextPacketIds) {
+    const packet = packetsById.get(packetId);
+    lines.push(
+      packet
+        ? renderPacketMarkdown(packet)
+        : `  - (packet ${packetId} unavailable)`
+    );
+  }
+  lines.push('');
+  return lines;
+}
+
+function renderPinnedContextMarkdown(
+  pinnedContextPackets: PreturnPacket[],
+  workContextId?: string
+): string[] {
+  if (pinnedContextPackets.length === 0) return [];
+  const lines = [
+    `## Pinned WorkContext context${workContextId ? ` — ${workContextId}` : ''}`,
+    `${pinnedContextPackets.length} pinned packet${pinnedContextPackets.length === 1 ? '' : 's'} from the WorkContext artifact pool.`,
+    '',
+  ];
+  for (const packet of pinnedContextPackets) {
+    lines.push(renderPacketMarkdown(packet));
+  }
+  return lines;
+}
 
 /** Render the full preturn payload as model-friendly markdown. */
 function renderPreturnMarkdown(
   sessionId: string,
   messages: PreturnMessage[],
-  packetsById: Map<string, PreturnPacket>
+  packetsById: Map<string, PreturnPacket>,
+  pinnedContextPackets: PreturnPacket[],
+  workContextId?: string
 ): string {
-  const lines: string[] = [];
-  lines.push(`# Relay pending context — session ${sessionId}`);
-  lines.push('');
-  if (messages.length === 0) {
+  const lines: string[] = [
+    `# Relay pending context — session ${sessionId}`,
+    '',
+  ];
+
+  if (messages.length === 0 && pinnedContextPackets.length === 0) {
     lines.push('No pending inbox messages.');
     return lines.join('\n');
   }
-  lines.push(
-    `${messages.length} pending message${messages.length === 1 ? '' : 's'}. ` +
-      'Read this context before responding. Rendering does not acknowledge or ' +
-      'resolve a message — use the inbox ack/resolve verbs for that.'
-  );
-  lines.push('');
-  for (const [index, message] of messages.entries()) {
-    lines.push(`## ${index + 1}. ${message.id} (${message.state})`);
-    if (message.createdBy) lines.push(`- from: ${message.createdBy}`);
-    if (message.text) lines.push(`- message: ${message.text}`);
-    if (message.contextPacketIds.length > 0) {
-      lines.push('- context:');
-      for (const packetId of message.contextPacketIds) {
-        const packet = packetsById.get(packetId);
-        if (packet) {
-          lines.push(renderPacketMarkdown(packet));
-        } else {
-          lines.push(`  - (packet ${packetId} unavailable)`);
-        }
-      }
+
+  if (messages.length > 0) {
+    lines.push(
+      `${messages.length} pending message${messages.length === 1 ? '' : 's'}. ` +
+        'Read this context before responding. Rendering does not acknowledge or ' +
+        'resolve a message — use the inbox ack/resolve verbs for that.',
+      ''
+    );
+    for (const [index, message] of messages.entries()) {
+      lines.push(...renderInboxMessageMarkdown(message, index, packetsById));
     }
-    lines.push('');
+  } else {
+    lines.push('No pending inbox messages.', '');
   }
+
+  lines.push(
+    ...renderPinnedContextMarkdown(pinnedContextPackets, workContextId)
+  );
   return lines.join('\n').trimEnd();
+}
+
+async function responseErrorDetail(res: Response): Promise<string> {
+  try {
+    const errBody = (await res.json()) as {
+      error?: { message?: string } | string;
+    };
+    return typeof errBody.error === 'string'
+      ? errBody.error
+      : (errBody.error?.message ?? '');
+  } catch {
+    return '';
+  }
+}
+
+async function fetchGatewayJson<T>(
+  endpoint: string,
+  headers: Record<string, string>,
+  options: {
+    reachabilityMessage: string;
+    forbiddenMessage: string;
+    failureSuffix?: string;
+  }
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint, { headers });
+  } catch (err) {
+    die(
+      `${options.reachabilityMessage}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (res.status === 403) {
+    console.error(options.forbiddenMessage);
+    process.exit(2);
+  }
+  if (!res.ok) {
+    const detail = await responseErrorDetail(res);
+    die(
+      `hub returned ${res.status} ${res.statusText}${options.failureSuffix ?? ''}${detail ? `: ${detail}` : ''}`
+    );
+  }
+  return (await res.json()) as T;
+}
+
+async function fetchInboxMessages(
+  hubUrl: string,
+  headers: Record<string, string>,
+  sessionId: string
+): Promise<PreturnMessage[]> {
+  const inboxBody = await fetchGatewayJson<{ messages?: PreturnMessage[] }>(
+    `${hubUrl}/inbox?targetSessionId=${encodeURIComponent(sessionId)}`,
+    headers,
+    {
+      reachabilityMessage: `failed to reach hub at ${hubUrl}`,
+      forbiddenMessage: 'relayctl: capability denied: session lacks inbox:read',
+    }
+  );
+  return Array.isArray(inboxBody.messages) ? inboxBody.messages : [];
+}
+
+async function fetchPinnedContextPackets(
+  hubUrl: string,
+  headers: Record<string, string>,
+  workContextId?: string
+): Promise<PreturnPacket[]> {
+  if (!workContextId) return [];
+  const pinnedBody = await fetchGatewayJson<{
+    contextPackets?: PreturnPacket[];
+  }>(
+    `${hubUrl}/context?workContextId=${encodeURIComponent(workContextId)}`,
+    headers,
+    {
+      reachabilityMessage: `failed to read WorkContext pinned context from hub at ${hubUrl}`,
+      forbiddenMessage:
+        'relayctl: capability denied: session lacks context:read',
+      failureSuffix: ' while reading WorkContext pinned context',
+    }
+  );
+  return Array.isArray(pinnedBody.contextPackets)
+    ? pinnedBody.contextPackets
+    : [];
+}
+
+function inboxPacketIds(messages: PreturnMessage[]): Set<string> {
+  const uniquePacketIds = new Set<string>();
+  for (const message of messages) {
+    for (const packetId of message.contextPacketIds)
+      uniquePacketIds.add(packetId);
+  }
+  return uniquePacketIds;
+}
+
+async function resolveInboxPackets(
+  hubUrl: string,
+  headers: Record<string, string>,
+  messages: PreturnMessage[],
+  packetsById: Map<string, PreturnPacket>
+): Promise<void> {
+  for (const packetId of inboxPacketIds(messages)) {
+    if (packetsById.has(packetId)) continue;
+    const packetEndpoint = `${hubUrl}/context/${encodeURIComponent(packetId)}`;
+    try {
+      const packetRes = await fetch(packetEndpoint, { headers });
+      const packetBody = packetRes.ok
+        ? ((await packetRes.json()) as { contextPacket?: PreturnPacket })
+        : {};
+      if (packetBody.contextPacket)
+        packetsById.set(packetId, packetBody.contextPacket);
+    } catch {
+      // Leave unresolved; renderer notes it as unavailable.
+    }
+  }
 }
 
 /**
@@ -357,76 +507,39 @@ async function cmdAgentPreturn(preturnArgs: string[]): Promise<void> {
   // Allow an explicit `--session` so this works via the gateway outside the
   // injected PTY env; otherwise fall back to the env-injected session id.
   const sessionId = overrideSessionId ?? requireEnv('RELAY_SESSION_ID');
-
   const headers = gatewayHeaders();
+  const workContextId = RELAY_WORK_CONTEXT_ID;
 
   // 1. PULL the inbox for this session. The hub flips queued → delivered here.
-  const inboxEndpoint = `${hubUrl}/inbox?targetSessionId=${encodeURIComponent(sessionId)}`;
-  let inboxRes: Response;
-  try {
-    inboxRes = await fetch(inboxEndpoint, { headers });
-  } catch (err) {
-    die(
-      `failed to reach hub at ${hubUrl}: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-  if (inboxRes.status === 403) {
-    console.error('relayctl: capability denied: session lacks inbox:read');
-    process.exit(2);
-  }
-  if (!inboxRes.ok) {
-    let detail = '';
-    try {
-      const errBody = (await inboxRes.json()) as {
-        error?: { message?: string } | string;
-      };
-      detail =
-        typeof errBody.error === 'string'
-          ? errBody.error
-          : (errBody.error?.message ?? '');
-    } catch {
-      // ignore parse error
-    }
-    die(
-      `hub returned ${inboxRes.status} ${inboxRes.statusText}${detail ? `: ${detail}` : ''}`
-    );
-  }
-  const inboxBody = (await inboxRes.json()) as { messages?: PreturnMessage[] };
-  const messages = Array.isArray(inboxBody.messages) ? inboxBody.messages : [];
+  const messages = await fetchInboxMessages(hubUrl, headers, sessionId);
 
-  // 2. Resolve referenced packet bodies (deduped). A missing/denied packet is
-  //    rendered as unavailable rather than tearing down the whole preturn.
+  // 2. Discover WorkContext-pinned packets. These are source-of-truth refs from
+  //    the WorkContext artifact pool and are agent-facing preturn context even
+  //    when no inbox message targets the current session.
+  const pinnedContextPackets = await fetchPinnedContextPackets(
+    hubUrl,
+    headers,
+    workContextId
+  );
   const packetsById = new Map<string, PreturnPacket>();
-  const uniquePacketIds = new Set<string>();
-  for (const message of messages) {
-    for (const packetId of message.contextPacketIds) uniquePacketIds.add(packetId);
-  }
-  for (const packetId of uniquePacketIds) {
-    const packetEndpoint = `${hubUrl}/context/${encodeURIComponent(packetId)}`;
-    try {
-      const packetRes = await fetch(packetEndpoint, { headers });
-      if (packetRes.ok) {
-        const packetBody = (await packetRes.json()) as {
-          contextPacket?: PreturnPacket;
-        };
-        if (packetBody.contextPacket) {
-          packetsById.set(packetId, packetBody.contextPacket);
-        }
-      }
-    } catch {
-      // Leave unresolved; renderer notes it as unavailable.
-    }
-  }
+  for (const packet of pinnedContextPackets) packetsById.set(packet.id, packet);
 
-  // 3. Render.
+  // 3. Resolve inbox-referenced packet bodies (deduped). A missing/denied packet
+  //    is rendered as unavailable rather than tearing down the whole preturn.
+  await resolveInboxPackets(hubUrl, headers, messages, packetsById);
+
+  // 4. Render.
   if (format === 'json') {
     console.log(
       JSON.stringify(
         {
           sessionId,
+          ...(workContextId ? { workContextId } : {}),
           pendingCount: messages.length,
+          pinnedContextCount: pinnedContextPackets.length,
           messages,
           contextPackets: [...packetsById.values()],
+          pinnedContextPackets,
         },
         null,
         2
@@ -434,7 +547,15 @@ async function cmdAgentPreturn(preturnArgs: string[]): Promise<void> {
     );
     return;
   }
-  console.log(renderPreturnMarkdown(sessionId, messages, packetsById));
+  console.log(
+    renderPreturnMarkdown(
+      sessionId,
+      messages,
+      packetsById,
+      pinnedContextPackets,
+      workContextId
+    )
+  );
 }
 
 /** Dispatch the `agent` subcommand group. */

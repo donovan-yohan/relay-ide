@@ -7,8 +7,17 @@ import {
 import type { RelayCapabilityBit } from './security-policy.js';
 
 export type RelayCommandSurface = 'web' | 'cli' | 'agent';
-export type RelayCommandSideEffect = 'read' | 'write' | 'destructive' | 'stream';
-export type RelayCommandScopeKind = 'node' | 'repo' | 'worktree' | 'work-context' | 'session';
+export type RelayCommandSideEffect =
+  | 'read'
+  | 'write'
+  | 'destructive'
+  | 'stream';
+export type RelayCommandScopeKind =
+  | 'node'
+  | 'repo'
+  | 'worktree'
+  | 'work-context'
+  | 'session';
 export type RelayCommandControlRequirement =
   | 'fresh-control-state'
   | 'latest-intervention-ack'
@@ -90,6 +99,8 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'context.create': 'create context packet',
   'context.get': 'context packet details',
   'context.list': 'list context packets',
+  'context.pin': 'pin context packet',
+  'context.unpin': 'unpin context packet',
   'inbox.send': 'send inbox message',
   'inbox.list': 'list inbox messages',
   'inbox.get': 'inbox message details',
@@ -110,9 +121,13 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'events.subscribe': 'subscribe gateway events',
 };
 
-function sideEffectForGatewayCommand(spec: RelayCliGatewayCommandSpec): RelayCommandSideEffect {
-  if (spec.name === 'sessions.stream' || spec.name === 'events.subscribe') return 'stream';
-  if (spec.name === 'handoffs.create' || spec.name === 'handoffs.launch') return 'destructive';
+function sideEffectForGatewayCommand(
+  spec: RelayCliGatewayCommandSpec
+): RelayCommandSideEffect {
+  if (spec.name === 'sessions.stream' || spec.name === 'events.subscribe')
+    return 'stream';
+  if (spec.name === 'handoffs.create' || spec.name === 'handoffs.launch')
+    return 'destructive';
   if (
     spec.name === 'sessions.create' ||
     spec.name === 'sessions.renew' ||
@@ -124,6 +139,8 @@ function sideEffectForGatewayCommand(spec: RelayCliGatewayCommandSpec): RelayCom
     spec.name === 'files.write' ||
     spec.name === 'handoffs.cancel' ||
     spec.name === 'context.create' ||
+    spec.name === 'context.pin' ||
+    spec.name === 'context.unpin' ||
     spec.name === 'inbox.send' ||
     spec.name === 'inbox.ack' ||
     spec.name === 'inbox.resolve' ||
@@ -134,13 +151,16 @@ function sideEffectForGatewayCommand(spec: RelayCliGatewayCommandSpec): RelayCom
   return 'read';
 }
 
-function scopeKindsForGatewayCommand(name: RelayCliGatewayCommand): readonly RelayCommandScopeKind[] {
+function scopeKindsForGatewayCommand(
+  name: RelayCliGatewayCommand
+): readonly RelayCommandScopeKind[] {
   if (name.startsWith('nodes.')) return ['node'];
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];
-  if (name.startsWith('handoffs.')) return ['repo', 'worktree', 'work-context', 'session'];
+  if (name.startsWith('handoffs.'))
+    return ['repo', 'worktree', 'work-context', 'session'];
   if (name.startsWith('artifacts.')) return ['work-context'];
   if (name.startsWith('supervisor.')) return ['session'];
   if (name.startsWith('events.')) return ['node', 'session'];
@@ -148,7 +168,9 @@ function scopeKindsForGatewayCommand(name: RelayCliGatewayCommand): readonly Rel
   return [];
 }
 
-function requiresConfirmationForGatewayCommand(spec: RelayCliGatewayCommandSpec): boolean {
+function requiresConfirmationForGatewayCommand(
+  spec: RelayCliGatewayCommandSpec
+): boolean {
   return (
     spec.name === 'files.write' ||
     spec.name === 'handoffs.create' ||
@@ -162,25 +184,40 @@ function controlRequirementsForGatewayCommand(
   spec: RelayCliGatewayCommandSpec
 ): readonly RelayCommandControlRequirement[] {
   const requirements: RelayCommandControlRequirement[] = [];
-  if (requiresConfirmationForGatewayCommand(spec)) requirements.push('confirmation-challenge');
+  if (requiresConfirmationForGatewayCommand(spec))
+    requirements.push('confirmation-challenge');
   if (spec.name === 'supervisor.snapshot') {
     requirements.push('fresh-control-state', 'latest-intervention-ack');
   }
-  if (spec.name === 'supervisor.sendText' || spec.name === 'supervisor.submit') {
+  if (
+    spec.name === 'supervisor.sendText' ||
+    spec.name === 'supervisor.submit'
+  ) {
     requirements.push('fresh-control-state');
   }
-  if (spec.name === 'sessions.handBack') requirements.push('latest-intervention-ack');
+  if (spec.name === 'sessions.handBack')
+    requirements.push('latest-intervention-ack');
   return requirements;
 }
 
 function auditExpectationForGatewayCommand(
   spec: RelayCliGatewayCommandSpec
 ): RelayCommandAuditExpectation {
-  if (spec.name === 'contract.list' || spec.name === 'contract.schema' || spec.name === 'nodes.manifest') {
+  if (
+    spec.name === 'contract.list' ||
+    spec.name === 'contract.schema' ||
+    spec.name === 'nodes.manifest'
+  ) {
     return 'schema-only';
   }
-  if (spec.name === 'sessions.stream' || spec.name === 'events.subscribe') return 'stream-redacted';
-  if (spec.name === 'supervisor.snapshot' || spec.name === 'supervisor.sendText' || spec.name === 'supervisor.submit') return 'hashes-only';
+  if (spec.name === 'sessions.stream' || spec.name === 'events.subscribe')
+    return 'stream-redacted';
+  if (
+    spec.name === 'supervisor.snapshot' ||
+    spec.name === 'supervisor.sendText' ||
+    spec.name === 'supervisor.submit'
+  )
+    return 'hashes-only';
   if (sideEffectForGatewayCommand(spec) === 'read') return 'bounded-redacted';
   return 'action-summary';
 }
@@ -224,11 +261,17 @@ export function relayCommandDefinitionFromCliGatewaySpec(
 export const RELAY_COMMAND_MANIFEST: RelayCommandManifest = {
   schemaVersion: 1,
   generatedFrom: 'shared/cli-gateway-contract.ts',
-  commands: RELAY_CLI_GATEWAY_CONTRACT.commandSchemas.map(relayCommandDefinitionFromCliGatewaySpec),
+  commands: RELAY_CLI_GATEWAY_CONTRACT.commandSchemas.map(
+    relayCommandDefinitionFromCliGatewaySpec
+  ),
 };
 
-export function relayCommandDefinition(name: RelayCliGatewayCommand): RelayCommandDefinition {
-  const definition = RELAY_COMMAND_MANIFEST.commands.find((entry) => entry.name === name);
+export function relayCommandDefinition(
+  name: RelayCliGatewayCommand
+): RelayCommandDefinition {
+  const definition = RELAY_COMMAND_MANIFEST.commands.find(
+    (entry) => entry.name === name
+  );
   if (!definition) throw new Error(`unknown Relay command definition: ${name}`);
   return definition;
 }
@@ -236,5 +279,7 @@ export function relayCommandDefinition(name: RelayCliGatewayCommand): RelayComma
 export function relayCommandDefinitionsForSurface(
   surface: RelayCommandSurface
 ): RelayCommandDefinition[] {
-  return RELAY_COMMAND_MANIFEST.commands.filter((command) => command.surfaces.includes(surface));
+  return RELAY_COMMAND_MANIFEST.commands.filter((command) =>
+    command.surfaces.includes(surface)
+  );
 }
