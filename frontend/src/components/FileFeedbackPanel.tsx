@@ -107,6 +107,16 @@ export function FileFeedbackPanel({
     [content]
   );
   const isMarkdown = language === 'markdown' || /\.mdx?$/iu.test(filePath);
+  const liveTargetSessionId = useMemo(
+    () =>
+      resolveFeedbackTarget(
+        sessions,
+        preferredTargetSessionId,
+        targetSessionId
+      ),
+    [preferredTargetSessionId, sessions, targetSessionId]
+  );
+  const hasLiveTarget = liveTargetSessionId !== '';
 
   useEffect(() => {
     setTargetSessionId((currentTargetSessionId) =>
@@ -135,24 +145,24 @@ export function FileFeedbackPanel({
   }, [endLine, startLine, totalLines]);
 
   const refreshInbox = useCallback(async () => {
-    if (!targetSessionId) return;
+    if (!liveTargetSessionId) return;
     setInboxLoading(true);
     setInboxError(null);
     try {
-      setMessages(await previewInboxMessages(targetSessionId, 8));
+      setMessages(await previewInboxMessages(liveTargetSessionId, 8));
     } catch (err) {
       setInboxError(messageError(err));
     } finally {
       setInboxLoading(false);
     }
-  }, [targetSessionId]);
+  }, [liveTargetSessionId]);
 
   useEffect(() => {
     void refreshInbox();
   }, [refreshInbox]);
 
   const handleSend = useCallback(async () => {
-    if (!range || !targetSessionId) return;
+    if (!range || !liveTargetSessionId) return;
     setSendState({ kind: 'sending' });
     try {
       const trimmedNote = note.trim();
@@ -180,7 +190,7 @@ export function FileFeedbackPanel({
         createdBy: 'relay-web',
       });
       const message = await sendInboxMessage({
-        targetSessionId,
+        targetSessionId: liveTargetSessionId,
         contextPacketIds: [packet.id],
         text:
           trimmedNote || `${filePath}#L${range.startLine}-L${range.endLine}`,
@@ -193,7 +203,7 @@ export function FileFeedbackPanel({
     } catch (err) {
       setSendState({ kind: 'error', message: messageError(err) });
     }
-  }, [content, filePath, note, range, targetSessionId, workspacePath]);
+  }, [content, filePath, liveTargetSessionId, note, range, workspacePath]);
 
   const transitionMessage = useCallback(
     async (id: string, action: 'ack' | 'resolve' | 'ignore') => {
@@ -215,7 +225,7 @@ export function FileFeedbackPanel({
   );
 
   const canSend = Boolean(
-    range && targetSessionId && sendState.kind !== 'sending'
+    range && hasLiveTarget && sendState.kind !== 'sending'
   );
 
   return (
@@ -233,7 +243,7 @@ export function FileFeedbackPanel({
           variant="ghost"
           size="sm"
           onClick={refreshInbox}
-          disabled={!targetSessionId || inboxLoading}
+          disabled={!hasLiveTarget || inboxLoading}
         >
           {inboxLoading ? 'refreshing' : 'refresh state'}
         </TuiButton>
@@ -243,9 +253,9 @@ export function FileFeedbackPanel({
         <label>
           target
           <select
-            value={targetSessionId}
+            value={liveTargetSessionId}
             onChange={(event) => setTargetSessionId(event.target.value)}
-            disabled={sessions.length === 0}
+            disabled={!hasLiveTarget}
           >
             {sessions.length === 0 ? (
               <option value="">no live sessions</option>
@@ -270,6 +280,7 @@ export function FileFeedbackPanel({
             max={totalLines}
             value={startLine}
             onChange={(event) => setStartLine(event.target.value)}
+            disabled={!hasLiveTarget}
           />
         </label>
         <label>
@@ -280,6 +291,7 @@ export function FileFeedbackPanel({
             max={totalLines}
             value={endLine}
             onChange={(event) => setEndLine(event.target.value)}
+            disabled={!hasLiveTarget}
           />
         </label>
         <label className="file-feedback__note">
@@ -289,6 +301,7 @@ export function FileFeedbackPanel({
             onChange={(event) => setNote(event.target.value)}
             placeholder="what should the agent review here?"
             rows={2}
+            disabled={!hasLiveTarget}
           />
         </label>
         <TuiButton
