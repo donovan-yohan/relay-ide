@@ -32,10 +32,15 @@ import type { ResolveAnchorOutcome } from '../server/anchor-resolution.js';
 // reject, PULL delivery (list/get flip queued → delivered).
 // ---------------------------------------------------------------------------
 
-const TERMINAL = new Set<SessionInboxMessageState>(TERMINAL_INBOX_MESSAGE_STATES);
+const TERMINAL = new Set<SessionInboxMessageState>(
+  TERMINAL_INBOX_MESSAGE_STATES
+);
 
 // Allowed forward transitions. `delivered` is reached by PULL, not this map.
-const ALLOWED_TRANSITIONS: Record<SessionInboxMessageState, Set<SessionInboxMessageState>> = {
+const ALLOWED_TRANSITIONS: Record<
+  SessionInboxMessageState,
+  Set<SessionInboxMessageState>
+> = {
   queued: new Set(['acknowledged']),
   delivered: new Set(['acknowledged']),
   acknowledged: new Set(['acknowledged', 'resolved', 'ignored']),
@@ -84,8 +89,10 @@ function createFakeStore(): ContextInboxStore & { _markDelivered: boolean } {
     },
     listPackets(filter?: ListContextPacketsFilter): ContextPacket[] {
       let all = [...packets.values()];
-      if (filter?.nodeId) all = all.filter((p) => p.binding?.nodeId === filter.nodeId);
-      if (filter?.workspaceId) all = all.filter((p) => p.binding?.workspaceId === filter.workspaceId);
+      if (filter?.nodeId)
+        all = all.filter((p) => p.binding?.nodeId === filter.nodeId);
+      if (filter?.workspaceId)
+        all = all.filter((p) => p.binding?.workspaceId === filter.workspaceId);
       if (filter?.limit !== undefined) all = all.slice(0, filter.limit);
       return all;
     },
@@ -93,8 +100,12 @@ function createFakeStore(): ContextInboxStore & { _markDelivered: boolean } {
       const id = createInboxMessageId(`test${messageSeq++}`);
       const message: SessionInboxMessage = {
         id,
-        ...(input.targetSessionId ? { targetSessionId: input.targetSessionId } : {}),
-        ...(input.targetWorkContextId ? { targetWorkContextId: input.targetWorkContextId } : {}),
+        ...(input.targetSessionId
+          ? { targetSessionId: input.targetSessionId }
+          : {}),
+        ...(input.targetWorkContextId
+          ? { targetWorkContextId: input.targetWorkContextId }
+          : {}),
         contextPacketIds: input.contextPacketIds,
         ...(input.text !== undefined ? { text: input.text } : {}),
         state: 'queued',
@@ -104,22 +115,33 @@ function createFakeStore(): ContextInboxStore & { _markDelivered: boolean } {
       messages.set(id, message);
       return message;
     },
-    listInboxMessages(filter: ListInboxMessagesFilter): SessionInboxMessage[] {
+    listInboxMessages(
+      filter: ListInboxMessagesFilter,
+      options: { markDelivered?: boolean } = {}
+    ): SessionInboxMessage[] {
       let all = [...messages.values()];
       if (filter.targetSessionId) {
         all = all.filter((m) => m.targetSessionId === filter.targetSessionId);
       }
       if (filter.targetWorkContextId) {
-        all = all.filter((m) => m.targetWorkContextId === filter.targetWorkContextId);
+        all = all.filter(
+          (m) => m.targetWorkContextId === filter.targetWorkContextId
+        );
       }
       if (filter.state) all = all.filter((m) => m.state === filter.state);
       if (filter.limit !== undefined) all = all.slice(0, filter.limit);
       // PULL delivery side effect applies only to rows returned by the list.
-      return all.map((m) => deliverOnPull(m));
+      return options.markDelivered === false
+        ? all
+        : all.map((m) => deliverOnPull(m));
     },
-    getInboxMessage(id: string): SessionInboxMessage | null {
+    getInboxMessage(
+      id: string,
+      options: { markDelivered?: boolean } = {}
+    ): SessionInboxMessage | null {
       const message = messages.get(id);
       if (!message) return null;
+      if (options.markDelivered === false) return message;
       return deliverOnPull(message);
     },
     updateInboxState(
@@ -133,14 +155,24 @@ function createFakeStore(): ContextInboxStore & { _markDelivered: boolean } {
         return { ok: false, reason: 'terminal', currentState: message.state };
       }
       if (!ALLOWED_TRANSITIONS[message.state].has(targetState)) {
-        return { ok: false, reason: 'invalid_transition', currentState: message.state };
+        return {
+          ok: false,
+          reason: 'invalid_transition',
+          currentState: message.state,
+        };
       }
       const updated: SessionInboxMessage = {
         ...message,
         state: targetState,
-        ...(targetState === 'acknowledged' ? { acknowledgedAt: new Date().toISOString() } : {}),
-        ...(targetState === 'resolved' ? { resolvedAt: new Date().toISOString() } : {}),
-        ...(targetState === 'ignored' ? { ignoredAt: new Date().toISOString() } : {}),
+        ...(targetState === 'acknowledged'
+          ? { acknowledgedAt: new Date().toISOString() }
+          : {}),
+        ...(targetState === 'resolved'
+          ? { resolvedAt: new Date().toISOString() }
+          : {}),
+        ...(targetState === 'ignored'
+          ? { ignoredAt: new Date().toISOString() }
+          : {}),
       };
       messages.set(id, updated);
       return { ok: true, message: updated };
@@ -228,7 +260,9 @@ describe('context/inbox gateway router', () => {
     expect(created.body.contextPacket.id).toMatch(/^cp:/);
 
     const id = created.body.contextPacket.id as string;
-    const got = await req('GET', `/context/${encodeURIComponent(id)}`, { caps: 'context:read' });
+    const got = await req('GET', `/context/${encodeURIComponent(id)}`, {
+      caps: 'context:read',
+    });
     expect(got.status).toBe(200);
     expect(got.body.contextPacket.id).toBe(id);
 
@@ -240,51 +274,103 @@ describe('context/inbox gateway router', () => {
   it('inbox.send queues; inbox.list PULL-delivers (queued → delivered)', async () => {
     const sent = await req('POST', '/inbox', {
       caps: 'inbox:write',
-      body: { targetSessionId: 'node1:s1', contextPacketIds: [], text: 'hi', createdBy: 'agent_1' },
+      body: {
+        targetSessionId: 'node1:s1',
+        contextPacketIds: [],
+        text: 'hi',
+        createdBy: 'agent_1',
+      },
     });
     expect(sent.status).toBe(201);
     expect(sent.body.message.state).toBe('queued');
 
-    const listed = await req('GET', '/inbox?targetSessionId=node1:s1', { caps: 'inbox:read' });
+    const listed = await req('GET', '/inbox?targetSessionId=node1:s1', {
+      caps: 'inbox:read',
+    });
     expect(listed.status).toBe(200);
     expect(listed.body.messages).toHaveLength(1);
     // PULL semantics: fetching flips queued → delivered.
     expect(listed.body.messages[0].state).toBe('delivered');
   });
 
+  it('inbox.preview lists without PULL-delivering queued messages', async () => {
+    const sent = await req('POST', '/inbox', {
+      caps: 'inbox:write',
+      body: {
+        targetSessionId: 'node1:s1',
+        contextPacketIds: [],
+        text: 'hi',
+        createdBy: 'agent_1',
+      },
+    });
+    expect(sent.body.message.state).toBe('queued');
+
+    const previewed = await req(
+      'GET',
+      '/inbox/preview?targetSessionId=node1:s1',
+      { caps: 'inbox:read' }
+    );
+    expect(previewed.status).toBe(200);
+    expect(previewed.body.messages).toHaveLength(1);
+    expect(previewed.body.messages[0].state).toBe('queued');
+
+    const listed = await req('GET', '/inbox?targetSessionId=node1:s1', {
+      caps: 'inbox:read',
+    });
+    expect(listed.body.messages[0].state).toBe('delivered');
+  });
+
   it('inbox.ack is idempotent and ack → resolve is terminal-guarded', async () => {
     const sent = await req('POST', '/inbox', {
       caps: 'inbox:write',
-      body: { targetSessionId: 'node1:s2', contextPacketIds: [], createdBy: 'agent_1' },
+      body: {
+        targetSessionId: 'node1:s2',
+        contextPacketIds: [],
+        createdBy: 'agent_1',
+      },
     });
     const id = sent.body.message.id as string;
 
-    const ack1 = await req('POST', `/inbox/${encodeURIComponent(id)}/ack`, { caps: 'inbox:write' });
+    const ack1 = await req('POST', `/inbox/${encodeURIComponent(id)}/ack`, {
+      caps: 'inbox:write',
+    });
     expect(ack1.status).toBe(200);
     expect(ack1.body.message.state).toBe('acknowledged');
 
     // Idempotent re-ack succeeds.
-    const ack2 = await req('POST', `/inbox/${encodeURIComponent(id)}/ack`, { caps: 'inbox:write' });
+    const ack2 = await req('POST', `/inbox/${encodeURIComponent(id)}/ack`, {
+      caps: 'inbox:write',
+    });
     expect(ack2.status).toBe(200);
     expect(ack2.body.message.state).toBe('acknowledged');
 
     // Resolve from acknowledged is allowed → terminal.
-    const resolved = await req('POST', `/inbox/${encodeURIComponent(id)}/resolve`, {
-      caps: 'inbox:write',
-    });
+    const resolved = await req(
+      'POST',
+      `/inbox/${encodeURIComponent(id)}/resolve`,
+      {
+        caps: 'inbox:write',
+      }
+    );
     expect(resolved.status).toBe(200);
     expect(resolved.body.message.state).toBe('resolved');
     expect(isTerminalInboxState(resolved.body.message.state)).toBe(true);
 
     // Any transition out of a terminal state is rejected (SESSION_CONFLICT).
-    const reAck = await req('POST', `/inbox/${encodeURIComponent(id)}/ack`, { caps: 'inbox:write' });
+    const reAck = await req('POST', `/inbox/${encodeURIComponent(id)}/ack`, {
+      caps: 'inbox:write',
+    });
     expect(reAck.status).toBe(409);
     expect(reAck.body.error.code).toBe('SESSION_CONFLICT');
     expect(reAck.body.error.details.currentState).toBe('resolved');
 
-    const reIgnore = await req('POST', `/inbox/${encodeURIComponent(id)}/ignore`, {
-      caps: 'inbox:write',
-    });
+    const reIgnore = await req(
+      'POST',
+      `/inbox/${encodeURIComponent(id)}/ignore`,
+      {
+        caps: 'inbox:write',
+      }
+    );
     expect(reIgnore.status).toBe(409);
     expect(reIgnore.body.error.code).toBe('SESSION_CONFLICT');
   });
@@ -312,7 +398,9 @@ describe('context/inbox gateway router', () => {
     expect(list.body.error.code).toBe('FORBIDDEN');
     expect(list.body.error.details.capability).toBe('context:read');
 
-    const inbox = await req('GET', '/inbox?targetSessionId=node1:s1', { caps: ALL_CAPS.replace('inbox:read', '') });
+    const inbox = await req('GET', '/inbox?targetSessionId=node1:s1', {
+      caps: ALL_CAPS.replace('inbox:read', ''),
+    });
     expect(inbox.status).toBe(403);
     expect(inbox.body.error.details.capability).toBe('inbox:read');
   });
@@ -339,7 +427,9 @@ describe('context/inbox gateway router', () => {
     expect(invalidAnchor.status).toBe(400);
     expect(invalidAnchor.body.error.code).toBe('INVALID_ARGUMENT');
     expect(invalidAnchor.body.error.message).toContain('anchor.ref.nodeId');
-    expect(invalidAnchor.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(invalidAnchor.body.error.details.reasonCode).toBe(
+      'INVALID_CONTEXT_PACKET'
+    );
     expect(invalidAnchor.body.error.details.fieldErrors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ field: 'anchor.ref.nodeId' }),
@@ -366,7 +456,9 @@ describe('context/inbox gateway router', () => {
     expect(invalidBinding.status).toBe(400);
     expect(invalidBinding.body.error.code).toBe('INVALID_ARGUMENT');
     expect(invalidBinding.body.error.message).toContain('binding.workspaceId');
-    expect(invalidBinding.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(invalidBinding.body.error.details.reasonCode).toBe(
+      'INVALID_CONTEXT_PACKET'
+    );
     expect(invalidBinding.body.error.details.fieldErrors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ field: 'binding.workspaceId' }),
@@ -387,7 +479,9 @@ describe('context/inbox gateway router', () => {
     });
     expect(nonObjectBinding.status).toBe(400);
     expect(nonObjectBinding.body.error.code).toBe('INVALID_ARGUMENT');
-    expect(nonObjectBinding.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(nonObjectBinding.body.error.details.reasonCode).toBe(
+      'INVALID_CONTEXT_PACKET'
+    );
     expect(nonObjectBinding.body.error.details.fieldErrors).toEqual([
       expect.objectContaining({ field: 'binding' }),
     ]);
@@ -399,7 +493,9 @@ describe('context/inbox gateway router', () => {
     expect(noTarget.status).toBe(400);
     expect(noTarget.body.error.code).toBe('INVALID_ARGUMENT');
 
-    const missing = await req('GET', '/context/cp:does-not-exist', { caps: 'context:read' });
+    const missing = await req('GET', '/context/cp:does-not-exist', {
+      caps: 'context:read',
+    });
     expect(missing.status).toBe(404);
     expect(missing.body.error.code).toBe('NOT_FOUND');
   });
@@ -416,14 +512,23 @@ describe('context/inbox gateway router without a store', () => {
 
 // #760: derived `AnchorState` decoration wired into the read paths.
 describe('context/inbox gateway router — #760 derived AnchorState decoration', () => {
-  function resolverReturning(state: 'unchanged' | 'stale' | 'missing'): AnchorStateResolver {
-    return async (): Promise<ResolveAnchorOutcome> => ({ state, current: null });
+  function resolverReturning(
+    state: 'unchanged' | 'stale' | 'missing'
+  ): AnchorStateResolver {
+    return async (): Promise<ResolveAnchorOutcome> => ({
+      state,
+      current: null,
+    });
   }
 
   async function createFileAnchor(): Promise<string> {
     const created = await req('POST', '/context', {
       caps: 'context:write',
-      body: { kind: 'file-anchor', anchor: fileAnchorRef(), createdBy: 'agent_1' },
+      body: {
+        kind: 'file-anchor',
+        anchor: fileAnchorRef(),
+        createdBy: 'agent_1',
+      },
     });
     expect(created.status).toBe(201);
     return created.body.contextPacket.id as string;
@@ -434,7 +539,9 @@ describe('context/inbox gateway router — #760 derived AnchorState decoration',
     async (state) => {
       await mount(createFakeStore(), resolverReturning(state));
       const id = await createFileAnchor();
-      const got = await req('GET', `/context/${encodeURIComponent(id)}`, { caps: 'context:read' });
+      const got = await req('GET', `/context/${encodeURIComponent(id)}`, {
+        caps: 'context:read',
+      });
       expect(got.status).toBe(200);
       expect(got.body.contextPacket.kind).toBe('file-anchor');
       // DERIVED at read time, surfaced — never stored.
@@ -449,7 +556,9 @@ describe('context/inbox gateway router — #760 derived AnchorState decoration',
       body: { kind: 'note', note: 'no anchor here', createdBy: 'agent_1' },
     });
     const id = created.body.contextPacket.id as string;
-    const got = await req('GET', `/context/${encodeURIComponent(id)}`, { caps: 'context:read' });
+    const got = await req('GET', `/context/${encodeURIComponent(id)}`, {
+      caps: 'context:read',
+    });
     expect(got.body.contextPacket.anchorState).toBeUndefined();
   });
 
@@ -458,10 +567,16 @@ describe('context/inbox gateway router — #760 derived AnchorState decoration',
     const packetId = await createFileAnchor();
     const sent = await req('POST', '/inbox', {
       caps: 'inbox:write',
-      body: { targetSessionId: 'node1:s9', contextPacketIds: [packetId], createdBy: 'agent_1' },
+      body: {
+        targetSessionId: 'node1:s9',
+        contextPacketIds: [packetId],
+        createdBy: 'agent_1',
+      },
     });
     const msgId = sent.body.message.id as string;
-    const got = await req('GET', `/inbox/${encodeURIComponent(msgId)}`, { caps: 'inbox:read' });
+    const got = await req('GET', `/inbox/${encodeURIComponent(msgId)}`, {
+      caps: 'inbox:read',
+    });
     expect(got.status).toBe(200);
     expect(got.body.message.contextPackets).toHaveLength(1);
     expect(got.body.message.contextPackets[0].anchorState).toBe('unchanged');
@@ -472,13 +587,44 @@ describe('context/inbox gateway router — #760 derived AnchorState decoration',
     const packetId = await createFileAnchor();
     await req('POST', '/inbox', {
       caps: 'inbox:write',
-      body: { targetSessionId: 'node1:s10', contextPacketIds: [packetId], createdBy: 'agent_1' },
+      body: {
+        targetSessionId: 'node1:s10',
+        contextPacketIds: [packetId],
+        createdBy: 'agent_1',
+      },
     });
-    const listed = await req('GET', '/inbox?targetSessionId=node1:s10', { caps: 'inbox:read' });
+    const listed = await req('GET', '/inbox?targetSessionId=node1:s10', {
+      caps: 'inbox:read',
+    });
     expect(listed.status).toBe(200);
     expect(listed.body.messages).toHaveLength(1);
     // PULL delivery still happens alongside decoration.
     expect(listed.body.messages[0].state).toBe('delivered');
-    expect(listed.body.messages[0].contextPackets[0].anchorState).toBe('missing');
+    expect(listed.body.messages[0].contextPackets[0].anchorState).toBe(
+      'missing'
+    );
+  });
+
+  it('inbox.preview decorates referenced packets without PULL-delivering', async () => {
+    await mount(createFakeStore(), resolverReturning('unchanged'));
+    const packetId = await createFileAnchor();
+    await req('POST', '/inbox', {
+      caps: 'inbox:write',
+      body: {
+        targetSessionId: 'node1:s11',
+        contextPacketIds: [packetId],
+        createdBy: 'agent_1',
+      },
+    });
+    const previewed = await req(
+      'GET',
+      '/inbox/preview?targetSessionId=node1:s11',
+      { caps: 'inbox:read' }
+    );
+    expect(previewed.status).toBe(200);
+    expect(previewed.body.messages[0].state).toBe('queued');
+    expect(previewed.body.messages[0].contextPackets[0].anchorState).toBe(
+      'unchanged'
+    );
   });
 });

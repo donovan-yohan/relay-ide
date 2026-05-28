@@ -9,6 +9,8 @@ const DEFAULT_DEV_BACKEND_TARGET = `http://127.0.0.1:${DEV_BACKEND_PORT}`;
 export const backendProxyPaths = [
   '/auth',
   '/sessions',
+  '/context',
+  '/inbox',
   '/repos',
   '/branches',
   '/worktrees',
@@ -43,9 +45,7 @@ type DevEnv = Record<string, string | undefined>;
 function parsePort(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const port = Number(value);
-  return Number.isInteger(port) && port > 0 && port <= 65_535
-    ? port
-    : fallback;
+  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : fallback;
 }
 
 export function buildBackendProxyTarget(env: DevEnv = process.env): string {

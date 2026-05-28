@@ -3,6 +3,7 @@ import { afterEach, expect, test } from 'vitest';
 import {
   createContextPacket,
   fetchInboxMessages,
+  previewInboxMessages,
   sendInboxMessage,
   updateInboxMessageState,
 } from '../frontend/src/lib/api.js';
@@ -134,5 +135,31 @@ test('context feedback api lists inbox feedback and drives review state transiti
   expect(requests[1]?.url).toBe('/inbox/im%3Aweb-1/resolve');
   expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({
     actorId: 'relay-web',
+  });
+});
+
+test('context feedback api previews inbox feedback through the non-consuming endpoint', async () => {
+  installFetch([
+    {
+      messages: [
+        {
+          id: 'im:web-1',
+          targetSessionId: 'local:session-1',
+          contextPacketIds: ['cp:web-1'],
+          state: 'queued',
+          text: 'please review this range',
+        },
+      ],
+    },
+  ]);
+
+  const messages = await previewInboxMessages('local:session-1', 8);
+
+  expect(messages[0]?.state).toBe('queued');
+  expect(requests[0]?.url).toBe(
+    '/inbox/preview?targetSessionId=local%3Asession-1&limit=8'
+  );
+  expect(requests[0]?.init?.headers).toMatchObject({
+    'x-relay-capabilities': 'context:read,context:write,inbox:read,inbox:write',
   });
 });

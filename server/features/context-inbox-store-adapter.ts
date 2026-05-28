@@ -141,14 +141,18 @@ export function createContextInboxStoreAdapter(
     listPackets(filter?: ListContextPacketsFilter): ContextPacket[] {
       return store.listContextPackets({
         ...(filter?.nodeId !== undefined ? { nodeId: filter.nodeId } : {}),
-        ...(filter?.workspaceId !== undefined ? { workspaceId: filter.workspaceId } : {}),
+        ...(filter?.workspaceId !== undefined
+          ? { workspaceId: filter.workspaceId }
+          : {}),
         ...(filter?.limit !== undefined ? { limit: filter.limit } : {}),
       });
     },
 
     createInboxMessage(input: CreateInboxMessageInput): SessionInboxMessage {
       return store.createInboxMessage({
-        ...(input.targetSessionId ? { targetSessionId: input.targetSessionId } : {}),
+        ...(input.targetSessionId
+          ? { targetSessionId: input.targetSessionId }
+          : {}),
         ...(input.targetWorkContextId
           ? { targetWorkContextId: input.targetWorkContextId }
           : {}),
@@ -158,23 +162,37 @@ export function createContextInboxStoreAdapter(
       });
     },
 
-    // PULL delivery: reading a queued message flips it to delivered (ADR-019 D3).
-    listInboxMessages(filter: ListInboxMessagesFilter): SessionInboxMessage[] {
+    // PULL delivery: reading a queued message flips it to delivered (ADR-019 D3)
+    // unless a sender-side preview explicitly opts out.
+    listInboxMessages(
+      filter: ListInboxMessagesFilter,
+      options: { markDelivered?: boolean } = {}
+    ): SessionInboxMessage[] {
       const messages = store.listInboxMessages({
-        ...(filter.targetSessionId ? { targetSessionId: filter.targetSessionId } : {}),
+        ...(filter.targetSessionId
+          ? { targetSessionId: filter.targetSessionId }
+          : {}),
         ...(filter.targetWorkContextId
           ? { targetWorkContextId: filter.targetWorkContextId }
           : {}),
         ...(filter.state ? { state: filter.state } : {}),
       });
-      const visible = filter.limit !== undefined ? messages.slice(0, filter.limit) : messages;
-      return visible.map((m) => deliverOnPull(store, m));
+      const visible =
+        filter.limit !== undefined ? messages.slice(0, filter.limit) : messages;
+      return options.markDelivered === false
+        ? visible
+        : visible.map((m) => deliverOnPull(store, m));
     },
 
-    // PULL delivery: getting a queued message by id flips it to delivered.
-    getInboxMessage(id: SessionInboxMessageId): SessionInboxMessage | null {
+    // PULL delivery: getting a queued message by id flips it to delivered unless
+    // a sender-side preview explicitly opts out.
+    getInboxMessage(
+      id: SessionInboxMessageId,
+      options: { markDelivered?: boolean } = {}
+    ): SessionInboxMessage | null {
       const message = store.getInboxMessage(id);
       if (!message) return null;
+      if (options.markDelivered === false) return message;
       return deliverOnPull(store, message);
     },
 

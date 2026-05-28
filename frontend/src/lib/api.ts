@@ -250,6 +250,19 @@ export async function fetchInboxMessages(
   return Array.isArray(data.messages) ? data.messages : [];
 }
 
+export async function previewInboxMessages(
+  targetSessionId: string,
+  limit = 10
+): Promise<DecoratedInboxMessage[]> {
+  const params = new URLSearchParams({ targetSessionId, limit: String(limit) });
+  const data = await json<{ messages?: DecoratedInboxMessage[] }>(
+    await fetch(`/inbox/preview?${params.toString()}`, {
+      headers: { 'x-relay-capabilities': CONTEXT_INBOX_CAPABILITIES },
+    })
+  );
+  return Array.isArray(data.messages) ? data.messages : [];
+}
+
 export async function updateInboxMessageState(
   id: SessionInboxMessageId,
   action: 'ack' | 'resolve' | 'ignore'

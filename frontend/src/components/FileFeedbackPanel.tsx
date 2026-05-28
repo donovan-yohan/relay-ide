@@ -7,7 +7,7 @@ import type {
 import type { SessionSummary } from '../lib/types.js';
 import {
   createContextPacket,
-  fetchInboxMessages,
+  previewInboxMessages,
   sendInboxMessage,
   updateInboxMessageState,
   type DecoratedInboxMessage,
@@ -76,6 +76,20 @@ function stateClass(state: SessionInboxMessageState): string {
   return `file-feedback__state file-feedback__state--${state}`;
 }
 
+async function sha256Hex(content: string): Promise<string | null> {
+  const cryptoApi = globalThis.crypto;
+  if (!cryptoApi?.subtle) return null;
+  const bytes = new TextEncoder().encode(content);
+  const digest = await cryptoApi.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function utf8Size(content: string): number {
+  return new TextEncoder().encode(content).byteLength;
+}
+
 export function FileFeedbackPanel({
   filePath,
   workspacePath,
@@ -129,7 +143,7 @@ export function FileFeedbackPanel({
     setInboxLoading(true);
     setInboxError(null);
     try {
-      setMessages(await fetchInboxMessages(targetSessionId, 8));
+      setMessages(await previewInboxMessages(targetSessionId, 8));
     } catch (err) {
       setInboxError(messageError(err));
     } finally {
@@ -146,6 +160,7 @@ export function FileFeedbackPanel({
     setSendState({ kind: 'sending' });
     try {
       const trimmedNote = note.trim();
+      const contentSha256 = await sha256Hex(content);
       const packet = await createContextPacket({
         kind: 'file-anchor',
         anchor: {
@@ -154,6 +169,8 @@ export function FileFeedbackPanel({
             path: absoluteFilePath(workspacePath, filePath),
             capturedAt: new Date().toISOString(),
             intent: 'read',
+            size: utf8Size(content),
+            ...(contentSha256 ? { sha256: contentSha256 } : {}),
             repoBinding: {
               repoPath: workspacePath,
               worktreePath: workspacePath,
