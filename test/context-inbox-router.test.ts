@@ -325,6 +325,73 @@ describe('context/inbox gateway router', () => {
     expect(noKind.status).toBe(400);
     expect(noKind.body.error.code).toBe('INVALID_ARGUMENT');
 
+    const invalidAnchor = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'file-anchor',
+        anchor: {
+          ref: { path: 'relative.ts', intent: 'bogus' },
+          lineRange: { startLine: 3, endLine: 2 },
+        },
+        createdBy: 'agent_1',
+      },
+    });
+    expect(invalidAnchor.status).toBe(400);
+    expect(invalidAnchor.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(invalidAnchor.body.error.message).toContain('anchor.ref.nodeId');
+    expect(invalidAnchor.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(invalidAnchor.body.error.details.fieldErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'anchor.ref.nodeId' }),
+        expect.objectContaining({ field: 'anchor.ref.path' }),
+        expect.objectContaining({ field: 'anchor.ref.intent' }),
+        expect.objectContaining({ field: 'anchor.lineRange.endLine' }),
+      ])
+    );
+
+    const invalidBinding = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'note',
+        note: 'valid note should not accept invalid binding',
+        binding: {
+          workspaceId: 123,
+          nodeId: '',
+          repoInstanceId: null,
+          worktreeInstanceId: false,
+        },
+        createdBy: 'agent_1',
+      },
+    });
+    expect(invalidBinding.status).toBe(400);
+    expect(invalidBinding.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(invalidBinding.body.error.message).toContain('binding.workspaceId');
+    expect(invalidBinding.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(invalidBinding.body.error.details.fieldErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'binding.workspaceId' }),
+        expect.objectContaining({ field: 'binding.nodeId' }),
+        expect.objectContaining({ field: 'binding.repoInstanceId' }),
+        expect.objectContaining({ field: 'binding.worktreeInstanceId' }),
+      ])
+    );
+
+    const nonObjectBinding = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'note',
+        note: 'valid note should not accept array binding',
+        binding: ['workspace-1'],
+        createdBy: 'agent_1',
+      },
+    });
+    expect(nonObjectBinding.status).toBe(400);
+    expect(nonObjectBinding.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(nonObjectBinding.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(nonObjectBinding.body.error.details.fieldErrors).toEqual([
+      expect.objectContaining({ field: 'binding' }),
+    ]);
+
     const noTarget = await req('POST', '/inbox', {
       caps: 'inbox:write',
       body: { contextPacketIds: [], createdBy: 'agent_1' },
@@ -362,15 +429,18 @@ describe('context/inbox gateway router — #760 derived AnchorState decoration',
     return created.body.contextPacket.id as string;
   }
 
-  it('context.get decorates a file-anchor packet with derived anchorState', async () => {
-    await mount(createFakeStore(), resolverReturning('stale'));
-    const id = await createFileAnchor();
-    const got = await req('GET', `/context/${encodeURIComponent(id)}`, { caps: 'context:read' });
-    expect(got.status).toBe(200);
-    expect(got.body.contextPacket.kind).toBe('file-anchor');
-    // DERIVED at read time, surfaced — never stored.
-    expect(got.body.contextPacket.anchorState).toBe('stale');
-  });
+  it.each(['unchanged', 'stale'] as const)(
+    'context.get decorates a file-anchor packet with derived %s anchorState',
+    async (state) => {
+      await mount(createFakeStore(), resolverReturning(state));
+      const id = await createFileAnchor();
+      const got = await req('GET', `/context/${encodeURIComponent(id)}`, { caps: 'context:read' });
+      expect(got.status).toBe(200);
+      expect(got.body.contextPacket.kind).toBe('file-anchor');
+      // DERIVED at read time, surfaced — never stored.
+      expect(got.body.contextPacket.anchorState).toBe(state);
+    }
+  );
 
   it('context.get leaves a note packet undecorated', async () => {
     await mount(createFakeStore(), resolverReturning('unchanged'));
