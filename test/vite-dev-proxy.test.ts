@@ -15,11 +15,13 @@ describe('Vite dev proxy config', () => {
   });
 
   it('builds the backend target from env overrides', () => {
-    expect(buildBackendProxyTarget({ RELAY_IDE_DEV_BACKEND_PORT: '4567' })).toBe(
-      'http://127.0.0.1:4567'
-    );
     expect(
-      buildBackendProxyTarget({ RELAY_IDE_DEV_BACKEND_URL: 'http://localhost:9999' })
+      buildBackendProxyTarget({ RELAY_IDE_DEV_BACKEND_PORT: '4567' })
+    ).toBe('http://127.0.0.1:4567');
+    expect(
+      buildBackendProxyTarget({
+        RELAY_IDE_DEV_BACKEND_URL: 'http://localhost:9999',
+      })
     ).toBe('http://localhost:9999');
   });
 
@@ -33,6 +35,8 @@ describe('Vite dev proxy config', () => {
     expect(proxy['/ws']?.ws).toBe(true);
     expect(backendProxyPaths).toContain('/auth');
     expect(backendProxyPaths).toContain('/sessions');
+    expect(backendProxyPaths).toContain('/context');
+    expect(backendProxyPaths).toContain('/inbox');
     expect(backendProxyPaths).toContain('/branches');
     expect(backendProxyPaths).toContain('/workspaces');
     expect(backendProxyPaths).toContain('/presets');

@@ -39,7 +39,11 @@ afterEach(() => {
 });
 
 function seedMessage(target: GlobalSessionId = SESSION_A) {
-  const packet = adapter.createPacket({ kind: 'note', note: 'hi', createdBy: 'agent_1' });
+  const packet = adapter.createPacket({
+    kind: 'note',
+    note: 'hi',
+    createdBy: 'agent_1',
+  });
   return adapter.createInboxMessage({
     targetSessionId: target,
     contextPacketIds: [packet.id],
@@ -50,7 +54,11 @@ function seedMessage(target: GlobalSessionId = SESSION_A) {
 
 describe('context-inbox store adapter — method renames + packet filter', () => {
   it('round-trips createPacket/getPacket/listPackets', () => {
-    const created = adapter.createPacket({ kind: 'note', note: 'remember', createdBy: 'agent_1' });
+    const created = adapter.createPacket({
+      kind: 'note',
+      note: 'remember',
+      createdBy: 'agent_1',
+    });
     expect(created.id).toMatch(/^cp:/);
     expect(adapter.getPacket(created.id)?.id).toBe(created.id);
     expect(adapter.listPackets().map((p) => p.id)).toContain(created.id);
@@ -70,7 +78,9 @@ describe('context-inbox store adapter — method renames + packet filter', () =>
       createdBy: 'agent_1',
     });
     expect(adapter.listPackets({ nodeId: 'node-a' })).toHaveLength(1);
-    expect(adapter.listPackets({ nodeId: 'node-a' })[0]?.binding?.nodeId).toBe('node-a');
+    expect(adapter.listPackets({ nodeId: 'node-a' })[0]?.binding?.nodeId).toBe(
+      'node-a'
+    );
     expect(adapter.listPackets({ limit: 1 })).toHaveLength(1);
   });
 });
@@ -94,12 +104,27 @@ describe('context-inbox store adapter — PULL-as-delivery flip', () => {
     expect(store.getInboxMessage(msg.id)?.state).toBe('delivered');
   });
 
+  it('listInboxMessages can opt out of PULL delivery for sender preview', () => {
+    const msg = seedMessage();
+    const previewed = adapter.listInboxMessages(
+      { targetSessionId: SESSION_A },
+      { markDelivered: false }
+    );
+
+    expect(previewed).toHaveLength(1);
+    expect(previewed[0]?.state).toBe('queued');
+    expect(store.getInboxMessage(msg.id)?.state).toBe('queued');
+  });
+
   it('listInboxMessages with a limit flips only returned queued rows', () => {
     const first = seedMessage(SESSION_A);
     const second = seedMessage(SESSION_A);
     const third = seedMessage(SESSION_A);
 
-    const listed = adapter.listInboxMessages({ targetSessionId: SESSION_A, limit: 2 });
+    const listed = adapter.listInboxMessages({
+      targetSessionId: SESSION_A,
+      limit: 2,
+    });
 
     expect(listed).toHaveLength(2);
     const listedIds = new Set(listed.map((m) => m.id));
@@ -109,7 +134,9 @@ describe('context-inbox store adapter — PULL-as-delivery flip', () => {
         listedIds.has(message.id) ? 'delivered' : 'queued'
       );
     }
-    expect([first, second, third].filter((m) => !listedIds.has(m.id))).toHaveLength(1);
+    expect(
+      [first, second, third].filter((m) => !listedIds.has(m.id))
+    ).toHaveLength(1);
   });
 
   it('re-fetching a delivered message is idempotent (no-op, timestamp preserved)', () => {
@@ -128,7 +155,9 @@ describe('context-inbox store adapter — PULL-as-delivery flip', () => {
     adapter.updateInboxState(msg.id, 'resolved');
     expect(adapter.getInboxMessage(msg.id)?.state).toBe('resolved');
     // A read of a terminal message leaves it terminal.
-    expect(adapter.listInboxMessages({ targetSessionId: SESSION_A })[0]?.state).toBe('resolved');
+    expect(
+      adapter.listInboxMessages({ targetSessionId: SESSION_A })[0]?.state
+    ).toBe('resolved');
   });
 
   it('only flips messages addressed to the fetched target', () => {
@@ -163,7 +192,8 @@ describe('context-inbox store adapter — throw → result-union remap', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe('terminal');
-      if (result.reason === 'terminal') expect(result.currentState).toBe('resolved');
+      if (result.reason === 'terminal')
+        expect(result.currentState).toBe('resolved');
     }
   });
 

@@ -24,6 +24,7 @@ import {
 import type { ScopedSessionSummary } from '../server/session-envelope-registry.js';
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
+import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
 import { RELAY_SECURITY_POLICY_VERSION } from '../shared/security-policy.js';
 
 const NODE_ID = 'node-alpha';
@@ -68,13 +69,24 @@ function onlineNode(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   } as unknown as HubNodeSummary;
 }
 
-function scopedSession(root: string): ScopedSessionSummary {
+function scopedSession(root: string, nodeId = NODE_ID): ScopedSessionSummary {
   return {
     sessionId: 'sess-1',
-    globalSessionId: `${NODE_ID}:sess-1`,
-    nodeId: NODE_ID,
-    intent: { kind: 'routed-node-session', description: 'test' },
-    scope: { kind: 'node-cwd', nodeId: NODE_ID, cwd: root },
+    globalSessionId: `${nodeId}:sess-1`,
+    nodeId,
+    intent: {
+      kind:
+        nodeId === DEFAULT_LOCAL_NODE_ID
+          ? 'local-dev-compatibility'
+          : 'routed-node-session',
+      description: 'test',
+    },
+    scope: {
+      kind:
+        nodeId === DEFAULT_LOCAL_NODE_ID ? 'local-compatibility' : 'node-cwd',
+      nodeId,
+      cwd: root,
+    },
     peerIdentity: { kind: 'local-user', id: 'local-dev' },
     issuedAt: new Date().toISOString(),
     expiresAt: null,
@@ -107,8 +119,13 @@ function deps(input: {
   };
 }
 
-function target(root: string, file: string, preferRead = false): AnchorFileFetchTarget {
-  return { nodeId: NODE_ID, path: path.join(root, file), preferRead };
+function target(
+  root: string,
+  file: string,
+  preferRead = false,
+  nodeId = NODE_ID
+): AnchorFileFetchTarget {
+  return { nodeId, path: path.join(root, file), preferRead };
 }
 
 describe('createAnchorFileFetcher — happy path (stat)', () => {
@@ -118,7 +135,14 @@ describe('createAnchorFileFetcher — happy path (stat)', () => {
       expect(type).toBe('fs.stat');
       return {
         operation: 'stat',
-        stat: { type: 'file', size: 123, mtimeMs: 4567, path: 'x', name: 'x', mode: 0 },
+        stat: {
+          type: 'file',
+          size: 123,
+          mtimeMs: 4567,
+          path: 'x',
+          name: 'x',
+          mode: 0,
+        },
       };
     });
     const fetcher = createAnchorFileFetcher(
@@ -139,7 +163,10 @@ describe('createAnchorFileFetcher — happy path (read, preferRead)', () => {
   it('resolves found:true and hashes content for an authoritative sha', async () => {
     const root = makeRoot();
     const content = 'export const answer = 42;\n';
-    const expectedSha = crypto.createHash('sha256').update(Buffer.from(content, 'utf8')).digest('hex');
+    const expectedSha = crypto
+      .createHash('sha256')
+      .update(Buffer.from(content, 'utf8'))
+      .digest('hex');
     const request = vi.fn(async (_nodeId, type) => {
       expect(type).toBe('fs.read');
       return {
@@ -183,18 +210,78 @@ describe('createAnchorFileFetcher — happy path (read, preferRead)', () => {
   });
 });
 
+describe('createAnchorFileFetcher — local compatibility node', () => {
+  it('resolves an existing DEFAULT_LOCAL_NODE_ID file through local File RPC without a paired node link', async () => {
+    const root = makeRoot();
+    const filePath = path.join(root, 'local.ts');
+    fs.writeFileSync(filePath, 'export const local = true;\n');
+    const request = vi.fn();
+    const fetcher = createAnchorFileFetcher(
+      deps({
+        nodes: [],
+        sessions: [scopedSession(root, DEFAULT_LOCAL_NODE_ID)],
+        request,
+        hasActiveNode: false,
+      })
+    );
+
+    const result = await fetcher(
+      target(root, 'local.ts', false, DEFAULT_LOCAL_NODE_ID)
+    );
+
+    expect(result).toMatchObject({
+      found: true,
+      grantedCapability: ANCHOR_RESOLUTION_CAPABILITY,
+      size: fs.statSync(filePath).size,
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('does not use the local fallback for non-local nodes without a paired link', async () => {
+    const root = makeRoot();
+    fs.writeFileSync(
+      path.join(root, 'remote-looking.ts'),
+      'exists on the hub only\n'
+    );
+    const request = vi.fn();
+    const fetcher = createAnchorFileFetcher(
+      deps({
+        nodes: [onlineNode()],
+        sessions: [scopedSession(root)],
+        request,
+        hasActiveNode: false,
+      })
+    );
+
+    const result = await fetcher(target(root, 'remote-looking.ts', false));
+
+    expect(result).toBeNull();
+    expect(request).not.toHaveBeenCalled();
+  });
+});
+
 describe('createAnchorFileFetcher — missing / not-a-file', () => {
   it('maps a non-file stat (directory) to found:false', async () => {
     const root = makeRoot();
     const request = vi.fn(async () => ({
       operation: 'stat',
-      stat: { type: 'directory', size: 0, mtimeMs: 1, path: 'd', name: 'd', mode: 0 },
+      stat: {
+        type: 'directory',
+        size: 0,
+        mtimeMs: 1,
+        path: 'd',
+        name: 'd',
+        mode: 0,
+      },
     }));
     const fetcher = createAnchorFileFetcher(
       deps({ nodes: [onlineNode()], sessions: [scopedSession(root)], request })
     );
     const result = await fetcher(target(root, 'sub', false));
-    expect(result).toEqual({ found: false, grantedCapability: ANCHOR_RESOLUTION_CAPABILITY });
+    expect(result).toEqual({
+      found: false,
+      grantedCapability: ANCHOR_RESOLUTION_CAPABILITY,
+    });
   });
 
   it('maps a NOT_FOUND link error to found:false (authorized fetch, gone file)', async () => {
@@ -206,18 +293,28 @@ describe('createAnchorFileFetcher — missing / not-a-file', () => {
       deps({ nodes: [onlineNode()], sessions: [scopedSession(root)], request })
     );
     const result = await fetcher(target(root, 'gone.ts', false));
-    expect(result).toEqual({ found: false, grantedCapability: ANCHOR_RESOLUTION_CAPABILITY });
+    expect(result).toEqual({
+      found: false,
+      grantedCapability: ANCHOR_RESOLUTION_CAPABILITY,
+    });
   });
 });
 
 describe('createAnchorFileFetcher — unresolvable (null, never local-stat)', () => {
   it('returns null when no live session scope contains the path', async () => {
     const root = makeRoot();
-    const request = vi.fn(async () => ({ operation: 'stat', stat: { type: 'file' } }));
+    const request = vi.fn(async () => ({
+      operation: 'stat',
+      stat: { type: 'file' },
+    }));
     // Session scoped to a DIFFERENT root → path is outside; no in-scope session.
     const otherRoot = makeRoot();
     const fetcher = createAnchorFileFetcher(
-      deps({ nodes: [onlineNode()], sessions: [scopedSession(otherRoot)], request })
+      deps({
+        nodes: [onlineNode()],
+        sessions: [scopedSession(otherRoot)],
+        request,
+      })
     );
     const result = await fetcher(target(root, 'a.ts', false));
     expect(result).toBeNull();
@@ -237,7 +334,9 @@ describe('createAnchorFileFetcher — unresolvable (null, never local-stat)', ()
   it('returns null when the node is offline (no File RPC path)', async () => {
     const root = makeRoot();
     const request = vi.fn();
-    const offline = onlineNode({ status: 'offline' as HubNodeSummary['status'] });
+    const offline = onlineNode({
+      status: 'offline' as HubNodeSummary['status'],
+    });
     const fetcher = createAnchorFileFetcher(
       deps({ nodes: [offline], sessions: [scopedSession(root)], request })
     );

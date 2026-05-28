@@ -1,23 +1,25 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-} from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ChangedFile } from '../lib/types.js';
 import { fetchChangedFiles, fetchDefaultBranch } from '../lib/api.js';
 import { diffSourceToBase } from '../lib/diff-utils.js';
 import { generateFileSummary } from '../lib/diff-summary.js';
 import { useFileDiff } from '../hooks/useFileDiff.js';
+import { useFileContent } from '../hooks/useFileContent.js';
 import {
   useUiStore,
   type DiffSource,
   type WorkspaceReviewState,
 } from '../lib/stores/ui.js';
+import { useSessionsStore } from '../lib/stores/sessions.js';
 import DiffSourceToggle from './DiffSourceToggle.js';
 import DiffViewer from './DiffViewer.js';
-import { DiffFileSidebar, type DiffFileSidebarHandle } from './DiffFileSidebar.js';
+import {
+  DiffFileSidebar,
+  type DiffFileSidebarHandle,
+} from './DiffFileSidebar.js';
+import FileFeedbackPanel from './FileFeedbackPanel.js';
+import { languageFromPath } from './FileTabContent.js';
 import './WorkspaceUtilityRail.css';
 
 export interface UtilityRailReviewPanelProps {
@@ -90,6 +92,8 @@ export function UtilityRailReviewPanel({
   const sidebarRef = useRef<DiffFileSidebarHandle>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const diffScrollerRef = useRef<HTMLDivElement | null>(null);
+  const sessions = useSessionsStore((s) => s.sessions);
+  const preferredTargetSessionId = useSessionsStore((s) => s.activeSessionId);
 
   const review = reviewState ??
     storeReviewState ?? {
@@ -121,7 +125,13 @@ export function UtilityRailReviewPanel({
     ) {
       setReviewDefaultBranch(workspaceStateKey, branch);
     }
-  }, [defaultBranchQuery.data, review.defaultBranch, setReviewDefaultBranch, workspaceStateKey, workspacePath]);
+  }, [
+    defaultBranchQuery.data,
+    review.defaultBranch,
+    setReviewDefaultBranch,
+    workspaceStateKey,
+    workspacePath,
+  ]);
 
   const filesQuery = useQuery<ChangedFilesResponse>({
     queryKey: changedFilesQueryKey(workspacePath, base),
@@ -147,7 +157,15 @@ export function UtilityRailReviewPanel({
       return;
     }
     setReviewActiveFile(workspaceStateKey, files[0]?.path ?? null);
-  }, [activeFilePath, files, filesQuery.isError, filesQuery.isPending, setReviewActiveFile, workspaceStateKey, workspacePath]);
+  }, [
+    activeFilePath,
+    files,
+    filesQuery.isError,
+    filesQuery.isPending,
+    setReviewActiveFile,
+    workspaceStateKey,
+    workspacePath,
+  ]);
 
   const {
     diff: fileDiff,
@@ -158,6 +176,13 @@ export function UtilityRailReviewPanel({
       workspacePath,
       filePath: activeFilePath ?? '',
       base: base || null,
+    },
+    { enabled: Boolean(activeFilePath) }
+  );
+  const fileContent = useFileContent(
+    {
+      workspacePath,
+      filePath: activeFilePath ?? '',
     },
     { enabled: Boolean(activeFilePath) }
   );
@@ -241,7 +266,9 @@ export function UtilityRailReviewPanel({
         if (onRequestClose) {
           onRequestClose();
         } else {
-          useUiStore.getState().setSelectedUtilityRailTab(workspaceStateKey, null);
+          useUiStore
+            .getState()
+            .setSelectedUtilityRailTab(workspaceStateKey, null);
         }
       }
     },
@@ -315,7 +342,11 @@ export function UtilityRailReviewPanel({
           ) : filesError ? (
             <div className="utility-empty utility-error">
               {filesError}
-              <button type="button" className="utility-panel-btn" onClick={refresh}>
+              <button
+                type="button"
+                className="utility-panel-btn"
+                onClick={refresh}
+              >
                 retry
               </button>
             </div>
@@ -340,24 +371,51 @@ export function UtilityRailReviewPanel({
                     <span className="utility-muted">{summary}</span>
                   ) : null}
                   <span className="utility-muted">
-                    {fileDiffViewMode} · {sourceLabel(review.diffSource, review.defaultBranch)}
+                    {fileDiffViewMode} ·{' '}
+                    {sourceLabel(review.diffSource, review.defaultBranch)}
                   </span>
                 </span>
               </div>
               {diffError ? (
                 <div className="utility-empty utility-error">
                   {diffError}
-                  <button type="button" className="utility-panel-btn" onClick={refresh}>
+                  <button
+                    type="button"
+                    className="utility-panel-btn"
+                    onClick={refresh}
+                  >
                     retry
                   </button>
                 </div>
               ) : (
-                <DiffViewer
-                  diff={fileDiff}
-                  filePath={activeFilePath}
-                  loading={diffLoading}
-                  mode={fileDiffViewMode}
-                />
+                <>
+                  {!fileContent.loading &&
+                    !fileContent.error &&
+                    !fileContent.binary &&
+                    !fileContent.truncated && (
+                      <FileFeedbackPanel
+                        filePath={activeFilePath}
+                        workspacePath={workspacePath}
+                        content={fileContent.content}
+                        language={languageFromPath(activeFilePath)}
+                        sessions={sessions}
+                        preferredTargetSessionId={preferredTargetSessionId}
+                        selectedLine={null}
+                        onSelectedLineConsumed={() => {}}
+                      />
+                    )}
+                  {fileContent.error && (
+                    <div className="utility-empty utility-error">
+                      feedback unavailable: {fileContent.error}
+                    </div>
+                  )}
+                  <DiffViewer
+                    diff={fileDiff}
+                    filePath={activeFilePath}
+                    loading={diffLoading}
+                    mode={fileDiffViewMode}
+                  />
+                </>
               )}
             </>
           ) : filesQuery.isPending ? (
@@ -367,7 +425,10 @@ export function UtilityRailReviewPanel({
           )}
         </div>
       </div>
-      <div className="utility-review-footer" aria-label="review keyboard shortcuts">
+      <div
+        className="utility-review-footer"
+        aria-label="review keyboard shortcuts"
+      >
         <span>j/k or arrows files</span>
         <span>n/p hunks</span>
         <span>esc close pane</span>

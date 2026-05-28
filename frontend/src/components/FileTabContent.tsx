@@ -168,6 +168,7 @@ export interface FileTabContentProps {
 
   hasActiveSession: boolean;
   onInjectReference?: ((reference: string) => void) | undefined;
+  onCodeLineClick?: ((line: number) => void) | undefined;
   onRetry: () => void;
   onCloseTab: () => void;
 
@@ -185,6 +186,7 @@ export interface FileTabContentProps {
 
   summary?: WorkspaceTabSummary | undefined;
   showSummary?: boolean;
+  feedbackPanel?: React.ReactNode;
 }
 
 export function FileTabContent({
@@ -203,12 +205,14 @@ export function FileTabContent({
   wordWrap,
   hasActiveSession,
   onInjectReference,
+  onCodeLineClick,
   onRetry,
   onCloseTab,
   renderDiff,
   renderCode,
   summary,
   showSummary = true,
+  feedbackPanel,
 }: FileTabContentProps) {
   const viewMode: 'html' | 'diff' | 'code' =
     tabType === 'html' ? 'html' : tabType === 'diff' ? 'diff' : 'code';
@@ -223,6 +227,19 @@ export function FileTabContent({
       }
     },
     [filePath, hasActiveSession, onInjectReference]
+  );
+
+  const handleCodeClick = useCallback(
+    (e: React.MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const lineEl = target.closest('.line-number');
+      if (!lineEl) return;
+      const lineNum = parseInt(lineEl.textContent?.trim() ?? '', 10);
+      if (!Number.isNaN(lineNum) && lineNum > 0) {
+        onCodeLineClick?.(lineNum);
+      }
+    },
+    [onCodeLineClick]
   );
 
   const body = (() => {
@@ -291,6 +308,7 @@ export function FileTabContent({
         className={['raw-file', wordWrap ? 'word-wrap' : '']
           .filter(Boolean)
           .join(' ')}
+        onClick={handleCodeClick}
       >
         {renderCode ? (
           renderCode({ code, language: languageFromPath(filePath) })
@@ -304,6 +322,7 @@ export function FileTabContent({
   return (
     <div className="file-tab-content">
       {showSummary && summary && <FileTabSummaryHeader summary={summary} />}
+      {feedbackPanel}
       <div className="file-tab-content__body" role="tabpanel">
         {body}
       </div>

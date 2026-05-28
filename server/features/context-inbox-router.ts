@@ -128,8 +128,14 @@ export interface ContextInboxStore {
   listPackets(filter?: ListContextPacketsFilter): ContextPacket[];
 
   createInboxMessage(input: CreateInboxMessageInput): SessionInboxMessage;
-  listInboxMessages(filter: ListInboxMessagesFilter): SessionInboxMessage[];
-  getInboxMessage(id: SessionInboxMessageId): SessionInboxMessage | null;
+  listInboxMessages(
+    filter: ListInboxMessagesFilter,
+    options?: { markDelivered?: boolean }
+  ): SessionInboxMessage[];
+  getInboxMessage(
+    id: SessionInboxMessageId,
+    options?: { markDelivered?: boolean }
+  ): SessionInboxMessage | null;
 
   /**
    * Transition-guarded update. Caller-requested `targetState` is validated by
@@ -189,7 +195,9 @@ function gatewayErrorBody(
   retryable: boolean,
   details?: Record<string, unknown>
 ): GatewayErrorBody {
-  return { error: { code, message, retryable, ...(details ? { details } : {}) } };
+  return {
+    error: { code, message, retryable, ...(details ? { details } : {}) },
+  };
 }
 
 function statusForCode(code: RelayCliGatewayErrorCode): number {
@@ -216,7 +224,9 @@ function sendGatewayError(
   retryable = false,
   details?: Record<string, unknown>
 ): void {
-  res.status(statusForCode(code)).json(gatewayErrorBody(code, message, retryable, details));
+  res
+    .status(statusForCode(code))
+    .json(gatewayErrorBody(code, message, retryable, details));
 }
 
 /** Returns true (and sends a 403) when a required capability is missing. */
@@ -228,26 +238,38 @@ function denyMissingCapability(
   const provided = parseCapabilityHeader(req.header('x-relay-capabilities'));
   const missing = required.filter((cap) => !provided.has(cap));
   if (missing.length === 0) return false;
-  sendGatewayError(res, 'FORBIDDEN', `missing required capability: ${missing[0]}`, false, {
-    capability: missing[0],
-    missingCapabilities: missing,
-  });
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    `missing required capability: ${missing[0]}`,
+    false,
+    {
+      capability: missing[0],
+      missingCapabilities: missing,
+    }
+  );
   return true;
 }
 
 function bodyRecord(req: Request): Record<string, unknown> {
-  return typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body)
+  return typeof req.body === 'object' &&
+    req.body !== null &&
+    !Array.isArray(req.body)
     ? (req.body as Record<string, unknown>)
     : {};
 }
 
 function readString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+  return typeof value === 'string' && value.trim().length > 0
+    ? value
+    : undefined;
 }
 
 function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+  return value.filter(
+    (entry): entry is string => typeof entry === 'string' && entry.length > 0
+  );
 }
 
 const CONTEXT_PACKET_KIND_SET = new Set<ContextPacketKind>([
@@ -259,7 +281,8 @@ const CONTEXT_PACKET_KIND_SET = new Set<ContextPacketKind>([
 ]);
 
 function readPacketKind(value: unknown): ContextPacketKind | undefined {
-  return typeof value === 'string' && CONTEXT_PACKET_KIND_SET.has(value as ContextPacketKind)
+  return typeof value === 'string' &&
+    CONTEXT_PACKET_KIND_SET.has(value as ContextPacketKind)
     ? (value as ContextPacketKind)
     : undefined;
 }
@@ -273,7 +296,8 @@ const INBOX_STATE_SET = new Set<SessionInboxMessageState>([
 ]);
 
 function readInboxState(value: unknown): SessionInboxMessageState | undefined {
-  return typeof value === 'string' && INBOX_STATE_SET.has(value as SessionInboxMessageState)
+  return typeof value === 'string' &&
+    INBOX_STATE_SET.has(value as SessionInboxMessageState)
     ? (value as SessionInboxMessageState)
     : undefined;
 }
@@ -330,7 +354,10 @@ function pushStringPathHint(
   } else if (!value.startsWith('/')) {
     hints.push({ field, message: 'must be absolute and start with /' });
   } else if (pathEscapesRoot(value)) {
-    hints.push({ field, message: 'must not escape the filesystem root with .. segments' });
+    hints.push({
+      field,
+      message: 'must not escape the filesystem root with .. segments',
+    });
   }
 }
 
@@ -344,12 +371,21 @@ function pushTimestampAndHashHints(
     rawCapturedAt !== undefined &&
     (typeof rawCapturedAt !== 'string' || !ISO_TIMESTAMP_RE.test(rawCapturedAt))
   ) {
-    hints.push({ field: `${fieldPrefix}.capturedAt`, message: 'must be an ISO 8601 UTC timestamp when set' });
+    hints.push({
+      field: `${fieldPrefix}.capturedAt`,
+      message: 'must be an ISO 8601 UTC timestamp when set',
+    });
   }
 
   const rawSha = payload['sha256'];
-  if (rawSha !== undefined && (typeof rawSha !== 'string' || !SHA256_HEX_RE.test(rawSha))) {
-    hints.push({ field: `${fieldPrefix}.sha256`, message: 'must be 64 hex characters when set' });
+  if (
+    rawSha !== undefined &&
+    (typeof rawSha !== 'string' || !SHA256_HEX_RE.test(rawSha))
+  ) {
+    hints.push({
+      field: `${fieldPrefix}.sha256`,
+      message: 'must be 64 hex characters when set',
+    });
   }
 }
 
@@ -364,16 +400,24 @@ function pushNumericHints(
       value !== undefined &&
       (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
     ) {
-      hints.push({ field: `${fieldPrefix}.${numericField}`, message: 'must be a non-negative finite number when set' });
+      hints.push({
+        field: `${fieldPrefix}.${numericField}`,
+        message: 'must be a non-negative finite number when set',
+      });
     }
   }
 
   const maxBytes = payload['maxBytes'];
   if (
     maxBytes !== undefined &&
-    (typeof maxBytes !== 'number' || !Number.isFinite(maxBytes) || maxBytes <= 0)
+    (typeof maxBytes !== 'number' ||
+      !Number.isFinite(maxBytes) ||
+      maxBytes <= 0)
   ) {
-    hints.push({ field: `${fieldPrefix}.maxBytes`, message: 'must be a positive finite number when set' });
+    hints.push({
+      field: `${fieldPrefix}.maxBytes`,
+      message: 'must be a positive finite number when set',
+    });
   }
 }
 
@@ -385,7 +429,10 @@ function pushRepoBindingHints(
   const repoBinding = payload['repoBinding'];
   if (repoBinding === undefined) return;
   if (!isRecord(repoBinding)) {
-    hints.push({ field: `${fieldPrefix}.repoBinding`, message: 'must be an object when set' });
+    hints.push({
+      field: `${fieldPrefix}.repoBinding`,
+      message: 'must be an object when set',
+    });
     return;
   }
 
@@ -408,7 +455,10 @@ function pushRepoBindingHints(
 
   const branch = repoBinding['branch'];
   if (branch !== undefined && branch !== null && typeof branch !== 'string') {
-    hints.push({ field: `${fieldPrefix}.repoBinding.branch`, message: 'must be a string or null when set' });
+    hints.push({
+      field: `${fieldPrefix}.repoBinding.branch`,
+      message: 'must be a string or null when set',
+    });
   }
 }
 
@@ -427,7 +477,10 @@ function validateFileResourceRefPayload(
   }
 
   if (!isNonEmptyString(payload['nodeId'])) {
-    hints.push({ field: `${fieldPrefix}.nodeId`, message: 'is required and must be a non-empty string' });
+    hints.push({
+      field: `${fieldPrefix}.nodeId`,
+      message: 'is required and must be a non-empty string',
+    });
   }
 
   pushStringPathHint(
@@ -458,17 +511,44 @@ function validateLineRangePayload(
   payload: unknown,
   fieldPrefix: string
 ): FieldValidationHint[] {
-  if (!isRecord(payload)) return [{ field: fieldPrefix, message: 'must be an object with startLine and endLine' }];
+  if (!isRecord(payload))
+    return [
+      {
+        field: fieldPrefix,
+        message: 'must be an object with startLine and endLine',
+      },
+    ];
   const hints: FieldValidationHint[] = [];
   const startLine = payload['startLine'];
   const endLine = payload['endLine'];
-  if (typeof startLine !== 'number' || !Number.isInteger(startLine) || startLine < 1) {
-    hints.push({ field: `${fieldPrefix}.startLine`, message: 'must be an integer >= 1' });
+  if (
+    typeof startLine !== 'number' ||
+    !Number.isInteger(startLine) ||
+    startLine < 1
+  ) {
+    hints.push({
+      field: `${fieldPrefix}.startLine`,
+      message: 'must be an integer >= 1',
+    });
   }
-  if (typeof endLine !== 'number' || !Number.isInteger(endLine) || endLine < 1) {
-    hints.push({ field: `${fieldPrefix}.endLine`, message: 'must be an integer >= 1' });
-  } else if (typeof startLine === 'number' && Number.isInteger(startLine) && endLine < startLine) {
-    hints.push({ field: `${fieldPrefix}.endLine`, message: 'must be >= startLine' });
+  if (
+    typeof endLine !== 'number' ||
+    !Number.isInteger(endLine) ||
+    endLine < 1
+  ) {
+    hints.push({
+      field: `${fieldPrefix}.endLine`,
+      message: 'must be an integer >= 1',
+    });
+  } else if (
+    typeof startLine === 'number' &&
+    Number.isInteger(startLine) &&
+    endLine < startLine
+  ) {
+    hints.push({
+      field: `${fieldPrefix}.endLine`,
+      message: 'must be >= startLine',
+    });
   }
   return hints;
 }
@@ -477,17 +557,44 @@ function validateByteRangePayload(
   payload: unknown,
   fieldPrefix: string
 ): FieldValidationHint[] {
-  if (!isRecord(payload)) return [{ field: fieldPrefix, message: 'must be an object with startByte and endByte' }];
+  if (!isRecord(payload))
+    return [
+      {
+        field: fieldPrefix,
+        message: 'must be an object with startByte and endByte',
+      },
+    ];
   const hints: FieldValidationHint[] = [];
   const startByte = payload['startByte'];
   const endByte = payload['endByte'];
-  if (typeof startByte !== 'number' || !Number.isInteger(startByte) || startByte < 0) {
-    hints.push({ field: `${fieldPrefix}.startByte`, message: 'must be an integer >= 0' });
+  if (
+    typeof startByte !== 'number' ||
+    !Number.isInteger(startByte) ||
+    startByte < 0
+  ) {
+    hints.push({
+      field: `${fieldPrefix}.startByte`,
+      message: 'must be an integer >= 0',
+    });
   }
-  if (typeof endByte !== 'number' || !Number.isInteger(endByte) || endByte < 0) {
-    hints.push({ field: `${fieldPrefix}.endByte`, message: 'must be an integer >= 0' });
-  } else if (typeof startByte === 'number' && Number.isInteger(startByte) && endByte <= startByte) {
-    hints.push({ field: `${fieldPrefix}.endByte`, message: 'must be > startByte' });
+  if (
+    typeof endByte !== 'number' ||
+    !Number.isInteger(endByte) ||
+    endByte < 0
+  ) {
+    hints.push({
+      field: `${fieldPrefix}.endByte`,
+      message: 'must be an integer >= 0',
+    });
+  } else if (
+    typeof startByte === 'number' &&
+    Number.isInteger(startByte) &&
+    endByte <= startByte
+  ) {
+    hints.push({
+      field: `${fieldPrefix}.endByte`,
+      message: 'must be > startByte',
+    });
   }
   return hints;
 }
@@ -495,25 +602,42 @@ function validateByteRangePayload(
 function validateAnchorPayload(payload: unknown): FieldValidationHint[] {
   const hints: FieldValidationHint[] = [];
   if (!isRecord(payload)) {
-    return [{ field: 'anchor', message: 'is required and must be an object for kind=file-anchor' }];
+    return [
+      {
+        field: 'anchor',
+        message: 'is required and must be an object for kind=file-anchor',
+      },
+    ];
   }
   hints.push(...validateFileResourceRefPayload(payload['ref'], 'anchor.ref'));
   const hasLineRange = payload['lineRange'] !== undefined;
   const hasByteRange = payload['byteRange'] !== undefined;
   if (!hasLineRange && !hasByteRange) {
-    hints.push({ field: 'anchor', message: 'must include lineRange or byteRange' });
+    hints.push({
+      field: 'anchor',
+      message: 'must include lineRange or byteRange',
+    });
   }
-  if (hasLineRange) hints.push(...validateLineRangePayload(payload['lineRange'], 'anchor.lineRange'));
-  if (hasByteRange) hints.push(...validateByteRangePayload(payload['byteRange'], 'anchor.byteRange'));
+  if (hasLineRange)
+    hints.push(
+      ...validateLineRangePayload(payload['lineRange'], 'anchor.lineRange')
+    );
+  if (hasByteRange)
+    hints.push(
+      ...validateByteRangePayload(payload['byteRange'], 'anchor.byteRange')
+    );
   if (payload['quote'] !== undefined && typeof payload['quote'] !== 'string') {
     hints.push({ field: 'anchor.quote', message: 'must be a string when set' });
   }
   return hints;
 }
 
-function validateContextBindingPayload(payload: unknown): FieldValidationHint[] {
+function validateContextBindingPayload(
+  payload: unknown
+): FieldValidationHint[] {
   if (payload === undefined) return [];
-  if (!isRecord(payload)) return [{ field: 'binding', message: 'must be an object when set' }];
+  if (!isRecord(payload))
+    return [{ field: 'binding', message: 'must be an object when set' }];
 
   const hints: FieldValidationHint[] = [];
   for (const field of [
@@ -523,7 +647,10 @@ function validateContextBindingPayload(payload: unknown): FieldValidationHint[] 
     'worktreeInstanceId',
   ] as const) {
     if (payload[field] !== undefined && !isNonEmptyString(payload[field])) {
-      hints.push({ field: `binding.${field}`, message: 'must be a non-empty string when set' });
+      hints.push({
+        field: `binding.${field}`,
+        message: 'must be a non-empty string when set',
+      });
     }
   }
   return hints;
@@ -553,7 +680,9 @@ function validateContextCreatePayload(
   }
 }
 
-const TERMINAL_STATE_SET = new Set<SessionInboxMessageState>(TERMINAL_INBOX_MESSAGE_STATES);
+const TERMINAL_STATE_SET = new Set<SessionInboxMessageState>(
+  TERMINAL_INBOX_MESSAGE_STATES
+);
 
 /** Map a guarded-update failure onto the right gateway error response. */
 function sendUpdateFailure(
@@ -570,7 +699,10 @@ function sendUpdateFailure(
       'SESSION_CONFLICT',
       `inbox message is in terminal state '${result.currentState}'`,
       false,
-      { currentState: result.currentState, terminalStates: [...TERMINAL_INBOX_MESSAGE_STATES] }
+      {
+        currentState: result.currentState,
+        terminalStates: [...TERMINAL_INBOX_MESSAGE_STATES],
+      }
     );
     return;
   }
@@ -585,7 +717,8 @@ function sendUpdateFailure(
 
 export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   const router = Router();
-  const auth = deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
+  const auth =
+    deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
   // #760: derived `AnchorState` decoration resolver. Defaults to the hub
   // registry; `resolveAnchorWithRegisteredFetcher` returns `null` when the hub
   // has not wired a fetcher, in which case packets pass through undecorated.
@@ -595,9 +728,15 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   /** Resolve the store or send 503; centralizes the null guard. */
   function store(res: Response): ContextInboxStore | null {
     if (!deps.store) {
-      sendGatewayError(res, 'SERVER_UNAVAILABLE', 'context/inbox store is unavailable', true, {
-        reasonCode: 'CONTEXT_STORE_UNAVAILABLE',
-      });
+      sendGatewayError(
+        res,
+        'SERVER_UNAVAILABLE',
+        'context/inbox store is unavailable',
+        true,
+        {
+          reasonCode: 'CONTEXT_STORE_UNAVAILABLE',
+        }
+      );
       return null;
     }
     return deps.store;
@@ -629,7 +768,9 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   async function decorateMessage(
     s: ContextInboxStore,
     message: SessionInboxMessage
-  ): Promise<SessionInboxMessage & { contextPackets?: DecoratedContextPacket[] }> {
+  ): Promise<
+    SessionInboxMessage & { contextPackets?: DecoratedContextPacket[] }
+  > {
     const contextPackets = await decoratedAnchorPacketsFor(s, message);
     return contextPackets.length > 0 ? { ...message, contextPackets } : message;
   }
@@ -642,9 +783,15 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     const body = bodyRecord(req);
     const kind = readPacketKind(body['kind']);
     if (!kind) {
-      sendGatewayError(res, 'INVALID_ARGUMENT', 'kind is required and must be a known ContextPacketKind', false, {
-        field: 'kind',
-      });
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'kind is required and must be a known ContextPacketKind',
+        false,
+        {
+          field: 'kind',
+        }
+      );
       return;
     }
     const fieldErrors = validateContextCreatePayload(kind, body);
@@ -663,15 +810,25 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     try {
       const contextPacket = s.createPacket({
         kind,
-        ...(body['anchor'] !== undefined ? { anchor: body['anchor'] as ContextPacket['anchor'] } : {}),
-        ...(body['fileRef'] !== undefined ? { fileRef: body['fileRef'] as ContextPacket['fileRef'] } : {}),
+        ...(body['anchor'] !== undefined
+          ? { anchor: body['anchor'] as ContextPacket['anchor'] }
+          : {}),
+        ...(body['fileRef'] !== undefined
+          ? { fileRef: body['fileRef'] as ContextPacket['fileRef'] }
+          : {}),
         ...(readString(body['note']) ? { note: body['note'] as string } : {}),
-        ...(body['binding'] !== undefined ? { binding: body['binding'] as ContextPacketBinding } : {}),
+        ...(body['binding'] !== undefined
+          ? { binding: body['binding'] as ContextPacketBinding }
+          : {}),
         createdBy,
       });
       res.status(201).json({ contextPacket });
     } catch (err) {
-      sendGatewayError(res, 'INVALID_ARGUMENT', err instanceof Error ? err.message : 'invalid context packet');
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        err instanceof Error ? err.message : 'invalid context packet'
+      );
     }
   });
 
@@ -716,9 +873,15 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     const targetSessionId = readString(body['targetSessionId']);
     const targetWorkContextId = readString(body['targetWorkContextId']);
     if (!targetSessionId && !targetWorkContextId) {
-      sendGatewayError(res, 'INVALID_ARGUMENT', 'one of targetSessionId or targetWorkContextId is required', false, {
-        field: 'targetSessionId',
-      });
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'one of targetSessionId or targetWorkContextId is required',
+        false,
+        {
+          field: 'targetSessionId',
+        }
+      );
       return;
     }
     const createdBy = readString(body['createdBy']) ?? 'cli-gateway';
@@ -732,7 +895,11 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
       });
       res.status(201).json({ message });
     } catch (err) {
-      sendGatewayError(res, 'INVALID_ARGUMENT', err instanceof Error ? err.message : 'invalid inbox message');
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        err instanceof Error ? err.message : 'invalid inbox message'
+      );
     }
   });
 
@@ -745,9 +912,15 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     const targetSessionId = readString(req.query['targetSessionId']);
     const targetWorkContextId = readString(req.query['targetWorkContextId']);
     if (!targetSessionId && !targetWorkContextId) {
-      sendGatewayError(res, 'INVALID_ARGUMENT', 'one of targetSessionId or targetWorkContextId is required', false, {
-        field: 'targetSessionId',
-      });
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'one of targetSessionId or targetWorkContextId is required',
+        false,
+        {
+          field: 'targetSessionId',
+        }
+      );
       return;
     }
     const filter: ListInboxMessagesFilter = {};
@@ -760,6 +933,42 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     // PULL delivery runs first (the store flips queued → delivered), then each
     // message's referenced file-anchor packets are decorated with derived state.
     const messages = s.listInboxMessages(filter);
+    Promise.all(messages.map((m) => decorateMessage(s, m)))
+      .then((decorated) => res.json({ messages: decorated }))
+      .catch(next);
+  });
+
+  // -- inbox.preview -------------------------------------------------------
+  // Sender-side/read-model preview: list and decorate messages WITHOUT the PULL
+  // delivery side effect. This keeps web feedback panels from marking a target
+  // agent's queued inbox rows delivered before the target consumer actually
+  // calls the delivery endpoint above.
+  router.get('/inbox/preview', auth, (req, res, next) => {
+    if (denyMissingCapability(req, res, [INBOX_READ])) return;
+    const s = store(res);
+    if (!s) return;
+    const targetSessionId = readString(req.query['targetSessionId']);
+    const targetWorkContextId = readString(req.query['targetWorkContextId']);
+    if (!targetSessionId && !targetWorkContextId) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'one of targetSessionId or targetWorkContextId is required',
+        false,
+        {
+          field: 'targetSessionId',
+        }
+      );
+      return;
+    }
+    const filter: ListInboxMessagesFilter = {};
+    if (targetSessionId) filter.targetSessionId = targetSessionId;
+    if (targetWorkContextId) filter.targetWorkContextId = targetWorkContextId;
+    const state = readInboxState(req.query['state']);
+    const limit = readLimit(req.query['limit']);
+    if (state) filter.state = state;
+    if (limit !== undefined) filter.limit = limit;
+    const messages = s.listInboxMessages(filter, { markDelivered: false });
     Promise.all(messages.map((m) => decorateMessage(s, m)))
       .then((decorated) => res.json({ messages: decorated }))
       .catch(next);
@@ -785,19 +994,23 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   // -- inbox.ack / inbox.resolve / inbox.ignore ----------------------------
   // All three go through the store's transition-guarded update; the router
   // never trusts the caller to enforce the lifecycle (fugu C2).
-  function transitionHandler(targetState: SessionInboxMessageState): RequestHandler {
+  function transitionHandler(
+    targetState: SessionInboxMessageState
+  ): RequestHandler {
     return (req, res) => {
       if (denyMissingCapability(req, res, [INBOX_WRITE])) return;
       const s = store(res);
       if (!s) return;
       const id = req.params['id'] ?? '';
       if (!id) {
-        sendGatewayError(res, 'INVALID_ARGUMENT', 'id is required', false, { field: 'id' });
+        sendGatewayError(res, 'INVALID_ARGUMENT', 'id is required', false, {
+          field: 'id',
+        });
         return;
       }
       const actorId = readString(bodyRecord(req)['actorId']);
       const result = s.updateInboxState(id, targetState, actorId);
-      if (!result.ok) {
+      if (result.ok === false) {
         sendUpdateFailure(res, result);
         return;
       }

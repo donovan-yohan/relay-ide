@@ -27,7 +27,7 @@
 // `grantedCapability` so #766's caller can assert the gate fired (C1
 // enforcement). A non-`allow` decision returns `null`.
 
-import { normalizeHubFileRpcRequest } from './file-rpc.js';
+import { executeLocalFileRpc, normalizeHubFileRpcRequest } from './file-rpc.js';
 import {
   evaluateHubPolicy,
   requiredCapabilitiesForRpcIntent,
@@ -39,9 +39,7 @@ import type {
   AnchorFileFetchResult,
   AnchorFileFetchTarget,
 } from './anchor-resolution.js';
-import {
-  hashAnchorContent,
-} from './anchor-resolution.js';
+import { hashAnchorContent } from './anchor-resolution.js';
 import type {
   FileRangeContentFetcher,
   FileRangeContentResult,
@@ -53,6 +51,8 @@ import type {
 } from '../shared/file-rpc.js';
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
+import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
+import { RELAY_SECURITY_POLICY_VERSION } from '../shared/security-policy.js';
 
 /** Minimal node registry shape the fetcher needs (subset of the hub registry). */
 export interface AnchorFetcherNodeRegistry {
@@ -81,6 +81,8 @@ export interface AnchorFileFetcherDeps {
   now?: () => Date;
 }
 
+type AnchorFetchTransport = 'local' | 'node-link';
+
 function liveNode(
   registry: AnchorFetcherNodeRegistry,
   nodeLinks: AnchorFetcherNodeLinks,
@@ -92,6 +94,77 @@ function liveNode(
   if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) return null;
   if (!nodeLinks.hasActiveNode(nodeId)) return null;
   return node;
+}
+
+function localCompatibilityNode(): HubNodeSummary {
+  const now = new Date().toISOString();
+  return {
+    nodeId: DEFAULT_LOCAL_NODE_ID,
+    displayName: 'Local hub',
+    hostname: 'localhost',
+    platform: process.platform,
+    arch: process.arch,
+    relayVersion: 'local',
+    protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+    status: 'online',
+    connection: { route: 'local', status: 'online' },
+    trust: {
+      state: 'trusted',
+      level: 'privileged-local-user',
+      tier: 'dev',
+      policy: {
+        policyVersion: RELAY_SECURITY_POLICY_VERSION,
+        ref: 'acl:local-compatibility',
+        trustTier: 'dev',
+        // Anchor resolution is read-only and still scoped to a live local
+        // session root by normalizeHubFileRpcRequest below. This node object is
+        // only for DEFAULT_LOCAL_NODE_ID; remote nodes still require a paired
+        // active reverse link.
+        allowed: ['rpc:fs:read'],
+        requiresConfirmation: [],
+        scope: { kind: 'node' },
+      },
+    },
+    credentialState: 'active',
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+      hubProtocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+    },
+    capabilities: {
+      totals: { available: 0, degraded: 0, unavailable: 0, unknown: 0 },
+      core: {
+        shell: 'unknown',
+        tmux: 'unknown',
+        git: 'unknown',
+        browserAutomation: 'unknown',
+        clipboardImage: 'unknown',
+        ssh: 'unknown',
+        tailscale: 'unknown',
+      },
+      agents: {},
+      serviceManager: 'unknown',
+      wsl: false,
+    },
+    fileRpcAvailable: true,
+    degradedReasons: [],
+    createdAt: now,
+    pairedAt: now,
+    lastSeenAt: now,
+    credentialId: 'local-compatibility',
+  };
+}
+
+function resolveNodeTransport(
+  registry: AnchorFetcherNodeRegistry,
+  nodeLinks: AnchorFetcherNodeLinks,
+  nodeId: string
+): { node: HubNodeSummary; transport: AnchorFetchTransport } | null {
+  if (nodeId === DEFAULT_LOCAL_NODE_ID) {
+    return { node: localCompatibilityNode(), transport: 'local' };
+  }
+  const node = liveNode(registry, nodeLinks, nodeId);
+  return node ? { node, transport: 'node-link' } : null;
 }
 
 /**
@@ -147,14 +220,21 @@ function resolveScopedReadRequest(input: {
  * `null` (no scope / unauthorized — anchor treated as `missing` by the resolver)
  * or `{ found: false }` (authorized, node reported the path gone).
  */
-export function createAnchorFileFetcher(deps: AnchorFileFetcherDeps): AnchorFileFetcher {
+export function createAnchorFileFetcher(
+  deps: AnchorFileFetcherDeps
+): AnchorFileFetcher {
   const now = deps.now ?? (() => new Date());
 
   return async function fetchAnchorFile(
     target: AnchorFileFetchTarget
   ): Promise<AnchorFileFetchResult | null> {
-    const node = liveNode(deps.registry, deps.nodeLinks, target.nodeId);
-    if (!node) return null;
+    const nodeTransport = resolveNodeTransport(
+      deps.registry,
+      deps.nodeLinks,
+      target.nodeId
+    );
+    if (!nodeTransport) return null;
+    const { node, transport } = nodeTransport;
 
     const operation: 'read' | 'stat' = target.preferRead ? 'read' : 'stat';
     const resolved = resolveScopedReadRequest({
@@ -198,7 +278,14 @@ export function createAnchorFileFetcher(deps: AnchorFileFetcherDeps): AnchorFile
 
     let payload: unknown;
     try {
-      payload = await deps.nodeLinks.request(target.nodeId, `fs.${operation}`, fileRequest);
+      payload =
+        transport === 'local'
+          ? await executeLocalFileRpc(operation, fileRequest)
+          : await deps.nodeLinks.request(
+              target.nodeId,
+              `fs.${operation}`,
+              fileRequest
+            );
     } catch {
       // A NOT_FOUND from the node means the path is gone (authorized fetch, found
       // nothing); any other link error means we could not perform the read.
@@ -255,11 +342,15 @@ function mapPayload(
     response.encoding === 'base64'
       ? Buffer.from(response.content, 'base64')
       : Buffer.from(response.content, 'utf8');
-  const contentSha256 = response.truncatedBytes ? undefined : hashAnchorContent(buffer);
+  const contentSha256 = response.truncatedBytes
+    ? undefined
+    : hashAnchorContent(buffer);
   return {
     found: true,
     grantedCapability: ANCHOR_RESOLUTION_CAPABILITY,
-    ...(typeof response.bytesRead === 'number' ? { size: response.bytesRead } : {}),
+    ...(typeof response.bytesRead === 'number'
+      ? { size: response.bytesRead }
+      : {}),
     ...(contentSha256 !== undefined ? { contentSha256 } : {}),
   };
 }
@@ -293,14 +384,20 @@ function mapContentPayload(payload: unknown): FileRangeContentResult {
   const buffer = Buffer.from(text, 'utf8');
   // A truncated read cannot yield a trustworthy whole-file hash (mirrors the
   // staleness fetcher); omit the sha so the resolver falls back to size/mtime.
-  const contentSha256 = response.truncatedBytes ? undefined : hashAnchorContent(buffer);
+  const contentSha256 = response.truncatedBytes
+    ? undefined
+    : hashAnchorContent(buffer);
   return {
     found: true,
     grantedCapability: ANCHOR_RESOLUTION_CAPABILITY,
     content: text,
-    ...(typeof response.bytesRead === 'number' ? { bytesRead: response.bytesRead, size: response.bytesRead } : {}),
+    ...(typeof response.bytesRead === 'number'
+      ? { bytesRead: response.bytesRead, size: response.bytesRead }
+      : {}),
     ...(contentSha256 !== undefined ? { contentSha256 } : {}),
-    ...(typeof response.truncatedBytes === 'boolean' ? { truncatedBytes: response.truncatedBytes } : {}),
+    ...(typeof response.truncatedBytes === 'boolean'
+      ? { truncatedBytes: response.truncatedBytes }
+      : {}),
   };
 }
 
@@ -318,8 +415,13 @@ export function createAnchorContentFetcher(
   return async function fetchAnchorContent(
     target: FileRangeContentTarget
   ): Promise<FileRangeContentResult | null> {
-    const node = liveNode(deps.registry, deps.nodeLinks, target.nodeId);
-    if (!node) return null;
+    const nodeTransport = resolveNodeTransport(
+      deps.registry,
+      deps.nodeLinks,
+      target.nodeId
+    );
+    if (!nodeTransport) return null;
+    const { node, transport } = nodeTransport;
 
     const resolved = resolveScopedReadRequest({
       sessions: deps.sessionEnvelopes.listSummaries(),
@@ -357,7 +459,10 @@ export function createAnchorContentFetcher(
 
     let payload: unknown;
     try {
-      payload = await deps.nodeLinks.request(target.nodeId, 'fs.read', fileRequest);
+      payload =
+        transport === 'local'
+          ? await executeLocalFileRpc('read', fileRequest)
+          : await deps.nodeLinks.request(target.nodeId, 'fs.read', fileRequest);
     } catch {
       // A node error (e.g. NOT_FOUND) on an authorized read → file gone.
       return { found: false, grantedCapability: ANCHOR_RESOLUTION_CAPABILITY };
