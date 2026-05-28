@@ -31,6 +31,8 @@ export type RelayCliGatewayCommand =
   | 'context.create'
   | 'context.get'
   | 'context.list'
+  | 'context.pin'
+  | 'context.unpin'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -222,7 +224,10 @@ const sessionEnvelopeSchema: RelayJsonSchema = {
       type: 'object',
       additionalProperties: false,
       properties: {
-        kind: { type: 'string', enum: ['local-compatibility', 'node-cwd', 'repo', 'worktree'] },
+        kind: {
+          type: 'string',
+          enum: ['local-compatibility', 'node-cwd', 'repo', 'worktree'],
+        },
         nodeId: stringSchema,
         cwd: stringSchema,
         repoPath: stringSchema,
@@ -268,7 +273,10 @@ const sessionDescriptorSchema: RelayJsonSchema = {
     branchName: stringSchema,
     displayName: stringSchema,
     status: { type: 'string', enum: ['active', 'disconnected'] },
-    controlMode: { type: 'string', enum: ['agent-driven', 'human-driven', 'co-driven'] },
+    controlMode: {
+      type: 'string',
+      enum: ['agent-driven', 'human-driven', 'co-driven'],
+    },
     activeActors: { type: 'array', items: controlActorSchema },
     activeWorker: controlActorSchema,
     lastInterventionAt: nullableStringSchema,
@@ -280,7 +288,6 @@ const sessionDescriptorSchema: RelayJsonSchema = {
   },
   required: ['id', 'type', 'agent', 'mode', 'cwd', 'displayName', 'status'],
 };
-
 
 const fileRpcStatSchema: RelayJsonSchema = {
   title: 'FileRpcStat',
@@ -348,7 +355,15 @@ const fileRpcListOutputSchema: RelayJsonSchema = {
     truncated: booleanSchema,
     maxEntries: { type: 'number' },
   },
-  required: ['operation', 'root', 'cwd', 'path', 'entries', 'truncated', 'maxEntries'],
+  required: [
+    'operation',
+    'root',
+    'cwd',
+    'path',
+    'entries',
+    'truncated',
+    'maxEntries',
+  ],
 };
 
 const fileRpcStatOutputSchema: RelayJsonSchema = {
@@ -404,7 +419,11 @@ const fileRpcWriteInputSchema: RelayJsonSchema = {
     expectedHash: stringSchema,
     permissions: { type: 'number', minimum: 0, maximum: 511 },
   },
-  required: [...(fileRpcBaseInputSchema.required ?? []), 'mode', 'contentBase64'],
+  required: [
+    ...(fileRpcBaseInputSchema.required ?? []),
+    'mode',
+    'contentBase64',
+  ],
 };
 
 const fileRpcWriteOutputSchema: RelayJsonSchema = {
@@ -421,7 +440,17 @@ const fileRpcWriteOutputSchema: RelayJsonSchema = {
     newMtime: stringSchema,
     created: booleanSchema,
   },
-  required: ['operation', 'root', 'cwd', 'path', 'mode', 'bytesWritten', 'newHash', 'newMtime', 'created'],
+  required: [
+    'operation',
+    'root',
+    'cwd',
+    'path',
+    'mode',
+    'bytesWritten',
+    'newHash',
+    'newMtime',
+    'created',
+  ],
 };
 
 const attachOutputSchema: RelayJsonSchema = {
@@ -550,7 +579,14 @@ const sessionInputOutputSchema: RelayJsonSchema = {
     truncated: booleanSchema,
     maxBytes: { type: 'number', minimum: 1 },
   },
-  required: ['sent', 'sessionId', 'bytesSent', 'matched', 'bytesReceived', 'truncated'],
+  required: [
+    'sent',
+    'sessionId',
+    'bytesSent',
+    'matched',
+    'bytesReceived',
+    'truncated',
+  ],
 };
 
 /**
@@ -732,7 +768,8 @@ const eventsSubscribeInputSchema: RelayJsonSchema = {
       type: 'number',
       minimum: 1,
       maximum: 10000,
-      description: 'Detach after N event frames (excluding open/closed envelopes).',
+      description:
+        'Detach after N event frames (excluding open/closed envelopes).',
     },
     idleTimeoutMs: {
       type: 'number',
@@ -824,8 +861,22 @@ const contextListInputSchema: RelayJsonSchema = {
   properties: {
     nodeId: stringSchema,
     workspaceId: stringSchema,
+    workContextId: stringSchema,
     limit: { type: 'number', minimum: 1, maximum: 200 },
   },
+};
+
+const contextPinInputSchema: RelayJsonSchema = {
+  title: 'ContextPinInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    workContextId: stringSchema,
+    actorId: stringSchema,
+    createdBy: stringSchema,
+  },
+  required: ['id', 'workContextId'],
 };
 
 const inboxSendInputSchema: RelayJsonSchema = {
@@ -839,7 +890,10 @@ const inboxSendInputSchema: RelayJsonSchema = {
     text: stringSchema,
     createdBy: stringSchema,
   },
-  anyOf: [{ required: ['targetSessionId'] }, { required: ['targetWorkContextId'] }],
+  anyOf: [
+    { required: ['targetSessionId'] },
+    { required: ['targetWorkContextId'] },
+  ],
 };
 
 const inboxListInputSchema: RelayJsonSchema = {
@@ -852,7 +906,10 @@ const inboxListInputSchema: RelayJsonSchema = {
     state: { type: 'string', enum: SESSION_INBOX_MESSAGE_STATES },
     limit: { type: 'number', minimum: 1, maximum: 200 },
   },
-  anyOf: [{ required: ['targetSessionId'] }, { required: ['targetWorkContextId'] }],
+  anyOf: [
+    { required: ['targetSessionId'] },
+    { required: ['targetWorkContextId'] },
+  ],
 };
 
 const inboxGetInputSchema: RelayJsonSchema = {
@@ -878,11 +935,59 @@ const contextPacketDataSchema: RelayJsonSchema = {
   required: ['contextPacket'],
 };
 
+const artifactRefEnvelopeSchema: RelayJsonSchema = {
+  title: 'ArtifactRef',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    kind: stringSchema,
+    title: stringSchema,
+    uri: stringSchema,
+    summary: stringSchema,
+  },
+  required: ['id', 'kind'],
+};
+
 const contextListDataSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
-  properties: { contextPackets: { type: 'array', items: contextPacketEnvelopeSchema } },
+  properties: {
+    contextPackets: { type: 'array', items: contextPacketEnvelopeSchema },
+    pinnedArtifacts: { type: 'array', items: artifactRefEnvelopeSchema },
+  },
   required: ['contextPackets'],
+};
+
+const contextPinDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workContext: { type: 'object', additionalProperties: true },
+    contextPacket: contextPacketEnvelopeSchema,
+    pinnedContextPackets: { type: 'array', items: contextPacketEnvelopeSchema },
+    pinnedArtifacts: { type: 'array', items: artifactRefEnvelopeSchema },
+    alreadyPinned: booleanSchema,
+  },
+  required: [
+    'workContext',
+    'contextPacket',
+    'pinnedContextPackets',
+    'pinnedArtifacts',
+    'alreadyPinned',
+  ],
+};
+
+const contextUnpinDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workContext: { type: 'object', additionalProperties: true },
+    contextPacket: contextPacketEnvelopeSchema,
+    removed: booleanSchema,
+    lifecycle: { type: 'object', additionalProperties: true },
+  },
+  required: ['workContext', 'removed', 'lifecycle'],
 };
 
 const inboxMessageDataSchema: RelayJsonSchema = {
@@ -895,7 +1000,9 @@ const inboxMessageDataSchema: RelayJsonSchema = {
 const inboxListDataSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
-  properties: { messages: { type: 'array', items: inboxMessageEnvelopeSchema } },
+  properties: {
+    messages: { type: 'array', items: inboxMessageEnvelopeSchema },
+  },
   required: ['messages'],
 };
 
@@ -939,7 +1046,10 @@ const handoffCreateInputSchema: RelayJsonSchema = {
   properties: {
     planId: stringSchema,
     plan: { type: 'object', additionalProperties: true },
-    confirmedGrants: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    confirmedGrants: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+    },
     sourceRepoPath: stringSchema,
     destinationRepoPath: stringSchema,
     approvedUntrackedPaths: { type: 'array', items: stringSchema },
@@ -1035,7 +1145,10 @@ const handoffCreateOutputSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: {
     run: { type: 'object', additionalProperties: true },
-    artifacts: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    artifacts: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+    },
   },
   required: ['run', 'artifacts'],
 };
@@ -1133,7 +1246,10 @@ const supervisorSessionsOutputSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: {
     command: { const: 'supervisor.sessions' },
-    sessions: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    sessions: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+    },
     count: { type: 'number', minimum: 0 },
   },
   required: ['command', 'sessions', 'count'],
@@ -1149,7 +1265,10 @@ const supervisorActionOutputSchema = (
     properties: {
       command: { const: command },
       action: { const: action },
-      results: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      results: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: true },
+      },
       counts: { type: 'object', additionalProperties: true },
       audit: { type: 'object', additionalProperties: true },
       redaction: {
@@ -1233,8 +1352,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     transport: 'local',
     requiresAuth: false,
     capabilityHints: [],
-    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
-    outputSchema: okOutput('ContractListOutput', { $id: 'RelayCliGatewayContractManifest', type: 'object' }),
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    outputSchema: okOutput('ContractListOutput', {
+      $id: 'RelayCliGatewayContractManifest',
+      type: 'object',
+    }),
     errorCodes: ['INVALID_ARGUMENT', 'INTERNAL'],
   },
   {
@@ -1245,8 +1371,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     transport: 'local',
     requiresAuth: false,
     capabilityHints: [],
-    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
-    outputSchema: okOutput('ContractSchemaOutput', { $id: 'RelayCliGatewayContractManifest', type: 'object' }),
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    outputSchema: okOutput('ContractSchemaOutput', {
+      $id: 'RelayCliGatewayContractManifest',
+      type: 'object',
+    }),
     errorCodes: ['INTERNAL'],
   },
   {
@@ -1257,47 +1390,89 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     transport: 'local',
     requiresAuth: false,
     capabilityHints: [],
-    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
-    outputSchema: okOutput('NodesManifestOutput', { type: 'object', additionalProperties: true }),
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    outputSchema: okOutput('NodesManifestOutput', {
+      type: 'object',
+      additionalProperties: true,
+    }),
     errorCodes: ['INTERNAL'],
   },
   {
     name: 'nodes.list',
     cli: ['relay-ide', 'v1', 'nodes', 'list', '--json'],
-    summary: 'List hub-known local/remote relay nodes and summarized capabilities.',
+    summary:
+      'List hub-known local/remote relay nodes and summarized capabilities.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['session:read'],
-    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
     outputSchema: okOutput('NodesListOutput', {
       type: 'object',
       additionalProperties: false,
-      properties: { nodes: { type: 'array', items: { type: 'object', additionalProperties: true } } },
+      properties: {
+        nodes: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+        },
+      },
       required: ['nodes'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'sessions.list',
     cli: ['relay-ide', 'v1', 'sessions', 'list', '--json'],
-    summary: 'List active local and routed sessions with identity and control summaries.',
+    summary:
+      'List active local and routed sessions with identity and control summaries.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['session:read'],
-    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
     outputSchema: okOutput('SessionsListOutput', {
       type: 'object',
       additionalProperties: false,
-      properties: { sessions: { type: 'array', items: sessionDescriptorSchema } },
+      properties: {
+        sessions: { type: 'array', items: sessionDescriptorSchema },
+      },
       required: ['sessions'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'sessions.get',
-    cli: ['relay-ide', 'v1', 'sessions', 'get', '--id', '<session-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'get',
+      '--id',
+      '<session-id>',
+      '--json',
+    ],
     summary: 'Inspect one session by node-local id or globalSessionId.',
     stable: true,
     transport: 'hub-http',
@@ -1321,12 +1496,25 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'sessions.create',
-    cli: ['relay-ide', 'v1', 'sessions', 'create', '--input-json', '<json>', '--json'],
-    summary: 'Create a local or routed node session and return the created descriptor.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'create',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Create a local or routed node session and return the created descriptor.',
     stable: true,
     transport: 'hub-http-or-node-rpc',
     requiresAuth: true,
-    capabilityHints: ['session:create:terminal', 'session:create:agent', 'tab:mode:set-agent'],
+    capabilityHints: [
+      'session:create:terminal',
+      'session:create:agent',
+      'tab:mode:set-agent',
+    ],
     inputSchema: createSessionInputSchema,
     outputSchema: okOutput('SessionsCreateOutput', sessionDescriptorSchema),
     errorCodes: [
@@ -1343,8 +1531,19 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'sessions.renew',
-    cli: ['relay-ide', 'v1', 'sessions', 'renew', '--id', '<session-id>', '--ttl-seconds', '<seconds>', '--json'],
-    summary: 'Renew or extend a scoped session expiry without changing its intent, scope, or peer identity.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'renew',
+      '--id',
+      '<session-id>',
+      '--ttl-seconds',
+      '<seconds>',
+      '--json',
+    ],
+    summary:
+      'Renew or extend a scoped session expiry without changing its intent, scope, or peer identity.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1371,7 +1570,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'sessions.attach',
-    cli: ['relay-ide', 'v1', 'sessions', 'attach', '--id', '<session-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'attach',
+      '--id',
+      '<session-id>',
+      '--json',
+    ],
     summary:
       'Resolve a local or routed session descriptor for adapter attach without starting a streaming adapter runtime.',
     stable: true,
@@ -1396,7 +1603,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'sessions.detach',
-    cli: ['relay-ide', 'v1', 'sessions', 'detach', '--id', '<session-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'detach',
+      '--id',
+      '<session-id>',
+      '--json',
+    ],
     summary:
       'Detach adapter control from a session without killing the underlying remote process.',
     stable: true,
@@ -1484,8 +1699,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'sessions.interventions',
-    cli: ['relay-ide', 'v1', 'sessions', 'interventions', '--id', '<session-id>', '--json'],
-    summary: 'Read bounded, redacted intervention metadata for a local session.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'interventions',
+      '--id',
+      '<session-id>',
+      '--json',
+    ],
+    summary:
+      'Read bounded, redacted intervention metadata for a local session.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1493,7 +1717,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     inputSchema: {
       type: 'object',
       additionalProperties: false,
-      properties: { id: stringSchema, limit: { type: 'number', minimum: 1, maximum: 200 } },
+      properties: {
+        id: stringSchema,
+        limit: { type: 'number', minimum: 1, maximum: 200 },
+      },
       required: ['id'],
     },
     outputSchema: okOutput('SessionsInterventionsOutput', {
@@ -1526,7 +1753,8 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '<event-id>',
       '--json',
     ],
-    summary: 'Acknowledge latest human intervention before restoring agent-driven control.',
+    summary:
+      'Acknowledge latest human intervention before restoring agent-driven control.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1534,10 +1762,16 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     inputSchema: {
       type: 'object',
       additionalProperties: false,
-      properties: { id: stringSchema, latestSeenInterventionEventId: stringSchema },
+      properties: {
+        id: stringSchema,
+        latestSeenInterventionEventId: stringSchema,
+      },
       required: ['id', 'latestSeenInterventionEventId'],
     },
-    outputSchema: okOutput('SessionsHandBackOutput', { type: 'object', additionalProperties: true }),
+    outputSchema: okOutput('SessionsHandBackOutput', {
+      type: 'object',
+      additionalProperties: true,
+    }),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -1627,7 +1861,8 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '<path>',
       '--json',
     ],
-    summary: 'Read UTF-8 file content through scoped read-only File RPC with byte/line caps.',
+    summary:
+      'Read UTF-8 file content through scoped read-only File RPC with byte/line caps.',
     stable: true,
     transport: 'hub-http-or-node-rpc',
     requiresAuth: true,
@@ -1662,7 +1897,8 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '<local-path|->',
       '--json',
     ],
-    summary: 'Write file content through scoped File RPC with atomic-rename semantics and capability gate.',
+    summary:
+      'Write file content through scoped File RPC with atomic-rename semantics and capability gate.',
     stable: true,
     transport: 'hub-http-or-node-rpc',
     requiresAuth: true,
@@ -1682,8 +1918,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'work-contexts.get',
-    cli: ['relay-ide', 'v1', 'work-contexts', 'get', '--id', '<work-context-id>', '--json'],
-    summary: 'Read one WorkContext by stable identity for handoff/self-service agents.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-contexts',
+      'get',
+      '--id',
+      '<work-context-id>',
+      '--json',
+    ],
+    summary:
+      'Read one WorkContext by stable identity for handoff/self-service agents.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1692,15 +1937,32 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     outputSchema: okOutput('WorkContextsGetOutput', {
       type: 'object',
       additionalProperties: false,
-      properties: { workContext: { type: 'object', additionalProperties: true } },
+      properties: {
+        workContext: { type: 'object', additionalProperties: true },
+      },
       required: ['workContext'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'NOT_FOUND', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'context.create',
-    cli: ['relay-ide', 'v1', 'context', 'create', '--input-json', '<json>', '--json'],
-    summary: 'Create a ref-only context packet (file-anchor/file-ref/note) in the hub store.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'context',
+      'create',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Create a ref-only context packet (file-anchor/file-ref/note) in the hub store.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1711,8 +1973,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'context.get',
-    cli: ['relay-ide', 'v1', 'context', 'get', '--id', '<context-packet-id>', '--json'],
-    summary: 'Read one context packet by stable id. Ref-only; never returns raw file bytes.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'context',
+      'get',
+      '--id',
+      '<context-packet-id>',
+      '--json',
+    ],
+    summary:
+      'Read one context packet by stable id. Ref-only; never returns raw file bytes.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1724,7 +1995,8 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   {
     name: 'context.list',
     cli: ['relay-ide', 'v1', 'context', 'list', '--json'],
-    summary: 'List context packets, optionally filtered by node/workspace binding.',
+    summary:
+      'List context packets, optionally filtered by node/workspace binding or WorkContext artifact pins.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1734,8 +2006,62 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     errorCodes: contextInboxReadErrorCodes,
   },
   {
+    name: 'context.pin',
+    cli: [
+      'relay-ide',
+      'v1',
+      'context',
+      'pin',
+      '--id',
+      '<context-packet-id>',
+      '--work-context-id',
+      '<work-context-id>',
+      '--json',
+    ],
+    summary:
+      'Pin an existing context packet to a WorkContext by recording a WorkContext artifact ref; the packet store remains the source of truth.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: contextPinInputSchema,
+    outputSchema: okOutput('ContextPinOutput', contextPinDataSchema),
+    errorCodes: contextInboxWriteErrorCodes,
+  },
+  {
+    name: 'context.unpin',
+    cli: [
+      'relay-ide',
+      'v1',
+      'context',
+      'unpin',
+      '--id',
+      '<context-packet-id>',
+      '--work-context-id',
+      '<work-context-id>',
+      '--json',
+    ],
+    summary:
+      'Unpin a context packet from a WorkContext artifact ref without deleting the packet; orphan cleanup/GC semantics remain explicit.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: contextPinInputSchema,
+    outputSchema: okOutput('ContextUnpinOutput', contextUnpinDataSchema),
+    errorCodes: contextInboxWriteErrorCodes,
+  },
+  {
     name: 'inbox.send',
-    cli: ['relay-ide', 'v1', 'inbox', 'send', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'inbox',
+      'send',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Queue a session/WorkContext inbox message referencing context packets. Never pushes into sessions.input; delivery is PULL.',
     stable: true,
@@ -1748,7 +2074,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'inbox.list',
-    cli: ['relay-ide', 'v1', 'inbox', 'list', '--target-session-id', '<global-session-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'inbox',
+      'list',
+      '--target-session-id',
+      '<global-session-id>',
+      '--json',
+    ],
     summary:
       'List inbox messages for a session/WorkContext. PULL delivery: queued messages flip to delivered as a side effect of being fetched.',
     stable: true,
@@ -1761,7 +2095,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'inbox.get',
-    cli: ['relay-ide', 'v1', 'inbox', 'get', '--id', '<inbox-message-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'inbox',
+      'get',
+      '--id',
+      '<inbox-message-id>',
+      '--json',
+    ],
     summary:
       'Read one inbox message by id. PULL delivery: a queued message flips to delivered as a side effect of being fetched.',
     stable: true,
@@ -1774,7 +2116,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'inbox.ack',
-    cli: ['relay-ide', 'v1', 'inbox', 'ack', '--id', '<inbox-message-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'inbox',
+      'ack',
+      '--id',
+      '<inbox-message-id>',
+      '--json',
+    ],
     summary:
       'Acknowledge an inbox message (delivered → acknowledged). Idempotent; rejects transitions out of terminal states.',
     stable: true,
@@ -1787,8 +2137,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'inbox.resolve',
-    cli: ['relay-ide', 'v1', 'inbox', 'resolve', '--id', '<inbox-message-id>', '--json'],
-    summary: 'Resolve an inbox message (terminal). Rejects transitions out of an already-terminal state.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'inbox',
+      'resolve',
+      '--id',
+      '<inbox-message-id>',
+      '--json',
+    ],
+    summary:
+      'Resolve an inbox message (terminal). Rejects transitions out of an already-terminal state.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1799,8 +2158,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'inbox.ignore',
-    cli: ['relay-ide', 'v1', 'inbox', 'ignore', '--id', '<inbox-message-id>', '--json'],
-    summary: 'Ignore an inbox message (terminal). Rejects transitions out of an already-terminal state.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'inbox',
+      'ignore',
+      '--id',
+      '<inbox-message-id>',
+      '--json',
+    ],
+    summary:
+      'Ignore an inbox message (terminal). Rejects transitions out of an already-terminal state.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1811,8 +2179,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'handoffs.plan',
-    cli: ['relay-ide', 'v1', 'handoffs', 'plan', '--input-json', '<json>', '--json'],
-    summary: 'Dry-run a cold handoff plan. Read-only; never mutates source or destination.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoffs',
+      'plan',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Dry-run a cold handoff plan. Read-only; never mutates source or destination.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1823,19 +2200,42 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'handoffs.create',
-    cli: ['relay-ide', 'v1', 'handoffs', 'create', '--input-json', '<json>', '--json'],
-    summary: 'Execute a confirmed cold handoff through the transfer/apply engine; refuses fake success.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoffs',
+      'create',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Execute a confirmed cold handoff through the transfer/apply engine; refuses fake success.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
-    capabilityHints: ['rpc:fs:read', 'rpc:fs:write', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
+    capabilityHints: [
+      'rpc:fs:read',
+      'rpc:fs:write',
+      'session:create:agent',
+      'session:create:terminal',
+      'pty:exec:arbitrary',
+    ],
     inputSchema: handoffCreateInputSchema,
     outputSchema: okOutput('HandoffsCreateOutput', handoffCreateOutputSchema),
     errorCodes: gatewayHandoffErrorCodes,
   },
   {
     name: 'handoffs.status',
-    cli: ['relay-ide', 'v1', 'handoffs', 'status', '--run-id', '<run-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoffs',
+      'status',
+      '--run-id',
+      '<run-id>',
+      '--json',
+    ],
     summary: 'Read bounded/redacted HandoffRun state and progress.',
     stable: true,
     transport: 'hub-http',
@@ -1847,8 +2247,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'handoffs.cancel',
-    cli: ['relay-ide', 'v1', 'handoffs', 'cancel', '--run-id', '<run-id>', '--json'],
-    summary: 'Cancel a non-terminal handoff run without applying additional mutations.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoffs',
+      'cancel',
+      '--run-id',
+      '<run-id>',
+      '--json',
+    ],
+    summary:
+      'Cancel a non-terminal handoff run without applying additional mutations.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1859,8 +2268,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'handoffs.resume',
-    cli: ['relay-ide', 'v1', 'handoffs', 'resume', '--run-id', '<run-id>', '--json'],
-    summary: 'Read cold handoff resume bundle refs without raw transcript/provider-auth export.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoffs',
+      'resume',
+      '--run-id',
+      '<run-id>',
+      '--json',
+    ],
+    summary:
+      'Read cold handoff resume bundle refs without raw transcript/provider-auth export.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1871,23 +2289,46 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'handoffs.launch',
-    cli: ['relay-ide', 'v1', 'handoffs', 'launch', '--run-id', '<run-id>', '--json'],
-    summary: 'Retry hub-side destination session launch for an applied cold handoff after a typed launch failure.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoffs',
+      'launch',
+      '--run-id',
+      '<run-id>',
+      '--json',
+    ],
+    summary:
+      'Retry hub-side destination session launch for an applied cold handoff after a typed launch failure.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
     // Static gateway manifests cannot know whether the stored retry target is
     // agent or terminal; advertise the superset for tool generators while the
     // hub route enforces the stored plan's runtime-specific create capability.
-    capabilityHints: ['session:read', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
+    capabilityHints: [
+      'session:read',
+      'session:create:agent',
+      'session:create:terminal',
+      'pty:exec:arbitrary',
+    ],
     inputSchema: handoffRunIdInputSchema,
     outputSchema: okOutput('HandoffsLaunchOutput', handoffCreateOutputSchema),
     errorCodes: gatewayHandoffErrorCodes,
   },
   {
     name: 'artifacts.read',
-    cli: ['relay-ide', 'v1', 'artifacts', 'read', '--ref', '<artifact-ref>', '--json'],
-    summary: 'Read a bounded handoff artifact reference; raw logs/secrets/transcripts are unavailable.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'artifacts',
+      'read',
+      '--ref',
+      '<artifact-ref>',
+      '--json',
+    ],
+    summary:
+      'Read a bounded handoff artifact reference; raw logs/secrets/transcripts are unavailable.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -1898,7 +2339,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'supervisor.snapshot',
-    cli: ['relay-ide', 'v1', 'supervisor', 'snapshot', '--id', '<session-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'supervisor',
+      'snapshot',
+      '--id',
+      '<session-id>',
+      '--json',
+    ],
     summary:
       'Read a typed supervisor snapshot for one session with control-mode preflight, intervention ack checks, and redacted audit metadata; never sends raw PTY input.',
     stable: true,
@@ -1906,43 +2355,76 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['session:read', 'tab:intervention:read'],
     inputSchema: supervisorSnapshotInputSchema,
-    outputSchema: okOutput('SupervisorSnapshotOutput', supervisorSnapshotOutputSchema),
+    outputSchema: okOutput(
+      'SupervisorSnapshotOutput',
+      supervisorSnapshotOutputSchema
+    ),
     errorCodes: gatewaySupervisorErrorCodes,
   },
   {
     name: 'supervisor.sessions',
     cli: ['relay-ide', 'v1', 'supervisor', 'sessions', '--json'],
-    summary: 'List sessions eligible for typed supervisor actions with per-action reasons.',
+    summary:
+      'List sessions eligible for typed supervisor actions with per-action reasons.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['session:read', 'tab:intervention:read'],
     inputSchema: supervisorSessionsInputSchema,
-    outputSchema: okOutput('SupervisorSessionsOutput', supervisorSessionsOutputSchema),
+    outputSchema: okOutput(
+      'SupervisorSessionsOutput',
+      supervisorSessionsOutputSchema
+    ),
     errorCodes: gatewaySupervisorErrorCodes,
   },
   {
     name: 'supervisor.sendText',
-    cli: ['relay-ide', 'v1', 'supervisor', 'send-text', '--id', '<session-id>', '--text', '<text>', '--json'],
-    summary: 'Send bounded literal text to one or more PTY sessions as a typed supervisor intervention.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'supervisor',
+      'send-text',
+      '--id',
+      '<session-id>',
+      '--text',
+      '<text>',
+      '--json',
+    ],
+    summary:
+      'Send bounded literal text to one or more PTY sessions as a typed supervisor intervention.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['session:attach', 'tab:intervention:send-text'],
     inputSchema: supervisorSendTextInputSchema,
-    outputSchema: okOutput('SupervisorSendTextOutput', supervisorActionOutputSchema('supervisor.sendText')),
+    outputSchema: okOutput(
+      'SupervisorSendTextOutput',
+      supervisorActionOutputSchema('supervisor.sendText')
+    ),
     errorCodes: gatewaySupervisorErrorCodes,
   },
   {
     name: 'supervisor.submit',
-    cli: ['relay-ide', 'v1', 'supervisor', 'submit', '--id', '<session-id>', '--json'],
-    summary: 'Submit Enter to one or more PTY sessions as a typed supervisor intervention.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'supervisor',
+      'submit',
+      '--id',
+      '<session-id>',
+      '--json',
+    ],
+    summary:
+      'Submit Enter to one or more PTY sessions as a typed supervisor intervention.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['session:attach', 'tab:intervention:submit'],
     inputSchema: supervisorSubmitInputSchema,
-    outputSchema: okOutput('SupervisorSubmitOutput', supervisorActionOutputSchema('supervisor.submit')),
+    outputSchema: okOutput(
+      'SupervisorSubmitOutput',
+      supervisorActionOutputSchema('supervisor.submit')
+    ),
     errorCodes: gatewaySupervisorErrorCodes,
   },
   {
@@ -2019,8 +2501,12 @@ export function gatewayError(
   };
 }
 
-export function commandSpec(name: RelayCliGatewayCommand): RelayCliGatewayCommandSpec {
-  const spec = RELAY_CLI_GATEWAY_CONTRACT.commandSchemas.find((entry) => entry.name === name);
+export function commandSpec(
+  name: RelayCliGatewayCommand
+): RelayCliGatewayCommandSpec {
+  const spec = RELAY_CLI_GATEWAY_CONTRACT.commandSchemas.find(
+    (entry) => entry.name === name
+  );
   if (!spec) throw new Error(`unknown CLI gateway command spec: ${name}`);
   return spec;
 }

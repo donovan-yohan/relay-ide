@@ -34,10 +34,14 @@ import {
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
-function objectMatchesSchemaKeywords(schema: RelayJsonSchema, value: Record<string, unknown>): boolean {
+function objectMatchesSchemaKeywords(
+  schema: RelayJsonSchema,
+  value: Record<string, unknown>
+): boolean {
   const properties = schema.properties ?? {};
   const required = schema.required ?? [];
-  if (schema.type === 'object' && (value === null || Array.isArray(value))) return false;
+  if (schema.type === 'object' && (value === null || Array.isArray(value)))
+    return false;
   if (!required.every((key) => hasOwn(value, key))) return false;
   if (schema.additionalProperties === false) {
     for (const key of Object.keys(value)) {
@@ -46,10 +50,14 @@ function objectMatchesSchemaKeywords(schema: RelayJsonSchema, value: Record<stri
   }
   for (const [key, propertySchema] of Object.entries(properties)) {
     if (!hasOwn(value, key)) continue;
-    if ('const' in propertySchema && value[key] !== propertySchema.const) return false;
-    if (propertySchema.type === 'string' && typeof value[key] !== 'string') return false;
-    if (propertySchema.type === 'boolean' && typeof value[key] !== 'boolean') return false;
-    if (propertySchema.type === 'number' && typeof value[key] !== 'number') return false;
+    if ('const' in propertySchema && value[key] !== propertySchema.const)
+      return false;
+    if (propertySchema.type === 'string' && typeof value[key] !== 'string')
+      return false;
+    if (propertySchema.type === 'boolean' && typeof value[key] !== 'boolean')
+      return false;
+    if (propertySchema.type === 'number' && typeof value[key] !== 'number')
+      return false;
   }
   return true;
 }
@@ -58,7 +66,10 @@ function schemaAcceptsSessionInput(value: Record<string, unknown>): boolean {
   const schema = commandSpec('sessions.input').inputSchema;
   if (!objectMatchesSchemaKeywords(schema, value)) return false;
   if (!schema.oneOf) return true;
-  return schema.oneOf.filter((branch) => objectMatchesSchemaKeywords(branch, value)).length === 1;
+  return (
+    schema.oneOf.filter((branch) => objectMatchesSchemaKeywords(branch, value))
+      .length === 1
+  );
 }
 
 describe('CLI gateway contract', () => {
@@ -93,6 +104,8 @@ describe('CLI gateway contract', () => {
       'context.create',
       'context.get',
       'context.list',
+      'context.pin',
+      'context.unpin',
       'inbox.send',
       'inbox.list',
       'inbox.get',
@@ -128,16 +141,18 @@ describe('CLI gateway contract', () => {
       schemaVersion: 1,
       generatedFrom: 'shared/cli-gateway-contract.ts',
     });
-    expect(RELAY_COMMAND_MANIFEST.commands.map((command) => command.name)).toEqual(stableNames);
-    expect(relayCommandDefinitionsForSurface('cli').map((command) => command.name)).toEqual(
-      stableNames
-    );
-    expect(relayCommandDefinitionsForSurface('agent').map((command) => command.name)).toEqual(
-      stableNames
-    );
-    expect(relayCommandDefinitionsForSurface('web').map((command) => command.name)).toEqual(
-      stableNames
-    );
+    expect(
+      RELAY_COMMAND_MANIFEST.commands.map((command) => command.name)
+    ).toEqual(stableNames);
+    expect(
+      relayCommandDefinitionsForSurface('cli').map((command) => command.name)
+    ).toEqual(stableNames);
+    expect(
+      relayCommandDefinitionsForSurface('agent').map((command) => command.name)
+    ).toEqual(stableNames);
+    expect(
+      relayCommandDefinitionsForSurface('web').map((command) => command.name)
+    ).toEqual(stableNames);
 
     for (const name of stableNames) {
       const spec = commandSpec(name);
@@ -159,7 +174,9 @@ describe('CLI gateway contract', () => {
         expect(RELAY_CAPABILITY_BITS).toContain(hint);
       }
       expect(command.handler.cli).toEqual(spec.cli);
-      expect(['read', 'write', 'destructive', 'stream']).toContain(command.sideEffect);
+      expect(['read', 'write', 'destructive', 'stream']).toContain(
+        command.sideEffect
+      );
       expect(Array.isArray(command.scopeKinds)).toBe(true);
       expect(Array.isArray(command.controlRequirements)).toBe(true);
       expect([
@@ -277,25 +294,36 @@ describe('CLI gateway contract', () => {
     };
     const envelope = gatewayOk('supervisor.snapshot', payload);
 
-    expect(envelope).toMatchObject({ ok: true, command: 'supervisor.snapshot' });
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'supervisor.snapshot',
+    });
     expect(envelope.data).toEqual(payload);
     expect(Object.keys(envelope.data).sort()).toEqual(['audit', 'snapshot']);
     expect(hasOwn(envelope.data, 'ok')).toBe(false);
 
     const outputSchema = commandSpec('supervisor.snapshot').outputSchema;
-    expect(objectMatchesSchemaKeywords(outputSchema, envelope as unknown as Record<string, unknown>)).toBe(
-      true
-    );
+    expect(
+      objectMatchesSchemaKeywords(
+        outputSchema,
+        envelope as unknown as Record<string, unknown>
+      )
+    ).toBe(true);
 
     const dataSchema = outputSchema.properties?.data;
-    if (!dataSchema) throw new Error('supervisor.snapshot output schema must define data');
+    if (!dataSchema)
+      throw new Error('supervisor.snapshot output schema must define data');
     expect(objectMatchesSchemaKeywords(dataSchema, envelope.data)).toBe(true);
-    expect(objectMatchesSchemaKeywords(dataSchema, { ok: true, ...payload })).toBe(false);
+    expect(
+      objectMatchesSchemaKeywords(dataSchema, { ok: true, ...payload })
+    ).toBe(false);
 
     const snapshotSchema = dataSchema.properties?.snapshot;
     const auditSchema = dataSchema.properties?.audit;
-    if (!snapshotSchema?.properties?.redaction) throw new Error('snapshot redaction schema required');
-    if (!auditSchema?.properties?.redaction) throw new Error('audit redaction schema required');
+    if (!snapshotSchema?.properties?.redaction)
+      throw new Error('snapshot redaction schema required');
+    if (!auditSchema?.properties?.redaction)
+      throw new Error('audit redaction schema required');
     expect(snapshotSchema.required).toEqual(['command', 'redaction']);
     expect(snapshotSchema.properties.redaction.required).toEqual([
       'rawPtyInputAvailable',
@@ -329,7 +357,9 @@ describe('CLI gateway contract', () => {
     const createProperties = create.inputSchema.properties ?? {};
     expect(createProperties['sessionEnvelope']).toBeDefined();
     expect(createProperties['workContextId']).toBeDefined();
-    expect(JSON.stringify(create.inputSchema)).not.toContain('"kind":{"const":"agent"}');
+    expect(JSON.stringify(create.inputSchema)).not.toContain(
+      '"kind":{"const":"agent"}'
+    );
     expect(JSON.stringify(create.inputSchema)).not.toContain('"adapter"');
   });
 
@@ -355,7 +385,9 @@ describe('CLI gateway contract', () => {
 
     const localEnvelope = validateAndSanitizeGatewayCreateInput({
       repoPath: '/tmp/repo',
-      sessionEnvelope: { peerIdentity: { kind: 'relay-node', nodeId: 'node-a' } },
+      sessionEnvelope: {
+        peerIdentity: { kind: 'relay-node', nodeId: 'node-a' },
+      },
     });
     expect(localEnvelope).toMatchObject({
       ok: false,
@@ -365,7 +397,9 @@ describe('CLI gateway contract', () => {
     const agentPeer = validateAndSanitizeGatewayCreateInput({
       nodeId: 'node-a',
       repoPath: '/tmp/repo',
-      sessionEnvelope: { peerIdentity: { kind: 'agent', id: 'brain', adapter: 'kbrain' } },
+      sessionEnvelope: {
+        peerIdentity: { kind: 'agent', id: 'brain', adapter: 'kbrain' },
+      },
     });
     expect(agentPeer).toMatchObject({
       ok: false,
@@ -379,7 +413,8 @@ describe('CLI gateway contract', () => {
       nodeId: 'node-a',
       repoPath: '/tmp/repo',
     });
-    if (routedDefault.ok !== true) throw new Error('expected routed create input to validate');
+    if (routedDefault.ok !== true)
+      throw new Error('expected routed create input to validate');
     expect(routedDefault.sessionType).toBe('agent');
     expect(routedDefault.input).toMatchObject({
       nodeId: 'node-a',
@@ -449,6 +484,8 @@ describe('CLI gateway contract', () => {
       'context.create',
       'context.get',
       'context.list',
+      'context.pin',
+      'context.unpin',
       'inbox.send',
       'inbox.list',
       'inbox.get',
@@ -472,7 +509,10 @@ describe('CLI gateway contract', () => {
     for (const command of invalidArgumentCommands) {
       const emitted = gatewayError(
         command,
-        gatewayCliInvalidArgumentError(command, 'invalid gateway command arguments')
+        gatewayCliInvalidArgumentError(
+          command,
+          'invalid gateway command arguments'
+        )
       );
       expect(emitted.error.code).toBe('INVALID_ARGUMENT');
       expect(commandSpec(command).errorCodes).toContain(emitted.error.code);
@@ -480,10 +520,15 @@ describe('CLI gateway contract', () => {
 
     const invalidJson = gatewayError(
       'sessions.create',
-      gatewayCliInvalidJsonError('sessions.create', 'Unexpected end of JSON input')
+      gatewayCliInvalidJsonError(
+        'sessions.create',
+        'Unexpected end of JSON input'
+      )
     );
     expect(invalidJson.error.code).toBe('INVALID_JSON');
-    expect(commandSpec('sessions.create').errorCodes).toContain(invalidJson.error.code);
+    expect(commandSpec('sessions.create').errorCodes).toContain(
+      invalidJson.error.code
+    );
   });
 
   it('normalizes routed errors without exposing raw upstream bodies', () => {
@@ -494,12 +539,20 @@ describe('CLI gateway contract', () => {
     ).toBe('CONFIRMATION_REQUIRED');
     expect(
       normalizeGatewayErrorCode(404, {
-        error: { code: 'NODE_OFFLINE', retryable: true, details: { path: '/internal' } },
+        error: {
+          code: 'NODE_OFFLINE',
+          retryable: true,
+          details: { path: '/internal' },
+        },
       })
     ).toBe('NODE_OFFLINE');
     expect(
       normalizeGatewayErrorCode(409, {
-        error: { code: 'SOURCE_STALE_OR_OFFLINE', retryable: true, reasonCode: 'FAILED_STALE_SOURCE' },
+        error: {
+          code: 'SOURCE_STALE_OR_OFFLINE',
+          retryable: true,
+          reasonCode: 'FAILED_STALE_SOURCE',
+        },
       })
     ).toBe('NODE_OFFLINE');
     expect(
@@ -513,7 +566,9 @@ describe('CLI gateway contract', () => {
       })
     ).toBe('FORBIDDEN');
     expect(
-      gatewayErrorRetryable(404, { error: { code: 'NODE_OFFLINE', retryable: true } })
+      gatewayErrorRetryable(404, {
+        error: { code: 'NODE_OFFLINE', retryable: true },
+      })
     ).toBe(true);
     expect(
       sanitizedGatewayErrorDetails(500, {
@@ -526,7 +581,6 @@ describe('CLI gateway contract', () => {
       })
     ).toEqual({ status: 500, upstreamCode: 'INTERNAL', field: 'repoPath' });
   });
-
 
   it('advertises descriptor-only attach/detach, session renewal, session I/O, and read-only file RPC commands', () => {
     const renew = commandSpec('sessions.renew');
@@ -576,7 +630,10 @@ describe('CLI gateway contract', () => {
       properties: { maxBytes: { maximum: 1048576 } },
       oneOf: [
         { required: ['id', 'data'], properties: { data: { type: 'string' } } },
-        { required: ['id', 'dataBase64'], properties: { dataBase64: { type: 'string' } } },
+        {
+          required: ['id', 'dataBase64'],
+          properties: { dataBase64: { type: 'string' } },
+        },
         { required: ['id', 'stdin'], properties: { stdin: { const: true } } },
       ],
     });
@@ -607,8 +664,13 @@ describe('CLI gateway contract', () => {
         maxLines: { maximum: 2000 },
       },
     });
-    expect(read.errorCodes).toEqual(expect.arrayContaining(['NODE_OFFLINE', 'NOT_FOUND']));
-    expect(commandSpec('files.stat').capabilityHints).toEqual(['session:read', 'rpc:fs:read']);
+    expect(read.errorCodes).toEqual(
+      expect.arrayContaining(['NODE_OFFLINE', 'NOT_FOUND'])
+    );
+    expect(commandSpec('files.stat').capabilityHints).toEqual([
+      'session:read',
+      'rpc:fs:read',
+    ]);
 
     const write = commandSpec('files.write');
     expect(write.capabilityHints).toEqual(['session:read', 'rpc:fs:write']);
@@ -633,7 +695,13 @@ describe('CLI gateway contract', () => {
         },
       },
     });
-    expect(write.errorCodes).toEqual(expect.arrayContaining(['NODE_OFFLINE', 'FORBIDDEN', 'CONFIRMATION_REQUIRED']));
+    expect(write.errorCodes).toEqual(
+      expect.arrayContaining([
+        'NODE_OFFLINE',
+        'FORBIDDEN',
+        'CONFIRMATION_REQUIRED',
+      ])
+    );
   });
 
   it('advertises handoff/work-context/artifact gateway commands with cold-handoff safety gates', () => {
@@ -671,12 +739,22 @@ describe('CLI gateway contract', () => {
     });
     expect(create.summary).toContain('refuses fake success');
     expect(create.errorCodes).toEqual(
-      expect.arrayContaining(['FORBIDDEN', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'])
+      expect.arrayContaining([
+        'FORBIDDEN',
+        'SESSION_CONFLICT',
+        'SERVER_UNAVAILABLE',
+      ])
     );
 
-    expect(commandSpec('handoffs.status').summary).toContain('bounded/redacted');
-    expect(commandSpec('handoffs.resume').summary).toContain('without raw transcript');
-    expect(commandSpec('artifacts.read').summary).toContain('raw logs/secrets/transcripts are unavailable');
+    expect(commandSpec('handoffs.status').summary).toContain(
+      'bounded/redacted'
+    );
+    expect(commandSpec('handoffs.resume').summary).toContain(
+      'without raw transcript'
+    );
+    expect(commandSpec('artifacts.read').summary).toContain(
+      'raw logs/secrets/transcripts are unavailable'
+    );
 
     const supervisor = commandSpec('supervisor.snapshot');
     expect(supervisor).toMatchObject({
@@ -687,39 +765,82 @@ describe('CLI gateway contract', () => {
       additionalProperties: false,
       required: ['id'],
       properties: {
-        expectedControlMode: { enum: ['agent-driven', 'human-driven', 'co-driven'] },
+        expectedControlMode: {
+          enum: ['agent-driven', 'human-driven', 'co-driven'],
+        },
       },
     });
     expect(supervisor.errorCodes).toEqual(
-      expect.arrayContaining(['FORBIDDEN', 'CONTROL_STATE_STALE', 'INTERVENTION_ACK_REQUIRED'])
+      expect.arrayContaining([
+        'FORBIDDEN',
+        'CONTROL_STATE_STALE',
+        'INTERVENTION_ACK_REQUIRED',
+      ])
     );
     expect(supervisor.summary).toContain('never sends raw PTY input');
   });
 
   it('advertises context.* / inbox.* verbs with ADR-019 capability + PULL semantics', () => {
     // Reads are session:read peers; writes use the dedicated context/inbox bits.
-    expect(commandSpec('context.get').capabilityHints).toEqual(['context:read']);
-    expect(commandSpec('context.list').capabilityHints).toEqual(['context:read']);
-    expect(commandSpec('context.create').capabilityHints).toEqual(['context:write']);
+    expect(commandSpec('context.get').capabilityHints).toEqual([
+      'context:read',
+    ]);
+    expect(commandSpec('context.list').capabilityHints).toEqual([
+      'context:read',
+    ]);
+    expect(commandSpec('context.create').capabilityHints).toEqual([
+      'context:write',
+    ]);
+    expect(commandSpec('context.pin').capabilityHints).toEqual([
+      'context:write',
+    ]);
+    expect(commandSpec('context.unpin').capabilityHints).toEqual([
+      'context:write',
+    ]);
     expect(commandSpec('inbox.list').capabilityHints).toEqual(['inbox:read']);
     expect(commandSpec('inbox.get').capabilityHints).toEqual(['inbox:read']);
     expect(commandSpec('inbox.send').capabilityHints).toEqual(['inbox:write']);
-    for (const verb of ['inbox.ack', 'inbox.resolve', 'inbox.ignore'] as const) {
+    for (const verb of [
+      'inbox.ack',
+      'inbox.resolve',
+      'inbox.ignore',
+    ] as const) {
       expect(commandSpec(verb).capabilityHints).toEqual(['inbox:write']);
     }
 
     // PULL delivery is documented on the read verbs; nothing pushes into sessions.input.
     expect(commandSpec('inbox.list').summary).toContain('PULL delivery');
     expect(commandSpec('inbox.get').summary).toContain('PULL delivery');
-    expect(commandSpec('inbox.send').summary).toContain('Never pushes into sessions.input');
+    expect(commandSpec('inbox.send').summary).toContain(
+      'Never pushes into sessions.input'
+    );
+    expect(commandSpec('context.pin').summary).toContain(
+      'WorkContext artifact ref'
+    );
+    expect(commandSpec('context.unpin').summary).toContain(
+      'without deleting the packet'
+    );
+    expect(commandSpec('context.list').inputSchema).toMatchObject({
+      properties: { workContextId: { type: 'string' } },
+    });
+    for (const verb of ['context.pin', 'context.unpin'] as const) {
+      expect(commandSpec(verb).inputSchema).toMatchObject({
+        required: ['id', 'workContextId'],
+      });
+    }
 
     // anchored addressing: send/list require a target.
     expect(commandSpec('inbox.send').inputSchema).toMatchObject({
-      anyOf: [{ required: ['targetSessionId'] }, { required: ['targetWorkContextId'] }],
+      anyOf: [
+        { required: ['targetSessionId'] },
+        { required: ['targetWorkContextId'] },
+      ],
     });
 
     // Manifest side-effects: writes are 'write' (not destructive); reads are 'read'.
     expect(relayCommandDefinition('context.create').sideEffect).toBe('write');
+    expect(relayCommandDefinition('context.pin').sideEffect).toBe('write');
+    expect(relayCommandDefinition('context.unpin').sideEffect).toBe('write');
     expect(relayCommandDefinition('inbox.ack').sideEffect).toBe('write');
     expect(relayCommandDefinition('context.get').sideEffect).toBe('read');
     expect(relayCommandDefinition('inbox.list').sideEffect).toBe('read');
@@ -729,6 +850,8 @@ describe('CLI gateway contract', () => {
     // context/inbox bits, not rpc:fs:write / pty:exec:arbitrary.
     for (const verb of [
       'context.create',
+      'context.pin',
+      'context.unpin',
       'inbox.send',
       'inbox.ack',
       'inbox.resolve',
@@ -740,7 +863,12 @@ describe('CLI gateway contract', () => {
   });
 
   it('places context/inbox capability bits in the correct trust tier (ADR-019 D5)', () => {
-    for (const bit of ['context:read', 'context:write', 'inbox:read', 'inbox:write'] as const) {
+    for (const bit of [
+      'context:read',
+      'context:write',
+      'inbox:read',
+      'inbox:write',
+    ] as const) {
       expect(RELAY_CAPABILITY_BITS).toContain(bit);
     }
     // Reads are default-allow peers of session:read.
@@ -759,7 +887,12 @@ describe('CLI gateway contract', () => {
       createdAt: '2026-05-27T00:00:00.000Z',
       trustTier: 'prod',
     });
-    for (const bit of ['context:read', 'context:write', 'inbox:read', 'inbox:write'] as const) {
+    for (const bit of [
+      'context:read',
+      'context:write',
+      'inbox:read',
+      'inbox:write',
+    ] as const) {
       expect(resolveAclCapability(prodAcl, bit)).toMatchObject({
         known: true,
         decision: 'allow',
@@ -768,16 +901,34 @@ describe('CLI gateway contract', () => {
   });
 
   it('encodes sessions.input source exclusivity for schema-generated adapters', () => {
-    expect(schemaAcceptsSessionInput({ id: 's1', data: 'hello', waitFor: 'hello' })).toBe(true);
-    expect(schemaAcceptsSessionInput({ id: 's1', dataBase64: 'aGVsbG8=' })).toBe(true);
-    expect(schemaAcceptsSessionInput({ id: 's1', stdin: true, timeoutMs: 1000 })).toBe(true);
+    expect(
+      schemaAcceptsSessionInput({ id: 's1', data: 'hello', waitFor: 'hello' })
+    ).toBe(true);
+    expect(
+      schemaAcceptsSessionInput({ id: 's1', dataBase64: 'aGVsbG8=' })
+    ).toBe(true);
+    expect(
+      schemaAcceptsSessionInput({ id: 's1', stdin: true, timeoutMs: 1000 })
+    ).toBe(true);
 
     expect(schemaAcceptsSessionInput({ id: 's1' })).toBe(false);
-    expect(schemaAcceptsSessionInput({ id: 's1', data: 'hello', dataBase64: 'aGVsbG8=' })).toBe(
-      false
-    );
-    expect(schemaAcceptsSessionInput({ id: 's1', data: 'hello', stdin: true })).toBe(false);
-    expect(schemaAcceptsSessionInput({ id: 's1', dataBase64: 'aGVsbG8=', stdin: true })).toBe(false);
+    expect(
+      schemaAcceptsSessionInput({
+        id: 's1',
+        data: 'hello',
+        dataBase64: 'aGVsbG8=',
+      })
+    ).toBe(false);
+    expect(
+      schemaAcceptsSessionInput({ id: 's1', data: 'hello', stdin: true })
+    ).toBe(false);
+    expect(
+      schemaAcceptsSessionInput({
+        id: 's1',
+        dataBase64: 'aGVsbG8=',
+        stdin: true,
+      })
+    ).toBe(false);
     expect(schemaAcceptsSessionInput({ id: 's1', stdin: false })).toBe(false);
   });
 

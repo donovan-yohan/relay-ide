@@ -18,6 +18,11 @@ relay-ide v1 files list --session-id <session-id> --path <path> --json
 relay-ide v1 files stat --session-id <session-id> --path <path> --json
 relay-ide v1 files read --session-id <session-id> --path <path> --max-bytes 32768 --max-lines 2000 --json
 relay-ide v1 files write --session-id <session-id> --path <path> --mode <create|overwrite|append> --file <local-path|-> --json
+relay-ide v1 context create --input-json '{...}' --json
+relay-ide v1 context get --id <context-packet-id> --json
+relay-ide v1 context list [--work-context-id <work-context-id>] --json
+relay-ide v1 context pin --id <context-packet-id> --work-context-id <work-context-id> --json
+relay-ide v1 context unpin --id <context-packet-id> --work-context-id <work-context-id> --json
 relay-ide v1 supervisor sessions --json
 relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
 relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json
@@ -57,7 +62,10 @@ Error:
     "code": "NOT_FOUND",
     "message": "file was not found",
     "retryable": false,
-    "details": { "upstreamCode": "NOT_FOUND", "reasonCode": "FILE_RPC_NOT_FOUND" }
+    "details": {
+      "upstreamCode": "NOT_FOUND",
+      "reasonCode": "FILE_RPC_NOT_FOUND"
+    }
   }
 }
 ```
@@ -77,7 +85,7 @@ The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvel
 - capability hints for hub policy checks
 - possible typed error codes
 
-The schema is the source of truth for adapter generation. A command missing from this manifest is not stable adapter API, even if an internal REST/WebSocket route exists.
+The schema is the source of truth for adapter generation. A command missing from this manifest is not stable adapter API, even if an internal REST/WebSocket route exists. WorkContext-pinning commands are exposed here as `context.pin`, `context.unpin`, and `context.list --work-context-id`; agents should discover and call those gateway verbs instead of private HTTP routes.
 
 ## Command taxonomy
 
@@ -85,11 +93,11 @@ Relay command metadata is defined in [`shared/relay-command-manifest.ts`](../sha
 
 Current command surfaces are intentionally separate:
 
-| Surface | Meaning | Execution path |
-| --- | --- | --- |
-| UI-only Command Center actions | Browser affordances such as navigation, settings, local palette helpers, and workflow entry points that are not stable agent API. | Frontend action registry only; do not generate agent tools from these. |
-| Stable CLI gateway commands | Versioned `relay-ide v1 ... --json` commands in `RELAY_CLI_GATEWAY_CONTRACT`. | Public CLI JSON gateway; this is the adapter-facing contract. |
-| Agent-callable commands | Gateway commands safe to expose to Claude/Codex/Hermes/MCP/ACP-style adapters through generated schemas. | Generated from the shared command manifest and executed through `relay-ide v1 ... --json`, never private node-link/browser routes. |
+| Surface                        | Meaning                                                                                                                           | Execution path                                                                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| UI-only Command Center actions | Browser affordances such as navigation, settings, local palette helpers, and workflow entry points that are not stable agent API. | Frontend action registry only; do not generate agent tools from these.                                                             |
+| Stable CLI gateway commands    | Versioned `relay-ide v1 ... --json` commands in `RELAY_CLI_GATEWAY_CONTRACT`.                                                     | Public CLI JSON gateway; this is the adapter-facing contract.                                                                      |
+| Agent-callable commands        | Gateway commands safe to expose to Claude/Codex/Hermes/MCP/ACP-style adapters through generated schemas.                          | Generated from the shared command manifest and executed through `relay-ide v1 ... --json`, never private node-link/browser routes. |
 
 The Command Center may search and describe stable gateway commands using the shared manifest before browser execution is wired. The manifest carries the stable command id, CLI projection, side-effect class, capability hints, confirmation/control requirements, scope kinds, and audit redaction expectations. Until a `handler.uiAction` or explicit UI execution bridge exists, these entries must stay disabled/degraded in the palette and point operators to the stable CLI argv. Do not mark every internal UI button as agent-callable, and do not add Claude/Codex/Hermes-specific schemas by hand; add or change the Relay-owned command definition first.
 
@@ -97,7 +105,7 @@ The Command Center may search and describe stable gateway commands using the sha
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.
 
-Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, and `events.*`) use the same local server token path as existing CLI session commands:
+Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, and `events.*`) use the same local server token path as existing CLI session commands:
 
 - `RELAY_IDE_BROWSER_TOKEN` supplies the bearer token.
 - `--port` or `RELAY_IDE_PORT` selects the local hub port; otherwise Relay uses the default port.
@@ -229,14 +237,14 @@ The stable supervisor surface is Relay-owned command API, not raw PTY, tmux, or 
 
 Commands:
 
-| Command | Purpose | Required capabilities |
-| --- | --- | --- |
-| `relay-ide v1 supervisor sessions --json` | Lists sessions and per-action eligibility. | `session:read`, `tab:intervention:read` |
-| `relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json` | Reads one redacted supervisor snapshot. | `session:read`, `tab:intervention:read` |
-| `relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json` | Sends bounded literal text as a typed intervention. | `session:attach`, `tab:intervention:send-text` |
-| `relay-ide v1 supervisor send-text --target-ids <id-1,id-2> --text <literal-text> --json` | Sends the same bounded literal text to multiple sessions and reports per-target results. | `session:attach`, `tab:intervention:send-text` |
-| `relay-ide v1 supervisor submit --id <session-id-or-global-id> --json` | Sends Enter (`\n`) as a typed intervention. | `session:attach`, `tab:intervention:submit` |
-| `relay-ide v1 supervisor submit --target-ids <id-1,id-2> --json` | Sends Enter to multiple sessions and reports per-target results. | `session:attach`, `tab:intervention:submit` |
+| Command                                                                                         | Purpose                                                                                  | Required capabilities                          |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `relay-ide v1 supervisor sessions --json`                                                       | Lists sessions and per-action eligibility.                                               | `session:read`, `tab:intervention:read`        |
+| `relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json`                        | Reads one redacted supervisor snapshot.                                                  | `session:read`, `tab:intervention:read`        |
+| `relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json` | Sends bounded literal text as a typed intervention.                                      | `session:attach`, `tab:intervention:send-text` |
+| `relay-ide v1 supervisor send-text --target-ids <id-1,id-2> --text <literal-text> --json`       | Sends the same bounded literal text to multiple sessions and reports per-target results. | `session:attach`, `tab:intervention:send-text` |
+| `relay-ide v1 supervisor submit --id <session-id-or-global-id> --json`                          | Sends Enter (`\n`) as a typed intervention.                                              | `session:attach`, `tab:intervention:submit`    |
+| `relay-ide v1 supervisor submit --target-ids <id-1,id-2> --json`                                | Sends Enter to multiple sessions and reports per-target results.                         | `session:attach`, `tab:intervention:submit`    |
 
 Inputs:
 
@@ -269,7 +277,13 @@ Successful action envelope shape:
         "controlModeAfter": "co-driven"
       }
     ],
-    "counts": { "requested": 1, "succeeded": 1, "denied": 0, "failed": 0, "skipped": 0 },
+    "counts": {
+      "requested": 1,
+      "succeeded": 1,
+      "denied": 0,
+      "failed": 0,
+      "skipped": 0
+    },
     "audit": {
       "action": "sendText",
       "targetSessionIds": ["sess-1"],
@@ -287,7 +301,11 @@ Successful action envelope shape:
       "rawContentStored": false,
       "partialFailure": false
     },
-    "redaction": { "rawContentAvailable": false, "rawContentStored": false, "hashesOnly": true }
+    "redaction": {
+      "rawContentAvailable": false,
+      "rawContentStored": false,
+      "hashesOnly": true
+    }
   }
 }
 ```

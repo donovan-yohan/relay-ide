@@ -461,7 +461,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
   );
   process.exit(1);
 }
@@ -1513,10 +1513,13 @@ async function runGatewayWorkContexts(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const workContextArgs = gatewayArgs.slice(2);
   if (subcommand !== 'get') {
-    gatewayInvalid('work-contexts.get', 'unknown work-contexts command', { args: gatewayArgs });
+    gatewayInvalid('work-contexts.get', 'unknown work-contexts command', {
+      args: gatewayArgs,
+    });
   }
   const id = gatewayArg(workContextArgs, '--id') ?? workContextArgs[0];
-  if (!id || id.startsWith('--')) gatewayInvalid('work-contexts.get', '--id is required');
+  if (!id || id.startsWith('--'))
+    gatewayInvalid('work-contexts.get', '--id is required');
   const result = await gatewayHttpJson({
     commandName: 'work-contexts.get',
     pathName: `/work-contexts/${encodeURIComponent(id)}`,
@@ -1541,7 +1544,8 @@ async function runGatewayContext(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'get') {
     const id = gatewayArg(contextArgs, '--id') ?? contextArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid('context.get', '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('context.get', '--id is required');
     const result = await gatewayHttpJson({
       commandName: 'context.get',
       pathName: `/context/${encodeURIComponent(id)}`,
@@ -1553,9 +1557,11 @@ async function runGatewayContext(gatewayArgs: string[]): Promise<never> {
     const query = new URLSearchParams();
     const nodeId = gatewayArg(contextArgs, '--node-id');
     const workspaceId = gatewayArg(contextArgs, '--workspace-id');
+    const workContextId = gatewayArg(contextArgs, '--work-context-id');
     const limit = gatewayArg(contextArgs, '--limit');
     if (nodeId) query.set('nodeId', nodeId);
     if (workspaceId) query.set('workspaceId', workspaceId);
+    if (workContextId) query.set('workContextId', workContextId);
     if (limit) query.set('limit', limit);
     const suffix = query.toString();
     const result = await gatewayHttpJson({
@@ -1565,7 +1571,43 @@ async function runGatewayContext(gatewayArgs: string[]): Promise<never> {
     });
     printGatewayEnvelope(gatewayOk('context.list', result), 0);
   }
-  gatewayInvalid('context.get', 'unknown context command', { args: gatewayArgs });
+  if (subcommand === 'pin' || subcommand === 'unpin') {
+    const commandName: RelayCliGatewayCommand =
+      subcommand === 'pin' ? 'context.pin' : 'context.unpin';
+    const input = parseGatewayInputObject(commandName, contextArgs);
+    const id =
+      gatewayArg(contextArgs, '--id') ??
+      contextArgs[0] ??
+      (typeof input['id'] === 'string' ? input['id'] : undefined);
+    if (!id || id.startsWith('--'))
+      gatewayInvalid(commandName, '--id is required');
+    const workContextId =
+      gatewayArg(contextArgs, '--work-context-id') ??
+      (typeof input['workContextId'] === 'string'
+        ? input['workContextId']
+        : undefined);
+    if (!workContextId) {
+      gatewayInvalid(commandName, '--work-context-id is required', {
+        field: 'workContextId',
+      });
+    }
+    const actorId = gatewayArg(contextArgs, '--actor-id');
+    const createdBy = gatewayArg(contextArgs, '--created-by');
+    const body: Record<string, unknown> = { ...input, workContextId };
+    if (actorId) body['actorId'] = actorId;
+    if (createdBy) body['createdBy'] = createdBy;
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/context/${encodeURIComponent(id)}/${subcommand}`,
+      method: 'POST',
+      body,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  gatewayInvalid('context.get', 'unknown context command', {
+    args: gatewayArgs,
+  });
 }
 
 async function runGatewayInbox(gatewayArgs: string[]): Promise<never> {
@@ -1585,11 +1627,15 @@ async function runGatewayInbox(gatewayArgs: string[]): Promise<never> {
   if (subcommand === 'list') {
     const query = new URLSearchParams();
     const targetSessionId = gatewayArg(inboxArgs, '--target-session-id');
-    const targetWorkContextId = gatewayArg(inboxArgs, '--target-work-context-id');
+    const targetWorkContextId = gatewayArg(
+      inboxArgs,
+      '--target-work-context-id'
+    );
     const state = gatewayArg(inboxArgs, '--state');
     const limit = gatewayArg(inboxArgs, '--limit');
     if (targetSessionId) query.set('targetSessionId', targetSessionId);
-    if (targetWorkContextId) query.set('targetWorkContextId', targetWorkContextId);
+    if (targetWorkContextId)
+      query.set('targetWorkContextId', targetWorkContextId);
     if (state) query.set('state', state);
     if (limit) query.set('limit', limit);
     const suffix = query.toString();
@@ -1602,7 +1648,8 @@ async function runGatewayInbox(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'get') {
     const id = gatewayArg(inboxArgs, '--id') ?? inboxArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid('inbox.get', '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('inbox.get', '--id is required');
     const result = await gatewayHttpJson({
       commandName: 'inbox.get',
       pathName: `/inbox/${encodeURIComponent(id)}`,
@@ -1610,7 +1657,11 @@ async function runGatewayInbox(gatewayArgs: string[]): Promise<never> {
     });
     printGatewayEnvelope(gatewayOk('inbox.get', result), 0);
   }
-  if (subcommand === 'ack' || subcommand === 'resolve' || subcommand === 'ignore') {
+  if (
+    subcommand === 'ack' ||
+    subcommand === 'resolve' ||
+    subcommand === 'ignore'
+  ) {
     const commandName =
       subcommand === 'ack'
         ? 'inbox.ack'
@@ -1618,7 +1669,8 @@ async function runGatewayInbox(gatewayArgs: string[]): Promise<never> {
           ? 'inbox.resolve'
           : 'inbox.ignore';
     const id = gatewayArg(inboxArgs, '--id') ?? inboxArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid(commandName, '--id is required');
     const actorId = gatewayArg(inboxArgs, '--actor-id');
     const result = await gatewayHttpJson({
       commandName,
@@ -1653,13 +1705,20 @@ async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
       pathName: '/handoffs/create',
       method: 'POST',
       body: input,
-      capabilities: ['rpc:fs:read', 'rpc:fs:write', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
+      capabilities: [
+        'rpc:fs:read',
+        'rpc:fs:write',
+        'session:create:agent',
+        'session:create:terminal',
+        'pty:exec:arbitrary',
+      ],
     });
     printGatewayEnvelope(gatewayOk('handoffs.create', result), 0);
   }
   if (subcommand === 'status') {
     const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
-    if (!runId || runId.startsWith('--')) gatewayInvalid('handoffs.status', '--run-id is required');
+    if (!runId || runId.startsWith('--'))
+      gatewayInvalid('handoffs.status', '--run-id is required');
     const result = await gatewayHttpJson({
       commandName: 'handoffs.status',
       pathName: `/handoffs/${encodeURIComponent(runId)}/status`,
@@ -1669,7 +1728,8 @@ async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'cancel') {
     const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
-    if (!runId || runId.startsWith('--')) gatewayInvalid('handoffs.cancel', '--run-id is required');
+    if (!runId || runId.startsWith('--'))
+      gatewayInvalid('handoffs.cancel', '--run-id is required');
     const actorId = gatewayArg(handoffArgs, '--actor-id');
     const result = await gatewayHttpJson({
       commandName: 'handoffs.cancel',
@@ -1682,7 +1742,8 @@ async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'resume') {
     const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
-    if (!runId || runId.startsWith('--')) gatewayInvalid('handoffs.resume', '--run-id is required');
+    if (!runId || runId.startsWith('--'))
+      gatewayInvalid('handoffs.resume', '--run-id is required');
     const result = await gatewayHttpJson({
       commandName: 'handoffs.resume',
       pathName: `/handoffs/${encodeURIComponent(runId)}/resume`,
@@ -1692,18 +1753,26 @@ async function runGatewayHandoffs(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'launch') {
     const runId = gatewayArg(handoffArgs, '--run-id') ?? handoffArgs[0];
-    if (!runId || runId.startsWith('--')) gatewayInvalid('handoffs.launch', '--run-id is required');
+    if (!runId || runId.startsWith('--'))
+      gatewayInvalid('handoffs.launch', '--run-id is required');
     const actorId = gatewayArg(handoffArgs, '--actor-id');
     const result = await gatewayHttpJson({
       commandName: 'handoffs.launch',
       pathName: `/handoffs/${encodeURIComponent(runId)}/launch`,
       method: 'POST',
       body: actorId ? { actorId } : {},
-      capabilities: ['session:read', 'session:create:agent', 'session:create:terminal', 'pty:exec:arbitrary'],
+      capabilities: [
+        'session:read',
+        'session:create:agent',
+        'session:create:terminal',
+        'pty:exec:arbitrary',
+      ],
     });
     printGatewayEnvelope(gatewayOk('handoffs.launch', result), 0);
   }
-  gatewayInvalid('handoffs.plan', 'unknown handoffs command', { args: gatewayArgs });
+  gatewayInvalid('handoffs.plan', 'unknown handoffs command', {
+    args: gatewayArgs,
+  });
 }
 
 async function runGatewaySupervisorSessions(): Promise<never> {
@@ -1721,15 +1790,27 @@ function parseGatewaySupervisorActionBody(
 ): Record<string, unknown> {
   const body = parseGatewayInputObject(commandName, supervisorArgs);
   const id = gatewayArg(supervisorArgs, '--id') ?? supervisorArgs[0];
-  if (id && !id.startsWith('--') && body['id'] === undefined && body['targetIds'] === undefined) {
+  if (
+    id &&
+    !id.startsWith('--') &&
+    body['id'] === undefined &&
+    body['targetIds'] === undefined
+  ) {
     body['id'] = id;
   }
   const targetIds = gatewayArg(supervisorArgs, '--target-ids');
   if (targetIds && body['targetIds'] === undefined) {
-    body['targetIds'] = targetIds.split(',').map((entry) => entry.trim()).filter(Boolean);
+    body['targetIds'] = targetIds
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
   }
   const text = gatewayArg(supervisorArgs, '--text');
-  if (commandName === 'supervisor.sendText' && text !== undefined && body['text'] === undefined) {
+  if (
+    commandName === 'supervisor.sendText' &&
+    text !== undefined &&
+    body['text'] === undefined
+  ) {
     body['text'] = text;
   }
   return body;
@@ -1743,29 +1824,45 @@ function validateGatewaySupervisorActionBody(
     commandName === 'supervisor.sendText' &&
     (typeof body['text'] !== 'string' || body['text'].length === 0)
   ) {
-    gatewayInvalid(commandName, '--text is required for supervisor send-text', { field: 'text' });
+    gatewayInvalid(commandName, '--text is required for supervisor send-text', {
+      field: 'text',
+    });
   }
   const id = body['id'];
   const targetIds = body['targetIds'];
   const hasId = typeof id === 'string' && id.trim().length > 0;
   if (targetIds !== undefined && !Array.isArray(targetIds)) {
-    gatewayInvalid(commandName, '--target-ids must be a non-empty list of session ids', {
-      field: 'targetIds',
-    });
+    gatewayInvalid(
+      commandName,
+      '--target-ids must be a non-empty list of session ids',
+      {
+        field: 'targetIds',
+      }
+    );
   }
   const hasTargetIds = Array.isArray(targetIds);
   if (hasTargetIds) {
     const validTargetIds =
       targetIds.length > 0 &&
-      targetIds.every((entry) => typeof entry === 'string' && entry.trim().length > 0);
+      targetIds.every(
+        (entry) => typeof entry === 'string' && entry.trim().length > 0
+      );
     if (!validTargetIds) {
-      gatewayInvalid(commandName, '--target-ids must be a non-empty list of session ids', {
-        field: 'targetIds',
-      });
+      gatewayInvalid(
+        commandName,
+        '--target-ids must be a non-empty list of session ids',
+        {
+          field: 'targetIds',
+        }
+      );
     }
   }
   if (hasId === hasTargetIds) {
-    gatewayInvalid(commandName, 'exactly one of --id or --target-ids is required', { field: 'id' });
+    gatewayInvalid(
+      commandName,
+      'exactly one of --id or --target-ids is required',
+      { field: 'id' }
+    );
   }
 }
 
@@ -1773,7 +1870,8 @@ async function runGatewaySupervisorAction(
   subcommand: string,
   supervisorArgs: string[]
 ): Promise<never> {
-  const commandName = subcommand === 'submit' ? 'supervisor.submit' : 'supervisor.sendText';
+  const commandName =
+    subcommand === 'submit' ? 'supervisor.submit' : 'supervisor.sendText';
   const body = parseGatewaySupervisorActionBody(commandName, supervisorArgs);
   validateGatewaySupervisorActionBody(commandName, body);
   const result = await gatewayHttpJson({
@@ -1793,7 +1891,10 @@ function parseGatewaySupervisorSnapshotPolicy(supervisorArgs: string[]): {
   expectedControlMode?: 'agent-driven' | 'human-driven' | 'co-driven';
   latestSeenInterventionEventId?: string;
 } {
-  const expectedControlMode = gatewayArg(supervisorArgs, '--expected-control-mode');
+  const expectedControlMode = gatewayArg(
+    supervisorArgs,
+    '--expected-control-mode'
+  );
   const policy: {
     expectedControlMode?: 'agent-driven' | 'human-driven' | 'co-driven';
     latestSeenInterventionEventId?: string;
@@ -1804,10 +1905,14 @@ function parseGatewaySupervisorSnapshotPolicy(supervisorArgs: string[]): {
       expectedControlMode !== 'human-driven' &&
       expectedControlMode !== 'co-driven'
     ) {
-      gatewayInvalid('supervisor.snapshot', '--expected-control-mode is invalid', {
-        field: 'expectedControlMode',
-        value: expectedControlMode,
-      });
+      gatewayInvalid(
+        'supervisor.snapshot',
+        '--expected-control-mode is invalid',
+        {
+          field: 'expectedControlMode',
+          value: expectedControlMode,
+        }
+      );
     }
     policy.expectedControlMode = expectedControlMode;
   }
@@ -1815,11 +1920,14 @@ function parseGatewaySupervisorSnapshotPolicy(supervisorArgs: string[]): {
     supervisorArgs,
     '--latest-seen-intervention-event-id'
   );
-  if (latestSeenInterventionEventId) policy.latestSeenInterventionEventId = latestSeenInterventionEventId;
+  if (latestSeenInterventionEventId)
+    policy.latestSeenInterventionEventId = latestSeenInterventionEventId;
   return policy;
 }
 
-async function runGatewaySupervisorSnapshot(supervisorArgs: string[]): Promise<never> {
+async function runGatewaySupervisorSnapshot(
+  supervisorArgs: string[]
+): Promise<never> {
   const id = requireGatewaySessionId('supervisor.snapshot', supervisorArgs);
   const session = await gatewayHttpJson({
     commandName: 'supervisor.snapshot',
@@ -1843,7 +1951,10 @@ async function runGatewaySupervisorSnapshot(supervisorArgs: string[]): Promise<n
     );
   }
   printGatewayEnvelope(
-    gatewayOk('supervisor.snapshot', { snapshot: result.snapshot, audit: result.audit }),
+    gatewayOk('supervisor.snapshot', {
+      snapshot: result.snapshot,
+      audit: result.audit,
+    }),
     0
   );
 }
@@ -1852,21 +1963,31 @@ async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const supervisorArgs = gatewayArgs.slice(2);
   if (subcommand === 'sessions') return runGatewaySupervisorSessions();
-  if (subcommand === 'send-text' || subcommand === 'sendText' || subcommand === 'submit') {
+  if (
+    subcommand === 'send-text' ||
+    subcommand === 'sendText' ||
+    subcommand === 'submit'
+  ) {
     return runGatewaySupervisorAction(subcommand, supervisorArgs);
   }
-  if (subcommand === 'snapshot') return runGatewaySupervisorSnapshot(supervisorArgs);
-  gatewayInvalid('supervisor.snapshot', 'unknown supervisor command', { args: gatewayArgs });
+  if (subcommand === 'snapshot')
+    return runGatewaySupervisorSnapshot(supervisorArgs);
+  gatewayInvalid('supervisor.snapshot', 'unknown supervisor command', {
+    args: gatewayArgs,
+  });
 }
 
 async function runGatewayArtifacts(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const artifactArgs = gatewayArgs.slice(2);
   if (subcommand !== 'read') {
-    gatewayInvalid('artifacts.read', 'unknown artifacts command', { args: gatewayArgs });
+    gatewayInvalid('artifacts.read', 'unknown artifacts command', {
+      args: gatewayArgs,
+    });
   }
   const ref = gatewayArg(artifactArgs, '--ref') ?? artifactArgs[0];
-  if (!ref || ref.startsWith('--')) gatewayInvalid('artifacts.read', '--ref is required');
+  if (!ref || ref.startsWith('--'))
+    gatewayInvalid('artifacts.read', '--ref is required');
   const result = await gatewayHttpJson({
     commandName: 'artifacts.read',
     pathName: `/handoffs/artifacts/${encodeURIComponent(ref)}`,
