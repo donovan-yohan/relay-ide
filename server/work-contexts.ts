@@ -44,6 +44,7 @@ const LIFECYCLE_EVENT_TYPES = new Set([
   'session.resumed',
   'operator.intervened',
   'artifact.recorded',
+  'artifact.unpinned',
   'summary.recorded',
   'handoff.closed',
 ]);
@@ -511,9 +512,16 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
       return updated;
     },
 
-    recordLifecycleEvent(id: WorkContextId, input: WorkContextLifecycleEventInput) {
+    recordLifecycleEvent(
+      id: WorkContextId,
+      input: WorkContextLifecycleEventInput
+    ) {
       const existing = mustGet(id);
-      const updated = contextWithLifecycleEvent(existing, input, new Date().toISOString());
+      const updated = contextWithLifecycleEvent(
+        existing,
+        input,
+        new Date().toISOString()
+      );
       return write(updated);
     },
 
@@ -628,7 +636,9 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
         type: 'handoff.created',
         summary: `Created handoff context for ${input.taskRef.kind}:${input.taskRef.id}`,
       });
-      res.status(201).json({ workContext: deps.store.get(context.id) ?? context });
+      res
+        .status(201)
+        .json({ workContext: deps.store.get(context.id) ?? context });
     } catch (err) {
       sendStoreError(res, err);
     }
@@ -648,7 +658,12 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
     try {
       const sessions = await deps.getSessions();
       const nodes = deps.getNodes?.() ?? [];
-      res.json({ resume: deps.store.getResumeSnapshot(req.params['id'] ?? '', { sessions, nodes }) });
+      res.json({
+        resume: deps.store.getResumeSnapshot(req.params['id'] ?? '', {
+          sessions,
+          nodes,
+        }),
+      });
     } catch (err) {
       sendStoreError(res, err);
     }
@@ -1123,7 +1138,9 @@ function contextWithLifecycleEvent(
   if (Number.isNaN(Date.parse(occurredAt))) {
     throw new WorkContextStoreError(400, 'invalid_lifecycle_occurred_at');
   }
-  const eventId = input.eventId ?? `work-context:${context.id}:${crypto.randomBytes(8).toString('hex')}`;
+  const eventId =
+    input.eventId ??
+    `work-context:${context.id}:${crypto.randomBytes(8).toString('hex')}`;
   const auditRef: AuditEventRef = {
     id: `audit-ref:${eventId}`,
     eventId,
@@ -1142,7 +1159,10 @@ function contextWithLifecycleEvent(
       },
     }),
   };
-  const artifacts = [...context.artifacts, ...safeLifecycleArtifacts(input, eventId, occurredAt)];
+  const artifacts = [
+    ...context.artifacts,
+    ...safeLifecycleArtifacts(input, eventId, occurredAt),
+  ];
   const auditRefs = upsertAuditRef(context.auditRefs, auditRef);
   const updated: WorkContext = {
     ...context,
@@ -1315,7 +1335,8 @@ function buildActiveGroups(
 function resumeSnapshotFromGroup(
   group: WorkContextActiveGroup
 ): WorkContextResumeSnapshot {
-  if (!group.context) throw new WorkContextStoreError(404, 'work_context_not_found');
+  if (!group.context)
+    throw new WorkContextStoreError(404, 'work_context_not_found');
   const context = group.context;
   return {
     workContext: {
@@ -1327,7 +1348,9 @@ function resumeSnapshotFromGroup(
       anchors: context.anchors,
       actors: context.actors,
       tasks: context.tasks,
-      ...(context.relatedContextRefs ? { relatedContextRefs: context.relatedContextRefs } : {}),
+      ...(context.relatedContextRefs
+        ? { relatedContextRefs: context.relatedContextRefs }
+        : {}),
     },
     node: group.node,
     sessions: group.sessions.slice(0, MAX_RESUME_SESSIONS),

@@ -1771,7 +1771,11 @@ async function main(): Promise<void> {
   // to 503 SERVER_UNAVAILABLE rather than failing boot.
   const contextInboxStore = deriveContextInboxStore(contextPacketStore);
   app.use(
-    createContextInboxRouter({ requireAuth: requireCliGatewayAuth, store: contextInboxStore })
+    createContextInboxRouter({
+      requireAuth: requireCliGatewayAuth,
+      store: contextInboxStore,
+      workContextStore,
+    })
   );
   // #766/#759: production `AnchorFileFetcher` wired to the session-scoped File
   // RPC path under `rpc:fs:read`. Resolves an anchor's `current` ref by routing
@@ -1793,11 +1797,12 @@ async function main(): Promise<void> {
   // CONTENT expansion. Reuses the same session-scoped File RPC `read` path under
   // `rpc:fs:read`; shares the live registry/link/envelope handles. Registered so
   // `expandFileRangePacket` can read a bounded slice without threading deps.
-  const anchorContentFetcher: FileRangeContentFetcher = createAnchorContentFetcher({
-    registry: hubNodeRegistry,
-    nodeLinks: hubNodeLinks,
-    sessionEnvelopes: sessionEnvelopeRegistry,
-  });
+  const anchorContentFetcher: FileRangeContentFetcher =
+    createAnchorContentFetcher({
+      registry: hubNodeRegistry,
+      nodeLinks: hubNodeLinks,
+      sessionEnvelopes: sessionEnvelopeRegistry,
+    });
   registerFileRangeContentFetcher(anchorContentFetcher);
   app.use(
     createCliGatewayEventsRouter(express, {
