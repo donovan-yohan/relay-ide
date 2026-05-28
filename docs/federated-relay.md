@@ -197,7 +197,7 @@ An authenticated hub user creates a short-lived, one-time token:
 
 ```http
 POST /hub/pair-tokens
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 Content-Type: application/json
 
 {
@@ -266,7 +266,7 @@ relay-ide node link --hub https://hub.example.com
 
 ```http
 POST /hub/nodes/{nodeId}/credential-rotation
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 Content-Type: application/json
 
 {"delivery":"manual"}     # or {"delivery":"online"}
@@ -278,7 +278,7 @@ A rotation is not stable when it is issued, delivered, or failed. The hub accept
 
 ```http
 POST /hub/nodes/{nodeId}/credential-rotation/clear-failure
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 ```
 
 The clear route is an operator recovery hatch for failed or otherwise non-stable rotations. It preserves the hub's current credential, removes the unproved next credential, and allows another rotation. Do not clear a failed/delivered rotation while the node may already have written the next credential: reconnecting with that next credential can still prove possession until clear explicitly invalidates it.
@@ -291,7 +291,7 @@ Scheduled rotation is opt-in. When `credentialRotation.intervalMs` is set on the
 
 ```http
 DELETE /nodes/{nodeId}
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 ```
 
 Revoking a node:
@@ -382,7 +382,7 @@ WSL state is reported in the manifest:
 
 ```http
 POST /hub/nodes/{nodeId}/sessions
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 Content-Type: application/json
 
 {
@@ -516,7 +516,7 @@ Each node reports its local repo inventory in the heartbeat payload. The hub agg
 
 ```http
 GET /hub/repo-inventory
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 ```
 
 Response groups repo instances by canonical git identity, showing per-node paths, branch counts, worktree counts, and online status. In #444 terms this is a repo-kind Project inventory plus git-specific Instance/Bench metadata, not the complete future Project inventory.

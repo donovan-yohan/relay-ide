@@ -7,6 +7,10 @@ import {
   recordFailedAttempt,
   generateCookieToken,
   verifyCookieToken,
+  browserSessionRequiredChallenge,
+  cliGatewayOrBrowserAuthRequiredChallenge,
+  scopedSessionOrBrowserAuthRequiredChallenge,
+  AUTH_ROUTE_LANE_INVENTORY,
   _resetForTesting,
 } from '../server/auth.js';
 
@@ -126,7 +130,7 @@ test('generateCookieToken returns non-empty string', () => {
   expect(token.length).toBeGreaterThan(0);
 });
 
-test('signed cookie tokens verify after in-memory auth state is reset', async () => {
+test('signed browser-session cookies verify after in-memory auth state is reset', async () => {
   _resetForTesting();
   const pinHash = await hashPin('1234');
   const now = Date.now();
@@ -141,7 +145,7 @@ test('signed cookie tokens verify after in-memory auth state is reset', async ()
   expect(verifyCookieToken(token, pinHash, now + 30_000)).toBe(true);
 });
 
-test('signed cookie tokens reject expired or wrong-pin-hash tokens', async () => {
+test('signed browser-session cookies reject expired or wrong-pin-hash tokens', async () => {
   _resetForTesting();
   const pinHash = await hashPin('1234');
   const otherPinHash = await hashPin('9999');
@@ -166,4 +170,74 @@ test('verifyPin returns false for null hash', async () => {
   _resetForTesting();
   const result = await verifyPin('1234', null);
   expect(result).toBe(false);
+});
+
+test('auth lane challenges return typed denial payloads', () => {
+  expect(browserSessionRequiredChallenge()).toMatchObject({
+    error: {
+      code: 'BROWSER_SESSION_REQUIRED',
+      message: expect.stringContaining('Browser session'),
+      retryable: false,
+      lane: 'denied',
+      acceptedLanes: ['browser-session'],
+      migrationTarget: 'scoped-actor-credential',
+    },
+  });
+
+  expect(cliGatewayOrBrowserAuthRequiredChallenge()).toMatchObject({
+    error: {
+      code: 'CLI_GATEWAY_OR_BROWSER_AUTH_REQUIRED',
+      retryable: false,
+      lane: 'denied',
+      acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    },
+  });
+
+  expect(scopedSessionOrBrowserAuthRequiredChallenge()).toMatchObject({
+    error: {
+      code: 'SCOPED_SESSION_OR_BROWSER_AUTH_REQUIRED',
+      retryable: false,
+      lane: 'denied',
+      acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    },
+  });
+});
+
+test('auth route lane inventory covers browser, scoped, node, pair, public, and denied lanes', () => {
+  const lanes = new Set(
+    AUTH_ROUTE_LANE_INVENTORY.flatMap((entry) => entry.acceptedLanes)
+  );
+  expect(lanes).toEqual(
+    new Set([
+      'browser-session',
+      'scoped-actor-credential',
+      'node-credential',
+      'pair-token',
+      'public-local-only',
+    ])
+  );
+  expect(browserSessionRequiredChallenge().error.lane).toBe('denied');
+
+  expect(AUTH_ROUTE_LANE_INVENTORY).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        middleware: 'requireAuth',
+        acceptedLanes: ['browser-session'],
+        routes: expect.arrayContaining(['/auth/check', '/workspaces/*']),
+      }),
+      expect.objectContaining({
+        middleware: 'bearer node credential',
+        acceptedLanes: ['node-credential'],
+        routes: expect.arrayContaining([
+          'POST /hub/node-heartbeat',
+          'WS /hub/node-link',
+        ]),
+      }),
+      expect.objectContaining({
+        middleware: 'pair token exchange',
+        acceptedLanes: ['pair-token'],
+        routes: ['POST /hub/pairing/exchange'],
+      }),
+    ])
+  );
 });

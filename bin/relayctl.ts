@@ -227,7 +227,7 @@ const PRETURN_CAPABILITIES = 'inbox:read,context:read';
  * Build the gateway headers a relayctl read uses against the hub. The hub
  * `requireCliGatewayAuth` middleware accepts the v1 header + a scoped bearer
  * token (when `RELAY_IDE_BROWSER_TOKEN` is present), or falls through to
- * NO_PIN/cookie auth (the dev/in-PTY default). The capability header is always
+ * NO_PIN/browser-session auth (the dev/in-PTY default). The capability header is always
  * required by the context/inbox router itself, independent of the auth path.
  */
 function gatewayHeaders(): Record<string, string> {

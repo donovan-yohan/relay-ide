@@ -3709,7 +3709,7 @@ async function runNodeSshBootstrap(nodeArgs: string[]): Promise<void> {
   console.log(`#`);
   console.log(`# 1. get a pair token from your hub:`);
   console.log(
-    `#    curl -X POST ${hubUrl}/hub/pair-tokens -H 'Content-Type: application/json' -b 'token=<auth-cookie>' -d '{"displayName":"<name>","ttlSeconds":600}'`
+    `#    curl -X POST ${hubUrl}/hub/pair-tokens -H 'Content-Type: application/json' -b 'token=<browser-session-cookie>' -d '{"displayName":"<name>","ttlSeconds":600}'`
   );
   console.log(`# 2. set PAIR_TOKEN and run the command below:`);
   console.log(`#    PAIR_TOKEN=pair_... ${scriptWithVar}`);
@@ -4067,7 +4067,7 @@ if (command === 'node') {
     if (!pairToken) {
       logger.info(`to get a pair token from your hub, run:`);
       logger.info(
-        `  curl -X POST ${hubUrl}/hub/pair-tokens -H 'Content-Type: application/json' -b 'token=<auth-cookie>' -d '{"displayName":"<name>","ttlSeconds":600}'`
+        `  curl -X POST ${hubUrl}/hub/pair-tokens -H 'Content-Type: application/json' -b 'token=<browser-session-cookie>' -d '{"displayName":"<name>","ttlSeconds":600}'`
       );
       logger.info(
         `then re-run: relay-ide node pair --hub ${hubUrl} --pair-token <token>`

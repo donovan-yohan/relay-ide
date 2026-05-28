@@ -63,7 +63,7 @@ An authenticated hub user creates a short-lived, one-time token:
 ```bash
 curl -X POST https://hub.example.com/hub/pair-tokens \
   -H "Content-Type: application/json" \
-  -b "token=<auth-cookie>" \
+  -b "token=<browser-session-cookie>" \
   -d '{"displayName":"dev-macbook","ttlSeconds":600}'
 ```
 
@@ -298,7 +298,7 @@ relay-ide hub nodes
 relay-ide hub nodes --json
 
 # Raw API equivalent
-curl https://hub.example.com/nodes -b "token=<auth-cookie>"
+curl https://hub.example.com/nodes -b "token=<browser-session-cookie>"
 ```
 
 Returns all paired nodes with `online`/`stale`/`offline`/`revoked` status, last seen timestamp, protocol/version state, and capability summary. The CLI reads the local hub port/config and requires `RELAY_IDE_BROWSER_TOKEN` for the same scoped hub API access as other CLI-gateway operations.
@@ -369,7 +369,7 @@ From the hub UI or API:
 
 ```bash
 curl -X DELETE https://hub.example.com/nodes/{nodeId} \
-  -b "token=<auth-cookie>"
+  -b "token=<browser-session-cookie>"
 ```
 
 Effects:

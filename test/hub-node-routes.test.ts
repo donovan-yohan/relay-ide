@@ -9,11 +9,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHubNodeRegistry } from '../server/hub-node-registry.js';
 import { createHubNodeRouter } from '../server/hub-node-router.js';
 import { createRepoFeatureRouter } from '../server/features/repo-router.js';
-import { createHubNodeLinkManager, HubNodeLinkError } from '../server/hub-node-link.js';
+import {
+  createHubNodeLinkManager,
+  HubNodeLinkError,
+} from '../server/hub-node-link.js';
 import { createRepoInventoryFeature } from '../server/features/repo-inventory.js';
 import { setupWebSocket } from '../server/ws.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 import { SecurityAuditLog } from '../server/security-audit-log.js';
+import * as auth from '../server/auth.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 
@@ -192,12 +196,20 @@ async function close(server: http.Server): Promise<void> {
   });
 }
 
-async function rawUpgrade(port: number, pathName: string): Promise<string> {
+async function rawUpgrade(
+  port: number,
+  pathName: string,
+  headers: Record<string, string> = {}
+): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      const extraHeaders = Object.entries(headers)
+        .map(([key, value]) => `${key}: ${value}\r\n`)
+        .join('');
       socket.write(
         `GET ${pathName} HTTP/1.1\r\n` +
           `Host: 127.0.0.1:${port}\r\n` +
+          extraHeaders +
           'Connection: Upgrade\r\n' +
           'Upgrade: websocket\r\n' +
           'Sec-WebSocket-Version: 13\r\n' +
@@ -243,7 +255,7 @@ describe('hub node routes and link', () => {
         registry,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
       })
     );
@@ -252,9 +264,19 @@ describe('hub node routes and link', () => {
     cleanup.push(() => close(server));
     const base = `http://127.0.0.1:${port}`;
 
-    expect(
-      (await fetch(`${base}/hub/pair-tokens`, { method: 'POST' })).status
-    ).toBe(401);
+    const deniedPairRes = await fetch(`${base}/hub/pair-tokens`, {
+      method: 'POST',
+    });
+    expect(deniedPairRes.status).toBe(401);
+    expect(await deniedPairRes.json()).toMatchObject({
+      error: {
+        code: 'BROWSER_SESSION_REQUIRED',
+        retryable: false,
+        lane: 'denied',
+        acceptedLanes: ['browser-session'],
+        migrationTarget: 'scoped-actor-credential',
+      },
+    });
 
     const pairRes = await fetch(`${base}/hub/pair-tokens`, {
       method: 'POST',
@@ -400,6 +422,44 @@ describe('hub node routes and link', () => {
     });
     expect(heartbeatRes.status).toBe(200);
 
+    const browserSessionOnlyHeartbeatRes = await fetch(
+      `${base}/hub/node-heartbeat`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          cookie: 'token=fake-browser-session',
+        },
+        body: JSON.stringify({
+          nodeId: exchange.credential.nodeId,
+          protocolVersion: '1.0',
+        }),
+      }
+    );
+    expect(browserSessionOnlyHeartbeatRes.status).toBe(401);
+    expect(await browserSessionOnlyHeartbeatRes.json()).toMatchObject({
+      error: { code: 'UNAUTHORIZED', message: 'invalid node credential' },
+    });
+
+    const pairTokenAsNodeCredentialRes = await fetch(
+      `${base}/hub/node-heartbeat`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${pair.pairToken}`,
+        },
+        body: JSON.stringify({
+          nodeId: exchange.credential.nodeId,
+          protocolVersion: '1.0',
+        }),
+      }
+    );
+    expect(pairTokenAsNodeCredentialRes.status).toBe(401);
+    expect(await pairTokenAsNodeCredentialRes.json()).toMatchObject({
+      error: { code: 'UNAUTHORIZED', message: 'invalid node credential' },
+    });
+
     const malformedHeartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
       method: 'POST',
       headers: {
@@ -520,6 +580,16 @@ describe('hub node routes and link', () => {
     );
     const port = await listen(server);
     cleanup.push(() => close(server));
+
+    const browserSessionOnlyUpgrade = await rawUpgrade(port, '/hub/node-link', {
+      Cookie: 'token=fake-browser-session',
+    });
+    expect(browserSessionOnlyUpgrade).toMatch(/^HTTP\/1\.1 401/);
+
+    const pairTokenOnlyUpgrade = await rawUpgrade(port, '/hub/node-link', {
+      Authorization: `Bearer ${registry.createPairToken({}).pairToken}`,
+    });
+    expect(pairTokenOnlyUpgrade).toMatch(/^HTTP\/1\.1 401/);
 
     const ws = new WebSocket(
       `ws://127.0.0.1:${port}/hub/node-link?trace=test`,
@@ -674,7 +744,7 @@ describe('hub node routes and link', () => {
     app.use(express.json());
     const requireAuth: express.RequestHandler = (req, res, next) => {
       if (req.header('x-test-auth') === 'yes') next();
-      else res.status(401).json({ error: 'Unauthorized' });
+      else res.status(401).json(auth.browserSessionRequiredChallenge());
     };
     const repoInventoryFeature = createRepoInventoryFeature(registry);
     const collect = async () =>
@@ -750,7 +820,7 @@ describe('hub node routes and link', () => {
       createHubNodeRouter({
         registry,
         requireAuth: (_req, res) =>
-          res.status(401).json({ error: 'Unauthorized' }),
+          res.status(401).json(auth.browserSessionRequiredChallenge()),
       })
     );
     const server = http.createServer(app);
@@ -891,11 +961,15 @@ describe('hub node routes and link', () => {
           append: (entry) => auditEntries.push(entry),
           listBefore: () => ({ rows: [], nextBeforeSequence: null }),
           head: () => ({ latestSequence: 0, latestHash: null }),
-          verify: () => ({ ok: true as const, entriesVerified: 0, lastHash: null }),
+          verify: () => ({
+            ok: true as const,
+            entriesVerified: 0,
+            lastHash: null,
+          }),
         },
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
         scopedSessionAuth: (req, res, next) => {
           if (
@@ -904,7 +978,7 @@ describe('hub node routes and link', () => {
           ) {
             next();
           } else {
-            res.status(401).json({ error: 'Unauthorized' });
+            res.status(401).json(auth.browserSessionRequiredChallenge());
           }
         },
       })
@@ -961,11 +1035,14 @@ describe('hub node routes and link', () => {
       intent: { action: 'sessions.kill', target: exchanged.node.nodeId },
     });
 
-    const invalidTypeRes = await fetch(`${base}/hub/nodes/${exchanged.node.nodeId}/sessions`, {
-      method: 'POST',
-      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'future-kind', cwd: '/srv/app' }),
-    });
+    const invalidTypeRes = await fetch(
+      `${base}/hub/nodes/${exchanged.node.nodeId}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'future-kind', cwd: '/srv/app' }),
+      }
+    );
     expect(invalidTypeRes.status).toBe(400);
     expect(await invalidTypeRes.json()).toMatchObject({
       error: {
@@ -984,7 +1061,11 @@ describe('hub node routes and link', () => {
         {
           method: 'POST',
           headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
-          body: JSON.stringify({ type: 'agent', cwd: '/srv/app', ...invalidLifecycle }),
+          body: JSON.stringify({
+            type: 'agent',
+            cwd: '/srv/app',
+            ...invalidLifecycle,
+          }),
         }
       );
       expect(invalidRes.status).toBe(400);
@@ -996,22 +1077,27 @@ describe('hub node routes and link', () => {
       });
     }
 
-    const createRes = await fetch(`${base}/hub/nodes/${exchanged.node.nodeId}/sessions`, {
-      method: 'POST',
-      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        type: 'agent',
-        cwd: '/srv/app',
-        expiresAt: '2026-01-02T03:06:00.000Z',
-      }),
-    });
+    const createRes = await fetch(
+      `${base}/hub/nodes/${exchanged.node.nodeId}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'agent',
+          cwd: '/srv/app',
+          expiresAt: '2026-01-02T03:06:00.000Z',
+        }),
+      }
+    );
     expect(createRes.status).toBe(201);
 
     const listRes = await fetch(`${base}/hub/scoped-sessions`, {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(listRes.status).toBe(200);
-    const list = (await listRes.json()) as { sessions: Array<Record<string, unknown>> };
+    const list = (await listRes.json()) as {
+      sessions: Array<Record<string, unknown>>;
+    };
     expect(list.sessions).toHaveLength(1);
     expect(list.sessions[0]).toMatchObject({
       sessionId: 'remote-session',
@@ -1044,11 +1130,17 @@ describe('hub node routes and link', () => {
       },
     });
 
-    const revokeRes = await fetch(`${base}/hub/scoped-sessions/remote-session/revoke`, {
-      method: 'POST',
-      headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
-      body: JSON.stringify({ nodeId: exchanged.node.nodeId, reason: 'operator-test' }),
-    });
+    const revokeRes = await fetch(
+      `${base}/hub/scoped-sessions/remote-session/revoke`,
+      {
+        method: 'POST',
+        headers: { 'x-test-auth': 'yes', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          nodeId: exchanged.node.nodeId,
+          reason: 'operator-test',
+        }),
+      }
+    );
     expect(revokeRes.status).toBe(200);
     expect(auditEntries).toHaveLength(3);
     expect(auditEntries[1]).toMatchObject({
@@ -1063,9 +1155,12 @@ describe('hub node routes and link', () => {
       reasonCode: 'SESSION_REVOKED',
     });
 
-    const activeOnlyRes = await fetch(`${base}/hub/scoped-sessions?includeRevoked=0`, {
-      headers: { 'x-test-auth': 'yes' },
-    });
+    const activeOnlyRes = await fetch(
+      `${base}/hub/scoped-sessions?includeRevoked=0`,
+      {
+        headers: { 'x-test-auth': 'yes' },
+      }
+    );
     const activeOnly = (await activeOnlyRes.json()) as {
       sessions: Array<Record<string, unknown>>;
     };
@@ -1085,7 +1180,7 @@ describe('hub node routes and link', () => {
     app.use(express.json());
     const requireAuth: express.RequestHandler = (req, res, next) => {
       if (req.header('x-test-auth') === 'yes') next();
-      else res.status(401).json({ error: 'Unauthorized' });
+      else res.status(401).json(auth.browserSessionRequiredChallenge());
     };
     const repoInventoryFeature = createRepoInventoryFeature(registry);
     const nodeLinks = createHubNodeLinkManager();
@@ -1258,7 +1353,9 @@ describe('hub node routes and link', () => {
       globalSessionId: `${exchanged.node.nodeId}:reopened-session`,
       sessionEnvelope: { expiresAt: '2127-05-30T03:57:25.000Z' },
     });
-    expect(sessionEnvelopes.read('reopened-session', exchanged.node.nodeId)).toMatchObject({
+    expect(
+      sessionEnvelopes.read('reopened-session', exchanged.node.nodeId)
+    ).toMatchObject({
       expiresAt: '2127-05-30T03:57:25.000Z',
     });
 
@@ -1286,11 +1383,15 @@ describe('hub node routes and link', () => {
           append: (entry) => auditEntries.push(entry),
           listBefore: () => ({ rows: [], nextBeforeSequence: null }),
           head: () => ({ latestSequence: 0, latestHash: null }),
-          verify: () => ({ ok: true as const, entriesVerified: 0, lastHash: null }),
+          verify: () => ({
+            ok: true as const,
+            entriesVerified: 0,
+            lastHash: null,
+          }),
         },
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
       })
     );
@@ -1336,7 +1437,9 @@ describe('hub node routes and link', () => {
         nodeId: exchanged.node.nodeId,
         credentialId: exchanged.credential.credentialId,
       },
-      material: { params: { delivery: 'manual', rotationId: rotate.rotation.rotationId } },
+      material: {
+        params: { delivery: 'manual', rotationId: rotate.rotation.rotationId },
+      },
     });
     expect(JSON.stringify(auditEntries)).not.toContain(rotate.credential.token);
 
@@ -1361,7 +1464,9 @@ describe('hub node routes and link', () => {
       error: { code: string; details?: { rotationId?: string } };
     };
     expect(collision.error.code).toBe('ROTATION_IN_PROGRESS');
-    expect(collision.error.details?.rotationId).toBe(rotate.rotation.rotationId);
+    expect(collision.error.details?.rotationId).toBe(
+      rotate.rotation.rotationId
+    );
 
     registry.failCredentialRotation(
       exchanged.node.nodeId,
@@ -1406,7 +1511,7 @@ describe('hub node routes and link', () => {
         nodeLinks,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
       })
     );
@@ -1430,9 +1535,11 @@ describe('hub node routes and link', () => {
     };
     expect(rotate.node.credentialState).toBe('rotating');
     expect(rotate.rotation.state).toBe('delivered');
-    const deliveredCredential = (deliveries[0] as {
-      credential?: { token?: string; credentialId?: string };
-    }).credential;
+    const deliveredCredential = (
+      deliveries[0] as {
+        credential?: { token?: string; credentialId?: string };
+      }
+    ).credential;
     expect(deliveredCredential?.token).toBeTruthy();
 
     const collisionRes = await fetch(
@@ -1448,7 +1555,9 @@ describe('hub node routes and link', () => {
       error: { code: string; details?: { rotationId?: string } };
     };
     expect(collision.error.code).toBe('ROTATION_IN_PROGRESS');
-    expect(collision.error.details?.rotationId).toBe(rotate.rotation.rotationId);
+    expect(collision.error.details?.rotationId).toBe(
+      rotate.rotation.rotationId
+    );
 
     const clearRes = await fetch(
       `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation/clear-failure`,
@@ -1463,11 +1572,15 @@ describe('hub node routes and link', () => {
     };
     expect(clear.node.credentialState).toBe('active');
     expect(clear.node.credentialRotation).toBeUndefined();
-    expect(registry.authenticateCredential(exchanged.credential.token)).toMatchObject({
+    expect(
+      registry.authenticateCredential(exchanged.credential.token)
+    ).toMatchObject({
       credentialId: exchanged.credential.credentialId,
       credentialState: 'active',
     });
-    expect(registry.authenticateCredential(deliveredCredential!.token!)).toBeNull();
+    expect(
+      registry.authenticateCredential(deliveredCredential!.token!)
+    ).toBeNull();
 
     const retryRes = await fetch(
       `${base}/hub/nodes/${encodeURIComponent(exchanged.node.nodeId)}/credential-rotation`,
@@ -1503,7 +1616,7 @@ describe('hub node routes and link', () => {
         nodeLinks,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
       })
     );
@@ -1528,9 +1641,11 @@ describe('hub node routes and link', () => {
     expect(rotate.node.credentialState).toBe('rotation-failed');
     expect(rotate.rotation.state).toBe('failed');
     expect(rotate.rotation.failureReason).toBe('rpc ack timeout');
-    const deliveredCredential = (deliveries[0] as {
-      credential?: { nodeId?: string; token?: string; credentialId?: string };
-    }).credential;
+    const deliveredCredential = (
+      deliveries[0] as {
+        credential?: { nodeId?: string; token?: string; credentialId?: string };
+      }
+    ).credential;
     expect(deliveredCredential?.token).toBeTruthy();
 
     const heartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
@@ -1547,14 +1662,20 @@ describe('hub node routes and link', () => {
     });
     expect(heartbeatRes.status).toBe(200);
     const heartbeat = (await heartbeatRes.json()) as {
-      node: { credentialId: string; credentialState: string; credentialRotation?: { state: string } };
+      node: {
+        credentialId: string;
+        credentialState: string;
+        credentialRotation?: { state: string };
+      };
     };
     expect(heartbeat.node).toMatchObject({
       credentialId: deliveredCredential!.credentialId,
       credentialState: 'active',
       credentialRotation: { state: 'stable' },
     });
-    expect(registry.authenticateCredential(exchanged.credential.token)).toBeNull();
+    expect(
+      registry.authenticateCredential(exchanged.credential.token)
+    ).toBeNull();
   });
 
   it('gates hub node log proxy before RPC and forwards remote log errors/snapshots', async () => {
@@ -1578,7 +1699,7 @@ describe('hub node routes and link', () => {
         } as never,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
         now: () => now,
       })
@@ -1611,7 +1732,7 @@ describe('hub node routes and link', () => {
         nodeLinks: { hasActiveNode: () => true, request: skewRequest } as never,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
         now: () => now,
       })
@@ -1633,7 +1754,9 @@ describe('hub node routes and link', () => {
       node['protocolVersion'] = '1.0';
       const acl = node['acl'] as { grants: { allowed: string[] } };
       // #597: logs.tail is gated on `logs:read` now (was `rpc:fs:tail`).
-      acl.grants.allowed = acl.grants.allowed.filter((bit) => bit !== 'logs:read');
+      acl.grants.allowed = acl.grants.allowed.filter(
+        (bit) => bit !== 'logs:read'
+      );
     });
     const deniedRegistry = createHubNodeRegistry({
       storagePath: path.join(tmpDir, 'nodes.json'),
@@ -1644,10 +1767,13 @@ describe('hub node routes and link', () => {
     deniedApp.use(
       createHubNodeRouter({
         registry: deniedRegistry,
-        nodeLinks: { hasActiveNode: () => true, request: deniedRequest } as never,
+        nodeLinks: {
+          hasActiveNode: () => true,
+          request: deniedRequest,
+        } as never,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
         now: () => now,
       })
@@ -1691,10 +1817,13 @@ describe('hub node routes and link', () => {
     routeApp.use(
       createHubNodeRouter({
         registry: routeRegistry,
-        nodeLinks: { hasActiveNode: () => true, request: routeRequest } as never,
+        nodeLinks: {
+          hasActiveNode: () => true,
+          request: routeRequest,
+        } as never,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
         now: () => now,
       })
@@ -1727,7 +1856,9 @@ describe('hub node routes and link', () => {
       manifest: manifest(),
     });
     let closeCalled = false;
-    let resolveStream: ((stream: { payload: unknown; close(): void }) => void) | undefined;
+    let resolveStream:
+      | ((stream: { payload: unknown; close(): void }) => void)
+      | undefined;
     const nodeLinks = {
       hasActiveNode: () => true,
       request: vi.fn(),
@@ -1745,7 +1876,7 @@ describe('hub node routes and link', () => {
         nodeLinks: nodeLinks as never,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
         now: () => now,
       })
@@ -1772,7 +1903,6 @@ describe('hub node routes and link', () => {
     });
     await vi.waitFor(() => expect(closeCalled).toBe(true));
   });
-
 });
 
 describe('GET /hub/audit/entries and /hub/audit/verify', () => {
@@ -1787,18 +1917,26 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
   });
 
   function tmpDbPath(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hub-audit-routes-'));
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-hub-audit-routes-')
+    );
     tmpRoots.push(dir);
     return path.join(dir, 'audit.db');
   }
 
-  function sampleInput(overrides: { eventId?: string; correlationId?: string } = {}) {
+  function sampleInput(
+    overrides: { eventId?: string; correlationId?: string } = {}
+  ) {
     return {
       eventId: overrides.eventId,
       eventType: 'grant' as const,
       decision: 'allow' as const,
       reasonCode: 'ACL_ALLOWED',
-      peer: { kind: 'node' as const, nodeId: 'node-1', credentialId: 'cred-secret-1' },
+      peer: {
+        kind: 'node' as const,
+        nodeId: 'node-1',
+        credentialId: 'cred-secret-1',
+      },
       node: { nodeId: 'node-1', trustTier: 'dev' as const },
       intent: { action: 'rpc.fs.read', target: '/repo/README.md' },
       requiredBits: ['rpc:fs:read' as const],
@@ -1819,7 +1957,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
         auditSink: auditLog,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
       })
     );
@@ -1833,7 +1971,9 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     const auditLog = new SecurityAuditLog(tmpDbPath());
     cleanup.push(() => auditLog.close());
     for (let i = 1; i <= 5; i++) {
-      auditLog.append(sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` }));
+      auditLog.append(
+        sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` })
+      );
     }
     const { base } = await startServer(auditLog);
 
@@ -1842,7 +1982,11 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { entries: Array<{ sequence: number }>; nextBeforeSequence: number | null; head: { latestSequence: number } };
+    const body = (await res.json()) as {
+      entries: Array<{ sequence: number }>;
+      nextBeforeSequence: number | null;
+      head: { latestSequence: number };
+    };
     expect(body.entries).toHaveLength(3);
     expect(body.entries[0]!.sequence).toBe(5);
     expect(body.entries[2]!.sequence).toBe(3);
@@ -1850,19 +1994,31 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     expect(body.head.latestSequence).toBe(5);
 
     // second page: beforeSequence=3 → sequences 2,1
-    const res2 = await fetch(`${base}/hub/audit/entries?beforeSequence=3&limit=50`, {
-      headers: { 'x-test-auth': 'yes' },
-    });
-    const body2 = await res2.json() as { entries: Array<{ sequence: number }>; nextBeforeSequence: number | null };
+    const res2 = await fetch(
+      `${base}/hub/audit/entries?beforeSequence=3&limit=50`,
+      {
+        headers: { 'x-test-auth': 'yes' },
+      }
+    );
+    const body2 = (await res2.json()) as {
+      entries: Array<{ sequence: number }>;
+      nextBeforeSequence: number | null;
+    };
     expect(body2.entries).toHaveLength(2);
     expect(body2.entries[0]!.sequence).toBe(2);
     expect(body2.nextBeforeSequence).toBe(1);
 
     // terminal page: beforeSequence=1 → empty + null
-    const res3 = await fetch(`${base}/hub/audit/entries?beforeSequence=1&limit=50`, {
-      headers: { 'x-test-auth': 'yes' },
-    });
-    const body3 = await res3.json() as { entries: unknown[]; nextBeforeSequence: number | null };
+    const res3 = await fetch(
+      `${base}/hub/audit/entries?beforeSequence=1&limit=50`,
+      {
+        headers: { 'x-test-auth': 'yes' },
+      }
+    );
+    const body3 = (await res3.json()) as {
+      entries: unknown[];
+      nextBeforeSequence: number | null;
+    };
     expect(body3.entries).toHaveLength(0);
     expect(body3.nextBeforeSequence).toBeNull();
   });
@@ -1896,7 +2052,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; entriesVerified: number };
+    const body = (await res.json()) as { ok: boolean; entriesVerified: number };
     expect(body.ok).toBe(true);
     expect(body.entriesVerified).toBe(2);
   });
@@ -1915,7 +2071,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
         },
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
       })
     );
@@ -1928,7 +2084,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(res.status).toBe(503);
-    const body = await res.json() as { error: string };
+    const body = (await res.json()) as { error: string };
     expect(body.error).toBe('audit_sink_unavailable');
   });
 
@@ -1962,13 +2118,17 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
         registry,
         auditSink: {
           append: () => undefined,
-          listBefore: () => { throw new Error('injected db error'); },
+          listBefore: () => {
+            throw new Error('injected db error');
+          },
           head: () => ({ latestSequence: 0, latestHash: null }),
-          verify: () => { throw new Error('injected verify error'); },
+          verify: () => {
+            throw new Error('injected verify error');
+          },
         },
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
       })
     );
@@ -1981,7 +2141,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(res.status).toBe(500);
-    const body = await res.json() as { error: string };
+    const body = (await res.json()) as { error: string };
     expect(body.error).toBe('audit_read_failed');
   });
 
@@ -1997,11 +2157,13 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
           append: () => undefined,
           listBefore: () => ({ rows: [], nextBeforeSequence: null }),
           head: () => ({ latestSequence: 0, latestHash: null }),
-          verify: () => { throw new Error('injected verify error'); },
+          verify: () => {
+            throw new Error('injected verify error');
+          },
         },
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
         },
       })
     );
@@ -2014,7 +2176,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(res.status).toBe(500);
-    const body = await res.json() as { error: string };
+    const body = (await res.json()) as { error: string };
     expect(body.error).toBe('audit_verify_failed');
   });
 
@@ -2023,7 +2185,9 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     const auditLog = new SecurityAuditLog(tmpDbPath());
     cleanup.push(() => auditLog.close());
     for (let i = 1; i <= 3; i++) {
-      auditLog.append(sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` }));
+      auditLog.append(
+        sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` })
+      );
     }
     const { base } = await startServer(auditLog);
 
@@ -2032,15 +2196,18 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(resNeg.status).toBe(200);
-    const bodyNeg = await resNeg.json() as { entries: unknown[] };
+    const bodyNeg = (await resNeg.json()) as { entries: unknown[] };
     expect(bodyNeg.entries).toHaveLength(3);
 
     // non-numeric beforeSequence → clamped to null → returns all 3 entries from head
-    const resAlpha = await fetch(`${base}/hub/audit/entries?beforeSequence=abc`, {
-      headers: { 'x-test-auth': 'yes' },
-    });
+    const resAlpha = await fetch(
+      `${base}/hub/audit/entries?beforeSequence=abc`,
+      {
+        headers: { 'x-test-auth': 'yes' },
+      }
+    );
     expect(resAlpha.status).toBe(200);
-    const bodyAlpha = await resAlpha.json() as { entries: unknown[] };
+    const bodyAlpha = (await resAlpha.json()) as { entries: unknown[] };
     expect(bodyAlpha.entries).toHaveLength(3);
   });
 
@@ -2048,7 +2215,9 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     const auditLog = new SecurityAuditLog(tmpDbPath());
     cleanup.push(() => auditLog.close());
     for (let i = 1; i <= 5; i++) {
-      auditLog.append(sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` }));
+      auditLog.append(
+        sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` })
+      );
     }
     const { base } = await startServer(auditLog);
 
@@ -2057,7 +2226,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(resZero.status).toBe(200);
-    const bodyZero = await resZero.json() as { entries: unknown[] };
+    const bodyZero = (await resZero.json()) as { entries: unknown[] };
     expect(bodyZero.entries).toHaveLength(5);
 
     // limit=99999 → capped at 200 → all 5 rows returned (no error)
@@ -2065,7 +2234,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(resHuge.status).toBe(200);
-    const bodyHuge = await resHuge.json() as { entries: unknown[] };
+    const bodyHuge = (await resHuge.json()) as { entries: unknown[] };
     expect(bodyHuge.entries).toHaveLength(5);
   });
 
@@ -2073,7 +2242,9 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     const auditLog = new SecurityAuditLog(tmpDbPath());
     cleanup.push(() => auditLog.close());
     for (let i = 1; i <= 5; i++) {
-      auditLog.append(sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` }));
+      auditLog.append(
+        sampleInput({ eventId: `evt-${i}`, correlationId: `c-${i}` })
+      );
     }
     const { base } = await startServer(auditLog);
 
@@ -2081,7 +2252,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { entries: unknown[] };
+    const body = (await res.json()) as { entries: unknown[] };
     expect(body.entries).toHaveLength(5);
   });
 
@@ -2097,7 +2268,9 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     const Database = (await import('better-sqlite3')).default;
     const db = new Database(dbPath);
     db.exec('DROP TRIGGER security_audit_no_update');
-    db.prepare("UPDATE security_audit_log SET decision = 'deny' WHERE sequence = 2").run();
+    db.prepare(
+      "UPDATE security_audit_log SET decision = 'deny' WHERE sequence = 2"
+    ).run();
     db.close();
 
     // Re-open via new SecurityAuditLog so the route sees the tampered DB
@@ -2109,7 +2282,10 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; break?: { sequence: number; reason: string } };
+    const body = (await res.json()) as {
+      ok: boolean;
+      break?: { sequence: number; reason: string };
+    };
     expect(body.ok).toBe(false);
     expect(body.break).toBeDefined();
     expect(body.break?.reason).toBe('entry_hash_mismatch');
