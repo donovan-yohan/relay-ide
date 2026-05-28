@@ -12,6 +12,10 @@ import {
   updateInboxMessageState,
   type DecoratedInboxMessage,
 } from '../lib/api.js';
+import {
+  initialFeedbackTarget,
+  resolveFeedbackTarget,
+} from '../lib/feedback-target.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
 import TuiButton from './TuiButton.js';
 import './FileFeedbackPanel.css';
@@ -44,19 +48,6 @@ const STATE_LABELS: Record<SessionInboxMessageState, string> = {
 function absoluteFilePath(workspacePath: string, filePath: string): string {
   if (filePath.startsWith('/')) return filePath;
   return `${workspacePath.replace(/\/+$/u, '')}/${filePath.replace(/^\/+/, '')}`;
-}
-
-function initialTarget(
-  sessions: SessionSummary[],
-  preferredTargetSessionId: string | null
-): string {
-  if (preferredTargetSessionId) return preferredTargetSessionId;
-  const firstAgent = sessions.find((session) => session.type === 'agent');
-  return firstAgent
-    ? scopedSessionKey(firstAgent)
-    : sessions[0]
-      ? scopedSessionKey(sessions[0])
-      : '';
 }
 
 function quoteForRange(
@@ -104,7 +95,7 @@ export function FileFeedbackPanel({
   const [endLine, setEndLine] = useState('1');
   const [note, setNote] = useState('');
   const [targetSessionId, setTargetSessionId] = useState(() =>
-    initialTarget(sessions, preferredTargetSessionId)
+    initialFeedbackTarget(sessions, preferredTargetSessionId)
   );
   const [sendState, setSendState] = useState<SendState>({ kind: 'idle' });
   const [inboxLoading, setInboxLoading] = useState(false);
@@ -118,9 +109,14 @@ export function FileFeedbackPanel({
   const isMarkdown = language === 'markdown' || /\.mdx?$/iu.test(filePath);
 
   useEffect(() => {
-    if (targetSessionId) return;
-    setTargetSessionId(initialTarget(sessions, preferredTargetSessionId));
-  }, [preferredTargetSessionId, sessions, targetSessionId]);
+    setTargetSessionId((currentTargetSessionId) =>
+      resolveFeedbackTarget(
+        sessions,
+        preferredTargetSessionId,
+        currentTargetSessionId
+      )
+    );
+  }, [preferredTargetSessionId, sessions]);
 
   useEffect(() => {
     if (selectedLine === null) return;
