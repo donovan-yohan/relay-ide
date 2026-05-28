@@ -69,6 +69,8 @@ curl -X POST https://hub.example.com/hub/pair-tokens \
 
 Response includes `pairToken` and suggested bootstrap commands for each supported service mode.
 
+Auth lane boundary: the browser-session cookie only authorizes the operator to create a short-lived pair token from the hub UI/API. The pair token is accepted only by `POST /hub/pairing/exchange`, and the resulting `node-credential.json` is accepted only by node heartbeat and `/hub/node-link`. A browser PIN/cookie is not a node credential, and a node credential does not log in to browser-only routes. Processes already running as the same OS user may still read local Relay state or run local CLIs, so the PIN should be described as browser/UI auth, not as a same-user process boundary.
+
 ### Step 3: Pair the node
 
 On the node machine, exchange the pair token:

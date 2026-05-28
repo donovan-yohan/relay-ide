@@ -306,7 +306,7 @@ Browser-facing channels require authentication via `token` cookie verified durin
 
 **Build:** TypeScript compiles via `tsc` to `dist/`. Frontend builds via Vite to `dist/frontend/`. ESM throughout (`"type": "module"`), all relative imports use `.js` extensions, Node builtins use `node:` prefix.
 
-**Auth:** Every HTTP request (except `/auth` POST) and every WebSocket upgrade requires a valid session cookie. Rate limiting is per-IP.
+**Auth:** HTTP and WebSocket routes are grouped by auth lane in `server/auth.ts` (`AUTH_ROUTE_LANE_INVENTORY`). Browser UI routes use browser-session cookies from PIN/no-PIN local dev; CLI gateway routes currently accept browser-session compatibility while naming `scoped-actor-credential` as the migration lane; node heartbeat and `/hub/node-link` use node credentials; pairing exchange uses pair tokens; setup/login/health routes are public-local-only. Rate limiting is per-IP for browser PIN attempts.
 
 **Session lifecycle:** Runtime session records are in-memory during normal operation, while tmux owns the durable process tree. Multiple sessions per directory are allowed (multi-tab support). PTY exit triggers automatic cleanup. Scrollback buffers cap at 256KB with FIFO eviction. PTY spawns are wrapped with `trap '' PIPE; exec` to prevent SIGPIPE from killing sessions. During auto-updates, sessions are serialized to disk (`pending-sessions.json` + scrollback files) and restored on restart by reattaching to the preserved tmux name when possible.
 
