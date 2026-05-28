@@ -156,6 +156,79 @@ function httpErrorMessage(status: number, fallback?: string): string {
   return fallback ?? `HTTP ${status}`;
 }
 
+const BROWSER_SESSION_AUTH_MESSAGE =
+  'browser session required; enter the browser PIN for this web UI.';
+const SCOPED_ACTOR_AUTH_MESSAGE =
+  'scoped actor credential required; browser PIN auth only unlocks the web UI.';
+const SCOPED_OR_BROWSER_AUTH_MESSAGE =
+  'scoped actor credential or browser session required for this route.';
+const NODE_CREDENTIAL_AUTH_MESSAGE =
+  'node credential required; browser PIN sessions are not accepted by node routes.';
+const PAIR_TOKEN_AUTH_MESSAGE =
+  'pair token required; browser PIN sessions are not accepted by pairing routes.';
+const CAPABILITY_DENIED_AUTH_MESSAGE =
+  'capability denied; this actor or session is missing the required grant.';
+const APPROVAL_REQUIRED_AUTH_MESSAGE =
+  'approval required before this action can continue.';
+const CREDENTIAL_REVOKED_AUTH_MESSAGE =
+  'credential revoked; re-authorize the relevant actor or node.';
+const CREDENTIAL_EXPIRED_AUTH_MESSAGE =
+  'credential expired; re-authenticate the relevant actor or node.';
+
+const AUTH_LANE_ERROR_MESSAGES: Record<string, string> = {
+  'browser-auth-required': BROWSER_SESSION_AUTH_MESSAGE,
+  'browser-session-required': BROWSER_SESSION_AUTH_MESSAGE,
+  browser_auth_required: BROWSER_SESSION_AUTH_MESSAGE,
+  browser_session_required: BROWSER_SESSION_AUTH_MESSAGE,
+  BROWSER_SESSION_REQUIRED: BROWSER_SESSION_AUTH_MESSAGE,
+
+  'actor-credential-required': SCOPED_ACTOR_AUTH_MESSAGE,
+  'scoped-actor-credential-required': SCOPED_ACTOR_AUTH_MESSAGE,
+  actor_credential_required: SCOPED_ACTOR_AUTH_MESSAGE,
+  scoped_actor_credential_required: SCOPED_ACTOR_AUTH_MESSAGE,
+  'scoped-session-or-browser-auth-required': SCOPED_OR_BROWSER_AUTH_MESSAGE,
+  CLI_GATEWAY_OR_BROWSER_AUTH_REQUIRED: SCOPED_OR_BROWSER_AUTH_MESSAGE,
+  SCOPED_SESSION_OR_BROWSER_AUTH_REQUIRED: SCOPED_OR_BROWSER_AUTH_MESSAGE,
+
+  'node-credential-required': NODE_CREDENTIAL_AUTH_MESSAGE,
+  node_credential_required: NODE_CREDENTIAL_AUTH_MESSAGE,
+  NODE_CREDENTIAL_REQUIRED: NODE_CREDENTIAL_AUTH_MESSAGE,
+
+  'pair-token-required': PAIR_TOKEN_AUTH_MESSAGE,
+  pair_token_required: PAIR_TOKEN_AUTH_MESSAGE,
+  PAIR_TOKEN_REQUIRED: PAIR_TOKEN_AUTH_MESSAGE,
+
+  'capability-denied': CAPABILITY_DENIED_AUTH_MESSAGE,
+  capability_denied: CAPABILITY_DENIED_AUTH_MESSAGE,
+  CAPABILITY_DENIED: CAPABILITY_DENIED_AUTH_MESSAGE,
+
+  'approval-required': APPROVAL_REQUIRED_AUTH_MESSAGE,
+  approval_required: APPROVAL_REQUIRED_AUTH_MESSAGE,
+  APPROVAL_REQUIRED: APPROVAL_REQUIRED_AUTH_MESSAGE,
+
+  'credential-revoked': CREDENTIAL_REVOKED_AUTH_MESSAGE,
+  credential_revoked: CREDENTIAL_REVOKED_AUTH_MESSAGE,
+  CREDENTIAL_REVOKED: CREDENTIAL_REVOKED_AUTH_MESSAGE,
+
+  'credential-expired': CREDENTIAL_EXPIRED_AUTH_MESSAGE,
+  credential_expired: CREDENTIAL_EXPIRED_AUTH_MESSAGE,
+  CREDENTIAL_EXPIRED: CREDENTIAL_EXPIRED_AUTH_MESSAGE,
+};
+
+export function authLaneErrorMessage(
+  code: string | undefined,
+  fallback: string
+): string {
+  if (!code) return fallback;
+  const normalized = code.trim();
+  return (
+    AUTH_LANE_ERROR_MESSAGES[normalized] ??
+    AUTH_LANE_ERROR_MESSAGES[normalized.toLowerCase()] ??
+    AUTH_LANE_ERROR_MESSAGES[normalized.toLowerCase().replace(/_/g, '-')] ??
+    fallback
+  );
+}
+
 export interface BrowseEntry {
   name: string;
   path: string;
@@ -350,7 +423,7 @@ async function httpErrorFromResponse(
       typeof structuredError?.['retryable'] === 'boolean'
         ? structuredError['retryable']
         : undefined;
-    const message =
+    const rawMessage =
       typeof data.message === 'string'
         ? data.message
         : typeof structuredError?.['message'] === 'string'
@@ -358,6 +431,7 @@ async function httpErrorFromResponse(
           : typeof data.error === 'string'
             ? httpErrorMessage(res.status, data.error)
             : httpErrorMessage(res.status, fallback);
+    const message = authLaneErrorMessage(code, rawMessage);
     return new HttpError(res.status, message, code, retryable, details);
   } catch {
     return new HttpError(res.status, httpErrorMessage(res.status, fallback));

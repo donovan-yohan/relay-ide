@@ -18,7 +18,7 @@ interface SetupFormProps {
 function SetupForm({ pinValue, confirmValue, onPinChange, onConfirmChange, onKeyDown, onSubmit }: SetupFormProps) {
   return (
     <>
-      <p>set up a PIN to secure this instance</p>
+      <p>set a browser PIN for this Relay web UI</p>
       <PinInput value={pinValue} onChange={onPinChange} onKeyDown={onKeyDown} placeholder="choose a PIN" autoFocus={true} maxLength={MAX_PIN_LENGTH} />
       <PinInput value={confirmValue} onChange={onConfirmChange} onKeyDown={onKeyDown} placeholder="confirm PIN" maxLength={MAX_PIN_LENGTH} />
       <TuiButton variant="primary" onClick={onSubmit}>set PIN</TuiButton>
@@ -36,11 +36,11 @@ interface UnlockFormProps {
 function UnlockForm({ pinValue, onPinChange, onKeyDown, onSubmit }: UnlockFormProps) {
   return (
     <>
-      <p>enter PIN to continue</p>
+      <p>enter browser PIN to unlock this web session</p>
       <PinInput value={pinValue} onChange={onPinChange} onKeyDown={onKeyDown} placeholder="PIN" autoFocus={true} maxLength={MAX_PIN_LENGTH} />
       <TuiButton variant="primary" onClick={onSubmit}>unlock</TuiButton>
       <p className="hint">
-        forgot your PIN? run <code>relay-ide pin reset</code> on the host machine
+        forgot your PIN? reset browser access with <code>relay-ide pin reset</code> on this host
       </p>
     </>
   );
