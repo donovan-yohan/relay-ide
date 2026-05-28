@@ -17,9 +17,9 @@ Relay auth is split into lanes. The current route inventory is checked into `ser
 
 The PIN and `token` cookie are therefore browser/UI authentication. They reduce drive-by browser access and support first-load local setup, but they cannot protect Relay from malicious processes already running as the same OS user: those processes can usually read local config, invoke local CLIs, attach to local sockets, or modify the checkout. Relay's federated security model relies on lane separation, node credentials, hub ACLs, capability policy, audit, revocation, and future scoped actor credentials rather than treating the browser PIN as global authorization.
 
-#427 shipped the earlier trust-tier/capability/audit/confirmation backbone. #797 tracks the broader multi-node auth model. #798 wave 1 narrows the current change to route-lane inventory, browser-session terminology, and typed lane denials; it deliberately does not implement scoped actor token registration, node proof-of-possession, passkeys, TOTP, or new approval UX.
+Relay issue `#427` shipped the earlier trust-tier/capability/audit/confirmation backbone. Relay issue `#797` tracks the broader multi-node auth model. Relay issue `#798` wave 1 narrows the current change to route-lane inventory, browser-session terminology, and typed lane denials; it deliberately does not implement scoped actor token registration, node proof-of-possession, passkeys, TOTP, or new approval UX.
 
-#177 remains the first-load/PIN explanation ticket. These docs clarify the security boundary, but closing #177 should wait until the visible browser first-load copy also explains where the PIN comes from and how to reset it.
+Relay issue `#177` remains the first-load/PIN explanation ticket. These docs clarify the security boundary, but closing `#177` should wait until the visible browser first-load copy also explains where the PIN comes from and how to reset it.
 
 ## Trust tiers
 

@@ -13,6 +13,7 @@ import {
   AUTH_ROUTE_LANE_INVENTORY,
   _resetForTesting,
 } from '../server/auth.js';
+import type { AuthRouteLaneInventoryEntry } from '../server/auth.js';
 
 test('hashPin returns scrypt hash with expected format', async () => {
   _resetForTesting();
@@ -208,13 +209,60 @@ const expectedInventoryCoverage = [
     surface: 'browser UI and authenticated local app APIs',
     middleware: 'requireAuth',
     acceptedLanes: ['browser-session'],
-    routes: ['/auth/check', '/workspaces/*', '/git/*', '/gh/*'],
+    routes: [
+      '/auth/check',
+      '/workspaces/*',
+      '/workspace-groups/*',
+      '/workbench/*',
+      '/git/*',
+      '/gh/*',
+      '/integration-github/*',
+      '/integration-jira/*',
+      '/auth/github/*',
+      '/branch-linker/*',
+      '/ticket-transitions/*',
+      '/org-dashboard/*',
+      '/analytics/*',
+      '/api/analytics/*',
+      '/telemetry/*',
+      '/work-contexts/*',
+    ],
   },
   {
     surface: 'browser diagnostics, config, and lifecycle APIs',
     middleware: 'requireAuth',
     acceptedLanes: ['browser-session'],
-    routes: ['/api/frameworks', '/api/node/manifest', '/config/*'],
+    routes: [
+      '/api/frontend-log',
+      '/api/frameworks',
+      '/api/node/manifest',
+      '/config/*',
+      '/presets/*',
+      '/repos',
+      '/worktrees/status',
+      '/worktrees',
+      '/push/*',
+      '/version',
+      '/update',
+      '/update-channel',
+      '/sessions/:id (DELETE/PATCH)',
+      '/sessions/:id/image',
+    ],
+  },
+  {
+    surface: 'browser webhook management APIs',
+    middleware: 'requireAuth via createWebhookManagerRouter mounted at /webhooks/manage',
+    acceptedLanes: ['browser-session'],
+    routes: [
+      'POST /webhooks/manage/setup',
+      'DELETE /webhooks/manage/setup',
+      'GET /webhooks/manage/status',
+      'POST /webhooks/manage/reload',
+      'POST /webhooks/manage/ping',
+      'POST /webhooks/manage/repos',
+      'POST /webhooks/manage/repos/remove',
+      'POST /webhooks/manage/backfill',
+    ],
   },
   {
     surface: 'browser event and PTY WebSocket APIs',
@@ -234,6 +282,7 @@ const expectedInventoryCoverage = [
       '/sessions (GET/POST)',
       '/context/*',
       '/inbox/*',
+      '/events/*',
       '/handoffs/*',
       '/nodes',
       '/hub/audit/*',
@@ -256,6 +305,7 @@ const expectedInventoryCoverage = [
       '/hub/scoped-sessions',
       '/hub/scoped-sessions/:sessionId/renew',
       '/hub/scoped-sessions/:sessionId/revoke',
+      '/hub/scoped-sessions/:sessionId (DELETE)',
     ],
   },
   {
@@ -269,6 +319,8 @@ const expectedInventoryCoverage = [
       '/hub/nodes/:nodeId/updating',
       '/hub/nodes/:nodeId/cwd/:operation',
       '/hub/nodes/:nodeId/sessions/:sessionId/files/:operation',
+      '/hub/nodes/:nodeId/sessions/:sessionId (DELETE)',
+      '/nodes/:nodeId (DELETE)',
       '/hub/repo-inventory',
       '/hub/repo-groups',
       '/hub/ia/tree',
@@ -294,7 +346,15 @@ const expectedInventoryCoverage = [
     middleware:
       'public setup/login, localhost hook callback, webhook secret, or static file serving',
     acceptedLanes: ['public-local-only'],
-    routes: ['/health', '/auth/status', 'POST /auth/setup', 'POST /auth'],
+    routes: [
+      '/health',
+      '/auth/status',
+      'POST /auth/setup',
+      'POST /auth',
+      '/hooks/*',
+      'POST /webhooks',
+      '/static frontend assets',
+    ],
   },
   {
     surface: 'intentionally denied or no-route surfaces',
@@ -303,11 +363,13 @@ const expectedInventoryCoverage = [
     routes: [
       'browser cookie as node credential',
       'pair token as browser/CLI/node runtime credential',
+      'scoped actor credential as node credential',
+      'unauthenticated /sessions/*',
       'unknown WebSocket paths',
       'unknown API routes',
     ],
   },
-] as const;
+] satisfies Array<Omit<AuthRouteLaneInventoryEntry, 'notes'>>;
 
 test('auth route lane inventory covers browser, scoped, node, pair, public, and denied lanes', () => {
   const lanes = new Set(
@@ -326,18 +388,12 @@ test('auth route lane inventory covers browser, scoped, node, pair, public, and 
   expect(browserSessionRequiredChallenge().error.lane).toBe('denied');
 });
 
-test('auth route lane inventory covers representative current route families', () => {
-  const bySurface = new Map(
-    AUTH_ROUTE_LANE_INVENTORY.map((entry) => [entry.surface, entry])
+test('auth route lane inventory exactly matches asserted route coverage', () => {
+  const inventoryCoverage = AUTH_ROUTE_LANE_INVENTORY.map(
+    ({ notes: _notes, ...entry }) => entry
   );
 
-  for (const expected of expectedInventoryCoverage) {
-    const entry = bySurface.get(expected.surface);
-    expect(entry, `missing surface ${expected.surface}`).toBeDefined();
-    expect(entry?.middleware).toBe(expected.middleware);
-    expect(entry?.acceptedLanes).toEqual(expected.acceptedLanes);
-    expect(entry?.routes).toEqual(expect.arrayContaining([...expected.routes]));
-  }
+  expect(inventoryCoverage).toEqual(expectedInventoryCoverage);
 });
 
 test('auth route lane inventory keeps credential classes distinct', () => {
@@ -357,6 +413,11 @@ test('auth route lane inventory keeps credential classes distinct', () => {
     'scoped-actor-credential',
     'browser-session',
   ]);
+  expect(routeToLanes.get('POST /webhooks/manage/setup')).toEqual([
+    'browser-session',
+  ]);
+  expect(routeToLanes.get('POST /webhooks')).toEqual(['public-local-only']);
+  expect(routeToLanes.has('/webhooks/*')).toBe(false);
   expect(routeToLanes.get('WS /ws/:sessionId')).toEqual(['browser-session']);
   expect(routeToLanes.get('browser cookie as node credential')).toEqual([
     'denied',

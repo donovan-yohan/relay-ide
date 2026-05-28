@@ -91,6 +91,23 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
       'Operator diagnostics/configuration and browser lifecycle endpoints stay on the browser-session lane for wave 1.',
   },
   {
+    surface: 'browser webhook management APIs',
+    routes: [
+      'POST /webhooks/manage/setup',
+      'DELETE /webhooks/manage/setup',
+      'GET /webhooks/manage/status',
+      'POST /webhooks/manage/reload',
+      'POST /webhooks/manage/ping',
+      'POST /webhooks/manage/repos',
+      'POST /webhooks/manage/repos/remove',
+      'POST /webhooks/manage/backfill',
+    ],
+    acceptedLanes: ['browser-session'],
+    middleware: 'requireAuth via createWebhookManagerRouter mounted at /webhooks/manage',
+    notes:
+      'Webhook management is a browser/operator surface mounted with requireAuth; it is distinct from the secret-protected webhook receiver.',
+  },
+  {
     surface: 'browser event and PTY WebSocket APIs',
     routes: [
       'WS /ws/events',
@@ -187,13 +204,13 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
       'POST /auth/setup',
       'POST /auth',
       '/hooks/*',
-      '/webhooks/*',
+      'POST /webhooks',
       '/static frontend assets',
     ],
     acceptedLanes: ['public-local-only'],
     middleware: 'public setup/login, localhost hook callback, webhook secret, or static file serving',
     notes:
-      'Setup/login/readiness/local hook/static surfaces intentionally sit outside browser-session auth and must not expose private session, repo, node, or credential state; webhook callbacks rely on their own secret validation.',
+      'Setup/login/readiness/local hook/static surfaces intentionally sit outside browser-session auth and must not expose private session, repo, node, or credential state; the webhook receiver relies on GitHub signature validation and is separate from authenticated /webhooks/manage routes.',
   },
   {
     surface: 'intentionally denied or no-route surfaces',
