@@ -1,5 +1,15 @@
 import type { WorkbenchLayout } from '../../../shared/workbench-layout-types.js';
 import type {
+  AnchorRef,
+  AnchorState,
+  ContextPacket,
+  ContextPacketBinding,
+  ContextPacketKind,
+  ContextPacketId,
+  SessionInboxMessage,
+  SessionInboxMessageId,
+} from '../../../shared/context-packet.js';
+import type {
   FileRpcListRequest,
   FileRpcListResponse,
   FileRpcReadResponse,
@@ -165,6 +175,93 @@ export interface BrowseResponse {
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw await httpErrorFromResponse(res);
   return res.json() as Promise<T>;
+}
+
+const CONTEXT_INBOX_CAPABILITIES =
+  'context:read,context:write,inbox:read,inbox:write';
+
+function contextInboxHeaders(): HeadersInit {
+  return {
+    'Content-Type': 'application/json',
+    'x-relay-capabilities': CONTEXT_INBOX_CAPABILITIES,
+  };
+}
+
+export type DecoratedContextPacket = ContextPacket & {
+  anchorState?: AnchorState;
+};
+
+export type DecoratedInboxMessage = SessionInboxMessage & {
+  contextPackets?: DecoratedContextPacket[];
+};
+
+export interface CreateContextPacketRequest {
+  kind: ContextPacketKind;
+  anchor?: AnchorRef;
+  note?: string;
+  binding?: ContextPacketBinding;
+  createdBy?: string;
+}
+
+export async function createContextPacket(
+  input: CreateContextPacketRequest
+): Promise<ContextPacket> {
+  const data = await json<{ contextPacket: ContextPacket }>(
+    await fetch('/context', {
+      method: 'POST',
+      headers: contextInboxHeaders(),
+      body: JSON.stringify(input),
+    })
+  );
+  return data.contextPacket;
+}
+
+export interface SendInboxMessageRequest {
+  targetSessionId?: string;
+  targetWorkContextId?: string;
+  contextPacketIds: ContextPacketId[];
+  text?: string;
+  createdBy?: string;
+}
+
+export async function sendInboxMessage(
+  input: SendInboxMessageRequest
+): Promise<DecoratedInboxMessage> {
+  const data = await json<{ message: DecoratedInboxMessage }>(
+    await fetch('/inbox', {
+      method: 'POST',
+      headers: contextInboxHeaders(),
+      body: JSON.stringify(input),
+    })
+  );
+  return data.message;
+}
+
+export async function fetchInboxMessages(
+  targetSessionId: string,
+  limit = 10
+): Promise<DecoratedInboxMessage[]> {
+  const params = new URLSearchParams({ targetSessionId, limit: String(limit) });
+  const data = await json<{ messages?: DecoratedInboxMessage[] }>(
+    await fetch(`/inbox?${params.toString()}`, {
+      headers: { 'x-relay-capabilities': CONTEXT_INBOX_CAPABILITIES },
+    })
+  );
+  return Array.isArray(data.messages) ? data.messages : [];
+}
+
+export async function updateInboxMessageState(
+  id: SessionInboxMessageId,
+  action: 'ack' | 'resolve' | 'ignore'
+): Promise<DecoratedInboxMessage> {
+  const data = await json<{ message: DecoratedInboxMessage }>(
+    await fetch(`/inbox/${encodeURIComponent(id)}/${action}`, {
+      method: 'POST',
+      headers: contextInboxHeaders(),
+      body: JSON.stringify({ actorId: 'relay-web' }),
+    })
+  );
+  return data.message;
 }
 
 async function jsonOrNull<T>(res: Response): Promise<T | null> {
@@ -573,10 +670,9 @@ export async function updateIaWorkspace(
 }
 
 export async function deleteIaWorkspace(id: string): Promise<void> {
-  const res = await fetch(
-    `${IA_WORKSPACES_PATH}/${encodeURIComponent(id)}`,
-    { method: 'DELETE' }
-  );
+  const res = await fetch(`${IA_WORKSPACES_PATH}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
   // 204 No Content on success; surface a structured error otherwise.
   if (!res.ok) {
     throw await httpErrorFromResponse(res, 'Failed to delete workspace');

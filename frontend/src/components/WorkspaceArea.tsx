@@ -31,7 +31,12 @@ import type { SummaryContext } from '../lib/workspace-summary.js';
 import type { SessionSummary } from '../lib/types.js';
 import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import { resolveWorkspaceSessionCloseTarget } from '../lib/workspace-session-close.js';
-import { FileTabContent, type FileTabContentProps } from './FileTabContent.js';
+import {
+  FileTabContent,
+  languageFromPath,
+  type FileTabContentProps,
+} from './FileTabContent.js';
+import FileFeedbackPanel from './FileFeedbackPanel.js';
 import { useFileDiff, useInvalidateFileDiff } from '../hooks/useFileDiff.js';
 import { useFileContent } from '../hooks/useFileContent.js';
 import { WorkspaceLayout } from './WorkspaceLayout.js';
@@ -126,6 +131,10 @@ function FileTabContentBridge({
   const openFileTabs = useUiStore((s) => s.openFileTabs);
   const sendToTargetSessionId = useUiStore((s) => s.sendToTargetSessionId);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+  const sessions = useSessionsStore((s) => s.sessions);
+  const [selectedFeedbackLine, setSelectedFeedbackLine] = useState<
+    number | null
+  >(null);
   const hasActiveSession = (sendToTargetSessionId ?? activeSessionId) !== null;
 
   const base = useMemo(
@@ -180,6 +189,20 @@ function FileTabContentBridge({
     closeFileTab(tab.filePath, tab.tabType);
   }, [closeFileTab, tab.filePath, tab.tabType]);
 
+  const feedbackPanel =
+    isCodeMode && !contentLoading && !contentError && !binary && !truncated ? (
+      <FileFeedbackPanel
+        filePath={tab.filePath}
+        workspacePath={workspacePath}
+        content={content ?? ''}
+        language={languageFromPath(tab.filePath)}
+        sessions={sessions}
+        preferredTargetSessionId={sendToTargetSessionId ?? activeSessionId}
+        selectedLine={selectedFeedbackLine}
+        onSelectedLineConsumed={() => setSelectedFeedbackLine(null)}
+      />
+    ) : null;
+
   return (
     <FileTabContent
       filePath={tab.filePath}
@@ -198,10 +221,12 @@ function FileTabContentBridge({
       wordWrap={fileWordWrap}
       hasActiveSession={hasActiveSession}
       onInjectReference={onInjectReference}
+      onCodeLineClick={setSelectedFeedbackLine}
       onRetry={handleRetry}
       onCloseTab={handleCloseTab}
       renderDiff={renderDiff}
       renderCode={renderCode}
+      feedbackPanel={feedbackPanel}
       showSummary={false}
     />
   );

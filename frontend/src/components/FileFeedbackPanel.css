@@ -1,0 +1,173 @@
+.file-feedback {
+  border-bottom: 1px solid var(--border, #333);
+  background: var(--bg, #000);
+  padding: 8px 12px;
+  display: grid;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--font-size-xs, 0.75rem);
+  color: var(--text, #e0e0e0);
+}
+
+.file-feedback__head,
+.file-feedback__form,
+.file-feedback__meta,
+.file-feedback__message,
+.file-feedback__message-main,
+.file-feedback__message-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-feedback__head {
+  justify-content: space-between;
+}
+
+.file-feedback__eyebrow {
+  color: var(--accent, #d97757);
+  font-size: var(--font-size-xs, 0.75rem);
+}
+
+.file-feedback__copy,
+.file-feedback__empty {
+  color: var(--text-muted, #888);
+}
+
+.file-feedback__form {
+  flex-wrap: wrap;
+}
+
+.file-feedback label {
+  display: grid;
+  gap: 3px;
+  color: var(--text-muted, #888);
+}
+
+.file-feedback select,
+.file-feedback input,
+.file-feedback textarea {
+  background: transparent;
+  color: var(--text, #e0e0e0);
+  border: 1px solid var(--border, #333);
+  border-radius: 0;
+  font: inherit;
+  padding: 5px 7px;
+}
+
+.file-feedback select:focus,
+.file-feedback input:focus,
+.file-feedback textarea:focus {
+  outline: 1px solid var(--accent, #d97757);
+  outline-offset: 0;
+}
+
+.file-feedback input {
+  width: 72px;
+}
+
+.file-feedback__note {
+  flex: 1 1 260px;
+}
+
+.file-feedback__note textarea {
+  min-width: 220px;
+  resize: vertical;
+}
+
+.file-feedback__meta {
+  min-height: 20px;
+  flex-wrap: wrap;
+  color: var(--text-muted, #888);
+}
+
+.file-feedback__error {
+  color: var(--status-error, #f87171);
+}
+
+.file-feedback__messages {
+  display: grid;
+  gap: 4px;
+}
+
+.file-feedback__message {
+  justify-content: space-between;
+  border: 1px solid color-mix(in srgb, var(--border, #333) 70%, transparent);
+  padding: 5px 7px;
+  min-height: 32px;
+}
+
+.file-feedback__message-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.file-feedback__message-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted, #888);
+}
+
+.file-feedback__state,
+.file-feedback__anchor {
+  border: 1px solid currentColor;
+  padding: 1px 5px;
+  flex: 0 0 auto;
+}
+
+.file-feedback__state--queued {
+  color: var(--status-warning, #fbbf24);
+}
+
+.file-feedback__state--delivered,
+.file-feedback__state--acknowledged {
+  color: var(--status-info, #60a5fa);
+}
+
+.file-feedback__state--resolved {
+  color: var(--status-success, #4ade80);
+}
+
+.file-feedback__state--ignored {
+  color: var(--text-muted, #888);
+}
+
+.file-feedback__anchor--unchanged {
+  color: var(--status-success, #4ade80);
+}
+
+.file-feedback__anchor--stale {
+  color: var(--status-warning, #fbbf24);
+}
+
+.file-feedback__anchor--missing {
+  color: var(--status-error, #f87171);
+}
+
+.file-feedback__message-actions button {
+  border: 1px solid var(--border, #333);
+  background: transparent;
+  color: var(--text-muted, #888);
+  border-radius: 0;
+  font: inherit;
+  padding: 2px 6px;
+}
+
+.file-feedback__message-actions button:hover,
+.file-feedback__message-actions button:focus-visible {
+  color: var(--text, #e0e0e0);
+  border-color: var(--accent, #d97757);
+}
+
+@media (max-width: 720px) {
+  .file-feedback__head,
+  .file-feedback__message {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .file-feedback__message-actions {
+    flex-wrap: wrap;
+  }
+}
