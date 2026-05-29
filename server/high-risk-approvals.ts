@@ -171,6 +171,8 @@ export interface HighRiskApprovalContract {
 export interface CreateHighRiskApprovalContractInput {
   challengeId: string;
   decision: HubPolicyDecision;
+  classificationInput?: HighRiskOperationClassificationInput;
+  classification?: HighRiskOperationClassification;
   canonicalParams: unknown;
   createdAt: Date;
   expiresAt: Date;
@@ -276,13 +278,9 @@ export function classifyHighRiskOperation(
 export function createHighRiskApprovalContract(
   input: CreateHighRiskApprovalContractInput
 ): HighRiskApprovalContract {
-  const classification = classifyHighRiskOperation({
-    action: input.decision.intent.action,
-    targetNodeId: input.decision.nodeId,
-    scopeKind: input.decision.scope.kind,
-    requiredCapabilities: input.decision.requiredBits,
-    ...(input.decision.trustTier ? { trustTier: input.decision.trustTier } : {}),
-  });
+  const classification = input.classification ?? classifyHighRiskOperation(
+    input.classificationInput ?? classificationInputFromDecision(input.decision)
+  );
   const workContextId =
     input.requester.workContextId ?? stringField(input.decision.scope as unknown as Record<string, unknown>, 'workspaceId');
   const redemptionNonceHash = input.redemptionNonce
@@ -327,6 +325,21 @@ export function createHighRiskApprovalContract(
   return {
     ...payload,
     contractHash: sha256Hex(stableStringify(payload)),
+  };
+}
+
+function classificationInputFromDecision(
+  decision: HubPolicyDecision
+): HighRiskOperationClassificationInput {
+  return {
+    action: decision.intent.action,
+    targetNodeId: decision.nodeId,
+    ...(decision.peer.kind === 'node' && decision.peer.nodeId
+      ? { sourceNodeId: decision.peer.nodeId }
+      : {}),
+    scopeKind: decision.scope.kind,
+    requiredCapabilities: decision.requiredBits,
+    ...(decision.trustTier ? { trustTier: decision.trustTier } : {}),
   };
 }
 

@@ -162,6 +162,76 @@ describe('high-risk approval contract bindings', () => {
     expect(serialized).not.toContain('relay-super-secret-token');
   });
 
+  it('serializes cross-node control contract risk from full classifier input, not lossy policy bits', () => {
+    const classificationInput = {
+      action: 'sessions.control.set-agent',
+      sourceNodeId: 'node_a',
+      targetNodeId: 'node_b',
+      requiredCapabilities: ['session:attach', 'tab:mode:set-agent'],
+    } as const;
+    const direct = classifyHighRiskOperation(classificationInput);
+    const decision = challengeDecision({
+      nodeId: 'node_b',
+      peer: { kind: 'node', nodeId: 'node_a' },
+      intent: { action: 'sessions.control.set-agent' },
+      scope: { kind: 'node', nodeId: 'node_b' },
+      requiredBits: ['session:attach', 'tab:mode:set-agent'],
+      challengeBits: ['session:attach'],
+      params: { action: 'sessions.control.set-agent' },
+    });
+
+    const contract = createHighRiskApprovalContract({
+      challengeId: 'challenge-cross-node-control',
+      decision,
+      canonicalParams: { action: 'sessions.control.set-agent' },
+      createdAt: NOW,
+      expiresAt: new Date(NOW.getTime() + 60_000),
+      requester: { kind: 'browser-session', authSessionHash: 'requester-session-hash' },
+    });
+
+    expect(direct).toMatchObject({
+      decision: 'approvalRequired',
+      riskReason: 'cross-node control high-risk',
+    });
+    expect(contract.risk).toMatchObject({
+      decision: direct.decision,
+      riskReason: direct.riskReason,
+    });
+  });
+
+  it('honors a preserved original high-risk classification when building contract risk', () => {
+    const classification = classifyHighRiskOperation({
+      action: 'rpc.fs.read',
+      targetNodeId: 'node_prod',
+      boundaryCrossing: true,
+      requiredCapabilities: ['rpc:fs:read'],
+    });
+    const decision = challengeDecision({
+      intent: { action: 'rpc.fs.read', target: 'node_prod' },
+      requiredBits: ['rpc:fs:read'],
+      challengeBits: ['rpc:fs:read'],
+    });
+
+    const contract = createHighRiskApprovalContract({
+      challengeId: 'challenge-boundary-read',
+      decision,
+      classification,
+      canonicalParams: { action: 'rpc.fs.read', path: '/srv/app/secrets.txt' },
+      createdAt: NOW,
+      expiresAt: new Date(NOW.getTime() + 60_000),
+      requester: { kind: 'browser-session', authSessionHash: 'requester-session-hash' },
+    });
+
+    expect(classification).toMatchObject({
+      decision: 'approvalRequired',
+      riskReason: 'file boundary mutation high-risk',
+    });
+    expect(contract.risk).toMatchObject({
+      decision: 'approvalRequired',
+      riskReason: 'file boundary mutation high-risk',
+    });
+  });
+
   it('summarizes pty exec command text without exposing raw shell text to public challenge or audit material', () => {
     const command = 'curl -H "Authorization: Bearer relay-...456" https://example.test && echo ghp_12...cdef';
     const canonicalParams = canonicalConfirmationParams('pty.exec.arbitrary', {
