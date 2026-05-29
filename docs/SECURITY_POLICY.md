@@ -17,7 +17,17 @@ Relay auth is split into lanes. The current route inventory is checked into `ser
 
 The PIN and `token` cookie are therefore browser/UI authentication. They reduce drive-by browser access and support first-load local setup, but they cannot protect Relay from malicious processes already running as the same OS user: those processes can usually read local config, invoke local CLIs, attach to local sockets, or modify the checkout. Relay's federated security model relies on lane separation, node credentials, hub ACLs, capability policy, audit, revocation, and scoped actor credentials for non-browser actors rather than treating the browser PIN as global authorization.
 
-Relay issue `#427` shipped the earlier trust-tier/capability/audit/confirmation backbone. Relay issue `#797` tracks the broader multi-node auth model. Relay issue `#798` wave 1 narrowed that work to route-lane inventory, browser-session terminology, and typed lane denials. Relay issue `#802` adds the scoped actor credential registry MVP; it deliberately does not migrate every CLI gateway command, implement node proof-of-possession, passkeys, TOTP, or new approval UX. Relay issue `#803` hardens node identity lifecycle semantics by separating stable node identity from replaceable credential records. Relay issue `#807` adds the high-risk approval hook contract for exact-operation challenges; it is still not MFA, passkeys/WebAuthn, TOTP, enterprise RBAC, or a broad approval-center UX.
+Relay issue `#427` shipped the earlier trust-tier/capability/audit/confirmation backbone. Relay issue `#797` tracks the broader multi-node auth model. Relay issue `#798` wave 1 narrowed that work to route-lane inventory, browser-session terminology, and typed lane denials. Relay issue `#802` adds the scoped actor credential registry MVP; it deliberately does not migrate every CLI gateway command, implement node proof-of-possession, passkeys, TOTP, or new approval UX. Relay issue `#803` hardens node identity lifecycle semantics by separating stable node identity from replaceable credential records. Relay issue `#807` adds the high-risk approval hook contract for exact-operation challenges; it is still not MFA, passkeys/WebAuthn, TOTP, enterprise RBAC, or a broad approval-center UX. Relay issue `#813` adds the one-time operator handshake grant registry/audit foundation: a browser session may authorize the ceremony, but the `relay-ohg-v1` grant handle is a separate one-use lane and never becomes a reusable automation credential.
+
+### Operator handshake grants
+
+One-time operator handshake grants live in `shared/operator-handshake-grants.ts` and are documented in `docs/OPERATOR_HANDSHAKE_GRANTS.md`. They bridge browser-session ceremony authorization to a bounded, one-use `relay-ohg-v1.<grant-id>.<secret>` grant handle for a named actor, audience, capability set, scope, optional device binding, and optional session/work-context binding.
+
+The browser session can authorize the ceremony, but it is not the reusable automation credential. A handshake grant is rejected from browser, scoped actor credential, pair-token, and node-credential lanes; those materials are likewise rejected as lane-mixed when presented as handshake grants. Successful validation consumes the grant, and replay/reuse denies with a typed reason.
+
+Validation fails closed on malformed grant handles, unknown or wrong audience, unapproved grants, expiry, revocation, replay, actor/device/session mismatch, missing or wrong node/session/global-session/work-context/repo/path/task scope, unknown requested capability, and insufficient capability. High-risk capability grants require existing #807 exact-operation approval evidence before approval; otherwise the ceremony denies instead of minting a handle.
+
+Operator copy must name what is delegated, who receives it, the audience, expiry/TTL, scope, device/session binding, and revoke path. Safe audit metadata is limited to grant id/jti, actor summary, issuer hash/display name, audience, capability bits, scope/params hashes, and correlation id. Raw grant handles, browser cookies, scoped actor tokens, pair tokens, node credentials, bearer headers, and secret-looking strings must not appear in logs, diagnostics, snapshots, audit payloads, CLI JSON, or browser JSON.
 
 ## Node identity lifecycle
 
@@ -45,24 +55,24 @@ Relay records Tailscale/MagicDNS source diagnostics for node credential authenti
 
 Public and audit surfaces expose only this redacted shape:
 
-| Field | Meaning |
-| --- | --- |
-| `state` | Diagnostic state: `signal-unavailable`, `source-match`, `source-mismatch`, `same-credential-multiple-sources`, or `strict-deny`. |
-| `policy` | `audit` by default, or `strict-deny` when the hub was started with strict source enforcement. |
-| `reasonCode` | Typed reason such as `NODE_SOURCE_MATCH`, `NODE_SOURCE_MISMATCH`, `NODE_SOURCE_MULTIPLE_SOURCES`, `NODE_SOURCE_SIGNAL_UNAVAILABLE`, or `NODE_SOURCE_STRICT_DENY`. |
-| `observedAt` | Time the credential source was evaluated. |
-| `sourceFingerprint` | Stable `src_<32 hex chars>` correlation handle for the normalized source. Omitted when no usable source exists. |
-| `displayHint` | Lossy operator hint such as `tailscale-ip:100.x.x.x`, `magicdns:ts.net:<suffix>`, `hostname:<suffix>`, or `no tailscale/magicdns signal`. |
+| Field               | Meaning                                                                                                                                                           |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state`             | Diagnostic state: `signal-unavailable`, `source-match`, `source-mismatch`, `same-credential-multiple-sources`, or `strict-deny`.                                  |
+| `policy`            | `audit` by default, or `strict-deny` when the hub was started with strict source enforcement.                                                                     |
+| `reasonCode`        | Typed reason such as `NODE_SOURCE_MATCH`, `NODE_SOURCE_MISMATCH`, `NODE_SOURCE_MULTIPLE_SOURCES`, `NODE_SOURCE_SIGNAL_UNAVAILABLE`, or `NODE_SOURCE_STRICT_DENY`. |
+| `observedAt`        | Time the credential source was evaluated.                                                                                                                         |
+| `sourceFingerprint` | Stable `src_<32 hex chars>` correlation handle for the normalized source. Omitted when no usable source exists.                                                   |
+| `displayHint`       | Lossy operator hint such as `tailscale-ip:100.x.x.x`, `magicdns:ts.net:<suffix>`, `hostname:<suffix>`, or `no tailscale/magicdns signal`.                         |
 
 State meanings:
 
-| State | Security meaning |
-| --- | --- |
-| `signal-unavailable` | No usable socket/Tailscale source signal was available. Caller-provided source headers are not trusted as authoritative source evidence. Default policy allows and audits this; strict mode denies it when the credential already has a Tailscale/MagicDNS source binding. |
-| `source-match` | The observed source matches the credential binding. |
-| `source-mismatch` | A usable observed source does not match the credential binding. If the credential otherwise validates, default policy allows and audits it so operators can see topology drift or suspicious reuse. |
-| `same-credential-multiple-sources` | The same credential has appeared from multiple redacted source fingerprints. If the credential otherwise validates, default policy allows it but operators should treat it as suspicious copied/replayed credential evidence unless a topology change explains it. |
-| `strict-deny` | `RELAY_NODE_SOURCE_STRICT_DENY=1` is enabled and a reachable source mismatch or missing trusted source evidence for a source-bound credential was denied. |
+| State                              | Security meaning                                                                                                                                                                                                                                                           |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `signal-unavailable`               | No usable socket/Tailscale source signal was available. Caller-provided source headers are not trusted as authoritative source evidence. Default policy allows and audits this; strict mode denies it when the credential already has a Tailscale/MagicDNS source binding. |
+| `source-match`                     | The observed source matches the credential binding.                                                                                                                                                                                                                        |
+| `source-mismatch`                  | A usable observed source does not match the credential binding. If the credential otherwise validates, default policy allows and audits it so operators can see topology drift or suspicious reuse.                                                                        |
+| `same-credential-multiple-sources` | The same credential has appeared from multiple redacted source fingerprints. If the credential otherwise validates, default policy allows it but operators should treat it as suspicious copied/replayed credential evidence unless a topology change explains it.         |
+| `strict-deny`                      | `RELAY_NODE_SOURCE_STRICT_DENY=1` is enabled and a reachable source mismatch or missing trusted source evidence for a source-bound credential was denied.                                                                                                                  |
 
 Strict mode is an opt-in node-credential control:
 
