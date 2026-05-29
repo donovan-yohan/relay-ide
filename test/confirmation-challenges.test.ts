@@ -169,24 +169,20 @@ describe('confirmation challenge store', () => {
       expect(mismatch.audit?.peer.principalHash).toBe('requester-session');
     }
 
-    const redeemed = store.redeemToken({
-      token: 'raw-token',
-      requesterAuthSessionHash: 'requester-session',
-      decision: challengeDecision(),
-      canonicalParams: canonicalConfirmationParams('rpc.fs.write', {
-        cwd: '/srv/app',
-        path: 'secrets.txt',
-        content: 'hello',
-      }),
-      now: NOW,
+    expect(mismatch.challenge).toMatchObject({
+      status: 'invalidated',
+      failedRedemptions: 1,
+      outcome: 'mismatch_denied',
     });
-    expect(redeemed.ok).toBe(true);
-    if (!redeemed.ok) throw new Error('expected redemption');
-    expect(redeemed.audit.peer.principalHash).toBe('requester-session');
-    expect(redeemed.audit.peer.principalHash).not.toBe('approver-session');
-    expect(redeemed.challenge.requesterToken).toBeUndefined();
+    expect(mismatch.challenge?.tokenHash).toBeUndefined();
+    expect(mismatch.challenge?.requesterToken).toBeUndefined();
+    expect(store.getChallenge(challenge.challengeId)).toMatchObject({
+      status: 'invalidated',
+    });
+    expect(store.getChallenge(challenge.challengeId)?.tokenHash).toBeUndefined();
+    expect(store.getChallenge(challenge.challengeId)?.requesterToken).toBeUndefined();
 
-    const usedAgain = store.redeemToken({
+    const correctAfterMismatch = store.redeemToken({
       token: 'raw-token',
       requesterAuthSessionHash: 'requester-session',
       decision: challengeDecision(),
@@ -197,11 +193,13 @@ describe('confirmation challenge store', () => {
       }),
       now: NOW,
     });
-    expect(usedAgain.ok).toBe(false);
-    if (!usedAgain.ok) expect(usedAgain.reasonCode).toBe('CONFIRMATION_ALREADY_USED');
+    expect(correctAfterMismatch.ok).toBe(false);
+    if (!correctAfterMismatch.ok) {
+      expect(correctAfterMismatch.reasonCode).toBe('CONFIRMATION_TOKEN_INVALID');
+    }
   });
 
-  it('expires, denies, deny+revokes, and caps failed mismatches with operator-readable reason codes', () => {
+  it('expires, denies, deny+revokes, and invalidates failed mismatches with operator-readable reason codes', () => {
     const store = createConfirmationChallengeStore({
       now: () => NOW,
       randomToken: () => 'raw-token',
@@ -263,17 +261,20 @@ describe('confirmation challenge store', () => {
     });
     expect(approved.ok).toBe(true);
     const wrongParams = canonicalConfirmationParams('rpc.fs.write', { path: '/srv/app/a', content: 'wrong' });
-    for (let i = 0; i < 2; i += 1) {
-      const result = store.redeemToken({
-        token: 'raw-token',
-        requesterAuthSessionHash: 'requester-session',
-        decision: challengeDecision(),
-        canonicalParams: wrongParams,
-        now: NOW,
-      });
-      expect(result).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_PARAM_MISMATCH' });
-    }
-    expect(store.getChallenge(capped.challengeId)?.status).toBe('invalidated');
+    const result = store.redeemToken({
+      token: 'raw-token',
+      requesterAuthSessionHash: 'requester-session',
+      decision: challengeDecision(),
+      canonicalParams: wrongParams,
+      now: NOW,
+    });
+    expect(result).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_PARAM_MISMATCH' });
+    expect(store.getChallenge(capped.challengeId)).toMatchObject({
+      status: 'invalidated',
+      failedRedemptions: 1,
+    });
+    expect(store.getChallenge(capped.challengeId)?.tokenHash).toBeUndefined();
+    expect(store.getChallenge(capped.challengeId)?.requesterToken).toBeUndefined();
   });
 
   it('expires stale list entries and bounds stored terminal challenges', () => {

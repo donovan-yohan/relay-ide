@@ -279,4 +279,152 @@ describe('high-risk approval contract bindings', () => {
     expect(redeemed.challenge.contract.redemptionNonceHash).toBe(approvedNonceHash);
     expect(JSON.stringify(publicChallenge(redeemed.challenge))).not.toContain('raw-confirmation-token');
   });
+
+  it('exercises deny, expire, redeem, reuse, and fail-closed parameter/context drift invalidation', () => {
+    let current = NOW;
+    let nextId = 0;
+    const store = createConfirmationChallengeStore({
+      now: () => current,
+      randomId: () => `challenge-${++nextId}`,
+      randomToken: () => `raw-token-${nextId}`,
+      challengeTtlMs: 1_000,
+      tokenTtlMs: 1_000,
+    });
+    const canonicalParams = canonicalConfirmationParams('rpc.fs.write', {
+      cwd: '/srv/app',
+      path: 'secrets.txt',
+      content: 'hello',
+    });
+
+    const denied = store.createChallenge(challengeDecision({ params: canonicalParams }), {
+      requesterAuthSessionHash: 'requester-session-hash',
+      canonicalParams,
+    });
+    const deniedResult = store.approveChallenge({
+      challengeId: denied.challengeId,
+      approverAuthSessionHash: 'operator-session',
+      decision: 'deny',
+      now: current,
+    });
+    expect(deniedResult).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_DENIED' });
+    expect(store.getChallenge(denied.challengeId)).toMatchObject({ status: 'denied', outcome: 'denied' });
+
+    const expired = store.createChallenge(challengeDecision({ params: canonicalParams }), {
+      requesterAuthSessionHash: 'requester-session-hash',
+      canonicalParams,
+    });
+    current = new Date(NOW.getTime() + 1_001);
+    expect(
+      store.approveChallenge({
+        challengeId: expired.challengeId,
+        approverAuthSessionHash: 'operator-session',
+        decision: 'approve',
+        now: current,
+      })
+    ).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_EXPIRED' });
+    expect(store.getChallenge(expired.challengeId)).toMatchObject({ status: 'expired', outcome: 'expired' });
+
+    current = NOW;
+    const redeemable = store.createChallenge(challengeDecision({ params: canonicalParams }), {
+      requesterAuthSessionHash: 'requester-session-hash',
+      canonicalParams,
+    });
+    const approved = store.approveChallenge({
+      challengeId: redeemable.challengeId,
+      approverAuthSessionHash: 'operator-session',
+      decision: 'approve',
+      now: current,
+    });
+    expect(approved).toMatchObject({ ok: true, reasonCode: 'CONFIRMATION_APPROVED' });
+    if (!approved.ok) throw new Error('expected approval');
+    const redeemed = store.redeemToken({
+      token: approved.confirmationToken,
+      requesterAuthSessionHash: 'requester-session-hash',
+      decision: challengeDecision({ params: canonicalParams }),
+      canonicalParams,
+      now: current,
+    });
+    expect(redeemed).toMatchObject({ ok: true, reasonCode: 'CONFIRMATION_APPROVED' });
+    const reused = store.redeemToken({
+      token: approved.confirmationToken,
+      requesterAuthSessionHash: 'requester-session-hash',
+      decision: challengeDecision({ params: canonicalParams }),
+      canonicalParams,
+      now: current,
+    });
+    expect(reused).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_ALREADY_USED' });
+
+    const drift = store.createChallenge(challengeDecision({ params: canonicalParams }), {
+      requesterAuthSessionHash: 'requester-session-hash',
+      canonicalParams,
+    });
+    const driftApproved = store.approveChallenge({
+      challengeId: drift.challengeId,
+      approverAuthSessionHash: 'operator-session',
+      decision: 'approve',
+      now: current,
+    });
+    if (!driftApproved.ok) throw new Error('expected drift approval');
+    const driftResult = store.redeemToken({
+      token: driftApproved.confirmationToken,
+      requesterAuthSessionHash: 'requester-session-hash',
+      decision: challengeDecision({ params: canonicalParams }),
+      canonicalParams: canonicalConfirmationParams('rpc.fs.write', {
+        cwd: '/srv/app',
+        path: 'secrets.txt',
+        content: 'tampered',
+      }),
+      now: current,
+    });
+    expect(driftResult).toMatchObject({
+      ok: false,
+      reasonCode: 'CONFIRMATION_PARAM_MISMATCH',
+      challenge: {
+        status: 'invalidated',
+        failedRedemptions: 1,
+        outcome: 'mismatch_denied',
+      },
+    });
+    expect(driftResult.challenge?.tokenHash).toBeUndefined();
+    expect(driftResult.challenge?.requesterToken).toBeUndefined();
+    expect(
+      store.redeemToken({
+        token: driftApproved.confirmationToken,
+        requesterAuthSessionHash: 'requester-session-hash',
+        decision: challengeDecision({ params: canonicalParams }),
+        canonicalParams,
+        now: current,
+      })
+    ).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_TOKEN_INVALID' });
+
+    const contextDrift = store.createChallenge(challengeDecision({ params: canonicalParams }), {
+      requesterAuthSessionHash: 'requester-session-hash',
+      canonicalParams,
+    });
+    const contextApproved = store.approveChallenge({
+      challengeId: contextDrift.challengeId,
+      approverAuthSessionHash: 'operator-session',
+      decision: 'approve',
+      now: current,
+    });
+    if (!contextApproved.ok) throw new Error('expected context approval');
+    const contextResult = store.redeemToken({
+      token: contextApproved.confirmationToken,
+      requesterAuthSessionHash: 'requester-session-hash',
+      decision: challengeDecision({ params: canonicalParams, sessionId: 'session-2' }),
+      canonicalParams,
+      now: current,
+    });
+    expect(contextResult).toMatchObject({
+      ok: false,
+      reasonCode: 'CONFIRMATION_CONTEXT_MISMATCH',
+      challenge: {
+        status: 'invalidated',
+        failedRedemptions: 1,
+        outcome: 'mismatch_denied',
+      },
+    });
+    expect(contextResult.challenge?.tokenHash).toBeUndefined();
+    expect(contextResult.challenge?.requesterToken).toBeUndefined();
+  });
 });

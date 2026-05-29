@@ -429,23 +429,20 @@ export function createConfirmationChallengeStore(
       return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the approving browser/auth session cannot redeem its own approval', 'same_session_approval_attempt', 'deny');
     }
     if (!challengeContextMatches(challenge, input.decision)) {
-      return failChallenge(challenge, 'CONFIRMATION_CONTEXT_MISMATCH', 'confirmation token does not match this node, intent, capability set, or session', 'failed_redemption', 'failed');
+      return invalidateRedemptionChallenge(
+        challenge,
+        'CONFIRMATION_CONTEXT_MISMATCH',
+        'confirmation token context drift invalidated the approved challenge',
+        input.canonicalParams
+      );
     }
     if (challenge.canonicalParamsHash !== hashCanonicalParams(input.canonicalParams)) {
-      challenge.failedRedemptions += 1;
-      challenge.outcome = 'mismatch_denied';
-      challenge.contract = updatedContract(challenge, 'mismatch_denied');
-      if (challenge.failedRedemptions >= challenge.maxFailedRedemptions) {
-        challenge.status = 'invalidated';
-        challenge.reasonCode = 'CONFIRMATION_PARAM_MISMATCH';
-        challenge.message = 'confirmation token invalidated after too many parameter mismatches';
-      }
-      return failure('CONFIRMATION_PARAM_MISMATCH', 'confirmation token parameters do not match the original challenge', challenge, auditForChallenge(challenge, {
-        eventType: 'failed_redemption',
-        decision: 'failed',
-        reasonCode: 'CONFIRMATION_PARAM_MISMATCH',
-        params: input.canonicalParams,
-      }));
+      return invalidateRedemptionChallenge(
+        challenge,
+        'CONFIRMATION_PARAM_MISMATCH',
+        'confirmation token parameter drift invalidated the approved challenge',
+        input.canonicalParams
+      );
     }
     challenge.status = 'redeemed';
     challenge.redeemedAt = current.toISOString();
@@ -682,6 +679,29 @@ function updatedContract(
         : {}),
     outcome,
   });
+}
+
+function invalidateRedemptionChallenge(
+  challenge: ConfirmationChallenge,
+  reasonCode: ConfirmationReasonCode,
+  message: string,
+  params?: unknown
+): ConfirmationFailure {
+  challenge.failedRedemptions += 1;
+  challenge.status = 'invalidated';
+  challenge.reasonCode = reasonCode;
+  challenge.message = message;
+  challenge.outcome = 'mismatch_denied';
+  challenge.contract = updatedContract(challenge, 'mismatch_denied');
+  delete challenge.tokenExpiresAt;
+  delete challenge.tokenHash;
+  delete challenge.requesterToken;
+  return failure(reasonCode, message, challenge, auditForChallenge(challenge, {
+    eventType: 'failed_redemption',
+    decision: 'failed',
+    reasonCode,
+    ...(params !== undefined ? { params } : {}),
+  }));
 }
 
 function failChallenge(
