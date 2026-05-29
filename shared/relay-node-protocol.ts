@@ -130,6 +130,22 @@ export type HubNodeVersionState =
   | 'version-skew'
   | 'incompatible';
 
+export type RelayNodeSourceState =
+  | 'signal-unavailable'
+  | 'source-match'
+  | 'source-mismatch'
+  | 'same-credential-multiple-sources'
+  | 'strict-deny';
+
+export interface RelayNodeSourceDiagnostics {
+  state: RelayNodeSourceState;
+  policy: 'audit' | 'strict-deny';
+  reasonCode: string;
+  observedAt: string;
+  sourceFingerprint?: string;
+  displayHint?: string;
+}
+
 /**
  * Hub↔node helper-version (binary) skew categories.
  * Distinct from the node-link protocol version check:
@@ -251,6 +267,12 @@ export interface HubNodeSummary {
    * when the manifest includes `degradedReasons[]`. Empty on healthy nodes.
    */
   degradedReasons?: NodeManifestDegradedReason[];
+  /**
+   * Tailscale/MagicDNS-aware source binding diagnostics. This is intentionally
+   * lossy: public surfaces expose only a stable fingerprint and display hint,
+   * never raw headers, bearer material, DNS names, host inventories, or paths.
+   */
+  sourceDiagnostics?: RelayNodeSourceDiagnostics;
   createdAt: string;
   pairedAt: string;
   lastSeenAt: string;

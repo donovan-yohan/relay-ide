@@ -1909,6 +1909,9 @@ async function main(): Promise<void> {
       renewLocalSession: localRelayNode.sessions.renew,
       workContextStore,
       readModelCache: remoteSessionReadModelCache,
+      sourceDiagnostics: {
+        strictDeny: process.env.RELAY_NODE_SOURCE_STRICT_DENY === '1',
+      },
       ...(securityAuditLog ? { auditSink: securityAuditLog } : {}),
     })
   );
@@ -2088,7 +2091,8 @@ async function main(): Promise<void> {
     hubNodeRegistry,
     hubNodeLinks,
     sessionEnvelopeRegistry,
-    securityAuditLog
+    securityAuditLog,
+    { strictDeny: process.env.RELAY_NODE_SOURCE_STRICT_DENY === '1' }
   );
 
   const browserScopedToken = generateScopedToken();

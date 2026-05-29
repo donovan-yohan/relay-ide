@@ -21,7 +21,16 @@ import {
   type RelayNodeCredentialRecordSummary,
   type RelayNodeError,
   type RelayNodeErrorCode,
+  type RelayNodeSourceDiagnostics,
 } from '../shared/relay-node-protocol.js';
+import {
+  evaluateRelayNodeSource,
+  hasTailscaleSourceSignal,
+  sourceDisplayHint,
+  sourceFingerprint,
+  sourceTupleWithHostname,
+  type RelayNodeSourceTuple,
+} from './node-source-diagnostics.js';
 import { classifyHelperSkew } from './node-version-skew.js';
 import {
   RELAY_SECURITY_POLICY_VERSION,
@@ -81,6 +90,13 @@ interface StoredActiveCredential {
   revokedAt?: string;
 }
 
+interface StoredNodeSourceBinding {
+  expected?: RelayNodeSourceTuple;
+  lastObserved?: RelayNodeSourceTuple;
+  observedFingerprints?: string[];
+  diagnostics?: RelayNodeSourceDiagnostics;
+}
+
 interface StoredNodeRecord {
   nodeId: string;
   identity?: StoredNodeIdentity;
@@ -109,6 +125,7 @@ interface StoredNodeRecord {
   acl?: RelayNodeAcl;
   repoInventory?: unknown;
   credentialRotation?: StoredCredentialRotation;
+  sourceBinding?: StoredNodeSourceBinding;
   createdAt: string;
   pairedAt: string;
   lastSeenAt: string;
@@ -135,6 +152,7 @@ export interface PairExchangeInput {
   manifest: NodeManifest;
   displayName?: string;
   protocolVersion?: string;
+  source?: RelayNodeSourceTuple;
 }
 
 export interface HeartbeatInput {
@@ -196,6 +214,11 @@ export type CredentialAuthResult =
       rotationId?: string;
     }
   | { ok: false; error: RelayNodeError };
+
+export interface CredentialAuthContext {
+  source?: RelayNodeSourceTuple;
+  strictSourceDeny?: boolean;
+}
 
 export interface HubNodeStatusEvent {
   nodeId: string;
@@ -528,6 +551,51 @@ function ensureSeparatedCredential(node: StoredNodeRecord): StoredActiveCredenti
   return node.activeCredential;
 }
 
+function sourceBindingForNode(node: StoredNodeRecord): StoredNodeSourceBinding {
+  node.sourceBinding ??= {};
+  node.sourceBinding.observedFingerprints ??= [];
+  return node.sourceBinding;
+}
+
+function publicSourceDiagnostics(
+  diagnostics: RelayNodeSourceDiagnostics | undefined
+): RelayNodeSourceDiagnostics | undefined {
+  if (!diagnostics) return undefined;
+  return {
+    state: diagnostics.state,
+    policy: diagnostics.policy,
+    reasonCode: diagnostics.reasonCode,
+    observedAt: diagnostics.observedAt,
+    ...(diagnostics.sourceFingerprint
+      ? { sourceFingerprint: diagnostics.sourceFingerprint }
+      : {}),
+    ...(diagnostics.displayHint ? { displayHint: diagnostics.displayHint } : {}),
+  };
+}
+
+function sourceDiagnosticsForAuthDenied(input: {
+  source?: RelayNodeSourceTuple | undefined;
+  now: string;
+  strictDeny?: boolean | undefined;
+  fingerprintKey?: string | undefined;
+}): RelayNodeSourceDiagnostics {
+  const normalized = sourceTupleWithHostname(input.source, undefined);
+  const hasSignal = hasTailscaleSourceSignal(normalized);
+  const fingerprint = normalized
+    ? sourceFingerprint(normalized, input.fingerprintKey)
+    : undefined;
+  return {
+    state: hasSignal ? 'source-mismatch' : 'signal-unavailable',
+    policy: input.strictDeny ? 'strict-deny' : 'audit',
+    reasonCode: hasSignal
+      ? 'TAILSCALE_REACHABLE_RELAY_AUTH_DENIED'
+      : 'NODE_SOURCE_SIGNAL_UNAVAILABLE',
+    observedAt: input.now,
+    ...(fingerprint ? { sourceFingerprint: fingerprint } : {}),
+    displayHint: sourceDisplayHint(normalized, fingerprint),
+  };
+}
+
 function credentialSummary(node: StoredNodeRecord): RelayNodeCredentialRecordSummary {
   const credential = ensureSeparatedCredential(node);
   const state = credentialState(node);
@@ -622,6 +690,7 @@ function publicNode(
   const rotationSummary = node.credentialRotation
     ? publicRotation(node.credentialRotation)
     : undefined;
+  const sourceDiagnostics = publicSourceDiagnostics(node.sourceBinding?.diagnostics);
 
   let helperSkew: HubNodeHelperSkewSummary | undefined;
   if (hubVersion && (node.helperVersion || node.relayVersion)) {
@@ -676,6 +745,7 @@ function publicNode(
     ...(node.degradedReasons && node.degradedReasons.length > 0
       ? { degradedReasons: node.degradedReasons }
       : {}),
+    ...(sourceDiagnostics ? { sourceDiagnostics } : {}),
     createdAt: node.createdAt,
     pairedAt: node.pairedAt,
     lastSeenAt: node.lastSeenAt,
@@ -816,6 +886,13 @@ export class HubNodeRegistry {
       input.displayName ?? pairToken.displayName,
       input.manifest
     );
+    const pairedSource = sourceTupleWithHostname(
+      input.source,
+      input.manifest.hostname
+    );
+    const pairedSourceFingerprint = pairedSource
+      ? sourceFingerprint(pairedSource, credential.hash)
+      : undefined;
     const node: StoredNodeRecord = {
       nodeId,
       identity: {
@@ -853,6 +930,31 @@ export class HubNodeRegistry {
         createdAt: timestamp,
       }),
       credentialIssuedAt: timestamp,
+      ...(pairedSource
+        ? {
+            sourceBinding: {
+              expected: pairedSource,
+              lastObserved: pairedSource,
+              observedFingerprints: pairedSourceFingerprint
+                ? [pairedSourceFingerprint]
+                : [],
+              diagnostics: {
+                state: hasTailscaleSourceSignal(pairedSource)
+                  ? 'source-match'
+                  : 'signal-unavailable',
+                policy: 'audit',
+                reasonCode: hasTailscaleSourceSignal(pairedSource)
+                  ? 'NODE_SOURCE_MATCH'
+                  : 'NODE_SOURCE_SIGNAL_UNAVAILABLE',
+                observedAt: timestamp,
+                ...(pairedSourceFingerprint
+                  ? { sourceFingerprint: pairedSourceFingerprint }
+                  : {}),
+                displayHint: sourceDisplayHint(pairedSource, pairedSourceFingerprint),
+              },
+            },
+          }
+        : {}),
       createdAt: timestamp,
       pairedAt: timestamp,
       lastSeenAt: timestamp,
@@ -882,18 +984,22 @@ export class HubNodeRegistry {
     };
   }
 
-  authenticateCredential(token: string): HubNodeSummary | null {
-    const result = this.authenticateCredentialDetailed(token);
+  authenticateCredential(token: string, context: CredentialAuthContext = {}): HubNodeSummary | null {
+    const result = this.authenticateCredentialDetailed(token, context);
     return result.ok ? result.node : null;
   }
 
   private parseCredentialToken(
-    token: string
+    token: string,
+    context: CredentialAuthContext = {}
   ):
     | { ok: true; nodeId: string }
     | { ok: false; result: CredentialAuthResult } {
     if (token.length === 0) {
-      return { ok: false, result: this.credentialDenied('NODE_CREDENTIAL_MISSING') };
+      return {
+        ok: false,
+        result: this.credentialDenied('NODE_CREDENTIAL_MISSING', undefined, undefined, context),
+      };
     }
     const firstSeparator = token.indexOf('.');
     if (
@@ -901,11 +1007,17 @@ export class HubNodeRegistry {
       firstSeparator === token.length - 1 ||
       token.indexOf('.', firstSeparator + 1) !== -1
     ) {
-      return { ok: false, result: this.credentialDenied('NODE_CREDENTIAL_MALFORMED') };
+      return {
+        ok: false,
+        result: this.credentialDenied('NODE_CREDENTIAL_MALFORMED', undefined, undefined, context),
+      };
     }
     const nodeId = token.slice(0, firstSeparator);
     if (!nodeId.startsWith('node_')) {
-      return { ok: false, result: this.credentialDenied('NODE_CREDENTIAL_MALFORMED') };
+      return {
+        ok: false,
+        result: this.credentialDenied('NODE_CREDENTIAL_MALFORMED', undefined, undefined, context),
+      };
     }
     return { ok: true, nodeId };
   }
@@ -913,20 +1025,31 @@ export class HubNodeRegistry {
   private credentialDenied(
     code: RelayNodeErrorCode,
     node?: StoredNodeRecord,
-    nodeId?: string
+    nodeId?: string,
+    context: CredentialAuthContext = {}
   ): CredentialAuthResult {
-    const error = this.credentialError(code);
+    const sourceDiagnostics = sourceDiagnosticsForAuthDenied({
+      source: context.source,
+      now: this.now().toISOString(),
+      strictDeny: context.strictSourceDeny,
+      ...(node ? { fingerprintKey: ensureSeparatedCredential(node).tokenHash } : {}),
+    });
+    const error = this.credentialError(code, sourceDiagnostics);
     this.auditNodeCredentialLifecycle({
       ...(node ? { node } : {}),
       ...(nodeId ? { nodeId } : {}),
       decision: code === 'NODE_CREDENTIAL_EXPIRED' ? 'expired' : 'deny',
       eventType: code === 'NODE_CREDENTIAL_EXPIRED' ? 'expiry' : 'denial',
       reasonCode: code,
+      sourceDiagnostics,
     });
     return { ok: false, error };
   }
 
-  private credentialError(code: RelayNodeErrorCode): RelayNodeError {
+  private credentialError(
+    code: RelayNodeErrorCode,
+    sourceDiagnostics?: RelayNodeSourceDiagnostics
+  ): RelayNodeError {
     const messages: Partial<Record<RelayNodeErrorCode, string>> = {
       NODE_CREDENTIAL_MISSING: 'node credential is missing; re-pair this node',
       NODE_CREDENTIAL_MALFORMED:
@@ -941,7 +1064,10 @@ export class HubNodeRegistry {
       code,
       message: messages[code] ?? 'invalid node credential',
       retryable: false,
-      details: { reasonCode: code },
+      details: {
+        reasonCode: code,
+        ...(sourceDiagnostics ? { sourceDiagnostics } : {}),
+      },
     };
   }
 
@@ -953,6 +1079,7 @@ export class HubNodeRegistry {
     eventType: SecurityAuditEventType;
     reasonCode: string;
     action?: string;
+    sourceDiagnostics?: RelayNodeSourceDiagnostics;
   }): void {
     if (!this.auditSink) return;
     const nodeId = input.node?.nodeId ?? input.nodeId;
@@ -975,8 +1102,14 @@ export class HubNodeRegistry {
           params: {
             recoveryReason: input.reasonCode,
             hasCredentialId: Boolean(input.credentialId),
+            ...(input.sourceDiagnostics
+              ? { sourceState: input.sourceDiagnostics.state }
+              : {}),
           },
         },
+        ...(input.sourceDiagnostics
+          ? { sourceDiagnostics: input.sourceDiagnostics }
+          : {}),
       });
     } catch {
       // Best-effort lifecycle visibility only. Authentication remains
@@ -985,9 +1118,43 @@ export class HubNodeRegistry {
     }
   }
 
-  authenticateCredentialDetailed(token: string): CredentialAuthResult {
+  private recordSourceObservation(
+    node: StoredNodeRecord,
+    context: CredentialAuthContext,
+    fingerprintKey: string,
+    now: string
+  ): RelayNodeSourceDiagnostics {
+    const binding = sourceBindingForNode(node);
+    const observed = sourceTupleWithHostname(context.source, node.identity?.hostname ?? node.hostname);
+    if (!binding.expected && observed && hasTailscaleSourceSignal(observed)) {
+      binding.expected = observed;
+    }
+    const evaluation = evaluateRelayNodeSource({
+      expected: binding.expected,
+      observed,
+      observedFingerprints: binding.observedFingerprints,
+      strictDeny: context.strictSourceDeny,
+      fingerprintKey,
+      now,
+    });
+    if (evaluation.normalizedObserved) {
+      binding.lastObserved = evaluation.normalizedObserved;
+    }
+    if (evaluation.observedFingerprint) {
+      const fingerprints = new Set(binding.observedFingerprints ?? []);
+      fingerprints.add(evaluation.observedFingerprint);
+      binding.observedFingerprints = Array.from(fingerprints).slice(-8);
+    }
+    binding.diagnostics = evaluation.diagnostics;
+    return evaluation.diagnostics;
+  }
+
+  authenticateCredentialDetailed(
+    token: string,
+    context: CredentialAuthContext = {}
+  ): CredentialAuthResult {
     const trimmedToken = token.trim();
-    const parsed = this.parseCredentialToken(trimmedToken);
+    const parsed = this.parseCredentialToken(trimmedToken, context);
     if (parsed.ok === false) return parsed.result;
     const { nodeId } = parsed;
     const tokenHash = sha256(trimmedToken);
@@ -1009,20 +1176,51 @@ export class HubNodeRegistry {
         : node.credentialRotation?.state === 'stable'
           ? 'REPAIR_REQUIRED'
           : 'NODE_CREDENTIAL_MISMATCH';
-      return this.credentialDenied(code, node, nodeId);
+      return this.credentialDenied(code, node, nodeId, context);
     }
     if (activeCredential?.expiresAt) {
       const expiresAt = Date.parse(activeCredential.expiresAt);
       if (Number.isFinite(expiresAt) && expiresAt <= this.now().getTime()) {
-        return this.credentialDenied('NODE_CREDENTIAL_EXPIRED', node, nodeId);
+        return this.credentialDenied('NODE_CREDENTIAL_EXPIRED', node, nodeId, context);
       }
     }
     if (node.revokedAt) {
-      return this.credentialDenied('NODE_REVOKED', node, nodeId);
+      return this.credentialDenied('NODE_REVOKED', node, nodeId, context);
     }
     const credentialId = matchesRotation
       ? rotation!.nextCredentialId
       : node.credentialId;
+    const sourceDiagnostics = this.recordSourceObservation(
+      node,
+      context,
+      matchesRotation ? rotation!.nextCredentialHash! : activeCredential!.tokenHash,
+      this.now().toISOString()
+    );
+    if (sourceDiagnostics.state === 'strict-deny') {
+      this.persist();
+      this.auditNodeCredentialLifecycle({
+        node,
+        credentialId,
+        decision: 'deny',
+        eventType: 'denial',
+        reasonCode: sourceDiagnostics.reasonCode,
+        sourceDiagnostics,
+      });
+      return {
+        ok: false,
+        error: {
+          code: 'FORBIDDEN',
+          message:
+            'node credential source does not match the expected Tailscale/MagicDNS binding',
+          retryable: false,
+          details: {
+            reasonCode: sourceDiagnostics.reasonCode,
+            sourceDiagnostics,
+          },
+        },
+      };
+    }
+    this.persist();
     this.auditNodeCredentialLifecycle({
       node,
       credentialId,
@@ -1031,6 +1229,7 @@ export class HubNodeRegistry {
       reasonCode: matchesRotation
         ? 'NODE_CREDENTIAL_ROTATION_RECONNECT_ALLOWED'
         : 'NODE_CREDENTIAL_RECONNECT_ALLOWED',
+      sourceDiagnostics,
     });
     return {
       ok: true,

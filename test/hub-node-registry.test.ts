@@ -382,6 +382,139 @@ describe('hub node registry', () => {
     });
   });
 
+  it('tracks Tailscale/MagicDNS source diagnostics without exposing raw source material', () => {
+    const auditEntries: SecurityAuditEntryInput[] = [];
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-hub-node-registry-source-')
+    );
+    try {
+      const registry = createHubNodeRegistry({
+        storagePath: path.join(tmpDir, 'nodes.json'),
+        now: () => new Date('2026-01-02T03:04:05.000Z'),
+        auditSink: { append: (entry) => auditEntries.push(entry) },
+      });
+      const pair = registry.createPairToken({ displayName: 'Dogfood Mac' });
+      const exchanged = registry.exchangePairToken({
+        pairToken: pair.pairToken,
+        manifest: manifest({ hostname: 'donovans-secret-macbook' }),
+        source: {
+          tailnetIp: '100.90.12.34',
+          magicDnsName: 'donovans-secret-macbook.tailnet.ts.net',
+        },
+      });
+
+      expect(exchanged.node.sourceDiagnostics).toMatchObject({
+        state: 'source-match',
+        policy: 'audit',
+        reasonCode: 'NODE_SOURCE_MATCH',
+        sourceFingerprint: expect.stringMatching(/^src_[a-f0-9]{32}$/),
+      });
+      const publicPairDiagnostics = JSON.stringify(
+        exchanged.node.sourceDiagnostics
+      );
+      expect(publicPairDiagnostics).not.toContain('100.90.12.34');
+      expect(publicPairDiagnostics).not.toContain(
+        'donovans-secret-macbook.tailnet.ts.net'
+      );
+      expect(publicPairDiagnostics).not.toContain('donovans-secret-macbook');
+
+      const matched = registry.authenticateCredentialDetailed(
+        exchanged.credential.token,
+        {
+          source: {
+            tailnetIp: '100.90.12.34',
+            magicDnsName: 'donovans-secret-macbook.tailnet.ts.net',
+          },
+        }
+      );
+      expect(matched.ok).toBe(true);
+      if (matched.ok) {
+        expect(matched.node.sourceDiagnostics?.state).toBe('source-match');
+      }
+
+      const unavailable = registry.authenticateCredentialDetailed(
+        exchanged.credential.token,
+        {}
+      );
+      expect(unavailable.ok).toBe(true);
+      if (unavailable.ok) {
+        expect(unavailable.node.sourceDiagnostics).toMatchObject({
+          state: 'signal-unavailable',
+          reasonCode: 'NODE_SOURCE_SIGNAL_UNAVAILABLE',
+        });
+      }
+
+      const mismatch = registry.authenticateCredentialDetailed(
+        exchanged.credential.token,
+        { source: { tailnetIp: '100.91.1.2' } }
+      );
+      expect(mismatch.ok).toBe(true);
+      if (mismatch.ok) {
+        expect(mismatch.node.sourceDiagnostics).toMatchObject({
+          state: 'same-credential-multiple-sources',
+          reasonCode: 'NODE_SOURCE_MULTIPLE_SOURCES',
+        });
+      }
+
+      const strictUnavailable = registry.authenticateCredentialDetailed(
+        exchanged.credential.token,
+        { strictSourceDeny: true }
+      );
+      const strictUnavailableError =
+        'error' in strictUnavailable ? strictUnavailable.error : undefined;
+      expect(strictUnavailableError).toMatchObject({
+        code: 'FORBIDDEN',
+        details: {
+          reasonCode: 'NODE_SOURCE_STRICT_DENY',
+          sourceDiagnostics: { state: 'strict-deny' },
+        },
+      });
+
+      const strictDeny = registry.authenticateCredentialDetailed(
+        exchanged.credential.token,
+        { source: { tailnetIp: '100.92.3.4' }, strictSourceDeny: true }
+      );
+      const strictError = 'error' in strictDeny ? strictDeny.error : undefined;
+      expect(strictError).toMatchObject({
+        code: 'FORBIDDEN',
+        details: {
+          reasonCode: 'NODE_SOURCE_STRICT_DENY',
+          sourceDiagnostics: { state: 'strict-deny' },
+        },
+      });
+
+      const auditJson = JSON.stringify(auditEntries);
+      expect(auditJson).toContain('sourceDiagnostics');
+      expect(auditJson).not.toContain(exchanged.credential.token);
+      expect(auditJson).not.toContain('100.90.12.34');
+      expect(auditJson).not.toContain(
+        'donovans-secret-macbook.tailnet.ts.net'
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('distinguishes Tailscale-reachable Relay auth denial from missing source signal', () => {
+    withTmpRegistry((registry) => {
+      const reachable = registry.authenticateCredentialDetailed('not-a-token', {
+        source: { tailnetIp: '100.80.1.2' },
+      });
+      const unavailable = registry.authenticateCredentialDetailed('not-a-token');
+
+      const reachableError = 'error' in reachable ? reachable.error : undefined;
+      const unavailableError = 'error' in unavailable ? unavailable.error : undefined;
+      expect(reachableError?.details?.['sourceDiagnostics']).toMatchObject({
+        state: 'source-mismatch',
+        reasonCode: 'TAILSCALE_REACHABLE_RELAY_AUTH_DENIED',
+      });
+      expect(unavailableError?.details?.['sourceDiagnostics']).toMatchObject({
+        state: 'signal-unavailable',
+        reasonCode: 'NODE_SOURCE_SIGNAL_UNAVAILABLE',
+      });
+    });
+  });
+
   it('persists paired nodes and authenticates durable node credentials after reload', () => {
     const tmpDir = fs.mkdtempSync(
       path.join(os.tmpdir(), 'relay-hub-node-registry-')
