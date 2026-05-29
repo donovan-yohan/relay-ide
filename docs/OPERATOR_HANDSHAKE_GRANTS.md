@@ -8,7 +8,7 @@ Operator approval surfaces should say all of this before approval:
 
 - What is delegated: the exact Relay capability bits, such as `session:read` or `logs:read`.
 - Who receives it: actor type and actor id/display name.
-- Audience: the expected grant audience, currently `relay:operator-handshake:v1`.
+- Audience: the expected grant audience, for example `relay:operator-handshake:v1` for generic ceremony handoffs or `relay:node-pair-token:v1` for node pair-token minting.
 - TTL: the grant expiry timestamp; the default foundation TTL is 10 minutes and the maximum is 30 minutes.
 - Scope: node/session/global-session/work-context/repo/path/task dimensions.
 - Bindings: optional device id hash and session binding.
@@ -30,6 +30,18 @@ The browser session may authorize the approval ceremony, but the returned `relay
 | `relay-sac-v1...` scoped actor token | No                                                     | Separate scoped actor credential lane.                              |
 | Pair token                           | No                                                     | Node bootstrap only.                                                |
 | Node credential                      | No                                                     | Node heartbeat/link only.                                           |
+
+## Node pair-token minting grant
+
+The node bootstrap automation lane uses a dedicated audience and capability:
+
+- Audience: `relay:node-pair-token:v1`
+- Capability: `node:pair-token:create`
+- Mint endpoint: `POST /hub/pair-tokens` with `X-Relay-Operator-Grant: <relay-ohg-v1...>` plus safe context in the JSON body (`displayName`, `platform`, `ttlSeconds`, `trustTier`, `capabilityEnvelope`, `taskRef` or session/work-context bindings, actor summary, and correlation id).
+
+The browser/PIN session may authorize creating or approving a grant, and may remain as a human fallback pair-token creation path, but it is not accepted as the automation grant. Scoped actor tokens, node credentials, existing pair tokens, and bearer headers from other lanes fail closed instead of minting node pair tokens.
+
+Successful mint validation consumes the operator grant and creates a separate short-lived pair token. That pair token is still one-time bootstrap material accepted only by `POST /hub/pairing/exchange`; it does not become a browser session, scoped actor credential, node credential, or reusable grant.
 
 ## Validation failure contract
 

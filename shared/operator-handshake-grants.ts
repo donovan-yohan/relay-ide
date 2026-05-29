@@ -15,6 +15,10 @@ import {
 } from './security-policy.js';
 
 export const HANDSHAKE_GRANT_TOKEN_PREFIX = 'relay-ohg-v1' as const;
+export const NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE =
+  'relay:node-pair-token:v1' as const;
+export const NODE_PAIR_TOKEN_CREATE_CAPABILITY =
+  'node:pair-token:create' as const;
 
 export const HANDSHAKE_GRANT_ACTOR_TYPES = [
   'agent',
@@ -27,6 +31,7 @@ export type HandshakeGrantActorType =
 
 export const HANDSHAKE_GRANT_AUDIENCES = [
   'relay:operator-handshake:v1',
+  NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
   'relay:registry-test',
 ] as const;
 
@@ -1018,6 +1023,9 @@ function isForeignCredentialLane(value: unknown): boolean {
   return (
     trimmed.startsWith('bearer ') ||
     trimmed.startsWith('relay-sac-v1.') ||
+    trimmed.startsWith('pair_') ||
+    trimmed.startsWith('node_') ||
+    trimmed.includes('.secret_') ||
     trimmed.startsWith('relay-pair-') ||
     trimmed.startsWith('relay-node-') ||
     trimmed.includes('connect.sid=') ||

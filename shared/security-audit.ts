@@ -146,7 +146,7 @@ const SENSITIVE_KEY_TERMS = new Set([
   'value',
 ]);
 const SENSITIVE_TEXT_PATTERN =
-  /(bearer\s+[a-z0-9._~+/=-]+|connect\.sid=[^\s;]+|\b(?:access_?token|refresh_?token|token)=[^\s&;]+|gh[pousr]_[a-z0-9_]+|sk-[a-z0-9_-]+|relay-[a-z0-9._~+/=-]{16,})/gi;
+  /(bearer\s+[a-z0-9._~+/=-]+|connect\.sid=[^\s;]+|\b(?:access_?token|refresh_?token|token)=[^\s&;]+|gh[pousr]_[a-z0-9_]+|sk-[a-z0-9_-]+|relay-(?:ohg|sac)-v1\.[a-z0-9._~+/=-]+\.[a-z0-9._~+/=-]+|relay-[a-z0-9._~+/=-]{16,}|\bpair_[a-z0-9._~+/=-]+|\bnode_[a-z0-9._~+/=-]+\.secret_[a-z0-9._~+/=-]+)/gi;
 const HIGH_RISK_SET = new Set<RelayCapabilityBit>(HIGH_RISK_CAPABILITIES);
 
 export function isSecurityAuditEventType(

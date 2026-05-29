@@ -18,6 +18,11 @@ import { setupWebSocket } from '../server/ws.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
 import { SecurityAuditLog } from '../server/security-audit-log.js';
 import * as auth from '../server/auth.js';
+import {
+  HandshakeGrantRegistry,
+  NODE_PAIR_TOKEN_CREATE_CAPABILITY,
+  NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
+} from '../shared/operator-handshake-grants.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 
@@ -563,6 +568,212 @@ describe('hub node routes and link', () => {
       error: { code: 'NODE_REVOKED', retryable: false },
     });
     expect(revokedHeartbeatBody).not.toContain(exchange.credential.token);
+  });
+
+
+  it('mints pair tokens from scoped one-time operator handshake grants only', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    let now = new Date('2026-01-02T03:04:05.000Z');
+    const operatorHandshakeGrants = new HandshakeGrantRegistry({
+      now: () => now,
+      secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        operatorHandshakeGrants,
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const grantRequest = await fetch(`${base}/hub/operator-handshake-grants`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({
+        actor: { type: 'cli', id: 'ebi-cli', displayName: 'Ebi CLI' },
+        issuer: { id: 'operator-browser', displayName: 'Operator' },
+        audience: NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
+        capabilities: [NODE_PAIR_TOKEN_CREATE_CAPABILITY],
+        scope: { taskRefs: ['bootstrap-work-mac'] },
+        ttlMs: 600_000,
+        correlationId: 'corr-pair-mint',
+      }),
+    });
+    expect(grantRequest.status).toBe(201);
+    const requested = (await grantRequest.json()) as { grant: { id: string } };
+    const grantApproval = await fetch(
+      `${base}/hub/operator-handshake-grants/${requested.grant.id}/approve`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({ approvedBy: { id: 'operator-browser' } }),
+      }
+    );
+    expect(grantApproval.status).toBe(200);
+    const approved = (await grantApproval.json()) as { handle: string };
+
+    const pairRes = await fetch(`${base}/hub/pair-tokens`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-relay-operator-grant': approved.handle,
+        'x-relay-actor-type': 'cli',
+        'x-relay-actor-id': 'ebi-cli',
+      },
+      body: JSON.stringify({
+        displayName: 'Work Mac',
+        platform: 'macos',
+        taskRef: 'bootstrap-work-mac',
+        trustTier: 'sandbox',
+        ttlSeconds: 300,
+        capabilityEnvelope: {
+          allowed: ['session:read', NODE_PAIR_TOKEN_CREATE_CAPABILITY],
+        },
+      }),
+    });
+    expect(pairRes.status).toBe(201);
+    const pair = (await pairRes.json()) as { pairToken: string };
+    expect(pair.pairToken).toMatch(/^pair_/);
+
+    const replayRes = await fetch(`${base}/hub/pair-tokens`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-relay-operator-grant': approved.handle,
+        'x-relay-actor-type': 'cli',
+        'x-relay-actor-id': 'ebi-cli',
+      },
+      body: JSON.stringify({ taskRef: 'bootstrap-work-mac' }),
+    });
+    expect(replayRes.status).toBe(400);
+    expect(await replayRes.json()).toMatchObject({
+      error: {
+        code: 'TOKEN_ALREADY_USED',
+        details: { reasonCode: 'PAIR_TOKEN_GRANT_REPLAYED' },
+      },
+    });
+
+    const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pairToken: pair.pairToken, manifest: manifest() }),
+    });
+    expect(exchangeRes.status).toBe(201);
+    const node = registry.listNodes()[0]!;
+    expect(node.trust.tier).toBe('sandbox');
+    expect(node.trust.policy?.allowed).toEqual(['session:read']);
+    expect(node.trust.policy?.allowed).not.toContain(
+      NODE_PAIR_TOKEN_CREATE_CAPABILITY
+    );
+
+    const approveGrant = (input: {
+      audience?: string;
+      capabilities?: string[];
+      scope?: { taskRefs?: string[] };
+      ttlMs?: number;
+    } = {}): string => {
+      const grant = operatorHandshakeGrants.request({
+        actor: { type: 'cli', id: 'ebi-cli' },
+        issuer: { id: 'operator-browser' },
+        audience: input.audience ?? NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
+        capabilities: input.capabilities ?? [NODE_PAIR_TOKEN_CREATE_CAPABILITY],
+        scope: input.scope ?? { taskRefs: ['bootstrap-work-mac'] },
+        ttlMs: input.ttlMs ?? 600_000,
+      });
+      return operatorHandshakeGrants.approve(grant.id, {
+        approvedBy: { id: 'operator-browser' },
+      }).handle;
+    };
+    const mintWithGrant = async (handle: string, body: Record<string, unknown>) =>
+      await fetch(`${base}/hub/pair-tokens`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-relay-operator-grant': handle,
+          'x-relay-actor-type': 'cli',
+          'x-relay-actor-id': 'ebi-cli',
+        },
+        body: JSON.stringify(body),
+      });
+
+    const missingScopeRes = await mintWithGrant(approveGrant(), {});
+    expect(missingScopeRes.status).toBe(403);
+    expect(await missingScopeRes.json()).toMatchObject({
+      error: { details: { reasonCode: 'PAIR_TOKEN_GRANT_MISSING_SCOPE' } },
+    });
+
+    const wrongAudienceRes = await mintWithGrant(
+      approveGrant({ audience: 'relay:operator-handshake:v1' }),
+      { taskRef: 'bootstrap-work-mac' }
+    );
+    expect(wrongAudienceRes.status).toBe(403);
+    expect(await wrongAudienceRes.json()).toMatchObject({
+      error: { details: { reasonCode: 'PAIR_TOKEN_GRANT_WRONG_AUDIENCE' } },
+    });
+
+    const insufficientCapabilityRes = await mintWithGrant(
+      approveGrant({ capabilities: ['session:read'] }),
+      { taskRef: 'bootstrap-work-mac' }
+    );
+    expect(insufficientCapabilityRes.status).toBe(403);
+    expect(await insufficientCapabilityRes.json()).toMatchObject({
+      error: {
+        details: { reasonCode: 'PAIR_TOKEN_GRANT_INSUFFICIENT_CAPABILITY' },
+      },
+    });
+
+    const wrongScopeRes = await mintWithGrant(
+      approveGrant({ scope: { taskRefs: ['bootstrap-wsl2'] } }),
+      { taskRef: 'bootstrap-work-mac' }
+    );
+    expect(wrongScopeRes.status).toBe(403);
+    expect(await wrongScopeRes.json()).toMatchObject({
+      error: { details: { reasonCode: 'PAIR_TOKEN_GRANT_WRONG_TASK_SCOPE' } },
+    });
+
+    const revoked = approveGrant();
+    const revokedGrantId = revoked.split('.')[1]!;
+    operatorHandshakeGrants.revoke(revokedGrantId, {
+      revokedBy: { id: 'operator-browser' },
+    });
+    const revokedRes = await mintWithGrant(revoked, {
+      taskRef: 'bootstrap-work-mac',
+    });
+    expect(revokedRes.status).toBe(401);
+    expect(await revokedRes.json()).toMatchObject({
+      error: { details: { reasonCode: 'PAIR_TOKEN_GRANT_REVOKED' } },
+    });
+
+    const expired = approveGrant({ ttlMs: 1 });
+    now = new Date('2026-01-02T03:04:06.000Z');
+    const expiredRes = await mintWithGrant(expired, {
+      taskRef: 'bootstrap-work-mac',
+    });
+    expect(expiredRes.status).toBe(400);
+    expect(await expiredRes.json()).toMatchObject({
+      error: {
+        code: 'TOKEN_EXPIRED',
+        details: { reasonCode: 'PAIR_TOKEN_GRANT_EXPIRED' },
+      },
+    });
+
+    const laneMixingRes = await mintWithGrant('pair_fake-token-material', {
+      taskRef: 'bootstrap-work-mac',
+    });
+    expect(laneMixingRes.status).toBe(401);
+    expect(await laneMixingRes.json()).toMatchObject({
+      error: { details: { reasonCode: 'PAIR_TOKEN_GRANT_LANE_MIXING' } },
+    });
   });
 
   it('keeps strict source denial scoped to the node credential lane', async () => {
