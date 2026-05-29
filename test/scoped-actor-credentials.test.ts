@@ -83,6 +83,7 @@ describe('scoped actor credential registry', () => {
         sessionId: 'session-a',
         globalSessionId: 'node-a:session-a',
         workContextId: 'work-context-a',
+        taskRef: 'issue-802',
       },
       correlationId: 'corr-validate-1',
     });
@@ -133,6 +134,9 @@ describe('scoped actor credential registry', () => {
       'wrong_work_context_scope',
       { scope: { workContextId: 'work-context-b' } },
     ],
+    ['wrong_repo_scope', { scope: { repoId: 'repo-b' } }],
+    ['wrong_path_scope', { scope: { path: '/repo-a/src/secrets.ts' } }],
+    ['wrong_task_scope', { scope: { taskRef: 'issue-999' } }],
     ['missing_scope', { scope: { nodeId: undefined } }],
     ['unknown_capability', { requiredCapabilities: ['session:teleport'] }],
     ['insufficient_capability', { requiredCapabilities: ['rpc:fs:write'] }],
@@ -151,6 +155,9 @@ describe('scoped actor credential registry', () => {
         sessionIds: ['session-a'],
         globalSessionIds: ['node-a:session-a'],
         workContextIds: ['work-context-a'],
+        repoIds: ['repo-a'],
+        pathPrefixes: ['/repo-a/src/safe/'],
+        taskRefs: ['issue-802'],
       },
       expiresAt: LATER,
     });
@@ -159,6 +166,9 @@ describe('scoped actor credential registry', () => {
       sessionId: 'session-a',
       globalSessionId: 'node-a:session-a',
       workContextId: 'work-context-a',
+      repoId: 'repo-a',
+      path: '/repo-a/src/safe/file.ts',
+      taskRef: 'issue-802',
     };
     const validation = store.validate(issued.token, {
       audience: 'relay:registry-test',
@@ -168,6 +178,63 @@ describe('scoped actor credential registry', () => {
     });
 
     expect(validation).toMatchObject({ ok: false, reason });
+  });
+
+  it('requires validation request scope for repo, path prefix, and task scoped credentials', () => {
+    const store = registry();
+    const issued = store.issue({
+      actor: { type: 'cli', id: 'cli-1' },
+      issuer: { id: 'operator-1' },
+      audience: 'relay:registry-test',
+      capabilities: ['session:read'],
+      scope: {
+        repoIds: ['repo-a'],
+        pathPrefixes: ['/repo-a/src/safe/'],
+        taskRefs: ['issue-802'],
+      },
+      expiresAt: LATER,
+    });
+
+    expect(
+      store.validate(issued.token, {
+        audience: 'relay:registry-test',
+        requiredCapabilities: ['session:read'],
+      })
+    ).toMatchObject({ ok: false, reason: 'missing_scope' });
+
+    expect(
+      store.validate(issued.token, {
+        audience: 'relay:registry-test',
+        requiredCapabilities: ['session:read'],
+        scope: {
+          repoId: 'repo-a',
+          path: '/repo-a/src/safe/file.ts',
+          taskRef: 'issue-802',
+        },
+      })
+    ).toMatchObject({ ok: true });
+  });
+
+  it('fails closed for non-object scope input and non-string token validation', () => {
+    const store = registry();
+
+    expect(() =>
+      store.issue({
+        actor: { type: 'agent', id: 'agent-1' },
+        issuer: { id: 'operator-1' },
+        audience: 'relay:registry-test',
+        capabilities: ['session:read'],
+        scope: 'relay-sac-v1.synthetic.raw-secret-token-material' as never,
+        expiresAt: LATER,
+      })
+    ).toThrow(/SCOPE_REQUIRED/);
+
+    expect(
+      store.validate(42 as never, {
+        audience: 'relay:registry-test',
+        requiredCapabilities: ['session:read'],
+      })
+    ).toMatchObject({ ok: false, reason: 'malformed_credential' });
   });
 
   it('requires expiry, enforces maximum ttl, expires tokens, and revokes without restart', () => {
@@ -272,6 +339,10 @@ describe('scoped actor credential registry', () => {
         deniedCapabilities: ['session:read'],
         correlationId: 'corr-entry-1',
         material: {
+          scope: {
+            bearerToken: issued.token,
+            nested: { authorization: `Bearer ${issued.token}` },
+          },
           params: {
             bearerToken: issued.token,
             authorization: `Bearer ${issued.token}`,
@@ -286,5 +357,54 @@ describe('scoped actor credential registry', () => {
     expect(serialized).not.toContain('raw-secret-token-material');
     expect(serialized).not.toContain('secretHash');
     expect(serialized).toContain(issued.credential.id);
+  });
+
+  it('omits raw actor and issuer ids from audit-redacted credentials', () => {
+    const store = registry();
+    const issued = store.issue({
+      actor: { type: 'agent', id: 'agent-1', displayName: 'worker' },
+      issuer: { id: 'operator-1', displayName: 'operator' },
+      audience: 'relay:registry-test',
+      capabilities: ['session:read'],
+      scope: { nodeIds: ['node-a'] },
+      expiresAt: LATER,
+    });
+
+    const redacted = redactScopedActorCredentialForAudit(issued.credential);
+
+    expect(redacted.actor).toMatchObject({
+      type: 'agent',
+      displayName: 'worker',
+    });
+    expect(redacted.actor).toHaveProperty('idHash');
+    expect(redacted.actor).not.toHaveProperty('id');
+    expect(redacted.issuer).toMatchObject({ displayName: 'operator' });
+    expect(redacted.issuer).toHaveProperty('idHash');
+    expect(redacted.issuer).not.toHaveProperty('id');
+  });
+
+  it('redacts custom audit material scope before exposing it', () => {
+    const entry = createScopedActorCredentialAuditEntry({
+      action: 'validate',
+      decision: 'deny',
+      reasonCode: 'MALFORMED_CREDENTIAL',
+      material: {
+        scope: {
+          bearerToken: 'relay-sac-v1.custom.raw-secret-token-material',
+          nested: {
+            authorization:
+              'Bearer relay-sac-v1.custom.raw-secret-token-material',
+          },
+        },
+      },
+    });
+
+    const serialized = JSON.stringify(entry.material.scope);
+    expect(serialized).not.toContain(
+      'relay-sac-v1.custom.raw-secret-token-material'
+    );
+    expect(serialized).not.toContain(
+      'Bearer relay-sac-v1.custom.raw-secret-token-material'
+    );
   });
 });

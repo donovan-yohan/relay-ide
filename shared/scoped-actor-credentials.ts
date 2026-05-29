@@ -43,6 +43,9 @@ export type ScopedActorCredentialValidationFailureReason =
   | 'wrong_session_scope'
   | 'wrong_global_session_scope'
   | 'wrong_work_context_scope'
+  | 'wrong_repo_scope'
+  | 'wrong_path_scope'
+  | 'wrong_task_scope'
   | 'unknown_capability'
   | 'insufficient_capability';
 
@@ -78,6 +81,9 @@ export interface ScopedActorCredentialValidationScope {
   sessionId?: string;
   globalSessionId?: string;
   workContextId?: string;
+  repoId?: string;
+  path?: string;
+  taskRef?: string;
 }
 
 export interface ScopedActorCredentialRecord {
@@ -475,7 +481,9 @@ export class ScopedActorCredentialRegistry {
 
   private recordAudit(input: CreateScopedActorCredentialAuditEntryInput): void {
     const credential = input.credential;
-    const materialScope = input.material?.scope ?? credential?.scope ?? null;
+    const materialScope = redactAuditValue(
+      input.material?.scope ?? credential?.scope ?? null
+    );
     const materialParams = redactAuditValue(input.material?.params ?? null);
     this.auditEvents.push({
       action: input.action,
@@ -515,18 +523,23 @@ export function isScopedActorCredentialAudience(
 
 export function redactScopedActorCredentialForAudit(
   credential: ScopedActorCredentialRecord
-): Omit<ScopedActorCredentialRecord, 'revocationReason'> & {
-  actor: ScopedActorCredentialRecord['actor'] & { idHash: string };
-  issuer: ScopedActorCredentialIssuer & { idHash: string };
+): Omit<
+  ScopedActorCredentialRecord,
+  'actor' | 'issuer' | 'revocationReason'
+> & {
+  actor: Omit<ScopedActorCredentialRecord['actor'], 'id'> & { idHash: string };
+  issuer: Omit<ScopedActorCredentialIssuer, 'id'> & { idHash: string };
 } {
+  const { id: _actorId, ...actor } = credential.actor;
+  const { id: _issuerId, ...issuer } = credential.issuer;
   return {
     id: credential.id,
     actor: {
-      ...credential.actor,
+      ...actor,
       idHash: sha256Hex(credential.actor.id),
     },
     issuer: {
-      ...credential.issuer,
+      ...issuer,
       idHash: sha256Hex(credential.issuer.id),
     },
     audience: credential.audience,
@@ -565,11 +578,12 @@ export function createScopedActorCredentialAuditEntry(
       ...(credential ? { target: credential.id } : {}),
     },
     material: {
-      scope:
+      scope: redactAuditValue(
         input.material?.scope ??
-        (credential
-          ? redactScopedActorCredentialForAudit(credential).scope
-          : null),
+          (credential
+            ? redactScopedActorCredentialForAudit(credential).scope
+            : null)
+      ),
       params: redactAuditValue({
         credential: credential
           ? redactScopedActorCredentialForAudit(credential)
@@ -627,6 +641,12 @@ function normalizeCredentialCapabilities(
 function normalizeCredentialScope(
   scope: ScopedActorCredentialScope
 ): ScopedActorCredentialScope {
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope)) {
+    throw new ScopedActorCredentialRegistryError(
+      'SCOPE_REQUIRED',
+      'scoped actor credentials require at least one explicit scope dimension'
+    );
+  }
   const normalized: ScopedActorCredentialScope = {
     ...(normalizeStringList(scope.nodeIds).length > 0
       ? { nodeIds: normalizeStringList(scope.nodeIds) }
@@ -659,54 +679,85 @@ function normalizeCredentialScope(
   return normalized;
 }
 
+type ScopeValidationRule = {
+  values: string[] | undefined;
+  requested: string | undefined;
+  wrongReason: ScopedActorCredentialValidationFailureReason;
+  matches?: (values: string[], requested: string) => boolean;
+};
+
 function validateCredentialScope(
   credentialScope: ScopedActorCredentialScope,
   expectedScope: ScopedActorCredentialValidationScope | undefined
 ): ScopedActorCredentialValidationFailureReason | null {
-  if (
-    credentialScope.nodeIds &&
-    expectedScope?.nodeId &&
-    !credentialScope.nodeIds.includes(expectedScope.nodeId)
-  ) {
-    return 'wrong_node_scope';
-  }
-  if (
-    credentialScope.sessionIds &&
-    expectedScope?.sessionId &&
-    !credentialScope.sessionIds.includes(expectedScope.sessionId)
-  ) {
-    return 'wrong_session_scope';
-  }
-  if (
-    credentialScope.globalSessionIds &&
-    expectedScope?.globalSessionId &&
-    !credentialScope.globalSessionIds.includes(expectedScope.globalSessionId)
-  ) {
-    return 'wrong_global_session_scope';
-  }
-  if (
-    credentialScope.workContextIds &&
-    expectedScope?.workContextId &&
-    !credentialScope.workContextIds.includes(expectedScope.workContextId)
-  ) {
-    return 'wrong_work_context_scope';
+  const rules: ScopeValidationRule[] = [
+    {
+      values: credentialScope.nodeIds,
+      requested: expectedScope?.nodeId,
+      wrongReason: 'wrong_node_scope',
+    },
+    {
+      values: credentialScope.sessionIds,
+      requested: expectedScope?.sessionId,
+      wrongReason: 'wrong_session_scope',
+    },
+    {
+      values: credentialScope.globalSessionIds,
+      requested: expectedScope?.globalSessionId,
+      wrongReason: 'wrong_global_session_scope',
+    },
+    {
+      values: credentialScope.workContextIds,
+      requested: expectedScope?.workContextId,
+      wrongReason: 'wrong_work_context_scope',
+    },
+    {
+      values: credentialScope.repoIds,
+      requested: expectedScope?.repoId,
+      wrongReason: 'wrong_repo_scope',
+    },
+    {
+      values: credentialScope.pathPrefixes,
+      requested: expectedScope?.path,
+      wrongReason: 'wrong_path_scope',
+      matches: (prefixes, path) =>
+        prefixes.some((prefix) => pathMatchesCredentialPrefix(path, prefix)),
+    },
+    {
+      values: credentialScope.taskRefs,
+      requested: expectedScope?.taskRef,
+      wrongReason: 'wrong_task_scope',
+    },
+  ];
+
+  for (const rule of rules) {
+    if (!rule.values || !rule.requested) continue;
+    const matches = rule.matches ?? listIncludesRequestedValue;
+    if (!matches(rule.values, rule.requested)) return rule.wrongReason;
   }
 
-  if (credentialScope.nodeIds && !expectedScope?.nodeId) return 'missing_scope';
-  if (credentialScope.sessionIds && !expectedScope?.sessionId)
-    return 'missing_scope';
-  if (credentialScope.globalSessionIds && !expectedScope?.globalSessionId) {
-    return 'missing_scope';
-  }
-  if (credentialScope.workContextIds && !expectedScope?.workContextId) {
-    return 'missing_scope';
-  }
-  return null;
+  return rules.some((rule) => rule.values && !rule.requested)
+    ? 'missing_scope'
+    : null;
+}
+
+function listIncludesRequestedValue(
+  values: string[],
+  requested: string
+): boolean {
+  return values.includes(requested);
+}
+
+function pathMatchesCredentialPrefix(path: string, prefix: string): boolean {
+  if (path === prefix) return true;
+  const normalizedPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`;
+  return path.startsWith(normalizedPrefix);
 }
 
 function parseScopedActorToken(
-  token: string
+  token: unknown
 ): { id: string; secret: string } | null {
+  if (typeof token !== 'string') return null;
   const parts = token.split('.');
   if (parts.length !== 3 || parts[0] !== 'relay-sac-v1') return null;
   const [, id, secret] = parts;
