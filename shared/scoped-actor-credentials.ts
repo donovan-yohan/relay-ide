@@ -90,6 +90,7 @@ export interface ScopedActorCredentialRecord {
   id: string;
   actor: ScopedActorCredentialActor & { type: ScopedActorCredentialType };
   issuer: ScopedActorCredentialIssuer;
+  grantId?: string;
   audience: ScopedActorCredentialAudience;
   capabilities: RelayCapabilityBit[];
   scope: ScopedActorCredentialScope;
@@ -99,6 +100,7 @@ export interface ScopedActorCredentialRecord {
   revokedAt?: string | undefined;
   revokedBy?: string | undefined;
   revocationReason?: string | undefined;
+  correlationId: string;
 }
 
 interface InternalScopedActorCredentialRecord extends ScopedActorCredentialRecord {
@@ -109,6 +111,7 @@ export interface IssueScopedActorCredentialInput {
   id?: string;
   actor: ScopedActorCredentialActor;
   issuer: ScopedActorCredentialIssuer;
+  grantId?: string;
   audience: string;
   capabilities: string[];
   scope: ScopedActorCredentialScope;
@@ -254,6 +257,7 @@ export class ScopedActorCredentialRegistry {
           ? { displayName: input.issuer.displayName }
           : {}),
       },
+      ...(input.grantId ? { grantId: input.grantId } : {}),
       audience,
       capabilities,
       scope,
@@ -261,6 +265,7 @@ export class ScopedActorCredentialRegistry {
       issuedAt: issuedAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
       secretHash,
+      correlationId: input.correlationId ?? crypto.randomUUID(),
     };
     this.credentials.set(id, credential);
     this.recordAudit({
@@ -384,7 +389,10 @@ export class ScopedActorCredentialRegistry {
     if (!credential) return null;
     credential.revokedAt = this.now().toISOString();
     credential.revokedBy = input.revokedBy;
-    if (input.reason) credential.revocationReason = input.reason;
+    if (input.reason) {
+      const reason = redactString(input.reason);
+      if (reason) credential.revocationReason = reason;
+    }
     this.recordAudit({
       action: 'revoke',
       decision: 'revoked',
@@ -405,6 +413,11 @@ export class ScopedActorCredentialRegistry {
 
   listCredentials(): ScopedActorCredentialRecord[] {
     return Array.from(this.credentials.values()).map(publicCredential);
+  }
+
+  getCredential(credentialId: string): ScopedActorCredentialRecord | null {
+    const credential = this.credentials.get(credentialId);
+    return credential ? publicCredential(credential) : null;
   }
 
   listAuditEvents(): ScopedActorCredentialAuditEvent[] {
@@ -552,6 +565,7 @@ export function redactScopedActorCredentialForAudit(
     expiresAt: credential.expiresAt,
     ...(credential.revokedAt ? { revokedAt: credential.revokedAt } : {}),
     ...(credential.revokedBy ? { revokedBy: credential.revokedBy } : {}),
+    correlationId: credential.correlationId,
   };
 }
 

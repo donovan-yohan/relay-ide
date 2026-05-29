@@ -4,11 +4,17 @@ import {
   CLI_GATEWAY_ACTOR_AUDIENCE,
   CLI_GATEWAY_ACTOR_READ_COMMANDS,
   CLI_GATEWAY_READ_SCOPE_TASK_REF,
+  CliGatewayActorGrantError,
   cliGatewayActorFailure,
   classifyCliGatewayCredentialLane,
   issueCliGatewayActorCredential,
+  issueCliGatewayActorCredentialWithGrant,
+  listCliGatewayActorCredentialsWithGrant,
+  revokeCliGatewayActorCredentialWithGrant,
+  rotateCliGatewayActorCredentialWithGrant,
   validateCliGatewayActorCredential,
 } from '../server/cli-gateway-actor-auth.js';
+import { HandshakeGrantRegistry } from '../shared/operator-handshake-grants.js';
 import { ScopedActorCredentialRegistry } from '../shared/scoped-actor-credentials.js';
 
 const NOW = new Date('2026-05-29T00:00:00.000Z');
@@ -18,6 +24,55 @@ function registry(): ScopedActorCredentialRegistry {
     now: () => NOW,
     secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
   });
+}
+
+function grantRegistry(): HandshakeGrantRegistry {
+  return new HandshakeGrantRegistry({
+    now: () => NOW,
+    secretBytes: () => Buffer.from('abcdef0123456789abcdef0123456789'),
+  });
+}
+
+const GRANT_ACTOR = { type: 'cli', id: 'relay-cli-test' } as const;
+const GRANT_SCOPE = {
+  sessionIds: ['session-1'],
+  taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+};
+
+function approveGrant(
+  grants: HandshakeGrantRegistry,
+  id: string,
+  options: {
+    actor?: { type: string; id: string; displayName?: string };
+    scope?: typeof GRANT_SCOPE;
+  } = {}
+): string {
+  const grant = grants.request({
+    id,
+    actor: options.actor ?? GRANT_ACTOR,
+    issuer: { id: 'browser-operator-test' },
+    audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+    capabilities: ['session:read'],
+    scope: options.scope ?? GRANT_SCOPE,
+    ttlMs: 60_000,
+    correlationId: `${id}-request`,
+  });
+  return grants.approve(grant.id, {
+    approvedBy: { id: 'browser-operator-test' },
+    correlationId: `${id}-approve`,
+  }).handle;
+}
+
+function grantLifecycleInput(handle: string, id: string) {
+  return {
+    grantHandle: handle,
+    audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+    actor: GRANT_ACTOR,
+    capabilities: ['session:read'],
+    scope: { sessionIds: ['session-1'] },
+    ttlMs: 60_000,
+    correlationId: `${id}-lifecycle`,
+  };
 }
 
 function req(input: {
@@ -186,4 +241,173 @@ test('returns stable typed denials without token material', () => {
     correlationId: 'corr-cli-deny',
   });
   expect(JSON.stringify(failure)).not.toContain('relay-sac-v1');
+});
+
+test('mints lists rotates and revokes CLI actor credentials with grant-backed lifecycle handles', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+
+  const mintHandle = approveGrant(grants, 'grant-mint');
+  const issued = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    grantLifecycleInput(mintHandle, 'mint')
+  );
+  expect(() =>
+    issueCliGatewayActorCredentialWithGrant(
+      scopedRegistry,
+      grants,
+      grantLifecycleInput(mintHandle, 'mint-replay')
+    )
+  ).toThrow(CliGatewayActorGrantError);
+  expect(scopedRegistry.listCredentials()).toHaveLength(1);
+
+  expect(issued.credential).toMatchObject({
+    grantId: 'grant-mint',
+    audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+    capabilities: ['session:read'],
+    scope: {
+      sessionIds: ['session-1'],
+      taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+    },
+    actor: GRANT_ACTOR,
+  });
+  expect(JSON.stringify(issued)).not.toContain('abcdef0123456789abcdef0123456789');
+
+  const validation = validateCliGatewayActorCredential(scopedRegistry, {
+    token: issued.token,
+    capabilities: ['session:read'],
+    scope: { sessionIds: ['session-1'] },
+    correlationId: 'mint-validate',
+  });
+  expect(validation).toMatchObject({ ok: true, grantedBits: ['session:read'] });
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${issued.token}`,
+        actorMarker: 'v1',
+        command: 'sessions.list',
+        cookie: 'connect.sid=[REDACTED]',
+      }),
+      'sessions.list'
+    )
+  ).toBe('scoped-actor-credential');
+
+  const listed = listCliGatewayActorCredentialsWithGrant(
+    scopedRegistry,
+    grants,
+    grantLifecycleInput(approveGrant(grants, 'grant-list'), 'list')
+  );
+  expect(listed.credentials.map((credential) => credential.id)).toContain(
+    issued.credential.id
+  );
+
+  const rotated = rotateCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    issued.credential.id,
+    grantLifecycleInput(approveGrant(grants, 'grant-rotate'), 'rotate')
+  );
+  expect(rotated.credential.id).not.toBe(issued.credential.id);
+  expect(rotated.credential.grantId).toBe('grant-rotate');
+  expect(rotated.revoked).toMatchObject({
+    id: issued.credential.id,
+    revokedBy: 'grant:grant-rotate',
+  });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['session:read'],
+      scope: { sessionIds: ['session-1'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'revoked' });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: rotated.token,
+      capabilities: ['session:read'],
+      scope: { sessionIds: ['session-1'] },
+    })
+  ).toMatchObject({ ok: true });
+
+  const revoked = revokeCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    rotated.credential.id,
+    {
+      ...grantLifecycleInput(approveGrant(grants, 'grant-revoke'), 'revoke'),
+      metadata: { reason: 'rotating bearer relay-sac-v1.supersecretcredentialmaterial' },
+    }
+  );
+  expect(revoked).toMatchObject({
+    id: rotated.credential.id,
+    revokedBy: 'grant:grant-revoke',
+  });
+  expect(revoked.revocationReason).toContain('[REDACTED]');
+  expect(revoked.revocationReason).not.toContain('supersecretcredentialmaterial');
+});
+
+test('denies grant-backed CLI actor lifecycle expansion and lane-mixing attempts', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+  const handle = approveGrant(grants, 'grant-deny');
+
+  expect(() =>
+    issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+      ...grantLifecycleInput(handle, 'deny'),
+      grantHandle: 'relay-sac-v1.credential-id.secret',
+    })
+  ).toThrow(CliGatewayActorGrantError);
+
+  const denialCases = [
+    [{ audience: 'relay:operator-handshake:v1' }, 'audience_expansion'],
+    [{ capabilities: ['session:create:agent'] }, 'capability_expansion'],
+    [{ capabilities: ['definitely:not-a-capability'] }, 'unknown_capability'],
+    [{ capabilities: ['*'] }, 'capability_expansion'],
+    [{ scope: {} }, 'scope_required'],
+    [{ actor: { type: 'cli', id: 'other-cli' } }, 'actor_mismatch'],
+  ] as const;
+  for (let index = 0; index < denialCases.length; index += 1) {
+    const [override, reason] = denialCases[index];
+    const freshHandle = approveGrant(grants, `grant-deny-${index}-${reason}`);
+    try {
+      issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+        ...grantLifecycleInput(freshHandle, `deny-${reason}`),
+        ...override,
+      });
+      throw new Error(`expected ${reason} denial`);
+    } catch (error) {
+      expect(error).toBeInstanceOf(CliGatewayActorGrantError);
+      expect((error as CliGatewayActorGrantError).reason).toBe(reason);
+    }
+  }
+});
+
+test('denies revoked grant handles before minting actor credentials', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+  const grant = grants.request({
+    id: 'grant-revoked-before-mint',
+    actor: GRANT_ACTOR,
+    issuer: { id: 'browser-operator-test' },
+    audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+    capabilities: ['session:read'],
+    scope: GRANT_SCOPE,
+    ttlMs: 60_000,
+  });
+  const handle = grants.approve(grant.id, {
+    approvedBy: { id: 'browser-operator-test' },
+  }).handle;
+  grants.revoke(grant.id, {
+    revokedBy: { id: 'browser-operator-test' },
+    reason: 'operator cancelled bearer relay-ohg-v1.secretmaterial',
+  });
+
+  expect(() =>
+    issueCliGatewayActorCredentialWithGrant(
+      scopedRegistry,
+      grants,
+      grantLifecycleInput(handle, 'revoked')
+    )
+  ).toThrow(CliGatewayActorGrantError);
+  expect(scopedRegistry.listCredentials()).toHaveLength(0);
 });
