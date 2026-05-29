@@ -1,5 +1,6 @@
 import * as crypto from 'node:crypto';
 import type { ControlActor, TabControlEvent } from './control-state.js';
+import type { RelayNodeSourceDiagnostics } from './relay-node-protocol.js';
 import {
   HIGH_RISK_CAPABILITIES,
   RELAY_SECURITY_POLICY_VERSION,
@@ -83,6 +84,7 @@ export interface NormalizedSecurityAuditEntry {
   deniedBits: RelayCapabilityBit[];
   aclRef?: string;
   policyVersion?: string;
+  sourceDiagnostics?: RelayNodeSourceDiagnostics;
   correlationId: string;
   prevHash: string | null;
   entryHash: string;
@@ -103,6 +105,7 @@ export interface SecurityAuditEntryInput {
   grantedBits?: RelayCapabilityBit[];
   deniedBits?: RelayCapabilityBit[];
   refs?: SecurityAuditRefs;
+  sourceDiagnostics?: RelayNodeSourceDiagnostics;
   correlationId?: string;
 }
 
@@ -420,6 +423,9 @@ export function normalizeSecurityAuditEntry(
     ...(input.refs?.aclRef ? { aclRef: input.refs.aclRef } : {}),
     ...(input.refs?.policyVersion
       ? { policyVersion: input.refs.policyVersion }
+      : {}),
+    ...(input.sourceDiagnostics
+      ? { sourceDiagnostics: input.sourceDiagnostics }
       : {}),
     correlationId: input.correlationId ?? crypto.randomUUID(),
     prevHash: chain.prevHash,

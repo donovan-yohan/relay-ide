@@ -565,6 +565,77 @@ describe('hub node routes and link', () => {
     expect(revokedHeartbeatBody).not.toContain(exchange.credential.token);
   });
 
+  it('keeps strict source denial scoped to the node credential lane', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        sourceDiagnostics: { strictDeny: true },
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const pairRes = await fetch(`${base}/hub/pair-tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ displayName: 'Strict Node' }),
+    });
+    const pair = (await pairRes.json()) as { pairToken: string };
+    const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-relay-node-tailnet-ip': '100.90.12.34',
+      },
+      body: JSON.stringify({ pairToken: pair.pairToken, manifest: manifest() }),
+    });
+    expect(exchangeRes.status).toBe(201);
+    const exchanged = (await exchangeRes.json()) as {
+      credential: { token: string; nodeId: string };
+    };
+
+    const deniedHeartbeat = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${exchanged.credential.token}`,
+        'x-relay-node-tailnet-ip': '100.91.1.2',
+      },
+      body: JSON.stringify({
+        nodeId: exchanged.credential.nodeId,
+        protocolVersion: '1.0',
+      }),
+    });
+    expect(deniedHeartbeat.status).toBe(403);
+    expect(await deniedHeartbeat.json()).toMatchObject({
+      error: {
+        code: 'FORBIDDEN',
+        details: { sourceDiagnostics: { state: 'strict-deny' } },
+      },
+    });
+
+    const nodesRes = await fetch(`${base}/nodes`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(nodesRes.status).toBe(200);
+    const nodes = (await nodesRes.json()) as {
+      nodes: Array<{ sourceDiagnostics?: { sourceFingerprint?: string } }>;
+    };
+    expect(nodes.nodes[0]?.sourceDiagnostics?.sourceFingerprint).toMatch(
+      /^src_[a-f0-9]{32}$/
+    );
+  });
+
   it('accepts authenticated reverse websocket heartbeats and rejects incompatible protocol envelopes with typed errors', async () => {
     let now = new Date('2026-01-02T03:04:05.000Z');
     const { tmpDir, registry } = tmpRegistry(() => now);
