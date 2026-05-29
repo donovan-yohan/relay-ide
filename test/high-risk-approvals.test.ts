@@ -162,6 +162,63 @@ describe('high-risk approval contract bindings', () => {
     expect(serialized).not.toContain('relay-super-secret-token');
   });
 
+  it('summarizes pty exec command text without exposing raw shell text to public challenge or audit material', () => {
+    const command = 'curl -H "Authorization: Bearer relay-...456" https://example.test && echo ghp_12...cdef';
+    const canonicalParams = canonicalConfirmationParams('pty.exec.arbitrary', {
+      cwd: '/srv/app',
+      command,
+      env: { PATH: '/bin', SECRET_TOKEN: 'secret-env-value' },
+    });
+
+    expect(canonicalParams).toMatchObject({
+      action: 'pty.exec.arbitrary',
+      cwd: '/srv/app',
+      commandHash: expect.any(String),
+      commandByteCount: Buffer.byteLength(command, 'utf8'),
+      commandCharCount: command.length,
+      commandClasses: expect.arrayContaining(['secret-looking', 'shell-metacharacters']),
+      envHash: expect.any(String),
+    });
+    expect(canonicalParams).not.toHaveProperty('command');
+
+    const store = createConfirmationChallengeStore({
+      now: () => NOW,
+      randomId: () => 'pty-challenge-1',
+      randomToken: () => 'raw-confirmation-token',
+    });
+    const challenge = store.createChallenge(
+      challengeDecision({
+        intent: { action: 'pty.exec.arbitrary', target: 'node_prod' },
+        requiredBits: ['pty:exec:arbitrary'],
+        challengeBits: ['pty:exec:arbitrary'],
+        params: canonicalParams,
+      }),
+      {
+        requesterAuthSessionHash: 'requester-session-hash',
+        canonicalParams,
+      }
+    );
+    const approved = store.approveChallenge({
+      challengeId: challenge.challengeId,
+      approverAuthSessionHash: 'operator-session',
+      decision: 'approve',
+      now: NOW,
+    });
+    expect(approved.ok).toBe(true);
+    if (!approved.ok) throw new Error('expected approval');
+    const publicJson = JSON.stringify(publicChallenge(challenge));
+    const auditJson = JSON.stringify(approved.audit);
+    for (const forbidden of [
+      'relay-super-secret-token-123456',
+      'ghp_12...cdef',
+      'secret-env-value',
+      command,
+    ]) {
+      expect(publicJson).not.toContain(forbidden);
+      expect(auditJson).not.toContain(forbidden);
+    }
+  });
+
   it.each([
     'challenge_created',
     'approved',
@@ -353,6 +410,12 @@ describe('high-risk approval contract bindings', () => {
       now: current,
     });
     expect(reused).toMatchObject({ ok: false, reasonCode: 'CONFIRMATION_ALREADY_USED' });
+    if (reused.ok) throw new Error('expected reuse denial');
+    expect(reused.audit).toMatchObject({
+      eventType: 'failed_redemption',
+      decision: 'failed',
+      reasonCode: 'CONFIRMATION_ALREADY_USED',
+    });
 
     const drift = store.createChallenge(challengeDecision({ params: canonicalParams }), {
       requesterAuthSessionHash: 'requester-session-hash',

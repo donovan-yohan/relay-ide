@@ -49,7 +49,16 @@ describe('confirmation challenge store', () => {
       command: 'npm test',
     });
     expect(execA).toEqual(execB);
-    expect(execA).toMatchObject({ action: 'pty.exec.arbitrary', command: 'npm test', cwd: '/srv/app' });
+    expect(execA).toMatchObject({
+      action: 'pty.exec.arbitrary',
+      cwd: '/srv/app',
+      commandHash: createHash('sha256').update('npm test').digest('hex'),
+      commandByteCount: Buffer.byteLength('npm test'),
+      commandCharCount: 'npm test'.length,
+      commandClasses: [],
+    });
+    expect(execA).not.toHaveProperty('command');
+    expect(JSON.stringify(execA)).not.toContain('npm test');
     expect(JSON.stringify(execA)).not.toContain('"A":"1"');
     expect(execA).toHaveProperty('envHash');
 

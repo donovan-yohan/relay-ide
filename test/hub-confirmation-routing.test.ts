@@ -363,21 +363,6 @@ describe('hub confirmation routing', () => {
       challenge: { challengeId: 'challenge-1', status: 'approved' },
     });
 
-    const tampered = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-test-auth': 'yes',
-        'x-auth-session': 'requester-browser',
-      },
-      body: JSON.stringify({ ...originalBody, method: 'cold-reopen', confirmationToken: 'raw-confirmation-token' }),
-    });
-    expect(tampered.status).toBe(401);
-    expect(await tampered.json()).toMatchObject({
-      error: { details: { reasonCode: 'CONFIRMATION_PARAM_MISMATCH' } },
-    });
-    expect(nodeLinks.requests).toHaveLength(0);
-
     const redeemed = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
       method: 'POST',
       headers: {
@@ -391,6 +376,20 @@ describe('hub confirmation routing', () => {
     expect(await redeemed.json()).toMatchObject({ id: 'remote-session-1', nodeId: 'node_prod' });
     expect(nodeLinks.requests).toHaveLength(1);
     expect(nodeLinks.requests[0]).toMatchObject({ type: 'sessions.create', payload: originalBody });
+
+    const reused = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+      },
+      body: JSON.stringify({ ...originalBody, confirmationToken: 'raw-confirmation-token' }),
+    });
+    expect(reused.status).toBe(401);
+    expect(await reused.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_ALREADY_USED' } },
+    });
     expect(auditEntries.map((entry) => entry.eventType)).toEqual(
       expect.arrayContaining(['challenge', 'same_session_approval_attempt', 'approval', 'failed_redemption', 'grant'])
     );
@@ -403,6 +402,130 @@ describe('hub confirmation routing', () => {
     expect(approvalAudit?.peer.principalHash).not.toBe(requesterHash);
     expect(failedRedemptionAudit?.peer.principalHash).toBe(requesterHash);
     expect(grantAudit?.peer.principalHash).toBe(requesterHash);
+  });
+
+  it('enforces structured requester/approver identity through live confirmation endpoints', async () => {
+    async function createScopedChallenge() {
+      const hub = await startHub();
+      const originalBody = { repoPath: '/srv/relay-ide', type: 'terminal' };
+      const requesterHeaders = {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+        'x-relay-actor-type': 'agent',
+        'x-relay-actor-id': 'agent-1',
+        'x-relay-credential-id': 'cred-1',
+        'x-relay-session-id': 'autonomous-session-1',
+      };
+      const first = await fetch(`${hub.base}/hub/nodes/node_prod/sessions`, {
+        method: 'POST',
+        headers: requesterHeaders,
+        body: JSON.stringify(originalBody),
+      });
+      expect(first.status).toBe(409);
+      const firstJson = await first.json();
+      expect(firstJson).toMatchObject({
+        error: {
+          details: {
+            challenge: {
+              contract: {
+                requester: {
+                  kind: 'scoped-actor',
+                  actorType: 'agent',
+                  actorIdHash: expect.any(String),
+                  credentialIdHash: expect.any(String),
+                  sessionId: 'autonomous-session-1',
+                },
+                approvalTarget: { kind: 'human' },
+              },
+            },
+          },
+        },
+      });
+      return { ...hub, originalBody, requesterHeaders };
+    }
+
+    const sameActor = await createScopedChallenge();
+    const sameActorApproval = await fetch(`${sameActor.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'operator-browser',
+        'x-relay-actor-type': 'agent',
+        'x-relay-actor-id': 'agent-1',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(sameActorApproval.status).toBe(401);
+    expect(await sameActorApproval.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_SAME_ACTOR' } },
+    });
+
+    const sameCredential = await createScopedChallenge();
+    const sameCredentialApproval = await fetch(`${sameCredential.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'operator-browser',
+        'x-relay-credential-id': 'cred-1',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(sameCredentialApproval.status).toBe(401);
+    expect(await sameCredentialApproval.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_SAME_CREDENTIAL' } },
+    });
+
+    const sameSession = await createScopedChallenge();
+    const sameSessionApproval = await fetch(`${sameSession.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'operator-browser',
+        'x-relay-session-id': 'autonomous-session-1',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(sameSessionApproval.status).toBe(401);
+    expect(await sameSessionApproval.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_SAME_SESSION' } },
+    });
+
+    const missingHuman = await createScopedChallenge();
+    const missingHumanApproval = await fetch(`${missingHuman.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(missingHumanApproval.status).toBe(401);
+    expect(await missingHumanApproval.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_APPROVAL_TARGET_INVALID' } },
+    });
+
+    const distinct = await createScopedChallenge();
+    const distinctApproval = await fetch(`${distinct.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'operator-browser',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(distinctApproval.status).toBe(200);
+    const redeemed = await fetch(`${distinct.base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: distinct.requesterHeaders,
+      body: JSON.stringify({ ...distinct.originalBody, confirmationToken: 'raw-confirmation-token' }),
+    });
+    expect(redeemed.status).toBe(201);
+    expect(distinct.nodeLinks.requests).toHaveLength(1);
   });
 
   it('associates routed session creates with existing WorkContext metadata and Active Work groups', async () => {

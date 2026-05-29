@@ -84,6 +84,11 @@ import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 import type { CliGatewayActorReadCommand } from './cli-gateway-actor-auth.js';
+import type {
+  HighRiskApprovalApproverIdentity,
+  HighRiskApprovalRequesterIdentity,
+  HighRiskApprovalTarget,
+} from './high-risk-approvals.js';
 
 const FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES = 256 * 1024;
 
@@ -590,6 +595,74 @@ function authSessionLabel(req: Request): string | undefined {
   return req.header('x-auth-session')?.trim() || undefined;
 }
 
+function requestHeader(req: Request, name: string): string | undefined {
+  return req.header(name)?.trim() || undefined;
+}
+
+function bodyString(req: Request, key: string): string | undefined {
+  const value = bodyRecord(req)[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function routedRequesterIdentity(
+  req: Request,
+  requesterAuthSessionHash: string
+): HighRiskApprovalRequesterIdentity {
+  const actorId = requestHeader(req, 'x-relay-actor-id') ?? bodyString(req, 'actorId');
+  const actorType = requestHeader(req, 'x-relay-actor-type') ?? bodyString(req, 'actorType');
+  const credentialId = requestHeader(req, 'x-relay-credential-id') ?? bodyString(req, 'credentialId');
+  const credentialJti = requestHeader(req, 'x-relay-credential-jti') ?? bodyString(req, 'credentialJti');
+  const sessionId = requestHeader(req, 'x-relay-session-id') ?? bodyString(req, 'sessionId');
+  const workContextId = requestHeader(req, 'x-relay-work-context-id') ?? bodyString(req, 'workContextId');
+  const displayName = authSessionLabel(req) ?? requestHeader(req, 'x-relay-actor-display-name');
+  if (actorId || actorType || credentialId || credentialJti || sessionId || workContextId) {
+    return {
+      kind: 'scoped-actor',
+      authSessionHash: requesterAuthSessionHash,
+      ...(actorType ? { actorType } : {}),
+      ...(actorId ? { actorId } : {}),
+      ...(credentialId ? { credentialId } : {}),
+      ...(credentialJti ? { credentialJti } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(workContextId ? { workContextId } : {}),
+      ...(displayName ? { displayName } : {}),
+    };
+  }
+  return {
+    kind: 'browser-session',
+    authSessionHash: requesterAuthSessionHash,
+    ...(displayName ? { displayName } : {}),
+  };
+}
+
+function routedApproverIdentity(req: Request): HighRiskApprovalApproverIdentity | undefined {
+  const actorId =
+    requestHeader(req, 'x-relay-approver-id') ??
+    requestHeader(req, 'x-relay-actor-id') ??
+    authSessionLabel(req);
+  const actorType = requestHeader(req, 'x-relay-actor-type') ?? 'human';
+  const credentialId = requestHeader(req, 'x-relay-credential-id');
+  const credentialJti = requestHeader(req, 'x-relay-credential-jti');
+  const sessionId = requestHeader(req, 'x-relay-session-id');
+  const workContextId = requestHeader(req, 'x-relay-work-context-id');
+  const displayName = authSessionLabel(req) ?? requestHeader(req, 'x-relay-actor-display-name');
+  if (!actorId && !credentialId && !credentialJti && !sessionId && !workContextId) return undefined;
+  return {
+    kind: 'human',
+    ...(actorType ? { actorType } : {}),
+    ...(actorId ? { actorId } : {}),
+    ...(credentialId ? { credentialId } : {}),
+    ...(credentialJti ? { credentialJti } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(workContextId ? { workContextId } : {}),
+    ...(displayName ? { displayName } : {}),
+  };
+}
+
+function routedApprovalTarget(requester: HighRiskApprovalRequesterIdentity): HighRiskApprovalTarget | undefined {
+  return requester.kind === 'scoped-actor' ? { kind: 'human' } : undefined;
+}
+
 function relayErrorForConfirmationFailure(
   failure: ConfirmationFailure
 ): RelayNodeError {
@@ -644,9 +717,13 @@ function confirmationCreateInput(
   canonicalParams: ReturnType<typeof canonicalConfirmationParams>
 ) {
   const requesterDisplayName = authSessionLabel(req);
+  const requester = routedRequesterIdentity(req, requesterAuthSessionHash);
+  const approvalTarget = routedApprovalTarget(requester);
   return {
     requesterAuthSessionHash,
     ...(requesterDisplayName ? { requesterDisplayName } : {}),
+    requester,
+    ...(approvalTarget ? { approvalTarget } : {}),
     canonicalParams,
   };
 }
@@ -658,10 +735,12 @@ function confirmationApprovalInput(
   now: Date
 ) {
   const approverDisplayName = authSessionLabel(req);
+  const approver = routedApproverIdentity(req);
   return {
     challengeId,
     approverAuthSessionHash: authSessionHash(req),
     ...(approverDisplayName ? { approverDisplayName } : {}),
+    ...(approver ? { approver } : {}),
     decision,
     now,
   };

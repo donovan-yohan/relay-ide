@@ -417,7 +417,16 @@ export function createConfirmationChallengeStore(
     if (challenge.status === 'redeemed') {
       challenge.outcome = 'reuse_denied';
       challenge.contract = updatedContract(challenge, 'reuse_denied');
-      return failure('CONFIRMATION_ALREADY_USED', 'confirmation token was already used', challenge);
+      return failure(
+        'CONFIRMATION_ALREADY_USED',
+        'confirmation token was already used',
+        challenge,
+        auditForChallenge(challenge, {
+          eventType: 'failed_redemption',
+          decision: 'failed',
+          reasonCode: 'CONFIRMATION_ALREADY_USED',
+        })
+      );
     }
     if (challenge.status !== 'approved') {
       return failure('CONFIRMATION_NOT_APPROVED', `confirmation challenge is ${challenge.status}`, challenge);
@@ -541,13 +550,18 @@ export function canonicalConfirmationParams(
 ): CanonicalConfirmationParams {
   const record = asRecord(params);
   switch (action) {
-    case 'pty.exec.arbitrary':
+    case 'pty.exec.arbitrary': {
+      const command = stringField(record, 'command');
       return stripUndefined({
         action,
-        command: stringField(record, 'command'),
         cwd: stringField(record, 'cwd'),
+        commandHash: command === undefined ? undefined : sha256Hex(command),
+        commandByteCount: command === undefined ? undefined : Buffer.byteLength(command, 'utf8'),
+        commandCharCount: command?.length,
+        commandClasses: command === undefined ? undefined : commandClasses(command),
         envHash: hashOptional(record?.['env']),
       });
+    }
     case 'rpc.fs.write': {
       const bytes = bytesFromFileWrite(record);
       return stripUndefined({
@@ -865,6 +879,22 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
 
 function hashOptional(value: unknown): string | undefined {
   return value === undefined ? undefined : sha256Hex(stableStringify(value));
+}
+
+function commandClasses(command: string): string[] {
+  const classes: string[] = [];
+  if (command.includes('\r') || command.includes('\n')) classes.push('multiline');
+  if (/[;&|`$<>()[\]{}*?~!]/.test(command)) classes.push('shell-metacharacters');
+  if (/https?:\/\//i.test(command)) classes.push('url');
+  if (
+    /(?:authorization|bearer|token|secret|password|api[_-]?key|gh[pousr]_|sk-|relay-)/i.test(
+      command
+    )
+  ) {
+    classes.push('secret-looking');
+  }
+  if (/[^\x20-\x7e]/.test(command)) classes.push('non-ascii');
+  return classes;
 }
 
 function bytesFromFileWrite(record: Record<string, unknown> | undefined): Buffer {
