@@ -57,8 +57,29 @@ export interface CliGatewayActorFailureEnvelope {
   };
 }
 
+const AUTHENTICATED_CLI_GATEWAY_ACTOR_CREDENTIAL = Symbol(
+  'relay.cliGatewayActorCredential'
+);
+
+type RequestWithAuthenticatedCliGatewayActor = Request & {
+  [AUTHENTICATED_CLI_GATEWAY_ACTOR_CREDENTIAL]?: ScopedActorCredentialRecord;
+};
+
 export function createCliGatewayActorRegistry(): ScopedActorCredentialRegistry {
   return new ScopedActorCredentialRegistry();
+}
+
+export function attachAuthenticatedCliGatewayActorCredential(
+  req: Request,
+  credential: ScopedActorCredentialRecord
+): void {
+  (req as RequestWithAuthenticatedCliGatewayActor)[AUTHENTICATED_CLI_GATEWAY_ACTOR_CREDENTIAL] = credential;
+}
+
+export function authenticatedCliGatewayActorCredential(
+  req: Request
+): ScopedActorCredentialRecord | undefined {
+  return (req as RequestWithAuthenticatedCliGatewayActor)[AUTHENTICATED_CLI_GATEWAY_ACTOR_CREDENTIAL];
 }
 
 export function bearerActorToken(req: Request): string {

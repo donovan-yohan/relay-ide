@@ -118,6 +118,12 @@ export type ConfirmationFailure = {
   audit?: SecurityAuditEntryInput;
 };
 
+type AttemptedApproval = {
+  approverAuthSessionHash: string;
+  approverDisplayName?: string;
+  approver?: HighRiskApprovalApproverIdentity;
+};
+
 export type ConfirmationApprovalResult =
   | {
       ok: true;
@@ -334,24 +340,25 @@ export function createConfirmationChallengeStore(
     if (challenge.status !== 'pending') {
       return failure('CONFIRMATION_NOT_APPROVED', `confirmation challenge is ${challenge.status}`, challenge);
     }
-    if (challenge.requesterAuthSessionHash === input.approverAuthSessionHash) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the requesting browser/auth session cannot approve its own challenge', 'same_session_approval_attempt', 'deny');
-    }
     const approver = input.approver;
+    const attemptedApproval = attemptedApprovalFromInput(input);
+    if (challenge.requesterAuthSessionHash === input.approverAuthSessionHash) {
+      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the requesting browser/auth session cannot approve its own challenge', 'same_session_approval_attempt', 'deny', undefined, attemptedApproval);
+    }
     if (requiresStructuredApprover(challenge) && !approver) {
-      return failChallenge(challenge, 'CONFIRMATION_APPROVAL_TARGET_INVALID', 'approval requires a distinct human/operator approver identity', 'denial', 'deny', 'approval_target_invalid');
+      return failChallenge(challenge, 'CONFIRMATION_APPROVAL_TARGET_INVALID', 'approval requires a distinct human/operator approver identity', 'denial', 'deny', 'approval_target_invalid', attemptedApproval);
     }
     if (sameHighRiskActor(challenge.requester, approver)) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_ACTOR', 'the requesting autonomous actor cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid');
+      return failChallenge(challenge, 'CONFIRMATION_SAME_ACTOR', 'the requesting autonomous actor cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid', attemptedApproval);
     }
     if (sameHighRiskCredential(challenge.requester, approver)) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_CREDENTIAL', 'the requesting scoped credential cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid');
+      return failChallenge(challenge, 'CONFIRMATION_SAME_CREDENTIAL', 'the requesting scoped credential cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid', attemptedApproval);
     }
     if (sameHighRiskSession(challenge.requester, approver)) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the requesting session cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid');
+      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the requesting session cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid', attemptedApproval);
     }
     if (approver && !approverSatisfiesTarget(approver, challenge.approvalTarget)) {
-      return failChallenge(challenge, 'CONFIRMATION_APPROVAL_TARGET_INVALID', 'approver does not match the challenge approval target', 'denial', 'deny', 'approval_target_invalid');
+      return failChallenge(challenge, 'CONFIRMATION_APPROVAL_TARGET_INVALID', 'approver does not match the challenge approval target', 'denial', 'deny', 'approval_target_invalid', attemptedApproval);
     }
     if (input.decision === 'deny' || input.decision === 'deny_revoke') {
       const reasonCode = input.decision === 'deny' ? 'CONFIRMATION_DENIED' : 'CONFIRMATION_DENIED_REVOKE';
@@ -718,24 +725,42 @@ function invalidateRedemptionChallenge(
   }));
 }
 
+function attemptedApprovalFromInput(input: {
+  approverAuthSessionHash: string;
+  approverDisplayName?: string;
+  approver?: HighRiskApprovalApproverIdentity;
+}): AttemptedApproval {
+  return {
+    approverAuthSessionHash: input.approverAuthSessionHash,
+    ...(input.approverDisplayName ? { approverDisplayName: input.approverDisplayName } : {}),
+    ...(input.approver ? { approver: input.approver } : {}),
+  };
+}
+
 function failChallenge(
   challenge: ConfirmationChallenge,
   reasonCode: ConfirmationReasonCode,
   message: string,
   eventType: SecurityAuditEntryInput['eventType'],
   decision: SecurityAuditEntryInput['decision'],
-  outcome?: HighRiskApprovalOutcome
+  outcome?: HighRiskApprovalOutcome,
+  attemptedApproval?: {
+    approverAuthSessionHash: string;
+    approverDisplayName?: string;
+    approver?: HighRiskApprovalApproverIdentity;
+  }
 ): ConfirmationFailure {
   challenge.reasonCode = reasonCode;
   challenge.message = message;
   if (outcome) {
     challenge.outcome = outcome;
-    challenge.contract = updatedContract(challenge, outcome);
+    challenge.contract = updatedContract(challenge, outcome, undefined, attemptedApproval?.approver);
   }
   return failure(reasonCode, message, challenge, auditForChallenge(challenge, {
     eventType,
     decision,
     reasonCode,
+    ...(attemptedApproval ? { attemptedApproval } : {}),
   }));
 }
 
@@ -797,6 +822,10 @@ function auditForChallenge(
     decision: SecurityAuditEntryInput['decision'];
     reasonCode: string;
     params?: unknown;
+    attemptedApproval?: {
+      approverAuthSessionHash: string;
+      approverDisplayName?: string;
+    };
   }
 ): SecurityAuditEntryInput {
   const policy = challenge.decision;
@@ -804,7 +833,7 @@ function auditForChallenge(
     eventType: input.eventType,
     decision: input.decision,
     reasonCode: input.reasonCode,
-    peer: auditPeerForChallenge(challenge, input.eventType),
+    peer: auditPeerForChallenge(challenge, input.eventType, input.attemptedApproval),
     node: {
       nodeId: challenge.nodeId,
       ...(policy.trustTier ? { trustTier: policy.trustTier } : {}),
@@ -828,17 +857,29 @@ function auditForChallenge(
 
 function auditPeerForChallenge(
   challenge: ConfirmationChallenge,
-  eventType: SecurityAuditEntryInput['eventType']
+  eventType: SecurityAuditEntryInput['eventType'],
+  attemptedApproval?: {
+    approverAuthSessionHash: string;
+    approverDisplayName?: string;
+  }
 ): SecurityAuditEntryInput['peer'] {
+  const useAttemptedApprover =
+    (eventType === 'same_session_approval_attempt' || eventType === 'denial') &&
+    Boolean(attemptedApproval?.approverAuthSessionHash);
   const useApprover =
+    !useAttemptedApprover &&
     (eventType === 'approval' || eventType === 'denial' || eventType === 'revocation') &&
     Boolean(challenge.approverAuthSessionHash);
-  const principalHash = useApprover
-    ? challenge.approverAuthSessionHash!
-    : challenge.requesterAuthSessionHash;
-  const displayName = useApprover
-    ? challenge.approverDisplayName
-    : challenge.requesterDisplayName;
+  const principalHash = useAttemptedApprover
+    ? attemptedApproval!.approverAuthSessionHash
+    : useApprover
+      ? challenge.approverAuthSessionHash!
+      : challenge.requesterAuthSessionHash;
+  const displayName = useAttemptedApprover
+    ? attemptedApproval?.approverDisplayName
+    : useApprover
+      ? challenge.approverDisplayName
+      : challenge.requesterDisplayName;
   return {
     kind: 'user',
     principalHash,

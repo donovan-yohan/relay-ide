@@ -214,6 +214,7 @@ import {
   handleSupervisorSessionsRequest,
 } from './supervisor-route-handlers.js';
 import {
+  attachAuthenticatedCliGatewayActorCredential,
   bearerActorToken,
   classifyCliGatewayCredentialLane,
   cliGatewayActorFailure,
@@ -1747,6 +1748,7 @@ async function main(): Promise<void> {
         );
         return;
       }
+      attachAuthenticatedCliGatewayActorCredential(req, validation.credential);
       next();
     };
   };
