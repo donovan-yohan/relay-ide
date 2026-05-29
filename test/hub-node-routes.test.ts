@@ -565,6 +565,119 @@ describe('hub node routes and link', () => {
     expect(revokedHeartbeatBody).not.toContain(exchange.credential.token);
   });
 
+  it('keeps strict source denial scoped to the node credential lane', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        sourceDiagnostics: { strictDeny: true },
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({ displayName: 'Strict Node' }).pairToken,
+      manifest: manifest(),
+      source: { tailnetIp: '100.90.12.34' },
+    });
+
+    const deniedHeartbeat = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${exchanged.credential.token}`,
+        'x-relay-node-tailnet-ip': '100.91.1.2',
+      },
+      body: JSON.stringify({
+        nodeId: exchanged.credential.nodeId,
+        protocolVersion: '1.0',
+      }),
+    });
+    expect(deniedHeartbeat.status).toBe(403);
+    expect(await deniedHeartbeat.json()).toMatchObject({
+      error: {
+        code: 'FORBIDDEN',
+        details: { sourceDiagnostics: { state: 'strict-deny' } },
+      },
+    });
+
+    const nodesRes = await fetch(`${base}/nodes`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(nodesRes.status).toBe(200);
+    const nodes = (await nodesRes.json()) as {
+      nodes: Array<{ sourceDiagnostics?: { state?: string; reasonCode?: string } }>;
+    };
+    expect(nodes.nodes[0]?.sourceDiagnostics).toMatchObject({
+      state: 'strict-deny',
+      reasonCode: 'NODE_SOURCE_STRICT_DENY',
+    });
+  });
+
+  it('denies spoofed source headers on reverse websocket upgrades while allowing unbound credentials', async () => {
+    const previousStrictDeny = process.env.RELAY_NODE_SOURCE_STRICT_DENY;
+    process.env.RELAY_NODE_SOURCE_STRICT_DENY = '1';
+    cleanup.push(() => {
+      if (previousStrictDeny === undefined) {
+        delete process.env.RELAY_NODE_SOURCE_STRICT_DENY;
+      } else {
+        process.env.RELAY_NODE_SOURCE_STRICT_DENY = previousStrictDeny;
+      }
+    });
+
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+      source: { tailnetIp: '100.90.12.34' },
+    });
+
+    const server = http.createServer(express());
+    setupWebSocket(
+      server,
+      new Set(),
+      null,
+      undefined,
+      false,
+      undefined,
+      registry
+    );
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+
+    const mismatchedUpgrade = await rawUpgrade(port, '/hub/node-link', {
+      Authorization: `Bearer ${exchanged.credential.token}`,
+      'x-relay-node-tailnet-ip': '100.91.1.2',
+    });
+    expect(mismatchedUpgrade).toMatch(/^HTTP\/1\.1 403/);
+
+    const unboundExchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link`, {
+      headers: {
+        authorization: `Bearer ${unboundExchanged.credential.token}`,
+      },
+    });
+    cleanup.push(() => ws.close());
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+  });
+
   it('accepts authenticated reverse websocket heartbeats and rejects incompatible protocol envelopes with typed errors', async () => {
     let now = new Date('2026-01-02T03:04:05.000Z');
     const { tmpDir, registry } = tmpRegistry(() => now);

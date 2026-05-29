@@ -92,6 +92,7 @@ import type {
   HighRiskApprovalRequesterIdentity,
   HighRiskApprovalTarget,
 } from './high-risk-approvals.js';
+import { sourceTupleFromRequest } from './node-source-diagnostics.js';
 
 const FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES = 256 * 1024;
 
@@ -149,6 +150,9 @@ interface HubNodeRouterOptions {
   auditSink?: RoutedSessionAuditSink;
   workContextStore?: WorkContextStore;
   readModelCache?: RoutedSessionReadModelCache;
+  sourceDiagnostics?: {
+    strictDeny?: boolean;
+  };
   now?: () => Date;
 }
 
@@ -227,6 +231,8 @@ export function errorStatus(error: RelayNodeError): number {
     case 'NODE_CREDENTIAL_MALFORMED':
     case 'NODE_CREDENTIAL_MISMATCH':
       return 401;
+    case 'FORBIDDEN':
+      return 403;
     case 'ROTATION_IN_PROGRESS':
     case 'CONFIRMATION_REQUIRED':
       return 409;
@@ -2075,12 +2081,14 @@ export function createHubNodeRouter(
         typeof body['displayName'] === 'string'
           ? body['displayName']
           : undefined;
+      const source = sourceTupleFromRequest(req);
       res.status(201).json(
         registry.exchangePairToken({
           pairToken,
           manifest,
           ...(displayName ? { displayName } : {}),
           ...(protocolVersion ? { protocolVersion } : {}),
+          ...(source ? { source } : {}),
         })
       );
     } catch (error) {
@@ -2090,9 +2098,16 @@ export function createHubNodeRouter(
 
   router.post('/hub/node-heartbeat', (req, res) => {
     const token = bearerToken(req);
+    const source = sourceTupleFromRequest(req);
+    const authContext = {
+      ...(source ? { source } : {}),
+      ...(options.sourceDiagnostics?.strictDeny
+        ? { strictSourceDeny: true }
+        : {}),
+    };
     const authenticated = token
-      ? registry.authenticateCredentialDetailed(token)
-      : registry.authenticateCredentialDetailed('');
+      ? registry.authenticateCredentialDetailed(token, authContext)
+      : registry.authenticateCredentialDetailed('', authContext);
     if (authenticated.ok === false) {
       const { error } = authenticated;
       res.status(errorStatus(error)).json({ error });

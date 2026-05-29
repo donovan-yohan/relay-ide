@@ -1,6 +1,8 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { RawData } from 'ws';
 import http from 'node:http';
+import type { Duplex } from 'node:stream';
+import { URL } from 'node:url';
 import type { IPty } from 'node-pty';
 import * as sessions from './sessions.js';
 import { WorktreeWatcher } from './watcher.js';
@@ -46,6 +48,7 @@ import {
   evaluateHubPolicy,
   policyDecisionToRelayError,
 } from './hub-policy-evaluator.js';
+import { sourceTupleFromIncomingMessage } from './node-source-diagnostics.js';
 
 const logger = createLogger('ws');
 
@@ -476,6 +479,10 @@ function parseCookies(
   return cookies;
 }
 
+interface NodeLinkSourceDiagnosticsOptions {
+  strictDeny?: boolean;
+}
+
 function setupWebSocket(
   server: http.Server,
   authenticatedTokens: Set<string>,
@@ -486,13 +493,17 @@ function setupWebSocket(
   hubNodeRegistry?: HubNodeRegistry,
   nodeLinks?: HubNodeLinkManager,
   sessionEnvelopes: InMemorySessionEnvelopeRegistry = sessionEnvelopeRegistry,
-  auditSink?: RoutedSessionAuditSink
+  auditSink?: RoutedSessionAuditSink,
+  sourceDiagnostics?: NodeLinkSourceDiagnosticsOptions
 ): {
   wss: WebSocketServer;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
   broadcastBranchChanged: (cwdPath: string, branchName: string) => void;
 } {
   const wss = new WebSocketServer({ noServer: true });
+  const nodeLinkStrictSourceDeny =
+    sourceDiagnostics?.strictDeny ??
+    process.env.RELAY_NODE_SOURCE_STRICT_DENY === '1';
   const eventClients = new Set<WebSocket>();
 
   function isAuthenticated(cookieHeader: string | undefined): boolean {
@@ -609,19 +620,33 @@ function setupWebSocket(
     if (nodeStatusRefreshTimer) clearInterval(nodeStatusRefreshTimer);
   });
 
+  function handleNodeLinkUpgrade(
+    request: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer
+  ): boolean {
+    const source = sourceTupleFromIncomingMessage(request);
+    const authenticated = authenticateHubNodeLink(request, hubNodeRegistry, {
+      ...(source ? { source } : {}),
+      ...(nodeLinkStrictSourceDeny ? { strictSourceDeny: true } : {}),
+    });
+    if (authenticated.ok === false || !hubNodeRegistry) {
+      const status = authenticated.ok === false ? authenticated.status : 401;
+      const reason = status === 403 ? 'Forbidden' : 'Unauthorized';
+      socket.write(`HTTP/1.1 ${status} ${reason}\r\n\r\n`);
+      socket.destroy();
+      return true;
+    }
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      handleHubNodeLink(ws, hubNodeRegistry, authenticated.authenticated, nodeLinks);
+    });
+    return true;
+  }
+
   server.on('upgrade', (request, socket, head) => {
     const requestUrl = new URL(request.url ?? '/', 'http://relay.local');
     const requestPath = requestUrl.pathname.replace(/\/$/, '');
-    if (requestPath === '/hub/node-link') {
-      const authenticated = authenticateHubNodeLink(request, hubNodeRegistry);
-      if (!authenticated || !hubNodeRegistry) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        handleHubNodeLink(ws, hubNodeRegistry, authenticated, nodeLinks);
-      });
+    if (requestPath === '/hub/node-link' && handleNodeLinkUpgrade(request, socket, head)) {
       return;
     }
 

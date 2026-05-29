@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto';
 import type * as http from 'node:http';
 import { WebSocket } from 'ws';
 import type { RawData } from 'ws';
-import type { HubNodeRegistry } from './hub-node-registry.js';
+import type { CredentialAuthContext, HubNodeRegistry } from './hub-node-registry.js';
 import { isNodeManifest, type NodeManifest } from '../shared/node-manifest.js';
 import {
   RELAY_NODE_LINK_PROTOCOL,
@@ -17,6 +17,10 @@ interface AuthenticatedNodeLink {
   token: string;
   credentialId: string;
 }
+
+export type HubNodeLinkAuthenticationResult =
+  | { ok: true; authenticated: AuthenticatedNodeLink }
+  | { ok: false; status: number; error?: RelayNodeError };
 
 interface PendingRpc {
   nodeId: string;
@@ -70,15 +74,37 @@ function bearerToken(request: http.IncomingMessage): string | null {
   return match?.[1]?.trim() || null;
 }
 
+function hubNodeLinkAuthStatus(error: RelayNodeError): number {
+  switch (error.code) {
+    case 'FORBIDDEN':
+    case 'NODE_REVOKED':
+    case 'NODE_CREDENTIAL_EXPIRED':
+    case 'REPAIR_REQUIRED':
+      return 403;
+    default:
+      return 401;
+  }
+}
+
 export function authenticateHubNodeLink(
   request: http.IncomingMessage,
-  registry: HubNodeRegistry | undefined
-): AuthenticatedNodeLink | null {
-  if (!registry) return null;
+  registry: HubNodeRegistry | undefined,
+  context: CredentialAuthContext = {}
+): HubNodeLinkAuthenticationResult {
+  if (!registry) return { ok: false, status: 401 };
   const token = bearerToken(request);
-  if (!token) return null;
-  const auth = registry.authenticateCredentialDetailed(token);
-  return auth.ok ? { node: auth.node, token, credentialId: auth.credentialId } : null;
+  if (!token) return { ok: false, status: 401 };
+  const auth = registry.authenticateCredentialDetailed(token, context);
+  if (auth.ok) {
+    return {
+      ok: true,
+      authenticated: { node: auth.node, token, credentialId: auth.credentialId },
+    };
+  }
+  const error = auth.ok === false ? auth.error : undefined;
+  return error
+    ? { ok: false, status: hubNodeLinkAuthStatus(error), error }
+    : { ok: false, status: 401 };
 }
 
 function envelope(
