@@ -13,6 +13,11 @@ export type RelayNodeErrorCode =
   | 'UNAUTHORIZED'
   | 'FORBIDDEN'
   | 'CONFIRMATION_REQUIRED'
+  | 'NODE_CREDENTIAL_MISSING'
+  | 'NODE_CREDENTIAL_MALFORMED'
+  | 'NODE_CREDENTIAL_MISMATCH'
+  | 'NODE_CREDENTIAL_EXPIRED'
+  | 'REPAIR_REQUIRED'
   | 'TOKEN_EXPIRED'
   | 'TOKEN_ALREADY_USED'
   | 'NODE_REVOKED'
@@ -58,6 +63,31 @@ export interface RelayNodeCredential {
   credentialId: string;
   token: string;
   issuedAt: string;
+}
+
+export type RelayNodeCredentialRecoveryReason =
+  | 'NODE_CREDENTIAL_MISSING'
+  | 'NODE_CREDENTIAL_MALFORMED'
+  | 'NODE_CREDENTIAL_MISMATCH'
+  | 'NODE_CREDENTIAL_EXPIRED'
+  | 'NODE_REVOKED'
+  | 'VERSION_SKEW'
+  | 'PROTOCOL_INCOMPATIBLE'
+  | 'REPAIR_REQUIRED';
+
+export interface RelayNodeIdentitySummary {
+  nodeId: string;
+  displayName: string;
+  hostname: string;
+  createdAt: string;
+  pairedAt: string;
+}
+
+export interface RelayNodeCredentialRecordSummary {
+  credentialId: string;
+  issuedAt: string;
+  state: HubNodeCredentialState;
+  rotationId?: string;
 }
 
 export type HubNodeStatus =
@@ -177,6 +207,7 @@ export interface NodeCapabilityManifestSummary {
 
 export interface HubNodeSummary {
   nodeId: string;
+  identity: RelayNodeIdentitySummary;
   displayName: string;
   hostname: string;
   homeDir?: string;
@@ -199,6 +230,7 @@ export interface HubNodeSummary {
     policy?: RelayAclSummary;
   };
   credentialState: HubNodeCredentialState;
+  credential: RelayNodeCredentialRecordSummary;
   credentialRotation?: HubNodeCredentialRotationSummary;
   version: {
     state: HubNodeVersionState;

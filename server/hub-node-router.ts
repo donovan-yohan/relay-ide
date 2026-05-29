@@ -211,6 +211,9 @@ function controlSummaryFieldsOk(session: Partial<SessionSummary>): boolean {
 export function errorStatus(error: RelayNodeError): number {
   switch (error.code) {
     case 'UNAUTHORIZED':
+    case 'NODE_CREDENTIAL_MISSING':
+    case 'NODE_CREDENTIAL_MALFORMED':
+    case 'NODE_CREDENTIAL_MISMATCH':
       return 401;
     case 'ROTATION_IN_PROGRESS':
     case 'CONFIRMATION_REQUIRED':
@@ -224,6 +227,8 @@ export function errorStatus(error: RelayNodeError): number {
       return 400;
     case 'UNSUPPORTED_CAPABILITY':
     case 'NODE_REVOKED':
+    case 'NODE_CREDENTIAL_EXPIRED':
+    case 'REPAIR_REQUIRED':
     case 'SESSION_EXPIRED':
     case 'SESSION_REVOKED':
     case 'SESSION_MISMATCH':
@@ -2001,16 +2006,7 @@ export function createHubNodeRouter(
     const token = bearerToken(req);
     const authenticated = token
       ? registry.authenticateCredentialDetailed(token)
-      : null;
-    if (!authenticated) {
-      const error = {
-        code: 'UNAUTHORIZED' as const,
-        message: 'invalid node credential',
-        retryable: false,
-      };
-      res.status(errorStatus(error)).json({ error });
-      return;
-    }
+      : registry.authenticateCredentialDetailed('');
     if (authenticated.ok === false) {
       const { error } = authenticated;
       res.status(errorStatus(error)).json({ error });

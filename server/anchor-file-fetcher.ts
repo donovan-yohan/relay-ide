@@ -100,6 +100,13 @@ function localCompatibilityNode(): HubNodeSummary {
   const now = new Date().toISOString();
   return {
     nodeId: DEFAULT_LOCAL_NODE_ID,
+    identity: {
+      nodeId: DEFAULT_LOCAL_NODE_ID,
+      displayName: 'Local hub',
+      hostname: 'localhost',
+      createdAt: now,
+      pairedAt: now,
+    },
     displayName: 'Local hub',
     hostname: 'localhost',
     platform: process.platform,
@@ -126,6 +133,11 @@ function localCompatibilityNode(): HubNodeSummary {
       },
     },
     credentialState: 'active',
+    credential: {
+      credentialId: 'local-compatibility',
+      issuedAt: now,
+      state: 'active',
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,

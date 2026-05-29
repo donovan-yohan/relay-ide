@@ -18,6 +18,7 @@ import {
   type HubNodeVersionState,
   type NodeCapabilityManifestSummary,
   type RelayNodeCredential,
+  type RelayNodeCredentialRecordSummary,
   type RelayNodeError,
   type RelayNodeErrorCode,
 } from '../shared/relay-node-protocol.js';
@@ -31,7 +32,11 @@ import {
   summarizeAcl,
   type RelayNodeAcl,
 } from '../shared/security-policy.js';
-import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
+import type {
+  SecurityAuditDecision,
+  SecurityAuditEntryInput,
+  SecurityAuditEventType,
+} from '../shared/security-audit.js';
 
 const logger = createLogger('hub-node-registry');
 const REVERSE_LINK_ROUTE = 'reverse-link' as const;
@@ -60,8 +65,26 @@ interface StoredCredentialRotation {
   failureReason?: string;
 }
 
+interface StoredNodeIdentity {
+  nodeId: string;
+  displayName: string;
+  hostname: string;
+  createdAt: string;
+  pairedAt: string;
+}
+
+interface StoredActiveCredential {
+  credentialId: string;
+  tokenHash: string;
+  issuedAt: string;
+  expiresAt?: string;
+  revokedAt?: string;
+}
+
 interface StoredNodeRecord {
   nodeId: string;
+  identity?: StoredNodeIdentity;
+  activeCredential?: StoredActiveCredential;
   credentialId: string;
   credentialHash: string;
   // Timestamp of the currently-active credential. Set on pair and updated
@@ -355,6 +378,10 @@ function registryNeedsAclMigration(registry: RegistryFile): boolean {
   return registry.nodes.some((node) => nodeNeedsAclMigration(node));
 }
 
+function registryNeedsIdentityMigration(registry: RegistryFile): boolean {
+  return registry.nodes.some((node) => !node.identity || !node.activeCredential);
+}
+
 function readRegistryFile(storagePath: string): RegistryFile {
   try {
     const parsed = JSON.parse(
@@ -480,6 +507,40 @@ function credentialState(node: StoredNodeRecord): HubNodeCredentialState {
   return 'active';
 }
 
+function ensureSeparatedIdentity(node: StoredNodeRecord): StoredNodeIdentity {
+  node.identity ??= {
+    nodeId: node.nodeId,
+    displayName: node.displayName,
+    hostname: node.hostname,
+    createdAt: node.createdAt,
+    pairedAt: node.pairedAt,
+  };
+  return node.identity;
+}
+
+function ensureSeparatedCredential(node: StoredNodeRecord): StoredActiveCredential {
+  node.activeCredential ??= {
+    credentialId: node.credentialId,
+    tokenHash: node.credentialHash,
+    issuedAt: activeCredentialIssuedAt(node),
+    ...(node.revokedAt ? { revokedAt: node.revokedAt } : {}),
+  };
+  return node.activeCredential;
+}
+
+function credentialSummary(node: StoredNodeRecord): RelayNodeCredentialRecordSummary {
+  const credential = ensureSeparatedCredential(node);
+  const state = credentialState(node);
+  return {
+    credentialId: credential.credentialId,
+    issuedAt: credential.issuedAt,
+    state,
+    ...(node.credentialRotation && state === 'rotating'
+      ? { rotationId: node.credentialRotation.rotationId }
+      : {}),
+  };
+}
+
 function activeCredentialIssuedAt(node: StoredNodeRecord): string {
   // Prefer the persisted credentialIssuedAt so the value survives in-flight
   // rotation windows where `credentialRotation` is overwritten before proof.
@@ -555,6 +616,8 @@ function publicNode(
   hubVersion?: string
 ): HubNodeSummary {
   const acl = ensureNodeAcl(node);
+  const identity = ensureSeparatedIdentity(node);
+  const credential = credentialSummary(node);
   const aclSummary = summarizeAcl(acl);
   const rotationSummary = node.credentialRotation
     ? publicRotation(node.credentialRotation)
@@ -579,6 +642,7 @@ function publicNode(
 
   return {
     nodeId: node.nodeId,
+    identity,
     displayName: node.displayName,
     hostname: node.hostname,
     ...(node.homeDir ? { homeDir: node.homeDir } : {}),
@@ -596,7 +660,8 @@ function publicNode(
       warning: PRIVILEGED_NODE_WARNING,
       policy: aclSummary,
     },
-    credentialState: credentialState(node),
+    credentialState: credential.state,
+    credential,
     ...(rotationSummary ? { credentialRotation: rotationSummary } : {}),
     version: {
       state: versionState(node.protocolVersion),
@@ -663,9 +728,15 @@ export class HubNodeRegistry {
     this.hubVersion = options.hubVersion;
     this.state = readRegistryFile(options.storagePath);
     const needsAclMigration = registryNeedsAclMigration(this.state);
-    for (const node of this.state.nodes) ensureNodeAcl(node);
+    const needsIdentityMigration = registryNeedsIdentityMigration(this.state);
+    for (const node of this.state.nodes) {
+      ensureNodeAcl(node);
+      ensureSeparatedIdentity(node);
+      ensureSeparatedCredential(node);
+    }
     this.refreshLastNotifiedStatuses();
-    if (needsAclMigration) writeRegistryFile(this.storagePath, this.state);
+    if (needsAclMigration || needsIdentityMigration)
+      writeRegistryFile(this.storagePath, this.state);
   }
 
   setNowForTest(now: () => Date): void {
@@ -741,14 +812,27 @@ export class HubNodeRegistry {
     const nodeId = randomToken('node');
     const credential = credentialToken(nodeId);
     const timestamp = now.toISOString();
+    const displayName = nodeDisplayName(
+      input.displayName ?? pairToken.displayName,
+      input.manifest
+    );
     const node: StoredNodeRecord = {
       nodeId,
+      identity: {
+        nodeId,
+        displayName,
+        hostname: input.manifest.hostname,
+        createdAt: timestamp,
+        pairedAt: timestamp,
+      },
+      activeCredential: {
+        credentialId: credential.credentialId,
+        tokenHash: credential.hash,
+        issuedAt: timestamp,
+      },
       credentialId: credential.credentialId,
       credentialHash: credential.hash,
-      displayName: nodeDisplayName(
-        input.displayName ?? pairToken.displayName,
-        input.manifest
-      ),
+      displayName,
       hostname: input.manifest.hostname,
       ...(input.manifest.homeDir ? { homeDir: input.manifest.homeDir } : {}),
       platform: input.manifest.platform,
@@ -765,10 +849,7 @@ export class HubNodeRegistry {
       acl: createLegacyDefaultNodeAcl({
         nodeId,
         credentialId: credential.credentialId,
-        displayName: nodeDisplayName(
-          input.displayName ?? pairToken.displayName,
-          input.manifest
-        ),
+        displayName,
         createdAt: timestamp,
       }),
       credentialIssuedAt: timestamp,
@@ -779,6 +860,14 @@ export class HubNodeRegistry {
     pairToken.usedAt = timestamp;
     this.state.nodes.push(node);
     this.persist();
+    this.auditNodeCredentialLifecycle({
+      node,
+      credentialId: credential.credentialId,
+      decision: 'allow',
+      eventType: 'grant',
+      reasonCode: 'NODE_PAIR_ALLOWED',
+      action: 'nodes.pair',
+    });
     this.notifyNodeStatusIfChanged(node, 'online', input.manifest);
     return {
       credential: {
@@ -798,40 +887,151 @@ export class HubNodeRegistry {
     return result.ok ? result.node : null;
   }
 
+  private parseCredentialToken(
+    token: string
+  ):
+    | { ok: true; nodeId: string }
+    | { ok: false; result: CredentialAuthResult } {
+    if (token.length === 0) {
+      return { ok: false, result: this.credentialDenied('NODE_CREDENTIAL_MISSING') };
+    }
+    const firstSeparator = token.indexOf('.');
+    if (
+      firstSeparator <= 0 ||
+      firstSeparator === token.length - 1 ||
+      token.indexOf('.', firstSeparator + 1) !== -1
+    ) {
+      return { ok: false, result: this.credentialDenied('NODE_CREDENTIAL_MALFORMED') };
+    }
+    const nodeId = token.slice(0, firstSeparator);
+    if (!nodeId.startsWith('node_')) {
+      return { ok: false, result: this.credentialDenied('NODE_CREDENTIAL_MALFORMED') };
+    }
+    return { ok: true, nodeId };
+  }
+
+  private credentialDenied(
+    code: RelayNodeErrorCode,
+    node?: StoredNodeRecord,
+    nodeId?: string
+  ): CredentialAuthResult {
+    const error = this.credentialError(code);
+    this.auditNodeCredentialLifecycle({
+      ...(node ? { node } : {}),
+      ...(nodeId ? { nodeId } : {}),
+      decision: code === 'NODE_CREDENTIAL_EXPIRED' ? 'expired' : 'deny',
+      eventType: code === 'NODE_CREDENTIAL_EXPIRED' ? 'expiry' : 'denial',
+      reasonCode: code,
+    });
+    return { ok: false, error };
+  }
+
+  private credentialError(code: RelayNodeErrorCode): RelayNodeError {
+    const messages: Partial<Record<RelayNodeErrorCode, string>> = {
+      NODE_CREDENTIAL_MISSING: 'node credential is missing; re-pair this node',
+      NODE_CREDENTIAL_MALFORMED:
+        'node credential is malformed; re-pair this node',
+      NODE_CREDENTIAL_MISMATCH:
+        'node credential does not match the stable node identity',
+      NODE_CREDENTIAL_EXPIRED: 'node credential expired; rotate or re-pair',
+      NODE_REVOKED: 'node credential was revoked',
+      REPAIR_REQUIRED: 'node credential no longer matches hub state; re-pair required',
+    };
+    return {
+      code,
+      message: messages[code] ?? 'invalid node credential',
+      retryable: false,
+      details: { reasonCode: code },
+    };
+  }
+
+  private auditNodeCredentialLifecycle(input: {
+    node?: StoredNodeRecord;
+    nodeId?: string;
+    credentialId?: string;
+    decision: SecurityAuditDecision;
+    eventType: SecurityAuditEventType;
+    reasonCode: string;
+    action?: string;
+  }): void {
+    if (!this.auditSink) return;
+    const nodeId = input.node?.nodeId ?? input.nodeId;
+    try {
+      this.auditSink.append({
+        eventType: input.eventType,
+        decision: input.decision,
+        reasonCode: input.reasonCode,
+        peer: {
+          kind: 'node',
+          ...(nodeId ? { nodeId } : {}),
+          ...(input.credentialId ? { credentialId: input.credentialId } : {}),
+        },
+        node: { ...(nodeId ? { nodeId } : {}) },
+        intent: {
+          action: input.action ?? 'nodes.credential.authenticate',
+          ...(nodeId ? { target: nodeId } : {}),
+        },
+        material: {
+          params: {
+            recoveryReason: input.reasonCode,
+            hasCredentialId: Boolean(input.credentialId),
+          },
+        },
+      });
+    } catch {
+      // Best-effort lifecycle visibility only. Authentication remains
+      // fail-closed/allow-closed on the credential decision itself; audit
+      // failures must not cause raw bearer material to be retried or logged.
+    }
+  }
+
   authenticateCredentialDetailed(token: string): CredentialAuthResult {
-    const tokenHash = sha256(token);
-    const [nodeId] = token.split('.', 1);
+    const trimmedToken = token.trim();
+    const parsed = this.parseCredentialToken(trimmedToken);
+    if (parsed.ok === false) return parsed.result;
+    const { nodeId } = parsed;
+    const tokenHash = sha256(trimmedToken);
     const node = this.state.nodes.find(
       (candidate) => candidate.nodeId === nodeId
     );
     const rotation = node ? provableRotation(node) : undefined;
-    const matchesActive = node
-      ? timingSafeEqualHex(node.credentialHash, tokenHash)
+    const activeCredential = node ? ensureSeparatedCredential(node) : undefined;
+    const matchesActive = activeCredential
+      ? timingSafeEqualHex(activeCredential.tokenHash, tokenHash)
       : false;
     const matchesRotation =
       node &&
       rotation?.nextCredentialHash &&
       timingSafeEqualHex(rotation.nextCredentialHash, tokenHash);
     if (!node || (!matchesActive && !matchesRotation)) {
-      return {
-        ok: false,
-        error: {
-          code: 'UNAUTHORIZED',
-          message: 'invalid node credential',
-          retryable: false,
-        },
-      };
+      const code: RelayNodeErrorCode = !node
+        ? 'REPAIR_REQUIRED'
+        : node.credentialRotation?.state === 'stable'
+          ? 'REPAIR_REQUIRED'
+          : 'NODE_CREDENTIAL_MISMATCH';
+      return this.credentialDenied(code, node, nodeId);
+    }
+    if (activeCredential?.expiresAt) {
+      const expiresAt = Date.parse(activeCredential.expiresAt);
+      if (Number.isFinite(expiresAt) && expiresAt <= this.now().getTime()) {
+        return this.credentialDenied('NODE_CREDENTIAL_EXPIRED', node, nodeId);
+      }
     }
     if (node.revokedAt) {
-      return {
-        ok: false,
-        error: {
-          code: 'NODE_REVOKED',
-          message: 'node credential was revoked',
-          retryable: false,
-        },
-      };
+      return this.credentialDenied('NODE_REVOKED', node, nodeId);
     }
+    const credentialId = matchesRotation
+      ? rotation!.nextCredentialId
+      : node.credentialId;
+    this.auditNodeCredentialLifecycle({
+      node,
+      credentialId,
+      decision: 'allow',
+      eventType: 'grant',
+      reasonCode: matchesRotation
+        ? 'NODE_CREDENTIAL_ROTATION_RECONNECT_ALLOWED'
+        : 'NODE_CREDENTIAL_RECONNECT_ALLOWED',
+    });
     return {
       ok: true,
       node: publicNode(
@@ -839,9 +1039,7 @@ export class HubNodeRegistry {
         statusForNode(node, this.now(), this.staleMs, this.offlineMs),
         this.hubVersion
       ),
-      credentialId: matchesRotation
-        ? rotation!.nextCredentialId
-        : node.credentialId,
+      credentialId,
       ...(matchesRotation ? { rotationId: rotation!.rotationId } : {}),
     };
   }
@@ -870,6 +1068,8 @@ export class HubNodeRegistry {
     node.protocolVersion = input.protocolVersion;
     if (input.manifest) {
       node.hostname = input.manifest.hostname;
+      const identity = ensureSeparatedIdentity(node);
+      node.identity = { ...identity, hostname: input.manifest.hostname };
       if (input.manifest.homeDir) node.homeDir = input.manifest.homeDir;
       else delete node.homeDir;
       node.platform = input.manifest.platform;
@@ -1067,6 +1267,11 @@ export class HubNodeRegistry {
     node.credentialHash = rotation.nextCredentialHash;
     node.credentialIssuedAt = now;
     updateAclCredential(node, rotation.nextCredentialId, now);
+    node.activeCredential = {
+      credentialId: rotation.nextCredentialId,
+      tokenHash: rotation.nextCredentialHash,
+      issuedAt: now,
+    };
     delete rotation.nextCredentialHash;
     rotation.state = 'stable';
     rotation.stableAt = now;
@@ -1188,7 +1393,19 @@ export class HubNodeRegistry {
     const alreadyRevoked = Boolean(node.revokedAt);
     if (!alreadyRevoked) {
       node.revokedAt = this.now().toISOString();
+      node.activeCredential = {
+        ...ensureSeparatedCredential(node),
+        revokedAt: node.revokedAt,
+      };
       this.persist();
+      this.auditNodeCredentialLifecycle({
+        node,
+        credentialId: node.credentialId,
+        decision: 'revoked',
+        eventType: 'revocation',
+        reasonCode: 'NODE_CREDENTIAL_REVOKED',
+        action: 'nodes.revoke',
+      });
       this.notifyNodeStatusIfChanged(node, 'revoked');
     }
     return publicNode(node, 'revoked', this.hubVersion);

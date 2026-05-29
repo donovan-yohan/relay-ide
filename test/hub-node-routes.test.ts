@@ -438,7 +438,10 @@ describe('hub node routes and link', () => {
     );
     expect(browserSessionOnlyHeartbeatRes.status).toBe(401);
     expect(await browserSessionOnlyHeartbeatRes.json()).toMatchObject({
-      error: { code: 'UNAUTHORIZED', message: 'invalid node credential' },
+      error: {
+        code: 'NODE_CREDENTIAL_MISSING',
+        details: { reasonCode: 'NODE_CREDENTIAL_MISSING' },
+      },
     });
 
     const pairTokenAsNodeCredentialRes = await fetch(
@@ -457,7 +460,10 @@ describe('hub node routes and link', () => {
     );
     expect(pairTokenAsNodeCredentialRes.status).toBe(401);
     expect(await pairTokenAsNodeCredentialRes.json()).toMatchObject({
-      error: { code: 'UNAUTHORIZED', message: 'invalid node credential' },
+      error: {
+        code: 'NODE_CREDENTIAL_MALFORMED',
+        details: { reasonCode: 'NODE_CREDENTIAL_MALFORMED' },
+      },
     });
 
     const malformedHeartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
