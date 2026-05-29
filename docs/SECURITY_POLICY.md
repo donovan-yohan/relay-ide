@@ -31,6 +31,22 @@ Revocation is in-process and immediate for future validations by credential id/j
 
 Audit helpers record issue, validate allow/deny, revoke, and expiry outcomes with reason codes, actor/issuer/audience metadata, credential id, required/granted/denied bits, correlation id, and hashed/redacted scope/params. Token-looking material is redacted before hashing or emission; raw bearer tokens, secrets, and secret hashes must not appear in logs, issues, diagnostics, registry snapshots, CLI output, browser JSON, or test snapshots.
 
+### CLI gateway actor credential lane
+
+The #805 CLI gateway MVP uses scoped actor credentials for a narrow read-only lane, not as a general login token. Credentials minted for `audience: "relay:cli-gateway:v1"` may be passed only as explicit actor credentials (`--actor-token` or `RELAY_IDE_ACTOR_TOKEN`) to these stable command ids: `nodes.list`, `sessions.list`, `sessions.get`, and `work-contexts.get`. The lane requires `session:read` and applies credential scope checks for requested session/global-session/work-context ids when those scopes are present.
+
+The lifecycle endpoints are hub operator APIs under `/cli-gateway/actor-credentials`: `POST` mints one token plus a public credential record, `GET` lists public records, and `DELETE /cli-gateway/actor-credentials/:id` revokes by credential id. Rotation is intentionally mint-new-then-revoke-old; this slice does not ship a separate rotate endpoint. The operator auth used to call these endpoints authorizes delegation, but the issued actor token is not a browser PIN/cookie, is not "login as Donovan," and does not pair or impersonate a Relay node.
+
+Lane separation is fail-closed:
+
+| Presented credential                          | Accepted here                                                                                                                                              | Rejected from                                                                                                                                             |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser PIN/session cookie                    | Browser UI, operator lifecycle endpoints such as actor credential mint/list/revoke, and legacy CLI gateway compatibility paths that have not migrated yet. | Scoped actor-token lane, node heartbeat, and `/hub/node-link`.                                                                                            |
+| Node credential                               | Node heartbeat and `/hub/node-link`.                                                                                                                       | Browser UI/operator auth and the CLI actor-token lane.                                                                                                    |
+| Scoped actor token for `relay:cli-gateway:v1` | Only the four read-only CLI gateway command ids above.                                                                                                     | Browser auth paths, node auth paths, write/control/session-input/event-stream commands, File RPC, supervisor actions, and commands outside the allowlist. |
+
+Typed CLI actor denials use stable reason codes such as `CLI_ACTOR_CREDENTIAL_MISSING`, `CLI_ACTOR_BROWSER_COOKIE_REJECTED`, `CLI_ACTOR_NODE_CREDENTIAL_REJECTED`, `CLI_ACTOR_ROUTE_UNSUPPORTED`, `CLI_ACTOR_MALFORMED_CREDENTIAL`, `CLI_ACTOR_WRONG_AUDIENCE`, `CLI_ACTOR_EXPIRED`, `CLI_ACTOR_REVOKED`, `CLI_ACTOR_MISSING_SCOPE`, `CLI_ACTOR_WRONG_SESSION_SCOPE`, `CLI_ACTOR_WRONG_GLOBAL_SESSION_SCOPE`, `CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE`, `CLI_ACTOR_UNKNOWN_CAPABILITY`, and `CLI_ACTOR_INSUFFICIENT_CAPABILITY`. Failure payloads may include safe credential ids, denied bits, the expected audience, and correlation ids, but never raw bearer strings, browser cookies, node credential material, or secret hashes.
+
 Relay issue `#177` remains the first-load/PIN explanation ticket. These docs clarify the security boundary, but closing `#177` should wait until the visible browser first-load copy also explains where the PIN comes from and how to reset it.
 
 ## Trust tiers

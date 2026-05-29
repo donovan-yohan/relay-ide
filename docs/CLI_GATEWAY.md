@@ -18,6 +18,7 @@ relay-ide v1 files list --session-id <session-id> --path <path> --json
 relay-ide v1 files stat --session-id <session-id> --path <path> --json
 relay-ide v1 files read --session-id <session-id> --path <path> --max-bytes 32768 --max-lines 2000 --json
 relay-ide v1 files write --session-id <session-id> --path <path> --mode <create|overwrite|append> --file <local-path|-> --json
+relay-ide v1 work-contexts get --id <work-context-id> --json
 relay-ide v1 context create --input-json '{...}' --json
 relay-ide v1 context get --id <context-packet-id> --json
 relay-ide v1 context list [--work-context-id <work-context-id>] --json
@@ -105,18 +106,103 @@ The Command Center may search and describe stable gateway commands using the sha
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.
 
-Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, and `events.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane:
+Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, and `events.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
 
-- Read-only inventory commands (`nodes.list`, `sessions.list`, `sessions.get`, and `work-contexts.get`) can use scoped actor credentials for the `relay:cli-gateway:v1` audience. Pass them with `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`; the CLI sends the token as bearer auth with `x-relay-cli-actor-token: v1` and `x-relay-cli-command`.
-- Browser-session bearer compatibility remains for other local/dev gateway calls through `RELAY_IDE_BROWSER_TOKEN` while the remaining command slices migrate.
-- `--port` or `RELAY_IDE_PORT` selects the local hub port; otherwise Relay uses the default port.
-- Gateway requests send `x-relay-cli-gateway: v1` so the hub can apply the adapter contract boundary.
-- Gateway requests send capability hints via `x-relay-capabilities` so hub policy can fail closed.
-- #802 defines the scoped actor credential registry. #805 wires the first CLI gateway scoped credential lane for read-only inventory commands without accepting browser cookies or node credentials on that lane.
-- Node credentials are not accepted for CLI gateway calls. `/hub/node-link` and node heartbeat use the `node-credential` lane; adapter authors must not impersonate nodes or call private node-link messages.
-- Token material must stay out of logs, issues, diagnostics, JSON envelopes, and screenshots. Use credential ids, jtis, correlation ids, hashes, and redacted summaries when reporting gateway auth failures or migration evidence.
+### Scoped actor credential MVP (#805)
 
-Missing or rejected gateway auth is converted to the normal JSON error envelope and exits nonzero. The server-side lane challenge includes `lane: "denied"`, accepted lanes (`scoped-actor-credential`, `browser-session`), and non-secret migration metadata where applicable.
+The first scoped actor credential slice supports only this read-only hub-backed set:
+
+| CLI command                                       | Stable command id   | Required capability | Notes                                                                                               |
+| ------------------------------------------------- | ------------------- | ------------------- | --------------------------------------------------------------------------------------------------- |
+| `relay-ide v1 nodes list --json`                  | `nodes.list`        | `session:read`      | Reads summarized hub/node inventory.                                                                |
+| `relay-ide v1 sessions list --json`               | `sessions.list`     | `session:read`      | Reads session descriptors and control summaries.                                                    |
+| `relay-ide v1 sessions get --id <id> --json`      | `sessions.get`      | `session:read`      | Validates the credential against the requested session/global session id when scoped that narrowly. |
+| `relay-ide v1 work-contexts get --id <id> --json` | `work-contexts.get` | `session:read`      | Validates work-context scope when the credential is scoped to a work context.                       |
+
+Pass the credential with `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`; `--actor-token` wins when both are present. `--correlation-id` or `RELAY_IDE_CORRELATION_ID` may be supplied for audit correlation. The CLI sends actor credentials as bearer auth with `x-relay-cli-gateway: v1`, `x-relay-cli-actor-token: v1`, `x-relay-cli-command`, and capability hints in `x-relay-capabilities`.
+
+Examples:
+
+```bash
+relay-ide v1 nodes list --actor-token "$RELAY_IDE_ACTOR_TOKEN" --json
+RELAY_IDE_ACTOR_TOKEN="$token" relay-ide v1 sessions list --json
+relay-ide v1 sessions get --id <session-id-or-global-id> --actor-token "$token" --correlation-id cli-smoke-1 --json
+relay-ide v1 work-contexts get --id <work-context-id> --actor-token "$token" --json
+```
+
+Local discovery commands (`relay-ide v1 --list --json`, `relay-ide v1 schema --json`, and `relay-ide v1 nodes manifest --json`) remain unauthenticated. Browser-session bearer compatibility remains for legacy local/dev gateway invocations through `RELAY_IDE_BROWSER_TOKEN`; that path is separate from the actor-token lane and must not be described as a scoped actor credential. When an invocation presents `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`, the actor-token lane does not fall back to browser cookies/PIN state or node credentials. `--port` or `RELAY_IDE_PORT` selects the local hub port; otherwise Relay uses the default port.
+
+### Mint, use, revoke, and rotate
+
+The current MVP exposes credential lifecycle through hub operator endpoints, not through stable `relay-ide v1` adapter commands. Mint/list/revoke requests require the existing hub operator auth path, or `NO_PIN=1` in local dev. That operator auth authorizes issuing a delegated credential; the resulting actor token is not a browser login, is not a node credential, and does not pair a node.
+
+Mint a short-lived CLI actor token:
+
+```bash
+curl -sS -X POST http://127.0.0.1:3456/cli-gateway/actor-credentials \
+  -H 'Content-Type: application/json' \
+  -b 'token=<operator-browser-session-cookie>' \
+  -d '{
+    "actor": { "type": "cli", "id": "relay-cli" },
+    "issuer": { "id": "operator" },
+    "ttlMs": 300000,
+    "scope": { "taskRefs": ["relay:cli-gateway:v1:read"] },
+    "correlationId": "cli-actor-mint-1"
+  }'
+```
+
+The response includes `token` once and a public `credential` record. Store the token in the calling process or a secret manager; do not paste it into issues, logs, screenshots, or test snapshots. Use the returned `credential.id` for list/revoke/audit references.
+
+List public credential records:
+
+```bash
+curl -sS http://127.0.0.1:3456/cli-gateway/actor-credentials \
+  -b 'token=<operator-browser-session-cookie>'
+```
+
+Revoke by credential id:
+
+```bash
+curl -sS -X DELETE http://127.0.0.1:3456/cli-gateway/actor-credentials/<credential-id> \
+  -H 'Content-Type: application/json' \
+  -b 'token=<operator-browser-session-cookie>' \
+  -d '{"revokedBy":"operator","reason":"rotation","correlationId":"cli-actor-rotate-1"}'
+```
+
+Rotation is mint-new-then-revoke-old in this slice. There is no separate rotate endpoint: issue a replacement credential with a new TTL/scope, update the automation to use the new token, then revoke the old credential id. Revocation is in-process and applies to future validations by id/jti; expiry is checked on every validation.
+
+### Lane separation
+
+| Lane                         | Credential source                                                                                                  | Valid surfaces                                                                                                                        | Must not satisfy                                                                                                                                          | Audit/redaction promise                                                                                                                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser cookie / PIN session | Existing browser login/PIN session cookie or local dev no-PIN mode.                                                | Browser UI, operator endpoints such as mint/list/revoke above, and legacy CLI gateway compatibility paths that have not migrated yet. | The scoped actor-token lane, `/hub/node-link`, heartbeat, node pairing/reconnect.                                                                         | Browser cookie/token material is redacted; use safe session/operator metadata only.                                                                       |
+| Node credential              | Node credential material issued through node pairing/lifecycle.                                                    | Node heartbeat and `/hub/node-link`.                                                                                                  | Browser UI auth, CLI actor token, “act as human/agent” auth.                                                                                              | Use node id and credential id/hash; never log raw node token material.                                                                                    |
+| Scoped actor token           | Explicit `--actor-token` / `RELAY_IDE_ACTOR_TOKEN` issued by the scoped actor registry for `relay:cli-gateway:v1`. | The four read-only MVP commands listed above.                                                                                         | Browser routes, node link/heartbeat, writes, control actions, session input/streaming, event streaming, or any command outside the implemented allowlist. | Use actor id/type, issuer, credential id/jti, requested/granted/denied bits, safe scope summary/hash, and correlation id; never emit raw bearer material. |
+
+### Failure examples
+
+Missing or rejected actor credentials use the normal gateway envelope shape (`ok: false`, `contract: "v1"`, command id, stable `error.code`, `retryable: false`) and the CLI exits nonzero. Current server-side lane failures include `lane: "denied"`, `acceptedLanes: ["scoped-actor-credential"]`, and `audience: "relay:cli-gateway:v1"` without token material.
+
+Stable reason codes in this slice include:
+
+| Case                                                    | HTTP / envelope code            | Reason code                                                                                                                                 |
+| ------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Missing bearer on an actor-marked MVP request           | `UNAUTHORIZED`                  | `CLI_ACTOR_CREDENTIAL_MISSING`                                                                                                              |
+| Browser cookie/PIN supplied to the actor lane           | `UNAUTHORIZED`                  | `CLI_ACTOR_BROWSER_COOKIE_REJECTED`                                                                                                         |
+| Node credential supplied to the actor lane              | `UNAUTHORIZED`                  | `CLI_ACTOR_NODE_CREDENTIAL_REJECTED`                                                                                                        |
+| Actor token used on a command outside the MVP allowlist | `UNAUTHORIZED`                  | `CLI_ACTOR_ROUTE_UNSUPPORTED`                                                                                                               |
+| Unsupported bearer type                                 | `UNAUTHORIZED`                  | `CLI_ACTOR_CREDENTIAL_UNSUPPORTED_TYPE`                                                                                                     |
+| Malformed/unknown token material                        | `UNAUTHORIZED`                  | `CLI_ACTOR_MALFORMED_CREDENTIAL`                                                                                                            |
+| Wrong/unknown audience                                  | `FORBIDDEN` or issue-time `400` | `CLI_ACTOR_WRONG_AUDIENCE` / `CLI_ACTOR_UNKNOWN_AUDIENCE`                                                                                   |
+| Expired or revoked credential                           | `UNAUTHORIZED`                  | `CLI_ACTOR_EXPIRED` / `CLI_ACTOR_REVOKED`                                                                                                   |
+| Missing or wrong scope                                  | `FORBIDDEN`                     | `CLI_ACTOR_MISSING_SCOPE`, `CLI_ACTOR_WRONG_SESSION_SCOPE`, `CLI_ACTOR_WRONG_GLOBAL_SESSION_SCOPE`, or `CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE` |
+| Unknown or insufficient capability                      | `FORBIDDEN`                     | `CLI_ACTOR_UNKNOWN_CAPABILITY` / `CLI_ACTOR_INSUFFICIENT_CAPABILITY`                                                                        |
+
+Messages and details must not echo `relay-sac-v1...` tokens, bearer headers, browser cookies, node credential material, secret hashes, or raw secret-looking scope/params. Use credential ids, jtis, correlation ids, hashes, and redacted summaries when reporting gateway auth failures or migration evidence.
+
+### Explicit non-goals for the first actor-token PR
+
+This slice does not migrate every v1 command and does not migrate adapter packages broadly. The actor-token lane does not cover `sessions.create`, `sessions.attach`, `sessions.detach`, `sessions.stream`, `sessions.input`, `files.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.subscribe`, write/control/session-input/event-stream surfaces, browser auth replacement, node proof-of-possession, node credential lifecycle, approval UX, MFA/passkeys, enterprise RBAC, or public multi-tenant hosting.
 
 This boundary is part of the #797/#798/#802 split: #427 provided the trust-tier/capability/audit/confirmation backbone, #798 inventories routes and clarifies browser-session vs actor/node credentials, and #802 provides the scoped actor credential lifecycle primitive. Follow-up work may replace local browser-token compatibility with scoped actor credentials, but adapters should treat that as a credential migration, not a reason to reuse node credentials, browser UI cookies, or browser-only private routes.
 
