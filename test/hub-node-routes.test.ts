@@ -253,11 +253,32 @@ describe('hub node routes and link', () => {
   it('protects user-facing pair/list routes while allowing token exchange and bearer heartbeat', async () => {
     const { tmpDir, registry } = tmpRegistry();
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const operatorHandshakeGrants = new HandshakeGrantRegistry();
+    const approvePairMintGrant = (): string => {
+      const grant = operatorHandshakeGrants.request({
+        actor: { type: 'cli', id: 'route-cli' },
+        issuer: { id: 'operator-browser' },
+        audience: NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
+        capabilities: [NODE_PAIR_TOKEN_CREATE_CAPABILITY],
+        scope: { taskRefs: ['route-node'] },
+        ttlMs: 600_000,
+      });
+      return operatorHandshakeGrants.approve(grant.id, {
+        approvedBy: { id: 'operator-browser' },
+      }).handle;
+    };
+    const pairMintHeaders = () => ({
+      'content-type': 'application/json',
+      'x-relay-operator-grant': approvePairMintGrant(),
+      'x-relay-actor-type': 'cli',
+      'x-relay-actor-id': 'route-cli',
+    });
     const app = express();
     app.use(express.json());
     app.use(
       createHubNodeRouter({
         registry,
+        operatorHandshakeGrants,
         requireAuth: (req, res, next) => {
           if (req.header('x-test-auth') === 'yes') next();
           else res.status(401).json(auth.browserSessionRequiredChallenge());
@@ -275,18 +296,29 @@ describe('hub node routes and link', () => {
     expect(deniedPairRes.status).toBe(401);
     expect(await deniedPairRes.json()).toMatchObject({
       error: {
-        code: 'BROWSER_SESSION_REQUIRED',
+        code: 'UNAUTHORIZED',
         retryable: false,
-        lane: 'denied',
-        acceptedLanes: ['browser-session'],
-        migrationTarget: 'scoped-actor-credential',
+        details: { reasonCode: 'PAIR_TOKEN_GRANT_REQUIRED' },
+      },
+    });
+
+    const browserSessionPairRes = await fetch(`${base}/hub/pair-tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      body: JSON.stringify({ displayName: 'Browser Session Route Node' }),
+    });
+    expect(browserSessionPairRes.status).toBe(401);
+    expect(await browserSessionPairRes.json()).toMatchObject({
+      error: {
+        code: 'UNAUTHORIZED',
+        details: { reasonCode: 'PAIR_TOKEN_GRANT_REQUIRED' },
       },
     });
 
     const pairRes = await fetch(`${base}/hub/pair-tokens`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ displayName: 'Route Node' }),
+      headers: pairMintHeaders(),
+      body: JSON.stringify({ displayName: 'Route Node', taskRef: 'route-node' }),
     });
     expect(pairRes.status).toBe(201);
     const pair = (await pairRes.json()) as {
@@ -332,8 +364,11 @@ describe('hub node routes and link', () => {
 
     const defaultedModesRes = await fetch(`${base}/hub/pair-tokens`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ serviceModes: ['bogus', 'also-bogus'] }),
+      headers: pairMintHeaders(),
+      body: JSON.stringify({
+        taskRef: 'route-node',
+        serviceModes: ['bogus', 'also-bogus'],
+      }),
     });
     expect(defaultedModesRes.status).toBe(201);
     const defaultedModes = (await defaultedModesRes.json()) as {
@@ -349,12 +384,11 @@ describe('hub node routes and link', () => {
     const forwardedHostRes = await fetch(`${base}/hub/pair-tokens`, {
       method: 'POST',
       headers: {
-        'content-type': 'application/json',
-        'x-test-auth': 'yes',
+        ...pairMintHeaders(),
         'x-forwarded-proto': 'https',
         'x-forwarded-host': 'relay.example.com',
       },
-      body: JSON.stringify({ displayName: 'Proxy Node' }),
+      body: JSON.stringify({ displayName: 'Proxy Node', taskRef: 'route-node' }),
     });
     expect(forwardedHostRes.status).toBe(201);
     const forwardedHost = (await forwardedHostRes.json()) as { hubUrl: string };
@@ -596,6 +630,29 @@ describe('hub node routes and link', () => {
     cleanup.push(() => close(server));
     const base = `http://127.0.0.1:${port}`;
 
+    const invalidDeviceGrantRequest = await fetch(
+      `${base}/hub/operator-handshake-grants`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          actor: { type: 'cli', id: 'ebi-cli', displayName: 'Ebi CLI' },
+          issuer: { id: 'operator-browser', displayName: 'Operator' },
+          audience: NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
+          capabilities: [NODE_PAIR_TOKEN_CREATE_CAPABILITY],
+          scope: { taskRefs: ['bootstrap-work-mac'] },
+          device: { displayName: 'Missing ID Device' },
+        }),
+      }
+    );
+    expect(invalidDeviceGrantRequest.status).toBe(400);
+    expect(await invalidDeviceGrantRequest.json()).toMatchObject({
+      error: {
+        code: 'INVALID_REQUEST',
+        details: { reasonCode: 'HANDSHAKE_GRANT_DEVICE_INVALID' },
+      },
+    });
+
     const grantRequest = await fetch(`${base}/hub/operator-handshake-grants`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
@@ -705,6 +762,18 @@ describe('hub node routes and link', () => {
         },
         body: JSON.stringify(body),
       });
+
+    const invalidCapabilityListRes = await mintWithGrant(approveGrant(), {
+      taskRef: 'bootstrap-work-mac',
+      capabilityEnvelope: { allowed: 'session:read' },
+    });
+    expect(invalidCapabilityListRes.status).toBe(400);
+    expect(await invalidCapabilityListRes.json()).toMatchObject({
+      error: {
+        code: 'INVALID_REQUEST',
+        details: { reasonCode: 'PAIR_TOKEN_CAPABILITY_LIST_INVALID' },
+      },
+    });
 
     const missingScopeRes = await mintWithGrant(approveGrant(), {});
     expect(missingScopeRes.status).toBe(403);

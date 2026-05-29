@@ -3737,6 +3737,7 @@ async function runNodeMintPairToken(nodeArgs: string[]): Promise<void> {
     getNodeArg(nodeArgs, '--actor-id') ??
     process.env['RELAY_IDE_ACTOR_ID'] ??
     process.env['USER'] ??
+    process.env['USERNAME'] ??
     'relay-ide-cli';
   const body: Record<string, unknown> = {};
   optionalNodeArgBody(body, 'displayName', getNodeArg(nodeArgs, '--display-name'));

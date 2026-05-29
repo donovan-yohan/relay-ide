@@ -2034,16 +2034,32 @@ function pairTokenMintScope(
 
 type CapabilityListParseResult =
   | { ok: true; capabilities: RelayCapabilityBit[] }
-  | { ok: false; invalidCapability: string };
+  | {
+      ok: false;
+      reasonCode: string;
+      message: string;
+      invalidCapability?: string;
+    };
 
 function parseCapabilityList(value: unknown): CapabilityListParseResult {
   if (value === undefined) return { ok: true, capabilities: [] };
-  if (!Array.isArray(value)) return { ok: true, capabilities: [] };
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      reasonCode: 'PAIR_TOKEN_CAPABILITY_LIST_INVALID',
+      message: 'pair token capability lists must be arrays',
+    };
+  }
   const capabilities: RelayCapabilityBit[] = [];
   const seen = new Set<RelayCapabilityBit>();
   for (const candidate of value) {
     if (!isRelayCapabilityBit(candidate)) {
-      return { ok: false, invalidCapability: String(candidate) };
+      return {
+        ok: false,
+        reasonCode: 'PAIR_TOKEN_CAPABILITY_UNKNOWN',
+        message: 'unknown pair token capability requested',
+        invalidCapability: String(candidate),
+      };
     }
     if (candidate === NODE_PAIR_TOKEN_CREATE_CAPABILITY) continue;
     if (!seen.has(candidate)) {
@@ -2061,7 +2077,7 @@ function pairTokenCapabilityEnvelopeFromBody(
       ok: true;
       envelope?: { allowed?: RelayCapabilityBit[]; requiresConfirmation?: RelayCapabilityBit[] };
     }
-  | { ok: false; invalidCapability: string } {
+  | { ok: false; reasonCode: string; message: string; invalidCapability?: string } {
   const rawEnvelope = body['capabilityEnvelope'];
   const envelope =
     typeof rawEnvelope === 'object' && rawEnvelope !== null && !Array.isArray(rawEnvelope)
@@ -2391,9 +2407,21 @@ export function createHubNodeRouter(
       );
       return;
     }
-    const device = recordFromBody(body, 'device') as
-      | { id: string; displayName?: string }
-      | undefined;
+    const deviceRecord = recordFromBody(body, 'device');
+    const deviceId = requiredStringFromRecord(deviceRecord, 'id');
+    if (deviceRecord && !deviceId) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'device.id is required when device is supplied', false, {
+          reasonCode: 'HANDSHAKE_GRANT_DEVICE_INVALID',
+        })
+      );
+      return;
+    }
+    const deviceDisplayName = requiredStringFromRecord(deviceRecord, 'displayName');
+    const device = deviceId
+      ? { id: deviceId, ...(deviceDisplayName ? { displayName: deviceDisplayName } : {}) }
+      : undefined;
     const sessionBinding = pairTokenMintSessionBinding(body);
     const metadata = recordFromBody(body, 'metadata');
     const expiresAt = typeof body['expiresAt'] === 'string' ? body['expiresAt'] : undefined;
@@ -2508,9 +2536,11 @@ export function createHubNodeRouter(
     if (capabilityEnvelope.ok === false) {
       sendRelayError(
         res,
-        relayError('INVALID_REQUEST', 'unknown pair token capability requested', false, {
-          reasonCode: 'PAIR_TOKEN_CAPABILITY_UNKNOWN',
-          capability: capabilityEnvelope.invalidCapability,
+        relayError('INVALID_REQUEST', capabilityEnvelope.message, false, {
+          reasonCode: capabilityEnvelope.reasonCode,
+          ...(capabilityEnvelope.invalidCapability
+            ? { capability: capabilityEnvelope.invalidCapability }
+            : {}),
         })
       );
       return;
@@ -2559,17 +2589,23 @@ export function createHubNodeRouter(
     });
   }
 
-  router.post('/hub/pair-tokens', (req, res, next) => {
+  router.post('/hub/pair-tokens', (req, res) => {
     const body = bodyRecord(req);
     const grantHandle = pairTokenMintGrantHandle(req, body);
     if (!grantHandle) {
-      requireAuth(req, res, (error?: unknown) => {
-        if (error) {
-          next(error);
-          return;
-        }
-        sendMintedPairToken({ req, res, body });
-      });
+      sendRelayError(
+        res,
+        relayError(
+          'UNAUTHORIZED',
+          'operator handshake grant is required to mint pair tokens',
+          false,
+          {
+            reasonCode: 'PAIR_TOKEN_GRANT_REQUIRED',
+            acceptedLanes: ['operator-handshake-grant'],
+            rejectedLanes: ['browser-session', 'node-credential'],
+          }
+        )
+      );
       return;
     }
 
