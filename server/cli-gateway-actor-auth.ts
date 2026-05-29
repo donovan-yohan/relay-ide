@@ -2,8 +2,10 @@ import type { Request, Response } from 'express';
 import {
   HandshakeGrantRegistry,
   type HandshakeGrantActor,
+  type HandshakeGrantScope,
   type HandshakeGrantSessionBinding,
   type HandshakeGrantValidationFailureReason,
+  type HandshakeGrantValidationScope,
 } from '../shared/operator-handshake-grants.js';
 import {
   ScopedActorCredentialRegistry,
@@ -388,15 +390,7 @@ export function rotateCliGatewayActorCredentialWithGrant(
 
 function scopeForValidation(
   scope: ScopedActorCredentialScope | undefined
-): {
-  nodeId?: string;
-  sessionId?: string;
-  globalSessionId?: string;
-  workContextId?: string;
-  repoId?: string;
-  path?: string;
-  taskRef?: string;
-} {
+): HandshakeGrantValidationScope {
   return {
     ...(scope?.nodeIds?.[0] ? { nodeId: scope.nodeIds[0] } : {}),
     ...(scope?.sessionIds?.[0] ? { sessionId: scope.sessionIds[0] } : {}),
@@ -536,15 +530,38 @@ function validateCliGatewayLifecycleGrant(
   request: StrictGrantLifecycleRequest,
   consume: boolean
 ) {
-  const validation = grantRegistry.validate(request.grantHandle, {
+  const validationInput = {
     audience: request.audience,
     requiredCapabilities: request.capabilities,
     actor: request.actor,
     ...(request.deviceId ? { deviceId: request.deviceId } : {}),
     ...(request.sessionBinding ? { sessionBinding: request.sessionBinding } : {}),
     scope: scopeForValidation(request.scope),
-    consume,
+    consume: false,
     correlationId: request.correlationId,
+  };
+  const preflight = grantRegistry.validate(request.grantHandle, validationInput);
+  if (preflight.ok === false) {
+    throw new CliGatewayActorGrantError(
+      preflight.reason,
+      'handshake grant does not authorize the requested CLI actor credential lifecycle operation',
+      preflight.grantId
+    );
+  }
+  const scopeExpansion = validateRequestedScopeAgainstGrant(
+    preflight.grant.scope,
+    request.scope
+  );
+  if (scopeExpansion) {
+    throw new CliGatewayActorGrantError(
+      scopeExpansion,
+      'handshake grant does not authorize the requested CLI actor credential lifecycle operation',
+      preflight.grant.id
+    );
+  }
+  const validation = grantRegistry.validate(request.grantHandle, {
+    ...validationInput,
+    consume,
   });
   if (validation.ok === false) {
     throw new CliGatewayActorGrantError(
@@ -554,6 +571,71 @@ function validateCliGatewayLifecycleGrant(
     );
   }
   return validation.grant;
+}
+
+function validateRequestedScopeAgainstGrant(
+  grantScope: HandshakeGrantScope,
+  requestScope: ScopedActorCredentialScope
+): HandshakeGrantValidationFailureReason | null {
+  const rules: {
+    grantValues: readonly string[] | undefined;
+    requestValues: readonly string[] | undefined;
+    wrongReason: HandshakeGrantValidationFailureReason;
+    matches?: (grantValues: readonly string[], requestedValue: string) => boolean;
+  }[] = [
+    {
+      grantValues: grantScope.nodeIds,
+      requestValues: requestScope.nodeIds,
+      wrongReason: 'wrong_node_scope',
+    },
+    {
+      grantValues: grantScope.sessionIds,
+      requestValues: requestScope.sessionIds,
+      wrongReason: 'wrong_session_scope',
+    },
+    {
+      grantValues: grantScope.globalSessionIds,
+      requestValues: requestScope.globalSessionIds,
+      wrongReason: 'wrong_global_session_scope',
+    },
+    {
+      grantValues: grantScope.workContextIds,
+      requestValues: requestScope.workContextIds,
+      wrongReason: 'wrong_work_context_scope',
+    },
+    {
+      grantValues: grantScope.repoIds,
+      requestValues: requestScope.repoIds,
+      wrongReason: 'wrong_repo_scope',
+    },
+    {
+      grantValues: grantScope.pathPrefixes,
+      requestValues: requestScope.pathPrefixes,
+      wrongReason: 'wrong_path_scope',
+      matches: (prefixes, requestedPath) =>
+        prefixes.some((prefix) => pathMatchesGrantPrefix(requestedPath, prefix)),
+    },
+    {
+      grantValues: grantScope.taskRefs,
+      requestValues: requestScope.taskRefs,
+      wrongReason: 'wrong_task_scope',
+    },
+  ];
+
+  for (const rule of rules) {
+    if (!rule.grantValues?.length || !rule.requestValues?.length) continue;
+    const matches = rule.matches ?? ((values, requested) => values.includes(requested));
+    if (!rule.requestValues.every((value) => matches(rule.grantValues ?? [], value))) {
+      return rule.wrongReason;
+    }
+  }
+  return null;
+}
+
+function pathMatchesGrantPrefix(path: string, prefix: string): boolean {
+  if (path === prefix) return true;
+  const normalizedPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`;
+  return path.startsWith(normalizedPrefix);
 }
 
 function strictActor(value: unknown): HandshakeGrantActor {

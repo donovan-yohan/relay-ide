@@ -44,7 +44,7 @@ function approveGrant(
   id: string,
   options: {
     actor?: { type: string; id: string; displayName?: string };
-    scope?: typeof GRANT_SCOPE;
+    scope?: typeof GRANT_SCOPE | Record<string, string[]>;
   } = {}
 ): string {
   const grant = grants.request({
@@ -400,6 +400,96 @@ test('denies grant-backed CLI actor lifecycle expansion and lane-mixing attempts
       expect((error as CliGatewayActorGrantError).reason).toBe(reason);
     }
   }
+});
+
+test('rejects grant-backed lifecycle requests that expand multi-value scope dimensions', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+
+  const scopeExpansionCases = [
+    { key: 'nodeIds', allowed: 'node-1', denied: 'node-2', reason: 'wrong_node_scope' },
+    { key: 'sessionIds', allowed: 'session-1', denied: 'session-2', reason: 'wrong_session_scope' },
+    {
+      key: 'globalSessionIds',
+      allowed: 'global-session-1',
+      denied: 'global-session-2',
+      reason: 'wrong_global_session_scope',
+    },
+    {
+      key: 'workContextIds',
+      allowed: 'work-context-1',
+      denied: 'work-context-2',
+      reason: 'wrong_work_context_scope',
+    },
+    { key: 'repoIds', allowed: 'repo-1', denied: 'repo-2', reason: 'wrong_repo_scope' },
+    { key: 'pathPrefixes', allowed: '/allowed', denied: '/blocked', reason: 'wrong_path_scope' },
+    { key: 'taskRefs', allowed: CLI_GATEWAY_READ_SCOPE_TASK_REF, denied: 'task-other', reason: 'wrong_task_scope' },
+  ] as const;
+
+  for (const { key, allowed, denied, reason } of scopeExpansionCases) {
+    const handle = approveGrant(grants, `grant-expand-${key}`, {
+      scope: { [key]: [allowed], taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+    });
+
+    try {
+      issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+        ...grantLifecycleInput(handle, `expand-${key}`),
+        scope: { [key]: [allowed, denied] },
+      });
+      throw new Error(`expected ${reason} for ${key}`);
+    } catch (error) {
+      expect(error).toBeInstanceOf(CliGatewayActorGrantError);
+      expect((error as CliGatewayActorGrantError).reason).toBe(reason);
+    }
+  }
+
+  expect(scopedRegistry.listCredentials()).toHaveLength(0);
+});
+
+test('denies mixed allowed and disallowed list scopes before exposing credentials', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+  const sessionOne = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    grantLifecycleInput(approveGrant(grants, 'grant-list-seed-session-1'), 'list-seed-session-1')
+  );
+  const sessionTwo = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+    ...grantLifecycleInput(
+      approveGrant(grants, 'grant-list-seed-session-2', {
+        scope: {
+          sessionIds: ['session-2'],
+          taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+        },
+      }),
+      'list-seed-session-2'
+    ),
+    scope: { sessionIds: ['session-2'] },
+  });
+
+  const mixedHandle = approveGrant(grants, 'grant-list-mixed-session');
+  try {
+    listCliGatewayActorCredentialsWithGrant(scopedRegistry, grants, {
+      ...grantLifecycleInput(mixedHandle, 'list-mixed-session'),
+      scope: { sessionIds: ['session-1', 'session-2'] },
+    });
+    throw new Error('expected wrong_session_scope for mixed list scope');
+  } catch (error) {
+    expect(error).toBeInstanceOf(CliGatewayActorGrantError);
+    expect((error as CliGatewayActorGrantError).reason).toBe('wrong_session_scope');
+  }
+
+  const listed = listCliGatewayActorCredentialsWithGrant(
+    scopedRegistry,
+    grants,
+    grantLifecycleInput(mixedHandle, 'list-mixed-session-retry')
+  );
+  expect(listed.credentials.map((credential) => credential.id)).toEqual([
+    sessionOne.credential.id,
+  ]);
+  expect(listed.credentials.map((credential) => credential.id)).not.toContain(
+    sessionTwo.credential.id
+  );
 });
 
 test('denies revoked grant handles before minting actor credentials', () => {
