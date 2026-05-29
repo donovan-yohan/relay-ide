@@ -636,6 +636,57 @@ describe('hub node routes and link', () => {
     );
   });
 
+  it('denies strict source mismatches on reverse websocket upgrades while allowing matching sources', async () => {
+    const previousStrictDeny = process.env.RELAY_NODE_SOURCE_STRICT_DENY;
+    process.env.RELAY_NODE_SOURCE_STRICT_DENY = '1';
+    cleanup.push(() => {
+      if (previousStrictDeny === undefined) {
+        delete process.env.RELAY_NODE_SOURCE_STRICT_DENY;
+      } else {
+        process.env.RELAY_NODE_SOURCE_STRICT_DENY = previousStrictDeny;
+      }
+    });
+
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+      source: { tailnetIp: '100.90.12.34' },
+    });
+
+    const server = http.createServer(express());
+    setupWebSocket(
+      server,
+      new Set(),
+      null,
+      undefined,
+      false,
+      undefined,
+      registry
+    );
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+
+    const mismatchedUpgrade = await rawUpgrade(port, '/hub/node-link', {
+      Authorization: `Bearer ${exchanged.credential.token}`,
+      'x-relay-node-tailnet-ip': '100.91.1.2',
+    });
+    expect(mismatchedUpgrade).toMatch(/^HTTP\/1\.1 403/);
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link`, {
+      headers: {
+        authorization: `Bearer ${exchanged.credential.token}`,
+        'x-relay-node-tailnet-ip': '100.90.12.34',
+      },
+    });
+    cleanup.push(() => ws.close());
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+  });
+
   it('accepts authenticated reverse websocket heartbeats and rejects incompatible protocol envelopes with typed errors', async () => {
     let now = new Date('2026-01-02T03:04:05.000Z');
     const { tmpDir, registry } = tmpRegistry(() => now);

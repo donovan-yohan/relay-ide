@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+import type * as http from 'node:http';
 import type { Request } from 'express';
 import type {
   RelayNodeSourceDiagnostics,
@@ -41,6 +42,20 @@ function firstHeader(req: Request, names: readonly string[]): string | undefined
   for (const name of names) {
     const value = req.header(name);
     const first = value?.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return undefined;
+}
+
+function firstIncomingHeader(
+  request: http.IncomingMessage,
+  names: readonly string[]
+): string | undefined {
+  for (const name of names) {
+    const value = request.headers[name.toLowerCase()];
+    const first = (Array.isArray(value) ? value[0] : value)
+      ?.split(',')[0]
+      ?.trim();
     if (first) return first;
   }
   return undefined;
@@ -130,6 +145,23 @@ export function sourceTupleFromRequest(req: Request): RelayNodeSourceTuple | und
   const tailnetIp =
     firstHeader(req, SOURCE_HEADER_NAMES.tailnetIp) ?? normalizeIp(remoteAddress);
   const magicDnsName = firstHeader(req, SOURCE_HEADER_NAMES.magicDnsName);
+  return normalizeRelayNodeSourceTuple({
+    ...(tailnetIp ? { tailnetIp } : {}),
+    ...(magicDnsName ? { magicDnsName } : {}),
+  });
+}
+
+export function sourceTupleFromIncomingMessage(
+  request: http.IncomingMessage
+): RelayNodeSourceTuple | undefined {
+  const remoteAddress = request.socket.remoteAddress;
+  const tailnetIp =
+    firstIncomingHeader(request, SOURCE_HEADER_NAMES.tailnetIp) ??
+    normalizeIp(remoteAddress);
+  const magicDnsName = firstIncomingHeader(
+    request,
+    SOURCE_HEADER_NAMES.magicDnsName
+  );
   return normalizeRelayNodeSourceTuple({
     ...(tailnetIp ? { tailnetIp } : {}),
     ...(magicDnsName ? { magicDnsName } : {}),
