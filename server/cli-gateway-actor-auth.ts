@@ -623,13 +623,29 @@ function validateRequestedScopeAgainstGrant(
   ];
 
   for (const rule of rules) {
-    if (!rule.grantValues?.length || !rule.requestValues?.length) continue;
+    if (!rule.requestValues?.length) continue;
+    const grantValues = rule.grantValues;
+    if (!grantValues?.length) {
+      if (requestOnlyScopeDimensionIsAllowed(rule.wrongReason, rule.requestValues)) continue;
+      return rule.wrongReason;
+    }
     const matches = rule.matches ?? ((values, requested) => values.includes(requested));
-    if (!rule.requestValues.every((value) => matches(rule.grantValues ?? [], value))) {
+    if (!rule.requestValues.every((value) => matches(grantValues, value))) {
       return rule.wrongReason;
     }
   }
   return null;
+}
+
+function requestOnlyScopeDimensionIsAllowed(
+  wrongReason: HandshakeGrantValidationFailureReason,
+  requestValues: readonly string[]
+): boolean {
+  return (
+    wrongReason === 'wrong_task_scope' &&
+    requestValues.length === 1 &&
+    requestValues[0] === CLI_GATEWAY_READ_SCOPE_TASK_REF
+  );
 }
 
 function pathMatchesGrantPrefix(path: string, prefix: string): boolean {

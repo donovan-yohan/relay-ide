@@ -75,6 +75,19 @@ function grantLifecycleInput(handle: string, id: string) {
   };
 }
 
+function expectGrantError(
+  run: () => unknown,
+  reason: CliGatewayActorGrantError['reason']
+): void {
+  try {
+    run();
+    throw new Error(`expected ${reason} denial`);
+  } catch (error) {
+    expect(error).toBeInstanceOf(CliGatewayActorGrantError);
+    expect((error as CliGatewayActorGrantError).reason).toBe(reason);
+  }
+}
+
 function req(input: {
   method?: string;
   authorization?: string;
@@ -431,19 +444,115 @@ test('rejects grant-backed lifecycle requests that expand multi-value scope dime
       scope: { [key]: [allowed], taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
     });
 
-    try {
-      issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
-        ...grantLifecycleInput(handle, `expand-${key}`),
-        scope: { [key]: [allowed, denied] },
-      });
-      throw new Error(`expected ${reason} for ${key}`);
-    } catch (error) {
-      expect(error).toBeInstanceOf(CliGatewayActorGrantError);
-      expect((error as CliGatewayActorGrantError).reason).toBe(reason);
-    }
+    expectGrantError(
+      () =>
+        issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+          ...grantLifecycleInput(handle, `expand-${key}`),
+          scope: { [key]: [allowed, denied] },
+        }),
+      reason
+    );
   }
 
   expect(scopedRegistry.listCredentials()).toHaveLength(0);
+});
+
+test('rejects request-only lifecycle scope dimensions absent from the approved grant', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+  const requestOnlyNodeScope = {
+    sessionIds: ['session-1'],
+    nodeIds: ['node-evil'],
+  };
+
+  expectGrantError(
+    () =>
+      issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+        ...grantLifecycleInput(approveGrant(grants, 'grant-mint-request-only-node'), 'mint-request-only-node'),
+        scope: requestOnlyNodeScope,
+      }),
+    'wrong_node_scope'
+  );
+  expect(scopedRegistry.listCredentials()).toHaveLength(0);
+
+  const allowedCredential = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+    ...grantLifecycleInput(
+      approveGrant(grants, 'grant-mint-node-bound', {
+        scope: {
+          sessionIds: ['session-1'],
+          nodeIds: ['node-allowed'],
+          taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+        },
+      }),
+      'mint-node-bound'
+    ),
+    scope: { sessionIds: ['session-1'], nodeIds: ['node-allowed'] },
+  });
+
+  expectGrantError(
+    () =>
+      listCliGatewayActorCredentialsWithGrant(scopedRegistry, grants, {
+        ...grantLifecycleInput(approveGrant(grants, 'grant-list-request-only-node'), 'list-request-only-node'),
+        scope: requestOnlyNodeScope,
+      }),
+    'wrong_node_scope'
+  );
+
+  expectGrantError(
+    () =>
+      rotateCliGatewayActorCredentialWithGrant(
+        scopedRegistry,
+        grants,
+        allowedCredential.credential.id,
+        grantLifecycleInput(approveGrant(grants, 'grant-rotate-request-only-node'), 'rotate-request-only-node')
+      ),
+    'wrong_node_scope'
+  );
+
+  expectGrantError(
+    () =>
+      revokeCliGatewayActorCredentialWithGrant(
+        scopedRegistry,
+        grants,
+        allowedCredential.credential.id,
+        grantLifecycleInput(approveGrant(grants, 'grant-revoke-request-only-node'), 'revoke-request-only-node')
+      ),
+    'wrong_node_scope'
+  );
+
+  expect(scopedRegistry.getCredential(allowedCredential.credential.id)).not.toHaveProperty(
+    'revokedAt'
+  );
+});
+
+test('allows only the default CLI gateway taskRef when the grant omits task scope', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+
+  const issued = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+    ...grantLifecycleInput(
+      approveGrant(grants, 'grant-default-taskref', {
+        scope: { sessionIds: ['session-1'] },
+      }),
+      'default-taskref'
+    ),
+    scope: { sessionIds: ['session-1'] },
+  });
+  expect(issued.credential.scope.taskRefs).toEqual([CLI_GATEWAY_READ_SCOPE_TASK_REF]);
+
+  expectGrantError(
+    () =>
+      issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+        ...grantLifecycleInput(
+          approveGrant(grants, 'grant-request-only-taskref', {
+            scope: { sessionIds: ['session-1'] },
+          }),
+          'request-only-taskref'
+        ),
+        scope: { sessionIds: ['session-1'], taskRefs: ['relay:other-task'] },
+      }),
+    'wrong_task_scope'
+  );
 });
 
 test('denies mixed allowed and disallowed list scopes before exposing credentials', () => {
