@@ -107,11 +107,12 @@ Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub t
 
 Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, and `events.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane:
 
-- Current local/dev callers use `RELAY_IDE_BROWSER_TOKEN` to send the same browser-session bearer token the existing CLI session commands already use.
+- Read-only inventory commands (`nodes.list`, `sessions.list`, `sessions.get`, and `work-contexts.get`) can use scoped actor credentials for the `relay:cli-gateway:v1` audience. Pass them with `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`; the CLI sends the token as bearer auth with `x-relay-cli-actor-token: v1` and `x-relay-cli-command`.
+- Browser-session bearer compatibility remains for other local/dev gateway calls through `RELAY_IDE_BROWSER_TOKEN` while the remaining command slices migrate.
 - `--port` or `RELAY_IDE_PORT` selects the local hub port; otherwise Relay uses the default port.
 - Gateway requests send `x-relay-cli-gateway: v1` so the hub can apply the adapter contract boundary.
 - Gateway requests send capability hints via `x-relay-capabilities` so hub policy can fail closed.
-- #802 defines the scoped actor credential registry and the future `relay:cli-gateway:v1` audience for adapter/agent credentials. This document still describes the pre-migration gateway commands: browser-session compatibility remains for local/dev gateway calls until a later slice wires those commands to scoped actor credentials.
+- #802 defines the scoped actor credential registry. #805 wires the first CLI gateway scoped credential lane for read-only inventory commands without accepting browser cookies or node credentials on that lane.
 - Node credentials are not accepted for CLI gateway calls. `/hub/node-link` and node heartbeat use the `node-credential` lane; adapter authors must not impersonate nodes or call private node-link messages.
 - Token material must stay out of logs, issues, diagnostics, JSON envelopes, and screenshots. Use credential ids, jtis, correlation ids, hashes, and redacted summaries when reporting gateway auth failures or migration evidence.
 

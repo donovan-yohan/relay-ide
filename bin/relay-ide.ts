@@ -373,6 +373,21 @@ function parseGatewayInputObject(
   return {};
 }
 
+const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
+  'nodes.list',
+  'sessions.list',
+  'sessions.get',
+  'work-contexts.get',
+]);
+
+function gatewayActorToken(): string {
+  return getArg('--actor-token') ?? process.env['RELAY_IDE_ACTOR_TOKEN'] ?? '';
+}
+
+function gatewayCorrelationId(): string | undefined {
+  return getArg('--correlation-id') ?? process.env['RELAY_IDE_CORRELATION_ID'];
+}
+
 async function gatewayHttpJson(input: {
   commandName: RelayCliGatewayCommand;
   pathName: string;
@@ -380,13 +395,23 @@ async function gatewayHttpJson(input: {
   body?: unknown;
   capabilities?: readonly string[];
 }): Promise<unknown> {
-  const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
+  const actorToken = gatewayActorToken();
+  if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(input.commandName)) {
+    gatewayInvalid(
+      input.commandName,
+      '--actor-token is only supported for read-only CLI gateway commands in this slice',
+      {
+        allowedCommands: Array.from(CLI_GATEWAY_ACTOR_TOKEN_COMMANDS),
+      }
+    );
+  }
+  const token = actorToken || (process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '');
   if (!token) {
     printGatewayEnvelope(
       gatewayError(input.commandName, {
         code: 'UNAUTHORIZED',
         message:
-          'RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.',
+          'RELAY_IDE_ACTOR_TOKEN/--actor-token or RELAY_IDE_BROWSER_TOKEN not set. Use a scoped CLI actor credential for the actor lane or run from an authenticated Relay session.',
         retryable: false,
       }),
       1
@@ -399,6 +424,12 @@ async function gatewayHttpJson(input: {
     Authorization: `Bearer ${token}`,
     'x-relay-cli-gateway': 'v1',
   };
+  if (actorToken) {
+    headers['x-relay-cli-actor-token'] = 'v1';
+    headers['x-relay-cli-command'] = input.commandName;
+  }
+  const correlationId = gatewayCorrelationId();
+  if (correlationId) headers['x-relay-correlation-id'] = correlationId;
   if (input.body !== undefined) headers['Content-Type'] = 'application/json';
   if (input.capabilities?.length) {
     headers['x-relay-capabilities'] = input.capabilities.join(',');

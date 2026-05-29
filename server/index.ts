@@ -213,12 +213,25 @@ import {
   handleSupervisorActionRequest,
   handleSupervisorSessionsRequest,
 } from './supervisor-route-handlers.js';
+import {
+  bearerActorToken,
+  classifyCliGatewayCredentialLane,
+  cliGatewayActorFailure,
+  cliGatewayCorrelationId,
+  createCliGatewayActorRegistry,
+  isCliGatewayActorTokenRequest,
+  issueCliGatewayActorCredential,
+  sendCliGatewayActorFailure,
+  validateCliGatewayActorCredential,
+  type CliGatewayActorIssueInput,
+} from './cli-gateway-actor-auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
 const logger = createLogger('index');
 const localRelayNode = createLocalRelayNode();
+const cliGatewayActorRegistry = createCliGatewayActorRegistry();
 
 // When run via CLI bin, config lives in ~/.config/relay-ide/
 // When run directly (development), fall back to local config.json
@@ -1679,7 +1692,71 @@ async function main(): Promise<void> {
     next();
   };
 
+  const requireCliGatewayActorAuth = (
+    capabilities: readonly ['session:read'],
+    scope?: {
+      nodeIds?: string[];
+      sessionIds?: string[];
+      globalSessionIds?: string[];
+      workContextIds?: string[];
+    }
+  ): express.RequestHandler => {
+    return (req, res, next) => {
+      if (!isCliGatewayV1Request(req)) {
+        if (process.env.NO_PIN === '1' || authenticatedBrowserSession(req)) {
+          next();
+          return;
+        }
+        res.status(401).json(auth.cliGatewayOrBrowserAuthRequiredChallenge());
+        return;
+      }
+      const lane = classifyCliGatewayCredentialLane(req);
+      const correlationId = cliGatewayCorrelationId(req);
+      if (lane !== 'scoped-actor-credential') {
+        sendCliGatewayActorFailure(
+          res,
+          cliGatewayActorFailure({
+            lane,
+            ...(correlationId ? { correlationId } : {}),
+          })
+        );
+        return;
+      }
+      const validation = validateCliGatewayActorCredential(
+        cliGatewayActorRegistry,
+        {
+          token: bearerActorToken(req),
+          capabilities,
+          ...(scope ? { scope } : {}),
+          ...(correlationId ? { correlationId } : {}),
+        }
+      );
+      if ('reason' in validation) {
+        sendCliGatewayActorFailure(
+          res,
+          cliGatewayActorFailure({
+            reason: validation.reason,
+            ...(validation.credentialId
+              ? { credentialId: validation.credentialId }
+              : {}),
+            deniedBits: validation.deniedBits,
+            ...(correlationId ? { correlationId } : {}),
+          })
+        );
+        return;
+      }
+      next();
+    };
+  };
+
+  const requireCliGatewayReadAuth: express.RequestHandler = (req, res, next) =>
+    requireCliGatewayActorAuth(['session:read'])(req, res, next);
+
   const requireCliGatewayAuth: express.RequestHandler = (req, res, next) => {
+    if (isCliGatewayActorTokenRequest(req)) {
+      requireCliGatewayReadAuth(req, res, next);
+      return;
+    }
     if (
       isCliGatewayV1Request(req) &&
       validateScopedToken(bearerScopedToken(req))
@@ -1699,6 +1776,13 @@ async function main(): Promise<void> {
   };
 
   const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
+    if (isCliGatewayActorTokenRequest(req)) {
+      const id = req.params['id'];
+      requireCliGatewayActorAuth(['session:read'], {
+        ...(id ? { sessionIds: [id], globalSessionIds: [id] } : {}),
+      })(req, res, next);
+      return;
+    }
     if (process.env.NO_PIN === '1' || authenticatedBrowserSession(req)) {
       next();
       return;
@@ -1709,6 +1793,65 @@ async function main(): Promise<void> {
     }
     res.status(401).json(auth.scopedSessionOrBrowserAuthRequiredChallenge());
   };
+
+  app.post('/cli-gateway/actor-credentials', requireAuth, (req, res) => {
+    try {
+      const issued = issueCliGatewayActorCredential(
+        cliGatewayActorRegistry,
+        isRecord(req.body) ? (req.body as CliGatewayActorIssueInput) : {}
+      );
+      res.status(201).json({
+        token: issued.token,
+        credential: issued.credential,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(400).json({
+        error: {
+          code: 'CLI_ACTOR_CREDENTIAL_ISSUE_FAILED',
+          message,
+          retryable: false,
+        },
+      });
+    }
+  });
+
+  app.get('/cli-gateway/actor-credentials', requireAuth, (_req, res) => {
+    res.json({ credentials: cliGatewayActorRegistry.listCredentials() });
+  });
+
+  app.delete('/cli-gateway/actor-credentials/:id', requireAuth, (req, res) => {
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({
+        error: {
+          code: 'CLI_ACTOR_CREDENTIAL_ID_REQUIRED',
+          message: 'credential id is required',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    const body = isRecord(req.body) ? req.body : {};
+    const credential = cliGatewayActorRegistry.revoke(id, {
+      revokedBy: typeof body['revokedBy'] === 'string' ? body['revokedBy'] : 'browser-operator',
+      ...(typeof body['reason'] === 'string' ? { reason: body['reason'] } : {}),
+      ...(typeof body['correlationId'] === 'string'
+        ? { correlationId: body['correlationId'] }
+        : {}),
+    });
+    if (!credential) {
+      res.status(404).json({
+        error: {
+          code: 'CLI_ACTOR_CREDENTIAL_NOT_FOUND',
+          message: 'credential not found',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    res.json({ credential });
+  });
 
   const collectLocalInventory = () =>
     collectLocalRepoInventory({
@@ -2225,6 +2368,20 @@ async function main(): Promise<void> {
     createWorkContextRouter({
       store: workContextStore,
       requireAuth,
+      requireReadAuth: (req, res, next) => {
+        if (isCliGatewayActorTokenRequest(req)) {
+          const id = req.params['id'];
+          requireCliGatewayActorAuth(['session:read'], {
+            ...(id ? { workContextIds: [id] } : {}),
+          })(req, res, next);
+          return;
+        }
+        if (isCliGatewayV1Request(req)) {
+          requireCliGatewayAuth(req, res, next);
+          return;
+        }
+        requireAuth(req, res, next);
+      },
       getSessions: async () => {
         const [localSessions, remoteSessions] = await Promise.all([
           Promise.resolve(

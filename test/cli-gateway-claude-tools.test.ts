@@ -12,6 +12,9 @@ type CapturedGatewayRequest = {
   url: string | undefined;
   authorization: string | undefined;
   marker: string | string[] | undefined;
+  actorMarker?: string | string[] | undefined;
+  command?: string | string[] | undefined;
+  correlationId?: string | string[] | undefined;
   capabilities: string | string[] | undefined;
   body?: Record<string, unknown>;
 };
@@ -63,6 +66,9 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
       url: req.url,
       authorization: req.headers.authorization,
       marker: req.headers['x-relay-cli-gateway'],
+      actorMarker: req.headers['x-relay-cli-actor-token'],
+      command: req.headers['x-relay-cli-command'],
+      correlationId: req.headers['x-relay-correlation-id'],
       capabilities: req.headers['x-relay-capabilities'],
     };
     const chunks: Buffer[] = [];
@@ -180,5 +186,57 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
     path: 'hello.txt',
     maxBytes: 64,
     maxLines: 2,
+  });
+});
+
+
+test('read-only CLI gateway calls can use explicit scoped actor token input', async () => {
+  const tools = generateRelayClaudeGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
+  const captured: CapturedGatewayRequest[] = [];
+  const server = http.createServer((req, res) => {
+    captured.push({
+      method: req.method,
+      url: req.url,
+      authorization: req.headers.authorization,
+      marker: req.headers['x-relay-cli-gateway'],
+      actorMarker: req.headers['x-relay-cli-actor-token'],
+      command: req.headers['x-relay-cli-command'],
+      correlationId: req.headers['x-relay-correlation-id'],
+      capabilities: req.headers['x-relay-capabilities'],
+    });
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ nodes: [{ nodeId: 'node-a', status: 'online' }] }));
+  });
+
+  const port = await listen(server);
+  try {
+    const runner = new RelayClaudeGatewayToolRunner(tools, {
+      command: process.execPath,
+      commandArgsPrefix: ['dist/bin/relay-ide.js'],
+      env: {
+        ...process.env,
+        RELAY_IDE_PORT: String(port),
+        RELAY_IDE_ACTOR_TOKEN: 'relay-sac-v1.test-credential.[REDACTED]',
+        RELAY_IDE_CORRELATION_ID: 'corr-cli-headers',
+        RELAY_IDE_BROWSER_TOKEN: '',
+      },
+    });
+
+    const nodes = await runner.callTool('relay_nodes_list');
+    expect(nodes).toMatchObject({ ok: true, command: 'nodes.list' });
+  } finally {
+    await close(server);
+  }
+
+  expect(captured).toHaveLength(1);
+  expect(captured[0]).toMatchObject({
+    method: 'GET',
+    url: '/nodes',
+    authorization: 'Bearer relay-sac-v1.test-credential.[REDACTED]',
+    marker: 'v1',
+    actorMarker: 'v1',
+    command: 'nodes.list',
+    correlationId: 'corr-cli-headers',
+    capabilities: 'session:read',
   });
 });
