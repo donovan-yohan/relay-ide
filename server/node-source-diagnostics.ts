@@ -49,7 +49,7 @@ function firstHeader(req: Request, names: readonly string[]): string | undefined
 function normalizeIp(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
-  const withoutIpv6Prefix = trimmed.startsWith('::ffff:')
+  const withoutIpv6Prefix = /^::ffff:/i.test(trimmed)
     ? trimmed.slice('::ffff:'.length)
     : trimmed;
   return isTailscaleIp(withoutIpv6Prefix) ? withoutIpv6Prefix.toLowerCase() : undefined;
@@ -186,19 +186,13 @@ export function sourcesMatch(
   observed: RelayNodeSourceTuple | undefined
 ): boolean {
   if (!expected || !observed) return false;
-  const comparable: (keyof RelayNodeSourceTuple)[] = [
-    'tailnetIp',
-    'magicDnsName',
-    'hostname',
-  ];
-  let sawComparable = false;
+  const comparable: (keyof RelayNodeSourceTuple)[] = ['tailnetIp', 'magicDnsName'];
   for (const key of comparable) {
-    if (expected[key] && observed[key]) {
-      sawComparable = true;
-      if (expected[key] !== observed[key]) return false;
+    if (expected[key] && observed[key] && expected[key] === observed[key]) {
+      return true;
     }
   }
-  return sawComparable;
+  return false;
 }
 
 export function evaluateRelayNodeSource(input: {
@@ -215,11 +209,15 @@ export function evaluateRelayNodeSource(input: {
     ? sourceFingerprint(observed, input.fingerprintKey)
     : undefined;
   if (!hasTailscaleSourceSignal(observed)) {
+    const strictUnavailableDeny =
+      Boolean(input.strictDeny) && hasTailscaleSourceSignal(expected);
     return {
       diagnostics: {
-        state: 'signal-unavailable',
+        state: strictUnavailableDeny ? 'strict-deny' : 'signal-unavailable',
         policy: input.strictDeny ? 'strict-deny' : 'audit',
-        reasonCode: 'NODE_SOURCE_SIGNAL_UNAVAILABLE',
+        reasonCode: strictUnavailableDeny
+          ? 'NODE_SOURCE_STRICT_DENY'
+          : 'NODE_SOURCE_SIGNAL_UNAVAILABLE',
         observedAt: input.now,
         displayHint: sourceDisplayHint(undefined),
       },

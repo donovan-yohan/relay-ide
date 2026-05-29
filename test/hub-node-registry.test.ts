@@ -460,12 +460,15 @@ describe('hub node registry', () => {
         exchanged.credential.token,
         { strictSourceDeny: true }
       );
-      expect(strictUnavailable.ok).toBe(true);
-      if (strictUnavailable.ok) {
-        expect(strictUnavailable.node.sourceDiagnostics?.state).toBe(
-          'signal-unavailable'
-        );
-      }
+      const strictUnavailableError =
+        'error' in strictUnavailable ? strictUnavailable.error : undefined;
+      expect(strictUnavailableError).toMatchObject({
+        code: 'FORBIDDEN',
+        details: {
+          reasonCode: 'NODE_SOURCE_STRICT_DENY',
+          sourceDiagnostics: { state: 'strict-deny' },
+        },
+      });
 
       const strictDeny = registry.authenticateCredentialDetailed(
         exchanged.credential.token,
