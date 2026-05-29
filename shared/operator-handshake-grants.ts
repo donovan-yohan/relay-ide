@@ -406,7 +406,11 @@ export class HandshakeGrantRegistry {
         `handshake grant ${grantId} is ${grant.status}`
       );
     }
-    if (requiresHighRiskApproval(grant) && !input.highRiskApproval) {
+    const requiresApprovalEvidence = requiresHighRiskApproval(grant);
+    const highRiskApproval = requiresApprovalEvidence
+      ? normalizeHighRiskApprovalEvidence(input.highRiskApproval)
+      : input.highRiskApproval;
+    if (requiresApprovalEvidence && !highRiskApproval) {
       grant.status = 'denied';
       grant.deniedAt = this.now().toISOString();
       grant.deniedByHash = sha256Hex(input.approvedBy.id);
@@ -425,7 +429,7 @@ export class HandshakeGrantRegistry {
       });
       throw new HandshakeGrantRegistryError(
         'high_risk_approval_required',
-        'handshake grants for high-risk capabilities require #807 approval contract evidence'
+        'handshake grants for high-risk capabilities require non-empty #807 approval contract evidence fields'
       );
     }
 
@@ -1037,6 +1041,27 @@ function requiresHighRiskApproval(grant: HandshakeGrantRecord): boolean {
   return grant.capabilities.some((capability) =>
     HIGH_RISK_CAPABILITY_SET.has(capability)
   );
+}
+
+function normalizeHighRiskApprovalEvidence(
+  value: unknown
+): HandshakeGrantHighRiskApprovalRef | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const challengeId = candidate.challengeId;
+  const contractHash = candidate.contractHash;
+  const approvedAt = candidate.approvedAt;
+  if (
+    typeof challengeId !== 'string' ||
+    !challengeId.trim() ||
+    typeof contractHash !== 'string' ||
+    !contractHash.trim() ||
+    typeof approvedAt !== 'string' ||
+    !approvedAt.trim()
+  ) {
+    return null;
+  }
+  return { challengeId, contractHash, approvedAt };
 }
 
 function actorMatches(

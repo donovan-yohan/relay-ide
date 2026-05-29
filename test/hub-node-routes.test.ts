@@ -653,6 +653,46 @@ describe('hub node routes and link', () => {
       },
     });
 
+    const highRiskGrantRequest = await fetch(
+      `${base}/hub/operator-handshake-grants`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          actor: { type: 'cli', id: 'ebi-cli', displayName: 'Ebi CLI' },
+          issuer: { id: 'operator-browser', displayName: 'Operator' },
+          audience: 'relay:operator-handshake:v1',
+          capabilities: ['credential:export'],
+          scope: { nodeIds: ['node-a'] },
+          ttlMs: 600_000,
+        }),
+      }
+    );
+    expect(highRiskGrantRequest.status).toBe(201);
+    const highRiskGrant = (await highRiskGrantRequest.json()) as {
+      grant: { id: string };
+    };
+    const malformedHighRiskApproval = await fetch(
+      `${base}/hub/operator-handshake-grants/${highRiskGrant.grant.id}/approve`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+        body: JSON.stringify({
+          approvedBy: { id: 'operator-browser' },
+          highRiskApproval: {},
+        }),
+      }
+    );
+    expect(malformedHighRiskApproval.status).toBe(400);
+    expect(await malformedHighRiskApproval.json()).toMatchObject({
+      error: {
+        code: 'INVALID_REQUEST',
+        details: {
+          reasonCode: 'HANDSHAKE_GRANT_HIGH_RISK_APPROVAL_REQUIRED',
+        },
+      },
+    });
+
     const grantRequest = await fetch(`${base}/hub/operator-handshake-grants`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
