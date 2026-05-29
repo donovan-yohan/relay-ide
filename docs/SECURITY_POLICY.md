@@ -2,6 +2,25 @@
 
 Relay separates node capability discovery from hub-granted policy. A node manifest says what a node appears able to do right now; the hub ACL says what the hub is willing to route to that node. Manifest data is availability/probe evidence, never a grant.
 
+## Auth lanes and browser-session boundary
+
+Relay auth is split into lanes. The current route inventory is checked into `server/auth.ts` as `AUTH_ROUTE_LANE_INVENTORY`; this section explains the policy boundary behind that source-of-truth table.
+
+| Lane | Current use | Boundary |
+| --- | --- | --- |
+| `browser-session` | Human browser/UI entry after PIN login, no-PIN local dev, and existing operator browser routes. | Protects the web UI from unauthenticated browser clients. It is not a fleet credential, node credential, or proof that another same-OS-user process is trusted. |
+| `scoped-actor-credential` | Migration target for CLI/agent gateway calls and scoped session APIs. | Named in the lane inventory and denial metadata, but a scoped actor token registry is not implemented in #798 wave 1. Browser-session compatibility remains for local/dev callers until that registry exists. |
+| `node-credential` | Node heartbeat and `/hub/node-link` reverse WebSocket. | Issued through pairing, stored on the node, revocable by the hub, and never satisfied by a browser PIN/cookie or pair token. |
+| `pair-token` | One-time node bootstrap exchange at `POST /hub/pairing/exchange`. | Short-lived bootstrap material only. It mints a node credential; it does not authenticate browser, CLI, or steady-state node routes. |
+| `public-local-only` | Setup, login, health, and similar routes that intentionally sit outside authenticated lanes. | Must not expose private session, repo, node, or credential state. |
+| `denied` | Typed auth-lane failure bodies. | Failure payloads name accepted lanes and migration targets without returning secrets. |
+
+The PIN and `token` cookie are therefore browser/UI authentication. They reduce drive-by browser access and support first-load local setup, but they cannot protect Relay from malicious processes already running as the same OS user: those processes can usually read local config, invoke local CLIs, attach to local sockets, or modify the checkout. Relay's federated security model relies on lane separation, node credentials, hub ACLs, capability policy, audit, revocation, and future scoped actor credentials rather than treating the browser PIN as global authorization.
+
+Relay issue `#427` shipped the earlier trust-tier/capability/audit/confirmation backbone. Relay issue `#797` tracks the broader multi-node auth model. Relay issue `#798` wave 1 narrows the current change to route-lane inventory, browser-session terminology, and typed lane denials; it deliberately does not implement scoped actor token registration, node proof-of-possession, passkeys, TOTP, or new approval UX.
+
+Relay issue `#177` remains the first-load/PIN explanation ticket. These docs clarify the security boundary, but closing `#177` should wait until the visible browser first-load copy also explains where the PIN comes from and how to reset it.
+
 ## Trust tiers
 
 Trust tiers describe blast radius. They are not marketing labels and they do not imply safety by themselves.

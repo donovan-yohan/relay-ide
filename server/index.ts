@@ -1605,7 +1605,7 @@ async function main(): Promise<void> {
     res.json({ status: 'ok' });
   });
 
-  function authenticatedCookieToken(req: express.Request): boolean {
+  function authenticatedBrowserSession(req: express.Request): boolean {
     const token = req.cookies && req.cookies.token;
     if (!token) return false;
     const config = getConfig();
@@ -1672,8 +1672,8 @@ async function main(): Promise<void> {
       next();
       return;
     }
-    if (!authenticatedCookieToken(req)) {
-      res.status(401).json({ error: 'Unauthorized' });
+    if (!authenticatedBrowserSession(req)) {
+      res.status(401).json(auth.browserSessionRequiredChallenge());
       return;
     }
     next();
@@ -1691,15 +1691,15 @@ async function main(): Promise<void> {
       next();
       return;
     }
-    if (authenticatedCookieToken(req)) {
+    if (authenticatedBrowserSession(req)) {
       next();
       return;
     }
-    res.status(401).json({ error: 'Unauthorized' });
+    res.status(401).json(auth.cliGatewayOrBrowserAuthRequiredChallenge());
   };
 
   const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
-    if (process.env.NO_PIN === '1' || authenticatedCookieToken(req)) {
+    if (process.env.NO_PIN === '1' || authenticatedBrowserSession(req)) {
       next();
       return;
     }
@@ -1707,7 +1707,7 @@ async function main(): Promise<void> {
       next();
       return;
     }
-    res.status(401).json({ error: 'Unauthorized' });
+    res.status(401).json(auth.scopedSessionOrBrowserAuthRequiredChallenge());
   };
 
   const collectLocalInventory = () =>
@@ -3933,7 +3933,7 @@ async function main(): Promise<void> {
     res.json({ channel });
   });
 
-  // Browser content viewer (token-based auth, not cookie auth)
+  // Browser content viewer (token-based auth, separate from browser-session cookies)
   const browserContentRouter = createBrowserContentRouter(broadcastEvent);
   app.use(browserContentRouter);
 

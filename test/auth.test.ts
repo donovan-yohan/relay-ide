@@ -7,8 +7,13 @@ import {
   recordFailedAttempt,
   generateCookieToken,
   verifyCookieToken,
+  browserSessionRequiredChallenge,
+  cliGatewayOrBrowserAuthRequiredChallenge,
+  scopedSessionOrBrowserAuthRequiredChallenge,
+  AUTH_ROUTE_LANE_INVENTORY,
   _resetForTesting,
 } from '../server/auth.js';
+import type { AuthRouteLaneInventoryEntry } from '../server/auth.js';
 
 test('hashPin returns scrypt hash with expected format', async () => {
   _resetForTesting();
@@ -126,7 +131,7 @@ test('generateCookieToken returns non-empty string', () => {
   expect(token.length).toBeGreaterThan(0);
 });
 
-test('signed cookie tokens verify after in-memory auth state is reset', async () => {
+test('signed browser-session cookies verify after in-memory auth state is reset', async () => {
   _resetForTesting();
   const pinHash = await hashPin('1234');
   const now = Date.now();
@@ -141,7 +146,7 @@ test('signed cookie tokens verify after in-memory auth state is reset', async ()
   expect(verifyCookieToken(token, pinHash, now + 30_000)).toBe(true);
 });
 
-test('signed cookie tokens reject expired or wrong-pin-hash tokens', async () => {
+test('signed browser-session cookies reject expired or wrong-pin-hash tokens', async () => {
   _resetForTesting();
   const pinHash = await hashPin('1234');
   const otherPinHash = await hashPin('9999');
@@ -166,4 +171,255 @@ test('verifyPin returns false for null hash', async () => {
   _resetForTesting();
   const result = await verifyPin('1234', null);
   expect(result).toBe(false);
+});
+
+test('auth lane challenges return typed denial payloads', () => {
+  expect(browserSessionRequiredChallenge()).toMatchObject({
+    error: {
+      code: 'BROWSER_SESSION_REQUIRED',
+      message: expect.stringContaining('Browser session'),
+      retryable: false,
+      lane: 'denied',
+      acceptedLanes: ['browser-session'],
+      migrationTarget: 'scoped-actor-credential',
+    },
+  });
+
+  expect(cliGatewayOrBrowserAuthRequiredChallenge()).toMatchObject({
+    error: {
+      code: 'CLI_GATEWAY_OR_BROWSER_AUTH_REQUIRED',
+      retryable: false,
+      lane: 'denied',
+      acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    },
+  });
+
+  expect(scopedSessionOrBrowserAuthRequiredChallenge()).toMatchObject({
+    error: {
+      code: 'SCOPED_SESSION_OR_BROWSER_AUTH_REQUIRED',
+      retryable: false,
+      lane: 'denied',
+      acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    },
+  });
+});
+
+const expectedInventoryCoverage = [
+  {
+    surface: 'browser UI and authenticated local app APIs',
+    middleware: 'requireAuth',
+    acceptedLanes: ['browser-session'],
+    routes: [
+      '/auth/check',
+      '/workspaces/*',
+      '/workspace-groups/*',
+      '/workbench/*',
+      '/git/*',
+      '/gh/*',
+      '/integration-github/*',
+      '/integration-jira/*',
+      '/auth/github/*',
+      '/branch-linker/*',
+      '/ticket-transitions/*',
+      '/org-dashboard/*',
+      '/analytics/*',
+      '/api/analytics/*',
+      '/telemetry/*',
+      '/work-contexts/*',
+    ],
+  },
+  {
+    surface: 'browser diagnostics, config, and lifecycle APIs',
+    middleware: 'requireAuth',
+    acceptedLanes: ['browser-session'],
+    routes: [
+      '/api/frontend-log',
+      '/api/frameworks',
+      '/api/node/manifest',
+      '/config/*',
+      '/presets/*',
+      '/repos',
+      '/worktrees/status',
+      '/worktrees',
+      '/push/*',
+      '/version',
+      '/update',
+      '/update-channel',
+      '/sessions/:id (DELETE/PATCH)',
+      '/sessions/:id/image',
+    ],
+  },
+  {
+    surface: 'browser webhook management APIs',
+    middleware: 'requireAuth via createWebhookManagerRouter mounted at /webhooks/manage',
+    acceptedLanes: ['browser-session'],
+    routes: [
+      'POST /webhooks/manage/setup',
+      'DELETE /webhooks/manage/setup',
+      'GET /webhooks/manage/status',
+      'POST /webhooks/manage/reload',
+      'POST /webhooks/manage/ping',
+      'POST /webhooks/manage/repos',
+      'POST /webhooks/manage/repos/remove',
+      'POST /webhooks/manage/backfill',
+    ],
+  },
+  {
+    surface: 'browser event and PTY WebSocket APIs',
+    middleware: 'setupWebSocket authenticated browser cookie',
+    acceptedLanes: ['browser-session'],
+    routes: [
+      'WS /ws/events',
+      'WS /ws/:sessionId',
+      'WS /nodes/:nodeId/ws/sessions/:sessionId',
+    ],
+  },
+  {
+    surface: 'CLI gateway APIs',
+    middleware: 'requireCliGatewayAuth',
+    acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    routes: [
+      '/sessions (GET/POST)',
+      '/context/*',
+      '/inbox/*',
+      '/events/*',
+      '/handoffs/*',
+      '/nodes',
+      '/hub/audit/*',
+      '/hub/nodes/:nodeId/logs',
+      '/hub/nodes/:nodeId/sessions',
+    ],
+  },
+  {
+    surface: 'scoped session APIs',
+    middleware: 'requireScopedSessionAuth',
+    acceptedLanes: ['scoped-actor-credential', 'browser-session'],
+    routes: [
+      '/sessions/:id',
+      '/sessions/:id/replay',
+      '/sessions/:id/interventions',
+      '/sessions/:id/control/hand-back',
+      '/sessions/:id/input',
+      '/supervisor/sessions',
+      '/supervisor/actions/:action',
+      '/hub/scoped-sessions',
+      '/hub/scoped-sessions/:sessionId/renew',
+      '/hub/scoped-sessions/:sessionId/revoke',
+      '/hub/scoped-sessions/:sessionId (DELETE)',
+    ],
+  },
+  {
+    surface: 'hub operator node and repo APIs',
+    middleware: 'requireAuth',
+    acceptedLanes: ['browser-session'],
+    routes: [
+      '/hub/confirmations/*',
+      '/hub/pair-tokens',
+      '/hub/nodes/:nodeId/credential-rotation/*',
+      '/hub/nodes/:nodeId/updating',
+      '/hub/nodes/:nodeId/cwd/:operation',
+      '/hub/nodes/:nodeId/sessions/:sessionId/files/:operation',
+      '/hub/nodes/:nodeId/sessions/:sessionId (DELETE)',
+      '/nodes/:nodeId (DELETE)',
+      '/hub/repo-inventory',
+      '/hub/repo-groups',
+      '/hub/ia/tree',
+      '/hub/ia/benches/*',
+      '/hub/ia/workspaces/*',
+      '/hub/nodes/:nodeId/sessions/reopen',
+    ],
+  },
+  {
+    surface: 'node credential APIs',
+    middleware: 'bearer node credential',
+    acceptedLanes: ['node-credential'],
+    routes: ['POST /hub/node-heartbeat', 'WS /hub/node-link'],
+  },
+  {
+    surface: 'pairing exchange APIs',
+    middleware: 'pair token exchange',
+    acceptedLanes: ['pair-token'],
+    routes: ['POST /hub/pairing/exchange'],
+  },
+  {
+    surface: 'public local setup and callbacks',
+    middleware:
+      'public setup/login, localhost hook callback, webhook secret, or static file serving',
+    acceptedLanes: ['public-local-only'],
+    routes: [
+      '/health',
+      '/auth/status',
+      'POST /auth/setup',
+      'POST /auth',
+      '/hooks/*',
+      'POST /webhooks',
+      '/static frontend assets',
+    ],
+  },
+  {
+    surface: 'intentionally denied or no-route surfaces',
+    middleware: 'challenge payload or 404/no route',
+    acceptedLanes: ['denied'],
+    routes: [
+      'browser cookie as node credential',
+      'pair token as browser/CLI/node runtime credential',
+      'scoped actor credential as node credential',
+      'unauthenticated /sessions/*',
+      'unknown WebSocket paths',
+      'unknown API routes',
+    ],
+  },
+] satisfies Array<Omit<AuthRouteLaneInventoryEntry, 'notes'>>;
+
+test('auth route lane inventory covers browser, scoped, node, pair, public, and denied lanes', () => {
+  const lanes = new Set(
+    AUTH_ROUTE_LANE_INVENTORY.flatMap((entry) => entry.acceptedLanes)
+  );
+  expect(lanes).toEqual(
+    new Set([
+      'browser-session',
+      'scoped-actor-credential',
+      'node-credential',
+      'pair-token',
+      'public-local-only',
+      'denied',
+    ])
+  );
+  expect(browserSessionRequiredChallenge().error.lane).toBe('denied');
+});
+
+test('auth route lane inventory exactly matches asserted route coverage', () => {
+  const inventoryCoverage = AUTH_ROUTE_LANE_INVENTORY.map(
+    ({ notes: _notes, ...entry }) => entry
+  );
+
+  expect(inventoryCoverage).toEqual(expectedInventoryCoverage);
+});
+
+test('auth route lane inventory keeps credential classes distinct', () => {
+  const routeToLanes = new Map<string, string[]>();
+  for (const entry of AUTH_ROUTE_LANE_INVENTORY) {
+    for (const route of entry.routes) routeToLanes.set(route, entry.acceptedLanes);
+  }
+
+  expect(routeToLanes.get('WS /hub/node-link')).toEqual(['node-credential']);
+  expect(routeToLanes.get('POST /hub/node-heartbeat')).toEqual([
+    'node-credential',
+  ]);
+  expect(routeToLanes.get('POST /hub/pairing/exchange')).toEqual([
+    'pair-token',
+  ]);
+  expect(routeToLanes.get('/sessions (GET/POST)')).toEqual([
+    'scoped-actor-credential',
+    'browser-session',
+  ]);
+  expect(routeToLanes.get('POST /webhooks/manage/setup')).toEqual([
+    'browser-session',
+  ]);
+  expect(routeToLanes.get('POST /webhooks')).toEqual(['public-local-only']);
+  expect(routeToLanes.has('/webhooks/*')).toBe(false);
+  expect(routeToLanes.get('WS /ws/:sessionId')).toEqual(['browser-session']);
+  expect(routeToLanes.get('browser cookie as node credential')).toEqual([
+    'denied',
+  ]);
 });

@@ -197,7 +197,7 @@ An authenticated hub user creates a short-lived, one-time token:
 
 ```http
 POST /hub/pair-tokens
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 Content-Type: application/json
 
 {
@@ -266,7 +266,7 @@ relay-ide node link --hub https://hub.example.com
 
 ```http
 POST /hub/nodes/{nodeId}/credential-rotation
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 Content-Type: application/json
 
 {"delivery":"manual"}     # or {"delivery":"online"}
@@ -278,7 +278,7 @@ A rotation is not stable when it is issued, delivered, or failed. The hub accept
 
 ```http
 POST /hub/nodes/{nodeId}/credential-rotation/clear-failure
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 ```
 
 The clear route is an operator recovery hatch for failed or otherwise non-stable rotations. It preserves the hub's current credential, removes the unproved next credential, and allows another rotation. Do not clear a failed/delivered rotation while the node may already have written the next credential: reconnecting with that next credential can still prove possession until clear explicitly invalidates it.
@@ -291,7 +291,7 @@ Scheduled rotation is opt-in. When `credentialRotation.intervalMs` is set on the
 
 ```http
 DELETE /nodes/{nodeId}
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 ```
 
 Revoking a node:
@@ -302,6 +302,20 @@ Revoking a node:
 - The credential is permanently rejected on subsequent authentication attempts
 
 The registry is stored in `<configDir>/hub-node-registry.json` (mode `0600`) with a JSON schema version of `1`.
+
+### Auth lane boundary
+
+Federated Relay currently has separate route lanes for browser sessions, future scoped actor credentials, node credentials, pair tokens, public local setup, and denied responses. The inventory is exported from `server/auth.ts` as `AUTH_ROUTE_LANE_INVENTORY` and is the implementation source of truth for #798 wave 1.
+
+- Browser/UI routes use the `browser-session` lane: PIN login or no-PIN local dev creates the `token` cookie that drives the React UI and operator browser routes.
+- CLI/agent gateway routes are named as `scoped-actor-credential` plus browser-session compatibility today. The scoped actor credential registry is future work; adapters must not substitute node credentials or private node-link messages.
+- `/hub/node-link` and node heartbeat use the `node-credential` lane only.
+- `POST /hub/pairing/exchange` uses the `pair-token` lane only.
+- Setup/login/health routes are `public-local-only` and must not expose private node, session, repo, or credential state.
+
+This corrects the older shorthand from #427-era docs where "auth cookie" could read like global Relay authorization. #427 remains the predecessor for trust tiers, capability policy, audit, confirmation, and credential rotation. #797 is the broader auth-model epic, and #798 is only the first split: route inventory, typed lane denials, and honest browser-session wording. It does not add scoped actor token issuance, node proof-of-possession, passkeys, TOTP, or a new human approval flow.
+
+The browser PIN/cookie is also not a same-OS-user security boundary. It protects the browser entry point from unauthenticated browser clients, but a malicious process already running as the same local user can often read local Relay config/state or invoke local tools. Node trust therefore comes from pair-token bootstrap, node credentials, hub ACL/policy, audit, and revocation rather than from reusing the browser PIN.
 
 ### Security Properties
 
@@ -382,7 +396,7 @@ WSL state is reported in the manifest:
 
 ```http
 POST /hub/nodes/{nodeId}/sessions
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 Content-Type: application/json
 
 {
@@ -516,7 +530,7 @@ Each node reports its local repo inventory in the heartbeat payload. The hub agg
 
 ```http
 GET /hub/repo-inventory
-Cookie: token={auth-cookie}
+Cookie: token={browser-session-cookie}
 ```
 
 Response groups repo instances by canonical git identity, showing per-node paths, branch counts, worktree counts, and online status. In #444 terms this is a repo-kind Project inventory plus git-specific Instance/Bench metadata, not the complete future Project inventory.

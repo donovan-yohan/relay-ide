@@ -63,11 +63,13 @@ An authenticated hub user creates a short-lived, one-time token:
 ```bash
 curl -X POST https://hub.example.com/hub/pair-tokens \
   -H "Content-Type: application/json" \
-  -b "token=<auth-cookie>" \
+  -b "token=<browser-session-cookie>" \
   -d '{"displayName":"dev-macbook","ttlSeconds":600}'
 ```
 
 Response includes `pairToken` and suggested bootstrap commands for each supported service mode.
+
+Auth lane boundary: the browser-session cookie only authorizes the operator to create a short-lived pair token from the hub UI/API. The pair token is accepted only by `POST /hub/pairing/exchange`, and the resulting `node-credential.json` is accepted only by node heartbeat and `/hub/node-link`. A browser PIN/cookie is not a node credential, and a node credential does not log in to browser-only routes. Processes already running as the same OS user may still read local Relay state or run local CLIs, so the PIN should be described as browser/UI auth, not as a same-user process boundary.
 
 ### Step 3: Pair the node
 
@@ -298,7 +300,7 @@ relay-ide hub nodes
 relay-ide hub nodes --json
 
 # Raw API equivalent
-curl https://hub.example.com/nodes -b "token=<auth-cookie>"
+curl https://hub.example.com/nodes -b "token=<browser-session-cookie>"
 ```
 
 Returns all paired nodes with `online`/`stale`/`offline`/`revoked` status, last seen timestamp, protocol/version state, and capability summary. The CLI reads the local hub port/config and requires `RELAY_IDE_BROWSER_TOKEN` for the same scoped hub API access as other CLI-gateway operations.
@@ -369,7 +371,7 @@ From the hub UI or API:
 
 ```bash
 curl -X DELETE https://hub.example.com/nodes/{nodeId} \
-  -b "token=<auth-cookie>"
+  -b "token=<browser-session-cookie>"
 ```
 
 Effects:
