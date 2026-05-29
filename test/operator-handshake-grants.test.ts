@@ -301,6 +301,51 @@ describe('operator handshake grant registry', () => {
     ).toThrow(HandshakeGrantRegistryError);
     expect(store.getGrant(grant.id)).toMatchObject({ status: 'denied' });
 
+    const malformedApprovals: Array<[string, unknown]> = [
+      ['empty', {}],
+      [
+        'missing-approved-at',
+        { challengeId: 'challenge-1', contractHash: 'hash-1' },
+      ],
+      [
+        'blank-challenge-id',
+        {
+          challengeId: '   ',
+          contractHash: 'hash-1',
+          approvedAt: NOW.toISOString(),
+        },
+      ],
+      [
+        'non-string-contract-hash',
+        {
+          challengeId: 'challenge-1',
+          contractHash: 123,
+          approvedAt: NOW.toISOString(),
+        },
+      ],
+    ];
+    for (const [suffix, highRiskApproval] of malformedApprovals) {
+      const malformedStore = registry();
+      const malformedGrant = malformedStore.request({
+        id: `malformed-high-risk-grant-${suffix}`,
+        actor: { type: 'automation-system', id: 'automation-1' },
+        issuer: { id: 'operator-1' },
+        audience: 'relay:operator-handshake:v1',
+        capabilities: ['credential:export'],
+        scope: { nodeIds: ['node-a'] },
+        expiresAt: LATER,
+      });
+      expect(() =>
+        malformedStore.approve(malformedGrant.id, {
+          approvedBy: { id: 'operator-1' },
+          highRiskApproval: highRiskApproval as never,
+        })
+      ).toThrow(HandshakeGrantRegistryError);
+      expect(malformedStore.getGrant(malformedGrant.id)).toMatchObject({
+        status: 'denied',
+      });
+    }
+
     const approvedStore = registry();
     const approvedGrant = approvedStore.request({
       id: 'high-risk-grant-2',

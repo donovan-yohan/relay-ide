@@ -633,4 +633,17 @@ describe('hub/node packaging decision', () => {
     expect(validationSource).toContain('Invalid --service');
     expect(validationSource).toContain('process.exit(1)');
   });
+
+  it('uses USERNAME as the Windows CLI actor fallback before relay-ide-cli', () => {
+    const cliSource = readRepoFile('bin/relay-ide.ts');
+    const actorFallbackStart = cliSource.indexOf('const actorId =');
+    const actorFallbackEnd = cliSource.indexOf('const body: Record<string, unknown> = {};', actorFallbackStart);
+    const actorFallbackSource = cliSource.slice(actorFallbackStart, actorFallbackEnd);
+
+    expect(actorFallbackStart).toBeGreaterThanOrEqual(0);
+    expect(actorFallbackEnd).toBeGreaterThan(actorFallbackStart);
+    expect(actorFallbackSource).toMatch(
+      /process\.env\['RELAY_IDE_ACTOR_ID'\][\s\S]*process\.env\['USER'\][\s\S]*process\.env\['USERNAME'\][\s\S]*'relay-ide-cli'/
+    );
+  });
 });

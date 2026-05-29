@@ -12,6 +12,10 @@ import { createLogger } from '../server/logger.js';
 import { getNodeManifest } from '../server/node-manifest.js';
 import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
 import {
+  NODE_PAIR_TOKEN_CREATE_CAPABILITY,
+  NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
+} from '../shared/operator-handshake-grants.js';
+import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type HubNodeSummary,
 } from '../shared/relay-node-protocol.js';
@@ -109,6 +113,8 @@ Commands:
     doctor [--hub <url>] [--json]      Diagnose local node health and hub reachability; surfaces all degraded reasons
     pair --hub <url> --pair-token <token>
                                        Exchange a pair token with a hub and send one heartbeat (pair-only, no service)
+    mint-pair-token --hub <url> --operator-grant <handle> [--display-name <name>] [--platform <name>] [--task-ref <ref>] [--json]
+                                       Mint a short-lived node pair token through the scoped operator-grant lane
     install --hub <url> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
                                        Install relay-ide globally via npm and optionally set up the local service (no pairing)
     connect --hub <url> --pair-token <token>
@@ -3686,6 +3692,112 @@ async function runNodeUpdate(nodeArgs: string[]): Promise<void> {
   restartServiceAfterUpdate();
 }
 
+function optionalNodeJsonNumber(nodeArgs: string[], flag: string): number | undefined {
+  const value = getNodeArg(nodeArgs, flag);
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    logger.error(`${flag} must be a positive number`);
+    process.exit(1);
+  }
+  return parsed;
+}
+
+function optionalNodeArgBody(
+  body: Record<string, unknown>,
+  key: string,
+  value: string | undefined
+): void {
+  if (value && value.trim()) body[key] = value.trim();
+}
+
+async function runNodeMintPairToken(nodeArgs: string[]): Promise<void> {
+  const hubUrl = getNodeArg(nodeArgs, '--hub');
+  const operatorGrant =
+    getNodeArg(nodeArgs, '--operator-grant') ??
+    getNodeArg(nodeArgs, '--handshake-grant') ??
+    process.env['RELAY_IDE_OPERATOR_GRANT'];
+  if (!hubUrl || !operatorGrant) {
+    logger.error(
+      'Usage: relay-ide node mint-pair-token --hub <url> --operator-grant <handle> [--display-name <name>] [--platform <name>] [--task-ref <ref>] [--json]'
+    );
+    logger.error(
+      `Requires a previously approved ${NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE} grant with ${NODE_PAIR_TOKEN_CREATE_CAPABILITY}; browser cookies/PIN and node credentials are not accepted for this automation lane.`
+    );
+    process.exit(1);
+  }
+  try {
+    new URL(hubUrl);
+  } catch {
+    logger.error(`invalid --hub url: ${hubUrl}`);
+    process.exit(1);
+  }
+  const actorType = getNodeArg(nodeArgs, '--actor-type') ?? 'cli';
+  const actorId =
+    getNodeArg(nodeArgs, '--actor-id') ??
+    process.env['RELAY_IDE_ACTOR_ID'] ??
+    process.env['USER'] ??
+    process.env['USERNAME'] ??
+    'relay-ide-cli';
+  const body: Record<string, unknown> = {};
+  optionalNodeArgBody(body, 'displayName', getNodeArg(nodeArgs, '--display-name'));
+  optionalNodeArgBody(body, 'platform', getNodeArg(nodeArgs, '--platform'));
+  optionalNodeArgBody(body, 'taskRef', getNodeArg(nodeArgs, '--task-ref'));
+  optionalNodeArgBody(body, 'correlationId', getNodeArg(nodeArgs, '--correlation-id'));
+  optionalNodeArgBody(body, 'trustTier', getNodeArg(nodeArgs, '--trust-tier'));
+  const ttlSeconds = optionalNodeJsonNumber(nodeArgs, '--ttl-seconds');
+  if (ttlSeconds !== undefined) body['ttlSeconds'] = ttlSeconds;
+  body['actor'] = {
+    type: actorType,
+    id: actorId,
+    ...(getNodeArg(nodeArgs, '--actor-display-name')
+      ? { displayName: getNodeArg(nodeArgs, '--actor-display-name') }
+      : {}),
+  };
+  const res = await fetch(nodeEndpoint(hubUrl, '/hub/pair-tokens'), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-relay-operator-grant': operatorGrant,
+      'x-relay-actor-type': actorType,
+      'x-relay-actor-id': actorId,
+      ...(getNodeArg(nodeArgs, '--correlation-id')
+        ? { 'x-relay-correlation-id': getNodeArg(nodeArgs, '--correlation-id')! }
+        : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const responseText = await res.text();
+  let response: unknown;
+  try {
+    response = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    response = { raw: responseText };
+  }
+  if (!res.ok) {
+    const message =
+      typeof response === 'object' && response !== null
+        ? ((response as { error?: { code?: string; message?: string } }).error?.message ??
+          responseText)
+        : responseText;
+    logger.error(redactBootstrapSecrets(`PAIR_TOKEN_MINT_FAILED: ${message}`));
+    process.exit(1);
+  }
+  if (nodeArgs.includes('--json')) {
+    console.log(redactBootstrapSecrets(JSON.stringify(response, null, 2)));
+    return;
+  }
+  const record = response as { pairToken?: string; tokenId?: string; expiresAt?: string };
+  if (!record.pairToken) {
+    logger.error('PAIR_TOKEN_MINT_FAILED: hub response did not include pairToken');
+    process.exit(1);
+  }
+  console.log(record.pairToken);
+  if (record.expiresAt) {
+    logger.info(`pair token expires at ${record.expiresAt} and is one-time use`);
+  }
+}
+
 /**
  * Generate and print a paste-able bash script that installs relay-ide and
  * pairs the node with the given hub on a remote machine reached via SSH.
@@ -3738,9 +3850,9 @@ async function runNodeSshBootstrap(nodeArgs: string[]): Promise<void> {
   console.log(`# relay-ide ssh bootstrap — generated for ${target}`);
   console.log(`# hub: ${hubUrl}`);
   console.log(`#`);
-  console.log(`# 1. get a pair token from your hub:`);
+  console.log(`# 1. get a pair token from your hub with an approved operator grant:`);
   console.log(
-    `#    curl -X POST ${hubUrl}/hub/pair-tokens -H 'Content-Type: application/json' -b 'token=<browser-session-cookie>' -d '{"displayName":"<name>","ttlSeconds":600}'`
+    `#    relay-ide node mint-pair-token --hub ${hubUrl} --operator-grant <relay-ohg-v1...> --display-name <name> --ttl-seconds 600`
   );
   console.log(`# 2. set PAIR_TOKEN and run the command below:`);
   console.log(`#    PAIR_TOKEN=pair_... ${scriptWithVar}`);
@@ -4083,6 +4195,10 @@ if (command === 'node') {
   // relay-ide node pair --hub <url> --pair-token <token>
   // Productized pair-only command. The existing 'connect' subcommand is kept
   // as a back-compat alias. Both call pairNode() under the hood.
+  if (subCommand === 'mint-pair-token') {
+    await runNodeMintPairToken(nodeArgs);
+    process.exit(0);
+  }
   if (subCommand === 'pair') {
     const pairToken = getNodeArg(nodeArgs, '--pair-token');
     const hubUrl = getNodeArg(nodeArgs, '--hub');
@@ -4091,14 +4207,14 @@ if (command === 'node') {
         'Usage: relay-ide node pair --hub <url> --pair-token <token>'
       );
       logger.error(
-        'Get a pair token from your hub: POST /hub/pair-tokens with {"displayName":"<name>","ttlSeconds":600}'
+        'Get a pair token from your hub with an approved operator grant: relay-ide node mint-pair-token --hub <url> --operator-grant <relay-ohg-v1...>'
       );
       process.exit(1);
     }
     if (!pairToken) {
       logger.info(`to get a pair token from your hub, run:`);
       logger.info(
-        `  curl -X POST ${hubUrl}/hub/pair-tokens -H 'Content-Type: application/json' -b 'token=<browser-session-cookie>' -d '{"displayName":"<name>","ttlSeconds":600}'`
+        `  relay-ide node mint-pair-token --hub ${hubUrl} --operator-grant <relay-ohg-v1...> --display-name <name> --ttl-seconds 600`
       );
       logger.info(
         `then re-run: relay-ide node pair --hub ${hubUrl} --pair-token <token>`
@@ -4157,7 +4273,7 @@ if (command === 'node') {
     }
   }
   logger.error(
-    'Usage: relay-ide node <status|logs|doctor|pair|install|ssh-bootstrap|connect|link|update>'
+    'Usage: relay-ide node <status|logs|doctor|pair|mint-pair-token|install|ssh-bootstrap|connect|link|update>'
   );
   process.exit(1);
 }

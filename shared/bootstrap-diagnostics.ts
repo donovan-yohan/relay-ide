@@ -260,14 +260,20 @@ export function generateBootstrapCommands(input: BootstrapCommandInput): Bootstr
 
 export function redactBootstrapSecrets(value: string): string {
   return value
+    .replace(
+      /--(?:operator-grant|handshake-grant|actor-token)\s+(?:'[^']*'|"[^"]*"|\S+)/g,
+      (match) => `${match.split(/\s+/, 1)[0]} …redacted`
+    )
     .replace(/--pair-token\s+(?:'[^']*'|"[^"]*"|\S+)/g, '--pair-token pair_…redacted')
+    .replace(/\brelay-ohg-v1\.[A-Za-z0-9._~+/=-]+\.[A-Za-z0-9._~+/=-]+\b/g, 'relay-ohg-v1.…redacted')
+    .replace(/\brelay-sac-v1\.[A-Za-z0-9._~+/=-]+\.[A-Za-z0-9._~+/=-]+\b/g, 'relay-sac-v1.…redacted')
     .replace(/\bpair_[A-Za-z0-9._~+/=-]+\b/g, 'pair_…redacted')
     .replace(/\bnode_[A-Za-z0-9._~+/=-]+\.secret_[A-Za-z0-9._~+/=-]+\b/g, 'node_…redacted.secret_…redacted')
     .replace(/\bsecret_[A-Za-z0-9._~+/=-]+\b/g, 'secret_…redacted')
     .replace(/(Authorization:\s*Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1…redacted')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1…redacted')
-    .replace(/("(?:token|pairToken|pin|password|secret)"\s*:\s*)"[^"]*"/gi, '$1"…redacted"')
-    .replace(/\b(token|pin|password|secret)=([^\s&"',}]+)/gi, '$1=…redacted')
+    .replace(/("(?:token|pairToken|operatorGrant|handshakeGrant|grantHandle|actorToken|pin|password|secret)"\s*:\s*)"[^"]*"/gi, '$1"…redacted"')
+    .replace(/\b(token|pin|password|secret|cookie)=([^\s&"',}]+)/gi, '$1=…redacted')
     // URL-embedded credentials, any scheme — keeps bootstrap log lines
     // (which can quote `--hub-url https://user:pass@…` or `wss://…`) in
     // lockstep with the diag-bundle url-credential rule (#604).

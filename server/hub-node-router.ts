@@ -21,6 +21,7 @@ import type { SecurityAuditVerificationResult } from './security-audit-log.js';
 import {
   HubNodeRegistryError,
   type HubNodeRegistry,
+  type PairTokenCapabilityEnvelope,
 } from './hub-node-registry.js';
 import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
@@ -93,6 +94,24 @@ import type {
   HighRiskApprovalTarget,
 } from './high-risk-approvals.js';
 import { sourceTupleFromRequest } from './node-source-diagnostics.js';
+import {
+  HandshakeGrantRegistryError,
+  HandshakeGrantRegistry,
+  NODE_PAIR_TOKEN_CREATE_CAPABILITY,
+  NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
+  type HandshakeGrantActor,
+  type HandshakeGrantScope,
+  type HandshakeGrantSessionBinding,
+  type HandshakeGrantValidationFailureReason,
+  type HandshakeGrantValidationScope,
+} from '../shared/operator-handshake-grants.js';
+import {
+  isRelayCapabilityBit,
+  isRelayTrustTier,
+  normalizeCapabilityBits,
+  type RelayCapabilityBit,
+  type RelayTrustTier,
+} from '../shared/security-policy.js';
 
 const FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES = 256 * 1024;
 
@@ -147,6 +166,7 @@ interface HubNodeRouterOptions {
     now?: Date;
   }) => ReturnType<InMemorySessionEnvelopeRegistry['renew']>;
   confirmations?: ConfirmationChallengeStore;
+  operatorHandshakeGrants?: HandshakeGrantRegistry;
   auditSink?: RoutedSessionAuditSink;
   workContextStore?: WorkContextStore;
   readModelCache?: RoutedSessionReadModelCache;
@@ -1904,6 +1924,360 @@ function hubUrlFromRequest(
   return `${proto}://${host}`;
 }
 
+function pairTokenMintGrantHandle(
+  req: Request,
+  body: Record<string, unknown>
+): string | undefined {
+  const header =
+    req.header('x-relay-operator-grant') ??
+    req.header('x-relay-handshake-grant') ??
+    req.header('x-relay-pair-token-grant');
+  if (header?.trim()) return header.trim();
+  for (const key of ['operatorGrant', 'handshakeGrant', 'grantHandle']) {
+    const value = body[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function pairTokenMintCorrelationId(
+  req: Request,
+  body: Record<string, unknown>,
+  fallback?: string
+): string | undefined {
+  return (
+    stringFromBody(body, 'correlationId') ??
+    req.header('x-relay-correlation-id')?.trim() ??
+    fallback
+  );
+}
+
+function pairTokenMintActor(
+  req: Request,
+  body: Record<string, unknown>
+): HandshakeGrantActor | undefined {
+  const actor = body['actor'];
+  if (typeof actor === 'object' && actor !== null && !Array.isArray(actor)) {
+    const candidate = actor as Record<string, unknown>;
+    if (typeof candidate['type'] === 'string' && typeof candidate['id'] === 'string') {
+      return {
+        type: candidate['type'],
+        id: candidate['id'],
+        ...(typeof candidate['displayName'] === 'string'
+          ? { displayName: candidate['displayName'] }
+          : {}),
+      };
+    }
+  }
+  const actorType = stringFromBody(body, 'actorType') ?? req.header('x-relay-actor-type')?.trim();
+  const actorId = stringFromBody(body, 'actorId') ?? req.header('x-relay-actor-id')?.trim();
+  if (!actorType || !actorId) return undefined;
+  const actorDisplayName =
+    stringFromBody(body, 'actorDisplayName') ??
+    req.header('x-relay-actor-display-name')?.trim();
+  return {
+    type: actorType,
+    id: actorId,
+    ...(actorDisplayName ? { displayName: actorDisplayName } : {}),
+  };
+}
+
+function pairTokenMintSessionBinding(
+  body: Record<string, unknown>
+): HandshakeGrantSessionBinding | undefined {
+  const binding = body['sessionBinding'];
+  const record =
+    typeof binding === 'object' && binding !== null && !Array.isArray(binding)
+      ? (binding as Record<string, unknown>)
+      : body;
+  const normalized: HandshakeGrantSessionBinding = {
+    ...(typeof record['sessionId'] === 'string'
+      ? { sessionId: record['sessionId'] }
+      : {}),
+    ...(typeof record['globalSessionId'] === 'string'
+      ? { globalSessionId: record['globalSessionId'] }
+      : {}),
+    ...(typeof record['workContextId'] === 'string'
+      ? { workContextId: record['workContextId'] }
+      : {}),
+    ...(typeof record['authSessionHash'] === 'string'
+      ? { authSessionHash: record['authSessionHash'] }
+      : {}),
+  };
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function pairTokenMintScope(
+  body: Record<string, unknown>
+): HandshakeGrantValidationScope | undefined {
+  const scope = body['scope'];
+  const record =
+    typeof scope === 'object' && scope !== null && !Array.isArray(scope)
+      ? (scope as Record<string, unknown>)
+      : body;
+  const normalized: HandshakeGrantValidationScope = {
+    ...(typeof record['nodeId'] === 'string' ? { nodeId: record['nodeId'] } : {}),
+    ...(typeof record['sessionId'] === 'string'
+      ? { sessionId: record['sessionId'] }
+      : {}),
+    ...(typeof record['globalSessionId'] === 'string'
+      ? { globalSessionId: record['globalSessionId'] }
+      : {}),
+    ...(typeof record['workContextId'] === 'string'
+      ? { workContextId: record['workContextId'] }
+      : {}),
+    ...(typeof record['repoId'] === 'string' ? { repoId: record['repoId'] } : {}),
+    ...(typeof record['path'] === 'string' ? { path: record['path'] } : {}),
+    ...(typeof record['taskRef'] === 'string' ? { taskRef: record['taskRef'] } : {}),
+  };
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+type CapabilityListParseResult =
+  | { ok: true; capabilities: RelayCapabilityBit[] }
+  | {
+      ok: false;
+      reasonCode: string;
+      message: string;
+      invalidCapability?: string;
+    };
+
+function parseCapabilityList(value: unknown): CapabilityListParseResult {
+  if (value === undefined) return { ok: true, capabilities: [] };
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      reasonCode: 'PAIR_TOKEN_CAPABILITY_LIST_INVALID',
+      message: 'pair token capability lists must be arrays',
+    };
+  }
+  const capabilities: RelayCapabilityBit[] = [];
+  const seen = new Set<RelayCapabilityBit>();
+  for (const candidate of value) {
+    if (!isRelayCapabilityBit(candidate)) {
+      return {
+        ok: false,
+        reasonCode: 'PAIR_TOKEN_CAPABILITY_UNKNOWN',
+        message: 'unknown pair token capability requested',
+        invalidCapability: String(candidate),
+      };
+    }
+    if (candidate === NODE_PAIR_TOKEN_CREATE_CAPABILITY) continue;
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      capabilities.push(candidate);
+    }
+  }
+  return { ok: true, capabilities };
+}
+
+function pairTokenCapabilityEnvelopeFromBody(
+  body: Record<string, unknown>
+):
+  | {
+      ok: true;
+      envelope?: { allowed?: RelayCapabilityBit[]; requiresConfirmation?: RelayCapabilityBit[] };
+    }
+  | { ok: false; reasonCode: string; message: string; invalidCapability?: string } {
+  const rawEnvelope = body['capabilityEnvelope'];
+  const envelope =
+    typeof rawEnvelope === 'object' && rawEnvelope !== null && !Array.isArray(rawEnvelope)
+      ? (rawEnvelope as Record<string, unknown>)
+      : {};
+  const allowed = parseCapabilityList(
+    envelope['allowed'] ?? body['allowedCapabilities'] ?? body['capabilities']
+  );
+  if (!allowed.ok) return allowed;
+  const requiresConfirmation = parseCapabilityList(
+    envelope['requiresConfirmation'] ?? body['requiresConfirmationCapabilities']
+  );
+  if (!requiresConfirmation.ok) return requiresConfirmation;
+  if (allowed.capabilities.length === 0 && requiresConfirmation.capabilities.length === 0) {
+    return { ok: true };
+  }
+  return {
+    ok: true,
+    envelope: {
+      ...(allowed.capabilities.length > 0 ? { allowed: allowed.capabilities } : {}),
+      ...(requiresConfirmation.capabilities.length > 0
+        ? { requiresConfirmation: requiresConfirmation.capabilities }
+        : {}),
+    },
+  };
+}
+
+function pairTokenCapabilityEnvelopeCapabilities(
+  envelope: PairTokenCapabilityEnvelope | undefined
+): RelayCapabilityBit[] {
+  const capabilities = new Set<RelayCapabilityBit>();
+  for (const capability of envelope?.allowed ?? []) capabilities.add(capability);
+  for (const capability of envelope?.requiresConfirmation ?? []) {
+    capabilities.add(capability);
+  }
+  return Array.from(capabilities);
+}
+
+function boundedGrantBackedPairTokenTrustTier(
+  trustTier: RelayTrustTier | undefined
+): RelayTrustTier | undefined {
+  // A pair-token-create grant derives the legacy dev bootstrap posture. The
+  // request may voluntarily narrow that to sandbox, but it cannot promote a
+  // grant-backed mint into a body-chosen prod node unless a future grant schema
+  // carries an explicit trust-tier bound.
+  return trustTier === 'sandbox' ? trustTier : undefined;
+}
+
+function pairTokenTrustTierFromBody(
+  body: Record<string, unknown>
+): { ok: true; trustTier?: RelayTrustTier } | { ok: false; value: string } {
+  const value = body['trustTier'];
+  if (value === undefined) return { ok: true };
+  if (isRelayTrustTier(value)) return { ok: true, trustTier: value };
+  return { ok: false, value: String(value) };
+}
+
+function pairTokenGrantReasonCode(
+  reason: HandshakeGrantValidationFailureReason
+): string {
+  return `PAIR_TOKEN_GRANT_${reason.toUpperCase()}`;
+}
+
+function relayErrorForPairTokenGrantFailure(input: {
+  reason: HandshakeGrantValidationFailureReason;
+  grantId?: string;
+  deniedBits: string[];
+}): RelayNodeError {
+  const reasonCode = pairTokenGrantReasonCode(input.reason);
+  const details = {
+    reasonCode,
+    ...(input.grantId ? { grantId: input.grantId } : {}),
+    deniedBits: input.deniedBits,
+  };
+  switch (input.reason) {
+    case 'expired':
+      return relayError('TOKEN_EXPIRED', 'operator handshake grant expired', false, details);
+    case 'replayed':
+      return relayError('TOKEN_ALREADY_USED', 'operator handshake grant was already consumed', false, details);
+    case 'wrong_audience':
+    case 'insufficient_capability':
+    case 'missing_scope':
+    case 'wrong_node_scope':
+    case 'wrong_session_scope':
+    case 'wrong_global_session_scope':
+    case 'wrong_work_context_scope':
+    case 'wrong_repo_scope':
+    case 'wrong_path_scope':
+    case 'wrong_task_scope':
+      return relayError('FORBIDDEN', 'operator handshake grant cannot mint pair tokens for this request', false, details);
+    default:
+      return relayError('UNAUTHORIZED', 'valid operator handshake grant is required to mint a pair token', false, details);
+  }
+}
+
+function appendPairTokenGrantAudit(
+  auditSink: RoutedSessionAuditSink | undefined,
+  input: {
+    reason: HandshakeGrantValidationFailureReason;
+    decision: 'deny' | 'expired';
+    grantId?: string;
+    deniedBits: string[];
+    correlationId?: string;
+  }
+): void {
+  if (!auditSink) return;
+  const deniedBits = normalizeCapabilityBits(input.deniedBits);
+  try {
+    auditSink.append({
+      eventType: input.reason === 'replayed' ? 'failed_redemption' : input.reason === 'expired' ? 'expiry' : 'denial',
+      decision: input.decision,
+      reasonCode: pairTokenGrantReasonCode(input.reason),
+      peer: { kind: 'system', ...(input.grantId ? { credentialId: input.grantId } : {}) },
+      intent: { action: 'nodes.pair-token.create' },
+      material: {
+        params: { reason: input.reason, grantId: input.grantId ?? null },
+        scope: { audience: NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE },
+      },
+      requiredBits: [NODE_PAIR_TOKEN_CREATE_CAPABILITY],
+      deniedBits,
+      refs: { policyVersion: '1.0' },
+      ...(input.correlationId ? { correlationId: input.correlationId } : {}),
+    });
+  } catch {
+    // Denial path only; never leak grant material while trying to report audit failures.
+  }
+}
+
+function recordFromBody(
+  body: Record<string, unknown>,
+  key: string
+): Record<string, unknown> | undefined {
+  const value = body[key];
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function requiredStringFromRecord(
+  record: Record<string, unknown> | undefined,
+  key: string
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function handshakeGrantIssuerFromBody(
+  body: Record<string, unknown>,
+  key: 'issuer' | 'approvedBy' | 'deniedBy' | 'revokedBy',
+  fallbackId: string
+): { id: string; displayName?: string } {
+  const record = recordFromBody(body, key);
+  const id =
+    requiredStringFromRecord(record, 'id') ??
+    (typeof body[key] === 'string' && body[key].trim()
+      ? body[key].trim()
+      : fallbackId);
+  const displayName = requiredStringFromRecord(record, 'displayName');
+  return { id, ...(displayName ? { displayName } : {}) };
+}
+
+function handshakeGrantActorFromBody(
+  body: Record<string, unknown>
+): HandshakeGrantActor | null {
+  const actor = recordFromBody(body, 'actor');
+  const type = requiredStringFromRecord(actor, 'type');
+  const id = requiredStringFromRecord(actor, 'id');
+  if (!type || !id) return null;
+  const displayName = requiredStringFromRecord(actor, 'displayName');
+  return { type, id, ...(displayName ? { displayName } : {}) };
+}
+
+function handshakeGrantCapabilitiesFromBody(
+  body: Record<string, unknown>
+): string[] | null {
+  const value = body['capabilities'];
+  if (!Array.isArray(value)) return null;
+  const capabilities = value.filter(
+    (capability): capability is string =>
+      typeof capability === 'string' && capability.trim().length > 0
+  );
+  return capabilities.length > 0 ? capabilities : null;
+}
+
+function handshakeGrantScopeFromBody(
+  body: Record<string, unknown>
+): HandshakeGrantScope | null {
+  const scope = recordFromBody(body, 'scope');
+  return scope ? (scope as HandshakeGrantScope) : null;
+}
+
+function relayErrorForHandshakeGrantRegistryError(
+  error: HandshakeGrantRegistryError
+): RelayNodeError {
+  return relayError('INVALID_REQUEST', error.message, false, {
+    reasonCode: `HANDSHAKE_GRANT_${error.code.toUpperCase()}`,
+  });
+}
+
 export function createHubNodeRouter(
   options: HubNodeRouterOptions
 ): express.Router {
@@ -1917,6 +2291,8 @@ export function createHubNodeRouter(
   const confirmations =
     options.confirmations ?? createConfirmationChallengeStore();
   const now = () => options.now?.() ?? new Date();
+  const operatorHandshakeGrants =
+    options.operatorHandshakeGrants ?? new HandshakeGrantRegistry({ now });
   const repoInventoryFeature =
     options.repoInventoryFeature ?? createRepoInventoryFeature(registry);
 
@@ -2031,14 +2407,167 @@ export function createHubNodeRouter(
     }
   );
 
-  router.post('/hub/pair-tokens', requireAuth, (req, res) => {
+  router.get('/hub/operator-handshake-grants', requireAuth, (_req, res) => {
+    res.json({ grants: operatorHandshakeGrants.listGrants() });
+  });
+
+  router.post('/hub/operator-handshake-grants', requireAuth, (req, res) => {
     const body = bodyRecord(req);
-    const displayName =
-      typeof body['displayName'] === 'string' ? body['displayName'] : undefined;
+    const actor = handshakeGrantActorFromBody(body);
+    const audience = stringFromBody(body, 'audience');
+    const capabilities = handshakeGrantCapabilitiesFromBody(body);
+    const scope = handshakeGrantScopeFromBody(body);
+    if (!actor || !audience || !capabilities || !scope) {
+      sendRelayError(
+        res,
+        relayError(
+          'INVALID_REQUEST',
+          'actor, audience, capabilities, and scope are required',
+          false,
+          { reasonCode: 'HANDSHAKE_GRANT_REQUEST_INVALID' }
+        )
+      );
+      return;
+    }
+    const deviceRecord = recordFromBody(body, 'device');
+    const deviceId = requiredStringFromRecord(deviceRecord, 'id');
+    if (deviceRecord && !deviceId) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'device.id is required when device is supplied', false, {
+          reasonCode: 'HANDSHAKE_GRANT_DEVICE_INVALID',
+        })
+      );
+      return;
+    }
+    const deviceDisplayName = requiredStringFromRecord(deviceRecord, 'displayName');
+    const device = deviceId
+      ? { id: deviceId, ...(deviceDisplayName ? { displayName: deviceDisplayName } : {}) }
+      : undefined;
+    const sessionBinding = pairTokenMintSessionBinding(body);
+    const metadata = recordFromBody(body, 'metadata');
+    const expiresAt = typeof body['expiresAt'] === 'string' ? body['expiresAt'] : undefined;
+    const ttlMs = typeof body['ttlMs'] === 'number' ? body['ttlMs'] : undefined;
+    const correlationId = pairTokenMintCorrelationId(req, body);
+    try {
+      const grant = operatorHandshakeGrants.request({
+        actor,
+        issuer: handshakeGrantIssuerFromBody(body, 'issuer', 'browser-operator'),
+        audience,
+        capabilities,
+        scope,
+        ...(device ? { device } : {}),
+        ...(sessionBinding ? { sessionBinding } : {}),
+        ...(metadata ? { metadata: metadata as never } : {}),
+        ...(expiresAt ? { expiresAt } : {}),
+        ...(ttlMs !== undefined ? { ttlMs } : {}),
+        ...(correlationId ? { correlationId } : {}),
+      });
+      res.status(201).json({ grant });
+    } catch (error) {
+      if (error instanceof HandshakeGrantRegistryError) {
+        sendRelayError(res, relayErrorForHandshakeGrantRegistryError(error));
+        return;
+      }
+      throw error;
+    }
+  });
+
+  router.post('/hub/operator-handshake-grants/:grantId/approve', requireAuth, (req, res) => {
+    const body = bodyRecord(req);
+    const grantId = req.params.grantId;
+    if (!grantId) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'grant id is required', false, {
+          reasonCode: 'HANDSHAKE_GRANT_ID_REQUIRED',
+        })
+      );
+      return;
+    }
+    const highRiskApproval = recordFromBody(body, 'highRiskApproval');
+    const correlationId = pairTokenMintCorrelationId(req, body);
+    try {
+      const approved = operatorHandshakeGrants.approve(grantId, {
+        approvedBy: handshakeGrantIssuerFromBody(body, 'approvedBy', 'browser-operator'),
+        ...(highRiskApproval ? { highRiskApproval: highRiskApproval as never } : {}),
+        ...(correlationId ? { correlationId } : {}),
+      });
+      res.json(approved);
+    } catch (error) {
+      if (error instanceof HandshakeGrantRegistryError) {
+        sendRelayError(res, relayErrorForHandshakeGrantRegistryError(error));
+        return;
+      }
+      throw error;
+    }
+  });
+
+  router.post('/hub/operator-handshake-grants/:grantId/revoke', requireAuth, (req, res) => {
+    const body = bodyRecord(req);
+    const grantId = req.params.grantId;
+    if (!grantId) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'grant id is required', false, {
+          reasonCode: 'HANDSHAKE_GRANT_ID_REQUIRED',
+        })
+      );
+      return;
+    }
+    const reason = typeof body['reason'] === 'string' ? body['reason'] : undefined;
+    const correlationId = pairTokenMintCorrelationId(req, body);
+    const grant = operatorHandshakeGrants.revoke(grantId, {
+      revokedBy: handshakeGrantIssuerFromBody(body, 'revokedBy', 'browser-operator'),
+      ...(reason ? { reason } : {}),
+      ...(correlationId ? { correlationId } : {}),
+    });
+    if (!grant) {
+      sendRelayError(
+        res,
+        relayError('NOT_FOUND', 'operator handshake grant not found', false, {
+          reasonCode: 'HANDSHAKE_GRANT_NOT_FOUND',
+        })
+      );
+      return;
+    }
+    res.json({ grant });
+  });
+
+  function sendMintedPairToken(input: {
+    req: Request;
+    res: Response;
+    body: Record<string, unknown>;
+    trustTier?: RelayTrustTier;
+    capabilityEnvelope?: PairTokenCapabilityEnvelope;
+    grant?: ReturnType<HandshakeGrantRegistry['getGrant']>;
+  }): void {
+    const { req, res, body, grant } = input;
+    const displayName = stringFromBody(body, 'displayName');
     const ttlMs = pairTtlMs(body);
+    const correlationId = pairTokenMintCorrelationId(req, body, grant?.correlationId);
+    const source = sourceTupleFromRequest(req);
+    const platform = stringFromBody(body, 'platform');
     const pairToken = registry.createPairToken({
       ...(displayName ? { displayName } : {}),
       ...(ttlMs !== undefined ? { ttlMs } : {}),
+      ...(platform ? { platform } : {}),
+      ...(input.trustTier ? { trustTier: input.trustTier } : {}),
+      ...(input.capabilityEnvelope ? { capabilityEnvelope: input.capabilityEnvelope } : {}),
+      ...(grant
+        ? {
+            issuer: {
+              grantId: grant.id,
+              actorType: grant.actor.type,
+              ...(grant.actor.displayName
+                ? { actorDisplayName: grant.actor.displayName }
+                : {}),
+              actorId: grant.actor.id,
+            },
+          }
+        : {}),
+      ...(correlationId ? { correlationId } : {}),
+      ...(source ? { source } : {}),
     });
     const hubUrl = hubUrlFromRequest(req, body);
     const sshTarget = stringFromBody(body, 'sshTarget');
@@ -2055,6 +2584,93 @@ export function createHubNodeRouter(
         ...(serviceModes ? { serviceModes } : {}),
       }),
       diagnostics: BOOTSTRAP_DIAGNOSTICS,
+    });
+  }
+
+  router.post('/hub/pair-tokens', (req, res) => {
+    const body = bodyRecord(req);
+    const grantHandle = pairTokenMintGrantHandle(req, body);
+    if (!grantHandle) {
+      sendRelayError(
+        res,
+        relayError(
+          'UNAUTHORIZED',
+          'operator handshake grant is required to mint pair tokens',
+          false,
+          {
+            reasonCode: 'PAIR_TOKEN_GRANT_REQUIRED',
+            acceptedLanes: ['operator-handshake-grant'],
+            rejectedLanes: ['browser-session', 'node-credential'],
+          }
+        )
+      );
+      return;
+    }
+
+    const correlationId = pairTokenMintCorrelationId(req, body);
+    const actor = pairTokenMintActor(req, body);
+    const deviceId = stringFromBody(body, 'deviceId');
+    const sessionBinding = pairTokenMintSessionBinding(body);
+    const scope = pairTokenMintScope(body);
+    const trustTier = pairTokenTrustTierFromBody(body);
+    if (trustTier.ok === false) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'trustTier must be sandbox, dev, or prod', false, {
+          reasonCode: 'PAIR_TOKEN_TRUST_TIER_INVALID',
+          trustTier: trustTier.value,
+        })
+      );
+      return;
+    }
+    const capabilityEnvelope = pairTokenCapabilityEnvelopeFromBody(body);
+    if (capabilityEnvelope.ok === false) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', capabilityEnvelope.message, false, {
+          reasonCode: capabilityEnvelope.reasonCode,
+          ...(capabilityEnvelope.invalidCapability
+            ? { capability: capabilityEnvelope.invalidCapability }
+            : {}),
+        })
+      );
+      return;
+    }
+    const validation = operatorHandshakeGrants.validate(grantHandle, {
+      audience: NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
+      requiredCapabilities: [
+        NODE_PAIR_TOKEN_CREATE_CAPABILITY,
+        ...pairTokenCapabilityEnvelopeCapabilities(capabilityEnvelope.envelope),
+      ],
+      ...(actor ? { actor } : {}),
+      ...(deviceId ? { deviceId } : {}),
+      ...(sessionBinding ? { sessionBinding } : {}),
+      ...(scope ? { scope } : {}),
+      consume: true,
+      ...(correlationId ? { correlationId } : {}),
+    });
+    if (validation.ok === false) {
+      const failure = validation;
+      appendPairTokenGrantAudit(options.auditSink, {
+        reason: failure.reason,
+        decision: failure.reason === 'expired' ? 'expired' : 'deny',
+        ...(failure.grantId ? { grantId: failure.grantId } : {}),
+        deniedBits: failure.deniedBits,
+        ...(correlationId ? { correlationId } : {}),
+      });
+      sendRelayError(res, relayErrorForPairTokenGrantFailure(failure));
+      return;
+    }
+    const boundedTrustTier = boundedGrantBackedPairTokenTrustTier(trustTier.trustTier);
+    sendMintedPairToken({
+      req,
+      res,
+      body,
+      ...(boundedTrustTier ? { trustTier: boundedTrustTier } : {}),
+      ...(capabilityEnvelope.envelope
+        ? { capabilityEnvelope: capabilityEnvelope.envelope }
+        : {}),
+      grant: validation.grant,
     });
   });
 
