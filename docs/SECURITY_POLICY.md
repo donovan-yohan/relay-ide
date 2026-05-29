@@ -17,7 +17,27 @@ Relay auth is split into lanes. The current route inventory is checked into `ser
 
 The PIN and `token` cookie are therefore browser/UI authentication. They reduce drive-by browser access and support first-load local setup, but they cannot protect Relay from malicious processes already running as the same OS user: those processes can usually read local config, invoke local CLIs, attach to local sockets, or modify the checkout. Relay's federated security model relies on lane separation, node credentials, hub ACLs, capability policy, audit, revocation, and scoped actor credentials for non-browser actors rather than treating the browser PIN as global authorization.
 
-Relay issue `#427` shipped the earlier trust-tier/capability/audit/confirmation backbone. Relay issue `#797` tracks the broader multi-node auth model. Relay issue `#798` wave 1 narrowed that work to route-lane inventory, browser-session terminology, and typed lane denials. Relay issue `#802` adds the scoped actor credential registry MVP; it deliberately does not migrate every CLI gateway command, implement node proof-of-possession, passkeys, TOTP, or new approval UX.
+Relay issue `#427` shipped the earlier trust-tier/capability/audit/confirmation backbone. Relay issue `#797` tracks the broader multi-node auth model. Relay issue `#798` wave 1 narrowed that work to route-lane inventory, browser-session terminology, and typed lane denials. Relay issue `#802` adds the scoped actor credential registry MVP; it deliberately does not migrate every CLI gateway command, implement node proof-of-possession, passkeys, TOTP, or new approval UX. Relay issue `#803` hardens node identity lifecycle semantics by separating stable node identity from replaceable credential records.
+
+## Node identity lifecycle
+
+Node identity is not the same thing as a node credential. The hub registry keeps a stable `nodeId` and identity summary for the node record, while credential records hold replaceable bearer material for heartbeat and `/hub/node-link`. Pairing creates both; reconnect proves the current credential; rotation replaces the credential while preserving the node identity; revocation keeps the identity as revoked and permanently rejects its credential; re-pairing after missing, malformed, mismatched, expired, revoked, or protocol-incompatible credentials creates a new node identity instead of reviving the old one.
+
+The lifecycle states exposed to operators are:
+
+| State | Security meaning |
+| --- | --- |
+| `active` | The node has a valid active credential for heartbeat and `/hub/node-link`. |
+| `rotating` | A next credential exists and is provable, but the old credential remains active until heartbeat proof. |
+| `rotation-failed` | Delivery failed or was marked failed; the previous credential remains active until an operator clears the rotation or retries safely. |
+| `revoked` | The node identity remains in registry history, active links are closed, and the credential is rejected without grace. |
+| re-pair required | Authentication returns typed recovery errors such as `NODE_CREDENTIAL_MISSING`, `NODE_CREDENTIAL_MALFORMED`, `NODE_CREDENTIAL_MISMATCH`, `NODE_CREDENTIAL_EXPIRED`, `NODE_REVOKED`, or `REPAIR_REQUIRED`; the operator must run a fresh pair-token exchange. |
+
+Browser auth is intentionally non-dependent. Browser PIN/cookie auth can authorize operator UI/API routes that mint pair tokens or request rotation/revocation, but it is not accepted by node heartbeat or `/hub/node-link`. Node credentials are likewise not browser, CLI, scoped actor, or human impersonation credentials.
+
+SSH and Tailscale are bootstrap/reachability/binding signals only. They can help deliver install/pair commands, prove that an operator can reach a host, or provide host-binding evidence in diagnostics, but they are not the steady-state Relay application authorization model. Steady-state node authorization comes from the node credential, hub ACL/policy, audit, and revocation.
+
+Node lifecycle audit and diagnostics must stay redacted. It is safe to emit `nodeId`, `credentialId`, `rotationId`, lifecycle state, recovery reason code, and hashed/redacted scope metadata. It is not safe to emit raw pair tokens, raw node credential tokens, token hashes, browser cookies, confirmation tokens, scoped actor bearer material, reverse-link private payloads, full env values, file bytes, or terminal byte streams.
 
 ## Scoped actor credentials
 

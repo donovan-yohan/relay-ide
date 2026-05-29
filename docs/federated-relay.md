@@ -231,6 +231,8 @@ relay-ide node install \
 
 Both commands exchange the pair token, receive a persistent credential, write `node-credential.json`, and send an initial authenticated heartbeat. `node install` then runs the generic Relay service install path for supported service modes. In the current CLI, neither command opens or maintains the persistent reverse WebSocket; run `relay-ide node link --hub <url>` for steady-state session routing.
 
+SSH and Tailscale are bootstrap and reachability mechanisms here: generated commands may use them to deliver the install/pair step, and future diagnostics may use their host identity as binding evidence, but Relay does not treat SSH or Tailscale login as steady-state application authorization. Once paired, hub-node authorization is carried by the node credential on heartbeat and `/hub/node-link`.
+
 > Bootstrap diagnostics pair credentials and install/start the generic Relay service. The persistent `/hub/node-link` reverse WebSocket is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager.
 
 ### Step 3: Credential storage
@@ -261,6 +263,23 @@ relay-ide node link --hub https://hub.example.com
 ```
 
 `node link` reads `node-credential.json`, opens the reverse WebSocket to `/hub/node-link`, sends `control.hello` with manifest + repo inventory, and then emits a `control.heartbeat` every 20s. The hub reports the node `online` while the link is up. The client reconnects with jittered exponential backoff (1s → 60s cap) on transient close, and exits permanently on `NODE_REVOKED`, `UNAUTHORIZED`, or `PROTOCOL_INCOMPATIBLE`. Routed PTY is handled end-to-end: hub `attachPty` → `pty.attach` over the reverse link → node-side `node-pty` spawn → `pty.data` / `pty.input` / `pty.resize` / `pty.detach` round-trip. Node-side RPC method handlers (manifest refresh, repo listing) and file/git RPC remain follow-ups.
+
+### Node identity and credential states
+
+The node registry separates node identity from credentials. `HubNodeSummary.identity` carries the stable `nodeId`, creation/pairing timestamps, and operator-facing name/host metadata that can be refreshed by later heartbeats. `HubNodeSummary.credential` carries the active credential record (`credentialId`, `issuedAt`, state, and optional `rotationId`). Token material is never returned in summaries.
+
+| Lifecycle state | Protocol behavior | Public state |
+| --- | --- | --- |
+| Pair | `POST /hub/pairing/exchange` consumes a one-time pair token and creates a node identity plus the first active credential. | `identity.nodeId` is new; `credential.state` is `active`; status is based on heartbeat freshness. |
+| Reconnect | Heartbeat or `/hub/node-link` presents the node credential. The hub hashes the presented token, checks it with timing-safe comparison against the active credential or a provable rotation credential, and rejects missing/malformed/mismatch/expired/revoked credentials with typed errors. | Same node identity; status moves `online` while the link/heartbeat is fresh. Audit rows use `NODE_CREDENTIAL_RECONNECT_ALLOWED` or a redacted recovery reason. |
+| Rotate | `POST /hub/nodes/:nodeId/credential-rotation` issues a next credential through manual operator delivery or online `credential.rotate`. The previous credential remains valid until the next credential proves possession. | `credential.state` is `rotating` with `credential.rotationId`; `credentialRotation.state` is `issuing`, `delivered`, or `failed`. |
+| Prove/stabilize | A heartbeat carrying the next `credentialId` proves rotation. The hub swaps active credential hashes, updates the ACL peer credential id, deletes the unproved next-token hash, and marks the rotation stable. | Same `identity.nodeId`; `credential.state` returns to `active`; audit emits a redacted `CREDENTIAL_ROTATION_PROVED` rotation event. |
+| Revoke | `DELETE /nodes/:nodeId` marks the registry record revoked, closes active links with `NODE_REVOKED`, and rejects later credential auth. | Same node identity remains visible as `revoked`; `credential.state` is `revoked`; no grace period. |
+| Re-pair | A missing/malformed/mismatched/expired/revoked/protocol-incompatible credential yields a recovery error such as `NODE_CREDENTIAL_MISSING`, `NODE_CREDENTIAL_MALFORMED`, `NODE_CREDENTIAL_MISMATCH`, `NODE_CREDENTIAL_EXPIRED`, `NODE_REVOKED`, or `REPAIR_REQUIRED`. The recovery path is a fresh pair token exchange. | Re-pairing creates a new node identity; it does not re-enable the revoked or mismatched `nodeId`. |
+
+Browser sessions are outside this lifecycle. A browser cookie can authorize an operator route that creates a pair token or starts rotation/revocation, but node heartbeat and `/hub/node-link` only accept node credentials. Node credentials are not accepted by browser-only UI routes or scoped actor/CLI routes.
+
+Redaction invariant: public summaries, audit entries, logs, diagnostics, issue comments, and tests may expose ids (`nodeId`, `credentialId`, `rotationId`) and lifecycle state. They must not expose raw pair tokens, raw node credential tokens, token hashes, browser cookies, or private reverse-link payloads.
 
 ### Credential rotation
 
