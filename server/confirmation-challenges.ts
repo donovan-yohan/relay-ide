@@ -2,6 +2,17 @@ import * as crypto from 'node:crypto';
 import { sha256Hex, stableStringify, type SecurityAuditEntryInput } from '../shared/security-audit.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
 import type { HubPolicyDecision } from './hub-policy-evaluator.js';
+import {
+  createHighRiskApprovalContract,
+  sameHighRiskActor,
+  sameHighRiskCredential,
+  sameHighRiskSession,
+  type HighRiskApprovalApproverIdentity,
+  type HighRiskApprovalContract,
+  type HighRiskApprovalOutcome,
+  type HighRiskApprovalRequesterIdentity,
+  type HighRiskApprovalTarget,
+} from './high-risk-approvals.js';
 
 export const DEFAULT_CONFIRMATION_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 export const DEFAULT_CONFIRMATION_TOKEN_TTL_MS = 60 * 1000;
@@ -31,7 +42,10 @@ export type ConfirmationReasonCode =
   | 'CONFIRMATION_NOT_APPROVED'
   | 'CONFIRMATION_TOKEN_INVALID'
   | 'CONFIRMATION_REQUESTER_MISMATCH'
-  | 'CONFIRMATION_CONTEXT_MISMATCH';
+  | 'CONFIRMATION_CONTEXT_MISMATCH'
+  | 'CONFIRMATION_SAME_ACTOR'
+  | 'CONFIRMATION_SAME_CREDENTIAL'
+  | 'CONFIRMATION_APPROVAL_TARGET_INVALID';
 
 export interface CanonicalConfirmationParams {
   action: string;
@@ -65,6 +79,11 @@ export interface ConfirmationChallenge {
   maxFailedRedemptions: number;
   reasonCode: ConfirmationReasonCode;
   message: string;
+  outcome: HighRiskApprovalOutcome;
+  requester?: HighRiskApprovalRequesterIdentity;
+  approver?: HighRiskApprovalApproverIdentity;
+  approvalTarget?: HighRiskApprovalTarget;
+  contract: HighRiskApprovalContract;
 }
 
 export interface ConfirmationChallengePublicView {
@@ -87,6 +106,8 @@ export interface ConfirmationChallengePublicView {
   maxFailedRedemptions: number;
   reasonCode: ConfirmationReasonCode;
   message: string;
+  outcome: HighRiskApprovalOutcome;
+  contract: HighRiskApprovalContract;
 }
 
 export type ConfirmationFailure = {
@@ -95,6 +116,12 @@ export type ConfirmationFailure = {
   message: string;
   challenge?: ConfirmationChallenge;
   audit?: SecurityAuditEntryInput;
+};
+
+type AttemptedApproval = {
+  approverAuthSessionHash: string;
+  approverDisplayName?: string;
+  approver?: HighRiskApprovalApproverIdentity;
 };
 
 export type ConfirmationApprovalResult =
@@ -144,6 +171,8 @@ export interface ConfirmationChallengeStore {
     input: {
       requesterAuthSessionHash: string;
       requesterDisplayName?: string;
+      requester?: HighRiskApprovalRequesterIdentity;
+      approvalTarget?: HighRiskApprovalTarget;
       canonicalParams: CanonicalConfirmationParams;
     }
   ): ConfirmationChallenge;
@@ -151,6 +180,7 @@ export interface ConfirmationChallengeStore {
     challengeId: string;
     approverAuthSessionHash: string;
     approverDisplayName?: string;
+    approver?: HighRiskApprovalApproverIdentity;
     decision: ConfirmationDecision;
     now?: Date;
   }): ConfirmationApprovalResult;
@@ -241,14 +271,24 @@ export function createConfirmationChallengeStore(
     input: {
       requesterAuthSessionHash: string;
       requesterDisplayName?: string;
+      requester?: HighRiskApprovalRequesterIdentity;
+      approvalTarget?: HighRiskApprovalTarget;
       canonicalParams: CanonicalConfirmationParams;
     }
   ): ConfirmationChallenge {
     const createdAt = now();
     pruneStoredChallenges(createdAt);
     ensureCapacityForNewChallenge();
+    const expiresAt = new Date(createdAt.getTime() + challengeTtlMs);
+    const requester = input.requester ?? {
+      kind: 'browser-session' as const,
+      authSessionHash: input.requesterAuthSessionHash,
+      ...(input.requesterDisplayName ? { displayName: input.requesterDisplayName } : {}),
+    };
+    const approvalTarget = input.approvalTarget ?? { kind: 'human' as const };
+    const challengeId = randomId();
     const challenge: ConfirmationChallenge = {
-      challengeId: randomId(),
+      challengeId,
       status: 'pending',
       requesterAuthSessionHash: input.requesterAuthSessionHash,
       ...(input.requesterDisplayName ? { requesterDisplayName: input.requesterDisplayName } : {}),
@@ -262,11 +302,23 @@ export function createConfirmationChallengeStore(
       scopeHash: sha256Hex(stableStringify(decision.scope)),
       decision,
       createdAt: createdAt.toISOString(),
-      expiresAt: new Date(createdAt.getTime() + challengeTtlMs).toISOString(),
+      expiresAt: expiresAt.toISOString(),
       failedRedemptions: 0,
       maxFailedRedemptions,
       reasonCode: 'CONFIRMATION_REQUIRED',
       message: 'confirmation required before Relay routes this operation to the node',
+      outcome: 'challenge_created',
+      requester,
+      approvalTarget,
+      contract: createHighRiskApprovalContract({
+        challengeId,
+        decision,
+        canonicalParams: input.canonicalParams,
+        createdAt,
+        expiresAt,
+        requester,
+        approvalTarget,
+      }),
     };
     challenges.set(challenge.challengeId, challenge);
     return challenge;
@@ -276,6 +328,7 @@ export function createConfirmationChallengeStore(
     challengeId: string;
     approverAuthSessionHash: string;
     approverDisplayName?: string;
+    approver?: HighRiskApprovalApproverIdentity;
     decision: ConfirmationDecision;
     now?: Date;
   }): ConfirmationApprovalResult {
@@ -287,8 +340,25 @@ export function createConfirmationChallengeStore(
     if (challenge.status !== 'pending') {
       return failure('CONFIRMATION_NOT_APPROVED', `confirmation challenge is ${challenge.status}`, challenge);
     }
+    const approver = input.approver;
+    const attemptedApproval = attemptedApprovalFromInput(input);
     if (challenge.requesterAuthSessionHash === input.approverAuthSessionHash) {
-      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the requesting browser/auth session cannot approve its own challenge', 'same_session_approval_attempt', 'deny');
+      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the requesting browser/auth session cannot approve its own challenge', 'same_session_approval_attempt', 'deny', undefined, attemptedApproval);
+    }
+    if (requiresStructuredApprover(challenge) && !approver) {
+      return failChallenge(challenge, 'CONFIRMATION_APPROVAL_TARGET_INVALID', 'approval requires a distinct human/operator approver identity', 'denial', 'deny', 'approval_target_invalid', attemptedApproval);
+    }
+    if (sameHighRiskActor(challenge.requester, approver)) {
+      return failChallenge(challenge, 'CONFIRMATION_SAME_ACTOR', 'the requesting autonomous actor cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid', attemptedApproval);
+    }
+    if (sameHighRiskCredential(challenge.requester, approver)) {
+      return failChallenge(challenge, 'CONFIRMATION_SAME_CREDENTIAL', 'the requesting scoped credential cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid', attemptedApproval);
+    }
+    if (sameHighRiskSession(challenge.requester, approver)) {
+      return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the requesting session cannot approve its own high-risk challenge', 'same_session_approval_attempt', 'deny', 'approval_target_invalid', attemptedApproval);
+    }
+    if (approver && !approverSatisfiesTarget(approver, challenge.approvalTarget)) {
+      return failChallenge(challenge, 'CONFIRMATION_APPROVAL_TARGET_INVALID', 'approver does not match the challenge approval target', 'denial', 'deny', 'approval_target_invalid', attemptedApproval);
     }
     if (input.decision === 'deny' || input.decision === 'deny_revoke') {
       const reasonCode = input.decision === 'deny' ? 'CONFIRMATION_DENIED' : 'CONFIRMATION_DENIED_REVOKE';
@@ -298,8 +368,11 @@ export function createConfirmationChallengeStore(
         ? 'confirmation challenge was denied by a distinct authenticated session'
         : 'confirmation challenge was denied and the grant should be revoked';
       challenge.approverAuthSessionHash = input.approverAuthSessionHash;
+      if (approver) challenge.approver = approver;
       if (input.approverDisplayName) challenge.approverDisplayName = input.approverDisplayName;
       challenge.approvedAt = current.toISOString();
+      challenge.outcome = 'denied';
+      challenge.contract = updatedContract(challenge, input.decision === 'deny' ? 'denied' : 'denied', undefined, approver);
       return failure(reasonCode, challenge.message, challenge, auditForChallenge(challenge, {
         eventType: input.decision === 'deny' ? 'denial' : 'revocation',
         decision: input.decision === 'deny' ? 'deny' : 'revoked',
@@ -311,11 +384,14 @@ export function createConfirmationChallengeStore(
     challenge.reasonCode = 'CONFIRMATION_APPROVED';
     challenge.message = 'confirmation challenge approved by a distinct authenticated session';
     challenge.approverAuthSessionHash = input.approverAuthSessionHash;
+    if (approver) challenge.approver = approver;
     if (input.approverDisplayName) challenge.approverDisplayName = input.approverDisplayName;
     challenge.approvedAt = current.toISOString();
     challenge.tokenExpiresAt = new Date(current.getTime() + tokenTtlMs).toISOString();
     challenge.tokenHash = hashToken(token);
     challenge.requesterToken = token;
+    challenge.outcome = 'approved';
+    challenge.contract = updatedContract(challenge, 'approved', token, approver);
     return {
       ok: true,
       reasonCode: 'CONFIRMATION_APPROVED',
@@ -346,7 +422,18 @@ export function createConfirmationChallengeStore(
     const expiryFailure = expireIfNeeded(challenge, current, true);
     if (expiryFailure) return expiryFailure;
     if (challenge.status === 'redeemed') {
-      return failure('CONFIRMATION_ALREADY_USED', 'confirmation token was already used', challenge);
+      challenge.outcome = 'reuse_denied';
+      challenge.contract = updatedContract(challenge, 'reuse_denied');
+      return failure(
+        'CONFIRMATION_ALREADY_USED',
+        'confirmation token was already used',
+        challenge,
+        auditForChallenge(challenge, {
+          eventType: 'failed_redemption',
+          decision: 'failed',
+          reasonCode: 'CONFIRMATION_ALREADY_USED',
+        })
+      );
     }
     if (challenge.status !== 'approved') {
       return failure('CONFIRMATION_NOT_APPROVED', `confirmation challenge is ${challenge.status}`, challenge);
@@ -358,26 +445,27 @@ export function createConfirmationChallengeStore(
       return failChallenge(challenge, 'CONFIRMATION_SAME_SESSION', 'the approving browser/auth session cannot redeem its own approval', 'same_session_approval_attempt', 'deny');
     }
     if (!challengeContextMatches(challenge, input.decision)) {
-      return failChallenge(challenge, 'CONFIRMATION_CONTEXT_MISMATCH', 'confirmation token does not match this node, intent, capability set, or session', 'failed_redemption', 'failed');
+      return invalidateRedemptionChallenge(
+        challenge,
+        'CONFIRMATION_CONTEXT_MISMATCH',
+        'confirmation token context drift invalidated the approved challenge',
+        input.canonicalParams
+      );
     }
     if (challenge.canonicalParamsHash !== hashCanonicalParams(input.canonicalParams)) {
-      challenge.failedRedemptions += 1;
-      if (challenge.failedRedemptions >= challenge.maxFailedRedemptions) {
-        challenge.status = 'invalidated';
-        challenge.reasonCode = 'CONFIRMATION_PARAM_MISMATCH';
-        challenge.message = 'confirmation token invalidated after too many parameter mismatches';
-      }
-      return failure('CONFIRMATION_PARAM_MISMATCH', 'confirmation token parameters do not match the original challenge', challenge, auditForChallenge(challenge, {
-        eventType: 'failed_redemption',
-        decision: 'failed',
-        reasonCode: 'CONFIRMATION_PARAM_MISMATCH',
-        params: input.canonicalParams,
-      }));
+      return invalidateRedemptionChallenge(
+        challenge,
+        'CONFIRMATION_PARAM_MISMATCH',
+        'confirmation token parameter drift invalidated the approved challenge',
+        input.canonicalParams
+      );
     }
     challenge.status = 'redeemed';
     challenge.redeemedAt = current.toISOString();
     challenge.reasonCode = 'CONFIRMATION_APPROVED';
     challenge.message = 'confirmation token redeemed';
+    challenge.outcome = 'redeemed';
+    challenge.contract = updatedContract(challenge, 'redeemed');
     delete challenge.requesterToken;
     return {
       ok: true,
@@ -435,6 +523,10 @@ export function createConfirmationChallengeStore(
     challenge.status = 'invalidated';
     challenge.reasonCode = input.reasonCode;
     challenge.message = input.message;
+    challenge.outcome = input.message.includes('audit write failed')
+      ? 'audit_write_failed'
+      : 'mismatch_denied';
+    challenge.contract = updatedContract(challenge, challenge.outcome);
     challenge.approvedAt = current.toISOString();
     delete challenge.tokenExpiresAt;
     delete challenge.tokenHash;
@@ -465,13 +557,18 @@ export function canonicalConfirmationParams(
 ): CanonicalConfirmationParams {
   const record = asRecord(params);
   switch (action) {
-    case 'pty.exec.arbitrary':
+    case 'pty.exec.arbitrary': {
+      const command = stringField(record, 'command');
       return stripUndefined({
         action,
-        command: stringField(record, 'command'),
         cwd: stringField(record, 'cwd'),
+        commandHash: command === undefined ? undefined : sha256Hex(command),
+        commandByteCount: command === undefined ? undefined : Buffer.byteLength(command, 'utf8'),
+        commandCharCount: command?.length,
+        commandClasses: command === undefined ? undefined : commandClasses(command),
         envHash: hashOptional(record?.['env']),
       });
+    }
     case 'rpc.fs.write': {
       const bytes = bytesFromFileWrite(record);
       return stripUndefined({
@@ -553,6 +650,90 @@ export function publicChallenge(
     maxFailedRedemptions: challenge.maxFailedRedemptions,
     reasonCode: challenge.reasonCode,
     message: challenge.message,
+    outcome: challenge.outcome,
+    contract: challenge.contract,
+  };
+}
+
+function requiresStructuredApprover(challenge: ConfirmationChallenge): boolean {
+  return challenge.requester?.kind === 'scoped-actor' || Boolean(challenge.requester?.actorId || challenge.requester?.credentialId);
+}
+
+function approverSatisfiesTarget(
+  approver: HighRiskApprovalApproverIdentity,
+  target: HighRiskApprovalTarget | undefined
+): boolean {
+  if (!target) return true;
+  if (target.kind === 'human' || target.kind === 'operator') {
+    if (approver.kind !== 'human') return false;
+    return !target.id || approver.actorId === target.id;
+  }
+  if (target.kind === 'session') {
+    return Boolean(target.sessionId && approver.sessionId === target.sessionId);
+  }
+  return true;
+}
+
+function updatedContract(
+  challenge: ConfirmationChallenge,
+  outcome: HighRiskApprovalOutcome,
+  redemptionNonce?: string,
+  approver?: HighRiskApprovalApproverIdentity
+): HighRiskApprovalContract {
+  return createHighRiskApprovalContract({
+    challengeId: challenge.challengeId,
+    decision: challenge.decision,
+    canonicalParams: challenge.canonicalParams,
+    createdAt: new Date(challenge.createdAt),
+    expiresAt: new Date(challenge.expiresAt),
+    requester: challenge.requester ?? {
+      kind: 'browser-session',
+      authSessionHash: challenge.requesterAuthSessionHash,
+      ...(challenge.requesterDisplayName ? { displayName: challenge.requesterDisplayName } : {}),
+    },
+    ...(challenge.approvalTarget ? { approvalTarget: challenge.approvalTarget } : {}),
+    ...(approver ?? challenge.approver ? { approver: approver ?? challenge.approver } : {}),
+    ...(redemptionNonce
+      ? { redemptionNonce }
+      : challenge.contract.redemptionNonceHash
+        ? { redemptionNonceHash: challenge.contract.redemptionNonceHash }
+        : {}),
+    outcome,
+  });
+}
+
+function invalidateRedemptionChallenge(
+  challenge: ConfirmationChallenge,
+  reasonCode: ConfirmationReasonCode,
+  message: string,
+  params?: unknown
+): ConfirmationFailure {
+  challenge.failedRedemptions += 1;
+  challenge.status = 'invalidated';
+  challenge.reasonCode = reasonCode;
+  challenge.message = message;
+  challenge.outcome = 'mismatch_denied';
+  challenge.contract = updatedContract(challenge, 'mismatch_denied');
+  delete challenge.tokenExpiresAt;
+  delete challenge.tokenHash;
+  delete challenge.requesterToken;
+  return failure(reasonCode, message, challenge, auditForChallenge(challenge, {
+    eventType: 'failed_redemption',
+    decision: 'failed',
+    reasonCode,
+    ...(params !== undefined ? { params } : {}),
+  }));
+}
+
+function attemptedApprovalFromInput(input: {
+  approverAuthSessionHash: string;
+  approverDisplayName?: string;
+  approver?: HighRiskApprovalApproverIdentity;
+}): AttemptedApproval {
+  return {
+    approverAuthSessionHash: input.approverAuthSessionHash,
+    ...(input.approverDisplayName ? { approverDisplayName: input.approverDisplayName } : {}),
+    ...(input.approver ? { approver: input.approver } : {}),
   };
 }
 
@@ -561,14 +742,25 @@ function failChallenge(
   reasonCode: ConfirmationReasonCode,
   message: string,
   eventType: SecurityAuditEntryInput['eventType'],
-  decision: SecurityAuditEntryInput['decision']
+  decision: SecurityAuditEntryInput['decision'],
+  outcome?: HighRiskApprovalOutcome,
+  attemptedApproval?: {
+    approverAuthSessionHash: string;
+    approverDisplayName?: string;
+    approver?: HighRiskApprovalApproverIdentity;
+  }
 ): ConfirmationFailure {
   challenge.reasonCode = reasonCode;
   challenge.message = message;
+  if (outcome) {
+    challenge.outcome = outcome;
+    challenge.contract = updatedContract(challenge, outcome, undefined, attemptedApproval?.approver);
+  }
   return failure(reasonCode, message, challenge, auditForChallenge(challenge, {
     eventType,
     decision,
     reasonCode,
+    ...(attemptedApproval ? { attemptedApproval } : {}),
   }));
 }
 
@@ -595,6 +787,8 @@ function expireIfNeeded(
   if (!challengeExpired && !tokenExpired) return null;
   challenge.status = 'expired';
   challenge.reasonCode = 'CONFIRMATION_EXPIRED';
+  challenge.outcome = 'expired';
+  challenge.contract = updatedContract(challenge, 'expired');
   delete challenge.requesterToken;
   challenge.message = tokenExpired
     ? 'confirmation token expired'
@@ -628,6 +822,10 @@ function auditForChallenge(
     decision: SecurityAuditEntryInput['decision'];
     reasonCode: string;
     params?: unknown;
+    attemptedApproval?: {
+      approverAuthSessionHash: string;
+      approverDisplayName?: string;
+    };
   }
 ): SecurityAuditEntryInput {
   const policy = challenge.decision;
@@ -635,7 +833,7 @@ function auditForChallenge(
     eventType: input.eventType,
     decision: input.decision,
     reasonCode: input.reasonCode,
-    peer: auditPeerForChallenge(challenge, input.eventType),
+    peer: auditPeerForChallenge(challenge, input.eventType, input.attemptedApproval),
     node: {
       nodeId: challenge.nodeId,
       ...(policy.trustTier ? { trustTier: policy.trustTier } : {}),
@@ -659,17 +857,29 @@ function auditForChallenge(
 
 function auditPeerForChallenge(
   challenge: ConfirmationChallenge,
-  eventType: SecurityAuditEntryInput['eventType']
+  eventType: SecurityAuditEntryInput['eventType'],
+  attemptedApproval?: {
+    approverAuthSessionHash: string;
+    approverDisplayName?: string;
+  }
 ): SecurityAuditEntryInput['peer'] {
+  const useAttemptedApprover =
+    (eventType === 'same_session_approval_attempt' || eventType === 'denial') &&
+    Boolean(attemptedApproval?.approverAuthSessionHash);
   const useApprover =
+    !useAttemptedApprover &&
     (eventType === 'approval' || eventType === 'denial' || eventType === 'revocation') &&
     Boolean(challenge.approverAuthSessionHash);
-  const principalHash = useApprover
-    ? challenge.approverAuthSessionHash!
-    : challenge.requesterAuthSessionHash;
-  const displayName = useApprover
-    ? challenge.approverDisplayName
-    : challenge.requesterDisplayName;
+  const principalHash = useAttemptedApprover
+    ? attemptedApproval!.approverAuthSessionHash
+    : useApprover
+      ? challenge.approverAuthSessionHash!
+      : challenge.requesterAuthSessionHash;
+  const displayName = useAttemptedApprover
+    ? attemptedApproval?.approverDisplayName
+    : useApprover
+      ? challenge.approverDisplayName
+      : challenge.requesterDisplayName;
   return {
     kind: 'user',
     principalHash,
@@ -710,6 +920,22 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
 
 function hashOptional(value: unknown): string | undefined {
   return value === undefined ? undefined : sha256Hex(stableStringify(value));
+}
+
+function commandClasses(command: string): string[] {
+  const classes: string[] = [];
+  if (command.includes('\r') || command.includes('\n')) classes.push('multiline');
+  if (/[;&|`$<>()[\]{}*?~!]/.test(command)) classes.push('shell-metacharacters');
+  if (/https?:\/\//i.test(command)) classes.push('url');
+  if (
+    /(?:authorization|bearer|token|secret|password|api[_-]?key|gh[pousr]_|sk-|relay-)/i.test(
+      command
+    )
+  ) {
+    classes.push('secret-looking');
+  }
+  if (/[^\x20-\x7e]/.test(command)) classes.push('non-ascii');
+  return classes;
 }
 
 function bytesFromFileWrite(record: Record<string, unknown> | undefined): Buffer {

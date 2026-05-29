@@ -153,14 +153,14 @@ This file is required for the node to authenticate heartbeats and the reverse We
 
 The hub now separates stable node identity from credential records. The stable identity anchor is the `nodeId` and pairing timestamps; operator-facing identity metadata such as `displayName` and `hostname` describes that identity and may be refreshed by later heartbeats. The active credential is replaceable bearer material tied to that identity. `GET /nodes` returns both the identity summary and a redacted credential summary (`credentialId`, `issuedAt`, and state), never the live token or token hash.
 
-| State | What it means | Operator action |
-| --- | --- | --- |
-| Paired | A one-time pair token was exchanged, the hub created a node identity, and the node stored `node-credential.json`. | Start or supervise `relay-ide node link --hub <url>` for routed sessions. |
-| Reconnected | The node proves the stored credential on heartbeat or `/hub/node-link` reconnect. | No browser cookie is involved; the node credential alone authenticates the node lane. |
-| Rotating | An operator-triggered or scheduled rotation has issued a next credential. The hub accepts the previous credential and the next credential until the node proves possession with a heartbeat carrying the next `credentialId`. | Deliver the new credential if manual; let online delivery write it over the active link if available. Do not clear a failed/delivered rotation if the node may already have written the next credential. |
-| Rotated/stable | The node proved the next credential. The hub swaps the active credential, invalidates the previous token, updates the ACL peer credential id, and preserves the same node identity. | Continue normal operation. |
-| Revoked | `DELETE /nodes/{nodeId}` marks the identity revoked, kills active links, and permanently rejects its credential. | Remove `node-credential.json` from the node before disposal or re-pairing. The old `nodeId` remains revoked in hub history. |
-| Re-pair required | The credential is missing, malformed, mismatched with hub state, expired, revoked, protocol-incompatible, or otherwise returns `REPAIR_REQUIRED`. | Generate a new pair token and run `relay-ide node pair`/`connect` again. Re-pairing creates a new node identity; it does not resurrect a revoked identity. |
+| State            | What it means                                                                                                                                                                                                                 | Operator action                                                                                                                                                                                          |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Paired           | A one-time pair token was exchanged, the hub created a node identity, and the node stored `node-credential.json`.                                                                                                             | Start or supervise `relay-ide node link --hub <url>` for routed sessions.                                                                                                                                |
+| Reconnected      | The node proves the stored credential on heartbeat or `/hub/node-link` reconnect.                                                                                                                                             | No browser cookie is involved; the node credential alone authenticates the node lane.                                                                                                                    |
+| Rotating         | An operator-triggered or scheduled rotation has issued a next credential. The hub accepts the previous credential and the next credential until the node proves possession with a heartbeat carrying the next `credentialId`. | Deliver the new credential if manual; let online delivery write it over the active link if available. Do not clear a failed/delivered rotation if the node may already have written the next credential. |
+| Rotated/stable   | The node proved the next credential. The hub swaps the active credential, invalidates the previous token, updates the ACL peer credential id, and preserves the same node identity.                                           | Continue normal operation.                                                                                                                                                                               |
+| Revoked          | `DELETE /nodes/{nodeId}` marks the identity revoked, kills active links, and permanently rejects its credential.                                                                                                              | Remove `node-credential.json` from the node before disposal or re-pairing. The old `nodeId` remains revoked in hub history.                                                                              |
+| Re-pair required | The credential is missing, malformed, mismatched with hub state, expired, revoked, protocol-incompatible, or otherwise returns `REPAIR_REQUIRED`.                                                                             | Generate a new pair token and run `relay-ide node pair`/`connect` again. Re-pairing creates a new node identity; it does not resurrect a revoked identity.                                               |
 
 Browser auth is deliberately not part of node reconnect. A browser PIN/cookie can authorize an operator to create a pair token or initiate rotation/revocation through browser routes, but it is never accepted as a node credential. Conversely, `node-credential.json` cannot log in to browser-only routes.
 
@@ -561,7 +561,13 @@ To grant `rpc:fs:write` on a paired node (e.g. for an agent brain that needs to 
 relay-ide hub node acl --node-id <node-id> --grant rpc:fs:write
 ```
 
-Prod-tier nodes additionally require a human-approved confirmation challenge on each write request; dev/sandbox-tier nodes execute immediately once the capability is granted.
+Prod-tier nodes additionally require a human-approved exact-operation confirmation challenge on each high-risk write request; dev/sandbox-tier nodes execute immediately once the capability is granted unless the hub ACL explicitly marks the bit as confirmation-required.
+
+Approval is per operation, not per node and not per agent. When a routed request pauses, the operator should inspect the challenge metadata: action, target node, session/work-context ids, required and challenged bits, policy/ACL refs, expiry, reason code, canonical params hash, and operation-specific params such as path/mode/byte count/content SHA-256 for file writes. The approval token is one-time and must be redeemed by the original requester for the same operation. Deny, expiry, mismatch, wrong requester, wrong approval target, self-approval, audit failure, or token reuse all fail closed; a retry starts with a new command and a fresh challenge.
+
+The safe public fields are node/session/work-context ids, challenge id/status, capability bits, timestamps, reason codes, redacted identity hashes/display names, params hashes, and operation summaries. Do not put raw confirmation tokens, browser cookies, node credentials, actor bearer tokens, pair tokens, raw file bytes, full environment values, or secret-looking command text into tickets, logs, screenshots, or chat handoffs.
+
+The current MVP uses the existing authenticated hub confirmation endpoints and UI path. Passkey/WebAuthn/TOTP, stronger approval auth, broad approval-center UX, and multi-approver policy are future work behind the same exact-operation contract, not part of this runbook slice.
 
 This is a privileged local-user blast radius. Do not pair nodes you do not control.
 
@@ -582,7 +588,7 @@ All CLI output, diagnostics, and bootstrap command generation redact sensitive t
 | `pair_...` tokens                      | `pair_…redacted`                  |
 | `node_...._....secret_...` credentials | `node_…redacted.secret_…redacted` |
 | `secret_...` fragments                 | `secret_…redacted`                |
-| `Authorization: Bearer <token>`        | `Authorization: Bearer …redacted` |
+| `Authorization: Bearer <value>`        | `Authorization: Bearer …redacted` |
 | `Bearer <token>`                       | `Bearer …redacted`                |
 
 The redaction is applied by `redactBootstrapSecrets()` in `shared/bootstrap-diagnostics.ts`.

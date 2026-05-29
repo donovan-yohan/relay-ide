@@ -19,7 +19,7 @@ This index separates current source-of-truth docs from historical plans and spik
 | Devbox deploy         | `references/devbox-hub-deploy.md` | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene |
 | Dogfood recovery      | `references/dogfood-recovery.md`  | Relay-develops-Relay proof loop, recovery matrix, diagnostics, no-force-merge gate      |
 | Self-hosting          | `SELF_HOSTING.md`                 | Running Relay from inside Relay with isolated config/ports                              |
-| Security policy       | `SECURITY_POLICY.md`              | Trust tiers, capability bits, hub ACL defaults                                          |
+| Security policy       | `SECURITY_POLICY.md`              | Trust tiers, capability bits, hub ACL defaults, exact-operation approval challenges     |
 | rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`         | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                 |
 | Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md`     | Hub/node command shape and npm packaging decisions                                      |
 | Node bootstrap        | `RELAY_NODE_BOOTSTRAP.md`         | Pair/install/update/unpair flows and diagnostics                                        |
@@ -57,6 +57,6 @@ These directories are useful evidence, but they are not current product docs by 
 ## Guardrails for future doc edits
 
 - Evidence first: source files, tests, package scripts, and CLI help beat old plans.
-- Do not overclaim planned work as shipped: especially File RPC, `logs.tail`/node-log proxying, #427 evaluator/confirmation/audit/rotation beyond the shipped policy schema/default ACLs, and the complete six-layer UI/data migration.
+- Do not overclaim planned work as shipped: especially File RPC beyond the listed v1 commands, `logs.tail`/node-log proxying, high-risk approval UX/auth strength beyond the exact-operation #807 contract, and the complete six-layer UI/data migration.
 - Keep `AGENTS.md` compact; add details here or in focused docs instead.
 - When a historical plan is still linked from a current doc, label it as historical/proposed unless implementation has been verified.

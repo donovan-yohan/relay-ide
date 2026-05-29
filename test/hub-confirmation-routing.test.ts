@@ -5,10 +5,15 @@ import path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createConfirmationChallengeStore, hashAuthSessionIdentity } from '../server/confirmation-challenges.js';
+import { attachAuthenticatedCliGatewayActorCredential } from '../server/cli-gateway-actor-auth.js';
 import { createRepoFeatureRouter } from '../server/features/repo-router.js';
 import { createHubNodeRouter, type RoutedSessionAuditSink } from '../server/hub-node-router.js';
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
+import type {
+  ScopedActorCredentialRecord,
+  ScopedActorCredentialType,
+} from '../shared/scoped-actor-credentials.js';
 import { createRoutedNodeSessionEnvelope } from '../shared/session-envelope.js';
 import { createWorkContextStore, type WorkContextStore } from '../server/work-contexts.js';
 import {
@@ -101,6 +106,38 @@ function sessionPayload() {
   };
 }
 
+function testAuthenticatedActorCredential(req: express.Request): ScopedActorCredentialRecord | undefined {
+  const actorId = req.header('x-test-trusted-actor-id')?.trim();
+  const credentialId = req.header('x-test-trusted-credential-id')?.trim();
+  if (!actorId && !credentialId) return undefined;
+  const actorType = (req.header('x-test-trusted-actor-type')?.trim() || 'agent') as ScopedActorCredentialType;
+  const sessionId = req.header('x-test-trusted-session-id')?.trim();
+  const workContextId = req.header('x-test-trusted-work-context-id')?.trim();
+  const displayName = req.header('x-test-trusted-display-name')?.trim();
+  return {
+    id: credentialId || `cred-${actorId}`,
+    actor: {
+      type: actorType,
+      id: actorId || `actor-${credentialId}`,
+      ...(displayName ? { displayName } : {}),
+    },
+    issuer: { id: 'test-auth' },
+    audience: 'relay:cli-gateway:v1',
+    capabilities: ['session:create:terminal', 'session:read'],
+    scope: {
+      ...(sessionId ? { sessionIds: [sessionId] } : {}),
+      ...(workContextId ? { workContextIds: [workContextId] } : {}),
+    },
+    issuedAt: NOW.toISOString(),
+    expiresAt: new Date(NOW.getTime() + 60_000).toISOString(),
+  };
+}
+
+function attachTestAuthenticatedActor(req: express.Request): void {
+  const credential = testAuthenticatedActorCredential(req);
+  if (credential) attachAuthenticatedCliGatewayActorCredential(req, credential);
+}
+
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -172,8 +209,10 @@ describe('hub confirmation routing', () => {
         workContextStore: options.workContextStore,
         now: () => NOW,
         requireAuth: (req, res, next) => {
-          if (req.header('x-test-auth') === 'yes') next();
-          else res.status(401).json({ error: 'Unauthorized' });
+          if (req.header('x-test-auth') === 'yes') {
+            attachTestAuthenticatedActor(req);
+            next();
+          } else res.status(401).json({ error: 'Unauthorized' });
         },
       })
     );
@@ -363,21 +402,6 @@ describe('hub confirmation routing', () => {
       challenge: { challengeId: 'challenge-1', status: 'approved' },
     });
 
-    const tampered = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-test-auth': 'yes',
-        'x-auth-session': 'requester-browser',
-      },
-      body: JSON.stringify({ ...originalBody, method: 'cold-reopen', confirmationToken: 'raw-confirmation-token' }),
-    });
-    expect(tampered.status).toBe(401);
-    expect(await tampered.json()).toMatchObject({
-      error: { details: { reasonCode: 'CONFIRMATION_PARAM_MISMATCH' } },
-    });
-    expect(nodeLinks.requests).toHaveLength(0);
-
     const redeemed = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
       method: 'POST',
       headers: {
@@ -391,6 +415,20 @@ describe('hub confirmation routing', () => {
     expect(await redeemed.json()).toMatchObject({ id: 'remote-session-1', nodeId: 'node_prod' });
     expect(nodeLinks.requests).toHaveLength(1);
     expect(nodeLinks.requests[0]).toMatchObject({ type: 'sessions.create', payload: originalBody });
+
+    const reused = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+      },
+      body: JSON.stringify({ ...originalBody, confirmationToken: 'raw-confirmation-token' }),
+    });
+    expect(reused.status).toBe(401);
+    expect(await reused.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_ALREADY_USED' } },
+    });
     expect(auditEntries.map((entry) => entry.eventType)).toEqual(
       expect.arrayContaining(['challenge', 'same_session_approval_attempt', 'approval', 'failed_redemption', 'grant'])
     );
@@ -403,6 +441,196 @@ describe('hub confirmation routing', () => {
     expect(approvalAudit?.peer.principalHash).not.toBe(requesterHash);
     expect(failedRedemptionAudit?.peer.principalHash).toBe(requesterHash);
     expect(grantAudit?.peer.principalHash).toBe(requesterHash);
+  });
+
+  it('enforces structured requester/approver identity through live confirmation endpoints', async () => {
+    const spoofOnly = await startHub();
+    const spoofOnlyResponse = await fetch(`${spoofOnly.base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+        'x-relay-actor-type': 'agent',
+        'x-relay-actor-id': 'spoofed-agent',
+        'x-relay-credential-id': 'spoofed-credential',
+        'x-relay-session-id': 'spoofed-session',
+      },
+      body: JSON.stringify({
+        repoPath: '/srv/relay-ide',
+        type: 'terminal',
+        actorId: 'spoofed-body-agent',
+        credentialId: 'spoofed-body-credential',
+        sessionId: 'spoofed-body-session',
+      }),
+    });
+    expect(spoofOnlyResponse.status).toBe(409);
+    const spoofOnlyJson = await spoofOnlyResponse.json();
+    expect(spoofOnlyJson).toMatchObject({
+      error: {
+        details: {
+          challenge: {
+            contract: {
+              requester: { kind: 'browser-session' },
+            },
+          },
+        },
+      },
+    });
+    expect(spoofOnlyJson.error.details.challenge.contract.requester.actorIdHash).toBeUndefined();
+    expect(spoofOnlyJson.error.details.challenge.contract.requester.credentialIdHash).toBeUndefined();
+    expect(spoofOnlyJson.error.details.challenge.contract.requester.sessionId).toBeUndefined();
+
+    async function createScopedChallenge() {
+      const hub = await startHub();
+      const originalBody = {
+        repoPath: '/srv/relay-ide',
+        type: 'terminal',
+        actorId: 'spoofed-body-agent',
+        credentialId: 'spoofed-body-credential',
+        sessionId: 'spoofed-body-session',
+      };
+      const requesterHeaders = {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'requester-browser',
+        'x-test-trusted-actor-type': 'agent',
+        'x-test-trusted-actor-id': 'agent-1',
+        'x-test-trusted-credential-id': 'cred-1',
+        'x-test-trusted-session-id': 'trusted-autonomous-session-1',
+        'x-relay-actor-type': 'agent',
+        'x-relay-actor-id': 'spoofed-agent',
+        'x-relay-credential-id': 'spoofed-credential',
+        'x-relay-session-id': 'spoofed-session',
+      };
+      const first = await fetch(`${hub.base}/hub/nodes/node_prod/sessions`, {
+        method: 'POST',
+        headers: requesterHeaders,
+        body: JSON.stringify(originalBody),
+      });
+      expect(first.status).toBe(409);
+      const firstJson = await first.json();
+      expect(firstJson).toMatchObject({
+        error: {
+          details: {
+            challenge: {
+              contract: {
+                requester: {
+                  kind: 'scoped-actor',
+                  actorType: 'agent',
+                  actorIdHash: expect.any(String),
+                  credentialIdHash: expect.any(String),
+                  sessionId: 'trusted-autonomous-session-1',
+                },
+                approvalTarget: { kind: 'human' },
+              },
+            },
+          },
+        },
+      });
+      expect(firstJson.error.details.challenge.contract.requester.sessionId).not.toBe('spoofed-session');
+      return { ...hub, originalBody, requesterHeaders };
+    }
+
+    const sameActor = await createScopedChallenge();
+    const sameActorApproval = await fetch(`${sameActor.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'operator-browser',
+        'x-test-trusted-actor-type': 'agent',
+        'x-test-trusted-actor-id': 'agent-1',
+        'x-test-trusted-credential-id': 'other-cred',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(sameActorApproval.status).toBe(401);
+    expect(await sameActorApproval.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_SAME_ACTOR' } },
+    });
+    expect(
+      sameActor.auditEntries.find((entry) => entry.eventType === 'same_session_approval_attempt')
+        ?.peer.principalHash
+    ).toBe(hashAuthSessionIdentity('test-header:operator-browser'));
+
+    const sameCredential = await createScopedChallenge();
+    const sameCredentialApproval = await fetch(`${sameCredential.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'operator-browser',
+        'x-test-trusted-actor-type': 'agent',
+        'x-test-trusted-actor-id': 'other-agent',
+        'x-test-trusted-credential-id': 'cred-1',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(sameCredentialApproval.status).toBe(401);
+    expect(await sameCredentialApproval.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_SAME_CREDENTIAL' } },
+    });
+
+    const sameSession = await createScopedChallenge();
+    const sameSessionApproval = await fetch(`${sameSession.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'operator-browser',
+        'x-test-trusted-actor-type': 'agent',
+        'x-test-trusted-actor-id': 'other-agent',
+        'x-test-trusted-credential-id': 'other-cred',
+        'x-test-trusted-session-id': 'trusted-autonomous-session-1',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(sameSessionApproval.status).toBe(401);
+    expect(await sameSessionApproval.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_SAME_SESSION' } },
+    });
+
+    const nonHumanApprover = await createScopedChallenge();
+    const nonHumanApproval = await fetch(`${nonHumanApprover.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'operator-browser',
+        'x-test-trusted-actor-type': 'agent',
+        'x-test-trusted-actor-id': 'other-agent',
+        'x-test-trusted-credential-id': 'other-cred',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(nonHumanApproval.status).toBe(401);
+    expect(await nonHumanApproval.json()).toMatchObject({
+      error: { details: { reasonCode: 'CONFIRMATION_APPROVAL_TARGET_INVALID' } },
+    });
+
+    const distinct = await createScopedChallenge();
+    const distinctApproval = await fetch(`${distinct.base}/hub/confirmations/challenge-1/approve`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        'x-auth-session': 'operator-browser',
+        'x-relay-actor-type': 'agent',
+        'x-relay-actor-id': 'agent-1',
+        'x-relay-credential-id': 'cred-1',
+        'x-relay-session-id': 'trusted-autonomous-session-1',
+      },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(distinctApproval.status).toBe(200);
+    const redeemed = await fetch(`${distinct.base}/hub/nodes/node_prod/sessions`, {
+      method: 'POST',
+      headers: distinct.requesterHeaders,
+      body: JSON.stringify({ ...distinct.originalBody, confirmationToken: 'raw-confirmation-token' }),
+    });
+    expect(redeemed.status).toBe(201);
+    expect(distinct.nodeLinks.requests).toHaveLength(1);
   });
 
   it('associates routed session creates with existing WorkContext metadata and Active Work groups', async () => {
