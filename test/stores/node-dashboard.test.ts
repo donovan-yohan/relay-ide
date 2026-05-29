@@ -308,12 +308,14 @@ describe('hub node dashboard state', () => {
     // #807 added three high-risk approval contract bits (node ACL widening,
     // credential export, destructive node lifecycle). They are denied in these
     // fixtures unless explicitly granted/challenged, so challenge remains at 2.
+    // #814 added `node:pair-token:create` for grant-backed node bootstrap; it
+    // is denied by these node policy fixtures unless explicitly delegated.
     expect(
       rows.map((row) => [row.security.trustTier, row.security.postureLabel])
     ).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 25'],
-      ['dev', 'allow 15 · challenge 0 · deny 11'],
-      ['prod', 'allow 1 · challenge 2 · deny 23'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 26'],
+      ['dev', 'allow 15 · challenge 0 · deny 12'],
+      ['prod', 'allow 1 · challenge 2 · deny 24'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',

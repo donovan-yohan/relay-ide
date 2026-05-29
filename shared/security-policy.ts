@@ -24,6 +24,10 @@ export const RELAY_CAPABILITY_BITS = [
   'node:acl:widen',
   'credential:export',
   'node:lifecycle:destructive',
+  // #814: one-time operator handshake grants may mint short-lived node
+  // pair tokens for bootstrap automation. This is not a node ACL default
+  // and is accepted only by the pair-token mint grant lane.
+  'node:pair-token:create',
   // #597: dedicated read bit for the `logs.tail` RPC backbone. Separate
   // from `rpc:fs:tail` so operator-only log visibility can be granted
   // without exposing arbitrary file tail to peers. Always redacted via

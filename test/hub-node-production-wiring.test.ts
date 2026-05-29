@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { SessionSummary } from '../server/types.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RelayNodeEnvelope } from '../shared/relay-node-protocol.js';
+import { mintPairTokenWithOperatorGrantForTest } from './helpers/operator-pairing.js';
 
 function manifest(): NodeManifest {
   return {
@@ -150,13 +151,9 @@ describe('production hub node link wiring', () => {
     const base = `http://127.0.0.1:${port}`;
     const wsBase = `ws://127.0.0.1:${port}`;
 
-    const pairRes = await fetch(`${base}/hub/pair-tokens`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ displayName: 'Remote Node' }),
+    const pair = await mintPairTokenWithOperatorGrantForTest(base, {
+      displayName: 'Remote Node',
     });
-    expect(pairRes.status).toBe(201);
-    const pair = (await pairRes.json()) as { pairToken: string };
 
     const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
       method: 'POST',

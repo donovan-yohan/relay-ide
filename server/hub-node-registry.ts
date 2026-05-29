@@ -34,12 +34,16 @@ import {
 import { classifyHelperSkew } from './node-version-skew.js';
 import {
   RELAY_SECURITY_POLICY_VERSION,
+  applyTrustTierOverlay,
   createLegacyDefaultNodeAcl,
   isRelayCapabilityBit,
   isRelayTrustTier,
+  normalizeCapabilityBits,
   normalizeNodeAcl,
   summarizeAcl,
+  type RelayCapabilityBit,
   type RelayNodeAcl,
+  type RelayTrustTier,
 } from '../shared/security-policy.js';
 import type {
   SecurityAuditDecision,
@@ -51,10 +55,25 @@ const logger = createLogger('hub-node-registry');
 const REVERSE_LINK_ROUTE = 'reverse-link' as const;
 const UNKNOWN_CAPABILITY_STATUS = 'unknown' as const;
 
+interface StoredPairTokenIssuer {
+  grantId?: string;
+  actorType?: string;
+  actorDisplayName?: string;
+  actorIdHash?: string;
+}
+
 interface StoredPairToken {
   tokenId: string;
   tokenHash: string;
   displayName?: string;
+  platform?: string;
+  trustTier?: RelayTrustTier;
+  allowedCapabilities?: RelayCapabilityBit[];
+  requiresConfirmationCapabilities?: RelayCapabilityBit[];
+  issuer?: StoredPairTokenIssuer;
+  correlationId?: string;
+  mintSourceFingerprint?: string;
+  mintSourceDiagnostics?: RelayNodeSourceDiagnostics;
   createdAt: string;
   expiresAt: string;
   usedAt?: string;
@@ -139,6 +158,18 @@ interface RegistryFile {
   schemaVersion: 1;
   pairTokens: StoredPairToken[];
   nodes: StoredNodeRecord[];
+}
+
+export interface PairTokenMintIssuer {
+  grantId?: string;
+  actorType?: string;
+  actorDisplayName?: string;
+  actorId?: string;
+}
+
+export interface PairTokenCapabilityEnvelope {
+  allowed?: RelayCapabilityBit[];
+  requiresConfirmation?: RelayCapabilityBit[];
 }
 
 export interface PairTokenResponse {
@@ -656,6 +687,42 @@ function updateAclCredential(
   };
 }
 
+
+function createNodeAclForPairToken(input: {
+  pairToken: StoredPairToken;
+  nodeId: string;
+  credentialId: string;
+  displayName: string;
+  createdAt: string;
+}): RelayNodeAcl {
+  const base = createLegacyDefaultNodeAcl({
+    nodeId: input.nodeId,
+    credentialId: input.credentialId,
+    displayName: input.displayName,
+    trustTier: input.pairToken.trustTier ?? 'dev',
+    createdAt: input.createdAt,
+  });
+  const allowed = normalizeCapabilityBits(input.pairToken.allowedCapabilities);
+  const requiresConfirmation = normalizeCapabilityBits(
+    input.pairToken.requiresConfirmationCapabilities
+  );
+  const nodeAllowed = allowed.filter(
+    (capability) => capability !== 'node:pair-token:create'
+  );
+  const nodeRequiresConfirmation = requiresConfirmation.filter(
+    (capability) => capability !== 'node:pair-token:create'
+  );
+  if (nodeAllowed.length === 0 && nodeRequiresConfirmation.length === 0)
+    return base;
+  return applyTrustTierOverlay({
+    ...base,
+    grants: {
+      allowed: nodeAllowed.length > 0 ? nodeAllowed : base.grants.allowed,
+      requiresConfirmation: nodeRequiresConfirmation,
+    },
+  });
+}
+
 function credentialToken(nodeId: string): {
   token: string;
   credentialId: string;
@@ -829,6 +896,12 @@ export class HubNodeRegistry {
   createPairToken(options: {
     displayName?: string;
     ttlMs?: number;
+    platform?: string;
+    trustTier?: RelayTrustTier;
+    capabilityEnvelope?: PairTokenCapabilityEnvelope;
+    issuer?: PairTokenMintIssuer;
+    correlationId?: string;
+    source?: RelayNodeSourceTuple;
   }): PairTokenResponse {
     const createdAt = this.now();
     const expiresAt = new Date(
@@ -836,14 +909,78 @@ export class HubNodeRegistry {
     );
     const pairToken = randomToken('pair');
     const tokenId = randomToken('pt');
-    this.state.pairTokens.push({
+    const tokenHash = sha256(pairToken);
+    const mintSource = sourceTupleWithHostname(options.source, undefined);
+    const mintSourceFingerprint = mintSource
+      ? sourceFingerprint(mintSource, tokenHash)
+      : undefined;
+    const mintSourceDiagnostics = mintSource
+      ? {
+          state: hasTailscaleSourceSignal(mintSource)
+            ? ('source-match' as const)
+            : ('signal-unavailable' as const),
+          policy: 'audit' as const,
+          reasonCode: hasTailscaleSourceSignal(mintSource)
+            ? 'PAIR_TOKEN_MINT_SOURCE_RECORDED'
+            : 'PAIR_TOKEN_MINT_SOURCE_SIGNAL_UNAVAILABLE',
+          observedAt: createdAt.toISOString(),
+          ...(mintSourceFingerprint
+            ? { sourceFingerprint: mintSourceFingerprint }
+            : {}),
+          displayHint: sourceDisplayHint(mintSource, mintSourceFingerprint),
+        }
+      : undefined;
+    const allowedCapabilities = normalizeCapabilityBits(
+      options.capabilityEnvelope?.allowed
+    );
+    const requiresConfirmationCapabilities = normalizeCapabilityBits(
+      options.capabilityEnvelope?.requiresConfirmation
+    );
+    const storedPairToken: StoredPairToken = {
       tokenId,
-      tokenHash: sha256(pairToken),
+      tokenHash,
       ...(options.displayName ? { displayName: options.displayName } : {}),
+      ...(options.platform ? { platform: options.platform } : {}),
+      ...(options.trustTier ? { trustTier: options.trustTier } : {}),
+      ...(allowedCapabilities.length > 0 ? { allowedCapabilities } : {}),
+      ...(requiresConfirmationCapabilities.length > 0
+        ? { requiresConfirmationCapabilities }
+        : {}),
+      ...(options.issuer
+        ? {
+            issuer: {
+              ...(options.issuer.grantId ? { grantId: options.issuer.grantId } : {}),
+              ...(options.issuer.actorType
+                ? { actorType: options.issuer.actorType }
+                : {}),
+              ...(options.issuer.actorDisplayName
+                ? { actorDisplayName: options.issuer.actorDisplayName }
+                : {}),
+              ...(options.issuer.actorId
+                ? { actorIdHash: sha256(options.issuer.actorId) }
+                : {}),
+            },
+          }
+        : {}),
+      ...(options.correlationId ? { correlationId: options.correlationId } : {}),
+      ...(mintSourceFingerprint ? { mintSourceFingerprint } : {}),
+      ...(mintSourceDiagnostics ? { mintSourceDiagnostics } : {}),
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
-    });
+    };
+    this.state.pairTokens.push(storedPairToken);
     this.persist();
+    this.auditPairTokenLifecycle({
+      pairToken: storedPairToken,
+      decision: 'allow',
+      eventType: 'grant',
+      reasonCode: 'PAIR_TOKEN_MINTED',
+      action: 'nodes.pair-token.create',
+      grantedBits: ['node:pair-token:create'],
+      ...(mintSourceDiagnostics
+        ? { sourceDiagnostics: mintSourceDiagnostics }
+        : {}),
+    });
     return {
       tokenId,
       pairToken,
@@ -863,20 +1000,46 @@ export class HubNodeRegistry {
       timingSafeEqualHex(candidate.tokenHash, tokenHash)
     );
     if (!pairToken) {
+      this.auditPairTokenLifecycle({
+        decision: 'deny',
+        eventType: 'denial',
+        reasonCode: 'PAIR_TOKEN_NOT_FOUND',
+        action: 'nodes.pair-token.redeem',
+      });
       throw new HubNodeRegistryError(
         'UNAUTHORIZED',
-        'pair token was not found'
+        'pair token was not found',
+        false,
+        { reasonCode: 'PAIR_TOKEN_NOT_FOUND' }
       );
     }
     if (pairToken.usedAt) {
+      this.auditPairTokenLifecycle({
+        pairToken,
+        decision: 'deny',
+        eventType: 'failed_redemption',
+        reasonCode: 'PAIR_TOKEN_REUSE_DENIED',
+        action: 'nodes.pair-token.redeem',
+      });
       throw new HubNodeRegistryError(
         'TOKEN_ALREADY_USED',
-        'pair token has already been used'
+        'pair token has already been used',
+        false,
+        { reasonCode: 'PAIR_TOKEN_REUSE_DENIED' }
       );
     }
     const now = this.now();
     if (Date.parse(pairToken.expiresAt) <= now.getTime()) {
-      throw new HubNodeRegistryError('TOKEN_EXPIRED', 'pair token expired');
+      this.auditPairTokenLifecycle({
+        pairToken,
+        decision: 'expired',
+        eventType: 'expiry',
+        reasonCode: 'PAIR_TOKEN_EXPIRED',
+        action: 'nodes.pair-token.redeem',
+      });
+      throw new HubNodeRegistryError('TOKEN_EXPIRED', 'pair token expired', false, {
+        reasonCode: 'PAIR_TOKEN_EXPIRED',
+      });
     }
 
     const nodeId = randomToken('node');
@@ -893,6 +1056,37 @@ export class HubNodeRegistry {
     const pairedSourceFingerprint = pairedSource
       ? sourceFingerprint(pairedSource, credential.hash)
       : undefined;
+    const pairTokenRedeemSourceFingerprint = pairedSource
+      ? sourceFingerprint(pairedSource, pairToken.tokenHash)
+      : undefined;
+    if (
+      pairToken.mintSourceFingerprint &&
+      pairTokenRedeemSourceFingerprint &&
+      pairToken.mintSourceFingerprint !== pairTokenRedeemSourceFingerprint
+    ) {
+      this.auditPairTokenLifecycle({
+        pairToken,
+        decision: 'recorded',
+        eventType: 'bridge_event',
+        reasonCode: 'PAIR_TOKEN_SOURCE_MISMATCH_RECORDED',
+        action: 'nodes.pair-token.source-check',
+        sourceDiagnostics: {
+          state: 'source-mismatch',
+          policy: 'audit',
+          reasonCode: 'PAIR_TOKEN_SOURCE_MISMATCH',
+          observedAt: timestamp,
+          sourceFingerprint: pairTokenRedeemSourceFingerprint,
+          displayHint: sourceDisplayHint(pairedSource, pairTokenRedeemSourceFingerprint),
+        },
+      });
+    }
+    const nodeAcl = createNodeAclForPairToken({
+      pairToken,
+      nodeId,
+      credentialId: credential.credentialId,
+      displayName,
+      createdAt: timestamp,
+    });
     const node: StoredNodeRecord = {
       nodeId,
       identity: {
@@ -923,12 +1117,7 @@ export class HubNodeRegistry {
         ? { fileRpcAvailable: input.manifest.fileRpc.available }
         : {}),
       degradedReasons: input.manifest.degradedReasons ?? [],
-      acl: createLegacyDefaultNodeAcl({
-        nodeId,
-        credentialId: credential.credentialId,
-        displayName,
-        createdAt: timestamp,
-      }),
+      acl: nodeAcl,
       credentialIssuedAt: timestamp,
       ...(pairedSource
         ? {
@@ -962,6 +1151,17 @@ export class HubNodeRegistry {
     pairToken.usedAt = timestamp;
     this.state.nodes.push(node);
     this.persist();
+    this.auditPairTokenLifecycle({
+      pairToken,
+      decision: 'allow',
+      eventType: 'grant',
+      reasonCode: 'PAIR_TOKEN_REDEEMED',
+      action: 'nodes.pair-token.redeem',
+      grantedBits: nodeAcl.grants.allowed,
+      ...(node.sourceBinding?.diagnostics
+        ? { sourceDiagnostics: node.sourceBinding.diagnostics }
+        : {}),
+    });
     this.auditNodeCredentialLifecycle({
       node,
       credentialId: credential.credentialId,
@@ -1069,6 +1269,71 @@ export class HubNodeRegistry {
         ...(sourceDiagnostics ? { sourceDiagnostics } : {}),
       },
     };
+  }
+
+  // eslint-disable-next-line complexity -- lifecycle audit payload is intentionally explicit so sensitive pair-token/grant material never gets serialized accidentally.
+  private auditPairTokenLifecycle(input: {
+    pairToken?: StoredPairToken;
+    decision: SecurityAuditDecision;
+    eventType: SecurityAuditEventType;
+    reasonCode: string;
+    action: string;
+    grantedBits?: RelayCapabilityBit[];
+    deniedBits?: RelayCapabilityBit[];
+    sourceDiagnostics?: RelayNodeSourceDiagnostics;
+  }): void {
+    if (!this.auditSink) return;
+    const pairToken = input.pairToken;
+    try {
+      this.auditSink.append({
+        eventType: input.eventType,
+        decision: input.decision,
+        reasonCode: input.reasonCode,
+        peer: {
+          kind: pairToken?.issuer ? 'system' : 'hub',
+          ...(pairToken?.tokenId ? { credentialId: pairToken.tokenId } : {}),
+          ...(pairToken?.issuer?.actorDisplayName
+            ? { displayName: pairToken.issuer.actorDisplayName }
+            : {}),
+          ...(pairToken?.issuer?.actorIdHash
+            ? { principalHash: pairToken.issuer.actorIdHash }
+            : {}),
+        },
+        intent: {
+          action: input.action,
+          ...(pairToken?.tokenId ? { target: pairToken.tokenId } : {}),
+        },
+        material: {
+          params: {
+            reasonCode: input.reasonCode,
+            tokenId: pairToken?.tokenId ?? null,
+            displayName: pairToken?.displayName ?? null,
+            platform: pairToken?.platform ?? null,
+            expiresAt: pairToken?.expiresAt ?? null,
+            trustTier: pairToken?.trustTier ?? null,
+            issuerGrantId: pairToken?.issuer?.grantId ?? null,
+            sourceState: input.sourceDiagnostics?.state ?? null,
+          },
+          scope: {
+            allowedCapabilities: pairToken?.allowedCapabilities ?? [],
+            requiresConfirmationCapabilities:
+              pairToken?.requiresConfirmationCapabilities ?? [],
+          },
+        },
+        grantedBits: input.grantedBits ?? [],
+        deniedBits: input.deniedBits ?? [],
+        refs: { policyVersion: RELAY_SECURITY_POLICY_VERSION },
+        ...(input.sourceDiagnostics
+          ? { sourceDiagnostics: input.sourceDiagnostics }
+          : {}),
+        ...(pairToken?.correlationId
+          ? { correlationId: pairToken.correlationId }
+          : {}),
+      });
+    } catch {
+      // Best-effort pair-token lifecycle visibility only. Never retry or log
+      // raw bootstrap/grant material if the audit sink fails.
+    }
   }
 
   private auditNodeCredentialLifecycle(input: {

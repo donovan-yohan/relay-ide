@@ -20,6 +20,7 @@ Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagno
 | -------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | Install relay-ide binary on node | `relay-ide node install --hub <url> [--service <mode>]`                                                  |
 | Pair node with hub (pair-only)   | `relay-ide node pair --hub <url> --pair-token <token>`                                                   |
+| Mint pair token from grant       | `relay-ide node mint-pair-token --hub <url> --operator-grant <relay-ohg-v1...> --display-name <name>`     |
 | Pair node (back-compat alias)    | `relay-ide node connect --hub <url> --pair-token <token>`                                                |
 | Generate SSH bootstrap script    | `relay-ide node ssh-bootstrap --target <host> --hub <url>`                                               |
 | Hold reverse node link           | `relay-ide node link --hub <url>`                                                                        |
@@ -56,20 +57,36 @@ Supported `--service` values:
 | `manual`       | Any                  | Binary only; no background service                                |
 | `auto`         | Any                  | Detects platform and chooses the best supported mode              |
 
-### Step 2: Generate a pair token from the hub
+### Step 2: Mint a pair token from the hub
 
-An authenticated hub user creates a short-lived, one-time token:
+Automation should mint a short-lived, one-time token through a previously approved operator handshake grant. The grant must use audience `relay:node-pair-token:v1`, include capability `node:pair-token:create`, and match the safe scope fields supplied with the mint request (for example `taskRef`, session/work-context binding, device id, or actor id). Browser cookies/PIN state, scoped actor tokens, node credentials, and existing pair tokens are not accepted on this automation lane.
+
+```bash
+relay-ide node mint-pair-token \
+  --hub https://hub.example.com \
+  --operator-grant <relay-ohg-v1...> \
+  --display-name dev-macbook \
+  --platform macos \
+  --task-ref bootstrap-work-mac \
+  --ttl-seconds 600
+```
+
+Equivalent API call:
 
 ```bash
 curl -X POST https://hub.example.com/hub/pair-tokens \
   -H "Content-Type: application/json" \
-  -b "token=<browser-session-cookie>" \
-  -d '{"displayName":"dev-macbook","ttlSeconds":600}'
+  -H "X-Relay-Operator-Grant: <relay-ohg-v1...>" \
+  -H "X-Relay-Actor-Type: cli" \
+  -H "X-Relay-Actor-Id: ebi-cli" \
+  -d '{"displayName":"dev-macbook","platform":"macos","taskRef":"bootstrap-work-mac","ttlSeconds":600,"trustTier":"sandbox"}'
 ```
 
-Response includes `pairToken` and suggested bootstrap commands for each supported service mode.
+Response includes `pairToken` and suggested bootstrap commands for each supported service mode. The grant is consumed on successful mint. The pair token remains separate bootstrap material and is accepted only by `POST /hub/pairing/exchange`.
 
-Auth lane boundary: the browser-session cookie only authorizes the operator to create a short-lived pair token from the hub UI/API. The pair token is accepted only by `POST /hub/pairing/exchange`, and the resulting `node-credential.json` is accepted only by node heartbeat and `/hub/node-link`. A browser PIN/cookie is not a node credential, and a node credential does not log in to browser-only routes. Processes already running as the same OS user may still read local Relay state or run local CLIs, so the PIN should be described as browser/UI auth, not as a same-user process boundary.
+Human fallback: an authenticated browser/PIN session may still create a pair token through the hub UI/API for manual operation. Treat that as a separate operator path, not as a reusable automation grant. Do not scrape or borrow browser cookies for Ebi/Hermes/CLI automation.
+
+Auth lane boundary: the operator grant only authorizes minting this one pair token. The pair token is accepted only by `POST /hub/pairing/exchange`, and the resulting `node-credential.json` is accepted only by node heartbeat and `/hub/node-link`. A browser PIN/cookie is not a node credential, and a node credential does not log in to browser-only routes. Processes already running as the same OS user may still read local Relay state or run local CLIs, so the PIN should be described as browser/UI auth, not as a same-user process boundary.
 
 ### Step 3: Pair the node
 
