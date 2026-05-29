@@ -293,13 +293,33 @@ test('mints lists rotates and revokes CLI actor credentials with grant-backed li
     )
   ).toBe('scoped-actor-credential');
 
+  const otherActor = { type: 'cli', id: 'other-cli' };
+  const otherScope = {
+    sessionIds: ['session-2'],
+    taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+  };
+  const otherIssued = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+    ...grantLifecycleInput(
+      approveGrant(grants, 'grant-mint-other', {
+        actor: otherActor,
+        scope: otherScope,
+      }),
+      'mint-other'
+    ),
+    actor: otherActor,
+    scope: otherScope,
+  });
+
   const listed = listCliGatewayActorCredentialsWithGrant(
     scopedRegistry,
     grants,
     grantLifecycleInput(approveGrant(grants, 'grant-list'), 'list')
   );
-  expect(listed.credentials.map((credential) => credential.id)).toContain(
-    issued.credential.id
+  expect(listed.credentials.map((credential) => credential.id)).toEqual([
+    issued.credential.id,
+  ]);
+  expect(listed.credentials.map((credential) => credential.id)).not.toContain(
+    otherIssued.credential.id
   );
 
   const rotated = rotateCliGatewayActorCredentialWithGrant(

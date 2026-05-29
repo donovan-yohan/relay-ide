@@ -299,7 +299,11 @@ export function listCliGatewayActorCredentialsWithGrant(
 ): { credentials: ScopedActorCredentialRecord[] } {
   const request = strictGrantLifecycleRequest(input, { ttlRequired: false });
   validateCliGatewayLifecycleGrant(grantRegistry, request, true);
-  return { credentials: registry.listCredentials() };
+  return {
+    credentials: registry
+      .listCredentials()
+      .filter((credential) => credentialMatchesGrantLifecycleRequest(credential, request)),
+  };
 }
 
 export function revokeCliGatewayActorCredentialWithGrant(
@@ -406,6 +410,56 @@ function scopeForValidation(
     ...(scope?.pathPrefixes?.[0] ? { path: scope.pathPrefixes[0] } : {}),
     ...(scope?.taskRefs?.[0] ? { taskRef: scope.taskRefs[0] } : {}),
   };
+}
+
+function credentialMatchesGrantLifecycleRequest(
+  credential: ScopedActorCredentialRecord,
+  request: StrictGrantLifecycleRequest
+): boolean {
+  return (
+    credential.audience === request.audience &&
+    credential.actor.type === request.actor.type &&
+    credential.actor.id === request.actor.id &&
+    listIsSubset(credential.capabilities, request.capabilities) &&
+    scopeIsAuthorizedByRequest(credential.scope, request.scope)
+  );
+}
+
+function scopeIsAuthorizedByRequest(
+  credentialScope: ScopedActorCredentialScope,
+  requestScope: ScopedActorCredentialScope
+): boolean {
+  return (
+    scopeDimensionIsAuthorized(credentialScope.nodeIds, requestScope.nodeIds) &&
+    scopeDimensionIsAuthorized(credentialScope.sessionIds, requestScope.sessionIds) &&
+    scopeDimensionIsAuthorized(
+      credentialScope.globalSessionIds,
+      requestScope.globalSessionIds
+    ) &&
+    scopeDimensionIsAuthorized(
+      credentialScope.workContextIds,
+      requestScope.workContextIds
+    ) &&
+    scopeDimensionIsAuthorized(credentialScope.repoIds, requestScope.repoIds) &&
+    scopeDimensionIsAuthorized(credentialScope.pathPrefixes, requestScope.pathPrefixes) &&
+    scopeDimensionIsAuthorized(credentialScope.taskRefs, requestScope.taskRefs)
+  );
+}
+
+function scopeDimensionIsAuthorized(
+  credentialValues: readonly string[] | undefined,
+  requestValues: readonly string[] | undefined
+): boolean {
+  if (!credentialValues?.length) return !requestValues?.length;
+  if (!requestValues?.length) return false;
+  return listIsSubset(credentialValues, requestValues);
+}
+
+function listIsSubset(
+  values: readonly string[],
+  allowed: readonly string[]
+): boolean {
+  return values.every((value) => allowed.includes(value));
 }
 
 type StrictGrantLifecycleRequest = {
