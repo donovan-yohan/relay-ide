@@ -83,6 +83,7 @@ import {
 import type { HubNodeSummary } from '../shared/relay-node-protocol.js';
 import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
+import type { CliGatewayActorReadCommand } from './cli-gateway-actor-auth.js';
 
 const FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES = 256 * 1024;
 
@@ -123,6 +124,9 @@ interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
   cliGatewayAuth?: express.RequestHandler;
+  cliGatewayAuthForActorCommand?: (
+    command: CliGatewayActorReadCommand
+  ) => express.RequestHandler;
   scopedSessionAuth?: express.RequestHandler;
   repoInventoryFeature?: RepoInventoryFeature;
   collectLocalRepoInventory?: () => Promise<RepoInventoryReport>;
@@ -1820,6 +1824,8 @@ export function createHubNodeRouter(
   const router = express.Router();
   const { registry, requireAuth } = options;
   const cliGatewayAuth = options.cliGatewayAuth ?? requireAuth;
+  const cliGatewayAuthForActorCommand =
+    options.cliGatewayAuthForActorCommand ?? (() => cliGatewayAuth);
   const scopedSessionAuth = options.scopedSessionAuth ?? requireAuth;
   const envelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
   const confirmations =
@@ -2050,7 +2056,7 @@ export function createHubNodeRouter(
     }
   });
 
-  router.get('/nodes', cliGatewayAuth, (_req, res) => {
+  router.get('/nodes', cliGatewayAuthForActorCommand('nodes.list'), (_req, res) => {
     res.json({ nodes: registry.listNodes() });
   });
 

@@ -295,6 +295,7 @@ export interface WorkContextStore {
 export interface WorkContextRouterDeps {
   store: WorkContextStore;
   requireAuth?: RequestHandler;
+  requireReadAuth?: RequestHandler;
   getSessions: () => Promise<SessionSummary[]> | SessionSummary[];
   getNodes?: () => HubNodeSummary[];
 }
@@ -590,6 +591,7 @@ export class WorkContextStoreError extends Error {
 export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
   const router = Router();
   const auth = deps.requireAuth ?? ((_req, _res, next) => next());
+  const readAuth = deps.requireReadAuth ?? auth;
 
   router.get('/', auth, (_req, res) => {
     res.json({ workContexts: deps.store.list() });
@@ -681,7 +683,7 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
     }
   });
 
-  router.get('/:id', auth, (req, res) => {
+  router.get('/:id', readAuth, (req, res) => {
     const context = deps.store.get(req.params['id'] ?? '');
     if (!context) {
       res.status(404).json({ error: 'work_context_not_found' });
