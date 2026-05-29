@@ -305,12 +305,15 @@ describe('hub node dashboard state', () => {
     // because it does not grant them — but crucially challenge stays at 2:
     // the writes are NOT high-risk, so prod never promotes them to a
     // confirmation challenge (the headless ack loop is not gated).
+    // #807 added three high-risk approval contract bits (node ACL widening,
+    // credential export, destructive node lifecycle). They are denied in these
+    // fixtures unless explicitly granted/challenged, so challenge remains at 2.
     expect(
       rows.map((row) => [row.security.trustTier, row.security.postureLabel])
     ).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 22'],
-      ['dev', 'allow 15 · challenge 0 · deny 8'],
-      ['prod', 'allow 1 · challenge 2 · deny 20'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 25'],
+      ['dev', 'allow 15 · challenge 0 · deny 11'],
+      ['prod', 'allow 1 · challenge 2 · deny 23'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',

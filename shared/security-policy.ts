@@ -21,6 +21,9 @@ export const RELAY_CAPABILITY_BITS = [
   'rpc:git:write',
   'pty:exec:arbitrary',
   'preview:port-forward',
+  'node:acl:widen',
+  'credential:export',
+  'node:lifecycle:destructive',
   // #597: dedicated read bit for the `logs.tail` RPC backbone. Separate
   // from `rpc:fs:tail` so operator-only log visibility can be granted
   // without exposing arbitrary file tail to peers. Always redacted via
@@ -82,6 +85,9 @@ export const HIGH_RISK_CAPABILITIES = [
   'rpc:git:write',
   'pty:exec:arbitrary',
   'preview:port-forward',
+  'node:acl:widen',
+  'credential:export',
+  'node:lifecycle:destructive',
 ] as const satisfies readonly RelayCapabilityBit[];
 
 const RELAY_CAPABILITY_SET = new Set<string>(RELAY_CAPABILITY_BITS);
