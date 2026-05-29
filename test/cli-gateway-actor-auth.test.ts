@@ -65,7 +65,7 @@ test('issues and validates bounded read-only CLI gateway actor credentials', () 
   expect(validation).toMatchObject({ ok: true, grantedBits: ['session:read'] });
 });
 
-test('classifies only explicit read-only CLI gateway actor requests into the actor lane', () => {
+test('classifies only server-bound read-only CLI gateway actor routes into the actor lane', () => {
   const token = 'relay-sac-v1.credential-id.[REDACTED]';
   expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toEqual([
     'nodes.list',
@@ -79,9 +79,29 @@ test('classifies only explicit read-only CLI gateway actor requests into the act
         authorization: `Bearer ${token}`,
         actorMarker: 'v1',
         command: 'nodes.list',
-      })
+      }),
+      'nodes.list'
     )
   ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'nodes.list',
+      })
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'nodes.list',
+      }),
+      'sessions.list'
+    )
+  ).toBe('unsupported-route');
   expect(
     classifyCliGatewayCredentialLane(
       req({
@@ -89,11 +109,12 @@ test('classifies only explicit read-only CLI gateway actor requests into the act
         authorization: `Bearer ${token}`,
         actorMarker: 'v1',
         command: 'sessions.create',
-      })
+      }),
+      'sessions.list'
     )
   ).toBe('unsupported-route');
   expect(
-    classifyCliGatewayCredentialLane(req({ authorization: `Bearer ${token}`, actorMarker: 'v1' }))
+    classifyCliGatewayCredentialLane(req({ authorization: `Bearer ${token}`, actorMarker: 'v1' }), 'nodes.list')
   ).toBe('unsupported-route');
   expect(classifyCliGatewayCredentialLane(req({ cookie: 'token=browser' }))).toBe(
     'browser-cookie-lane'
@@ -101,6 +122,52 @@ test('classifies only explicit read-only CLI gateway actor requests into the act
   expect(classifyCliGatewayCredentialLane(req({ authorization: 'Bearer node-secret', nodeId: 'n1' }))).toBe(
     'node-credential-lane'
   );
+});
+
+test('denies spoofed actor command headers on non-MVP route identities', () => {
+  const token = 'relay-sac-v1.credential-id.[REDACTED]';
+  const spoofedRequests = [
+    { route: '/hub/audit/entries', command: 'nodes.list' },
+    { route: '/hub/nodes/node-1/logs', command: 'nodes.list' },
+    { route: '/sessions/session-1/replay', command: 'sessions.get' },
+    { route: '/supervisor/sessions', command: 'sessions.get' },
+  ];
+
+  for (const { route, command } of spoofedRequests) {
+    expect(
+      classifyCliGatewayCredentialLane(
+        req({
+          authorization: `Bearer ${token}`,
+          actorMarker: 'v1',
+          command,
+        })
+      ),
+      route
+    ).toBe('unsupported-route');
+  }
+});
+
+test('allows only the MVP actor command and route identity pairs', () => {
+  const token = 'relay-sac-v1.credential-id.[REDACTED]';
+  const allowed = [
+    { command: 'nodes.list', expected: 'nodes.list' },
+    { command: 'sessions.list', expected: 'sessions.list' },
+    { command: 'sessions.get', expected: 'sessions.get' },
+    { command: 'work-contexts.get', expected: 'work-contexts.get' },
+  ] as const;
+
+  for (const { command, expected } of allowed) {
+    expect(
+      classifyCliGatewayCredentialLane(
+        req({
+          authorization: `Bearer ${token}`,
+          actorMarker: 'v1',
+          command,
+        }),
+        expected
+      )
+    ).toBe('scoped-actor-credential');
+  }
 });
 
 test('returns stable typed denials without token material', () => {

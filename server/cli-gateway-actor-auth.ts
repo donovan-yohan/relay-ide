@@ -19,6 +19,8 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'sessions.get',
   'work-contexts.get',
 ] as const;
+export type CliGatewayActorReadCommand =
+  (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
 
 const cliGatewayActorReadCommandSet = new Set<string>(CLI_GATEWAY_ACTOR_READ_COMMANDS);
 
@@ -73,7 +75,10 @@ export function isCliGatewayActorTokenRequest(req: Request): boolean {
   return req.header(CLI_GATEWAY_ACTOR_TOKEN_HEADER) === 'v1';
 }
 
-export function classifyCliGatewayCredentialLane(req: Request):
+export function classifyCliGatewayCredentialLane(
+  req: Request,
+  expectedCommand?: CliGatewayActorReadCommand
+):
   | 'missing'
   | 'scoped-actor-credential'
   | 'browser-cookie-lane'
@@ -86,7 +91,7 @@ export function classifyCliGatewayCredentialLane(req: Request):
     return 'missing';
   }
   if (token.startsWith('relay-sac-v1.')) {
-    return isSupportedCliGatewayActorReadRequest(req)
+    return isSupportedCliGatewayActorReadRequest(req, expectedCommand)
       ? 'scoped-actor-credential'
       : 'unsupported-route';
   }
@@ -96,10 +101,16 @@ export function classifyCliGatewayCredentialLane(req: Request):
   return 'unsupported-type';
 }
 
-export function isSupportedCliGatewayActorReadRequest(req: Request): boolean {
+export function isSupportedCliGatewayActorReadRequest(
+  req: Request,
+  expectedCommand?: CliGatewayActorReadCommand
+): boolean {
   if (req.method !== 'GET') return false;
+  if (!expectedCommand || !cliGatewayActorReadCommandSet.has(expectedCommand)) {
+    return false;
+  }
   const command = req.header(CLI_GATEWAY_COMMAND_HEADER);
-  return typeof command === 'string' && cliGatewayActorReadCommandSet.has(command);
+  return command === expectedCommand;
 }
 
 export function defaultCliGatewayActorScope(

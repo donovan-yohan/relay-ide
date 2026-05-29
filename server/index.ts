@@ -224,6 +224,7 @@ import {
   sendCliGatewayActorFailure,
   validateCliGatewayActorCredential,
   type CliGatewayActorIssueInput,
+  type CliGatewayActorReadCommand,
 } from './cli-gateway-actor-auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1699,7 +1700,8 @@ async function main(): Promise<void> {
       sessionIds?: string[];
       globalSessionIds?: string[];
       workContextIds?: string[];
-    }
+    },
+    expectedCommand?: CliGatewayActorReadCommand
   ): express.RequestHandler => {
     return (req, res, next) => {
       if (!isCliGatewayV1Request(req)) {
@@ -1710,7 +1712,7 @@ async function main(): Promise<void> {
         res.status(401).json(auth.cliGatewayOrBrowserAuthRequiredChallenge());
         return;
       }
-      const lane = classifyCliGatewayCredentialLane(req);
+      const lane = classifyCliGatewayCredentialLane(req, expectedCommand);
       const correlationId = cliGatewayCorrelationId(req);
       if (lane !== 'scoped-actor-credential') {
         sendCliGatewayActorFailure(
@@ -1749,12 +1751,26 @@ async function main(): Promise<void> {
     };
   };
 
-  const requireCliGatewayReadAuth: express.RequestHandler = (req, res, next) =>
-    requireCliGatewayActorAuth(['session:read'])(req, res, next);
+  const requireCliGatewayReadAuth = (
+    expectedCommand?: CliGatewayActorReadCommand
+  ): express.RequestHandler =>
+    requireCliGatewayActorAuth(['session:read'], undefined, expectedCommand);
+
+  const requireCliGatewayAuthForActorCommand = (
+    expectedCommand: CliGatewayActorReadCommand
+  ): express.RequestHandler => {
+    return (req, res, next) => {
+      if (isCliGatewayActorTokenRequest(req)) {
+        requireCliGatewayReadAuth(expectedCommand)(req, res, next);
+        return;
+      }
+      requireCliGatewayAuth(req, res, next);
+    };
+  };
 
   const requireCliGatewayAuth: express.RequestHandler = (req, res, next) => {
     if (isCliGatewayActorTokenRequest(req)) {
-      requireCliGatewayReadAuth(req, res, next);
+      requireCliGatewayReadAuth()(req, res, next);
       return;
     }
     if (
@@ -1792,6 +1808,25 @@ async function main(): Promise<void> {
       return;
     }
     res.status(401).json(auth.scopedSessionOrBrowserAuthRequiredChallenge());
+  };
+
+  const requireScopedSessionAuthForActorCommand = (
+    expectedCommand: CliGatewayActorReadCommand
+  ): express.RequestHandler => {
+    return (req, res, next) => {
+      if (isCliGatewayActorTokenRequest(req)) {
+        const id = req.params['id'];
+        requireCliGatewayActorAuth(
+          ['session:read'],
+          {
+            ...(id ? { sessionIds: [id], globalSessionIds: [id] } : {}),
+          },
+          expectedCommand
+        )(req, res, next);
+        return;
+      }
+      requireScopedSessionAuth(req, res, next);
+    };
   };
 
   app.post('/cli-gateway/actor-credentials', requireAuth, (req, res) => {
@@ -1865,6 +1900,7 @@ async function main(): Promise<void> {
       nodeLinks: hubNodeLinks,
       requireAuth,
       cliGatewayAuth: requireCliGatewayAuth,
+      cliGatewayAuthForActorCommand: requireCliGatewayAuthForActorCommand,
       scopedSessionAuth: requireScopedSessionAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,
@@ -2371,9 +2407,13 @@ async function main(): Promise<void> {
       requireReadAuth: (req, res, next) => {
         if (isCliGatewayActorTokenRequest(req)) {
           const id = req.params['id'];
-          requireCliGatewayActorAuth(['session:read'], {
-            ...(id ? { workContextIds: [id] } : {}),
-          })(req, res, next);
+          requireCliGatewayActorAuth(
+            ['session:read'],
+            {
+              ...(id ? { workContextIds: [id] } : {}),
+            },
+            'work-contexts.get'
+          )(req, res, next);
           return;
         }
         if (isCliGatewayV1Request(req)) {
@@ -2804,7 +2844,7 @@ async function main(): Promise<void> {
   // GET /sessions — enrich with live branch from git (rate-limited to avoid spawning git on every poll)
   const branchRefreshCache = new Map<string, number>(); // sessionId -> last refresh timestamp
   const BRANCH_REFRESH_INTERVAL_MS = 10_000;
-  app.get('/sessions', requireCliGatewayAuth, async (_req, res) => {
+  app.get('/sessions', requireCliGatewayAuthForActorCommand('sessions.list'), async (_req, res) => {
     const [localSessions, remoteSessions] = await Promise.all([
       Promise.resolve(
         localRelayNode.sessions
@@ -2863,7 +2903,7 @@ async function main(): Promise<void> {
     res.json(allSessions);
   });
 
-  app.get('/sessions/:id', requireScopedSessionAuth, async (req, res) => {
+  app.get('/sessions/:id', requireScopedSessionAuthForActorCommand('sessions.get'), async (req, res) => {
     const decision = capabilityDecisionFromRequest(
       req,
       CONTROL_READ_CAPABILITY
