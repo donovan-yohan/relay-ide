@@ -177,6 +177,13 @@ function baseCapabilitiesFor(
 function syntheticLocalNode(): HubNodeSummary {
   return {
     nodeId: DEFAULT_LOCAL_NODE_ID,
+    identity: {
+      nodeId: DEFAULT_LOCAL_NODE_ID,
+      displayName: 'local',
+      hostname: 'local',
+      createdAt: '',
+      pairedAt: '',
+    },
     displayName: 'local',
     hostname: 'local',
     platform: 'local',
@@ -187,6 +194,11 @@ function syntheticLocalNode(): HubNodeSummary {
     connection: { route: 'local', status: 'connected' },
     trust: { state: 'trusted', level: 'privileged-local-user', warning: '' },
     credentialState: 'active',
+    credential: {
+      credentialId: 'local',
+      issuedAt: '',
+      state: 'active',
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: 'local',

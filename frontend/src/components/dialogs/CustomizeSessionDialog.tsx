@@ -172,6 +172,13 @@ const PICKER_FALLBACK_GENERATED_AT = '1970-01-01T00:00:00.000Z';
 function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
   return {
     nodeId: DEFAULT_LOCAL_NODE_ID,
+    identity: {
+      nodeId: DEFAULT_LOCAL_NODE_ID,
+      displayName: 'local',
+      hostname: 'local',
+      createdAt: '',
+      pairedAt: '',
+    },
     displayName: 'local',
     hostname: 'local',
     platform: 'local',
@@ -186,6 +193,11 @@ function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
       warning: '',
     },
     credentialState: 'active',
+    credential: {
+      credentialId: 'local',
+      issuedAt: '',
+      state: 'active',
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: 'local',

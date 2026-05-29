@@ -41,6 +41,13 @@ function framework(id: string): FrameworkInfo {
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'local',
+    identity: {
+      nodeId: 'local',
+      displayName: 'local mac',
+      hostname: 'local.local',
+      createdAt: '2026-05-12T00:00:00.000Z',
+      pairedAt: '2026-05-12T00:00:00.000Z',
+    },
     displayName: 'local mac',
     hostname: 'local.local',
     homeDir: '/Users/kyle',
@@ -56,6 +63,11 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       warning: 'test node is trusted',
     },
     credentialState: 'active',
+    credential: {
+      credentialId: 'cred-local',
+      issuedAt: '2026-05-12T00:00:00.000Z',
+      state: 'active',
+    },
     version: {
       state: 'compatible',
       nodeProtocolVersion: '1.0',

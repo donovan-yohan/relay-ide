@@ -286,6 +286,16 @@ describe('hub node registry', () => {
         new RegExp(`^${exchanged.node.nodeId}\\.`)
       );
       expect(exchanged.node).toMatchObject({
+        identity: {
+          nodeId: exchanged.node.nodeId,
+          displayName: 'Dev Mac',
+          pairedAt: '2026-01-02T03:04:05.000Z',
+        },
+        credential: {
+          credentialId: exchanged.credential.credentialId,
+          issuedAt: '2026-01-02T03:04:05.000Z',
+          state: 'active',
+        },
         displayName: 'Dev Mac',
         hostname: 'test-host',
         homeDir: '/Users/dev',
@@ -337,8 +347,26 @@ describe('hub node registry', () => {
         exchanged.credential.token.split('.')[1]!
       );
       const parsed = JSON.parse(persisted) as {
-        nodes: Array<{ acl?: { grants?: { allowed?: string[] } } }>;
+        nodes: Array<{
+          identity?: { nodeId?: string; displayName?: string; pairedAt?: string };
+          activeCredential?: {
+            credentialId?: string;
+            tokenHash?: string;
+            issuedAt?: string;
+          };
+          acl?: { grants?: { allowed?: string[] } };
+        }>;
       };
+      expect(parsed.nodes[0]?.identity).toMatchObject({
+        nodeId: exchanged.node.nodeId,
+        displayName: 'Dev Mac',
+        pairedAt: '2026-01-02T03:04:05.000Z',
+      });
+      expect(parsed.nodes[0]?.activeCredential).toMatchObject({
+        credentialId: exchanged.credential.credentialId,
+        tokenHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        issuedAt: '2026-01-02T03:04:05.000Z',
+      });
       expect(parsed.nodes[0]?.acl?.grants?.allowed).toEqual(
         expect.arrayContaining(['session:read', 'rpc:fs:read'])
       );
@@ -876,6 +904,111 @@ describe('hub node registry', () => {
     });
   });
 
+  it('classifies node credential recovery failures without leaking credential material', () => {
+    const auditEntries: SecurityAuditEntryInput[] = [];
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-hub-node-registry-')
+    );
+    try {
+      const registry = createHubNodeRegistry({
+        storagePath: path.join(tmpDir, 'nodes.json'),
+        now: () => new Date('2026-01-02T03:04:05.000Z'),
+        auditSink: { append: (entry) => auditEntries.push(entry) },
+      });
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+
+      expect(registry.authenticateCredentialDetailed('')).toMatchObject({
+        ok: false,
+        error: {
+          code: 'NODE_CREDENTIAL_MISSING',
+          details: { reasonCode: 'NODE_CREDENTIAL_MISSING' },
+        },
+      });
+      expect(
+        registry.authenticateCredentialDetailed('not-a-relay-node-token')
+      ).toMatchObject({
+        ok: false,
+        error: {
+          code: 'NODE_CREDENTIAL_MALFORMED',
+          details: { reasonCode: 'NODE_CREDENTIAL_MALFORMED' },
+        },
+      });
+      expect(
+        registry.authenticateCredentialDetailed(`${exchanged.node.nodeId}.wrong-secret`)
+      ).toMatchObject({
+        ok: false,
+        error: {
+          code: 'NODE_CREDENTIAL_MISMATCH',
+          details: { reasonCode: 'NODE_CREDENTIAL_MISMATCH' },
+        },
+      });
+
+      registry.revokeNode(exchanged.node.nodeId);
+      expect(
+        registry.authenticateCredentialDetailed(exchanged.credential.token)
+      ).toMatchObject({
+        ok: false,
+        error: {
+          code: 'NODE_REVOKED',
+          details: { reasonCode: 'NODE_REVOKED' },
+        },
+      });
+
+      const serializedAudit = JSON.stringify(auditEntries);
+      expect(serializedAudit).toContain('NODE_CREDENTIAL_MISSING');
+      expect(serializedAudit).toContain('NODE_CREDENTIAL_MALFORMED');
+      expect(serializedAudit).toContain('NODE_CREDENTIAL_MISMATCH');
+      expect(serializedAudit).toContain('NODE_REVOKED');
+      expect(serializedAudit).not.toContain(exchanged.credential.token);
+      expect(serializedAudit).not.toContain(exchanged.credential.token.split('.')[1]!);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps stable node identity while rotating credential records', () => {
+    withTmpRegistry((registry) => {
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      const rotation = registry.beginCredentialRotation(exchanged.node.nodeId);
+      const beforeProof = registry.listNodes()[0];
+
+      expect(rotation.node.identity).toMatchObject(exchanged.node.identity);
+      expect(rotation.node.credential).toMatchObject({
+        credentialId: exchanged.credential.credentialId,
+        state: 'rotating',
+      });
+      expect(beforeProof?.identity).toMatchObject(exchanged.node.identity);
+
+      const proved = registry.recordHeartbeat({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        credentialId: rotation.credential.credentialId,
+        manifest: manifest(),
+      });
+
+      expect(proved.identity).toMatchObject(exchanged.node.identity);
+      expect(proved.credential).toMatchObject({
+        credentialId: rotation.credential.credentialId,
+        state: 'active',
+      });
+      expect(
+        registry.authenticateCredentialDetailed(exchanged.credential.token)
+      ).toMatchObject({
+        ok: false,
+        error: {
+          code: 'REPAIR_REQUIRED',
+          details: { reasonCode: 'REPAIR_REQUIRED' },
+        },
+      });
+    });
+  });
+
   it('rotates node credentials without invalidating the previous token until proof', () => {
     const auditEntries: SecurityAuditEntryInput[] = [];
     const tmpDir = fs.mkdtempSync(
@@ -953,8 +1086,11 @@ describe('hub node registry', () => {
         credentialId: rotation.credential.credentialId,
         credentialState: 'active',
       });
-      expect(auditEntries).toHaveLength(1);
-      expect(auditEntries[0]).toMatchObject({
+      const rotationAuditEntries = auditEntries.filter(
+        (entry) => entry.reasonCode === 'CREDENTIAL_ROTATION_PROVED'
+      );
+      expect(rotationAuditEntries).toHaveLength(1);
+      expect(rotationAuditEntries[0]).toMatchObject({
         eventType: 'rotation',
         decision: 'rotated',
         reasonCode: 'CREDENTIAL_ROTATION_PROVED',

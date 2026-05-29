@@ -4,7 +4,7 @@ Operator guide for pairing, installing, updating, diagnosing, and unpairing Rela
 
 Relay uses one npm package for both roles. The packaging decision is documented in [Relay Hub/Node Packaging Decision](RELAY_HUB_NODE_PACKAGING.md): operators install `relay-ide` once, run the web server as `relay-ide hub`, and pair or bootstrap nodes with `relay-ide node ...`. Bare `relay-ide` and top-level `install/status/uninstall` remain back-compat hub aliases.
 
-Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, and emergency fallback. They are not the steady-state hub-node product API. Pairing and heartbeat bootstrap are handled by `relay-ide node pair` / `relay-ide node install`; the persistent steady-state reverse WebSocket `/hub/node-link` is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager. Bootstrap commands (`node pair`, `node install`) themselves do not open or maintain `/hub/node-link`.
+Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagnostics, emergency fallback, and optional host-binding evidence. They are not the steady-state hub-node product API and do not authorize browser, CLI, or routed session actions. Pairing and heartbeat bootstrap are handled by `relay-ide node pair` / `relay-ide node install`; the persistent steady-state reverse WebSocket `/hub/node-link` is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager. Bootstrap commands (`node pair`, `node install`) themselves do not open or maintain `/hub/node-link`.
 
 > This document is the runbook. For architecture and protocol details, see `docs/federated-relay.md`. For the generic Relay service install/uninstall (non-node), see `docs/references/deployment.md`.
 
@@ -149,7 +149,24 @@ Format:
 
 This file is required for the node to authenticate heartbeats and the reverse WebSocket. Do not copy it between machines.
 
-### 4. Verify the node appears online
+### 4. Node identity lifecycle
+
+The hub now separates stable node identity from credential records. The stable identity anchor is the `nodeId` and pairing timestamps; operator-facing identity metadata such as `displayName` and `hostname` describes that identity and may be refreshed by later heartbeats. The active credential is replaceable bearer material tied to that identity. `GET /nodes` returns both the identity summary and a redacted credential summary (`credentialId`, `issuedAt`, and state), never the live token or token hash.
+
+| State | What it means | Operator action |
+| --- | --- | --- |
+| Paired | A one-time pair token was exchanged, the hub created a node identity, and the node stored `node-credential.json`. | Start or supervise `relay-ide node link --hub <url>` for routed sessions. |
+| Reconnected | The node proves the stored credential on heartbeat or `/hub/node-link` reconnect. | No browser cookie is involved; the node credential alone authenticates the node lane. |
+| Rotating | An operator-triggered or scheduled rotation has issued a next credential. The hub accepts the previous credential and the next credential until the node proves possession with a heartbeat carrying the next `credentialId`. | Deliver the new credential if manual; let online delivery write it over the active link if available. Do not clear a failed/delivered rotation if the node may already have written the next credential. |
+| Rotated/stable | The node proved the next credential. The hub swaps the active credential, invalidates the previous token, updates the ACL peer credential id, and preserves the same node identity. | Continue normal operation. |
+| Revoked | `DELETE /nodes/{nodeId}` marks the identity revoked, kills active links, and permanently rejects its credential. | Remove `node-credential.json` from the node before disposal or re-pairing. The old `nodeId` remains revoked in hub history. |
+| Re-pair required | The credential is missing, malformed, mismatched with hub state, expired, revoked, protocol-incompatible, or otherwise returns `REPAIR_REQUIRED`. | Generate a new pair token and run `relay-ide node pair`/`connect` again. Re-pairing creates a new node identity; it does not resurrect a revoked identity. |
+
+Browser auth is deliberately not part of node reconnect. A browser PIN/cookie can authorize an operator to create a pair token or initiate rotation/revocation through browser routes, but it is never accepted as a node credential. Conversely, `node-credential.json` cannot log in to browser-only routes.
+
+Redaction rule: logs, diagnostics, node summaries, registry snapshots, audit entries, and issue comments may include `nodeId`, `credentialId`, `rotationId`, lifecycle state, and hashed/redacted scope metadata. They must not include pair tokens, raw node credential tokens, token hashes, browser cookies, or secret-bearing command output.
+
+### 5. Verify the node appears online
 
 On the node, hold the steady-state reverse link:
 
