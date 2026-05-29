@@ -33,6 +33,7 @@ Implemented/current:
 - Repo inventory: `server/repo-inventory.ts` reports configured repos/worktrees, dirty/divergence summaries, and canonical repo identity; the hub aggregates it through `GET /hub/repo-inventory`.
 - Local hub-as-node: `server/local-node.ts` scopes existing hub-local sessions and file events as the default local node.
 - File RPC (#428, #505, #539, #638): `fs.list`, `fs.stat`, `fs.read`, and `fs.tail` are shipped. `fs.write` is also shipped with the `rpc:fs:write` capability gate, 1 MB cap, atomic-rename semantics on the node executor, and a confirmation gate for prod-tier nodes. See `docs/CLI_GATEWAY.md` for the `files.write` verb shape.
+- Node source diagnostics: node credential auth records redacted Tailscale/MagicDNS source diagnostics on pair/reconnect, exposes only `sourceFingerprint` and lossy `displayHint` on public/audit surfaces, and supports opt-in strict mismatch denial with `RELAY_NODE_SOURCE_STRICT_DENY=1`.
 
 Planned/deferred:
 
@@ -231,7 +232,7 @@ relay-ide node install \
 
 Both commands exchange the pair token, receive a persistent credential, write `node-credential.json`, and send an initial authenticated heartbeat. `node install` then runs the generic Relay service install path for supported service modes. In the current CLI, neither command opens or maintains the persistent reverse WebSocket; run `relay-ide node link --hub <url>` for steady-state session routing.
 
-SSH and Tailscale are bootstrap and reachability mechanisms here: generated commands may use them to deliver the install/pair step, and future diagnostics may use their host identity as binding evidence, but Relay does not treat SSH or Tailscale login as steady-state application authorization. Once paired, hub-node authorization is carried by the node credential on heartbeat and `/hub/node-link`.
+SSH and Tailscale are bootstrap and reachability mechanisms here: generated commands may use them to deliver the install/pair step, and node source diagnostics may record redacted Tailscale/MagicDNS binding evidence for operator visibility. Relay does not treat SSH or Tailscale login as steady-state application authorization. Once paired, hub-node authorization is carried by the node credential on heartbeat and `/hub/node-link`.
 
 > Bootstrap diagnostics pair credentials and install/start the generic Relay service. The persistent `/hub/node-link` reverse WebSocket is opened by `relay-ide node link --hub <url>` (foreground), which can be wrapped by your platform service manager.
 
@@ -279,7 +280,38 @@ The node registry separates node identity from credentials. `HubNodeSummary.iden
 
 Browser sessions are outside this lifecycle. A browser cookie can authorize an operator route that creates a pair token or starts rotation/revocation, but node heartbeat and `/hub/node-link` only accept node credentials. Node credentials are not accepted by browser-only UI routes or scoped actor/CLI routes.
 
-Redaction invariant: public summaries, audit entries, logs, diagnostics, issue comments, and tests may expose ids (`nodeId`, `credentialId`, `rotationId`) and lifecycle state. They must not expose raw pair tokens, raw node credential tokens, token hashes, browser cookies, or private reverse-link payloads.
+Redaction invariant: public summaries, audit entries, logs, diagnostics, issue comments, and tests may expose ids (`nodeId`, `credentialId`, `rotationId`), lifecycle state, source diagnostic state, `reasonCode`, `observedAt`, stable `sourceFingerprint`, and lossy `displayHint`. They must not expose raw pair tokens, raw node credential tokens, token hashes, browser cookies, raw forwarded headers, raw env values, terminal byte streams, full path inventories, private reverse-link payloads, full MagicDNS names, full hostnames, raw tailnet IPs, or arbitrary unredacted DNS/host strings.
+
+### Tailscale/MagicDNS source diagnostics
+
+Node credential authentication records source diagnostics for operator visibility. The binding is attached to the node credential lane only: `POST /hub/pairing/exchange` establishes the initial observed source when available, and later heartbeat or `/hub/node-link` credential checks compare subsequent observed source signals against that binding. Browser sessions, pair-token exchange, scoped actor credentials, ACL policy, and CLI actor-token semantics are separate lanes. Missing, malformed, expired, revoked, or mismatched credentials still fail normally; source diagnostics only annotate those failures.
+
+The public `HubNodeSummary.sourceDiagnostics` shape is deliberately redacted:
+
+```ts
+{
+  state: 'signal-unavailable' | 'source-match' | 'source-mismatch' | 'same-credential-multiple-sources' | 'strict-deny',
+  policy: 'audit' | 'strict-deny',
+  reasonCode: string,
+  observedAt: string,
+  sourceFingerprint?: string, // stable src_<32 hex chars>, not the raw source
+  displayHint?: string        // lossy operator hint, not the raw source
+}
+```
+
+Operational states:
+
+| State | Meaning | Enforcement behavior |
+| --- | --- | --- |
+| `signal-unavailable` | No usable Tailscale/MagicDNS source signal was observed. | Allowed and audited in both default and strict mode. |
+| `source-match` | Observed source matches the credential's expected source. | Allowed and audited. |
+| `source-mismatch` | Observed source differs from the expected source. | If the credential otherwise validates, default mode allows and audits; strict mode rewrites the result to `strict-deny`. |
+| `same-credential-multiple-sources` | The same credential has appeared from more than one redacted source fingerprint. | If the credential otherwise validates, default mode allows and audits as suspicious; strict mode rewrites the result to `strict-deny`. |
+| `strict-deny` | Strict enforcement is enabled and a reachable mismatched source presented the credential. | Authentication fails with `FORBIDDEN` and redacted `sourceDiagnostics` details. |
+
+Default policy is warn/audit. Operators opt in to enforcement by running the hub with `RELAY_NODE_SOURCE_STRICT_DENY=1`. Strict-deny affects node credential authentication only and intentionally leaves `signal-unavailable` as allow/audit so deployments without usable Tailscale/MagicDNS headers do not fail closed by accident.
+
+`sourceFingerprint` is stable for correlation but hides the source tuple. `displayHint` may reveal only coarse families such as `tailscale-ip:100.x.x.x`, `magicdns:ts.net:<suffix>`, `hostname:<suffix>`, or `no tailscale/magicdns signal`. Public/audit surfaces must not include raw credentials, tokens, headers, env, terminal bytes, full path inventories, raw forwarded headers, or unredacted arbitrary DNS/host strings.
 
 ### Credential rotation
 
@@ -645,6 +677,10 @@ The hub returns a diagnostics taxonomy covering the full bootstrap lifecycle:
 | `PAIR_TOKEN_INVALID`            | pair-token        | Malformed, unknown, or already consumed         |
 | `PAIR_TOKEN_EXPIRED`            | pair-token        | Token expired before exchange                   |
 | `NODE_CREDENTIAL_REJECTED`      | node-auth         | Credential was revoked or rejected              |
+| `NODE_SOURCE_SIGNAL_UNAVAILABLE` | node-auth        | No usable Tailscale/MagicDNS source signal      |
+| `NODE_SOURCE_MISMATCH`          | node-auth         | Credential source differs from expected binding |
+| `NODE_SOURCE_MULTIPLE_SOURCES`  | node-auth         | Credential appeared from multiple source fingerprints |
+| `NODE_SOURCE_STRICT_DENY`       | node-auth         | Strict source policy denied a mismatch          |
 | `NODE_CONNECT_FAILED`           | connect-back      | Node cannot reach hub for heartbeat             |
 | `PROTOCOL_INCOMPATIBLE`         | protocol          | Hub/node protocol versions incompatible         |
 | `NODE_STARTED_NO_HEARTBEAT`     | heartbeat         | Bootstrap exited but no heartbeat observed      |
@@ -657,7 +693,7 @@ relay-ide node logs              # Service logs (launchd/systemd)
 relay-ide node doctor --hub URL  # Reachability and capability checks
 ```
 
-All diagnostics redact secrets (pair tokens, bearer headers, credentials) before display.
+All diagnostics redact secrets (pair tokens, bearer headers, credentials) and source material before display; source diagnostics expose only stable `sourceFingerprint` and lossy `displayHint`.
 
 ## WSL Caveats
 

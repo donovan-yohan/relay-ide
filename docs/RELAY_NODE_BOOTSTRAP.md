@@ -164,9 +164,42 @@ The hub now separates stable node identity from credential records. The stable i
 
 Browser auth is deliberately not part of node reconnect. A browser PIN/cookie can authorize an operator to create a pair token or initiate rotation/revocation through browser routes, but it is never accepted as a node credential. Conversely, `node-credential.json` cannot log in to browser-only routes.
 
-Redaction rule: logs, diagnostics, node summaries, registry snapshots, audit entries, and issue comments may include `nodeId`, `credentialId`, `rotationId`, lifecycle state, and hashed/redacted scope metadata. They must not include pair tokens, raw node credential tokens, token hashes, browser cookies, or secret-bearing command output.
+Redaction rule: logs, diagnostics, node summaries, registry snapshots, audit entries, and issue comments may include `nodeId`, `credentialId`, `rotationId`, lifecycle state, node source diagnostics, and hashed/redacted scope metadata. They must not include pair tokens, raw node credential tokens, token hashes, browser cookies, raw forwarded headers, raw environment values, raw terminal bytes, full path inventories, or secret-bearing command output.
 
-### 5. Verify the node appears online
+### 5. Tailscale/MagicDNS source diagnostics
+
+When a node pairs or authenticates with its node credential, the hub records a redacted source diagnostic for that node credential lane. The signal is used for operator visibility and optional strict enforcement only; it is not a replacement for node credentials, hub ACLs, browser auth, or scoped actor credentials. Normal credential failures still fail normally; source diagnostics only annotate those failures.
+
+Public node summaries and audit rows may expose only:
+
+- `state`
+- `policy` (`audit` or `strict-deny`)
+- `reasonCode`
+- `observedAt`
+- stable `sourceFingerprint` such as `src_<32 hex chars>` when a usable source is present
+- lossy `displayHint` such as `tailscale-ip:100.x.x.x`, `magicdns:ts.net:<suffix>`, `hostname:<suffix>`, or `no tailscale/magicdns signal`
+
+They must not expose raw credentials, pair tokens, bearer headers, browser cookies, raw forwarded headers, raw env values, raw terminal bytes, full path inventories, full hostnames, full MagicDNS names, arbitrary unredacted DNS/host strings, or raw tailnet IPs. Treat `sourceFingerprint` as a stable correlation handle and `displayHint` as a human hint, not as the underlying source tuple.
+
+Diagnostic states:
+
+| State | Operational meaning | Default behavior |
+| --- | --- | --- |
+| `signal-unavailable` | The request did not include a usable Tailscale/MagicDNS source signal. | Allowed and audited. This remains allow/audit even when strict-deny mode is enabled, because lack of signal is not proof of credential replay. |
+| `source-match` | The observed source matches the source bound to the node credential from pairing or a prior valid reconnect. | Allowed and audited. |
+| `source-mismatch` | A usable source signal was observed, but it does not match the credential's expected source. | If the credential otherwise validates, default audit mode allows it and surfaces the mismatch for investigation. With strict-deny mode enabled, this becomes `strict-deny`. |
+| `same-credential-multiple-sources` | The same node credential has been observed from more than one redacted source fingerprint. | If the credential otherwise validates, default audit mode allows it as a high-suspicion warning that usually means a credential was copied or replayed. With strict-deny mode enabled, this becomes `strict-deny`. |
+| `strict-deny` | Strict source enforcement is enabled and a reachable source mismatch was detected. | The node credential auth attempt is rejected with a typed `FORBIDDEN` response carrying redacted `sourceDiagnostics`. |
+
+By default Relay runs source diagnostics in warn/audit mode. To opt in to enforcement for node credential traffic, start the hub with:
+
+```bash
+RELAY_NODE_SOURCE_STRICT_DENY=1 relay-ide hub
+```
+
+Strict source denial is scoped to node credential authentication for heartbeat and `/hub/node-link`. It does not change browser-session routes, scoped actor credentials, pair-token exchange semantics, CLI actor-token behavior, ACL policy, or any future approval UX.
+
+### 6. Verify the node appears online
 
 On the node, hold the steady-state reverse link:
 
@@ -489,8 +522,12 @@ If `RMUX_SDK_DAEMON_BINARY` is set, the probe executes that explicit helper over
 | `NODE_CONNECT_FAILED`         | Node cannot reach hub URL                    | Check DNS, firewall, proxy, TLS                                     |
 | `PROTOCOL_INCOMPATIBLE`       | Hub/node protocol version mismatch           | Update both hub and node to the same Relay version                  |
 | `NODE_STARTED_NO_HEARTBEAT`   | Bootstrap finished but hub sees no heartbeat | Run `relay-ide node status` and `relay-ide node doctor` on the node |
+| `NODE_SOURCE_SIGNAL_UNAVAILABLE` | No usable Tailscale/MagicDNS source signal was available for node credential diagnostics | Check proxy/Tailscale topology if you expected a signal; authentication still proceeds |
+| `NODE_SOURCE_MISMATCH`        | Node credential was presented from a different source fingerprint than expected | Investigate copied credentials or topology changes; strict mode denies this path |
+| `NODE_SOURCE_MULTIPLE_SOURCES` | Same node credential has appeared from multiple source fingerprints | Treat as suspicious credential reuse; rotate/revoke/re-pair if unexpected |
+| `NODE_SOURCE_STRICT_DENY`     | `RELAY_NODE_SOURCE_STRICT_DENY=1` rejected a mismatched reachable source | Re-pair from the intended source or disable strict mode if topology legitimately changed |
 
-All diagnostic output redacts secrets before display. See Token Redaction below.
+All diagnostic output redacts secrets and source material before display. See Token Redaction and Tailscale/MagicDNS source diagnostics above.
 
 ### Credential rejected after revocation
 

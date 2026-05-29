@@ -37,7 +37,40 @@ Browser auth is intentionally non-dependent. Browser PIN/cookie auth can authori
 
 SSH and Tailscale are bootstrap/reachability/binding signals only. They can help deliver install/pair commands, prove that an operator can reach a host, or provide host-binding evidence in diagnostics, but they are not the steady-state Relay application authorization model. Steady-state node authorization comes from the node credential, hub ACL/policy, audit, and revocation.
 
-Node lifecycle audit and diagnostics must stay redacted. It is safe to emit `nodeId`, `credentialId`, `rotationId`, lifecycle state, recovery reason code, and hashed/redacted scope metadata. It is not safe to emit raw pair tokens, raw node credential tokens, token hashes, browser cookies, confirmation tokens, scoped actor bearer material, reverse-link private payloads, full env values, file bytes, or terminal byte streams.
+Node lifecycle audit and diagnostics must stay redacted. It is safe to emit `nodeId`, `credentialId`, `rotationId`, lifecycle state, recovery reason code, source diagnostic state, `observedAt`, stable `sourceFingerprint`, lossy `displayHint`, and hashed/redacted scope metadata. It is not safe to emit raw pair tokens, raw node credential tokens, token hashes, browser cookies, confirmation tokens, scoped actor bearer material, raw forwarded headers, reverse-link private payloads, full env values, file bytes, terminal byte streams, full path inventories, raw tailnet IPs, full MagicDNS names, full hostnames, or arbitrary unredacted DNS/host strings.
+
+## Node source diagnostics
+
+Relay records Tailscale/MagicDNS source diagnostics for node credential authentication. The feature is diagnostic by default: pairing, heartbeat, and `/hub/node-link` credential checks record whether the observed source matches the credential's expected source, but they do not deny an otherwise valid credential unless strict mode is explicitly enabled. Missing, malformed, expired, revoked, or mismatched credentials still fail normally; source diagnostics only annotate those failures.
+
+Public and audit surfaces expose only this redacted shape:
+
+| Field | Meaning |
+| --- | --- |
+| `state` | Diagnostic state: `signal-unavailable`, `source-match`, `source-mismatch`, `same-credential-multiple-sources`, or `strict-deny`. |
+| `policy` | `audit` by default, or `strict-deny` when the hub was started with strict source enforcement. |
+| `reasonCode` | Typed reason such as `NODE_SOURCE_MATCH`, `NODE_SOURCE_MISMATCH`, `NODE_SOURCE_MULTIPLE_SOURCES`, `NODE_SOURCE_SIGNAL_UNAVAILABLE`, or `NODE_SOURCE_STRICT_DENY`. |
+| `observedAt` | Time the credential source was evaluated. |
+| `sourceFingerprint` | Stable `src_<32 hex chars>` correlation handle for the normalized source. Omitted when no usable source exists. |
+| `displayHint` | Lossy operator hint such as `tailscale-ip:100.x.x.x`, `magicdns:ts.net:<suffix>`, `hostname:<suffix>`, or `no tailscale/magicdns signal`. |
+
+State meanings:
+
+| State | Security meaning |
+| --- | --- |
+| `signal-unavailable` | No usable Tailscale/MagicDNS signal was available. This is allowed and audited even under strict mode because it is absence of evidence, not proof of credential movement. |
+| `source-match` | The observed source matches the credential binding. |
+| `source-mismatch` | A usable observed source does not match the credential binding. If the credential otherwise validates, default policy allows and audits it so operators can see topology drift or suspicious reuse. |
+| `same-credential-multiple-sources` | The same credential has appeared from multiple redacted source fingerprints. If the credential otherwise validates, default policy allows it but operators should treat it as suspicious copied/replayed credential evidence unless a topology change explains it. |
+| `strict-deny` | `RELAY_NODE_SOURCE_STRICT_DENY=1` is enabled and a reachable source mismatch was denied. |
+
+Strict mode is an opt-in node-credential control:
+
+```bash
+RELAY_NODE_SOURCE_STRICT_DENY=1 relay-ide hub
+```
+
+It applies to node heartbeat and `/hub/node-link` credential authentication only. It does not implement Tailnet-only authorization, browser route approval, CLI actor-token migration, ACL redesign, or lifecycle semantics beyond the source check described here.
 
 ## Scoped actor credentials
 
