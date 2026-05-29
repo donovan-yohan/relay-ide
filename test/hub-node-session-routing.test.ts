@@ -283,16 +283,40 @@ describe('hub-routed node session create and attach', () => {
       else res.status(401).json({ error: 'Unauthorized' });
     };
     const cliGatewayAuth: express.RequestHandler = (req, res, next) => {
+      if (req.header('x-test-auth') === 'yes') {
+        next();
+        return;
+      }
+      if (req.header('x-relay-cli-actor-token') === 'v1') {
+        res.status(401).json({ error: 'actor command route binding required' });
+        return;
+      }
       if (
-        req.header('x-test-auth') === 'yes' ||
-        (req.header('x-relay-cli-gateway') === 'v1' &&
-          req.header('authorization') === 'Bearer scoped-test-token')
+        req.header('x-relay-cli-gateway') === 'v1' &&
+        req.header('authorization') === 'Bearer scoped-test-token'
       ) {
         next();
         return;
       }
       res.status(401).json({ error: 'Unauthorized' });
     };
+    const cliGatewayAuthForActorCommand =
+      (expectedCommand: string): express.RequestHandler =>
+      (req, res, next) => {
+        if (req.header('x-relay-cli-actor-token') === 'v1') {
+          if (
+            req.header('x-relay-cli-gateway') === 'v1' &&
+            req.header('authorization') === 'Bearer scoped-test-token' &&
+            req.header('x-relay-cli-command') === expectedCommand
+          ) {
+            next();
+            return;
+          }
+          res.status(401).json({ error: 'actor command route binding required' });
+          return;
+        }
+        cliGatewayAuth(req, res, next);
+      };
     app.use(
       createHubNodeRouter({
         registry,
@@ -302,6 +326,7 @@ describe('hub-routed node session create and attach', () => {
         now,
         requireAuth,
         cliGatewayAuth,
+        cliGatewayAuthForActorCommand,
       })
     );
     const server = http.createServer(app);
@@ -353,6 +378,36 @@ describe('hub-routed node session create and attach', () => {
     expect(await createRes.json()).toMatchObject({
       error: { code: 'NODE_OFFLINE', retryable: true },
     });
+  });
+
+  it('binds actor-token nodes.list auth to /nodes instead of caller-spoofed audit or log routes', async () => {
+    const { base } = await startHub();
+    const { nodeId } = await pairNode(base);
+    const actorHeaders = {
+      authorization: 'Bearer scoped-test-token',
+      'x-relay-cli-gateway': 'v1',
+      'x-relay-cli-actor-token': 'v1',
+      'x-relay-cli-command': 'nodes.list',
+    };
+
+    const nodesRes = await fetch(`${base}/nodes`, { headers: actorHeaders });
+    expect(nodesRes.status).toBe(200);
+    expect(await nodesRes.json()).toMatchObject({ nodes: [{ nodeId }] });
+
+    const auditVerifyRes = await fetch(`${base}/hub/audit/verify`, {
+      headers: actorHeaders,
+    });
+    expect(auditVerifyRes.status).toBe(401);
+
+    const auditEntriesRes = await fetch(`${base}/hub/audit/entries`, {
+      headers: actorHeaders,
+    });
+    expect(auditEntriesRes.status).toBe(401);
+
+    const logsRes = await fetch(`${base}/hub/nodes/nope/logs`, {
+      headers: actorHeaders,
+    });
+    expect(logsRes.status).toBe(401);
   });
 
   it('renews routed scoped session expiry without changing authority', async () => {
