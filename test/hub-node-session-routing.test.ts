@@ -25,6 +25,7 @@ import {
 } from '../shared/session-envelope.js';
 import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
+import { mintPairTokenWithOperatorGrantForTest } from './helpers/operator-pairing.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -162,13 +163,9 @@ async function pairNode(
   token: string;
   nodeId: string;
 }> {
-  const pairRes = await fetch(`${base}/hub/pair-tokens`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-    body: JSON.stringify({ displayName: 'Remote Node' }),
+  const pair = await mintPairTokenWithOperatorGrantForTest(base, {
+    displayName: 'Remote Node',
   });
-  expect(pairRes.status).toBe(201);
-  const pair = (await pairRes.json()) as { pairToken: string };
 
   const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
     method: 'POST',

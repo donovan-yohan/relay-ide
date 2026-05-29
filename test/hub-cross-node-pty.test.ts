@@ -19,6 +19,7 @@ import {
   type RelayNodeEnvelope,
 } from '../shared/relay-node-protocol.js';
 import { buildManifestWithAgents } from './helpers/manifest-fixtures.js';
+import { mintPairTokenWithOperatorGrantForTest } from './helpers/operator-pairing.js';
 
 const AGENTS = [
   { id: 'claude', label: 'Claude', status: 'available' as const },
@@ -467,13 +468,9 @@ async function pairAndConnectNode(input: {
   wsBase: string;
   hostname: string;
 }): Promise<SimulatedNode> {
-  const pairRes = await fetch(`${input.base}/hub/pair-tokens`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-    body: JSON.stringify({ displayName: input.hostname }),
+  const pair = await mintPairTokenWithOperatorGrantForTest(input.base, {
+    displayName: input.hostname,
   });
-  expect(pairRes.status, `pair-token creation failed for ${input.hostname}`).toBe(201);
-  const pair = (await pairRes.json()) as { pairToken: string };
 
   const exchangeRes = await fetch(`${input.base}/hub/pairing/exchange`, {
     method: 'POST',

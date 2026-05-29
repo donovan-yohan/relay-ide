@@ -16,6 +16,7 @@ import type { SessionSummary } from '../server/types.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 import type { RelayNodeEnvelope } from '../shared/relay-node-protocol.js';
+import { mintPairTokenWithOperatorGrantForTest } from './helpers/operator-pairing.js';
 
 function manifest(): NodeManifest {
   return {
@@ -279,12 +280,9 @@ describe('hub cold transfer / reopen-on-other-node', () => {
   async function pairNode(
     base: string
   ): Promise<{ token: string; nodeId: string }> {
-    const pairRes = await fetch(`${base}/hub/pair-tokens`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+    const pair = await mintPairTokenWithOperatorGrantForTest(base, {
+      displayName: 'Cold Transfer Node',
     });
-    expect(pairRes.status).toBe(201);
-    const pair = (await pairRes.json()) as { pairToken: string };
     const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
