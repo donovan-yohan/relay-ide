@@ -21,6 +21,7 @@ import type { SecurityAuditVerificationResult } from './security-audit-log.js';
 import {
   HubNodeRegistryError,
   type HubNodeRegistry,
+  type PairTokenCapabilityEnvelope,
 } from './hub-node-registry.js';
 import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
@@ -2105,6 +2106,27 @@ function pairTokenCapabilityEnvelopeFromBody(
   };
 }
 
+function pairTokenCapabilityEnvelopeCapabilities(
+  envelope: PairTokenCapabilityEnvelope | undefined
+): RelayCapabilityBit[] {
+  const capabilities = new Set<RelayCapabilityBit>();
+  for (const capability of envelope?.allowed ?? []) capabilities.add(capability);
+  for (const capability of envelope?.requiresConfirmation ?? []) {
+    capabilities.add(capability);
+  }
+  return Array.from(capabilities);
+}
+
+function boundedGrantBackedPairTokenTrustTier(
+  trustTier: RelayTrustTier | undefined
+): RelayTrustTier | undefined {
+  // A pair-token-create grant derives the legacy dev bootstrap posture. The
+  // request may voluntarily narrow that to sandbox, but it cannot promote a
+  // grant-backed mint into a body-chosen prod node unless a future grant schema
+  // carries an explicit trust-tier bound.
+  return trustTier === 'sandbox' ? trustTier : undefined;
+}
+
 function pairTokenTrustTierFromBody(
   body: Record<string, unknown>
 ): { ok: true; trustTier?: RelayTrustTier } | { ok: false; value: string } {
@@ -2516,35 +2538,13 @@ export function createHubNodeRouter(
     req: Request;
     res: Response;
     body: Record<string, unknown>;
+    trustTier?: RelayTrustTier;
+    capabilityEnvelope?: PairTokenCapabilityEnvelope;
     grant?: ReturnType<HandshakeGrantRegistry['getGrant']>;
   }): void {
     const { req, res, body, grant } = input;
     const displayName = stringFromBody(body, 'displayName');
     const ttlMs = pairTtlMs(body);
-    const trustTier = pairTokenTrustTierFromBody(body);
-    if (trustTier.ok === false) {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', 'trustTier must be sandbox, dev, or prod', false, {
-          reasonCode: 'PAIR_TOKEN_TRUST_TIER_INVALID',
-          trustTier: trustTier.value,
-        })
-      );
-      return;
-    }
-    const capabilityEnvelope = pairTokenCapabilityEnvelopeFromBody(body);
-    if (capabilityEnvelope.ok === false) {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', capabilityEnvelope.message, false, {
-          reasonCode: capabilityEnvelope.reasonCode,
-          ...(capabilityEnvelope.invalidCapability
-            ? { capability: capabilityEnvelope.invalidCapability }
-            : {}),
-        })
-      );
-      return;
-    }
     const correlationId = pairTokenMintCorrelationId(req, body, grant?.correlationId);
     const source = sourceTupleFromRequest(req);
     const platform = stringFromBody(body, 'platform');
@@ -2552,10 +2552,8 @@ export function createHubNodeRouter(
       ...(displayName ? { displayName } : {}),
       ...(ttlMs !== undefined ? { ttlMs } : {}),
       ...(platform ? { platform } : {}),
-      ...(trustTier.trustTier ? { trustTier: trustTier.trustTier } : {}),
-      ...(capabilityEnvelope.envelope
-        ? { capabilityEnvelope: capabilityEnvelope.envelope }
-        : {}),
+      ...(input.trustTier ? { trustTier: input.trustTier } : {}),
+      ...(input.capabilityEnvelope ? { capabilityEnvelope: input.capabilityEnvelope } : {}),
       ...(grant
         ? {
             issuer: {
@@ -2614,9 +2612,36 @@ export function createHubNodeRouter(
     const deviceId = stringFromBody(body, 'deviceId');
     const sessionBinding = pairTokenMintSessionBinding(body);
     const scope = pairTokenMintScope(body);
+    const trustTier = pairTokenTrustTierFromBody(body);
+    if (trustTier.ok === false) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', 'trustTier must be sandbox, dev, or prod', false, {
+          reasonCode: 'PAIR_TOKEN_TRUST_TIER_INVALID',
+          trustTier: trustTier.value,
+        })
+      );
+      return;
+    }
+    const capabilityEnvelope = pairTokenCapabilityEnvelopeFromBody(body);
+    if (capabilityEnvelope.ok === false) {
+      sendRelayError(
+        res,
+        relayError('INVALID_REQUEST', capabilityEnvelope.message, false, {
+          reasonCode: capabilityEnvelope.reasonCode,
+          ...(capabilityEnvelope.invalidCapability
+            ? { capability: capabilityEnvelope.invalidCapability }
+            : {}),
+        })
+      );
+      return;
+    }
     const validation = operatorHandshakeGrants.validate(grantHandle, {
       audience: NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
-      requiredCapabilities: [NODE_PAIR_TOKEN_CREATE_CAPABILITY],
+      requiredCapabilities: [
+        NODE_PAIR_TOKEN_CREATE_CAPABILITY,
+        ...pairTokenCapabilityEnvelopeCapabilities(capabilityEnvelope.envelope),
+      ],
       ...(actor ? { actor } : {}),
       ...(deviceId ? { deviceId } : {}),
       ...(sessionBinding ? { sessionBinding } : {}),
@@ -2636,7 +2661,17 @@ export function createHubNodeRouter(
       sendRelayError(res, relayErrorForPairTokenGrantFailure(failure));
       return;
     }
-    sendMintedPairToken({ req, res, body, grant: validation.grant });
+    const boundedTrustTier = boundedGrantBackedPairTokenTrustTier(trustTier.trustTier);
+    sendMintedPairToken({
+      req,
+      res,
+      body,
+      ...(boundedTrustTier ? { trustTier: boundedTrustTier } : {}),
+      ...(capabilityEnvelope.envelope
+        ? { capabilityEnvelope: capabilityEnvelope.envelope }
+        : {}),
+      grant: validation.grant,
+    });
   });
 
   router.post('/hub/pairing/exchange', (req, res) => {

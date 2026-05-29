@@ -660,7 +660,7 @@ describe('hub node routes and link', () => {
         actor: { type: 'cli', id: 'ebi-cli', displayName: 'Ebi CLI' },
         issuer: { id: 'operator-browser', displayName: 'Operator' },
         audience: NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
-        capabilities: [NODE_PAIR_TOKEN_CREATE_CAPABILITY],
+        capabilities: [NODE_PAIR_TOKEN_CREATE_CAPABILITY, 'session:read'],
         scope: { taskRefs: ['bootstrap-work-mac'] },
         ttlMs: 600_000,
         correlationId: 'corr-pair-mint',
@@ -800,6 +800,39 @@ describe('hub node routes and link', () => {
         details: { reasonCode: 'PAIR_TOKEN_GRANT_INSUFFICIENT_CAPABILITY' },
       },
     });
+
+    const bodyControlledAclRes = await mintWithGrant(approveGrant(), {
+      taskRef: 'bootstrap-work-mac',
+      trustTier: 'prod',
+      capabilityEnvelope: {
+        allowed: ['tab:intervention:read'],
+        requiresConfirmation: ['credential:export', 'pty:exec:arbitrary'],
+      },
+    });
+    expect(bodyControlledAclRes.status).toBe(403);
+    expect(await bodyControlledAclRes.json()).toMatchObject({
+      error: {
+        details: { reasonCode: 'PAIR_TOKEN_GRANT_INSUFFICIENT_CAPABILITY' },
+      },
+    });
+
+    const prodOnlyPairRes = await mintWithGrant(approveGrant(), {
+      taskRef: 'bootstrap-work-mac',
+      trustTier: 'prod',
+    });
+    expect(prodOnlyPairRes.status).toBe(201);
+    const prodOnlyPair = (await prodOnlyPairRes.json()) as { pairToken: string };
+    const prodOnlyExchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        pairToken: prodOnlyPair.pairToken,
+        manifest: manifest(),
+      }),
+    });
+    expect(prodOnlyExchangeRes.status).toBe(201);
+    const prodOnlyNode = registry.listNodes()[registry.listNodes().length - 1]!;
+    expect(prodOnlyNode.trust.tier).toBe('dev');
 
     const wrongScopeRes = await mintWithGrant(
       approveGrant({ scope: { taskRefs: ['bootstrap-wsl2'] } }),
