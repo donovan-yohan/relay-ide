@@ -111,12 +111,12 @@ Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `
 - `--port` or `RELAY_IDE_PORT` selects the local hub port; otherwise Relay uses the default port.
 - Gateway requests send `x-relay-cli-gateway: v1` so the hub can apply the adapter contract boundary.
 - Gateway requests send capability hints via `x-relay-capabilities` so hub policy can fail closed.
-- #798 names `scoped-actor-credential` as the migration target for adapter/agent credentials, but the scoped actor token registry is intentionally not implemented in this wave. Until that registry exists, browser-session compatibility remains for local/dev gateway calls.
+- #802 defines the scoped actor credential registry and the future `relay:cli-gateway:v1` audience for adapter/agent credentials. This document still describes the pre-migration gateway commands: browser-session compatibility remains for local/dev gateway calls until a later slice wires those commands to scoped actor credentials.
 - Node credentials are not accepted for CLI gateway calls. `/hub/node-link` and node heartbeat use the `node-credential` lane; adapter authors must not impersonate nodes or call private node-link messages.
 
 Missing or rejected gateway auth is converted to the normal JSON error envelope and exits nonzero. The server-side lane challenge includes `lane: "denied"`, accepted lanes (`scoped-actor-credential`, `browser-session`), and non-secret migration metadata where applicable.
 
-This boundary is part of the #797/#798 split: #427 provided the trust-tier/capability/audit/confirmation backbone, while #798 wave 1 only inventories routes and clarifies browser-session vs actor/node credentials. Follow-up work may replace local browser-token compatibility with scoped actor credentials, but adapters should treat that as a credential migration, not a reason to reuse node credentials or browser-only private routes.
+This boundary is part of the #797/#798/#802 split: #427 provided the trust-tier/capability/audit/confirmation backbone, #798 inventories routes and clarifies browser-session vs actor/node credentials, and #802 provides the scoped actor credential lifecycle primitive. Follow-up work may replace local browser-token compatibility with scoped actor credentials, but adapters should treat that as a credential migration, not a reason to reuse node credentials or browser-only private routes.
 
 ## Session descriptors
 
