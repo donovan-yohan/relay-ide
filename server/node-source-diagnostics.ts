@@ -21,44 +21,8 @@ export interface RelayNodeSourceEvaluation {
 
 const MAGICDNS_SUFFIX_PATTERN = /(^|\.)ts\.net$/i;
 const MAGICDNS_LEGACY_SUFFIX_PATTERN = /(^|\.)beta\.tailscale\.net$/i;
-const SOURCE_HEADER_NAMES = {
-  tailnetIp: [
-    'x-relay-node-tailnet-ip',
-    'x-relay-tailnet-ip',
-    'x-tailscale-ip',
-  ],
-  magicDnsName: [
-    'x-relay-node-magicdns-name',
-    'x-relay-magicdns-name',
-    'x-tailscale-magicdns-name',
-  ],
-} as const;
-
 function stableJson(value: unknown): string {
   return JSON.stringify(value, Object.keys(value as Record<string, unknown>).sort());
-}
-
-function firstHeader(req: Request, names: readonly string[]): string | undefined {
-  for (const name of names) {
-    const value = req.header(name);
-    const first = value?.split(',')[0]?.trim();
-    if (first) return first;
-  }
-  return undefined;
-}
-
-function firstIncomingHeader(
-  request: http.IncomingMessage,
-  names: readonly string[]
-): string | undefined {
-  for (const name of names) {
-    const value = request.headers[name.toLowerCase()];
-    const first = (Array.isArray(value) ? value[0] : value)
-      ?.split(',')[0]
-      ?.trim();
-    if (first) return first;
-  }
-  return undefined;
 }
 
 function normalizeIp(value: string | undefined): string | undefined {
@@ -142,29 +106,18 @@ export function sourceTupleWithHostname(
 
 export function sourceTupleFromRequest(req: Request): RelayNodeSourceTuple | undefined {
   const remoteAddress = req.socket.remoteAddress ?? req.ip;
-  const tailnetIp =
-    firstHeader(req, SOURCE_HEADER_NAMES.tailnetIp) ?? normalizeIp(remoteAddress);
-  const magicDnsName = firstHeader(req, SOURCE_HEADER_NAMES.magicDnsName);
+  const tailnetIp = normalizeIp(remoteAddress);
   return normalizeRelayNodeSourceTuple({
     ...(tailnetIp ? { tailnetIp } : {}),
-    ...(magicDnsName ? { magicDnsName } : {}),
   });
 }
 
 export function sourceTupleFromIncomingMessage(
   request: http.IncomingMessage
 ): RelayNodeSourceTuple | undefined {
-  const remoteAddress = request.socket.remoteAddress;
-  const tailnetIp =
-    firstIncomingHeader(request, SOURCE_HEADER_NAMES.tailnetIp) ??
-    normalizeIp(remoteAddress);
-  const magicDnsName = firstIncomingHeader(
-    request,
-    SOURCE_HEADER_NAMES.magicDnsName
-  );
+  const tailnetIp = normalizeIp(request.socket.remoteAddress);
   return normalizeRelayNodeSourceTuple({
     ...(tailnetIp ? { tailnetIp } : {}),
-    ...(magicDnsName ? { magicDnsName } : {}),
   });
 }
 

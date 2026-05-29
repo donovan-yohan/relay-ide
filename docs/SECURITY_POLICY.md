@@ -58,11 +58,11 @@ State meanings:
 
 | State | Security meaning |
 | --- | --- |
-| `signal-unavailable` | No usable Tailscale/MagicDNS signal was available. This is allowed and audited even under strict mode because it is absence of evidence, not proof of credential movement. |
+| `signal-unavailable` | No usable socket/Tailscale source signal was available. Caller-provided source headers are not trusted as authoritative source evidence. Default policy allows and audits this; strict mode denies it when the credential already has a Tailscale/MagicDNS source binding. |
 | `source-match` | The observed source matches the credential binding. |
 | `source-mismatch` | A usable observed source does not match the credential binding. If the credential otherwise validates, default policy allows and audits it so operators can see topology drift or suspicious reuse. |
 | `same-credential-multiple-sources` | The same credential has appeared from multiple redacted source fingerprints. If the credential otherwise validates, default policy allows it but operators should treat it as suspicious copied/replayed credential evidence unless a topology change explains it. |
-| `strict-deny` | `RELAY_NODE_SOURCE_STRICT_DENY=1` is enabled and a reachable source mismatch was denied. |
+| `strict-deny` | `RELAY_NODE_SOURCE_STRICT_DENY=1` is enabled and a reachable source mismatch or missing trusted source evidence for a source-bound credential was denied. |
 
 Strict mode is an opt-in node-credential control:
 

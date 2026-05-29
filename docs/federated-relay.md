@@ -303,13 +303,13 @@ Operational states:
 
 | State | Meaning | Enforcement behavior |
 | --- | --- | --- |
-| `signal-unavailable` | No usable Tailscale/MagicDNS source signal was observed. | Allowed and audited in both default and strict mode. |
+| `signal-unavailable` | No usable socket/Tailscale source signal was observed. Caller-provided source headers are not trusted as authoritative source evidence. | Allowed and audited in default mode. In strict mode, denied when the credential already has a Tailscale/MagicDNS source binding. |
 | `source-match` | Observed source matches the credential's expected source. | Allowed and audited. |
 | `source-mismatch` | Observed source differs from the expected source. | If the credential otherwise validates, default mode allows and audits; strict mode rewrites the result to `strict-deny`. |
 | `same-credential-multiple-sources` | The same credential has appeared from more than one redacted source fingerprint. | If the credential otherwise validates, default mode allows and audits as suspicious; strict mode rewrites the result to `strict-deny`. |
-| `strict-deny` | Strict enforcement is enabled and a reachable mismatched source presented the credential. | Authentication fails with `FORBIDDEN` and redacted `sourceDiagnostics` details. |
+| `strict-deny` | Strict enforcement is enabled and the credential was presented from a mismatched source or without trusted source evidence for an already source-bound credential. | Authentication fails with `FORBIDDEN` and redacted `sourceDiagnostics` details. |
 
-Default policy is warn/audit. Operators opt in to enforcement by running the hub with `RELAY_NODE_SOURCE_STRICT_DENY=1`. Strict-deny affects node credential authentication only and intentionally leaves `signal-unavailable` as allow/audit so deployments without usable Tailscale/MagicDNS headers do not fail closed by accident.
+Default policy is warn/audit. Operators opt in to enforcement by running the hub with `RELAY_NODE_SOURCE_STRICT_DENY=1`. Strict-deny affects node credential authentication only. For credentials with an existing Tailscale/MagicDNS binding, missing trusted source evidence is denied rather than letting spoofable header-only evidence stand in for the socket source.
 
 `sourceFingerprint` is stable for correlation but hides the source tuple. `displayHint` may reveal only coarse families such as `tailscale-ip:100.x.x.x`, `magicdns:ts.net:<suffix>`, `hostname:<suffix>`, or `no tailscale/magicdns signal`. Public/audit surfaces must not include raw credentials, tokens, headers, env, terminal bytes, full path inventories, raw forwarded headers, or unredacted arbitrary DNS/host strings.
 

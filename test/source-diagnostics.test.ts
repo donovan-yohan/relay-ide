@@ -1,8 +1,37 @@
+import type { IncomingMessage } from 'node:http';
+import type { Request } from 'express';
 import { describe, expect, it } from 'vitest';
 import {
   evaluateRelayNodeSource,
+  sourceTupleFromIncomingMessage,
+  sourceTupleFromRequest,
   sourcesMatch,
 } from '../server/node-source-diagnostics.js';
+
+function fakeExpressRequest(input: {
+  remoteAddress?: string;
+  ip?: string;
+  headers?: Record<string, string>;
+}): Request {
+  const headers = new Map(
+    Object.entries(input.headers ?? {}).map(([key, value]) => [key.toLowerCase(), value])
+  );
+  return {
+    socket: { remoteAddress: input.remoteAddress },
+    ip: input.ip,
+    header: (name: string) => headers.get(name.toLowerCase()),
+  } as unknown as Request;
+}
+
+function fakeIncomingMessage(input: {
+  remoteAddress?: string;
+  headers?: Record<string, string>;
+}): IncomingMessage {
+  return {
+    socket: { remoteAddress: input.remoteAddress },
+    headers: input.headers ?? {},
+  } as unknown as IncomingMessage;
+}
 
 describe('relay node source diagnostics', () => {
   it('strict-denies unavailable source when a Tailscale source is already bound', () => {
@@ -48,5 +77,53 @@ describe('relay node source diagnostics', () => {
     expect(evaluation.matchesExpected).toBe(true);
     expect(evaluation.normalizedObserved).toMatchObject({ tailnetIp: '100.64.0.9' });
     expect(evaluation.diagnostics.state).toBe('source-match');
+  });
+
+  it('ignores caller-controlled source headers on HTTP requests', () => {
+    expect(
+      sourceTupleFromRequest(
+        fakeExpressRequest({
+          remoteAddress: '127.0.0.1',
+          ip: '127.0.0.1',
+          headers: {
+            'x-relay-node-tailnet-ip': '100.64.0.9',
+            'x-relay-node-magicdns-name': 'forged.tailnet.ts.net',
+          },
+        })
+      )
+    ).toBeUndefined();
+
+    expect(
+      sourceTupleFromRequest(
+        fakeExpressRequest({
+          remoteAddress: '100.64.0.10',
+          ip: '100.64.0.10',
+          headers: { 'x-relay-node-tailnet-ip': '100.64.0.9' },
+        })
+      )
+    ).toEqual({ tailnetIp: '100.64.0.10' });
+  });
+
+  it('ignores caller-controlled source headers on websocket upgrade requests', () => {
+    expect(
+      sourceTupleFromIncomingMessage(
+        fakeIncomingMessage({
+          remoteAddress: '127.0.0.1',
+          headers: {
+            'x-relay-node-tailnet-ip': '100.64.0.9',
+            'x-relay-node-magicdns-name': 'forged.tailnet.ts.net',
+          },
+        })
+      )
+    ).toBeUndefined();
+
+    expect(
+      sourceTupleFromIncomingMessage(
+        fakeIncomingMessage({
+          remoteAddress: '100.64.0.10',
+          headers: { 'x-relay-node-tailnet-ip': '100.64.0.9' },
+        })
+      )
+    ).toEqual({ tailnetIp: '100.64.0.10' });
   });
 });

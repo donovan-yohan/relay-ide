@@ -185,11 +185,11 @@ Diagnostic states:
 
 | State | Operational meaning | Default behavior |
 | --- | --- | --- |
-| `signal-unavailable` | The request did not include a usable Tailscale/MagicDNS source signal. | Allowed and audited. This remains allow/audit even when strict-deny mode is enabled, because lack of signal is not proof of credential replay. |
+| `signal-unavailable` | The request did not include a usable socket/Tailscale source signal. Caller-provided source headers are not trusted as authoritative source evidence. | Allowed and audited in default mode. With strict-deny enabled, this is denied when the credential already has a Tailscale/MagicDNS source binding, because an untrusted or missing signal cannot prove the credential is still on the expected source. |
 | `source-match` | The observed source matches the source bound to the node credential from pairing or a prior valid reconnect. | Allowed and audited. |
 | `source-mismatch` | A usable source signal was observed, but it does not match the credential's expected source. | If the credential otherwise validates, default audit mode allows it and surfaces the mismatch for investigation. With strict-deny mode enabled, this becomes `strict-deny`. |
 | `same-credential-multiple-sources` | The same node credential has been observed from more than one redacted source fingerprint. | If the credential otherwise validates, default audit mode allows it as a high-suspicion warning that usually means a credential was copied or replayed. With strict-deny mode enabled, this becomes `strict-deny`. |
-| `strict-deny` | Strict source enforcement is enabled and a reachable source mismatch was detected. | The node credential auth attempt is rejected with a typed `FORBIDDEN` response carrying redacted `sourceDiagnostics`. |
+| `strict-deny` | Strict source enforcement is enabled and the request either mismatched the expected source or lacked trusted source evidence for an already source-bound credential. | The node credential auth attempt is rejected with a typed `FORBIDDEN` response carrying redacted `sourceDiagnostics`. |
 
 By default Relay runs source diagnostics in warn/audit mode. To opt in to enforcement for node credential traffic, start the hub with:
 

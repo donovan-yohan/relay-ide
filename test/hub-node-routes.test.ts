@@ -585,24 +585,11 @@ describe('hub node routes and link', () => {
     cleanup.push(() => close(server));
     const base = `http://127.0.0.1:${port}`;
 
-    const pairRes = await fetch(`${base}/hub/pair-tokens`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
-      body: JSON.stringify({ displayName: 'Strict Node' }),
+    const exchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({ displayName: 'Strict Node' }).pairToken,
+      manifest: manifest(),
+      source: { tailnetIp: '100.90.12.34' },
     });
-    const pair = (await pairRes.json()) as { pairToken: string };
-    const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-relay-node-tailnet-ip': '100.90.12.34',
-      },
-      body: JSON.stringify({ pairToken: pair.pairToken, manifest: manifest() }),
-    });
-    expect(exchangeRes.status).toBe(201);
-    const exchanged = (await exchangeRes.json()) as {
-      credential: { token: string; nodeId: string };
-    };
 
     const deniedHeartbeat = await fetch(`${base}/hub/node-heartbeat`, {
       method: 'POST',
@@ -629,14 +616,15 @@ describe('hub node routes and link', () => {
     });
     expect(nodesRes.status).toBe(200);
     const nodes = (await nodesRes.json()) as {
-      nodes: Array<{ sourceDiagnostics?: { sourceFingerprint?: string } }>;
+      nodes: Array<{ sourceDiagnostics?: { state?: string; reasonCode?: string } }>;
     };
-    expect(nodes.nodes[0]?.sourceDiagnostics?.sourceFingerprint).toMatch(
-      /^src_[a-f0-9]{32}$/
-    );
+    expect(nodes.nodes[0]?.sourceDiagnostics).toMatchObject({
+      state: 'strict-deny',
+      reasonCode: 'NODE_SOURCE_STRICT_DENY',
+    });
   });
 
-  it('denies strict source mismatches on reverse websocket upgrades while allowing matching sources', async () => {
+  it('denies spoofed source headers on reverse websocket upgrades while allowing unbound credentials', async () => {
     const previousStrictDeny = process.env.RELAY_NODE_SOURCE_STRICT_DENY;
     process.env.RELAY_NODE_SOURCE_STRICT_DENY = '1';
     cleanup.push(() => {
@@ -674,10 +662,13 @@ describe('hub node routes and link', () => {
     });
     expect(mismatchedUpgrade).toMatch(/^HTTP\/1\.1 403/);
 
+    const unboundExchanged = registry.exchangePairToken({
+      pairToken: registry.createPairToken({}).pairToken,
+      manifest: manifest(),
+    });
     const ws = new WebSocket(`ws://127.0.0.1:${port}/hub/node-link`, {
       headers: {
-        authorization: `Bearer ${exchanged.credential.token}`,
-        'x-relay-node-tailnet-ip': '100.90.12.34',
+        authorization: `Bearer ${unboundExchanged.credential.token}`,
       },
     });
     cleanup.push(() => ws.close());
