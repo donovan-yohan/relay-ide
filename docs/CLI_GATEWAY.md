@@ -71,7 +71,7 @@ Error:
 }
 ```
 
-The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvelopeSchema`. It includes auth/connectivity errors, typed create/validation errors, file RPC errors (`NOT_FOUND`, `FORBIDDEN`, `NODE_OFFLINE`, `CONFIRMATION_REQUIRED`), control hand-back state errors (`CONTROL_STATE_STALE`, `INTERVENTION_ACK_REQUIRED`, `INTERVENTION_ACK_STALE`, `CONTROL_STATE_UNKNOWN`), and typed supervisor action errors. Multi-target supervisor action denials can also appear inside a successful action envelope as per-target `results[].error` entries; see [Supervisor typed actions and rmux mapping](#supervisor-typed-actions-and-rmux-mapping-704).
+The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvelopeSchema`. It includes auth/connectivity errors, typed create/validation errors, file RPC errors (`NOT_FOUND`, `FORBIDDEN`, `NODE_OFFLINE`, `CONFIRMATION_REQUIRED`), control hand-back state errors (`CONTROL_STATE_STALE`, `INTERVENTION_ACK_REQUIRED`, `INTERVENTION_ACK_STALE`, `CONTROL_STATE_UNKNOWN`), and typed supervisor action errors. Multi-target supervisor action denials can also appear inside a successful action envelope as per-target `results[].error` entries; see [Supervisor typed actions and rmux mapping](#supervisor-typed-actions-and-rmux-mapping-704). `CONFIRMATION_REQUIRED` means the agent must pause for a human/operator approval of the exact operation described by the returned challenge; it is not a prompt to ask for a broader grant.
 
 ## Discovery and schemas
 
@@ -289,6 +289,21 @@ Fail-closed examples:
 
 The gateway must never silently downgrade unsupported scoped, privileged, or control-mode requests.
 
+## Exact-operation confirmation challenges (#807)
+
+High-risk routed operations can return a normal error envelope with `error.code: "CONFIRMATION_REQUIRED"` and `error.details.challenge`. The challenge is the pause point: the agent or adapter must stop before executing the operation, show the human/operator enough safe metadata to decide, and wait for an approved token. Do not auto-approve from the same actor/session, and do not treat approval as a reusable capability grant.
+
+The challenge is bound to the original requester, node, session/work context, intent/action/target, capability bits, scope hash, canonical params hash, TTL, and approval target. For File RPC writes, the canonical params include action, path, mode, expected hash, decoded byte count, and SHA-256 of the bytes; raw file bytes and confirmation tokens are not safe to log. For exec-style operations, command and cwd may be shown to the approving human but should not be pasted into durable logs if they contain secret-looking values.
+
+The currently implemented retry shape is:
+
+1. The original command returns `CONFIRMATION_REQUIRED` with a `challengeId`, status, reason code, expiry, required/challenge bits, and contract metadata.
+2. A distinct authenticated human/operator approves or denies through the existing hub confirmation surface (`POST /hub/confirmations/:challengeId/approve`). This MVP does not ship passkey/WebAuthn/TOTP, multi-approver policy, or a broad approval center.
+3. The original requester fetches its one-time token with `POST /hub/confirmations/:challengeId/requester-token`.
+4. The requester retries the same CLI operation with `--confirmation-token <token>` or `confirmationToken` in the request body.
+
+Denial, expiry, requester mismatch, context drift, parameter drift, same-session/self-approval, wrong approval target, audit-write failure, and token reuse fail closed. After any of those outcomes, retrying begins with a new command attempt and a fresh challenge. Reusing the old token or changing parameters under the approved token must be reported as a failed redemption, not retried silently.
+
 ## Session stream and input
 
 `relay-ide v1 sessions stream --id <id> --mode ndjson --json` opens the same authenticated PTY attach path as the browser tab and emits newline-delimited gateway envelopes. Each output chunk is a `sessions.stream` success envelope with `data.event: "data"`, UTF-8 `data.data`, `bytes`, and a monotonic `sequence`. When the CLI detaches or the PTY closes, it emits one final `data.event: "closed"` envelope with `closeCode`, `reason`, `frames`, `bytesReceived`, and `truncated`.
@@ -434,7 +449,7 @@ The CLI first resolves the session through `sessions get` unless `--node-id` is 
 POST /hub/nodes/:nodeId/sessions/:sessionId/files/:operation
 ```
 
-Only these operations are stable in v1:
+Only these file operations are stable in v1:
 
 - `files.list` maps to `fs.list` and requires `session:read` + `rpc:fs:list`.
 - `files.stat` maps to `fs.stat` and requires `session:read` + `rpc:fs:read`.
@@ -501,7 +516,7 @@ Read example:
 }
 ```
 
-File commands remain read-only. They must surface unavailable node, missing path, denied capability, stale/expired session envelope, and confirmation-required states as typed error envelopes. They must not fall back to local filesystem reads when the scoped file RPC route rejects a request.
+File commands must surface unavailable node, missing path, denied capability, stale/expired session envelope, and confirmation-required states as typed error envelopes. They must not fall back to local filesystem reads or writes when the scoped file RPC route rejects a request.
 
 ## Intervention and hand-back boundaries
 
@@ -557,4 +572,4 @@ relay-ide v1 events subscribe --topic sessions --max-events 1 --json
 
 ## Deferred work
 
-Event subscription beyond `events.subscribe` (multi-topic fan-out, cursor/resume, replay), multi-session fan-out, File RPC write/delete/tail, destructive operations, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.
+Event subscription beyond `events.subscribe` (multi-topic fan-out, cursor/resume, replay), multi-session fan-out, File RPC delete/tail, arbitrary exec/destructive operations, stronger approval authentication, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.

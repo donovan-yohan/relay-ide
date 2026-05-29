@@ -17,7 +17,7 @@ Relay auth is split into lanes. The current route inventory is checked into `ser
 
 The PIN and `token` cookie are therefore browser/UI authentication. They reduce drive-by browser access and support first-load local setup, but they cannot protect Relay from malicious processes already running as the same OS user: those processes can usually read local config, invoke local CLIs, attach to local sockets, or modify the checkout. Relay's federated security model relies on lane separation, node credentials, hub ACLs, capability policy, audit, revocation, and scoped actor credentials for non-browser actors rather than treating the browser PIN as global authorization.
 
-Relay issue `#427` shipped the earlier trust-tier/capability/audit/confirmation backbone. Relay issue `#797` tracks the broader multi-node auth model. Relay issue `#798` wave 1 narrowed that work to route-lane inventory, browser-session terminology, and typed lane denials. Relay issue `#802` adds the scoped actor credential registry MVP; it deliberately does not migrate every CLI gateway command, implement node proof-of-possession, passkeys, TOTP, or new approval UX. Relay issue `#803` hardens node identity lifecycle semantics by separating stable node identity from replaceable credential records.
+Relay issue `#427` shipped the earlier trust-tier/capability/audit/confirmation backbone. Relay issue `#797` tracks the broader multi-node auth model. Relay issue `#798` wave 1 narrowed that work to route-lane inventory, browser-session terminology, and typed lane denials. Relay issue `#802` adds the scoped actor credential registry MVP; it deliberately does not migrate every CLI gateway command, implement node proof-of-possession, passkeys, TOTP, or new approval UX. Relay issue `#803` hardens node identity lifecycle semantics by separating stable node identity from replaceable credential records. Relay issue `#807` adds the high-risk approval hook contract for exact-operation challenges; it is still not MFA, passkeys/WebAuthn, TOTP, enterprise RBAC, or a broad approval-center UX.
 
 ## Node identity lifecycle
 
@@ -25,13 +25,13 @@ Node identity is not the same thing as a node credential. The hub registry keeps
 
 The lifecycle states exposed to operators are:
 
-| State | Security meaning |
-| --- | --- |
-| `active` | The node has a valid active credential for heartbeat and `/hub/node-link`. |
-| `rotating` | A next credential exists and is provable, but the old credential remains active until heartbeat proof. |
-| `rotation-failed` | Delivery failed or was marked failed; the previous credential remains active until an operator clears the rotation or retries safely. |
-| `revoked` | The node identity remains in registry history, active links are closed, and the credential is rejected without grace. |
-| re-pair required | Authentication returns typed recovery errors such as `NODE_CREDENTIAL_MISSING`, `NODE_CREDENTIAL_MALFORMED`, `NODE_CREDENTIAL_MISMATCH`, `NODE_CREDENTIAL_EXPIRED`, `NODE_REVOKED`, or `REPAIR_REQUIRED`; the operator must run a fresh pair-token exchange. |
+| State             | Security meaning                                                                                                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `active`          | The node has a valid active credential for heartbeat and `/hub/node-link`.                                                                                                                                                                                   |
+| `rotating`        | A next credential exists and is provable, but the old credential remains active until heartbeat proof.                                                                                                                                                       |
+| `rotation-failed` | Delivery failed or was marked failed; the previous credential remains active until an operator clears the rotation or retries safely.                                                                                                                        |
+| `revoked`         | The node identity remains in registry history, active links are closed, and the credential is rejected without grace.                                                                                                                                        |
+| re-pair required  | Authentication returns typed recovery errors such as `NODE_CREDENTIAL_MISSING`, `NODE_CREDENTIAL_MALFORMED`, `NODE_CREDENTIAL_MISMATCH`, `NODE_CREDENTIAL_EXPIRED`, `NODE_REVOKED`, or `REPAIR_REQUIRED`; the operator must run a fresh pair-token exchange. |
 
 Browser auth is intentionally non-dependent. Browser PIN/cookie auth can authorize operator UI/API routes that mint pair tokens or request rotation/revocation, but it is not accepted by node heartbeat or `/hub/node-link`. Node credentials are likewise not browser, CLI, scoped actor, or human impersonation credentials.
 
@@ -90,15 +90,39 @@ Default legacy grants are intentionally boring:
 
 `session:control:kill` is intentionally separate from `session:attach`: attaching or streaming a session is not authority to terminate it. Pause/retry controls are not routed in this slice; when added, they need explicit high-risk control bits instead of reusing attach.
 
-`rpc:fs:write` is now shipped (#428). The node executor writes via atomic rename (write-to-temp + `fs.rename`). Prod-tier nodes gate writes behind the two-token confirmation challenge — the hub returns `CONFIRMATION_REQUIRED` on the first POST; the caller must obtain an approved `confirmationToken` and re-POST with it. The CLI enforces a 1 MiB cap on base64-decoded content before the HTTP call.
+`rpc:fs:write` is now shipped (#428). The node executor writes via atomic rename (write-to-temp + `fs.rename`). Prod-tier nodes gate writes behind the exact-operation confirmation challenge — the hub returns `CONFIRMATION_REQUIRED` on the first POST; the caller must obtain an approved `confirmationToken` and re-POST the same operation with it. The CLI enforces a 1 MiB cap on base64-decoded content before the HTTP call.
 
-The schema exists before the full policy evaluator. Current routed surfaces still have their existing route-level checks; this slice adds the policy authority data model and legacy defaults so later gates have a safe source of truth.
+## Exact-operation high-risk approval hook
+
+The #807 MVP makes approval a one-time authorization for one canonical operation. It is not a blanket trust upgrade, not a new capability grant, and not permission for the actor to perform similar future work. A successful approval is redeemed once; a retry after denial, expiry, mismatch, or reuse starts from a fresh challenge.
+
+The current high-risk classifier requires approval for these implemented families when they appear in the routed policy decision: cross-node session/node control, capability escalation (`node:acl:widen` / grant-style actions), shell or arbitrary PTY exec, file write/delete or boundary-crossing mutation, credential/secret export, node revoke/rotate/re-pair/destroy, destructive session control, and any otherwise-routed capability listed in `HIGH_RISK_CAPABILITIES`. Low-risk read and ref-only context/inbox operations stay silent-allow when policy allows them; unknown operations or unknown capability strings deny instead of prompting.
+
+Challenge binding includes the requester auth-session hash, actor type/id hash, scoped credential id/jti hash when present, node id, session id, work-context id, intent/action/target, required and challenged capability bits, ACL/policy refs, trust tier, scope hash, canonical params hash, TTL, approval target, and a stable `contractHash`. The approval target defaults to a human approval. When a target id or session is present, the approver must match it; scoped/autonomous requesters also require a structured approver identity so they cannot self-approve through the same actor, credential, or session.
+
+Safe metadata for operator lists, prompts, diagnostics, and issue handoffs is limited to challenge id/status, action, node/session/work-context ids, required/challenge bits, risk reason, created/expires/token-expires times, failed-redemption counts, reason code, message, `canonicalParamsHash`, `paramsHash`, `scopeHash`, `contractHash`, redacted identity hashes, and display names. Review prompts may show canonical params such as command/cwd, path/mode, expected hash, byte count, and content SHA-256 so a human can tell what they are approving; do not persist or paste raw params if they contain secret-looking values.
+
+Failure modes are fail-closed:
+
+| Case                                                                                                                  | Behavior                                                                                                  |
+| --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Human denies                                                                                                          | Challenge becomes `denied`/`revoked`; no token is usable.                                                 |
+| Challenge or token expires                                                                                            | Challenge becomes `expired`; the requester must repeat the operation to create a fresh challenge.         |
+| Requester, node, intent, capability set, session, scope, or canonical params drift                                    | Redemption fails with context/parameter mismatch; repeated parameter mismatches invalidate the challenge. |
+| Token is reused                                                                                                       | Redemption fails with `reuse_denied`; approvals are one-time only.                                        |
+| Same browser/auth session, same autonomous actor, same scoped credential, or same requester session attempts approval | Approval is rejected as self-approval.                                                                    |
+| Approval target does not match                                                                                        | Approval is rejected with `approval_target_invalid`.                                                      |
+| Approval audit write fails                                                                                            | The approval token is invalidated; destructive/high-risk flows do not continue without audit.             |
+
+The implemented approval transport is the existing authenticated hub confirmation surface: `GET /hub/confirmations`, `GET /hub/confirmations/:challengeId`, `POST /hub/confirmations/:challengeId/approve`, and requester-only `POST /hub/confirmations/:challengeId/requester-token`. The MVP may use the existing hub/browser confirmation components and mocked flows. Passkey/WebAuthn/TOTP, stronger human auth, multi-approver policy, and broad approval-center workflows are future auth-strength/UX work behind this same contract.
+
+The approval hook is a contract and in-process enforcement path for routed high-risk decisions. It does not by itself add every future high-risk command surface; new routed commands still need explicit policy mapping, audit coverage, and contract tests before adapters expose them.
 
 ## Hash-chained security audit sink
 
 Security audit entries are normalized in `shared/security-audit.ts` and persisted by `server/security-audit-log.ts` into `security-audit.db` under the Relay config directory unless a caller supplies a specific DB path. Each entry includes event id, timestamp, monotonic sequence, schema version, event type, decision, reason code, peer/node identity, trust tier, session id, intent, scope/params hashes, required/granted/denied bits, ACL/policy refs, correlation id, `prevHash`, and `entryHash`.
 
-Event types cover grants, denials, challenges, approvals, expiry, revocation, rotation, failed redemption, same-session approval attempts, and #470 bridge events. Raw bearer tokens, pair tokens, confirmation tokens, full env values, file bytes, and terminal byte streams must be passed through the audit redaction helpers before hashing; the persisted entry stores hashes for scope/params rather than raw payload bytes.
+Event types cover grants, denials, challenges, approvals, expiry, revocation, rotation, failed redemption, same-session approval attempts, and #470 bridge events. Raw bearer tokens, pair tokens, confirmation tokens, full env values, file bytes, and terminal byte streams must be passed through the audit redaction helpers before hashing; the persisted entry stores hashes for scope/params rather than raw payload bytes. Confirmation audit entries carry the same exact-operation context as the challenge, including required/granted/denied bits and correlation id, without storing the redemption token.
 
 Persistence uses a SQLite append-only table with an atomic insert transaction, update/delete rejection triggers, and a singleton tail checkpoint updated on every append. Verify with:
 
@@ -107,7 +131,7 @@ relay-ide audit verify --db ~/.config/relay-ide/security-audit.db
 relay-ide audit verify --db ~/.config/relay-ide/security-audit.db --json
 ```
 
-The verifier replays rows in sequence order and recomputes `prevHash` / `entryHash`, using SQLite row iteration so verification memory stays bounded by the largest row rather than total log size. It reports the exact first break location for gaps, row tamper, insert/reorder attacks, tail truncation relative to the stored checkpoint, and corrupt/partial storage. Hash chaining plus the DB-local checkpoint detects accidental corruption and post-hoc edits against the current DB file, but it is not remote attestation: a compromised hub/root account can still rewrite the whole history, recompute hashes, and rewrite the checkpoint unless future slices add external shipping or trusted timestamping. External SIEM, third-party timestamping, full PTY transcript recording, credential rotation, confirmation registries, and evaluator gates are intentionally outside this slice.
+The verifier replays rows in sequence order and recomputes `prevHash` / `entryHash`, using SQLite row iteration so verification memory stays bounded by the largest row rather than total log size. It reports the exact first break location for gaps, row tamper, insert/reorder attacks, tail truncation relative to the stored checkpoint, and corrupt/partial storage. Hash chaining plus the DB-local checkpoint detects accidental corruption and post-hoc edits against the current DB file, but it is not remote attestation: a compromised hub/root account can still rewrite the whole history, recompute hashes, and rewrite the checkpoint unless future slices add external shipping or trusted timestamping. External SIEM, third-party timestamping, full PTY transcript recording, durable/distributed confirmation registries, and stronger approval auth are intentionally outside this slice.
 
 Audit storage is intentionally unbounded in this slice: Relay does not yet enforce retention, rotation, or a maximum `security-audit.db` size. Operators must provision and monitor the config-directory storage accordingly; manual pruning or rotation will break the contiguous sequence/hash chain unless a future retention design preserves verifier semantics.
 
