@@ -220,8 +220,13 @@ import {
   cliGatewayActorFailure,
   cliGatewayCorrelationId,
   createCliGatewayActorRegistry,
+  createCliGatewayHandshakeGrantRegistry,
   isCliGatewayActorTokenRequest,
   issueCliGatewayActorCredential,
+  issueCliGatewayActorCredentialWithGrant,
+  listCliGatewayActorCredentialsWithGrant,
+  revokeCliGatewayActorCredentialWithGrant,
+  rotateCliGatewayActorCredentialWithGrant,
   sendCliGatewayActorFailure,
   validateCliGatewayActorCredential,
   type CliGatewayActorIssueInput,
@@ -234,6 +239,7 @@ const execFileAsync = promisify(execFile);
 const logger = createLogger('index');
 const localRelayNode = createLocalRelayNode();
 const cliGatewayActorRegistry = createCliGatewayActorRegistry();
+const cliGatewayHandshakeGrantRegistry = createCliGatewayHandshakeGrantRegistry();
 
 // When run via CLI bin, config lives in ~/.config/relay-ide/
 // When run directly (development), fall back to local config.json
@@ -1831,30 +1837,66 @@ async function main(): Promise<void> {
     };
   };
 
-  app.post('/cli-gateway/actor-credentials', requireAuth, (req, res) => {
+  const actorLifecycleAuth: express.RequestHandler = (req, res, next) => {
+    const body = isRecord(req.body) ? req.body : {};
+    if (typeof body['grantHandle'] === 'string') {
+      next();
+      return;
+    }
+    requireAuth(req, res, next);
+  };
+
+  const actorLifecycleError = (res: express.Response, error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason =
+      error instanceof Error && 'reason' in error && typeof error.reason === 'string'
+        ? error.reason
+        : 'issue_failed';
+    res.status(reason === 'credential_not_found' ? 404 : 400).json({
+      error: {
+        code: `CLI_ACTOR_CREDENTIAL_${reason.toUpperCase()}`,
+        message,
+        retryable: false,
+      },
+    });
+  };
+
+  app.post('/cli-gateway/actor-credentials', actorLifecycleAuth, (req, res) => {
     try {
-      const issued = issueCliGatewayActorCredential(
-        cliGatewayActorRegistry,
-        isRecord(req.body) ? (req.body as CliGatewayActorIssueInput) : {}
-      );
+      const body = isRecord(req.body) ? (req.body as CliGatewayActorIssueInput) : {};
+      const issued =
+        isRecord(req.body) && typeof req.body['grantHandle'] === 'string'
+          ? issueCliGatewayActorCredentialWithGrant(
+              cliGatewayActorRegistry,
+              cliGatewayHandshakeGrantRegistry,
+              req.body
+            )
+          : issueCliGatewayActorCredential(cliGatewayActorRegistry, body);
       res.status(201).json({
         token: issued.token,
         credential: issued.credential,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(400).json({
-        error: {
-          code: 'CLI_ACTOR_CREDENTIAL_ISSUE_FAILED',
-          message,
-          retryable: false,
-        },
-      });
+      actorLifecycleError(res, error);
     }
   });
 
   app.get('/cli-gateway/actor-credentials', requireAuth, (_req, res) => {
     res.json({ credentials: cliGatewayActorRegistry.listCredentials() });
+  });
+
+  app.post('/cli-gateway/actor-credentials/list', (req, res) => {
+    try {
+      const body = isRecord(req.body) ? req.body : {};
+      const listed = listCliGatewayActorCredentialsWithGrant(
+        cliGatewayActorRegistry,
+        cliGatewayHandshakeGrantRegistry,
+        body
+      );
+      res.json(listed);
+    } catch (error) {
+      actorLifecycleError(res, error);
+    }
   });
 
   app.delete('/cli-gateway/actor-credentials/:id', requireAuth, (req, res) => {
@@ -1888,6 +1930,58 @@ async function main(): Promise<void> {
       return;
     }
     res.json({ credential });
+  });
+
+  app.post('/cli-gateway/actor-credentials/:id/revoke', (req, res) => {
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({
+        error: {
+          code: 'CLI_ACTOR_CREDENTIAL_ID_REQUIRED',
+          message: 'credential id is required',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    try {
+      const body = isRecord(req.body) ? req.body : {};
+      const credential = revokeCliGatewayActorCredentialWithGrant(
+        cliGatewayActorRegistry,
+        cliGatewayHandshakeGrantRegistry,
+        id,
+        body
+      );
+      res.json({ credential });
+    } catch (error) {
+      actorLifecycleError(res, error);
+    }
+  });
+
+  app.post('/cli-gateway/actor-credentials/:id/rotate', (req, res) => {
+    const id = req.params['id'];
+    if (!id) {
+      res.status(400).json({
+        error: {
+          code: 'CLI_ACTOR_CREDENTIAL_ID_REQUIRED',
+          message: 'credential id is required',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    try {
+      const body = isRecord(req.body) ? req.body : {};
+      const rotated = rotateCliGatewayActorCredentialWithGrant(
+        cliGatewayActorRegistry,
+        cliGatewayHandshakeGrantRegistry,
+        id,
+        body
+      );
+      res.status(201).json(rotated);
+    } catch (error) {
+      actorLifecycleError(res, error);
+    }
   });
 
   const collectLocalInventory = () =>

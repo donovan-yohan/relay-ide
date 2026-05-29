@@ -134,9 +134,9 @@ Local discovery commands (`relay-ide v1 --list --json`, `relay-ide v1 schema --j
 
 ### Mint, use, revoke, and rotate
 
-The current MVP exposes credential lifecycle through hub operator endpoints, not through stable `relay-ide v1` adapter commands. Mint/list/revoke requests require the existing hub operator auth path, or `NO_PIN=1` in local dev. That operator auth authorizes issuing a delegated credential; the resulting actor token is not a browser login, is not a node credential, and does not pair a node.
+The current MVP exposes credential lifecycle through hub operator endpoints, not through stable `relay-ide v1` adapter commands. Browser-authenticated operators may mint/list/revoke with the existing hub operator auth path (`NO_PIN=1` in local dev). #815 also allows an approved one-time operator handshake grant for the same lifecycle without browser-cookie fallback. Grant-backed lifecycle calls must carry a handshake `grantHandle`, exact audience `relay:cli-gateway:v1`, actor type/id, explicit `session:read` capability bits, at least one concrete scope dimension, TTL or expiry, and a correlation id.
 
-Mint a short-lived CLI actor token:
+Mint a short-lived CLI actor token with browser operator auth:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:3456/cli-gateway/actor-credentials \
@@ -151,25 +151,57 @@ curl -sS -X POST http://127.0.0.1:3456/cli-gateway/actor-credentials \
   }'
 ```
 
-The response includes `token` once and a public `credential` record. Store the token in the calling process or a secret manager; do not paste it into issues, logs, screenshots, or test snapshots. Use the returned `credential.id` for list/revoke/audit references.
+Mint the same token family with an approved handshake grant:
 
-List public credential records:
+```bash
+curl -sS -X POST http://127.0.0.1:3456/cli-gateway/actor-credentials \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "grantHandle": "<approved-one-time-handshake-grant>",
+    "audience": "relay:cli-gateway:v1",
+    "actor": { "type": "cli", "id": "relay-cli" },
+    "capabilities": ["session:read"],
+    "ttlMs": 300000,
+    "scope": { "sessionIds": ["<session-id>"] },
+    "correlationId": "cli-actor-grant-mint-1"
+  }'
+```
+
+The response includes `token` once and a public `credential` record. Store the token in the calling process or a secret manager; do not paste it into issues, logs, screenshots, or test snapshots. Use the returned `credential.id` for list/revoke/audit references. Public records include the issuer/grant id and redacted metadata only; raw grant handles and bearer material are never returned.
+
+List public credential records with browser auth or a fresh grant handle:
 
 ```bash
 curl -sS http://127.0.0.1:3456/cli-gateway/actor-credentials \
   -b 'token=<operator-browser-session-cookie>'
+
+curl -sS -X POST http://127.0.0.1:3456/cli-gateway/actor-credentials/list \
+  -H 'Content-Type: application/json' \
+  -d '{"grantHandle":"<approved-one-time-handshake-grant>","audience":"relay:cli-gateway:v1","actor":{"type":"cli","id":"relay-cli"},"capabilities":["session:read"],"scope":{"sessionIds":["<session-id>"]},"correlationId":"cli-actor-grant-list-1"}'
 ```
 
-Revoke by credential id:
+Revoke by credential id with browser auth or a fresh grant handle:
 
 ```bash
 curl -sS -X DELETE http://127.0.0.1:3456/cli-gateway/actor-credentials/<credential-id> \
   -H 'Content-Type: application/json' \
   -b 'token=<operator-browser-session-cookie>' \
-  -d '{"revokedBy":"operator","reason":"rotation","correlationId":"cli-actor-rotate-1"}'
+  -d '{"revokedBy":"operator","reason":"rotation","correlationId":"cli-actor-revoke-1"}'
+
+curl -sS -X POST http://127.0.0.1:3456/cli-gateway/actor-credentials/<credential-id>/revoke \
+  -H 'Content-Type: application/json' \
+  -d '{"grantHandle":"<approved-one-time-handshake-grant>","audience":"relay:cli-gateway:v1","actor":{"type":"cli","id":"relay-cli"},"scope":{"sessionIds":["<session-id>"]},"correlationId":"cli-actor-grant-revoke-1"}'
 ```
 
-Rotation is mint-new-then-revoke-old in this slice. There is no separate rotate endpoint: issue a replacement credential with a new TTL/scope, update the automation to use the new token, then revoke the old credential id. Revocation is in-process and applies to future validations by id/jti; expiry is checked on every validation.
+Rotation is mint-new-then-revoke-old in this slice. The grant-backed rotate endpoint performs that ordering in one request with a fresh grant handle and returns `{ token, credential, revoked }`; browser-authenticated operators can do the same manually by issuing a replacement credential, updating the automation to use the new token, then revoking the old credential id. Revocation is in-process and applies to future validations by id/jti; expiry is checked on every validation.
+
+```bash
+curl -sS -X POST http://127.0.0.1:3456/cli-gateway/actor-credentials/<credential-id>/rotate \
+  -H 'Content-Type: application/json' \
+  -d '{"grantHandle":"<approved-one-time-handshake-grant>","audience":"relay:cli-gateway:v1","actor":{"type":"cli","id":"relay-cli"},"ttlMs":300000,"scope":{"sessionIds":["<session-id>"]},"correlationId":"cli-actor-grant-rotate-1"}'
+```
+
+Grant-backed requests are denied before minting when the handle is revoked, expired, replayed, from a different credential lane, scoped to another actor/session/task, asks for another audience, omits scope/TTL, or requests wildcard/unknown/non-allowlisted capabilities. Denial copy must mention stable reason codes, credential/grant ids, and correlation ids only; redact bearer tokens, grant handles, cookies, node credentials, approval secrets, and raw secret-looking reason strings.
 
 ### Lane separation
 

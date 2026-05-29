@@ -31,6 +31,7 @@ export type HandshakeGrantActorType =
 
 export const HANDSHAKE_GRANT_AUDIENCES = [
   'relay:operator-handshake:v1',
+  'relay:cli-gateway:v1',
   NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
   'relay:registry-test',
 ] as const;

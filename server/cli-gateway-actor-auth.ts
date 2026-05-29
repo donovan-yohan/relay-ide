@@ -1,18 +1,30 @@
 import type { Request, Response } from 'express';
 import {
+  HandshakeGrantRegistry,
+  type HandshakeGrantActor,
+  type HandshakeGrantScope,
+  type HandshakeGrantSessionBinding,
+  type HandshakeGrantValidationFailureReason,
+  type HandshakeGrantValidationScope,
+} from '../shared/operator-handshake-grants.js';
+import {
   ScopedActorCredentialRegistry,
   type ScopedActorCredentialRecord,
   type ScopedActorCredentialScope,
   type ScopedActorCredentialValidationFailureReason,
   type ScopedActorCredentialValidationResult,
 } from '../shared/scoped-actor-credentials.js';
-import type { RelayCapabilityBit } from '../shared/security-policy.js';
+import {
+  isRelayCapabilityBit,
+  type RelayCapabilityBit,
+} from '../shared/security-policy.js';
 
 export const CLI_GATEWAY_ACTOR_AUDIENCE = 'relay:cli-gateway:v1' as const;
 export const CLI_GATEWAY_READ_SCOPE_TASK_REF = 'relay:cli-gateway:v1:read' as const;
 export const CLI_GATEWAY_ACTOR_TOKEN_HEADER = 'x-relay-cli-actor-token' as const;
 export const CLI_GATEWAY_COMMAND_HEADER = 'x-relay-cli-command' as const;
 export const CLI_GATEWAY_CORRELATION_ID_HEADER = 'x-relay-correlation-id' as const;
+export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = ['session:read'] as const;
 export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'nodes.list',
   'sessions.list',
@@ -33,6 +45,38 @@ export interface CliGatewayActorIssueInput {
   expiresAt?: unknown;
   metadata?: unknown;
   correlationId?: unknown;
+}
+
+export interface CliGatewayGrantActorLifecycleInput extends CliGatewayActorIssueInput {
+  grantHandle?: unknown;
+  audience?: unknown;
+  grantActor?: { type?: unknown; id?: unknown; displayName?: unknown };
+  deviceId?: unknown;
+  sessionBinding?: unknown;
+}
+
+export type CliGatewayActorGrantFailureReason =
+  | HandshakeGrantValidationFailureReason
+  | 'grant_handle_required'
+  | 'actor_required'
+  | 'issuer_required'
+  | 'ttl_required'
+  | 'audience_required'
+  | 'audience_expansion'
+  | 'capability_required'
+  | 'capability_expansion'
+  | 'scope_required'
+  | 'credential_not_found';
+
+export class CliGatewayActorGrantError extends Error {
+  constructor(
+    public readonly reason: CliGatewayActorGrantFailureReason,
+    message: string,
+    public readonly grantId?: string
+  ) {
+    super(`${reason.toUpperCase()}: ${message}`);
+    this.name = 'CliGatewayActorGrantError';
+  }
 }
 
 export interface CliGatewayActorValidationInput {
@@ -67,6 +111,10 @@ type RequestWithAuthenticatedCliGatewayActor = Request & {
 
 export function createCliGatewayActorRegistry(): ScopedActorCredentialRegistry {
   return new ScopedActorCredentialRegistry();
+}
+
+export function createCliGatewayHandshakeGrantRegistry(): HandshakeGrantRegistry {
+  return new HandshakeGrantRegistry();
 }
 
 export function attachAuthenticatedCliGatewayActorCredential(
@@ -221,17 +269,128 @@ export function issueCliGatewayActorCredential(
   });
 }
 
+export function issueCliGatewayActorCredentialWithGrant(
+  registry: ScopedActorCredentialRegistry,
+  grantRegistry: HandshakeGrantRegistry,
+  input: CliGatewayGrantActorLifecycleInput
+): { token: string; credential: ScopedActorCredentialRecord } {
+  const request = strictGrantLifecycleRequest(input);
+  const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  const issued = registry.issue({
+    actor: request.actor,
+    issuer: {
+      id: grant.id,
+      ...(grant.issuer.displayName ? { displayName: grant.issuer.displayName } : {}),
+    },
+    grantId: grant.id,
+    audience: request.audience,
+    capabilities: request.capabilities,
+    scope: request.scope,
+    ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
+    ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
+    ...(isRecord(input.metadata) ? { metadata: input.metadata } : {}),
+    correlationId: request.correlationId,
+  });
+  return issued;
+}
+
+export function listCliGatewayActorCredentialsWithGrant(
+  registry: ScopedActorCredentialRegistry,
+  grantRegistry: HandshakeGrantRegistry,
+  input: CliGatewayGrantActorLifecycleInput
+): { credentials: ScopedActorCredentialRecord[] } {
+  const request = strictGrantLifecycleRequest(input, { ttlRequired: false });
+  validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  return {
+    credentials: registry
+      .listCredentials()
+      .filter((credential) => credentialMatchesGrantLifecycleRequest(credential, request)),
+  };
+}
+
+export function revokeCliGatewayActorCredentialWithGrant(
+  registry: ScopedActorCredentialRegistry,
+  grantRegistry: HandshakeGrantRegistry,
+  credentialId: string,
+  input: CliGatewayGrantActorLifecycleInput
+): ScopedActorCredentialRecord {
+  const existing = registry.getCredential(credentialId);
+  if (!existing) {
+    throw new CliGatewayActorGrantError(
+      'credential_not_found',
+      'scoped actor credential not found'
+    );
+  }
+  const request = strictGrantLifecycleRequest(input, {
+    ttlRequired: false,
+    capabilities: existing.capabilities,
+    scope: existing.scope,
+    actor: existing.actor,
+  });
+  const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  const credential = registry.revoke(credentialId, {
+    revokedBy: `grant:${grant.id}`,
+    ...(typeof input.metadata === 'object' && input.metadata && 'reason' in input.metadata
+      ? { reason: String((input.metadata as { reason?: unknown }).reason ?? '') }
+      : {}),
+    correlationId: request.correlationId,
+  });
+  if (!credential) {
+    throw new CliGatewayActorGrantError(
+      'credential_not_found',
+      'scoped actor credential not found',
+      grant.id
+    );
+  }
+  return credential;
+}
+
+export function rotateCliGatewayActorCredentialWithGrant(
+  registry: ScopedActorCredentialRegistry,
+  grantRegistry: HandshakeGrantRegistry,
+  credentialId: string,
+  input: CliGatewayGrantActorLifecycleInput
+): { token: string; credential: ScopedActorCredentialRecord; revoked: ScopedActorCredentialRecord } {
+  const existing = registry.getCredential(credentialId);
+  if (!existing) {
+    throw new CliGatewayActorGrantError(
+      'credential_not_found',
+      'scoped actor credential not found'
+    );
+  }
+  const request = strictGrantLifecycleRequest(input, {
+    capabilities: existing.capabilities,
+    scope: existing.scope,
+    actor: existing.actor,
+  });
+  const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
+  const issued = registry.issue({
+    actor: existing.actor,
+    issuer: {
+      id: grant.id,
+      ...(grant.issuer.displayName ? { displayName: grant.issuer.displayName } : {}),
+    },
+    grantId: grant.id,
+    audience: existing.audience,
+    capabilities: existing.capabilities,
+    scope: existing.scope,
+    ...(request.ttlMs != null ? { ttlMs: request.ttlMs } : {}),
+    ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
+    ...(isRecord(input.metadata) ? { metadata: input.metadata } : {}),
+    correlationId: request.correlationId,
+  });
+  const revoked = registry.revoke(credentialId, {
+    revokedBy: `grant:${grant.id}`,
+    reason: 'rotated by grant-backed lifecycle',
+    correlationId: request.correlationId,
+  });
+  if (!revoked) throw new Error('credential disappeared during rotation');
+  return { ...issued, revoked };
+}
+
 function scopeForValidation(
   scope: ScopedActorCredentialScope | undefined
-): {
-  nodeId?: string;
-  sessionId?: string;
-  globalSessionId?: string;
-  workContextId?: string;
-  repoId?: string;
-  path?: string;
-  taskRef?: string;
-} {
+): HandshakeGrantValidationScope {
   return {
     ...(scope?.nodeIds?.[0] ? { nodeId: scope.nodeIds[0] } : {}),
     ...(scope?.sessionIds?.[0] ? { sessionId: scope.sessionIds[0] } : {}),
@@ -244,6 +403,323 @@ function scopeForValidation(
     ...(scope?.repoIds?.[0] ? { repoId: scope.repoIds[0] } : {}),
     ...(scope?.pathPrefixes?.[0] ? { path: scope.pathPrefixes[0] } : {}),
     ...(scope?.taskRefs?.[0] ? { taskRef: scope.taskRefs[0] } : {}),
+  };
+}
+
+function credentialMatchesGrantLifecycleRequest(
+  credential: ScopedActorCredentialRecord,
+  request: StrictGrantLifecycleRequest
+): boolean {
+  return (
+    credential.audience === request.audience &&
+    credential.actor.type === request.actor.type &&
+    credential.actor.id === request.actor.id &&
+    listIsSubset(credential.capabilities, request.capabilities) &&
+    scopeIsAuthorizedByRequest(credential.scope, request.scope)
+  );
+}
+
+function scopeIsAuthorizedByRequest(
+  credentialScope: ScopedActorCredentialScope,
+  requestScope: ScopedActorCredentialScope
+): boolean {
+  return (
+    scopeDimensionIsAuthorized(credentialScope.nodeIds, requestScope.nodeIds) &&
+    scopeDimensionIsAuthorized(credentialScope.sessionIds, requestScope.sessionIds) &&
+    scopeDimensionIsAuthorized(
+      credentialScope.globalSessionIds,
+      requestScope.globalSessionIds
+    ) &&
+    scopeDimensionIsAuthorized(
+      credentialScope.workContextIds,
+      requestScope.workContextIds
+    ) &&
+    scopeDimensionIsAuthorized(credentialScope.repoIds, requestScope.repoIds) &&
+    scopeDimensionIsAuthorized(credentialScope.pathPrefixes, requestScope.pathPrefixes) &&
+    scopeDimensionIsAuthorized(credentialScope.taskRefs, requestScope.taskRefs)
+  );
+}
+
+function scopeDimensionIsAuthorized(
+  credentialValues: readonly string[] | undefined,
+  requestValues: readonly string[] | undefined
+): boolean {
+  if (!credentialValues?.length) return !requestValues?.length;
+  if (!requestValues?.length) return false;
+  return listIsSubset(credentialValues, requestValues);
+}
+
+function listIsSubset(
+  values: readonly string[],
+  allowed: readonly string[]
+): boolean {
+  return values.every((value) => allowed.includes(value));
+}
+
+type StrictGrantLifecycleRequest = {
+  grantHandle: string;
+  audience: typeof CLI_GATEWAY_ACTOR_AUDIENCE;
+  capabilities: RelayCapabilityBit[];
+  actor: HandshakeGrantActor;
+  grantActor?: HandshakeGrantActor;
+  deviceId?: string;
+  sessionBinding?: HandshakeGrantSessionBinding;
+  scope: ScopedActorCredentialScope;
+  ttlMs?: number;
+  expiresAt?: string;
+  correlationId: string;
+};
+
+function strictGrantLifecycleRequest(
+  input: CliGatewayGrantActorLifecycleInput,
+  options: {
+    ttlRequired?: boolean;
+    capabilities?: readonly RelayCapabilityBit[];
+    scope?: ScopedActorCredentialScope;
+    actor?: HandshakeGrantActor;
+  } = {}
+): StrictGrantLifecycleRequest {
+  if (typeof input.grantHandle !== 'string' || !input.grantHandle.trim()) {
+    throw new CliGatewayActorGrantError(
+      'grant_handle_required',
+      'grant-backed lifecycle requires a handshake grant handle'
+    );
+  }
+  if (input.audience !== CLI_GATEWAY_ACTOR_AUDIENCE) {
+    throw new CliGatewayActorGrantError(
+      typeof input.audience === 'string' ? 'audience_expansion' : 'audience_required',
+      'grant-backed CLI actor credentials require audience relay:cli-gateway:v1'
+    );
+  }
+  const actor = options.actor ?? strictActor(input.actor);
+  const capabilities = options.capabilities
+    ? [...options.capabilities]
+    : strictCliGatewayCapabilities(input.capabilities);
+  const scope = defaultCliGatewayActorScope(options.scope ?? strictScope(input.scope));
+  const ttlRequired = options.ttlRequired ?? true;
+  const ttlMs = typeof input.ttlMs === 'number' ? input.ttlMs : undefined;
+  const expiresAt = typeof input.expiresAt === 'string' ? input.expiresAt : undefined;
+  if (ttlRequired && ttlMs == null && !expiresAt) {
+    throw new CliGatewayActorGrantError(
+      'ttl_required',
+      'grant-backed CLI actor credentials require ttlMs or expiresAt'
+    );
+  }
+  return {
+    grantHandle: input.grantHandle.trim(),
+    audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+    capabilities,
+    actor,
+    ...(input.grantActor ? { grantActor: strictActor(input.grantActor) } : {}),
+    ...(typeof input.deviceId === 'string' ? { deviceId: input.deviceId } : {}),
+    ...(isRecord(input.sessionBinding)
+      ? { sessionBinding: strictSessionBinding(input.sessionBinding) }
+      : {}),
+    scope,
+    ...(ttlMs != null ? { ttlMs } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+    correlationId:
+      typeof input.correlationId === 'string' && input.correlationId.trim()
+        ? input.correlationId.trim()
+        : `cli-actor-grant-${Date.now()}`,
+  };
+}
+
+function validateCliGatewayLifecycleGrant(
+  grantRegistry: HandshakeGrantRegistry,
+  request: StrictGrantLifecycleRequest,
+  consume: boolean
+) {
+  const validationInput = {
+    audience: request.audience,
+    requiredCapabilities: request.capabilities,
+    actor: request.actor,
+    ...(request.deviceId ? { deviceId: request.deviceId } : {}),
+    ...(request.sessionBinding ? { sessionBinding: request.sessionBinding } : {}),
+    scope: scopeForValidation(request.scope),
+    consume: false,
+    correlationId: request.correlationId,
+  };
+  const preflight = grantRegistry.validate(request.grantHandle, validationInput);
+  if (preflight.ok === false) {
+    throw new CliGatewayActorGrantError(
+      preflight.reason,
+      'handshake grant does not authorize the requested CLI actor credential lifecycle operation',
+      preflight.grantId
+    );
+  }
+  const scopeExpansion = validateRequestedScopeAgainstGrant(
+    preflight.grant.scope,
+    request.scope
+  );
+  if (scopeExpansion) {
+    throw new CliGatewayActorGrantError(
+      scopeExpansion,
+      'handshake grant does not authorize the requested CLI actor credential lifecycle operation',
+      preflight.grant.id
+    );
+  }
+  const validation = grantRegistry.validate(request.grantHandle, {
+    ...validationInput,
+    consume,
+  });
+  if (validation.ok === false) {
+    throw new CliGatewayActorGrantError(
+      validation.reason,
+      'handshake grant does not authorize the requested CLI actor credential lifecycle operation',
+      validation.grantId
+    );
+  }
+  return validation.grant;
+}
+
+function validateRequestedScopeAgainstGrant(
+  grantScope: HandshakeGrantScope,
+  requestScope: ScopedActorCredentialScope
+): HandshakeGrantValidationFailureReason | null {
+  const rules: {
+    grantValues: readonly string[] | undefined;
+    requestValues: readonly string[] | undefined;
+    wrongReason: HandshakeGrantValidationFailureReason;
+    matches?: (grantValues: readonly string[], requestedValue: string) => boolean;
+  }[] = [
+    {
+      grantValues: grantScope.nodeIds,
+      requestValues: requestScope.nodeIds,
+      wrongReason: 'wrong_node_scope',
+    },
+    {
+      grantValues: grantScope.sessionIds,
+      requestValues: requestScope.sessionIds,
+      wrongReason: 'wrong_session_scope',
+    },
+    {
+      grantValues: grantScope.globalSessionIds,
+      requestValues: requestScope.globalSessionIds,
+      wrongReason: 'wrong_global_session_scope',
+    },
+    {
+      grantValues: grantScope.workContextIds,
+      requestValues: requestScope.workContextIds,
+      wrongReason: 'wrong_work_context_scope',
+    },
+    {
+      grantValues: grantScope.repoIds,
+      requestValues: requestScope.repoIds,
+      wrongReason: 'wrong_repo_scope',
+    },
+    {
+      grantValues: grantScope.pathPrefixes,
+      requestValues: requestScope.pathPrefixes,
+      wrongReason: 'wrong_path_scope',
+      matches: (prefixes, requestedPath) =>
+        prefixes.some((prefix) => pathMatchesGrantPrefix(requestedPath, prefix)),
+    },
+    {
+      grantValues: grantScope.taskRefs,
+      requestValues: requestScope.taskRefs,
+      wrongReason: 'wrong_task_scope',
+    },
+  ];
+
+  for (const rule of rules) {
+    if (!rule.requestValues?.length) continue;
+    const grantValues = rule.grantValues;
+    if (!grantValues?.length) {
+      if (requestOnlyScopeDimensionIsAllowed(rule.wrongReason, rule.requestValues)) continue;
+      return rule.wrongReason;
+    }
+    const matches = rule.matches ?? ((values, requested) => values.includes(requested));
+    if (!rule.requestValues.every((value) => matches(grantValues, value))) {
+      return rule.wrongReason;
+    }
+  }
+  return null;
+}
+
+function requestOnlyScopeDimensionIsAllowed(
+  wrongReason: HandshakeGrantValidationFailureReason,
+  requestValues: readonly string[]
+): boolean {
+  return (
+    wrongReason === 'wrong_task_scope' &&
+    requestValues.length === 1 &&
+    requestValues[0] === CLI_GATEWAY_READ_SCOPE_TASK_REF
+  );
+}
+
+function pathMatchesGrantPrefix(path: string, prefix: string): boolean {
+  if (path === prefix) return true;
+  const normalizedPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`;
+  return path.startsWith(normalizedPrefix);
+}
+
+function strictActor(value: unknown): HandshakeGrantActor {
+  if (!isRecord(value) || typeof value.type !== 'string' || typeof value.id !== 'string') {
+    throw new CliGatewayActorGrantError(
+      'actor_required',
+      'grant-backed lifecycle requires actor type and id'
+    );
+  }
+  return {
+    type: value.type,
+    id: value.id,
+    ...(typeof value.displayName === 'string' ? { displayName: value.displayName } : {}),
+  };
+}
+
+function strictCliGatewayCapabilities(value: unknown): RelayCapabilityBit[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new CliGatewayActorGrantError(
+      'capability_required',
+      'grant-backed lifecycle requires explicit capability bits'
+    );
+  }
+  const capabilities = value.filter((entry): entry is string => typeof entry === 'string');
+  if (capabilities.length !== value.length || capabilities.some((capability) => capability === '*')) {
+    throw new CliGatewayActorGrantError(
+      'capability_expansion',
+      'grant-backed CLI actor credentials are limited to the read-only CLI gateway capability allowlist'
+    );
+  }
+  if (capabilities.some((capability) => !isRelayCapabilityBit(capability))) {
+    throw new CliGatewayActorGrantError(
+      'unknown_capability',
+      'grant-backed lifecycle requires known Relay capability bits'
+    );
+  }
+  if (capabilities.some((capability) => capability !== CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES[0])) {
+    throw new CliGatewayActorGrantError(
+      'capability_expansion',
+      'grant-backed CLI actor credentials are limited to the read-only CLI gateway capability allowlist'
+    );
+  }
+  return ['session:read'];
+}
+
+function strictScope(value: unknown): ScopedActorCredentialScope {
+  const scope = coerceScope(value);
+  if (!scope || Object.keys(scope).length === 0) {
+    throw new CliGatewayActorGrantError(
+      'scope_required',
+      'grant-backed lifecycle requires at least one explicit scope dimension'
+    );
+  }
+  return scope;
+}
+
+function strictSessionBinding(value: Record<string, unknown>): HandshakeGrantSessionBinding {
+  return {
+    ...(typeof value['sessionId'] === 'string' ? { sessionId: value['sessionId'] } : {}),
+    ...(typeof value['globalSessionId'] === 'string'
+      ? { globalSessionId: value['globalSessionId'] }
+      : {}),
+    ...(typeof value['workContextId'] === 'string'
+      ? { workContextId: value['workContextId'] }
+      : {}),
+    ...(typeof value['authSessionHash'] === 'string'
+      ? { authSessionHash: value['authSessionHash'] }
+      : {}),
   };
 }
 
