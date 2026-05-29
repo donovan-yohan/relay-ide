@@ -5,6 +5,34 @@
 // the picker has one stable import path.
 
 export {
+  ACTOR_CREDENTIAL_AUDIENCES,
+  ACTOR_CREDENTIAL_TYPES,
+  DEFAULT_SCOPED_ACTOR_CREDENTIAL_MAX_TTL_MS,
+  ScopedActorCredentialRegistry,
+  ScopedActorCredentialRegistryError,
+  createScopedActorCredentialAuditEntry,
+  isScopedActorCredentialAudience,
+  isScopedActorCredentialType,
+  redactScopedActorCredentialForAudit,
+  type CreateScopedActorCredentialAuditEntryInput,
+  type IssueScopedActorCredentialInput,
+  type IssuedScopedActorCredential,
+  type RevokeScopedActorCredentialInput,
+  type ScopedActorCredentialActor,
+  type ScopedActorCredentialAudience,
+  type ScopedActorCredentialAuditEvent,
+  type ScopedActorCredentialIssuer,
+  type ScopedActorCredentialMetadata,
+  type ScopedActorCredentialRecord,
+  type ScopedActorCredentialScope,
+  type ScopedActorCredentialType,
+  type ScopedActorCredentialValidationFailureReason,
+  type ScopedActorCredentialValidationResult,
+  type ScopedActorCredentialValidationScope,
+  type ValidateScopedActorCredentialInput,
+} from './scoped-actor-credentials.js';
+
+export {
   ENVIRONMENT_DEGRADED_REASONS,
   ENVIRONMENT_FRESHNESS_VALUES,
   ENVIRONMENT_OPTION_SCHEMA_VERSION,
