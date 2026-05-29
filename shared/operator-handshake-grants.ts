@@ -806,6 +806,10 @@ export function createHandshakeGrantAuditEntry(
   input: CreateHandshakeGrantAuditEntryInput
 ): SecurityAuditEntryInput {
   const grant = input.grant;
+  const inputParams =
+    typeof input.material?.params === 'object' && input.material.params !== null
+      ? (input.material.params as Record<string, unknown>)
+      : { params: input.material?.params ?? null };
   return {
     eventType: handshakeGrantAuditEventType(input.action, input.decision),
     decision: input.decision,
@@ -827,11 +831,8 @@ export function createHandshakeGrantAuditEntry(
         input.material?.scope ?? grant?.scope ?? null
       ),
       params: redactHandshakeGrantValue({
-        grant: grant ? redactHandshakeGrantForAudit(grant) : undefined,
-        ...(typeof input.material?.params === 'object' &&
-        input.material.params !== null
-          ? (input.material.params as Record<string, unknown>)
-          : { params: input.material?.params ?? null }),
+        ...inputParams,
+        ...(grant ? { grant: redactHandshakeGrantForAudit(grant) } : {}),
       }),
     },
     requiredBits: [...(input.requiredCapabilities ?? [])],
@@ -849,8 +850,13 @@ export function redactHandshakeGrantForAudit(grant: HandshakeGrantRecord): Omit<
   actor: Omit<HandshakeGrantRecord['actor'], 'id'> & { idHash: string };
 } {
   const { id: _actorId, ...actor } = grant.actor;
+  const {
+    deniedReason: _deniedReason,
+    revocationReason: _revocationReason,
+    ...publicRecord
+  } = publicGrant(grant);
   return {
-    ...publicGrant(grant),
+    ...publicRecord,
     actor: {
       ...actor,
       idHash: sha256Hex(grant.actor.id),
@@ -1106,7 +1112,12 @@ function redactSafeString(value: string | undefined): string | undefined {
 function publicGrant(
   grant: InternalHandshakeGrantRecord
 ): HandshakeGrantRecord {
-  const { handleHash: _handleHash, ...publicRecord } = grant;
+  const {
+    handleHash: _handleHash,
+    deniedReason: _deniedReason,
+    revocationReason: _revocationReason,
+    ...publicRecord
+  } = grant;
   return {
     ...publicRecord,
     actor: { ...publicRecord.actor },

@@ -387,6 +387,89 @@ describe('operator handshake grant registry', () => {
     expect(serialized).not.toContain('handleHash');
   });
 
+  it('keeps hostile grant params and lifecycle reasons out of public and audit payloads', () => {
+    const deniedStore = registry();
+    const { grant: pendingGrant } = requestedGrant(deniedStore);
+    const denialReason =
+      'denial raw reason connect.sid=s%3Adeny-cookie token=deny-secret';
+    const deniedGrant = deniedStore.deny(pendingGrant.id, {
+      deniedBy: { id: 'operator-raw-deny-id', displayName: 'operator' },
+      reason: denialReason,
+      correlationId: 'corr-deny-redaction',
+    });
+    if (!deniedGrant) throw new Error('expected denied grant');
+
+    const {
+      store: revokedStore,
+      grant: approvedForRevocation,
+      handle: revokedHandle,
+    } = approvedGrant();
+    const revocationReason =
+      'revocation raw reason connect.sid=s%3Arevoke-cookie token=revoke-secret';
+    const revokedGrant = revokedStore.revoke(approvedForRevocation.id, {
+      revokedBy: { id: 'operator-raw-revoke-id', displayName: 'operator' },
+      reason: revocationReason,
+      correlationId: 'corr-revoke-redaction',
+    });
+    if (!revokedGrant) throw new Error('expected revoked grant');
+
+    const rawCookie = 'connect.sid=s%3Araw-browser-cookie';
+    const tokenOnly = 'token=raw-token-only-secret';
+    const rawHandle = `${revokedHandle}-malicious-copy`;
+    const rawPairToken = 'relay-pair-token-malicious-material';
+    const rawNodeCredential = 'relay-node-credential-malicious-material';
+    const rawActorId = 'malicious-raw-actor-id';
+    const auditEntry = createHandshakeGrantAuditEntry({
+      action: 'validate',
+      decision: 'deny',
+      reasonCode: 'HANDSHAKE_GRANT_MALICIOUS_PARAMS',
+      grant: revokedGrant,
+      material: {
+        scope: {
+          note: `${rawCookie} ${tokenOnly}`,
+          grantHandle: rawHandle,
+        },
+        params: {
+          note: `${rawCookie} ${tokenOnly}`,
+          grant: {
+            actor: { id: rawActorId },
+            deniedReason: denialReason,
+            revocationReason,
+            handle: rawHandle,
+            pairToken: rawPairToken,
+            nodeCredential: rawNodeCredential,
+          },
+        },
+      },
+    });
+
+    const serialized = JSON.stringify({
+      deniedGrant,
+      deniedByIdSurface: deniedStore.listGrants(),
+      deniedLookup: deniedStore.getGrant(pendingGrant.id),
+      deniedAuditEvents: deniedStore.listAuditEvents(),
+      revokedGrant,
+      revokedSurface: revokedStore.listGrants(),
+      revokedLookup: revokedStore.getGrant(approvedForRevocation.id),
+      revokedAuditEvents: revokedStore.listAuditEvents(),
+      auditEntry,
+      redactedDenied: redactHandshakeGrantForAudit(deniedGrant),
+      redactedRevoked: redactHandshakeGrantForAudit(revokedGrant),
+    });
+
+    expect(serialized).not.toContain(denialReason);
+    expect(serialized).not.toContain(revocationReason);
+    expect(serialized).not.toContain('raw reason');
+    expect(serialized).not.toContain('raw-browser-cookie');
+    expect(serialized).not.toContain('raw-token-only-secret');
+    expect(serialized).not.toContain(rawHandle);
+    expect(serialized).not.toContain(rawPairToken);
+    expect(serialized).not.toContain(rawNodeCredential);
+    expect(serialized).not.toContain(rawActorId);
+    expect(serialized).not.toContain('operator-raw-deny-id');
+    expect(serialized).not.toContain('operator-raw-revoke-id');
+  });
+
   it('renders approval copy with delegation, TTL, actor, audience, scope, and revoke path', () => {
     const { grant } = requestedGrant();
     const copy = operatorHandshakeGrantApprovalCopy(grant);
