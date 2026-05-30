@@ -145,6 +145,14 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     classifyCliGatewayCredentialLane(
       req({
         authorization: `Bearer ${token}`,
+      }),
+      'nodes.list'
+    )
+  ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${token}`,
         actorMarker: 'v1',
         command: 'nodes.list',
       }),
@@ -183,7 +191,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
   ).toBe('unsupported-route');
   expect(
     classifyCliGatewayCredentialLane(req({ authorization: `Bearer ${token}`, actorMarker: 'v1' }), 'nodes.list')
-  ).toBe('unsupported-route');
+  ).toBe('scoped-actor-credential');
   expect(classifyCliGatewayCredentialLane(req({ cookie: 'token=browser' }))).toBe(
     'browser-cookie-lane'
   );

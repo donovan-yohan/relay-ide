@@ -3,6 +3,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { hashPin } from '../server/auth.js';
+import {
+  CLI_GATEWAY_ACTOR_AUDIENCE,
+  CLI_GATEWAY_READ_SCOPE_TASK_REF,
+} from '../server/cli-gateway-actor-auth.js';
 
 const SERVER_SCRIPT = path.resolve(
   import.meta.dirname,
@@ -70,6 +75,22 @@ function startServer(opts: StartServerOpts): ChildProcess {
   });
 }
 
+function cookieFromSetCookie(headers: Headers): string {
+  const raw = headers.get('set-cookie');
+  if (!raw) throw new Error('expected set-cookie header');
+  return raw.split(';')[0] ?? raw;
+}
+
+async function expectJsonStatus<T>(
+  res: Response,
+  status: number,
+  label: string
+): Promise<T> {
+  const body = (await res.json()) as T;
+  expect(res.status, label).toBe(status);
+  return body;
+}
+
 test('server starts without PIN in non-TTY mode and serves /auth/status', async () => {
   // Create a temporary config with no pinHash
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-remote-test-'));
@@ -131,6 +152,119 @@ test('--bg startup with no PIN configured does not crash-loop (#151)', async () 
 
     // Server must still be alive — if it had crashed, exitCode would be set.
     expect(child.exitCode).toBeNull();
+  } finally {
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('protected hub accepts grant-backed CLI actor credential for nodes.list without browser-cookie fallback', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-cli-actor-protected-'));
+  const configPath = path.join(tmpDir, 'config.json');
+  const pin = '246810';
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      port: 0,
+      host: '127.0.0.1',
+      pinHash: await hashPin(pin),
+      cookieTTL: '1h',
+    })
+  );
+
+  const child = startServer({
+    env: {
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
+      HOME: tmpDir,
+    },
+  });
+
+  try {
+    const port = await waitForListeningPort(child);
+    const base = `http://127.0.0.1:${port}`;
+
+    const unauthenticatedNodes = await fetch(`${base}/nodes`, {
+      headers: { 'x-relay-cli-gateway': 'v1' },
+    });
+    expect(unauthenticatedNodes.status).toBe(401);
+
+    const login = await fetch(`${base}/auth`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    await expectJsonStatus<{ ok: true }>(login, 200, 'PIN login');
+    const cookie = cookieFromSetCookie(login.headers);
+
+    const grantRequest = await fetch(`${base}/hub/operator-handshake-grants`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        actor: { type: 'cli', id: 'relay-cli-regression' },
+        issuer: { id: 'browser-operator-test' },
+        audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+        capabilities: ['session:read'],
+        scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+        ttlMs: 60_000,
+      }),
+    });
+    const requested = await expectJsonStatus<{ grant: { id: string } }>(
+      grantRequest,
+      201,
+      'operator grant request'
+    );
+
+    const grantApproval = await fetch(
+      `${base}/hub/operator-handshake-grants/${encodeURIComponent(requested.grant.id)}/approve`,
+      {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ approvedBy: { id: 'browser-operator-test' } }),
+      }
+    );
+    const approved = await expectJsonStatus<{ handle: string }>(
+      grantApproval,
+      200,
+      'operator grant approval'
+    );
+
+    const minted = await fetch(`${base}/cli-gateway/actor-credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        grantHandle: approved.handle,
+        audience: CLI_GATEWAY_ACTOR_AUDIENCE,
+        actor: { type: 'cli', id: 'relay-cli-regression' },
+        capabilities: ['session:read'],
+        scope: { taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+        ttlMs: 60_000,
+      }),
+    });
+    const issued = await expectJsonStatus<{ token: string }>(
+      minted,
+      201,
+      'grant-backed actor credential mint'
+    );
+
+    const actorNodes = await fetch(`${base}/nodes`, {
+      headers: {
+        authorization: `Bearer ${issued.token}`,
+        'x-relay-cli-gateway': 'v1',
+        'x-relay-capabilities': 'session:read',
+      },
+    });
+    await expectJsonStatus<{ nodes: unknown[] }>(actorNodes, 200, 'actor nodes.list');
+
+    const nodeCredentialNodes = await fetch(`${base}/nodes`, {
+      headers: {
+        authorization: 'Bearer node_fake.secret_fake',
+        'x-relay-cli-gateway': 'v1',
+        'x-relay-node-id': 'node-fake',
+        'x-relay-node-credential': 'node_fake.secret_fake',
+      },
+    });
+    expect(nodeCredentialNodes.status).toBe(401);
   } finally {
     await killAndWait(child);
     fs.rmSync(tmpDir, { recursive: true, force: true });
