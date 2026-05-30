@@ -30,7 +30,7 @@ describe('BackendSupervisor', () => {
     const supervisor = new BackendSupervisor({
       packageRoot: '/repo',
       backendScript: '/repo/dist/server/index.js',
-      backendEnv: { RELAY_IDE_PORT: '4567', NO_PIN: '1' },
+      backendEnv: { RELAY_IDE_PORT: '4567', RELAY_IDE_DEV_INSTANCE: '1' },
       spawn(command, args) {
         calls.push({ command, args });
         const child = new FakeChild();

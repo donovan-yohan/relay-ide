@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { SessionSummary } from '../server/types.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RelayNodeEnvelope } from '../shared/relay-node-protocol.js';
+import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
+import { hashPin } from '../server/auth.js';
 import { mintPairTokenWithOperatorGrantForTest } from './helpers/operator-pairing.js';
 
 function manifest(): NodeManifest {
@@ -127,7 +129,11 @@ describe('production hub node link wiring', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-production-node-links-'));
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
     const configPath = path.join(tmpDir, 'config.json');
-    fs.writeFileSync(configPath, JSON.stringify({ port: 0, host: '127.0.0.1' }));
+    const pin = '123456';
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ port: 0, host: '127.0.0.1', pinHash: await hashPin(pin) })
+    );
 
     const serverScript = path.resolve(import.meta.dirname, '..', 'dist', 'server', 'index.js');
     const child = spawn(process.execPath, [serverScript], {
@@ -135,7 +141,7 @@ describe('production hub node link wiring', () => {
         ...process.env,
         RELAY_IDE_CONFIG: configPath,
         RELAY_IDE_PORT: '0',
-        NO_PIN: '1',
+        RELAY_IDE_DEV_INSTANCE: '1',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -151,8 +157,18 @@ describe('production hub node link wiring', () => {
     const base = `http://127.0.0.1:${port}`;
     const wsBase = `ws://127.0.0.1:${port}`;
 
+    const loginRes = await fetch(`${base}/auth`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    expect(loginRes.status).toBe(200);
+    const authCookie = loginRes.headers.get('set-cookie') ?? '';
+    expect(authCookie).toContain('token=');
+
     const pair = await mintPairTokenWithOperatorGrantForTest(base, {
       displayName: 'Remote Node',
+      authCookie,
     });
 
     const exchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
@@ -166,15 +182,26 @@ describe('production hub node link wiring', () => {
     };
     const { token, nodeId } = exchange.credential;
 
-    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, {
-      headers: { authorization: `Bearer ${token}` },
+    const heartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        nodeId,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        manifest: manifest(),
+      }),
+    });
+    expect(heartbeatRes.status).toBe(200);
+
+    const nodeWs = new WebSocket(`${wsBase}/hub/node-link`, [], {
+      headers: { Authorization: `Bearer ${token}` },
     });
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
     const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', Cookie: authCookie },
       body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
     });
 
@@ -208,7 +235,9 @@ describe('production hub node link wiring', () => {
     });
 
     const browserWs = new WebSocket(
-      `${wsBase}/nodes/${encodeURIComponent(nodeId)}/ws/sessions/remote-session-1`
+      `${wsBase}/nodes/${encodeURIComponent(nodeId)}/ws/sessions/remote-session-1`,
+      [],
+      { headers: { Cookie: authCookie } }
     );
     cleanup.push(() => browserWs.close());
     await waitForOpen(browserWs);

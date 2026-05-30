@@ -1206,11 +1206,7 @@ async function initializePinConfig(startupConfig: Config): Promise<void> {
     saveConfig(CONFIG_PATH, startupConfig);
   }
 
-  if (process.env.NO_PIN === '1') {
-    logger.info('PIN disabled (NO_PIN=1).');
-    startupConfig.pinHash = startupConfig.pinHash || 'disabled';
-    saveConfig(CONFIG_PATH, startupConfig);
-  } else if (!startupConfig.pinHash) {
+  if (!startupConfig.pinHash) {
     if (process.stdin.isTTY) {
       const pin = await promptPin('Set up a PIN for relay-ide:');
       startupConfig.pinHash = await auth.hashPin(pin);
@@ -1689,10 +1685,6 @@ async function main(): Promise<void> {
   }
 
   const requireAuth: express.RequestHandler = (req, res, next) => {
-    if (process.env.NO_PIN === '1') {
-      next();
-      return;
-    }
     if (!authenticatedBrowserSession(req)) {
       res.status(401).json(auth.browserSessionRequiredChallenge());
       return;
@@ -1712,7 +1704,7 @@ async function main(): Promise<void> {
   ): express.RequestHandler => {
     return (req, res, next) => {
       if (!isCliGatewayV1Request(req)) {
-        if (process.env.NO_PIN === '1' || authenticatedBrowserSession(req)) {
+        if (authenticatedBrowserSession(req)) {
           next();
           return;
         }
@@ -1788,10 +1780,6 @@ async function main(): Promise<void> {
       next();
       return;
     }
-    if (process.env.NO_PIN === '1') {
-      next();
-      return;
-    }
     if (authenticatedBrowserSession(req)) {
       next();
       return;
@@ -1807,7 +1795,7 @@ async function main(): Promise<void> {
       })(req, res, next);
       return;
     }
-    if (process.env.NO_PIN === '1' || authenticatedBrowserSession(req)) {
+    if (authenticatedBrowserSession(req)) {
       next();
       return;
     }
@@ -2183,7 +2171,7 @@ async function main(): Promise<void> {
     authenticatedTokens,
     watcher,
     CONFIG_PATH,
-    process.env.NO_PIN === '1',
+    false,
     localRelayNode,
     hubNodeRegistry,
     hubNodeLinks,
@@ -2812,8 +2800,7 @@ async function main(): Promise<void> {
   // GET /auth/status — no auth required, tells frontend if PIN is configured
   app.get('/auth/status', (_req, res) => {
     const config = getConfig();
-    const noPin = config.pinHash === 'disabled';
-    res.json({ hasPIN: !!config.pinHash && !noPin, noPin });
+    res.json({ hasPIN: !!config.pinHash && config.pinHash !== 'disabled' });
   });
 
   // POST /auth/setup — set initial PIN (only works when no PIN is configured)
@@ -2892,24 +2879,6 @@ async function main(): Promise<void> {
       const authConfig = getConfig();
       if (!authConfig.pinHash) {
         res.status(412).json({ error: 'No PIN configured', needsSetup: true });
-        return;
-      }
-
-      // No-PIN mode: auto-authenticate without a PIN body
-      if (process.env.NO_PIN === '1') {
-        auth.clearRateLimit(ip);
-        const ttlMs = parseTTL(authConfig.cookieTTL);
-        const token = authConfig.pinHash
-          ? auth.generateCookieToken({ pinHash: authConfig.pinHash, ttlMs })
-          : auth.generateCookieToken();
-        authenticatedTokens.add(token);
-        setTimeout(() => authenticatedTokens.delete(token), ttlMs);
-        res.cookie('token', token, {
-          httpOnly: true,
-          sameSite: 'strict',
-          maxAge: ttlMs,
-        });
-        res.json({ ok: true });
         return;
       }
 
@@ -4244,17 +4213,19 @@ async function main(): Promise<void> {
   const BROWSER_TOKEN_TTL = 24 * 60 * 60 * 1000;
   setInterval(() => cleanExpiredTokens(BROWSER_TOKEN_TTL), 60 * 60 * 1000);
 
+  const devInstance =
+    process.env.RELAY_IDE_DEV_INSTANCE === '1' ||
+    process.env.RELAY_IDE_SELF_HOST === '1';
   // Clean up orphaned tmux sessions from previous runs (skip any adopted by restore)
   // Skip in dev mode — another server instance owns these sessions
-  if (process.env.NO_PIN === '1') {
+  if (devInstance) {
     logger.info('Dev mode: skipping orphaned tmux session cleanup.');
   } else {
     await cleanupOrphanedTmuxSessions(activeTmuxSessionNames());
   }
 
   async function gracefulShutdown() {
-    const restartReason =
-      process.env.NO_PIN === '1' ? 'dev-restart' : 'signal-shutdown';
+    const restartReason = devInstance ? 'dev-restart' : 'signal-shutdown';
     broadcastEvent('server-restarting', { reason: restartReason });
     await stopPolling();
     stopEventBatching();

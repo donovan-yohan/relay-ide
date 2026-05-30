@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import getPort from 'get-port';
+import { hashPin } from '../server/auth.js';
 
 const __dirname = import.meta.dirname;
 
@@ -12,6 +13,7 @@ interface StartedServer {
   child: ChildProcess;
   port: number;
   tmpDir: string;
+  authCookie: string;
 }
 
 function writeAgentStub(tmpDir: string, agent: string, body: string): void {
@@ -85,9 +87,15 @@ async function startRelayServer(
   envOverrides: Record<string, string> = {}
 ): Promise<StartedServer> {
   const configPath = path.join(tmpDir, 'config.json');
+  const pin = '123456';
   fs.writeFileSync(
     configPath,
-    JSON.stringify({ port: 0, host: '127.0.0.1', repos: [tmpDir] })
+    JSON.stringify({
+      port: 0,
+      host: '127.0.0.1',
+      repos: [tmpDir],
+      pinHash: await hashPin(pin),
+    })
   );
 
   const serverScript = path.resolve(
@@ -103,7 +111,7 @@ async function startRelayServer(
       ...process.env,
       RELAY_IDE_CONFIG: configPath,
       RELAY_IDE_PORT: '0',
-      NO_PIN: '1',
+      RELAY_IDE_DEV_INSTANCE: '1',
       PATH: envPath,
       ...envOverrides,
     },
@@ -135,7 +143,20 @@ async function startRelayServer(
     });
   });
 
-  return { child, port, tmpDir };
+  const loginRes = await fetch(`http://127.0.0.1:${port}/auth`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin }),
+  });
+  if (loginRes.status !== 200) {
+    throw new Error(`Failed to login test server: ${loginRes.status}`);
+  }
+  const authCookie = loginRes.headers.get('set-cookie') ?? '';
+  if (!authCookie.includes('token=')) {
+    throw new Error('Failed to capture test auth cookie');
+  }
+
+  return { child, port, tmpDir, authCookie };
 }
 
 async function stopRelayServer(server: StartedServer): Promise<void> {
@@ -183,7 +204,10 @@ process.exit(0);
     // 1) Create a hermes session via the public API
     const createRes = await fetch(`http://127.0.0.1:${server.port}/sessions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: server.authCookie,
+      },
       body: JSON.stringify({
         repoPath: tmpDir,
         type: 'agent',
@@ -207,7 +231,9 @@ process.exit(0);
     expect(session.runtimeOwnership).toBe('attached');
 
     // 2) Verify it appears in GET /sessions
-    const listRes = await fetch(`http://127.0.0.1:${server.port}/sessions`);
+    const listRes = await fetch(`http://127.0.0.1:${server.port}/sessions`, {
+      headers: { Cookie: server.authCookie },
+    });
     expect(listRes.status).toBe(200);
     const sessions = (await listRes.json()) as Array<{
       id: string;
@@ -246,7 +272,10 @@ setInterval(() => {}, 1000);
   try {
     const createRes = await fetch(`http://127.0.0.1:${server.port}/sessions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: server.authCookie,
+      },
       body: JSON.stringify({
         repoPath: tmpDir,
         type: 'agent',
@@ -289,7 +318,10 @@ process.exit(0);
   try {
     const createRes = await fetch(`http://127.0.0.1:${server.port}/sessions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: server.authCookie,
+      },
       body: JSON.stringify({
         repoPath: tmpDir,
         type: 'agent',
@@ -325,7 +357,10 @@ test('POST /sessions rejects hermes when the host CLI is not installed', async (
   try {
     const createRes = await fetch(`http://127.0.0.1:${server.port}/sessions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: server.authCookie,
+      },
       body: JSON.stringify({
         repoPath: tmpDir,
         type: 'agent',

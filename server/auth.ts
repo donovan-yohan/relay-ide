@@ -65,7 +65,7 @@ export const AUTH_ROUTE_LANE_INVENTORY: AuthRouteLaneInventoryEntry[] = [
     acceptedLanes: ['browser-session'],
     middleware: 'requireAuth',
     notes:
-      'Interactive browser surfaces require the browser session established by PIN login or no-PIN local development; these cookies are not node, pair, or scoped actor credentials.',
+      'Interactive browser surfaces require the browser session established by PIN login or first-run PIN setup; these cookies are not node, pair, or scoped actor credentials.',
   },
   {
     surface: 'browser diagnostics, config, and lifecycle APIs',

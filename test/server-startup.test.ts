@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import net from 'node:net';
 import { hashPin } from '../server/auth.js';
 import {
   CLI_GATEWAY_ACTOR_AUDIENCE,
@@ -91,6 +92,50 @@ async function expectJsonStatus<T>(
   return body;
 }
 
+async function rawUpgradeStatus(port: number, pathName: string): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      socket.write(
+        [
+          `GET ${pathName} HTTP/1.1`,
+          'Host: 127.0.0.1',
+          'Upgrade: websocket',
+          'Connection: Upgrade',
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+          'Sec-WebSocket-Version: 13',
+          '',
+          '',
+        ].join('\r\n')
+      );
+    });
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      reject(new Error('timed out waiting for raw upgrade response'));
+    }, 3000);
+    let response = '';
+    socket.on('data', (chunk: Buffer) => {
+      response += chunk.toString();
+      const match = response.match(/^HTTP\/1\.1\s+(\d+)/);
+      if (match) {
+        clearTimeout(timeout);
+        socket.destroy();
+        resolve(Number(match[1]));
+      }
+    });
+    socket.on('error', (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+    socket.on('end', () => {
+      const match = response.match(/^HTTP\/1\.1\s+(\d+)/);
+      if (match) {
+        clearTimeout(timeout);
+        resolve(Number(match[1]));
+      }
+    });
+  });
+}
+
 test('server starts without PIN in non-TTY mode and serves /auth/status', async () => {
   // Create a temporary config with no pinHash
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-remote-test-'));
@@ -101,7 +146,6 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
     env: {
       RELAY_IDE_CONFIG: configPath,
       RELAY_IDE_PORT: '0',
-      NO_PIN: '1',
     },
   });
 
@@ -152,6 +196,54 @@ test('--bg startup with no PIN configured does not crash-loop (#151)', async () 
 
     // Server must still be alive — if it had crashed, exitCode would be set.
     expect(child.exitCode).toBeNull();
+  } finally {
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('NO_PIN does not bypass protected browser or CLI gateway auth paths', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-pin-no-bypass-'));
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      port: 0,
+      host: '127.0.0.1',
+      pinHash: await hashPin('246810'),
+      cookieTTL: '1h',
+    })
+  );
+
+  const child = startServer({
+    env: {
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
+      NO_PIN: '1',
+      HOME: tmpDir,
+    },
+  });
+
+  try {
+    const port = await waitForListeningPort(child);
+    const base = `http://127.0.0.1:${port}`;
+
+    const browserRoute = await fetch(`${base}/hub/confirmations`);
+    expect(browserRoute.status).toBe(401);
+
+    const badPinLogin = await fetch(`${base}/auth`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin: 'wrong' }),
+    });
+    expect(badPinLogin.status).toBe(401);
+
+    const cliGatewayRoute = await fetch(`${base}/sessions`, {
+      headers: { 'x-relay-cli-gateway': 'v1' },
+    });
+    expect(cliGatewayRoute.status).toBe(401);
+
+    await expect(rawUpgradeStatus(port, '/ws/events')).resolves.toBe(401);
   } finally {
     await killAndWait(child);
     fs.rmSync(tmpDir, { recursive: true, force: true });
