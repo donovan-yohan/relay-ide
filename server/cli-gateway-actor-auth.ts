@@ -141,7 +141,10 @@ export function cliGatewayCorrelationId(req: Request): string | undefined {
 }
 
 export function isCliGatewayActorTokenRequest(req: Request): boolean {
-  return req.header(CLI_GATEWAY_ACTOR_TOKEN_HEADER) === 'v1';
+  return (
+    req.header(CLI_GATEWAY_ACTOR_TOKEN_HEADER) === 'v1' ||
+    bearerActorToken(req).startsWith('relay-sac-v1.')
+  );
 }
 
 export function classifyCliGatewayCredentialLane(
@@ -179,7 +182,7 @@ export function isSupportedCliGatewayActorReadRequest(
     return false;
   }
   const command = req.header(CLI_GATEWAY_COMMAND_HEADER);
-  return command === expectedCommand;
+  return command == null || command === expectedCommand;
 }
 
 export function defaultCliGatewayActorScope(
