@@ -1997,6 +1997,7 @@ async function main(): Promise<void> {
       requireAuth,
       cliGatewayAuth: requireCliGatewayAuth,
       cliGatewayAuthForActorCommand: requireCliGatewayAuthForActorCommand,
+      operatorHandshakeGrants: cliGatewayHandshakeGrantRegistry,
       scopedSessionAuth: requireScopedSessionAuth,
       repoInventoryFeature,
       collectLocalRepoInventory: collectLocalInventory,

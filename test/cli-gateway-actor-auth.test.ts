@@ -555,6 +555,32 @@ test('allows only the default CLI gateway taskRef when the grant omits task scop
   );
 });
 
+test('keeps grant-specific task scope while preserving the read gateway marker', () => {
+  const scopedRegistry = registry();
+  const grants = grantRegistry();
+  const dogfoodTaskRef = 'bootstrap-work-mac';
+  const handle = approveGrant(grants, 'grant-dogfood-taskref', {
+    scope: { taskRefs: [dogfoodTaskRef] },
+  });
+
+  const issued = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
+    ...grantLifecycleInput(handle, 'dogfood-taskref'),
+    scope: { taskRefs: [dogfoodTaskRef] },
+  });
+
+  expect(issued.credential.scope.taskRefs).toEqual([
+    CLI_GATEWAY_READ_SCOPE_TASK_REF,
+    dogfoodTaskRef,
+  ]);
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['session:read'],
+      correlationId: 'dogfood-nodes-list',
+    })
+  ).toMatchObject({ ok: true, grantedBits: ['session:read'] });
+});
+
 test('denies mixed allowed and disallowed list scopes before exposing credentials', () => {
   const scopedRegistry = registry();
   const grants = grantRegistry();

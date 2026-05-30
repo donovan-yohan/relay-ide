@@ -185,9 +185,13 @@ export function isSupportedCliGatewayActorReadRequest(
 export function defaultCliGatewayActorScope(
   overrides?: ScopedActorCredentialScope
 ): ScopedActorCredentialScope {
+  const taskRefs = uniqueStrings([
+    CLI_GATEWAY_READ_SCOPE_TASK_REF,
+    ...(overrides?.taskRefs ?? []),
+  ]);
   return {
-    taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
     ...(overrides ?? {}),
+    taskRefs,
   };
 }
 
@@ -391,6 +395,7 @@ export function rotateCliGatewayActorCredentialWithGrant(
 function scopeForValidation(
   scope: ScopedActorCredentialScope | undefined
 ): HandshakeGrantValidationScope {
+  const taskRef = taskRefForGrantValidation(scope?.taskRefs);
   return {
     ...(scope?.nodeIds?.[0] ? { nodeId: scope.nodeIds[0] } : {}),
     ...(scope?.sessionIds?.[0] ? { sessionId: scope.sessionIds[0] } : {}),
@@ -402,8 +407,16 @@ function scopeForValidation(
       : {}),
     ...(scope?.repoIds?.[0] ? { repoId: scope.repoIds[0] } : {}),
     ...(scope?.pathPrefixes?.[0] ? { path: scope.pathPrefixes[0] } : {}),
-    ...(scope?.taskRefs?.[0] ? { taskRef: scope.taskRefs[0] } : {}),
+    ...(taskRef ? { taskRef } : {}),
   };
+}
+
+function taskRefForGrantValidation(taskRefs: readonly string[] | undefined): string | undefined {
+  if (!taskRefs?.length) return undefined;
+  return (
+    taskRefs.find((taskRef) => taskRef !== CLI_GATEWAY_READ_SCOPE_TASK_REF) ??
+    taskRefs[0]
+  );
 }
 
 function credentialMatchesGrantLifecycleRequest(
@@ -454,6 +467,10 @@ function listIsSubset(
   allowed: readonly string[]
 ): boolean {
   return values.every((value) => allowed.includes(value));
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 type StrictGrantLifecycleRequest = {
@@ -623,18 +640,32 @@ function validateRequestedScopeAgainstGrant(
   ];
 
   for (const rule of rules) {
-    if (!rule.requestValues?.length) continue;
+    const requestValues = requestValuesForGrantScopeRule(rule);
+    if (!requestValues.length) continue;
     const grantValues = rule.grantValues;
     if (!grantValues?.length) {
-      if (requestOnlyScopeDimensionIsAllowed(rule.wrongReason, rule.requestValues)) continue;
+      if (requestOnlyScopeDimensionIsAllowed(rule.wrongReason, requestValues)) continue;
       return rule.wrongReason;
     }
     const matches = rule.matches ?? ((values, requested) => values.includes(requested));
-    if (!rule.requestValues.every((value) => matches(grantValues, value))) {
+    if (!requestValues.every((value) => matches(grantValues, value))) {
       return rule.wrongReason;
     }
   }
   return null;
+}
+
+function requestValuesForGrantScopeRule(rule: {
+  grantValues: readonly string[] | undefined;
+  requestValues: readonly string[] | undefined;
+  wrongReason: HandshakeGrantValidationFailureReason;
+}): readonly string[] {
+  const requestValues = rule.requestValues ?? [];
+  if (rule.wrongReason !== 'wrong_task_scope') return requestValues;
+  return requestValues.filter(
+    (taskRef) =>
+      taskRef !== CLI_GATEWAY_READ_SCOPE_TASK_REF || rule.grantValues?.includes(taskRef)
+  );
 }
 
 function requestOnlyScopeDimensionIsAllowed(
