@@ -1,6 +1,7 @@
 import { test, expect } from 'vitest';
 import {
   hashPin,
+  isPinConfigured,
   verifyPin,
   isLegacyHash,
   isRateLimited,
@@ -122,6 +123,18 @@ test('isLegacyHash returns false for scrypt hashes', async () => {
 
 test('isLegacyHash returns false for empty string', () => {
   expect(isLegacyHash('')).toBe(false);
+});
+
+test('isPinConfigured treats legacy disabled sentinel and unsupported hashes as not configured', async () => {
+  const hash = await hashPin('1234');
+  expect(isPinConfigured(hash)).toBe(true);
+  expect(isPinConfigured('disabled')).toBe(false);
+  expect(
+    isPinConfigured('$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012')
+  ).toBe(false);
+  expect(isPinConfigured('')).toBe(false);
+  expect(isPinConfigured(undefined)).toBe(false);
+  expect(isPinConfigured(null)).toBe(false);
 });
 
 test('generateCookieToken returns non-empty string', () => {

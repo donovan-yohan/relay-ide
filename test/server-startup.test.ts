@@ -202,6 +202,52 @@ test('--bg startup with no PIN configured does not crash-loop (#151)', async () 
   }
 });
 
+test('legacy disabled PIN sentinel allows first-run setup instead of lockout', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-disabled-pin-'));
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ port: 0, host: '127.0.0.1', pinHash: 'disabled' })
+  );
+
+  const child = startServer({
+    env: {
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
+      HOME: tmpDir,
+    },
+  });
+
+  try {
+    const port = await waitForListeningPort(child);
+    const base = `http://127.0.0.1:${port}`;
+
+    const status = await fetch(`${base}/auth/status`);
+    expect(status.status).toBe(200);
+    await expect(status.json()).resolves.toMatchObject({ hasPIN: false });
+
+    const setup = await fetch(`${base}/auth/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin: '246810', confirm: '246810' }),
+    });
+    await expectJsonStatus<{ ok: true }>(setup, 200, 'PIN setup');
+    const cookie = cookieFromSetCookie(setup.headers);
+
+    const protectedRoute = await fetch(`${base}/auth/check`, {
+      headers: { cookie },
+    });
+    await expectJsonStatus<{ ok: true }>(
+      protectedRoute,
+      200,
+      'browser session after setup'
+    );
+  } finally {
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('NO_PIN does not bypass protected browser or CLI gateway auth paths', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-pin-no-bypass-'));
   const configPath = path.join(tmpDir, 'config.json');

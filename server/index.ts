@@ -1198,7 +1198,7 @@ function sessionCreateFailureMessage(err: unknown): string {
 
 /** Initializes the startup config PIN (migrates legacy hashes, prompts if needed). */
 async function initializePinConfig(startupConfig: Config): Promise<void> {
-  if (startupConfig.pinHash && auth.isLegacyHash(startupConfig.pinHash)) {
+  if (startupConfig.pinHash && !auth.isPinConfigured(startupConfig.pinHash)) {
     logger.info(
       'Migrating legacy PIN hash to scrypt. You will need to set a new PIN.'
     );
@@ -2800,7 +2800,7 @@ async function main(): Promise<void> {
   // GET /auth/status — no auth required, tells frontend if PIN is configured
   app.get('/auth/status', (_req, res) => {
     const config = getConfig();
-    res.json({ hasPIN: !!config.pinHash && config.pinHash !== 'disabled' });
+    res.json({ hasPIN: auth.isPinConfigured(config.pinHash) });
   });
 
   // POST /auth/setup — set initial PIN (only works when no PIN is configured)
@@ -2829,7 +2829,7 @@ async function main(): Promise<void> {
 
       // Single read — check + write atomically to avoid TOCTOU race
       const freshConfig = loadConfig(CONFIG_PATH);
-      if (freshConfig.pinHash) {
+      if (auth.isPinConfigured(freshConfig.pinHash)) {
         res
           .status(403)
           .json({ error: 'PIN is already configured. Use CLI to reset.' });
@@ -2877,7 +2877,7 @@ async function main(): Promise<void> {
       }
 
       const authConfig = getConfig();
-      if (!authConfig.pinHash) {
+      if (!auth.isPinConfigured(authConfig.pinHash)) {
         res.status(412).json({ error: 'No PIN configured', needsSetup: true });
         return;
       }

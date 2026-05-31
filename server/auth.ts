@@ -384,6 +384,12 @@ export function isLegacyHash(hash: string): boolean {
   return !!hash && !hash.startsWith('scrypt:');
 }
 
+export function isPinConfigured(
+  hash: string | null | undefined
+): hash is string {
+  return !!hash && !isLegacyHash(hash);
+}
+
 export function _resetForTesting(): void {
   attemptMap.clear();
 }
