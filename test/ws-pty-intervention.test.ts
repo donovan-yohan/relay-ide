@@ -16,6 +16,10 @@ import {
 import { setupWebSocket } from '../server/ws.js';
 import type { PtySession } from '../server/types.js';
 import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
+import {
+  testBrowserAuthTokens,
+  testBrowserWsHeaders,
+} from './helpers/ws-auth.js';
 
 const execFileAsync = promisify(execFile);
 const cleanupFns: Array<() => void | Promise<void>> = [];
@@ -109,7 +113,7 @@ describe('PTY WebSocket intervention control', () => {
     const server = http.createServer();
     const { wss } = setupWebSocket(
       server,
-      new Set<string>(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       true
@@ -144,7 +148,9 @@ describe('PTY WebSocket intervention control', () => {
     const session = sessions.get(result.id);
     expect(session?.mode).toBe('pty');
 
-    const ws = new WebSocket(`ws://127.0.0.1:${address.port}/ws/${result.id}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${address.port}/ws/${result.id}`, {
+      headers: testBrowserWsHeaders(),
+    });
     cleanupFns.push(() => ws.terminate());
     await waitForOpen(ws);
 

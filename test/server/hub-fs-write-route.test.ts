@@ -21,6 +21,7 @@ import {
 import type { SecurityAuditEntryInput } from '../../shared/security-audit.js';
 import type { RelayCapabilityBit } from '../../shared/security-policy.js';
 import { mintPairTokenWithOperatorGrantForTest } from '../helpers/operator-pairing.js';
+import { testBrowserAuthTokens } from '../helpers/ws-auth.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -180,7 +181,7 @@ describe('hub fs.write route', () => {
     const server = http.createServer(app);
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       true,

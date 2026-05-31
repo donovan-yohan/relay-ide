@@ -5,6 +5,10 @@ import { WebSocket } from 'ws';
 import { createLocalRelayNode } from '../server/local-node.js';
 import { setupWebSocket } from '../server/ws.js';
 import type { WorktreeWatcher } from '../server/watcher.js';
+import {
+  testBrowserAuthTokens,
+  testBrowserWsHeaders,
+} from './helpers/ws-auth.js';
 
 const cleanupFns: Array<() => void> = [];
 
@@ -18,7 +22,7 @@ describe('node-scoped websocket broadcasts', () => {
     const watcher = new EventEmitter();
     const { wss } = setupWebSocket(
       server,
-      new Set<string>(),
+      testBrowserAuthTokens(),
       watcher as unknown as WorktreeWatcher,
       undefined,
       true,
@@ -34,7 +38,9 @@ describe('node-scoped websocket broadcasts', () => {
       throw new Error('server did not listen on a tcp port');
     }
 
-    const client = new WebSocket(`ws://127.0.0.1:${address.port}/ws/events`);
+    const client = new WebSocket(`ws://127.0.0.1:${address.port}/ws/events`, {
+      headers: testBrowserWsHeaders(),
+    });
     cleanupFns.push(() => client.close());
     await once(client, 'open');
 

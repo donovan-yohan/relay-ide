@@ -25,6 +25,10 @@ import {
 } from '../shared/operator-handshake-grants.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
+import {
+  testBrowserAuthTokens,
+  testBrowserWsHeaders,
+} from './helpers/ws-auth.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -999,7 +1003,7 @@ describe('hub node routes and link', () => {
     const server = http.createServer(express());
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       false,
@@ -1043,7 +1047,7 @@ describe('hub node routes and link', () => {
     const server = http.createServer(express());
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       false,
@@ -1343,7 +1347,7 @@ describe('hub node routes and link', () => {
     });
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       false,
@@ -1679,7 +1683,7 @@ describe('hub node routes and link', () => {
     const server = http.createServer(app);
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       true,
@@ -1833,7 +1837,8 @@ describe('hub node routes and link', () => {
 
     const upgrade = await rawUpgrade(
       port,
-      `/nodes/${encodeURIComponent(exchanged.node.nodeId)}/ws/sessions/reopened-session`
+      `/nodes/${encodeURIComponent(exchanged.node.nodeId)}/ws/sessions/reopened-session`,
+      testBrowserWsHeaders()
     );
     expect(upgrade).toContain('101 Switching Protocols');
   });
