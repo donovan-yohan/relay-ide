@@ -82,15 +82,40 @@ describe('Hermes gateway settings resolution', () => {
         '    extra:',
         '      host: 127.0.0.1',
         '      port: 9876',
-        '      key: cfg-secret',
+        '      key: cfg#secret # keep hash in scalar, drop comment',
         '',
       ].join('\n')
     );
 
     expect(resolveHermesGatewaySettings(undefined)).toEqual({
       endpoint: 'http://127.0.0.1:9876',
-      apiKey: 'cfg-secret',
+      apiKey: 'cfg#secret',
       source: 'Hermes config',
+    });
+  });
+
+  it('ignores disabled config.yaml API server endpoints', () => {
+    const home = makeTempHome();
+    const hermesHome = path.join(home, '.hermes');
+    fs.mkdirSync(hermesHome, { recursive: true });
+    fs.writeFileSync(
+      path.join(hermesHome, 'config.yaml'),
+      [
+        'platforms:',
+        '  api_server:',
+        '    enabled: false',
+        '    extra:',
+        '      host: 127.0.0.1',
+        '      port: 9876',
+        '      key: disabled-secret',
+        '',
+      ].join('\n')
+    );
+
+    expect(resolveHermesGatewaySettings(undefined)).toEqual({
+      endpoint: 'http://127.0.0.1:8642',
+      apiKey: null,
+      source: 'default',
     });
   });
 
@@ -109,6 +134,30 @@ describe('Hermes gateway settings resolution', () => {
     expect(resolveHermesGatewaySettings(undefined)).toEqual({
       endpoint: 'http://127.0.0.1:2222',
       apiKey: 'profile-secret',
+      source: 'environment',
+    });
+  });
+
+  it('uses the active profile under a custom HERMES_HOME root', () => {
+    makeTempHome();
+    const customRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-hermes-custom-')
+    );
+    tempDirs.push(customRoot);
+    process.env.HERMES_HOME = customRoot;
+
+    const profileHome = path.join(customRoot, 'profiles', 'ebi');
+    fs.mkdirSync(profileHome, { recursive: true });
+    fs.writeFileSync(path.join(customRoot, '.env'), 'API_SERVER_PORT=1111\n');
+    fs.writeFileSync(path.join(customRoot, 'active_profile'), 'ebi\n');
+    fs.writeFileSync(
+      path.join(profileHome, '.env'),
+      'API_SERVER_PORT=2222\nAPI_SERVER_KEY=custom-profile-secret\n'
+    );
+
+    expect(resolveHermesGatewaySettings(undefined)).toEqual({
+      endpoint: 'http://127.0.0.1:2222',
+      apiKey: 'custom-profile-secret',
       source: 'environment',
     });
   });
