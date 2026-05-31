@@ -18,7 +18,7 @@ Stable tmux names are part of the restore contract:
 ```
 
 - Production prefix: `relay-ide-`
-- Dev prefix: `relay-dev-` when `NO_PIN=1`
+- Dev prefix: `relay-dev-` when `RELAY_IDE_DEV_INSTANCE=1`
 - The slug is sanitized to alphanumeric/hyphen characters and capped before the id suffix.
 - Agent sessions should prefer repo/branch-oriented slugs for readable `tmux ls` output. Browser display names such as `Agent 1` remain separate from tmux names.
 - Restore should preserve the original session id and tmux session name.

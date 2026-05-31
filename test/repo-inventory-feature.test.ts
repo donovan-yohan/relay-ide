@@ -15,6 +15,7 @@ import {
 } from '../server/features/repo-inventory.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 import type { NodeManifest } from '../shared/node-manifest.js';
+import { testBrowserAuthTokens } from './helpers/ws-auth.js';
 
 function listen(server: http.Server): Promise<number> {
   return new Promise((resolve) => {
@@ -227,7 +228,7 @@ describe('repo-inventory feature', () => {
       const nodeLinks = createHubNodeLinkManager();
       setupWebSocket(
         server,
-        new Set(),
+        testBrowserAuthTokens(),
         null,
         undefined,
         false,

@@ -37,7 +37,7 @@ The `dev` command starts the real Express/WebSocket backend under a supervisor a
 | Ordinary source dev  | `npm run dev`                   | `127.0.0.1:3457`          | `127.0.0.1:5173`          | `./config.dev.json`                                                | `relay-dev-`  | Local source development outside production Relay |
 | Self-host source dev | `npm run dev:self`              | allocator-chosen          | allocator-chosen          | `~/.config/relay-ide/self-host/<worktree-slug>-<hash>/config.json` | `relay-self-` | Building Relay from inside Relay                  |
 
-Both dev modes run with `NO_PIN=1`. Self-host mode can also be selected by running the CLI entrypoint directly with `relay-ide dev --self-host` from a source checkout, or by setting `RELAY_IDE_SELF_HOST=1` for the dev command.
+Both dev modes set `RELAY_IDE_DEV_INSTANCE=1` and a mode-specific `RELAY_IDE_TMUX_PREFIX` for process isolation. They do not disable auth; use the normal first-run PIN setup or browser-session login. Self-host mode can also be selected by running the CLI entrypoint directly with `relay-ide dev --self-host` from a source checkout, or by setting `RELAY_IDE_SELF_HOST=1` for the dev command.
 
 ## What self-host mode isolates
 
@@ -88,6 +88,7 @@ Supported dev override variables:
 | `RELAY_IDE_DEV_FRONTEND_HOST` | `127.0.0.1`                       | Vite bind host                                                                                                                           |
 | `RELAY_IDE_DEV_BACKEND_URL`   | `http://127.0.0.1:<backend-port>` | Vite proxy target                                                                                                                        |
 | `RELAY_IDE_CONFIG`            | `./config.dev.json`               | Ignored to avoid inherited production config; pass `--config <path>` for an explicit self-host config override                           |
+| `RELAY_IDE_DEV_INSTANCE`      | `1`                               | Marks a dev server for non-security behavior such as restart reason and cleanup isolation; does not bypass auth                           |
 | `RELAY_IDE_TMUX_PREFIX`       | mode-specific                     | Overrides the tmux prefix after normalization                                                                                            |
 
 Invalid self-host port overrides are treated as unset, so the allocator remains the fallback instead of fixed ordinary-dev ports. If you override ports, the effective backend/frontend ports are still written to the worktree `.env` managed block. Generic parent-process `RELAY_IDE_CONFIG` and `RELAY_IDE_PORT` values are intentionally ignored in self-host mode; this prevents a child Relay launched from production Relay from reusing the production config or port by accident.

@@ -20,6 +20,10 @@ import {
 } from '../shared/relay-node-protocol.js';
 import { buildManifestWithAgents } from './helpers/manifest-fixtures.js';
 import { mintPairTokenWithOperatorGrantForTest } from './helpers/operator-pairing.js';
+import {
+  testBrowserAuthTokens,
+  testBrowserWsHeaders,
+} from './helpers/ws-auth.js';
 
 const AGENTS = [
   { id: 'claude', label: 'Claude', status: 'available' as const },
@@ -446,7 +450,7 @@ async function startHub() {
   const server = http.createServer(app);
   setupWebSocket(
     server,
-    new Set(),
+    testBrowserAuthTokens(),
     null,
     undefined,
     true,
@@ -534,7 +538,8 @@ async function attachBrowser(input: {
   sessionId: string;
 }): Promise<{ browser: BrowserClient; attach: RelayNodeEnvelope }> {
   const browserWs = new WebSocket(
-    `${input.wsBase}/nodes/${encodeURIComponent(input.node.nodeId)}/ws/sessions/${encodeURIComponent(input.sessionId)}`
+    `${input.wsBase}/nodes/${encodeURIComponent(input.node.nodeId)}/ws/sessions/${encodeURIComponent(input.sessionId)}`,
+    { headers: testBrowserWsHeaders() }
   );
   await waitForOpen(browserWs);
   const browser = new BrowserClient(browserWs);

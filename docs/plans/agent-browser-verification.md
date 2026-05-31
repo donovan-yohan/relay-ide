@@ -41,7 +41,7 @@ RELAY_IDE_URL=http://127.0.0.1:3457 npx relay-ide-browser validate
 2. Discovers a free port (3456-3556 range) or uses the one you specify
 3. Writes a config JSON with `host: 127.0.0.1` and your `workspacePath` as the only repo
 4. **Bootstraps the frontend build** from the main repo if the worktree doesn't have one (see below)
-5. Spawns `node dist/server/index.js` with `NO_PIN=1` and the ephemeral config
+5. Spawns `node dist/server/index.js` with `RELAY_IDE_DEV_INSTANCE=1`, `RELAY_IDE_TMUX_PREFIX=relay-sandbox-`, and the ephemeral config
 6. Polls `/health` every 200ms until the server is ready (30s timeout)
 7. Returns `{ url, port, configPath, dataDir, process, teardown }`
 
@@ -69,7 +69,7 @@ Environment:
 
 - **Port:** Each sandbox gets its own ephemeral port. The global `relay-ide` (if running) typically uses 3456; sandboxes use 3457+.
 - **Config:** Each sandbox writes its own `config.json` in a temp dir, so there's no conflict over `~/.config/relay-ide/config.json`.
-- **Tmux:** The sandbox runs with `NO_PIN=1`, so it uses the `relay-dev-` tmux prefix (dev mode), keeping sessions isolated from production `relay-ide-` prefixes.
+- **Tmux:** The sandbox runs with an explicit `relay-sandbox-` tmux prefix, keeping sessions isolated from production `relay-ide-` and ordinary dev `relay-dev-` prefixes.
 
 ## API Reference
 

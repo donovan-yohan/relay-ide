@@ -59,7 +59,7 @@ function normalizeTmuxPrefix(prefix: string | undefined): string | null {
 export function getTmuxPrefix(): string {
   return (
     normalizeTmuxPrefix(process.env.RELAY_IDE_TMUX_PREFIX) ??
-    (process.env.NO_PIN === '1' ? 'relay-dev-' : 'relay-ide-')
+    (process.env.RELAY_IDE_DEV_INSTANCE === '1' ? 'relay-dev-' : 'relay-ide-')
   );
 }
 

@@ -17,6 +17,7 @@ import type { NodeManifest } from '../shared/node-manifest.js';
 import type { RepoInventoryReport } from '../shared/repo-inventory.js';
 import type { RelayNodeEnvelope } from '../shared/relay-node-protocol.js';
 import { mintPairTokenWithOperatorGrantForTest } from './helpers/operator-pairing.js';
+import { testBrowserAuthTokens } from './helpers/ws-auth.js';
 
 function manifest(): NodeManifest {
   return {
@@ -261,7 +262,7 @@ describe('hub cold transfer / reopen-on-other-node', () => {
     const server = http.createServer(app);
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       true,

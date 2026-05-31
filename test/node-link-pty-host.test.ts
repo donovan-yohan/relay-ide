@@ -20,6 +20,7 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type RelayNodeEnvelope,
 } from '../shared/relay-node-protocol.js';
+import { testBrowserAuthTokens } from './helpers/ws-auth.js';
 
 function envelopeBuilder(nodeId: string) {
   return (
@@ -412,7 +413,7 @@ describe('node link pty host (integration)', () => {
     const server = http.createServer(express());
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       false,

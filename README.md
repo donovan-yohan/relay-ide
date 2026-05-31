@@ -64,7 +64,7 @@ npm install
 npm run dev
 ```
 
-`npm run dev` builds the TypeScript backend once, starts the backend in no-PIN dev mode on `127.0.0.1:3457`, and starts the Vite frontend on `127.0.0.1:5173`. Open the Vite URL for frontend HMR; Vite proxies REST and WebSocket traffic to the real backend.
+`npm run dev` builds the TypeScript backend once, starts the backend as an isolated dev instance on `127.0.0.1:3457`, and starts the Vite frontend on `127.0.0.1:5173`. Open the Vite URL for frontend HMR; Vite proxies REST and WebSocket traffic to the real backend. Dev instances use separate config/tmux identity but still require the normal PIN/browser-session auth flow.
 
 Useful split commands:
 

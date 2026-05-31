@@ -5,13 +5,9 @@ const isExpectedError = (msg: string) => {
 };
 
 const waitForAppReady = async (page: Page) => {
-  if (process.env.NO_PIN === '1') {
-    await expect(page.locator('.main-app')).toBeVisible({ timeout: 10000 });
-  } else {
-    await expect(page.getByRole('button', { name: /set PIN/i })).toBeVisible({
-      timeout: 10000,
-    });
-  }
+  await expect(page.getByRole('button', { name: /set PIN/i })).toBeVisible({
+    timeout: 10000,
+  });
 };
 
 test.describe('smoke', () => {
@@ -42,11 +38,7 @@ test.describe('smoke', () => {
 
     await waitForAppReady(page);
 
-    if (process.env.NO_PIN === '1') {
-      await expect(setPinButton).toHaveCount(0);
-    } else {
-      await expect(setPinButton).toBeVisible();
-    }
+    await expect(setPinButton).toBeVisible();
   });
 
   test('no console errors on load', async ({ page }) => {

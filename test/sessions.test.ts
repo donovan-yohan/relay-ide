@@ -738,19 +738,19 @@ describe('sessions', () => {
   });
 
   it('generateTmuxSessionName has correct prefix', () => {
-    const original = process.env.NO_PIN;
-    delete process.env.NO_PIN;
+    const original = process.env.RELAY_IDE_DEV_INSTANCE;
+    delete process.env.RELAY_IDE_DEV_INSTANCE;
     try {
       const name = generateTmuxSessionName('my-session', 'abcdef1234567890');
       expect(name.startsWith('relay-ide-')).toBe(true);
     } finally {
-      if (original !== undefined) process.env.NO_PIN = original;
+      if (original !== undefined) process.env.RELAY_IDE_DEV_INSTANCE = original;
     }
   });
 
   it('generateTmuxSessionName sanitizes special characters', () => {
-    const original = process.env.NO_PIN;
-    delete process.env.NO_PIN;
+    const original = process.env.RELAY_IDE_DEV_INSTANCE;
+    delete process.env.RELAY_IDE_DEV_INSTANCE;
     try {
       const name = generateTmuxSessionName(
         'feat/auth-flow',
@@ -758,13 +758,13 @@ describe('sessions', () => {
       );
       expect(name.startsWith('relay-ide-feat-auth-flow-')).toBe(true);
     } finally {
-      if (original !== undefined) process.env.NO_PIN = original;
+      if (original !== undefined) process.env.RELAY_IDE_DEV_INSTANCE = original;
     }
   });
 
   it('generateTmuxSessionName limits display name to 30 chars', () => {
-    const original = process.env.NO_PIN;
-    delete process.env.NO_PIN;
+    const original = process.env.RELAY_IDE_DEV_INSTANCE;
+    delete process.env.RELAY_IDE_DEV_INSTANCE;
     try {
       const longName =
         'a-very-long-display-name-that-exceeds-thirty-characters';
@@ -781,7 +781,7 @@ describe('sessions', () => {
       );
       expect(displayPart.length).toBeLessThanOrEqual(30);
     } finally {
-      if (original !== undefined) process.env.NO_PIN = original;
+      if (original !== undefined) process.env.RELAY_IDE_DEV_INSTANCE = original;
     }
   });
 
@@ -798,26 +798,26 @@ describe('sessions', () => {
     expect(prodPrefix.startsWith(devPrefix)).toBe(false);
   });
 
-  it('getTmuxPrefix returns relay-ide- when NO_PIN is not set', () => {
-    const original = process.env.NO_PIN;
-    delete process.env.NO_PIN;
+  it('getTmuxPrefix returns relay-ide- when RELAY_IDE_DEV_INSTANCE is not set', () => {
+    const original = process.env.RELAY_IDE_DEV_INSTANCE;
+    delete process.env.RELAY_IDE_DEV_INSTANCE;
     try {
       expect(getTmuxPrefix()).toBe('relay-ide-');
     } finally {
-      if (original !== undefined) process.env.NO_PIN = original;
+      if (original !== undefined) process.env.RELAY_IDE_DEV_INSTANCE = original;
     }
   });
 
-  it('getTmuxPrefix returns relay-dev- when NO_PIN is 1', () => {
-    const original = process.env.NO_PIN;
-    process.env.NO_PIN = '1';
+  it('getTmuxPrefix returns relay-dev- when RELAY_IDE_DEV_INSTANCE is 1', () => {
+    const originalDevInstance = process.env.RELAY_IDE_DEV_INSTANCE;
+    process.env.RELAY_IDE_DEV_INSTANCE = '1';
     try {
       expect(getTmuxPrefix()).toBe('relay-dev-');
     } finally {
-      if (original !== undefined) {
-        process.env.NO_PIN = original;
+      if (originalDevInstance !== undefined) {
+        process.env.RELAY_IDE_DEV_INSTANCE = originalDevInstance;
       } else {
-        delete process.env.NO_PIN;
+        delete process.env.RELAY_IDE_DEV_INSTANCE;
       }
     }
   });

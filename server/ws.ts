@@ -488,7 +488,7 @@ function setupWebSocket(
   authenticatedTokens: Set<string>,
   watcher: WorktreeWatcher | null,
   configPath?: string,
-  noPinMode = false,
+  _legacyNoPinModeIgnored = false,
   localNode?: LocalRelayNode,
   hubNodeRegistry?: HubNodeRegistry,
   nodeLinks?: HubNodeLinkManager,
@@ -507,7 +507,6 @@ function setupWebSocket(
   const eventClients = new Set<WebSocket>();
 
   function isAuthenticated(cookieHeader: string | undefined): boolean {
-    if (noPinMode) return true;
     const cookies = parseCookies(cookieHeader);
     const token = cookies['token'] ?? '';
     if (authenticatedTokens.has(token)) return true;

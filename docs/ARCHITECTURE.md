@@ -227,7 +227,7 @@ Tmux session names are stable and human-readable:
 ```
 
 - Production sessions use the `relay-ide-` prefix.
-- Ordinary dev mode sessions (`NO_PIN=1`) use the `relay-dev-` prefix.
+- Ordinary dev mode sessions (`RELAY_IDE_DEV_INSTANCE=1`) use the `relay-dev-` prefix.
 - Self-host mode sessions (`relay-ide dev --self-host` / `npm run dev:self`) use the `relay-self-` prefix and a config path under user config state, not the production config.
 - The slug is sanitized to alphanumeric/hyphen characters and capped before the session id suffix.
 - Restore paths preserve the original session id and tmux session name so browser tabs can reconnect to the same server-side process after a server restart.
@@ -307,7 +307,7 @@ Browser-facing channels require authentication via `token` cookie verified durin
 
 **Build:** TypeScript compiles via `tsc` to `dist/`. Frontend builds via Vite to `dist/frontend/`. ESM throughout (`"type": "module"`), all relative imports use `.js` extensions, Node builtins use `node:` prefix.
 
-**Auth:** HTTP and WebSocket routes are grouped by auth lane in `server/auth.ts` (`AUTH_ROUTE_LANE_INVENTORY`). Browser UI routes use browser-session cookies from PIN/no-PIN local dev; scoped actor credentials are delegated bounded capabilities for agents, CLIs, and automation systems; CLI gateway routes currently accept browser-session compatibility while naming `scoped-actor-credential` as the migration lane; node heartbeat and `/hub/node-link` use node credentials; pairing exchange uses pair tokens; setup/login/health routes are public-local-only. Rate limiting is per-IP for browser PIN attempts.
+**Auth:** HTTP and WebSocket routes are grouped by auth lane in `server/auth.ts` (`AUTH_ROUTE_LANE_INVENTORY`). Browser UI routes use browser-session cookies from PIN login or first-run PIN setup; scoped actor credentials are delegated bounded capabilities for agents, CLIs, and automation systems; CLI gateway routes currently accept browser-session compatibility while naming `scoped-actor-credential` as the migration lane; node heartbeat and `/hub/node-link` use node credentials; pairing exchange uses pair tokens; setup/login/health routes are public-local-only. Dev-instance flags isolate config/tmux/process behavior and do not satisfy auth. Rate limiting is per-IP for browser PIN attempts.
 
 **Session lifecycle:** Runtime session records are in-memory during normal operation, while tmux owns the durable process tree. Multiple sessions per directory are allowed (multi-tab support). PTY exit triggers automatic cleanup. Scrollback buffers cap at 256KB with FIFO eviction. PTY spawns are wrapped with `trap '' PIPE; exec` to prevent SIGPIPE from killing sessions. During auto-updates, sessions are serialized to disk (`pending-sessions.json` + scrollback files) and restored on restart by reattaching to the preserved tmux name when possible.
 

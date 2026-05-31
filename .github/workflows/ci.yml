@@ -83,7 +83,7 @@ jobs:
         run: npx playwright test --grep "smoke"
         env:
           CI: true
-          NO_PIN: '1'
+          RELAY_IDE_DEV_INSTANCE: '1'
           RELAY_IDE_PORT: '3456'
           RELAY_IDE_E2E_SKIP_BUILD: '1'
           PLAYWRIGHT_CHROME_CHANNEL: chrome

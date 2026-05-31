@@ -457,12 +457,9 @@ export async function checkAuth(): Promise<boolean> {
 
 export async function checkAuthStatus(): Promise<{
   hasPIN: boolean;
-  noPin?: boolean;
 }> {
-  const data = await json<{ hasPIN?: boolean; noPin?: boolean }>(
-    await fetch('/auth/status')
-  );
-  return { hasPIN: data.hasPIN === true, noPin: data.noPin === true };
+  const data = await json<{ hasPIN?: boolean }>(await fetch('/auth/status'));
+  return { hasPIN: data.hasPIN === true };
 }
 
 export async function fetchConfirmationChallenges(): Promise<

@@ -20,6 +20,10 @@ import {
 } from '../shared/relay-node-protocol.js';
 import { buildManifestWithAgents } from './helpers/manifest-fixtures.js';
 import { mintPairTokenWithOperatorGrantForTest } from './helpers/operator-pairing.js';
+import {
+  testBrowserAuthTokens,
+  testBrowserWsHeaders,
+} from './helpers/ws-auth.js';
 
 const LOCAL_SESSION_ID = 'duplicate-local-session';
 
@@ -280,7 +284,7 @@ async function startSmokeHub(now: () => Date) {
   const server = http.createServer(app);
   setupWebSocket(
     server,
-    new Set(),
+    testBrowserAuthTokens(),
     null,
     undefined,
     true,
@@ -456,7 +460,9 @@ describe('multi-node smoke harness', () => {
     expect(sessionA.nodeId).toBe(nodeA.nodeId);
     expect(sessionB.nodeId).toBe(nodeB.nodeId);
 
-    const eventWs = new WebSocket(`${hub.wsBase}/ws/events`);
+    const eventWs = new WebSocket(`${hub.wsBase}/ws/events`, {
+      headers: testBrowserWsHeaders(),
+    });
     cleanup.push(() => eventWs.close());
     await waitForOpen(eventWs);
     const events: Array<Record<string, unknown>> = [];
@@ -490,7 +496,8 @@ describe('multi-node smoke harness', () => {
 
     const nodeBMessageCount = nodeB.messages.length;
     const browserWs = new WebSocket(
-      `${hub.wsBase}/nodes/${encodeURIComponent(nodeA.nodeId)}/ws/sessions/${LOCAL_SESSION_ID}`
+      `${hub.wsBase}/nodes/${encodeURIComponent(nodeA.nodeId)}/ws/sessions/${LOCAL_SESSION_ID}`,
+      { headers: testBrowserWsHeaders() }
     );
     cleanup.push(() => browserWs.close());
     await waitForOpen(browserWs);

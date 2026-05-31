@@ -8,6 +8,7 @@ import {
 } from '../server/pty-handler.js';
 
 const originalRelayTmuxPrefix = process.env.RELAY_IDE_TMUX_PREFIX;
+const originalDevInstance = process.env.RELAY_IDE_DEV_INSTANCE;
 const originalNoPin = process.env.NO_PIN;
 
 afterEach(() => {
@@ -15,6 +16,11 @@ afterEach(() => {
     delete process.env.RELAY_IDE_TMUX_PREFIX;
   } else {
     process.env.RELAY_IDE_TMUX_PREFIX = originalRelayTmuxPrefix;
+  }
+  if (originalDevInstance === undefined) {
+    delete process.env.RELAY_IDE_DEV_INSTANCE;
+  } else {
+    process.env.RELAY_IDE_DEV_INSTANCE = originalDevInstance;
   }
   if (originalNoPin === undefined) {
     delete process.env.NO_PIN;
@@ -46,10 +52,18 @@ describe('tmux prefix resolution', () => {
     expect(getTmuxPrefix()).toBe('relay-self-');
   });
 
-  it('falls back to dev and production prefixes without an explicit override', () => {
+  it('uses the explicit dev-instance flag for dev fallback prefixes', () => {
     delete process.env.RELAY_IDE_TMUX_PREFIX;
+    process.env.RELAY_IDE_DEV_INSTANCE = '1';
     process.env.NO_PIN = '1';
     expect(getTmuxPrefix()).toBe('relay-dev-');
+  });
+
+  it('ignores NO_PIN for tmux prefix fallback because auth bypass is not dev identity', () => {
+    delete process.env.RELAY_IDE_TMUX_PREFIX;
+    delete process.env.RELAY_IDE_DEV_INSTANCE;
+    process.env.NO_PIN = '1';
+    expect(getTmuxPrefix()).toBe('relay-ide-');
 
     delete process.env.NO_PIN;
     expect(getTmuxPrefix()).toBe('relay-ide-');

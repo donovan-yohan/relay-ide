@@ -14,6 +14,10 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
 } from '../shared/relay-node-protocol.js';
 import { buildManifestWithAgents } from './helpers/manifest-fixtures.js';
+import {
+  testBrowserAuthTokens,
+  testBrowserWsHeaders,
+} from './helpers/ws-auth.js';
 
 const cleanupFns: Array<() => Promise<void> | void> = [];
 
@@ -99,7 +103,7 @@ describe('hub node status event websocket', () => {
     const server = http.createServer();
     const { wss } = setupWebSocket(
       server,
-      new Set<string>(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       true,
@@ -110,7 +114,9 @@ describe('hub node status event websocket', () => {
     cleanupFns.push(() => closeServer(server));
     const port = await listen(server);
 
-    const browser = new WebSocket(`ws://127.0.0.1:${port}/ws/events`);
+    const browser = new WebSocket(`ws://127.0.0.1:${port}/ws/events`, {
+      headers: testBrowserWsHeaders(),
+    });
     cleanupFns.push(() => browser.close());
     await waitForOpen(browser);
 
@@ -201,7 +207,7 @@ describe('hub node status event websocket', () => {
     const server = http.createServer();
     const { wss } = setupWebSocket(
       server,
-      new Set<string>(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       true,
@@ -213,7 +219,9 @@ describe('hub node status event websocket', () => {
     cleanupFns.push(() => closeServer(server));
     const port = await listen(server);
 
-    const browser = new WebSocket(`ws://127.0.0.1:${port}/ws/events`);
+    const browser = new WebSocket(`ws://127.0.0.1:${port}/ws/events`, {
+      headers: testBrowserWsHeaders(),
+    });
     cleanupFns.push(() => browser.close());
     await waitForOpen(browser);
 

@@ -26,6 +26,10 @@ import {
 import type { SecurityAuditEntryInput } from '../shared/security-audit.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
 import { mintPairTokenWithOperatorGrantForTest } from './helpers/operator-pairing.js';
+import {
+  testBrowserAuthTokens,
+  testBrowserWsHeaders,
+} from './helpers/ws-auth.js';
 
 function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
   return {
@@ -130,12 +134,20 @@ async function nextEvent(ws: WebSocket): Promise<Record<string, unknown>> {
   });
 }
 
-async function rawUpgrade(port: number, pathName: string): Promise<string> {
+async function rawUpgrade(
+  port: number,
+  pathName: string,
+  headers: Record<string, string> = {}
+): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      const extraHeaders = Object.entries(headers)
+        .map(([key, value]) => `${key}: ${value}\r\n`)
+        .join('');
       socket.write(
         `GET ${pathName} HTTP/1.1\r\n` +
           `Host: 127.0.0.1:${port}\r\n` +
+          extraHeaders +
           'Connection: Upgrade\r\n' +
           'Upgrade: websocket\r\n' +
           'Sec-WebSocket-Version: 13\r\n' +
@@ -329,7 +341,7 @@ describe('hub-routed node session create and attach', () => {
     const server = http.createServer(app);
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       true,
@@ -1166,7 +1178,8 @@ describe('hub-routed node session create and attach', () => {
     await waitForOpen(nodeWs);
 
     const browserWs = new WebSocket(
-      `${wsBase}/nodes/${encodeURIComponent(nodeId)}/ws/sessions/remote-session-1`
+      `${wsBase}/nodes/${encodeURIComponent(nodeId)}/ws/sessions/remote-session-1`,
+      { headers: testBrowserWsHeaders() }
     );
     cleanup.push(() => browserWs.close());
     await waitForOpen(browserWs);
@@ -1284,7 +1297,8 @@ describe('hub-routed node session create and attach', () => {
     await waitForOpen(nodeWs);
 
     const browserWs = new WebSocket(
-      `${wsBase}/nodes/${encodeURIComponent(nodeId)}/ws/sessions/remote-session-1`
+      `${wsBase}/nodes/${encodeURIComponent(nodeId)}/ws/sessions/remote-session-1`,
+      { headers: testBrowserWsHeaders() }
     );
     cleanup.push(() => browserWs.close());
     await waitForOpen(browserWs);
@@ -1335,7 +1349,9 @@ describe('hub-routed node session create and attach', () => {
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const eventsWs = new WebSocket(`${wsBase}/ws/events`);
+    const eventsWs = new WebSocket(`${wsBase}/ws/events`, {
+      headers: testBrowserWsHeaders(),
+    });
     cleanup.push(() => eventsWs.close());
     await waitForOpen(eventsWs);
 
@@ -1606,7 +1622,11 @@ describe('hub-routed node session create and attach', () => {
     const { port } = await startHub();
 
     await expect(
-      rawUpgrade(port, '/nodes/%E0%A4%A/ws/sessions/remote-session-1')
+      rawUpgrade(
+        port,
+        '/nodes/%E0%A4%A/ws/sessions/remote-session-1',
+        testBrowserWsHeaders()
+      )
     ).resolves.toContain('HTTP/1.1 400 Bad Request');
   });
 });

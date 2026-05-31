@@ -358,7 +358,7 @@ The registry is stored in `<configDir>/hub-node-registry.json` (mode `0600`) wit
 
 Federated Relay has separate route lanes for browser sessions, scoped actor credentials, node credentials, pair tokens, public local setup, and denied responses. The inventory is exported from `server/auth.ts` as `AUTH_ROUTE_LANE_INVENTORY` and is the implementation source of truth for route-lane policy.
 
-- Browser/UI routes use the `browser-session` lane: PIN login or no-PIN local dev creates the `token` cookie that drives the React UI and operator browser routes.
+- Browser/UI routes use the `browser-session` lane: PIN login creates the `token` cookie that drives the React UI and operator browser routes. Dev-instance flags do not mint this cookie or bypass the lane.
 - CLI/agent gateway routes are named as `scoped-actor-credential` plus browser-session compatibility today. The scoped actor credential registry exists as the #802 lifecycle primitive, but command migration is a later slice; adapters must not substitute node credentials, browser UI cookies, or private node-link messages.
 - `/hub/node-link` and node heartbeat use the `node-credential` lane only.
 - `POST /hub/pairing/exchange` uses the `pair-token` lane only.

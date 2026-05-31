@@ -9,6 +9,7 @@ export interface MintPairTokenForTestOptions {
   displayName: string;
   taskRef?: string;
   actorId?: string;
+  authCookie?: string;
 }
 
 async function responseBodyForMessage(response: Response): Promise<string> {
@@ -39,7 +40,11 @@ export async function mintPairTokenWithOperatorGrantForTest(
 
   const grantRes = await fetch(`${base}/hub/operator-handshake-grants`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+    headers: {
+      'content-type': 'application/json',
+      'x-test-auth': 'yes',
+      ...(options.authCookie ? { Cookie: options.authCookie } : {}),
+    },
     body: JSON.stringify({
       actor: { type: 'cli', id: actorId },
       issuer: { id: 'operator-browser' },
@@ -56,7 +61,11 @@ export async function mintPairTokenWithOperatorGrantForTest(
     `${base}/hub/operator-handshake-grants/${encodeURIComponent(grantBody.grant.id)}/approve`,
     {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-test-auth': 'yes' },
+      headers: {
+        'content-type': 'application/json',
+        'x-test-auth': 'yes',
+        ...(options.authCookie ? { Cookie: options.authCookie } : {}),
+      },
       body: JSON.stringify({ approvedBy: { id: 'operator-browser' } }),
     }
   );

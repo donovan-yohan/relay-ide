@@ -19,6 +19,7 @@ import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type RelayNodeEnvelope,
 } from '../shared/relay-node-protocol.js';
+import { testBrowserAuthTokens } from './helpers/ws-auth.js';
 
 type Listener = (...args: unknown[]) => void;
 
@@ -274,7 +275,7 @@ describe('node link client (integration)', () => {
     const server = http.createServer(express());
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       false,
@@ -337,7 +338,7 @@ describe('node link client (integration)', () => {
     const server = http.createServer(express());
     setupWebSocket(
       server,
-      new Set(),
+      testBrowserAuthTokens(),
       null,
       undefined,
       false,

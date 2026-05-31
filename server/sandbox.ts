@@ -115,7 +115,8 @@ export async function startSandbox(
     env: {
       ...process.env,
       RELAY_IDE_CONFIG: configPath,
-      NO_PIN: '1',
+      RELAY_IDE_DEV_INSTANCE: '1',
+      RELAY_IDE_TMUX_PREFIX: 'relay-sandbox-',
     },
     stdio: 'inherit',
     detached: false,

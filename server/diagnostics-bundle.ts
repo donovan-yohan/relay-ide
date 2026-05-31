@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
+import { isPinConfigured } from './auth.js';
 import { getNodeManifest } from './node-manifest.js';
 import {
   readLocalLogSnapshot,
@@ -429,7 +430,7 @@ function buildConfigSummary(
       frameworkOverrideCount: Object.keys(config.frameworks ?? {}).length,
       githubConfigured: Boolean(config.github?.accessToken || config.github?.username),
       webhookConfigured: Boolean(config.github?.webhookSecret || config.github?.smeeUrl),
-      pinConfigured: Boolean(config.pinHash),
+      pinConfigured: isPinConfigured(config.pinHash),
       vapidConfigured: Boolean(config.vapidPublicKey || config.vapidPrivateKey),
     },
   };
