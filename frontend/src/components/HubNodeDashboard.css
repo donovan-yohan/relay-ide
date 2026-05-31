@@ -303,7 +303,7 @@
 
 .hub-node-degraded-reason {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: minmax(0, auto) minmax(12ch, 1fr) auto;
   gap: 6px;
   align-items: baseline;
   border: 1px solid var(--border);
@@ -314,14 +314,14 @@
 .hub-node-degraded-code {
   color: var(--text);
   font-weight: 600;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .hub-node-degraded-desc {
   color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .hub-node-degraded-severity {

@@ -1,6 +1,56 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createAdapterV2 } from '../../../server/protocol-adapters/index.js';
 import { LegacyProtocolAdapterV2Bridge } from '../../../server/protocol-adapters/legacy-v2-bridge.js';
+import { resolveHermesGatewaySettings } from '../../../server/protocol-adapters/hermes-adapter.js';
+
+const ENV_KEYS = [
+  'HOME',
+  'HERMES_HOME',
+  'HERMES_API_ENDPOINT',
+  'HERMES_API_BASE_URL',
+  'HERMES_API_URL',
+  'HERMES_API_TOKEN',
+  'HERMES_API_KEY',
+  'HERMES_GATEWAY_API_KEY',
+  'API_SERVER_KEY',
+  'API_SERVER_HOST',
+  'API_SERVER_PORT',
+];
+
+const originalEnv = new Map<string, string | undefined>(
+  ENV_KEYS.map((key) => [key, process.env[key]])
+);
+const tempDirs: string[] = [];
+
+function resetHermesEnv(): void {
+  for (const key of ENV_KEYS) {
+    const value = originalEnv.get(key);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function makeTempHome(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-hermes-home-'));
+  tempDirs.push(dir);
+  process.env.HOME = dir;
+  delete process.env.HERMES_HOME;
+  for (const key of ENV_KEYS) {
+    if (key !== 'HOME' && key !== 'HERMES_HOME') delete process.env[key];
+  }
+  return dir;
+}
+
+afterEach(resetHermesEnv);
 
 describe('Hermes V2 web adapter registration', () => {
   it('registers hermes as a ProtocolAdapterV2 bridge while native gateway mapping is ported', () => {
@@ -14,6 +64,52 @@ describe('Hermes V2 web adapter registration', () => {
       fileChanges: true,
       approvals: true,
       interrupt: true,
+    });
+  });
+});
+
+describe('Hermes gateway settings resolution', () => {
+  it('reads the API server endpoint and key from Hermes config.yaml', () => {
+    const home = makeTempHome();
+    const hermesHome = path.join(home, '.hermes');
+    fs.mkdirSync(hermesHome, { recursive: true });
+    fs.writeFileSync(
+      path.join(hermesHome, 'config.yaml'),
+      [
+        'platforms:',
+        '  api_server:',
+        '    enabled: true',
+        '    extra:',
+        '      host: 127.0.0.1',
+        '      port: 9876',
+        '      key: cfg-secret',
+        '',
+      ].join('\n')
+    );
+
+    expect(resolveHermesGatewaySettings(undefined)).toEqual({
+      endpoint: 'http://127.0.0.1:9876',
+      apiKey: 'cfg-secret',
+      source: 'Hermes config',
+    });
+  });
+
+  it('lets active Hermes profile env override root env defaults', () => {
+    const home = makeTempHome();
+    const hermesHome = path.join(home, '.hermes');
+    const profileHome = path.join(hermesHome, 'profiles', 'ebi');
+    fs.mkdirSync(profileHome, { recursive: true });
+    fs.writeFileSync(path.join(hermesHome, '.env'), 'API_SERVER_PORT=1111\n');
+    fs.writeFileSync(path.join(hermesHome, 'active_profile'), 'ebi\n');
+    fs.writeFileSync(
+      path.join(profileHome, '.env'),
+      'API_SERVER_PORT=2222\nAPI_SERVER_KEY=profile-secret\n'
+    );
+
+    expect(resolveHermesGatewaySettings(undefined)).toEqual({
+      endpoint: 'http://127.0.0.1:2222',
+      apiKey: 'profile-secret',
+      source: 'environment',
     });
   });
 });
