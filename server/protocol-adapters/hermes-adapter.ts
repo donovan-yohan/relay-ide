@@ -75,26 +75,198 @@ function parseEnvFile(filePath: string): Record<string, string> {
   }
 }
 
+function stripYamlInlineComment(value: string): string {
+  let quote: 'single' | 'double' | null = null;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    if (char === "'" && quote !== 'double') {
+      quote = quote === 'single' ? null : 'single';
+    } else if (char === '"' && quote !== 'single') {
+      quote = quote === 'double' ? null : 'double';
+    } else if (char === '#' && quote === null) {
+      if (i === 0 || /\s/.test(value[i - 1] ?? '')) {
+        return value.slice(0, i).trim();
+      }
+    }
+  }
+  return value.trim();
+}
+
+function parseYamlScalar(value: string): string {
+  let parsed = stripYamlInlineComment(value).trim();
+  if (
+    (parsed.startsWith('"') && parsed.endsWith('"')) ||
+    (parsed.startsWith("'") && parsed.endsWith("'"))
+  ) {
+    parsed = parsed.slice(1, -1);
+  }
+  return parsed;
+}
+
+function readSimpleYamlScalars(filePath: string): Map<string, string> {
+  const values = new Map<string, string>();
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const stack: Array<{ indent: number; key: string }> = [];
+    for (const rawLine of content.split(/\r?\n/)) {
+      if (!rawLine.trim() || rawLine.trimStart().startsWith('#')) continue;
+      const match = /^(\s*)([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(rawLine);
+      if (!match) continue;
+      const indent = match[1]?.length ?? 0;
+      const key = match[2];
+      const rawValue = match[3] ?? '';
+      if (!key) continue;
+      while (stack.length > 0 && indent <= stack[stack.length - 1]!.indent) {
+        stack.pop();
+      }
+      const pathParts = [...stack.map((entry) => entry.key), key];
+      const value = parseYamlScalar(rawValue);
+      if (value === '') {
+        stack.push({ indent, key });
+      } else {
+        values.set(pathParts.join('.'), value);
+      }
+    }
+  } catch {
+    // Missing or malformed config is fine; fall back to env/defaults.
+  }
+  return values;
+}
+
+function firstConfigValue(
+  values: Map<string, string>,
+  prefixes: string[],
+  keys: string[]
+): string | null {
+  for (const prefix of prefixes) {
+    for (const key of keys) {
+      const value = nonEmpty(values.get(`${prefix}.${key}`));
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function configBoolean(value: string | null): boolean | null {
+  if (value == null) return null;
+  const normalized = value.toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+  return null;
+}
+
+function firstConfigBoolean(
+  values: Map<string, string>,
+  prefixes: string[],
+  keys: string[]
+): boolean | null {
+  for (const prefix of prefixes) {
+    const value = configBoolean(firstConfigValue(values, [prefix], keys));
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+interface HermesConfigApiServerSettings {
+  endpoint: string | null;
+  apiKey: string | null;
+  disabled: boolean;
+}
+
+function readHermesConfigApiServerFile(
+  filePath: string
+): HermesConfigApiServerSettings {
+  const values = readSimpleYamlScalars(filePath);
+  const prefixes = [
+    'api_server',
+    'platforms.api_server',
+    'gateway.platforms.api_server',
+    'gateway.api_server',
+  ];
+  const enabled = firstConfigBoolean(values, prefixes, [
+    'enabled',
+    'extra.enabled',
+  ]);
+  const host = firstConfigValue(values, prefixes, ['host', 'extra.host']);
+  const port = firstConfigValue(values, prefixes, ['port', 'extra.port']);
+  const apiKey = firstConfigValue(values, prefixes, [
+    'key',
+    'extra.key',
+    'api_key',
+    'apiKey',
+    'token',
+  ]);
+
+  const disabled = enabled === false;
+  const endpoint = disabled
+    ? null
+    : enabled === true || host || port
+      ? `http://${host ?? '127.0.0.1'}:${port ?? '8642'}`
+      : null;
+
+  return {
+    endpoint,
+    apiKey: disabled ? null : apiKey,
+    disabled,
+  };
+}
+
+function readHermesConfigApiServer(): HermesConfigApiServerSettings {
+  const merged: HermesConfigApiServerSettings = {
+    endpoint: null,
+    apiKey: null,
+    disabled: false,
+  };
+  for (const home of candidateHermesHomes()) {
+    const settings = readHermesConfigApiServerFile(
+      path.join(home, 'config.yaml')
+    );
+    if (settings.disabled) {
+      merged.endpoint = null;
+      merged.apiKey = null;
+      merged.disabled = true;
+      continue;
+    }
+    if (settings.endpoint) {
+      merged.endpoint = settings.endpoint;
+      merged.disabled = false;
+    }
+    if (settings.apiKey) merged.apiKey = settings.apiKey;
+  }
+  return merged;
+}
+
+function addCandidate(candidates: string[], value: string | null): void {
+  if (value && !candidates.includes(value)) candidates.push(value);
+}
+
+function addHomeWithActiveProfile(
+  candidates: string[],
+  home: string | null
+): void {
+  if (!home) return;
+  addCandidate(candidates, home);
+  try {
+    const activeProfile = fs
+      .readFileSync(path.join(home, 'active_profile'), 'utf8')
+      .trim();
+    if (activeProfile) {
+      addCandidate(candidates, path.join(home, 'profiles', activeProfile));
+    }
+  } catch {
+    // No active profile marker for this home.
+  }
+}
+
 function candidateHermesHomes(): string[] {
   const home = os.homedir();
   const root = path.join(home, '.hermes');
-  const candidates = new Set<string>();
-  const envHome = nonEmpty(process.env['HERMES_HOME']);
-  if (envHome) candidates.add(envHome);
+  const candidates: string[] = [];
 
-  try {
-    const activeProfile = fs
-      .readFileSync(path.join(root, 'active_profile'), 'utf8')
-      .trim();
-    if (activeProfile) {
-      candidates.add(path.join(root, 'profiles', activeProfile));
-    }
-  } catch {
-    // No active profile marker; fall through to the root.
-  }
-
-  candidates.add(root);
-  return [...candidates];
+  // Merge from broadest to most specific so profile/env homes win.
+  addHomeWithActiveProfile(candidates, root);
+  addHomeWithActiveProfile(candidates, nonEmpty(process.env['HERMES_HOME']));
+  return candidates;
 }
 
 function readHermesEnv(): Record<string, string> {
@@ -134,19 +306,23 @@ export function resolveHermesGatewaySettings(
   extra: Record<string, unknown> | undefined
 ): HermesGatewaySettings {
   const fileEnv = readHermesEnv();
+  const configApiServer = readHermesConfigApiServer();
   const explicitEndpoint = nonEmpty(extra?.['endpoint']);
   const envEndpoint =
     firstEnvValue(ENDPOINT_ENV_KEYS, fileEnv) ??
     endpointFromApiServerEnv(fileEnv);
+  const configEndpoint = configApiServer.endpoint;
   const endpoint = (
     explicitEndpoint ??
     envEndpoint ??
+    configEndpoint ??
     DEFAULT_HERMES_ENDPOINT
   ).replace(/\/+$/, '');
   const apiKey =
     nonEmpty(extra?.['apiToken']) ??
     nonEmpty(extra?.['apiKey']) ??
-    firstEnvValue(TOKEN_ENV_KEYS, fileEnv);
+    firstEnvValue(TOKEN_ENV_KEYS, fileEnv) ??
+    configApiServer.apiKey;
 
   return {
     endpoint,
@@ -155,7 +331,9 @@ export function resolveHermesGatewaySettings(
       ? 'adapter config'
       : envEndpoint
         ? 'environment'
-        : 'default',
+        : configEndpoint
+          ? 'Hermes config'
+          : 'default',
   };
 }
 

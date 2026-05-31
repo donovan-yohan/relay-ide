@@ -51,23 +51,27 @@ function DegradedReasonsExpander({
       </button>
       {open && (
         <ul className="hub-node-degraded-list" role="list">
-          {reasons.map((reason) => (
-            <li
-              key={reason.code}
-              className={[
-                'hub-node-degraded-reason',
-                severityClass(reason.severity),
-              ].join(' ')}
-            >
-              <span className="hub-node-degraded-code">{reason.code}</span>
-              <span className="hub-node-degraded-desc">
-                {reason.description}
-              </span>
-              <span className="hub-node-degraded-severity">
-                {reason.severity}
-              </span>
-            </li>
-          ))}
+          {reasons.map((reason) => {
+            const fullReason = `${reason.code}: ${reason.description} (${reason.severity})`;
+            return (
+              <li
+                key={reason.code}
+                className={[
+                  'hub-node-degraded-reason',
+                  severityClass(reason.severity),
+                ].join(' ')}
+                title={fullReason}
+              >
+                <span className="hub-node-degraded-code">{reason.code}</span>
+                <span className="hub-node-degraded-desc">
+                  {reason.description}
+                </span>
+                <span className="hub-node-degraded-severity">
+                  {reason.severity}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
