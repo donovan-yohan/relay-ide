@@ -291,24 +291,23 @@ beforeEach(async () => {
     })
   );
   app.get('/sessions', (_req, res) => {
-    res.json({
-      sessions: [
-        {
-          id: 'node1:sess-preturn',
-          type: 'terminal',
-          displayName: 'Terminal 1',
-          cwd: '/tmp/terminal',
-          workContextId: WORK_CONTEXT_ID,
-        },
-        {
-          id: 'node1:agent-a',
-          type: 'agent',
-          displayName: 'Agent A',
-          status: 'running',
-          cwd: '/tmp/agent',
-        },
-      ],
-    });
+    // Production server/index.ts returns /sessions as a raw JSON array.
+    res.json([
+      {
+        id: 'node1:sess-preturn',
+        type: 'terminal',
+        displayName: 'Terminal 1',
+        cwd: '/tmp/terminal',
+        workContextId: WORK_CONTEXT_ID,
+      },
+      {
+        id: 'node1:agent-a',
+        type: 'agent',
+        displayName: 'Agent A',
+        status: 'running',
+        cwd: '/tmp/agent',
+      },
+    ]);
   });
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', () => {
