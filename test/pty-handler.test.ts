@@ -174,6 +174,36 @@ describe('framework-driven PTY handler', () => {
     expect(session.sessionArgs).toEqual([]);
   });
 
+  it('relay-pty backend bypasses tmux and maintains a relay terminal model', async () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      agent: 'claude',
+      command: '/bin/cat',
+      args: [],
+      terminalBackend: 'relay-pty',
+      useTmux: false,
+      cols: 80,
+      rows: 24,
+    });
+    createdIds.push(result.id);
+    const session = sessions.get(result.id) as PtySession;
+    expect(session).toBeTruthy();
+    expect(session.terminalBackend).toBe('relay-pty');
+    expect(session.useTmux).toBe(false);
+    expect(session.tmuxSessionName).toBe('');
+    expect(session.terminalModel).toBeTruthy();
+
+    await sessions.sendTmuxText(result.id, 'relay-pty-ok\n');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await expect(sessions.captureTmuxPane(result.id)).resolves.toContain(
+      'relay-pty-ok'
+    );
+  });
+
   it('forceOutputParser sets dataQuality to parser regardless of framework', () => {
     const result = sessions.create({
       repoName: 'test-repo',

@@ -880,7 +880,7 @@ describe('sessions', () => {
     expect(result.tmuxSessionName).toMatch(/^relay-(ide|dev)-test-repo-/);
   });
 
-  it('useTmux cannot be disabled by custom command sessions or useTmux:false', () => {
+  it('useTmux:false opts custom command sessions into relay-pty', () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
@@ -891,8 +891,9 @@ describe('sessions', () => {
       useTmux: false,
     });
     createdIds.push(result.id);
-    expect(result.useTmux).toBe(true);
-    expect(result.tmuxSessionName).toMatch(/^relay-(ide|dev)-test-repo-/);
+    expect(result.terminalBackend).toBe('relay-pty');
+    expect(result.useTmux).toBe(false);
+    expect(result.tmuxSessionName).toBe('');
   });
 
   it('list includes useTmux and tmuxSessionName fields', () => {

@@ -13,6 +13,7 @@ import type {
   Session,
   SessionSummary,
   SessionMeta,
+  TerminalBackend,
   SessionType,
   WebSession,
 } from './types.js';
@@ -105,6 +106,10 @@ import {
   securityAuditEntryForTabControlEvent,
   type SecurityAuditEntryInput,
 } from '../shared/security-audit.js';
+import {
+  encodeTerminalInput,
+  type TerminalInputKey,
+} from './terminal-model-backend.js';
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('sessions');
@@ -202,6 +207,7 @@ interface SerializedPtySession {
   displayName: string;
   createdAt: string;
   lastActivity: string;
+  terminalBackend?: TerminalBackend;
   useTmux: boolean;
   tmuxSessionName: string;
   customCommand: string | null;
@@ -836,7 +842,11 @@ function list(): SessionSummary[] {
         currentActivity: s.currentActivity,
         ...normalizeControlStateSummary(s.controlState),
         ...(s.mode === 'pty'
-          ? { useTmux: s.useTmux, tmuxSessionName: s.tmuxSessionName }
+          ? {
+              terminalBackend: s.terminalBackend,
+              useTmux: s.useTmux,
+              tmuxSessionName: s.tmuxSessionName,
+            }
           : {}),
         ...(s.workspaceId ? { workspaceId: s.workspaceId } : {}),
         ...(s.additionalDirs?.length
@@ -879,7 +889,7 @@ function kill(id: string): void {
     } catch {
       // PTY may already be dead (e.g. disconnected sessions) — still delete from registry
     }
-    if (session.tmuxSessionName) {
+    if (session.useTmux && session.tmuxSessionName) {
       execFile(
         TMUX_COMMAND,
         ['kill-session', '-t', session.tmuxSessionName],
@@ -936,7 +946,7 @@ function detachForRestart(id: string): void {
   }
   if (session.mode === 'pty') {
     session.preserveRuntimeFilesOnExit = true;
-    if (session.tmuxSessionName) {
+    if (session.useTmux && session.tmuxSessionName) {
       try {
         execFileSync(
           TMUX_COMMAND,
@@ -966,7 +976,7 @@ function detachForRestart(id: string): void {
 
 function killAllTmuxSessions(): void {
   for (const session of sessions.values()) {
-    if (session.mode === 'pty' && session.tmuxSessionName) {
+    if (session.mode === 'pty' && session.useTmux && session.tmuxSessionName) {
       execFile(
         TMUX_COMMAND,
         ['kill-session', '-t', session.tmuxSessionName],
@@ -983,6 +993,7 @@ function resize(id: string, cols: number, rows: number): void {
   }
   if (session.mode === 'pty') {
     session.pty.resize(cols, rows);
+    session.terminalModel?.resize(cols, rows);
   } else {
     logger.warn(`resize() called on web session ${id} — no-op`);
   }
@@ -1019,12 +1030,16 @@ function supervisorWrite(
   try {
     session.pty.write(input.payload);
   } catch (error) {
-    logger.warn(`supervisorWrite() failed to write to PTY session ${id}: ${String(error)}`);
+    logger.warn(
+      `supervisorWrite() failed to write to PTY session ${id}: ${String(error)}`
+    );
     throw error;
   }
   const event = recordSupervisorAction(session, input, controlEngineOptions());
   if (event.type !== 'tab.intervention') {
-    throw new Error(`Supervisor action did not produce an intervention event for ${id}`);
+    throw new Error(
+      `Supervisor action did not produce an intervention event for ${id}`
+    );
   }
   session.lastActivity = new Date().toISOString();
   return {
@@ -1086,6 +1101,7 @@ function routedPtyControlSession(nodeId: string, sessionId: string): Session {
     mode: 'pty',
     pty: { write: () => {}, resize: () => {}, kill: () => {} },
     scrollback: [],
+    terminalBackend: 'relay-pty',
     useTmux: false,
     tmuxSessionName: `routed-${globalSessionId}`,
     onPtyReplacedCallbacks: [],
@@ -1211,23 +1227,76 @@ function tmuxTargetForSession(id: string): string {
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
-  if (session.mode !== 'pty' || !session.tmuxSessionName) {
-    throw new Error(`Session ${id} does not have a tmux target`);
+  if (session.mode !== 'pty' || !session.useTmux || !session.tmuxSessionName) {
+    throw new Error(`Session ${id} does not have a tmux compatibility target`);
   }
   return session.tmuxSessionName;
 }
 
+function ptySessionForTerminalControl(id: string): PtySession {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  if (session.mode !== 'pty') {
+    throw new Error(`Session ${id} is not a PTY session`);
+  }
+  return session;
+}
+
+const SUPPORTED_TERMINAL_INPUT_KEYS = new Set<TerminalInputKey>([
+  'Enter',
+  'Escape',
+  'Tab',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'CtrlC',
+]);
+
+function toTerminalInputKey(key: string): TerminalInputKey {
+  if (SUPPORTED_TERMINAL_INPUT_KEYS.has(key as TerminalInputKey)) {
+    return key as TerminalInputKey;
+  }
+  throw new Error(`Unsupported relay-pty input key: ${key}`);
+}
+
 async function sendTmuxKeys(id: string, keys: string[]): Promise<void> {
+  const session = ptySessionForTerminalControl(id);
+  if (session.terminalBackend === 'relay-pty') {
+    for (const key of keys) {
+      const encoded = encodeTerminalInput({
+        type: 'key',
+        key: toTerminalInputKey(key),
+      });
+      session.pty.write(encoded.sequence);
+    }
+    return;
+  }
   const target = tmuxTargetForSession(id);
   await execFileAsync(TMUX_COMMAND, ['send-keys', '-t', target, ...keys]);
 }
 
 async function sendTmuxText(id: string, text: string): Promise<void> {
+  const session = ptySessionForTerminalControl(id);
+  if (session.terminalBackend === 'relay-pty') {
+    const encoded = encodeTerminalInput({ type: 'text', text });
+    session.pty.write(encoded.sequence);
+    return;
+  }
   const target = tmuxTargetForSession(id);
   await execFileAsync(TMUX_COMMAND, ['send-keys', '-t', target, '-l', text]);
 }
 
 async function captureTmuxPane(id: string): Promise<string> {
+  const session = ptySessionForTerminalControl(id);
+  if (session.terminalBackend === 'relay-pty') {
+    if (!session.terminalModel) {
+      throw new Error(`Session ${id} does not have a terminal model`);
+    }
+    return session.terminalModel.getVisibleText();
+  }
   const target = tmuxTargetForSession(id);
   const { stdout } = await execFileAsync(TMUX_COMMAND, [
     'capture-pane',
@@ -1380,6 +1449,7 @@ function serializePtySession(
     displayName: session.displayName,
     createdAt: session.createdAt,
     lastActivity: session.lastActivity,
+    terminalBackend: session.terminalBackend,
     useTmux: session.useTmux,
     tmuxSessionName: session.tmuxSessionName || '',
     customCommand: session.customCommand,
@@ -1580,9 +1650,14 @@ function buildAgentArgs(
 type RestoredPtySpawnParams = {
   command: string | undefined;
   args: string[];
+  terminalBackend: TerminalBackend;
   tmuxSessionName: string;
   tmuxAttach: boolean;
 };
+
+function serializedTerminalBackend(s: SerializedPtySession): TerminalBackend {
+  return s.terminalBackend ?? 'tmux-compat';
+}
 
 function stableTmuxSessionName(s: SerializedPtySession): string {
   return (
@@ -1595,9 +1670,11 @@ async function resolveSessionSpawnParams(
   s: SerializedPtySession,
   frameworks?: Record<string, Partial<AgentFramework>>
 ): Promise<RestoredPtySpawnParams> {
-  const tmuxSessionName = stableTmuxSessionName(s);
+  const terminalBackend = serializedTerminalBackend(s);
+  const tmuxSessionName =
+    terminalBackend === 'tmux-compat' ? stableTmuxSessionName(s) : '';
 
-  if (tmuxSessionName) {
+  if (terminalBackend === 'tmux-compat' && tmuxSessionName) {
     let tmuxAlive = false;
     try {
       await execFileAsync(TMUX_COMMAND, ['has-session', '-t', tmuxSessionName]);
@@ -1619,6 +1696,7 @@ async function resolveSessionSpawnParams(
       return {
         command: TMUX_COMMAND,
         args: ['-u', 'attach-session', '-t', tmuxSessionName],
+        terminalBackend,
         tmuxSessionName,
         tmuxAttach: true,
       };
@@ -1629,6 +1707,7 @@ async function resolveSessionSpawnParams(
     return {
       command: s.customCommand,
       args: [],
+      terminalBackend,
       tmuxSessionName,
       tmuxAttach: false,
     };
@@ -1637,6 +1716,7 @@ async function resolveSessionSpawnParams(
   return {
     command: undefined,
     args: buildAgentArgs(s, frameworks),
+    terminalBackend,
     tmuxSessionName,
     tmuxAttach: false,
   };
@@ -1658,7 +1738,8 @@ function restoreSession(
     branchName: s.branchName,
     displayName: s.displayName,
     args: spawn.args,
-    useTmux: true,
+    terminalBackend: spawn.terminalBackend,
+    useTmux: spawn.terminalBackend === 'tmux-compat',
     tmuxSessionName: spawn.tmuxSessionName,
     tmuxAttach: spawn.tmuxAttach,
     sessionCustomCommand: s.customCommand,
@@ -2107,7 +2188,7 @@ async function restoreFromDisk(
 function activeTmuxSessionNames(): Set<string> {
   const names = new Set<string>();
   for (const session of sessions.values()) {
-    if (session.mode === 'pty' && session.tmuxSessionName)
+    if (session.mode === 'pty' && session.useTmux && session.tmuxSessionName)
       names.add(session.tmuxSessionName);
   }
   return names;

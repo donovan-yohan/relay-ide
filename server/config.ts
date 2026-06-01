@@ -6,6 +6,7 @@ import type {
   Config,
   ContinuePolicy,
   FilterPreset,
+  TerminalBackend,
   WorkspaceSettings,
   WorktreeMetadata,
 } from './types.js';
@@ -46,6 +47,7 @@ export const DEFAULTS: Omit<
   defaultYolo: false,
   maxPtySessions: 64,
   launchInTmux: true,
+  terminalBackend: 'tmux-compat',
   defaultNotifications: true,
   claudeFullscreen: true,
   updateChannel: 'stable',
@@ -138,6 +140,7 @@ export function getRepoSettings(
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
     launchInTmux: true,
+    terminalBackend: defaultTerminalBackend(config),
     claudeArgs: config.claudeArgs,
   };
   const perWorkspace = config.repoSettings?.[repoPath] ?? {};
@@ -150,6 +153,7 @@ export interface ResolvedSessionSettings {
   yolo: boolean;
   continuePolicy: ContinuePolicy;
   useTmux: boolean;
+  terminalBackend: TerminalBackend;
   claudeArgs: string[];
   /** #614 slice 4: effective per-session scrollback cap, undefined = use pty-handler default. */
   scrollbackBytes?: number;
@@ -206,7 +210,22 @@ export interface SessionSettingsOverrides {
   yolo?: boolean | undefined;
   continuePolicy?: ContinuePolicy | undefined;
   useTmux?: boolean | undefined;
+  terminalBackend?: TerminalBackend | undefined;
   claudeArgs?: string[] | undefined;
+}
+
+export function normalizeTerminalBackend(
+  value: unknown
+): TerminalBackend | undefined {
+  return value === 'relay-pty' || value === 'tmux-compat' ? value : undefined;
+}
+
+export function defaultTerminalBackend(config: Config): TerminalBackend {
+  return (
+    normalizeTerminalBackend(process.env.RELAY_IDE_TERMINAL_BACKEND) ??
+    normalizeTerminalBackend(config.terminalBackend) ??
+    'tmux-compat'
+  );
 }
 
 export function resolveSessionSettings(
@@ -220,6 +239,7 @@ export function resolveSessionSettings(
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
     launchInTmux: true,
+    terminalBackend: defaultTerminalBackend(config),
     claudeArgs: config.claudeArgs,
   };
 
@@ -233,6 +253,16 @@ export function resolveSessionSettings(
 
   // Merge: repo overrides workspace overrides global
   const merged = { ...globalDefaults, ...wsDefaults, ...repoSpecific };
+  const terminalBackend =
+    overrides.terminalBackend ??
+    (overrides.useTmux === false
+      ? 'relay-pty'
+      : overrides.useTmux === true
+        ? 'tmux-compat'
+        : undefined) ??
+    normalizeTerminalBackend(process.env.RELAY_IDE_TERMINAL_BACKEND) ??
+    normalizeTerminalBackend(merged.terminalBackend) ??
+    'tmux-compat';
 
   // Map boolean defaultContinue → ContinuePolicy for backward compat
   const configPolicy: ContinuePolicy =
@@ -261,7 +291,8 @@ export function resolveSessionSettings(
     agent: overrides.agent ?? agentFromLayers,
     yolo: overrides.yolo ?? merged.defaultYolo ?? false,
     continuePolicy: overrides.continuePolicy ?? configPolicy,
-    useTmux: true,
+    terminalBackend,
+    useTmux: terminalBackend === 'tmux-compat',
     ...(scrollbackBytes !== undefined ? { scrollbackBytes } : {}),
     claudeArgs: overrides.claudeArgs ?? merged.claudeArgs ?? [],
   };

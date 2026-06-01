@@ -31,6 +31,7 @@ import type {
 } from '../shared/control-state.js';
 import type { SessionEnvelope } from '../shared/session-envelope.js';
 import type { SessionDurabilityState } from '../shared/session-durability.js';
+import type { TerminalModelBackend } from './terminal-model-backend.js';
 
 export type AgentState =
   | 'initializing'
@@ -54,6 +55,7 @@ export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
 export type SessionMode = 'pty' | 'web';
+export type TerminalBackend = 'tmux-compat' | 'relay-pty';
 
 // ── Agent Framework Registry ──
 
@@ -321,6 +323,9 @@ export interface PtySession extends BaseSession {
   terminalStream?: TerminalStreamState;
   /** Live subscribers for terminal stream v2 envelopes. */
   terminalStreamSubscribers?: Array<(envelope: TerminalStreamEnvelope) => void>;
+  terminalBackend: TerminalBackend;
+  /** Relay-owned terminal screen model used by the relay-pty backend. */
+  terminalModel?: TerminalModelBackend;
   useTmux: boolean;
   tmuxSessionName: string;
   onPtyReplacedCallbacks: Array<(newPty: IPty) => void>;
@@ -424,6 +429,8 @@ export interface SessionSummary {
   /** Node-scoped worktree/cwd instance id when this session runs in a worktree. */
   worktreeInstanceId?: WorktreeInstanceId;
   /** PTY sessions only */
+  terminalBackend?: TerminalBackend;
+  /** PTY sessions only */
   useTmux?: boolean;
   /** PTY sessions only */
   tmuxSessionName?: string;
@@ -509,6 +516,7 @@ export interface WorkspaceSettings {
   defaultContinuePolicy?: ContinuePolicy;
   defaultYolo?: boolean;
   launchInTmux?: boolean;
+  terminalBackend?: TerminalBackend;
   claudeArgs?: string[];
 
   // Git settings
@@ -606,6 +614,7 @@ export interface Config {
   defaultYolo: boolean;
   maxPtySessions: number;
   launchInTmux: boolean;
+  terminalBackend: TerminalBackend;
   defaultNotifications: boolean;
   claudeFullscreen: boolean;
   /**
@@ -906,6 +915,7 @@ export interface WorkspaceLevelSettings {
   defaultContinue?: boolean;
   defaultYolo?: boolean;
   launchInTmux?: boolean;
+  terminalBackend?: TerminalBackend;
   claudeArgs?: string[];
   promptCodeReview?: string;
   promptCreatePr?: string;

@@ -20,6 +20,8 @@ import {
   deleteMeta,
   ensureMetaDir,
   getConfigDir,
+  defaultTerminalBackend,
+  normalizeTerminalBackend,
   resolveSessionSettings,
 } from './config.js';
 import * as auth from './auth.js';
@@ -166,6 +168,7 @@ import type {
   Config,
   ContinuePolicy,
   SessionSummary,
+  TerminalBackend,
   TicketContext,
   WorkspaceSettings,
 } from './types.js';
@@ -239,7 +242,8 @@ const execFileAsync = promisify(execFile);
 const logger = createLogger('index');
 const localRelayNode = createLocalRelayNode();
 const cliGatewayActorRegistry = createCliGatewayActorRegistry();
-const cliGatewayHandshakeGrantRegistry = createCliGatewayHandshakeGrantRegistry();
+const cliGatewayHandshakeGrantRegistry =
+  createCliGatewayHandshakeGrantRegistry();
 
 // When run via CLI bin, config lives in ~/.config/relay-ide/
 // When run directly (development), fall back to local config.json
@@ -759,6 +763,7 @@ type AgentSessionParams = {
   tmuxDisplayName: string;
   args: string[];
   resolvedAgent: AgentType;
+  resolvedTerminalBackend: TerminalBackend;
   resolvedUseTmux: boolean;
   resolvedYolo: boolean;
   resolvedClaudeArgs: string[];
@@ -787,6 +792,8 @@ type TerminalSessionParams = {
   cwd: string;
   safeCols: number | undefined;
   safeRows: number | undefined;
+  resolvedTerminalBackend: TerminalBackend;
+  resolvedUseTmux: boolean;
   sessionLane: SessionLane | undefined;
   workContextId?: string | undefined;
   portVariables?: string[] | undefined;
@@ -810,6 +817,8 @@ function createTerminalSessionRecord(
     branchName: '',
     command: shell,
     args: [],
+    terminalBackend: params.resolvedTerminalBackend,
+    useTmux: params.resolvedUseTmux,
     ...(params.safeCols != null && { cols: params.safeCols }),
     ...(params.safeRows != null && { rows: params.safeRows }),
     ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
@@ -835,6 +844,7 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     tmuxDisplayName: params.tmuxDisplayName,
     args: params.args,
     configPath: CONFIG_PATH,
+    terminalBackend: params.resolvedTerminalBackend,
     useTmux: params.resolvedUseTmux,
     yolo: params.resolvedYolo,
     claudeArgs: params.resolvedClaudeArgs,
@@ -1052,6 +1062,11 @@ function createHandoffDestinationLauncher(params: {
 
     try {
       if (input.request.desiredRuntime.kind === 'terminal') {
+        const resolvedTerminal = resolveSessionSettings(
+          freshConfig,
+          repoPath,
+          {}
+        );
         const session = createTerminalSessionRecord({
           repoName,
           repoPath,
@@ -1059,6 +1074,8 @@ function createHandoffDestinationLauncher(params: {
           cwd,
           safeCols: undefined,
           safeRows: undefined,
+          resolvedTerminalBackend: resolvedTerminal.terminalBackend,
+          resolvedUseTmux: resolvedTerminal.useTmux,
           sessionLane: undefined,
           workContextId: undefined,
           portVariables,
@@ -1111,6 +1128,7 @@ function createHandoffDestinationLauncher(params: {
         tmuxDisplayName: branchName ? `${repoName}-${branchName}` : repoName,
         args,
         resolvedAgent: resolved.agent,
+        resolvedTerminalBackend: resolved.terminalBackend,
         resolvedUseTmux: resolved.useTmux,
         resolvedYolo: resolved.yolo,
         resolvedClaudeArgs: resolved.claudeArgs,
@@ -1347,6 +1365,14 @@ function deriveContextInboxStore(
   return store ? createContextInboxStoreAdapter(store) : null;
 }
 
+async function ensureStartupTerminalBackendAvailable(
+  startupConfig: Config
+): Promise<void> {
+  if (defaultTerminalBackend(startupConfig) === 'tmux-compat') {
+    await ensureTmuxAvailable();
+  }
+}
+
 async function main(): Promise<void> {
   // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits.
   // Ignore SIGHUP: keep server alive if controlling terminal disconnects.
@@ -1512,7 +1538,7 @@ async function main(): Promise<void> {
     }
   }
 
-  await ensureTmuxAvailable();
+  await ensureStartupTerminalBackendAvailable(startupConfig);
 
   await initializePortAllocatorAndReconcile(
     CONFIG_PATH,
@@ -1842,7 +1868,9 @@ async function main(): Promise<void> {
   const actorLifecycleError = (res: express.Response, error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     const reason =
-      error instanceof Error && 'reason' in error && typeof error.reason === 'string'
+      error instanceof Error &&
+      'reason' in error &&
+      typeof error.reason === 'string'
         ? error.reason
         : 'issue_failed';
     res.status(reason === 'credential_not_found' ? 404 : 400).json({
@@ -1856,7 +1884,9 @@ async function main(): Promise<void> {
 
   app.post('/cli-gateway/actor-credentials', actorLifecycleAuth, (req, res) => {
     try {
-      const body = isRecord(req.body) ? (req.body as CliGatewayActorIssueInput) : {};
+      const body = isRecord(req.body)
+        ? (req.body as CliGatewayActorIssueInput)
+        : {};
       const issued =
         isRecord(req.body) && typeof req.body['grantHandle'] === 'string'
           ? issueCliGatewayActorCredentialWithGrant(
@@ -1906,7 +1936,10 @@ async function main(): Promise<void> {
     }
     const body = isRecord(req.body) ? req.body : {};
     const credential = cliGatewayActorRegistry.revoke(id, {
-      revokedBy: typeof body['revokedBy'] === 'string' ? body['revokedBy'] : 'browser-operator',
+      revokedBy:
+        typeof body['revokedBy'] === 'string'
+          ? body['revokedBy']
+          : 'browser-operator',
       ...(typeof body['reason'] === 'string' ? { reason: body['reason'] } : {}),
       ...(typeof body['correlationId'] === 'string'
         ? { correlationId: body['correlationId'] }
@@ -2163,6 +2196,40 @@ async function main(): Promise<void> {
     c.launchInTmux = true;
     saveConfig(CONFIG_PATH, c);
     res.json({ launchInTmux: true, required: true });
+  });
+
+  app.get('/config/terminalBackend', requireAuth, (_req, res) => {
+    const c = getConfig();
+    res.json({
+      terminalBackend: defaultTerminalBackend(c),
+      allowed: ['tmux-compat', 'relay-pty'],
+    });
+  });
+  app.patch('/config/terminalBackend', requireAuth, async (req, res) => {
+    const value = normalizeTerminalBackend(
+      (req.body as Record<string, unknown>).terminalBackend
+    );
+    if (!value) {
+      res.status(400).json({
+        error: 'terminalBackend must be tmux-compat or relay-pty',
+      });
+      return;
+    }
+    if (value === 'tmux-compat') {
+      try {
+        await ensureTmuxAvailable();
+      } catch (err) {
+        res.status(400).json({
+          error: err instanceof Error ? err.message : 'tmux is not available',
+        });
+        return;
+      }
+    }
+    const c = getConfig();
+    c.terminalBackend = value;
+    c.launchInTmux = value === 'tmux-compat';
+    saveConfig(CONFIG_PATH, c);
+    res.json({ terminalBackend: value, launchInTmux: c.launchInTmux });
   });
 
   const watcher = new WorktreeWatcher();
@@ -2919,119 +2986,129 @@ async function main(): Promise<void> {
   // GET /sessions — enrich with live branch from git (rate-limited to avoid spawning git on every poll)
   const branchRefreshCache = new Map<string, number>(); // sessionId -> last refresh timestamp
   const BRANCH_REFRESH_INTERVAL_MS = 10_000;
-  app.get('/sessions', requireCliGatewayAuthForActorCommand('sessions.list'), async (_req, res) => {
-    const [localSessions, remoteSessions] = await Promise.all([
-      Promise.resolve(
-        localRelayNode.sessions
+  app.get(
+    '/sessions',
+    requireCliGatewayAuthForActorCommand('sessions.list'),
+    async (_req, res) => {
+      const [localSessions, remoteSessions] = await Promise.all([
+        Promise.resolve(
+          localRelayNode.sessions
+            .list()
+            .map((session) =>
+              withWorkContextMetadata(workContextStore, session)
+            )
+        ),
+        aggregateRemoteSessions({
+          registry: hubNodeRegistry,
+          nodeLinks: hubNodeLinks,
+          logger,
+          sessionEnvelopes: sessionEnvelopeRegistry,
+          workContextStore,
+          readModelCache: remoteSessionReadModelCache,
+        }),
+      ]);
+      const allSessions = [...localSessions, ...remoteSessions];
+      const now = Date.now();
+
+      // Prune cache entries for sessions that no longer exist. Branch
+      // refresh only runs against local sessions (they have a real cwd
+      // on this host); the routed-session subset is skipped below via
+      // the `nodeId === undefined` guard.
+      const activeIds = new Set(allSessions.map((s) => s.id));
+      for (const sessionId of branchRefreshCache.keys()) {
+        if (!activeIds.has(sessionId)) branchRefreshCache.delete(sessionId);
+      }
+
+      await Promise.all(
+        allSessions.map(async (s) => {
+          if (s.type !== 'agent') return;
+          // Skip remote (routed) sessions: their cwd lives on the owning
+          // node and running `git` against it locally is meaningless.
+          if (!isLocallyOwnedSession(s)) return;
+          if (!s.cwd) return;
+          const lastRefresh = branchRefreshCache.get(s.id) ?? 0;
+          if (now - lastRefresh < BRANCH_REFRESH_INTERVAL_MS) return;
+          const cwd = s.cwd;
+          branchRefreshCache.set(s.id, now);
+          try {
+            const { stdout } = await execFileAsync(
+              'git',
+              ['rev-parse', '--abbrev-ref', 'HEAD'],
+              { cwd }
+            );
+            const liveBranch = stdout.trim();
+            if (liveBranch && liveBranch !== s.branchName) {
+              s.branchName = liveBranch;
+              const raw = localRelayNode.sessions.get(s.id);
+              if (raw) raw.branchName = liveBranch;
+            }
+          } catch {
+            /* non-fatal */
+          }
+        })
+      );
+      res.json(allSessions);
+    }
+  );
+
+  app.get(
+    '/sessions/:id',
+    requireScopedSessionAuthForActorCommand('sessions.get'),
+    async (req, res) => {
+      const decision = capabilityDecisionFromRequest(
+        req,
+        CONTROL_READ_CAPABILITY
+      );
+      if (decision.decision !== 'allow') {
+        const error = capabilityError(decision);
+        res.status(sessionControlErrorStatus(error)).json({ error });
+        return;
+      }
+      const id = req.params['id'] as string;
+      const local = localRelayNode.sessions.get(id);
+      if (local) {
+        const session = localRelayNode.sessions
           .list()
-          .map((session) => withWorkContextMetadata(workContextStore, session))
-      ),
-      aggregateRemoteSessions({
+          .find((candidate) => candidate.id === id);
+        if (!session) {
+          res.status(404).json({
+            error: {
+              code: 'NOT_FOUND',
+              reasonCode: 'SESSION_NOT_FOUND',
+              message: 'session summary was not found',
+              retryable: false,
+            },
+          });
+          return;
+        }
+        res.json(withWorkContextMetadata(workContextStore, session));
+        return;
+      }
+      const remoteSessions = await aggregateRemoteSessions({
         registry: hubNodeRegistry,
         nodeLinks: hubNodeLinks,
         logger,
         sessionEnvelopes: sessionEnvelopeRegistry,
         workContextStore,
         readModelCache: remoteSessionReadModelCache,
-      }),
-    ]);
-    const allSessions = [...localSessions, ...remoteSessions];
-    const now = Date.now();
-
-    // Prune cache entries for sessions that no longer exist. Branch
-    // refresh only runs against local sessions (they have a real cwd
-    // on this host); the routed-session subset is skipped below via
-    // the `nodeId === undefined` guard.
-    const activeIds = new Set(allSessions.map((s) => s.id));
-    for (const sessionId of branchRefreshCache.keys()) {
-      if (!activeIds.has(sessionId)) branchRefreshCache.delete(sessionId);
-    }
-
-    await Promise.all(
-      allSessions.map(async (s) => {
-        if (s.type !== 'agent') return;
-        // Skip remote (routed) sessions: their cwd lives on the owning
-        // node and running `git` against it locally is meaningless.
-        if (!isLocallyOwnedSession(s)) return;
-        if (!s.cwd) return;
-        const lastRefresh = branchRefreshCache.get(s.id) ?? 0;
-        if (now - lastRefresh < BRANCH_REFRESH_INTERVAL_MS) return;
-        const cwd = s.cwd;
-        branchRefreshCache.set(s.id, now);
-        try {
-          const { stdout } = await execFileAsync(
-            'git',
-            ['rev-parse', '--abbrev-ref', 'HEAD'],
-            { cwd }
-          );
-          const liveBranch = stdout.trim();
-          if (liveBranch && liveBranch !== s.branchName) {
-            s.branchName = liveBranch;
-            const raw = localRelayNode.sessions.get(s.id);
-            if (raw) raw.branchName = liveBranch;
-          }
-        } catch {
-          /* non-fatal */
-        }
-      })
-    );
-    res.json(allSessions);
-  });
-
-  app.get('/sessions/:id', requireScopedSessionAuthForActorCommand('sessions.get'), async (req, res) => {
-    const decision = capabilityDecisionFromRequest(
-      req,
-      CONTROL_READ_CAPABILITY
-    );
-    if (decision.decision !== 'allow') {
-      const error = capabilityError(decision);
-      res.status(sessionControlErrorStatus(error)).json({ error });
-      return;
-    }
-    const id = req.params['id'] as string;
-    const local = localRelayNode.sessions.get(id);
-    if (local) {
-      const session = localRelayNode.sessions
-        .list()
-        .find((candidate) => candidate.id === id);
-      if (!session) {
+      });
+      const remote = remoteSessions.find(
+        (candidate) => candidate.id === id || candidate.globalSessionId === id
+      );
+      if (!remote) {
         res.status(404).json({
           error: {
             code: 'NOT_FOUND',
             reasonCode: 'SESSION_NOT_FOUND',
-            message: 'session summary was not found',
+            message: 'session was not found',
             retryable: false,
           },
         });
         return;
       }
-      res.json(withWorkContextMetadata(workContextStore, session));
-      return;
+      res.json(remote);
     }
-    const remoteSessions = await aggregateRemoteSessions({
-      registry: hubNodeRegistry,
-      nodeLinks: hubNodeLinks,
-      logger,
-      sessionEnvelopes: sessionEnvelopeRegistry,
-      workContextStore,
-      readModelCache: remoteSessionReadModelCache,
-    });
-    const remote = remoteSessions.find(
-      (candidate) => candidate.id === id || candidate.globalSessionId === id
-    );
-    if (!remote) {
-      res.status(404).json({
-        error: {
-          code: 'NOT_FOUND',
-          reasonCode: 'SESSION_NOT_FOUND',
-          message: 'session was not found',
-          retryable: false,
-        },
-      });
-      return;
-    }
-    res.json(remote);
-  });
+  );
 
   app.get('/sessions/:id/replay', requireScopedSessionAuth, (req, res) => {
     const decision = capabilityDecisionFromRequest(
@@ -3766,6 +3843,7 @@ async function main(): Promise<void> {
       agent,
       yolo,
       useTmux,
+      terminalBackend,
       claudeArgs,
       cols,
       rows,
@@ -3788,6 +3866,7 @@ async function main(): Promise<void> {
       agent?: AgentType;
       yolo?: boolean;
       useTmux?: boolean;
+      terminalBackend?: TerminalBackend;
       claudeArgs?: string[];
       cols?: number;
       rows?: number;
@@ -3814,6 +3893,7 @@ async function main(): Promise<void> {
 
     // Read config once for the lifetime of this request
     const freshConfig = getConfig();
+    const requestedTerminalBackend = normalizeTerminalBackend(terminalBackend);
 
     // #740: Bench-inherited env overrides (sanitized to string->string). The
     // PTY layer applies these additively and refuses reserved keys.
@@ -3857,6 +3937,14 @@ async function main(): Promise<void> {
     if (sendPtyCapacityError(res, capacityResponse)) return;
 
     if (type === 'terminal') {
+      const terminalSettings = resolveSessionSettings(
+        freshConfig,
+        checkedRepoPath,
+        {
+          useTmux,
+          terminalBackend: requestedTerminalBackend,
+        }
+      );
       // Terminal session — bare shell
       let session: CreateResult;
       try {
@@ -3867,6 +3955,8 @@ async function main(): Promise<void> {
           cwd,
           safeCols,
           safeRows,
+          resolvedTerminalBackend: terminalSettings.terminalBackend,
+          resolvedUseTmux: terminalSettings.useTmux,
           sessionLane,
           workContextId,
           portVariables,
@@ -3898,6 +3988,7 @@ async function main(): Promise<void> {
       agent,
       yolo,
       useTmux,
+      terminalBackend: requestedTerminalBackend,
       claudeArgs,
       continuePolicy: effectivePolicy,
     });
@@ -3995,6 +4086,7 @@ async function main(): Promise<void> {
         tmuxDisplayName,
         args,
         resolvedAgent,
+        resolvedTerminalBackend: resolved.terminalBackend,
         resolvedUseTmux: resolved.useTmux,
         resolvedYolo: resolved.yolo,
         resolvedClaudeArgs: resolved.claudeArgs,
