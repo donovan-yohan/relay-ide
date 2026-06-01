@@ -1196,12 +1196,15 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const updates = req.body as Record<string, unknown>;
 
     const config = getConfig();
+    const legacyLaunchInTmux = Object.hasOwn(updates, 'launchInTmux')
+      ? updates.launchInTmux
+      : undefined;
     if (
-      Object.hasOwn(updates, 'launchInTmux') &&
-      updates.launchInTmux !== true &&
-      updates.launchInTmux !== null
+      legacyLaunchInTmux !== undefined &&
+      typeof legacyLaunchInTmux !== 'boolean' &&
+      legacyLaunchInTmux !== null
     ) {
-      res.status(400).json({ error: 'tmux is required for all PTY sessions' });
+      res.status(400).json({ error: 'launchInTmux must be a boolean or null' });
       return;
     }
 
@@ -1209,7 +1212,7 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const keysToDelete: string[] = [];
     const keysToUpdate: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
-      if (key === 'launchInTmux' && value === true) {
+      if (key === 'launchInTmux') {
         keysToDelete.push(key);
         continue;
       }
@@ -1218,6 +1221,15 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       } else {
         keysToUpdate[key] = value;
       }
+    }
+
+    if (
+      typeof legacyLaunchInTmux === 'boolean' &&
+      !Object.hasOwn(updates, 'terminalBackend')
+    ) {
+      keysToUpdate.terminalBackend = legacyLaunchInTmux
+        ? 'tmux-compat'
+        : 'relay-pty';
     }
 
     // Apply deletions first

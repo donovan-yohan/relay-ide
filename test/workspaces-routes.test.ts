@@ -6,7 +6,7 @@ import express from 'express';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createWorkspaceRouter, type WorkspaceDeps } from '../server/workspaces.js';
-import { DEFAULTS, saveConfig } from '../server/config.js';
+import { DEFAULTS, loadConfig, saveConfig } from '../server/config.js';
 import { createTestServer } from './helpers/test-server.js';
 
 type ExecFn = NonNullable<WorkspaceDeps['execAsync']>;
@@ -71,6 +71,64 @@ async function makeApp(exec: ExecFn) {
   app.use('/workspaces', createWorkspaceRouter({ configPath, execAsync: exec }));
   return app;
 }
+
+describe('PATCH /workspaces/settings — legacy launchInTmux mapping', () => {
+  it('maps launchInTmux=false to terminalBackend=relay-pty without rejecting', async () => {
+    const exec = makeExec(gitRepoPath);
+    const app = await makeApp(exec);
+    const server = await createTestServer(app);
+    try {
+      const params = new URLSearchParams({ path: gitRepoPath });
+      const res = await fetch(`${server.url}/workspaces/settings?${params}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ launchInTmux: false }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        launchInTmux?: boolean;
+        terminalBackend?: string;
+      };
+      expect(body.launchInTmux).toBeUndefined();
+      expect(body.terminalBackend).toBe('relay-pty');
+
+      const saved = loadConfig(configPath);
+      expect(saved.repoSettings?.[path.resolve(gitRepoPath)]?.launchInTmux).toBeUndefined();
+      expect(saved.repoSettings?.[path.resolve(gitRepoPath)]?.terminalBackend).toBe('relay-pty');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('maps launchInTmux=true to terminalBackend=tmux-compat without persisting the legacy key', async () => {
+    const exec = makeExec(gitRepoPath);
+    const app = await makeApp(exec);
+    const server = await createTestServer(app);
+    try {
+      const params = new URLSearchParams({ path: gitRepoPath });
+      const res = await fetch(`${server.url}/workspaces/settings?${params}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ launchInTmux: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        launchInTmux?: boolean;
+        terminalBackend?: string;
+      };
+      expect(body.launchInTmux).toBeUndefined();
+      expect(body.terminalBackend).toBe('tmux-compat');
+
+      const saved = loadConfig(configPath);
+      expect(saved.repoSettings?.[path.resolve(gitRepoPath)]?.launchInTmux).toBeUndefined();
+      expect(saved.repoSettings?.[path.resolve(gitRepoPath)]?.terminalBackend).toBe('tmux-compat');
+    } finally {
+      await server.close();
+    }
+  });
+});
 
 describe('GET /workspaces — kind field', () => {
   it('returns kind: "repo" for a git-initialized path and kind: "directory" for a non-git path', async () => {

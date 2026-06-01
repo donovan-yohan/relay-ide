@@ -324,7 +324,7 @@ useSessionsStore                    useUiStore
 | Failure mode                                                         | Severity | Mitigation                                                                                      |
 | -------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------- |
 | Moving a terminal tab remounts the terminal and drops live PTY state | Critical | Keep session rendering keyed by session ID and verify no forced new session is created.         |
-| Two mounted terminal panes fight over one global PTY websocket       | Critical | Land tmux-required session routing first, or restrict first slice to one mounted live terminal. |
+| Two mounted terminal panes fight over one global PTY websocket       | Critical | Historical pre-#837 note: this first slice depended on the old tmux-first routing plan, or it had to restrict itself to one mounted live terminal. |
 | File tab appears in two panes                                        | High     | Enforce single-owner invariant in pure reducers.                                                |
 | Closing a tab leaves activeTabId pointing at missing tab             | High     | Reducer selects neighbor or null.                                                               |
 | Empty split remains visible                                          | Medium   | `pruneLayout` collapses empty panes and single-child splits.                                    |

@@ -1,6 +1,6 @@
 # Terminal backends and relay-pty rollout
 
-Relay supports two PTY execution backends for local sessions:
+Relay supports two PTY execution backends for local and routed node sessions:
 
 - `relay-pty` (default): the direct `RelayPtySession` runtime using Relay's PTY/libghostty-vt pipeline.
 - `tmux-compat`: the legacy compatibility path. Relay launches sessions through tmux and reattaches to tmux sessions across browser reconnects and server restarts.

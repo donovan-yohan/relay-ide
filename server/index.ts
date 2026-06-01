@@ -240,6 +240,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
 const logger = createLogger('index');
+const TERMINAL_BACKEND_RELAY_PTY: TerminalBackend = 'relay-pty';
+const TERMINAL_BACKEND_TMUX_COMPAT: TerminalBackend = 'tmux-compat';
 const localRelayNode = createLocalRelayNode();
 const cliGatewayActorRegistry = createCliGatewayActorRegistry();
 const cliGatewayHandshakeGrantRegistry =
@@ -1368,7 +1370,7 @@ function deriveContextInboxStore(
 async function ensureStartupTerminalBackendAvailable(
   startupConfig: Config
 ): Promise<void> {
-  if (defaultTerminalBackend(startupConfig) === 'tmux-compat') {
+  if (defaultTerminalBackend(startupConfig) === TERMINAL_BACKEND_TMUX_COMPAT) {
     await ensureTmuxAvailable();
   }
 }
@@ -2172,7 +2174,13 @@ async function main(): Promise<void> {
   }
 
   app.get('/config/launchInTmux', requireAuth, (_req, res) => {
-    res.json({ launchInTmux: true, required: true });
+    const terminalBackend = defaultTerminalBackend(getConfig());
+    res.json({
+      launchInTmux: terminalBackend === TERMINAL_BACKEND_TMUX_COMPAT,
+      required: false,
+      terminalBackend,
+      deprecated: true,
+    });
   });
   app.patch('/config/launchInTmux', requireAuth, async (req, res) => {
     const value = (req.body as Record<string, unknown>).launchInTmux;
@@ -2180,29 +2188,36 @@ async function main(): Promise<void> {
       res.status(400).json({ error: 'launchInTmux must be a boolean' });
       return;
     }
-    if (!value) {
-      res.status(400).json({ error: 'tmux is required for all PTY sessions' });
-      return;
-    }
-    try {
-      await ensureTmuxAvailable();
-    } catch (err) {
-      res.status(400).json({
-        error: err instanceof Error ? err.message : 'tmux is not available',
-      });
-      return;
+    const terminalBackend = value
+      ? TERMINAL_BACKEND_TMUX_COMPAT
+      : TERMINAL_BACKEND_RELAY_PTY;
+    if (terminalBackend === TERMINAL_BACKEND_TMUX_COMPAT) {
+      try {
+        await ensureTmuxAvailable();
+      } catch (err) {
+        res.status(400).json({
+          error: err instanceof Error ? err.message : 'tmux is not available',
+        });
+        return;
+      }
     }
     const c = getConfig();
+    c.terminalBackend = terminalBackend;
     c.launchInTmux = true;
     saveConfig(CONFIG_PATH, c);
-    res.json({ launchInTmux: true, required: true });
+    res.json({
+      launchInTmux: terminalBackend === TERMINAL_BACKEND_TMUX_COMPAT,
+      required: false,
+      terminalBackend,
+      deprecated: true,
+    });
   });
 
   app.get('/config/terminalBackend', requireAuth, (_req, res) => {
     const c = getConfig();
     res.json({
       terminalBackend: defaultTerminalBackend(c),
-      allowed: ['tmux-compat', 'relay-pty'],
+      allowed: [TERMINAL_BACKEND_TMUX_COMPAT, TERMINAL_BACKEND_RELAY_PTY],
     });
   });
   app.patch('/config/terminalBackend', requireAuth, async (req, res) => {
@@ -2215,7 +2230,7 @@ async function main(): Promise<void> {
       });
       return;
     }
-    if (value === 'tmux-compat') {
+    if (value === TERMINAL_BACKEND_TMUX_COMPAT) {
       try {
         await ensureTmuxAvailable();
       } catch (err) {
