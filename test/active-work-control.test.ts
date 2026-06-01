@@ -172,6 +172,9 @@ describe('active work mobile control helpers', () => {
       activeWorkSessionActivationKey(
         session({ id: 'local-session-1', nodeId: DEFAULT_LOCAL_NODE_ID })
       )
-    ).toBe('local-session-1');
+    ).toBe('local:local-session-1');
+    expect(
+      activeWorkSessionActivationKey(session({ id: 'local-session-2' }))
+    ).toBe('local:local-session-2');
   });
 });

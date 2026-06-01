@@ -1,12 +1,12 @@
 import {
   DEFAULT_LOCAL_NODE_ID,
-  createGlobalSessionId,
 } from '../../../shared/identity.js';
 import type {
   WorkContextActiveGroup,
   WorkContextSessionSummary,
 } from './types.js';
 import { durabilityDisabledReason } from './session-durability.js';
+import { scopedSessionKey } from './session-keys.js';
 
 export interface ActiveWorkMobileControlState {
   attachDisabledReason: string | null;
@@ -20,9 +20,10 @@ export interface ActiveWorkMobileControlState {
 export function activeWorkSessionActivationKey(
   session: WorkContextSessionSummary
 ): string {
-  const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
-  if (nodeId === DEFAULT_LOCAL_NODE_ID) return session.id;
-  return session.globalSessionId ?? createGlobalSessionId(nodeId, session.id);
+  return scopedSessionKey({
+    ...session,
+    nodeId: session.nodeId ?? DEFAULT_LOCAL_NODE_ID,
+  });
 }
 
 export function activeWorkAttentionPriority(

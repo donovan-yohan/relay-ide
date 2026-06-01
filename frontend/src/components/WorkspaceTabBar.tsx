@@ -11,7 +11,9 @@ import {
   type SummaryContext,
   type WorkspaceTabSummary,
 } from '../lib/workspace-summary.js';
+import { scopedSessionKey } from '../lib/session-keys.js';
 import { TabControlBadge } from './TabControlBadge.js';
+import { SessionMailboxBadge } from './SessionMailboxPanel.js';
 import './WorkspaceTabBar.css';
 
 const ICON_GLYPH: Record<WorkspaceTabSummary['icon'], string> = {
@@ -104,6 +106,12 @@ function WorkspaceTabItem({
           session={session}
           nodeBadge={summary.nodeBadge}
           compact
+        />
+      )}
+      {tab.kind === 'session' && session && (
+        <SessionMailboxBadge
+          targetSessionId={scopedSessionKey(session)}
+          label="inbox"
         />
       )}
       {summary.nodeBadge && (

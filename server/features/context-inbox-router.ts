@@ -804,25 +804,23 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   }
 
   /**
-   * #760: collect the decorated `file-anchor` packets a message references, so
-   * `inbox.get`/`inbox.list` can surface each referenced packet's derived
-   * `AnchorState` without the agent issuing a follow-up `context.get`. Only
-   * `file-anchor` packets are decorated; missing/non-anchor packets are skipped.
-   * Returns `[]` when the message references no resolvable file-anchor packets.
+   * #760/#835: collect the referenced packets a message names, so
+   * `inbox.get`/`inbox.list` can surface artifact refs without the frontend
+   * issuing follow-up `context.get` calls. File anchors still receive derived
+   * `AnchorState`; non-anchor packets pass through unchanged. Missing packet
+   * ids are skipped.
    */
-  async function decoratedAnchorPacketsFor(
+  async function decoratedContextPacketsFor(
     s: ContextInboxStore,
     message: SessionInboxMessage
   ): Promise<DecoratedContextPacket[]> {
-    const anchorPackets: ContextPacket[] = [];
+    const packets: ContextPacket[] = [];
     for (const id of message.contextPacketIds) {
       const packet = s.getPacket(id);
-      if (packet && packet.kind === 'file-anchor' && packet.anchor) {
-        anchorPackets.push(packet);
-      }
+      if (packet) packets.push(packet);
     }
-    if (anchorPackets.length === 0) return [];
-    return decoratePacketsAnchorState(anchorPackets, resolveAnchorState);
+    if (packets.length === 0) return [];
+    return decoratePacketsAnchorState(packets, resolveAnchorState);
   }
 
   /** Attach decorated referenced packets to a message envelope (additive). */
@@ -832,7 +830,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   ): Promise<
     SessionInboxMessage & { contextPackets?: DecoratedContextPacket[] }
   > {
-    const contextPackets = await decoratedAnchorPacketsFor(s, message);
+    const contextPackets = await decoratedContextPacketsFor(s, message);
     return contextPackets.length > 0 ? { ...message, contextPackets } : message;
   }
 
