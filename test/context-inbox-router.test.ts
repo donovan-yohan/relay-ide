@@ -806,4 +806,75 @@ describe('context/inbox gateway router — #760 derived AnchorState decoration',
       'unchanged'
     );
   });
+
+  it('inbox.preview attaches referenced file-ref and log-ref packets for artifact rendering', async () => {
+    await mount(createFakeStore(), resolverReturning('unchanged'));
+    const filePacket = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'file-ref',
+        fileRef: createFileResourceRef({
+          nodeId: 'node1',
+          path: '/repo/dist/report.html',
+          intent: 'read',
+          sha256: 'b'.repeat(64),
+          mtimeMs: 2_000,
+        }),
+        note: 'browser artifact',
+        createdBy: 'agent_1',
+      },
+    });
+    expect(filePacket.status).toBe(201);
+    const logPacket = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'log-ref',
+        fileRef: createFileResourceRef({
+          nodeId: 'node1',
+          path: '/tmp/relay/session.log',
+          intent: 'read',
+          sha256: 'c'.repeat(64),
+          mtimeMs: 3_000,
+        }),
+        note: 'session log',
+        createdBy: 'agent_1',
+      },
+    });
+    expect(logPacket.status).toBe(201);
+    await req('POST', '/inbox', {
+      caps: 'inbox:write',
+      body: {
+        targetSessionId: 'node1:s12',
+        contextPacketIds: [
+          filePacket.body.contextPacket.id,
+          logPacket.body.contextPacket.id,
+        ],
+        text: 'published artifacts',
+        createdBy: 'agent_1',
+      },
+    });
+
+    const previewed = await req(
+      'GET',
+      '/inbox/preview?targetSessionId=node1:s12',
+      { caps: 'inbox:read' }
+    );
+
+    expect(previewed.status).toBe(200);
+    expect(previewed.body.messages[0].state).toBe('queued');
+    expect(previewed.body.messages[0].contextPackets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'file-ref',
+          note: 'browser artifact',
+          fileRef: expect.objectContaining({ path: '/repo/dist/report.html' }),
+        }),
+        expect.objectContaining({
+          kind: 'log-ref',
+          note: 'session log',
+          fileRef: expect.objectContaining({ path: '/tmp/relay/session.log' }),
+        }),
+      ])
+    );
+  });
 });

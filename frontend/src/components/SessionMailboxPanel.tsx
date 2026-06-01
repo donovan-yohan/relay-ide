@@ -137,7 +137,7 @@ export default function SessionMailboxPanel({
   compact = false,
 }: SessionMailboxPanelProps) {
   const mailbox = useSessionMailbox(targetSessionId, {
-    mode: 'detail',
+    mode: 'preview',
     limit: compact ? 5 : 12,
     enabled: !!targetSessionId,
   });
