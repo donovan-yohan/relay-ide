@@ -38,6 +38,7 @@ import type {
   HubNodeSummary,
   NodeCapabilityStatus,
 } from '../../../../shared/relay-node-protocol.js';
+import { nodeTerminalBackends } from '../../../../shared/relay-node-protocol.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
   type NodeId,
@@ -314,12 +315,9 @@ function capabilityProblem(
 }
 
 function terminalBackendProblem(node: HubNodeSummary): string | null {
-  const relayPty = node.capabilities.terminalBackends?.['relay-pty'] ?? 'unknown';
-  const tmuxCompat =
-    node.capabilities.terminalBackends?.['tmux-compat'] ??
-    node.capabilities.core.tmux;
-  if (relayPty === 'available' || tmuxCompat === 'available') return null;
-  return `terminal backend unavailable on ${node.displayName} (relay-pty ${relayPty}, tmux-compat ${tmuxCompat})`;
+  const backends = nodeTerminalBackends(node);
+  if (backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available') return null;
+  return `terminal backend unavailable on ${node.displayName ?? node.nodeId} (relay-pty ${backends['relay-pty']}, tmux-compat ${backends['tmux-compat']})`;
 }
 
 export function nodeShellBlockReason(

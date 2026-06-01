@@ -24,6 +24,8 @@ import {
   type PairTokenCapabilityEnvelope,
 } from './hub-node-registry.js';
 import {
+  nodeHasTerminalBackend,
+  nodeTerminalBackends,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type RelayNodeError,
 } from '../shared/relay-node-protocol.js';
@@ -1689,23 +1691,6 @@ function protocolVersionRelayError(
     nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
     `relay-node-link protocol ${nodeProtocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
   );
-}
-
-function nodeTerminalBackends(node: HubNodeSummary): {
-  'relay-pty': string;
-  'tmux-compat': string;
-} {
-  return {
-    'relay-pty': node.capabilities.terminalBackends?.['relay-pty'] ?? 'unknown',
-    'tmux-compat':
-      node.capabilities.terminalBackends?.['tmux-compat'] ??
-      node.capabilities.core.tmux,
-  };
-}
-
-function nodeHasTerminalBackend(node: HubNodeSummary): boolean {
-  const backends = nodeTerminalBackends(node);
-  return backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available';
 }
 
 function nodeTerminalUnsupportedError(

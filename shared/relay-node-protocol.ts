@@ -287,3 +287,20 @@ export interface HubNodeSummary {
   lastSeenAt: string;
   credentialId: string;
 }
+
+export function nodeTerminalBackends(node: HubNodeSummary): Record<
+  HubNodeTerminalBackendCapability,
+  NodeCapabilityStatus
+> {
+  return {
+    'relay-pty': node.capabilities.terminalBackends?.['relay-pty'] ?? 'unknown',
+    'tmux-compat':
+      node.capabilities.terminalBackends?.['tmux-compat'] ??
+      node.capabilities.core.tmux,
+  };
+}
+
+export function nodeHasTerminalBackend(node: HubNodeSummary): boolean {
+  const backends = nodeTerminalBackends(node);
+  return backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available';
+}

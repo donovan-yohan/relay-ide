@@ -476,7 +476,7 @@ relay-ide hub doctor
 relay-ide hub doctor --json
 ```
 
-Hub doctor is intentionally cheap and read-only. It checks local config readability, scoped CLI auth token presence, hub `/version` reachability, paired node registry shape, node availability, protocol/version compatibility, required terminal capability (`tmux`), and hub-mediated node-log snapshot support. It reports typed reasons such as `CONFIG_MISSING`, `AUTH_TOKEN_MISSING`, `HUB_UNREACHABLE`, `NODE_OFFLINE`, `NODE_STALE`, `NODE_REVOKED`, `VERSION_SKEW`, `PROTOCOL_INCOMPATIBLE`, `UNSUPPORTED_CAPABILITY`, `MISSING_LOG_SUPPORT`, and `CHECK_SKIPPED`. It does not remediate nodes, mutate files, run arbitrary commands, or prove multi-machine topology.
+Hub doctor is intentionally cheap and read-only. It checks local config readability, scoped CLI auth token presence, hub `/version` reachability, paired node registry shape, node availability, protocol/version compatibility, at least one available terminal backend (`relay-pty` or `tmux-compat`), and hub-mediated node-log snapshot support. It reports typed reasons such as `CONFIG_MISSING`, `AUTH_TOKEN_MISSING`, `HUB_UNREACHABLE`, `NODE_OFFLINE`, `NODE_STALE`, `NODE_REVOKED`, `VERSION_SKEW`, `PROTOCOL_INCOMPATIBLE`, `UNSUPPORTED_CAPABILITY`, `MISSING_LOG_SUPPORT`, and `CHECK_SKIPPED`. It does not remediate nodes, mutate files, run arbitrary commands, or prove multi-machine topology.
 
 ### Diagnose from the node
 

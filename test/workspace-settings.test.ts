@@ -52,7 +52,7 @@ describe('PATCH /workspaces/settings', () => {
     expect(loadConfig(configPath).repoSettings?.[repoPath]).toBeUndefined();
   });
 
-  test('strips true launchInTmux compatibility values', async () => {
+  test('maps true launchInTmux compatibility values to tmux-compat', async () => {
     const res = await fetch(
       `${baseUrl}/workspaces/settings?path=${encodeURIComponent(repoPath)}`,
       {
@@ -63,7 +63,9 @@ describe('PATCH /workspaces/settings', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({});
-    expect(loadConfig(configPath).repoSettings?.[repoPath]).toBeUndefined();
+    expect(await res.json()).toEqual({ terminalBackend: 'tmux-compat' });
+    expect(loadConfig(configPath).repoSettings?.[repoPath]).toEqual({
+      terminalBackend: 'tmux-compat',
+    });
   });
 });

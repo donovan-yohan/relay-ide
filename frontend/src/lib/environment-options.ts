@@ -30,6 +30,10 @@ import type {
   HubNodeSummary,
   NodeCapabilityStatus,
 } from '../../../shared/relay-node-protocol.js';
+import {
+  nodeHasTerminalBackend,
+  nodeTerminalBackends,
+} from '../../../shared/relay-node-protocol.js';
 import type {
   AggregatedRepoInventoryGroup,
   AggregatedRepoInventoryResponse,
@@ -150,23 +154,6 @@ function capabilityProblem(
   if (capability === undefined) return 'unknown';
   if (capability === 'available') return null;
   return capability;
-}
-
-function nodeTerminalBackends(node: HubNodeSummary): {
-  'relay-pty': NodeCapabilityStatus;
-  'tmux-compat': NodeCapabilityStatus;
-} {
-  return {
-    'relay-pty': node.capabilities.terminalBackends?.['relay-pty'] ?? 'unknown',
-    'tmux-compat':
-      node.capabilities.terminalBackends?.['tmux-compat'] ??
-      node.capabilities.core.tmux,
-  };
-}
-
-function nodeHasTerminalBackend(node: HubNodeSummary): boolean {
-  const backends = nodeTerminalBackends(node);
-  return backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available';
 }
 
 function baseCapabilitiesFor(

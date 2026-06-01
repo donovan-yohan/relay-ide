@@ -16,8 +16,9 @@ import {
   NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
 } from '../shared/operator-handshake-grants.js';
 import {
+  nodeHasTerminalBackend,
+  nodeTerminalBackends,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
-  type NodeCapabilityStatus,
   type HubNodeSummary,
 } from '../shared/relay-node-protocol.js';
 import type {
@@ -2837,23 +2838,6 @@ function nodeCapabilityChecks(node: HubNodeSummary): HubDoctorCheck[] {
     });
   }
   return checks;
-}
-
-function nodeTerminalBackends(node: HubNodeSummary): {
-  'relay-pty': NodeCapabilityStatus;
-  'tmux-compat': NodeCapabilityStatus;
-} {
-  return {
-    'relay-pty': node.capabilities.terminalBackends?.['relay-pty'] ?? 'unknown',
-    'tmux-compat':
-      node.capabilities.terminalBackends?.['tmux-compat'] ??
-      node.capabilities.core.tmux,
-  };
-}
-
-function nodeHasTerminalBackend(node: HubNodeSummary): boolean {
-  const backends = nodeTerminalBackends(node);
-  return backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available';
 }
 
 function nodeAvailabilityCheck(node: HubNodeSummary): HubDoctorCheck {

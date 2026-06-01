@@ -83,7 +83,7 @@ test('DEFAULTS has expected keys and values', () => {
   expect(DEFAULTS.defaultFramework).toBe('claude');
   expect(DEFAULTS.defaultContinue).toBe(true);
   expect(DEFAULTS.defaultYolo).toBe(false);
-  expect(DEFAULTS.launchInTmux).toBe(true);
+  expect(DEFAULTS.launchInTmux).toBe(false);
   expect(DEFAULTS.terminalBackend).toBe('relay-pty');
 });
 
@@ -94,7 +94,7 @@ test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and 
   const config = loadConfig(configPath);
   expect(config.defaultContinue).toBe(true);
   expect(config.defaultYolo).toBe(false);
-  expect(config.launchInTmux).toBe(true);
+  expect(config.launchInTmux).toBe(false);
   expect(config.terminalBackend).toBe('relay-pty');
 });
 

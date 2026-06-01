@@ -300,7 +300,7 @@ function nodes(): HubNodeSummary[] {
           tmux: 'unavailable',
         },
         terminalBackends: {
-          'relay-pty': 'unavailable',
+          'relay-pty': 'available',
           'tmux-compat': 'unavailable',
         },
       },

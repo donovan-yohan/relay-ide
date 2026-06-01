@@ -470,7 +470,7 @@ async function ensureTmuxAvailable(): Promise<void> {
   } catch (err) {
     const detail = execErrorMessage(err, 'tmux is not available');
     throw new Error(
-      `tmux is required to run relay-ide sessions: ${detail}. Install tmux and restart relay-ide (macOS: brew install tmux; Debian/Ubuntu: sudo apt install tmux).`,
+      `tmux is required for tmux-compat sessions: ${detail}. Install tmux and restart relay-ide if you need legacy tmux compatibility (macOS: brew install tmux; Debian/Ubuntu: sudo apt install tmux).`,
       { cause: err }
     );
   }
@@ -2203,7 +2203,7 @@ async function main(): Promise<void> {
     }
     const c = getConfig();
     c.terminalBackend = terminalBackend;
-    c.launchInTmux = true;
+    c.launchInTmux = terminalBackend === TERMINAL_BACKEND_TMUX_COMPAT;
     saveConfig(CONFIG_PATH, c);
     res.json({
       launchInTmux: terminalBackend === TERMINAL_BACKEND_TMUX_COMPAT,
@@ -2242,9 +2242,9 @@ async function main(): Promise<void> {
     }
     const c = getConfig();
     c.terminalBackend = value;
-    c.launchInTmux = true;
+    c.launchInTmux = value === TERMINAL_BACKEND_TMUX_COMPAT;
     saveConfig(CONFIG_PATH, c);
-    res.json({ terminalBackend: value, launchInTmux: true, required: true });
+    res.json({ terminalBackend: value, launchInTmux: value === TERMINAL_BACKEND_TMUX_COMPAT, required: false });
   });
 
   const watcher = new WorktreeWatcher();
