@@ -45,6 +45,15 @@ function requireEnv(name: string): string {
   return val;
 }
 
+function normalizeSessionsBody(body: unknown): Record<string, unknown>[] {
+  if (Array.isArray(body)) return body as Record<string, unknown>[];
+  if (body && typeof body === 'object') {
+    const sessions = (body as { sessions?: unknown }).sessions;
+    if (Array.isArray(sessions)) return sessions as Record<string, unknown>[];
+  }
+  return [];
+}
+
 // ── subcommand: whoami ─────────────────────────────────────────────────────
 
 async function cmdWhoami(whoamiArgs: string[] = []): Promise<void> {
@@ -57,14 +66,16 @@ async function cmdWhoami(whoamiArgs: string[] = []): Promise<void> {
     let session: Record<string, unknown> | undefined;
     if (hubUrl) {
       try {
-        const body = await fetchGatewayJson<{
-          sessions?: Record<string, unknown>[];
-        }>(`${hubUrl}/sessions`, gatewayHeaders('sessions.list'), {
-          reachabilityMessage: `failed to reach hub at ${hubUrl}`,
-          forbiddenMessage:
-            'relayctl: capability denied: session lacks session:read',
-        });
-        session = body.sessions?.find(
+        const body = await fetchGatewayJson<unknown>(
+          `${hubUrl}/sessions`,
+          gatewayHeaders('sessions.list'),
+          {
+            reachabilityMessage: `failed to reach hub at ${hubUrl}`,
+            forbiddenMessage:
+              'relayctl: capability denied: session lacks session:read',
+          }
+        );
+        session = normalizeSessionsBody(body).find(
           (candidate) => candidate.id === sessionId
         );
       } catch {
@@ -667,7 +678,7 @@ async function cmdAgents(agentArgs: string[]): Promise<void> {
     die(`unknown agents subcommand: ${sub ?? '(none)'}. supported: list`);
   }
   const hubUrl = requireEnv('RELAY_HUB_URL');
-  const body = await fetchGatewayJson<{ sessions?: Record<string, unknown>[] }>(
+  const body = await fetchGatewayJson<unknown>(
     `${hubUrl}/sessions`,
     gatewayHeaders('sessions.list'),
     {
@@ -676,7 +687,7 @@ async function cmdAgents(agentArgs: string[]): Promise<void> {
         'relayctl: capability denied: session lacks session:read',
     }
   );
-  const sessions = Array.isArray(body.sessions) ? body.sessions : [];
+  const sessions = normalizeSessionsBody(body);
   const agents = sessions.filter((session) => session.type === 'agent');
   if (agentArgs.includes('--json')) {
     console.log(JSON.stringify({ agents }, null, 2));
@@ -699,18 +710,69 @@ function parseFlagValue(input: string[], name: string): string | undefined {
   return value;
 }
 
-function stripFlags(input: string[], names: string[]): string[] {
-  const output: string[] = [];
+type ParsedRelayctlFlagArgs = {
+  values: Map<string, string>;
+  rest: string[];
+};
+
+function parseFlagsBeforePayload(
+  input: string[],
+  names: string[]
+): ParsedRelayctlFlagArgs {
+  const values = new Map<string, string>();
+  const rest: string[] = [];
+  let payloadStarted = false;
+
   for (let i = 0; i < input.length; i += 1) {
     const arg = input[i];
     if (arg === undefined) continue;
-    if (names.includes(arg)) {
+    if (!payloadStarted && arg === '--') {
+      payloadStarted = true;
+      continue;
+    }
+    if (!payloadStarted && names.includes(arg)) {
+      const value = input[i + 1];
+      if (!value || value.startsWith('--')) die(`${arg} requires a value`);
+      if (!values.has(arg)) values.set(arg, value);
       i += 1;
       continue;
     }
-    output.push(arg);
+    payloadStarted = true;
+    rest.push(arg);
   }
-  return output;
+
+  return { values, rest };
+}
+
+type ArtifactPublishArgs = {
+  path?: string;
+  kind?: string;
+  title?: string;
+};
+
+function parseArtifactPublishArgs(input: string[]): ArtifactPublishArgs {
+  const parsed: ArtifactPublishArgs = {};
+  let literal = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const arg = input[i];
+    if (arg === undefined) continue;
+    if (!literal && arg === '--') {
+      literal = true;
+      continue;
+    }
+    if (!literal && (arg === '--kind' || arg === '--title')) {
+      const value = input[i + 1];
+      if (!value || value.startsWith('--')) die(`${arg} requires a value`);
+      if (arg === '--kind' && parsed.kind === undefined) parsed.kind = value;
+      if (arg === '--title' && parsed.title === undefined) parsed.title = value;
+      i += 1;
+      continue;
+    }
+    if (parsed.path === undefined) parsed.path = arg;
+  }
+
+  return parsed;
 }
 
 async function cmdMsg(msgArgs: string[]): Promise<void> {
@@ -718,12 +780,14 @@ async function cmdMsg(msgArgs: string[]): Promise<void> {
   const hubUrl = requireEnv('RELAY_HUB_URL');
   const headers = gatewayHeaders();
   if (sub === 'send') {
+    const parsedArgs = parseFlagsBeforePayload(msgArgs.slice(1), [
+      '--to',
+      '--session',
+    ]);
     const to =
-      parseFlagValue(msgArgs, '--to') ?? parseFlagValue(msgArgs, '--session');
+      parsedArgs.values.get('--to') ?? parsedArgs.values.get('--session');
     if (!to) die('usage: relayctl msg send --to <session-id> <text>');
-    const text = stripFlags(msgArgs.slice(1), ['--to', '--session'])
-      .join(' ')
-      .trim();
+    const text = parsedArgs.rest.join(' ').trim();
     if (!text) die('usage: relayctl msg send --to <session-id> <text>');
     const body = await postGatewayJson<{ message?: PreturnMessage }>(
       `${hubUrl}/inbox`,
@@ -798,8 +862,9 @@ async function publishContextArtifact(
 }
 
 async function cmdNotify(notifyArgs: string[]): Promise<void> {
-  const kind = parseFlagValue(notifyArgs, '--kind') ?? 'info';
-  const text = stripFlags(notifyArgs, ['--kind']).join(' ').trim();
+  const parsedArgs = parseFlagsBeforePayload(notifyArgs, ['--kind']);
+  const kind = parsedArgs.values.get('--kind') ?? 'info';
+  const text = parsedArgs.rest.join(' ').trim();
   if (!text)
     die('usage: relayctl notify [--kind needs_input|warning|info] <text>');
   const hubUrl = requireEnv('RELAY_HUB_URL');
@@ -840,10 +905,10 @@ async function cmdArtifact(artifactArgs: string[]): Promise<void> {
   if (sub !== 'publish') {
     die(`unknown artifact subcommand: ${sub ?? '(none)'}. supported: publish`);
   }
-  const kind = parseFlagValue(artifactArgs, '--kind') ?? 'report';
-  const title = parseFlagValue(artifactArgs, '--title');
-  const rest = stripFlags(artifactArgs.slice(1), ['--kind', '--title']);
-  const artifactPath = rest[0];
+  const parsedArgs = parseArtifactPublishArgs(artifactArgs.slice(1));
+  const kind = parsedArgs.kind ?? 'report';
+  const title = parsedArgs.title;
+  const artifactPath = parsedArgs.path;
   if (!artifactPath)
     die(
       'usage: relayctl artifact publish <path> --kind <kind> [--title <title>]'

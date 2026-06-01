@@ -568,6 +568,65 @@ describe('relayctl terminal mailroom commands', () => {
     expect(read.stdout).toContain('mailroom ping');
   });
 
+  it('preserves flag-like tokens inside message text after the recipient flag', async () => {
+    const sent = await runRelayctl(
+      [
+        'msg',
+        'send',
+        '--to',
+        SESSION_ID,
+        'qa-flag-message',
+        'literal',
+        '--to',
+        'SHOULD_STAY',
+        'after',
+      ],
+      env()
+    );
+
+    expect(sent.code).toBe(0);
+    const message = JSON.parse(sent.stdout) as {
+      targetSessionId: string;
+      text: string;
+    };
+    expect(message.targetSessionId).toBe(SESSION_ID);
+    expect(message.text).toBe('qa-flag-message literal --to SHOULD_STAY after');
+  });
+
+  it('preserves flag-like tokens inside notify text after leading options', async () => {
+    const notify = await runRelayctl(
+      ['notify', '--kind', 'warning', 'literal', '--kind', 'SHOULD_STAY'],
+      env()
+    );
+
+    expect(notify.code).toBe(0);
+    const parsed = JSON.parse(notify.stdout) as {
+      attentionEvent: { kind: string; text: string };
+    };
+    expect(parsed.attentionEvent.kind).toBe('warning');
+    expect(parsed.attentionEvent.text).toBe('literal --kind SHOULD_STAY');
+  });
+
+  it('preserves recipient-looking tokens in message text instead of stripping payload', async () => {
+    const sent = await runRelayctl(
+      ['msg', 'send', '--to', SESSION_ID, 'keep', '--to', 'literal', 'after'],
+      env()
+    );
+    expect(sent.code).toBe(0);
+    const message = JSON.parse(sent.stdout) as { text: string };
+    expect(message.text).toBe('keep --to literal after');
+  });
+
+  it('preserves recipient-looking tokens in message text after --', async () => {
+    const sent = await runRelayctl(
+      ['msg', 'send', '--to', SESSION_ID, '--', 'keep', '--to', 'literal', 'after'],
+      env()
+    );
+    expect(sent.code).toBe(0);
+    const message = JSON.parse(sent.stdout) as { text: string };
+    expect(message.text).toBe('keep --to literal after');
+  });
+
   it('publishes attention, decision, and artifact refs as pinned WorkContext context', async () => {
     const notify = await runRelayctl(
       ['notify', '--kind', 'needs_input', 'operator needed'],
@@ -585,7 +644,7 @@ describe('relayctl terminal mailroom commands', () => {
         '--kind',
         'report',
         '--title',
-        'Run report',
+        'Run --kind SHOULD_STAY report',
       ],
       env()
     );
@@ -595,7 +654,11 @@ describe('relayctl terminal mailroom commands', () => {
     expect(artifact.code).toBe(0);
     expect(JSON.parse(notify.stdout).attentionEvent.kind).toBe('needs_input');
     expect(JSON.parse(decision.stdout).decision.state).toBe('pending');
-    expect(JSON.parse(artifact.stdout).artifact.path).toMatch(/\/report\.txt$/);
+    const parsedArtifact = JSON.parse(artifact.stdout) as {
+      artifact: { path: string; title?: string };
+    };
+    expect(parsedArtifact.artifact.path).toMatch(/\/report\.txt$/);
+    expect(parsedArtifact.artifact.title).toBe('Run --kind SHOULD_STAY report');
 
     const context = workContextStore.get(WORK_CONTEXT_ID);
     expect(context?.artifacts.length).toBe(3);
