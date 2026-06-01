@@ -60,6 +60,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspaces');
+const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
 
 // ── Typed git infrastructure errors ──────────────────────────────────────────
 
@@ -1196,12 +1197,10 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const updates = req.body as Record<string, unknown>;
 
     const config = getConfig();
-    if (
-      Object.hasOwn(updates, 'launchInTmux') &&
-      updates.launchInTmux !== true &&
-      updates.launchInTmux !== null
-    ) {
-      res.status(400).json({ error: 'tmux is required for all PTY sessions' });
+    if (Object.prototype.hasOwnProperty.call(updates, LEGACY_TMUX_LAUNCH_KEY)) {
+      res.status(400).json({
+        error: 'legacy tmux launch flag is no longer supported; use terminalBackend',
+      });
       return;
     }
 
@@ -1209,10 +1208,6 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const keysToDelete: string[] = [];
     const keysToUpdate: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
-      if (key === 'launchInTmux' && value === true) {
-        keysToDelete.push(key);
-        continue;
-      }
       if (value === null) {
         keysToDelete.push(key);
       } else {

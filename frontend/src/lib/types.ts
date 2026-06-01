@@ -440,7 +440,7 @@ export interface WorkspaceSettings {
   defaultAgent?: AgentType;
   defaultContinue?: boolean;
   defaultYolo?: boolean;
-  launchInTmux?: boolean;
+  terminalBackend?: 'relay-pty' | 'tmux-compat';
   claudeArgs?: string[];
   defaultBranch?: string;
   remote?: string;

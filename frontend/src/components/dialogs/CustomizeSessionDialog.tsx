@@ -38,6 +38,7 @@ import type {
   HubNodeSummary,
   NodeCapabilityStatus,
 } from '../../../../shared/relay-node-protocol.js';
+import { nodeTerminalBackends } from '../../../../shared/relay-node-protocol.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
   type NodeId,
@@ -214,6 +215,10 @@ function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
         ssh: 'available',
         tailscale: 'available',
       },
+      terminalBackends: {
+        'relay-pty': 'available',
+        'tmux-compat': 'available',
+      },
       worktrees: 'available',
       agents: { [selectedAgent]: 'available' },
       serviceManager: 'local',
@@ -309,6 +314,12 @@ function capabilityProblem(
   return `${name} ${capability}`;
 }
 
+function terminalBackendProblem(node: HubNodeSummary): string | null {
+  const backends = nodeTerminalBackends(node);
+  if (backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available') return null;
+  return `terminal backend unavailable on ${node.displayName ?? node.nodeId} (relay-pty ${backends['relay-pty']}, tmux-compat ${backends['tmux-compat']})`;
+}
+
 export function nodeShellBlockReason(
   node: HubNodeSummary | null
 ): string | null {
@@ -321,8 +332,8 @@ export function nodeShellBlockReason(
   if (versionState === 'version-skew') return 'node has version skew';
   const shellProblem = capabilityProblem(node.capabilities.core.shell, 'shell');
   if (shellProblem) return shellProblem;
-  const tmuxProblem = capabilityProblem(node.capabilities.core.tmux, 'tmux');
-  if (tmuxProblem) return `${tmuxProblem} on ${node.displayName}`;
+  const backendProblem = terminalBackendProblem(node);
+  if (backendProblem) return backendProblem;
   return null;
 }
 

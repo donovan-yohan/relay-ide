@@ -29,6 +29,10 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
         ssh: 'available',
         tailscale: 'available',
       },
+      terminalBackends: {
+        'relay-pty': 'available',
+        'tmux-compat': 'available',
+      },
       agents: { claude: 'available', codex: 'available' },
       serviceManager: 'launchd',
       wsl: false,
@@ -209,7 +213,7 @@ describe('buildEnvironmentOptions', () => {
     expect(reason?.kind).toBe('capability-missing');
   });
 
-  it('terminal mode ignores missing agents and stays fresh on shell+tmux available', () => {
+  it('terminal mode ignores missing agents and stays fresh on shell plus terminal backend available', () => {
     const options = buildEnvironmentOptions({
       inventory: inventory(),
       nodes: [
@@ -295,7 +299,7 @@ describe('buildEnvironmentOptions', () => {
     expect(remote?.cwd).toBe('/home/linux');
   });
 
-  it('omits session:create:terminal capability when tmux is unavailable (Gemini PR #647)', () => {
+  it('keeps session:create:terminal capability when tmux is unavailable but relay-pty is available', () => {
     const options = buildEnvironmentOptions({
       inventory: inventory(),
       nodes: [
@@ -309,6 +313,10 @@ describe('buildEnvironmentOptions', () => {
               ...node().capabilities.core,
               tmux: 'unavailable',
             },
+            terminalBackends: {
+              'relay-pty': 'available',
+              'tmux-compat': 'unavailable',
+            },
             agents: { claude: 'available' },
           },
         }),
@@ -318,16 +326,13 @@ describe('buildEnvironmentOptions', () => {
       generatedAt: GENERATED_AT,
     });
     const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
-    // tmux is mandatory for PTY sessions; without it the option must NOT
-    // advertise session:create:terminal even if shell is available.
-    expect(linuxOpt?.capabilities).not.toContain('session:create:terminal');
-    // And it should also flag the missing capability as a degraded reason.
+    expect(linuxOpt?.capabilities).toContain('session:create:terminal');
     expect(
-      linuxOpt?.degradedReasons?.some((r) => r.kind === 'capability-missing')
-    ).toBe(true);
+      linuxOpt?.degradedReasons?.some((r) => r.kind === 'capability-missing') ?? false
+    ).toBe(false);
   });
 
-  it('omits session:create:agent capability when tmux is unavailable in agent mode', () => {
+  it('omits session:create:terminal capability when no terminal backend is available', () => {
     const options = buildEnvironmentOptions({
       inventory: inventory(),
       nodes: [
@@ -340,6 +345,43 @@ describe('buildEnvironmentOptions', () => {
             core: {
               ...node().capabilities.core,
               tmux: 'unavailable',
+            },
+            terminalBackends: {
+              'relay-pty': 'unavailable',
+              'tmux-compat': 'unavailable',
+            },
+            agents: { claude: 'available' },
+          },
+        }),
+      ],
+      selectedAgent: 'claude',
+      sessionType: 'terminal',
+      generatedAt: GENERATED_AT,
+    });
+    const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
+    expect(linuxOpt?.capabilities).not.toContain('session:create:terminal');
+    expect(
+      linuxOpt?.degradedReasons?.some((r) => r.kind === 'capability-missing')
+    ).toBe(true);
+  });
+
+  it('omits session:create:agent capability when no terminal backend is available in agent mode', () => {
+    const options = buildEnvironmentOptions({
+      inventory: inventory(),
+      nodes: [
+        node(),
+        node({
+          nodeId: 'linux',
+          displayName: 'linux lab',
+          capabilities: {
+            ...node().capabilities,
+            core: {
+              ...node().capabilities.core,
+              tmux: 'unavailable',
+            },
+            terminalBackends: {
+              'relay-pty': 'unavailable',
+              'tmux-compat': 'unavailable',
             },
             agents: { claude: 'available' },
           },

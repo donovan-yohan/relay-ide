@@ -12,7 +12,7 @@ Relay's product boundary is broader than terminal routing but narrower than an I
 ┌─────────────┐          ┌──────────┐          ┌──────────────────────────────┐
 │  Browser    │◄─HTTPS──►│   Hub    │◄─WS────►│  Node (macOS/Linux/WSL)      │
 │  (React UI) │          │relay-ide │  reverse │  relay-ide install           │
-└─────────────┘          └──────────┘  link    │  tmux / node-pty / git / fs  │
+└─────────────┘          └──────────┘  link    │  relay-pty / tmux-compat / git / fs │
                                                └──────────────────────────────┘
 ```
 
@@ -28,7 +28,7 @@ Implemented/current:
 - Credential rotation: `POST /hub/nodes/:nodeId/credential-rotation` supports authenticated operator manual delivery and online reverse-link delivery; heartbeat proof swaps the active credential and writes a redacted rotation audit event. Failed/delivered rotations remain provable with the next credential until `POST /hub/nodes/:nodeId/credential-rotation/clear-failure` explicitly clears them without accepting the unproved next credential.
 - Reverse link: `/hub/node-link` is implemented by `server/hub-node-link.ts` (hub) and `server/node-link-client.ts` (node). Nodes dial out with `relay-ide node link --hub <url>`.
 - Routed sessions: the hub creates sessions with `POST /hub/nodes/:nodeId/sessions`, kills them with `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, and proxies browser PTY traffic through `/nodes/:nodeId/ws/sessions/:sessionId`.
-- Node-local execution: `server/node-link-pty-host.ts` hosts PTY streams through the `SessionAttachment` boundary; tmux-backed resume ships, raw fallback exists for future gates, and the hub currently requires tmux-capable nodes for routed sessions.
+- Node-local execution: `server/node-link-pty-host.ts` hosts PTY streams through the `SessionAttachment` boundary. Routed sessions can use node-advertised terminal backends; `relay-pty` is preferred when available, while `tmux-compat` remains the legacy resume/import backend.
 - Multi-node routed PTY smoke: `test/hub-cross-node-pty.test.ts` is the canonical integration harness for hub + two simulated nodes, concurrent browser PTY streams, sustained byte flow, and one-node reverse-link failure isolation. Run it with `npm run test:smoke:multi-node`.
 - Repo inventory: `server/repo-inventory.ts` reports configured repos/worktrees, dirty/divergence summaries, and canonical repo identity; the hub aggregates it through `GET /hub/repo-inventory`.
 - Local hub-as-node: `server/local-node.ts` scopes existing hub-local sessions and file events as the default local node.
@@ -464,7 +464,7 @@ Preconditions checked by the hub:
 
 1. Node is paired and not revoked
 2. Node protocol version exactly matches hub (`RELAY_NODE_LINK_PROTOCOL_VERSION` = `1.0`)
-3. Node `capabilities.core.tmux` is `available`
+3. Node advertises at least one supported terminal backend (`capabilities.terminalBackends.relay-pty` or `capabilities.terminalBackends.tmux-compat` is `available`). Older manifests that do not include `terminalBackends` fall back to the legacy `capabilities.core.tmux` value for `tmux-compat` only.
 4. Node is `online` and has an active reverse link
 
 If any precondition fails, the hub returns a typed error with `retryable` guidance:
@@ -474,7 +474,7 @@ If any precondition fails, the hub returns a typed error with `retryable` guidan
 | `NOT_FOUND`             | Node is not paired                    | No        |
 | `PROTOCOL_INCOMPATIBLE` | Major version mismatch                | No        |
 | `VERSION_SKEW`          | Exact version mismatch (same major)   | No        |
-| `NODE_UNSUPPORTED`      | Node cannot host tmux-backed sessions | No        |
+| `NODE_UNSUPPORTED`      | Node cannot host any supported terminal backend | No        |
 | `NODE_OFFLINE`          | Node has no live reverse link         | Yes       |
 
 On success, the hub forwards the request as an RPC (`sessions.create`) over the node's reverse WebSocket, receives the node-local `SessionSummary`, and returns a **node-scoped** session that backs a user-visible Tab with:
@@ -563,7 +563,7 @@ The tmux config file lives under `$XDG_CONFIG_HOME/relay-ide/tmux/relay.tmux.con
 
 **Session lifecycle:** `attachment.close()` with no reason — or any reason other than `SESSION_ATTACHMENT_KILL_REASON` — terminates only the local attach client. The tmux session keeps running and is the resume target for the next attach. Explicitly destroying a session (kill-session) requires passing the `SESSION_ATTACHMENT_KILL_REASON` sentinel; the hub uses this when the operator explicitly closes a tab, distinct from a transient browser reload.
 
-**Raw fallback scope:** `sessionResume: 'none'` ships a working raw shell, but the v1 hub session-routing preconditions (see [Session Routing](#session-routing)) still require `core.tmux === 'available'`. The terminal picker enforces the same gate; non-tmux nodes appear disabled with reason `no tmux`. Raw shells are wired so phase 2 can drop the gate without re-doing the attachment layer.
+**Raw fallback / backend scope:** `relay-pty` is now a supported terminal backend for new routed sessions when the node advertises `capabilities.terminalBackends['relay-pty'] === 'available'`. `tmux-compat` remains the resume/import backend for existing tmux-backed sessions, and only that backend requires `tmux` to be available. Nodes with neither backend available are disabled by the terminal picker with a terminal-backend unavailable reason.
 
 ## Repo Identity and Inventory
 

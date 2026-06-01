@@ -4,6 +4,8 @@ export type NodeCapabilityStatus =
   | 'unavailable'
   | 'unknown';
 
+export type NodeTerminalBackendCapability = 'relay-pty' | 'tmux-compat';
+
 export type NodeAgentAuthStatus = 'authed' | 'unauthed' | 'unknown';
 
 export interface NodeCapabilityProbe {
@@ -158,6 +160,12 @@ export interface NodeServiceManager {
 export type NodeSessionResumeKind = 'tmux' | 'canonical-emulator' | 'none';
 
 export interface NodeCapabilities {
+  /**
+   * Terminal runtime backends this node can create new PTY sessions with.
+   * `relay-pty` is Relay's default direct PTY/runtime path; `tmux-compat`
+   * is the explicit import/fallback path for old tmux-backed sessions.
+   */
+  terminalBackends?: Record<NodeTerminalBackendCapability, NodeCapabilityProbe>;
   tmux: NodeCapabilityProbe;
   git: NodeCapabilityProbe;
   clipboard: NodeCapabilityProbe;
@@ -403,6 +411,12 @@ function isNodeCapabilities(value: unknown): value is NodeCapabilities {
   if (!isRecord(value)) return false;
   for (const key of requiredCapabilityKeys) {
     if (!isNodeCapabilityProbe(value[key])) return false;
+  }
+  if (value['terminalBackends'] !== undefined) {
+    const terminalBackends = value['terminalBackends'];
+    if (!isRecord(terminalBackends)) return false;
+    if (!isNodeCapabilityProbe(terminalBackends['relay-pty'])) return false;
+    if (!isNodeCapabilityProbe(terminalBackends['tmux-compat'])) return false;
   }
   // sessionResume was added in #467. Pre-#467 nodes did not publish it;
   // accept the field's absence and treat as 'none' at the call site.

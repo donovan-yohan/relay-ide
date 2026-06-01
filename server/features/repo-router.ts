@@ -5,7 +5,10 @@ import {
 } from '../confirmation-challenges.js';
 import { type HubNodeRegistry } from '../hub-node-registry.js';
 import {
+  nodeHasTerminalBackend,
+  nodeTerminalBackends,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
+  type HubNodeSummary,
   type RelayNodeError,
 } from '../../shared/relay-node-protocol.js';
 import { HubNodeLinkError, type HubNodeLinkManager } from '../hub-node-link.js';
@@ -222,6 +225,87 @@ function sendIaStoreError(res: express.Response, error: unknown): void {
       error instanceof Error ? error.message : 'bench overlay write failed'
     )
   );
+}
+
+function sendNodeTerminalBackendUnavailable(
+  res: express.Response,
+  nodeId: string,
+  node: HubNodeSummary
+): void {
+  const terminalBackends = nodeTerminalBackends(node);
+  sendRelayError(
+    res,
+    relayError(
+      'NODE_UNSUPPORTED',
+      `node ${nodeId} cannot host PTY sessions: no terminal backend is available`,
+      false,
+      {
+        reasonCode: 'NODE_TERMINAL_BACKEND_UNAVAILABLE',
+        capability: 'terminalBackend',
+        terminalBackends,
+        tmuxStatus: node.capabilities.core.tmux,
+      }
+    )
+  );
+}
+
+function validateReopenTargetNode(
+  res: express.Response,
+  nodeId: string,
+  registry: HubNodeRegistry,
+  nodeLinks?: HubNodeLinkManager
+): HubNodeSummary | null {
+  const node = registry
+    .listNodes()
+    .find((candidate) => candidate.nodeId === nodeId);
+  if (!node || node.status === 'revoked') {
+    sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+    return null;
+  }
+  if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+    const [nodeMajor] = node.protocolVersion.split('.');
+    const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+    sendRelayError(
+      res,
+      relayError(
+        nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+        `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+      )
+    );
+    return null;
+  }
+  if (node.capabilities.core.shell !== 'available') {
+    sendRelayError(
+      res,
+      relayError(
+        'NODE_UNSUPPORTED',
+        `node ${nodeId} cannot host shell-backed terminal sessions`,
+        false,
+        {
+          reasonCode: 'NODE_TERMINAL_SHELL_UNAVAILABLE',
+          capability: 'shell',
+          status: node.capabilities.core.shell,
+        }
+      )
+    );
+    return null;
+  }
+  if (!nodeHasTerminalBackend(node)) {
+    sendNodeTerminalBackendUnavailable(res, nodeId, node);
+    return null;
+  }
+  if (node.status !== 'online' || !nodeLinks?.hasActiveNode(nodeId)) {
+    sendRelayError(
+      res,
+      relayError(
+        'NODE_OFFLINE',
+        `node ${nodeId} has no live reverse link`,
+        true
+      )
+    );
+    return null;
+  }
+  return node;
 }
 
 // Repo-feature HTTP surface. These routes used to live in
@@ -529,49 +613,13 @@ export function createRepoFeatureRouter(
         );
         return;
       }
-      const node = registry
-        .listNodes()
-        .find((candidate) => candidate.nodeId === nodeId);
-      if (!node || node.status === 'revoked') {
-        sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
-        return;
-      }
-      if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
-        const [nodeMajor] = node.protocolVersion.split('.');
-        const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
-        sendRelayError(
-          res,
-          relayError(
-            nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
-            `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
-          )
-        );
-        return;
-      }
-      if (node.capabilities.core.tmux !== 'available') {
-        sendRelayError(
-          res,
-          relayError(
-            'NODE_UNSUPPORTED',
-            `node ${nodeId} cannot host tmux-backed PTY sessions`
-          )
-        );
-        return;
-      }
-      if (
-        node.status !== 'online' ||
-        !options.nodeLinks?.hasActiveNode(nodeId)
-      ) {
-        sendRelayError(
-          res,
-          relayError(
-            'NODE_OFFLINE',
-            `node ${nodeId} has no live reverse link`,
-            true
-          )
-        );
-        return;
-      }
+      const node = validateReopenTargetNode(
+        res,
+        nodeId,
+        registry,
+        options.nodeLinks
+      );
+      if (!node) return;
 
       const body = bodyRecord(req);
       const routedBody = paramsWithoutConfirmation(body);
@@ -650,7 +698,7 @@ export function createRepoFeatureRouter(
         ) return;
 
         const sessionPayload = coldReopenSessionPayload(routedBody, target);
-        const payload = await options.nodeLinks.request(
+        const payload = await options.nodeLinks!.request(
           nodeId,
           'sessions.create',
           sessionPayload

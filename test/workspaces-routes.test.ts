@@ -6,8 +6,10 @@ import express from 'express';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createWorkspaceRouter, type WorkspaceDeps } from '../server/workspaces.js';
-import { DEFAULTS, saveConfig } from '../server/config.js';
+import { DEFAULTS, loadConfig, saveConfig } from '../server/config.js';
 import { createTestServer } from './helpers/test-server.js';
+
+const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
 
 type ExecFn = NonNullable<WorkspaceDeps['execAsync']>;
 type ExecResult = { stdout: string; stderr: string };
@@ -71,6 +73,50 @@ async function makeApp(exec: ExecFn) {
   app.use('/workspaces', createWorkspaceRouter({ configPath, execAsync: exec }));
   return app;
 }
+
+describe('PATCH /workspaces/settings — terminal backend selection', () => {
+  it('rejects the removed legacy tmux launch flag', async () => {
+    const exec = makeExec(gitRepoPath);
+    const app = await makeApp(exec);
+    const server = await createTestServer(app);
+    try {
+      const params = new URLSearchParams({ path: gitRepoPath });
+      const res = await fetch(`${server.url}/workspaces/settings?${params}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [LEGACY_TMUX_LAUNCH_KEY]: true }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(loadConfig(configPath).repoSettings?.[path.resolve(gitRepoPath)]).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('uses terminalBackend as the only tmux-compat config path', async () => {
+    const exec = makeExec(gitRepoPath);
+    const app = await makeApp(exec);
+    const server = await createTestServer(app);
+    try {
+      const params = new URLSearchParams({ path: gitRepoPath });
+      const res = await fetch(`${server.url}/workspaces/settings?${params}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ terminalBackend: 'tmux-compat' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { terminalBackend?: string };
+      expect(body.terminalBackend).toBe('tmux-compat');
+
+      const saved = loadConfig(configPath);
+      expect(saved.repoSettings?.[path.resolve(gitRepoPath)]?.terminalBackend).toBe('tmux-compat');
+    } finally {
+      await server.close();
+    }
+  });
+});
 
 describe('GET /workspaces — kind field', () => {
   it('returns kind: "repo" for a git-initialized path and kind: "directory" for a non-git path', async () => {

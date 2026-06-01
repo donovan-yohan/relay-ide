@@ -24,6 +24,8 @@ import {
   type PairTokenCapabilityEnvelope,
 } from './hub-node-registry.js';
 import {
+  nodeHasTerminalBackend,
+  nodeTerminalBackends,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type RelayNodeError,
 } from '../shared/relay-node-protocol.js';
@@ -1707,15 +1709,17 @@ function nodeTerminalUnsupportedError(
       }
     );
   }
-  if (node.capabilities.core.tmux !== 'available') {
+  if (!nodeHasTerminalBackend(node)) {
+    const backends = nodeTerminalBackends(node);
     return relayError(
       'NODE_UNSUPPORTED',
-      `node ${nodeId} cannot host tmux-backed PTY sessions`,
+      `node ${nodeId} cannot host PTY sessions: no terminal backend is available`,
       false,
       {
-        reasonCode: 'NODE_TERMINAL_TMUX_UNAVAILABLE',
-        capability: 'tmux',
-        status: node.capabilities.core.tmux,
+        reasonCode: 'NODE_TERMINAL_BACKEND_UNAVAILABLE',
+        capability: 'terminalBackend',
+        terminalBackends: backends,
+        tmuxStatus: node.capabilities.core.tmux,
       }
     );
   }

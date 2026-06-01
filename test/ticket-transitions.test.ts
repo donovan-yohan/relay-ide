@@ -37,7 +37,7 @@ beforeAll(() => {
     defaultAgent: 'claude',
     defaultContinue: true,
     defaultYolo: false,
-    launchInTmux: false,
+    terminalBackend: 'relay-pty',
     defaultNotifications: true,
   };
   fs.writeFileSync(sharedConfigPath, JSON.stringify(minimalConfig, null, 2));
@@ -275,7 +275,7 @@ describe('ticket-transitions (Jira)', () => {
       defaultAgent: 'claude',
       defaultContinue: true,
       defaultYolo: false,
-      launchInTmux: false,
+      terminalBackend: 'relay-pty',
       defaultNotifications: true,
       integrations: {
         jira: { projectKey: 'PROJ', statusMappings },

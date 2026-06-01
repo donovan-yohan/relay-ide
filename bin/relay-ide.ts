@@ -16,6 +16,8 @@ import {
   NODE_PAIR_TOKEN_MINT_GRANT_AUDIENCE,
 } from '../shared/operator-handshake-grants.js';
 import {
+  nodeHasTerminalBackend,
+  nodeTerminalBackends,
   RELAY_NODE_LINK_PROTOCOL_VERSION,
   type HubNodeSummary,
 } from '../shared/relay-node-protocol.js';
@@ -2808,14 +2810,19 @@ async function fetchHubNodes(): Promise<
 
 function nodeCapabilityChecks(node: HubNodeSummary): HubDoctorCheck[] {
   const checks: HubDoctorCheck[] = [];
-  const tmuxStatus = node.capabilities.core.tmux;
-  if (tmuxStatus !== 'available') {
+  const terminalBackends = nodeTerminalBackends(node);
+  if (!nodeHasTerminalBackend(node)) {
     checks.push({
-      name: `node.${node.nodeId}.capability.tmux`,
+      name: `node.${node.nodeId}.capability.terminalBackend`,
       status: 'fail',
       reason: 'UNSUPPORTED_CAPABILITY',
-      message: `${node.displayName} reports tmux capability ${tmuxStatus}; routed terminal sessions require tmux support.`,
-      details: { nodeId: node.nodeId, capability: 'tmux', status: tmuxStatus },
+      message: `${node.displayName} has no available terminal backend for routed PTY sessions.`,
+      details: {
+        nodeId: node.nodeId,
+        capability: 'terminalBackend',
+        terminalBackends,
+        tmuxStatus: node.capabilities.core.tmux,
+      },
     });
   }
   if (node.version.state !== 'compatible') {
@@ -2917,7 +2924,7 @@ function formatNodeTable(nodes: HubNodeSummary[]): string[] {
       boundedNodeRow(`${node.hostname} ${node.platform}/${node.arch}`, 30),
       boundedNodeRow(node.relayVersion, 14),
       boundedNodeRow(node.version.state, 16),
-      `tmux:${node.capabilities.core.tmux}`,
+      terminalBackendCell(node),
       node.lastSeenAt,
     ]);
   const header = [
@@ -2948,6 +2955,11 @@ function formatNodeTable(nodes: HubNodeSummary[]): string[] {
       `… ${nodes.length - rows.length} more nodes omitted from human output; use --json for the full list.`
     );
   return output;
+}
+
+function terminalBackendCell(node: HubNodeSummary): string {
+  const backends = nodeTerminalBackends(node);
+  return `pty:${backends['relay-pty']} tmux:${backends['tmux-compat']}`;
 }
 
 async function printHubNodes(commandArgs: string[]): Promise<void> {

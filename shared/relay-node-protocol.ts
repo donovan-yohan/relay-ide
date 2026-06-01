@@ -172,6 +172,8 @@ export type NodeCapabilityStatus =
   | 'unavailable'
   | 'unknown';
 
+export type HubNodeTerminalBackendCapability = 'relay-pty' | 'tmux-compat';
+
 export type HubNodeCoreCapability =
   | 'shell'
   | 'tmux'
@@ -201,6 +203,13 @@ export interface NodeCapabilityManifestSummary {
     unknown: number;
   };
   core: Record<HubNodeCoreCapability, NodeCapabilityStatus>;
+  /**
+   * Terminal backend availability for new PTY sessions. New consumers should
+   * gate terminal creation on at least one available backend plus shell, not
+   * on `core.tmux` alone. Missing means a pre-#837 node; derive only the
+   * tmux-compat fallback from `core.tmux` and treat relay-pty as unknown.
+   */
+  terminalBackends?: Record<HubNodeTerminalBackendCapability, NodeCapabilityStatus>;
   /**
    * Repo-feature-layer capability. Optional on the wire so a node with
    * no repo feature decorator wired in (or no repo capability at all)
@@ -277,4 +286,21 @@ export interface HubNodeSummary {
   pairedAt: string;
   lastSeenAt: string;
   credentialId: string;
+}
+
+export function nodeTerminalBackends(node: HubNodeSummary): Record<
+  HubNodeTerminalBackendCapability,
+  NodeCapabilityStatus
+> {
+  return {
+    'relay-pty': node.capabilities.terminalBackends?.['relay-pty'] ?? 'unknown',
+    'tmux-compat':
+      node.capabilities.terminalBackends?.['tmux-compat'] ??
+      node.capabilities.core.tmux,
+  };
+}
+
+export function nodeHasTerminalBackend(node: HubNodeSummary): boolean {
+  const backends = nodeTerminalBackends(node);
+  return backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available';
 }

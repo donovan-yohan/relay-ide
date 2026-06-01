@@ -194,7 +194,7 @@ Implemented today:
 
 - `relay-ide node connect` exchanges a short-lived pair token, writes `node-credential.json`, sends one authenticated heartbeat, and exits.
 - `relay-ide node link --hub <url>` is the foreground long-running reverse WebSocket client. It sends `control.hello`/`control.heartbeat` with manifest + repo inventory, handles `sessions.create` / `sessions.kill` RPC, and hosts routed PTY streams.
-- The hub can create remote sessions through `POST /hub/nodes/:nodeId/sessions` and attach browsers through `/nodes/:nodeId/ws/sessions/:sessionId` when the node is online, protocol-compatible, and tmux-capable.
+- The hub can create remote sessions through `POST /hub/nodes/:nodeId/sessions` and attach browsers through `/nodes/:nodeId/ws/sessions/:sessionId` when the node is online, protocol-compatible, and advertises a supported terminal backend.
 - `server/local-node.ts` makes the hub itself look like the default local node for existing sessions/events.
 - Hub-owned node ACL policy is enforced on each routed decision; ACL changes apply immediately in hub policy and do not wait for node credential rotation.
 - Credential rotation is shipped for explicit operator/manual and online reverse-link delivery. Manual delivery is an authenticated-operator route that deliberately returns `credential.token` so the operator can move it to the node out-of-band; node summaries and audit rows expose credential IDs/rotation IDs only, never bearer tokens. Online delivery sends `credential.rotate` over `/hub/node-link`; the node writes the new credential and the next HTTP or reverse-link heartbeat proves `nextCredentialId`, swaps the active credential, invalidates the previous token, and appends a redacted `rotation`/`rotated` audit event.
@@ -216,25 +216,25 @@ PTY flow:
 5. xterm.js renders output in browser
 6. Resize events sent as JSON: `{type: 'resize', cols, rows}`
 
-## Tmux Substrate
+## Terminal Backends
 
-xterm.js remains the browser renderer. tmux is the required server-side session and process substrate for interactive agent and terminal sessions. `node-pty` is the adapter between the WebSocket relay and tmux; it is not the durable owner of the agent process tree.
+xterm.js remains the browser renderer. New interactive agent and terminal sessions default to the direct `relay-pty` backend, which owns the server-side PTY process without requiring tmux. `tmux-compat` remains the explicit legacy/import backend for existing tmux-backed sessions, saved state without a `terminalBackend`, and operators who need tmux resume/copy-mode behavior.
 
-Tmux session names are stable and human-readable:
+Tmux compatibility session names are stable and human-readable:
 
 ```
 <prefix><sanitized repo-or-repo-branch slug>-<first 8 chars of session id>
 ```
 
-- Production sessions use the `relay-ide-` prefix.
-- Ordinary dev mode sessions (`RELAY_IDE_DEV_INSTANCE=1`) use the `relay-dev-` prefix.
-- Self-host mode sessions (`relay-ide dev --self-host` / `npm run dev:self`) use the `relay-self-` prefix and a config path under user config state, not the production config.
+- Production `tmux-compat` sessions use the `relay-ide-` prefix.
+- Ordinary dev mode `tmux-compat` sessions (`RELAY_IDE_DEV_INSTANCE=1`) use the `relay-dev-` prefix.
+- Self-host mode `tmux-compat` sessions (`relay-ide dev --self-host` / `npm run dev:self`) use the `relay-self-` prefix and a config path under user config state, not the production config.
 - The slug is sanitized to alphanumeric/hyphen characters and capped before the session id suffix.
 - Restore paths preserve the original session id and tmux session name so browser tabs can reconnect to the same server-side process after a server restart.
-- On startup, the server checks whether the named tmux session still exists. If it does, Relay reattaches with `tmux -u attach-session -t <name>`. If it does not, agent sessions fall back to agent-specific continue args and create a fresh tmux-backed process.
-- `sessions.ts` exposes targeted tmux helpers (`sendTmuxKeys`, `sendTmuxText`, `captureTmuxPane`) so future workspace panes can address a specific tmux-backed process by session id instead of relying only on the currently attached PTY stream.
+- On startup, the server requires tmux only when the effective backend is `tmux-compat`. If the named tmux session still exists, Relay reattaches with `tmux -u attach-session -t <name>`. If it does not, agent sessions fall back to agent-specific continue args and create a fresh tmux-backed compatibility process.
+- `sessions.ts` exposes targeted tmux helpers (`sendTmuxKeys`, `sendTmuxText`, `captureTmuxPane`) for `tmux-compat` sessions only; new backend-neutral code should use the session/terminal backend abstraction instead of assuming tmux verbs.
 
-This makes Tab and pane customization (#263) viable without losing process ownership; the tmux/session name is process substrate, while the browser Tab is the user-visible leaf surface. Browser-level tabs and panes can be rearranged freely while the underlying tmux session remains the stable process identity for reconnect, restore, resize, copy-mode, and cleanup.
+This makes Tab and pane customization (#263) viable without making tmux the only process owner. Browser-level tabs and panes can be rearranged freely while `relay-pty` owns direct PTY sessions and `tmux-compat` keeps stable tmux process identity for reconnect, restore, resize, copy-mode, import, and cleanup.
 
 ## REST API
 

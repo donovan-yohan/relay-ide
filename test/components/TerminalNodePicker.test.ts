@@ -32,6 +32,10 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
         ssh: 'available',
         tailscale: 'available',
       },
+      terminalBackends: {
+        'relay-pty': 'available',
+        'tmux-compat': 'available',
+      },
       agents: { claude: 'available' },
       serviceManager: 'launchd',
       wsl: false,
@@ -89,8 +93,8 @@ describe('TerminalNodePicker buildChoices', () => {
     expect(choices[1]?.label).toBe('m1');
   });
 
-  it('blocks version-skew nodes even when shell+tmux are available', () => {
-    // nodeShellBlockReason checks version state before shell+tmux — a version-skew
+  it('blocks version-skew nodes even when shell plus terminal backend are available', () => {
+    // nodeShellBlockReason checks version state before shell/backend health — a version-skew
     // node is disabled pre-click so the user gets feedback before attempting to
     // open a session.
     const choices = buildChoices([
@@ -110,7 +114,7 @@ describe('TerminalNodePicker buildChoices', () => {
     });
   });
 
-  it('blocks incompatible-version nodes even when shell+tmux are available', () => {
+  it('blocks incompatible-version nodes even when shell plus terminal backend are available', () => {
     // Same reasoning: incompatible protocol is infrastructure-level; the hub will
     // reject a routed session anyway, so we block pre-click.
     const choices = buildChoices([
@@ -170,7 +174,7 @@ describe('TerminalNodePicker buildChoices', () => {
     expect(choices[1]?.resumable).toBe(false);
   });
 
-  it('disables nodes without tmux capability even when online', () => {
+  it('keeps nodes without tmux enabled when relay-pty is available', () => {
     const choices = buildChoices([
       node({
         nodeId: 'thin',
@@ -178,18 +182,42 @@ describe('TerminalNodePicker buildChoices', () => {
         capabilities: {
           ...node().capabilities,
           core: { ...node().capabilities.core, tmux: 'unavailable' },
+          terminalBackends: {
+            'relay-pty': 'available',
+            'tmux-compat': 'unavailable',
+          },
         },
       }),
     ]);
-    // nodeShellBlockReason returns "tmux <status> on <displayName>"
+    expect(choices[1]).toMatchObject({
+      disabled: false,
+    });
+  });
+
+  it('disables nodes without any terminal backend even when online', () => {
+    const choices = buildChoices([
+      node({
+        nodeId: 'thin',
+        displayName: 'thin',
+        capabilities: {
+          ...node().capabilities,
+          core: { ...node().capabilities.core, tmux: 'unavailable' },
+          terminalBackends: {
+            'relay-pty': 'unavailable',
+            'tmux-compat': 'unavailable',
+          },
+        },
+      }),
+    ]);
     expect(choices[1]).toMatchObject({
       disabled: true,
-      disabledReason: 'tmux unavailable on thin',
+      disabledReason:
+        'terminal backend unavailable on thin (relay-pty unavailable, tmux-compat unavailable)',
     });
   });
 
   it('hermes unavailable does not block terminal node picker', () => {
-    // Terminal picker uses nodeShellBlockReason (shell+tmux only), not agent availability.
+    // Terminal picker uses nodeShellBlockReason (shell + terminal backend), not agent availability.
     const choices = buildChoices([
       node({
         nodeId: 'hermes-absent',

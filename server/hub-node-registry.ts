@@ -341,6 +341,15 @@ function summarizeCapabilities(
   // summary. Consumers that need a worktree-availability hint should
   // fall back to deriving from `core.git` (the canonical worktree
   // capability today is just "is git usable here?").
+  const terminalBackends = manifest.capabilities.terminalBackends ?? {
+    'relay-pty': {
+      id: 'relay-pty',
+      label: 'Relay PTY',
+      status: 'unknown' as const,
+      message: 'pre-#837 node did not report relay-pty availability.',
+    },
+    'tmux-compat': manifest.capabilities.tmux,
+  };
   return {
     totals,
     core: {
@@ -351,6 +360,10 @@ function summarizeCapabilities(
       clipboardImage: manifest.capabilities.clipboard.status,
       ssh: manifest.capabilities.ssh.status,
       tailscale: manifest.capabilities.tailscale.status,
+    },
+    terminalBackends: {
+      'relay-pty': terminalBackends['relay-pty'].status,
+      'tmux-compat': terminalBackends['tmux-compat'].status,
     },
     agents,
     serviceManager: manifest.serviceManager.kind,
@@ -510,7 +523,15 @@ function statusForNode(
 function normalizeCapabilitySummary(
   capabilities: NodeCapabilityManifestSummary
 ): NodeCapabilityManifestSummary {
-  if (capabilities.core) return capabilities;
+  if (capabilities.core) {
+    return {
+      ...capabilities,
+      terminalBackends: capabilities.terminalBackends ?? {
+        'relay-pty': UNKNOWN_CAPABILITY_STATUS,
+        'tmux-compat': capabilities.core.tmux ?? UNKNOWN_CAPABILITY_STATUS,
+      },
+    };
+  }
   return {
     ...capabilities,
     core: {
@@ -521,6 +542,10 @@ function normalizeCapabilitySummary(
       clipboardImage: UNKNOWN_CAPABILITY_STATUS,
       ssh: UNKNOWN_CAPABILITY_STATUS,
       tailscale: UNKNOWN_CAPABILITY_STATUS,
+    },
+    terminalBackends: {
+      'relay-pty': UNKNOWN_CAPABILITY_STATUS,
+      'tmux-compat': UNKNOWN_CAPABILITY_STATUS,
     },
   };
 }

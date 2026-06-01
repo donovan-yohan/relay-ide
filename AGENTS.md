@@ -81,7 +81,7 @@ Issue workflow: `backlog` (rough) → `refined` (scoped) → `todo` (planned) �
 - Agent frameworks are configurable; built-ins include Claude Code, Codex, OpenCode, and Hermes. Do not hard-code Claude-only assumptions in new docs or UI copy.
 - `node-pty` needs native compile; `postinstall` fixes prebuilt binaries on macOS.
 - Strip `CLAUDECODE` from PTY env so Claude sessions nest.
-- tmux is mandatory for interactive agent and terminal sessions; xterm.js remains the browser renderer.
+- New interactive agent and terminal sessions default to RelayPtySession (`relay-pty`); tmux is the explicit `tmux-compat` import/fallback backend. xterm.js remains the browser renderer.
 - 256KB scrollback cap per session; oldest trimmed FIFO.
 - Config: `~/.config/relay-ide/config.json` (global) or `./config.json` (local dev).
 - PIN reset: `relay-ide pin reset` on the host (interactive TTY).

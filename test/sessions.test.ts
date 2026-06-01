@@ -866,7 +866,7 @@ describe('sessions', () => {
     expect(session!.agent).toBe('codex');
   });
 
-  it('useTmux defaults to true when not specified', () => {
+  it('useTmux defaults to false when not specified', () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
@@ -876,8 +876,9 @@ describe('sessions', () => {
       args: [],
     });
     createdIds.push(result.id);
-    expect(result.useTmux).toBe(true);
-    expect(result.tmuxSessionName).toMatch(/^relay-(ide|dev)-test-repo-/);
+    expect(result.terminalBackend).toBe('relay-pty');
+    expect(result.useTmux).toBe(false);
+    expect(result.tmuxSessionName).toBe('');
   });
 
   it('useTmux:false opts custom command sessions into relay-pty', () => {
@@ -909,11 +910,12 @@ describe('sessions', () => {
     const list = sessions.list();
     const session = list.find((s) => s.id === result.id);
     expect(session).toBeTruthy();
-    expect(session!.useTmux).toBe(true);
-    expect(session!.tmuxSessionName).toMatch(/^relay-(ide|dev)-test-repo-/);
+    expect(session!.terminalBackend).toBe('relay-pty');
+    expect(session!.useTmux).toBe(false);
+    expect(session!.tmuxSessionName).toBe('');
   });
 
-  it('exposes targeted tmux send and capture helpers', async () => {
+  it('exposes targeted tmux-compat send and capture helpers', async () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
@@ -921,6 +923,7 @@ describe('sessions', () => {
       cwd: '/tmp',
       command: '/bin/sh',
       args: ['-i'],
+      terminalBackend: 'tmux-compat',
     });
     createdIds.push(result.id);
     await waitForTmuxSession(result.tmuxSessionName!);
@@ -937,7 +940,7 @@ describe('sessions', () => {
     expect(captured).toContain('TMUX_TARGET_READY');
   });
 
-  it('detachForRestart leaves the tmux session alive for restore adoption', async () => {
+  it('detachForRestart leaves the tmux-compat session alive for restore adoption', async () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
@@ -945,6 +948,7 @@ describe('sessions', () => {
       cwd: '/tmp',
       command: '/bin/sh',
       args: ['-i'],
+      terminalBackend: 'tmux-compat',
     });
     const tmuxSessionName = result.tmuxSessionName!;
     const runtimeDir = path.join(os.tmpdir(), 'relay-ide', result.id);
@@ -1769,7 +1773,7 @@ describe('session persistence', () => {
     expect(found!.status).toBe('disconnected');
   });
 
-  it('full serialize-restore round trip preserves all session fields including tmuxSessionName', async () => {
+  it('full serialize-restore round trip preserves relay-pty session fields', async () => {
     const configDir = createTmpDir();
 
     // Create sessions of different types
@@ -1803,35 +1807,13 @@ describe('session persistence', () => {
     sessions.detachForRestart(agentSession.id);
     sessions.detachForRestart(terminal.id);
 
-    // Also inject a tmux-style session into the pending file to test tmuxSessionName round-trip.
-    // Use customCommand so restore spawns that instead of claude --continue (which would exit instantly).
-    const pendingPath = path.join(configDir, 'pending-sessions.json');
-    const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
-    pending.sessions.push({
-      id: 'tmux-roundtrip-id',
-      type: 'agent',
-      agent: 'claude',
-      workspacePath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      repoName: 'tmux-repo',
-      branchName: 'feat/tmux',
-      displayName: 'Tmux Session',
-      createdAt: new Date().toISOString(),
-      lastActivity: new Date().toISOString(),
-      useTmux: true,
-      tmuxSessionName: 'relay-ide-tmux-session-tmux-rou',
-      customCommand: '/bin/cat',
-    });
-    fs.writeFileSync(pendingPath, JSON.stringify(pending));
-
     // Restore
     const restored = await restoreFromDisk(configDir);
-    expect(restored).toBe(3);
+    expect(restored).toBe(2);
 
     // Verify all sessions exist
     const list = sessions.list();
-    expect(list.length).toBe(3);
+    expect(list.length).toBe(2);
 
     const restoredAgent = list.find((s) => s.id === agentSession.id);
     expect(restoredAgent).toBeTruthy();
@@ -1844,14 +1826,6 @@ describe('session persistence', () => {
     expect(restoredTerminal!.type).toBe('terminal');
     expect(restoredTerminal!.displayName).toBe('Terminal 1');
 
-    // Verify tmux session name survived the round trip
-    const restoredTmux = sessions.get('tmux-roundtrip-id');
-    expect(restoredTmux).toBeTruthy();
-    expect(restoredTmux!.mode).toBe('pty');
-    expect((restoredTmux as PtySession).tmuxSessionName).toBe(
-      'relay-ide-tmux-session-tmux-rou'
-    );
-    expect(restoredTmux!.displayName).toBe('Tmux Session');
   });
 
   it('serialize/restore preserves yolo flag', async () => {

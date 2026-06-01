@@ -2,12 +2,14 @@
 
 Issue: [#264](https://github.com/donovan-yohan/relay-ide/issues/264)
 
+Historical note: this plan records the pre-#837 tmux-first acceptance contract. Current source-of-truth behavior lives in `docs/TERMINAL_BACKENDS.md`: `relay-pty` is the default for new sessions, and `tmux-compat` is legacy/import/fallback only.
+
 ## Acceptance Contract
 
 - xterm.js remains the browser terminal renderer. It owns display, input capture, fit/resize, renderer fallback, and browser-specific terminal behavior.
-- tmux is the required server-side PTY/session/process substrate for interactive agent and terminal sessions. It owns durable process identity, copy-mode, server-side restore/reattach, and cleanup.
+- The pre-#837 contract treated tmux as the server-side PTY/session/process substrate for interactive agent and terminal sessions. Current behavior is documented in `docs/TERMINAL_BACKENDS.md`: `relay-pty` is the default, and `tmux-compat` preserves legacy tmux-backed restore/import behavior.
 - `node-pty` remains the server adapter between WebSocket I/O and tmux. It should not be treated as the durable session owner.
-- Documentation and UI text should not describe `launchInTmux` or tmux wrapping as an optional launch mode for interactive sessions. Any remaining config field is compatibility/migration surface, not a product choice.
+- Documentation and UI text should not describe legacy tmux launch flags or tmux wrapping as an optional launch mode for interactive sessions. Any remaining config field is compatibility/migration surface, not a product choice.
 
 ## Naming And Restore
 

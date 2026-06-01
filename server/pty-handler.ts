@@ -941,8 +941,7 @@ function resolveSpawnTarget(
   tmuxSessionName: string;
 } {
   const terminalBackend =
-    paramTerminalBackend ??
-    (paramUseTmux === false ? 'relay-pty' : 'tmux-compat');
+    paramTerminalBackend ?? (paramUseTmux === true ? 'tmux-compat' : 'relay-pty');
   const useTmux = terminalBackend === 'tmux-compat';
   const tmuxSessionName =
     paramTmuxSessionName ||

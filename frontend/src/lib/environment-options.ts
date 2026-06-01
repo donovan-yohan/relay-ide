@@ -30,6 +30,10 @@ import type {
   HubNodeSummary,
   NodeCapabilityStatus,
 } from '../../../shared/relay-node-protocol.js';
+import {
+  nodeHasTerminalBackend,
+  nodeTerminalBackends,
+} from '../../../shared/relay-node-protocol.js';
 import type {
   AggregatedRepoInventoryGroup,
   AggregatedRepoInventoryResponse,
@@ -117,12 +121,13 @@ function nodeFreshnessAndReasons(
       message: `shell ${node.capabilities.core.shell ?? 'unknown'}`,
     });
   }
-  if (capabilityProblem(node.capabilities.core.tmux) !== null) {
+  if (!nodeHasTerminalBackend(node)) {
+    const backends = nodeTerminalBackends(node);
     if (freshness === 'fresh') freshness = 'stale';
     reasons.push({
       kind: 'capability-missing',
       capability: 'session:create:terminal',
-      message: `tmux ${node.capabilities.core.tmux ?? 'unknown'}`,
+      message: `terminal backend unavailable (relay-pty ${backends['relay-pty']}, tmux-compat ${backends['tmux-compat']})`,
     });
   }
   if (sessionType === 'agent') {
@@ -157,15 +162,11 @@ function baseCapabilitiesFor(
 ): RelayCapabilityBit[] {
   if (!node) return [];
   const caps: RelayCapabilityBit[] = ['session:read'];
-  // tmux is mandatory for both terminal and agent PTY sessions (see
-  // CLAUDE.md §Key Patterns and `nodeShellBlockReason` /
-  // `nodeAgentBlockReason` in CustomizeSessionDialog). A node without it
-  // cannot host create-terminal/create-agent regardless of shell status,
-  // so the picker must not advertise those capabilities (Gemini PR #647
-  // high-priority finding).
+  // New PTY sessions require shell plus at least one terminal backend. tmux is
+  // now the compatibility/import backend, not the terminal capability gate.
   const shellOk = capabilityProblem(node.capabilities.core.shell) === null;
-  const tmuxOk = capabilityProblem(node.capabilities.core.tmux) === null;
-  if (shellOk && tmuxOk) {
+  const terminalBackendOk = nodeHasTerminalBackend(node);
+  if (shellOk && terminalBackendOk) {
     caps.push('session:create:terminal');
     if (sessionType === 'agent') {
       caps.push('session:create:agent');
@@ -214,6 +215,10 @@ function syntheticLocalNode(): HubNodeSummary {
         clipboardImage: 'available',
         ssh: 'available',
         tailscale: 'available',
+      },
+      terminalBackends: {
+        'relay-pty': 'available',
+        'tmux-compat': 'available',
       },
       worktrees: 'available',
       agents: {},

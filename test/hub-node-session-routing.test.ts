@@ -51,6 +51,20 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
       caveats: [],
     },
     capabilities: {
+      terminalBackends: {
+        'relay-pty': {
+          id: 'relay-pty',
+          label: 'Relay PTY',
+          status: 'available',
+          message: 'ok',
+        },
+        'tmux-compat': {
+          id: 'tmux-compat',
+          label: 'tmux compatibility',
+          status: 'available',
+          message: 'ok',
+        },
+      },
       tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
       clipboard: {
@@ -770,7 +784,7 @@ describe('hub-routed node session create and attach', () => {
     });
   });
 
-  it('returns NODE_UNSUPPORTED when the node cannot host tmux PTY sessions', async () => {
+  it('returns NODE_UNSUPPORTED when the node cannot host any terminal backend', async () => {
     const { base } = await startHub();
     const { nodeId } = await pairNode(
       base,
@@ -782,6 +796,20 @@ describe('hub-routed node session create and attach', () => {
             label: 'tmux',
             status: 'unavailable',
             message: 'missing',
+          },
+          terminalBackends: {
+            'relay-pty': {
+              id: 'relay-pty',
+              label: 'Relay PTY',
+              status: 'unavailable',
+              message: 'missing',
+            },
+            'tmux-compat': {
+              id: 'tmux-compat',
+              label: 'tmux compatibility',
+              status: 'unavailable',
+              message: 'missing',
+            },
           },
         },
       })

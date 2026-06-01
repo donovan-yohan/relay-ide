@@ -161,7 +161,7 @@ test.describe('CustomizeSessionDialog', () => {
     ).toContainText('claude unavailable on no claude box');
     await expect(nodeOptions.filter({ hasText: 'no tmux box' })).toBeDisabled();
     await expect(nodeOptions.filter({ hasText: 'no tmux box' })).toContainText(
-      'tmux unavailable on no tmux box'
+      'terminal backend unavailable on no tmux box (relay-pty unavailable, tmux-compat unavailable)'
     );
   });
 

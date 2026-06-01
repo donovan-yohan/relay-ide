@@ -1,11 +1,11 @@
 # Terminal backends and relay-pty rollout
 
-Relay supports two PTY execution backends for local sessions:
+Relay supports two PTY execution backends for local and routed node sessions:
 
-- `tmux-compat` (default): the existing stable path. Relay launches sessions through tmux and reattaches to tmux sessions across browser reconnects and server restarts.
-- `relay-pty`: the new direct `RelayPtySession` runtime using Relay's PTY/libghostty-vt pipeline. It is opt-in while it rolls out.
+- `relay-pty` (default): the direct `RelayPtySession` runtime using Relay's PTY/libghostty-vt pipeline.
+- `tmux-compat`: the legacy compatibility path. Relay launches sessions through tmux and reattaches to tmux sessions across browser reconnects and server restarts.
 
-The rollout is intentionally conservative. Existing installs and existing sessions stay on `tmux-compat` unless a new session is explicitly created with `terminalBackend: "relay-pty"` or an operator/repo/workspace default selects `relay-pty`.
+Existing tmux sessions and legacy saved state stay on `tmux-compat`, but new sessions use `relay-pty` unless an explicit session/repo/workspace/global setting selects `tmux-compat`.
 
 ## Configuration and precedence
 
@@ -14,7 +14,7 @@ The rollout is intentionally conservative. Existing installs and existing sessio
 1. Explicit session override: `POST /sessions` or `PATCH /config/terminalBackend` request fields such as `terminalBackend: "relay-pty"` or legacy `useTmux: false`.
 2. Repo settings: `repoSettings[repoPath].terminalBackend`.
 3. Workspace settings: `workspaces[].settings.terminalBackend`.
-4. Global default: `RELAY_IDE_TERMINAL_BACKEND`, then `config.terminalBackend`, then the hardcoded default `tmux-compat`.
+4. Global default: `RELAY_IDE_TERMINAL_BACKEND`, then `config.terminalBackend`, then the hardcoded default `relay-pty`.
 
 `RELAY_IDE_TERMINAL_BACKEND` is a global default, not an absolute operator lock. A repo or workspace configured for `tmux-compat` must continue to resolve to `tmux-compat` even when the process environment default is `relay-pty`. Explicit per-session overrides still win over all saved defaults.
 
@@ -40,16 +40,15 @@ Backend selection happens when a session is created or restored from saved sessi
 `tmux-compat` remains the fallback/import path for old Relay state:
 
 - Old session manifests that only have `useTmux` are normalized into a backend before launch/restore.
-- Missing or unknown `terminalBackend` values fall back to `tmux-compat` rather than silently selecting the experimental runtime.
-- Startup only requires tmux when the effective default backend is `tmux-compat`, but any session resolved to `tmux-compat` still needs tmux available.
+- Missing or unknown new-session `terminalBackend` values fall back to `relay-pty`; legacy serialized sessions without `terminalBackend` still restore as `tmux-compat`.
+- Startup only requires tmux when the effective backend is `tmux-compat`, but any session resolved to `tmux-compat` still needs tmux available.
 - Relay-pty sessions do not import existing tmux process state. They start new `RelayPtySession` processes and expose `RELAY_IDE_SESSION_RUNTIME=relay-pty/libghostty-vt` to the child environment.
 
 ## Operator rollout pattern
 
-Recommended staged rollout:
+Recommended operating pattern:
 
-1. Leave the global default at `tmux-compat`.
-2. Opt one repo or workspace into `relay-pty` and start new sessions there.
-3. Keep critical or long-lived repos explicitly pinned to `tmux-compat` while testing.
-4. After relay-pty is proven for new sessions, change the global default if desired.
-5. Do not expect existing tmux sessions to convert in place; close/recreate them when they are ready to move.
+1. Leave existing long-running tmux sessions alone; they continue through `tmux-compat`.
+2. Start new sessions on the default `relay-pty` backend.
+3. Pin only the repos/workspaces that still require tmux behavior to `tmux-compat`.
+4. Do not expect existing tmux sessions to convert in place; close/recreate them when they are ready to move.
