@@ -45,19 +45,75 @@ function requireEnv(name: string): string {
   return val;
 }
 
+function normalizeSessionsBody(body: unknown): Record<string, unknown>[] {
+  if (Array.isArray(body)) return body as Record<string, unknown>[];
+  if (body && typeof body === 'object') {
+    const sessions = (body as { sessions?: unknown }).sessions;
+    if (Array.isArray(sessions)) return sessions as Record<string, unknown>[];
+  }
+  return [];
+}
+
 // ── subcommand: whoami ─────────────────────────────────────────────────────
 
-function cmdWhoami(): void {
+async function cmdWhoami(whoamiArgs: string[] = []): Promise<void> {
   const nodeId = requireEnv('RELAY_NODE_ID');
   const sessionId = requireEnv('RELAY_SESSION_ID');
+  const json = whoamiArgs.includes('--json');
+  const hubUrl = RELAY_HUB_URL;
+
+  if (json) {
+    let session: Record<string, unknown> | undefined;
+    if (hubUrl) {
+      try {
+        const body = await fetchGatewayJson<unknown>(
+          `${hubUrl}/sessions`,
+          gatewayHeaders('sessions.list'),
+          {
+            reachabilityMessage: `failed to reach hub at ${hubUrl}`,
+            forbiddenMessage:
+              'relayctl: capability denied: session lacks session:read',
+          }
+        );
+        session = normalizeSessionsBody(body).find(
+          (candidate) => candidate.id === sessionId
+        );
+      } catch {
+        session = undefined;
+      }
+    }
+    console.log(
+      JSON.stringify(
+        {
+          nodeId,
+          sessionId,
+          ...(RELAY_WORK_CONTEXT_ID
+            ? { workContextId: RELAY_WORK_CONTEXT_ID }
+            : {}),
+          ...(hubUrl
+            ? { hubUrl, relaySocket: process.env.RELAY_SOCKET ?? hubUrl }
+            : {}),
+          cwd: typeof session?.cwd === 'string' ? session.cwd : process.cwd(),
+          ...(typeof session?.displayName === 'string'
+            ? { displayName: session.displayName }
+            : {}),
+          ...(typeof session?.type === 'string' ? { type: session.type } : {}),
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
 
   console.log(`node_id:      ${nodeId}`);
   console.log(`session_id:   ${sessionId}`);
   if (RELAY_WORK_CONTEXT_ID) {
     console.log(`work_context: ${RELAY_WORK_CONTEXT_ID}`);
   }
-  if (RELAY_HUB_URL) {
-    console.log(`hub_url:      ${RELAY_HUB_URL}`);
+  if (hubUrl) {
+    console.log(`hub_url:      ${hubUrl}`);
+    console.log(`relay_socket: ${process.env.RELAY_SOCKET ?? hubUrl}`);
   }
 }
 
@@ -221,7 +277,8 @@ interface PreturnMessage {
   deliveredAt?: string;
 }
 
-const PRETURN_CAPABILITIES = 'inbox:read,context:read';
+const MAILROOM_CAPABILITIES =
+  'session:read,inbox:read,inbox:write,context:read,context:write';
 
 /**
  * Build the gateway headers a relayctl read uses against the hub. The hub
@@ -230,11 +287,22 @@ const PRETURN_CAPABILITIES = 'inbox:read,context:read';
  * browser-session auth. The capability header is always
  * required by the context/inbox router itself, independent of the auth path.
  */
-function gatewayHeaders(): Record<string, string> {
+function gatewayHeaders(commandName?: string): Record<string, string> {
   const headers: Record<string, string> = {
     'x-relay-cli-gateway': 'v1',
-    'x-relay-capabilities': PRETURN_CAPABILITIES,
+    'x-relay-capabilities': MAILROOM_CAPABILITIES,
   };
+  const actorToken = commandName
+    ? process.env.RELAY_IDE_ACTOR_TOKEN
+    : undefined;
+  if (actorToken) {
+    headers['Authorization'] = `Bearer ${actorToken}`;
+    headers['x-relay-cli-actor-token'] = 'v1';
+    if (commandName) headers['x-relay-cli-command'] = commandName;
+    const correlationId = process.env.RELAY_IDE_CORRELATION_ID;
+    if (correlationId) headers['x-relay-correlation-id'] = correlationId;
+    return headers;
+  }
   const token = process.env.RELAY_IDE_BROWSER_TOKEN;
   if (token) headers['Authorization'] = `Bearer ${token}`;
   return headers;
@@ -423,6 +491,41 @@ async function fetchGatewayJson<T>(
   return (await res.json()) as T;
 }
 
+async function postGatewayJson<T>(
+  endpoint: string,
+  headers: Record<string, string>,
+  body: Record<string, unknown>,
+  options: {
+    reachabilityMessage: string;
+    forbiddenMessage: string;
+    failureSuffix?: string;
+  }
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    die(
+      `${options.reachabilityMessage}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (res.status === 403) {
+    console.error(options.forbiddenMessage);
+    process.exit(2);
+  }
+  if (!res.ok) {
+    const detail = await responseErrorDetail(res);
+    die(
+      `hub returned ${res.status} ${res.statusText}${options.failureSuffix ?? ''}${detail ? `: ${detail}` : ''}`
+    );
+  }
+  return (await res.json()) as T;
+}
+
 async function fetchInboxMessages(
   hubUrl: string,
   headers: Record<string, string>,
@@ -567,6 +670,268 @@ async function cmdAgent(agentArgs: string[]): Promise<void> {
   await cmdAgentPreturn(agentArgs.slice(1));
 }
 
+// ── subcommand: agents ─────────────────────────────────────────────────────
+
+async function cmdAgents(agentArgs: string[]): Promise<void> {
+  const sub = agentArgs[0];
+  if (sub !== 'list') {
+    die(`unknown agents subcommand: ${sub ?? '(none)'}. supported: list`);
+  }
+  const hubUrl = requireEnv('RELAY_HUB_URL');
+  const body = await fetchGatewayJson<unknown>(
+    `${hubUrl}/sessions`,
+    gatewayHeaders('sessions.list'),
+    {
+      reachabilityMessage: `failed to reach hub at ${hubUrl}`,
+      forbiddenMessage:
+        'relayctl: capability denied: session lacks session:read',
+    }
+  );
+  const sessions = normalizeSessionsBody(body);
+  const agents = sessions.filter((session) => session.type === 'agent');
+  if (agentArgs.includes('--json')) {
+    console.log(JSON.stringify({ agents }, null, 2));
+    return;
+  }
+  for (const agent of agents) {
+    const id = String(agent.id ?? '(unknown)');
+    const name = typeof agent.displayName === 'string' ? agent.displayName : '';
+    const state = typeof agent.status === 'string' ? agent.status : '';
+    const cwd = typeof agent.cwd === 'string' ? agent.cwd : '';
+    console.log([id, name, state, cwd].filter(Boolean).join('\t'));
+  }
+}
+
+function parseFlagValue(input: string[], name: string): string | undefined {
+  const index = input.indexOf(name);
+  if (index === -1) return undefined;
+  const value = input[index + 1];
+  if (!value || value.startsWith('--')) die(`${name} requires a value`);
+  return value;
+}
+
+type ParsedRelayctlFlagArgs = {
+  values: Map<string, string>;
+  rest: string[];
+};
+
+function parseFlagsBeforePayload(
+  input: string[],
+  names: string[]
+): ParsedRelayctlFlagArgs {
+  const values = new Map<string, string>();
+  const rest: string[] = [];
+  let payloadStarted = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const arg = input[i];
+    if (arg === undefined) continue;
+    if (!payloadStarted && arg === '--') {
+      payloadStarted = true;
+      continue;
+    }
+    if (!payloadStarted && names.includes(arg)) {
+      const value = input[i + 1];
+      if (!value || value.startsWith('--')) die(`${arg} requires a value`);
+      if (!values.has(arg)) values.set(arg, value);
+      i += 1;
+      continue;
+    }
+    payloadStarted = true;
+    rest.push(arg);
+  }
+
+  return { values, rest };
+}
+
+type ArtifactPublishArgs = {
+  path?: string;
+  kind?: string;
+  title?: string;
+};
+
+function parseArtifactPublishArgs(input: string[]): ArtifactPublishArgs {
+  const parsed: ArtifactPublishArgs = {};
+  let literal = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const arg = input[i];
+    if (arg === undefined) continue;
+    if (!literal && arg === '--') {
+      literal = true;
+      continue;
+    }
+    if (!literal && (arg === '--kind' || arg === '--title')) {
+      const value = input[i + 1];
+      if (!value || value.startsWith('--')) die(`${arg} requires a value`);
+      if (arg === '--kind' && parsed.kind === undefined) parsed.kind = value;
+      if (arg === '--title' && parsed.title === undefined) parsed.title = value;
+      i += 1;
+      continue;
+    }
+    if (parsed.path === undefined) parsed.path = arg;
+  }
+
+  return parsed;
+}
+
+async function cmdMsg(msgArgs: string[]): Promise<void> {
+  const sub = msgArgs[0];
+  const hubUrl = requireEnv('RELAY_HUB_URL');
+  const headers = gatewayHeaders();
+  if (sub === 'send') {
+    const parsedArgs = parseFlagsBeforePayload(msgArgs.slice(1), [
+      '--to',
+      '--session',
+    ]);
+    const to =
+      parsedArgs.values.get('--to') ?? parsedArgs.values.get('--session');
+    if (!to) die('usage: relayctl msg send --to <session-id> <text>');
+    const text = parsedArgs.rest.join(' ').trim();
+    if (!text) die('usage: relayctl msg send --to <session-id> <text>');
+    const body = await postGatewayJson<{ message?: PreturnMessage }>(
+      `${hubUrl}/inbox`,
+      headers,
+      {
+        targetSessionId: to,
+        text,
+        createdBy: requireEnv('RELAY_SESSION_ID'),
+      },
+      {
+        reachabilityMessage: `failed to reach hub at ${hubUrl}`,
+        forbiddenMessage:
+          'relayctl: capability denied: session lacks inbox:write',
+      }
+    );
+    console.log(JSON.stringify(body.message ?? body, null, 2));
+    return;
+  }
+  if (sub === 'read' || sub === 'watch') {
+    const sessionId =
+      parseFlagValue(msgArgs, '--session') ?? requireEnv('RELAY_SESSION_ID');
+    const once = sub === 'read' || msgArgs.includes('--once');
+    const seen = new Set<string>();
+    for (;;) {
+      const messages = await fetchInboxMessages(hubUrl, headers, sessionId);
+      const fresh = messages.filter((message) => !seen.has(message.id));
+      for (const message of fresh) {
+        seen.add(message.id);
+        console.log(`${message.id}\t${message.state}\t${message.text ?? ''}`);
+      }
+      if (once) return;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+  die(
+    `unknown msg subcommand: ${sub ?? '(none)'}. supported: send, read, watch`
+  );
+}
+
+async function publishContextArtifact(
+  hubUrl: string,
+  headers: Record<string, string>,
+  packet: Record<string, unknown>,
+  pin = true
+): Promise<Record<string, unknown>> {
+  const packetBody = await postGatewayJson<{
+    contextPacket?: Record<string, unknown>;
+  }>(`${hubUrl}/context`, headers, packet, {
+    reachabilityMessage: `failed to reach hub at ${hubUrl}`,
+    forbiddenMessage:
+      'relayctl: capability denied: session lacks context:write',
+  });
+  const contextPacket = (packetBody.contextPacket ?? packetBody) as Record<
+    string,
+    unknown
+  >;
+  const packetId =
+    typeof contextPacket.id === 'string' ? contextPacket.id : undefined;
+  if (pin && packetId && RELAY_WORK_CONTEXT_ID) {
+    await postGatewayJson(
+      `${hubUrl}/context/${encodeURIComponent(packetId)}/pin`,
+      headers,
+      { workContextId: RELAY_WORK_CONTEXT_ID },
+      {
+        reachabilityMessage: `failed to pin context packet in WorkContext ${RELAY_WORK_CONTEXT_ID}`,
+        forbiddenMessage:
+          'relayctl: capability denied: session lacks context:write',
+      }
+    );
+  }
+  return contextPacket;
+}
+
+async function cmdNotify(notifyArgs: string[]): Promise<void> {
+  const parsedArgs = parseFlagsBeforePayload(notifyArgs, ['--kind']);
+  const kind = parsedArgs.values.get('--kind') ?? 'info';
+  const text = parsedArgs.rest.join(' ').trim();
+  if (!text)
+    die('usage: relayctl notify [--kind needs_input|warning|info] <text>');
+  const hubUrl = requireEnv('RELAY_HUB_URL');
+  const packet = await publishContextArtifact(hubUrl, gatewayHeaders(), {
+    kind: 'note',
+    note: `[attention:${kind}] ${text}`,
+    createdBy: requireEnv('RELAY_SESSION_ID'),
+  });
+  console.log(
+    JSON.stringify(
+      { attentionEvent: { kind, text, contextPacket: packet } },
+      null,
+      2
+    )
+  );
+}
+
+async function cmdDecision(decisionArgs: string[]): Promise<void> {
+  const text = decisionArgs.join(' ').trim();
+  if (!text) die('usage: relayctl decision <question>');
+  const hubUrl = requireEnv('RELAY_HUB_URL');
+  const packet = await publishContextArtifact(hubUrl, gatewayHeaders(), {
+    kind: 'note',
+    note: `[decision:pending] ${text}`,
+    createdBy: requireEnv('RELAY_SESSION_ID'),
+  });
+  console.log(
+    JSON.stringify(
+      { decision: { state: 'pending', question: text, contextPacket: packet } },
+      null,
+      2
+    )
+  );
+}
+
+async function cmdArtifact(artifactArgs: string[]): Promise<void> {
+  const sub = artifactArgs[0];
+  if (sub !== 'publish') {
+    die(`unknown artifact subcommand: ${sub ?? '(none)'}. supported: publish`);
+  }
+  const parsedArgs = parseArtifactPublishArgs(artifactArgs.slice(1));
+  const kind = parsedArgs.kind ?? 'report';
+  const title = parsedArgs.title;
+  const artifactPath = parsedArgs.path;
+  if (!artifactPath)
+    die(
+      'usage: relayctl artifact publish <path> --kind <kind> [--title <title>]'
+    );
+  const absolutePath = artifactPath.startsWith('/')
+    ? artifactPath
+    : `${process.cwd()}/${artifactPath}`;
+  const hubUrl = requireEnv('RELAY_HUB_URL');
+  const packet = await publishContextArtifact(hubUrl, gatewayHeaders(), {
+    kind: 'log-ref',
+    note: title ?? `artifact ${kind}: ${absolutePath}`,
+    fileRef: { path: absolutePath, nodeId: RELAY_NODE_ID },
+    createdBy: requireEnv('RELAY_SESSION_ID'),
+  });
+  console.log(
+    JSON.stringify(
+      { artifact: { kind, path: absolutePath, title, contextPacket: packet } },
+      null,
+      2
+    )
+  );
+}
+
 // ── subcommand: logs ───────────────────────────────────────────────────────
 
 function cmdLogs(logsArgs: string[]): void {
@@ -590,7 +955,15 @@ async function main(): Promise<void> {
         'usage: relayctl <subcommand> [args]',
         '',
         'subcommands:',
-        '  whoami                         print session identity',
+        '  whoami [--json]                 print session identity',
+        '  agents list [--json]            list active agent sessions',
+        '  msg send --to <session> <text>  send an inbox message',
+        '  msg read [--session <id>]       read this session inbox once',
+        '  msg watch [--session <id>]      watch this session inbox',
+        '  notify [--kind <kind>] <text>   publish an attention event',
+        '  decision <question>             publish a pending decision request',
+        '  artifact publish <path> --kind <kind> [--title <title>]',
+        '                                 publish and pin an artifact ref',
         '  status                         show node manifest summary',
         '  files read <path> [--cwd <d>]  read a file',
         '  files list <path> [--cwd <d>]  list a directory',
@@ -606,7 +979,22 @@ async function main(): Promise<void> {
 
   switch (subcommand) {
     case 'whoami':
-      cmdWhoami();
+      await cmdWhoami(args.slice(1));
+      break;
+    case 'agents':
+      await cmdAgents(args.slice(1));
+      break;
+    case 'msg':
+      await cmdMsg(args.slice(1));
+      break;
+    case 'notify':
+      await cmdNotify(args.slice(1));
+      break;
+    case 'decision':
+      await cmdDecision(args.slice(1));
+      break;
+    case 'artifact':
+      await cmdArtifact(args.slice(1));
       break;
     case 'status':
       await cmdStatus();

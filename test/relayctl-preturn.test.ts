@@ -242,14 +242,14 @@ function createFakeStore(): ContextInboxStore & {
   };
 }
 
-function runPreturn(
-  preturnArgs: string[],
+function runRelayctl(
+  relayctlArgs: string[],
   env: NodeJS.ProcessEnv
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      [RELAYCTL_BIN, 'agent', 'preturn', ...preturnArgs],
+      [RELAYCTL_BIN, ...relayctlArgs],
       { encoding: 'utf-8', timeout: 15_000, env },
       (error, stdout, stderr) => {
         const code =
@@ -260,6 +260,13 @@ function runPreturn(
       }
     );
   });
+}
+
+function runPreturn(
+  preturnArgs: string[],
+  env: NodeJS.ProcessEnv
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return runRelayctl(['agent', 'preturn', ...preturnArgs], env);
 }
 
 let server: Server;
@@ -283,6 +290,25 @@ beforeEach(async () => {
       workContextStore,
     })
   );
+  app.get('/sessions', (_req, res) => {
+    // Production server/index.ts returns /sessions as a raw JSON array.
+    res.json([
+      {
+        id: 'node1:sess-preturn',
+        type: 'terminal',
+        displayName: 'Terminal 1',
+        cwd: '/tmp/terminal',
+        workContextId: WORK_CONTEXT_ID,
+      },
+      {
+        id: 'node1:agent-a',
+        type: 'agent',
+        displayName: 'Agent A',
+        status: 'running',
+        cwd: '/tmp/agent',
+      },
+    ]);
+  });
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', () => {
       const addr = server.address() as { port: number };
@@ -476,5 +502,164 @@ describe('relayctl agent preturn', () => {
     });
     expect(code).toBe(1);
     expect(stderr).toContain("--format must be 'markdown' or 'json'");
+  });
+});
+
+describe('relayctl terminal mailroom commands', () => {
+  const SESSION_ID = 'node1:sess-preturn';
+
+  function env() {
+    return {
+      ...process.env,
+      RELAY_HUB_URL: baseUrl,
+      RELAY_SOCKET: baseUrl,
+      RELAY_NODE_ID: 'node1',
+      RELAY_SESSION_ID: SESSION_ID,
+      RELAY_WORK_CONTEXT_ID: WORK_CONTEXT_ID,
+    };
+  }
+
+  it('prints structured identity with whoami --json', async () => {
+    const { code, stdout } = await runRelayctl(['whoami', '--json'], env());
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      nodeId: string;
+      sessionId: string;
+      workContextId?: string;
+      relaySocket?: string;
+      cwd?: string;
+      displayName?: string;
+    };
+    expect(parsed.nodeId).toBe('node1');
+    expect(parsed.sessionId).toBe(SESSION_ID);
+    expect(parsed.workContextId).toBe(WORK_CONTEXT_ID);
+    expect(parsed.relaySocket).toBe(baseUrl);
+    expect(parsed.cwd).toBe('/tmp/terminal');
+    expect(parsed.displayName).toBe('Terminal 1');
+  });
+
+  it('lists agent sessions', async () => {
+    const { code, stdout } = await runRelayctl(
+      ['agents', 'list', '--json'],
+      env()
+    );
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      agents: Array<{ id: string; type: string }>;
+    };
+    expect(parsed.agents).toEqual([
+      expect.objectContaining({ id: 'node1:agent-a', type: 'agent' }),
+    ]);
+  });
+
+  it('sends and reads inbox messages from the terminal CLI', async () => {
+    const sent = await runRelayctl(
+      ['msg', 'send', '--to', SESSION_ID, 'mailroom ping'],
+      env()
+    );
+    expect(sent.code).toBe(0);
+    const message = JSON.parse(sent.stdout) as { id: string; text: string };
+    expect(message.text).toBe('mailroom ping');
+
+    const read = await runRelayctl(['msg', 'read'], env());
+    expect(read.code).toBe(0);
+    expect(read.stdout).toContain(message.id);
+    expect(read.stdout).toContain('mailroom ping');
+  });
+
+  it('preserves flag-like tokens inside message text after the recipient flag', async () => {
+    const sent = await runRelayctl(
+      [
+        'msg',
+        'send',
+        '--to',
+        SESSION_ID,
+        'qa-flag-message',
+        'literal',
+        '--to',
+        'SHOULD_STAY',
+        'after',
+      ],
+      env()
+    );
+
+    expect(sent.code).toBe(0);
+    const message = JSON.parse(sent.stdout) as {
+      targetSessionId: string;
+      text: string;
+    };
+    expect(message.targetSessionId).toBe(SESSION_ID);
+    expect(message.text).toBe('qa-flag-message literal --to SHOULD_STAY after');
+  });
+
+  it('preserves flag-like tokens inside notify text after leading options', async () => {
+    const notify = await runRelayctl(
+      ['notify', '--kind', 'warning', 'literal', '--kind', 'SHOULD_STAY'],
+      env()
+    );
+
+    expect(notify.code).toBe(0);
+    const parsed = JSON.parse(notify.stdout) as {
+      attentionEvent: { kind: string; text: string };
+    };
+    expect(parsed.attentionEvent.kind).toBe('warning');
+    expect(parsed.attentionEvent.text).toBe('literal --kind SHOULD_STAY');
+  });
+
+  it('preserves recipient-looking tokens in message text instead of stripping payload', async () => {
+    const sent = await runRelayctl(
+      ['msg', 'send', '--to', SESSION_ID, 'keep', '--to', 'literal', 'after'],
+      env()
+    );
+    expect(sent.code).toBe(0);
+    const message = JSON.parse(sent.stdout) as { text: string };
+    expect(message.text).toBe('keep --to literal after');
+  });
+
+  it('preserves recipient-looking tokens in message text after --', async () => {
+    const sent = await runRelayctl(
+      ['msg', 'send', '--to', SESSION_ID, '--', 'keep', '--to', 'literal', 'after'],
+      env()
+    );
+    expect(sent.code).toBe(0);
+    const message = JSON.parse(sent.stdout) as { text: string };
+    expect(message.text).toBe('keep --to literal after');
+  });
+
+  it('publishes attention, decision, and artifact refs as pinned WorkContext context', async () => {
+    const notify = await runRelayctl(
+      ['notify', '--kind', 'needs_input', 'operator needed'],
+      env()
+    );
+    const decision = await runRelayctl(
+      ['decision', 'choose path A or B'],
+      env()
+    );
+    const artifact = await runRelayctl(
+      [
+        'artifact',
+        'publish',
+        'report.txt',
+        '--kind',
+        'report',
+        '--title',
+        'Run --kind SHOULD_STAY report',
+      ],
+      env()
+    );
+
+    expect(notify.code).toBe(0);
+    expect(decision.code).toBe(0);
+    expect(artifact.code).toBe(0);
+    expect(JSON.parse(notify.stdout).attentionEvent.kind).toBe('needs_input');
+    expect(JSON.parse(decision.stdout).decision.state).toBe('pending');
+    const parsedArtifact = JSON.parse(artifact.stdout) as {
+      artifact: { path: string; title?: string };
+    };
+    expect(parsedArtifact.artifact.path).toMatch(/\/report\.txt$/);
+    expect(parsedArtifact.artifact.title).toBe('Run --kind SHOULD_STAY report');
+
+    const context = workContextStore.get(WORK_CONTEXT_ID);
+    expect(context?.artifacts.length).toBe(3);
   });
 });

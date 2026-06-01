@@ -770,6 +770,7 @@ type AgentSessionParams = {
   computedInitialPrompt: string | undefined;
   claudeFullscreen: boolean;
   sessionLane: SessionLane | undefined;
+  workContextId?: string | undefined;
   controlState?: ReturnType<typeof createAgentDrivenInitialControlState>;
   /** Port env var names to inject for this worktree (from repo settings) */
   portVariables?: string[] | undefined;
@@ -787,6 +788,7 @@ type TerminalSessionParams = {
   safeCols: number | undefined;
   safeRows: number | undefined;
   sessionLane: SessionLane | undefined;
+  workContextId?: string | undefined;
   portVariables?: string[] | undefined;
   /** #740: anchoring Bench's env overrides, applied additively to the PTY env. */
   envOverrides?: Record<string, string> | undefined;
@@ -811,6 +813,7 @@ function createTerminalSessionRecord(
     ...(params.safeCols != null && { cols: params.safeCols }),
     ...(params.safeRows != null && { rows: params.safeRows }),
     ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
+    workContextId: params.workContextId,
     portVariables: params.portVariables,
     ...(params.envOverrides ? { envOverrides: params.envOverrides } : {}),
   });
@@ -840,6 +843,7 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     ...(params.safeCols != null && { cols: params.safeCols }),
     ...(params.safeRows != null && { rows: params.safeRows }),
     ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
+    workContextId: params.workContextId,
     controlState:
       params.controlState ??
       createAgentDrivenInitialControlState({
@@ -1056,6 +1060,7 @@ function createHandoffDestinationLauncher(params: {
           safeCols: undefined,
           safeRows: undefined,
           sessionLane: undefined,
+          workContextId: undefined,
           portVariables,
         });
         localRelayNode.sessions.write(
@@ -3863,6 +3868,7 @@ async function main(): Promise<void> {
           safeCols,
           safeRows,
           sessionLane,
+          workContextId,
           portVariables,
           envOverrides: sessionEnvOverrides,
         });
@@ -4000,6 +4006,7 @@ async function main(): Promise<void> {
         computedInitialPrompt,
         claudeFullscreen: freshConfig.claudeFullscreen,
         sessionLane,
+        workContextId,
         portVariables,
         scrollbackBytes: resolved.scrollbackBytes,
         envOverrides: sessionEnvOverrides,
