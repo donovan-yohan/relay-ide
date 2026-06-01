@@ -79,6 +79,30 @@ describe('TerminalModelBackend — libghostty-vt', () => {
     backend.dispose();
   });
 
+  it('tracks OSC titles split across feed calls with BEL terminators', () => {
+    const backend = createLibghosttyTerminalModelBackend({ cols: 20, rows: 5, scrollbackLimit: 10 });
+
+    backend.feed('\x1b]2;spl');
+    backend.feed('it-title\x07hello');
+
+    const snapshot = backend.snapshot();
+    expect(snapshot.title).toBe('split-title');
+    expect(snapshot.visibleText).toContain('hello');
+    backend.dispose();
+  });
+
+  it('tracks OSC titles split across feed calls with ST terminators', () => {
+    const backend = createLibghosttyTerminalModelBackend({ cols: 20, rows: 5, scrollbackLimit: 10 });
+
+    backend.feed('\x1b]0;st-title\x1b');
+    backend.feed('\\hello');
+
+    const snapshot = backend.snapshot();
+    expect(snapshot.title).toBe('st-title');
+    expect(snapshot.visibleText).toContain('hello');
+    backend.dispose();
+  });
+
   it('encodes typed input keys without tmux send-keys names', () => {
     expect(encodeTerminalInput({ type: 'text', text: 'abc' }).sequence).toBe('abc');
     expect(encodeTerminalInput({ type: 'key', key: 'Enter' }).bytes).toEqual(Buffer.from('\r'));

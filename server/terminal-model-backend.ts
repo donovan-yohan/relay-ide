@@ -103,11 +103,17 @@ export function createLibghosttyTerminalModelBackend(
   return new LibghosttyTerminalModelBackend(options);
 }
 
+const OSC_PREFIX = `${String.fromCharCode(27)}]`;
+const BEL_TERMINATOR = String.fromCharCode(7);
+const ST_TERMINATOR = `${String.fromCharCode(27)}\\`;
+const MAX_PENDING_OSC_TITLE_BYTES = 8192;
+
 export class LibghosttyTerminalModelBackend implements TerminalModelBackend {
   readonly name = 'libghostty-vt' as const;
   readonly backendInfo: NativeInfo;
   private readonly terminal: GhosttyVtTerminal;
   private title: string | null = null;
+  private pendingOscTitleText = '';
   private disposed = false;
 
   constructor(options: LibghosttyTerminalModelBackendOptions) {
@@ -177,29 +183,40 @@ export class LibghosttyTerminalModelBackend implements TerminalModelBackend {
   }
 
   private captureTitle(data: Uint8Array | Buffer | string): void {
-    const text = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
-    const oscPrefix = String.fromCharCode(27, 93);
-    const bel = String.fromCharCode(7);
-    const st = `${String.fromCharCode(27)}\\`;
+    const incoming = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
+    const text = this.pendingOscTitleText + incoming;
+    this.pendingOscTitleText = '';
+
     let offset = 0;
     while (offset < text.length) {
-      const start = text.indexOf(oscPrefix, offset);
-      if (start === -1) return;
-      const payloadStart = start + oscPrefix.length;
-      const belEnd = text.indexOf(bel, payloadStart);
-      const stEnd = text.indexOf(st, payloadStart);
-      const end =
-        belEnd === -1
-          ? stEnd
-          : stEnd === -1
-            ? belEnd
-            : Math.min(belEnd, stEnd);
-      if (end === -1) return;
+      const start = text.indexOf(OSC_PREFIX, offset);
+      if (start === -1) {
+        const possiblePrefixStart = OSC_PREFIX.charAt(0);
+        this.pendingOscTitleText = text.endsWith(possiblePrefixStart) ? possiblePrefixStart : '';
+        return;
+      }
+
+      const payloadStart = start + OSC_PREFIX.length;
+      const belEnd = text.indexOf(BEL_TERMINATOR, payloadStart);
+      const stEnd = text.indexOf(ST_TERMINATOR, payloadStart);
+      const [end, terminatorLength] = this.firstOscTerminator(belEnd, stEnd);
+      if (end === -1) {
+        this.pendingOscTitleText = text.slice(start, start + MAX_PENDING_OSC_TITLE_BYTES);
+        return;
+      }
+
       const payload = text.slice(payloadStart, end);
       if (payload.startsWith('0;') || payload.startsWith('2;')) {
         this.title = payload.slice(2);
       }
-      offset = end + 1;
+      offset = end + terminatorLength;
     }
+  }
+
+  private firstOscTerminator(belEnd: number, stEnd: number): [number, number] {
+    if (belEnd === -1 && stEnd === -1) return [-1, 0];
+    if (belEnd === -1) return [stEnd, ST_TERMINATOR.length];
+    if (stEnd === -1) return [belEnd, BEL_TERMINATOR.length];
+    return belEnd < stEnd ? [belEnd, BEL_TERMINATOR.length] : [stEnd, ST_TERMINATOR.length];
   }
 }
