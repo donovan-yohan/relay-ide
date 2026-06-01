@@ -8,5 +8,5 @@
   "defaultAgent": "claude",
   "defaultContinue": true,
   "defaultYolo": false,
-  "launchInTmux": true
+  "terminalBackend": "relay-pty"
 }

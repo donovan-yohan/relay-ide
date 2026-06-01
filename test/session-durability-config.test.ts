@@ -15,7 +15,7 @@ const base: Config = {
   defaultContinue: true,
   defaultYolo: false,
   maxPtySessions: 64,
-  launchInTmux: true,
+  terminalBackend: 'relay-pty',
   defaultNotifications: true,
   claudeFullscreen: true,
 };

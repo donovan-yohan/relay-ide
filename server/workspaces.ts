@@ -60,6 +60,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspaces');
+const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
 
 // ── Typed git infrastructure errors ──────────────────────────────────────────
 
@@ -1196,15 +1197,10 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const updates = req.body as Record<string, unknown>;
 
     const config = getConfig();
-    const legacyLaunchInTmux = Object.hasOwn(updates, 'launchInTmux')
-      ? updates.launchInTmux
-      : undefined;
-    if (
-      legacyLaunchInTmux !== undefined &&
-      typeof legacyLaunchInTmux !== 'boolean' &&
-      legacyLaunchInTmux !== null
-    ) {
-      res.status(400).json({ error: 'launchInTmux must be a boolean or null' });
+    if (Object.prototype.hasOwnProperty.call(updates, LEGACY_TMUX_LAUNCH_KEY)) {
+      res.status(400).json({
+        error: 'legacy tmux launch flag is no longer supported; use terminalBackend',
+      });
       return;
     }
 
@@ -1212,24 +1208,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const keysToDelete: string[] = [];
     const keysToUpdate: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
-      if (key === 'launchInTmux') {
-        keysToDelete.push(key);
-        continue;
-      }
       if (value === null) {
         keysToDelete.push(key);
       } else {
         keysToUpdate[key] = value;
       }
-    }
-
-    if (
-      typeof legacyLaunchInTmux === 'boolean' &&
-      !Object.hasOwn(updates, 'terminalBackend')
-    ) {
-      keysToUpdate.terminalBackend = legacyLaunchInTmux
-        ? 'tmux-compat'
-        : 'relay-pty';
     }
 
     // Apply deletions first

@@ -515,7 +515,6 @@ export interface WorkspaceSettings {
   defaultContinue?: boolean;
   defaultContinuePolicy?: ContinuePolicy;
   defaultYolo?: boolean;
-  launchInTmux?: boolean;
   terminalBackend?: TerminalBackend;
   claudeArgs?: string[];
 
@@ -613,7 +612,6 @@ export interface Config {
   defaultContinue: boolean;
   defaultYolo: boolean;
   maxPtySessions: number;
-  launchInTmux: boolean;
   terminalBackend: TerminalBackend;
   defaultNotifications: boolean;
   claudeFullscreen: boolean;
@@ -914,7 +912,6 @@ export interface WorkspaceLevelSettings {
   defaultFramework?: string; // canonical agent framework (v5+)
   defaultContinue?: boolean;
   defaultYolo?: boolean;
-  launchInTmux?: boolean;
   terminalBackend?: TerminalBackend;
   claudeArgs?: string[];
   promptCodeReview?: string;

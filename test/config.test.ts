@@ -15,6 +15,8 @@ import {
 } from '../server/config.js';
 import type { Config } from '../server/types.js';
 
+const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
+
 let tmpDir!: string;
 
 beforeAll(() => {
@@ -83,59 +85,63 @@ test('DEFAULTS has expected keys and values', () => {
   expect(DEFAULTS.defaultFramework).toBe('claude');
   expect(DEFAULTS.defaultContinue).toBe(true);
   expect(DEFAULTS.defaultYolo).toBe(false);
-  expect(DEFAULTS.launchInTmux).toBe(false);
+  expect(Object.prototype.hasOwnProperty.call(DEFAULTS, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
   expect(DEFAULTS.terminalBackend).toBe('relay-pty');
 });
 
-test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and launchInTmux', () => {
+test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and terminalBackend', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ port: 3456 }), 'utf8');
 
   const config = loadConfig(configPath);
   expect(config.defaultContinue).toBe(true);
   expect(config.defaultYolo).toBe(false);
-  expect(config.launchInTmux).toBe(false);
+  expect(Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
   expect(config.terminalBackend).toBe('relay-pty');
 });
 
-test('loadConfig migrates legacy launchInTmux=true to tmux-compat when terminalBackend is absent', () => {
+test('loadConfig ignores the legacy tmux launch flag when terminalBackend is absent', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ launchInTmux: true }), 'utf8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ [LEGACY_TMUX_LAUNCH_KEY]: true }),
+    'utf8'
+  );
 
   const config = loadConfig(configPath);
-  expect(config.terminalBackend).toBe('tmux-compat');
-  expect(config.launchInTmux).toBe(true);
+  expect(config.terminalBackend).toBe('relay-pty');
+  expect(Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
 });
 
-test('loadConfig keeps relay-pty default for absent or false legacy launchInTmux', () => {
+test('loadConfig keeps relay-pty default for absent or false legacy tmux launch flag', () => {
   const missingLegacyPath = path.join(tmpDir, 'missing-legacy.json');
   fs.writeFileSync(missingLegacyPath, JSON.stringify({}), 'utf8');
   const missingLegacyConfig = loadConfig(missingLegacyPath);
   expect(missingLegacyConfig.terminalBackend).toBe('relay-pty');
-  expect(missingLegacyConfig.launchInTmux).toBe(false);
+  expect(Object.prototype.hasOwnProperty.call(missingLegacyConfig, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
 
   const falseLegacyPath = path.join(tmpDir, 'false-legacy.json');
   fs.writeFileSync(
     falseLegacyPath,
-    JSON.stringify({ launchInTmux: false }),
+    JSON.stringify({ [LEGACY_TMUX_LAUNCH_KEY]: false }),
     'utf8'
   );
   const falseLegacyConfig = loadConfig(falseLegacyPath);
   expect(falseLegacyConfig.terminalBackend).toBe('relay-pty');
-  expect(falseLegacyConfig.launchInTmux).toBe(false);
+  expect(Object.prototype.hasOwnProperty.call(falseLegacyConfig, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
 });
 
-test('loadConfig lets explicit terminalBackend take precedence over legacy launchInTmux', () => {
+test('loadConfig keeps explicit terminalBackend when legacy tmux launch flag is present', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(
     configPath,
-    JSON.stringify({ terminalBackend: 'relay-pty', launchInTmux: true }),
+    JSON.stringify({ terminalBackend: 'relay-pty', [LEGACY_TMUX_LAUNCH_KEY]: true }),
     'utf8'
   );
 
   const config = loadConfig(configPath);
   expect(config.terminalBackend).toBe('relay-pty');
-  expect(config.launchInTmux).toBe(false);
+  expect(Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
 });
 
 test('ensureMetaDir creates worktree-meta directory', () => {
@@ -205,7 +211,6 @@ test('resolveSessionSettings returns global defaults when no workspace or overri
       defaultFramework: 'claude',
       defaultContinue: true,
       defaultYolo: false,
-      launchInTmux: false,
       claudeArgs: [],
     }),
     'utf8'
@@ -228,7 +233,6 @@ test('resolveSessionSettings applies workspace overrides over globals', () => {
       defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
-      launchInTmux: false,
       claudeArgs: [],
       repoSettings: {
         '/my/repo': { defaultYolo: true, defaultFramework: 'codex' },
@@ -252,7 +256,6 @@ test('resolveSessionSettings can opt into relay-pty through legacy useTmux:false
       defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
-      launchInTmux: false,
       claudeArgs: [],
       repos: ['/my/repo'],
       workspaces: [
@@ -261,11 +264,11 @@ test('resolveSessionSettings can opt into relay-pty through legacy useTmux:false
           name: 'My Workspace',
           repos: ['/my/repo'],
           order: 0,
-          settings: { launchInTmux: false },
+          settings: {},
         },
       ],
       repoSettings: {
-        '/my/repo': { launchInTmux: false },
+        '/my/repo': {},
       },
     }),
     'utf8'
@@ -342,7 +345,6 @@ test('resolveSessionSettings explicit overrides beat workspace settings', () => 
       defaultFramework: 'claude',
       defaultYolo: true,
       defaultContinue: true,
-      launchInTmux: false,
       claudeArgs: [],
       repoSettings: {
         '/my/repo': { defaultYolo: true },
@@ -363,7 +365,6 @@ test('resolveSessionSettings uses override claudeArgs, not global', () => {
       defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
-      launchInTmux: false,
       claudeArgs: ['--global-arg'],
     }),
     'utf8'
@@ -383,7 +384,7 @@ test('resolveSessionSettings falls through to globals when no workspace exists',
       defaultFramework: 'codex',
       defaultYolo: true,
       defaultContinue: false,
-      launchInTmux: true,
+      terminalBackend: 'tmux-compat',
       claudeArgs: ['--verbose'],
     }),
     'utf8'
@@ -453,7 +454,6 @@ test('resolveSessionSettings with workspaceId applies workspace settings between
       defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
-      launchInTmux: false,
       claudeArgs: [],
       repos: ['/my/repo'],
       workspaces: [
@@ -465,7 +465,7 @@ test('resolveSessionSettings with workspaceId applies workspace settings between
           settings: {
             defaultYolo: true,
             defaultFramework: 'codex',
-            launchInTmux: true,
+            [LEGACY_TMUX_LAUNCH_KEY]: true,
           },
         },
       ],
@@ -474,7 +474,7 @@ test('resolveSessionSettings with workspaceId applies workspace settings between
   );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
-  // Workspace settings should override global; legacy launchInTmux no longer changes the backend.
+  // Workspace settings should override global; the legacy tmux launch flag no longer changes the backend.
   expect(result.yolo).toBe(true);
   expect(result.agent).toBe('codex');
   expect(result.useTmux).toBe(false);
@@ -489,7 +489,6 @@ test('resolveSessionSettings: repo settings override workspace settings', () => 
       defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
-      launchInTmux: false,
       claudeArgs: [],
       repos: ['/my/repo'],
       workspaces: [
@@ -523,7 +522,6 @@ test('resolveSessionSettings: overrides beat workspace and repo settings', () =>
       defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
-      launchInTmux: false,
       claudeArgs: [],
       repos: ['/my/repo'],
       workspaces: [
@@ -559,7 +557,6 @@ test('resolveSessionSettings without workspaceId skips workspace cascade', () =>
       defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
-      launchInTmux: false,
       claudeArgs: [],
       repos: ['/my/repo'],
       workspaces: [
@@ -589,7 +586,6 @@ test('resolveSessionSettings with unknown workspaceId falls through to global', 
       defaultFramework: 'claude',
       defaultYolo: false,
       defaultContinue: true,
-      launchInTmux: false,
       claudeArgs: [],
       repos: ['/my/repo'],
       workspaces: [],

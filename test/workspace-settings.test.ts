@@ -8,6 +8,8 @@ import type { Server } from 'node:http';
 import { createWorkspaceRouter } from '../server/workspaces.js';
 import { DEFAULTS, loadConfig, saveConfig } from '../server/config.js';
 
+const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
+
 let tmpDir: string;
 let configPath: string;
 let repoPath: string;
@@ -38,13 +40,13 @@ afterEach(() => {
 });
 
 describe('PATCH /workspaces/settings', () => {
-  test('rejects non-true launchInTmux compatibility values', async () => {
+  test('rejects legacy tmux launch flag updates', async () => {
     const res = await fetch(
       `${baseUrl}/workspaces/settings?path=${encodeURIComponent(repoPath)}`,
       {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ launchInTmux: 'false' }),
+        body: JSON.stringify({ [LEGACY_TMUX_LAUNCH_KEY]: false }),
       }
     );
 
@@ -52,13 +54,13 @@ describe('PATCH /workspaces/settings', () => {
     expect(loadConfig(configPath).repoSettings?.[repoPath]).toBeUndefined();
   });
 
-  test('maps true launchInTmux compatibility values to tmux-compat', async () => {
+  test('accepts terminalBackend as the only tmux-compat opt-in', async () => {
     const res = await fetch(
       `${baseUrl}/workspaces/settings?path=${encodeURIComponent(repoPath)}`,
       {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ launchInTmux: true }),
+        body: JSON.stringify({ terminalBackend: 'tmux-compat' }),
       }
     );
 

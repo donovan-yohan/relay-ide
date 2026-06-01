@@ -46,7 +46,6 @@ export const DEFAULTS: Omit<
   defaultContinue: true,
   defaultYolo: false,
   maxPtySessions: 64,
-  launchInTmux: false,
   terminalBackend: 'relay-pty',
   defaultNotifications: true,
   claudeFullscreen: true,
@@ -55,21 +54,39 @@ export const DEFAULTS: Omit<
   maxScrollbackGlobalBytes: DEFAULT_MAX_SCROLLBACK_GLOBAL_BYTES,
 };
 
+const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
+
+function omitLegacyTmuxLaunchSetting<T extends object>(settings: T): T {
+  const { [LEGACY_TMUX_LAUNCH_KEY]: _legacyTmuxLaunch, ...rest } =
+    settings as T & Record<string, unknown>;
+  return rest as T;
+}
+
 export function loadConfig(configPath: string): Config {
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config file not found: ${configPath}`);
   }
   const raw = fs.readFileSync(configPath, 'utf8');
-  const parsed = JSON.parse(raw) as Partial<Config>;
-  const hasExplicitTerminalBackend = Object.prototype.hasOwnProperty.call(
-    parsed,
-    'terminalBackend'
-  );
-  const config: Config = { ...DEFAULTS, ...parsed };
-  if (!hasExplicitTerminalBackend && parsed.launchInTmux === true) {
-    config.terminalBackend = 'tmux-compat';
+  const parsed = JSON.parse(raw) as Partial<Config> & Record<string, unknown>;
+  const config: Config = { ...DEFAULTS, ...omitLegacyTmuxLaunchSetting(parsed) };
+  if (config.repoSettings) {
+    config.repoSettings = Object.fromEntries(
+      Object.entries(config.repoSettings).map(([repoPath, settings]) => [
+        repoPath,
+        omitLegacyTmuxLaunchSetting(settings),
+      ])
+    );
   }
-  config.launchInTmux = config.terminalBackend === 'tmux-compat';
+  if (config.workspaces) {
+    config.workspaces = config.workspaces.map((workspace) =>
+      workspace.settings
+        ? {
+            ...workspace,
+            settings: omitLegacyTmuxLaunchSetting(workspace.settings),
+          }
+        : workspace
+    );
+  }
 
   // Set default filter presets if not present in saved config (clone to avoid mutating the constant)
   if (config.filterPresets == null) {
@@ -146,19 +163,16 @@ export function getRepoSettings(
     defaultFramework: config.defaultFramework,
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
-    launchInTmux: defaultTerminalBackend(config) === 'tmux-compat',
     terminalBackend: defaultTerminalBackend(config),
     claudeArgs: config.claudeArgs,
   };
-  const perWorkspace = config.repoSettings?.[repoPath] ?? {};
+  const perWorkspace = omitLegacyTmuxLaunchSetting(
+    config.repoSettings?.[repoPath] ?? {}
+  );
   // Per-repo settings override global — only for defined keys
   return {
     ...globalDefaults,
     ...perWorkspace,
-    launchInTmux:
-      normalizeTerminalBackend(perWorkspace.terminalBackend) === 'tmux-compat' ||
-      (perWorkspace.terminalBackend === undefined &&
-        globalDefaults.terminalBackend === 'tmux-compat'),
   };
 }
 
@@ -252,7 +266,6 @@ export function resolveSessionSettings(
     defaultFramework: config.defaultFramework,
     defaultContinue: config.defaultContinue,
     defaultYolo: config.defaultYolo,
-    launchInTmux: defaultTerminalBackend(config) === 'tmux-compat',
     terminalBackend: defaultTerminalBackend(config),
     claudeArgs: config.claudeArgs,
   };

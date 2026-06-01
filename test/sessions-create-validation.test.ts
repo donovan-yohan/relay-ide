@@ -15,7 +15,7 @@ function makeConfig(repos: string[]): Config {
     defaultContinue: false,
     defaultYolo: false,
     maxPtySessions: 10,
-    launchInTmux: true,
+    terminalBackend: 'relay-pty',
     defaultNotifications: false,
     claudeFullscreen: false,
   };

@@ -2173,46 +2173,6 @@ async function main(): Promise<void> {
     );
   }
 
-  app.get('/config/launchInTmux', requireAuth, (_req, res) => {
-    const terminalBackend = defaultTerminalBackend(getConfig());
-    res.json({
-      launchInTmux: terminalBackend === TERMINAL_BACKEND_TMUX_COMPAT,
-      required: false,
-      terminalBackend,
-      deprecated: true,
-    });
-  });
-  app.patch('/config/launchInTmux', requireAuth, async (req, res) => {
-    const value = (req.body as Record<string, unknown>).launchInTmux;
-    if (typeof value !== 'boolean') {
-      res.status(400).json({ error: 'launchInTmux must be a boolean' });
-      return;
-    }
-    const terminalBackend = value
-      ? TERMINAL_BACKEND_TMUX_COMPAT
-      : TERMINAL_BACKEND_RELAY_PTY;
-    if (terminalBackend === TERMINAL_BACKEND_TMUX_COMPAT) {
-      try {
-        await ensureTmuxAvailable();
-      } catch (err) {
-        res.status(400).json({
-          error: err instanceof Error ? err.message : 'tmux is not available',
-        });
-        return;
-      }
-    }
-    const c = getConfig();
-    c.terminalBackend = terminalBackend;
-    c.launchInTmux = terminalBackend === TERMINAL_BACKEND_TMUX_COMPAT;
-    saveConfig(CONFIG_PATH, c);
-    res.json({
-      launchInTmux: terminalBackend === TERMINAL_BACKEND_TMUX_COMPAT,
-      required: false,
-      terminalBackend,
-      deprecated: true,
-    });
-  });
-
   app.get('/config/terminalBackend', requireAuth, (_req, res) => {
     const c = getConfig();
     res.json({
@@ -2242,9 +2202,8 @@ async function main(): Promise<void> {
     }
     const c = getConfig();
     c.terminalBackend = value;
-    c.launchInTmux = value === TERMINAL_BACKEND_TMUX_COMPAT;
     saveConfig(CONFIG_PATH, c);
-    res.json({ terminalBackend: value, launchInTmux: value === TERMINAL_BACKEND_TMUX_COMPAT, required: false });
+    res.json({ terminalBackend: value, required: false });
   });
 
   const watcher = new WorktreeWatcher();
