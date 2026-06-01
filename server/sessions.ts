@@ -599,9 +599,10 @@ export function fireBackendStateIfChanged(session: Session): void {
   let permissionType: 'approval' | 'question' | undefined;
   if (newState === 'permission') {
     permissionType =
-      session.currentActivity?.tool === 'AskUserQuestion'
+      session.permissionType ??
+      (session.currentActivity?.tool === 'AskUserQuestion'
         ? 'question'
-        : 'approval';
+        : 'approval');
   }
 
   if (

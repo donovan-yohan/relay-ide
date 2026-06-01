@@ -109,6 +109,10 @@ function setAgentState(
   state: AgentState,
   deps: HookDeps
 ): void {
+  if (state !== AGENT_STATE_PERMISSION_PROMPT) {
+    delete session.permissionType;
+    delete session.permissionPromptSource;
+  }
   session.agentState = state;
   deps.fireBackendStateIfChanged(session);
   if (session.mode === 'pty') {
@@ -138,6 +142,8 @@ function handleAgentEvent(
   } else if (eventType === 'session.idle' || eventType === 'session.ended') {
     setAgentState(session, 'idle', deps);
   } else if (eventType === 'permission.requested') {
+    session.permissionType = 'approval';
+    session.permissionPromptSource = 'hooks';
     setAgentState(session, AGENT_STATE_PERMISSION_PROMPT, deps);
     session.lastAttentionNotifiedAt = Date.now();
     deps.notifySessionAttention(session.id, {
@@ -380,6 +386,8 @@ export function createHooksRouter(deps: HookDeps): Router {
     const type = req.query.type;
 
     if (type === 'permission_prompt') {
+      session.permissionType = 'approval';
+      session.permissionPromptSource = 'hooks';
       setAgentState(session, AGENT_STATE_PERMISSION_PROMPT, deps);
       session.lastAttentionNotifiedAt = Date.now();
       deps.notifySessionAttention(session.id, {

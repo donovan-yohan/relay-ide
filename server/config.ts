@@ -54,9 +54,22 @@ export const DEFAULTS: Omit<
   maxScrollbackGlobalBytes: DEFAULT_MAX_SCROLLBACK_GLOBAL_BYTES,
 };
 
-const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
+// Legacy no-op only: kept as a plain searchable string so audits can find and
+// delete stale config writers. Do not reintroduce this as a supported setting.
+const LEGACY_TMUX_LAUNCH_KEY = 'launchInTmux';
+const CONFIG_LOG = createLogger('config');
+let warnedLegacyTmuxLaunchSetting = false;
 
 function omitLegacyTmuxLaunchSetting<T extends object>(settings: T): T {
+  if (
+    !warnedLegacyTmuxLaunchSetting &&
+    Object.prototype.hasOwnProperty.call(settings, LEGACY_TMUX_LAUNCH_KEY)
+  ) {
+    warnedLegacyTmuxLaunchSetting = true;
+    CONFIG_LOG.warn(
+      'ignoring legacy launchInTmux setting; use terminalBackend instead'
+    );
+  }
   const { [LEGACY_TMUX_LAUNCH_KEY]: _legacyTmuxLaunch, ...rest } =
     settings as T & Record<string, unknown>;
   return rest as T;

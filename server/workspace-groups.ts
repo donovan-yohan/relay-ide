@@ -10,6 +10,7 @@ import {
   loadConfig,
   saveConfig,
   resolveSessionSettings,
+  normalizeTerminalBackend,
   writeMeta,
 } from './config.js';
 import type {
@@ -18,6 +19,7 @@ import type {
   AgentType,
   WorkspaceLevelSettings,
   WorkspaceTemplate,
+  TerminalBackend,
 } from './types.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { findOrCreateWorktreeForBranch } from './watcher.js';
@@ -69,6 +71,10 @@ type RepoResult =
   | { repoPath: string; resolvedPath: string }
   | { repoPath: string; error: string };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 async function resolveRepoPath(
   repoPath: string,
   execFn: ExecFn
@@ -111,7 +117,7 @@ function buildFinalArgs(
   overrides: {
     agent: string | undefined;
     yolo: boolean | undefined;
-    useTmux: boolean | undefined;
+    terminalBackend: TerminalBackend | undefined;
     claudeArgs: string[] | undefined;
   },
   workspaceId: string
@@ -126,8 +132,8 @@ function buildFinalArgs(
   if (overrides.agent !== undefined)
     sessionOverrides.agent = overrides.agent as AgentType;
   if (overrides.yolo !== undefined) sessionOverrides.yolo = overrides.yolo;
-  if (overrides.useTmux !== undefined)
-    sessionOverrides.useTmux = overrides.useTmux;
+  if (overrides.terminalBackend !== undefined)
+    sessionOverrides.terminalBackend = overrides.terminalBackend;
   if (overrides.claudeArgs !== undefined)
     sessionOverrides.claudeArgs = overrides.claudeArgs;
 
@@ -401,14 +407,35 @@ export function createWorkspaceGroupsRouter(
       requireAuth,
       async (req: Request, res: Response) => {
         const { id } = req.params as { id: string };
-        const { agent, yolo, useTmux, claudeArgs, cols, rows } = req.body as {
+        const body = req.body as unknown;
+        if (!isRecord(body)) {
+          res.status(400).json({ error: 'request body must be an object' });
+          return;
+        }
+        if (Object.prototype.hasOwnProperty.call(body, 'useTmux')) {
+          res.status(400).json({
+            error: 'legacy useTmux request flag is no longer supported; use terminalBackend',
+          });
+          return;
+        }
+        if (Object.prototype.hasOwnProperty.call(body, 'terminalBackend')) {
+          const normalized = normalizeTerminalBackend(body['terminalBackend']);
+          if (normalized === undefined) {
+            res.status(400).json({
+              error: 'terminalBackend must be "relay-pty" or "tmux-compat"',
+            });
+            return;
+          }
+        }
+        const { agent, yolo, terminalBackend, claudeArgs, cols, rows } = body as {
           agent?: string;
           yolo?: boolean;
-          useTmux?: boolean;
+          terminalBackend?: TerminalBackend;
           claudeArgs?: string[];
           cols?: number;
           rows?: number;
         };
+        const requestedTerminalBackend = normalizeTerminalBackend(terminalBackend);
 
         let config: Config;
         try {
@@ -469,7 +496,7 @@ export function createWorkspaceGroupsRouter(
           config,
           primary,
           additionalDirs,
-          { agent, yolo, useTmux, claudeArgs },
+          { agent, yolo, terminalBackend: requestedTerminalBackend, claudeArgs },
           workspace.id
         );
 
@@ -496,6 +523,7 @@ export function createWorkspaceGroupsRouter(
             displayName,
             args: finalArgs,
             configPath: sessionDeps.configPath,
+            terminalBackend: resolved.terminalBackend,
             useTmux: resolved.useTmux,
             yolo: resolved.yolo,
             claudeArgs: combinedClaudeArgs,

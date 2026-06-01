@@ -8,6 +8,7 @@ import type { PtySession, EventSourceType } from '../server/types.js';
 import {
   buildStatusLineRelayScript,
   getTmuxPrefix,
+  handleTerminalAttentionUpdate,
 } from '../server/pty-handler.js';
 
 const originalRelayTmuxPrefix = process.env.RELAY_IDE_TMUX_PREFIX;
@@ -70,6 +71,62 @@ describe('tmux prefix resolution', () => {
 
     delete process.env.NO_PIN;
     expect(getTmuxPrefix()).toBe('relay-ide-');
+  });
+});
+
+describe('terminal attention fallback', () => {
+  function sessionWithVisibleText(
+    visibleText: string,
+    overrides: Partial<PtySession> = {}
+  ): PtySession {
+    return {
+      id: 'session-attention',
+      agentState: 'idle',
+      terminalModel: { getVisibleText: () => visibleText },
+      ...overrides,
+    } as PtySession;
+  }
+
+  it('clears terminal-model-owned permission prompts when the prompt disappears', () => {
+    const session = sessionWithVisibleText('npm test passed', {
+      agentState: 'permission-prompt',
+      permissionType: 'approval',
+      permissionPromptSource: 'terminal-model',
+    });
+    const states: string[] = [];
+    const backendChanges: string[] = [];
+
+    handleTerminalAttentionUpdate(
+      session,
+      [(_id, state) => states.push(state)],
+      (changed) => backendChanges.push(changed.agentState)
+    );
+
+    expect(session.agentState).toBe('idle');
+    expect(session.permissionType).toBeUndefined();
+    expect(session.permissionPromptSource).toBeUndefined();
+    expect(states).toEqual(['idle']);
+    expect(backendChanges).toEqual(['idle']);
+  });
+
+  it('does not clear hook-owned permission prompts just because fallback text is absent', () => {
+    const session = sessionWithVisibleText('waiting on hook event', {
+      agentState: 'permission-prompt',
+      permissionType: 'approval',
+      permissionPromptSource: 'hooks',
+    });
+    const states: string[] = [];
+
+    handleTerminalAttentionUpdate(
+      session,
+      [(_id, state) => states.push(state)],
+      undefined
+    );
+
+    expect(session.agentState).toBe('permission-prompt');
+    expect(session.permissionType).toBe('approval');
+    expect(session.permissionPromptSource).toBe('hooks');
+    expect(states).toEqual([]);
   });
 });
 

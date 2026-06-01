@@ -9,7 +9,7 @@ import { createWorkspaceRouter, type WorkspaceDeps } from '../server/workspaces.
 import { DEFAULTS, loadConfig, saveConfig } from '../server/config.js';
 import { createTestServer } from './helpers/test-server.js';
 
-const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
+const LEGACY_TMUX_LAUNCH_KEY = 'launchInTmux';
 
 type ExecFn = NonNullable<WorkspaceDeps['execAsync']>;
 type ExecResult = { stdout: string; stderr: string };

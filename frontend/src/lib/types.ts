@@ -278,7 +278,7 @@ export interface OpenSessionOptions {
   branchName?: string;
   agent?: AgentType;
   claudeArgs?: string;
-  useTmux?: boolean;
+  terminalBackend?: 'relay-pty' | 'tmux-compat';
 }
 
 export interface SessionMeta {

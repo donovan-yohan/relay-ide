@@ -45,6 +45,7 @@ import {
   createLibghosttyTerminalModelBackend,
   type TerminalModelBackend,
 } from './terminal-model-backend.js';
+import { detectTerminalAttentionPrompt } from './terminal-attention.js';
 import { buildRelayPtySessionEnv } from './relay-pty-session.js';
 
 const IDLE_TIMEOUT_MS = 5000;
@@ -1135,8 +1136,44 @@ function handleParserStateUpdate(
       return;
     }
   }
+  if (newState !== 'permission-prompt') {
+    delete session.permissionType;
+    delete session.permissionPromptSource;
+  }
   session.agentState = newState;
   for (const cb of stateChangeCallbacks) cb(session.id, newState);
+  fireBackendStateIfChanged?.(session);
+}
+
+export function handleTerminalAttentionUpdate(
+  session: PtySession,
+  stateChangeCallbacks: Array<(sessionId: string, state: AgentState) => void>,
+  fireBackendStateIfChanged: ((session: PtySession) => void) | undefined
+): void {
+  const terminalModel = session.terminalModel;
+  if (!terminalModel) return;
+
+  const attention = detectTerminalAttentionPrompt(terminalModel.getVisibleText());
+  if (!attention) {
+    if (
+      session.agentState === 'permission-prompt' &&
+      session.permissionPromptSource === 'terminal-model'
+    ) {
+      delete session.permissionType;
+      delete session.permissionPromptSource;
+      session.agentState = 'idle';
+      for (const cb of stateChangeCallbacks) cb(session.id, 'idle');
+      fireBackendStateIfChanged?.(session);
+    }
+    return;
+  }
+
+  session.permissionType = attention.kind;
+  session.permissionPromptSource = attention.source;
+  if (session.agentState !== 'permission-prompt') {
+    session.agentState = 'permission-prompt';
+    for (const cb of stateChangeCallbacks) cb(session.id, 'permission-prompt');
+  }
   fireBackendStateIfChanged?.(session);
 }
 
@@ -1429,6 +1466,11 @@ export function createPtySession(
           fireBackendStateIfChanged
         );
       }
+      handleTerminalAttentionUpdate(
+        session,
+        stateChangeCallbacks,
+        fireBackendStateIfChanged
+      );
     });
 
     proc.onExit(() => {
