@@ -13,6 +13,7 @@ import type {
   Session,
   SessionStatus,
   SessionSummary,
+  TerminalBackend,
   SessionType,
 } from './types.js';
 import {
@@ -40,6 +41,11 @@ import {
   appendTerminalStreamData,
   createTerminalStreamState,
 } from '../shared/session-replay.js';
+import {
+  createLibghosttyTerminalModelBackend,
+  type TerminalModelBackend,
+} from './terminal-model-backend.js';
+import { buildRelayPtySessionEnv } from './relay-pty-session.js';
 
 const IDLE_TIMEOUT_MS = 5000;
 /** Default per-session scrollback cap. Overridable via createPtySession options. */
@@ -390,6 +396,7 @@ export type CreatePtyParams = {
   rows?: number | undefined;
   configPath?: string | undefined;
   configDir?: string | undefined;
+  terminalBackend?: TerminalBackend | undefined;
   useTmux?: boolean | undefined;
   tmuxSessionName?: string | undefined;
   tmuxDisplayName?: string | undefined;
@@ -913,13 +920,15 @@ function resolveSpawnTarget(
   command: string | undefined,
   resolvedCommand: string,
   args: string[],
-  _paramUseTmux: boolean | undefined,
+  paramUseTmux: boolean | undefined,
+  paramTerminalBackend: TerminalBackend | undefined,
   paramTmuxSessionName: string | undefined,
   tmuxAttach: boolean | undefined,
   tmuxDisplayName: string | undefined,
+  cwd: string,
+  workContextId: string | undefined,
   displayName: string | undefined,
   repoName: string | undefined,
-  cwd: string,
   id: string,
   env: NodeJS.ProcessEnv,
   tmuxEnv: NodeJS.ProcessEnv
@@ -927,28 +936,52 @@ function resolveSpawnTarget(
   spawnCommand: string;
   spawnArgs: string[];
   spawnEnv: NodeJS.ProcessEnv;
+  terminalBackend: TerminalBackend;
   useTmux: boolean;
   tmuxSessionName: string;
 } {
-  const useTmux = true;
+  const terminalBackend =
+    paramTerminalBackend ??
+    (paramUseTmux === false ? 'relay-pty' : 'tmux-compat');
+  const useTmux = terminalBackend === 'tmux-compat';
   const tmuxSessionName =
     paramTmuxSessionName ||
-    generateTmuxSessionName(
-      tmuxDisplayName ||
-        displayName ||
-        repoName ||
-        path.basename(cwd) ||
-        'session',
-      id
-    );
+    (useTmux
+      ? generateTmuxSessionName(
+          tmuxDisplayName ||
+            displayName ||
+            repoName ||
+            path.basename(cwd) ||
+            'session',
+          id
+        )
+      : '');
 
-  const spawnEnv = tmuxEnv;
+  const spawnEnv = useTmux
+    ? tmuxEnv
+    : buildRelayPtySessionEnv({
+        id,
+        env,
+        ...(workContextId ? { workContextId } : {}),
+      });
+
+  if (!useTmux) {
+    return {
+      spawnCommand: resolvedCommand,
+      spawnArgs: args,
+      spawnEnv,
+      terminalBackend,
+      useTmux,
+      tmuxSessionName,
+    };
+  }
 
   if (tmuxAttach) {
     return {
       spawnCommand: resolvedCommand,
       spawnArgs: args,
       spawnEnv,
+      terminalBackend,
       useTmux,
       tmuxSessionName,
     };
@@ -964,6 +997,7 @@ function resolveSpawnTarget(
       spawnCommand: tmux.command,
       spawnArgs: tmux.args,
       spawnEnv,
+      terminalBackend,
       useTmux,
       tmuxSessionName,
     };
@@ -978,6 +1012,8 @@ function buildSessionObject(
   hookToken: string,
   hooksActive: boolean,
   effectiveEventSource: EventSourceType,
+  terminalBackend: TerminalBackend,
+  terminalModel: TerminalModelBackend | undefined,
   useTmux: boolean,
   tmuxSessionName: string,
   createdAt: string,
@@ -1029,6 +1065,8 @@ function buildSessionObject(
       initialChunks: scrollback,
     }),
     terminalStreamSubscribers: [],
+    terminalBackend,
+    ...(terminalModel ? { terminalModel } : {}),
     idle: false,
     cwd,
     customCommand:
@@ -1217,22 +1255,30 @@ export function createPtySession(
   const { env, tmuxEnv, hookToken, hooksActive, settingsPath } = hookSetup;
   const args = hookSetup.args;
 
-  const { spawnCommand, spawnArgs, spawnEnv, useTmux, tmuxSessionName } =
-    resolveSpawnTarget(
-      command,
-      resolvedCommand,
-      args,
-      paramUseTmux,
-      paramTmuxSessionName,
-      tmuxAttach,
-      params.tmuxDisplayName,
-      displayName,
-      repoName,
-      cwd,
-      id,
-      env,
-      tmuxEnv
-    );
+  const {
+    spawnCommand,
+    spawnArgs,
+    spawnEnv,
+    terminalBackend,
+    useTmux,
+    tmuxSessionName,
+  } = resolveSpawnTarget(
+    command,
+    resolvedCommand,
+    args,
+    paramUseTmux,
+    params.terminalBackend,
+    paramTmuxSessionName,
+    tmuxAttach,
+    params.tmuxDisplayName,
+    cwd,
+    params.workContextId,
+    displayName,
+    repoName,
+    id,
+    env,
+    tmuxEnv
+  );
 
   let ptyProcess: pty.IPty;
   try {
@@ -1255,6 +1301,17 @@ export function createPtySession(
   }
 
   const scrollback: string[] = initialScrollback ? [...initialScrollback] : [];
+  const terminalModel =
+    terminalBackend === 'relay-pty'
+      ? createLibghosttyTerminalModelBackend({
+          cols,
+          rows,
+          scrollbackLimit: 1000,
+        })
+      : undefined;
+  if (terminalModel) {
+    for (const chunk of scrollback) terminalModel.feed(chunk);
+  }
   // Use a ref so tryRetrySpawn (called from onExit) can reset the byte counter
   const scrollbackRef = {
     bytes: initialScrollback
@@ -1274,6 +1331,8 @@ export function createPtySession(
     hookToken,
     hooksActive,
     effectiveEventSource,
+    terminalBackend,
+    terminalModel,
     useTmux,
     tmuxSessionName,
     createdAt,
@@ -1324,6 +1383,7 @@ export function createPtySession(
       session.lastActivity = new Date().toISOString();
       resetIdleTimer();
       scrollback.push(data);
+      session.terminalModel?.feed(data);
       scrollbackRef.bytes += data.length;
       const terminalStreamEnvelope = session.terminalStream
         ? appendTerminalStreamData(session.terminalStream, data)
@@ -1386,6 +1446,7 @@ export function createPtySession(
           cwd,
           env,
           tmuxEnv,
+          workContextId: params.workContextId,
           scrollback,
           scrollbackRef,
           timers: {
@@ -1458,6 +1519,7 @@ export function createPtySession(
     idle: false,
     cwd,
     customCommand: session.customCommand,
+    terminalBackend,
     useTmux,
     tmuxSessionName,
     status: 'active' as SessionStatus,
@@ -1481,6 +1543,7 @@ type RetryContext = {
   cwd: string;
   env: NodeJS.ProcessEnv;
   tmuxEnv: NodeJS.ProcessEnv;
+  workContextId: string | undefined;
   scrollback: string[];
   scrollbackRef: { bytes: number };
   timers: {
@@ -1530,7 +1593,13 @@ function tryRetrySpawn(
       cols: ctx.cols,
       rows: ctx.rows,
       cwd: ctx.cwd,
-      env: ctx.tmuxEnv,
+      env: ctx.useTmux
+        ? ctx.tmuxEnv
+        : buildRelayPtySessionEnv({
+            id: ctx.id,
+            env: ctx.env,
+            ...(ctx.workContextId ? { workContextId: ctx.workContextId } : {}),
+          }),
     });
   } catch {
     try {
@@ -1576,6 +1645,7 @@ function runExitCleanup(
     }
   }
   sessionsMap.delete(id);
+  session.terminalModel?.dispose();
   if (!session.preserveRuntimeFilesOnExit) {
     const tmpDir = path.join(os.tmpdir(), 'relay-ide', id);
     fs.rm(tmpDir, { recursive: true, force: true }, () => {});

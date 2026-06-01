@@ -14,6 +14,7 @@ This index separates current source-of-truth docs from historical plans and spik
 | Backend design notes  | `DESIGN.md`                       | Backend patterns, auth/session/PTY behavior                                                  |
 | Frontend              | `FRONTEND.md`                     | React components, frontend state, UI entrypoints                                             |
 | Quality               | `QUALITY.md`                      | Test strategy, isolation rules, known gate behavior                                          |
+| Terminal backends     | `TERMINAL_BACKENDS.md`            | `relay-pty` rollout, `tmux-compat` fallback, migration/import behavior                       |
 | Review                | `REVIEW_GUIDANCE.md`              | Reviewer prompts, risk areas, escape log                                                     |
 | Deployment            | `references/deployment.md`        | Branching, npm channels, publishing flow                                                     |
 | Devbox deploy         | `references/devbox-hub-deploy.md` | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene      |

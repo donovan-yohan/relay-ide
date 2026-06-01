@@ -30,6 +30,8 @@ const createSessionAllowedFields = new Set([
   'mode',
   'agent',
   'yolo',
+  'useTmux',
+  'terminalBackend',
   'cols',
   'rows',
   'branchName',
@@ -61,13 +63,19 @@ const createSessionEnvironmentAllowedFields = new Set([
  * Legacy flat fields that cannot be combined with the typed `environment`
  * object. Callers pick one shape per request; mixing produces INVALID_ARGUMENT.
  */
-const legacyEnvironmentFlatFields = ['nodeId', 'repoPath', 'worktreePath', 'cwd'] as const;
+const legacyEnvironmentFlatFields = [
+  'nodeId',
+  'repoPath',
+  'worktreePath',
+  'cwd',
+] as const;
 
 const stringFields = [
   'nodeId',
   'repoPath',
   'cwd',
   'agent',
+  'terminalBackend',
   'branchName',
   'initialPrompt',
   'workContextId',
@@ -80,6 +88,24 @@ const localUnsupportedFields = [
   'ttlSeconds',
   'expiresAt',
   'confirmationToken',
+] as const;
+
+const localCreateSupportedFields = [
+  'repoPath',
+  'worktreePath',
+  'type',
+  'mode',
+  'agent',
+  'yolo',
+  'useTmux',
+  'terminalBackend',
+  'cols',
+  'rows',
+  'branchName',
+  'initialPrompt',
+  'continuePolicy',
+  'workContextId',
+  'controlMode',
 ] as const;
 
 function createValidationError(
@@ -146,7 +172,9 @@ function validateStringField(
 ): GatewayCreateValidationFailure | null {
   if (input[field] === undefined) return null;
   if (typeof input[field] !== 'string') {
-    return invalidCreateInput(`sessions.create ${field} must be a string`, { field });
+    return invalidCreateInput(`sessions.create ${field} must be a string`, {
+      field,
+    });
   }
   return null;
 }
@@ -159,7 +187,10 @@ function validateNumberField(
 ): GatewayCreateValidationFailure | null {
   if (input[field] === undefined) return null;
   if (typeof input[field] !== 'number' || !Number.isFinite(input[field])) {
-    return invalidCreateInput(`sessions.create ${field} must be a finite number`, { field });
+    return invalidCreateInput(
+      `sessions.create ${field} must be a finite number`,
+      { field }
+    );
   }
   if (input[field] < min || (max !== undefined && input[field] > max)) {
     return invalidCreateInput(
@@ -206,13 +237,19 @@ function validateCreateEnvironment(
     }
   }
 
-  if (typeof environment['nodeId'] !== 'string' || environment['nodeId'].length === 0) {
+  if (
+    typeof environment['nodeId'] !== 'string' ||
+    environment['nodeId'].length === 0
+  ) {
     return invalidCreateInput(
       'sessions.create environment.nodeId is required and must be a non-empty string',
       { field: 'environment.nodeId' }
     );
   }
-  if (typeof environment['cwd'] !== 'string' || environment['cwd'].length === 0) {
+  if (
+    typeof environment['cwd'] !== 'string' ||
+    environment['cwd'].length === 0
+  ) {
     return invalidCreateInput(
       'sessions.create environment.cwd is required and must be a non-empty string',
       { field: 'environment.cwd' }
@@ -281,22 +318,35 @@ function validateSessionEnvelopeInput(
 ): GatewayCreateValidationFailure | null {
   if (envelope === undefined) return null;
   if (!isRecord(envelope)) {
-    return invalidCreateInput('sessions.create sessionEnvelope must be an object', {
-      field: 'sessionEnvelope',
-    });
+    return invalidCreateInput(
+      'sessions.create sessionEnvelope must be an object',
+      {
+        field: 'sessionEnvelope',
+      }
+    );
   }
   const envelopeNodeId = envelope['nodeId'];
   if (envelopeNodeId !== undefined && typeof envelopeNodeId !== 'string') {
-    return invalidCreateInput('sessions.create sessionEnvelope.nodeId must be a string', {
-      field: 'sessionEnvelope.nodeId',
-    });
+    return invalidCreateInput(
+      'sessions.create sessionEnvelope.nodeId must be a string',
+      {
+        field: 'sessionEnvelope.nodeId',
+      }
+    );
   }
-  if (nodeId && typeof envelopeNodeId === 'string' && envelopeNodeId !== nodeId) {
-    return invalidCreateInput('sessions.create sessionEnvelope.nodeId must match nodeId', {
-      field: 'sessionEnvelope.nodeId',
-      nodeId,
-      envelopeNodeId,
-    });
+  if (
+    nodeId &&
+    typeof envelopeNodeId === 'string' &&
+    envelopeNodeId !== nodeId
+  ) {
+    return invalidCreateInput(
+      'sessions.create sessionEnvelope.nodeId must match nodeId',
+      {
+        field: 'sessionEnvelope.nodeId',
+        nodeId,
+        envelopeNodeId,
+      }
+    );
   }
   const peerIdentity = envelope['peerIdentity'];
   if (peerIdentity !== undefined) {
@@ -336,13 +386,18 @@ function validateSessionEnvelopeInput(
 
 function sanitizedCreateInput(
   rawInput: Record<string, unknown>
-): GatewayCreateValidationFailure | { ok: true; input: Record<string, unknown> } {
+):
+  | GatewayCreateValidationFailure
+  | { ok: true; input: Record<string, unknown> } {
   const sanitized: Record<string, unknown> = {};
   for (const [field, value] of Object.entries(rawInput)) {
     if (!createSessionAllowedFields.has(field)) {
-      return invalidCreateInput(`sessions.create field is not in the v1 contract: ${field}`, {
-        field,
-      });
+      return invalidCreateInput(
+        `sessions.create field is not in the v1 contract: ${field}`,
+        {
+          field,
+        }
+      );
     }
     sanitized[field] = value;
   }
@@ -361,12 +416,22 @@ function validateCreateFieldTypes(
     input['worktreePath'] !== null &&
     typeof input['worktreePath'] !== 'string'
   ) {
-    return invalidCreateInput('sessions.create worktreePath must be a string or null', {
-      field: 'worktreePath',
-    });
+    return invalidCreateInput(
+      'sessions.create worktreePath must be a string or null',
+      {
+        field: 'worktreePath',
+      }
+    );
   }
   if (input['yolo'] !== undefined && typeof input['yolo'] !== 'boolean') {
-    return invalidCreateInput('sessions.create yolo must be a boolean', { field: 'yolo' });
+    return invalidCreateInput('sessions.create yolo must be a boolean', {
+      field: 'yolo',
+    });
+  }
+  if (input['useTmux'] !== undefined && typeof input['useTmux'] !== 'boolean') {
+    return invalidCreateInput('sessions.create useTmux must be a boolean', {
+      field: 'useTmux',
+    });
   }
   for (const [field, min, max] of [
     ['cols', 1, 500],
@@ -382,34 +447,71 @@ function validateCreateFieldTypes(
 function validateCreateEnums(
   input: Record<string, unknown>
 ): GatewayCreateValidationFailure | null {
-  if (input['type'] !== undefined && input['type'] !== 'agent' && input['type'] !== 'terminal') {
-    return invalidCreateInput('sessions.create type must be agent or terminal', { field: 'type' });
+  if (
+    input['type'] !== undefined &&
+    input['type'] !== 'agent' &&
+    input['type'] !== 'terminal'
+  ) {
+    return invalidCreateInput(
+      'sessions.create type must be agent or terminal',
+      { field: 'type' }
+    );
   }
-  if (input['mode'] !== undefined && input['mode'] !== 'pty' && input['mode'] !== 'web') {
-    return invalidCreateInput('sessions.create mode must be pty or web', { field: 'mode' });
+  if (
+    input['mode'] !== undefined &&
+    input['mode'] !== 'pty' &&
+    input['mode'] !== 'web'
+  ) {
+    return invalidCreateInput('sessions.create mode must be pty or web', {
+      field: 'mode',
+    });
+  }
+  if (
+    input['terminalBackend'] !== undefined &&
+    input['terminalBackend'] !== 'tmux-compat' &&
+    input['terminalBackend'] !== 'relay-pty'
+  ) {
+    return invalidCreateInput(
+      'sessions.create terminalBackend must be tmux-compat or relay-pty',
+      {
+        field: 'terminalBackend',
+      }
+    );
   }
   if (
     input['continuePolicy'] !== undefined &&
     input['continuePolicy'] !== 'always' &&
     input['continuePolicy'] !== 'never'
   ) {
-    return invalidCreateInput('sessions.create continuePolicy must be always or never', {
-      field: 'continuePolicy',
-    });
+    return invalidCreateInput(
+      'sessions.create continuePolicy must be always or never',
+      {
+        field: 'continuePolicy',
+      }
+    );
   }
   if (
     input['controlMode'] !== undefined &&
     input['controlMode'] !== 'agent-driven' &&
     input['controlMode'] !== 'human-driven'
   ) {
-    return invalidCreateInput('sessions.create controlMode must be agent-driven or human-driven', {
-      field: 'controlMode',
-    });
+    return invalidCreateInput(
+      'sessions.create controlMode must be agent-driven or human-driven',
+      {
+        field: 'controlMode',
+      }
+    );
   }
-  if (input['expiresAt'] !== undefined && Number.isNaN(Date.parse(input['expiresAt'] as string))) {
-    return invalidCreateInput('sessions.create expiresAt must be an ISO date-time string', {
-      field: 'expiresAt',
-    });
+  if (
+    input['expiresAt'] !== undefined &&
+    Number.isNaN(Date.parse(input['expiresAt'] as string))
+  ) {
+    return invalidCreateInput(
+      'sessions.create expiresAt must be an ISO date-time string',
+      {
+        field: 'expiresAt',
+      }
+    );
   }
   return null;
 }
@@ -421,7 +523,10 @@ function validateLocalCreateSupport(
     if (input[field] !== undefined) {
       return unsupportedCreateInput(
         `local sessions.create does not support ${field}; use routed node creation or omit the field`,
-        { field, supportedLocalFields: ['repoPath', 'worktreePath', 'type', 'mode', 'agent'] }
+        {
+          field,
+          supportedLocalFields: localCreateSupportedFields,
+        }
       );
     }
   }
@@ -438,7 +543,9 @@ function validateLocalCreateSupport(
     );
   }
   if (typeof input['repoPath'] !== 'string') {
-    return invalidCreateInput('local session creation requires repoPath', { field: 'repoPath' });
+    return invalidCreateInput('local session creation requires repoPath', {
+      field: 'repoPath',
+    });
   }
   return null;
 }
@@ -460,15 +567,21 @@ export function validateAndSanitizeGatewayCreateInput(
   // The typed environment supplies an effective nodeId for downstream routing
   // when present. When `environment` is set, `nodeId` (flat) is forbidden by
   // validateCreateEnvironment, so this is unambiguous.
-  const environment = isRecord(sanitized['environment']) ? sanitized['environment'] : undefined;
+  const environment = isRecord(sanitized['environment'])
+    ? sanitized['environment']
+    : undefined;
   const environmentNodeId =
     environment && typeof environment['nodeId'] === 'string'
       ? environment['nodeId']
       : undefined;
-  const flatNodeId = typeof sanitized['nodeId'] === 'string' ? sanitized['nodeId'] : undefined;
+  const flatNodeId =
+    typeof sanitized['nodeId'] === 'string' ? sanitized['nodeId'] : undefined;
   const nodeId = environmentNodeId ?? flatNodeId;
 
-  const envelopeError = validateSessionEnvelopeInput(sanitized['sessionEnvelope'], nodeId);
+  const envelopeError = validateSessionEnvelopeInput(
+    sanitized['sessionEnvelope'],
+    nodeId
+  );
   if (envelopeError) return envelopeError;
   if (!nodeId) {
     const localError = validateLocalCreateSupport(sanitized);
@@ -477,7 +590,12 @@ export function validateAndSanitizeGatewayCreateInput(
 
   const sessionType = sanitized['type'] === 'terminal' ? 'terminal' : 'agent';
   sanitized['type'] = sessionType;
-  return { ok: true, input: sanitized, ...(nodeId ? { nodeId } : {}), sessionType };
+  return {
+    ok: true,
+    input: sanitized,
+    ...(nodeId ? { nodeId } : {}),
+    sessionType,
+  };
 }
 
 export function validateAndSanitizeLocalGatewayCreateInput(
@@ -500,7 +618,9 @@ export function validateAndSanitizeLocalGatewayCreateInput(
   return validated;
 }
 
-function upstreamErrorRecord(upstream: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+function upstreamErrorRecord(
+  upstream: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
   const error = upstream?.['error'];
   return typeof error === 'object' && error !== null
     ? (error as Record<string, unknown>)
@@ -545,9 +665,11 @@ export function normalizeGatewayErrorCode(
   upstream: Record<string, unknown> | undefined
 ): RelayCliGatewayErrorCode {
   const body = upstreamErrorRecord(upstream);
-  const reason = typeof body?.['reasonCode'] === 'string' ? body['reasonCode'] : undefined;
+  const reason =
+    typeof body?.['reasonCode'] === 'string' ? body['reasonCode'] : undefined;
   const code = typeof body?.['code'] === 'string' ? body['code'] : undefined;
-  if (code === 'CONFIRMATION_REQUIRED' || reason === 'CONFIRMATION_REQUIRED') return 'CONFIRMATION_REQUIRED';
+  if (code === 'CONFIRMATION_REQUIRED' || reason === 'CONFIRMATION_REQUIRED')
+    return 'CONFIRMATION_REQUIRED';
   const handoffCode = normalizeHandoffGatewayErrorCode(code);
   if (handoffCode) return handoffCode;
   if (isGatewayPassthroughErrorCode(code)) return code;
@@ -559,7 +681,12 @@ export function normalizeGatewayErrorCode(
   if (code === 'NODE_UNSUPPORTED') return 'UNSUPPORTED';
   if (code === 'NOT_FOUND' || status === 404) return 'NOT_FOUND';
   if (code === 'FORBIDDEN' || status === 403) return 'FORBIDDEN';
-  if (status === 400 || code === 'INVALID_REQUEST' || code === 'INVALID_ARGUMENT') return 'INVALID_ARGUMENT';
+  if (
+    status === 400 ||
+    code === 'INVALID_REQUEST' ||
+    code === 'INVALID_ARGUMENT'
+  )
+    return 'INVALID_ARGUMENT';
   if (status === 409 || code === 'SESSION_CONFLICT') return 'SESSION_CONFLICT';
   if (status === 503) return 'SERVER_UNAVAILABLE';
   return 'UPSTREAM_ERROR';
@@ -584,10 +711,18 @@ export function gatewayErrorMessage(
     : `Relay hub returned HTTP ${status}`;
 }
 
-function redactedChallenge(value: unknown): Record<string, unknown> | undefined {
+function redactedChallenge(
+  value: unknown
+): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   const result: Record<string, unknown> = {};
-  for (const key of ['id', 'challengeId', 'expiresAt', 'requiredBits', 'requiredCapabilities']) {
+  for (const key of [
+    'id',
+    'challengeId',
+    'expiresAt',
+    'requiredBits',
+    'requiredCapabilities',
+  ]) {
     const entry = value[key];
     if (entry !== undefined) result[key] = entry;
   }
@@ -605,11 +740,17 @@ export function sanitizedGatewayErrorDetails(
   if (typeof code === 'string') details['upstreamCode'] = code;
   if (typeof reasonCode === 'string') details['reasonCode'] = reasonCode;
 
-  const upstreamDetails = isRecord(body?.['details']) ? body['details'] : undefined;
-  const field = isRecord(upstreamDetails) ? upstreamDetails['field'] : body?.['field'];
+  const upstreamDetails = isRecord(body?.['details'])
+    ? body['details']
+    : undefined;
+  const field = isRecord(upstreamDetails)
+    ? upstreamDetails['field']
+    : body?.['field'];
   if (typeof field === 'string') details['field'] = field;
   const challenge = redactedChallenge(
-    isRecord(upstreamDetails) ? upstreamDetails['challenge'] : body?.['challenge']
+    isRecord(upstreamDetails)
+      ? upstreamDetails['challenge']
+      : body?.['challenge']
   );
   if (challenge) details['challenge'] = challenge;
   return details;
