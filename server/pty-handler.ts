@@ -618,13 +618,12 @@ function writeRelayctlShim(sessionId: string): string | null {
   try {
     const binDir = path.join(os.tmpdir(), 'relay-ide', sessionId, 'bin');
     fs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
-    const shimPath = path.join(binDir, 'relayctl');
-    fs.writeFileSync(
-      shimPath,
-      `#!/bin/sh\nexec node ${shellQuote(binaryPath)} "$@"\n`,
-      { encoding: 'utf-8', mode: 0o755 }
-    );
-    fs.chmodSync(shimPath, 0o755);
+    const shim = `#!/bin/sh\nexec node ${shellQuote(binaryPath)} "$@"\n`;
+    for (const name of ['relayctl', 'relay']) {
+      const shimPath = path.join(binDir, name);
+      fs.writeFileSync(shimPath, shim, { encoding: 'utf-8', mode: 0o755 });
+      fs.chmodSync(shimPath, 0o755);
+    }
     return binDir;
   } catch (err) {
     logger.warn(`Failed to write relayctl shim for session ${sessionId}:`, err);
@@ -645,6 +644,7 @@ type RelaySessionEnvParams = {
  * - RELAY_NODE_ID — the node this session is running on
  * - RELAY_SESSION_ID — the local session ID
  * - RELAY_HUB_URL — the local hub base URL (http://127.0.0.1:{port})
+ * - RELAY_SOCKET — alias for the local hub endpoint for terminal mailroom CLIs
  * - RELAY_WORK_CONTEXT_ID — set only when a WorkContext is bound
  *
  * Also writes a per-session bin dir with a `relayctl` shim and prepends it
@@ -678,7 +678,9 @@ function injectRelaySessionEnv(
   if (port !== undefined) {
     const hubUrl = `http://127.0.0.1:${port}`;
     env.RELAY_HUB_URL = hubUrl;
+    env.RELAY_SOCKET = hubUrl;
     tmuxEnv.RELAY_HUB_URL = hubUrl;
+    tmuxEnv.RELAY_SOCKET = hubUrl;
   }
 
   if (workContextId) {

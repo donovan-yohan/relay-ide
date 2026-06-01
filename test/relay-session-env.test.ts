@@ -116,6 +116,8 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
     });
     expect(env.RELAY_HUB_URL).toBe('http://127.0.0.1:9876');
     expect(tmuxEnv.RELAY_HUB_URL).toBe('http://127.0.0.1:9876');
+    expect(env.RELAY_SOCKET).toBe('http://127.0.0.1:9876');
+    expect(tmuxEnv.RELAY_SOCKET).toBe('http://127.0.0.1:9876');
   });
 
   it('omits RELAY_HUB_URL when port is undefined', () => {
@@ -129,6 +131,8 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
     });
     expect(env.RELAY_HUB_URL).toBeUndefined();
     expect(tmuxEnv.RELAY_HUB_URL).toBeUndefined();
+    expect(env.RELAY_SOCKET).toBeUndefined();
+    expect(tmuxEnv.RELAY_SOCKET).toBeUndefined();
   });
 
   it('injects RELAY_WORK_CONTEXT_ID when provided', () => {
@@ -177,9 +181,10 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
       expect(shimDir).toMatch(/bin$/);
       expect(env.PATH).toContain(originalPath);
       expect(tmuxEnv.PATH).toContain(originalPath);
-      // Verify a relayctl file was written in the shim dir
+      // Verify relayctl and relay files were written in the shim dir
       const { existsSync } = fs;
       expect(existsSync(path.join(shimDir, 'relayctl'))).toBe(true);
+      expect(existsSync(path.join(shimDir, 'relay'))).toBe(true);
     }
     // Either way PATH is a valid string
     expect(typeof env.PATH).toBe('string');
