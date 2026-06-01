@@ -1700,7 +1700,25 @@ async function main(): Promise<void> {
     res: express.Response
   ): Record<string, unknown> | null {
     const body = req.body as unknown;
-    if (!isCliGatewayV1Request(req)) return isRecord(body) ? body : {};
+    if (!isCliGatewayV1Request(req)) {
+      const directBody = isRecord(body) ? body : {};
+      if (Object.prototype.hasOwnProperty.call(directBody, 'useTmux')) {
+        res.status(400).json({
+          error: 'legacy useTmux request flag is no longer supported; use terminalBackend',
+        });
+        return null;
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(directBody, 'terminalBackend') &&
+        normalizeTerminalBackend(directBody['terminalBackend']) === undefined
+      ) {
+        res.status(400).json({
+          error: 'terminalBackend must be "relay-pty" or "tmux-compat"',
+        });
+        return null;
+      }
+      return directBody;
+    }
     if (!isRecord(body)) {
       sendGatewayCreateValidationError(res, {
         code: 'INVALID_ARGUMENT',
@@ -3816,7 +3834,6 @@ async function main(): Promise<void> {
       mode,
       agent,
       yolo,
-      useTmux,
       terminalBackend,
       claudeArgs,
       cols,
@@ -3839,7 +3856,6 @@ async function main(): Promise<void> {
       mode?: 'pty' | 'web';
       agent?: AgentType;
       yolo?: boolean;
-      useTmux?: boolean;
       terminalBackend?: TerminalBackend;
       claudeArgs?: string[];
       cols?: number;
@@ -3915,7 +3931,6 @@ async function main(): Promise<void> {
         freshConfig,
         checkedRepoPath,
         {
-          useTmux,
           terminalBackend: requestedTerminalBackend,
         }
       );
@@ -3961,7 +3976,6 @@ async function main(): Promise<void> {
     const resolved = resolveSessionSettings(freshConfig, checkedRepoPath, {
       agent,
       yolo,
-      useTmux,
       terminalBackend: requestedTerminalBackend,
       claudeArgs,
       continuePolicy: effectivePolicy,

@@ -1,4 +1,4 @@
-import { test, beforeAll, afterEach, afterAll, expect } from 'vitest';
+import { test, beforeAll, afterEach, afterAll, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -19,11 +19,11 @@ function writeConfig(data: object): void {
   fs.writeFileSync(configPath, JSON.stringify(data), 'utf8');
 }
 
-function startServer(cp: string): Promise<void> {
+function startServer(cp: string, sessionDeps?: any): Promise<void> {
   return new Promise((resolve) => {
     const app = express();
     app.use(express.json());
-    app.use('/workspace-groups', createWorkspaceGroupsRouter(cp, noAuth));
+    app.use('/workspace-groups', createWorkspaceGroupsRouter(cp, noAuth, sessionDeps));
     server = app.listen(0, '127.0.0.1', () => {
       const addr = server.address() as { port: number };
       baseUrl = `http://127.0.0.1:${addr.port}`;
@@ -59,6 +59,31 @@ async function req(
     }
   }
   return { status: res.status, body: parsed };
+}
+
+async function rawReq(
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+  url: string,
+  rawBody: string
+): Promise<{ status: number; body: any }> {
+  const res = await fetch(`${baseUrl}${url}`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: rawBody,
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+function fakeSessionDeps() {
+  return {
+    sessions: {
+      create: vi.fn().mockReturnValue({ id: 'sess-1', cwd: tmpDir }),
+      list: () => [],
+      nextAgentName: () => 'Agent 1',
+    },
+    gitWatcher: { watch: vi.fn() },
+    configPath,
+  };
 }
 
 beforeAll(() => {
@@ -438,4 +463,51 @@ test('same repo can appear in multiple workspaces', async () => {
   expect(saved.workspaces.every((w: any) => w.repos.includes('/shared'))).toBe(
     true
   );
+});
+
+test('workspace session rejects malformed body and invalid terminal backend', async () => {
+  const repoPath = path.join(tmpDir, 'repo');
+  fs.mkdirSync(repoPath, { recursive: true });
+  writeConfig({
+    configVersion: 4,
+    repos: [repoPath],
+    workspaces: [{ id: 'ws-1', name: 'Ws', repos: [repoPath], order: 0 }],
+  });
+  const sessionDeps = fakeSessionDeps();
+  await startServer(configPath, sessionDeps);
+
+  const nullBody = await rawReq('POST', '/workspace-groups/ws-1/session', '[]');
+  expect(nullBody.status).toBe(400);
+  expect(nullBody.body).toEqual({ error: 'request body must be an object' });
+
+  const invalidBackend = await req('POST', '/workspace-groups/ws-1/session', {
+    terminalBackend: 'tmuxx',
+  });
+  expect(invalidBackend.status).toBe(400);
+  expect(invalidBackend.body).toEqual({
+    error: 'terminalBackend must be "relay-pty" or "tmux-compat"',
+  });
+  expect(sessionDeps.sessions.create).not.toHaveBeenCalled();
+});
+
+test('workspace session passes valid terminalBackend to session create', async () => {
+  const repoPath = path.join(tmpDir, 'repo-valid');
+  fs.mkdirSync(repoPath, { recursive: true });
+  writeConfig({
+    configVersion: 4,
+    repos: [repoPath],
+    workspaces: [{ id: 'ws-1', name: 'Ws', repos: [repoPath], order: 0 }],
+  });
+  const sessionDeps = fakeSessionDeps();
+  await startServer(configPath, sessionDeps);
+
+  const result = await req('POST', '/workspace-groups/ws-1/session', {
+    terminalBackend: 'tmux-compat',
+  });
+  expect(result.status).toBe(201);
+  expect(sessionDeps.sessions.create).toHaveBeenCalledTimes(1);
+  expect(sessionDeps.sessions.create.mock.calls[0]?.[0]).toMatchObject({
+    terminalBackend: 'tmux-compat',
+    useTmux: true,
+  });
 });

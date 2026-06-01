@@ -11,19 +11,19 @@ Existing tmux sessions and legacy saved state stay on `tmux-compat`, but new ses
 
 `terminalBackend` can be set globally, per workspace, per repo, or per session request. Effective session settings use this order, most-specific first:
 
-1. Explicit session override: `POST /sessions` or `PATCH /config/terminalBackend` request fields such as `terminalBackend: "relay-pty"` or legacy `useTmux: false`.
+1. Explicit session override: `POST /sessions`, routed `sessions.create`, or `PATCH /config/terminalBackend` request fields such as `terminalBackend: "relay-pty"`.
 2. Repo settings: `repoSettings[repoPath].terminalBackend`.
 3. Workspace settings: `workspaces[].settings.terminalBackend`.
 4. Global default: `RELAY_IDE_TERMINAL_BACKEND`, then `config.terminalBackend`, then the hardcoded default `relay-pty`.
 
 `RELAY_IDE_TERMINAL_BACKEND` is a global default, not an absolute operator lock. A repo or workspace configured for `tmux-compat` must continue to resolve to `tmux-compat` even when the process environment default is `relay-pty`. Explicit per-session overrides still win over all saved defaults.
 
-Legacy `useTmux` maps to the same backend contract for compatibility:
+`terminalBackend` is the public create/config knob. Legacy serialized/runtime `useTmux` still maps to the same backend contract when restoring old state, but it is no longer part of the CLI gateway `sessions.create` surface:
 
-- `useTmux: true` => `terminalBackend: "tmux-compat"`
-- `useTmux: false` => `terminalBackend: "relay-pty"`
+- legacy `useTmux: true` => `terminalBackend: "tmux-compat"`
+- legacy `useTmux: false` => `terminalBackend: "relay-pty"`
 
-New code should prefer `terminalBackend`; `useTmux` exists so older callers and saved settings keep working during migration.
+New code must send `terminalBackend`; `useTmux` is runtime/status compatibility only.
 
 ## Which sessions migrate
 

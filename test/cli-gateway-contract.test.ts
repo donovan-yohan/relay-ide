@@ -391,7 +391,6 @@ describe('CLI gateway contract', () => {
           'type',
           'mode',
           'agent',
-          'useTmux',
           'terminalBackend',
           'cols',
           'rows',
@@ -415,6 +414,16 @@ describe('CLI gateway contract', () => {
     expect(localEnvelope).toMatchObject({
       ok: false,
       error: { code: 'UNSUPPORTED', details: { field: 'sessionEnvelope' } },
+    });
+
+    const legacyTmuxFlag = validateAndSanitizeGatewayCreateInput({
+      nodeId: 'node-a',
+      repoPath: '/tmp/repo',
+      useTmux: false,
+    });
+    expect(legacyTmuxFlag).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT', details: { field: 'useTmux' } },
     });
 
     const agentPeer = validateAndSanitizeGatewayCreateInput({
@@ -470,7 +479,6 @@ describe('CLI gateway contract', () => {
       worktreePath: null,
       type: 'terminal',
       terminalBackend: 'relay-pty',
-      useTmux: false,
       cols: 120,
       rows: 32,
       workContextId: 'wc:handoff',
@@ -482,7 +490,6 @@ describe('CLI gateway contract', () => {
         worktreePath: null,
         type: 'terminal',
         terminalBackend: 'relay-pty',
-        useTmux: false,
         cols: 120,
         rows: 32,
         workContextId: 'wc:handoff',

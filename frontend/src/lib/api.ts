@@ -1328,7 +1328,7 @@ export interface CreateSessionBody {
   claudeArgs?: string[] | undefined;
   yolo?: boolean | undefined;
   agent?: string | undefined;
-  useTmux?: boolean | undefined;
+  terminalBackend?: 'relay-pty' | 'tmux-compat' | undefined;
   cols?: number | undefined;
   rows?: number | undefined;
   needsBranchRename?: boolean | undefined;
@@ -2007,7 +2007,7 @@ export async function launchWorkspaceSession(
   opts?: {
     agent?: string;
     yolo?: boolean;
-    useTmux?: boolean;
+    terminalBackend?: 'relay-pty' | 'tmux-compat';
     claudeArgs?: string[];
     cols?: number;
     rows?: number;

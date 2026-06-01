@@ -28,7 +28,7 @@ import type {
   RelayNodeError,
 } from '../shared/relay-node-protocol.js';
 import { isSessionLane, type SessionLane } from '../shared/session-lane.js';
-import type { SessionSummary } from './types.js';
+import type { SessionSummary, TerminalBackend } from './types.js';
 
 // Node-side RPC dispatcher. Hub initiates rpc/<type> requests over the
 // reverse WS; this module receives them, calls into the local
@@ -97,6 +97,31 @@ function asBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
 }
 
+function parseTerminalBackend(value: unknown): TerminalBackend | undefined {
+  if (value === 'relay-pty' || value === 'tmux-compat') return value;
+  return undefined;
+}
+
+function parseTerminalBackendOverride(
+  record: Record<string, unknown>
+): Pick<SessionsCreateInput, 'terminalBackend'> | RelayNodeError {
+  if (Object.prototype.hasOwnProperty.call(record, 'useTmux')) {
+    return invalidRequest(
+      'sessions.create payload.useTmux is no longer supported; use terminalBackend'
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(record, 'terminalBackend')) {
+    const terminalBackend = parseTerminalBackend(record['terminalBackend']);
+    if (terminalBackend === undefined) {
+      return invalidRequest(
+        'sessions.create payload.terminalBackend must be "relay-pty" or "tmux-compat"'
+      );
+    }
+    return { terminalBackend };
+  }
+  return {};
+}
+
 function asNullableString(value: unknown): string | null | undefined {
   if (value === null) return null;
   if (typeof value === 'string') return value;
@@ -157,7 +182,7 @@ interface SessionsCreateInput {
   workspaceId?: string;
   additionalDirs?: string[];
   initialPrompt?: string;
-  useTmux?: boolean;
+  terminalBackend?: TerminalBackend;
   needsBranchRename?: boolean;
   branchRenamePrompt?: string;
   continue?: boolean;
@@ -218,8 +243,9 @@ function parseSessionsCreateInput(
   if (additionalDirs !== undefined) input.additionalDirs = additionalDirs;
   const initialPrompt = asString(record['initialPrompt']);
   if (initialPrompt !== undefined) input.initialPrompt = initialPrompt;
-  const useTmux = asBoolean(record['useTmux']);
-  if (useTmux !== undefined) input.useTmux = useTmux;
+  const terminalOverride = parseTerminalBackendOverride(record);
+  if ('code' in terminalOverride) return terminalOverride;
+  Object.assign(input, terminalOverride);
   const needsBranchRename = asBoolean(record['needsBranchRename']);
   if (needsBranchRename !== undefined)
     input.needsBranchRename = needsBranchRename;

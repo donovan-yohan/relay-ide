@@ -30,7 +30,6 @@ const createSessionAllowedFields = new Set([
   'mode',
   'agent',
   'yolo',
-  'useTmux',
   'terminalBackend',
   'cols',
   'rows',
@@ -97,7 +96,6 @@ const localCreateSupportedFields = [
   'mode',
   'agent',
   'yolo',
-  'useTmux',
   'terminalBackend',
   'cols',
   'rows',
@@ -426,11 +424,6 @@ function validateCreateFieldTypes(
   if (input['yolo'] !== undefined && typeof input['yolo'] !== 'boolean') {
     return invalidCreateInput('sessions.create yolo must be a boolean', {
       field: 'yolo',
-    });
-  }
-  if (input['useTmux'] !== undefined && typeof input['useTmux'] !== 'boolean') {
-    return invalidCreateInput('sessions.create useTmux must be a boolean', {
-      field: 'useTmux',
     });
   }
   for (const [field, min, max] of [

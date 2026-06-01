@@ -8,7 +8,7 @@ import type { Server } from 'node:http';
 import { createWorkspaceRouter } from '../server/workspaces.js';
 import { DEFAULTS, loadConfig, saveConfig } from '../server/config.js';
 
-const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
+const LEGACY_TMUX_LAUNCH_KEY = 'launchInTmux';
 
 let tmpDir: string;
 let configPath: string;

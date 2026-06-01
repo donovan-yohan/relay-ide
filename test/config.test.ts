@@ -15,7 +15,7 @@ import {
 } from '../server/config.js';
 import type { Config } from '../server/types.js';
 
-const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
+const LEGACY_TMUX_LAUNCH_KEY = 'launchInTmux';
 
 let tmpDir!: string;
 

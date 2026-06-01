@@ -299,6 +299,10 @@ interface BaseSession {
   sessionEnvelope?: SessionEnvelope | undefined;
   _lastEmittedBackendState?: BackendDisplayState | undefined;
   _lastEmittedPermissionType?: 'approval' | 'question' | undefined;
+  /** Tracks whether permission-prompt is for approval or question. */
+  permissionType?: 'approval' | 'question';
+  /** Distinguishes hook-owned prompts from terminal-model fallback prompts. */
+  permissionPromptSource?: 'hooks' | 'terminal-model';
   _lastEmittedDurability?: SessionDurabilityState | undefined;
   lastAttentionNotifiedAt?: number | undefined;
 }

@@ -134,6 +134,67 @@ describe('node-link-rpc-host', () => {
     expect(replyPayload.session).not.toHaveProperty('pid');
   });
 
+  it('passes routed terminalBackend and rejects legacy routed useTmux', () => {
+    const localRelayNode = fakeLocalNode();
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const ok = context();
+
+    host.handle(
+      envelope('sessions.create', {
+        type: 'terminal',
+        cwd: '/home/user',
+        terminalBackend: 'relay-pty',
+      }),
+      ok.ctx
+    );
+
+    expect(localRelayNode.sessions.create).toHaveBeenCalledTimes(1);
+    expect(
+      (localRelayNode.sessions.create as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0]
+    ).toMatchObject({ terminalBackend: 'relay-pty' });
+
+    const legacy = context();
+    host.handle(
+      envelope('sessions.create', {
+        type: 'terminal',
+        cwd: '/home/user',
+        useTmux: false,
+      }),
+      legacy.ctx
+    );
+
+    expect(localRelayNode.sessions.create).toHaveBeenCalledTimes(1);
+    expect(legacy.sent[0]).toMatchObject({
+      type: 'sessions.create.error',
+      error: {
+        code: 'INVALID_REQUEST',
+        message:
+          'sessions.create payload.useTmux is no longer supported; use terminalBackend',
+      },
+    });
+
+    const invalid = context();
+    host.handle(
+      envelope('sessions.create', {
+        type: 'terminal',
+        cwd: '/home/user',
+        terminalBackend: 'tmuxx',
+      }),
+      invalid.ctx
+    );
+
+    expect(localRelayNode.sessions.create).toHaveBeenCalledTimes(1);
+    expect(invalid.sent[0]).toMatchObject({
+      type: 'sessions.create.error',
+      error: {
+        code: 'INVALID_REQUEST',
+        message:
+          'sessions.create payload.terminalBackend must be "relay-pty" or "tmux-compat"',
+      },
+    });
+  });
+
   it('defaults routed terminal creates to a shell command instead of the agent command', () => {
     const localRelayNode = fakeLocalNode();
     const host = createNodeLinkRpcHost({ localRelayNode });

@@ -60,7 +60,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const logger = createLogger('workspaces');
-const LEGACY_TMUX_LAUNCH_KEY = 'launch' + 'InTmux';
+const LEGACY_TMUX_LAUNCH_KEY = 'launchInTmux';
 
 // ── Typed git infrastructure errors ──────────────────────────────────────────
 
