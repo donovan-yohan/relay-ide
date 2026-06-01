@@ -84,6 +84,10 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
         ssh: 'available',
         tailscale: 'available',
       },
+      terminalBackends: {
+        'relay-pty': 'available',
+        'tmux-compat': 'available',
+      },
       worktrees: 'available',
       agents: { claude: 'available', codex: 'available', hermes: 'available' },
       serviceManager: 'launchd',
@@ -294,6 +298,10 @@ function nodes(): HubNodeSummary[] {
         core: {
           ...node().capabilities.core,
           tmux: 'unavailable',
+        },
+        terminalBackends: {
+          'relay-pty': 'unavailable',
+          'tmux-compat': 'unavailable',
         },
       },
     }),

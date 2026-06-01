@@ -84,7 +84,7 @@ test('DEFAULTS has expected keys and values', () => {
   expect(DEFAULTS.defaultContinue).toBe(true);
   expect(DEFAULTS.defaultYolo).toBe(false);
   expect(DEFAULTS.launchInTmux).toBe(true);
-  expect(DEFAULTS.terminalBackend).toBe('tmux-compat');
+  expect(DEFAULTS.terminalBackend).toBe('relay-pty');
 });
 
 test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and launchInTmux', () => {
@@ -95,7 +95,7 @@ test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and 
   expect(config.defaultContinue).toBe(true);
   expect(config.defaultYolo).toBe(false);
   expect(config.launchInTmux).toBe(true);
-  expect(config.terminalBackend).toBe('tmux-compat');
+  expect(config.terminalBackend).toBe('relay-pty');
 });
 
 test('ensureMetaDir creates worktree-meta directory', () => {
@@ -175,8 +175,8 @@ test('resolveSessionSettings returns global defaults when no workspace or overri
   expect(result.agent).toBe('claude');
   expect(result.yolo).toBe(false);
   expect(result.continuePolicy).toBe('always');
-  expect(result.terminalBackend).toBe('tmux-compat');
-  expect(result.useTmux).toBe(true);
+  expect(result.terminalBackend).toBe('relay-pty');
+  expect(result.useTmux).toBe(false);
   expect(result.claudeArgs).toEqual([]);
 });
 
@@ -353,7 +353,7 @@ test('resolveSessionSettings falls through to globals when no workspace exists',
   expect(result.agent).toBe('codex');
   expect(result.yolo).toBe(true);
   expect(result.continuePolicy).toBe('never');
-  expect(result.useTmux).toBe(true);
+  expect(result.useTmux).toBe(false);
   expect(result.claudeArgs).toEqual(['--verbose']);
 });
 
@@ -433,10 +433,10 @@ test('resolveSessionSettings with workspaceId applies workspace settings between
   );
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
-  // Workspace settings should override global
+  // Workspace settings should override global; legacy launchInTmux no longer changes the backend.
   expect(result.yolo).toBe(true);
   expect(result.agent).toBe('codex');
-  expect(result.useTmux).toBe(true);
+  expect(result.useTmux).toBe(false);
 });
 
 test('resolveSessionSettings: repo settings override workspace settings', () => {

@@ -1691,6 +1691,23 @@ function protocolVersionRelayError(
   );
 }
 
+function nodeTerminalBackends(node: HubNodeSummary): {
+  'relay-pty': string;
+  'tmux-compat': string;
+} {
+  return {
+    'relay-pty': node.capabilities.terminalBackends?.['relay-pty'] ?? 'unknown',
+    'tmux-compat':
+      node.capabilities.terminalBackends?.['tmux-compat'] ??
+      node.capabilities.core.tmux,
+  };
+}
+
+function nodeHasTerminalBackend(node: HubNodeSummary): boolean {
+  const backends = nodeTerminalBackends(node);
+  return backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available';
+}
+
 function nodeTerminalUnsupportedError(
   nodeId: string,
   node: HubNodeSummary
@@ -1707,15 +1724,17 @@ function nodeTerminalUnsupportedError(
       }
     );
   }
-  if (node.capabilities.core.tmux !== 'available') {
+  if (!nodeHasTerminalBackend(node)) {
+    const backends = nodeTerminalBackends(node);
     return relayError(
       'NODE_UNSUPPORTED',
-      `node ${nodeId} cannot host tmux-backed PTY sessions`,
+      `node ${nodeId} cannot host PTY sessions: no terminal backend is available`,
       false,
       {
-        reasonCode: 'NODE_TERMINAL_TMUX_UNAVAILABLE',
-        capability: 'tmux',
-        status: node.capabilities.core.tmux,
+        reasonCode: 'NODE_TERMINAL_BACKEND_UNAVAILABLE',
+        capability: 'terminalBackend',
+        terminalBackends: backends,
+        tmuxStatus: node.capabilities.core.tmux,
       }
     );
   }

@@ -47,7 +47,7 @@ export const DEFAULTS: Omit<
   defaultYolo: false,
   maxPtySessions: 64,
   launchInTmux: true,
-  terminalBackend: 'tmux-compat',
+  terminalBackend: 'relay-pty',
   defaultNotifications: true,
   claudeFullscreen: true,
   updateChannel: 'stable',
@@ -224,7 +224,7 @@ export function defaultTerminalBackend(config: Config): TerminalBackend {
   return (
     normalizeTerminalBackend(process.env.RELAY_IDE_TERMINAL_BACKEND) ??
     normalizeTerminalBackend(config.terminalBackend) ??
-    'tmux-compat'
+    'relay-pty'
   );
 }
 
@@ -261,7 +261,7 @@ export function resolveSessionSettings(
         ? 'tmux-compat'
         : undefined) ??
     normalizeTerminalBackend(merged.terminalBackend) ??
-    'tmux-compat';
+    'relay-pty';
 
   // Map boolean defaultContinue → ContinuePolicy for backward compat
   const configPolicy: ContinuePolicy =

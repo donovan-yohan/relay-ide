@@ -551,7 +551,7 @@ describe('CustomizeSessionDialog environment picker model', () => {
   });
 
   it.each(['degraded', 'unavailable', 'unknown'] as const)(
-    'disables nodes when tmux is %s',
+    'disables pre-backend-reporting nodes when tmux compatibility is %s',
     (tmuxStatus) => {
       const model = buildEnvironmentPickerModel({
         inventory: inventory(),
@@ -581,7 +581,7 @@ describe('CustomizeSessionDialog environment picker model', () => {
         model.nodeChoices.find((choice) => choice.value === 'linux')
       ).toMatchObject({
         disabled: true,
-        reason: `tmux ${tmuxStatus} on linux lab`,
+        reason: `terminal backend unavailable on linux lab (relay-pty unknown, tmux-compat ${tmuxStatus})`,
       });
       expect(model.resolved.nodeId).toBe('local');
     }
@@ -601,7 +601,7 @@ describe('terminal vs agent node eligibility', () => {
     });
   }
 
-  it('nodeAgentBlockReason returns reason for missing agent; nodeShellBlockReason returns null when shell+tmux are available', () => {
+  it('nodeAgentBlockReason returns reason for missing agent; nodeShellBlockReason returns null when shell plus terminal backend are available', () => {
     const hermesMissingNode = remoteNode();
 
     expect(nodeShellBlockReason(hermesMissingNode)).toBeNull();
@@ -610,7 +610,7 @@ describe('terminal vs agent node eligibility', () => {
     );
   });
 
-  it('buildEnvironmentPickerModel enables node in terminal mode when agent is missing but shell+tmux are available', () => {
+  it('buildEnvironmentPickerModel enables node in terminal mode when agent is missing but shell plus terminal backend are available', () => {
     const hermesMissingNode = remoteNode();
     const repoInventory = inventory();
     repoInventory.groups = [
@@ -677,7 +677,7 @@ describe('terminal vs agent node eligibility', () => {
     expect(terminalRemoteChoice?.reason).toBeUndefined();
   });
 
-  it('disables node in both modes when tmux is degraded', () => {
+  it('keeps node enabled when tmux is degraded but relay-pty is available', () => {
     const tmuxDegradedNode = remoteNode({
       capabilities: {
         ...remoteNode().capabilities,
@@ -685,14 +685,39 @@ describe('terminal vs agent node eligibility', () => {
           ...remoteNode().capabilities.core,
           tmux: 'degraded',
         },
+        terminalBackends: {
+          'relay-pty': 'available',
+          'tmux-compat': 'degraded',
+        },
       },
     });
 
-    expect(nodeShellBlockReason(tmuxDegradedNode)).toBe(
-      'tmux degraded on remote server'
-    );
+    expect(nodeShellBlockReason(tmuxDegradedNode)).toBeNull();
     expect(nodeAgentBlockReason(tmuxDegradedNode, 'hermes')).toBe(
-      'tmux degraded on remote server'
+      'hermes capability unknown on remote server'
+    );
+  });
+
+  it('disables node in both modes when no terminal backend is available', () => {
+    const noBackendNode = remoteNode({
+      capabilities: {
+        ...remoteNode().capabilities,
+        core: {
+          ...remoteNode().capabilities.core,
+          tmux: 'unavailable',
+        },
+        terminalBackends: {
+          'relay-pty': 'unavailable',
+          'tmux-compat': 'unavailable',
+        },
+      },
+    });
+
+    expect(nodeShellBlockReason(noBackendNode)).toBe(
+      'terminal backend unavailable on remote server (relay-pty unavailable, tmux-compat unavailable)'
+    );
+    expect(nodeAgentBlockReason(noBackendNode, 'hermes')).toBe(
+      'terminal backend unavailable on remote server (relay-pty unavailable, tmux-compat unavailable)'
     );
   });
 

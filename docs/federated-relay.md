@@ -474,7 +474,7 @@ If any precondition fails, the hub returns a typed error with `retryable` guidan
 | `NOT_FOUND`             | Node is not paired                    | No        |
 | `PROTOCOL_INCOMPATIBLE` | Major version mismatch                | No        |
 | `VERSION_SKEW`          | Exact version mismatch (same major)   | No        |
-| `NODE_UNSUPPORTED`      | Node cannot host tmux-backed sessions | No        |
+| `NODE_UNSUPPORTED`      | Node cannot host any supported terminal backend | No        |
 | `NODE_OFFLINE`          | Node has no live reverse link         | Yes       |
 
 On success, the hub forwards the request as an RPC (`sessions.create`) over the node's reverse WebSocket, receives the node-local `SessionSummary`, and returns a **node-scoped** session that backs a user-visible Tab with:

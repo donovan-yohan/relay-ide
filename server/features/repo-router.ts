@@ -6,6 +6,7 @@ import {
 import { type HubNodeRegistry } from '../hub-node-registry.js';
 import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
+  type HubNodeSummary,
   type RelayNodeError,
 } from '../../shared/relay-node-protocol.js';
 import { HubNodeLinkError, type HubNodeLinkManager } from '../hub-node-link.js';
@@ -78,6 +79,23 @@ export interface RepoFeatureRouterOptions {
    */
   iaStore?: IaStore | null;
   now?: () => Date;
+}
+
+function nodeTerminalBackends(node: HubNodeSummary): {
+  'relay-pty': string;
+  'tmux-compat': string;
+} {
+  return {
+    'relay-pty': node.capabilities.terminalBackends?.['relay-pty'] ?? 'unknown',
+    'tmux-compat':
+      node.capabilities.terminalBackends?.['tmux-compat'] ??
+      node.capabilities.core.tmux,
+  };
+}
+
+function nodeHasTerminalBackend(node: HubNodeSummary): boolean {
+  const backends = nodeTerminalBackends(node);
+  return backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available';
 }
 
 function sessionCreateTypeFromBody(body: Record<string, unknown>): SessionCreateType | RelayNodeError {
@@ -548,12 +566,20 @@ export function createRepoFeatureRouter(
         );
         return;
       }
-      if (node.capabilities.core.tmux !== 'available') {
+      if (!nodeHasTerminalBackend(node)) {
+        const terminalBackends = nodeTerminalBackends(node);
         sendRelayError(
           res,
           relayError(
             'NODE_UNSUPPORTED',
-            `node ${nodeId} cannot host tmux-backed PTY sessions`
+            `node ${nodeId} cannot host PTY sessions: no terminal backend is available`,
+            false,
+            {
+              reasonCode: 'NODE_TERMINAL_BACKEND_UNAVAILABLE',
+              capability: 'terminalBackend',
+              terminalBackends,
+              tmuxStatus: node.capabilities.core.tmux,
+            }
           )
         );
         return;

@@ -157,7 +157,26 @@ function getNodeCapabilities(
   // `decorateManifestWithFrameworks`. Core never references framework
   // ids directly — neither in code nor in this comment.
   const tmux = probeCommand('tmux', 'tmux', 'tmux', env);
+  const relayPty: NodeCapabilityProbe = {
+    id: 'relay-pty',
+    label: 'Relay PTY',
+    status: 'available',
+    message:
+      'RelayPtySession is bundled and can create new direct PTY sessions without tmux.',
+  };
   return {
+    terminalBackends: {
+      'relay-pty': relayPty,
+      'tmux-compat': {
+        ...tmux,
+        id: 'tmux-compat',
+        label: 'tmux compatibility',
+        message:
+          tmux.status === 'available'
+            ? 'tmux compatibility backend is available for legacy/imported sessions.'
+            : 'tmux compatibility backend is unavailable because tmux was not found on PATH.',
+      },
+    },
     tmux,
     git: probeCommand('git', 'Git', 'git', env),
     clipboard: probeClipboard(env, platform),

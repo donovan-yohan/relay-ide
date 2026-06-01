@@ -214,6 +214,10 @@ function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
         ssh: 'available',
         tailscale: 'available',
       },
+      terminalBackends: {
+        'relay-pty': 'available',
+        'tmux-compat': 'available',
+      },
       worktrees: 'available',
       agents: { [selectedAgent]: 'available' },
       serviceManager: 'local',
@@ -309,6 +313,15 @@ function capabilityProblem(
   return `${name} ${capability}`;
 }
 
+function terminalBackendProblem(node: HubNodeSummary): string | null {
+  const relayPty = node.capabilities.terminalBackends?.['relay-pty'] ?? 'unknown';
+  const tmuxCompat =
+    node.capabilities.terminalBackends?.['tmux-compat'] ??
+    node.capabilities.core.tmux;
+  if (relayPty === 'available' || tmuxCompat === 'available') return null;
+  return `terminal backend unavailable on ${node.displayName} (relay-pty ${relayPty}, tmux-compat ${tmuxCompat})`;
+}
+
 export function nodeShellBlockReason(
   node: HubNodeSummary | null
 ): string | null {
@@ -321,8 +334,8 @@ export function nodeShellBlockReason(
   if (versionState === 'version-skew') return 'node has version skew';
   const shellProblem = capabilityProblem(node.capabilities.core.shell, 'shell');
   if (shellProblem) return shellProblem;
-  const tmuxProblem = capabilityProblem(node.capabilities.core.tmux, 'tmux');
-  if (tmuxProblem) return `${tmuxProblem} on ${node.displayName}`;
+  const backendProblem = terminalBackendProblem(node);
+  if (backendProblem) return backendProblem;
   return null;
 }
 
