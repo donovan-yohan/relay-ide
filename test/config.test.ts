@@ -98,6 +98,46 @@ test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and 
   expect(config.terminalBackend).toBe('relay-pty');
 });
 
+test('loadConfig migrates legacy launchInTmux=true to tmux-compat when terminalBackend is absent', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ launchInTmux: true }), 'utf8');
+
+  const config = loadConfig(configPath);
+  expect(config.terminalBackend).toBe('tmux-compat');
+  expect(config.launchInTmux).toBe(true);
+});
+
+test('loadConfig keeps relay-pty default for absent or false legacy launchInTmux', () => {
+  const missingLegacyPath = path.join(tmpDir, 'missing-legacy.json');
+  fs.writeFileSync(missingLegacyPath, JSON.stringify({}), 'utf8');
+  const missingLegacyConfig = loadConfig(missingLegacyPath);
+  expect(missingLegacyConfig.terminalBackend).toBe('relay-pty');
+  expect(missingLegacyConfig.launchInTmux).toBe(false);
+
+  const falseLegacyPath = path.join(tmpDir, 'false-legacy.json');
+  fs.writeFileSync(
+    falseLegacyPath,
+    JSON.stringify({ launchInTmux: false }),
+    'utf8'
+  );
+  const falseLegacyConfig = loadConfig(falseLegacyPath);
+  expect(falseLegacyConfig.terminalBackend).toBe('relay-pty');
+  expect(falseLegacyConfig.launchInTmux).toBe(false);
+});
+
+test('loadConfig lets explicit terminalBackend take precedence over legacy launchInTmux', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({ terminalBackend: 'relay-pty', launchInTmux: true }),
+    'utf8'
+  );
+
+  const config = loadConfig(configPath);
+  expect(config.terminalBackend).toBe('relay-pty');
+  expect(config.launchInTmux).toBe(false);
+});
+
 test('ensureMetaDir creates worktree-meta directory', () => {
   const configPath = path.join(tmpDir, 'config.json');
   ensureMetaDir(configPath);
@@ -353,7 +393,8 @@ test('resolveSessionSettings falls through to globals when no workspace exists',
   expect(result.agent).toBe('codex');
   expect(result.yolo).toBe(true);
   expect(result.continuePolicy).toBe('never');
-  expect(result.useTmux).toBe(false);
+  expect(result.terminalBackend).toBe('tmux-compat');
+  expect(result.useTmux).toBe(true);
   expect(result.claudeArgs).toEqual(['--verbose']);
 });
 

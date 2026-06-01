@@ -61,7 +61,14 @@ export function loadConfig(configPath: string): Config {
   }
   const raw = fs.readFileSync(configPath, 'utf8');
   const parsed = JSON.parse(raw) as Partial<Config>;
+  const hasExplicitTerminalBackend = Object.prototype.hasOwnProperty.call(
+    parsed,
+    'terminalBackend'
+  );
   const config: Config = { ...DEFAULTS, ...parsed };
+  if (!hasExplicitTerminalBackend && parsed.launchInTmux === true) {
+    config.terminalBackend = 'tmux-compat';
+  }
   config.launchInTmux = config.terminalBackend === 'tmux-compat';
 
   // Set default filter presets if not present in saved config (clone to avoid mutating the constant)
