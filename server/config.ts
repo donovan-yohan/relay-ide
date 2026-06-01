@@ -260,7 +260,6 @@ export function resolveSessionSettings(
       : overrides.useTmux === true
         ? 'tmux-compat'
         : undefined) ??
-    normalizeTerminalBackend(process.env.RELAY_IDE_TERMINAL_BACKEND) ??
     normalizeTerminalBackend(merged.terminalBackend) ??
     'tmux-compat';
 

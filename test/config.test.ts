@@ -262,6 +262,38 @@ test('resolveSessionSettings can opt into relay-pty through terminalBackend', ()
   expect(result.useTmux).toBe(false);
 });
 
+test('resolveSessionSettings lets repo terminalBackend override env global default', () => {
+  const configPath = path.join(tmpDir, 'config.json');
+  const previousBackend = process.env.RELAY_IDE_TERMINAL_BACKEND;
+  process.env.RELAY_IDE_TERMINAL_BACKEND = 'relay-pty';
+  try {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        defaultFramework: 'claude',
+        defaultYolo: false,
+        defaultContinue: true,
+        terminalBackend: 'relay-pty',
+        claudeArgs: [],
+        repoSettings: {
+          '/my/repo': { terminalBackend: 'tmux-compat' },
+        },
+      }),
+      'utf8'
+    );
+    const config = loadConfig(configPath);
+    const result = resolveSessionSettings(config, '/my/repo', {});
+    expect(result.terminalBackend).toBe('tmux-compat');
+    expect(result.useTmux).toBe(true);
+  } finally {
+    if (previousBackend === undefined) {
+      delete process.env.RELAY_IDE_TERMINAL_BACKEND;
+    } else {
+      process.env.RELAY_IDE_TERMINAL_BACKEND = previousBackend;
+    }
+  }
+});
+
 test('resolveSessionSettings explicit overrides beat workspace settings', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(

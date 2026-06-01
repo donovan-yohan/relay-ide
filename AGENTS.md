@@ -33,6 +33,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Design             | `docs/DESIGN.md`                       | Backend patterns, auth flow, PTY management, session types                                     |
 | Frontend           | `docs/FRONTEND.md`                     | React 19 components, state management (Zustand + TanStack Query)                               |
 | Quality            | `docs/QUALITY.md`                      | Test runner, test files, isolation patterns                                                    |
+| Terminal backends  | `docs/TERMINAL_BACKENDS.md`            | `relay-pty` rollout, `tmux-compat` fallback, migration/import behavior                         |
 | Review             | `docs/REVIEW_GUIDANCE.md`              | Review agent config, question bank, escape log                                                 |
 | Deployment         | `docs/references/deployment.md`        | Publishing + branching (nightly/master + tags)                                                 |
 | Devbox deploy      | `docs/references/devbox-hub-deploy.md` | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene        |
