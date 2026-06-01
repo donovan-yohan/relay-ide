@@ -2227,9 +2227,9 @@ async function main(): Promise<void> {
     }
     const c = getConfig();
     c.terminalBackend = value;
-    c.launchInTmux = value === 'tmux-compat';
+    c.launchInTmux = true;
     saveConfig(CONFIG_PATH, c);
-    res.json({ terminalBackend: value, launchInTmux: c.launchInTmux });
+    res.json({ terminalBackend: value, launchInTmux: true, required: true });
   });
 
   const watcher = new WorktreeWatcher();

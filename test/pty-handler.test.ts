@@ -1,4 +1,7 @@
 import { describe, it, afterEach, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import * as sessions from '../server/sessions.js';
 import type { PtySession, EventSourceType } from '../server/types.js';
 
@@ -202,6 +205,48 @@ describe('framework-driven PTY handler', () => {
     await expect(sessions.captureTmuxPane(result.id)).resolves.toContain(
       'relay-pty-ok'
     );
+  });
+
+  it('preserves workContextId when relay-pty retries without --continue', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-pty-retry-'));
+    const envPath = path.join(tmp, 'retry-env.txt');
+    const scriptPath = path.join(tmp, 'retry-env.sh');
+    fs.writeFileSync(
+      scriptPath,
+      `#!/bin/sh
+set -eu
+if [ "\${1:-}" = "--continue" ]; then
+  exit 1
+fi
+env > ${JSON.stringify(envPath)}
+sleep 60
+`,
+      { mode: 0o700 }
+    );
+
+    try {
+      const result = sessions.create({
+        repoName: 'test-repo',
+        repoPath: '/tmp',
+        worktreePath: null,
+        cwd: '/tmp',
+        agent: 'claude',
+        command: scriptPath,
+        args: ['--continue'],
+        terminalBackend: 'relay-pty',
+        useTmux: false,
+        workContextId: 'wc:retry-preserve',
+      });
+      createdIds.push(result.id);
+
+      await expect
+        .poll(() =>
+          fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
+        )
+        .toContain('RELAY_WORK_CONTEXT_ID=wc:retry-preserve');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('forceOutputParser sets dataQuality to parser regardless of framework', () => {

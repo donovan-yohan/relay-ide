@@ -382,6 +382,29 @@ describe('CLI gateway contract', () => {
       ok: false,
       error: { code: 'UNSUPPORTED', details: { field: 'ttlSeconds' } },
     });
+    expect(localLifecycle.ok).toBe(false);
+    if (localLifecycle.ok === false) {
+      expect(localLifecycle.error.details?.['supportedLocalFields']).toEqual(
+        expect.arrayContaining([
+          'repoPath',
+          'worktreePath',
+          'type',
+          'mode',
+          'agent',
+          'useTmux',
+          'terminalBackend',
+          'cols',
+          'rows',
+          'workContextId',
+        ])
+      );
+      expect(
+        localLifecycle.error.details?.['supportedLocalFields']
+      ).not.toContain('ttlSeconds');
+      expect(
+        localLifecycle.error.details?.['supportedLocalFields']
+      ).not.toContain('cwd');
+    }
 
     const localEnvelope = validateAndSanitizeGatewayCreateInput({
       repoPath: '/tmp/repo',
@@ -446,7 +469,10 @@ describe('CLI gateway contract', () => {
       repoPath: '/tmp/repo',
       worktreePath: null,
       type: 'terminal',
+      terminalBackend: 'relay-pty',
+      useTmux: false,
       cols: 120,
+      rows: 32,
       workContextId: 'wc:handoff',
     });
     expect(clean).toMatchObject({
@@ -455,7 +481,10 @@ describe('CLI gateway contract', () => {
         repoPath: '/tmp/repo',
         worktreePath: null,
         type: 'terminal',
+        terminalBackend: 'relay-pty',
+        useTmux: false,
         cols: 120,
+        rows: 32,
         workContextId: 'wc:handoff',
       },
       sessionType: 'terminal',

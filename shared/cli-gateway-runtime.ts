@@ -90,6 +90,24 @@ const localUnsupportedFields = [
   'confirmationToken',
 ] as const;
 
+const localCreateSupportedFields = [
+  'repoPath',
+  'worktreePath',
+  'type',
+  'mode',
+  'agent',
+  'yolo',
+  'useTmux',
+  'terminalBackend',
+  'cols',
+  'rows',
+  'branchName',
+  'initialPrompt',
+  'continuePolicy',
+  'workContextId',
+  'controlMode',
+] as const;
+
 function createValidationError(
   code: RelayCliGatewayErrorCode,
   message: string,
@@ -507,13 +525,7 @@ function validateLocalCreateSupport(
         `local sessions.create does not support ${field}; use routed node creation or omit the field`,
         {
           field,
-          supportedLocalFields: [
-            'repoPath',
-            'worktreePath',
-            'type',
-            'mode',
-            'agent',
-          ],
+          supportedLocalFields: localCreateSupportedFields,
         }
       );
     }

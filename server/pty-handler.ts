@@ -1446,6 +1446,7 @@ export function createPtySession(
           cwd,
           env,
           tmuxEnv,
+          workContextId: params.workContextId,
           scrollback,
           scrollbackRef,
           timers: {
@@ -1542,6 +1543,7 @@ type RetryContext = {
   cwd: string;
   env: NodeJS.ProcessEnv;
   tmuxEnv: NodeJS.ProcessEnv;
+  workContextId: string | undefined;
   scrollback: string[];
   scrollbackRef: { bytes: number };
   timers: {
@@ -1593,7 +1595,11 @@ function tryRetrySpawn(
       cwd: ctx.cwd,
       env: ctx.useTmux
         ? ctx.tmuxEnv
-        : buildRelayPtySessionEnv({ id: ctx.id, env: ctx.env }),
+        : buildRelayPtySessionEnv({
+            id: ctx.id,
+            env: ctx.env,
+            ...(ctx.workContextId ? { workContextId: ctx.workContextId } : {}),
+          }),
     });
   } catch {
     try {
