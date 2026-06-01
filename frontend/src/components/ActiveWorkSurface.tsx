@@ -22,6 +22,9 @@ import {
   activeWorkSessionActivationKey,
   activeWorkStateLabel,
 } from '../lib/active-work-control.js';
+import SessionMailboxPanel, {
+  SessionMailboxBadge,
+} from './SessionMailboxPanel.js';
 import { TuiButton } from './TuiButton.js';
 import './ActiveWorkSurface.css';
 
@@ -379,6 +382,9 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
                     last known
                   </span>
                 )}
+                <SessionMailboxBadge
+                  targetSessionId={activeWorkSessionActivationKey(session)}
+                />
               </div>
               <div className="active-work-session__cwd">{session.cwd}</div>
               <div className="active-work-session__meta">
@@ -389,6 +395,14 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
             </div>
           ))}
         </div>
+
+        <SessionMailboxPanel
+          compact
+          targetSessionId={
+            primarySession ? activeWorkSessionActivationKey(primarySession) : null
+          }
+          title="primary session mailbox"
+        />
 
         {artifacts.length > 0 && (
           <div className="active-work-artifacts" aria-label="artifacts">

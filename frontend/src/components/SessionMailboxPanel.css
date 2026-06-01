@@ -1,0 +1,157 @@
+.session-mailbox-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.session-mailbox-badge--critical {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.session-mailbox-badge--attention {
+  border-color: var(--status-warning);
+  color: var(--status-warning);
+}
+
+.session-mailbox-badge--info {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.session-mailbox-badge__label {
+  color: var(--text-muted);
+}
+
+.session-mailbox-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 92%, var(--panel) 8%);
+}
+
+.session-mailbox-panel--compact {
+  padding: 6px;
+}
+
+.session-mailbox-panel__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.session-mailbox-panel__header span:last-child {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.session-mailbox-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.session-mailbox-state--error {
+  color: var(--status-error);
+}
+
+.session-mailbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.session-mailbox-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+}
+
+.session-mailbox-card--critical {
+  border-color: color-mix(in srgb, var(--status-error) 70%, var(--border));
+}
+
+.session-mailbox-card--attention {
+  border-color: color-mix(in srgb, var(--status-warning) 70%, var(--border));
+}
+
+.session-mailbox-card--info {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+
+.session-mailbox-card__header,
+.session-mailbox-card__meta,
+.session-mailbox-card__artifacts,
+.session-mailbox-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.session-mailbox-card__header {
+  justify-content: space-between;
+}
+
+.session-mailbox-card__title {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+}
+
+.session-mailbox-card__state,
+.session-mailbox-card__meta,
+.session-mailbox-artifact {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.session-mailbox-card__body {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.session-mailbox-artifact {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
