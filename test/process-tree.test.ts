@@ -1,7 +1,10 @@
 import { spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import {
+  collectLanguageServerDiagnostics,
   readProcessTable,
   redactCommandLine,
   scheduleRelayProcessTreeReap,
@@ -16,6 +19,27 @@ function proc(overrides: Partial<ProcessInfo> & Pick<ProcessInfo, 'pid' | 'ppid'
     rssBytes: 0,
     ...overrides,
   };
+}
+
+function writeFakeProc(
+  procRoot: string,
+  options: {
+    pid: number;
+    ppid: number;
+    pgid: number;
+    command: string;
+    cmdlineArgs: string[];
+    rssKb?: number;
+  }
+): void {
+  const procDir = `${procRoot}/${options.pid}`;
+  mkdirSync(procDir, { recursive: true });
+  writeFileSync(
+    `${procDir}/stat`,
+    `${options.pid} (${options.command}) S ${options.ppid} ${options.pgid} 1 0 0 0 0 0 0 0 0 0 0 0 20 0 1 0 100`
+  );
+  writeFileSync(`${procDir}/cmdline`, `${options.cmdlineArgs.join('\0')}\0`);
+  writeFileSync(`${procDir}/status`, `Name:\t${options.command}\nVmRSS:\t${options.rssKb ?? 0} kB\n`);
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 4_000): Promise<void> {
@@ -94,6 +118,62 @@ describe('process-tree session runtime reaping', () => {
     expect(redactCommandLine('Authorization Bearer abc123')).toBe(
       'Authorization Bearer [REDACTED]'
     );
+    expect(
+      redactCommandLine(
+        'node relay-ide --token="my secret value" --client-secret \'client secret value\' Authorization Basic "basic secret value" GITHUB_TOKEN=\'env secret value\''
+      )
+    ).toBe(
+      'node relay-ide --token=[REDACTED] --client-secret [REDACTED] Authorization Basic [REDACTED] GITHUB_TOKEN=[REDACTED]'
+    );
+  });
+
+  it('redacts quoted secrets in collected language-server diagnostics', () => {
+    const procRoot = mkdtempSync(`${tmpdir()}/relay-proc-`);
+    try {
+      writeFileSync(`${procRoot}/uptime`, '1000 0');
+      writeFakeProc(procRoot, {
+        pid: 300,
+        ppid: 1,
+        pgid: 300,
+        command: 'relay-ide',
+        cmdlineArgs: ['node', 'relay-ide', '--token="parent secret value"'],
+      });
+      writeFakeProc(procRoot, {
+        pid: 301,
+        ppid: 300,
+        pgid: 300,
+        command: 'node',
+        cmdlineArgs: [
+          'node',
+          '/typescript/lib/tsserver.js',
+          '--api-key="child secret value"',
+          '--password',
+          "'spaced password value'",
+          'Authorization',
+          'Bearer',
+          '"bearer secret value"',
+          "GITHUB_TOKEN='env secret value'",
+        ],
+        rssKb: 42,
+      });
+
+      const diagnostics = collectLanguageServerDiagnostics({
+        procRoot,
+        nowMs: 1_000_000,
+        uptimeSeconds: 1000,
+        clockTickHz: 100,
+      });
+
+      expect(diagnostics.processes).toHaveLength(1);
+      expect(diagnostics.processes[0]?.commandLine).toBe(
+        'node /typescript/lib/tsserver.js --api-key=[REDACTED] --password [REDACTED] Authorization Bearer [REDACTED] GITHUB_TOKEN=[REDACTED]'
+      );
+      expect(diagnostics.processes[0]?.ancestors[0]?.commandLine).toBe(
+        'node relay-ide --token=[REDACTED]'
+      );
+    } finally {
+      rmSync(procRoot, { recursive: true, force: true });
+    }
   });
 
   it('spawn/kill cycle returns language-server descendants to baseline on Linux', async () => {

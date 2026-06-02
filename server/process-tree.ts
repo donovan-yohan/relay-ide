@@ -306,21 +306,29 @@ function readCommandLine(processDir: string, fallbackCommand: string): string {
   return normalized || fallbackCommand;
 }
 
+const REDACTABLE_VALUE = String.raw`(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)`;
+const SENSITIVE_FLAG_VALUE = new RegExp(
+  String.raw`(^|\s)(--?(?:api[-_]?key|token|access[-_]?token|auth(?:orization)?|password|secret|credential|client[-_]?secret)(?:=|\s+))${REDACTABLE_VALUE}`,
+  'gi'
+);
+const AUTH_SCHEME_VALUE = new RegExp(
+  String.raw`((?:bearer|basic)\s+)${REDACTABLE_VALUE}`,
+  'gi'
+);
+const SENSITIVE_ENV_VALUE = new RegExp(
+  String.raw`([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)[A-Z0-9_]*=)${REDACTABLE_VALUE}`,
+  'g'
+);
+
 export function redactCommandLine(commandLine: string): string {
   return commandLine
-    .replace(
-      /(^|\s)(--?(?:api[-_]?key|token|access[-_]?token|auth(?:orization)?|password|secret|credential|client[-_]?secret)(?:=|\s+))\S+/gi,
-      '$1$2[REDACTED]'
-    )
-    .replace(/((?:bearer|basic)\s+)\S+/gi, '$1[REDACTED]')
+    .replace(SENSITIVE_FLAG_VALUE, '$1$2[REDACTED]')
+    .replace(AUTH_SCHEME_VALUE, '$1[REDACTED]')
     .replace(
       /([?&](?:token|access_token|api_key|key|secret|password)=)[^&\s]+/gi,
       '$1[REDACTED]'
     )
-    .replace(
-      /([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)[A-Z0-9_]*=)\S+/g,
-      '$1[REDACTED]'
-    );
+    .replace(SENSITIVE_ENV_VALUE, '$1[REDACTED]');
 }
 
 function readRssBytes(processDir: string): number {
