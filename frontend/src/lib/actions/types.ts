@@ -1,3 +1,5 @@
+import type { RelayActionDescriptor } from '../../../../shared/action-descriptor.js';
+
 export type ActionCategory =
   | 'session'
   | 'workspace'
@@ -49,6 +51,12 @@ export type Action = {
   disabledReason?: (ctx: ActionContext) => string | undefined;
   handler: (ctx: ActionContext) => void | Promise<void>;
   mobile?: { showInSheet?: boolean; label?: string };
+  /**
+   * Optional shared descriptor bridge. Stable CLI/API/agent commands attach the
+   * Relay-owned contract descriptor; UI-only helpers may be projected with
+   * actionDescriptorFromMeta without becoming stable agent commands.
+   */
+  descriptor?: RelayActionDescriptor;
 };
 
 export type ActionMeta = Omit<Action, 'handler'>;
