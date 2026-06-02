@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { isPinConfigured } from './auth.js';
 import { getNodeManifest } from './node-manifest.js';
+import { collectLanguageServerDiagnostics } from './process-tree.js';
 import {
   readLocalLogSnapshot,
   resolveLocalLogPlan,
@@ -244,12 +245,13 @@ export async function createDiagnosticsBundle(
     });
   }
 
-  writeJson(
-    'version.json',
-    'package and runtime version info',
-    options.versionInfo ?? collectVersionInfo(cwd)
-  );
+  writeJson('version.json', 'package and runtime version info', options.versionInfo ?? collectVersionInfo(cwd));
   writeJson('environment.json', 'selected environment hints', buildEnvironmentHints(env, cwd));
+  writeJson(
+    'processes/language-servers.json',
+    'local language-server process diagnostics',
+    collectLanguageServerDiagnostics()
+  );
 
   const manifest =
     options.manifest ??

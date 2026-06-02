@@ -82,6 +82,10 @@ import {
   normalizeSessionEnvelope,
 } from '../shared/session-envelope.js';
 import {
+  scheduleRelayProcessTreeReap,
+  summarizeProcessReap,
+} from './process-tree.js';
+import {
   sessionEnvelopeRegistry,
   type SessionRenewResult,
 } from './session-envelope-registry.js';
@@ -879,12 +883,58 @@ function updateDisplayName(
   return { id, displayName };
 }
 
+function tmuxPanePid(tmuxSessionName: string): number | undefined {
+  try {
+    const output = execFileSync(
+      TMUX_COMMAND,
+      ['display-message', '-p', '-t', tmuxSessionName, '#{pane_pid}'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1_000 }
+    ).trim();
+    const pid = Number(output);
+    return Number.isSafeInteger(pid) && pid > 1 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sessionRuntimeRootPids(session: PtySession): number[] {
+  const pids = new Set<number>();
+  const ptyPid = session.pty.pid;
+  if (Number.isSafeInteger(ptyPid) && ptyPid > 1) pids.add(ptyPid);
+  if (session.useTmux && session.tmuxSessionName) {
+    const panePid = tmuxPanePid(session.tmuxSessionName);
+    if (panePid !== undefined) pids.add(panePid);
+  }
+  return Array.from(pids);
+}
+
+function scheduleSessionRuntimeReap(session: PtySession, reason: string): void {
+  const rootPids = sessionRuntimeRootPids(session);
+  if (rootPids.length === 0) return;
+
+  const preview = summarizeProcessReap(rootPids);
+  if (preview.languageServers.length > 0) {
+    logger.warn(
+      'reaping %d language-server descendants for session %s (%s)',
+      preview.languageServers.length,
+      session.id,
+      reason
+    );
+  }
+  scheduleRelayProcessTreeReap({
+    rootPids,
+    reason: `${reason}:${session.id}`,
+    logger,
+  });
+}
+
 function kill(id: string): void {
   const session = sessions.get(id);
   if (!session) {
     throw new Error(`Session not found: ${id}`);
   }
   if (session.mode === 'pty') {
+    scheduleSessionRuntimeReap(session, 'explicit-session-kill');
     try {
       session.pty.kill('SIGTERM');
     } catch {
