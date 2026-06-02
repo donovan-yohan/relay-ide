@@ -302,8 +302,52 @@ function parseProcStat(stat: string):
 function readCommandLine(processDir: string, fallbackCommand: string): string {
   const cmdline = readText(`${processDir}/cmdline`);
   if (!cmdline) return fallbackCommand;
-  const normalized = cmdline.replace(/\0+/g, ' ').trim();
-  return normalized || fallbackCommand;
+  const argv = cmdline.split('\0').filter((arg) => arg.length > 0);
+  if (argv.length === 0) return fallbackCommand;
+  return redactSensitiveArgvValues(argv).join(' ');
+}
+
+function redactSensitiveArgvValues(argv: string[]): string[] {
+  const redacted: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]!;
+    const inline = redactInlineSensitiveArg(arg);
+    if (inline) {
+      redacted.push(inline);
+      continue;
+    }
+
+    if (isSensitiveStandaloneArg(arg) && argv[index + 1] !== undefined) {
+      redacted.push(arg, '[REDACTED]');
+      index += 1;
+      continue;
+    }
+
+    redacted.push(arg);
+  }
+  return redacted;
+}
+
+function redactInlineSensitiveArg(arg: string): string | undefined {
+  const optionMatch = arg.match(
+    /^(--?(?:api[-_]?key|token|access[-_]?token|auth(?:orization)?|password|secret|credential|client[-_]?secret)=)(.+)$/i
+  );
+  if (optionMatch) return `${optionMatch[1]}[REDACTED]`;
+
+  const envMatch = arg.match(
+    /^([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)[A-Z0-9_]*=)(.+)$/
+  );
+  if (envMatch) return `${envMatch[1]}[REDACTED]`;
+
+  return undefined;
+}
+
+function isSensitiveStandaloneArg(arg: string): boolean {
+  return (
+    /^--?(?:api[-_]?key|token|access[-_]?token|auth(?:orization)?|password|secret|credential|client[-_]?secret)$/i.test(
+      arg
+    ) || /^(?:bearer|basic)$/i.test(arg)
+  );
 }
 
 type CommandToken = { start: number; end: number; text: string };

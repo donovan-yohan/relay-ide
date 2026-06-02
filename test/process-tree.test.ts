@@ -184,6 +184,43 @@ describe('process-tree session runtime reaping', () => {
     }
   });
 
+  it('redacts shell-stripped secret argv values without hiding following safe args', () => {
+    const procRoot = mkdtempSync(`${tmpdir()}/relay-proc-`);
+    try {
+      writeFileSync(`${procRoot}/uptime`, '1000 0');
+      writeFakeProc(procRoot, {
+        pid: 400,
+        ppid: 1,
+        pgid: 400,
+        command: 'node',
+        cmdlineArgs: [
+          'node',
+          '/typescript/lib/tsserver.js',
+          '--token=my secret value',
+          '--safe',
+          'flag',
+          'GITHUB_TOKEN=*** secret value',
+          '--after-env',
+        ],
+        rssKb: 42,
+      });
+
+      const diagnostics = collectLanguageServerDiagnostics({
+        procRoot,
+        nowMs: 1_000_000,
+        uptimeSeconds: 1000,
+        clockTickHz: 100,
+      });
+
+      expect(diagnostics.processes).toHaveLength(1);
+      expect(diagnostics.processes[0]?.commandLine).toBe(
+        'node /typescript/lib/tsserver.js --token=[REDACTED] --safe flag GITHUB_TOKEN=[REDACTED] --after-env'
+      );
+    } finally {
+      rmSync(procRoot, { recursive: true, force: true });
+    }
+  });
+
   it('spawn/kill cycle returns language-server descendants to baseline on Linux', async () => {
     if (process.platform !== 'linux') return;
 
