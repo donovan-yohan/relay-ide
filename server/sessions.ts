@@ -883,33 +883,33 @@ function updateDisplayName(
   return { id, displayName };
 }
 
-function tmuxPanePid(tmuxSessionName: string): number | undefined {
+async function tmuxPanePid(tmuxSessionName: string): Promise<number | undefined> {
   try {
-    const output = execFileSync(
+    const { stdout } = await execFileAsync(
       TMUX_COMMAND,
       ['display-message', '-p', '-t', tmuxSessionName, '#{pane_pid}'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1_000 }
-    ).trim();
-    const pid = Number(output);
+      { encoding: 'utf8', timeout: 1_000 }
+    );
+    const pid = Number(stdout.trim());
     return Number.isSafeInteger(pid) && pid > 1 ? pid : undefined;
   } catch {
     return undefined;
   }
 }
 
-function sessionRuntimeRootPids(session: PtySession): number[] {
+async function sessionRuntimeRootPids(session: PtySession): Promise<number[]> {
   const pids = new Set<number>();
   const ptyPid = session.pty.pid;
   if (Number.isSafeInteger(ptyPid) && ptyPid > 1) pids.add(ptyPid);
   if (session.useTmux && session.tmuxSessionName) {
-    const panePid = tmuxPanePid(session.tmuxSessionName);
+    const panePid = await tmuxPanePid(session.tmuxSessionName);
     if (panePid !== undefined) pids.add(panePid);
   }
   return Array.from(pids);
 }
 
-function scheduleSessionRuntimeReap(session: PtySession, reason: string): void {
-  const rootPids = sessionRuntimeRootPids(session);
+async function scheduleSessionRuntimeReap(session: PtySession, reason: string): Promise<void> {
+  const rootPids = await sessionRuntimeRootPids(session);
   if (rootPids.length === 0) return;
 
   const preview = summarizeProcessReap(rootPids);
@@ -928,13 +928,10 @@ function scheduleSessionRuntimeReap(session: PtySession, reason: string): void {
   });
 }
 
-function kill(id: string): void {
-  const session = sessions.get(id);
-  if (!session) {
-    throw new Error(`Session not found: ${id}`);
-  }
-  if (session.mode === 'pty') {
-    scheduleSessionRuntimeReap(session, 'explicit-session-kill');
+async function terminatePtySession(session: PtySession, reason: string): Promise<void> {
+  try {
+    await scheduleSessionRuntimeReap(session, reason);
+  } finally {
     try {
       session.pty.kill('SIGTERM');
     } catch {
@@ -947,6 +944,16 @@ function kill(id: string): void {
         () => {}
       );
     }
+  }
+}
+
+function kill(id: string): void {
+  const session = sessions.get(id);
+  if (!session) {
+    throw new Error(`Session not found: ${id}`);
+  }
+  if (session.mode === 'pty') {
+    void terminatePtySession(session, 'explicit-session-kill');
   } else {
     // Web session: disconnect adapter (tears down network connections and event handlers)
     session.adapterV2?.disconnect().catch(() => {

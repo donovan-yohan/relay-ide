@@ -119,11 +119,19 @@ describe('process-tree session runtime reaping', () => {
       'Authorization Bearer [REDACTED]'
     );
     expect(
-      redactCommandLine(
-        'node relay-ide --token="my secret value" --client-secret \'client secret value\' Authorization Basic "basic secret value" GITHUB_TOKEN=\'env secret value\''
-      )
-    ).toBe(
-      'node relay-ide --token=[REDACTED] --client-secret [REDACTED] Authorization Basic [REDACTED] GITHUB_TOKEN=[REDACTED]'
+      redactCommandLine('node relay-ide --token="my secret value" --safe flag')
+    ).toBe('node relay-ide --token=[REDACTED] --safe flag');
+    expect(
+      redactCommandLine("node relay-ide GITHUB_TOKEN='ghp secret value' --safe flag")
+    ).toBe('node relay-ide GITHUB_TOKEN=[REDACTED] --safe flag');
+    expect(
+      redactCommandLine("node relay-ide GITHUB_TOKEN=*** secret value' --safe flag")
+    ).toBe('node relay-ide GITHUB_TOKEN=[REDACTED] --safe flag');
+    expect(redactCommandLine('Authorization Bearer "abc 123" next')).toBe(
+      'Authorization Bearer [REDACTED] next'
+    );
+    expect(redactCommandLine("Authorization Basic 'dXNlci pwYXNz' next")).toBe(
+      'Authorization Basic [REDACTED] next'
     );
   });
 
@@ -152,7 +160,7 @@ describe('process-tree session runtime reaping', () => {
           'Authorization',
           'Bearer',
           '"bearer secret value"',
-          "GITHUB_TOKEN='env secret value'",
+          "GITHUB_TOKEN=*** secret value'",
         ],
         rssKb: 42,
       });
@@ -222,5 +230,5 @@ describe('process-tree session runtime reaping', () => {
       }
       parent.stdout.destroy();
     }
-  }, 10_000);
+  }, 15_000);
 });

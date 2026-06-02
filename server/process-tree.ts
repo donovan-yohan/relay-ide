@@ -306,29 +306,147 @@ function readCommandLine(processDir: string, fallbackCommand: string): string {
   return normalized || fallbackCommand;
 }
 
-const REDACTABLE_VALUE = String.raw`(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)`;
-const SENSITIVE_FLAG_VALUE = new RegExp(
-  String.raw`(^|\s)(--?(?:api[-_]?key|token|access[-_]?token|auth(?:orization)?|password|secret|credential|client[-_]?secret)(?:=|\s+))${REDACTABLE_VALUE}`,
-  'gi'
-);
-const AUTH_SCHEME_VALUE = new RegExp(
-  String.raw`((?:bearer|basic)\s+)${REDACTABLE_VALUE}`,
-  'gi'
-);
-const SENSITIVE_ENV_VALUE = new RegExp(
-  String.raw`([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)[A-Z0-9_]*=)${REDACTABLE_VALUE}`,
-  'g'
-);
+type CommandToken = { start: number; end: number; text: string };
+type RedactionRange = { start: number; end: number };
 
 export function redactCommandLine(commandLine: string): string {
-  return commandLine
-    .replace(SENSITIVE_FLAG_VALUE, '$1$2[REDACTED]')
-    .replace(AUTH_SCHEME_VALUE, '$1[REDACTED]')
-    .replace(
-      /([?&](?:token|access_token|api_key|key|secret|password)=)[^&\s]+/gi,
-      '$1[REDACTED]'
+  const tokens = tokenizeCommandLine(commandLine);
+  const redactions = collectCommandLineRedactions(tokens);
+
+  return applyRedactions(commandLine, redactions).replace(
+    /([?&](?:token|access_token|api_key|key|secret|password)=)[^&\s]+/gi,
+    '$1[REDACTED]'
+  );
+}
+
+function collectCommandLineRedactions(tokens: CommandToken[]): RedactionRange[] {
+  const redactions: RedactionRange[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const range =
+      secretOptionRedaction(token, tokens[index + 1]) ??
+      envAssignmentRedaction(token, tokens, index) ??
+      credentialSchemeRedaction(token, tokens[index + 1]);
+    if (range) redactions.push(range);
+  }
+  return redactions;
+}
+
+function secretOptionRedaction(
+  token: CommandToken,
+  nextToken: CommandToken | undefined
+): RedactionRange | undefined {
+  if (
+    !/^(--?(?:api[-_]?key|token|access[-_]?token|auth(?:orization)?|password|secret|credential|client[-_]?secret))(?:=.*)?$/i.test(
+      token.text
     )
-    .replace(SENSITIVE_ENV_VALUE, '$1[REDACTED]');
+  ) {
+    return undefined;
+  }
+
+  if (!token.text.includes('=')) return nextToken;
+
+  const valueStart = token.start + token.text.indexOf('=') + 1;
+  return valueStart < token.end ? { start: valueStart, end: token.end } : undefined;
+}
+
+function envAssignmentRedaction(
+  token: CommandToken,
+  tokens: CommandToken[],
+  index: number
+): RedactionRange | undefined {
+  const envMatch = token.text.match(
+    /^([A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)[A-Z0-9_]*=)/
+  );
+  const envPrefix = envMatch?.[1];
+  if (!envPrefix) return undefined;
+
+  const valueStart = token.start + envPrefix.length;
+  const valueText = token.text.slice(envPrefix.length);
+  let valueEnd = token.end;
+  if (valueText.includes('"')) {
+    valueEnd = consumeUntilQuote(tokens, index, '"');
+  } else if (valueText.includes("'")) {
+    valueEnd = consumeUntilQuote(tokens, index, "'");
+  } else {
+    valueEnd = consumeFollowingQuotedFragments(tokens, index) ?? valueEnd;
+  }
+  return valueStart < valueEnd ? { start: valueStart, end: valueEnd } : undefined;
+}
+
+function credentialSchemeRedaction(
+  token: CommandToken,
+  nextToken: CommandToken | undefined
+): RedactionRange | undefined {
+  return /^(?:bearer|basic)$/i.test(token.text) ? nextToken : undefined;
+}
+
+function tokenizeCommandLine(commandLine: string): Array<{ start: number; end: number; text: string }> {
+  const tokens: Array<{ start: number; end: number; text: string }> = [];
+  let index = 0;
+
+  while (index < commandLine.length) {
+    while (index < commandLine.length && /\s/.test(commandLine[index]!)) index += 1;
+    if (index >= commandLine.length) break;
+
+    const start = index;
+    let quote: '"' | "'" | undefined;
+    while (index < commandLine.length) {
+      const char = commandLine[index]!;
+      if (quote) {
+        if (char === quote) quote = undefined;
+      } else if (char === '"' || char === "'") {
+        quote = char;
+      } else if (/\s/.test(char)) {
+        break;
+      }
+      index += 1;
+    }
+
+    tokens.push({ start, end: index, text: commandLine.slice(start, index) });
+  }
+
+  return tokens;
+}
+
+function consumeUntilQuote(
+  tokens: Array<{ start: number; end: number; text: string }>,
+  startIndex: number,
+  quote: '"' | "'"
+): number {
+  for (let index = startIndex; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token.text.endsWith(quote) && !token.text.endsWith(`\\${quote}`)) return token.end;
+  }
+  return tokens[startIndex]!.end;
+}
+
+function consumeFollowingQuotedFragments(
+  tokens: Array<{ start: number; end: number; text: string }>,
+  startIndex: number
+): number | undefined {
+  for (let index = startIndex + 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (/^--?\w/.test(token.text) || /^[A-Z0-9_]+=/.test(token.text)) return undefined;
+    const quoteOffset = Math.max(token.text.indexOf('"'), token.text.indexOf("'"));
+    if (quoteOffset >= 0) return token.start + quoteOffset + 1;
+    if (token.text.endsWith('"') || token.text.endsWith("'")) return token.end;
+  }
+  return undefined;
+}
+
+function applyRedactions(
+  commandLine: string,
+  redactions: Array<{ start: number; end: number }>
+): string {
+  const ranges = redactions
+    .filter((range) => range.start < range.end)
+    .sort((a, b) => b.start - a.start);
+  let redacted = commandLine;
+  for (const range of ranges) {
+    redacted = `${redacted.slice(0, range.start)}[REDACTED]${redacted.slice(range.end)}`;
+  }
+  return redacted;
 }
 
 function readRssBytes(processDir: string): number {
