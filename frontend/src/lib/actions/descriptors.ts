@@ -42,16 +42,12 @@ function availabilityFromActionMeta(
   }
 
   const enabled = meta.when?.(ctx) ?? true;
-  const disabledReason = meta.disabledReason?.(ctx);
-
-  if (disabledReason) {
-    return capabilityAvailability('unavailable', disabledReason, fallback);
-  }
 
   if (!enabled) {
+    const disabledReason = meta.disabledReason?.(ctx);
     return capabilityAvailability(
       'unavailable',
-      fallback?.reason ?? 'not available in the current context',
+      disabledReason ?? fallback?.reason ?? 'not available in the current context',
       fallback
     );
   }

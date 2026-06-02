@@ -233,6 +233,26 @@ describe('Action Coverage', () => {
     });
   });
 
+  it('does not evaluate disabled reasons for actions that pass contextual gates', () => {
+    let disabledReasonCalls = 0;
+    const descriptor = actionDescriptorFromMeta(
+      {
+        id: 'workspace.enabled-test',
+        label: 'enabled test action',
+        category: 'workspace',
+        when: () => true,
+        disabledReason: () => {
+          disabledReasonCalls += 1;
+          return 'should not be projected while enabled';
+        },
+      },
+      { view: 'workspace', workspacePath: '/repo' }
+    );
+
+    expect(disabledReasonCalls).toBe(0);
+    expect(descriptor.availability).toEqual({ state: 'available' });
+  });
+
   it('no conflicting keyboard shortcuts', () => {
     const shortcuts = ALL_META.filter((a: ActionMeta) => a.shortcut).map(
       (a: ActionMeta) => ({ id: a.id, key: a.shortcut!.key })
