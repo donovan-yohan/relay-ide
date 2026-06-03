@@ -304,6 +304,54 @@ export function initWorkContextStore(configDir: string): WorkContextStore {
   return createWorkContextStore(path.join(configDir, 'work-contexts.db'));
 }
 
+export type WorkContextStoreInitializer = (configDir: string) => WorkContextStore;
+
+export function initWorkContextStoreBestEffort(
+  configDir: string,
+  initializer: WorkContextStoreInitializer = initWorkContextStore
+): WorkContextStore {
+  try {
+    return initializer(configDir);
+  } catch (err) {
+    logger.warn(
+      'Work context store disabled: failed to initialize: %s',
+      errorMessage(err)
+    );
+    return createUnavailableWorkContextStore(err);
+  }
+}
+
+export function createUnavailableWorkContextStore(reason: unknown): WorkContextStore {
+  const unavailable = (): never => {
+    throw new WorkContextStoreError(
+      503,
+      'work_context_store_unavailable',
+      `work_context_store_unavailable: ${errorMessage(reason)}`
+    );
+  };
+  return {
+    close() {},
+    create: unavailable,
+    get() {
+      return null;
+    },
+    list() {
+      return [];
+    },
+    update: unavailable,
+    linkContexts: unavailable,
+    associateSession: unavailable,
+    recordLifecycleEvent: unavailable,
+    getResumeSnapshot: unavailable,
+    listActiveWork() {
+      return [];
+    },
+    findSessionWorkContextIds() {
+      return [];
+    },
+  };
+}
+
 export function createWorkContextStore(dbPath: string): WorkContextStore {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
@@ -1548,6 +1596,10 @@ function nodeStateForNodeId(
 
 function sessionKey(nodeId: string, sessionId: string): string {
   return `${nodeId}\u0000${sessionId}`;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function sendStoreError(

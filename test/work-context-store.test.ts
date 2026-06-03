@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createWorkContextRouter,
   createWorkContextStore,
+  initWorkContextStoreBestEffort,
   type WorkContextStore,
 } from '../server/work-contexts.js';
 import type { SessionSummary } from '../server/types.js';
@@ -38,6 +39,23 @@ function makeStoreHandle(): { store: WorkContextStore; dbPath: string } {
 function makeStore(): WorkContextStore {
   return makeStoreHandle().store;
 }
+
+describe('work-context store boot fallback', () => {
+  it('degrades to an unavailable store when sqlite initialization fails', () => {
+    const store = initWorkContextStoreBestEffort('/tmp/relay-config', () => {
+      throw new Error('Module did not self-register');
+    });
+
+    expect(store.list()).toEqual([]);
+    expect(store.get('wc:missing')).toBeNull();
+    expect(
+      store.listActiveWork({ sessions: [], nodes: [] })
+    ).toEqual([]);
+    expect(() => store.create({ id: 'wc:fallback' })).toThrow(
+      'work_context_store_unavailable'
+    );
+  });
+});
 
 function replacePersistedContextJson(
   dbPath: string,
