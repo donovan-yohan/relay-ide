@@ -16,6 +16,7 @@ export type ActionCategory =
 export type ActionContext = {
   view: 'workspace' | 'session' | 'dashboard' | 'settings' | 'org';
   workspacePath?: string;
+  cwd?: string;
   sessionId?: string;
   agentRunning?: boolean;
   isMobile?: boolean;

@@ -7,7 +7,8 @@ import {
 const launchDescriptor = sessionCreateActionDescriptor();
 const launchRequiresContext = (ctx: ActionContext) =>
   sessionCreateActionAvailability({
-    workspacePath: ctx.workspacePath ?? null,
+    ...(ctx.workspacePath ? { workspacePath: ctx.workspacePath } : {}),
+    ...(ctx.cwd ? { cwd: ctx.cwd } : {}),
   }).reason;
 
 export const sessionNewAgent: ActionMeta = {

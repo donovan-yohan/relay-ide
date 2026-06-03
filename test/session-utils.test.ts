@@ -85,7 +85,10 @@ Object.defineProperty(globalThis, 'localStorage', {
 });
 
 import { ConflictError, HttpError } from '../frontend/src/lib/api.js';
-import { createSessionWithoutActivation } from '../frontend/src/lib/session-utils.js';
+import {
+  createAgentSession,
+  createSessionWithoutActivation,
+} from '../frontend/src/lib/session-utils.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 
 const originalRefreshAll = useSessionsStore.getState().refreshAll;
@@ -246,6 +249,42 @@ describe('createSessionWithoutActivation', () => {
 
     expect(result).toEqual({ session: undefined, error: createError });
     expect(refreshAll).not.toHaveBeenCalled();
+  });
+
+  it('activates created agent sessions and returns refresh errors instead of throwing', async () => {
+    const created = session('new-agent', 'agent');
+    const refreshError = new Error('refresh failed');
+    apiMocks.createSession.mockResolvedValue(created);
+    useSessionsStore.setState({
+      refreshAll: vi.fn().mockRejectedValue(refreshError),
+    });
+
+    const result = await createAgentSession({
+      repoPath: '/repo/a',
+      type: 'agent',
+    });
+
+    expect(result.session).toBe(created);
+    expect(result.error).toBe(refreshError);
+    expect(useSessionsStore.getState().activeSessionId).toBe('new-agent');
+  });
+
+  it('activates conflicting agent sessions and returns conflict refresh errors instead of throwing', async () => {
+    const conflict = new ConflictError('main');
+    const refreshError = new Error('refresh failed');
+    apiMocks.createSession.mockRejectedValue(conflict);
+    useSessionsStore.setState({
+      refreshAll: vi.fn().mockRejectedValue(refreshError),
+    });
+
+    const result = await createAgentSession({
+      repoPath: '/repo/a',
+      type: 'agent',
+    });
+
+    expect(result.session?.id).toBe('main');
+    expect(result.error).toBe(refreshError);
+    expect(useSessionsStore.getState().activeSessionId).toBe('main');
   });
 
   it('does not throw when legacy workspace groups omit repos', () => {

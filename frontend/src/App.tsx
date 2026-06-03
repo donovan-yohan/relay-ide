@@ -966,13 +966,19 @@ export default function App() {
         sessionId: activeSessionId,
       };
       if (activeRepoPath) ctx.workspacePath = activeRepoPath;
+      if (activeWorkspaceCwd) ctx.cwd = activeWorkspaceCwd;
       return ctx;
     }
     if (activeRepoPath) {
-      return { view: 'workspace', workspacePath: activeRepoPath };
+      const ctx: ActionContext = {
+        view: 'workspace',
+        workspacePath: activeRepoPath,
+      };
+      if (activeWorkspaceCwd) ctx.cwd = activeWorkspaceCwd;
+      return ctx;
     }
     return { view: 'dashboard' };
-  }, [activeSessionId, activeRepoPath]);
+  }, [activeSessionId, activeRepoPath, activeWorkspaceCwd]);
 
   // Keep actionContext in a ref so registry callbacks (set up once on mount) always read current value
   const actionContextRef = useRef(actionContext);

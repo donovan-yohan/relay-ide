@@ -158,16 +158,26 @@ export async function createAgentSession(
   const action = await executeSessionCreateAction(options);
 
   if (action.ok) {
-    await useSessionsStore.getState().refreshAll();
+    let refreshError: unknown = null;
+    try {
+      await useSessionsStore.getState().refreshAll();
+    } catch (error) {
+      refreshError = error;
+    }
     useSessionsStore.getState().setActiveSessionId(action.session.id);
-    return { session: action.session, error: null };
+    return { session: action.session, error: refreshError };
   }
 
   const failure = action as SessionCreateActionFailure;
   const error = failure.rawError ?? failure.error;
   const conflictingSessionId = conflictSessionIdFromFailure(failure);
   if (conflictingSessionId) {
-    await useSessionsStore.getState().refreshAll();
+    let refreshError: unknown = null;
+    try {
+      await useSessionsStore.getState().refreshAll();
+    } catch (caughtRefreshError) {
+      refreshError = caughtRefreshError;
+    }
     const session = conflictingSessionId
       ? resolveSessionByKey(
           useSessionsStore.getState().sessions,
@@ -177,7 +187,7 @@ export async function createAgentSession(
     if (conflictingSessionId) {
       useSessionsStore.getState().setActiveSessionId(conflictingSessionId);
     }
-    return { session, error };
+    return { session, error: refreshError ?? error };
   }
 
   return { session: undefined, error };
