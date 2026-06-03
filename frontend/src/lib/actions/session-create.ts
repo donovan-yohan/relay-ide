@@ -44,16 +44,11 @@ export interface SessionCreateActionTarget {
   terminalBackend?: 'relay-pty' | 'tmux-compat';
 }
 
+export type SessionCreateActionResult = RelayCliGatewayEnvelope<SessionSummary>;
 export type SessionCreateActionFailure = Extract<
-  RelayCliGatewayEnvelope<SessionSummary>,
+  SessionCreateActionResult,
   { ok: false }
-> & {
-  /** Internal-only raw error for legacy frontend conflict/refresh handling. */
-  rawError?: unknown;
-};
-export type SessionCreateActionResult =
-  | Extract<RelayCliGatewayEnvelope<SessionSummary>, { ok: true }>
-  | SessionCreateActionFailure;
+>;
 
 export type SessionCreateExecutor = (
   input: CreateSessionBody
@@ -188,18 +183,6 @@ function errorFromUnknown(error: unknown): RelayCliGatewayError {
   };
 }
 
-function withRawError(
-  envelope: Extract<RelayCliGatewayEnvelope<SessionSummary>, { ok: false }>,
-  rawError: unknown
-): SessionCreateActionFailure {
-  Object.defineProperty(envelope, 'rawError', {
-    value: rawError,
-    enumerable: false,
-    configurable: true,
-  });
-  return envelope as SessionCreateActionFailure;
-}
-
 export async function executeSessionCreateAction(
   input: SessionCreateActionInput,
   createSession: SessionCreateExecutor = createSessionApi
@@ -208,9 +191,6 @@ export async function executeSessionCreateAction(
     const session = await createSession(input);
     return gatewayOk('sessions.create', session);
   } catch (rawError) {
-    return withRawError(
-      gatewayError('sessions.create', errorFromUnknown(rawError)),
-      rawError
-    );
+    return gatewayError('sessions.create', errorFromUnknown(rawError));
   }
 }
