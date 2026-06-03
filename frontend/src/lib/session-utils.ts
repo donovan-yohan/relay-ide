@@ -1,10 +1,14 @@
-import { ConflictError, createSession as createSessionApi } from './api.js';
+import { ConflictError } from './api.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
 import { resolveSessionByKey } from './session-keys.js';
 import type { Repo, SessionSummary } from './types.js';
 import type { NodeId } from '../../../shared/identity.js';
 import type { SessionLane } from '../../../shared/session-lane.js';
+import {
+  executeSessionCreateAction,
+  type SessionCreateActionFailure,
+} from './actions/session-create.js';
 
 export interface CreateAgentSessionOptions {
   nodeId?: NodeId | undefined;
@@ -96,8 +100,9 @@ export async function createSessionWithoutActivation(
   const before = useSessionsStore.getState();
   const activeSessionId = before.activeSessionId;
   const workspaceLastSession = { ...before.workspaceLastSession };
-  try {
-    const session = await createSessionApi(options);
+  const action = await executeSessionCreateAction(options);
+
+  if (action.ok) {
     let refreshError: unknown = null;
     try {
       await useSessionsStore.getState().refreshAll();
@@ -105,54 +110,59 @@ export async function createSessionWithoutActivation(
       refreshError = error;
     }
     restoreSessionPlacement(activeSessionId, workspaceLastSession);
-    return { session, error: refreshError };
-  } catch (error) {
-    if (error instanceof ConflictError) {
-      let refreshError: unknown = null;
-      try {
-        await useSessionsStore.getState().refreshAll();
-      } catch (caughtRefreshError) {
-        refreshError = caughtRefreshError;
-      }
-      const conflictingSessionId = error.sessionId;
-      const session = conflictingSessionId
-        ? resolveSessionByKey(
-            useSessionsStore.getState().sessions,
-            conflictingSessionId
-          )
-        : undefined;
-      restoreSessionPlacement(activeSessionId, workspaceLastSession);
-      return { session, error: refreshError ?? error };
-    }
-
-    return { session: undefined, error };
+    return { session: action.session, error: refreshError };
   }
+
+  const failure = action as SessionCreateActionFailure;
+  const error = failure.rawError ?? failure.error;
+  if (error instanceof ConflictError) {
+    let refreshError: unknown = null;
+    try {
+      await useSessionsStore.getState().refreshAll();
+    } catch (caughtRefreshError) {
+      refreshError = caughtRefreshError;
+    }
+    const conflictingSessionId = error.sessionId;
+    const session = conflictingSessionId
+      ? resolveSessionByKey(
+          useSessionsStore.getState().sessions,
+          conflictingSessionId
+        )
+      : undefined;
+    restoreSessionPlacement(activeSessionId, workspaceLastSession);
+    return { session, error: refreshError ?? error };
+  }
+
+  return { session: undefined, error };
 }
 
 export async function createAgentSession(
   options: CreateAgentSessionOptions
 ): Promise<CreateAgentSessionResult> {
-  try {
-    const session = await createSessionApi(options);
-    await useSessionsStore.getState().refreshAll();
-    useSessionsStore.getState().setActiveSessionId(session.id);
-    return { session, error: null };
-  } catch (error) {
-    if (error instanceof ConflictError) {
-      await useSessionsStore.getState().refreshAll();
-      const conflictingSessionId = error.sessionId;
-      const session = conflictingSessionId
-        ? resolveSessionByKey(
-            useSessionsStore.getState().sessions,
-            conflictingSessionId
-          )
-        : undefined;
-      if (conflictingSessionId) {
-        useSessionsStore.getState().setActiveSessionId(conflictingSessionId);
-      }
-      return { session, error };
-    }
+  const action = await executeSessionCreateAction(options);
 
-    return { session: undefined, error };
+  if (action.ok) {
+    await useSessionsStore.getState().refreshAll();
+    useSessionsStore.getState().setActiveSessionId(action.session.id);
+    return { session: action.session, error: null };
   }
+
+  const failure = action as SessionCreateActionFailure;
+  const error = failure.rawError ?? failure.error;
+  if (error instanceof ConflictError) {
+    await useSessionsStore.getState().refreshAll();
+    const conflictingSessionId = error.sessionId;
+    const session = conflictingSessionId
+      ? resolveSessionByKey(
+          useSessionsStore.getState().sessions,
+          conflictingSessionId
+        )
+      : undefined;
+    if (conflictingSessionId) {
+      useSessionsStore.getState().setActiveSessionId(conflictingSessionId);
+    }
+    return { session, error };
+  }
+
+  return { session: undefined, error };
 }
