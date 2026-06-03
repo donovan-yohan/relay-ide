@@ -10,21 +10,65 @@ const apiMocks = vi.hoisted(() => ({
   enrichBranches: vi.fn(),
 }));
 
-vi.mock('../frontend/src/lib/api.js', () => ({
-  ConflictError: class ConflictError extends Error {
+vi.mock('../frontend/src/lib/api.js', () => {
+  class ConflictError extends Error {
     sessionId: string;
     constructor(sessionId: string) {
       super('conflict');
       this.sessionId = sessionId;
     }
-  },
-  createSession: apiMocks.createSession,
-  fetchSessions: apiMocks.fetchSessions,
-  fetchWorktrees: apiMocks.fetchWorktrees,
-  fetchWorkspaces: apiMocks.fetchWorkspaces,
-  fetchWorkspaceGroups: apiMocks.fetchWorkspaceGroups,
-  enrichBranches: apiMocks.enrichBranches,
-}));
+  }
+
+  class ConfirmationRequiredError extends Error {
+    challenge: {
+      reasonCode: string;
+      challengeId: string;
+      requiredBits: string[];
+      expiresAt: string;
+    };
+    constructor() {
+      super('confirmation required');
+      this.challenge = {
+        reasonCode: 'CONFIRMATION_REQUIRED',
+        challengeId: 'challenge-1',
+        requiredBits: [],
+        expiresAt: '2026-05-05T00:00:00.000Z',
+      };
+    }
+  }
+
+  class HttpError extends Error {
+    status: number;
+    code?: string;
+    retryable?: boolean;
+    details?: Record<string, unknown>;
+    constructor(
+      status: number,
+      message: string,
+      code?: string,
+      retryable?: boolean,
+      details?: Record<string, unknown>
+    ) {
+      super(message);
+      this.status = status;
+      if (code !== undefined) this.code = code;
+      if (retryable !== undefined) this.retryable = retryable;
+      if (details !== undefined) this.details = details;
+    }
+  }
+
+  return {
+    ConflictError,
+    ConfirmationRequiredError,
+    HttpError,
+    createSession: apiMocks.createSession,
+    fetchSessions: apiMocks.fetchSessions,
+    fetchWorktrees: apiMocks.fetchWorktrees,
+    fetchWorkspaces: apiMocks.fetchWorkspaces,
+    fetchWorkspaceGroups: apiMocks.fetchWorkspaceGroups,
+    enrichBranches: apiMocks.enrichBranches,
+  };
+});
 
 const storage: Record<string, string> = {};
 Object.defineProperty(globalThis, 'localStorage', {
@@ -40,7 +84,7 @@ Object.defineProperty(globalThis, 'localStorage', {
   configurable: true,
 });
 
-import { ConflictError } from '../frontend/src/lib/api.js';
+import { ConflictError, HttpError } from '../frontend/src/lib/api.js';
 import { createSessionWithoutActivation } from '../frontend/src/lib/session-utils.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 
@@ -141,6 +185,31 @@ describe('createSessionWithoutActivation', () => {
 
     expect(result.session?.id).toBe('main');
     expect(result.error).toBe(conflict);
+    expect(useSessionsStore.getState().activeSessionId).toBe('main');
+    expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe('main');
+  });
+
+  it('returns the conflicting session from stable error details', async () => {
+    const conflict = new HttpError(
+      409,
+      'session already exists',
+      'SESSION_CONFLICT',
+      false,
+      { sessionId: 'main' }
+    );
+    apiMocks.createSession.mockRejectedValue(conflict);
+    apiMocks.fetchSessions.mockResolvedValue([session('main', 'agent')]);
+
+    const result = await createSessionWithoutActivation({
+      repoPath: '/repo/a',
+      type: 'terminal',
+    });
+
+    expect(result.session?.id).toBe('main');
+    expect(result.error).toMatchObject({
+      code: 'SESSION_CONFLICT',
+      details: { sessionId: 'main' },
+    });
     expect(useSessionsStore.getState().activeSessionId).toBe('main');
     expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe('main');
   });

@@ -1,13 +1,14 @@
-import type { ActionMeta } from '../types.js';
+import type { ActionContext, ActionMeta } from '../types.js';
 import {
   sessionCreateActionAvailability,
   sessionCreateActionDescriptor,
 } from '../session-create.js';
 
 const launchDescriptor = sessionCreateActionDescriptor();
-const launchRequiresContext = () =>
-  sessionCreateActionAvailability({}).reason ??
-  'session launch requires a workspace, cwd, or selected environment';
+const launchRequiresContext = (ctx: ActionContext) =>
+  sessionCreateActionAvailability({
+    workspacePath: ctx.workspacePath ?? null,
+  }).reason;
 
 export const sessionNewAgent: ActionMeta = {
   id: 'session.new-agent',

@@ -56,6 +56,22 @@ export interface CreateAgentSessionResult {
   error: unknown;
 }
 
+function conflictSessionIdFromFailure(
+  failure: SessionCreateActionFailure
+): string | undefined {
+  const stableSessionId = failure.error.details?.sessionId;
+  if (
+    failure.error.code === 'SESSION_CONFLICT' &&
+    typeof stableSessionId === 'string'
+  ) {
+    return stableSessionId;
+  }
+
+  return failure.rawError instanceof ConflictError
+    ? failure.rawError.sessionId
+    : undefined;
+}
+
 export function getCurrentSessionContext(): CurrentSessionContext {
   const sessionsStore = useSessionsStore.getState();
   const currentRepoPath = useUiStore.getState().activeRepoPath;
@@ -115,14 +131,14 @@ export async function createSessionWithoutActivation(
 
   const failure = action as SessionCreateActionFailure;
   const error = failure.rawError ?? failure.error;
-  if (error instanceof ConflictError) {
+  const conflictingSessionId = conflictSessionIdFromFailure(failure);
+  if (conflictingSessionId) {
     let refreshError: unknown = null;
     try {
       await useSessionsStore.getState().refreshAll();
     } catch (caughtRefreshError) {
       refreshError = caughtRefreshError;
     }
-    const conflictingSessionId = error.sessionId;
     const session = conflictingSessionId
       ? resolveSessionByKey(
           useSessionsStore.getState().sessions,
@@ -149,9 +165,9 @@ export async function createAgentSession(
 
   const failure = action as SessionCreateActionFailure;
   const error = failure.rawError ?? failure.error;
-  if (error instanceof ConflictError) {
+  const conflictingSessionId = conflictSessionIdFromFailure(failure);
+  if (conflictingSessionId) {
     await useSessionsStore.getState().refreshAll();
-    const conflictingSessionId = error.sessionId;
     const session = conflictingSessionId
       ? resolveSessionByKey(
           useSessionsStore.getState().sessions,

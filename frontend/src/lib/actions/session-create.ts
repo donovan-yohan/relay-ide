@@ -127,7 +127,10 @@ function targetFromInputAndSession(
   const repoPath = session.repoPath ?? input.repoPath;
   if (repoPath) target.repoPath = repoPath;
   if (session.worktreePath !== undefined || input.worktreePath !== undefined) {
-    target.worktreePath = session.worktreePath ?? input.worktreePath ?? null;
+    target.worktreePath =
+      session.worktreePath !== undefined
+        ? session.worktreePath
+        : (input.worktreePath ?? null);
   }
   const type = session.type ?? input.type;
   if (type) target.type = type;

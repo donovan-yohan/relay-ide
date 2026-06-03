@@ -70,6 +70,19 @@ describe('sessions.create frontend action contract', () => {
     }
   });
 
+  it('keeps launch actions enabled in a workspace command context', () => {
+    const ctx = { view: 'workspace' as const, workspacePath: '/home/me/repo' };
+
+    for (const action of [
+      sessionNewAgent,
+      sessionNewTerminal,
+      sessionStartOnRepo,
+    ]) {
+      expect(action.when?.(ctx)).toBe(true);
+      expect(action.disabledReason?.(ctx)).toBeUndefined();
+    }
+  });
+
   it('executes a web launch through the shared action path with typed success target', async () => {
     const result = await executeSessionCreateAction(
       {
@@ -98,6 +111,47 @@ describe('sessions.create frontend action contract', () => {
       },
     });
     expect(result.descriptor.contract?.relayCommandName).toBe('sessions.create');
+  });
+
+  it('preserves explicit null worktree responses instead of falling back to input', async () => {
+    const result = await executeSessionCreateAction(
+      {
+        nodeId: 'remote-1',
+        cwd: '/home/me/repo',
+        repoPath: '/home/me/repo',
+        worktreePath: '/home/me/repo/.worktrees/feature',
+        type: 'terminal',
+        mode: 'pty',
+      },
+      async () => session({ worktreePath: null })
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      target: { worktreePath: null },
+    });
+  });
+
+  it('falls back to input worktree only when the session omits the field', async () => {
+    const serverSession = session();
+    delete serverSession.worktreePath;
+
+    const result = await executeSessionCreateAction(
+      {
+        nodeId: 'remote-1',
+        cwd: '/home/me/repo',
+        repoPath: '/home/me/repo',
+        worktreePath: '/home/me/repo/.worktrees/feature',
+        type: 'terminal',
+        mode: 'pty',
+      },
+      async () => serverSession
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      target: { worktreePath: '/home/me/repo/.worktrees/feature' },
+    });
   });
 
   it('normalizes launch failures into a stable typed error envelope', async () => {
