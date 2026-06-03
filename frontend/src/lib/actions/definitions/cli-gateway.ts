@@ -1,4 +1,8 @@
 import {
+  relayActionDescriptorFromCommandDefinition,
+  type RelayActionDescriptor,
+} from '../../../../../shared/action-descriptor.js';
+import {
   RELAY_COMMAND_MANIFEST,
   type RelayCommandDefinition,
 } from '../../../../../shared/relay-command-manifest.js';
@@ -6,6 +10,7 @@ import type { ActionMeta } from '../types.js';
 
 export type CliGatewayCommandActionMeta = ActionMeta & {
   relayCommand: RelayCommandDefinition;
+  descriptor: RelayActionDescriptor;
 };
 
 export function cliGatewayActionId(command: RelayCommandDefinition): `gateway.${string}` {
@@ -17,8 +22,11 @@ function gatewayDisabledReason(command: RelayCommandDefinition): string {
   return `stable cli gateway command; run via ${argv}. Command Center execution is not wired yet.`;
 }
 
-export const cliGatewayCommandActions: CliGatewayCommandActionMeta[] =
-  RELAY_COMMAND_MANIFEST.commands.map((command) => ({
+function cliGatewayCommandAction(
+  command: RelayCommandDefinition
+): CliGatewayCommandActionMeta {
+  const reason = gatewayDisabledReason(command);
+  return {
     id: cliGatewayActionId(command),
     label: command.label,
     description: command.description,
@@ -33,6 +41,18 @@ export const cliGatewayCommandActions: CliGatewayCommandActionMeta[] =
     category: 'gateway',
     icon: 'v1',
     when: () => false,
-    disabledReason: () => gatewayDisabledReason(command),
+    disabledReason: () => reason,
     relayCommand: command,
-  }));
+    descriptor: relayActionDescriptorFromCommandDefinition(command, {
+      availability: {
+        state: 'unavailable',
+        reason,
+        capabilityHints: command.capabilityHints,
+      },
+      surfaces: [...command.surfaces, 'command-center'],
+    }),
+  };
+}
+
+export const cliGatewayCommandActions: CliGatewayCommandActionMeta[] =
+  RELAY_COMMAND_MANIFEST.commands.map(cliGatewayCommandAction);

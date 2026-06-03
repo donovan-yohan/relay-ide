@@ -2,6 +2,7 @@ import {
   RELAY_CLI_GATEWAY_CONTRACT,
   type RelayCliGatewayCommand,
   type RelayCliGatewayCommandSpec,
+  type RelayCliGatewayErrorCode,
   type RelayJsonSchema,
 } from './cli-gateway-contract.js';
 import type { RelayCapabilityBit } from './security-policy.js';
@@ -62,6 +63,7 @@ export interface RelayCommandDefinition {
   requiresConfirmation: boolean;
   controlRequirements: readonly RelayCommandControlRequirement[];
   auditRedaction: RelayCommandAuditRedaction;
+  errorCodes: readonly RelayCliGatewayErrorCode[];
   scopeKinds: readonly RelayCommandScopeKind[];
   handler: RelayCommandHandler;
   stable: boolean;
@@ -251,6 +253,7 @@ export function relayCommandDefinitionFromCliGatewaySpec(
     requiresConfirmation: requiresConfirmationForGatewayCommand(spec),
     controlRequirements: controlRequirementsForGatewayCommand(spec),
     auditRedaction: auditRedactionForGatewayCommand(spec),
+    errorCodes: spec.errorCodes,
     scopeKinds: scopeKindsForGatewayCommand(spec.name),
     handler: { cli: spec.cli },
     stable: spec.stable,

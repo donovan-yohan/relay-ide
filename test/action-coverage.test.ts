@@ -11,9 +11,14 @@ import { prActions } from '../frontend/src/lib/actions/definitions/pr.js';
 import { settingsActions } from '../frontend/src/lib/actions/definitions/settings.js';
 import { sidebarActions } from '../frontend/src/lib/actions/definitions/sidebar.js';
 import { dashboardActions } from '../frontend/src/lib/actions/definitions/dashboard.js';
-import { terminalActions } from '../frontend/src/lib/actions/definitions/terminal.js';
+import {
+  terminalActions,
+  terminalScrollTop,
+} from '../frontend/src/lib/actions/definitions/terminal.js';
 import { navigationActions } from '../frontend/src/lib/actions/definitions/navigation.js';
 import { cliGatewayCommandActions } from '../frontend/src/lib/actions/definitions/cli-gateway.js';
+import { workspaceOpenFileBrowser } from '../frontend/src/lib/actions/definitions/workspace-file-rpc.js';
+import { actionDescriptorFromMeta } from '../frontend/src/lib/actions/descriptors.js';
 import { stableCommandNames } from '../shared/cli-gateway-contract.js';
 
 // Full allowlist: 60 palettable action IDs (15 Phase 2 + 44 Phase 3 + 1 from #630)
@@ -160,7 +165,92 @@ describe('Action Coverage', () => {
       );
       expect(action.when?.({ view: 'workspace' })).toBe(false);
       expect(action.disabledReason?.({ view: 'workspace' })).toContain('relay-ide v1');
+      expect(action.descriptor.contract?.source).toBe(
+        'shared/relay-command-manifest.ts'
+      );
     }
+  });
+
+  it('bridges sessions.create as a stable Relay action descriptor', () => {
+    const action = cliGatewayCommandActions.find(
+      (entry) => entry.relayCommand.name === 'sessions.create'
+    );
+    expect(action).toBeTruthy();
+    const descriptor = action!.descriptor;
+
+    expect(action!.id).toBe('gateway.sessions.create');
+    expect(descriptor.id).toBe('sessions.create');
+    expect(descriptor.stable).toBe(true);
+    expect(descriptor.source).toBe('cli-gateway-v1');
+    expect(descriptor.input.kind).toBe('json-schema');
+    expect(descriptor.result.kind).toBe('json-schema');
+    expect(descriptor.error.kind).toBe('typed-shape');
+    expect(descriptor.sideEffect).toBe('write');
+    expect(descriptor.confirmation.required).toBe(false);
+    expect(descriptor.surfaces).toEqual(
+      expect.arrayContaining(['cli', 'agent', 'web', 'command-center'])
+    );
+    expect(descriptor.availability).toMatchObject({
+      state: 'unavailable',
+      reason: expect.stringContaining('Command Center execution is not wired yet'),
+    });
+    expect(descriptor.contract).toMatchObject({
+      relayCommandName: 'sessions.create',
+      stable: true,
+      source: 'shared/relay-command-manifest.ts',
+    });
+  });
+
+  it('projects UI-only actions without promoting them to stable Relay commands', () => {
+    const descriptor = actionDescriptorFromMeta(terminalScrollTop, {
+      view: 'session',
+      sessionId: 'session-1',
+    });
+
+    expect(descriptor).toMatchObject({
+      id: 'terminal.scroll-top',
+      stable: false,
+      source: 'ui-action-registry',
+      sideEffect: 'ui',
+      availability: { state: 'available' },
+    });
+    expect(descriptor.contract).toBeUndefined();
+    expect(descriptor.surfaces).toEqual(
+      expect.arrayContaining(['web', 'command-center'])
+    );
+  });
+
+  it('projects action availability reasons from contextual UI gates', () => {
+    const descriptor = actionDescriptorFromMeta(workspaceOpenFileBrowser, {
+      view: 'workspace',
+      workspacePath: '/repo',
+      activeNodeFileRpcAvailable: false,
+    });
+
+    expect(descriptor.availability).toEqual({
+      state: 'unavailable',
+      reason: 'file rpc unavailable on this node — check the node helper status',
+    });
+  });
+
+  it('does not evaluate disabled reasons for actions that pass contextual gates', () => {
+    let disabledReasonCalls = 0;
+    const descriptor = actionDescriptorFromMeta(
+      {
+        id: 'workspace.enabled-test',
+        label: 'enabled test action',
+        category: 'workspace',
+        when: () => true,
+        disabledReason: () => {
+          disabledReasonCalls += 1;
+          return 'should not be projected while enabled';
+        },
+      },
+      { view: 'workspace', workspacePath: '/repo' }
+    );
+
+    expect(disabledReasonCalls).toBe(0);
+    expect(descriptor.availability).toEqual({ state: 'available' });
   });
 
   it('no conflicting keyboard shortcuts', () => {
