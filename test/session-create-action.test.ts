@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import type { RelayJsonSchema } from '../shared/cli-gateway-contract.js';
 import {
   executeSessionCreateAction,
   sessionCreateActionAvailability,
   sessionCreateActionDescriptor,
+  sessionCreateActionTarget,
   sessionsCreateCommandDefinition,
 } from '../frontend/src/lib/actions/session-create.js';
 import {
@@ -14,16 +16,85 @@ import {
 import { HttpError } from '../frontend/src/lib/api.js';
 import type { SessionSummary } from '../frontend/src/lib/types.js';
 
+function schemaTypeMatches(type: string, value: unknown): boolean {
+  if (type === 'array') return Array.isArray(value);
+  if (type === 'null') return value === null;
+  if (type === 'object') {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+  return typeof value === type;
+}
+
+// The test intentionally implements the tiny JSON Schema subset used by the gateway
+// envelopes so this regression does not depend on an undeclared Ajv package.
+// eslint-disable-next-line sonarjs/cognitive-complexity
+function validateJsonSchema(
+  schema: RelayJsonSchema | undefined,
+  value: unknown,
+  path = '$'
+): string[] {
+  if (!schema) return [`${path} has no schema`];
+
+  const errors: string[] = [];
+  if ('const' in schema && value !== schema.const) {
+    errors.push(`${path} expected const ${String(schema.const)}`);
+  }
+  if (schema.enum && !schema.enum.includes(String(value))) {
+    errors.push(`${path} expected enum ${schema.enum.join('|')}`);
+  }
+  if (schema.oneOf) {
+    const matches = schema.oneOf.filter(
+      (candidate) => validateJsonSchema(candidate, value, path).length === 0
+    );
+    if (matches.length !== 1) errors.push(`${path} expected oneOf match`);
+    return errors;
+  }
+  if (schema.type) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    if (!types.some((type) => schemaTypeMatches(type, value))) {
+      errors.push(`${path} expected type ${types.join('|')}`);
+      return errors;
+    }
+  }
+  if (schema.type === 'object' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const objectValue = value as Record<string, unknown>;
+    const properties = schema.properties ?? {};
+    for (const required of schema.required ?? []) {
+      if (!(required in objectValue)) {
+        errors.push(`${path} missing required property ${required}`);
+      }
+    }
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(objectValue)) {
+        if (!(key in properties)) errors.push(`${path} has additional property ${key}`);
+      }
+    }
+    for (const [key, childSchema] of Object.entries(properties)) {
+      if (key in objectValue) {
+        errors.push(...validateJsonSchema(childSchema, objectValue[key], `${path}.${key}`));
+      }
+    }
+  }
+  if (schema.type === 'array' && Array.isArray(value) && schema.items) {
+    for (let index = 0; index < value.length; index += 1) {
+      errors.push(...validateJsonSchema(schema.items, value[index], `${path}[${index}]`));
+    }
+  }
+  return errors;
+}
+
 function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: 'sess-1',
     globalSessionId: 'remote-1:sess-1',
     nodeId: 'remote-1',
     type: 'terminal',
+    agent: 'claude',
     mode: 'pty',
     cwd: '/home/me/repo',
     repoPath: '/home/me/repo',
     worktreePath: null,
+    displayName: 'terminal',
     createdAt: '2026-06-03T00:00:00.000Z',
     lastActivity: '2026-06-03T00:00:00.000Z',
     idle: true,
@@ -51,7 +122,11 @@ describe('sessions.create frontend action contract', () => {
       kind: 'json-schema',
       schema: command.outputSchema,
     });
-    expect(descriptor.error.kind).toBe('typed-shape');
+    expect(descriptor.error).toMatchObject({
+      kind: 'typed-shape',
+      type: 'RelayCliGatewayErrorEnvelope',
+      schema: expect.objectContaining({ title: 'RelayCliGatewayErrorEnvelope' }),
+    });
     expect(descriptor.surfaces).toEqual(
       expect.arrayContaining(['cli', 'agent', 'web', 'command-center'])
     );
@@ -83,7 +158,8 @@ describe('sessions.create frontend action contract', () => {
     }
   });
 
-  it('executes a web launch through the shared action path with typed success target', async () => {
+  it('executes a web launch as the stable CLI gateway success envelope', async () => {
+    const descriptor = sessionCreateActionDescriptor();
     const result = await executeSessionCreateAction(
       {
         nodeId: 'remote-1',
@@ -98,9 +174,11 @@ describe('sessions.create frontend action contract', () => {
 
     expect(result).toMatchObject({
       ok: true,
+      contract: 'v1',
+      contractVersion: '1.0',
       command: 'sessions.create',
-      target: {
-        sessionId: 'sess-1',
+      data: {
+        id: 'sess-1',
         globalSessionId: 'remote-1:sess-1',
         nodeId: 'remote-1',
         cwd: '/home/me/repo',
@@ -110,7 +188,36 @@ describe('sessions.create frontend action contract', () => {
         mode: 'pty',
       },
     });
-    expect(result.descriptor.contract?.relayCommandName).toBe('sessions.create');
+    expect(validateJsonSchema(descriptor.result.schema, result)).toEqual([]);
+  });
+
+  it('rejects the legacy custom web envelope against the advertised result schema', () => {
+    const descriptor = sessionCreateActionDescriptor();
+    const legacyResult = {
+      ok: true,
+      command: 'sessions.create',
+      descriptor,
+      input: { cwd: '/home/me/repo', type: 'terminal' },
+      session: session(),
+      target: {
+        sessionId: 'sess-1',
+        globalSessionId: 'remote-1:sess-1',
+        nodeId: 'remote-1',
+      },
+    };
+
+    const errors = validateJsonSchema(descriptor.result.schema, legacyResult);
+    expect(errors).toEqual(
+      expect.arrayContaining([
+        '$ missing required property contract',
+        '$ missing required property contractVersion',
+        '$ missing required property data',
+        '$ has additional property descriptor',
+        '$ has additional property input',
+        '$ has additional property session',
+        '$ has additional property target',
+      ])
+    );
   });
 
   it('preserves explicit null worktree responses instead of falling back to input', async () => {
@@ -128,33 +235,36 @@ describe('sessions.create frontend action contract', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      target: { worktreePath: null },
+      data: { worktreePath: null },
     });
   });
 
-  it('falls back to input worktree only when the session omits the field', async () => {
+  it('keeps fallback targeting as an explicit internal projection helper', () => {
     const serverSession = session();
     delete serverSession.worktreePath;
 
-    const result = await executeSessionCreateAction(
-      {
-        nodeId: 'remote-1',
-        cwd: '/home/me/repo',
-        repoPath: '/home/me/repo',
-        worktreePath: '/home/me/repo/.worktrees/feature',
-        type: 'terminal',
-        mode: 'pty',
-      },
-      async () => serverSession
-    );
-
-    expect(result).toMatchObject({
-      ok: true,
-      target: { worktreePath: '/home/me/repo/.worktrees/feature' },
+    expect(
+      sessionCreateActionTarget(
+        {
+          nodeId: 'remote-1',
+          cwd: '/home/me/repo',
+          repoPath: '/home/me/repo',
+          worktreePath: '/home/me/repo/.worktrees/feature',
+          type: 'terminal',
+          mode: 'pty',
+        },
+        serverSession
+      )
+    ).toMatchObject({
+      sessionId: 'sess-1',
+      globalSessionId: 'remote-1:sess-1',
+      nodeId: 'remote-1',
+      worktreePath: '/home/me/repo/.worktrees/feature',
     });
   });
 
-  it('normalizes launch failures into a stable typed error envelope', async () => {
+  it('normalizes launch failures into the stable CLI gateway error envelope', async () => {
+    const descriptor = sessionCreateActionDescriptor();
     const result = await executeSessionCreateAction(
       { nodeId: 'remote-1', cwd: '/home/me/repo', type: 'terminal' },
       async () => {
@@ -166,20 +276,24 @@ describe('sessions.create frontend action contract', () => {
 
     expect(result).toMatchObject({
       ok: false,
+      contract: 'v1',
+      contractVersion: '1.0',
       command: 'sessions.create',
-      target: {
-        nodeId: 'remote-1',
-        cwd: '/home/me/repo',
-        type: 'terminal',
-      },
       error: {
         code: 'NODE_OFFLINE',
-        reasonCode: 'NODE_OFFLINE',
         message: 'node is offline',
         retryable: true,
-        details: { nodeId: 'remote-1' },
+        details: { reasonCode: 'NODE_OFFLINE', nodeId: 'remote-1' },
       },
     });
+    expect(Object.keys(result)).toEqual([
+      'ok',
+      'contract',
+      'contractVersion',
+      'command',
+      'error',
+    ]);
+    expect(validateJsonSchema(descriptor.error.schema, result)).toEqual([]);
   });
 
   it('uses the shared availability shape for missing context and node/capability blocks', () => {

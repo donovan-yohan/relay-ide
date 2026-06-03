@@ -176,7 +176,7 @@ describe('createSessionWithoutActivation', () => {
     expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe('main');
   });
 
-  it('returns the conflicting session and ConflictError when refresh succeeds', async () => {
+  it('returns the conflicting session and stable ConflictError envelope when refresh succeeds', async () => {
     const conflict = new ConflictError('main');
     apiMocks.createSession.mockRejectedValue(conflict);
     apiMocks.fetchSessions.mockResolvedValue([session('main', 'agent')]);
@@ -187,7 +187,12 @@ describe('createSessionWithoutActivation', () => {
     });
 
     expect(result.session?.id).toBe('main');
-    expect(result.error).toBe(conflict);
+    expect(result.error).toMatchObject({
+      code: 'SESSION_CONFLICT',
+      message: 'session already exists for this launch target',
+      retryable: false,
+      details: { sessionId: 'main' },
+    });
     expect(useSessionsStore.getState().activeSessionId).toBe('main');
     expect(useSessionsStore.getState().workspaceLastSession['/repo/a']).toBe('main');
   });
@@ -247,7 +252,15 @@ describe('createSessionWithoutActivation', () => {
       type: 'terminal',
     });
 
-    expect(result).toEqual({ session: undefined, error: createError });
+    expect(result).toMatchObject({
+      session: undefined,
+      error: {
+        code: 'UPSTREAM_ERROR',
+        message: 'create failed',
+        retryable: true,
+        details: { reasonCode: 'SESSION_CREATE_FAILED' },
+      },
+    });
     expect(refreshAll).not.toHaveBeenCalled();
   });
 

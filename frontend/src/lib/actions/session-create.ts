@@ -4,13 +4,20 @@ import {
   type RelayActionDescriptor,
 } from '../../../../shared/action-descriptor.js';
 import {
-  relayCommandDefinition,
-  type RelayCommandDefinition,
-} from '../../../../shared/relay-command-manifest.js';
+  gatewayError,
+  gatewayOk,
+  type RelayCliGatewayEnvelope,
+  type RelayCliGatewayError,
+} from '../../../../shared/cli-gateway-contract.js';
+import { normalizeGatewayErrorCode } from '../../../../shared/cli-gateway-runtime.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
   createGlobalSessionId,
 } from '../../../../shared/identity.js';
+import {
+  relayCommandDefinition,
+  type RelayCommandDefinition,
+} from '../../../../shared/relay-command-manifest.js';
 import {
   ConfirmationRequiredError,
   ConflictError,
@@ -37,35 +44,15 @@ export interface SessionCreateActionTarget {
   terminalBackend?: 'relay-pty' | 'tmux-compat';
 }
 
-export interface SessionCreateActionError {
-  code: string;
-  reasonCode: string;
-  message: string;
-  retryable: boolean;
-  details?: Record<string, unknown>;
-}
-
-export interface SessionCreateActionSuccess {
-  ok: true;
-  command: 'sessions.create';
-  descriptor: RelayActionDescriptor;
-  input: SessionCreateActionInput;
-  session: SessionSummary;
-  target: SessionCreateActionTarget;
-}
-
-export interface SessionCreateActionFailure {
-  ok: false;
-  command: 'sessions.create';
-  descriptor: RelayActionDescriptor;
-  input: SessionCreateActionInput;
-  target: Partial<SessionCreateActionTarget>;
-  error: SessionCreateActionError;
+export type SessionCreateActionFailure = Extract<
+  RelayCliGatewayEnvelope<SessionSummary>,
+  { ok: false }
+> & {
+  /** Internal-only raw error for legacy frontend conflict/refresh handling. */
   rawError?: unknown;
-}
-
+};
 export type SessionCreateActionResult =
-  | SessionCreateActionSuccess
+  | Extract<RelayCliGatewayEnvelope<SessionSummary>, { ok: true }>
   | SessionCreateActionFailure;
 
 export type SessionCreateExecutor = (
@@ -110,7 +97,7 @@ export function sessionsCreateCommandDefinition(): RelayCommandDefinition {
   return SESSIONS_CREATE_COMMAND;
 }
 
-function targetFromInputAndSession(
+export function sessionCreateActionTarget(
   input: SessionCreateActionInput,
   session: SessionSummary
 ): SessionCreateActionTarget {
@@ -142,37 +129,25 @@ function targetFromInputAndSession(
   return target;
 }
 
-function targetFromInput(input: SessionCreateActionInput): Partial<SessionCreateActionTarget> {
-  return {
-    ...(input.nodeId ? { nodeId: input.nodeId } : {}),
-    ...(input.cwd ? { cwd: input.cwd } : {}),
-    ...(input.repoPath ? { repoPath: input.repoPath } : {}),
-    ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
-    ...(input.type ? { type: input.type } : {}),
-    ...(input.mode ? { mode: input.mode } : {}),
-    ...(input.agent ? { agent: input.agent } : {}),
-    ...(input.terminalBackend ? { terminalBackend: input.terminalBackend } : {}),
-  };
-}
-
-function errorFromUnknown(error: unknown): SessionCreateActionError {
+function errorFromUnknown(error: unknown): RelayCliGatewayError {
   if (error instanceof ConflictError) {
     return {
       code: 'SESSION_CONFLICT',
-      reasonCode: 'SESSION_ALREADY_EXISTS',
       message: 'session already exists for this launch target',
       retryable: false,
-      details: error.sessionId ? { sessionId: error.sessionId } : {},
+      details: error.sessionId
+        ? { sessionId: error.sessionId, reasonCode: 'SESSION_ALREADY_EXISTS' }
+        : { reasonCode: 'SESSION_ALREADY_EXISTS' },
     };
   }
 
   if (error instanceof ConfirmationRequiredError) {
     return {
       code: 'CONFIRMATION_REQUIRED',
-      reasonCode: error.challenge.reasonCode,
       message: error.message,
       retryable: true,
       details: {
+        reasonCode: error.challenge.reasonCode,
         challengeId: error.challenge.challengeId,
         requiredBits: error.challenge.requiredBits,
         expiresAt: error.challenge.expiresAt,
@@ -182,61 +157,60 @@ function errorFromUnknown(error: unknown): SessionCreateActionError {
 
   if (error instanceof HttpError) {
     return {
-      code: error.code ?? 'UPSTREAM_ERROR',
-      reasonCode: error.code ?? 'HTTP_ERROR',
+      code: normalizeGatewayErrorCode(error.status, {
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+        details: error.details,
+      }),
       message: error.message,
       retryable: error.retryable ?? error.status >= 500,
-      ...(error.details ? { details: error.details } : {}),
+      ...(error.details
+        ? { details: { reasonCode: error.code ?? 'HTTP_ERROR', ...error.details } }
+        : { details: { reasonCode: error.code ?? 'HTTP_ERROR' } }),
     };
   }
 
   if (error instanceof Error) {
     return {
       code: 'UPSTREAM_ERROR',
-      reasonCode: 'SESSION_CREATE_FAILED',
       message: error.message,
       retryable: true,
+      details: { reasonCode: 'SESSION_CREATE_FAILED' },
     };
   }
 
   return {
     code: 'UPSTREAM_ERROR',
-    reasonCode: 'SESSION_CREATE_FAILED',
     message: 'failed to create session',
     retryable: true,
+    details: { reasonCode: 'SESSION_CREATE_FAILED' },
   };
+}
+
+function withRawError(
+  envelope: Extract<RelayCliGatewayEnvelope<SessionSummary>, { ok: false }>,
+  rawError: unknown
+): SessionCreateActionFailure {
+  Object.defineProperty(envelope, 'rawError', {
+    value: rawError,
+    enumerable: false,
+    configurable: true,
+  });
+  return envelope as SessionCreateActionFailure;
 }
 
 export async function executeSessionCreateAction(
   input: SessionCreateActionInput,
   createSession: SessionCreateExecutor = createSessionApi
 ): Promise<SessionCreateActionResult> {
-  const descriptor = sessionCreateActionDescriptor(
-    sessionCreateActionAvailability({
-      workspacePath: input.repoPath ?? input.worktreePath ?? null,
-      cwd: input.cwd ?? null,
-    })
-  );
-
   try {
     const session = await createSession(input);
-    return {
-      ok: true,
-      command: 'sessions.create',
-      descriptor,
-      input,
-      session,
-      target: targetFromInputAndSession(input, session),
-    };
+    return gatewayOk('sessions.create', session);
   } catch (rawError) {
-    return {
-      ok: false,
-      command: 'sessions.create',
-      descriptor,
-      input,
-      target: targetFromInput(input),
-      error: errorFromUnknown(rawError),
-      rawError,
-    };
+    return withRawError(
+      gatewayError('sessions.create', errorFromUnknown(rawError)),
+      rawError
+    );
   }
 }

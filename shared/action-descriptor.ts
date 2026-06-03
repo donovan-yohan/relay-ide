@@ -3,6 +3,7 @@ import type {
   RelayCliGatewayErrorCode,
   RelayJsonSchema,
 } from './cli-gateway-contract.js';
+import { gatewayErrorSchema } from './cli-gateway-contract.js';
 import type {
   RelayCommandControlRequirement,
   RelayCommandDefinition,
@@ -130,6 +131,7 @@ export function relayActionDescriptorFromCommandDefinition(
     error: {
       kind: 'typed-shape',
       type: 'RelayCliGatewayErrorEnvelope',
+      schema: gatewayErrorSchema,
     },
     stable: command.stable,
     source: 'cli-gateway-v1',

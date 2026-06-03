@@ -1,4 +1,3 @@
-import { ConflictError } from './api.js';
 import { useSessionsStore } from './stores/sessions.js';
 import { useUiStore } from './stores/ui.js';
 import { resolveSessionByKey } from './session-keys.js';
@@ -67,9 +66,7 @@ function conflictSessionIdFromFailure(
     return stableSessionId;
   }
 
-  return failure.rawError instanceof ConflictError
-    ? failure.rawError.sessionId
-    : undefined;
+  return undefined;
 }
 
 export function getCurrentSessionContext(): CurrentSessionContext {
@@ -126,11 +123,11 @@ export async function createSessionWithoutActivation(
       refreshError = error;
     }
     restoreSessionPlacement(activeSessionId, workspaceLastSession);
-    return { session: action.session, error: refreshError };
+    return { session: action.data, error: refreshError };
   }
 
   const failure = action as SessionCreateActionFailure;
-  const error = failure.rawError ?? failure.error;
+  const error = failure.error;
   const conflictingSessionId = conflictSessionIdFromFailure(failure);
   if (conflictingSessionId) {
     let refreshError: unknown = null;
@@ -164,12 +161,12 @@ export async function createAgentSession(
     } catch (error) {
       refreshError = error;
     }
-    useSessionsStore.getState().setActiveSessionId(action.session.id);
-    return { session: action.session, error: refreshError };
+    useSessionsStore.getState().setActiveSessionId(action.data.id);
+    return { session: action.data, error: refreshError };
   }
 
   const failure = action as SessionCreateActionFailure;
-  const error = failure.rawError ?? failure.error;
+  const error = failure.error;
   const conflictingSessionId = conflictSessionIdFromFailure(failure);
   if (conflictingSessionId) {
     let refreshError: unknown = null;
