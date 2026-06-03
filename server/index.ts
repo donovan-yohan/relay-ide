@@ -71,7 +71,7 @@ import {
 } from './relay-state-db.js';
 import {
   createWorkContextRouter,
-  initWorkContextStore,
+  initWorkContextStoreBestEffort,
   type WorkContextStore,
 } from './work-contexts.js';
 import { initIaStore, type IaStore } from './ia-store.js';
@@ -1557,7 +1557,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const workContextStore = initWorkContextStore(configDir);
+  const workContextStore = initWorkContextStoreBestEffort(configDir);
 
   // IA persistence substrate (#737): Workspace grouping + Bench overlays. Own
   // SQLite file; new tables only, non-destructive. Routes that consume it
