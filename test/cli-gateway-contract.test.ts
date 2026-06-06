@@ -126,6 +126,10 @@ describe('CLI gateway contract', () => {
       'supervisor.sendText',
       'supervisor.submit',
       'events.subscribe',
+      'settings.get',
+      'settings.update',
+      'webhooks.status',
+      'webhooks.ping',
     ]);
 
     for (const spec of RELAY_CLI_GATEWAY_CONTRACT.commandSchemas) {
@@ -239,6 +243,80 @@ describe('CLI gateway contract', () => {
       controlRequirements: ['fresh-control-state'],
       auditRedaction: { expectation: 'hashes-only' },
       scopeKinds: ['session'],
+    });
+    expect(relayCommandDefinition('settings.update')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: true,
+      controlRequirements: ['confirmation-challenge'],
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['node'],
+    });
+    expect(relayCommandDefinition('settings.get')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['node'],
+    });
+    expect(relayCommandDefinition('webhooks.status')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['node'],
+    });
+    expect(relayCommandDefinition('webhooks.ping')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['node'],
+    });
+  });
+
+  it('describes browser-operator-only safe settings and webhook contracts with redaction metadata', () => {
+    const settingsGet = commandSpec('settings.get');
+    expect(settingsGet.capabilityHints).toEqual([]);
+    expect(settingsGet.outputSchema.properties?.data?.properties?.redaction).toMatchObject({
+      properties: {
+        rawConfigReturned: { const: false },
+        secretsReturned: { const: false },
+        tokenMaterialReturned: { const: false },
+      },
+    });
+
+    const settingsUpdate = commandSpec('settings.update');
+    expect(settingsUpdate.capabilityHints).toEqual([]);
+    expect(settingsUpdate.errorCodes).toContain('CONFIRMATION_REQUIRED');
+    expect(settingsUpdate.inputSchema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['key', 'value'],
+    });
+    expect(settingsUpdate.inputSchema.properties?.['key']?.enum).toEqual([
+      'defaultAgent',
+      'defaultContinue',
+      'defaultYolo',
+      'defaultNotifications',
+      'claudeFullscreen',
+      'renamerTool',
+      'updateChannel',
+    ]);
+    expect(settingsUpdate.inputSchema.properties?.['confirmRiskyWrite']).toEqual({
+      type: 'boolean',
+    });
+
+    const webhookStatus = commandSpec('webhooks.status');
+    expect(webhookStatus.capabilityHints).toEqual([]);
+    const webhookStatusJson = JSON.stringify(webhookStatus.outputSchema);
+    expect(webhookStatusJson).toContain('webhookSecretsReturned');
+    expect(webhookStatusJson).not.toContain('"webhookSecret"');
+    expect(webhookStatusJson).not.toContain('"smeeUrl"');
+
+    const webhookPing = commandSpec('webhooks.ping');
+    expect(webhookPing.capabilityHints).toEqual([]);
+    expect(webhookPing.outputSchema.properties?.data?.properties?.redaction).toMatchObject({
+      properties: {
+        webhookSecretsReturned: { const: false },
+        rawWebhookUrlsReturned: { const: false },
+      },
     });
   });
 

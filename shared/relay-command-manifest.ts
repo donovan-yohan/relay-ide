@@ -123,6 +123,10 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'supervisor.sendText': 'supervisor send text',
   'supervisor.submit': 'supervisor submit',
   'events.subscribe': 'subscribe gateway events',
+  'settings.get': 'safe settings get',
+  'settings.update': 'safe settings update',
+  'webhooks.status': 'webhook status',
+  'webhooks.ping': 'webhook ping',
 };
 
 function sideEffectForGatewayCommand(
@@ -153,7 +157,9 @@ function sideEffectForGatewayCommand(
     spec.name === 'inbox.send' ||
     spec.name === 'inbox.ack' ||
     spec.name === 'inbox.resolve' ||
-    spec.name === 'inbox.ignore'
+    spec.name === 'inbox.ignore' ||
+    spec.name === 'settings.update' ||
+    spec.name === 'webhooks.ping'
   ) {
     return 'write';
   }
@@ -173,6 +179,7 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('artifacts.')) return ['work-context'];
   if (name.startsWith('supervisor.')) return ['session'];
   if (name.startsWith('events.')) return ['node', 'session'];
+  if (name.startsWith('settings.') || name.startsWith('webhooks.')) return ['node'];
   if (name.startsWith('sessions.')) return ['session'];
   return [];
 }
@@ -183,6 +190,7 @@ function requiresConfirmationForGatewayCommand(
   return (
     spec.name === 'files.write' ||
     spec.name === 'sessions.kill' ||
+    spec.name === 'settings.update' ||
     spec.name === 'handoffs.create' ||
     spec.name === 'handoffs.launch' ||
     spec.capabilityHints.includes('pty:exec:arbitrary') ||

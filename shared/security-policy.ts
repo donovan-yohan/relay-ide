@@ -43,6 +43,13 @@ export const RELAY_CAPABILITY_BITS = [
   'context:write',
   'inbox:read',
   'inbox:write',
+  // #873: stable CLI gateway contracts for safe settings reads/writes and
+  // redacted webhook operational checks. `settings:write` is high-risk by
+  // default; individual risky values still require command-level confirmation.
+  'settings:read',
+  'settings:write',
+  'integration:webhook:read',
+  'integration:webhook:test',
 ] as const;
 
 export type RelayCapabilityBit = (typeof RELAY_CAPABILITY_BITS)[number];
@@ -80,6 +87,8 @@ export const LEGACY_DEFAULT_ALLOWED_CAPABILITIES = [
   'context:write',
   'inbox:read',
   'inbox:write',
+  'settings:read',
+  'integration:webhook:read',
 ] as const satisfies readonly RelayCapabilityBit[];
 
 export const HIGH_RISK_CAPABILITIES = [
@@ -94,6 +103,7 @@ export const HIGH_RISK_CAPABILITIES = [
   'node:acl:widen',
   'credential:export',
   'node:lifecycle:destructive',
+  'settings:write',
 ] as const satisfies readonly RelayCapabilityBit[];
 
 const RELAY_CAPABILITY_SET = new Set<string>(RELAY_CAPABILITY_BITS);

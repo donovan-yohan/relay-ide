@@ -312,12 +312,17 @@ describe('hub node dashboard state', () => {
     // is denied by these node policy fixtures unless explicitly delegated.
     // #869 added `session:control:rename`; it follows the kill tier pattern:
     // allowed in dev, denied in sandbox + prod.
+    // #873 added four settings/webhook gateway bits. The read bits
+    // (`settings:read`, `integration:webhook:read`) are default-granted on
+    // dev nodes; `settings:write` remains high-risk and this fixture's prod
+    // policy still denies all four because it overrides allowed bits to
+    // `session:read` only, preserving the challenge count at 2.
     expect(
       rows.map((row) => [row.security.trustTier, row.security.postureLabel])
     ).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 27'],
-      ['dev', 'allow 16 · challenge 0 · deny 12'],
-      ['prod', 'allow 1 · challenge 2 · deny 25'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 31'],
+      ['dev', 'allow 18 · challenge 0 · deny 14'],
+      ['prod', 'allow 1 · challenge 2 · deny 29'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',

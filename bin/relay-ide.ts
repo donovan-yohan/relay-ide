@@ -563,7 +563,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -2428,6 +2428,88 @@ async function runGatewayEvents(gatewayArgs: string[]): Promise<never> {
   });
 }
 
+function parseGatewaySettingsValue(
+  commandName: RelayCliGatewayCommand,
+  settingsArgs: string[]
+): string | boolean {
+  const jsonValue = gatewayArg(settingsArgs, '--value-json');
+  if (jsonValue !== undefined) {
+    try {
+      const parsed = JSON.parse(jsonValue) as unknown;
+      if (typeof parsed === 'string' || typeof parsed === 'boolean') return parsed;
+      gatewayInvalid(commandName, '--value-json must decode to a string or boolean');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      printGatewayEnvelope(
+        gatewayError(commandName, gatewayCliInvalidJsonError(commandName, message)),
+        1
+      );
+    }
+  }
+  const value = gatewayArg(settingsArgs, '--value');
+  if (value === undefined) gatewayInvalid(commandName, '--value or --value-json is required');
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return value;
+}
+
+function parseGatewaySettingsUpdateInput(
+  settingsArgs: string[]
+): Record<string, unknown> {
+  const input = parseGatewayInputObject('settings.update', settingsArgs);
+  if (Object.keys(input).length > 0) return input;
+  const key = gatewayArg(settingsArgs, '--key');
+  if (!key) gatewayInvalid('settings.update', '--key is required');
+  return {
+    key,
+    value: parseGatewaySettingsValue('settings.update', settingsArgs),
+    ...(settingsArgs.includes('--confirm-risky-write')
+      ? { confirmRiskyWrite: true }
+      : {}),
+  };
+}
+
+async function runGatewaySettings(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  if (subcommand === 'get') {
+    const data = await gatewayHttpJson({
+      commandName: 'settings.get',
+      pathName: '/cli-gateway/settings',
+    });
+    printGatewayEnvelope(gatewayOk('settings.get', data), 0);
+  }
+  if (subcommand === 'update') {
+    const data = await gatewayHttpJson({
+      commandName: 'settings.update',
+      pathName: '/cli-gateway/settings',
+      method: 'PATCH',
+      body: parseGatewaySettingsUpdateInput(gatewayArgs.slice(2)),
+    });
+    printGatewayEnvelope(gatewayOk('settings.update', data), 0);
+  }
+  gatewayInvalid('settings.get', 'unknown settings command', { args: gatewayArgs });
+}
+
+async function runGatewayWebhooks(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  if (subcommand === 'status') {
+    const data = await gatewayHttpJson({
+      commandName: 'webhooks.status',
+      pathName: '/cli-gateway/webhooks/status',
+    });
+    printGatewayEnvelope(gatewayOk('webhooks.status', data), 0);
+  }
+  if (subcommand === 'ping') {
+    const data = await gatewayHttpJson({
+      commandName: 'webhooks.ping',
+      pathName: '/cli-gateway/webhooks/ping',
+      method: 'POST',
+    });
+    printGatewayEnvelope(gatewayOk('webhooks.ping', data), 0);
+  }
+  gatewayInvalid('webhooks.status', 'unknown webhooks command', { args: gatewayArgs });
+}
+
 async function runGatewayV1(): Promise<never> {
   const gatewayArgs = args.slice(1);
   const json = gatewayArgs.includes('--json');
@@ -2459,6 +2541,8 @@ async function runGatewayV1(): Promise<never> {
   if (top === 'artifacts') return runGatewayArtifacts(gatewayArgs);
   if (top === 'supervisor') return runGatewaySupervisor(gatewayArgs);
   if (top === 'events') return runGatewayEvents(gatewayArgs);
+  if (top === 'settings') return runGatewaySettings(gatewayArgs);
+  if (top === 'webhooks') return runGatewayWebhooks(gatewayArgs);
   gatewayInvalid('contract.list', 'unknown v1 gateway command', {
     args: gatewayArgs,
   });
