@@ -94,21 +94,18 @@ function isSafeSettingKey(value: unknown): value is CliGatewaySafeSettingKey {
   return typeof value === 'string' && SAFE_SETTING_KEY_SET.has(value);
 }
 
-function readHeaderCapabilities(req: Request): Set<string> {
-  return new Set(
-    (req.header('x-relay-capabilities') ?? '')
-      .split(',')
-      .map((bit) => bit.trim())
-      .filter(Boolean)
-  );
-}
+export type CliGatewayCapabilityAuthorizer = (
+  req: Request,
+  capability: RelayCapabilityBit
+) => boolean;
 
 function requireCapability(
   req: Request,
   res: Response,
-  capability: RelayCapabilityBit
+  capability: RelayCapabilityBit,
+  authorizeCapability: CliGatewayCapabilityAuthorizer
 ): boolean {
-  if (readHeaderCapabilities(req).has(capability)) return true;
+  if (authorizeCapability(req, capability)) return true;
   res.status(403).json({
     error: {
       code: 'FORBIDDEN',
@@ -335,18 +332,21 @@ function webhookStatusFromConfig(config: Config): CliGatewayWebhookStatusResult 
 export function createCliGatewaySettingsRouter(deps: {
   configPath: string;
   requireAuth: RequestHandler;
+  authorizeCapability: CliGatewayCapabilityAuthorizer;
 }): Router {
   const router = Router();
   router.use(deps.requireAuth);
 
   router.get('/settings', (req, res) => {
-    if (!requireCapability(req, res, 'settings:read')) return;
+    if (!requireCapability(req, res, 'settings:read', deps.authorizeCapability))
+      return;
     const settings = safeSettingsFromConfig(loadConfig(deps.configPath));
     res.json({ settings, redaction: redactionSummary() });
   });
 
   router.patch('/settings', (req, res) => {
-    if (!requireCapability(req, res, 'settings:write')) return;
+    if (!requireCapability(req, res, 'settings:write', deps.authorizeCapability))
+      return;
     const parsed = parseSettingsUpdateInput(req.body);
     if (parsed.ok === false) {
       res.status(400).json({
@@ -369,12 +369,28 @@ export function createCliGatewaySettingsRouter(deps: {
   });
 
   router.get('/webhooks/status', (req, res) => {
-    if (!requireCapability(req, res, 'integration:webhook:read')) return;
+    if (
+      !requireCapability(
+        req,
+        res,
+        'integration:webhook:read',
+        deps.authorizeCapability
+      )
+    )
+      return;
     res.json(webhookStatusFromConfig(loadConfig(deps.configPath)));
   });
 
   router.post('/webhooks/ping', (req, res) => {
-    if (!requireCapability(req, res, 'integration:webhook:test')) return;
+    if (
+      !requireCapability(
+        req,
+        res,
+        'integration:webhook:test',
+        deps.authorizeCapability
+      )
+    )
+      return;
     const status = webhookStatusFromConfig(loadConfig(deps.configPath));
     res.json({
       ok: status.configured,
