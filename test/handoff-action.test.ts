@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { HandoffPlan } from '../shared/handoff.js';
+import type { HandoffPlan, HandoffRun } from '../shared/handoff.js';
 import type { RelayJsonSchema } from '../shared/cli-gateway-contract.js';
 import { getHandoffPlanFixture } from '../frontend/src/lib/handoff-fixtures.js';
 import { buildHandoffDraft, confirmedGrantsForPlan } from '../frontend/src/lib/handoff-live.js';
@@ -18,6 +18,12 @@ function schemaTypeMatches(type: string, value: unknown): boolean {
   if (type === 'null') return value === null;
   if (type === 'object') return typeof value === 'object' && value !== null && !Array.isArray(value);
   return typeof value === type;
+}
+
+function schemaAllowsType(schema: RelayJsonSchema, type: string): boolean {
+  const schemaType = schema.type;
+  if (!schemaType) return true;
+  return Array.isArray(schemaType) ? schemaType.includes(type) : schemaType === type;
 }
 
 // The test intentionally implements the tiny JSON Schema subset used by the gateway
@@ -44,7 +50,7 @@ function validateJsonSchema(
       return errors;
     }
   }
-  if (schema.type === 'object' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+  if (schemaAllowsType(schema, 'object') && typeof value === 'object' && value !== null && !Array.isArray(value)) {
     const objectValue = value as Record<string, unknown>;
     const properties = schema.properties ?? {};
     for (const required of schema.required ?? []) {
@@ -59,7 +65,7 @@ function validateJsonSchema(
       if (key in objectValue) errors.push(...validateJsonSchema(childSchema, objectValue[key], `${path}.${key}`));
     }
   }
-  if (schema.type === 'array' && Array.isArray(value) && schema.items) {
+  if (schemaAllowsType(schema, 'array') && Array.isArray(value) && schema.items) {
     for (let index = 0; index < value.length; index += 1) {
       errors.push(...validateJsonSchema(schema.items, value[index], `${path}[${index}]`));
     }
@@ -99,6 +105,21 @@ function validFixturePlan(key: Parameters<typeof getHandoffPlanFixture>[0]): Han
     { leg: 'destination-exec', nodeId: plan.route.destinationNodeId, capability: 'pty:exec:arbitrary', decision: 'requiresConfirmation' },
   ];
   return plan;
+}
+
+function validRun(plan: HandoffPlan): HandoffRun {
+  return {
+    schemaVersion: 1,
+    id: 'handoff-run-872',
+    requestId: plan.requestId,
+    planId: plan.id,
+    state: 'planned',
+    sourceDisposition: 'left-running',
+    conflicts: [],
+    transitions: [],
+    createdAt: '2026-06-06T18:00:00.000Z',
+    updatedAt: '2026-06-06T18:00:00.000Z',
+  };
 }
 
 describe('handoff gateway frontend action bridge', () => {
@@ -172,18 +193,7 @@ describe('handoff gateway frontend action bridge', () => {
   it('executes handoffs.create and preserves the run in the gateway success envelope', async () => {
     const descriptor = handoffsCreateActionDescriptor();
     const plan = getHandoffPlanFixture('grants-required').plan;
-    const run = {
-      schemaVersion: 1,
-      id: 'handoff-run-872',
-      requestId: plan.requestId,
-      planId: plan.id,
-      state: 'failed',
-      sourceDisposition: 'handoff-failed',
-      conflicts: [],
-      transitions: [],
-      createdAt: '2026-06-06T18:00:00.000Z',
-      updatedAt: '2026-06-06T18:00:00.000Z',
-    };
+    const run = validRun(plan);
 
     const result = await executeHandoffsCreateAction(
       {
@@ -208,6 +218,65 @@ describe('handoff gateway frontend action bridge', () => {
       data: { run, artifacts: [] },
     });
     expect(validateJsonSchema(descriptor.result.schema, result)).toEqual([]);
+  });
+
+  it('rejects malformed handoffs.create success bodies as upstream errors', async () => {
+    const descriptor = handoffsCreateActionDescriptor();
+    const plan = getHandoffPlanFixture('grants-required').plan;
+    const run = validRun(plan);
+
+    for (const body of [
+      {},
+      { run: {}, artifacts: [] },
+      { run, artifacts: undefined },
+      { run, artifacts: [null] },
+    ]) {
+      const result = await executeHandoffsCreateAction(
+        {
+          planId: plan.id,
+          confirmedGrants: confirmedGrantsForPlan(plan),
+          sourceRepoPath: '/home/dev/relay-ide',
+          destinationRepoPath: '/hub/relay-ide',
+        },
+        async () => new Response(JSON.stringify(body), { status: 201 })
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        command: 'handoffs.create',
+        error: {
+          code: 'UPSTREAM_ERROR',
+          retryable: false,
+          details: { reasonCode: 'INVALID_CREATE_RESPONSE' },
+        },
+      });
+      expect(validateJsonSchema(descriptor.error.schema, result)).toEqual([]);
+    }
+  });
+
+  it('walks object and array schemas even when schema.type allows multiple JSON types', () => {
+    const schema: RelayJsonSchema = {
+      type: ['object', 'null'],
+      additionalProperties: false,
+      required: ['items'],
+      properties: {
+        items: {
+          type: ['array', 'null'],
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['id'],
+            properties: { id: { type: 'string' } },
+          },
+        },
+      },
+    };
+
+    expect(validateJsonSchema(schema, { items: [{ id: 'artifact:ok' }] })).toEqual([]);
+    expect(validateJsonSchema(schema, { items: [{}] })).toContain('$.items[0] missing required property id');
+    expect(validateJsonSchema(schema, { items: [{ id: 'artifact:ok', rawPayload: 'nope' }] })).toContain(
+      '$.items[0] has additional property rawPayload'
+    );
   });
 
   it('normalizes handoff API failures into the stable gateway error envelope', async () => {

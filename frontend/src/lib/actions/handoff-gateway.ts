@@ -24,6 +24,7 @@ import type {
 } from '../../../../shared/handoff.js';
 import {
   isHandoffPlan,
+  isHandoffRun,
 } from '../../../../shared/handoff.js';
 import {
   relayCommandDefinition,
@@ -41,14 +42,7 @@ export interface HandoffPlanResponse {
 
 export interface HandoffCreateResponse {
   run: HandoffRun;
-  artifacts?: Array<{
-    id: string;
-    group: string;
-    summary: string;
-    refs?: string[];
-    rawPayloadAvailable?: false;
-    transcriptExportAvailable?: false;
-  }>;
+  artifacts: Record<string, unknown>[];
 }
 
 export interface HandoffPlanActionInput {
@@ -163,6 +157,24 @@ function invalidPlanResponse(): HandoffPlanActionResult {
   });
 }
 
+function invalidCreateResponse(): HandoffCreateActionResult {
+  return gatewayError('handoffs.create', {
+    code: 'UPSTREAM_ERROR',
+    message: 'handoffs.create response did not include a valid run and artifacts list',
+    retryable: false,
+    details: { reasonCode: 'INVALID_CREATE_RESPONSE' },
+  });
+}
+
+function isHandoffCreateResponse(value: unknown): value is HandoffCreateResponse {
+  if (!isRecord(value)) return false;
+  return (
+    isHandoffRun(value['run']) &&
+    Array.isArray(value['artifacts']) &&
+    value['artifacts'].every(isRecord)
+  );
+}
+
 export async function executeHandoffsPlanAction(
   input: HandoffPlanActionInput,
   fetchImpl: HandoffFetch = (url, init) => fetch(url, init)
@@ -189,5 +201,6 @@ export async function executeHandoffsCreateAction(
   });
   const body = await parseJsonRecord(res);
   if (!res.ok) return gatewayError('handoffs.create', gatewayErrorFromResponse('handoffs.create', res, body));
-  return gatewayOk('handoffs.create', body as unknown as HandoffCreateResponse);
+  if (!isHandoffCreateResponse(body)) return invalidCreateResponse();
+  return gatewayOk('handoffs.create', body);
 }
