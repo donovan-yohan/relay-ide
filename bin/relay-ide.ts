@@ -79,6 +79,15 @@ function execErrorMessage(err: unknown, fallback: string): string {
   return (e.stderr || e.message || fallback).trimEnd();
 }
 
+function isMissingCommandError(err: unknown, command: string): boolean {
+  const e = err as { code?: unknown; path?: unknown; message?: unknown };
+  return (
+    e.code === 'ENOENT' &&
+    (e.path === command ||
+      (typeof e.message === 'string' && e.message.includes(`spawn ${command} ENOENT`)))
+  );
+}
+
 // Parse CLI flags
 const args = process.argv.slice(2);
 
@@ -643,6 +652,18 @@ async function resolveWorkflowBranchFromPr(
       },
     };
   } catch (error) {
+    if (isMissingCommandError(error, 'gh')) {
+      workflowError(
+        commandName,
+        'UPSTREAM_ERROR',
+        'gh CLI is required to resolve PR numbers but was not found',
+        {
+          reasonCode: 'GH_CLI_MISSING',
+          command: 'gh',
+          prNumber,
+        }
+      );
+    }
     workflowError(commandName, 'NOT_FOUND', execErrorMessage(error, 'unknown PR'), {
       reasonCode: 'UNKNOWN_PR',
       prNumber,
@@ -706,6 +727,20 @@ async function resolveWorkflowWorktree(
     ? worktrees.find((entry) => path.resolve(entry.path) === requestedWorktreePath)
     : worktrees.find((entry) => entry.branchName === branchName);
   let createdWorktree = false;
+
+  if (requestedWorktreePath && existing && existing.branchName !== branchName) {
+    workflowError(
+      commandName,
+      'SESSION_CONFLICT',
+      'explicit worktree path is checked out on a different branch than requested',
+      {
+        reasonCode: 'WORKTREE_BRANCH_MISMATCH',
+        worktreePath: requestedWorktreePath,
+        branchName,
+        actualBranchName: existing.branchName ?? null,
+      }
+    );
+  }
 
   if (!existing && mode === 'reuse-existing') {
     workflowError(commandName, 'NOT_FOUND', 'no existing worktree for requested branch', {
@@ -813,7 +848,6 @@ function workflowSessionBody(
   const body: Record<string, unknown> = {
     repoPath: resolved.repoPath,
     worktreePath: resolved.worktreePath,
-    cwd: resolved.worktreePath,
     branchName: resolved.branchName,
   };
   for (const field of [
