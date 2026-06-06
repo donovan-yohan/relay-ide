@@ -7,14 +7,19 @@ import {
   createRepoInstanceId,
   createWorktreeInstanceId,
 } from '../../../shared/identity.js';
+import type { RelayCliGatewayErrorEnvelope } from '../../../shared/cli-gateway-contract.js';
 import {
   HANDOFF_SCHEMA_VERSION,
-  isHandoffPlan,
   type HandoffPlan,
   type HandoffRequest,
   type HandoffRequiredGrant,
-  type HandoffRun,
 } from '../../../shared/handoff.js';
+import {
+  executeHandoffsCreateAction,
+  executeHandoffsPlanAction,
+  type HandoffCreateResponse,
+  type HandoffPlanResponse,
+} from './actions/handoff-gateway.js';
 import type { SessionSummary } from './types.js';
 
 export type HandoffLiveStatus =
@@ -40,24 +45,6 @@ export interface HandoffApiErrorView {
   status?: number;
 }
 
-export interface HandoffPlanResponse {
-  plan: HandoffPlan;
-  dryRun?: unknown;
-  readOnly?: boolean;
-}
-
-export interface HandoffCreateResponse {
-  run: HandoffRun;
-  artifacts?: Array<{
-    id: string;
-    group: string;
-    summary: string;
-    refs?: string[];
-    rawPayloadAvailable?: false;
-    transcriptExportAvailable?: false;
-  }>;
-}
-
 export interface HandoffDraft {
   request: HandoffRequest;
   sourceRepoPath?: string;
@@ -68,10 +55,6 @@ export interface HandoffDraft {
 export interface HandoffDraftResult {
   draft: HandoffDraft | null;
   emptyReason?: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function preferredCwd(session: SessionSummary): string {
@@ -190,54 +173,31 @@ export function buildHandoffDraft(session: SessionSummary | null | undefined): H
   };
 }
 
-async function parseHandoffError(res: Response): Promise<HandoffApiErrorView> {
-  try {
-    const data = await res.json();
-    const error = isRecord(data?.error) ? data.error : null;
-    const code = typeof error?.code === 'string' ? error.code : `HTTP_${res.status}`;
-    return {
-      code,
-      message:
-        typeof error?.message === 'string'
-          ? error.message
-          : typeof data?.error === 'string'
-            ? data.error
-            : `handoff API returned HTTP ${res.status}`,
-      retryable: typeof error?.retryable === 'boolean' ? error.retryable : false,
-      ...(typeof error?.reasonCode === 'string' ? { reasonCode: error.reasonCode } : {}),
-      ...(isRecord(error?.details) ? { details: error.details } : {}),
-      status: res.status,
-    };
-  } catch {
-    return {
-      code: `HTTP_${res.status}`,
-      message: `handoff API returned HTTP ${res.status}`,
-      retryable: false,
-      status: res.status,
-    };
-  }
+function handoffErrorViewFromEnvelope(
+  envelope: RelayCliGatewayErrorEnvelope
+): HandoffApiErrorView {
+  const details = envelope.error.details;
+  const upstreamCode = typeof details?.['upstreamCode'] === 'string' ? details['upstreamCode'] : undefined;
+  const reasonCode = typeof details?.['reasonCode'] === 'string' ? details['reasonCode'] : undefined;
+  const status = typeof details?.['status'] === 'number' ? details['status'] : undefined;
+  return {
+    code: upstreamCode ?? envelope.error.code,
+    message: envelope.error.message,
+    retryable: envelope.error.retryable,
+    ...(reasonCode ? { reasonCode } : {}),
+    ...(details ? { details } : {}),
+    ...(status !== undefined ? { status } : {}),
+  };
 }
 
 export async function planHandoff(draft: HandoffDraft): Promise<HandoffPlanResponse> {
-  const res = await fetch('/handoffs/plan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      request: draft.request,
-      ...(draft.sourceRepoPath ? { sourceRepoPath: draft.sourceRepoPath } : {}),
-      ...(draft.sourceBranchName ? { sourceBranchName: draft.sourceBranchName } : {}),
-    }),
+  const result = await executeHandoffsPlanAction({
+    request: draft.request,
+    ...(draft.sourceRepoPath ? { sourceRepoPath: draft.sourceRepoPath } : {}),
+    ...(draft.sourceBranchName ? { sourceBranchName: draft.sourceBranchName } : {}),
   });
-  if (!res.ok) throw await parseHandoffError(res);
-  const body = (await res.json()) as HandoffPlanResponse;
-  if (!isHandoffPlan(body.plan)) {
-    throw {
-      code: 'INVALID_PLAN_RESPONSE',
-      message: 'handoff API response did not include a valid plan',
-      retryable: false,
-    } satisfies HandoffApiErrorView;
-  }
-  return body;
+  if (result.ok === false) throw handoffErrorViewFromEnvelope(result);
+  return result.data;
 }
 
 export function confirmedGrantsForPlan(plan: HandoffPlan): HandoffRequiredGrant[] {
@@ -251,31 +211,15 @@ export async function createHandoffFromPlan(
   draft: HandoffDraft,
   plan: HandoffPlan
 ): Promise<HandoffCreateResponse> {
-  const res = await fetch('/handoffs/create', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      planId: plan.id,
-      confirmedGrants: confirmedGrantsForPlan(plan),
-      ...(draft.sourceRepoPath ? { sourceRepoPath: draft.sourceRepoPath } : {}),
-      ...(draft.destinationRepoPath ? { destinationRepoPath: draft.destinationRepoPath } : {}),
-      actorId: 'relay-frontend',
-    }),
+  const result = await executeHandoffsCreateAction({
+    planId: plan.id,
+    confirmedGrants: confirmedGrantsForPlan(plan),
+    ...(draft.sourceRepoPath ? { sourceRepoPath: draft.sourceRepoPath } : {}),
+    ...(draft.destinationRepoPath ? { destinationRepoPath: draft.destinationRepoPath } : {}),
+    actorId: 'relay-frontend',
   });
-  if (!res.ok) {
-    const clone = res.clone();
-    const error = await parseHandoffError(res);
-    try {
-      const data = await clone.json();
-      if (isRecord(data?.run)) {
-        (error.details ??= {}).run = data.run;
-      }
-    } catch {
-      // ignore parse fallback; the typed error is enough for UI copy.
-    }
-    throw error;
-  }
-  return (await res.json()) as HandoffCreateResponse;
+  if (result.ok === false) throw handoffErrorViewFromEnvelope(result);
+  return result.data;
 }
 
 export function handoffStatusFromError(error: HandoffApiErrorView): HandoffLiveStatus {
