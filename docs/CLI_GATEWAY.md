@@ -250,20 +250,20 @@ This boundary is part of the #797/#798/#802 split: #427 provided the trust-tier/
 
 ## Settings and webhook gateway contracts (#873)
 
-`settings.*` and `webhooks.*` expose a narrow operational slice for CLI/agent adapters. They are not a raw config API.
+`settings.*` and `webhooks.*` expose a narrow operational slice for CLI/agent adapters. They are not a raw config API, and they are browser-operator-session-only for now.
 
-| Command | Required capability | Side effect | Contract |
+| Command | Current auth boundary | Side effect | Contract |
 | --- | --- | --- | --- |
-| `relay-ide v1 settings get --json` | `settings:read` | read | Returns only `defaultAgent`, `defaultContinue`, `defaultYolo`, `defaultNotifications`, `claudeFullscreen`, `renamerTool`, and `updateChannel`, plus redaction metadata. |
-| `relay-ide v1 settings update --input-json '{...}' --json` | `settings:write` | write | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed. |
-| `relay-ide v1 webhooks status --json` | `integration:webhook:read` | read | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata. |
-| `relay-ide v1 webhooks ping --json` | `integration:webhook:test` | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs. |
+| `relay-ide v1 settings get --json` | Browser operator session | read | Returns only `defaultAgent`, `defaultContinue`, `defaultYolo`, `defaultNotifications`, `claudeFullscreen`, `renamerTool`, and `updateChannel`, plus redaction metadata. |
+| `relay-ide v1 settings update --input-json '{...}' --json` | Browser operator session | write | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed. |
+| `relay-ide v1 webhooks status --json` | Browser operator session | read | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata. |
+| `relay-ide v1 webhooks ping --json` | Browser operator session | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs. |
 
-Settings update accepts either `--input-json` / `--input-file` with `{ "key", "value", "confirmRiskyWrite"? }` or typed flags (`--key`, `--value` / `--value-json`, optional `--confirm-risky-write`). `defaultYolo: true` and `updateChannel` changes require `confirmRiskyWrite: true`; otherwise the hub returns `CONFIRMATION_REQUIRED` with a bounded challenge that names only the key and requested value. `settings:write` is also a high-risk capability bit in the shared security policy.
+Settings update accepts either `--input-json` / `--input-file` with `{ "key", "value", "confirmRiskyWrite"? }` or typed flags (`--key`, `--value` / `--value-json`, optional `--confirm-risky-write`). `defaultYolo: true` and `updateChannel` changes require `confirmRiskyWrite: true`; otherwise the hub returns `CONFIRMATION_REQUIRED` with a bounded challenge that names only the key and requested value. The shared security policy still defines settings/webhook capability bits as future grant names, but they are not trusted for these routes yet.
 
 All responses include redaction metadata. The gateway must never return raw config, bearer/browser/node tokens, GitHub tokens, webhook secrets, Smee URLs, connection strings, or secret-looking values. `webhooks.status` and `webhooks.ping` intentionally expose booleans/status strings instead of `github.webhookSecret` or `github.smeeUrl`.
 
-These routes are mounted under `/cli-gateway` and use the CLI gateway auth path. The current scoped actor-token MVP remains read-only for the four commands above; use the existing browser/scoped hub token compatibility path for this settings/webhook slice until a later credential-lifecycle slice mints actor tokens with `settings:*` and `integration:webhook:*` capabilities.
+These routes are mounted under `/cli-gateway`, but they are wired through the browser operator-session middleware rather than the scoped actor-token lane. Caller-supplied `x-relay-capabilities` is ignored and must not be treated as an authorization boundary; the v1 contract intentionally publishes empty `capabilityHints` for `settings.*` and `webhooks.*`. Scoped actor/bearer settings and webhook grants remain future credential-lifecycle work.
 
 ## Session descriptors
 
