@@ -269,9 +269,9 @@ describe('CLI gateway contract', () => {
     });
   });
 
-  it('describes safe settings and webhook contracts with narrow capability hints and redaction metadata', () => {
+  it('describes browser-operator-only safe settings and webhook contracts with redaction metadata', () => {
     const settingsGet = commandSpec('settings.get');
-    expect(settingsGet.capabilityHints).toEqual(['settings:read']);
+    expect(settingsGet.capabilityHints).toEqual([]);
     expect(settingsGet.outputSchema.properties?.data?.properties?.redaction).toMatchObject({
       properties: {
         rawConfigReturned: { const: false },
@@ -281,7 +281,7 @@ describe('CLI gateway contract', () => {
     });
 
     const settingsUpdate = commandSpec('settings.update');
-    expect(settingsUpdate.capabilityHints).toEqual(['settings:write']);
+    expect(settingsUpdate.capabilityHints).toEqual([]);
     expect(settingsUpdate.errorCodes).toContain('CONFIRMATION_REQUIRED');
     expect(settingsUpdate.inputSchema).toMatchObject({
       type: 'object',
@@ -302,14 +302,14 @@ describe('CLI gateway contract', () => {
     });
 
     const webhookStatus = commandSpec('webhooks.status');
-    expect(webhookStatus.capabilityHints).toEqual(['integration:webhook:read']);
+    expect(webhookStatus.capabilityHints).toEqual([]);
     const webhookStatusJson = JSON.stringify(webhookStatus.outputSchema);
     expect(webhookStatusJson).toContain('webhookSecretsReturned');
     expect(webhookStatusJson).not.toContain('"webhookSecret"');
     expect(webhookStatusJson).not.toContain('"smeeUrl"');
 
     const webhookPing = commandSpec('webhooks.ping');
-    expect(webhookPing.capabilityHints).toEqual(['integration:webhook:test']);
+    expect(webhookPing.capabilityHints).toEqual([]);
     expect(webhookPing.outputSchema.properties?.data?.properties?.redaction).toMatchObject({
       properties: {
         webhookSecretsReturned: { const: false },

@@ -2632,7 +2632,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
-    capabilityHints: ['settings:read'],
+    capabilityHints: [],
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2657,7 +2657,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
-    capabilityHints: ['settings:write'],
+    capabilityHints: [],
     inputSchema: settingsUpdateInputSchema,
     outputSchema: okOutput('SettingsUpdateOutput', settingsUpdateOutputDataSchema),
     errorCodes: [
@@ -2677,7 +2677,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
-    capabilityHints: ['integration:webhook:read'],
+    capabilityHints: [],
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2694,7 +2694,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
-    capabilityHints: ['integration:webhook:test'],
+    capabilityHints: [],
     inputSchema: {
       type: 'object',
       additionalProperties: false,

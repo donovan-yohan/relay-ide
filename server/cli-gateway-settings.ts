@@ -1,9 +1,8 @@
-import { Router, type RequestHandler, type Request, type Response } from 'express';
+import { Router, type RequestHandler } from 'express';
 
 import { loadConfig, saveConfig } from './config.js';
 import { getSmeeStatus } from './webhook-manager.js';
 import type { Config, RenamerTool } from './types.js';
-import type { RelayCapabilityBit } from '../shared/security-policy.js';
 
 export const CLI_GATEWAY_SAFE_SETTING_KEYS = [
   'defaultAgent',
@@ -92,30 +91,6 @@ function redactionSummary(): CliGatewayRedactionSummary {
 
 function isSafeSettingKey(value: unknown): value is CliGatewaySafeSettingKey {
   return typeof value === 'string' && SAFE_SETTING_KEY_SET.has(value);
-}
-
-export type CliGatewayCapabilityAuthorizer = (
-  req: Request,
-  capability: RelayCapabilityBit
-) => boolean;
-
-function requireCapability(
-  req: Request,
-  res: Response,
-  capability: RelayCapabilityBit,
-  authorizeCapability: CliGatewayCapabilityAuthorizer
-): boolean {
-  if (authorizeCapability(req, capability)) return true;
-  res.status(403).json({
-    error: {
-      code: 'FORBIDDEN',
-      message: `missing required capability: ${capability}`,
-      retryable: false,
-      reasonCode: 'CAPABILITY_REQUIRED',
-      deniedBits: [capability],
-    },
-  });
-  return false;
 }
 
 export function safeSettingsFromConfig(config: Config): CliGatewaySafeSettings {
@@ -332,21 +307,16 @@ function webhookStatusFromConfig(config: Config): CliGatewayWebhookStatusResult 
 export function createCliGatewaySettingsRouter(deps: {
   configPath: string;
   requireAuth: RequestHandler;
-  authorizeCapability: CliGatewayCapabilityAuthorizer;
 }): Router {
   const router = Router();
   router.use(deps.requireAuth);
 
-  router.get('/settings', (req, res) => {
-    if (!requireCapability(req, res, 'settings:read', deps.authorizeCapability))
-      return;
+  router.get('/settings', (_req, res) => {
     const settings = safeSettingsFromConfig(loadConfig(deps.configPath));
     res.json({ settings, redaction: redactionSummary() });
   });
 
   router.patch('/settings', (req, res) => {
-    if (!requireCapability(req, res, 'settings:write', deps.authorizeCapability))
-      return;
     const parsed = parseSettingsUpdateInput(req.body);
     if (parsed.ok === false) {
       res.status(400).json({
@@ -368,29 +338,11 @@ export function createCliGatewaySettingsRouter(deps: {
     res.json(updated.result);
   });
 
-  router.get('/webhooks/status', (req, res) => {
-    if (
-      !requireCapability(
-        req,
-        res,
-        'integration:webhook:read',
-        deps.authorizeCapability
-      )
-    )
-      return;
+  router.get('/webhooks/status', (_req, res) => {
     res.json(webhookStatusFromConfig(loadConfig(deps.configPath)));
   });
 
-  router.post('/webhooks/ping', (req, res) => {
-    if (
-      !requireCapability(
-        req,
-        res,
-        'integration:webhook:test',
-        deps.authorizeCapability
-      )
-    )
-      return;
+  router.post('/webhooks/ping', (_req, res) => {
     const status = webhookStatusFromConfig(loadConfig(deps.configPath));
     res.json({
       ok: status.configured,

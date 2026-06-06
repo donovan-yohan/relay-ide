@@ -219,7 +219,6 @@ import {
 } from './supervisor-route-handlers.js';
 import {
   attachAuthenticatedCliGatewayActorCredential,
-  authenticatedCliGatewayActorCredential,
   bearerActorToken,
   classifyCliGatewayCredentialLane,
   cliGatewayActorFailure,
@@ -2146,15 +2145,10 @@ async function main(): Promise<void> {
     '/cli-gateway',
     createCliGatewaySettingsRouter({
       configPath: CONFIG_PATH,
-      requireAuth: requireCliGatewayAuth,
-      authorizeCapability: (req, capability) => {
-        // Browser-session operators are the server-side authority for this
-        // local settings/webhook surface. Scoped bearer tokens and caller-
-        // supplied `x-relay-capabilities` headers are not capability grants.
-        if (authenticatedBrowserSession(req)) return true;
-        const credential = authenticatedCliGatewayActorCredential(req);
-        return credential?.capabilities.includes(capability) ?? false;
-      },
+      // Settings/webhook configuration remains browser-operator-only until
+      // scoped actor credentials carry explicit settings/webhook grants.
+      // Do not let CLI callers self-assert capability bits in headers.
+      requireAuth,
     })
   );
 

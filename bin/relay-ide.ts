@@ -2351,7 +2351,6 @@ async function runGatewaySettings(gatewayArgs: string[]): Promise<never> {
     const data = await gatewayHttpJson({
       commandName: 'settings.get',
       pathName: '/cli-gateway/settings',
-      capabilities: ['settings:read'],
     });
     printGatewayEnvelope(gatewayOk('settings.get', data), 0);
   }
@@ -2361,7 +2360,6 @@ async function runGatewaySettings(gatewayArgs: string[]): Promise<never> {
       pathName: '/cli-gateway/settings',
       method: 'PATCH',
       body: parseGatewaySettingsUpdateInput(gatewayArgs.slice(2)),
-      capabilities: ['settings:write'],
     });
     printGatewayEnvelope(gatewayOk('settings.update', data), 0);
   }
@@ -2374,7 +2372,6 @@ async function runGatewayWebhooks(gatewayArgs: string[]): Promise<never> {
     const data = await gatewayHttpJson({
       commandName: 'webhooks.status',
       pathName: '/cli-gateway/webhooks/status',
-      capabilities: ['integration:webhook:read'],
     });
     printGatewayEnvelope(gatewayOk('webhooks.status', data), 0);
   }
@@ -2383,7 +2380,6 @@ async function runGatewayWebhooks(gatewayArgs: string[]): Promise<never> {
       commandName: 'webhooks.ping',
       pathName: '/cli-gateway/webhooks/ping',
       method: 'POST',
-      capabilities: ['integration:webhook:test'],
     });
     printGatewayEnvelope(gatewayOk('webhooks.ping', data), 0);
   }

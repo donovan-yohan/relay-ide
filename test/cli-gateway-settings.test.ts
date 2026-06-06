@@ -1,10 +1,7 @@
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import type { AddressInfo } from 'node:net';
-
-import express from 'express';
+import express, { type RequestHandler } from 'express';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -12,8 +9,9 @@ import {
   safeSettingsFromConfig,
   updateSafeSetting,
 } from '../server/cli-gateway-settings.js';
+import { saveConfig } from '../server/config.js';
 import type { Config } from '../server/types.js';
-import type { RelayCapabilityBit } from '../shared/security-policy.js';
+import { createTestServer } from './helpers/test-server.js';
 
 function config(overrides: Partial<Config> = {}): Config {
   return {
@@ -23,45 +21,32 @@ function config(overrides: Partial<Config> = {}): Config {
   } as Config;
 }
 
-async function withSettingsRouter(
-  grantedCapabilities: readonly RelayCapabilityBit[],
-  callback: (input: {
-    baseUrl: string;
-    configPath: string;
-  }) => Promise<void>
-): Promise<void> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-settings-router-'));
-  const configPath = path.join(dir, 'config.json');
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify(config({ defaultYolo: false, defaultNotifications: false })),
-    'utf8'
-  );
-  const granted = new Set<RelayCapabilityBit>(grantedCapabilities);
+const browserOnlyAuth: RequestHandler = (req, res, next) => {
+  if (req.header('cookie') === 'token=browser') {
+    next();
+    return;
+  }
+  res.status(401).json({
+    error: {
+      code: 'UNAUTHORIZED',
+      reasonCode: 'BROWSER_SESSION_REQUIRED',
+      message: 'browser operator session required',
+      retryable: false,
+    },
+  });
+};
+
+async function startSettingsServer(configPath: string) {
   const app = express();
   app.use(express.json());
   app.use(
     '/cli-gateway',
     createCliGatewaySettingsRouter({
       configPath,
-      requireAuth: (_req, _res, next) => next(),
-      authorizeCapability: (_req, capability) => granted.has(capability),
+      requireAuth: browserOnlyAuth,
     })
   );
-  const server = http.createServer(app);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address() as AddressInfo;
-  try {
-    await callback({
-      baseUrl: `http://127.0.0.1:${address.port}`,
-      configPath,
-    });
-  } finally {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  return createTestServer(app);
 }
 
 describe('CLI gateway safe settings helpers', () => {
@@ -164,52 +149,64 @@ describe('CLI gateway safe settings helpers', () => {
   });
 });
 
-describe('CLI gateway settings router capability authorization', () => {
-  it('rejects caller-asserted settings:write without a server-side grant', async () => {
-    await withSettingsRouter([], async ({ baseUrl, configPath }) => {
-      const res = await fetch(`${baseUrl}/cli-gateway/settings`, {
+describe('CLI gateway settings/webhook route auth', () => {
+  it('does not let CLI bearer auth self-assert settings:write through x-relay-capabilities', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-gateway-settings-'));
+    const configPath = path.join(tmpDir, 'config.json');
+    saveConfig(configPath, config({ defaultFramework: 'claude' }));
+    const { url, close } = await startSettingsServer(configPath);
+    try {
+      const res = await fetch(`${url}/cli-gateway/settings`, {
         method: 'PATCH',
         headers: {
-          'content-type': 'application/json',
+          Authorization: 'Bearer scoped-token-without-settings-grant',
+          'Content-Type': 'application/json',
           'x-relay-cli-gateway': 'v1',
           'x-relay-capabilities': 'settings:write',
         },
-        body: JSON.stringify({
-          key: 'defaultYolo',
-          value: true,
-          confirmRiskyWrite: true,
-        }),
+        body: JSON.stringify({ key: 'defaultAgent', value: 'codex' }),
       });
 
-      expect(res.status).toBe(403);
-      const body = (await res.json()) as { error: { deniedBits: string[] } };
-      expect(body.error.deniedBits).toEqual(['settings:write']);
-      expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toMatchObject({
-        defaultYolo: false,
-      });
-    });
+      expect(res.status).toBe(401);
+      const persisted = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Config;
+      expect(persisted.defaultFramework).toBe('claude');
+    } finally {
+      await close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
-  it('allows settings updates from server-side settings:write grants without trusting headers', async () => {
-    await withSettingsRouter(['settings:write'], async ({ baseUrl, configPath }) => {
-      const res = await fetch(`${baseUrl}/cli-gateway/settings`, {
-        method: 'PATCH',
-        headers: {
-          'content-type': 'application/json',
-          'x-relay-cli-gateway': 'v1',
-        },
-        body: JSON.stringify({ key: 'defaultNotifications', value: true }),
-      });
+  it.each([
+    ['GET', '/cli-gateway/settings', 'settings:read'],
+    ['GET', '/cli-gateway/webhooks/status', 'integration:webhook:read'],
+    ['POST', '/cli-gateway/webhooks/ping', 'integration:webhook:test'],
+  ])(
+    'keeps %s %s browser-operator-only even when x-relay-capabilities=%s is spoofed',
+    async (method, pathName, capability) => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-gateway-settings-'));
+      const configPath = path.join(tmpDir, 'config.json');
+      saveConfig(configPath, config({ defaultFramework: 'claude' }));
+      const { url, close } = await startSettingsServer(configPath);
+      try {
+        const denied = await fetch(`${url}${pathName}`, {
+          method,
+          headers: {
+            Authorization: 'Bearer scoped-token-without-route-grant',
+            'x-relay-cli-gateway': 'v1',
+            'x-relay-capabilities': capability,
+          },
+        });
+        expect(denied.status).toBe(401);
 
-      expect(res.status).toBe(200);
-      await expect(res.json()).resolves.toMatchObject({
-        key: 'defaultNotifications',
-        value: true,
-        changed: true,
-      });
-      expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toMatchObject({
-        defaultNotifications: true,
-      });
-    });
-  });
+        const allowed = await fetch(`${url}${pathName}`, {
+          method,
+          headers: { cookie: 'token=browser' },
+        });
+        expect(allowed.status).toBe(200);
+      } finally {
+        await close();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }
+  );
 });
