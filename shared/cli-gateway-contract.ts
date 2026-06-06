@@ -702,7 +702,7 @@ const renewSessionInputSchema: RelayJsonSchema = {
   required: ['id'],
 };
 
-const gatewayErrorSchema: RelayJsonSchema = {
+export const gatewayErrorSchema: RelayJsonSchema = {
   title: 'RelayCliGatewayErrorEnvelope',
   type: 'object',
   additionalProperties: false,

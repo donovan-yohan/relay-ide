@@ -1,4 +1,15 @@
-import type { ActionMeta } from '../types.js';
+import type { ActionContext, ActionMeta } from '../types.js';
+import {
+  sessionCreateActionAvailability,
+  sessionCreateActionDescriptor,
+} from '../session-create.js';
+
+const launchDescriptor = sessionCreateActionDescriptor();
+const launchRequiresContext = (ctx: ActionContext) =>
+  sessionCreateActionAvailability({
+    ...(ctx.workspacePath ? { workspacePath: ctx.workspacePath } : {}),
+    ...(ctx.cwd ? { cwd: ctx.cwd } : {}),
+  }).reason;
 
 export const sessionNewAgent: ActionMeta = {
   id: 'session.new-agent',
@@ -8,6 +19,8 @@ export const sessionNewAgent: ActionMeta = {
   icon: '+',
   shortcut: { key: 'mod+t', global: true },
   when: (ctx) => !!ctx.workspacePath,
+  disabledReason: launchRequiresContext,
+  descriptor: launchDescriptor,
 };
 
 export const sessionNewTerminal: ActionMeta = {
@@ -17,6 +30,8 @@ export const sessionNewTerminal: ActionMeta = {
   category: 'session',
   icon: '+',
   when: (ctx) => !!ctx.workspacePath,
+  disabledReason: launchRequiresContext,
+  descriptor: launchDescriptor,
 };
 
 export const sessionCloseActive: ActionMeta = {
@@ -45,6 +60,8 @@ export const sessionStartOnRepo: ActionMeta = {
   category: 'session',
   icon: '▸',
   when: (ctx) => !!ctx.workspacePath,
+  disabledReason: launchRequiresContext,
+  descriptor: launchDescriptor,
 };
 
 export const sessionStartOnTicket: ActionMeta = {
@@ -97,6 +114,7 @@ export const sessionStartWorkInEnv: ActionMeta = {
   aliases: ['start work', 'environment', 'env', 'node', 'where', 'pick env'],
   category: 'session',
   icon: '▸',
+  descriptor: launchDescriptor,
 };
 
 export const sessionActions: ActionMeta[] = [
