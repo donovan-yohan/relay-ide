@@ -3890,6 +3890,158 @@ export function createHubNodeRouter(
     }
   );
 
+  router.patch(
+    '/hub/nodes/:nodeId/sessions/:sessionId',
+    requireAuth,
+    async (req, res) => {
+      const { nodeId, sessionId } = req.params;
+      const { displayName } = req.body as { displayName?: string };
+      if (!nodeId) {
+        sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+        return;
+      }
+      if (!sessionId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'sessionId is required')
+        );
+        return;
+      }
+      if (typeof displayName !== 'string' || displayName.trim().length === 0) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'displayName is required')
+        );
+        return;
+      }
+      const node = registry
+        .listNodes()
+        .find((candidate) => candidate.nodeId === nodeId);
+      if (!node || node.status === 'revoked') {
+        sendRelayError(res, relayError('NOT_FOUND', 'node is not paired'));
+        return;
+      }
+      if (node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION) {
+        const [nodeMajor] = node.protocolVersion.split('.');
+        const [hubMajor] = RELAY_NODE_LINK_PROTOCOL_VERSION.split('.');
+        sendRelayError(
+          res,
+          relayError(
+            nodeMajor === hubMajor ? 'VERSION_SKEW' : 'PROTOCOL_INCOMPATIBLE',
+            `relay-node-link protocol ${node.protocolVersion} must exactly match hub protocol ${RELAY_NODE_LINK_PROTOCOL_VERSION}`
+          )
+        );
+        return;
+      }
+      if (
+        node.status !== 'online' ||
+        !options.nodeLinks?.hasActiveNode(nodeId)
+      ) {
+        sendRelayError(
+          res,
+          relayError(
+            'NODE_OFFLINE',
+            `node ${nodeId} has no live reverse link`,
+            true
+          )
+        );
+        return;
+      }
+
+      const lifecycle = envelopes.validate({ nodeId, sessionId, now: now() });
+      if (!lifecycle.ok) {
+        const denial = lifecycle as Exclude<
+          ReturnType<InMemorySessionEnvelopeRegistry['validate']>,
+          { ok: true }
+        >;
+        auditLifecycleDenial(
+          options.auditSink,
+          denial,
+          nodeId,
+          sessionId,
+          'sessions.rename',
+          { method: 'PATCH' }
+        );
+        sendRelayError(res, denial.error);
+        return;
+      }
+      const scoped = lifecycle.summary;
+      const renameNow = now();
+      const renameParams = { method: 'PATCH', displayName };
+      const renamePolicyDecision = evaluateHubPolicy({
+        peer: { kind: 'hub' },
+        node,
+        nodeId,
+        intent: { action: 'sessions.rename', target: nodeId },
+        scope: scoped
+          ? {
+              kind: scoped.scope.kind,
+              nodeId,
+              cwd: scoped.scope.cwd,
+              ...(scoped.scope.repoPath
+                ? { repoPath: scoped.scope.repoPath }
+                : {}),
+              ...(scoped.scope.worktreePath !== undefined
+                ? { worktreePath: scoped.scope.worktreePath }
+                : {}),
+            }
+          : { kind: 'node', nodeId, cwd: '/' },
+        requiredCapabilities: ['session:control:rename'],
+        sessionId,
+        ...(scoped?.correlationId
+          ? { correlationId: scoped.correlationId }
+          : {}),
+        ...(scoped?.expiresAt !== undefined
+          ? { expiresAt: scoped.expiresAt }
+          : {}),
+        ...(scoped?.revokedAt ? { revokedAt: scoped.revokedAt } : {}),
+        params: renameParams,
+        now: renameNow,
+      });
+      if (
+        sendPolicyDecision(
+          options.auditSink,
+          res,
+          renamePolicyDecision,
+          renameParams,
+          {
+            confirmations,
+            req,
+            canonicalParams: renameParams,
+            now: renameNow,
+          }
+        )
+      )
+        return;
+
+      try {
+        const payload = await options.nodeLinks.request(
+          nodeId,
+          'sessions.rename',
+          {
+            id: sessionId,
+            displayName,
+          }
+        );
+        res.json({
+          ...(typeof payload === 'object' && payload !== null
+            ? (payload as Record<string, unknown>)
+            : {}),
+          id: sessionId,
+          sessionId,
+          nodeId,
+          displayName,
+        });
+      } catch (error) {
+        if (error instanceof HubNodeLinkError) {
+          sendRelayError(res, error.relayNodeError);
+          return;
+        }
+        sendRegistryError(registry, res, error);
+      }
+    }
+  );
+
   router.delete(
     '/hub/nodes/:nodeId/sessions/:sessionId',
     requireAuth,
@@ -4010,11 +4162,23 @@ export function createHubNodeRouter(
         return;
 
       try {
-        await options.nodeLinks.request(nodeId, 'sessions.kill', {
-          id: sessionId,
-        });
+        const payload = await options.nodeLinks.request(
+          nodeId,
+          'sessions.kill',
+          {
+            id: sessionId,
+          }
+        );
         envelopes.delete(sessionId, nodeId);
-        res.json({ ok: true });
+        res.json({
+          ...(typeof payload === 'object' && payload !== null
+            ? (payload as Record<string, unknown>)
+            : {}),
+          ok: true,
+          id: sessionId,
+          sessionId,
+          nodeId,
+        });
       } catch (error) {
         if (error instanceof HubNodeLinkError) {
           sendRelayError(res, error.relayNodeError);

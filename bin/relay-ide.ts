@@ -381,6 +381,44 @@ function parseGatewayInputObject(
   return {};
 }
 
+function parseGatewaySessionRenameInput(
+  sessionArgs: string[]
+): { id: string; displayName: string } {
+  const parsed = parseGatewayInputObject('sessions.rename', sessionArgs);
+  const id =
+    typeof parsed['id'] === 'string'
+      ? parsed['id']
+      : gatewayArg(sessionArgs, '--id') ?? sessionArgs[0];
+  const displayName =
+    typeof parsed['displayName'] === 'string'
+      ? parsed['displayName']
+      : gatewayArg(sessionArgs, '--display-name') ??
+        gatewayArg(sessionArgs, '--name');
+  if (!id || id.startsWith('--')) gatewayInvalid('sessions.rename', '--id is required');
+  if (typeof displayName !== 'string' || displayName.trim().length === 0) {
+    gatewayInvalid('sessions.rename', '--display-name is required', {
+      field: 'displayName',
+    });
+  }
+  return { id, displayName };
+}
+
+function gatewaySessionIdentityPayload(
+  requestedId: string,
+  sessionId: string,
+  session: GatewaySessionDescriptor,
+  extras: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    id: sessionId,
+    sessionId,
+    ...(requestedId !== sessionId ? { requestedId } : {}),
+    ...(session.nodeId ? { nodeId: session.nodeId } : {}),
+    ...(session.globalSessionId ? { globalSessionId: session.globalSessionId } : {}),
+    ...extras,
+  };
+}
+
 const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'nodes.list',
   'sessions.list',
@@ -500,7 +538,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
+    'relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
   );
   process.exit(1);
 }
@@ -955,6 +993,63 @@ async function runGatewaySessionDetach(sessionArgs: string[]): Promise<never> {
       message:
         'detached CLI gateway handle only; underlying Relay session/process was left running',
     }),
+    0
+  );
+}
+
+async function runGatewaySessionKill(sessionArgs: string[]): Promise<never> {
+  const requestedId = requireGatewaySessionId('sessions.kill', sessionArgs);
+  const session = await gatewaySessionDescriptor(requestedId, 'sessions.kill');
+  const sessionId = session.id ?? requestedId;
+  const result = await gatewayHttpJson({
+    commandName: 'sessions.kill',
+    pathName: session.nodeId
+      ? `/hub/nodes/${encodeURIComponent(
+          session.nodeId
+        )}/sessions/${encodeURIComponent(sessionId)}`
+      : `/sessions/${encodeURIComponent(sessionId)}`,
+    method: 'DELETE',
+    capabilities: ['session:read', 'session:control:kill'],
+  });
+  printGatewayEnvelope(
+    gatewayOk(
+      'sessions.kill',
+      gatewaySessionIdentityPayload(requestedId, sessionId, session, {
+        ...(typeof result === 'object' && result !== null ? (result as Record<string, unknown>) : {}),
+        ok: true,
+        killed: true,
+      })
+    ),
+    0
+  );
+}
+
+async function runGatewaySessionRename(sessionArgs: string[]): Promise<never> {
+  const { id: requestedId, displayName } = parseGatewaySessionRenameInput(
+    sessionArgs
+  );
+  const session = await gatewaySessionDescriptor(requestedId, 'sessions.rename');
+  const sessionId = session.id ?? requestedId;
+  const result = await gatewayHttpJson({
+    commandName: 'sessions.rename',
+    pathName: session.nodeId
+      ? `/hub/nodes/${encodeURIComponent(
+          session.nodeId
+        )}/sessions/${encodeURIComponent(sessionId)}`
+      : `/sessions/${encodeURIComponent(sessionId)}`,
+    method: 'PATCH',
+    body: { displayName },
+    capabilities: ['session:read', 'session:control:rename'],
+  });
+  printGatewayEnvelope(
+    gatewayOk(
+      'sessions.rename',
+      gatewaySessionIdentityPayload(requestedId, sessionId, session, {
+        ...(typeof result === 'object' && result !== null ? (result as Record<string, unknown>) : {}),
+        renamed: true,
+        displayName,
+      })
+    ),
     0
   );
 }
@@ -1458,6 +1553,9 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
     return runGatewaySessionAttach(sessionArgs);
   if (sessionSubcommand === 'detach')
     return runGatewaySessionDetach(sessionArgs);
+  if (sessionSubcommand === 'kill') return runGatewaySessionKill(sessionArgs);
+  if (sessionSubcommand === 'rename')
+    return runGatewaySessionRename(sessionArgs);
   if (sessionSubcommand === 'stream')
     return runGatewaySessionStream(sessionArgs);
   if (sessionSubcommand === 'input') return runGatewaySessionInput(sessionArgs);

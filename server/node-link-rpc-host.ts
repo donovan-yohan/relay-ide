@@ -36,7 +36,7 @@ import type { SessionSummary, TerminalBackend } from './types.js';
 // envelope on the same `requestId`.
 //
 // Wired today: `sessions.create` (#425.7), `sessions.list` (#465),
-// `sessions.kill` (#478), read-only File RPC `fs.list` / `fs.stat` /
+// `sessions.kill` (#478), `sessions.rename`, read-only File RPC `fs.list` / `fs.stat` /
 // `fs.read` / `fs.tail` (#505), and `fs.write` (#428).
 // Other RPC types fall through to an INVALID_REQUEST response so
 // misrouted envelopes don't silently hang the hub-side pending
@@ -435,11 +435,69 @@ export function createNodeLinkRpcHost(
     }
     try {
       localRelayNode.sessions.kill(id);
-      sendResultEnvelope(ctx, envelope, { ok: true });
+      sendResultEnvelope(ctx, envelope, { ok: true, id, sessionId: id });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : String(error ?? 'unknown');
       logger.error(`sessions.kill failed: ${message}`);
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        message.toLowerCase().includes('not found')
+          ? notFound(message)
+          : internalError(message)
+      );
+    }
+  }
+
+  function handleSessionsRename(
+    envelope: RelayNodeEnvelope,
+    ctx: NodeLinkEnvelopeHandlerContext
+  ): void {
+    const record = asRecord(envelope.payload);
+    if (!record) {
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        invalidRequest('sessions.rename payload must be an object')
+      );
+      return;
+    }
+    const id = asString(record['id']);
+    const displayName = asString(record['displayName']);
+    if (!id) {
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        invalidRequest('sessions.rename payload.id must be a non-empty string')
+      );
+      return;
+    }
+    if (!displayName || displayName.trim().length === 0) {
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        invalidRequest(
+          'sessions.rename payload.displayName must be a non-empty string'
+        )
+      );
+      return;
+    }
+    try {
+      const updated = localRelayNode.sessions.updateDisplayName(id, displayName);
+      sendResultEnvelope(ctx, envelope, {
+        ok: true,
+        ...(typeof updated === 'object' && updated !== null
+          ? (updated as Record<string, unknown>)
+          : {}),
+        id,
+        sessionId: id,
+        displayName,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : String(error ?? 'unknown');
+      logger.error(`sessions.rename failed: ${message}`);
       sendErrorEnvelope(
         ctx,
         envelope,
@@ -654,6 +712,10 @@ export function createNodeLinkRpcHost(
     }
     if (envelope.type === 'sessions.kill') {
       handleSessionsKill(envelope, ctx);
+      return;
+    }
+    if (envelope.type === 'sessions.rename') {
+      handleSessionsRename(envelope, ctx);
       return;
     }
     if (envelope.type === 'credential.rotate') {

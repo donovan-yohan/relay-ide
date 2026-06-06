@@ -92,6 +92,8 @@ describe('CLI gateway contract', () => {
       'sessions.renew',
       'sessions.attach',
       'sessions.detach',
+      'sessions.kill',
+      'sessions.rename',
       'sessions.stream',
       'sessions.input',
       'sessions.interventions',

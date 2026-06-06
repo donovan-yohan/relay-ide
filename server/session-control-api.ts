@@ -11,6 +11,8 @@ export const CONTROL_READ_CAPABILITY = 'session:read' as const;
 export const INTERVENTION_READ_CAPABILITY = 'tab:intervention:read' as const;
 export const CONTROL_WRITE_CAPABILITY = 'tab:mode:set-agent' as const;
 export const CONTROL_SESSION_CAPABILITY = 'session:attach' as const;
+export const CONTROL_KILL_CAPABILITY = 'session:control:kill' as const;
+export const CONTROL_RENAME_CAPABILITY = 'session:control:rename' as const;
 
 export type SessionControlCapability = RelayCapabilityBit;
 
