@@ -130,6 +130,12 @@ describe('CLI gateway contract', () => {
       'contract.schema',
       'nodes.manifest',
       'nodes.list',
+      'repos.add',
+      'workspaces.launch',
+      'worktrees.create',
+      'worktrees.status',
+      'worktrees.delete',
+      'worktrees.archive',
       'sessions.list',
       'sessions.get',
       'sessions.create',
@@ -264,6 +270,44 @@ describe('CLI gateway contract', () => {
       requiresConfirmation: false,
       auditRedaction: { expectation: 'action-summary' },
       scopeKinds: ['repo', 'worktree', 'work-context', 'session'],
+    });
+    expect(relayCommandDefinition('repos.add')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['repo'],
+    });
+    expect(relayCommandDefinition('workspaces.launch')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context', 'repo', 'worktree'],
+    });
+    expect(relayCommandDefinition('worktrees.status')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['repo', 'worktree'],
+    });
+    expect(relayCommandDefinition('worktrees.create')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['repo', 'worktree'],
+    });
+    expect(relayCommandDefinition('worktrees.delete')).toMatchObject({
+      sideEffect: 'destructive',
+      requiresConfirmation: true,
+      controlRequirements: ['confirmation-challenge'],
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['repo', 'worktree'],
+    });
+    expect(relayCommandDefinition('worktrees.archive')).toMatchObject({
+      sideEffect: 'destructive',
+      requiresConfirmation: true,
+      controlRequirements: ['confirmation-challenge'],
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['repo', 'worktree'],
     });
     expect(relayCommandDefinition('sessions.stream')).toMatchObject({
       sideEffect: 'stream',
@@ -707,6 +751,12 @@ describe('CLI gateway contract', () => {
     const invalidArgumentCommands = [
       'contract.list',
       'nodes.list',
+      'repos.add',
+      'workspaces.launch',
+      'worktrees.create',
+      'worktrees.status',
+      'worktrees.delete',
+      'worktrees.archive',
       'sessions.list',
       'sessions.get',
       'sessions.create',

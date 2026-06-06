@@ -63,6 +63,11 @@ import {
   validateAndSanitizeGatewayCreateInput,
 } from '../shared/cli-gateway-runtime.js';
 import {
+  DEFAULT_LOCAL_NODE_ID,
+  parseRepoInstanceId,
+  parseWorktreeInstanceId,
+} from '../shared/identity.js';
+import {
   isFileRpcOperation,
   FILE_RPC_MAX_WRITE_BYTES,
   type FileRpcOperation,
@@ -1296,6 +1301,140 @@ async function runGatewayWorkflow(
   );
 }
 
+type GatewayLifecycleInput = Record<string, unknown> & {
+  environment?: Record<string, unknown>;
+};
+
+function gatewayLifecycleEnvironment(
+  input: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  const environment = input['environment'];
+  if (environment === undefined) return undefined;
+  if (!isGatewayRecord(environment)) {
+    gatewayInvalid(
+      'worktrees.status',
+      'environment must be an object when provided'
+    );
+  }
+  return environment;
+}
+
+function gatewayLifecycleNodeId(input: GatewayLifecycleInput): string | undefined {
+  const environment = input.environment;
+  const explicitNodeId = environment?.['nodeId'];
+  if (typeof explicitNodeId === 'string' && explicitNodeId.trim()) {
+    return explicitNodeId;
+  }
+  const repoInstanceId = environment?.['repoInstanceId'];
+  if (typeof repoInstanceId === 'string') {
+    const parsed = parseRepoInstanceId(repoInstanceId);
+    if (parsed) return parsed.nodeId;
+  }
+  const benchId = environment?.['benchId'];
+  if (typeof benchId === 'string') {
+    const parsed = parseWorktreeInstanceId(benchId);
+    if (parsed) return parsed.nodeId;
+  }
+  return undefined;
+}
+
+function rejectRemoteLifecycleWrite(
+  commandName: RelayCliGatewayCommand,
+  input: GatewayLifecycleInput
+): void {
+  const nodeId = gatewayLifecycleNodeId(input);
+  if (nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID) {
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: 'UNSUPPORTED',
+        message:
+          'repo/worktree lifecycle writes are local-only in v1; remote node mutation is unsupported until routed node worktree capabilities exist',
+        retryable: false,
+        details: { nodeId },
+      }),
+      1
+    );
+  }
+}
+
+function lifecycleRepoPath(
+  commandName: RelayCliGatewayCommand,
+  input: GatewayLifecycleInput
+): string {
+  if (typeof input['repoPath'] === 'string' && input['repoPath'].trim()) {
+    return path.resolve(input['repoPath']);
+  }
+  const repoInstanceId = input.environment?.['repoInstanceId'];
+  if (typeof repoInstanceId === 'string') {
+    const parsed = parseRepoInstanceId(repoInstanceId);
+    if (parsed?.nodeId === DEFAULT_LOCAL_NODE_ID) {
+      return path.resolve(parsed.localPath);
+    }
+  }
+  gatewayInvalid(commandName, 'repoPath or local environment.repoInstanceId is required', {
+    required: ['repoPath', 'environment.repoInstanceId'],
+  });
+}
+
+function lifecycleWorktreePath(
+  commandName: RelayCliGatewayCommand,
+  input: GatewayLifecycleInput
+): string {
+  if (
+    typeof input['worktreePath'] === 'string' &&
+    input['worktreePath'].trim()
+  ) {
+    return path.resolve(input['worktreePath']);
+  }
+  const benchId = input.environment?.['benchId'];
+  if (typeof benchId === 'string') {
+    const parsed = parseWorktreeInstanceId(benchId);
+    if (parsed?.nodeId === DEFAULT_LOCAL_NODE_ID) {
+      return path.resolve(parsed.localPath);
+    }
+  }
+  const cwd = input.environment?.['cwd'];
+  if (typeof cwd === 'string' && cwd.trim()) {
+    return path.resolve(cwd);
+  }
+  gatewayInvalid(commandName, 'worktreePath, local environment.benchId, or environment.cwd is required', {
+    required: ['worktreePath', 'environment.benchId', 'environment.cwd'],
+  });
+}
+
+function parseLifecycleInput(
+  commandName: RelayCliGatewayCommand,
+  commandArgs: string[]
+): GatewayLifecycleInput {
+  const input = parseGatewayInputObject(commandName, commandArgs);
+  const environment = gatewayLifecycleEnvironment(input);
+  const lifecycleInput: GatewayLifecycleInput = { ...input };
+  if (environment) lifecycleInput.environment = environment;
+  return lifecycleInput;
+}
+
+async function assertGitRepoIfRequested(
+  commandName: RelayCliGatewayCommand,
+  input: Record<string, unknown>
+): Promise<void> {
+  if (input['requireGitRepo'] !== true) return;
+  const repoPath = input['path'];
+  if (typeof repoPath !== 'string' || !repoPath.trim()) return;
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['rev-parse', '--is-inside-work-tree'],
+      { cwd: path.resolve(repoPath), timeout: 5000 }
+    );
+    if (stdout.trim() === 'true') return;
+  } catch {
+    // fall through to fail-closed argument error
+  }
+  gatewayInvalid(commandName, 'path is not a git repo/worktree', {
+    field: 'path',
+  });
+}
+
 const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'nodes.list',
   'sessions.list',
@@ -1450,6 +1589,170 @@ async function runGatewayNodes(gatewayArgs: string[]): Promise<never> {
     printGatewayEnvelope(gatewayOk('nodes.list', data), 0);
   }
   gatewayInvalid('nodes.list', 'unknown nodes command', { args: gatewayArgs });
+}
+
+async function runGatewayRepos(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  if (subcommand === 'add') {
+    const input = parseGatewayInputObject('repos.add', gatewayArgs.slice(2));
+    if (typeof input['path'] !== 'string' || !input['path'].trim()) {
+      gatewayInvalid('repos.add', 'path is required', { field: 'path' });
+    }
+    await assertGitRepoIfRequested('repos.add', input);
+    const result = await gatewayHttpJson({
+      commandName: 'repos.add',
+      pathName: '/workspaces',
+      method: 'POST',
+      body: { path: input['path'] },
+      capabilities: ['rpc:git:read', 'rpc:git:write'],
+    });
+    printGatewayEnvelope(gatewayOk('repos.add', result), 0);
+  }
+  gatewayInvalid('repos.add', 'unknown repos command', { args: gatewayArgs });
+}
+
+async function runGatewayWorkspaces(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  if (subcommand === 'launch') {
+    const input = parseGatewayInputObject(
+      'workspaces.launch',
+      gatewayArgs.slice(2)
+    );
+    const workspaceId = input['workspaceId'];
+    if (typeof workspaceId !== 'string' || !workspaceId.trim()) {
+      gatewayInvalid('workspaces.launch', 'workspaceId is required', {
+        field: 'workspaceId',
+      });
+    }
+    const body = { ...input };
+    delete body['workspaceId'];
+    const result = await gatewayHttpJson({
+      commandName: 'workspaces.launch',
+      pathName: `/workspace-groups/${encodeURIComponent(workspaceId)}/session`,
+      method: 'POST',
+      body,
+      capabilities: ['session:create:agent'],
+    });
+    printGatewayEnvelope(gatewayOk('workspaces.launch', result), 0);
+  }
+  gatewayInvalid('workspaces.launch', 'unknown workspaces command', {
+    args: gatewayArgs,
+  });
+}
+
+async function runGatewayWorktreeStatus(
+  commandName: RelayCliGatewayCommand,
+  input: GatewayLifecycleInput
+): Promise<Record<string, unknown>> {
+  rejectRemoteLifecycleWrite(commandName, input);
+  const worktreePath = lifecycleWorktreePath(commandName, input);
+  const query = new URLSearchParams({ path: worktreePath });
+  const result = await gatewayHttpJson({
+    commandName,
+    pathName: `/worktrees/status?${query.toString()}`,
+    capabilities: ['session:read', 'rpc:git:read'],
+  });
+  return isGatewayRecord(result) ? result : {};
+}
+
+async function runGatewayWorktreeCleanup(
+  commandName: 'worktrees.delete' | 'worktrees.archive',
+  input: GatewayLifecycleInput
+): Promise<never> {
+  rejectRemoteLifecycleWrite(commandName, input);
+  const repoPath = lifecycleRepoPath(commandName, input);
+  const worktreePath = lifecycleWorktreePath(commandName, input);
+  const force = input['force'] === true;
+  const confirmationToken = input['confirmationToken'];
+  const hasConfirmation =
+    typeof confirmationToken === 'string' && confirmationToken.trim().length > 0;
+  const statusInput: GatewayLifecycleInput = { worktreePath };
+  if (input.environment) statusInput.environment = input.environment;
+  const status = await runGatewayWorktreeStatus(commandName, statusInput);
+  const activeSessions = Array.isArray(status['activeSessions'])
+    ? status['activeSessions'].filter((id): id is string => typeof id === 'string')
+    : [];
+  const hasUncommittedChanges = status['hasUncommittedChanges'] === true;
+  if ((activeSessions.length > 0 || hasUncommittedChanges) && !force && !hasConfirmation) {
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: 'CONFIRMATION_REQUIRED',
+        message:
+          'worktree cleanup requires force or confirmationToken when active sessions or uncommitted changes are present',
+        retryable: false,
+        details: {
+          activeSessionCount: activeSessions.length,
+          hasUncommittedChanges,
+        },
+      }),
+      1
+    );
+  }
+  const deleteBranch = commandName === 'worktrees.delete';
+  const result = await gatewayHttpJson({
+    commandName,
+    pathName: '/worktrees',
+    method: 'DELETE',
+    body: {
+      repoPath,
+      worktreePath,
+      force: force || hasConfirmation,
+      deleteBranch,
+    },
+    capabilities: ['session:read', 'session:control:kill', 'rpc:git:read', 'rpc:git:write'],
+  });
+  const data = isGatewayRecord(result) ? result : {};
+  printGatewayEnvelope(
+    gatewayOk(commandName, {
+      ok: true,
+      action: commandName === 'worktrees.delete' ? 'delete' : 'archive',
+      branchDeleted: data['branchDeleted'] === true,
+      audit: {
+        repoPath,
+        worktreePath,
+        force: force || hasConfirmation,
+      },
+    }),
+    0
+  );
+}
+
+async function runGatewayWorktrees(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  if (subcommand === 'create') {
+    const input = parseLifecycleInput('worktrees.create', gatewayArgs.slice(2));
+    rejectRemoteLifecycleWrite('worktrees.create', input);
+    const repoPath = lifecycleRepoPath('worktrees.create', input);
+    const body: Record<string, unknown> = {};
+    if (typeof input['branch'] === 'string' && input['branch'].trim()) {
+      body['branch'] = input['branch'];
+    }
+    const query = new URLSearchParams({ path: repoPath });
+    const result = await gatewayHttpJson({
+      commandName: 'worktrees.create',
+      pathName: `/workspaces/worktree?${query.toString()}`,
+      method: 'POST',
+      body,
+      capabilities: ['rpc:git:read', 'rpc:git:write'],
+    });
+    printGatewayEnvelope(gatewayOk('worktrees.create', result), 0);
+  }
+  if (subcommand === 'status') {
+    const input = parseLifecycleInput('worktrees.status', gatewayArgs.slice(2));
+    const result = await runGatewayWorktreeStatus('worktrees.status', input);
+    printGatewayEnvelope(gatewayOk('worktrees.status', result), 0);
+  }
+  if (subcommand === 'delete') {
+    const input = parseLifecycleInput('worktrees.delete', gatewayArgs.slice(2));
+    await runGatewayWorktreeCleanup('worktrees.delete', input);
+  }
+  if (subcommand === 'archive') {
+    const input = parseLifecycleInput('worktrees.archive', gatewayArgs.slice(2));
+    await runGatewayWorktreeCleanup('worktrees.archive', input);
+  }
+  gatewayInvalid('worktrees.status', 'unknown worktrees command', {
+    args: gatewayArgs,
+  });
 }
 
 async function runGatewaySessionList(): Promise<never> {
@@ -3427,6 +3730,9 @@ async function runGatewayV1(): Promise<never> {
   }
   if (!json) gatewayUsage();
   if (top === 'nodes') return runGatewayNodes(gatewayArgs);
+  if (top === 'repos') return runGatewayRepos(gatewayArgs);
+  if (top === 'workspaces') return runGatewayWorkspaces(gatewayArgs);
+  if (top === 'worktrees') return runGatewayWorktrees(gatewayArgs);
   if (top === 'sessions') return runGatewaySessions(gatewayArgs);
   if (top === 'tickets') return runGatewayTickets(gatewayArgs);
   if (top === 'branches') return runGatewayBranches(gatewayArgs);

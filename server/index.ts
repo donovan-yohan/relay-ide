@@ -1841,6 +1841,19 @@ async function main(): Promise<void> {
     res.status(401).json(auth.cliGatewayOrBrowserAuthRequiredChallenge());
   };
 
+  const requireCliGatewayWriteAuth: express.RequestHandler = (req, res, next) => {
+    if (isCliGatewayActorTokenRequest(req)) {
+      res.status(403).json({
+        error: 'Forbidden',
+        code: 'CLI_GATEWAY_ACTOR_WRITE_UNSUPPORTED',
+        message:
+          'CLI actor credentials are read-only in this slice; use browser or scoped gateway auth for lifecycle mutations.',
+      });
+      return;
+    }
+    requireCliGatewayAuth(req, res, next);
+  };
+
   const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
     if (isCliGatewayActorTokenRequest(req)) {
       const id = req.params['id'];
@@ -2420,7 +2433,7 @@ async function main(): Promise<void> {
       });
     },
   });
-  app.use('/workspaces', requireAuth, workspaceRouter);
+  app.use('/workspaces', requireCliGatewayWriteAuth, workspaceRouter);
 
   // Mount git (local/fast) and gh (network/slow) routers
   app.use(
@@ -2441,7 +2454,7 @@ async function main(): Promise<void> {
   // Mount workspace-groups CRUD router
   app.use(
     '/workspace-groups',
-    createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth, {
+    createWorkspaceGroupsRouter(CONFIG_PATH, requireCliGatewayWriteAuth, {
       sessions,
       gitWatcher,
       configPath: CONFIG_PATH,
@@ -3369,7 +3382,7 @@ async function main(): Promise<void> {
   });
 
   // GET /worktrees/status — pre-cleanup checks for a worktree
-  app.get('/worktrees/status', requireAuth, async (req, res) => {
+  app.get('/worktrees/status', requireCliGatewayAuth, async (req, res) => {
     const worktreePath =
       typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!worktreePath) {
@@ -3737,11 +3750,12 @@ async function main(): Promise<void> {
   });
 
   // DELETE /worktrees — remove a worktree, prune, and delete its branch
-  app.delete('/worktrees', requireAuth, async (req, res) => {
-    const { worktreePath, repoPath, force } = req.body as {
+  app.delete('/worktrees', requireCliGatewayWriteAuth, async (req, res) => {
+    const { worktreePath, repoPath, force, deleteBranch } = req.body as {
       worktreePath?: string;
       repoPath?: string;
       force?: boolean;
+      deleteBranch?: boolean;
     };
     if (!worktreePath || !repoPath) {
       res.status(400).json({ error: 'worktreePath and repoPath are required' });
@@ -3806,7 +3820,8 @@ async function main(): Promise<void> {
       // Non-fatal: prune failure doesn't block success
     }
 
-    if (branchName) {
+    const shouldDeleteBranch = deleteBranch !== false;
+    if (shouldDeleteBranch && branchName) {
       try {
         // Delete the branch
         await execFileAsync('git', ['branch', '-D', branchName], {

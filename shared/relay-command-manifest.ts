@@ -83,6 +83,12 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'contract.schema': 'gateway schema',
   'nodes.manifest': 'local node manifest',
   'nodes.list': 'relay nodes list',
+  'repos.add': 'add repo workspace',
+  'workspaces.launch': 'launch workspace',
+  'worktrees.create': 'create worktree',
+  'worktrees.status': 'worktree cleanup preflight',
+  'worktrees.delete': 'delete worktree',
+  'worktrees.archive': 'archive worktree',
   'sessions.list': 'sessions list',
   'sessions.get': 'session details',
   'sessions.create': 'create session',
@@ -139,7 +145,9 @@ function sideEffectForGatewayCommand(
   if (
     spec.name === 'handoffs.create' ||
     spec.name === 'handoffs.launch' ||
-    spec.name === 'sessions.kill'
+    spec.name === 'sessions.kill' ||
+    spec.name === 'worktrees.delete' ||
+    spec.name === 'worktrees.archive'
   )
     return 'destructive';
   if (
@@ -158,6 +166,9 @@ function sideEffectForGatewayCommand(
     spec.name === 'context.create' ||
     spec.name === 'context.pin' ||
     spec.name === 'context.unpin' ||
+    spec.name === 'repos.add' ||
+    spec.name === 'workspaces.launch' ||
+    spec.name === 'worktrees.create' ||
     spec.name === 'inbox.send' ||
     spec.name === 'inbox.ack' ||
     spec.name === 'inbox.resolve' ||
@@ -174,6 +185,9 @@ function scopeKindsForGatewayCommand(
   name: RelayCliGatewayCommand
 ): readonly RelayCommandScopeKind[] {
   if (name.startsWith('nodes.')) return ['node'];
+  if (name.startsWith('repos.')) return ['repo'];
+  if (name.startsWith('workspaces.')) return ['work-context', 'repo', 'worktree'];
+  if (name.startsWith('worktrees.')) return ['repo', 'worktree'];
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
@@ -198,6 +212,8 @@ function requiresConfirmationForGatewayCommand(
     spec.name === 'files.write' ||
     spec.name === 'sessions.kill' ||
     spec.name === 'settings.update' ||
+    spec.name === 'worktrees.delete' ||
+    spec.name === 'worktrees.archive' ||
     spec.name === 'handoffs.create' ||
     spec.name === 'handoffs.launch' ||
     spec.capabilityHints.includes('pty:exec:arbitrary') ||
