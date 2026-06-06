@@ -34,42 +34,84 @@ import {
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
-function objectMatchesSchemaKeywords(
+function isSchemaObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function schemaTypeMatches(schema: RelayJsonSchema, value: unknown): boolean {
+  if (schema.type === undefined) return true;
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  return types.some((type) => {
+    if (type === 'object') return isSchemaObject(value);
+    if (type === 'array') return Array.isArray(value);
+    if (type === 'null') return value === null;
+    return typeof value === type;
+  });
+}
+
+function schemaRequiredMatches(
   schema: RelayJsonSchema,
+  value: unknown
+): value is Record<string, unknown> {
+  const required = schema.required ?? [];
+  if (required.length === 0) return true;
+  return isSchemaObject(value) && required.every((key) => hasOwn(value, key));
+}
+
+function schemaNumberBoundsMatch(
+  schema: RelayJsonSchema,
+  value: unknown
+): boolean {
+  if (schema.type !== 'number' || typeof value !== 'number') return true;
+  const aboveMinimum = schema.minimum === undefined || value >= schema.minimum;
+  const belowMaximum = schema.maximum === undefined || value <= schema.maximum;
+  return aboveMinimum && belowMaximum;
+}
+
+function schemaObjectPropertiesMatch(
+  schema: RelayJsonSchema,
+  value: unknown
+): boolean {
+  if (schema.type !== 'object') return true;
+  if (!schemaRequiredMatches(schema, value)) return false;
+  const properties = schema.properties ?? {};
+  if (
+    schema.additionalProperties === false &&
+    Object.keys(value).some((key) => !hasOwn(properties, key))
+  ) {
+    return false;
+  }
+  return Object.entries(properties).every(
+    ([key, propertySchema]) =>
+      !hasOwn(value, key) || schemaMatches(propertySchema, value[key])
+  );
+}
+
+function schemaMatches(schema: RelayJsonSchema, value: unknown): boolean {
+  const scalarMatches =
+    !('const' in schema && value !== schema.const) &&
+    schemaTypeMatches(schema, value) &&
+    (!schema.enum || schema.enum.includes(value as string)) &&
+    schemaRequiredMatches(schema, value) &&
+    schemaNumberBoundsMatch(schema, value) &&
+    schemaObjectPropertiesMatch(schema, value);
+  if (!scalarMatches) return false;
+  if (schema.anyOf?.some((branch) => schemaMatches(branch, value)) === false) {
+    return false;
+  }
+  if (!schema.oneOf) return true;
+  return schema.oneOf.filter((branch) => schemaMatches(branch, value)).length === 1;
+}
+
+function schemaAcceptsCommandInput(
+  commandName: Parameters<typeof commandSpec>[0],
   value: Record<string, unknown>
 ): boolean {
-  const properties = schema.properties ?? {};
-  const required = schema.required ?? [];
-  if (schema.type === 'object' && (value === null || Array.isArray(value)))
-    return false;
-  if (!required.every((key) => hasOwn(value, key))) return false;
-  if (schema.additionalProperties === false) {
-    for (const key of Object.keys(value)) {
-      if (!hasOwn(properties, key)) return false;
-    }
-  }
-  for (const [key, propertySchema] of Object.entries(properties)) {
-    if (!hasOwn(value, key)) continue;
-    if ('const' in propertySchema && value[key] !== propertySchema.const)
-      return false;
-    if (propertySchema.type === 'string' && typeof value[key] !== 'string')
-      return false;
-    if (propertySchema.type === 'boolean' && typeof value[key] !== 'boolean')
-      return false;
-    if (propertySchema.type === 'number' && typeof value[key] !== 'number')
-      return false;
-  }
-  return true;
+  return schemaMatches(commandSpec(commandName).inputSchema, value);
 }
 
 function schemaAcceptsSessionInput(value: Record<string, unknown>): boolean {
-  const schema = commandSpec('sessions.input').inputSchema;
-  if (!objectMatchesSchemaKeywords(schema, value)) return false;
-  if (!schema.oneOf) return true;
-  return (
-    schema.oneOf.filter((branch) => objectMatchesSchemaKeywords(branch, value))
-      .length === 1
-  );
+  return schemaAcceptsCommandInput('sessions.input', value);
 }
 
 describe('CLI gateway contract', () => {
@@ -254,6 +296,69 @@ describe('CLI gateway contract', () => {
     });
   });
 
+  it('publishes strict workflow schemas for ticket and branch session delegation', () => {
+    const branchInput = {
+      repo: { repoPath: '/tmp/relay-ide' },
+      branch: { name: 'issue-871-backend-start-work-branch-contract' },
+    };
+    const prInput = {
+      repo: { repoPath: '/tmp/relay-ide' },
+      pr: { number: 879 },
+    };
+    const ticketInput = {
+      ticket: { source: 'github', id: '871' },
+      repo: { repoPath: '/tmp/relay-ide' },
+      branch: { name: 'issue-871-backend-start-work-branch-contract' },
+    };
+
+    expect(schemaAcceptsCommandInput('branches.openSession', branchInput)).toBe(
+      true
+    );
+    expect(schemaAcceptsCommandInput('branches.openSession', prInput)).toBe(
+      true
+    );
+    expect(schemaAcceptsCommandInput('tickets.startWork', ticketInput)).toBe(
+      true
+    );
+
+    expect(
+      schemaAcceptsCommandInput('branches.openSession', {
+        repo: {},
+        branch: { name: 'missing-repo-path' },
+      })
+    ).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('branches.openSession', {
+        repo: { repoPath: '/tmp/relay-ide' },
+      })
+    ).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('branches.openSession', {
+        repo: { repoPath: '/tmp/relay-ide' },
+        branch: {},
+      })
+    ).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('branches.openSession', {
+        repo: { repoPath: '/tmp/relay-ide' },
+        pr: { url: 'https://github.com/donovan-yohan/relay-ide/pull/879' },
+      })
+    ).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('tickets.startWork', {
+        repo: { repoPath: '/tmp/relay-ide' },
+        branch: { name: 'missing-ticket' },
+      })
+    ).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('tickets.startWork', {
+        ticket: { source: 'github' },
+        repo: { repoPath: '/tmp/relay-ide' },
+        branch: { name: 'missing-ticket-id' },
+      })
+    ).toBe(false);
+  });
+
   it('keeps success and error envelopes machine-readable and versioned', () => {
     expect(gatewayOk('nodes.list', { nodes: [] })).toEqual({
       ok: true,
@@ -318,7 +423,7 @@ describe('CLI gateway contract', () => {
 
     const outputSchema = commandSpec('supervisor.snapshot').outputSchema;
     expect(
-      objectMatchesSchemaKeywords(
+      schemaMatches(
         outputSchema,
         envelope as unknown as Record<string, unknown>
       )
@@ -327,9 +432,9 @@ describe('CLI gateway contract', () => {
     const dataSchema = outputSchema.properties?.data;
     if (!dataSchema)
       throw new Error('supervisor.snapshot output schema must define data');
-    expect(objectMatchesSchemaKeywords(dataSchema, envelope.data)).toBe(true);
+    expect(schemaMatches(dataSchema, envelope.data)).toBe(true);
     expect(
-      objectMatchesSchemaKeywords(dataSchema, { ok: true, ...payload })
+      schemaMatches(dataSchema, { ok: true, ...payload })
     ).toBe(false);
 
     const snapshotSchema = dataSchema.properties?.snapshot;

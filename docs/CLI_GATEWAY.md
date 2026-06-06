@@ -267,7 +267,7 @@ Supported now:
 
 ## Ticket and branch workflow session commands
 
-`tickets start-work` and `branches open-session` are stable v1 workflow commands for adapters that want a single backend contract for “resolve this ticket or branch into a worktree and open a Relay session.” They intentionally sit above raw `sessions create`: the CLI resolves the local git branch/worktree policy first, then creates a normal `/sessions` backend session with `repoPath`, `worktreePath`, `cwd`, `branchName`, session options, and optional initial prompt/control handoff metadata.
+`tickets start-work` and `branches open-session` are stable v1 workflow commands for adapters that want a single backend contract for “resolve this ticket or branch into a worktree and open a Relay session.” They intentionally sit above raw `sessions create`: the CLI resolves the local git branch/worktree policy first, then creates a normal `/sessions` backend session with `repoPath`, `worktreePath`, `branchName`, session options, and optional initial prompt/control handoff metadata. The local `/sessions` path derives `cwd` from the resolved repo/worktree and workflow delegation does not send an explicit `cwd` field.
 
 Supported now:
 

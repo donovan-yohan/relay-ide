@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, beforeAll, expect, test } from 'vitest';
 import * as http from 'node:http';
 import { execFile, execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -99,6 +99,14 @@ function workflowArgs(command: 'branches open-session' | 'tickets start-work', i
 function parseEnvelope(stdout: string): Record<string, unknown> {
   return JSON.parse(stdout) as Record<string, unknown>;
 }
+
+beforeAll(() => {
+  execFileSync('npm', ['run', 'build:server'], {
+    cwd: path.resolve('.'),
+    env: process.env,
+    stdio: 'inherit',
+  });
+});
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {

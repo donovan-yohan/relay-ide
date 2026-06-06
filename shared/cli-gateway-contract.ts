@@ -729,6 +729,7 @@ const repoWorkflowBindingInputSchema: RelayJsonSchema = {
     repoIdentity: stringSchema,
     repoInstanceId: stringSchema,
   },
+  required: ['repoPath'],
 };
 
 const branchWorkflowTargetInputSchema: RelayJsonSchema = {
@@ -741,6 +742,7 @@ const branchWorkflowTargetInputSchema: RelayJsonSchema = {
     remote: stringSchema,
     url: stringSchema,
   },
+  required: ['name'],
 };
 
 const prWorkflowTargetInputSchema: RelayJsonSchema = {
@@ -754,6 +756,7 @@ const prWorkflowTargetInputSchema: RelayJsonSchema = {
     base: stringSchema,
     title: stringSchema,
   },
+  anyOf: [{ required: ['number'] }, { required: ['head'] }],
 };
 
 const worktreeWorkflowPolicyInputSchema: RelayJsonSchema = {
@@ -819,6 +822,18 @@ const workflowCommandInputSchema: RelayJsonSchema = {
     confirmationToken: stringSchema,
   },
   required: ['repo'],
+  anyOf: [{ required: ['branch'] }, { required: ['pr'] }],
+};
+
+const ticketsStartWorkWorkflowInputSchema: RelayJsonSchema = {
+  ...workflowCommandInputSchema,
+  title: 'TicketsStartWorkInput',
+  required: ['repo', 'ticket'],
+};
+
+const branchesOpenSessionWorkflowInputSchema: RelayJsonSchema = {
+  ...workflowCommandInputSchema,
+  title: 'BranchesOpenSessionInput',
 };
 
 const workflowCommandOutputSchema: RelayJsonSchema = {
@@ -1713,7 +1728,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'session:create:agent',
       'tab:mode:set-agent',
     ],
-    inputSchema: workflowCommandInputSchema,
+    inputSchema: ticketsStartWorkWorkflowInputSchema,
     outputSchema: okOutput('TicketsStartWorkOutput', workflowCommandOutputSchema),
     errorCodes: workflowGatewayErrorCodes,
   },
@@ -1738,7 +1753,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'session:create:agent',
       'tab:mode:set-agent',
     ],
-    inputSchema: workflowCommandInputSchema,
+    inputSchema: branchesOpenSessionWorkflowInputSchema,
     outputSchema: okOutput('BranchesOpenSessionOutput', workflowCommandOutputSchema),
     errorCodes: workflowGatewayErrorCodes,
   },
