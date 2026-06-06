@@ -310,12 +310,17 @@ describe('hub node dashboard state', () => {
     // fixtures unless explicitly granted/challenged, so challenge remains at 2.
     // #814 added `node:pair-token:create` for grant-backed node bootstrap; it
     // is denied by these node policy fixtures unless explicitly delegated.
+    // #873 added four settings/webhook gateway bits. The read bits
+    // (`settings:read`, `integration:webhook:read`) are default-granted on
+    // dev nodes; `settings:write` remains high-risk and this fixture's prod
+    // policy still denies all four because it overrides allowed bits to
+    // `session:read` only, preserving the challenge count at 2.
     expect(
       rows.map((row) => [row.security.trustTier, row.security.postureLabel])
     ).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 26'],
-      ['dev', 'allow 15 · challenge 0 · deny 12'],
-      ['prod', 'allow 1 · challenge 2 · deny 24'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 30'],
+      ['dev', 'allow 17 · challenge 0 · deny 14'],
+      ['prod', 'allow 1 · challenge 2 · deny 28'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',
