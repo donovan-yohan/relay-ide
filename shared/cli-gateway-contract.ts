@@ -52,7 +52,11 @@ export type RelayCliGatewayCommand =
   | 'supervisor.sessions'
   | 'supervisor.sendText'
   | 'supervisor.submit'
-  | 'events.subscribe';
+  | 'events.subscribe'
+  | 'settings.get'
+  | 'settings.update'
+  | 'webhooks.status'
+  | 'webhooks.ping';
 
 export type RelayCliGatewayErrorCode =
   | 'UNAUTHORIZED'
@@ -1521,6 +1525,166 @@ const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
   required: ['ok', 'contract', 'contractVersion', 'command', 'data'],
 });
 
+const cliGatewayRedactionSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    rawConfigReturned: { const: false },
+    secretsReturned: { const: false },
+    tokenMaterialReturned: { const: false },
+  },
+  required: ['rawConfigReturned', 'secretsReturned', 'tokenMaterialReturned'],
+};
+
+const cliGatewayWebhookRedactionSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    rawConfigReturned: { const: false },
+    secretsReturned: { const: false },
+    tokenMaterialReturned: { const: false },
+    webhookSecretsReturned: { const: false },
+    rawWebhookUrlsReturned: { const: false },
+  },
+  required: [
+    'rawConfigReturned',
+    'secretsReturned',
+    'tokenMaterialReturned',
+    'webhookSecretsReturned',
+    'rawWebhookUrlsReturned',
+  ],
+};
+
+const cliGatewaySafeSettingsSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    defaultAgent: stringSchema,
+    defaultContinue: booleanSchema,
+    defaultYolo: booleanSchema,
+    defaultNotifications: booleanSchema,
+    claudeFullscreen: booleanSchema,
+    renamerTool: {
+      type: 'string',
+      enum: ['claude', 'codex', 'none', 'custom-script'],
+    },
+    updateChannel: { type: 'string', enum: ['stable', 'nightly'] },
+  },
+  required: [
+    'defaultAgent',
+    'defaultContinue',
+    'defaultYolo',
+    'defaultNotifications',
+    'claudeFullscreen',
+    'renamerTool',
+    'updateChannel',
+  ],
+};
+
+const settingsGetOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    settings: cliGatewaySafeSettingsSchema,
+    redaction: cliGatewayRedactionSchema,
+  },
+  required: ['settings', 'redaction'],
+};
+
+const settingsUpdateInputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    key: {
+      type: 'string',
+      enum: [
+        'defaultAgent',
+        'defaultContinue',
+        'defaultYolo',
+        'defaultNotifications',
+        'claudeFullscreen',
+        'renamerTool',
+        'updateChannel',
+      ],
+    },
+    value: { type: ['string', 'boolean'] },
+    confirmRiskyWrite: booleanSchema,
+  },
+  required: ['key', 'value'],
+};
+
+const settingsUpdateOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    key: settingsUpdateInputSchema.properties?.['key'] ?? stringSchema,
+    value: { type: ['string', 'boolean'] },
+    previousValue: { type: ['string', 'boolean'] },
+    changed: booleanSchema,
+    redaction: cliGatewayRedactionSchema,
+  },
+  required: ['key', 'value', 'previousValue', 'changed', 'redaction'],
+};
+
+const webhookStatusOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    configured: booleanSchema,
+    smeeConnected: booleanSchema,
+    lastEventAt: nullableStringSchema,
+    autoProvision: booleanSchema,
+    repoStatuses: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          repoPath: stringSchema,
+          webhookStatus: {
+            type: 'string',
+            enum: ['manual', 'live', 'limited', 'error'],
+          },
+          webhookEnabled: booleanSchema,
+          webhookError: stringSchema,
+          lastEventAt: nullableStringSchema,
+        },
+        required: ['repoPath', 'webhookStatus', 'webhookEnabled', 'lastEventAt'],
+      },
+    },
+    redaction: cliGatewayWebhookRedactionSchema,
+  },
+  required: [
+    'configured',
+    'smeeConnected',
+    'lastEventAt',
+    'autoProvision',
+    'repoStatuses',
+    'redaction',
+  ],
+};
+
+const webhookPingOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ok: booleanSchema,
+    configured: booleanSchema,
+    smeeConnected: booleanSchema,
+    lastEventAt: nullableStringSchema,
+    message: stringSchema,
+    redaction: cliGatewayWebhookRedactionSchema,
+  },
+  required: [
+    'ok',
+    'configured',
+    'smeeConnected',
+    'lastEventAt',
+    'message',
+    'redaction',
+  ],
+};
+
 const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   {
     name: 'contract.list',
@@ -2687,6 +2851,85 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],
+  },
+  {
+    name: 'settings.get',
+    cli: ['relay-ide', 'v1', 'settings', 'get', '--json'],
+    summary:
+      'Read the CLI gateway safe settings subset with explicit redaction metadata; raw config and secrets are never returned.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: [],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    outputSchema: okOutput('SettingsGetOutput', settingsGetOutputDataSchema),
+    errorCodes: ['UNAUTHORIZED', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'settings.update',
+    cli: [
+      'relay-ide',
+      'v1',
+      'settings',
+      'update',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Mutate one allowlisted safe setting; risky transitions require confirmRiskyWrite=true and never expose raw config or secrets.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: [],
+    inputSchema: settingsUpdateInputSchema,
+    outputSchema: okOutput('SettingsUpdateOutput', settingsUpdateOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'CONFIRMATION_REQUIRED',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'webhooks.status',
+    cli: ['relay-ide', 'v1', 'webhooks', 'status', '--json'],
+    summary:
+      'Read bounded webhook relay status with webhook secrets and raw URLs intentionally redacted.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: [],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    outputSchema: okOutput('WebhooksStatusOutput', webhookStatusOutputDataSchema),
+    errorCodes: ['UNAUTHORIZED', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'webhooks.ping',
+    cli: ['relay-ide', 'v1', 'webhooks', 'ping', '--json'],
+    summary:
+      'Run a safe webhook relay configuration ping/status probe without returning webhook secrets or raw URLs.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: [],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    outputSchema: okOutput('WebhooksPingOutput', webhookPingOutputDataSchema),
+    errorCodes: ['UNAUTHORIZED', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
   },
 ];
 

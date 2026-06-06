@@ -129,6 +129,7 @@ import {
 } from './credential-rotation-scheduler.js';
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
+import { createCliGatewaySettingsRouter } from './cli-gateway-settings.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import {
   createHandoffRouter,
@@ -2138,6 +2139,16 @@ async function main(): Promise<void> {
         onControlEvent: (cb) => sessions.onControlEvent(cb),
         onNodeStatus: (cb) => hubNodeRegistry.onNodeStatus(cb),
       },
+    })
+  );
+  app.use(
+    '/cli-gateway',
+    createCliGatewaySettingsRouter({
+      configPath: CONFIG_PATH,
+      // Settings/webhook configuration remains browser-operator-only until
+      // scoped actor credentials carry explicit settings/webhook grants.
+      // Do not let CLI callers self-assert capability bits in headers.
+      requireAuth,
     })
   );
 

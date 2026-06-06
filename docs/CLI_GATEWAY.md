@@ -33,6 +33,10 @@ relay-ide v1 supervisor send-text --target-ids <session-id-1,session-id-2> --tex
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --json
 relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
 relay-ide v1 events subscribe --topic <sessions|nodes|audit> --json
+relay-ide v1 settings get --json
+relay-ide v1 settings update --input-json '{"key":"defaultYolo","value":true,"confirmRiskyWrite":true}' --json
+relay-ide v1 webhooks status --json
+relay-ide v1 webhooks ping --json
 ```
 
 This contract is for external brain-as-peer adapters (#430). It is intentionally separate from the internal `/hub/node-link` WebSocket protocol. Adapter packages must generate native tool/function definitions from `relay-ide v1 schema --json` or the committed source manifest in `shared/cli-gateway-contract.ts`; do not hand-code Hermes/Claude/Codex-specific schemas.
@@ -104,11 +108,17 @@ Current command surfaces are intentionally separate:
 
 The Command Center may search and describe stable gateway commands using the shared manifest before browser execution is wired. The manifest carries the stable command id, CLI projection, side-effect class, capability hints, confirmation/control requirements, scope kinds, and audit redaction expectations. Until a `handler.uiAction` or explicit UI execution bridge exists, these entries must stay disabled/degraded in the palette and point operators to the stable CLI argv. Do not mark every internal UI button as agent-callable, and do not add Claude/Codex/Hermes-specific schemas by hand; add or change the Relay-owned command definition first.
 
+### Web UI action parity rule (#849/#860)
+
+Relay's web UI is one client over this action contract. The agent-facing source of truth is the stable v1 gateway contract and shared manifest, not React handler names, Command Center labels, or private browser REST calls. UI-only helpers such as tab switching, dashboard sorting/filtering, dialog openers, clipboard helpers, terminal viewport scrolling, and external-link navigation must stay classified as UI-only until a follow-up issue defines a real agent/operator use case and adds a stable Relay-owned command descriptor.
+
+The #857 inventory is kept in [`docs/refactor/857-action-parity-inventory.md`](refactor/857-action-parity-inventory.md), and the #860 follow-up map is kept in [`docs/refactor/860-action-contract-follow-up-map.md`](refactor/860-action-contract-follow-up-map.md). Remaining major web-only groups are tracked as explicit issues instead of TODO comments: session lifecycle (#869), workspace/worktree lifecycle (#870), ticket/PR branch workflows (#871), UI bridges to existing gateway commands (#872), and settings/integration mutations (#873).
+
 ## Auth and hub access
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.
 
-Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, and `events.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
+Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
 
 ### Scoped actor credential MVP (#805)
 
@@ -209,7 +219,7 @@ Grant-backed requests are denied before minting when the handle is revoked, expi
 
 | Lane                         | Credential source                                                                                                  | Valid surfaces                                                                                                                        | Must not satisfy                                                                                                                                          | Audit/redaction promise                                                                                                                                   |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Browser cookie / PIN session | Existing browser login/PIN session cookie.                                                                        | Browser UI, operator endpoints such as mint/list/revoke above, and legacy CLI gateway compatibility paths that have not migrated yet. | The scoped actor-token lane, `/hub/node-link`, heartbeat, node pairing/reconnect.                                                                         | Browser cookie/token material is redacted; use safe session/operator metadata only.                                                                       |
+| Browser cookie / PIN session | Existing browser login/PIN session cookie.                                                                         | Browser UI, operator endpoints such as mint/list/revoke above, and legacy CLI gateway compatibility paths that have not migrated yet. | The scoped actor-token lane, `/hub/node-link`, heartbeat, node pairing/reconnect.                                                                         | Browser cookie/token material is redacted; use safe session/operator metadata only.                                                                       |
 | Node credential              | Node credential material issued through node pairing/lifecycle.                                                    | Node heartbeat and `/hub/node-link`.                                                                                                  | Browser UI auth, CLI actor token, “act as human/agent” auth.                                                                                              | Use node id and credential id/hash; never log raw node token material.                                                                                    |
 | Scoped actor token           | Explicit `--actor-token` / `RELAY_IDE_ACTOR_TOKEN` issued by the scoped actor registry for `relay:cli-gateway:v1`. | The four read-only MVP commands listed above.                                                                                         | Browser routes, node link/heartbeat, writes, control actions, session input/streaming, event streaming, or any command outside the implemented allowlist. | Use actor id/type, issuer, credential id/jti, requested/granted/denied bits, safe scope summary/hash, and correlation id; never emit raw bearer material. |
 
@@ -240,6 +250,23 @@ This slice does not migrate every v1 command and does not migrate adapter packag
 
 This boundary is part of the #797/#798/#802 split: #427 provided the trust-tier/capability/audit/confirmation backbone, #798 inventories routes and clarifies browser-session vs actor/node credentials, and #802 provides the scoped actor credential lifecycle primitive. Follow-up work may replace local browser-token compatibility with scoped actor credentials, but adapters should treat that as a credential migration, not a reason to reuse node credentials, browser UI cookies, or browser-only private routes.
 
+## Settings and webhook gateway contracts (#873)
+
+`settings.*` and `webhooks.*` expose a narrow operational slice for CLI/agent adapters. They are not a raw config API, and they are browser-operator-session-only for now.
+
+| Command | Current auth boundary | Side effect | Contract |
+| --- | --- | --- | --- |
+| `relay-ide v1 settings get --json` | Browser operator session | read | Returns only `defaultAgent`, `defaultContinue`, `defaultYolo`, `defaultNotifications`, `claudeFullscreen`, `renamerTool`, and `updateChannel`, plus redaction metadata. |
+| `relay-ide v1 settings update --input-json '{...}' --json` | Browser operator session | write | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed. |
+| `relay-ide v1 webhooks status --json` | Browser operator session | read | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata. |
+| `relay-ide v1 webhooks ping --json` | Browser operator session | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs. |
+
+Settings update accepts either `--input-json` / `--input-file` with `{ "key", "value", "confirmRiskyWrite"? }` or typed flags (`--key`, `--value` / `--value-json`, optional `--confirm-risky-write`). `defaultYolo: true` and `updateChannel` changes require `confirmRiskyWrite: true`; otherwise the hub returns `CONFIRMATION_REQUIRED` with a bounded challenge that names only the key and requested value. The shared security policy still defines settings/webhook capability bits as future grant names, but they are not trusted for these routes yet.
+
+All responses include redaction metadata. The gateway must never return raw config, bearer/browser/node tokens, GitHub tokens, webhook secrets, Smee URLs, connection strings, or secret-looking values. `webhooks.status` and `webhooks.ping` intentionally expose booleans/status strings instead of `github.webhookSecret` or `github.smeeUrl`.
+
+These routes are mounted under `/cli-gateway`, but they are wired through the browser operator-session middleware rather than the scoped actor-token lane. Caller-supplied `x-relay-capabilities` is ignored and must not be treated as an authorization boundary; the v1 contract intentionally publishes empty `capabilityHints` for `settings.*` and `webhooks.*`. Scoped actor/bearer settings and webhook grants remain future credential-lifecycle work.
+
 ## Session descriptors
 
 `nodes list`, `sessions list`, `sessions get`, `sessions create`, `sessions attach`, and `sessions detach` return existing backend descriptors, wrapped in gateway envelopes. Session descriptors are expected to include the already-available identity and control fields where present:
@@ -255,6 +282,8 @@ External brain/agent peer identity is reserved for hub-owned credential/session 
 ## Session create, attach, and detach
 
 `sessions create` accepts either `--input-json`, `--input-file`, or typed flags. `nodeId` selects routed node creation through `/hub/nodes/:nodeId/sessions`; omitting it uses the current local `/sessions` path.
+
+Web launch parity (#859): the converted browser launch actions use the same stable command id, descriptor, and envelope as this CLI command. `sessionCreateActionDescriptor()` is generated from `relayCommandDefinition('sessions.create')`; `session.new-agent`, `session.new-terminal`, `session.start-on-repo`, and `session.start-work-in-env` attach that descriptor in the action registry. Their input is the `sessions.create` schema / `CreateSessionBody`, success is `RelayCliGatewayEnvelope<SessionSummary>`, and errors use the normal gateway error envelope. `sessionCreateActionAvailability()` carries the shared availability state for missing workspace/cwd/selected environment, offline node, and unsupported capability reasons. Do not document unconverted browser actions as `sessions.create` parity just because they eventually start a session after private branch/worktree/ticket semantics.
 
 Supported now:
 

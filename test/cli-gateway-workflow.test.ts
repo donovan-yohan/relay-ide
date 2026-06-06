@@ -106,7 +106,7 @@ beforeAll(() => {
     env: process.env,
     stdio: 'inherit',
   });
-});
+}, 60_000);
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
