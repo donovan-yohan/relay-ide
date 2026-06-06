@@ -1306,13 +1306,14 @@ type GatewayLifecycleInput = Record<string, unknown> & {
 };
 
 function gatewayLifecycleEnvironment(
+  commandName: RelayCliGatewayCommand,
   input: Record<string, unknown>
 ): Record<string, unknown> | undefined {
   const environment = input['environment'];
   if (environment === undefined) return undefined;
   if (!isGatewayRecord(environment)) {
     gatewayInvalid(
-      'worktrees.status',
+      commandName,
       'environment must be an object when provided'
     );
   }
@@ -1407,7 +1408,7 @@ function parseLifecycleInput(
   commandArgs: string[]
 ): GatewayLifecycleInput {
   const input = parseGatewayInputObject(commandName, commandArgs);
-  const environment = gatewayLifecycleEnvironment(input);
+  const environment = gatewayLifecycleEnvironment(commandName, input);
   const lifecycleInput: GatewayLifecycleInput = { ...input };
   if (environment) lifecycleInput.environment = environment;
   return lifecycleInput;
@@ -1702,15 +1703,18 @@ async function runGatewayWorktreeCleanup(
     capabilities: ['session:read', 'session:control:kill', 'rpc:git:read', 'rpc:git:write'],
   });
   const data = isGatewayRecord(result) ? result : {};
+  const branchDeleted = data['branchDeleted'] === true;
   printGatewayEnvelope(
     gatewayOk(commandName, {
       ok: true,
       action: commandName === 'worktrees.delete' ? 'delete' : 'archive',
-      branchDeleted: data['branchDeleted'] === true,
+      branchDeleted,
       audit: {
         repoPath,
         worktreePath,
         force: force || hasConfirmation,
+        deleteBranch,
+        branchDeleted,
       },
     }),
     0
