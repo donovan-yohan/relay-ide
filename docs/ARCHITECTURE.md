@@ -155,7 +155,7 @@ React 19 SPA built by Vite, output to `dist/frontend/`. Express serves the compi
 
 ### `bin/`
 
-`bin/relay-ide.ts` — CLI entry point. Parses flags (`--port`, `--host`, `--config`, `--version`, `--help`, `--bg`, `hub`, `node`, `install`, `uninstall`, `status`, `update`), manages config directory, prompts for PIN on first run. Hub/node roles intentionally share the single `relay-ide` npm binary; see `docs/RELAY_HUB_NODE_PACKAGING.md`.
+`bin/relay-ide.ts` — CLI entry point. Parses flags (`--port`, `--host`, `--config`, `--version`, `--help`, `--bg`, `hub`, `node`, `install`, `uninstall`, `status`, `update`), manages config directory, prompts for PIN on first run. Hub/node roles intentionally share the single `relay-ide` npm binary; see `docs/RELAY_HUB_NODE_PACKAGING.md`. The versioned `relay-ide v1 ... --json` gateway lives here too: it wraps stable adapter commands from `shared/cli-gateway-contract.ts`, routes HTTP session/file/context/inbox/supervisor calls to the hub, and owns local-only ticket/branch workflow commands (`tickets.startWork`, `branches.openSession`) that resolve git branch/worktree state before delegating to `/sessions`. Those workflow commands must authenticate before mutating git/worktrees and must not smuggle raw PTY bytes as prompt handoff.
 
 **Architecture Invariant:** CLI flags are passed to the server via environment variables (`RELAY_IDE_CONFIG`, `RELAY_IDE_PORT`, `RELAY_IDE_HOST`), not direct function calls.
 

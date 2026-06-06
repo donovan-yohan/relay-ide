@@ -16,6 +16,8 @@ export type RelayCliGatewayCommand =
   | 'sessions.list'
   | 'sessions.get'
   | 'sessions.create'
+  | 'tickets.startWork'
+  | 'branches.openSession'
   | 'sessions.renew'
   | 'sessions.attach'
   | 'sessions.detach'
@@ -701,6 +703,167 @@ const renewSessionInputSchema: RelayJsonSchema = {
   },
   required: ['id'],
 };
+
+const ticketContextInputSchema: RelayJsonSchema = {
+  title: 'TicketContextInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    source: stringSchema,
+    id: stringSchema,
+    title: stringSchema,
+    url: stringSchema,
+    description: stringSchema,
+  },
+  required: ['source', 'id'],
+};
+
+const repoWorkflowBindingInputSchema: RelayJsonSchema = {
+  title: 'RepoWorkflowBindingInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    nodeId: stringSchema,
+    repoPath: stringSchema,
+    workspaceId: stringSchema,
+    repoIdentity: stringSchema,
+    repoInstanceId: stringSchema,
+  },
+};
+
+const branchWorkflowTargetInputSchema: RelayJsonSchema = {
+  title: 'BranchWorkflowTargetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    name: stringSchema,
+    base: stringSchema,
+    remote: stringSchema,
+    url: stringSchema,
+  },
+};
+
+const prWorkflowTargetInputSchema: RelayJsonSchema = {
+  title: 'PrWorkflowTargetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    number: { type: 'number', minimum: 1 },
+    url: stringSchema,
+    head: stringSchema,
+    base: stringSchema,
+    title: stringSchema,
+  },
+};
+
+const worktreeWorkflowPolicyInputSchema: RelayJsonSchema = {
+  title: 'WorktreeWorkflowPolicyInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    mode: {
+      type: 'string',
+      enum: ['reuse-existing', 'create-if-missing', 'reject-if-missing'],
+      default: 'reuse-existing',
+    },
+    worktreePath: stringSchema,
+    allowDirty: booleanSchema,
+    allowConflicted: booleanSchema,
+  },
+};
+
+const workflowSessionOptionsInputSchema: RelayJsonSchema = {
+  title: 'WorkflowSessionOptionsInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    type: { type: 'string', enum: ['agent', 'terminal'], default: 'agent' },
+    mode: { type: 'string', enum: ['pty', 'web'] },
+    agent: stringSchema,
+    yolo: booleanSchema,
+    terminalBackend: { type: 'string', enum: ['tmux-compat', 'relay-pty'] },
+    cols: { type: 'number', minimum: 1, maximum: 500 },
+    rows: { type: 'number', minimum: 1, maximum: 200 },
+    continuePolicy: { type: 'string', enum: ['always', 'never'] },
+    workContextId: stringSchema,
+    controlMode: {
+      type: 'string',
+      enum: ['agent-driven', 'human-driven'],
+    },
+  },
+};
+
+const promptHandoffPolicyInputSchema: RelayJsonSchema = {
+  title: 'PromptHandoffPolicyInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    mode: { type: 'string', enum: ['none', 'initial-prompt', 'unsupported'] },
+    prompt: stringSchema,
+    requireTypedDelivery: booleanSchema,
+  },
+};
+
+const workflowCommandInputSchema: RelayJsonSchema = {
+  title: 'WorkflowCommandInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ticket: ticketContextInputSchema,
+    repo: repoWorkflowBindingInputSchema,
+    branch: branchWorkflowTargetInputSchema,
+    pr: prWorkflowTargetInputSchema,
+    worktree: worktreeWorkflowPolicyInputSchema,
+    session: workflowSessionOptionsInputSchema,
+    prompt: promptHandoffPolicyInputSchema,
+    confirmationToken: stringSchema,
+  },
+  required: ['repo'],
+};
+
+const workflowCommandOutputSchema: RelayJsonSchema = {
+  title: 'WorkflowCommandOutputData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    session: sessionDescriptorSchema,
+    nodeId: stringSchema,
+    repo: { type: 'object', additionalProperties: true },
+    worktree: { type: 'object', additionalProperties: true },
+    branch: { type: 'object', additionalProperties: true },
+    pr: { type: 'object', additionalProperties: true },
+    workContextId: stringSchema,
+    created: { type: 'object', additionalProperties: true },
+    reused: { type: 'object', additionalProperties: true },
+    promptHandoff: { type: 'object', additionalProperties: true },
+    controlHandoff: { type: 'object', additionalProperties: true },
+  },
+  required: [
+    'session',
+    'nodeId',
+    'repo',
+    'worktree',
+    'branch',
+    'created',
+    'reused',
+    'promptHandoff',
+    'controlHandoff',
+  ],
+};
+
+const workflowGatewayErrorCodes = [
+  'UNAUTHORIZED',
+  'FORBIDDEN',
+  'INVALID_ARGUMENT',
+  'INVALID_JSON',
+  'UNSUPPORTED',
+  'NOT_FOUND',
+  'SESSION_CONFLICT',
+  'CONFIRMATION_REQUIRED',
+  'NODE_OFFLINE',
+  'SERVER_UNAVAILABLE',
+  'UPSTREAM_ERROR',
+] as const satisfies readonly RelayCliGatewayErrorCode[];
 
 export const gatewayErrorSchema: RelayJsonSchema = {
   title: 'RelayCliGatewayErrorEnvelope',
@@ -1528,6 +1691,56 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'NODE_OFFLINE',
       'UPSTREAM_ERROR',
     ],
+  },
+  {
+    name: 'tickets.startWork',
+    cli: [
+      'relay-ide',
+      'v1',
+      'tickets',
+      'start-work',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Start work from a typed ticket context by resolving repo/branch/worktree policy and creating a Relay session.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: [
+      'session:create:terminal',
+      'session:create:agent',
+      'tab:mode:set-agent',
+    ],
+    inputSchema: workflowCommandInputSchema,
+    outputSchema: okOutput('TicketsStartWorkOutput', workflowCommandOutputSchema),
+    errorCodes: workflowGatewayErrorCodes,
+  },
+  {
+    name: 'branches.openSession',
+    cli: [
+      'relay-ide',
+      'v1',
+      'branches',
+      'open-session',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Open a session for a branch or PR target with typed repo/worktree, prompt, and control handoff metadata.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: [
+      'session:create:terminal',
+      'session:create:agent',
+      'tab:mode:set-agent',
+    ],
+    inputSchema: workflowCommandInputSchema,
+    outputSchema: okOutput('BranchesOpenSessionOutput', workflowCommandOutputSchema),
+    errorCodes: workflowGatewayErrorCodes,
   },
   {
     name: 'sessions.renew',

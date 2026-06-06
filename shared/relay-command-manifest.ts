@@ -86,6 +86,8 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'sessions.list': 'sessions list',
   'sessions.get': 'session details',
   'sessions.create': 'create session',
+  'tickets.startWork': 'start ticket work',
+  'branches.openSession': 'open branch session',
   'sessions.renew': 'renew session',
   'sessions.attach': 'attach session descriptor',
   'sessions.detach': 'detach session handle',
@@ -132,6 +134,8 @@ function sideEffectForGatewayCommand(
     return 'destructive';
   if (
     spec.name === 'sessions.create' ||
+    spec.name === 'tickets.startWork' ||
+    spec.name === 'branches.openSession' ||
     spec.name === 'sessions.renew' ||
     spec.name === 'sessions.detach' ||
     spec.name === 'sessions.input' ||
@@ -162,6 +166,8 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];
   if (name.startsWith('handoffs.'))
+    return ['repo', 'worktree', 'work-context', 'session'];
+  if (name.startsWith('tickets.') || name.startsWith('branches.'))
     return ['repo', 'worktree', 'work-context', 'session'];
   if (name.startsWith('artifacts.')) return ['work-context'];
   if (name.startsWith('supervisor.')) return ['session'];

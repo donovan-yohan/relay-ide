@@ -89,6 +89,8 @@ describe('CLI gateway contract', () => {
       'sessions.list',
       'sessions.get',
       'sessions.create',
+      'tickets.startWork',
+      'branches.openSession',
       'sessions.renew',
       'sessions.attach',
       'sessions.detach',
@@ -200,6 +202,18 @@ describe('CLI gateway contract', () => {
       controlRequirements: ['confirmation-challenge'],
       auditRedaction: { expectation: 'action-summary' },
       scopeKinds: ['session'],
+    });
+    expect(relayCommandDefinition('tickets.startWork')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['repo', 'worktree', 'work-context', 'session'],
+    });
+    expect(relayCommandDefinition('branches.openSession')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['repo', 'worktree', 'work-context', 'session'],
     });
     expect(relayCommandDefinition('sessions.stream')).toMatchObject({
       sideEffect: 'stream',
@@ -505,6 +519,8 @@ describe('CLI gateway contract', () => {
       'sessions.list',
       'sessions.get',
       'sessions.create',
+      'tickets.startWork',
+      'branches.openSession',
       'sessions.renew',
       'sessions.attach',
       'sessions.detach',

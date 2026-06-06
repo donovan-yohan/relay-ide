@@ -381,6 +381,590 @@ function parseGatewayInputObject(
   return {};
 }
 
+type WorkflowGatewayCommand = 'tickets.startWork' | 'branches.openSession';
+
+type WorkflowWorktreeMode =
+  | 'reuse-existing'
+  | 'create-if-missing'
+  | 'reject-if-missing';
+
+interface WorkflowGitResult {
+  stdout: string;
+  stderr: string;
+}
+
+interface WorkflowWorktreeResolution {
+  repoPath: string;
+  worktreePath: string;
+  branchName: string;
+  createdWorktree: boolean;
+  reusedWorktree: boolean;
+  dirty: boolean;
+  conflicted: boolean;
+}
+
+function isGatewayRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function workflowError(
+  commandName: WorkflowGatewayCommand,
+  code: RelayCliGatewayErrorCode,
+  message: string,
+  details?: Record<string, unknown>,
+  retryable = false
+): never {
+  printGatewayEnvelope(
+    gatewayError(commandName, {
+      code,
+      message,
+      retryable,
+      ...(details ? { details } : {}),
+    }),
+    1
+  );
+}
+
+function workflowInputRecord(
+  commandName: WorkflowGatewayCommand,
+  input: Record<string, unknown>,
+  field: string,
+  required = false
+): Record<string, unknown> | undefined {
+  const value = input[field];
+  if (value === undefined) {
+    if (required) {
+      workflowError(commandName, 'INVALID_ARGUMENT', `${field} is required`, {
+        field,
+      });
+    }
+    return undefined;
+  }
+  if (!isGatewayRecord(value)) {
+    workflowError(commandName, 'INVALID_ARGUMENT', `${field} must be an object`, {
+      field,
+    });
+  }
+  return value;
+}
+
+function workflowString(
+  commandName: WorkflowGatewayCommand,
+  record: Record<string, unknown> | undefined,
+  field: string,
+  required = false
+): string | undefined {
+  const value = record?.[field];
+  if (value === undefined || value === null || value === '') {
+    if (required) {
+      workflowError(commandName, 'INVALID_ARGUMENT', `${field} is required`, {
+        field,
+      });
+    }
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    workflowError(commandName, 'INVALID_ARGUMENT', `${field} must be a string`, {
+      field,
+    });
+  }
+  return value;
+}
+
+function workflowBoolean(
+  commandName: WorkflowGatewayCommand,
+  record: Record<string, unknown> | undefined,
+  field: string
+): boolean | undefined {
+  const value = record?.[field];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    workflowError(commandName, 'INVALID_ARGUMENT', `${field} must be a boolean`, {
+      field,
+    });
+  }
+  return value;
+}
+
+function workflowWorktreeMode(
+  commandName: WorkflowGatewayCommand,
+  worktree: Record<string, unknown> | undefined
+): WorkflowWorktreeMode {
+  const raw = worktree?.['mode'];
+  if (raw === undefined) return 'reuse-existing';
+  if (
+    raw === 'reuse-existing' ||
+    raw === 'create-if-missing' ||
+    raw === 'reject-if-missing'
+  ) {
+    return raw;
+  }
+  workflowError(commandName, 'INVALID_ARGUMENT', 'worktree.mode is invalid', {
+    field: 'worktree.mode',
+    allowed: ['reuse-existing', 'create-if-missing', 'reject-if-missing'],
+  });
+}
+
+function branchSlug(branchName: string): string {
+  return branchName
+    .replace(/^refs\/heads\//, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 96);
+}
+
+async function workflowGit(
+  commandName: WorkflowGatewayCommand,
+  repoPath: string,
+  args: string[],
+  errorCode: RelayCliGatewayErrorCode,
+  reasonCode: string
+): Promise<WorkflowGitResult> {
+  try {
+    return (await execFileAsync('git', args, {
+      cwd: repoPath,
+      timeout: 15000,
+    })) as WorkflowGitResult;
+  } catch (error) {
+    const message = execErrorMessage(error, 'git command failed');
+    workflowError(commandName, errorCode, message, {
+      reasonCode,
+      gitArgs: args,
+    });
+  }
+}
+
+async function workflowGitOptional(
+  repoPath: string,
+  args: string[]
+): Promise<WorkflowGitResult | null> {
+  try {
+    return (await execFileAsync('git', args, {
+      cwd: repoPath,
+      timeout: 15000,
+    })) as WorkflowGitResult;
+  } catch {
+    return null;
+  }
+}
+
+function parseGitWorktreePorcelain(stdout: string): Array<{
+  path: string;
+  branchName?: string;
+}> {
+  const entries: Array<{ path: string; branchName?: string }> = [];
+  let current: { path?: string; branchName?: string } = {};
+  const flush = () => {
+    if (current.path) {
+      entries.push({
+        path: current.path,
+        ...(current.branchName ? { branchName: current.branchName } : {}),
+      });
+    }
+    current = {};
+  };
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    if (line.startsWith('worktree ')) {
+      if (current.path) flush();
+      current.path = line.slice('worktree '.length).trim();
+    } else if (line.startsWith('branch ')) {
+      current.branchName = line
+        .slice('branch '.length)
+        .trim()
+        .replace(/^refs\/heads\//, '');
+    }
+  }
+  flush();
+  return entries;
+}
+
+async function workflowBranchExists(
+  repoPath: string,
+  branchName: string
+): Promise<{ local: boolean; remote: boolean }> {
+  const local = await workflowGitOptional(repoPath, [
+    'rev-parse',
+    '--verify',
+    `refs/heads/${branchName}`,
+  ]);
+  const remote = await workflowGitOptional(repoPath, [
+    'rev-parse',
+    '--verify',
+    `refs/remotes/origin/${branchName}`,
+  ]);
+  return { local: Boolean(local), remote: Boolean(remote) };
+}
+
+async function resolveWorkflowBranchFromPr(
+  commandName: WorkflowGatewayCommand,
+  repoPath: string,
+  pr: Record<string, unknown> | undefined,
+  explicitBranch: string | undefined
+): Promise<{ branchName: string; prMeta?: Record<string, unknown> }> {
+  if (explicitBranch) {
+    return pr ? { branchName: explicitBranch, prMeta: pr } : { branchName: explicitBranch };
+  }
+  const prHead = workflowString(commandName, pr, 'head');
+  if (prHead) {
+    return pr ? { branchName: prHead, prMeta: pr } : { branchName: prHead };
+  }
+  const prNumber = pr?.['number'];
+  if (prNumber === undefined) {
+    workflowError(commandName, 'INVALID_ARGUMENT', 'branch.name or pr.head/number is required', {
+      field: 'branch.name',
+    });
+  }
+  if (typeof prNumber !== 'number' || !Number.isInteger(prNumber) || prNumber <= 0) {
+    workflowError(commandName, 'INVALID_ARGUMENT', 'pr.number must be a positive integer', {
+      field: 'pr.number',
+    });
+  }
+  try {
+    const { stdout } = (await execFileAsync(
+      'gh',
+      ['pr', 'view', String(prNumber), '--json', 'headRefName,baseRefName,url,title,number'],
+      { cwd: repoPath, timeout: 15000 }
+    )) as WorkflowGitResult;
+    const data = JSON.parse(stdout) as Record<string, unknown>;
+    const head = typeof data['headRefName'] === 'string' ? data['headRefName'] : '';
+    if (!head) throw new Error('PR headRefName missing');
+    return {
+      branchName: head,
+      prMeta: {
+        number: data['number'] ?? prNumber,
+        url: data['url'],
+        title: data['title'],
+        head,
+        base: data['baseRefName'],
+      },
+    };
+  } catch (error) {
+    workflowError(commandName, 'NOT_FOUND', execErrorMessage(error, 'unknown PR'), {
+      reasonCode: 'UNKNOWN_PR',
+      prNumber,
+    });
+  }
+}
+
+async function resolveWorkflowWorktree(
+  commandName: WorkflowGatewayCommand,
+  input: Record<string, unknown>
+): Promise<WorkflowWorktreeResolution> {
+  const repo = workflowInputRecord(commandName, input, 'repo', true)!;
+  const branch = workflowInputRecord(commandName, input, 'branch');
+  const pr = workflowInputRecord(commandName, input, 'pr');
+  const worktree = workflowInputRecord(commandName, input, 'worktree');
+  const nodeId = workflowString(commandName, repo, 'nodeId');
+  if (nodeId && nodeId !== 'local') {
+    workflowError(
+      commandName,
+      'UNSUPPORTED',
+      'ticket/branch workflow resolution is local-only in this slice; remote node execution must wait for node-side git capability routing',
+      { reasonCode: 'REMOTE_WORKFLOW_UNSUPPORTED', nodeId }
+    );
+  }
+  const rawRepoPath = workflowString(commandName, repo, 'repoPath', true)!;
+  const repoPath = path.resolve(rawRepoPath);
+  const topLevel = await workflowGit(
+    commandName,
+    repoPath,
+    ['rev-parse', '--show-toplevel'],
+    'INVALID_ARGUMENT',
+    'MISSING_REPO_BINDING'
+  );
+  const resolvedRepoPath = topLevel.stdout.trim() || repoPath;
+  const explicitBranch = workflowString(commandName, branch, 'name');
+  const { branchName, prMeta } = await resolveWorkflowBranchFromPr(
+    commandName,
+    resolvedRepoPath,
+    pr,
+    explicitBranch
+  );
+  const mode = workflowWorktreeMode(commandName, worktree);
+  const allowDirty = workflowBoolean(commandName, worktree, 'allowDirty') ?? false;
+  const allowConflicted = workflowBoolean(commandName, worktree, 'allowConflicted') ?? false;
+  const explicitWorktreePath = workflowString(commandName, worktree, 'worktreePath');
+  const worktrees = parseGitWorktreePorcelain(
+    (
+      await workflowGit(
+        commandName,
+        resolvedRepoPath,
+        ['worktree', 'list', '--porcelain'],
+        'UPSTREAM_ERROR',
+        'WORKTREE_LIST_FAILED'
+      )
+    ).stdout
+  );
+  const requestedWorktreePath = explicitWorktreePath
+    ? path.resolve(explicitWorktreePath)
+    : undefined;
+  let existing = requestedWorktreePath
+    ? worktrees.find((entry) => path.resolve(entry.path) === requestedWorktreePath)
+    : worktrees.find((entry) => entry.branchName === branchName);
+  let createdWorktree = false;
+
+  if (!existing && mode === 'reuse-existing') {
+    workflowError(commandName, 'NOT_FOUND', 'no existing worktree for requested branch', {
+      reasonCode: 'WORKTREE_NOT_FOUND',
+      branchName,
+      worktreePolicy: mode,
+    });
+  }
+  if (!existing && mode === 'reject-if-missing') {
+    workflowError(commandName, 'NOT_FOUND', 'worktree is required to already exist', {
+      reasonCode: 'WORKTREE_NOT_FOUND',
+      branchName,
+      worktreePolicy: mode,
+    });
+  }
+  if (!existing) {
+    const targetPath =
+      requestedWorktreePath ??
+      path.join(resolvedRepoPath, '.worktrees', branchSlug(branchName));
+    const branchState = await workflowBranchExists(resolvedRepoPath, branchName);
+    const branchBase = workflowString(commandName, branch, 'base') ?? workflowString(commandName, prMeta, 'base');
+    if (!branchState.local && branchState.remote) {
+      await workflowGit(
+        commandName,
+        resolvedRepoPath,
+        ['branch', branchName, `origin/${branchName}`],
+        'UPSTREAM_ERROR',
+        'BRANCH_CREATE_FROM_REMOTE_FAILED'
+      );
+    }
+    const addArgs = branchState.local || branchState.remote
+      ? ['worktree', 'add', targetPath, branchName]
+      : branchBase
+        ? ['worktree', 'add', '-b', branchName, targetPath, branchBase]
+        : undefined;
+    if (!addArgs) {
+      workflowError(commandName, 'NOT_FOUND', 'branch was not found and no base branch was provided for creation', {
+        reasonCode: 'UNKNOWN_BRANCH',
+        branchName,
+      });
+    }
+    await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+    await workflowGit(
+      commandName,
+      resolvedRepoPath,
+      addArgs,
+      'UPSTREAM_ERROR',
+      'WORKTREE_CREATE_FAILED'
+    );
+    existing = { path: targetPath, branchName };
+    createdWorktree = true;
+  }
+
+  const finalWorktreePath = path.resolve(existing.path);
+  const conflicted = Boolean(
+    (await workflowGit(
+      commandName,
+      finalWorktreePath,
+      ['ls-files', '-u'],
+      'UPSTREAM_ERROR',
+      'WORKTREE_CONFLICT_CHECK_FAILED'
+    )).stdout.trim()
+  );
+  const dirty = Boolean(
+    (await workflowGit(
+      commandName,
+      finalWorktreePath,
+      ['status', '--porcelain'],
+      'UPSTREAM_ERROR',
+      'WORKTREE_DIRTY_CHECK_FAILED'
+    )).stdout.trim()
+  );
+  if (conflicted && !allowConflicted) {
+    workflowError(commandName, 'SESSION_CONFLICT', 'worktree has unresolved conflicts', {
+      reasonCode: 'WORKTREE_CONFLICTED',
+      worktreePath: finalWorktreePath,
+      branchName,
+    });
+  }
+  if (dirty && !allowDirty) {
+    workflowError(commandName, 'SESSION_CONFLICT', 'worktree has uncommitted changes', {
+      reasonCode: 'WORKTREE_DIRTY',
+      worktreePath: finalWorktreePath,
+      branchName,
+    });
+  }
+  return {
+    repoPath: resolvedRepoPath,
+    worktreePath: finalWorktreePath,
+    branchName,
+    createdWorktree,
+    reusedWorktree: !createdWorktree,
+    dirty,
+    conflicted,
+  };
+}
+
+function workflowSessionBody(
+  commandName: WorkflowGatewayCommand,
+  input: Record<string, unknown>,
+  resolved: WorkflowWorktreeResolution
+): { body: Record<string, unknown>; promptHandoff: Record<string, unknown>; controlHandoff: Record<string, unknown> } {
+  const session = workflowInputRecord(commandName, input, 'session') ?? {};
+  const prompt = workflowInputRecord(commandName, input, 'prompt');
+  const body: Record<string, unknown> = {
+    repoPath: resolved.repoPath,
+    worktreePath: resolved.worktreePath,
+    cwd: resolved.worktreePath,
+    branchName: resolved.branchName,
+  };
+  for (const field of [
+    'type',
+    'mode',
+    'agent',
+    'yolo',
+    'terminalBackend',
+    'cols',
+    'rows',
+    'continuePolicy',
+    'workContextId',
+    'controlMode',
+  ]) {
+    if (session[field] !== undefined) body[field] = session[field];
+  }
+  const promptMode = workflowString(commandName, prompt, 'mode') ?? 'none';
+  const promptText = workflowString(commandName, prompt, 'prompt');
+  const requireTypedDelivery = workflowBoolean(commandName, prompt, 'requireTypedDelivery') ?? false;
+  if (promptMode === 'unsupported' && requireTypedDelivery) {
+    workflowError(
+      commandName,
+      'UNSUPPORTED',
+      'requested prompt handoff policy is explicitly unsupported and raw PTY bytes are not a stable contract',
+      { reasonCode: 'PROMPT_HANDOFF_UNSUPPORTED', promptMode }
+    );
+  }
+  let promptHandoff: Record<string, unknown> = {
+    requested: Boolean(promptText),
+    policy: promptMode,
+    delivered: false,
+    method: 'none',
+  };
+  if (promptMode === 'initial-prompt' && promptText) {
+    body['initialPrompt'] = promptText;
+    promptHandoff = {
+      requested: true,
+      policy: promptMode,
+      delivered: true,
+      method: 'sessions.create.initialPrompt',
+    };
+  } else if (promptText) {
+    promptHandoff = {
+      requested: true,
+      policy: promptMode,
+      delivered: false,
+      method: 'none',
+      reasonCode: 'PROMPT_HANDOFF_NOT_REQUESTED',
+    };
+  }
+  return {
+    body,
+    promptHandoff,
+    controlHandoff: {
+      requested: typeof session['controlMode'] === 'string',
+      mode: session['controlMode'] ?? null,
+      delivered: typeof session['controlMode'] === 'string',
+      method: typeof session['controlMode'] === 'string' ? 'sessions.create.controlMode' : 'none',
+    },
+  };
+}
+
+function requireWorkflowGatewayAuth(commandName: WorkflowGatewayCommand): void {
+  const actorToken = gatewayActorToken();
+  if (actorToken) {
+    gatewayInvalid(
+      commandName,
+      '--actor-token is only supported for read-only CLI gateway commands in this slice',
+      {
+        allowedCommands: Array.from(CLI_GATEWAY_ACTOR_TOKEN_COMMANDS),
+      }
+    );
+  }
+  if (!process.env['RELAY_IDE_BROWSER_TOKEN']) {
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: 'UNAUTHORIZED',
+        message:
+          'RELAY_IDE_BROWSER_TOKEN not set. Starting ticket work or opening branch sessions is a write workflow and requires an authenticated Relay session in this slice.',
+        retryable: false,
+      }),
+      1
+    );
+  }
+}
+
+async function runGatewayWorkflow(
+  commandName: WorkflowGatewayCommand,
+  commandArgs: string[]
+): Promise<never> {
+  const input = parseGatewayInputObject(commandName, commandArgs);
+  requireWorkflowGatewayAuth(commandName);
+  if (commandName === 'tickets.startWork') {
+    workflowInputRecord(commandName, input, 'ticket', true);
+  }
+  const resolved = await resolveWorkflowWorktree(commandName, input);
+  const { body, promptHandoff, controlHandoff } = workflowSessionBody(
+    commandName,
+    input,
+    resolved
+  );
+  const validated = validateAndSanitizeGatewayCreateInput(body);
+  if (validated.ok === false) {
+    printGatewayEnvelope(gatewayError(commandName, validated.error), 1);
+  }
+  const session = await gatewayHttpJson({
+    commandName,
+    pathName: '/sessions',
+    method: 'POST',
+    body: validated.input,
+    capabilities: [
+      validated.sessionType === 'terminal'
+        ? 'session:create:terminal'
+        : 'session:create:agent',
+      ...(validated.input['controlMode'] === 'agent-driven'
+        ? ['tab:mode:set-agent']
+        : []),
+    ],
+  });
+  const sessionRecord = isGatewayRecord(session) ? session : {};
+  const workContextId =
+    workflowString(commandName, workflowInputRecord(commandName, input, 'session'), 'workContextId') ??
+    (typeof sessionRecord['workContextId'] === 'string' ? sessionRecord['workContextId'] : undefined);
+  printGatewayEnvelope(
+    gatewayOk(commandName, {
+      session,
+      nodeId: 'local',
+      repo: {
+        repoPath: resolved.repoPath,
+        repoIdentity: workflowString(commandName, workflowInputRecord(commandName, input, 'repo'), 'repoIdentity') ?? null,
+        repoInstanceId: workflowString(commandName, workflowInputRecord(commandName, input, 'repo'), 'repoInstanceId') ?? null,
+      },
+      worktree: {
+        path: resolved.worktreePath,
+        dirty: resolved.dirty,
+        conflicted: resolved.conflicted,
+      },
+      branch: { name: resolved.branchName },
+      ...(workflowInputRecord(commandName, input, 'pr')
+        ? { pr: workflowInputRecord(commandName, input, 'pr') }
+        : {}),
+      ...(workContextId ? { workContextId } : {}),
+      created: { session: true, worktree: resolved.createdWorktree },
+      reused: { session: false, worktree: resolved.reusedWorktree },
+      promptHandoff,
+      controlHandoff,
+    }),
+    0
+  );
+}
+
 const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'nodes.list',
   'sessions.list',
@@ -500,7 +1084,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe) --json'
   );
   process.exit(1);
 }
@@ -1472,6 +2056,26 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
   });
 }
 
+async function runGatewayTickets(gatewayArgs: string[]): Promise<never> {
+  const ticketSubcommand = gatewayArgs[1];
+  if (ticketSubcommand === 'start-work') {
+    return runGatewayWorkflow('tickets.startWork', gatewayArgs.slice(2));
+  }
+  gatewayInvalid('tickets.startWork', 'unknown tickets command', {
+    args: gatewayArgs,
+  });
+}
+
+async function runGatewayBranches(gatewayArgs: string[]): Promise<never> {
+  const branchSubcommand = gatewayArgs[1];
+  if (branchSubcommand === 'open-session') {
+    return runGatewayWorkflow('branches.openSession', gatewayArgs.slice(2));
+  }
+  gatewayInvalid('branches.openSession', 'unknown branches command', {
+    args: gatewayArgs,
+  });
+}
+
 async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
   const operation = gatewayArgs[1];
   if (!isFileRpcOperation(operation)) {
@@ -2327,6 +2931,8 @@ async function runGatewayV1(): Promise<never> {
   if (!json) gatewayUsage();
   if (top === 'nodes') return runGatewayNodes(gatewayArgs);
   if (top === 'sessions') return runGatewaySessions(gatewayArgs);
+  if (top === 'tickets') return runGatewayTickets(gatewayArgs);
+  if (top === 'branches') return runGatewayBranches(gatewayArgs);
   if (top === 'files') return runGatewayFiles(gatewayArgs);
   if (top === 'work-contexts') return runGatewayWorkContexts(gatewayArgs);
   if (top === 'context') return runGatewayContext(gatewayArgs);
