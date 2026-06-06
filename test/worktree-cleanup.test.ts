@@ -8,6 +8,7 @@ import {
   removeWorktreeFromDisk,
   validateWorktreeForDelete,
 } from '../server/worktree-cleanup.js';
+import type { WorktreeDeleteProof } from '../server/worktree-cleanup.js';
 
 const tempRoots: string[] = [];
 const gitEnv: NodeJS.ProcessEnv = {
@@ -63,6 +64,16 @@ function branchExists(repoPath: string, branchName: string): boolean {
   }
 }
 
+function expectDeleteProof(
+  validation: Awaited<ReturnType<typeof validateWorktreeForDelete>>
+): WorktreeDeleteProof {
+  expect(validation.ok).toBe(true);
+  if (!validation.ok) {
+    throw new Error(`expected valid worktree: ${validation.error.error}`);
+  }
+  return validation.deleteProof;
+}
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -98,9 +109,17 @@ describe('worktree cleanup route helpers', () => {
     const { repoPath, worktreePath } = makeRepoWithWorktree(
       'feature/no-rm-fallback'
     );
+    const deleteProof = expectDeleteProof(
+      await validateWorktreeForDelete(worktreePath, repoPath, false, [])
+    );
     fs.writeFileSync(path.join(worktreePath, 'dirty-untracked.txt'), 'dirty\n');
 
-    const error = await removeWorktreeFromDisk(worktreePath, repoPath, false);
+    const error = await removeWorktreeFromDisk(
+      worktreePath,
+      repoPath,
+      false,
+      deleteProof
+    );
 
     expect(error).toContain('contains modified or untracked files');
     expect(fs.existsSync(worktreePath)).toBe(true);
@@ -122,9 +141,10 @@ describe('worktree cleanup route helpers', () => {
       branchName,
       hasUncommittedChanges: false,
     });
-    expect(await removeWorktreeFromDisk(worktreePath, repoPath, false)).toBe(
-      null
-    );
+    const deleteProof = expectDeleteProof(validation);
+    expect(
+      await removeWorktreeFromDisk(worktreePath, repoPath, false, deleteProof)
+    ).toBe(null);
     const branchDeleted = await deleteLocalWorktreeBranch(repoPath, branchName);
 
     expect(branchDeleted).toBe(true);
@@ -143,9 +163,10 @@ describe('worktree cleanup route helpers', () => {
       []
     );
     expect(validation).toMatchObject({ ok: true, branchName });
-    expect(await removeWorktreeFromDisk(worktreePath, repoPath, false)).toBe(
-      null
-    );
+    const deleteProof = expectDeleteProof(validation);
+    expect(
+      await removeWorktreeFromDisk(worktreePath, repoPath, false, deleteProof)
+    ).toBe(null);
     const branchDeleted = false;
 
     expect(branchDeleted).toBe(false);
@@ -172,6 +193,45 @@ describe('worktree cleanup route helpers', () => {
         sessionIds: ['session-1'],
       },
     });
+  });
+
+  it('fails closed on invalid repoPath with force and leaves target directory intact', async () => {
+    const { root, repoPath } = makeRepoWithWorktree(
+      'feature/invalid-force-repo'
+    );
+    const missingRepoPath = path.join(root, 'missing-repo');
+
+    const validation = await validateWorktreeForDelete(
+      repoPath,
+      missingRepoPath,
+      true,
+      []
+    );
+
+    expect(validation).toEqual({
+      ok: false,
+      error: {
+        status: 500,
+        error: 'Cannot verify worktree — git worktree list failed.',
+      },
+    });
+
+    const forgedProof: WorktreeDeleteProof = {
+      repoPath: path.resolve(missingRepoPath),
+      worktreePath: path.resolve(repoPath),
+      branchName: 'main',
+      recognizedNonMainWorktree: true,
+    };
+    const removeError = await removeWorktreeFromDisk(
+      repoPath,
+      missingRepoPath,
+      true,
+      forgedProof
+    );
+
+    expect(removeError).toBe('Cannot remove worktree — git worktree list failed');
+    expect(fs.existsSync(repoPath)).toBe(true);
+    expect(fs.existsSync(path.join(repoPath, 'README.md'))).toBe(true);
   });
 
   it('keeps lifecycle invalid-environment errors command-specific', () => {

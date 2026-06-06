@@ -3729,7 +3729,8 @@ async function main(): Promise<void> {
     const removeErr = await removeWorktreeFromDisk(
       worktreePath,
       repoPath,
-      force ?? false
+      force ?? false,
+      validation.deleteProof
     );
     if (removeErr) {
       res.status(500).json({ error: removeErr });

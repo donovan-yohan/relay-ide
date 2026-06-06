@@ -8,6 +8,13 @@ import { parseAllWorktrees } from './watcher.js';
 const execFileAsync = promisify(execFile);
 const logger = createLogger('worktree-cleanup');
 
+const gitChildEnv: NodeJS.ProcessEnv = {
+  ...process.env,
+  GIT_DIR: undefined,
+  GIT_WORK_TREE: undefined,
+  GIT_COMMON_DIR: undefined,
+};
+
 export type WorktreeValidationError = {
   status: number;
   error: string;
@@ -15,8 +22,20 @@ export type WorktreeValidationError = {
   hasUncommittedChanges?: boolean;
 };
 
+export type WorktreeDeleteProof = {
+  readonly repoPath: string;
+  readonly worktreePath: string;
+  readonly branchName: string;
+  readonly recognizedNonMainWorktree: true;
+};
+
 export type WorktreeValidationResult =
-  | { ok: true; branchName: string; hasUncommittedChanges: boolean }
+  | {
+      ok: true;
+      branchName: string;
+      hasUncommittedChanges: boolean;
+      deleteProof: WorktreeDeleteProof;
+    }
   | { ok: false; error: WorktreeValidationError };
 
 function execErrorMessage(err: unknown, fallback: string): string {
@@ -27,9 +46,46 @@ function execErrorMessage(err: unknown, fallback: string): string {
 async function hasDirtyWorktree(worktreePath: string): Promise<boolean> {
   const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
     cwd: path.resolve(worktreePath),
+    env: gitChildEnv,
     timeout: 5000,
   });
   return stdout.trim().length > 0;
+}
+
+async function proveRecognizedNonMainWorktree(
+  worktreePath: string,
+  repoPath: string
+): Promise<WorktreeDeleteProof | null> {
+  const resolvedWorktreePath = path.resolve(worktreePath);
+  const resolvedRepoPath = path.resolve(repoPath);
+  const { stdout: wtListOut } = await execFileAsync(
+    'git',
+    ['worktree', 'list', '--porcelain'],
+    { cwd: resolvedRepoPath, env: gitChildEnv }
+  );
+  const allWorktrees = parseAllWorktrees(wtListOut, resolvedRepoPath);
+  const worktree = allWorktrees.find(
+    (wt) => path.resolve(wt.path) === resolvedWorktreePath && !wt.isMain
+  );
+  if (!worktree) return null;
+  return {
+    repoPath: resolvedRepoPath,
+    worktreePath: resolvedWorktreePath,
+    branchName: worktree.branch,
+    recognizedNonMainWorktree: true,
+  };
+}
+
+function proofMatchesRequest(
+  proof: WorktreeDeleteProof,
+  worktreePath: string,
+  repoPath: string
+): boolean {
+  return (
+    proof.recognizedNonMainWorktree === true &&
+    proof.worktreePath === path.resolve(worktreePath) &&
+    proof.repoPath === path.resolve(repoPath)
+  );
 }
 
 /** Validates that a worktree can be deleted and returns the branch checked out there. */
@@ -40,19 +96,11 @@ export async function validateWorktreeForDelete(
   activeSessions: string[]
 ): Promise<WorktreeValidationResult> {
   const resolvedWorktreePath = path.resolve(worktreePath);
-  let branchName = '';
+  let deleteProof: WorktreeDeleteProof;
 
   try {
-    const { stdout: wtListOut } = await execFileAsync(
-      'git',
-      ['worktree', 'list', '--porcelain'],
-      { cwd: repoPath }
-    );
-    const allWorktrees = parseAllWorktrees(wtListOut, repoPath);
-    const worktree = allWorktrees.find(
-      (wt) => wt.path === resolvedWorktreePath && !wt.isMain
-    );
-    if (!worktree) {
+    const proof = await proveRecognizedNonMainWorktree(worktreePath, repoPath);
+    if (!proof) {
       if (!fs.existsSync(resolvedWorktreePath)) {
         return {
           ok: false,
@@ -67,23 +115,20 @@ export async function validateWorktreeForDelete(
         error: { status: 400, error: 'Path is not a recognized git worktree' },
       };
     }
-    branchName = worktree.branch;
+    deleteProof = proof;
   } catch (err) {
     logger.warn(
       '[worktrees/delete] git worktree list failed for',
       repoPath,
       err instanceof Error ? err.message : err
     );
-    if (!force) {
-      return {
-        ok: false,
-        error: {
-          status: 500,
-          error:
-            'Cannot verify worktree — git worktree list failed. Use force: true to delete anyway.',
-        },
-      };
-    }
+    return {
+      ok: false,
+      error: {
+        status: 500,
+        error: 'Cannot verify worktree — git worktree list failed.',
+      },
+    };
   }
 
   if (activeSessions.length > 0 && !force) {
@@ -130,20 +175,50 @@ export async function validateWorktreeForDelete(
     };
   }
 
-  return { ok: true, branchName, hasUncommittedChanges };
+  return {
+    ok: true,
+    branchName: deleteProof.branchName,
+    hasUncommittedChanges,
+    deleteProof,
+  };
 }
 
-/** Removes a worktree from disk. Fallback directory deletion is force-only. */
+/** Removes a worktree from disk. Fallback directory deletion is force-only and proof-gated. */
 export async function removeWorktreeFromDisk(
   worktreePath: string,
   repoPath: string,
-  force: boolean
+  force: boolean,
+  deleteProof: WorktreeDeleteProof
 ): Promise<string | null> {
+  if (!proofMatchesRequest(deleteProof, worktreePath, repoPath)) {
+    return 'Cannot remove worktree — deletion proof does not match requested path';
+  }
+  try {
+    const freshProof = await proveRecognizedNonMainWorktree(
+      worktreePath,
+      repoPath
+    );
+    if (
+      !freshProof ||
+      freshProof.branchName !== deleteProof.branchName ||
+      !proofMatchesRequest(freshProof, worktreePath, repoPath)
+    ) {
+      return 'Cannot remove worktree — path is not a recognized non-main git worktree';
+    }
+  } catch (err) {
+    logger.warn(
+      '[worktrees/delete] git worktree list failed before removal for',
+      repoPath,
+      err instanceof Error ? err.message : err
+    );
+    return 'Cannot remove worktree — git worktree list failed';
+  }
+
   try {
     const removeArgs = force
       ? ['worktree', 'remove', '--force', worktreePath]
       : ['worktree', 'remove', worktreePath];
-    await execFileAsync('git', removeArgs, { cwd: repoPath });
+    await execFileAsync('git', removeArgs, { cwd: repoPath, env: gitChildEnv });
   } catch (err) {
     if (!force) {
       return execErrorMessage(err, 'Failed to remove worktree');
@@ -166,7 +241,10 @@ export async function deleteLocalWorktreeBranch(
 ): Promise<boolean> {
   if (!branchName) return false;
   try {
-    await execFileAsync('git', ['branch', '-D', branchName], { cwd: repoPath });
+    await execFileAsync('git', ['branch', '-D', branchName], {
+      cwd: repoPath,
+      env: gitChildEnv,
+    });
     return true;
   } catch {
     return false;
