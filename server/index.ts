@@ -129,6 +129,7 @@ import {
 } from './credential-rotation-scheduler.js';
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
+import { createCliGatewaySettingsRouter } from './cli-gateway-settings.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import {
   createHandoffRouter,
@@ -2138,6 +2139,13 @@ async function main(): Promise<void> {
         onControlEvent: (cb) => sessions.onControlEvent(cb),
         onNodeStatus: (cb) => hubNodeRegistry.onNodeStatus(cb),
       },
+    })
+  );
+  app.use(
+    '/cli-gateway',
+    createCliGatewaySettingsRouter({
+      configPath: CONFIG_PATH,
+      requireAuth: requireCliGatewayAuth,
     })
   );
 

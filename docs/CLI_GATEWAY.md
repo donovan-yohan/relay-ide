@@ -31,6 +31,10 @@ relay-ide v1 supervisor send-text --target-ids <session-id-1,session-id-2> --tex
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --json
 relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
 relay-ide v1 events subscribe --topic <sessions|nodes|audit> --json
+relay-ide v1 settings get --json
+relay-ide v1 settings update --input-json '{"key":"defaultYolo","value":true,"confirmRiskyWrite":true}' --json
+relay-ide v1 webhooks status --json
+relay-ide v1 webhooks ping --json
 ```
 
 This contract is for external brain-as-peer adapters (#430). It is intentionally separate from the internal `/hub/node-link` WebSocket protocol. Adapter packages must generate native tool/function definitions from `relay-ide v1 schema --json` or the committed source manifest in `shared/cli-gateway-contract.ts`; do not hand-code Hermes/Claude/Codex-specific schemas.
@@ -112,7 +116,7 @@ The #857 inventory is kept in [`docs/refactor/857-action-parity-inventory.md`](r
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.
 
-Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, and `events.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
+Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
 
 ### Scoped actor credential MVP (#805)
 
@@ -243,6 +247,23 @@ Messages and details must not echo `relay-sac-v1...` tokens, bearer headers, bro
 This slice does not migrate every v1 command and does not migrate adapter packages broadly. The actor-token lane does not cover `sessions.create`, `sessions.attach`, `sessions.detach`, `sessions.stream`, `sessions.input`, `files.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.subscribe`, write/control/session-input/event-stream surfaces, browser auth replacement, node proof-of-possession, node credential lifecycle, approval UX, MFA/passkeys, enterprise RBAC, or public multi-tenant hosting.
 
 This boundary is part of the #797/#798/#802 split: #427 provided the trust-tier/capability/audit/confirmation backbone, #798 inventories routes and clarifies browser-session vs actor/node credentials, and #802 provides the scoped actor credential lifecycle primitive. Follow-up work may replace local browser-token compatibility with scoped actor credentials, but adapters should treat that as a credential migration, not a reason to reuse node credentials, browser UI cookies, or browser-only private routes.
+
+## Settings and webhook gateway contracts (#873)
+
+`settings.*` and `webhooks.*` expose a narrow operational slice for CLI/agent adapters. They are not a raw config API.
+
+| Command | Required capability | Side effect | Contract |
+| --- | --- | --- | --- |
+| `relay-ide v1 settings get --json` | `settings:read` | read | Returns only `defaultAgent`, `defaultContinue`, `defaultYolo`, `defaultNotifications`, `claudeFullscreen`, `renamerTool`, and `updateChannel`, plus redaction metadata. |
+| `relay-ide v1 settings update --input-json '{...}' --json` | `settings:write` | write | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed. |
+| `relay-ide v1 webhooks status --json` | `integration:webhook:read` | read | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata. |
+| `relay-ide v1 webhooks ping --json` | `integration:webhook:test` | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs. |
+
+Settings update accepts either `--input-json` / `--input-file` with `{ "key", "value", "confirmRiskyWrite"? }` or typed flags (`--key`, `--value` / `--value-json`, optional `--confirm-risky-write`). `defaultYolo: true` and `updateChannel` changes require `confirmRiskyWrite: true`; otherwise the hub returns `CONFIRMATION_REQUIRED` with a bounded challenge that names only the key and requested value. `settings:write` is also a high-risk capability bit in the shared security policy.
+
+All responses include redaction metadata. The gateway must never return raw config, bearer/browser/node tokens, GitHub tokens, webhook secrets, Smee URLs, connection strings, or secret-looking values. `webhooks.status` and `webhooks.ping` intentionally expose booleans/status strings instead of `github.webhookSecret` or `github.smeeUrl`.
+
+These routes are mounted under `/cli-gateway` and use the CLI gateway auth path. The current scoped actor-token MVP remains read-only for the four commands above; use the existing browser/scoped hub token compatibility path for this settings/webhook slice until a later credential-lifecycle slice mints actor tokens with `settings:*` and `integration:webhook:*` capabilities.
 
 ## Session descriptors
 
