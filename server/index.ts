@@ -4146,7 +4146,8 @@ async function main(): Promise<void> {
       res.status(sessionControlErrorStatus(error)).json({ error });
       return;
     }
-    const { displayName } = req.body as { displayName?: string };
+    const body = isRecord(req.body) ? req.body : {};
+    const displayName = body['displayName'];
     if (typeof displayName !== 'string' || displayName.trim().length === 0) {
       res.status(400).json({ error: 'displayName is required' });
       return;

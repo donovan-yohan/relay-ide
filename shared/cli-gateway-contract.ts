@@ -1698,7 +1698,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     inputSchema: {
       type: 'object',
       additionalProperties: false,
-      properties: { id: stringSchema },
+      properties: { id: stringSchema, confirmationToken: stringSchema },
       required: ['id'],
     },
     outputSchema: okOutput('SessionsKillOutput', sessionKillOutputSchema),

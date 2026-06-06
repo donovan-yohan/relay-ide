@@ -652,6 +652,20 @@ describe('CLI gateway contract', () => {
       transport: 'hub-http',
     });
 
+    const kill = commandSpec('sessions.kill');
+    expect(kill).toMatchObject({
+      capabilityHints: ['session:read', 'session:control:kill'],
+      transport: 'hub-http-or-node-rpc',
+    });
+    expect(kill.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        id: { type: 'string' },
+        confirmationToken: { type: 'string' },
+      },
+    });
+
     const stream = commandSpec('sessions.stream');
     expect(stream.capabilityHints).toEqual(['session:read', 'session:attach']);
     expect(stream.outputSchema).toMatchObject({

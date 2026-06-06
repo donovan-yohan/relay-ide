@@ -12,7 +12,7 @@ relay-ide v1 sessions get --id <session-id-or-global-id> --json
 relay-ide v1 sessions create --input-json '{...}' --json
 relay-ide v1 sessions attach --id <session-id-or-global-id> --json
 relay-ide v1 sessions detach --id <session-id-or-global-id> --json
-relay-ide v1 sessions kill --id <session-id-or-global-id> --json
+relay-ide v1 sessions kill --id <session-id-or-global-id> [--confirmation-token <token>] --json
 relay-ide v1 sessions rename --id <session-id-or-global-id> --display-name 'new name' --json
 relay-ide v1 sessions stream --id <session-id-or-global-id> --mode ndjson --json
 relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --wait-for ok --json
@@ -318,7 +318,7 @@ Legacy flat fields `nodeId`, `repoPath`, `worktreePath`, and `cwd` on `sessions.
 
 `sessions detach` intentionally does not call the session kill route. If the session is already gone, the command returns the normal typed `NOT_FOUND` envelope from `sessions.get`.
 
-`relay-ide v1 sessions kill --id <id> --json` resolves local and routed session IDs before calling the Relay-owned lifecycle route. Local sessions use `DELETE /sessions/:id`; routed sessions use `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, which forwards `sessions.kill` over node-link RPC and removes the hub's scoped session envelope only after the node acknowledges. The command requires `session:control:kill`, is marked destructive in the manifest, and remains subject to the existing high-risk confirmation policy.
+`relay-ide v1 sessions kill --id <id> [--confirmation-token <token>] --json` resolves local and routed session IDs before calling the Relay-owned lifecycle route. Local sessions use `DELETE /sessions/:id`; routed sessions use `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, which forwards `sessions.kill` over node-link RPC and removes the hub's scoped session envelope only after the node acknowledges. The command requires `session:control:kill`, is marked destructive in the manifest, forwards retry tokens as `x-confirmation-token`, and remains subject to the existing high-risk confirmation policy.
 
 `relay-ide v1 sessions rename --id <id> --display-name <name> --json` uses `PATCH /sessions/:id` locally and `PATCH /hub/nodes/:nodeId/sessions/:sessionId` remotely. Remote renames forward `sessions.rename` over node-link RPC and require `session:control:rename`; they fail closed on stale envelopes, offline nodes, and policy denial.
 

@@ -212,6 +212,11 @@ function gatewayArgsForGeneratedTool(
       ['idleTimeoutMs', '--idle-timeout-ms'],
     ]);
   }
+  if (tool.relay.command === 'sessions.kill') {
+    return appendOptionalFlags(replaceGatewayInputPlaceholders(cliArgs, input), input, [
+      ['confirmationToken', '--confirmation-token'],
+    ]);
+  }
   if (tool.relay.command === 'sessions.input') {
     return gatewaySessionInputArgs(input);
   }

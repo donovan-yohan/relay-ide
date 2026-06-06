@@ -3895,7 +3895,7 @@ export function createHubNodeRouter(
     requireAuth,
     async (req, res) => {
       const { nodeId, sessionId } = req.params;
-      const { displayName } = req.body as { displayName?: string };
+      const displayName = bodyRecord(req)['displayName'];
       if (!nodeId) {
         sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
         return;

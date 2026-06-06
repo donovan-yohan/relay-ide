@@ -16,6 +16,7 @@ type CapturedGatewayRequest = {
   command?: string | string[] | undefined;
   correlationId?: string | string[] | undefined;
   capabilities: string | string[] | undefined;
+  confirmationToken?: string | string[] | undefined;
   body?: Record<string, unknown>;
 };
 
@@ -70,6 +71,7 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
       command: req.headers['x-relay-cli-command'],
       correlationId: req.headers['x-relay-correlation-id'],
       capabilities: req.headers['x-relay-capabilities'],
+      confirmationToken: req.headers['x-confirmation-token'],
     };
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -189,6 +191,83 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
   });
 });
 
+test('generated session kill tool forwards confirmation retry token as a header', async () => {
+  const tools = generateRelayClaudeGatewayTools(RELAY_CLI_GATEWAY_CONTRACT, [
+    'sessions.kill',
+  ]);
+  const captured: CapturedGatewayRequest[] = [];
+  const session = {
+    id: 'remote-session-1',
+    globalSessionId: 'node-a:remote-session-1',
+    nodeId: 'node-a',
+    type: 'terminal',
+    agent: 'shell',
+    mode: 'pty',
+    cwd: '/fixture',
+    displayName: 'fixture terminal',
+    status: 'active',
+  };
+
+  const server = http.createServer((req, res) => {
+    const entry: CapturedGatewayRequest = {
+      method: req.method,
+      url: req.url,
+      authorization: req.headers.authorization,
+      marker: req.headers['x-relay-cli-gateway'],
+      actorMarker: req.headers['x-relay-cli-actor-token'],
+      command: req.headers['x-relay-cli-command'],
+      correlationId: req.headers['x-relay-correlation-id'],
+      capabilities: req.headers['x-relay-capabilities'],
+      confirmationToken: req.headers['x-confirmation-token'],
+    };
+    captured.push(entry);
+    res.setHeader('content-type', 'application/json');
+
+    if (req.method === 'GET' && req.url === '/sessions/remote-session-1') {
+      res.end(JSON.stringify(session));
+      return;
+    }
+    if (
+      req.method === 'DELETE' &&
+      req.url === '/hub/nodes/node-a/sessions/remote-session-1'
+    ) {
+      res.end(JSON.stringify({ ok: true, id: 'remote-session-1' }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+  });
+
+  const port = await listen(server);
+  try {
+    const runner = new RelayClaudeGatewayToolRunner(tools, {
+      command: process.execPath,
+      commandArgsPrefix: ['dist/bin/relay-ide.js'],
+      env: {
+        ...process.env,
+        RELAY_IDE_PORT: String(port),
+        RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      },
+    });
+
+    const killed = await runner.callTool('relay_sessions_kill', {
+      id: 'remote-session-1',
+      confirmationToken: 'confirm-token-1',
+    });
+    expect(killed).toMatchObject({ ok: true, command: 'sessions.kill' });
+  } finally {
+    await close(server);
+  }
+
+  expect(captured.map((entry) => `${entry.method} ${entry.url}`)).toEqual([
+    'GET /sessions/remote-session-1',
+    'DELETE /hub/nodes/node-a/sessions/remote-session-1',
+  ]);
+  expect(captured[1]).toMatchObject({
+    capabilities: 'session:read,session:control:kill',
+    confirmationToken: 'confirm-token-1',
+  });
+});
 
 test('read-only CLI gateway calls can use explicit scoped actor token input', async () => {
   const tools = generateRelayClaudeGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);

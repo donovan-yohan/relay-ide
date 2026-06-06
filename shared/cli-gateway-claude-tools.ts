@@ -119,6 +119,11 @@ function gatewayArgsForGeneratedTool(
       ['confirmationToken', '--confirmation-token'],
     ]);
   }
+  if (tool.relay.command === 'sessions.kill') {
+    return appendOptionalFlags(replaceGatewayInputPlaceholders(cliArgs, input), input, [
+      ['confirmationToken', '--confirmation-token'],
+    ]);
+  }
   return replaceGatewayInputPlaceholders(cliArgs, input);
 }
 

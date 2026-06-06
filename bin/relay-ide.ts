@@ -403,6 +403,27 @@ function parseGatewaySessionRenameInput(
   return { id, displayName };
 }
 
+function parseGatewaySessionKillInput(
+  sessionArgs: string[]
+): { id: string; confirmationToken?: string } {
+  const parsed = parseGatewayInputObject('sessions.kill', sessionArgs);
+  const id =
+    typeof parsed['id'] === 'string'
+      ? parsed['id']
+      : gatewayArg(sessionArgs, '--id') ?? sessionArgs[0];
+  if (!id || id.startsWith('--')) gatewayInvalid('sessions.kill', '--id is required');
+
+  const rawConfirmationToken =
+    typeof parsed['confirmationToken'] === 'string'
+      ? parsed['confirmationToken']
+      : gatewayArg(sessionArgs, '--confirmation-token');
+  const confirmationToken = rawConfirmationToken?.trim();
+  return {
+    id,
+    ...(confirmationToken ? { confirmationToken } : {}),
+  };
+}
+
 function gatewaySessionIdentityPayload(
   requestedId: string,
   sessionId: string,
@@ -440,6 +461,7 @@ async function gatewayHttpJson(input: {
   method?: string;
   body?: unknown;
   capabilities?: readonly string[];
+  confirmationToken?: string;
 }): Promise<unknown> {
   const actorToken = gatewayActorToken();
   if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(input.commandName)) {
@@ -479,6 +501,9 @@ async function gatewayHttpJson(input: {
   if (input.body !== undefined) headers['Content-Type'] = 'application/json';
   if (input.capabilities?.length) {
     headers['x-relay-capabilities'] = input.capabilities.join(',');
+  }
+  if (input.confirmationToken?.trim()) {
+    headers['x-confirmation-token'] = input.confirmationToken.trim();
   }
 
   let res: Response;
@@ -998,7 +1023,7 @@ async function runGatewaySessionDetach(sessionArgs: string[]): Promise<never> {
 }
 
 async function runGatewaySessionKill(sessionArgs: string[]): Promise<never> {
-  const requestedId = requireGatewaySessionId('sessions.kill', sessionArgs);
+  const { id: requestedId, confirmationToken } = parseGatewaySessionKillInput(sessionArgs);
   const session = await gatewaySessionDescriptor(requestedId, 'sessions.kill');
   const sessionId = session.id ?? requestedId;
   const result = await gatewayHttpJson({
@@ -1010,6 +1035,7 @@ async function runGatewaySessionKill(sessionArgs: string[]): Promise<never> {
       : `/sessions/${encodeURIComponent(sessionId)}`,
     method: 'DELETE',
     capabilities: ['session:read', 'session:control:kill'],
+    ...(confirmationToken ? { confirmationToken } : {}),
   });
   printGatewayEnvelope(
     gatewayOk(
