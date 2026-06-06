@@ -270,3 +270,92 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
   );
   expect(inputs).toContain('marker-input\n');
 });
+
+test('generated Hermes session rename tool forwards displayName to the PATCH body', async () => {
+  const tools = generateRelayHermesGatewayTools(RELAY_CLI_GATEWAY_CONTRACT, [
+    'sessions.rename',
+  ]);
+  const captured: CapturedGatewayRequest[] = [];
+  const session = {
+    id: 'remote-session-1',
+    globalSessionId: 'node-a:remote-session-1',
+    nodeId: 'node-a',
+    type: 'terminal',
+    agent: 'shell',
+    mode: 'pty',
+    cwd: '/fixture',
+    displayName: 'fixture terminal',
+    status: 'active',
+  };
+
+  const server = http.createServer((req, res) => {
+    const entry: CapturedGatewayRequest = {
+      method: req.method,
+      url: req.url,
+      authorization: req.headers.authorization,
+      marker: req.headers['x-relay-cli-gateway'],
+      capabilities: req.headers['x-relay-capabilities'],
+    };
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const rawBody = Buffer.concat(chunks).toString('utf8');
+      if (rawBody) entry.body = JSON.parse(rawBody) as Record<string, unknown>;
+      captured.push(entry);
+      res.setHeader('content-type', 'application/json');
+
+      if (req.method === 'GET' && req.url === '/sessions/remote-session-1') {
+        res.end(JSON.stringify(session));
+        return;
+      }
+      if (
+        req.method === 'PATCH' &&
+        req.url === '/hub/nodes/node-a/sessions/remote-session-1'
+      ) {
+        res.end(
+          JSON.stringify({
+            ...session,
+            displayName: entry.body?.['displayName'],
+          })
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+    });
+  });
+
+  const port = await listen(server);
+  try {
+    const runner = new RelayHermesGatewayToolRunner(tools, {
+      command: process.execPath,
+      commandArgsPrefix: ['dist/bin/relay-ide.js'],
+      env: {
+        ...process.env,
+        RELAY_IDE_PORT: String(port),
+        RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      },
+    });
+
+    const renamed = await runner.callTool('relay_gateway_sessions_rename', {
+      id: 'remote-session-1',
+      displayName: 'wanted name',
+    });
+    expect(renamed).toMatchObject({
+      ok: true,
+      command: 'sessions.rename',
+      data: { renamed: true, displayName: 'wanted name' },
+    });
+  } finally {
+    await close(server);
+  }
+
+  expect(captured.map((entry) => `${entry.method} ${entry.url}`)).toEqual([
+    'GET /sessions/remote-session-1',
+    'PATCH /hub/nodes/node-a/sessions/remote-session-1',
+  ]);
+  expect(captured[1]).toMatchObject({
+    capabilities: 'session:read,session:control:rename',
+    body: { displayName: 'wanted name' },
+  });
+});
