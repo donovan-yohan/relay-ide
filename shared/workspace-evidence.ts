@@ -8,6 +8,7 @@ export const WORKSPACE_EVIDENCE_DEFAULT_LIST_ENTRIES = 100;
 export const WORKSPACE_EVIDENCE_MAX_PREVIEW_BYTES = 64 * 1024;
 export const WORKSPACE_EVIDENCE_DEFAULT_PREVIEW_BYTES = 32 * 1024;
 export const WORKSPACE_EVIDENCE_HASH_BYTE_LIMIT = 1024 * 1024;
+export const WORKSPACE_EVIDENCE_LIST_HASH_TOTAL_BYTE_LIMIT = 4 * 1024 * 1024;
 
 export type WorkspaceEvidenceRootKind = 'workspace' | 'project' | 'bench' | 'repo' | 'worktree' | 'directory';
 export type WorkspaceEvidenceBackingKind = 'directory' | 'repo' | 'worktree' | 'artifact-only';

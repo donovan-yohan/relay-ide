@@ -5,6 +5,7 @@ import {
   createSession,
   fetchConfirmationRequesterToken,
   fetchNodeFsList,
+  fetchWorkspaceEvidenceList,
   HttpError,
   killSession,
   type ConfirmationChallenge,
@@ -468,5 +469,40 @@ describe('frontend api errors', () => {
       '/hub/nodes/nodeB/sessions/s1/files/list',
       expect.objectContaining({ method: 'POST' })
     );
+  });
+
+  it('preserves workspace evidence typed error state and reason on helper failures', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              operation: 'list',
+              error: {
+                state: 'offline',
+                reason: 'WORKSPACE_EVIDENCE_NODE_OFFLINE',
+                message: 'workspace evidence node is offline',
+                nodeId: 'node_remote',
+              },
+            }),
+            { status: 503, headers: { 'Content-Type': 'application/json' } }
+          )
+      )
+    );
+
+    await expect(
+      fetchWorkspaceEvidenceList({
+        rootRef: { id: 'wer:node_remote:%2Fhome%2Frelay', nodeId: 'node_remote', kind: 'directory' },
+      })
+    ).rejects.toMatchObject({
+      name: 'HttpError',
+      status: 503,
+      code: 'WORKSPACE_EVIDENCE_NODE_OFFLINE',
+      details: { state: 'offline', reason: 'WORKSPACE_EVIDENCE_NODE_OFFLINE', nodeId: 'node_remote' },
+      workspaceEvidence: {
+        error: { state: 'offline', reason: 'WORKSPACE_EVIDENCE_NODE_OFFLINE' },
+      },
+    });
   });
 });

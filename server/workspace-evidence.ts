@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { TextDecoder } from 'node:util';
 import { constants as fsConstants, type Stats } from 'node:fs';
 import type { RequestHandler, Response } from 'express';
 import express from 'express';
@@ -18,6 +19,7 @@ import {
   WORKSPACE_EVIDENCE_DEFAULT_LIST_ENTRIES,
   WORKSPACE_EVIDENCE_DEFAULT_PREVIEW_BYTES,
   WORKSPACE_EVIDENCE_HASH_BYTE_LIMIT,
+  WORKSPACE_EVIDENCE_LIST_HASH_TOTAL_BYTE_LIMIT,
   WORKSPACE_EVIDENCE_MAX_LIST_ENTRIES,
   WORKSPACE_EVIDENCE_MAX_PREVIEW_BYTES,
   createWorkspaceEvidenceRootId,
@@ -216,6 +218,67 @@ async function buildLocalRoot(rootPath: string, workspaceId?: string): Promise<W
   return root;
 }
 
+function unavailableCapabilities(reason: WorkspaceEvidenceUnavailableReason): WorkspaceEvidenceRoot['capabilities'] {
+  return { list: false, stat: false, read: false, preview: false, write: false, reason };
+}
+
+function remoteRootRef(node: HubNodeSummary, rootPath: string): WorkspaceEvidenceRootRef {
+  return {
+    id: createWorkspaceEvidenceRootId(node.nodeId, rootPath),
+    nodeId: node.nodeId,
+    kind: 'directory',
+  };
+}
+
+function buildRemoteNodeRoot(node: HubNodeSummary, nodeLinks?: WorkspaceEvidenceNodeLinks): WorkspaceEvidenceRoot | null {
+  if (node.nodeId === DEFAULT_LOCAL_NODE_ID) return null;
+  const rootPath = typeof node.homeDir === 'string' && node.homeDir.trim() ? node.homeDir : null;
+  const ref = remoteRootRef(node, rootPath ?? `node://${node.nodeId}/home`);
+  const base = {
+    ref,
+    name: `${node.displayName || node.hostname || node.nodeId} home`,
+    path: rootPath,
+    nodeId: node.nodeId,
+    kind: 'directory' as const,
+    backing: 'directory' as const,
+  };
+  if (!rootPath) {
+    const reason = 'WORKSPACE_EVIDENCE_ROOT_UNAVAILABLE' as const;
+    return {
+      ...base,
+      status: 'unavailable',
+      capabilities: unavailableCapabilities(reason),
+      unavailableReason: reason,
+      message: 'workspace evidence node did not publish a filesystem root',
+    };
+  }
+  if (node.fileRpcAvailable === false) {
+    const reason = 'WORKSPACE_EVIDENCE_UNSUPPORTED' as const;
+    return {
+      ...base,
+      status: 'unsupported',
+      capabilities: unavailableCapabilities(reason),
+      unavailableReason: reason,
+      message: 'workspace evidence file RPC is unavailable on this node',
+    };
+  }
+  if (node.status !== 'online' || node.protocolVersion !== RELAY_NODE_LINK_PROTOCOL_VERSION || !nodeLinks?.hasActiveNode(node.nodeId)) {
+    const reason = 'WORKSPACE_EVIDENCE_NODE_OFFLINE' as const;
+    return {
+      ...base,
+      status: 'offline',
+      capabilities: unavailableCapabilities(reason),
+      unavailableReason: reason,
+      message: 'workspace evidence node is offline or has no active file RPC link',
+    };
+  }
+  return {
+    ...base,
+    status: 'available',
+    capabilities: { list: true, stat: true, read: true, preview: true, write: false },
+  };
+}
+
 export async function listConfiguredWorkspaceEvidenceRoots(config: Config): Promise<WorkspaceEvidenceRoot[]> {
   const seen = new Set<string>();
   const paths: Array<{ path: string; workspaceId?: string }> = [];
@@ -358,8 +421,7 @@ function findRootByRef(roots: WorkspaceEvidenceRoot[], rootRef: unknown): Worksp
       (root) =>
         root.ref.id === rootRef.id &&
         root.ref.nodeId === rootRef.nodeId &&
-        root.ref.kind === rootRef.kind &&
-        root.path !== null
+        root.ref.kind === rootRef.kind
     ) ?? null
   );
 }
@@ -409,18 +471,28 @@ async function localHashIfSmall(targetPath: string, stats: Stats): Promise<strin
 
 async function addLocalHashes(root: WorkspaceEvidenceRoot, entries: WorkspaceEvidenceEntry[], api: PathApi): Promise<WorkspaceEvidenceEntry[]> {
   if (root.nodeId !== DEFAULT_LOCAL_NODE_ID || !root.path) return entries;
-  return Promise.all(
-    entries.map(async (entry) => {
-      if (entry.type !== 'file' || entry.size > WORKSPACE_EVIDENCE_HASH_BYTE_LIMIT) return entry;
-      const target = api.resolve(root.path ?? '', entry.path);
-      try {
-        const contentHash = await localHashIfSmall(target, await fs.stat(target));
-        return contentHash ? { ...entry, contentHash } : entry;
-      } catch {
-        return entry;
+  const hashed: WorkspaceEvidenceEntry[] = [];
+  let hashBytesBudget = WORKSPACE_EVIDENCE_LIST_HASH_TOTAL_BYTE_LIMIT;
+  for (const entry of entries) {
+    if (entry.type !== 'file' || entry.size > WORKSPACE_EVIDENCE_HASH_BYTE_LIMIT || entry.size > hashBytesBudget) {
+      hashed.push(entry);
+      continue;
+    }
+    const target = api.resolve(root.path, entry.path);
+    try {
+      const stats = await fs.stat(target);
+      const contentHash = await localHashIfSmall(target, stats);
+      if (contentHash) {
+        hashBytesBudget -= stats.size;
+        hashed.push({ ...entry, contentHash });
+        continue;
       }
-    })
-  );
+    } catch {
+      // Best-effort list hashes must never make directory listing fail.
+    }
+    hashed.push(entry);
+  }
+  return hashed;
 }
 
 function previewKindForPath(filePath: string, api: PathApi): WorkspaceEvidencePreviewKind {
@@ -463,6 +535,20 @@ function binaryLike(content: string): boolean {
   return content.includes('\0');
 }
 
+function decodeReadContent(read: FileRpcReadResponse): { ok: true; content: string; bytes: Buffer } | { ok: false } {
+  if (read.encoding === 'base64') {
+    const bytes = Buffer.from(read.content, 'base64');
+    if (bytes.includes(0)) return { ok: false };
+    try {
+      return { ok: true, content: new TextDecoder('utf-8', { fatal: true }).decode(bytes), bytes };
+    } catch {
+      return { ok: false };
+    }
+  }
+  if (binaryLike(read.content)) return { ok: false };
+  return { ok: true, content: read.content, bytes: Buffer.from(read.content, 'utf8') };
+}
+
 async function dispatchFileRpc(
   root: WorkspaceEvidenceRoot,
   operation: 'list' | 'stat' | 'read',
@@ -472,6 +558,7 @@ async function dispatchFileRpc(
     nodeLinks?: WorkspaceEvidenceNodeLinks;
     maxEntries?: number;
     maxBytes?: number;
+    encoding?: 'utf8' | 'base64';
   } = {}
 ): Promise<FileRpcResponse | RelayNodeError> {
   if (!root.path) {
@@ -490,6 +577,7 @@ async function dispatchFileRpc(
   };
   if (operation === 'list') payload.maxEntries = options.maxEntries ?? WORKSPACE_EVIDENCE_DEFAULT_LIST_ENTRIES;
   if (operation === 'read') payload.maxBytes = options.maxBytes ?? WORKSPACE_EVIDENCE_DEFAULT_PREVIEW_BYTES;
+  if (operation === 'read' && options.encoding) payload.encoding = options.encoding;
   if (root.nodeId === DEFAULT_LOCAL_NODE_ID) return await executeLocalFileRpc(operation, payload);
   if (!options.nodeLinks) {
     return {
@@ -586,12 +674,13 @@ async function resolveOperationRoot(
 
 function dispatchOptions(
   nodeLinks?: WorkspaceEvidenceNodeLinks,
-  limits: { maxEntries?: number; maxBytes?: number } = {}
-): { nodeLinks?: WorkspaceEvidenceNodeLinks; maxEntries?: number; maxBytes?: number } {
+  limits: { maxEntries?: number; maxBytes?: number; encoding?: 'utf8' | 'base64' } = {}
+): { nodeLinks?: WorkspaceEvidenceNodeLinks; maxEntries?: number; maxBytes?: number; encoding?: 'utf8' | 'base64' } {
   return {
     ...(nodeLinks ? { nodeLinks } : {}),
     ...(limits.maxEntries !== undefined ? { maxEntries: limits.maxEntries } : {}),
     ...(limits.maxBytes !== undefined ? { maxBytes: limits.maxBytes } : {}),
+    ...(limits.encoding !== undefined ? { encoding: limits.encoding } : {}),
   };
 }
 
@@ -695,22 +784,23 @@ async function handleRead(
     return errorResponse('read', 'WORKSPACE_EVIDENCE_NOT_FILE', 'workspace evidence read target is not a file', 'unsupported', root.ref, root.nodeId);
   }
 
-  const readResponse = await dispatchFileRpc(root, 'read', target.path, dispatchOptions(nodeLinks, { maxBytes }));
+  const readResponse = await dispatchFileRpc(root, 'read', target.path, dispatchOptions(nodeLinks, { maxBytes, encoding: 'base64' }));
   if (isRelayNodeError(readResponse)) {
     return errorResponse('read', relayErrorReason(readResponse), readResponse.message, relayState(readResponse), root.ref, root.nodeId);
   }
   const read = readResponse as FileRpcReadResponse;
-  if (binaryLike(read.content)) {
+  const decoded = decodeReadContent(read);
+  if (decoded.ok === false) {
     return errorResponse('read', 'WORKSPACE_EVIDENCE_BINARY_UNSUPPORTED', 'workspace evidence read target is binary', 'unsupported', root.ref, root.nodeId);
   }
-  const contentHash = sha256Hex(read.content);
+  const contentHash = sha256Hex(decoded.bytes);
   return {
     operation: 'read',
     root,
     path: entry.path,
     entry: { ...entry, contentHash },
     encoding: 'utf8',
-    content: read.content,
+    content: decoded.content,
     bytesRead: read.bytesRead,
     maxBytes: read.maxBytes,
     truncated: read.truncatedBytes || read.truncatedLines,
@@ -797,12 +887,13 @@ async function handlePreview(
     };
   }
 
-  const readResponse = await dispatchFileRpc(root, 'read', target.path, dispatchOptions(nodeLinks, { maxBytes }));
+  const readResponse = await dispatchFileRpc(root, 'read', target.path, dispatchOptions(nodeLinks, { maxBytes, encoding: 'base64' }));
   if (isRelayNodeError(readResponse)) {
     return errorResponse('preview', relayErrorReason(readResponse), readResponse.message, relayState(readResponse), root.ref, root.nodeId);
   }
   const read = readResponse as FileRpcReadResponse;
-  if (binaryLike(read.content)) {
+  const decoded = decodeReadContent(read);
+  if (decoded.ok === false) {
     return {
       operation: 'preview',
       root,
@@ -811,7 +902,7 @@ async function handlePreview(
       preview: unavailablePreview('binary', 'WORKSPACE_EVIDENCE_BINARY_UNSUPPORTED', maxBytes, 'binary'),
     };
   }
-  const contentHash = sha256Hex(read.content);
+  const contentHash = sha256Hex(decoded.bytes);
   return {
     operation: 'preview',
     root,
@@ -821,7 +912,7 @@ async function handlePreview(
       state: 'available',
       kind,
       encoding: 'utf8',
-      content: read.content,
+      content: decoded.content,
       bytesRead: read.bytesRead,
       maxBytes: read.maxBytes,
       truncated: read.truncatedBytes || read.truncatedLines,
@@ -833,9 +924,15 @@ async function handlePreview(
 
 async function rootsForOptions(options: WorkspaceEvidenceRouterOptions): Promise<WorkspaceEvidenceRoot[]> {
   const configured = options.getConfig ? await listConfiguredWorkspaceEvidenceRoots(options.getConfig()) : [];
+  const remote = options.registry
+    ? options.registry.listNodes().flatMap((node) => {
+        const root = buildRemoteNodeRoot(node, options.nodeLinks);
+        return root ? [root] : [];
+      })
+    : [];
   const additional = options.getRoots ? await options.getRoots() : [];
   const byId = new Map<string, WorkspaceEvidenceRoot>();
-  for (const root of [...configured, ...additional]) byId.set(root.ref.id, root);
+  for (const root of [...configured, ...remote, ...additional]) byId.set(root.ref.id, root);
   return Array.from(byId.values());
 }
 

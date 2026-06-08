@@ -12,6 +12,7 @@ import {
 import type { Config } from '../server/types.js';
 import {
   createWorkspaceEvidenceRootId,
+  WORKSPACE_EVIDENCE_LIST_HASH_TOTAL_BYTE_LIMIT,
   type WorkspaceEvidenceRoot,
   type WorkspaceEvidenceRootRef,
 } from '../shared/workspace-evidence.js';
@@ -142,6 +143,52 @@ describe('workspace evidence router', () => {
     expect(res.body.roots.find((root) => root.path === plain)?.nodeId).toBe(DEFAULT_LOCAL_NODE_ID);
   });
 
+  it('exposes production remote node home roots with offline/online route state', async () => {
+    const node = { ...onlineNode('node_prod'), homeDir: '/home/relay' };
+    const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const registry: WorkspaceEvidenceNodeRegistry = { listNodes: () => [node] };
+    const nodeLinks: WorkspaceEvidenceNodeLinks = {
+      hasActiveNode: () => true,
+      request: async (_nodeId, type, payload) => {
+        calls.push({ type, payload: payload as Record<string, unknown> });
+        return {
+          operation: 'list',
+          root: '/home/relay',
+          cwd: '/home/relay',
+          path: '/home/relay/project',
+          entries: [],
+          truncated: false,
+          maxEntries: 100,
+        };
+      },
+    };
+
+    const { port } = await listen(createWorkspaceEvidenceRouter({ registry, nodeLinks }));
+    const roots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
+    const remote = roots.body.roots.find((root) => root.nodeId === 'node_prod');
+    expect(remote).toMatchObject({ status: 'available', path: '/home/relay', capabilities: { list: true, write: false } });
+
+    const list = await postJson<{ state: string }>(port, '/workspace-evidence/list', {
+      rootRef: remote?.ref,
+      path: 'project',
+    });
+    expect(list.status).toBe(200);
+    expect(calls[0].payload).toMatchObject({ root: '/home/relay', cwd: '/home/relay', path: '/home/relay/project' });
+
+    const offlinePort = await listen(
+      createWorkspaceEvidenceRouter({
+        registry,
+        nodeLinks: { ...nodeLinks, hasActiveNode: () => false },
+      })
+    );
+    const offlineRoots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(offlinePort.port, '/workspace-evidence/roots');
+    expect(offlineRoots.body.roots.find((root) => root.nodeId === 'node_prod')).toMatchObject({
+      status: 'offline',
+      unavailableReason: 'WORKSPACE_EVIDENCE_NODE_OFFLINE',
+      capabilities: { list: false, reason: 'WORKSPACE_EVIDENCE_NODE_OFFLINE' },
+    });
+  });
+
   it('reads and previews local root files without allowing arbitrary path browsing', async () => {
     const root = tmpRoot();
     fs.writeFileSync(path.join(root, 'README.md'), '# hello\nworkspace evidence\n');
@@ -226,6 +273,50 @@ describe('workspace evidence router', () => {
     });
     expect(list.status).toBe(503);
     expect(list.body.error).toMatchObject({ state: 'unavailable', reason: 'WORKSPACE_EVIDENCE_ROOT_NOT_FOUND' });
+  });
+
+  it('bounds local list hashing instead of hashing every listed file concurrently', async () => {
+    const root = tmpRoot();
+    const fileCount = 8;
+    const fileSize = WORKSPACE_EVIDENCE_LIST_HASH_TOTAL_BYTE_LIMIT / 4;
+    for (let index = 0; index < fileCount; index += 1) {
+      fs.writeFileSync(path.join(root, `file-${index}.txt`), Buffer.alloc(fileSize, String(index)));
+    }
+
+    const { port } = await listen(createWorkspaceEvidenceRouter({ getConfig: () => asConfig([root]) }));
+    const roots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
+    const list = await postJson<{ entries: Array<{ path: string; contentHash?: string }> }>(port, '/workspace-evidence/list', {
+      rootRef: roots.body.roots[0].ref,
+      maxEntries: fileCount,
+    });
+
+    expect(list.status).toBe(200);
+    expect(list.body.entries.filter((entry) => entry.contentHash).length).toBe(4);
+    expect(list.body.entries.filter((entry) => !entry.contentHash).length).toBe(fileCount - 4);
+  });
+
+  it('treats invalid UTF-8 text-extension files as binary for preview/read', async () => {
+    const root = tmpRoot();
+    fs.writeFileSync(path.join(root, 'bad.txt'), Buffer.from([0xff, 0xfe, 0xfd]));
+    const { port } = await listen(createWorkspaceEvidenceRouter({ getConfig: () => asConfig([root]) }));
+    const roots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
+    const rootRef = roots.body.roots[0].ref;
+
+    const preview = await postJson<{ preview: { state: string; unsupportedReason: string } }>(port, '/workspace-evidence/preview', {
+      rootRef,
+      path: 'bad.txt',
+      maxBytes: 1024,
+    });
+    expect(preview.status).toBe(200);
+    expect(preview.body.preview).toMatchObject({ state: 'binary', unsupportedReason: 'WORKSPACE_EVIDENCE_BINARY_UNSUPPORTED' });
+
+    const read = await postJson<{ error: { state: string; reason: string } }>(port, '/workspace-evidence/read', {
+      rootRef,
+      path: 'bad.txt',
+      maxBytes: 1024,
+    });
+    expect(read.status).toBe(422);
+    expect(read.body.error).toMatchObject({ state: 'unsupported', reason: 'WORKSPACE_EVIDENCE_BINARY_UNSUPPORTED' });
   });
 
   it('surfaces remote offline state before routing file RPC', async () => {
