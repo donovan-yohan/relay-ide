@@ -260,6 +260,32 @@ describe('PipelineHandoffArtifact schema', () => {
     expect(publicResult.errors.join('\n')).not.toContain('pair_abcd1234');
   });
 
+  it('rejects and redacts Relay node credential and standalone secret token forms in public handoffs', () => {
+    const nodeCredential = 'node_devbox.secret_superSecret123';
+    const standaloneSecret = 'secret_anotherSecret456';
+    const artifact = baseArtifact([
+      {
+        ...implementationStage(),
+        summary: `paired node with ${nodeCredential} and fallback ${standaloneSecret}`,
+        downstreamFocus: [
+          `ensure public comments never expose ${nodeCredential}`,
+          `ensure public comments never expose ${standaloneSecret}`,
+        ],
+      },
+    ]);
+
+    const publicResult = validatePublicPipelineHandoffArtifact(artifact);
+    const publicMarkdown = renderPipelineHandoffMarkdown(artifact, { public: true });
+
+    expect(publicResult.valid).toBe(false);
+    expect(publicResult.errors.join('\n')).toContain('secret-looking text rejected');
+    expect(publicResult.errors.join('\n')).not.toContain(nodeCredential);
+    expect(publicResult.errors.join('\n')).not.toContain(standaloneSecret);
+    expect(publicMarkdown).not.toContain(nodeCredential);
+    expect(publicMarkdown).not.toContain(standaloneSecret);
+    expect(publicMarkdown).toContain('[redacted-secret]');
+  });
+
   it('requires exact sha256 artifact hashes and runtime ArtifactKind values', () => {
     const validHash = 'c'.repeat(64);
     const artifact = baseArtifact([

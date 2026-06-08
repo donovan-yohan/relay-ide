@@ -277,7 +277,7 @@ const FORBIDDEN_FIELD_NAMES = new Set<string>([
 ]);
 
 const SECRET_TEXT_RE =
-  /(?:bearer\s+[a-z0-9._~+/-]+=*|sk-[a-z0-9_-]{8,}|relay-(?:sac|ohg|grant|auth|pair)-v1[a-z0-9._-]*|pair_[a-z0-9_-]{8,})/gi;
+  /(?:bearer\s+[a-z0-9._~+/-]+=*|sk-[a-z0-9_-]{8,}|relay-(?:sac|ohg|grant|auth|pair)-v1[a-z0-9._-]*|pair_[a-z0-9_-]{8,}|node_[a-z0-9._~+/=-]+\.secret_[a-z0-9._~+/=-]+|secret_[a-z0-9._~+/=-]+)/gi;
 const ABSOLUTE_LOCAL_PATH_RE =
   /(?:^|[\s:=('"])(?:\/home\/[^\s)'"]+|\/Users\/[^\s)'"]+|\/tmp\/[^\s)'"]+)/g;
 const WINDOWS_ABSOLUTE_PATH_RE = /(?:^|[\s:=('"])[a-z]:[\\/][^\s)'"]+/gi;
