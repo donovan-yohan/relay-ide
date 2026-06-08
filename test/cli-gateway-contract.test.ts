@@ -309,6 +309,28 @@ describe('CLI gateway contract', () => {
       auditRedaction: { expectation: 'action-summary' },
       scopeKinds: ['repo', 'worktree'],
     });
+    expect(schemaAcceptsCommandInput('worktrees.create', {})).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('worktrees.create', { repoPath: '/tmp/repo' })
+    ).toBe(true);
+    expect(
+      schemaAcceptsCommandInput('worktrees.create', {
+        environment: { repoInstanceId: 'local:/tmp/repo' },
+      })
+    ).toBe(true);
+    expect(schemaAcceptsCommandInput('worktrees.status', {})).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('worktrees.status', {
+        environment: { benchId: 'local:/tmp/repo/.worktrees/one' },
+      })
+    ).toBe(true);
+    expect(schemaAcceptsCommandInput('worktrees.delete', {})).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('worktrees.delete', {
+        repoPath: '/tmp/repo',
+        worktreePath: '/tmp/repo/.worktrees/one',
+      })
+    ).toBe(true);
     expect(relayCommandDefinition('sessions.stream')).toMatchObject({
       sideEffect: 'stream',
       requiresConfirmation: false,

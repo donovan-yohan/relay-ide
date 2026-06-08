@@ -1629,7 +1629,8 @@ async function main(): Promise<void> {
       const directBody = isRecord(body) ? body : {};
       if (Object.prototype.hasOwnProperty.call(directBody, 'useTmux')) {
         res.status(400).json({
-          error: 'legacy useTmux request flag is no longer supported; use terminalBackend',
+          error:
+            'legacy useTmux request flag is no longer supported; use terminalBackend',
         });
         return null;
       }
@@ -1763,7 +1764,11 @@ async function main(): Promise<void> {
     res.status(401).json(auth.cliGatewayOrBrowserAuthRequiredChallenge());
   };
 
-  const requireCliGatewayWriteAuth: express.RequestHandler = (req, res, next) => {
+  const requireCliGatewayWriteAuth: express.RequestHandler = (
+    req,
+    res,
+    next
+  ) => {
     if (isCliGatewayActorTokenRequest(req)) {
       res.status(403).json({
         error: 'Forbidden',
@@ -3305,6 +3310,16 @@ async function main(): Promise<void> {
 
   // GET /worktrees/status — pre-cleanup checks for a worktree
   app.get('/worktrees/status', requireCliGatewayAuth, async (req, res) => {
+    if (isCliGatewayActorTokenRequest(req)) {
+      res.status(403).json({
+        error: 'Forbidden',
+        code: 'CLI_GATEWAY_ACTOR_WORKTREE_STATUS_UNSUPPORTED',
+        message:
+          'CLI actor credentials cannot read arbitrary worktree status until repo/worktree-scoped actor tokens are supported.',
+      });
+      return;
+    }
+
     const worktreePath =
       typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!worktreePath) {
@@ -4060,7 +4075,10 @@ async function main(): Promise<void> {
 
   // DELETE /sessions/:id
   app.delete('/sessions/:id', requireAuth, (req, res) => {
-    const decision = capabilityDecisionFromRequest(req, CONTROL_KILL_CAPABILITY);
+    const decision = capabilityDecisionFromRequest(
+      req,
+      CONTROL_KILL_CAPABILITY
+    );
     if (decision.decision !== 'allow') {
       const error = capabilityError(decision);
       res.status(sessionControlErrorStatus(error)).json({ error });

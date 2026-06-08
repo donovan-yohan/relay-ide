@@ -751,23 +751,28 @@ const lifecycleEnvironmentSchema: RelayJsonSchema = {
   properties: {
     nodeId: {
       type: 'string',
-      description: 'Target Relay node id. v1 local lifecycle writes are supported only for the local node; remote nodes fail closed as UNSUPPORTED/NODE_OFFLINE until routed node worktree mutation support exists.',
+      description:
+        'Target Relay node id. v1 local lifecycle writes are supported only for the local node; remote nodes fail closed as UNSUPPORTED/NODE_OFFLINE until routed node worktree mutation support exists.',
     },
     repoIdentity: {
       type: ['string', 'null'],
-      description: 'Canonical normalized repo identity for audit/discovery. Path resolution prefers repoInstanceId over this identity in v1 local commands.',
+      description:
+        'Canonical normalized repo identity for audit/discovery. Path resolution prefers repoInstanceId over this identity in v1 local commands.',
     },
     repoInstanceId: {
       type: 'string',
-      description: 'Scoped RepoInstanceId, usually createRepoInstanceId(nodeId, localPath). Used instead of browser active repo state.',
+      description:
+        'Scoped RepoInstanceId, usually createRepoInstanceId(nodeId, localPath). Used instead of browser active repo state.',
     },
     benchId: {
       type: 'string',
-      description: 'Scoped WorktreeInstanceId, usually createWorktreeInstanceId(nodeId, localPath). Used for worktree status/delete/archive compatibility with path input.',
+      description:
+        'Scoped WorktreeInstanceId, usually createWorktreeInstanceId(nodeId, localPath). Used for worktree status/delete/archive compatibility with path input.',
     },
     cwd: {
       type: 'string',
-      description: 'Absolute cwd on the target node. Accepted for status/preflight compatibility when benchId is unavailable.',
+      description:
+        'Absolute cwd on the target node. Accepted for status/preflight compatibility when benchId is unavailable.',
     },
   },
 };
@@ -807,14 +812,28 @@ const worktreeCreateInputSchema: RelayJsonSchema = {
     environment: lifecycleEnvironmentSchema,
     repoPath: {
       ...stringSchema,
-      description: 'Compatibility path for the local repo checkout. Prefer environment.repoInstanceId when available.',
+      description:
+        'Compatibility path for the local repo checkout. Prefer environment.repoInstanceId when available.',
     },
     branch: {
       ...stringSchema,
-      description: 'Existing branch to check out into a worktree. Omit to create the next Relay-generated branch/mountain worktree.',
+      description:
+        'Existing branch to check out into a worktree. Omit to create the next Relay-generated branch/mountain worktree.',
     },
     confirmationToken: stringSchema,
   },
+  anyOf: [
+    { required: ['repoPath'] },
+    {
+      required: ['environment'],
+      properties: {
+        environment: {
+          ...lifecycleEnvironmentSchema,
+          required: ['repoInstanceId'],
+        },
+      },
+    },
+  ],
 };
 
 const worktreeStatusInputSchema: RelayJsonSchema = {
@@ -825,9 +844,25 @@ const worktreeStatusInputSchema: RelayJsonSchema = {
     environment: lifecycleEnvironmentSchema,
     worktreePath: {
       ...stringSchema,
-      description: 'Compatibility local worktree path. Prefer environment.benchId when available.',
+      description:
+        'Compatibility local worktree path. Prefer environment.benchId when available.',
     },
   },
+  anyOf: [
+    { required: ['worktreePath'] },
+    {
+      required: ['environment'],
+      properties: {
+        environment: { ...lifecycleEnvironmentSchema, required: ['benchId'] },
+      },
+    },
+    {
+      required: ['environment'],
+      properties: {
+        environment: { ...lifecycleEnvironmentSchema, required: ['cwd'] },
+      },
+    },
+  ],
 };
 
 const worktreeDeleteInputSchema: RelayJsonSchema = {
@@ -838,15 +873,59 @@ const worktreeDeleteInputSchema: RelayJsonSchema = {
     environment: lifecycleEnvironmentSchema,
     repoPath: {
       ...stringSchema,
-      description: 'Compatibility local repo checkout path. Prefer environment.repoInstanceId when available.',
+      description:
+        'Compatibility local repo checkout path. Prefer environment.repoInstanceId when available.',
     },
     worktreePath: {
       ...stringSchema,
-      description: 'Compatibility local worktree path. Prefer environment.benchId when available.',
+      description:
+        'Compatibility local worktree path. Prefer environment.benchId when available.',
     },
     force: booleanSchema,
     confirmationToken: stringSchema,
   },
+  anyOf: [
+    { required: ['repoPath', 'worktreePath'] },
+    {
+      required: ['repoPath', 'environment'],
+      properties: {
+        environment: { ...lifecycleEnvironmentSchema, required: ['benchId'] },
+      },
+    },
+    {
+      required: ['repoPath', 'environment'],
+      properties: {
+        environment: { ...lifecycleEnvironmentSchema, required: ['cwd'] },
+      },
+    },
+    {
+      required: ['worktreePath', 'environment'],
+      properties: {
+        environment: {
+          ...lifecycleEnvironmentSchema,
+          required: ['repoInstanceId'],
+        },
+      },
+    },
+    {
+      required: ['environment'],
+      properties: {
+        environment: {
+          ...lifecycleEnvironmentSchema,
+          required: ['repoInstanceId', 'benchId'],
+        },
+      },
+    },
+    {
+      required: ['environment'],
+      properties: {
+        environment: {
+          ...lifecycleEnvironmentSchema,
+          required: ['repoInstanceId', 'cwd'],
+        },
+      },
+    },
+  ],
 };
 
 const repoDescriptorSchema: RelayJsonSchema = {
@@ -1993,7 +2072,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'repos.add',
-    cli: ['relay-ide', 'v1', 'repos', 'add', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'repos',
+      'add',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Add a local repo/workspace path to Relay without relying on browser active repo state.',
     stable: true,
@@ -2013,7 +2100,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'workspaces.launch',
-    cli: ['relay-ide', 'v1', 'workspaces', 'launch', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'workspaces',
+      'launch',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Launch an agent session for a configured workspace group using its typed workspace id.',
     stable: true,
@@ -2034,7 +2129,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'worktrees.create',
-    cli: ['relay-ide', 'v1', 'worktrees', 'create', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'worktrees',
+      'create',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Create or reuse a local git worktree for a repo instance; remote node writes fail closed until node capability support exists.',
     stable: true,
@@ -2057,7 +2160,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'worktrees.status',
-    cli: ['relay-ide', 'v1', 'worktrees', 'status', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'worktrees',
+      'status',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Preflight a worktree before cleanup, returning active session ids and dirty-worktree state.',
     stable: true,
@@ -2080,13 +2191,26 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'worktrees.delete',
-    cli: ['relay-ide', 'v1', 'worktrees', 'delete', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'worktrees',
+      'delete',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Delete a local git worktree and its branch after fail-closed dirty/session/main-worktree checks.',
     stable: true,
     transport: 'hub-http-or-node-rpc',
     requiresAuth: true,
-    capabilityHints: ['session:read', 'session:control:kill', 'rpc:git:read', 'rpc:git:write'],
+    capabilityHints: [
+      'session:read',
+      'session:control:kill',
+      'rpc:git:read',
+      'rpc:git:write',
+    ],
     inputSchema: worktreeDeleteInputSchema,
     outputSchema: okOutput('WorktreesDeleteOutput', worktreeDeleteOutputSchema),
     errorCodes: [
@@ -2105,15 +2229,31 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'worktrees.archive',
-    cli: ['relay-ide', 'v1', 'worktrees', 'archive', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'worktrees',
+      'archive',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Archive/remove a local git worktree while preserving its branch, with the same fail-closed preflight checks as delete.',
     stable: true,
     transport: 'hub-http-or-node-rpc',
     requiresAuth: true,
-    capabilityHints: ['session:read', 'session:control:kill', 'rpc:git:read', 'rpc:git:write'],
+    capabilityHints: [
+      'session:read',
+      'session:control:kill',
+      'rpc:git:read',
+      'rpc:git:write',
+    ],
     inputSchema: worktreeDeleteInputSchema,
-    outputSchema: okOutput('WorktreesArchiveOutput', worktreeDeleteOutputSchema),
+    outputSchema: okOutput(
+      'WorktreesArchiveOutput',
+      worktreeDeleteOutputSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',

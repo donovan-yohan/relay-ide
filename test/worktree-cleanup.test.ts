@@ -33,7 +33,9 @@ function makeRepoWithWorktree(branchName: string): {
   worktreePath: string;
   branchName: string;
 } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-worktree-cleanup-'));
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-worktree-cleanup-')
+  );
   tempRoots.push(root);
   const repoPath = path.join(root, 'repo');
   const worktreePath = path.join(root, 'wt');
@@ -229,7 +231,9 @@ describe('worktree cleanup route helpers', () => {
       forgedProof
     );
 
-    expect(removeError).toBe('Cannot remove worktree — git worktree list failed');
+    expect(removeError).toBe(
+      'Cannot remove worktree — git worktree list failed'
+    );
     expect(fs.existsSync(repoPath)).toBe(true);
     expect(fs.existsSync(path.join(repoPath, 'README.md'))).toBe(true);
   });
@@ -247,7 +251,7 @@ describe('worktree cleanup route helpers', () => {
     expect(lifecycleEnvironmentHelper).toContain(
       'commandName: RelayCliGatewayCommand'
     );
-    expect(lifecycleEnvironmentHelper).toContain('gatewayInvalid(\n      commandName,');
+    expect(lifecycleEnvironmentHelper).toContain('gatewayInvalid(commandName,');
     expect(lifecycleEnvironmentHelper).not.toContain("'worktrees.status'");
     expect(cliSource).toContain(
       'const environment = gatewayLifecycleEnvironment(commandName, input);'

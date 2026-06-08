@@ -1312,15 +1312,14 @@ function gatewayLifecycleEnvironment(
   const environment = input['environment'];
   if (environment === undefined) return undefined;
   if (!isGatewayRecord(environment)) {
-    gatewayInvalid(
-      commandName,
-      'environment must be an object when provided'
-    );
+    gatewayInvalid(commandName, 'environment must be an object when provided');
   }
   return environment;
 }
 
-function gatewayLifecycleNodeId(input: GatewayLifecycleInput): string | undefined {
+function gatewayLifecycleNodeId(
+  input: GatewayLifecycleInput
+): string | undefined {
   const environment = input.environment;
   const explicitNodeId = environment?.['nodeId'];
   if (typeof explicitNodeId === 'string' && explicitNodeId.trim()) {
@@ -1372,9 +1371,13 @@ function lifecycleRepoPath(
       return path.resolve(parsed.localPath);
     }
   }
-  gatewayInvalid(commandName, 'repoPath or local environment.repoInstanceId is required', {
-    required: ['repoPath', 'environment.repoInstanceId'],
-  });
+  gatewayInvalid(
+    commandName,
+    'repoPath or local environment.repoInstanceId is required',
+    {
+      required: ['repoPath', 'environment.repoInstanceId'],
+    }
+  );
 }
 
 function lifecycleWorktreePath(
@@ -1398,9 +1401,13 @@ function lifecycleWorktreePath(
   if (typeof cwd === 'string' && cwd.trim()) {
     return path.resolve(cwd);
   }
-  gatewayInvalid(commandName, 'worktreePath, local environment.benchId, or environment.cwd is required', {
-    required: ['worktreePath', 'environment.benchId', 'environment.cwd'],
-  });
+  gatewayInvalid(
+    commandName,
+    'worktreePath, local environment.benchId, or environment.cwd is required',
+    {
+      required: ['worktreePath', 'environment.benchId', 'environment.cwd'],
+    }
+  );
 }
 
 function parseLifecycleInput(
@@ -1664,17 +1671,25 @@ async function runGatewayWorktreeCleanup(
   const repoPath = lifecycleRepoPath(commandName, input);
   const worktreePath = lifecycleWorktreePath(commandName, input);
   const force = input['force'] === true;
-  const confirmationToken = input['confirmationToken'];
-  const hasConfirmation =
-    typeof confirmationToken === 'string' && confirmationToken.trim().length > 0;
+  const confirmationToken =
+    typeof input['confirmationToken'] === 'string'
+      ? input['confirmationToken'].trim()
+      : '';
+  const hasConfirmation = confirmationToken.length > 0;
   const statusInput: GatewayLifecycleInput = { worktreePath };
   if (input.environment) statusInput.environment = input.environment;
   const status = await runGatewayWorktreeStatus(commandName, statusInput);
   const activeSessions = Array.isArray(status['activeSessions'])
-    ? status['activeSessions'].filter((id): id is string => typeof id === 'string')
+    ? status['activeSessions'].filter(
+        (id): id is string => typeof id === 'string'
+      )
     : [];
   const hasUncommittedChanges = status['hasUncommittedChanges'] === true;
-  if ((activeSessions.length > 0 || hasUncommittedChanges) && !force && !hasConfirmation) {
+  if (
+    (activeSessions.length > 0 || hasUncommittedChanges) &&
+    !force &&
+    !hasConfirmation
+  ) {
     printGatewayEnvelope(
       gatewayError(commandName, {
         code: 'CONFIRMATION_REQUIRED',
@@ -1700,7 +1715,13 @@ async function runGatewayWorktreeCleanup(
       force: force || hasConfirmation,
       deleteBranch,
     },
-    capabilities: ['session:read', 'session:control:kill', 'rpc:git:read', 'rpc:git:write'],
+    ...(hasConfirmation ? { confirmationToken } : {}),
+    capabilities: [
+      'session:read',
+      'session:control:kill',
+      'rpc:git:read',
+      'rpc:git:write',
+    ],
   });
   const data = isGatewayRecord(result) ? result : {};
   const branchDeleted = data['branchDeleted'] === true;
@@ -1751,7 +1772,10 @@ async function runGatewayWorktrees(gatewayArgs: string[]): Promise<never> {
     await runGatewayWorktreeCleanup('worktrees.delete', input);
   }
   if (subcommand === 'archive') {
-    const input = parseLifecycleInput('worktrees.archive', gatewayArgs.slice(2));
+    const input = parseLifecycleInput(
+      'worktrees.archive',
+      gatewayArgs.slice(2)
+    );
     await runGatewayWorktreeCleanup('worktrees.archive', input);
   }
   gatewayInvalid('worktrees.status', 'unknown worktrees command', {
