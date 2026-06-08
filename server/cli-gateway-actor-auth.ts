@@ -30,6 +30,10 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'sessions.list',
   'sessions.get',
   'work-contexts.get',
+  'work-context-artifacts.list',
+  'work-context-artifacts.show',
+  'work-context-artifacts.export',
+  'work-context-artifacts.doctor',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];

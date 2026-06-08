@@ -31,6 +31,11 @@ const now = '2026-06-08T12:00:00.000Z';
 const headSha = 'a'.repeat(40);
 const nextHeadSha = 'b'.repeat(40);
 const cleanup: Array<() => void> = [];
+type ArtifactReadCommand =
+  | 'work-context-artifacts.list'
+  | 'work-context-artifacts.show'
+  | 'work-context-artifacts.export'
+  | 'work-context-artifacts.doctor';
 
 function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoffArtifact {
   return {
@@ -144,6 +149,8 @@ async function serve(input: {
   root: string;
   maxPublishBytes?: number;
   maxExportBytes?: number;
+  requireReadAuth?: Parameters<typeof createWorkContextArtifactRouter>[0]['requireReadAuth'];
+  requireWriteAuth?: express.RequestHandler;
 }): Promise<{ baseUrl: string; server: http.Server }> {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
@@ -151,6 +158,8 @@ async function serve(input: {
     createWorkContextArtifactRouter({
       store: input.store,
       workContextStore: input.workContextStore,
+      ...(input.requireReadAuth ? { requireReadAuth: input.requireReadAuth } : {}),
+      ...(input.requireWriteAuth ? { requireWriteAuth: input.requireWriteAuth } : {}),
       diagnostics: {
         dbPath: path.join(input.root, 'work-context-artifacts.db'),
         payloadRoot: path.join(input.root, 'payloads'),
@@ -171,11 +180,138 @@ async function json(res: Response): Promise<Record<string, unknown>> {
   return (await res.json()) as Record<string, unknown>;
 }
 
+function actorHeaders(command: string, capabilities = 'context:read'): Record<string, string> {
+  return {
+    authorization: 'Bearer relay-sac-v1.test-credential.[REDACTED]',
+    'x-relay-cli-gateway': 'v1',
+    'x-relay-cli-actor-token': 'v1',
+    'x-relay-cli-command': command,
+    'x-relay-capabilities': capabilities,
+  };
+}
+
+function actorReadAuth(expectedCommand: ArtifactReadCommand): express.RequestHandler {
+  return (req, res, next) => {
+    if (req.header('x-relay-cli-actor-token') !== 'v1') {
+      next();
+      return;
+    }
+    if (
+      req.header('x-relay-cli-gateway') === 'v1' &&
+      req.header('x-relay-cli-command') === expectedCommand &&
+      (req.header('authorization') ?? '').startsWith('Bearer relay-sac-v1.')
+    ) {
+      next();
+      return;
+    }
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', expectedCommand } });
+  };
+}
+
+const actorWriteAuth: express.RequestHandler = (req, res, next) => {
+  if (req.header('x-relay-cli-actor-token') === 'v1') {
+    res.status(403).json({
+      error: 'Forbidden',
+      code: 'CLI_GATEWAY_ACTOR_WRITE_UNSUPPORTED',
+    });
+    return;
+  }
+  next();
+};
+
 afterEach(() => {
   for (const dispose of cleanup.splice(0).reverse()) dispose();
 });
 
 describe('WorkContext artifact router', () => {
+  it('accepts actor-token reads and rejects actor-token writes through route-specific auth', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-actor-token';
+    const workContextStore = fakeWorkContextStore(createWorkContext(workContextId));
+    const stored = store.storePipelineHandoffArtifact({
+      workContextId,
+      visibility: 'public',
+      artifact: artifact({ id: 'pipeline-handoff:router:actor-token' }),
+    });
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore,
+      requireReadAuth: {
+        list: actorReadAuth('work-context-artifacts.list'),
+        show: actorReadAuth('work-context-artifacts.show'),
+        export: actorReadAuth('work-context-artifacts.export'),
+        doctor: actorReadAuth('work-context-artifacts.doctor'),
+      },
+      requireWriteAuth: actorWriteAuth,
+    });
+
+    const list = await fetch(
+      `${baseUrl}/work-context-artifacts?workContextId=${encodeURIComponent(workContextId)}`,
+      { headers: actorHeaders('work-context-artifacts.list') }
+    );
+    expect(list.status).toBe(200);
+    expect((await json(list)).artifacts).toHaveLength(1);
+
+    const show = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(stored.metadata.id)}`,
+      { headers: actorHeaders('work-context-artifacts.show') }
+    );
+    expect(show.status).toBe(200);
+    expect(await json(show)).toMatchObject({ artifact: { metadata: { id: stored.metadata.id } } });
+
+    const exported = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(stored.metadata.id)}/export`,
+      { headers: actorHeaders('work-context-artifacts.export') }
+    );
+    expect(exported.status).toBe(200);
+    expect(await json(exported)).toMatchObject({
+      export: { mode: 'public-summary', rawPayloadAvailable: false },
+    });
+
+    const doctor = await fetch(`${baseUrl}/work-context-artifacts/doctor`, {
+      headers: actorHeaders('work-context-artifacts.doctor'),
+    });
+    expect(doctor.status).toBe(200);
+
+    const publish = await fetch(`${baseUrl}/work-context-artifacts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...actorHeaders('work-context-artifacts.publish', 'context:write,context:read'),
+      },
+      body: JSON.stringify({ workContextId, artifact: artifact({ id: 'pipeline-handoff:router:denied' }) }),
+    });
+    expect(publish.status).toBe(403);
+    expect(await json(publish)).toMatchObject({ code: 'CLI_GATEWAY_ACTOR_WRITE_UNSUPPORTED' });
+
+    const pin = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(stored.metadata.id)}/pin`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...actorHeaders('work-context-artifacts.pin', 'context:write,context:read'),
+        },
+        body: JSON.stringify({ workContextId }),
+      }
+    );
+    expect(pin.status).toBe(403);
+
+    const unpin = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(stored.metadata.id)}/unpin`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...actorHeaders('work-context-artifacts.unpin', 'context:write,context:read'),
+        },
+        body: JSON.stringify({ workContextId }),
+      }
+    );
+    expect(unpin.status).toBe(403);
+  });
+
   it('publishes, lists, shows, pins, unpins, exports, and doctors artifacts', async () => {
     const { root, store } = tmpStore();
     const workContextId = 'wc:router';

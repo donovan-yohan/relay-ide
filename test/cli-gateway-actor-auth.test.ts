@@ -140,6 +140,10 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'sessions.list',
     'sessions.get',
     'work-contexts.get',
+    'work-context-artifacts.list',
+    'work-context-artifacts.show',
+    'work-context-artifacts.export',
+    'work-context-artifacts.doctor',
   ]);
   expect(
     classifyCliGatewayCredentialLane(
@@ -230,6 +234,10 @@ test('allows only the MVP actor command and route identity pairs', () => {
     { command: 'sessions.list', expected: 'sessions.list' },
     { command: 'sessions.get', expected: 'sessions.get' },
     { command: 'work-contexts.get', expected: 'work-contexts.get' },
+    { command: 'work-context-artifacts.list', expected: 'work-context-artifacts.list' },
+    { command: 'work-context-artifacts.show', expected: 'work-context-artifacts.show' },
+    { command: 'work-context-artifacts.export', expected: 'work-context-artifacts.export' },
+    { command: 'work-context-artifacts.doctor', expected: 'work-context-artifacts.doctor' },
   ] as const;
 
   for (const { command, expected } of allowed) {

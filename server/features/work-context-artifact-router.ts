@@ -40,6 +40,13 @@ export interface WorkContextArtifactRouterDeps {
   store: WorkContextArtifactStore | null;
   workContextStore?: WorkContextStore;
   requireAuth?: RequestHandler;
+  requireReadAuth?: {
+    list?: RequestHandler;
+    show?: RequestHandler;
+    export?: RequestHandler;
+    doctor?: RequestHandler;
+  };
+  requireWriteAuth?: RequestHandler;
   diagnostics?: {
     dbPath: string;
     payloadRoot: string;
@@ -503,12 +510,14 @@ export function createWorkContextArtifactRouter(
 ): Router {
   const router = Router();
   const auth = deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
+  const readAuth = deps.requireReadAuth ?? {};
+  const writeAuth = deps.requireWriteAuth ?? auth;
   const maxPublishBytes =
     deps.diagnostics?.maxPublishBytes ?? DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES;
   const maxExportBytes =
     deps.diagnostics?.maxExportBytes ?? DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES;
 
-  router.get('/work-context-artifacts/doctor', auth, (req, res) => {
+  router.get('/work-context-artifacts/doctor', readAuth.doctor ?? auth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const s = storeOr503(res, deps.store, 'doctor');
     if (!s) return;
@@ -526,7 +535,7 @@ export function createWorkContextArtifactRouter(
     }
   });
 
-  router.post('/work-context-artifacts', auth, (req, res) => {
+  router.post('/work-context-artifacts', writeAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const s = storeOr503(res, deps.store, 'publish');
     if (!s) return;
@@ -627,7 +636,7 @@ export function createWorkContextArtifactRouter(
     }
   });
 
-  router.get('/work-context-artifacts', auth, (req, res) => {
+  router.get('/work-context-artifacts', readAuth.list ?? auth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const s = storeOr503(res, deps.store, 'list');
     if (!s) return;
@@ -651,7 +660,7 @@ export function createWorkContextArtifactRouter(
     res.json({ artifacts: s.list(input).map((record) => recordEnvelope(record, current)) });
   });
 
-  router.get('/work-context-artifacts/:id', auth, (req, res) => {
+  router.get('/work-context-artifacts/:id', readAuth.show ?? auth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const s = storeOr503(res, deps.store, 'show');
     if (!s) return;
@@ -695,7 +704,7 @@ export function createWorkContextArtifactRouter(
     }
   });
 
-  router.get('/work-context-artifacts/:id/export', auth, (req, res) => {
+  router.get('/work-context-artifacts/:id/export', readAuth.export ?? auth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const s = storeOr503(res, deps.store, 'export');
     if (!s) return;
@@ -744,7 +753,7 @@ export function createWorkContextArtifactRouter(
     }
   });
 
-  router.post('/work-context-artifacts/:id/pin', auth, (req, res) => {
+  router.post('/work-context-artifacts/:id/pin', writeAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const s = storeOr503(res, deps.store, 'pin');
     if (!s) return;
@@ -780,7 +789,7 @@ export function createWorkContextArtifactRouter(
     });
   });
 
-  router.post('/work-context-artifacts/:id/unpin', auth, (req, res) => {
+  router.post('/work-context-artifacts/:id/unpin', writeAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const s = storeOr503(res, deps.store, 'unpin');
     if (!s) return;

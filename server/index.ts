@@ -2075,6 +2075,13 @@ async function main(): Promise<void> {
   app.use(
     createWorkContextArtifactRouter({
       requireAuth: requireCliGatewayAuth,
+      requireReadAuth: {
+        list: requireCliGatewayAuthForActorCommand('work-context-artifacts.list'),
+        show: requireCliGatewayAuthForActorCommand('work-context-artifacts.show'),
+        export: requireCliGatewayAuthForActorCommand('work-context-artifacts.export'),
+        doctor: requireCliGatewayAuthForActorCommand('work-context-artifacts.doctor'),
+      },
+      requireWriteAuth: requireCliGatewayWriteAuth,
       store: workContextArtifactStore,
       workContextStore,
       diagnostics: {

@@ -141,6 +141,10 @@ The first scoped actor credential slice supports only this read-only hub-backed 
 | `relay-ide v1 sessions list --json`               | `sessions.list`     | `session:read`      | Reads session descriptors and control summaries.                                                    |
 | `relay-ide v1 sessions get --id <id> --json`      | `sessions.get`      | `session:read`      | Validates the credential against the requested session/global session id when scoped that narrowly. |
 | `relay-ide v1 work-contexts get --id <id> --json` | `work-contexts.get` | `session:read`      | Validates work-context scope when the credential is scoped to a work context.                       |
+| `relay-ide v1 work-context-artifacts list --work-context-id <id> --json` | `work-context-artifacts.list` | `session:read` | Reads bounded artifact metadata; requires `context:read` capability hint. |
+| `relay-ide v1 work-context-artifacts show --id <id> --json` | `work-context-artifacts.show` | `session:read` | Reads one artifact envelope and validates stored payload integrity; requires `context:read`. |
+| `relay-ide v1 work-context-artifacts export --id <id> --json` | `work-context-artifacts.export` | `session:read` | Exports only the sanitized public-summary copy; requires `context:read`. |
+| `relay-ide v1 work-context-artifacts doctor --json` | `work-context-artifacts.doctor` | `session:read` | Reads bounded artifact store diagnostics; requires `context:read`. |
 
 Pass the credential with `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`; `--actor-token` wins when both are present. `--correlation-id` or `RELAY_IDE_CORRELATION_ID` may be supplied for audit correlation. The CLI sends actor credentials as bearer auth with `x-relay-cli-gateway: v1`, `x-relay-cli-actor-token: v1`, `x-relay-cli-command`, and capability hints in `x-relay-capabilities`.
 
@@ -151,6 +155,10 @@ relay-ide v1 nodes list --actor-token "$RELAY_IDE_ACTOR_TOKEN" --json
 RELAY_IDE_ACTOR_TOKEN="$token" relay-ide v1 sessions list --json
 relay-ide v1 sessions get --id <session-id-or-global-id> --actor-token "$token" --correlation-id cli-smoke-1 --json
 relay-ide v1 work-contexts get --id <work-context-id> --actor-token "$token" --json
+relay-ide v1 work-context-artifacts list --work-context-id <work-context-id> --actor-token "$token" --json
+relay-ide v1 work-context-artifacts show --id <artifact-id> --actor-token "$token" --json
+relay-ide v1 work-context-artifacts export --id <artifact-id> --actor-token "$token" --json
+relay-ide v1 work-context-artifacts doctor --actor-token "$token" --json
 ```
 
 Local discovery commands (`relay-ide v1 --list --json`, `relay-ide v1 schema --json`, and `relay-ide v1 nodes manifest --json`) remain unauthenticated. Browser-session bearer compatibility remains for legacy local/dev gateway invocations through `RELAY_IDE_BROWSER_TOKEN`; that path is separate from the actor-token lane and must not be described as a scoped actor credential. When an invocation presents `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`, the actor-token lane does not fall back to browser cookies/PIN state or node credentials. `--port` or `RELAY_IDE_PORT` selects the local hub port; otherwise Relay uses the default port.
