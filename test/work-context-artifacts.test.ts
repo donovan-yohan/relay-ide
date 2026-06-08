@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -30,6 +32,12 @@ function tmpStore(): { root: string; store: WorkContextArtifactStore } {
   });
   cleanup.push(() => store.close());
   return { root, store };
+}
+
+function tmpRoot(prefix = 'work-context-artifacts-'): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
 }
 
 afterEach(() => {
@@ -107,6 +115,106 @@ function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoff
     ],
     ...input,
   };
+}
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function createLegacyV1Store(input: {
+  root: string;
+  payload: PipelineHandoffArtifact;
+  primaryTaskRef: { kind: string; id: string };
+}): string {
+  const dbPath = path.join(input.root, 'index.db');
+  const payloadRoot = path.join(input.root, 'payloads');
+  fs.mkdirSync(payloadRoot, { recursive: true });
+  const payloadJson = JSON.stringify(input.payload, null, 2);
+  const payloadSha256 = sha256Hex(payloadJson);
+  const payloadPath = path.join(payloadRoot, `${payloadSha256}.json`);
+  fs.writeFileSync(payloadPath, payloadJson);
+
+  const db = new Database(dbPath);
+  db.exec(`
+    CREATE TABLE work_context_artifact_schema_version (version INTEGER NOT NULL);
+    INSERT INTO work_context_artifact_schema_version (version) VALUES (1);
+    CREATE TABLE work_context_artifacts (
+      id                    TEXT PRIMARY KEY,
+      work_context_id       TEXT NOT NULL,
+      project_id            TEXT,
+      task_ref_kind         TEXT NOT NULL,
+      task_ref_id           TEXT NOT NULL,
+      stage                 TEXT,
+      provenance_actor_id   TEXT,
+      kind                  TEXT NOT NULL,
+      title                 TEXT NOT NULL,
+      summary               TEXT NOT NULL,
+      visibility            TEXT NOT NULL,
+      created_at            TEXT NOT NULL,
+      updated_at            TEXT NOT NULL,
+      captured_at           TEXT NOT NULL,
+      payload_kind          TEXT NOT NULL,
+      payload_media_type    TEXT NOT NULL,
+      payload_path          TEXT NOT NULL,
+      payload_sha256        TEXT NOT NULL,
+      payload_bytes         INTEGER NOT NULL,
+      pr_number             INTEGER,
+      head_sha              TEXT,
+      base_name             TEXT,
+      branch_name           TEXT,
+      supersedes_artifact_id TEXT,
+      metadata_json         TEXT NOT NULL,
+      CHECK (visibility IN ('private', 'public'))
+    );
+  `);
+  db.prepare(`
+    INSERT INTO work_context_artifacts (
+      id, work_context_id, project_id, task_ref_kind, task_ref_id, stage,
+      provenance_actor_id, kind, title, summary, visibility, created_at,
+      updated_at, captured_at, payload_kind, payload_media_type, payload_path,
+      payload_sha256, payload_bytes, pr_number, head_sha, base_name,
+      branch_name, supersedes_artifact_id, metadata_json
+    ) VALUES (
+      @id, @workContextId, @projectId, @taskRefKind, @taskRefId, @stage,
+      @provenanceActorId, @kind, @title, @summary, @visibility, @createdAt,
+      @updatedAt, @capturedAt, @payloadKind, @payloadMediaType, @payloadPath,
+      @payloadSha256, @payloadBytes, @prNumber, @headSha, @baseName,
+      @branchName, @supersedesArtifactId, @metadataJson
+    )
+  `).run({
+    id: input.payload.id,
+    workContextId: 'wc:legacy-v1',
+    projectId: 'project:example-org/example-project',
+    taskRefKind: input.primaryTaskRef.kind,
+    taskRefId: input.primaryTaskRef.id,
+    stage: 'implementation',
+    provenanceActorId: 'agent:kani-backend',
+    kind: 'report',
+    title: input.payload.title,
+    summary: input.payload.scope.summary,
+    visibility: 'private',
+    createdAt: input.payload.createdAt,
+    updatedAt: input.payload.updatedAt,
+    capturedAt: input.payload.head.capturedAt,
+    payloadKind: 'pipeline-handoff-artifact',
+    payloadMediaType: 'application/json',
+    payloadPath,
+    payloadSha256,
+    payloadBytes: Buffer.byteLength(payloadJson, 'utf8'),
+    prNumber: input.payload.head.pr?.number ?? null,
+    headSha: input.payload.head.headSha,
+    baseName: input.payload.head.base.name,
+    branchName: input.payload.head.branch?.name ?? null,
+    supersedesArtifactId: null,
+    metadataJson: JSON.stringify({
+      taskRef: {
+        kind: input.primaryTaskRef.kind,
+        id: input.primaryTaskRef.id,
+      },
+    }),
+  });
+  db.close();
+  return dbPath;
 }
 
 describe('WorkContext artifact store/index', () => {
@@ -187,6 +295,51 @@ describe('WorkContext artifact store/index', () => {
     expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })).toHaveLength(1);
     expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })[0]?.metadata.id).toBe(
       stored.metadata.id
+    );
+  });
+
+  it('backfills v1 artifact rows from every valid payload task ref during migration', () => {
+    const root = tmpRoot('work-context-artifacts-v1-');
+    const legacyPayload = artifact({
+      id: 'pipeline-handoff:legacy-v1:aaaaaaaa',
+      scope: {
+        ...artifact().scope,
+        taskRefs: [
+          {
+            kind: 'github-issue',
+            id: '889',
+            url: 'https://github.com/example-org/example-project/issues/889',
+          },
+          {
+            kind: 'github-pr',
+            id: '893',
+            url: 'https://github.com/example-org/example-project/pull/893',
+          },
+        ],
+      },
+      head: {
+        ...artifact().head,
+        pr: {
+          number: 893,
+          url: 'https://github.com/example-org/example-project/pull/893',
+        },
+      },
+    });
+    const dbPath = createLegacyV1Store({
+      root,
+      payload: legacyPayload,
+      primaryTaskRef: { kind: 'github-issue', id: '889' },
+    });
+    const store = createWorkContextArtifactStore({
+      dbPath,
+      payloadRoot: path.join(root, 'payloads'),
+    });
+    cleanup.push(() => store.close());
+
+    expect(store.list({ taskRef: { kind: 'github-issue', id: '889' } })).toHaveLength(1);
+    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })).toHaveLength(1);
+    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })[0]?.metadata.id).toBe(
+      legacyPayload.id
     );
   });
 

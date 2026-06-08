@@ -17,6 +17,7 @@ import {
   ARTIFACT_KINDS,
   type ArtifactKind,
   type TaskRef,
+  type TaskRefKind,
   type WorkContextId,
 } from '../shared/work-context.js';
 
@@ -25,6 +26,14 @@ const DEFAULT_PAYLOAD_MEDIA_TYPE = 'application/json';
 const DEFAULT_VISIBILITY: WorkContextArtifactVisibility = 'private';
 const VISIBILITIES = new Set<string>(['private', 'public']);
 const STAGES = new Set<string>(PIPELINE_HANDOFF_STAGES);
+const TASK_REF_KINDS = new Set<string>([
+  'github-issue',
+  'github-pr',
+  'kanban-task',
+  'jira-ticket',
+  'linear-issue',
+  'external',
+]);
 const SECRET_TEXT_RE =
   /(?:bearer\s+[a-z0-9._~+/-]+=*|sk-[a-z0-9_-]{8,}|relay-(?:sac|ohg|grant|auth|pair)-v1[a-z0-9._-]*|pair_[a-z0-9_-]{8,}|node_[a-z0-9._~+/=-]+\.secret_[a-z0-9._~+/=-]+|secret_[a-z0-9._~+/=-]+)/gi;
 const ABSOLUTE_LOCAL_PATH_RE =
@@ -282,13 +291,6 @@ export function createWorkContextArtifactStore(input: {
       @branchName, @supersedesArtifactId, @metadataJson
     )
   `);
-  db.prepare(`
-    INSERT OR IGNORE INTO work_context_artifact_task_refs (
-      artifact_id, task_ref_kind, task_ref_id
-    )
-    SELECT id, task_ref_kind, task_ref_id
-    FROM work_context_artifacts
-  `).run();
   const insertTaskRef = db.prepare(`
     INSERT OR IGNORE INTO work_context_artifact_task_refs (
       artifact_id, task_ref_kind, task_ref_id, task_ref_title, task_ref_url, task_ref_status
@@ -296,6 +298,7 @@ export function createWorkContextArtifactStore(input: {
       @artifactId, @taskRefKind, @taskRefId, @taskRefTitle, @taskRefUrl, @taskRefStatus
     )
   `);
+  backfillArtifactTaskRefs(db, insertTaskRef);
   const selectById = db.prepare('SELECT * FROM work_context_artifacts WHERE id = ?');
 
   function mustNotAlreadyExist(id: string): void {
@@ -543,6 +546,45 @@ export function createWorkContextArtifactStore(input: {
   };
 }
 
+function backfillArtifactTaskRefs(
+  db: Database.Database,
+  insertTaskRef: Database.Statement
+): void {
+  const rows = db.prepare('SELECT * FROM work_context_artifacts').all() as WorkContextArtifactRow[];
+  db.transaction(() => {
+    for (const row of rows) {
+      const taskRefs = dedupeTaskRefs([legacyTaskRef(row), ...payloadTaskRefs(row)]);
+      for (const taskRef of taskRefs) {
+        if (!isValidTaskRef(taskRef)) continue;
+        insertTaskRef.run({
+          artifactId: row.id,
+          taskRefKind: taskRef.kind,
+          taskRefId: taskRef.id,
+          taskRefTitle: taskRef.title ?? null,
+          taskRefUrl: taskRef.url ?? null,
+          taskRefStatus: taskRef.status ?? null,
+        });
+      }
+    }
+  })();
+}
+
+function legacyTaskRef(row: WorkContextArtifactRow): TaskRef {
+  return { kind: row.task_ref_kind as TaskRefKind, id: row.task_ref_id };
+}
+
+function payloadTaskRefs(row: WorkContextArtifactRow): TaskRef[] {
+  try {
+    const raw = readFileSync(row.payload_path, 'utf8');
+    assertPayloadSha256(raw, row);
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isPipelineHandoffArtifact(parsed)) return [];
+    return parsed.scope.taskRefs.filter(isValidTaskRef);
+  } catch {
+    return [];
+  }
+}
+
 function rowToMetadata(row: WorkContextArtifactRow): WorkContextArtifactMetadata {
   const json = JSON.parse(row.metadata_json) as PersistedMetadataJson;
   return {
@@ -674,6 +716,15 @@ function assertValidArtifactKind(value: string): void {
 function assertValidTaskRef(value: TaskRef): void {
   assertNonEmptyString(value.kind, 'taskRef.kind');
   assertNonEmptyString(value.id, 'taskRef.id');
+}
+
+function isValidTaskRef(value: TaskRef): value is TaskRef & { kind: TaskRefKind } {
+  return (
+    typeof value.kind === 'string' &&
+    TASK_REF_KINDS.has(value.kind) &&
+    typeof value.id === 'string' &&
+    value.id.trim().length > 0
+  );
 }
 
 function sanitizePublicText(value: string): string {
