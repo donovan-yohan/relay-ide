@@ -18,6 +18,18 @@ import type {
   FileRpcWriteResponse,
 } from '../../../shared/file-rpc.js';
 import type {
+  WorkspaceEvidenceErrorResponse,
+  WorkspaceEvidenceListRequest,
+  WorkspaceEvidenceListResponse,
+  WorkspaceEvidencePreviewRequest,
+  WorkspaceEvidencePreviewResponse,
+  WorkspaceEvidenceReadRequest,
+  WorkspaceEvidenceReadResponse,
+  WorkspaceEvidenceRoot,
+  WorkspaceEvidenceStatRequest,
+  WorkspaceEvidenceStatResponse,
+} from '../../../shared/workspace-evidence.js';
+import type {
   SessionSummary,
   WorktreeInfo,
   Repo,
@@ -78,12 +90,14 @@ export class HttpError extends Error {
   code: string | undefined;
   retryable: boolean | undefined;
   details: Record<string, unknown> | undefined;
+  workspaceEvidence: WorkspaceEvidenceErrorResponse | undefined;
   constructor(
     status: number,
     message = httpErrorMessage(status),
     code?: string | undefined,
     retryable?: boolean | undefined,
-    details?: Record<string, unknown> | undefined
+    details?: Record<string, unknown> | undefined,
+    workspaceEvidence?: WorkspaceEvidenceErrorResponse | undefined
   ) {
     super(message);
     this.name = 'HttpError';
@@ -91,6 +105,7 @@ export class HttpError extends Error {
     this.code = code;
     this.retryable = retryable;
     this.details = details;
+    this.workspaceEvidence = workspaceEvidence;
   }
 }
 
@@ -139,7 +154,8 @@ export class ConfirmationRequiredError extends HttpError {
       error.message,
       error.code,
       error.retryable,
-      error.details
+      error.details,
+      error.workspaceEvidence
     );
     this.name = 'ConfirmationRequiredError';
     this.challenge = challenge;
@@ -375,6 +391,44 @@ async function parseErrorBody(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isWorkspaceEvidenceErrorResponse(
+  value: unknown
+): value is WorkspaceEvidenceErrorResponse {
+  if (!isRecord(value)) return false;
+  const error = value['error'];
+  return (
+    typeof value['operation'] === 'string' &&
+    isRecord(error) &&
+    typeof error['state'] === 'string' &&
+    typeof error['reason'] === 'string' &&
+    typeof error['message'] === 'string'
+  );
+}
+
+async function workspaceEvidenceErrorFromResponse(res: Response): Promise<HttpError> {
+  try {
+    const data = (await res.json()) as unknown;
+    if (isWorkspaceEvidenceErrorResponse(data)) {
+      return new HttpError(
+        res.status,
+        data.error.message,
+        data.error.reason,
+        undefined,
+        {
+          state: data.error.state,
+          reason: data.error.reason,
+          ...(data.error.rootRef ? { rootRef: data.error.rootRef } : {}),
+          ...(data.error.nodeId ? { nodeId: data.error.nodeId } : {}),
+        },
+        data
+      );
+    }
+  } catch {
+    // Fall through to a generic status-preserving error below.
+  }
+  return new HttpError(res.status, httpErrorMessage(res.status));
 }
 
 function isConfirmationChallenge(
@@ -1124,6 +1178,49 @@ export async function fetchNodeFsStat(
       body: JSON.stringify(body),
     })
   );
+}
+
+export type WorkspaceEvidenceApiError = WorkspaceEvidenceErrorResponse;
+
+const WORKSPACE_EVIDENCE_PATH = '/workspace-evidence';
+
+async function postWorkspaceEvidence<T>(operation: 'list' | 'stat' | 'read' | 'preview', body: unknown): Promise<T> {
+  const res = await fetch(`${WORKSPACE_EVIDENCE_PATH}/${operation}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await workspaceEvidenceErrorFromResponse(res);
+  return res.json() as Promise<T>;
+}
+
+export async function fetchWorkspaceEvidenceRoots(): Promise<WorkspaceEvidenceRoot[]> {
+  const data = await json<{ roots?: WorkspaceEvidenceRoot[] }>(await fetch(`${WORKSPACE_EVIDENCE_PATH}/roots`));
+  return Array.isArray(data.roots) ? data.roots : [];
+}
+
+export async function fetchWorkspaceEvidenceList(
+  request: WorkspaceEvidenceListRequest
+): Promise<WorkspaceEvidenceListResponse> {
+  return postWorkspaceEvidence<WorkspaceEvidenceListResponse>('list', request);
+}
+
+export async function fetchWorkspaceEvidenceStat(
+  request: WorkspaceEvidenceStatRequest
+): Promise<WorkspaceEvidenceStatResponse> {
+  return postWorkspaceEvidence<WorkspaceEvidenceStatResponse>('stat', request);
+}
+
+export async function fetchWorkspaceEvidenceRead(
+  request: WorkspaceEvidenceReadRequest
+): Promise<WorkspaceEvidenceReadResponse> {
+  return postWorkspaceEvidence<WorkspaceEvidenceReadResponse>('read', request);
+}
+
+export async function fetchWorkspaceEvidencePreview(
+  request: WorkspaceEvidencePreviewRequest
+): Promise<WorkspaceEvidencePreviewResponse> {
+  return postWorkspaceEvidence<WorkspaceEvidencePreviewResponse>('preview', request);
 }
 
 export interface NodeFsWriteArgs {

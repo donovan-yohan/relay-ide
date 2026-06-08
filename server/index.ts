@@ -149,6 +149,7 @@ import {
 import { createRepoInventoryFeature } from './features/repo-inventory.js';
 import { createRepoFeatureRouter } from './features/repo-router.js';
 import { createIaWorkspaceRouter } from './features/ia-workspace-router.js';
+import { createWorkspaceEvidenceRouter } from './workspace-evidence.js';
 import {
   createContextInboxRouter,
   type ContextInboxStore,
@@ -2032,6 +2033,14 @@ async function main(): Promise<void> {
   // non-destructive). Consumes the `iaStore` handle wired above; degrades to
   // 503 if the store failed to init.
   app.use(createIaWorkspaceRouter({ requireAuth, iaStore }));
+  app.use(
+    createWorkspaceEvidenceRouter({
+      requireAuth,
+      getConfig,
+      registry: hubNodeRegistry,
+      nodeLinks: hubNodeLinks,
+    })
+  );
   // #765 / ADR-019: context.* / inbox.* gateway verbs. #759 wires the router
   // to the concrete #758 `ContextPacketStore` via the integration adapter
   // (method renames, throw→result-union remap, PULL-as-delivery flip). When the
