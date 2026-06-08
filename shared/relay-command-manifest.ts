@@ -83,6 +83,12 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'contract.schema': 'gateway schema',
   'nodes.manifest': 'local node manifest',
   'nodes.list': 'relay nodes list',
+  'repos.add': 'add repo workspace',
+  'workspaces.launch': 'launch workspace',
+  'worktrees.create': 'create worktree',
+  'worktrees.status': 'worktree cleanup preflight',
+  'worktrees.delete': 'delete worktree',
+  'worktrees.archive': 'archive worktree',
   'sessions.list': 'sessions list',
   'sessions.get': 'session details',
   'sessions.create': 'create session',
@@ -131,42 +137,52 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'webhooks.ping': 'webhook ping',
 };
 
+const STREAM_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
+  'sessions.stream',
+  'events.subscribe',
+]);
+
+const DESTRUCTIVE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
+  'handoffs.create',
+  'handoffs.launch',
+  'sessions.kill',
+  'worktrees.delete',
+  'worktrees.archive',
+]);
+
+const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
+  'sessions.create',
+  'tickets.startWork',
+  'branches.openSession',
+  'sessions.renew',
+  'sessions.detach',
+  'sessions.rename',
+  'sessions.input',
+  'sessions.handBack',
+  'supervisor.sendText',
+  'supervisor.submit',
+  'files.write',
+  'handoffs.cancel',
+  'context.create',
+  'context.pin',
+  'context.unpin',
+  'repos.add',
+  'workspaces.launch',
+  'worktrees.create',
+  'inbox.send',
+  'inbox.ack',
+  'inbox.resolve',
+  'inbox.ignore',
+  'settings.update',
+  'webhooks.ping',
+]);
+
 function sideEffectForGatewayCommand(
   spec: RelayCliGatewayCommandSpec
 ): RelayCommandSideEffect {
-  if (spec.name === 'sessions.stream' || spec.name === 'events.subscribe')
-    return 'stream';
-  if (
-    spec.name === 'handoffs.create' ||
-    spec.name === 'handoffs.launch' ||
-    spec.name === 'sessions.kill'
-  )
-    return 'destructive';
-  if (
-    spec.name === 'sessions.create' ||
-    spec.name === 'tickets.startWork' ||
-    spec.name === 'branches.openSession' ||
-    spec.name === 'sessions.renew' ||
-    spec.name === 'sessions.detach' ||
-    spec.name === 'sessions.rename' ||
-    spec.name === 'sessions.input' ||
-    spec.name === 'sessions.handBack' ||
-    spec.name === 'supervisor.sendText' ||
-    spec.name === 'supervisor.submit' ||
-    spec.name === 'files.write' ||
-    spec.name === 'handoffs.cancel' ||
-    spec.name === 'context.create' ||
-    spec.name === 'context.pin' ||
-    spec.name === 'context.unpin' ||
-    spec.name === 'inbox.send' ||
-    spec.name === 'inbox.ack' ||
-    spec.name === 'inbox.resolve' ||
-    spec.name === 'inbox.ignore' ||
-    spec.name === 'settings.update' ||
-    spec.name === 'webhooks.ping'
-  ) {
-    return 'write';
-  }
+  if (STREAM_GATEWAY_COMMANDS.has(spec.name)) return 'stream';
+  if (DESTRUCTIVE_GATEWAY_COMMANDS.has(spec.name)) return 'destructive';
+  if (WRITE_GATEWAY_COMMANDS.has(spec.name)) return 'write';
   return 'read';
 }
 
@@ -174,6 +190,10 @@ function scopeKindsForGatewayCommand(
   name: RelayCliGatewayCommand
 ): readonly RelayCommandScopeKind[] {
   if (name.startsWith('nodes.')) return ['node'];
+  if (name.startsWith('repos.')) return ['repo'];
+  if (name.startsWith('workspaces.'))
+    return ['work-context', 'repo', 'worktree'];
+  if (name.startsWith('worktrees.')) return ['repo', 'worktree'];
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
@@ -198,6 +218,8 @@ function requiresConfirmationForGatewayCommand(
     spec.name === 'files.write' ||
     spec.name === 'sessions.kill' ||
     spec.name === 'settings.update' ||
+    spec.name === 'worktrees.delete' ||
+    spec.name === 'worktrees.archive' ||
     spec.name === 'handoffs.create' ||
     spec.name === 'handoffs.launch' ||
     spec.capabilityHints.includes('pty:exec:arbitrary') ||

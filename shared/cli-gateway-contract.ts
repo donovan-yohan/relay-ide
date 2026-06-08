@@ -13,6 +13,12 @@ export type RelayCliGatewayCommand =
   | 'contract.schema'
   | 'nodes.manifest'
   | 'nodes.list'
+  | 'repos.add'
+  | 'workspaces.launch'
+  | 'worktrees.create'
+  | 'worktrees.status'
+  | 'worktrees.delete'
+  | 'worktrees.archive'
   | 'sessions.list'
   | 'sessions.get'
   | 'sessions.create'
@@ -736,6 +742,246 @@ const createSessionInputSchema: RelayJsonSchema = {
     expiresAt: { type: 'string', format: 'date-time' },
     confirmationToken: stringSchema,
   },
+};
+
+const lifecycleEnvironmentSchema: RelayJsonSchema = {
+  title: 'LifecycleEnvironment',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    nodeId: {
+      type: 'string',
+      description:
+        'Target Relay node id. v1 local lifecycle writes are supported only for the local node; remote nodes fail closed as UNSUPPORTED/NODE_OFFLINE until routed node worktree mutation support exists.',
+    },
+    repoIdentity: {
+      type: ['string', 'null'],
+      description:
+        'Canonical normalized repo identity for audit/discovery. Path resolution prefers repoInstanceId over this identity in v1 local commands.',
+    },
+    repoInstanceId: {
+      type: 'string',
+      description:
+        'Scoped RepoInstanceId, usually createRepoInstanceId(nodeId, localPath). Used instead of browser active repo state.',
+    },
+    benchId: {
+      type: 'string',
+      description:
+        'Scoped WorktreeInstanceId, usually createWorktreeInstanceId(nodeId, localPath). Used for worktree status/delete/archive compatibility with path input.',
+    },
+    cwd: {
+      type: 'string',
+      description:
+        'Absolute cwd on the target node. Accepted for status/preflight compatibility when benchId is unavailable.',
+    },
+  },
+};
+
+const repoAddInputSchema: RelayJsonSchema = {
+  title: 'ReposAddInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    path: stringSchema,
+    requireGitRepo: booleanSchema,
+  },
+  required: ['path'],
+};
+
+const workspaceLaunchInputSchema: RelayJsonSchema = {
+  title: 'WorkspaceLaunchInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workspaceId: stringSchema,
+    agent: stringSchema,
+    yolo: booleanSchema,
+    terminalBackend: { type: 'string', enum: ['relay-pty', 'tmux-compat'] },
+    claudeArgs: { type: 'array', items: stringSchema },
+    cols: { type: 'number', minimum: 1, maximum: 500 },
+    rows: { type: 'number', minimum: 1, maximum: 200 },
+  },
+  required: ['workspaceId'],
+};
+
+const worktreeCreateInputSchema: RelayJsonSchema = {
+  title: 'WorktreeCreateInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    environment: lifecycleEnvironmentSchema,
+    repoPath: {
+      ...stringSchema,
+      description:
+        'Compatibility path for the local repo checkout. Prefer environment.repoInstanceId when available.',
+    },
+    branch: {
+      ...stringSchema,
+      description:
+        'Existing branch to check out into a worktree. Omit to create the next Relay-generated branch/mountain worktree.',
+    },
+    confirmationToken: stringSchema,
+  },
+  anyOf: [
+    { required: ['repoPath'] },
+    {
+      required: ['environment'],
+      properties: {
+        environment: {
+          ...lifecycleEnvironmentSchema,
+          required: ['repoInstanceId'],
+        },
+      },
+    },
+  ],
+};
+
+const worktreeStatusInputSchema: RelayJsonSchema = {
+  title: 'WorktreeStatusInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    environment: lifecycleEnvironmentSchema,
+    worktreePath: {
+      ...stringSchema,
+      description:
+        'Compatibility local worktree path. Prefer environment.benchId when available.',
+    },
+  },
+  anyOf: [
+    { required: ['worktreePath'] },
+    {
+      required: ['environment'],
+      properties: {
+        environment: { ...lifecycleEnvironmentSchema, required: ['benchId'] },
+      },
+    },
+    {
+      required: ['environment'],
+      properties: {
+        environment: { ...lifecycleEnvironmentSchema, required: ['cwd'] },
+      },
+    },
+  ],
+};
+
+const worktreeDeleteInputSchema: RelayJsonSchema = {
+  title: 'WorktreeDeleteInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    environment: lifecycleEnvironmentSchema,
+    repoPath: {
+      ...stringSchema,
+      description:
+        'Compatibility local repo checkout path. Prefer environment.repoInstanceId when available.',
+    },
+    worktreePath: {
+      ...stringSchema,
+      description:
+        'Compatibility local worktree path. Prefer environment.benchId when available.',
+    },
+    force: booleanSchema,
+    confirmationToken: stringSchema,
+  },
+  anyOf: [
+    { required: ['repoPath', 'worktreePath'] },
+    {
+      required: ['repoPath', 'environment'],
+      properties: {
+        environment: { ...lifecycleEnvironmentSchema, required: ['benchId'] },
+      },
+    },
+    {
+      required: ['repoPath', 'environment'],
+      properties: {
+        environment: { ...lifecycleEnvironmentSchema, required: ['cwd'] },
+      },
+    },
+    {
+      required: ['worktreePath', 'environment'],
+      properties: {
+        environment: {
+          ...lifecycleEnvironmentSchema,
+          required: ['repoInstanceId'],
+        },
+      },
+    },
+    {
+      required: ['environment'],
+      properties: {
+        environment: {
+          ...lifecycleEnvironmentSchema,
+          required: ['repoInstanceId', 'benchId'],
+        },
+      },
+    },
+    {
+      required: ['environment'],
+      properties: {
+        environment: {
+          ...lifecycleEnvironmentSchema,
+          required: ['repoInstanceId', 'cwd'],
+        },
+      },
+    },
+  ],
+};
+
+const repoDescriptorSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    path: stringSchema,
+    name: stringSchema,
+    isGitRepo: booleanSchema,
+    kind: { type: 'string', enum: ['repo', 'directory'] },
+    nodeId: stringSchema,
+    repoIdentity: { type: ['string', 'null'] },
+    repoInstanceId: stringSchema,
+  },
+};
+
+const worktreeCreateOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    branchName: stringSchema,
+    mountainName: stringSchema,
+    worktreePath: stringSchema,
+    existing: booleanSchema,
+  },
+  required: ['branchName', 'worktreePath'],
+};
+
+const worktreeStatusOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    activeSessions: { type: 'array', items: stringSchema },
+    hasUncommittedChanges: booleanSchema,
+  },
+  required: ['activeSessions', 'hasUncommittedChanges'],
+};
+
+const worktreeDeleteOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ok: booleanSchema,
+    action: { type: 'string', enum: ['delete', 'archive'] },
+    branchDeleted: booleanSchema,
+    audit: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        repoPath: stringSchema,
+        worktreePath: stringSchema,
+        force: booleanSchema,
+      },
+    },
+  },
+  required: ['ok', 'action', 'branchDeleted'],
 };
 
 const renewSessionInputSchema: RelayJsonSchema = {
@@ -1820,6 +2066,204 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'repos.add',
+    cli: [
+      'relay-ide',
+      'v1',
+      'repos',
+      'add',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Add a local repo/workspace path to Relay without relying on browser active repo state.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['rpc:git:read', 'rpc:git:write'],
+    inputSchema: repoAddInputSchema,
+    outputSchema: okOutput('ReposAddOutput', repoDescriptorSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'INVALID_JSON',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'workspaces.launch',
+    cli: [
+      'relay-ide',
+      'v1',
+      'workspaces',
+      'launch',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Launch an agent session for a configured workspace group using its typed workspace id.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:create:agent'],
+    inputSchema: workspaceLaunchInputSchema,
+    outputSchema: okOutput('WorkspacesLaunchOutput', sessionDescriptorSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'INVALID_JSON',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'worktrees.create',
+    cli: [
+      'relay-ide',
+      'v1',
+      'worktrees',
+      'create',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Create or reuse a local git worktree for a repo instance; remote node writes fail closed until node capability support exists.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['rpc:git:read', 'rpc:git:write'],
+    inputSchema: worktreeCreateInputSchema,
+    outputSchema: okOutput('WorktreesCreateOutput', worktreeCreateOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'INVALID_JSON',
+      'UNSUPPORTED',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'worktrees.status',
+    cli: [
+      'relay-ide',
+      'v1',
+      'worktrees',
+      'status',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Preflight a worktree before cleanup, returning active session ids and dirty-worktree state.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'rpc:git:read'],
+    inputSchema: worktreeStatusInputSchema,
+    outputSchema: okOutput('WorktreesStatusOutput', worktreeStatusOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'INVALID_JSON',
+      'UNSUPPORTED',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'worktrees.delete',
+    cli: [
+      'relay-ide',
+      'v1',
+      'worktrees',
+      'delete',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Delete a local git worktree and its branch after fail-closed dirty/session/main-worktree checks.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: [
+      'session:read',
+      'session:control:kill',
+      'rpc:git:read',
+      'rpc:git:write',
+    ],
+    inputSchema: worktreeDeleteInputSchema,
+    outputSchema: okOutput('WorktreesDeleteOutput', worktreeDeleteOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'INVALID_JSON',
+      'UNSUPPORTED',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SESSION_CONFLICT',
+      'CONFIRMATION_REQUIRED',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'worktrees.archive',
+    cli: [
+      'relay-ide',
+      'v1',
+      'worktrees',
+      'archive',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Archive/remove a local git worktree while preserving its branch, with the same fail-closed preflight checks as delete.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: [
+      'session:read',
+      'session:control:kill',
+      'rpc:git:read',
+      'rpc:git:write',
+    ],
+    inputSchema: worktreeDeleteInputSchema,
+    outputSchema: okOutput(
+      'WorktreesArchiveOutput',
+      worktreeDeleteOutputSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'INVALID_JSON',
+      'UNSUPPORTED',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'SESSION_CONFLICT',
+      'CONFIRMATION_REQUIRED',
+      'NODE_OFFLINE',
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],

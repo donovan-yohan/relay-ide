@@ -15,7 +15,6 @@ import {
   loadConfig,
   saveConfig,
   DEFAULTS,
-  readMeta,
   writeMeta,
   deleteMeta,
   ensureMetaDir,
@@ -44,6 +43,11 @@ import {
   GitWatcher,
   parseAllWorktrees,
 } from './watcher.js';
+import {
+  deleteLocalWorktreeBranch,
+  removeWorktreeFromDisk,
+  validateWorktreeForDelete,
+} from './worktree-cleanup.js';
 import { isInstalled as serviceIsInstalled } from './service.js';
 import { extensionForMime, setClipboardImage } from './clipboard.js';
 import { createGitRouter } from './git-routes.js';
@@ -555,64 +559,6 @@ function buildTicketInitialPrompt(
     .replace(/\{description\}/g, ticketContext.description ?? '');
 }
 
-type WorktreeValidationError = {
-  status: number;
-  error: string;
-  sessionIds?: string[];
-};
-
-/** Validates that a worktree can be deleted. Returns an error descriptor or null. */
-async function validateWorktreeForDelete(
-  worktreePath: string,
-  repoPath: string,
-  force: boolean,
-  activeSessions: string[]
-): Promise<WorktreeValidationError | null> {
-  try {
-    const { stdout: wtListOut } = await execFileAsync(
-      'git',
-      ['worktree', 'list', '--porcelain'],
-      { cwd: repoPath }
-    );
-    const allWorktrees = parseAllWorktrees(wtListOut, repoPath);
-    const isKnownWorktree = allWorktrees.some(
-      (wt) => wt.path === path.resolve(worktreePath) && !wt.isMain
-    );
-    if (!isKnownWorktree) {
-      if (!fs.existsSync(worktreePath)) {
-        return {
-          status: 404,
-          error: 'Worktree not found — may have been already cleaned up',
-        };
-      }
-      return { status: 400, error: 'Path is not a recognized git worktree' };
-    }
-  } catch (err) {
-    logger.warn(
-      '[worktrees/delete] git worktree list failed for',
-      repoPath,
-      err instanceof Error ? err.message : err
-    );
-    if (!force) {
-      return {
-        status: 500,
-        error:
-          'Cannot verify worktree — git worktree list failed. Use force: true to delete anyway.',
-      };
-    }
-  }
-
-  if (activeSessions.length > 0 && !force) {
-    return {
-      status: 409,
-      error: 'active_sessions',
-      sessionIds: activeSessions,
-    };
-  }
-
-  return null;
-}
-
 /**
  * Clamps a terminal dimension (cols or rows) to a valid range.
  * Returns the rounded value if valid, or undefined if invalid/unset.
@@ -731,30 +677,6 @@ function resolveContinuePolicy(
   if (explicitContinuePolicy !== undefined) return explicitContinuePolicy;
   if (explicitContinue === undefined) return undefined;
   return explicitContinue ? 'always' : 'never';
-}
-
-/** Removes a worktree from disk, falling back to rmSync if git fails. Returns error string or null. */
-async function removeWorktreeFromDisk(
-  worktreePath: string,
-  repoPath: string,
-  force: boolean
-): Promise<string | null> {
-  try {
-    const removeArgs = force
-      ? ['worktree', 'remove', '--force', worktreePath]
-      : ['worktree', 'remove', worktreePath];
-    await execFileAsync('git', removeArgs, { cwd: repoPath });
-  } catch {
-    if (fs.existsSync(worktreePath)) {
-      try {
-        fs.rmSync(worktreePath, { recursive: true });
-      } catch (rmErr: unknown) {
-        return execErrorMessage(rmErr, 'Failed to remove worktree directory');
-      }
-    }
-    // directory already gone — that's fine, continue to cleanup
-  }
-  return null;
 }
 
 type AgentSessionParams = {
@@ -1707,7 +1629,8 @@ async function main(): Promise<void> {
       const directBody = isRecord(body) ? body : {};
       if (Object.prototype.hasOwnProperty.call(directBody, 'useTmux')) {
         res.status(400).json({
-          error: 'legacy useTmux request flag is no longer supported; use terminalBackend',
+          error:
+            'legacy useTmux request flag is no longer supported; use terminalBackend',
         });
         return null;
       }
@@ -1839,6 +1762,23 @@ async function main(): Promise<void> {
       return;
     }
     res.status(401).json(auth.cliGatewayOrBrowserAuthRequiredChallenge());
+  };
+
+  const requireCliGatewayWriteAuth: express.RequestHandler = (
+    req,
+    res,
+    next
+  ) => {
+    if (isCliGatewayActorTokenRequest(req)) {
+      res.status(403).json({
+        error: 'Forbidden',
+        code: 'CLI_GATEWAY_ACTOR_WRITE_UNSUPPORTED',
+        message:
+          'CLI actor credentials are read-only in this slice; use browser or scoped gateway auth for lifecycle mutations.',
+      });
+      return;
+    }
+    requireCliGatewayAuth(req, res, next);
   };
 
   const requireScopedSessionAuth: express.RequestHandler = (req, res, next) => {
@@ -2420,7 +2360,7 @@ async function main(): Promise<void> {
       });
     },
   });
-  app.use('/workspaces', requireAuth, workspaceRouter);
+  app.use('/workspaces', requireCliGatewayWriteAuth, workspaceRouter);
 
   // Mount git (local/fast) and gh (network/slow) routers
   app.use(
@@ -2441,7 +2381,7 @@ async function main(): Promise<void> {
   // Mount workspace-groups CRUD router
   app.use(
     '/workspace-groups',
-    createWorkspaceGroupsRouter(CONFIG_PATH, requireAuth, {
+    createWorkspaceGroupsRouter(CONFIG_PATH, requireCliGatewayWriteAuth, {
       sessions,
       gitWatcher,
       configPath: CONFIG_PATH,
@@ -3369,7 +3309,17 @@ async function main(): Promise<void> {
   });
 
   // GET /worktrees/status — pre-cleanup checks for a worktree
-  app.get('/worktrees/status', requireAuth, async (req, res) => {
+  app.get('/worktrees/status', requireCliGatewayAuth, async (req, res) => {
+    if (isCliGatewayActorTokenRequest(req)) {
+      res.status(403).json({
+        error: 'Forbidden',
+        code: 'CLI_GATEWAY_ACTOR_WORKTREE_STATUS_UNSUPPORTED',
+        message:
+          'CLI actor credentials cannot read arbitrary worktree status until repo/worktree-scoped actor tokens are supported.',
+      });
+      return;
+    }
+
     const worktreePath =
       typeof req.query.path === 'string' ? req.query.path : undefined;
     if (!worktreePath) {
@@ -3737,11 +3687,12 @@ async function main(): Promise<void> {
   });
 
   // DELETE /worktrees — remove a worktree, prune, and delete its branch
-  app.delete('/worktrees', requireAuth, async (req, res) => {
-    const { worktreePath, repoPath, force } = req.body as {
+  app.delete('/worktrees', requireCliGatewayWriteAuth, async (req, res) => {
+    const { worktreePath, repoPath, force, deleteBranch } = req.body as {
       worktreePath?: string;
       repoPath?: string;
       force?: boolean;
+      deleteBranch?: boolean;
     };
     if (!worktreePath || !repoPath) {
       res.status(400).json({ error: 'worktreePath and repoPath are required' });
@@ -3754,17 +3705,21 @@ async function main(): Promise<void> {
       .filter((s) => s.worktreePath === resolvedPath || s.cwd === resolvedPath)
       .map((s) => s.id);
 
-    const validationErr = await validateWorktreeForDelete(
+    const validation = await validateWorktreeForDelete(
       worktreePath,
       repoPath,
       force ?? false,
       worktreeSessions
     );
-    if (validationErr) {
+    if (!validation.ok) {
+      const validationErr = validation.error;
       res.status(validationErr.status).json({
         error: validationErr.error,
         ...(validationErr.sessionIds && {
           sessionIds: validationErr.sessionIds,
+        }),
+        ...(validationErr.hasUncommittedChanges !== undefined && {
+          hasUncommittedChanges: validationErr.hasUncommittedChanges,
         }),
       });
       return;
@@ -3784,15 +3739,13 @@ async function main(): Promise<void> {
       }
     }
 
-    // Derive branch name from metadata or worktree directory name
-    const meta = readMeta(CONFIG_PATH, worktreePath);
-    const branchName =
-      (meta && meta.branchName) || worktreePath.split('/').pop() || '';
+    const branchName = validation.branchName;
 
     const removeErr = await removeWorktreeFromDisk(
       worktreePath,
       repoPath,
-      force ?? false
+      force ?? false,
+      validation.deleteProof
     );
     if (removeErr) {
       res.status(500).json({ error: removeErr });
@@ -3806,16 +3759,10 @@ async function main(): Promise<void> {
       // Non-fatal: prune failure doesn't block success
     }
 
-    if (branchName) {
-      try {
-        // Delete the branch
-        await execFileAsync('git', ['branch', '-D', branchName], {
-          cwd: repoPath,
-        });
-      } catch (_) {
-        // Non-fatal: branch may not exist or may be checked out elsewhere
-      }
-    }
+    const shouldDeleteBranch = deleteBranch !== false;
+    const branchDeleted = shouldDeleteBranch
+      ? await deleteLocalWorktreeBranch(repoPath, branchName)
+      : false;
 
     try {
       getDefaultAllocator().releasePortsForWorktree(repoPath, resolvedPath);
@@ -3833,7 +3780,7 @@ async function main(): Promise<void> {
     // Broadcast worktrees-changed so all clients refresh
     broadcastEvent('worktrees-changed');
 
-    res.json({ ok: true });
+    res.json({ ok: true, branchDeleted });
   });
 
   // POST /sessions — unified endpoint for agent and terminal sessions
@@ -4128,7 +4075,10 @@ async function main(): Promise<void> {
 
   // DELETE /sessions/:id
   app.delete('/sessions/:id', requireAuth, (req, res) => {
-    const decision = capabilityDecisionFromRequest(req, CONTROL_KILL_CAPABILITY);
+    const decision = capabilityDecisionFromRequest(
+      req,
+      CONTROL_KILL_CAPABILITY
+    );
     if (decision.decision !== 'allow') {
       const error = capabilityError(decision);
       res.status(sessionControlErrorStatus(error)).json({ error });
