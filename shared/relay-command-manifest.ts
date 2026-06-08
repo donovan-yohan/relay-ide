@@ -113,13 +113,13 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'context.list': 'list context packets',
   'context.pin': 'pin context packet',
   'context.unpin': 'unpin context packet',
-  'work-context-artifacts.publish': 'publish WorkContext artifact',
-  'work-context-artifacts.list': 'list WorkContext artifacts',
-  'work-context-artifacts.show': 'show WorkContext artifact',
-  'work-context-artifacts.pin': 'pin WorkContext artifact',
-  'work-context-artifacts.unpin': 'unpin WorkContext artifact',
-  'work-context-artifacts.export': 'export WorkContext artifact',
-  'work-context-artifacts.doctor': 'doctor WorkContext artifact store',
+  'work-context-artifacts.publish': 'publish workcontext artifact',
+  'work-context-artifacts.list': 'list workcontext artifacts',
+  'work-context-artifacts.show': 'show workcontext artifact',
+  'work-context-artifacts.pin': 'pin workcontext artifact',
+  'work-context-artifacts.unpin': 'unpin workcontext artifact',
+  'work-context-artifacts.export': 'export workcontext artifact',
+  'work-context-artifacts.doctor': 'doctor workcontext artifact store',
   'inbox.send': 'send inbox message',
   'inbox.list': 'list inbox messages',
   'inbox.get': 'inbox message details',
@@ -173,6 +173,9 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'context.create',
   'context.pin',
   'context.unpin',
+  'work-context-artifacts.publish',
+  'work-context-artifacts.pin',
+  'work-context-artifacts.unpin',
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
@@ -203,6 +206,7 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('worktrees.')) return ['repo', 'worktree'];
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
+  if (name.startsWith('work-context-artifacts.')) return ['work-context'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];
   if (name.startsWith('handoffs.'))

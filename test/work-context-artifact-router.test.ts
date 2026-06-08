@@ -142,6 +142,8 @@ async function serve(input: {
   store: WorkContextArtifactStore | null;
   workContextStore: WorkContextStore;
   root: string;
+  maxPublishBytes?: number;
+  maxExportBytes?: number;
 }): Promise<{ baseUrl: string; server: http.Server }> {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
@@ -152,6 +154,8 @@ async function serve(input: {
       diagnostics: {
         dbPath: path.join(input.root, 'work-context-artifacts.db'),
         payloadRoot: path.join(input.root, 'payloads'),
+        ...(input.maxPublishBytes !== undefined ? { maxPublishBytes: input.maxPublishBytes } : {}),
+        ...(input.maxExportBytes !== undefined ? { maxExportBytes: input.maxExportBytes } : {}),
       },
     })
   );
@@ -243,6 +247,101 @@ describe('WorkContext artifact router', () => {
     );
     expect(unpin.status).toBe(200);
     expect(await json(unpin)).toMatchObject({ removed: true, lifecycle: { artifactDeleted: false } });
+  });
+
+  it('enforces publish and export guardrails with persisted public bytes', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-guardrails';
+    const workContextStore = fakeWorkContextStore(createWorkContext(workContextId));
+    const publishArtifact = artifact({
+      id: 'pipeline-handoff:router:guardrails',
+    });
+    const minifiedBytes = Buffer.byteLength(JSON.stringify(publishArtifact), 'utf8');
+    const persistedBytes = Buffer.byteLength(JSON.stringify(publishArtifact, null, 2), 'utf8');
+    expect(persistedBytes).toBeGreaterThan(minifiedBytes);
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore,
+      maxPublishBytes: minifiedBytes,
+      maxExportBytes: 16,
+    });
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-relay-capabilities': 'context:write,context:read',
+    };
+
+    const oversizedPublish = await fetch(`${baseUrl}/work-context-artifacts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ workContextId, artifact: publishArtifact }),
+    });
+    expect(oversizedPublish.status).toBe(400);
+    expect(await json(oversizedPublish)).toMatchObject({
+      error: {
+        code: 'INVALID_ARGUMENT',
+        details: {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_PAYLOAD',
+          payloadBytes: persistedBytes,
+          maxBytes: minifiedBytes,
+        },
+      },
+    });
+
+    const publicStored = store.storePipelineHandoffArtifact({
+      workContextId,
+      visibility: 'public',
+      artifact: artifact({ id: 'pipeline-handoff:router:public-export' }),
+    });
+    const oversizedExport = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(publicStored.metadata.id)}/export`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(oversizedExport.status).toBe(400);
+    expect(await json(oversizedExport)).toMatchObject({
+      error: {
+        code: 'INVALID_ARGUMENT',
+        details: { reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_EXPORT', maxBytes: 16 },
+      },
+    });
+  });
+
+  it('distinguishes missing and unsafe public artifact exports', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-export-errors';
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore: fakeWorkContextStore(createWorkContext(workContextId)),
+    });
+
+    const missing = await fetch(`${baseUrl}/work-context-artifacts/missing/export`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    });
+    expect(missing.status).toBe(404);
+    expect(await json(missing)).toMatchObject({
+      error: {
+        code: 'NOT_FOUND',
+        details: { reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND', operation: 'export' },
+      },
+    });
+
+    const privateStored = store.storePipelineHandoffArtifact({
+      workContextId,
+      visibility: 'private',
+      artifact: artifact({ id: 'pipeline-handoff:router:private-export' }),
+    });
+    const forbidden = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(privateStored.metadata.id)}/export`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(forbidden.status).toBe(403);
+    expect(await json(forbidden)).toMatchObject({
+      error: {
+        code: 'FORBIDDEN',
+        details: { reasonCode: 'WORK_CONTEXT_ARTIFACT_UNSAFE_PUBLIC_COPY' },
+      },
+    });
   });
 
   it('returns stable typed errors for missing capability and stale publish heads', async () => {

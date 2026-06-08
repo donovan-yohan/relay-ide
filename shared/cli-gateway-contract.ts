@@ -3142,7 +3142,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'work-context-artifacts.publish',
-    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'publish', '--input-file', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-artifacts',
+      'publish',
+      '--work-context-id',
+      '<work-context-id>',
+      '--artifact-file',
+      '<pipeline-handoff-artifact.json>',
+      '--json',
+    ],
     summary:
       'Publish a sanitized PipelineHandoffArtifact into the WorkContext artifact store with bounded payload and stable metadata.',
     stable: true,

@@ -276,6 +276,32 @@ function gatewayInvalid(
   );
 }
 
+function writeGatewayOutputFile(
+  commandName: RelayCliGatewayCommand,
+  outputPath: string,
+  payload: unknown
+): void {
+  const resolvedOutputPath = path.resolve(outputPath);
+  try {
+    fs.writeFileSync(resolvedOutputPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: 'INTERNAL',
+        message: `failed to write --output: ${message}`,
+        retryable: false,
+        details: {
+          reasonCode: 'CLI_GATEWAY_OUTPUT_WRITE_FAILED',
+          field: 'output',
+          path: resolvedOutputPath,
+        },
+      }),
+      1
+    );
+  }
+}
+
 function gatewayArg(commandArgs: string[], flag: string): string | undefined {
   const idx = commandArgs.indexOf(flag);
   if (idx === -1 || idx + 1 >= commandArgs.length) return undefined;
@@ -3508,7 +3534,7 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
     });
     const output = gatewayArg(artifactArgs, '--output');
     if (output) {
-      fs.writeFileSync(path.resolve(output), `${JSON.stringify(result, null, 2)}\n`, 'utf8');
+      writeGatewayOutputFile(commandName, output, result);
     }
     printGatewayEnvelope(gatewayOk(commandName, result), 0);
   }

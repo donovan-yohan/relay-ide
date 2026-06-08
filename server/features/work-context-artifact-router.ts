@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { Router } from 'express';
 import type { Request, RequestHandler, Response } from 'express';
@@ -259,6 +260,10 @@ function readEnvelope(
   };
 }
 
+function persistedArtifactPayloadBytes(artifact: PipelineHandoffArtifact): number {
+  return Buffer.byteLength(JSON.stringify(artifact, null, 2), 'utf8');
+}
+
 function mapStoreError(
   res: Response,
   err: WorkContextArtifactStoreError,
@@ -397,18 +402,33 @@ function storeOr503(
   return null;
 }
 
+function safeFileSizeBytes(filePath: string): number | undefined {
+  try {
+    return statSync(filePath).size;
+  } catch {
+    return undefined;
+  }
+}
+
 function dirSizeBytes(root: string): { bytes: number; files: number; largestBytes: number } {
   let bytes = 0;
   let files = 0;
   let largestBytes = 0;
   function walk(dir: string): void {
-    if (!existsSync(dir)) return;
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = `${dir}/${entry.name}`;
+    let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+    try {
+      if (!existsSync(dir)) return;
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         walk(full);
       } else if (entry.isFile()) {
-        const size = statSync(full).size;
+        const size = safeFileSizeBytes(full);
+        if (size === undefined) continue;
         bytes += size;
         files += 1;
         largestBytes = Math.max(largestBytes, size);
@@ -436,10 +456,7 @@ function diagnosticsFor(
     ok: true,
     storage: {
       dbPath: diagnostics?.dbPath ?? null,
-      dbBytes:
-        diagnostics?.dbPath && existsSync(diagnostics.dbPath)
-          ? statSync(diagnostics.dbPath).size
-          : null,
+      dbBytes: diagnostics?.dbPath ? (safeFileSizeBytes(diagnostics.dbPath) ?? null) : null,
       payloadRoot: diagnostics?.payloadRoot ?? null,
       payloadBytes: payload.bytes,
       payloadFileCount: payload.files,
@@ -534,7 +551,7 @@ export function createWorkContextArtifactRouter(
       });
       return;
     }
-    const payloadBytes = Buffer.byteLength(JSON.stringify(artifact), 'utf8');
+    const payloadBytes = persistedArtifactPayloadBytes(artifact);
     if (payloadBytes > maxPublishBytes) {
       sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact payload exceeds publish size cap', false, {
         reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_PAYLOAD',
@@ -684,6 +701,15 @@ export function createWorkContextArtifactRouter(
     if (!s) return;
     const id = req.params['id'] ?? '';
     try {
+      const record = s.get(id);
+      if (!record) {
+        sendGatewayError(res, 'NOT_FOUND', 'WorkContext artifact not found', false, {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND',
+          operation: 'export',
+          artifactId: id,
+        });
+        return;
+      }
       const publicCopy = s.publicSummary(id);
       if (!publicCopy) {
         sendGatewayError(res, 'FORBIDDEN', 'artifact is not available for public export', false, {
@@ -693,7 +719,7 @@ export function createWorkContextArtifactRouter(
         });
         return;
       }
-      const exportBytes = Buffer.byteLength(JSON.stringify(publicCopy), 'utf8');
+      const exportBytes = Buffer.byteLength(JSON.stringify(publicCopy, null, 2), 'utf8');
       if (exportBytes > maxExportBytes) {
         sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact export exceeds public export size cap', false, {
           reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_EXPORT',

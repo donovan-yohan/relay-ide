@@ -160,6 +160,13 @@ describe('CLI gateway contract', () => {
       'context.list',
       'context.pin',
       'context.unpin',
+      'work-context-artifacts.publish',
+      'work-context-artifacts.list',
+      'work-context-artifacts.show',
+      'work-context-artifacts.pin',
+      'work-context-artifacts.unpin',
+      'work-context-artifacts.export',
+      'work-context-artifacts.doctor',
       'inbox.send',
       'inbox.list',
       'inbox.get',
@@ -331,6 +338,30 @@ describe('CLI gateway contract', () => {
         worktreePath: '/tmp/repo/.worktrees/one',
       })
     ).toBe(true);
+    expect(relayCommandDefinition('work-context-artifacts.publish')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context'],
+    });
+    expect(relayCommandDefinition('work-context-artifacts.pin')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context'],
+    });
+    expect(relayCommandDefinition('work-context-artifacts.unpin')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context'],
+    });
+    expect(relayCommandDefinition('work-context-artifacts.export')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['work-context'],
+    });
     expect(relayCommandDefinition('sessions.stream')).toMatchObject({
       sideEffect: 'stream',
       requiresConfirmation: false,
@@ -801,6 +832,13 @@ describe('CLI gateway contract', () => {
       'context.list',
       'context.pin',
       'context.unpin',
+      'work-context-artifacts.publish',
+      'work-context-artifacts.list',
+      'work-context-artifacts.show',
+      'work-context-artifacts.pin',
+      'work-context-artifacts.unpin',
+      'work-context-artifacts.export',
+      'work-context-artifacts.doctor',
       'inbox.send',
       'inbox.list',
       'inbox.get',
