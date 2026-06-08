@@ -100,7 +100,9 @@ function schemaMatches(schema: RelayJsonSchema, value: unknown): boolean {
     return false;
   }
   if (!schema.oneOf) return true;
-  return schema.oneOf.filter((branch) => schemaMatches(branch, value)).length === 1;
+  return (
+    schema.oneOf.filter((branch) => schemaMatches(branch, value)).length === 1
+  );
 }
 
 function schemaAcceptsCommandInput(
@@ -136,6 +138,8 @@ describe('CLI gateway contract', () => {
       'sessions.renew',
       'sessions.attach',
       'sessions.detach',
+      'sessions.kill',
+      'sessions.rename',
       'sessions.stream',
       'sessions.input',
       'sessions.interventions',
@@ -328,7 +332,9 @@ describe('CLI gateway contract', () => {
   it('describes browser-operator-only safe settings and webhook contracts with redaction metadata', () => {
     const settingsGet = commandSpec('settings.get');
     expect(settingsGet.capabilityHints).toEqual([]);
-    expect(settingsGet.outputSchema.properties?.data?.properties?.redaction).toMatchObject({
+    expect(
+      settingsGet.outputSchema.properties?.data?.properties?.redaction
+    ).toMatchObject({
       properties: {
         rawConfigReturned: { const: false },
         secretsReturned: { const: false },
@@ -353,7 +359,9 @@ describe('CLI gateway contract', () => {
       'renamerTool',
       'updateChannel',
     ]);
-    expect(settingsUpdate.inputSchema.properties?.['confirmRiskyWrite']).toEqual({
+    expect(
+      settingsUpdate.inputSchema.properties?.['confirmRiskyWrite']
+    ).toEqual({
       type: 'boolean',
     });
 
@@ -366,7 +374,9 @@ describe('CLI gateway contract', () => {
 
     const webhookPing = commandSpec('webhooks.ping');
     expect(webhookPing.capabilityHints).toEqual([]);
-    expect(webhookPing.outputSchema.properties?.data?.properties?.redaction).toMatchObject({
+    expect(
+      webhookPing.outputSchema.properties?.data?.properties?.redaction
+    ).toMatchObject({
       properties: {
         webhookSecretsReturned: { const: false },
         rawWebhookUrlsReturned: { const: false },
@@ -511,9 +521,7 @@ describe('CLI gateway contract', () => {
     if (!dataSchema)
       throw new Error('supervisor.snapshot output schema must define data');
     expect(schemaMatches(dataSchema, envelope.data)).toBe(true);
-    expect(
-      schemaMatches(dataSchema, { ok: true, ...payload })
-    ).toBe(false);
+    expect(schemaMatches(dataSchema, { ok: true, ...payload })).toBe(false);
 
     const snapshotSchema = dataSchema.properties?.snapshot;
     const auditSchema = dataSchema.properties?.audit;
@@ -847,6 +855,20 @@ describe('CLI gateway contract', () => {
     expect(commandSpec('sessions.detach')).toMatchObject({
       capabilityHints: ['session:read', 'session:attach'],
       transport: 'hub-http',
+    });
+
+    const kill = commandSpec('sessions.kill');
+    expect(kill).toMatchObject({
+      capabilityHints: ['session:read', 'session:control:kill'],
+      transport: 'hub-http-or-node-rpc',
+    });
+    expect(kill.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        id: { type: 'string' },
+        confirmationToken: { type: 'string' },
+      },
     });
 
     const stream = commandSpec('sessions.stream');

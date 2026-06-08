@@ -91,6 +91,8 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'sessions.renew': 'renew session',
   'sessions.attach': 'attach session descriptor',
   'sessions.detach': 'detach session handle',
+  'sessions.kill': 'kill session process',
+  'sessions.rename': 'rename session',
   'sessions.stream': 'stream session output',
   'sessions.input': 'send session input',
   'sessions.interventions': 'session interventions',
@@ -134,7 +136,11 @@ function sideEffectForGatewayCommand(
 ): RelayCommandSideEffect {
   if (spec.name === 'sessions.stream' || spec.name === 'events.subscribe')
     return 'stream';
-  if (spec.name === 'handoffs.create' || spec.name === 'handoffs.launch')
+  if (
+    spec.name === 'handoffs.create' ||
+    spec.name === 'handoffs.launch' ||
+    spec.name === 'sessions.kill'
+  )
     return 'destructive';
   if (
     spec.name === 'sessions.create' ||
@@ -142,6 +148,7 @@ function sideEffectForGatewayCommand(
     spec.name === 'branches.openSession' ||
     spec.name === 'sessions.renew' ||
     spec.name === 'sessions.detach' ||
+    spec.name === 'sessions.rename' ||
     spec.name === 'sessions.input' ||
     spec.name === 'sessions.handBack' ||
     spec.name === 'supervisor.sendText' ||
@@ -178,7 +185,8 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('artifacts.')) return ['work-context'];
   if (name.startsWith('supervisor.')) return ['session'];
   if (name.startsWith('events.')) return ['node', 'session'];
-  if (name.startsWith('settings.') || name.startsWith('webhooks.')) return ['node'];
+  if (name.startsWith('settings.') || name.startsWith('webhooks.'))
+    return ['node'];
   if (name.startsWith('sessions.')) return ['session'];
   return [];
 }
@@ -188,6 +196,7 @@ function requiresConfirmationForGatewayCommand(
 ): boolean {
   return (
     spec.name === 'files.write' ||
+    spec.name === 'sessions.kill' ||
     spec.name === 'settings.update' ||
     spec.name === 'handoffs.create' ||
     spec.name === 'handoffs.launch' ||

@@ -84,7 +84,8 @@ function isMissingCommandError(err: unknown, command: string): boolean {
   return (
     e.code === 'ENOENT' &&
     (e.path === command ||
-      (typeof e.message === 'string' && e.message.includes(`spawn ${command} ENOENT`)))
+      (typeof e.message === 'string' &&
+        e.message.includes(`spawn ${command} ENOENT`)))
   );
 }
 
@@ -390,6 +391,71 @@ function parseGatewayInputObject(
   return {};
 }
 
+function parseGatewaySessionRenameInput(sessionArgs: string[]): {
+  id: string;
+  displayName: string;
+} {
+  const parsed = parseGatewayInputObject('sessions.rename', sessionArgs);
+  const id =
+    typeof parsed['id'] === 'string'
+      ? parsed['id']
+      : (gatewayArg(sessionArgs, '--id') ?? sessionArgs[0]);
+  const displayName =
+    typeof parsed['displayName'] === 'string'
+      ? parsed['displayName']
+      : (gatewayArg(sessionArgs, '--display-name') ??
+        gatewayArg(sessionArgs, '--name'));
+  if (!id || id.startsWith('--'))
+    gatewayInvalid('sessions.rename', '--id is required');
+  if (typeof displayName !== 'string' || displayName.trim().length === 0) {
+    gatewayInvalid('sessions.rename', '--display-name is required', {
+      field: 'displayName',
+    });
+  }
+  return { id, displayName };
+}
+
+function parseGatewaySessionKillInput(sessionArgs: string[]): {
+  id: string;
+  confirmationToken?: string;
+} {
+  const parsed = parseGatewayInputObject('sessions.kill', sessionArgs);
+  const id =
+    typeof parsed['id'] === 'string'
+      ? parsed['id']
+      : (gatewayArg(sessionArgs, '--id') ?? sessionArgs[0]);
+  if (!id || id.startsWith('--'))
+    gatewayInvalid('sessions.kill', '--id is required');
+
+  const rawConfirmationToken =
+    typeof parsed['confirmationToken'] === 'string'
+      ? parsed['confirmationToken']
+      : gatewayArg(sessionArgs, '--confirmation-token');
+  const confirmationToken = rawConfirmationToken?.trim();
+  return {
+    id,
+    ...(confirmationToken ? { confirmationToken } : {}),
+  };
+}
+
+function gatewaySessionIdentityPayload(
+  requestedId: string,
+  sessionId: string,
+  session: GatewaySessionDescriptor,
+  extras: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    id: sessionId,
+    sessionId,
+    ...(requestedId !== sessionId ? { requestedId } : {}),
+    ...(session.nodeId ? { nodeId: session.nodeId } : {}),
+    ...(session.globalSessionId
+      ? { globalSessionId: session.globalSessionId }
+      : {}),
+    ...extras,
+  };
+}
+
 type WorkflowGatewayCommand = 'tickets.startWork' | 'branches.openSession';
 
 type WorkflowWorktreeMode =
@@ -459,9 +525,14 @@ function workflowInputRecord(
     return undefined;
   }
   if (!isGatewayRecord(value)) {
-    workflowError(commandName, 'INVALID_ARGUMENT', `${field} must be an object`, {
-      field,
-    });
+    workflowError(
+      commandName,
+      'INVALID_ARGUMENT',
+      `${field} must be an object`,
+      {
+        field,
+      }
+    );
   }
   return value;
 }
@@ -482,9 +553,14 @@ function workflowString(
     return undefined;
   }
   if (typeof value !== 'string') {
-    workflowError(commandName, 'INVALID_ARGUMENT', `${field} must be a string`, {
-      field,
-    });
+    workflowError(
+      commandName,
+      'INVALID_ARGUMENT',
+      `${field} must be a string`,
+      {
+        field,
+      }
+    );
   }
   return value;
 }
@@ -497,9 +573,14 @@ function workflowBoolean(
   const value = record?.[field];
   if (value === undefined) return undefined;
   if (typeof value !== 'boolean') {
-    workflowError(commandName, 'INVALID_ARGUMENT', `${field} must be a boolean`, {
-      field,
-    });
+    workflowError(
+      commandName,
+      'INVALID_ARGUMENT',
+      `${field} must be a boolean`,
+      {
+        field,
+      }
+    );
   }
   return value;
 }
@@ -621,7 +702,11 @@ async function workflowRefOid(
   repoPath: string,
   refName: string
 ): Promise<string | undefined> {
-  const result = await workflowGitOptional(repoPath, ['rev-parse', '--verify', refName]);
+  const result = await workflowGitOptional(repoPath, [
+    'rev-parse',
+    '--verify',
+    refName,
+  ]);
   return result?.stdout.trim() || undefined;
 }
 
@@ -665,11 +750,21 @@ async function prepareWorkflowPrHeadBranch(
   );
 
   const fetchedOid = await workflowRefOid(repoPath, prMeta.remoteRef);
-  assertWorkflowRefMatchesPrHead(commandName, prMeta.remoteRef, fetchedOid, prMeta);
+  assertWorkflowRefMatchesPrHead(
+    commandName,
+    prMeta.remoteRef,
+    fetchedOid,
+    prMeta
+  );
 
   if (branchState.local) {
     const localOid = await workflowRefOid(repoPath, `refs/heads/${branchName}`);
-    assertWorkflowRefMatchesPrHead(commandName, `refs/heads/${branchName}`, localOid, prMeta);
+    assertWorkflowRefMatchesPrHead(
+      commandName,
+      `refs/heads/${branchName}`,
+      localOid,
+      prMeta
+    );
     return;
   }
 
@@ -706,18 +801,34 @@ async function resolveWorkflowBranchFromPr(
   }
   const prHead = workflowString(commandName, pr, 'head');
   if (prHead) {
-    return pr ? { branchName: prHead, prMeta: { ...pr, head: prHead } } : { branchName: prHead };
+    return pr
+      ? { branchName: prHead, prMeta: { ...pr, head: prHead } }
+      : { branchName: prHead };
   }
   const prNumber = pr?.['number'];
   if (prNumber === undefined) {
-    workflowError(commandName, 'INVALID_ARGUMENT', 'branch.name or pr.head/number is required', {
-      field: 'branch.name',
-    });
+    workflowError(
+      commandName,
+      'INVALID_ARGUMENT',
+      'branch.name or pr.head/number is required',
+      {
+        field: 'branch.name',
+      }
+    );
   }
-  if (typeof prNumber !== 'number' || !Number.isInteger(prNumber) || prNumber <= 0) {
-    workflowError(commandName, 'INVALID_ARGUMENT', 'pr.number must be a positive integer', {
-      field: 'pr.number',
-    });
+  if (
+    typeof prNumber !== 'number' ||
+    !Number.isInteger(prNumber) ||
+    prNumber <= 0
+  ) {
+    workflowError(
+      commandName,
+      'INVALID_ARGUMENT',
+      'pr.number must be a positive integer',
+      {
+        field: 'pr.number',
+      }
+    );
   }
   try {
     const { stdout } = (await execFileAsync(
@@ -732,8 +843,10 @@ async function resolveWorkflowBranchFromPr(
       { cwd: repoPath, timeout: 15000 }
     )) as WorkflowGitResult;
     const data = JSON.parse(stdout) as Record<string, unknown>;
-    const head = typeof data['headRefName'] === 'string' ? data['headRefName'] : '';
-    const headOid = typeof data['headRefOid'] === 'string' ? data['headRefOid'] : '';
+    const head =
+      typeof data['headRefName'] === 'string' ? data['headRefName'] : '';
+    const headOid =
+      typeof data['headRefOid'] === 'string' ? data['headRefOid'] : '';
     if (!head) throw new Error('PR headRefName missing');
     if (!headOid) throw new Error('PR headRefOid missing');
     return {
@@ -762,10 +875,15 @@ async function resolveWorkflowBranchFromPr(
         }
       );
     }
-    workflowError(commandName, 'NOT_FOUND', execErrorMessage(error, 'unknown PR'), {
-      reasonCode: 'UNKNOWN_PR',
-      prNumber,
-    });
+    workflowError(
+      commandName,
+      'NOT_FOUND',
+      execErrorMessage(error, 'unknown PR'),
+      {
+        reasonCode: 'UNKNOWN_PR',
+        prNumber,
+      }
+    );
   }
 }
 
@@ -804,9 +922,15 @@ async function resolveWorkflowWorktree(
     explicitBranch
   );
   const mode = workflowWorktreeMode(commandName, worktree);
-  const allowDirty = workflowBoolean(commandName, worktree, 'allowDirty') ?? false;
-  const allowConflicted = workflowBoolean(commandName, worktree, 'allowConflicted') ?? false;
-  const explicitWorktreePath = workflowString(commandName, worktree, 'worktreePath');
+  const allowDirty =
+    workflowBoolean(commandName, worktree, 'allowDirty') ?? false;
+  const allowConflicted =
+    workflowBoolean(commandName, worktree, 'allowConflicted') ?? false;
+  const explicitWorktreePath = workflowString(
+    commandName,
+    worktree,
+    'worktreePath'
+  );
   const worktrees = parseGitWorktreePorcelain(
     (
       await workflowGit(
@@ -822,7 +946,9 @@ async function resolveWorkflowWorktree(
     ? path.resolve(explicitWorktreePath)
     : undefined;
   let existing = requestedWorktreePath
-    ? worktrees.find((entry) => path.resolve(entry.path) === requestedWorktreePath)
+    ? worktrees.find(
+        (entry) => path.resolve(entry.path) === requestedWorktreePath
+      )
     : worktrees.find((entry) => entry.branchName === branchName);
   let createdWorktree = false;
 
@@ -841,25 +967,40 @@ async function resolveWorkflowWorktree(
   }
 
   if (!existing && mode === 'reuse-existing') {
-    workflowError(commandName, 'NOT_FOUND', 'no existing worktree for requested branch', {
-      reasonCode: 'WORKTREE_NOT_FOUND',
-      branchName,
-      worktreePolicy: mode,
-    });
+    workflowError(
+      commandName,
+      'NOT_FOUND',
+      'no existing worktree for requested branch',
+      {
+        reasonCode: 'WORKTREE_NOT_FOUND',
+        branchName,
+        worktreePolicy: mode,
+      }
+    );
   }
   if (!existing && mode === 'reject-if-missing') {
-    workflowError(commandName, 'NOT_FOUND', 'worktree is required to already exist', {
-      reasonCode: 'WORKTREE_NOT_FOUND',
-      branchName,
-      worktreePolicy: mode,
-    });
+    workflowError(
+      commandName,
+      'NOT_FOUND',
+      'worktree is required to already exist',
+      {
+        reasonCode: 'WORKTREE_NOT_FOUND',
+        branchName,
+        worktreePolicy: mode,
+      }
+    );
   }
   if (!existing) {
     const targetPath =
       requestedWorktreePath ??
       path.join(resolvedRepoPath, '.worktrees', branchSlug(branchName));
-    const branchState = await workflowBranchExists(resolvedRepoPath, branchName);
-    const branchBase = workflowString(commandName, branch, 'base') ?? workflowString(commandName, prMeta, 'base');
+    const branchState = await workflowBranchExists(
+      resolvedRepoPath,
+      branchName
+    );
+    const branchBase =
+      workflowString(commandName, branch, 'base') ??
+      workflowString(commandName, prMeta, 'base');
     await prepareWorkflowPrHeadBranch(
       commandName,
       resolvedRepoPath,
@@ -876,16 +1017,22 @@ async function resolveWorkflowWorktree(
         'BRANCH_CREATE_FROM_REMOTE_FAILED'
       );
     }
-    const addArgs = branchState.local || branchState.remote
-      ? ['worktree', 'add', targetPath, branchName]
-      : branchBase
-        ? ['worktree', 'add', '-b', branchName, targetPath, branchBase]
-        : undefined;
+    const addArgs =
+      branchState.local || branchState.remote
+        ? ['worktree', 'add', targetPath, branchName]
+        : branchBase
+          ? ['worktree', 'add', '-b', branchName, targetPath, branchBase]
+          : undefined;
     if (!addArgs) {
-      workflowError(commandName, 'NOT_FOUND', 'branch was not found and no base branch was provided for creation', {
-        reasonCode: 'UNKNOWN_BRANCH',
-        branchName,
-      });
+      workflowError(
+        commandName,
+        'NOT_FOUND',
+        'branch was not found and no base branch was provided for creation',
+        {
+          reasonCode: 'UNKNOWN_BRANCH',
+          branchName,
+        }
+      );
     }
     await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
     await workflowGit(
@@ -900,38 +1047,56 @@ async function resolveWorkflowWorktree(
   }
 
   const finalWorktreePath = path.resolve(existing.path);
-  await assertWorkflowWorktreeMatchesPrHead(commandName, finalWorktreePath, prMeta);
+  await assertWorkflowWorktreeMatchesPrHead(
+    commandName,
+    finalWorktreePath,
+    prMeta
+  );
   const conflicted = Boolean(
-    (await workflowGit(
-      commandName,
-      finalWorktreePath,
-      ['ls-files', '-u'],
-      'UPSTREAM_ERROR',
-      'WORKTREE_CONFLICT_CHECK_FAILED'
-    )).stdout.trim()
+    (
+      await workflowGit(
+        commandName,
+        finalWorktreePath,
+        ['ls-files', '-u'],
+        'UPSTREAM_ERROR',
+        'WORKTREE_CONFLICT_CHECK_FAILED'
+      )
+    ).stdout.trim()
   );
   const dirty = Boolean(
-    (await workflowGit(
-      commandName,
-      finalWorktreePath,
-      ['status', '--porcelain'],
-      'UPSTREAM_ERROR',
-      'WORKTREE_DIRTY_CHECK_FAILED'
-    )).stdout.trim()
+    (
+      await workflowGit(
+        commandName,
+        finalWorktreePath,
+        ['status', '--porcelain'],
+        'UPSTREAM_ERROR',
+        'WORKTREE_DIRTY_CHECK_FAILED'
+      )
+    ).stdout.trim()
   );
   if (conflicted && !allowConflicted) {
-    workflowError(commandName, 'SESSION_CONFLICT', 'worktree has unresolved conflicts', {
-      reasonCode: 'WORKTREE_CONFLICTED',
-      worktreePath: finalWorktreePath,
-      branchName,
-    });
+    workflowError(
+      commandName,
+      'SESSION_CONFLICT',
+      'worktree has unresolved conflicts',
+      {
+        reasonCode: 'WORKTREE_CONFLICTED',
+        worktreePath: finalWorktreePath,
+        branchName,
+      }
+    );
   }
   if (dirty && !allowDirty) {
-    workflowError(commandName, 'SESSION_CONFLICT', 'worktree has uncommitted changes', {
-      reasonCode: 'WORKTREE_DIRTY',
-      worktreePath: finalWorktreePath,
-      branchName,
-    });
+    workflowError(
+      commandName,
+      'SESSION_CONFLICT',
+      'worktree has uncommitted changes',
+      {
+        reasonCode: 'WORKTREE_DIRTY',
+        worktreePath: finalWorktreePath,
+        branchName,
+      }
+    );
   }
   return {
     repoPath: resolvedRepoPath,
@@ -948,7 +1113,11 @@ function workflowSessionBody(
   commandName: WorkflowGatewayCommand,
   input: Record<string, unknown>,
   resolved: WorkflowWorktreeResolution
-): { body: Record<string, unknown>; promptHandoff: Record<string, unknown>; controlHandoff: Record<string, unknown> } {
+): {
+  body: Record<string, unknown>;
+  promptHandoff: Record<string, unknown>;
+  controlHandoff: Record<string, unknown>;
+} {
   const session = workflowInputRecord(commandName, input, 'session') ?? {};
   const prompt = workflowInputRecord(commandName, input, 'prompt');
   const body: Record<string, unknown> = {
@@ -972,7 +1141,8 @@ function workflowSessionBody(
   }
   const promptMode = workflowString(commandName, prompt, 'mode') ?? 'none';
   const promptText = workflowString(commandName, prompt, 'prompt');
-  const requireTypedDelivery = workflowBoolean(commandName, prompt, 'requireTypedDelivery') ?? false;
+  const requireTypedDelivery =
+    workflowBoolean(commandName, prompt, 'requireTypedDelivery') ?? false;
   if (promptMode === 'unsupported' && requireTypedDelivery) {
     workflowError(
       commandName,
@@ -1011,7 +1181,10 @@ function workflowSessionBody(
       requested: typeof session['controlMode'] === 'string',
       mode: session['controlMode'] ?? null,
       delivered: typeof session['controlMode'] === 'string',
-      method: typeof session['controlMode'] === 'string' ? 'sessions.create.controlMode' : 'none',
+      method:
+        typeof session['controlMode'] === 'string'
+          ? 'sessions.create.controlMode'
+          : 'none',
     },
   };
 }
@@ -1077,16 +1250,32 @@ async function runGatewayWorkflow(
   });
   const sessionRecord = isGatewayRecord(session) ? session : {};
   const workContextId =
-    workflowString(commandName, workflowInputRecord(commandName, input, 'session'), 'workContextId') ??
-    (typeof sessionRecord['workContextId'] === 'string' ? sessionRecord['workContextId'] : undefined);
+    workflowString(
+      commandName,
+      workflowInputRecord(commandName, input, 'session'),
+      'workContextId'
+    ) ??
+    (typeof sessionRecord['workContextId'] === 'string'
+      ? sessionRecord['workContextId']
+      : undefined);
   printGatewayEnvelope(
     gatewayOk(commandName, {
       session,
       nodeId: 'local',
       repo: {
         repoPath: resolved.repoPath,
-        repoIdentity: workflowString(commandName, workflowInputRecord(commandName, input, 'repo'), 'repoIdentity') ?? null,
-        repoInstanceId: workflowString(commandName, workflowInputRecord(commandName, input, 'repo'), 'repoInstanceId') ?? null,
+        repoIdentity:
+          workflowString(
+            commandName,
+            workflowInputRecord(commandName, input, 'repo'),
+            'repoIdentity'
+          ) ?? null,
+        repoInstanceId:
+          workflowString(
+            commandName,
+            workflowInputRecord(commandName, input, 'repo'),
+            'repoInstanceId'
+          ) ?? null,
       },
       worktree: {
         path: resolved.worktreePath,
@@ -1128,6 +1317,7 @@ async function gatewayHttpJson(input: {
   method?: string;
   body?: unknown;
   capabilities?: readonly string[];
+  confirmationToken?: string;
 }): Promise<unknown> {
   const actorToken = gatewayActorToken();
   if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(input.commandName)) {
@@ -1167,6 +1357,9 @@ async function gatewayHttpJson(input: {
   if (input.body !== undefined) headers['Content-Type'] = 'application/json';
   if (input.capabilities?.length) {
     headers['x-relay-capabilities'] = input.capabilities.join(',');
+  }
+  if (input.confirmationToken?.trim()) {
+    headers['x-confirmation-token'] = input.confirmationToken.trim();
   }
 
   let res: Response;
@@ -1226,7 +1419,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -1681,6 +1874,71 @@ async function runGatewaySessionDetach(sessionArgs: string[]): Promise<never> {
       message:
         'detached CLI gateway handle only; underlying Relay session/process was left running',
     }),
+    0
+  );
+}
+
+async function runGatewaySessionKill(sessionArgs: string[]): Promise<never> {
+  const { id: requestedId, confirmationToken } =
+    parseGatewaySessionKillInput(sessionArgs);
+  const session = await gatewaySessionDescriptor(requestedId, 'sessions.kill');
+  const sessionId = session.id ?? requestedId;
+  const result = await gatewayHttpJson({
+    commandName: 'sessions.kill',
+    pathName: session.nodeId
+      ? `/hub/nodes/${encodeURIComponent(
+          session.nodeId
+        )}/sessions/${encodeURIComponent(sessionId)}`
+      : `/sessions/${encodeURIComponent(sessionId)}`,
+    method: 'DELETE',
+    capabilities: ['session:read', 'session:control:kill'],
+    ...(confirmationToken ? { confirmationToken } : {}),
+  });
+  printGatewayEnvelope(
+    gatewayOk(
+      'sessions.kill',
+      gatewaySessionIdentityPayload(requestedId, sessionId, session, {
+        ...(typeof result === 'object' && result !== null
+          ? (result as Record<string, unknown>)
+          : {}),
+        ok: true,
+        killed: true,
+      })
+    ),
+    0
+  );
+}
+
+async function runGatewaySessionRename(sessionArgs: string[]): Promise<never> {
+  const { id: requestedId, displayName } =
+    parseGatewaySessionRenameInput(sessionArgs);
+  const session = await gatewaySessionDescriptor(
+    requestedId,
+    'sessions.rename'
+  );
+  const sessionId = session.id ?? requestedId;
+  const result = await gatewayHttpJson({
+    commandName: 'sessions.rename',
+    pathName: session.nodeId
+      ? `/hub/nodes/${encodeURIComponent(
+          session.nodeId
+        )}/sessions/${encodeURIComponent(sessionId)}`
+      : `/sessions/${encodeURIComponent(sessionId)}`,
+    method: 'PATCH',
+    body: { displayName },
+    capabilities: ['session:read', 'session:control:rename'],
+  });
+  printGatewayEnvelope(
+    gatewayOk(
+      'sessions.rename',
+      gatewaySessionIdentityPayload(requestedId, sessionId, session, {
+        ...(typeof result === 'object' && result !== null
+          ? (result as Record<string, unknown>)
+          : {}),
+        renamed: true,
+        displayName,
+      })
+    ),
     0
   );
 }
@@ -2184,6 +2442,9 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
     return runGatewaySessionAttach(sessionArgs);
   if (sessionSubcommand === 'detach')
     return runGatewaySessionDetach(sessionArgs);
+  if (sessionSubcommand === 'kill') return runGatewaySessionKill(sessionArgs);
+  if (sessionSubcommand === 'rename')
+    return runGatewaySessionRename(sessionArgs);
   if (sessionSubcommand === 'stream')
     return runGatewaySessionStream(sessionArgs);
   if (sessionSubcommand === 'input') return runGatewaySessionInput(sessionArgs);
@@ -3058,18 +3319,26 @@ function parseGatewaySettingsValue(
   if (jsonValue !== undefined) {
     try {
       const parsed = JSON.parse(jsonValue) as unknown;
-      if (typeof parsed === 'string' || typeof parsed === 'boolean') return parsed;
-      gatewayInvalid(commandName, '--value-json must decode to a string or boolean');
+      if (typeof parsed === 'string' || typeof parsed === 'boolean')
+        return parsed;
+      gatewayInvalid(
+        commandName,
+        '--value-json must decode to a string or boolean'
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       printGatewayEnvelope(
-        gatewayError(commandName, gatewayCliInvalidJsonError(commandName, message)),
+        gatewayError(
+          commandName,
+          gatewayCliInvalidJsonError(commandName, message)
+        ),
         1
       );
     }
   }
   const value = gatewayArg(settingsArgs, '--value');
-  if (value === undefined) gatewayInvalid(commandName, '--value or --value-json is required');
+  if (value === undefined)
+    gatewayInvalid(commandName, '--value or --value-json is required');
   if (value === 'true') return true;
   if (value === 'false') return false;
   return value;
@@ -3109,7 +3378,9 @@ async function runGatewaySettings(gatewayArgs: string[]): Promise<never> {
     });
     printGatewayEnvelope(gatewayOk('settings.update', data), 0);
   }
-  gatewayInvalid('settings.get', 'unknown settings command', { args: gatewayArgs });
+  gatewayInvalid('settings.get', 'unknown settings command', {
+    args: gatewayArgs,
+  });
 }
 
 async function runGatewayWebhooks(gatewayArgs: string[]): Promise<never> {
@@ -3129,7 +3400,9 @@ async function runGatewayWebhooks(gatewayArgs: string[]): Promise<never> {
     });
     printGatewayEnvelope(gatewayOk('webhooks.ping', data), 0);
   }
-  gatewayInvalid('webhooks.status', 'unknown webhooks command', { args: gatewayArgs });
+  gatewayInvalid('webhooks.status', 'unknown webhooks command', {
+    args: gatewayArgs,
+  });
 }
 
 async function runGatewayV1(): Promise<never> {
@@ -4536,7 +4809,10 @@ async function runNodeUpdate(nodeArgs: string[]): Promise<void> {
   restartServiceAfterUpdate();
 }
 
-function optionalNodeJsonNumber(nodeArgs: string[], flag: string): number | undefined {
+function optionalNodeJsonNumber(
+  nodeArgs: string[],
+  flag: string
+): number | undefined {
   const value = getNodeArg(nodeArgs, flag);
   if (!value) return undefined;
   const parsed = Number(value);
@@ -4584,10 +4860,18 @@ async function runNodeMintPairToken(nodeArgs: string[]): Promise<void> {
     process.env['USERNAME'] ??
     'relay-ide-cli';
   const body: Record<string, unknown> = {};
-  optionalNodeArgBody(body, 'displayName', getNodeArg(nodeArgs, '--display-name'));
+  optionalNodeArgBody(
+    body,
+    'displayName',
+    getNodeArg(nodeArgs, '--display-name')
+  );
   optionalNodeArgBody(body, 'platform', getNodeArg(nodeArgs, '--platform'));
   optionalNodeArgBody(body, 'taskRef', getNodeArg(nodeArgs, '--task-ref'));
-  optionalNodeArgBody(body, 'correlationId', getNodeArg(nodeArgs, '--correlation-id'));
+  optionalNodeArgBody(
+    body,
+    'correlationId',
+    getNodeArg(nodeArgs, '--correlation-id')
+  );
   optionalNodeArgBody(body, 'trustTier', getNodeArg(nodeArgs, '--trust-tier'));
   const ttlSeconds = optionalNodeJsonNumber(nodeArgs, '--ttl-seconds');
   if (ttlSeconds !== undefined) body['ttlSeconds'] = ttlSeconds;
@@ -4606,7 +4890,9 @@ async function runNodeMintPairToken(nodeArgs: string[]): Promise<void> {
       'x-relay-actor-type': actorType,
       'x-relay-actor-id': actorId,
       ...(getNodeArg(nodeArgs, '--correlation-id')
-        ? { 'x-relay-correlation-id': getNodeArg(nodeArgs, '--correlation-id')! }
+        ? {
+            'x-relay-correlation-id': getNodeArg(nodeArgs, '--correlation-id')!,
+          }
         : {}),
     },
     body: JSON.stringify(body),
@@ -4621,8 +4907,8 @@ async function runNodeMintPairToken(nodeArgs: string[]): Promise<void> {
   if (!res.ok) {
     const message =
       typeof response === 'object' && response !== null
-        ? ((response as { error?: { code?: string; message?: string } }).error?.message ??
-          responseText)
+        ? ((response as { error?: { code?: string; message?: string } }).error
+            ?.message ?? responseText)
         : responseText;
     logger.error(redactBootstrapSecrets(`PAIR_TOKEN_MINT_FAILED: ${message}`));
     process.exit(1);
@@ -4631,14 +4917,22 @@ async function runNodeMintPairToken(nodeArgs: string[]): Promise<void> {
     console.log(redactBootstrapSecrets(JSON.stringify(response, null, 2)));
     return;
   }
-  const record = response as { pairToken?: string; tokenId?: string; expiresAt?: string };
+  const record = response as {
+    pairToken?: string;
+    tokenId?: string;
+    expiresAt?: string;
+  };
   if (!record.pairToken) {
-    logger.error('PAIR_TOKEN_MINT_FAILED: hub response did not include pairToken');
+    logger.error(
+      'PAIR_TOKEN_MINT_FAILED: hub response did not include pairToken'
+    );
     process.exit(1);
   }
   console.log(record.pairToken);
   if (record.expiresAt) {
-    logger.info(`pair token expires at ${record.expiresAt} and is one-time use`);
+    logger.info(
+      `pair token expires at ${record.expiresAt} and is one-time use`
+    );
   }
 }
 
@@ -4694,7 +4988,9 @@ async function runNodeSshBootstrap(nodeArgs: string[]): Promise<void> {
   console.log(`# relay-ide ssh bootstrap — generated for ${target}`);
   console.log(`# hub: ${hubUrl}`);
   console.log(`#`);
-  console.log(`# 1. get a pair token from your hub with an approved operator grant:`);
+  console.log(
+    `# 1. get a pair token from your hub with an approved operator grant:`
+  );
   console.log(
     `#    relay-ide node mint-pair-token --hub ${hubUrl} --operator-grant <relay-ohg-v1...> --display-name <name> --ttl-seconds 600`
   );

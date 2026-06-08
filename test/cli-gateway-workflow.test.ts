@@ -30,14 +30,21 @@ function mkTempRoot(name: string): string {
   return root;
 }
 
-function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = GIT_ENV): string {
+function git(
+  cwd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = GIT_ENV
+): string {
   return execFileSync('git', args, { cwd, env, encoding: 'utf8' });
 }
 
 function createCleanRepo(branchName: string): string {
   const repo = path.join(mkTempRoot('workflow-repo'), 'repo');
   fs.mkdirSync(repo, { recursive: true });
-  execFileSync('git', ['init', '-b', branchName, repo], { env: GIT_ENV, stdio: 'ignore' });
+  execFileSync('git', ['init', '-b', branchName, repo], {
+    env: GIT_ENV,
+    stdio: 'ignore',
+  });
   fs.writeFileSync(path.join(repo, 'README.md'), '# workflow fixture\n');
   git(repo, ['add', 'README.md']);
   git(repo, ['commit', '-m', 'initial fixture']);
@@ -56,7 +63,8 @@ function findOnPath(command: string): string {
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('missing server address');
+  if (!address || typeof address === 'string')
+    throw new Error('missing server address');
   return address.port;
 }
 
@@ -67,7 +75,10 @@ async function close(server: http.Server): Promise<void> {
   });
 }
 
-function runRelay(args: string[], env: NodeJS.ProcessEnv): Promise<{
+function runRelay(
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<{
   code: number;
   stdout: string;
   stderr: string;
@@ -86,7 +97,10 @@ function runRelay(args: string[], env: NodeJS.ProcessEnv): Promise<{
   });
 }
 
-function workflowArgs(command: 'branches open-session' | 'tickets start-work', input: unknown): string[] {
+function workflowArgs(
+  command: 'branches open-session' | 'tickets start-work',
+  input: unknown
+): string[] {
   return [
     'v1',
     ...command.split(' '),
@@ -127,7 +141,9 @@ test('branches.openSession delegates to /sessions with resolved repo/worktree an
         url: req.url,
         authorization: req.headers.authorization,
         capabilities: req.headers['x-relay-capabilities'],
-        ...(rawBody ? { body: JSON.parse(rawBody) as Record<string, unknown> } : {}),
+        ...(rawBody
+          ? { body: JSON.parse(rawBody) as Record<string, unknown> }
+          : {}),
       };
       captured.push(entry);
       res.setHeader('content-type', 'application/json');
@@ -145,7 +161,9 @@ test('branches.openSession delegates to /sessions with resolved repo/worktree an
         return;
       }
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
 
@@ -156,7 +174,11 @@ test('branches.openSession delegates to /sessions with resolved repo/worktree an
         repo: { repoPath: repo },
         branch: { name: 'desired-branch' },
         worktree: { mode: 'reuse-existing', worktreePath: repo },
-        session: { type: 'terminal', mode: 'pty', terminalBackend: 'relay-pty' },
+        session: {
+          type: 'terminal',
+          mode: 'pty',
+          terminalBackend: 'relay-pty',
+        },
         prompt: { mode: 'initial-prompt', prompt: 'continue the workflow' },
       }),
       {
@@ -169,7 +191,10 @@ test('branches.openSession delegates to /sessions with resolved repo/worktree an
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
     const envelope = parseEnvelope(result.stdout);
-    expect(envelope).toMatchObject({ ok: true, command: 'branches.openSession' });
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'branches.openSession',
+    });
   } finally {
     await close(server);
   }
@@ -280,10 +305,19 @@ test('missing gh CLI while resolving pr.number returns a typed GH_CLI_MISSING er
 test('pr.number create-if-missing fetches the PR head instead of creating from base', async () => {
   const repo = createCleanRepo('main');
   const origin = path.join(mkTempRoot('workflow-origin'), 'origin.git');
-  execFileSync('git', ['init', '--bare', origin], { env: GIT_ENV, stdio: 'ignore' });
+  execFileSync('git', ['init', '--bare', origin], {
+    env: GIT_ENV,
+    stdio: 'ignore',
+  });
   git(repo, ['remote', 'add', 'origin', origin]);
   git(repo, ['push', 'origin', 'main']);
-  execFileSync('git', ['--git-dir', origin, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+  execFileSync('git', [
+    '--git-dir',
+    origin,
+    'symbolic-ref',
+    'HEAD',
+    'refs/heads/main',
+  ]);
   const baseSha = git(repo, ['rev-parse', 'HEAD']).trim();
 
   git(repo, ['checkout', '-b', 'temporary-pr-head']);
@@ -322,16 +356,26 @@ test('pr.number create-if-missing fetches the PR head instead of creating from b
       captured.push({
         method: req.method,
         url: req.url,
-        ...(rawBody ? { body: JSON.parse(rawBody) as Record<string, unknown> } : {}),
+        ...(rawBody
+          ? { body: JSON.parse(rawBody) as Record<string, unknown> }
+          : {}),
       });
       res.setHeader('content-type', 'application/json');
       if (req.method === 'POST' && req.url === '/sessions') {
         res.statusCode = 201;
-        res.end(JSON.stringify({ id: 'session-pr-head', type: 'terminal', mode: 'pty' }));
+        res.end(
+          JSON.stringify({
+            id: 'session-pr-head',
+            type: 'terminal',
+            mode: 'pty',
+          })
+        );
         return;
       }
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
 
@@ -355,7 +399,10 @@ test('pr.number create-if-missing fetches the PR head instead of creating from b
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
     const envelope = parseEnvelope(result.stdout);
-    expect(envelope).toMatchObject({ ok: true, command: 'branches.openSession' });
+    expect(envelope).toMatchObject({
+      ok: true,
+      command: 'branches.openSession',
+    });
     expect(captured).toHaveLength(1);
     expect(captured[0].body).toMatchObject({
       branchName: 'feature-from-fork',

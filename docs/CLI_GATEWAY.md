@@ -14,6 +14,8 @@ relay-ide v1 tickets start-work --input-json '{...}' --json
 relay-ide v1 branches open-session --input-json '{...}' --json
 relay-ide v1 sessions attach --id <session-id-or-global-id> --json
 relay-ide v1 sessions detach --id <session-id-or-global-id> --json
+relay-ide v1 sessions kill --id <session-id-or-global-id> [--confirmation-token <token>] --json
+relay-ide v1 sessions rename --id <session-id-or-global-id> --display-name 'new name' --json
 relay-ide v1 sessions stream --id <session-id-or-global-id> --mode ndjson --json
 relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --wait-for ok --json
 relay-ide v1 files list --session-id <session-id> --path <path> --json
@@ -254,12 +256,12 @@ This boundary is part of the #797/#798/#802 split: #427 provided the trust-tier/
 
 `settings.*` and `webhooks.*` expose a narrow operational slice for CLI/agent adapters. They are not a raw config API, and they are browser-operator-session-only for now.
 
-| Command | Current auth boundary | Side effect | Contract |
-| --- | --- | --- | --- |
-| `relay-ide v1 settings get --json` | Browser operator session | read | Returns only `defaultAgent`, `defaultContinue`, `defaultYolo`, `defaultNotifications`, `claudeFullscreen`, `renamerTool`, and `updateChannel`, plus redaction metadata. |
-| `relay-ide v1 settings update --input-json '{...}' --json` | Browser operator session | write | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed. |
-| `relay-ide v1 webhooks status --json` | Browser operator session | read | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata. |
-| `relay-ide v1 webhooks ping --json` | Browser operator session | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs. |
+| Command                                                    | Current auth boundary    | Side effect | Contract                                                                                                                                                                |
+| ---------------------------------------------------------- | ------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `relay-ide v1 settings get --json`                         | Browser operator session | read        | Returns only `defaultAgent`, `defaultContinue`, `defaultYolo`, `defaultNotifications`, `claudeFullscreen`, `renamerTool`, and `updateChannel`, plus redaction metadata. |
+| `relay-ide v1 settings update --input-json '{...}' --json` | Browser operator session | write       | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed.                        |
+| `relay-ide v1 webhooks status --json`                      | Browser operator session | read        | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata.                                                              |
+| `relay-ide v1 webhooks ping --json`                        | Browser operator session | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs.                                                                             |
 
 Settings update accepts either `--input-json` / `--input-file` with `{ "key", "value", "confirmRiskyWrite"? }` or typed flags (`--key`, `--value` / `--value-json`, optional `--confirm-risky-write`). `defaultYolo: true` and `updateChannel` changes require `confirmRiskyWrite: true`; otherwise the hub returns `CONFIRMATION_REQUIRED` with a bounded challenge that names only the key and requested value. The shared security policy still defines settings/webhook capability bits as future grant names, but they are not trusted for these routes yet.
 
@@ -269,7 +271,7 @@ These routes are mounted under `/cli-gateway`, but they are wired through the br
 
 ## Session descriptors
 
-`nodes list`, `sessions list`, `sessions get`, `sessions create`, `sessions attach`, and `sessions detach` return existing backend descriptors, wrapped in gateway envelopes. Session descriptors are expected to include the already-available identity and control fields where present:
+`nodes list`, `sessions list`, `sessions get`, `sessions create`, `sessions attach`, `sessions detach`, `sessions kill`, and `sessions rename` return existing backend descriptors or lifecycle summaries, wrapped in gateway envelopes. Session descriptors are expected to include the already-available identity and control fields where present:
 
 - `id`, `globalSessionId`, `nodeId`
 - `type`, `agent`, `mode`, `cwd`
@@ -312,9 +314,16 @@ Minimal examples:
 
 ```json
 {
-  "ticket": { "source": "github", "id": "871", "url": "https://github.com/donovan-yohan/relay-ide/issues/871" },
+  "ticket": {
+    "source": "github",
+    "id": "871",
+    "url": "https://github.com/donovan-yohan/relay-ide/issues/871"
+  },
   "repo": { "repoPath": "/Users/me/code/relay-ide" },
-  "branch": { "name": "issue-871-backend-start-work-branch-contract", "base": "origin/nightly" },
+  "branch": {
+    "name": "issue-871-backend-start-work-branch-contract",
+    "base": "origin/nightly"
+  },
   "worktree": { "mode": "create-if-missing" },
   "session": { "type": "agent", "agent": "claude" },
   "prompt": { "mode": "initial-prompt", "prompt": "Work issue #871." }
@@ -383,6 +392,10 @@ Legacy flat fields `nodeId`, `repoPath`, `worktreePath`, and `cwd` on `sessions.
 `sessions attach` is intentionally descriptor-only in v1. It does not start a Claude/Codex/Hermes adapter runtime and it does not stream PTY data.
 
 `sessions detach` intentionally does not call the session kill route. If the session is already gone, the command returns the normal typed `NOT_FOUND` envelope from `sessions.get`.
+
+`relay-ide v1 sessions kill --id <id> [--confirmation-token <token>] --json` resolves local and routed session IDs before calling the Relay-owned lifecycle route. Local sessions use `DELETE /sessions/:id`; routed sessions use `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, which forwards `sessions.kill` over node-link RPC and removes the hub's scoped session envelope only after the node acknowledges. The command requires `session:control:kill`, is marked destructive in the manifest, forwards retry tokens as `x-confirmation-token`, and remains subject to the existing high-risk confirmation policy.
+
+`relay-ide v1 sessions rename --id <id> --display-name <name> --json` uses `PATCH /sessions/:id` locally and `PATCH /hub/nodes/:nodeId/sessions/:sessionId` remotely. Remote renames forward `sessions.rename` over node-link RPC and require `session:control:rename`; they fail closed on stale envelopes, offline nodes, and policy denial.
 
 Fail-closed examples:
 

@@ -487,7 +487,7 @@ describe('node-link-rpc-host', () => {
       channel: 'rpc',
       type: 'sessions.kill.result',
       requestId: 'req-1',
-      payload: { ok: true },
+      payload: { ok: true, id: 'sess-1', sessionId: 'sess-1' },
     });
   });
 
@@ -522,6 +522,57 @@ describe('node-link-rpc-host', () => {
     expect(err.code).toBe('NOT_FOUND');
     expect(err.retryable).toBe(false);
   });
+
+  it('dispatches sessions.rename to localRelayNode', () => {
+    const localRelayNode = fakeLocalNode({
+      updateDisplayName: vi.fn().mockReturnValue({ renamed: true }),
+    });
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('sessions.rename', {
+        id: 'sess-1',
+        displayName: 'Sleepy Crab',
+      }),
+      ctx
+    );
+
+    expect(localRelayNode.sessions.updateDisplayName).toHaveBeenCalledWith(
+      'sess-1',
+      'Sleepy Crab'
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      channel: 'rpc',
+      type: 'sessions.rename.result',
+      requestId: 'req-1',
+      payload: {
+        ok: true,
+        renamed: true,
+        id: 'sess-1',
+        sessionId: 'sess-1',
+        displayName: 'Sleepy Crab',
+      },
+    });
+  });
+
+  it(
+    'responds with INVALID_REQUEST when sessions.rename payload is missing displayName',
+    () => {
+      const localRelayNode = fakeLocalNode({ updateDisplayName: vi.fn() });
+      const host = createNodeLinkRpcHost({ localRelayNode });
+      const { sent, ctx } = context();
+
+      host.handle(envelope('sessions.rename', { id: 'sess-1' }), ctx);
+
+      expect(localRelayNode.sessions.updateDisplayName).not.toHaveBeenCalled();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.type).toBe('sessions.rename.error');
+      const err = sent[0]!.error as RelayNodeError;
+      expect(err.code).toBe('INVALID_REQUEST');
+    }
+  );
 
   it('responds with INVALID_REQUEST when payload is missing type', () => {
     const localRelayNode = fakeLocalNode();

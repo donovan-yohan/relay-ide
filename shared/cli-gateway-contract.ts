@@ -21,6 +21,8 @@ export type RelayCliGatewayCommand =
   | 'sessions.renew'
   | 'sessions.attach'
   | 'sessions.detach'
+  | 'sessions.kill'
+  | 'sessions.rename'
   | 'sessions.stream'
   | 'sessions.input'
   | 'sessions.interventions'
@@ -488,6 +490,48 @@ const detachOutputSchema: RelayJsonSchema = {
     message: stringSchema,
   },
   required: ['detached', 'killed', 'session', 'message'],
+};
+
+const sessionKillOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ok: booleanSchema,
+    killed: booleanSchema,
+    id: stringSchema,
+    sessionId: stringSchema,
+    requestedId: stringSchema,
+    nodeId: stringSchema,
+    globalSessionId: stringSchema,
+  },
+  required: ['ok', 'killed', 'id', 'sessionId'],
+};
+
+const sessionRenameInputSchema: RelayJsonSchema = {
+  title: 'SessionsRenameInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    displayName: stringSchema,
+  },
+  required: ['id', 'displayName'],
+};
+
+const sessionRenameOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    renamed: booleanSchema,
+    id: stringSchema,
+    sessionId: stringSchema,
+    requestedId: stringSchema,
+    nodeId: stringSchema,
+    globalSessionId: stringSchema,
+    displayName: stringSchema,
+    session: sessionDescriptorSchema,
+  },
+  required: ['renamed', 'id', 'sessionId', 'displayName'],
 };
 
 const sessionStreamInputSchema: RelayJsonSchema = {
@@ -1649,7 +1693,12 @@ const webhookStatusOutputDataSchema: RelayJsonSchema = {
           webhookError: stringSchema,
           lastEventAt: nullableStringSchema,
         },
-        required: ['repoPath', 'webhookStatus', 'webhookEnabled', 'lastEventAt'],
+        required: [
+          'repoPath',
+          'webhookStatus',
+          'webhookEnabled',
+          'lastEventAt',
+        ],
       },
     },
     redaction: cliGatewayWebhookRedactionSchema,
@@ -1893,7 +1942,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'tab:mode:set-agent',
     ],
     inputSchema: ticketsStartWorkWorkflowInputSchema,
-    outputSchema: okOutput('TicketsStartWorkOutput', workflowCommandOutputSchema),
+    outputSchema: okOutput(
+      'TicketsStartWorkOutput',
+      workflowCommandOutputSchema
+    ),
     errorCodes: workflowGatewayErrorCodes,
   },
   {
@@ -1918,7 +1970,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'tab:mode:set-agent',
     ],
     inputSchema: branchesOpenSessionWorkflowInputSchema,
-    outputSchema: okOutput('BranchesOpenSessionOutput', workflowCommandOutputSchema),
+    outputSchema: okOutput(
+      'BranchesOpenSessionOutput',
+      workflowCommandOutputSchema
+    ),
     errorCodes: workflowGatewayErrorCodes,
   },
   {
@@ -2022,6 +2077,73 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'INVALID_ARGUMENT',
       'NOT_FOUND',
       'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.kill',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'kill',
+      '--id',
+      '<session-id>',
+      '--json',
+    ],
+    summary:
+      'Destroy a local or routed session and terminate its underlying process.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'session:control:kill'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: stringSchema, confirmationToken: stringSchema },
+      required: ['id'],
+    },
+    outputSchema: okOutput('SessionsKillOutput', sessionKillOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'CONFIRMATION_REQUIRED',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.rename',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'rename',
+      '--id',
+      '<session-id>',
+      '--display-name',
+      '<display-name>',
+      '--json',
+    ],
+    summary:
+      'Persistently rename a local or routed session display name without changing process lifecycle.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'session:control:rename'],
+    inputSchema: sessionRenameInputSchema,
+    outputSchema: okOutput('SessionsRenameOutput', sessionRenameOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'INVALID_JSON',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],
@@ -2867,7 +2989,12 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {},
     },
     outputSchema: okOutput('SettingsGetOutput', settingsGetOutputDataSchema),
-    errorCodes: ['UNAUTHORIZED', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'settings.update',
@@ -2887,7 +3014,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: [],
     inputSchema: settingsUpdateInputSchema,
-    outputSchema: okOutput('SettingsUpdateOutput', settingsUpdateOutputDataSchema),
+    outputSchema: okOutput(
+      'SettingsUpdateOutput',
+      settingsUpdateOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'FORBIDDEN',
@@ -2911,8 +3041,16 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       additionalProperties: false,
       properties: {},
     },
-    outputSchema: okOutput('WebhooksStatusOutput', webhookStatusOutputDataSchema),
-    errorCodes: ['UNAUTHORIZED', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    outputSchema: okOutput(
+      'WebhooksStatusOutput',
+      webhookStatusOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'webhooks.ping',
@@ -2929,7 +3067,12 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {},
     },
     outputSchema: okOutput('WebhooksPingOutput', webhookPingOutputDataSchema),
-    errorCodes: ['UNAUTHORIZED', 'FORBIDDEN', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
 ];
 

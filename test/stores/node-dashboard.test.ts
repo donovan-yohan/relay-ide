@@ -310,6 +310,8 @@ describe('hub node dashboard state', () => {
     // fixtures unless explicitly granted/challenged, so challenge remains at 2.
     // #814 added `node:pair-token:create` for grant-backed node bootstrap; it
     // is denied by these node policy fixtures unless explicitly delegated.
+    // #869 added `session:control:rename`; it follows the kill tier pattern:
+    // allowed in dev, denied in sandbox + prod.
     // #873 added four settings/webhook gateway bits. The read bits
     // (`settings:read`, `integration:webhook:read`) are default-granted on
     // dev nodes; `settings:write` remains high-risk and this fixture's prod
@@ -318,9 +320,9 @@ describe('hub node dashboard state', () => {
     expect(
       rows.map((row) => [row.security.trustTier, row.security.postureLabel])
     ).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 30'],
-      ['dev', 'allow 17 · challenge 0 · deny 14'],
-      ['prod', 'allow 1 · challenge 2 · deny 28'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 31'],
+      ['dev', 'allow 18 · challenge 0 · deny 14'],
+      ['prod', 'allow 1 · challenge 2 · deny 29'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',

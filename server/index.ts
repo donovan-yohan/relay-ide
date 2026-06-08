@@ -205,7 +205,9 @@ import {
   capabilitiesDecisionFromRequest,
   capabilityError,
   clampInterventionLimit,
+  CONTROL_KILL_CAPABILITY,
   CONTROL_READ_CAPABILITY,
+  CONTROL_RENAME_CAPABILITY,
   CONTROL_SESSION_CAPABILITY,
   CONTROL_WRITE_CAPABILITY,
   createAgentDrivenInitialControlState,
@@ -4126,13 +4128,19 @@ async function main(): Promise<void> {
 
   // DELETE /sessions/:id
   app.delete('/sessions/:id', requireAuth, (req, res) => {
+    const decision = capabilityDecisionFromRequest(req, CONTROL_KILL_CAPABILITY);
+    if (decision.decision !== 'allow') {
+      const error = capabilityError(decision);
+      res.status(sessionControlErrorStatus(error)).json({ error });
+      return;
+    }
     const id = req.params['id'] as string;
     try {
       const sessionToDelete = localRelayNode.sessions.get(id);
       localRelayNode.sessions.kill(id);
       push.removeSession(id);
       if (sessionToDelete) gitWatcher.unwatch(sessionToDelete.cwd);
-      res.json({ ok: true });
+      res.json({ ok: true, id, sessionId: id, killed: true });
     } catch (_) {
       res.status(404).json({ error: 'Session not found' });
     }
@@ -4140,8 +4148,18 @@ async function main(): Promise<void> {
 
   // PATCH /sessions/:id — update displayName and persist to metadata
   app.patch('/sessions/:id', requireAuth, (req, res) => {
-    const { displayName } = req.body as { displayName?: string };
-    if (!displayName) {
+    const decision = capabilityDecisionFromRequest(
+      req,
+      CONTROL_RENAME_CAPABILITY
+    );
+    if (decision.decision !== 'allow') {
+      const error = capabilityError(decision);
+      res.status(sessionControlErrorStatus(error)).json({ error });
+      return;
+    }
+    const body = isRecord(req.body) ? req.body : {};
+    const displayName = body['displayName'];
+    if (typeof displayName !== 'string' || displayName.trim().length === 0) {
       res.status(400).json({ error: 'displayName is required' });
       return;
     }
@@ -4159,7 +4177,7 @@ async function main(): Promise<void> {
           lastActivity: session.lastActivity,
         });
       }
-      res.json(updated);
+      res.json({ ...updated, id, sessionId: id, displayName });
     } catch (_) {
       res.status(404).json({ error: 'Session not found' });
     }
