@@ -18,6 +18,18 @@ import type {
   FileRpcWriteResponse,
 } from '../../../shared/file-rpc.js';
 import type {
+  WorkspaceEvidenceErrorResponse,
+  WorkspaceEvidenceListRequest,
+  WorkspaceEvidenceListResponse,
+  WorkspaceEvidencePreviewRequest,
+  WorkspaceEvidencePreviewResponse,
+  WorkspaceEvidenceReadRequest,
+  WorkspaceEvidenceReadResponse,
+  WorkspaceEvidenceRoot,
+  WorkspaceEvidenceStatRequest,
+  WorkspaceEvidenceStatResponse,
+} from '../../../shared/workspace-evidence.js';
+import type {
   SessionSummary,
   WorktreeInfo,
   Repo,
@@ -1124,6 +1136,49 @@ export async function fetchNodeFsStat(
       body: JSON.stringify(body),
     })
   );
+}
+
+export type WorkspaceEvidenceApiError = WorkspaceEvidenceErrorResponse;
+
+const WORKSPACE_EVIDENCE_PATH = '/workspace-evidence';
+
+async function postWorkspaceEvidence<T>(operation: 'list' | 'stat' | 'read' | 'preview', body: unknown): Promise<T> {
+  return json<T>(
+    await fetch(`${WORKSPACE_EVIDENCE_PATH}/${operation}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+export async function fetchWorkspaceEvidenceRoots(): Promise<WorkspaceEvidenceRoot[]> {
+  const data = await json<{ roots?: WorkspaceEvidenceRoot[] }>(await fetch(`${WORKSPACE_EVIDENCE_PATH}/roots`));
+  return Array.isArray(data.roots) ? data.roots : [];
+}
+
+export async function fetchWorkspaceEvidenceList(
+  request: WorkspaceEvidenceListRequest
+): Promise<WorkspaceEvidenceListResponse> {
+  return postWorkspaceEvidence<WorkspaceEvidenceListResponse>('list', request);
+}
+
+export async function fetchWorkspaceEvidenceStat(
+  request: WorkspaceEvidenceStatRequest
+): Promise<WorkspaceEvidenceStatResponse> {
+  return postWorkspaceEvidence<WorkspaceEvidenceStatResponse>('stat', request);
+}
+
+export async function fetchWorkspaceEvidenceRead(
+  request: WorkspaceEvidenceReadRequest
+): Promise<WorkspaceEvidenceReadResponse> {
+  return postWorkspaceEvidence<WorkspaceEvidenceReadResponse>('read', request);
+}
+
+export async function fetchWorkspaceEvidencePreview(
+  request: WorkspaceEvidencePreviewRequest
+): Promise<WorkspaceEvidencePreviewResponse> {
+  return postWorkspaceEvidence<WorkspaceEvidencePreviewResponse>('preview', request);
 }
 
 export interface NodeFsWriteArgs {
