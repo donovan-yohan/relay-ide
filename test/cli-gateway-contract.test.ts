@@ -160,6 +160,13 @@ describe('CLI gateway contract', () => {
       'context.list',
       'context.pin',
       'context.unpin',
+      'work-context-artifacts.publish',
+      'work-context-artifacts.list',
+      'work-context-artifacts.show',
+      'work-context-artifacts.pin',
+      'work-context-artifacts.unpin',
+      'work-context-artifacts.export',
+      'work-context-artifacts.doctor',
       'inbox.send',
       'inbox.list',
       'inbox.get',
@@ -329,6 +336,63 @@ describe('CLI gateway contract', () => {
       schemaAcceptsCommandInput('worktrees.delete', {
         repoPath: '/tmp/repo',
         worktreePath: '/tmp/repo/.worktrees/one',
+      })
+    ).toBe(true);
+    expect(relayCommandDefinition('work-context-artifacts.publish')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context'],
+    });
+    expect(relayCommandDefinition('work-context-artifacts.pin')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context'],
+    });
+    expect(relayCommandDefinition('work-context-artifacts.unpin')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context'],
+    });
+    expect(relayCommandDefinition('work-context-artifacts.export')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['work-context'],
+    });
+    expect(schemaAcceptsCommandInput('work-context-artifacts.publish', {})).toBe(
+      false
+    );
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.publish', {
+        workContextId: 'wc:contract',
+        artifact: {},
+      })
+    ).toBe(true);
+    expect(schemaAcceptsCommandInput('work-context-artifacts.show', { id: 'artifact:1' })).toBe(
+      true
+    );
+    expect(schemaAcceptsCommandInput('work-context-artifacts.export', { id: 'artifact:1' })).toBe(
+      true
+    );
+    expect(schemaAcceptsCommandInput('work-context-artifacts.pin', { id: 'artifact:1' })).toBe(
+      false
+    );
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.pin', {
+        id: 'artifact:1',
+        workContextId: 'wc:contract',
+      })
+    ).toBe(true);
+    expect(schemaAcceptsCommandInput('work-context-artifacts.unpin', { id: 'artifact:1' })).toBe(
+      false
+    );
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.unpin', {
+        id: 'artifact:1',
+        workContextId: 'wc:contract',
       })
     ).toBe(true);
     expect(relayCommandDefinition('sessions.stream')).toMatchObject({
@@ -801,6 +865,13 @@ describe('CLI gateway contract', () => {
       'context.list',
       'context.pin',
       'context.unpin',
+      'work-context-artifacts.publish',
+      'work-context-artifacts.list',
+      'work-context-artifacts.show',
+      'work-context-artifacts.pin',
+      'work-context-artifacts.unpin',
+      'work-context-artifacts.export',
+      'work-context-artifacts.doctor',
       'inbox.send',
       'inbox.list',
       'inbox.get',

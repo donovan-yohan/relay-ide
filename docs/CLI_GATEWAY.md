@@ -28,6 +28,13 @@ relay-ide v1 context get --id <context-packet-id> --json
 relay-ide v1 context list [--work-context-id <work-context-id>] --json
 relay-ide v1 context pin --id <context-packet-id> --work-context-id <work-context-id> --json
 relay-ide v1 context unpin --id <context-packet-id> --work-context-id <work-context-id> --json
+relay-ide v1 work-context-artifacts publish --work-context-id <work-context-id> --artifact-file <pipeline-handoff.json> --json
+relay-ide v1 work-context-artifacts list --work-context-id <work-context-id> --json
+relay-ide v1 work-context-artifacts show --id <artifact-id> [--current-head-sha <sha>] --json
+relay-ide v1 work-context-artifacts pin --id <artifact-id> --work-context-id <work-context-id> --json
+relay-ide v1 work-context-artifacts unpin --id <artifact-id> --work-context-id <work-context-id> --json
+relay-ide v1 work-context-artifacts export --id <artifact-id> [--output <path>] --json
+relay-ide v1 work-context-artifacts doctor --json
 relay-ide v1 supervisor sessions --json
 relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
 relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json
@@ -96,6 +103,8 @@ The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvel
 
 The schema is the source of truth for adapter generation. A command missing from this manifest is not stable adapter API, even if an internal REST/WebSocket route exists. WorkContext-pinning commands are exposed here as `context.pin`, `context.unpin`, and `context.list --work-context-id`; agents should discover and call those gateway verbs instead of private HTTP routes.
 
+WorkContext artifact operations are also part of the stable manifest: `work-context-artifacts.publish`, `list`, `show`, `pin`, `unpin`, `export`, and `doctor`. These commands expose PipelineHandoffArtifact storage through the hub without giving adapters private database paths or raw transcript access. `publish` accepts the artifact object through `--input-json`, `--input-file`, or `--artifact-file`; `list` is bounded and metadata-only; `show` validates payload integrity; `export` returns only the sanitized public-summary form and never raw payload bytes; `doctor` reports bounded store health/manifest metadata. Stale-head checks use `currentHeadSha` / `--current-head-sha` and return typed gateway errors rather than silently accepting evidence for the wrong PR head. The current actor-token lane remains read-only: artifact writes (`publish`, `pin`, and `unpin`) require the browser-session gateway path until scoped write grants are implemented.
+
 ## Command taxonomy
 
 Relay command metadata is defined in [`shared/relay-command-manifest.ts`](../shared/relay-command-manifest.ts) as a projection of this v1 gateway contract. That module adds product-facing fields on top of each stable gateway command: `id`/`name`, label, description/summary, supported surfaces, input/output schemas, capability hints, side-effect class, confirmation requirement, scope kinds, and the public handler projection.
@@ -132,6 +141,10 @@ The first scoped actor credential slice supports only this read-only hub-backed 
 | `relay-ide v1 sessions list --json`               | `sessions.list`     | `session:read`      | Reads session descriptors and control summaries.                                                    |
 | `relay-ide v1 sessions get --id <id> --json`      | `sessions.get`      | `session:read`      | Validates the credential against the requested session/global session id when scoped that narrowly. |
 | `relay-ide v1 work-contexts get --id <id> --json` | `work-contexts.get` | `session:read`      | Validates work-context scope when the credential is scoped to a work context.                       |
+| `relay-ide v1 work-context-artifacts list --work-context-id <id> --json` | `work-context-artifacts.list` | `session:read` | Reads bounded artifact metadata; requires `context:read` capability hint. |
+| `relay-ide v1 work-context-artifacts show --id <id> --json` | `work-context-artifacts.show` | `session:read` | Reads one artifact envelope and validates stored payload integrity; requires `context:read`. |
+| `relay-ide v1 work-context-artifacts export --id <id> --json` | `work-context-artifacts.export` | `session:read` | Exports only the sanitized public-summary copy; requires `context:read`. |
+| `relay-ide v1 work-context-artifacts doctor --json` | `work-context-artifacts.doctor` | `session:read` | Reads bounded artifact store diagnostics; requires `context:read`. |
 
 Pass the credential with `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`; `--actor-token` wins when both are present. `--correlation-id` or `RELAY_IDE_CORRELATION_ID` may be supplied for audit correlation. The CLI sends actor credentials as bearer auth with `x-relay-cli-gateway: v1`, `x-relay-cli-actor-token: v1`, `x-relay-cli-command`, and capability hints in `x-relay-capabilities`.
 
@@ -142,6 +155,10 @@ relay-ide v1 nodes list --actor-token "$RELAY_IDE_ACTOR_TOKEN" --json
 RELAY_IDE_ACTOR_TOKEN="$token" relay-ide v1 sessions list --json
 relay-ide v1 sessions get --id <session-id-or-global-id> --actor-token "$token" --correlation-id cli-smoke-1 --json
 relay-ide v1 work-contexts get --id <work-context-id> --actor-token "$token" --json
+relay-ide v1 work-context-artifacts list --work-context-id <work-context-id> --actor-token "$token" --json
+relay-ide v1 work-context-artifacts show --id <artifact-id> --actor-token "$token" --json
+relay-ide v1 work-context-artifacts export --id <artifact-id> --actor-token "$token" --json
+relay-ide v1 work-context-artifacts doctor --actor-token "$token" --json
 ```
 
 Local discovery commands (`relay-ide v1 --list --json`, `relay-ide v1 schema --json`, and `relay-ide v1 nodes manifest --json`) remain unauthenticated. Browser-session bearer compatibility remains for legacy local/dev gateway invocations through `RELAY_IDE_BROWSER_TOKEN`; that path is separate from the actor-token lane and must not be described as a scoped actor credential. When an invocation presents `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`, the actor-token lane does not fall back to browser cookies/PIN state or node credentials. `--port` or `RELAY_IDE_PORT` selects the local hub port; otherwise Relay uses the default port.

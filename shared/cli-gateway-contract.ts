@@ -43,6 +43,13 @@ export type RelayCliGatewayCommand =
   | 'context.list'
   | 'context.pin'
   | 'context.unpin'
+  | 'work-context-artifacts.publish'
+  | 'work-context-artifacts.list'
+  | 'work-context-artifacts.show'
+  | 'work-context-artifacts.pin'
+  | 'work-context-artifacts.unpin'
+  | 'work-context-artifacts.export'
+  | 'work-context-artifacts.doctor'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -1498,6 +1505,28 @@ const contextInboxWriteErrorCodes = [
   'UPSTREAM_ERROR',
 ] as const satisfies readonly RelayCliGatewayErrorCode[];
 
+const workContextArtifactReadErrorCodes = [
+  'UNAUTHORIZED',
+  'INVALID_ARGUMENT',
+  'NOT_FOUND',
+  'FORBIDDEN',
+  'SERVER_UNAVAILABLE',
+  'UPSTREAM_ERROR',
+  'INTERNAL',
+] as const satisfies readonly RelayCliGatewayErrorCode[];
+
+const workContextArtifactWriteErrorCodes = [
+  'UNAUTHORIZED',
+  'INVALID_ARGUMENT',
+  'INVALID_JSON',
+  'NOT_FOUND',
+  'FORBIDDEN',
+  'SESSION_CONFLICT',
+  'SERVER_UNAVAILABLE',
+  'UPSTREAM_ERROR',
+  'INTERNAL',
+] as const satisfies readonly RelayCliGatewayErrorCode[];
+
 const handoffPlanInputSchema: RelayJsonSchema = {
   title: 'HandoffPlanInput',
   type: 'object',
@@ -1545,6 +1574,93 @@ const artifactReadInputSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: { ref: stringSchema },
   required: ['ref'],
+};
+
+const workContextArtifactTaskRefSchema: RelayJsonSchema = {
+  title: 'WorkContextArtifactTaskRef',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    kind: stringSchema,
+    id: stringSchema,
+    title: stringSchema,
+    url: stringSchema,
+    status: stringSchema,
+  },
+  required: ['kind', 'id'],
+};
+
+const workContextArtifactPublishInputSchema: RelayJsonSchema = {
+  title: 'WorkContextArtifactPublishInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    workContextId: stringSchema,
+    projectId: stringSchema,
+    taskRef: workContextArtifactTaskRefSchema,
+    stage: { type: 'string', enum: ['implementation', 'qa', 'review', 'release'] },
+    provenanceActorId: stringSchema,
+    actorId: stringSchema,
+    visibility: { type: 'string', enum: ['private', 'public'] },
+    kind: stringSchema,
+    title: stringSchema,
+    summary: stringSchema,
+    capturedAt: { type: 'string', format: 'date-time' },
+    supersedesArtifactId: stringSchema,
+    currentHeadSha: stringSchema,
+    pin: booleanSchema,
+    artifact: { type: 'object', additionalProperties: true },
+  },
+  required: ['workContextId', 'artifact'],
+};
+
+const workContextArtifactListInputSchema: RelayJsonSchema = {
+  title: 'WorkContextArtifactListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workContextId: stringSchema,
+    projectId: stringSchema,
+    taskRef: workContextArtifactTaskRefSchema,
+    stage: { type: 'string', enum: ['implementation', 'qa', 'review', 'release'] },
+    includeSuperseded: booleanSchema,
+    limit: { type: 'number', minimum: 1, maximum: 200 },
+    currentHeadSha: stringSchema,
+  },
+  anyOf: [{ required: ['workContextId'] }, { required: ['taskRef'] }],
+};
+
+const workContextArtifactIdInputSchema: RelayJsonSchema = {
+  title: 'WorkContextArtifactIdInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    currentHeadSha: stringSchema,
+    public: booleanSchema,
+    output: stringSchema,
+  },
+  required: ['id'],
+};
+
+const workContextArtifactPinInputSchema: RelayJsonSchema = {
+  title: 'WorkContextArtifactPinInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    workContextId: stringSchema,
+    actorId: stringSchema,
+  },
+  required: ['id', 'workContextId'],
+};
+
+const workContextArtifactDoctorInputSchema: RelayJsonSchema = {
+  title: 'WorkContextArtifactDoctorInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {},
 };
 
 const supervisorSnapshotInputSchema: RelayJsonSchema = {
@@ -1653,6 +1769,31 @@ const artifactReadOutputSchema: RelayJsonSchema = {
     artifact: { type: 'object', additionalProperties: true },
   },
   required: ['artifact'],
+};
+
+const workContextArtifactRecordOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    artifact: { type: 'object', additionalProperties: true },
+    pin: { type: 'object', additionalProperties: true },
+    artifactRef: { type: 'object', additionalProperties: true },
+    workContext: { type: 'object', additionalProperties: true },
+    alreadyPinned: booleanSchema,
+    removed: booleanSchema,
+    lifecycle: { type: 'object', additionalProperties: true },
+    export: { type: 'object', additionalProperties: true },
+    diagnostics: { type: 'object', additionalProperties: true },
+  },
+};
+
+const workContextArtifactListOutputSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    artifacts: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+  required: ['artifacts'],
 };
 
 const supervisorSnapshotOutputSchema: RelayJsonSchema = {
@@ -3008,6 +3149,107 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     inputSchema: contextPinInputSchema,
     outputSchema: okOutput('ContextUnpinOutput', contextUnpinDataSchema),
     errorCodes: contextInboxWriteErrorCodes,
+  },
+  {
+    name: 'work-context-artifacts.publish',
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-artifacts',
+      'publish',
+      '--work-context-id',
+      '<work-context-id>',
+      '--artifact-file',
+      '<pipeline-handoff-artifact.json>',
+      '--json',
+    ],
+    summary:
+      'Publish a sanitized PipelineHandoffArtifact into the WorkContext artifact store with bounded payload and stable metadata.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workContextArtifactPublishInputSchema,
+    outputSchema: okOutput('WorkContextArtifactPublishOutput', workContextArtifactRecordOutputSchema),
+    errorCodes: workContextArtifactWriteErrorCodes,
+  },
+  {
+    name: 'work-context-artifacts.list',
+    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'list', '--work-context-id', '<work-context-id>', '--json'],
+    summary:
+      'List WorkContext artifact metadata by WorkContext or task ref without reading raw payload files.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextArtifactListInputSchema,
+    outputSchema: okOutput('WorkContextArtifactListOutput', workContextArtifactListOutputSchema),
+    errorCodes: workContextArtifactReadErrorCodes,
+  },
+  {
+    name: 'work-context-artifacts.show',
+    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'show', '--id', '<artifact-id>', '--json'],
+    summary:
+      'Read one WorkContext artifact by id with integrity validation and optional stale-head metadata.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextArtifactIdInputSchema,
+    outputSchema: okOutput('WorkContextArtifactShowOutput', workContextArtifactRecordOutputSchema),
+    errorCodes: workContextArtifactReadErrorCodes,
+  },
+  {
+    name: 'work-context-artifacts.pin',
+    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'pin', '--id', '<artifact-id>', '--work-context-id', '<work-context-id>', '--json'],
+    summary:
+      'Pin a stored WorkContext artifact ref into a WorkContext without copying raw payload bytes.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workContextArtifactPinInputSchema,
+    outputSchema: okOutput('WorkContextArtifactPinOutput', workContextArtifactRecordOutputSchema),
+    errorCodes: workContextArtifactWriteErrorCodes,
+  },
+  {
+    name: 'work-context-artifacts.unpin',
+    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'unpin', '--id', '<artifact-id>', '--work-context-id', '<work-context-id>', '--json'],
+    summary:
+      'Unpin a WorkContext artifact ref from a WorkContext without deleting the stored artifact.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workContextArtifactPinInputSchema,
+    outputSchema: okOutput('WorkContextArtifactUnpinOutput', workContextArtifactRecordOutputSchema),
+    errorCodes: workContextArtifactWriteErrorCodes,
+  },
+  {
+    name: 'work-context-artifacts.export',
+    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'export', '--id', '<artifact-id>', '--output', '<path>', '--json'],
+    summary:
+      'Export the bounded public summary form of a WorkContext artifact; raw payload export is intentionally unsupported.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextArtifactIdInputSchema,
+    outputSchema: okOutput('WorkContextArtifactExportOutput', workContextArtifactRecordOutputSchema),
+    errorCodes: workContextArtifactReadErrorCodes,
+  },
+  {
+    name: 'work-context-artifacts.doctor',
+    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'doctor', '--json'],
+    summary:
+      'Inspect WorkContext artifact store health, storage paths, bounded payload sizes, and recent artifact manifest entries.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextArtifactDoctorInputSchema,
+    outputSchema: okOutput('WorkContextArtifactDoctorOutput', workContextArtifactRecordOutputSchema),
+    errorCodes: workContextArtifactReadErrorCodes,
   },
   {
     name: 'inbox.send',

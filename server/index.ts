@@ -156,6 +156,15 @@ import {
 } from './features/context-inbox-router.js';
 import { createContextInboxStoreAdapter } from './features/context-inbox-store-adapter.js';
 import {
+  createWorkContextArtifactRouter,
+  DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES,
+  DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES,
+} from './features/work-context-artifact-router.js';
+import {
+  initWorkContextArtifactStore,
+  type WorkContextArtifactStore,
+} from './work-context-artifacts.js';
+import {
   createAnchorFileFetcher,
   createAnchorContentFetcher,
 } from './anchor-file-fetcher.js';
@@ -1293,6 +1302,20 @@ function deriveContextInboxStore(
   return store ? createContextInboxStoreAdapter(store) : null;
 }
 
+function initWorkContextArtifactStoreBestEffort(
+  configDir: string
+): WorkContextArtifactStore | null {
+  try {
+    return initWorkContextArtifactStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'WorkContext artifact store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 async function ensureStartupTerminalBackendAvailable(
   startupConfig: Config
 ): Promise<void> {
@@ -1529,6 +1552,10 @@ async function main(): Promise<void> {
       err instanceof Error ? err.message : err
     );
   }
+
+  // WorkContext artifact store (#889/#890). Own SQLite/payload files; routes
+  // degrade to typed 503 when initialization fails so hub startup stays useful.
+  const workContextArtifactStore = initWorkContextArtifactStoreBestEffort(configDir);
 
   try {
     initInterventionLog(configDir);
@@ -2052,6 +2079,26 @@ async function main(): Promise<void> {
       requireAuth: requireCliGatewayAuth,
       store: contextInboxStore,
       workContextStore,
+    })
+  );
+  app.use(
+    createWorkContextArtifactRouter({
+      requireAuth: requireCliGatewayAuth,
+      requireReadAuth: {
+        list: requireCliGatewayAuthForActorCommand('work-context-artifacts.list'),
+        show: requireCliGatewayAuthForActorCommand('work-context-artifacts.show'),
+        export: requireCliGatewayAuthForActorCommand('work-context-artifacts.export'),
+        doctor: requireCliGatewayAuthForActorCommand('work-context-artifacts.doctor'),
+      },
+      requireWriteAuth: requireCliGatewayWriteAuth,
+      store: workContextArtifactStore,
+      workContextStore,
+      diagnostics: {
+        dbPath: path.join(configDir, 'work-context-artifacts.db'),
+        payloadRoot: path.join(configDir, 'work-context-artifacts', 'payloads'),
+        maxPublishBytes: DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES,
+        maxExportBytes: DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES,
+      },
     })
   );
   // #766/#759: production `AnchorFileFetcher` wired to the session-scoped File
@@ -4236,6 +4283,7 @@ async function main(): Promise<void> {
         workContextStore.close();
         iaStore?.close();
         contextPacketStore?.close();
+        workContextArtifactStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -4320,6 +4368,7 @@ async function main(): Promise<void> {
     workContextStore.close();
     iaStore?.close();
     contextPacketStore?.close();
+    workContextArtifactStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {
