@@ -151,6 +151,45 @@ describe('WorkContext artifact store/index', () => {
     expect(read?.payload?.title).toBe('Example Project implementation handoff');
   });
 
+  it('indexes every task ref from a handoff artifact payload', () => {
+    const { store } = tmpStore();
+    const multiRefArtifact = artifact({
+      scope: {
+        ...artifact().scope,
+        taskRefs: [
+          {
+            kind: 'github-issue',
+            id: '889',
+            url: 'https://github.com/example-org/example-project/issues/889',
+          },
+          {
+            kind: 'github-pr',
+            id: '893',
+            url: 'https://github.com/example-org/example-project/pull/893',
+          },
+        ],
+      },
+      head: {
+        ...artifact().head,
+        pr: {
+          number: 893,
+          url: 'https://github.com/example-org/example-project/pull/893',
+        },
+      },
+    });
+
+    const stored = store.storePipelineHandoffArtifact({
+      workContextId: 'wc:multi-task-ref',
+      artifact: multiRefArtifact,
+    });
+
+    expect(store.list({ taskRef: { kind: 'github-issue', id: '889' } })).toHaveLength(1);
+    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })).toHaveLength(1);
+    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })[0]?.metadata.id).toBe(
+      stored.metadata.id
+    );
+  });
+
   it('lists from the SQLite index without reading payload files', () => {
     const { store } = tmpStore();
     const stored = store.storePipelineHandoffArtifact({
@@ -164,7 +203,7 @@ describe('WorkContext artifact store/index', () => {
     expect(listed[0]?.metadata.summary).toBe(
       'artifact store foundation for generic project work'
     );
-    expect(() => store.read(stored.metadata.id)).toThrow(SyntaxError);
+    expect(() => store.read(stored.metadata.id)).toThrow(WorkContextArtifactStoreError);
   });
 
   it('preserves append-only history and models superseded refs without rewriting prior rows', () => {
@@ -263,5 +302,81 @@ describe('WorkContext artifact store/index', () => {
       publicCopy?.payload?.scope.nonGoals.some((item) => /kanban|dispatcher|worktree/i.test(item))
     ).toBe(false);
     expect(validatePublicPipelineHandoffArtifact(publicCopy?.payload as PipelineHandoffArtifact).valid).toBe(true);
+  });
+
+  it('does not expose private artifacts through publicSummary', () => {
+    const { store } = tmpStore();
+    const stored = store.storePipelineHandoffArtifact({
+      workContextId: 'wc:private-copy',
+      visibility: 'private',
+      artifact: artifact(),
+    });
+
+    expect(store.publicSummary(stored.metadata.id)).toBeNull();
+  });
+
+  it('verifies sha-addressed payload integrity when reading stored artifacts', () => {
+    const { store } = tmpStore();
+    const stored = store.storePipelineHandoffArtifact({
+      workContextId: 'wc:tamper-proof',
+      visibility: 'public',
+      artifact: artifact(),
+    });
+    fs.writeFileSync(
+      stored.payloadPath,
+      JSON.stringify(
+        artifact({
+          id: 'pipeline-handoff:example:tampered',
+          head: { ...artifact().head, headSha: nextHeadSha },
+        }),
+        null,
+        2
+      )
+    );
+
+    expect(() => store.read(stored.metadata.id)).toThrow(WorkContextArtifactStoreError);
+    expect(() => store.publicSummary(stored.metadata.id)).toThrow(WorkContextArtifactStoreError);
+  });
+
+  it('rejects supersedes edges across WorkContexts', () => {
+    const { store } = tmpStore();
+    const first = store.storePipelineHandoffArtifact({
+      workContextId: 'wc:a',
+      artifact: artifact(),
+    });
+
+    expect(() =>
+      store.storePipelineHandoffArtifact({
+        workContextId: 'wc:b',
+        artifact: artifact({
+          id: 'pipeline-handoff:example:bbbbbbbb',
+          head: { ...artifact().head, headSha: nextHeadSha },
+        }),
+        supersedesArtifactId: first.metadata.id,
+      })
+    ).toThrow(WorkContextArtifactStoreError);
+    expect(store.list({ workContextId: 'wc:a' }).map((entry) => entry.metadata.id)).toEqual([
+      first.metadata.id,
+    ]);
+  });
+
+  it('rejects loose timestamps and mismatched store ids', () => {
+    const { store } = tmpStore();
+
+    expect(() =>
+      store.storePipelineHandoffArtifact({
+        workContextId: 'wc:validation',
+        capturedAt: '2026-06-08 12:00:00',
+        artifact: artifact(),
+      })
+    ).toThrow(WorkContextArtifactStoreError);
+
+    expect(() =>
+      store.storePipelineHandoffArtifact({
+        id: 'different-id',
+        workContextId: 'wc:validation',
+        artifact: artifact(),
+      })
+    ).toThrow(WorkContextArtifactStoreError);
   });
 });

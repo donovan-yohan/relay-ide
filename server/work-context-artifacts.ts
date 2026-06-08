@@ -20,7 +20,7 @@ import {
   type WorkContextId,
 } from '../shared/work-context.js';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DEFAULT_PAYLOAD_MEDIA_TYPE = 'application/json';
 const DEFAULT_VISIBILITY: WorkContextArtifactVisibility = 'private';
 const VISIBILITIES = new Set<string>(['private', 'public']);
@@ -32,6 +32,7 @@ const ABSOLUTE_LOCAL_PATH_RE =
 const WINDOWS_ABSOLUTE_PATH_RE = /(?:^|[\s:=('"])[a-z]:[\\/][^\s)'"]+/gi;
 const UNC_PATH_RE = /(?:^|[\s:=('"])\\\\[^\s\\/'"]+[\\/][^\s)'"]+/g;
 const KANBAN_TASK_ID_RE = /\bt_[a-f0-9]{8,}\b/gi;
+const STRICT_ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS work_context_artifacts (
@@ -72,6 +73,18 @@ CREATE INDEX IF NOT EXISTS idx_work_context_artifacts_head
   ON work_context_artifacts(head_sha);
 CREATE INDEX IF NOT EXISTS idx_work_context_artifacts_supersedes
   ON work_context_artifacts(supersedes_artifact_id);
+CREATE TABLE IF NOT EXISTS work_context_artifact_task_refs (
+  artifact_id          TEXT NOT NULL,
+  task_ref_kind        TEXT NOT NULL,
+  task_ref_id          TEXT NOT NULL,
+  task_ref_title       TEXT,
+  task_ref_url         TEXT,
+  task_ref_status      TEXT,
+  PRIMARY KEY (artifact_id, task_ref_kind, task_ref_id),
+  FOREIGN KEY (artifact_id) REFERENCES work_context_artifacts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_work_context_artifact_task_refs_lookup
+  ON work_context_artifact_task_refs(task_ref_kind, task_ref_id, artifact_id);
 `;
 
 export type WorkContextArtifactVisibility = 'private' | 'public';
@@ -269,6 +282,20 @@ export function createWorkContextArtifactStore(input: {
       @branchName, @supersedesArtifactId, @metadataJson
     )
   `);
+  db.prepare(`
+    INSERT OR IGNORE INTO work_context_artifact_task_refs (
+      artifact_id, task_ref_kind, task_ref_id
+    )
+    SELECT id, task_ref_kind, task_ref_id
+    FROM work_context_artifacts
+  `).run();
+  const insertTaskRef = db.prepare(`
+    INSERT OR IGNORE INTO work_context_artifact_task_refs (
+      artifact_id, task_ref_kind, task_ref_id, task_ref_title, task_ref_url, task_ref_status
+    ) VALUES (
+      @artifactId, @taskRefKind, @taskRefId, @taskRefTitle, @taskRefUrl, @taskRefStatus
+    )
+  `);
   const selectById = db.prepare('SELECT * FROM work_context_artifacts WHERE id = ?');
 
   function mustNotAlreadyExist(id: string): void {
@@ -277,10 +304,17 @@ export function createWorkContextArtifactStore(input: {
     }
   }
 
-  function mustValidateSupersedes(id: string | undefined): void {
+  function mustValidateSupersedes(
+    id: string | undefined,
+    workContextId: WorkContextId
+  ): void {
     if (!id) return;
-    if (!selectById.get(id)) {
+    const row = selectById.get(id) as WorkContextArtifactRow | undefined;
+    if (!row) {
       throw new WorkContextArtifactStoreError(400, 'superseded_artifact_not_found');
+    }
+    if (row.work_context_id !== workContextId) {
+      throw new WorkContextArtifactStoreError(400, 'superseded_artifact_scope_mismatch');
     }
   }
 
@@ -336,15 +370,23 @@ export function createWorkContextArtifactStore(input: {
           validation.errors.join('; ')
         );
       }
+      if (storeInput.id !== undefined) {
+        assertNonEmptyString(storeInput.id, 'id');
+        if (storeInput.artifact.id !== undefined && storeInput.id !== storeInput.artifact.id) {
+          throw new WorkContextArtifactStoreError(400, 'artifact_id_mismatch');
+        }
+      }
       const artifactId = storeInput.id ?? storeInput.artifact.id ?? `artifact:${randomUUID()}`;
       mustNotAlreadyExist(artifactId);
-      mustValidateSupersedes(storeInput.supersedesArtifactId);
+      mustValidateSupersedes(storeInput.supersedesArtifactId, storeInput.workContextId);
 
       const taskRef = storeInput.taskRef ?? firstTaskRef(storeInput.artifact);
       if (!taskRef) {
         throw new WorkContextArtifactStoreError(400, 'task_ref_required');
       }
       assertValidTaskRef(taskRef);
+      const taskRefs = dedupeTaskRefs([taskRef, ...storeInput.artifact.scope.taskRefs]);
+      for (const indexedTaskRef of taskRefs) assertValidTaskRef(indexedTaskRef);
       const now = new Date().toISOString();
       const capturedAt = storeInput.capturedAt ?? storeInput.artifact.head.capturedAt;
       assertIsoTimestamp(capturedAt, 'capturedAt');
@@ -404,6 +446,16 @@ export function createWorkContextArtifactStore(input: {
           supersedesArtifactId: metadata.supersedesArtifactId ?? null,
           metadataJson: JSON.stringify({ taskRef: metadata.taskRef } satisfies PersistedMetadataJson),
         });
+        for (const indexedTaskRef of taskRefs) {
+          insertTaskRef.run({
+            artifactId: metadata.id,
+            taskRefKind: indexedTaskRef.kind,
+            taskRefId: indexedTaskRef.id,
+            taskRefTitle: indexedTaskRef.title ?? null,
+            taskRefUrl: indexedTaskRef.url ?? null,
+            taskRefStatus: indexedTaskRef.status ?? null,
+          });
+        }
       })();
       return { metadata, payloadPath };
     },
@@ -418,6 +470,7 @@ export function createWorkContextArtifactStore(input: {
       if (!row) return null;
       const record = rowToRecord(row);
       const raw = readFileSync(row.payload_path, 'utf8');
+      assertPayloadSha256(raw, row);
       const payload = JSON.parse(raw) as unknown;
       if (!isPipelineHandoffArtifact(payload)) {
         throw new WorkContextArtifactStoreError(500, 'stored_payload_invalid');
@@ -438,7 +491,13 @@ export function createWorkContextArtifactStore(input: {
         params.projectId = input.projectId;
       }
       if (input.taskRef) {
-        clauses.push('task_ref_kind = @taskRefKind AND task_ref_id = @taskRefId');
+        clauses.push(`EXISTS (
+          SELECT 1
+          FROM work_context_artifact_task_refs task_refs
+          WHERE task_refs.artifact_id = work_context_artifacts.id
+            AND task_refs.task_ref_kind = @taskRefKind
+            AND task_refs.task_ref_id = @taskRefId
+        )`);
         params.taskRefKind = input.taskRef.kind;
         params.taskRefId = input.taskRef.id;
       }
@@ -447,7 +506,12 @@ export function createWorkContextArtifactStore(input: {
         params.stage = input.stage;
       }
       if (!input.includeSuperseded) {
-        clauses.push('NOT EXISTS (SELECT 1 FROM work_context_artifacts newer WHERE newer.supersedes_artifact_id = work_context_artifacts.id)');
+        clauses.push(`NOT EXISTS (
+          SELECT 1
+          FROM work_context_artifacts newer
+          WHERE newer.supersedes_artifact_id = work_context_artifacts.id
+            AND newer.work_context_id = work_context_artifacts.work_context_id
+        )`);
       }
       const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
       const rows = db.prepare(`SELECT * FROM work_context_artifacts ${where} ORDER BY captured_at DESC, created_at DESC LIMIT @limit`).all(params) as WorkContextArtifactRow[];
@@ -457,8 +521,10 @@ export function createWorkContextArtifactStore(input: {
     publicSummary(id: string) {
       const row = getRow(id);
       if (!row) return null;
+      if (row.visibility !== 'public') return null;
       const metadata = publicMetadata(rowToMetadata(row));
       const raw = readFileSync(row.payload_path, 'utf8');
+      assertPayloadSha256(raw, row);
       const parsed = JSON.parse(raw) as unknown;
       if (!isPipelineHandoffArtifact(parsed)) {
         throw new WorkContextArtifactStoreError(500, 'stored_payload_invalid');
@@ -549,12 +615,34 @@ function firstTaskRef(artifact: PipelineHandoffArtifact): TaskRef | undefined {
   );
 }
 
+function dedupeTaskRefs(taskRefs: TaskRef[]): TaskRef[] {
+  const seen = new Set<string>();
+  const unique: TaskRef[] = [];
+  for (const taskRef of taskRefs) {
+    const key = `${taskRef.kind}\u0000${taskRef.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(taskRef);
+  }
+  return unique;
+}
+
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function assertPayloadSha256(raw: string, row: WorkContextArtifactRow): void {
+  if (sha256Hex(raw) !== row.payload_sha256) {
+    throw new WorkContextArtifactStoreError(500, 'stored_payload_sha256_mismatch');
+  }
+}
+
 function assertIsoTimestamp(value: string, label: string): void {
-  if (Number.isNaN(Date.parse(value))) {
+  if (!STRICT_ISO_TIMESTAMP_RE.test(value)) {
+    throw new WorkContextArtifactStoreError(400, `${label}_invalid`);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString() !== value) {
     throw new WorkContextArtifactStoreError(400, `${label}_invalid`);
   }
 }
