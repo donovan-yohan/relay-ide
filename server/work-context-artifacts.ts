@@ -17,7 +17,6 @@ import {
   ARTIFACT_KINDS,
   type ArtifactKind,
   type TaskRef,
-  type TaskRefKind,
   type WorkContextId,
 } from '../shared/work-context.js';
 
@@ -26,14 +25,6 @@ const DEFAULT_PAYLOAD_MEDIA_TYPE = 'application/json';
 const DEFAULT_VISIBILITY: WorkContextArtifactVisibility = 'private';
 const VISIBILITIES = new Set<string>(['private', 'public']);
 const STAGES = new Set<string>(PIPELINE_HANDOFF_STAGES);
-const TASK_REF_KINDS = new Set<string>([
-  'github-issue',
-  'github-pr',
-  'kanban-task',
-  'jira-ticket',
-  'linear-issue',
-  'external',
-]);
 const SECRET_TEXT_RE =
   /(?:bearer\s+[a-z0-9._~+/-]+=*|sk-[a-z0-9_-]{8,}|relay-(?:sac|ohg|grant|auth|pair)-v1[a-z0-9._-]*|pair_[a-z0-9_-]{8,}|node_[a-z0-9._~+/=-]+\.secret_[a-z0-9._~+/=-]+|secret_[a-z0-9._~+/=-]+)/gi;
 const ABSOLUTE_LOCAL_PATH_RE =
@@ -227,6 +218,8 @@ interface WorkContextArtifactRow {
 interface PersistedMetadataJson {
   taskRef: TaskRef;
 }
+
+type IndexedTaskRef = Pick<TaskRef, 'id' | 'title' | 'url' | 'status'> & { kind: string };
 
 export class WorkContextArtifactStoreError extends Error {
   readonly status: number;
@@ -555,7 +548,6 @@ function backfillArtifactTaskRefs(
     for (const row of rows) {
       const taskRefs = dedupeTaskRefs([legacyTaskRef(row), ...payloadTaskRefs(row)]);
       for (const taskRef of taskRefs) {
-        if (!isValidTaskRef(taskRef)) continue;
         insertTaskRef.run({
           artifactId: row.id,
           taskRefKind: taskRef.kind,
@@ -569,17 +561,19 @@ function backfillArtifactTaskRefs(
   })();
 }
 
-function legacyTaskRef(row: WorkContextArtifactRow): TaskRef {
-  return { kind: row.task_ref_kind as TaskRefKind, id: row.task_ref_id };
+function legacyTaskRef(row: WorkContextArtifactRow): IndexedTaskRef {
+  return { kind: row.task_ref_kind, id: row.task_ref_id };
 }
 
-function payloadTaskRefs(row: WorkContextArtifactRow): TaskRef[] {
+function payloadTaskRefs(row: WorkContextArtifactRow): IndexedTaskRef[] {
   try {
     const raw = readFileSync(row.payload_path, 'utf8');
     assertPayloadSha256(raw, row);
     const parsed = JSON.parse(raw) as unknown;
-    if (!isPipelineHandoffArtifact(parsed)) return [];
-    return parsed.scope.taskRefs.filter(isValidTaskRef);
+    if (!isRecord(parsed)) return [];
+    const scope = parsed.scope;
+    if (!isRecord(scope) || !Array.isArray(scope.taskRefs)) return [];
+    return scope.taskRefs.filter(isIndexableTaskRef);
   } catch {
     return [];
   }
@@ -657,9 +651,9 @@ function firstTaskRef(artifact: PipelineHandoffArtifact): TaskRef | undefined {
   );
 }
 
-function dedupeTaskRefs(taskRefs: TaskRef[]): TaskRef[] {
+function dedupeTaskRefs<T extends { kind: string; id: string }>(taskRefs: T[]): T[] {
   const seen = new Set<string>();
-  const unique: TaskRef[] = [];
+  const unique: T[] = [];
   for (const taskRef of taskRefs) {
     const key = `${taskRef.kind}\u0000${taskRef.id}`;
     if (seen.has(key)) continue;
@@ -718,13 +712,21 @@ function assertValidTaskRef(value: TaskRef): void {
   assertNonEmptyString(value.id, 'taskRef.id');
 }
 
-function isValidTaskRef(value: TaskRef): value is TaskRef & { kind: TaskRefKind } {
+function isIndexableTaskRef(value: unknown): value is IndexedTaskRef {
+  if (!isRecord(value)) return false;
   return (
     typeof value.kind === 'string' &&
-    TASK_REF_KINDS.has(value.kind) &&
+    value.kind.trim().length > 0 &&
     typeof value.id === 'string' &&
-    value.id.trim().length > 0
+    value.id.trim().length > 0 &&
+    isOptionalString(value.title) &&
+    isOptionalString(value.url) &&
+    isOptionalString(value.status)
   );
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string';
 }
 
 function sanitizePublicText(value: string): string {

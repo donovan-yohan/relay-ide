@@ -125,7 +125,7 @@ function createLegacyV1Store(input: {
   root: string;
   payload: PipelineHandoffArtifact;
   primaryTaskRef: { kind: string; id: string };
-}): string {
+}): { dbPath: string; payloadPath: string } {
   const dbPath = path.join(input.root, 'index.db');
   const payloadRoot = path.join(input.root, 'payloads');
   fs.mkdirSync(payloadRoot, { recursive: true });
@@ -214,7 +214,7 @@ function createLegacyV1Store(input: {
     }),
   });
   db.close();
-  return dbPath;
+  return { dbPath, payloadPath };
 }
 
 describe('WorkContext artifact store/index', () => {
@@ -325,7 +325,7 @@ describe('WorkContext artifact store/index', () => {
         },
       },
     });
-    const dbPath = createLegacyV1Store({
+    const { dbPath } = createLegacyV1Store({
       root,
       payload: legacyPayload,
       primaryTaskRef: { kind: 'github-issue', id: '889' },
@@ -341,6 +341,34 @@ describe('WorkContext artifact store/index', () => {
     expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })[0]?.metadata.id).toBe(
       legacyPayload.id
     );
+  });
+
+  it('falls back to the legacy primary task ref when a v1 payload is tampered', () => {
+    const root = tmpRoot('work-context-artifacts-v1-tampered-');
+    const legacyPayload = artifact({
+      id: 'pipeline-handoff:legacy-v1-tampered:aaaaaaaa',
+      scope: {
+        ...artifact().scope,
+        taskRefs: [
+          { kind: 'github-issue', id: '889' },
+          { kind: 'github-pr', id: '893' },
+        ],
+      },
+    });
+    const { dbPath, payloadPath } = createLegacyV1Store({
+      root,
+      payload: legacyPayload,
+      primaryTaskRef: { kind: 'github-issue', id: '889' },
+    });
+    fs.writeFileSync(payloadPath, '{"scope":{"taskRefs":[{"kind":"github-pr","id":"893"}]}}');
+    const store = createWorkContextArtifactStore({
+      dbPath,
+      payloadRoot: path.join(root, 'payloads'),
+    });
+    cleanup.push(() => store.close());
+
+    expect(store.list({ taskRef: { kind: 'github-issue', id: '889' } })).toHaveLength(1);
+    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })).toHaveLength(0);
   });
 
   it('lists from the SQLite index without reading payload files', () => {
