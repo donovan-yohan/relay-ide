@@ -423,8 +423,8 @@ async function addLocalHashes(root: WorkspaceEvidenceRoot, entries: WorkspaceEvi
   );
 }
 
-function previewKindForPath(filePath: string): WorkspaceEvidencePreviewKind {
-  const ext = path.extname(filePath).toLowerCase();
+function previewKindForPath(filePath: string, api: PathApi): WorkspaceEvidencePreviewKind {
+  const ext = api.extname(filePath).toLowerCase();
   if (ext === '.md' || ext === '.markdown') return 'markdown';
   if (ext === '.json' || ext === '.jsonl') return 'json';
   if (ext === '.log' || ext === '.out' || ext === '.err') return 'log';
@@ -782,11 +782,11 @@ async function handlePreview(
       root,
       path: entry.path,
       entry,
-      preview: unavailablePreview('oversized', 'WORKSPACE_EVIDENCE_OVERSIZED', maxBytes, previewKindForPath(entry.path)),
+      preview: unavailablePreview('oversized', 'WORKSPACE_EVIDENCE_OVERSIZED', maxBytes, previewKindForPath(entry.path, api)),
     };
   }
 
-  const kind = previewKindForPath(entry.path);
+  const kind = previewKindForPath(entry.path, api);
   if (kind === 'unsupported') {
     return {
       operation: 'preview',

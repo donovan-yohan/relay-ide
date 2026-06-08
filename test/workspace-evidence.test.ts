@@ -300,4 +300,61 @@ describe('workspace evidence router', () => {
     expect(calls.map((call) => call.type)).toEqual(['fs.stat', 'fs.read']);
     expect(calls[0].payload).toMatchObject({ root: '/srv/project', cwd: '/srv/project', path: '/srv/project/README.md' });
   });
+
+  it('uses remote Windows path semantics when previewing files under dotted directories', async () => {
+    const root = remoteRoot('node_windows', 'C:\\srv\\project');
+    const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const registry: WorkspaceEvidenceNodeRegistry = {
+      listNodes: () => [{ ...onlineNode('node_windows'), platform: 'win32' }],
+    };
+    const nodeLinks: WorkspaceEvidenceNodeLinks = {
+      hasActiveNode: () => true,
+      request: async (_nodeId, type, payload) => {
+        calls.push({ type, payload: payload as Record<string, unknown> });
+        if (type === 'fs.stat') {
+          return {
+            operation: 'stat',
+            root: 'C:\\srv\\project',
+            cwd: 'C:\\srv\\project',
+            path: 'C:\\srv\\project\\docs.withdot\\README',
+            stat: {
+              path: 'C:\\srv\\project\\docs.withdot\\README',
+              name: 'README',
+              type: 'file',
+              size: 10,
+              mtimeMs: 1,
+              mode: 0o100644,
+            },
+          };
+        }
+        if (type === 'fs.read') {
+          return {
+            operation: 'read',
+            root: 'C:\\srv\\project',
+            cwd: 'C:\\srv\\project',
+            path: 'C:\\srv\\project\\docs.withdot\\README',
+            encoding: 'utf8',
+            content: 'plain text',
+            bytesRead: 10,
+            truncatedBytes: false,
+            truncatedLines: false,
+            maxBytes: 1024,
+          };
+        }
+        throw new Error(`unexpected request ${type}`);
+      },
+    };
+
+    const { port } = await listen(createWorkspaceEvidenceRouter({ getRoots: () => [root], registry, nodeLinks }));
+    const preview = await postJson<{ preview: { state: string; kind: string; content: string } }>(port, '/workspace-evidence/preview', {
+      rootRef: root.ref,
+      path: 'docs.withdot\\README',
+      maxBytes: 1024,
+    });
+
+    expect(preview.status).toBe(200);
+    expect(preview.body.preview).toMatchObject({ state: 'available', kind: 'text', content: 'plain text' });
+    expect(calls.map((call) => call.type)).toEqual(['fs.stat', 'fs.read']);
+    expect(calls[0].payload).toMatchObject({ root: 'C:\\srv\\project', cwd: 'C:\\srv\\project', path: 'C:\\srv\\project\\docs.withdot\\README' });
+  });
 });
