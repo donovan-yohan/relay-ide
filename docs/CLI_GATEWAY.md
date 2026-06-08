@@ -28,6 +28,13 @@ relay-ide v1 context get --id <context-packet-id> --json
 relay-ide v1 context list [--work-context-id <work-context-id>] --json
 relay-ide v1 context pin --id <context-packet-id> --work-context-id <work-context-id> --json
 relay-ide v1 context unpin --id <context-packet-id> --work-context-id <work-context-id> --json
+relay-ide v1 work-context-artifacts publish --work-context-id <work-context-id> --artifact-file <pipeline-handoff.json> --json
+relay-ide v1 work-context-artifacts list --work-context-id <work-context-id> --json
+relay-ide v1 work-context-artifacts show --id <artifact-id> [--current-head-sha <sha>] --json
+relay-ide v1 work-context-artifacts pin --id <artifact-id> --work-context-id <work-context-id> --json
+relay-ide v1 work-context-artifacts unpin --id <artifact-id> --work-context-id <work-context-id> --json
+relay-ide v1 work-context-artifacts export --id <artifact-id> [--output <path>] --json
+relay-ide v1 work-context-artifacts doctor --json
 relay-ide v1 supervisor sessions --json
 relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
 relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json
@@ -95,6 +102,8 @@ The current error taxonomy is declared in `RELAY_CLI_GATEWAY_CONTRACT.errorEnvel
 - possible typed error codes
 
 The schema is the source of truth for adapter generation. A command missing from this manifest is not stable adapter API, even if an internal REST/WebSocket route exists. WorkContext-pinning commands are exposed here as `context.pin`, `context.unpin`, and `context.list --work-context-id`; agents should discover and call those gateway verbs instead of private HTTP routes.
+
+WorkContext artifact operations are also part of the stable manifest: `work-context-artifacts.publish`, `list`, `show`, `pin`, `unpin`, `export`, and `doctor`. These commands expose PipelineHandoffArtifact storage through the hub without giving adapters private database paths or raw transcript access. `publish` accepts the artifact object through `--input-json`, `--input-file`, or `--artifact-file`; `list` is bounded and metadata-only; `show` validates payload integrity; `export` returns only the sanitized public-summary form and never raw payload bytes; `doctor` reports bounded store health/manifest metadata. Stale-head checks use `currentHeadSha` / `--current-head-sha` and return typed gateway errors rather than silently accepting evidence for the wrong PR head.
 
 ## Command taxonomy
 

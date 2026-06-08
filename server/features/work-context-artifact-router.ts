@@ -1,0 +1,783 @@
+import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+
+import { Router } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
+
+import type { RelayCliGatewayErrorCode } from '../../shared/cli-gateway-contract.js';
+import {
+  createWorkContextPrivacyMetadata,
+  type ArtifactRef,
+  type TaskRef,
+  type WorkContext,
+  type WorkContextId,
+} from '../../shared/work-context.js';
+import {
+  isPipelineHandoffArtifact,
+  type PipelineHandoffArtifact,
+  type PipelineHandoffStageName,
+} from '../../shared/pipeline-handoff-artifact.js';
+import type { WorkContextStore } from '../work-contexts.js';
+import {
+  WorkContextArtifactStoreError,
+  type StorePipelineHandoffArtifactInput,
+  type WorkContextArtifactListInput,
+  type WorkContextArtifactMetadata,
+  type WorkContextArtifactReadResult,
+  type WorkContextArtifactRecord,
+  type WorkContextArtifactStore,
+  type WorkContextArtifactVisibility,
+} from '../work-context-artifacts.js';
+
+export const WORK_CONTEXT_ARTIFACT_URI_PREFIX = 'relay://work-context-artifacts/';
+const CONTEXT_READ = 'context:read';
+const CONTEXT_WRITE = 'context:write';
+const STAGES = new Set(['implementation', 'qa', 'review', 'release']);
+export const DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES = 1024 * 1024;
+export const DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES = 512 * 1024;
+
+export interface WorkContextArtifactRouterDeps {
+  store: WorkContextArtifactStore | null;
+  workContextStore?: WorkContextStore;
+  requireAuth?: RequestHandler;
+  diagnostics?: {
+    dbPath: string;
+    payloadRoot: string;
+    maxPublishBytes?: number;
+    maxExportBytes?: number;
+  };
+}
+
+interface GatewayErrorBody {
+  error: {
+    code: RelayCliGatewayErrorCode;
+    message: string;
+    retryable: boolean;
+    details?: Record<string, unknown>;
+  };
+}
+
+function artifactUri(id: string): string {
+  return `${WORK_CONTEXT_ARTIFACT_URI_PREFIX}${encodeURIComponent(id)}`;
+}
+
+function artifactRefId(id: string): string {
+  return `artifact:work-context-artifact:${id}`;
+}
+
+export function artifactRefForMetadata(
+  metadata: WorkContextArtifactMetadata,
+  actorId?: string
+): ArtifactRef {
+  const producedByActorId = actorId ?? metadata.provenanceActorId;
+  return {
+    id: artifactRefId(metadata.id),
+    kind: metadata.kind,
+    title: metadata.title,
+    uri: artifactUri(metadata.id),
+    ...(producedByActorId ? { producedByActorId } : {}),
+    producedAt: new Date().toISOString(),
+    summary: metadata.summary,
+    privacy: createWorkContextPrivacyMetadata({
+      classification: metadata.visibility === 'public' ? 'public' : 'internal',
+      retention: 'project',
+      rawPayloadStored: false,
+      redaction: {
+        redacted: true,
+        strategy: 'summary',
+        classes: ['payload', 'artifact'],
+        hashSha256: metadata.payloadSha256,
+      },
+    }),
+  };
+}
+
+function parseCapabilityHeader(value: string | undefined): Set<string> {
+  if (!value) return new Set();
+  return new Set(
+    value
+      .split(/[\s,]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+}
+
+function statusForCode(code: RelayCliGatewayErrorCode): number {
+  switch (code) {
+    case 'UNAUTHORIZED':
+      return 401;
+    case 'FORBIDDEN':
+      return 403;
+    case 'NOT_FOUND':
+      return 404;
+    case 'SESSION_CONFLICT':
+      return 409;
+    case 'SERVER_UNAVAILABLE':
+      return 503;
+    case 'INTERNAL':
+      return 500;
+    default:
+      return 400;
+  }
+}
+
+function gatewayErrorBody(
+  code: RelayCliGatewayErrorCode,
+  message: string,
+  retryable: boolean,
+  details?: Record<string, unknown>
+): GatewayErrorBody {
+  return { error: { code, message, retryable, ...(details ? { details } : {}) } };
+}
+
+function sendGatewayError(
+  res: Response,
+  code: RelayCliGatewayErrorCode,
+  message: string,
+  retryable = false,
+  details?: Record<string, unknown>
+): void {
+  res.status(statusForCode(code)).json(gatewayErrorBody(code, message, retryable, details));
+}
+
+function denyMissingCapability(
+  req: Request,
+  res: Response,
+  required: readonly string[]
+): boolean {
+  const provided = parseCapabilityHeader(req.header('x-relay-capabilities'));
+  const missing = required.filter((cap) => !provided.has(cap));
+  if (missing.length === 0) return false;
+  sendGatewayError(res, 'FORBIDDEN', `missing required capability: ${missing[0]}`, false, {
+    capability: missing[0],
+    missingCapabilities: missing,
+  });
+  return true;
+}
+
+function bodyRecord(req: Request): Record<string, unknown> {
+  return typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body)
+    ? (req.body as Record<string, unknown>)
+    : {};
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
+function readLimit(value: unknown): number | undefined {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+        ? Number(value)
+        : undefined;
+  if (parsed === undefined || !Number.isFinite(parsed)) return undefined;
+  return Math.min(Math.max(Math.trunc(parsed), 1), 200);
+}
+
+function readStage(value: unknown): PipelineHandoffStageName | undefined {
+  return typeof value === 'string' && STAGES.has(value)
+    ? (value as PipelineHandoffStageName)
+    : undefined;
+}
+
+function readVisibility(value: unknown): WorkContextArtifactVisibility | undefined {
+  return value === 'private' || value === 'public' ? value : undefined;
+}
+
+function readTaskRef(value: unknown): TaskRef | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const kind = readString(record['kind']);
+  const id = readString(record['id']);
+  if (!kind || !id) return undefined;
+  return {
+    kind: kind as TaskRef['kind'],
+    id,
+    ...(readString(record['title']) ? { title: record['title'] as string } : {}),
+    ...(readString(record['url']) ? { url: record['url'] as string } : {}),
+    ...(readString(record['status']) ? { status: record['status'] as string } : {}),
+  };
+}
+
+function readQueryTaskRef(req: Request): Pick<TaskRef, 'kind' | 'id'> | undefined | 'invalid' {
+  const kind = readString(req.query['taskRefKind'] ?? req.query['task-ref-kind']);
+  const id = readString(req.query['taskRefId'] ?? req.query['task-ref-id']);
+  if (!kind && !id) return undefined;
+  if (!kind || !id) return 'invalid';
+  return { kind: kind as TaskRef['kind'], id };
+}
+
+function currentHeadSha(req: Request, body?: Record<string, unknown>): string | undefined {
+  return (
+    readString(body?.['currentHeadSha']) ??
+    readString(body?.['expectedHeadSha']) ??
+    readString(req.query['currentHeadSha'] ?? req.query['current-head-sha'])
+  );
+}
+
+function staleness(
+  metadata: WorkContextArtifactMetadata,
+  current: string | undefined
+): Record<string, unknown> | undefined {
+  if (!current || !metadata.headSha) return undefined;
+  return {
+    stale: metadata.headSha !== current,
+    staleIf: { headShaChanges: true },
+    artifactHeadSha: metadata.headSha,
+    currentHeadSha: current,
+  };
+}
+
+function recordEnvelope(
+  record: WorkContextArtifactRecord,
+  current?: string
+): Record<string, unknown> {
+  const stale = staleness(record.metadata, current);
+  return {
+    metadata: record.metadata,
+    ...(stale ? { staleness: stale } : {}),
+  };
+}
+
+function readEnvelope(
+  record: WorkContextArtifactReadResult,
+  current?: string
+): Record<string, unknown> {
+  const stale = staleness(record.metadata, current);
+  return {
+    metadata: record.metadata,
+    ...(record.payload ? { payload: record.payload } : {}),
+    ...(stale ? { staleness: stale } : {}),
+  };
+}
+
+function mapStoreError(
+  res: Response,
+  err: WorkContextArtifactStoreError,
+  context: Record<string, unknown> = {}
+): void {
+  const details = { storeCode: err.code, ...context };
+  switch (err.code) {
+    case 'task_ref_required':
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'taskRef is required', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_TASK_REF_REQUIRED',
+        ...details,
+      });
+      return;
+    case 'invalid_pipeline_handoff_artifact':
+    case 'artifact_id_mismatch':
+      sendGatewayError(res, 'INVALID_ARGUMENT', err.message, false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
+        ...details,
+      });
+      return;
+    case 'public_artifact_sanitization_failed':
+      sendGatewayError(res, 'FORBIDDEN', 'public artifact copy failed sanitizer validation', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_UNSAFE_PUBLIC_COPY',
+        ...details,
+      });
+      return;
+    case 'stored_payload_sha256_mismatch':
+    case 'stored_payload_invalid':
+      sendGatewayError(res, 'INTERNAL', 'stored artifact payload failed integrity validation', true, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_PAYLOAD_INTEGRITY_FAILED',
+        ...details,
+      });
+      return;
+    case 'artifact_already_exists':
+      sendGatewayError(res, 'SESSION_CONFLICT', 'artifact already exists', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_ALREADY_EXISTS',
+        ...details,
+      });
+      return;
+    case 'superseded_artifact_not_found':
+      sendGatewayError(res, 'NOT_FOUND', 'superseded artifact not found', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_SUPERSEDES_NOT_FOUND',
+        ...details,
+      });
+      return;
+    default:
+      sendGatewayError(res, 'INVALID_ARGUMENT', err.message, false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_STORE_ERROR',
+        ...details,
+      });
+  }
+}
+
+function ensureWorkContext(
+  res: Response,
+  workContextStore: WorkContextStore | undefined,
+  workContextId: WorkContextId,
+  operation: string
+): boolean {
+  if (!workContextStore) {
+    sendGatewayError(res, 'SERVER_UNAVAILABLE', 'WorkContext store is unavailable', true, {
+      reasonCode: 'WORK_CONTEXT_STORE_UNAVAILABLE',
+      operation,
+      workContextId,
+    });
+    return false;
+  }
+  if (workContextStore.get(workContextId)) return true;
+  sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found', false, {
+    reasonCode: 'WORK_CONTEXT_NOT_FOUND',
+    operation,
+    workContextId,
+  });
+  return false;
+}
+
+function pinArtifactRef(
+  workContextStore: WorkContextStore,
+  workContextId: WorkContextId,
+  metadata: WorkContextArtifactMetadata,
+  actorId?: string
+): { workContext: WorkContext | null; artifactRef: ArtifactRef; alreadyPinned: boolean } {
+  const existing = workContextStore.get(workContextId);
+  const artifactRef = artifactRefForMetadata(metadata, actorId);
+  if (!existing) return { workContext: null, artifactRef, alreadyPinned: false };
+  const alreadyPinned = existing.artifacts.some(
+    (item) => item.id === artifactRef.id || item.uri === artifactRef.uri
+  );
+  const workContext = alreadyPinned
+    ? existing
+    : workContextStore.recordLifecycleEvent(workContextId, {
+        type: 'artifact.recorded',
+        ...(actorId ? { actorId } : {}),
+        artifacts: [artifactRef],
+        summary: `Pinned WorkContext artifact ${metadata.id} to WorkContext ${workContextId}`,
+      });
+  return { workContext, artifactRef, alreadyPinned };
+}
+
+function unpinArtifactRef(
+  workContextStore: WorkContextStore,
+  workContextId: WorkContextId,
+  artifactId: string,
+  actorId?: string
+): { workContext: WorkContext | null; removed: boolean } {
+  const existing = workContextStore.get(workContextId);
+  if (!existing) return { workContext: null, removed: false };
+  const refId = artifactRefId(artifactId);
+  const uri = artifactUri(artifactId);
+  const nextArtifacts = existing.artifacts.filter(
+    (item) => item.id !== refId && item.uri !== uri
+  );
+  const removed = nextArtifacts.length !== existing.artifacts.length;
+  if (!removed) return { workContext: existing, removed: false };
+  workContextStore.update(workContextId, { artifacts: nextArtifacts });
+  return {
+    workContext: workContextStore.recordLifecycleEvent(workContextId, {
+      type: 'artifact.unpinned',
+      ...(actorId ? { actorId } : {}),
+      summary: `Unpinned WorkContext artifact ${artifactId} from WorkContext ${workContextId}`,
+    }),
+    removed: true,
+  };
+}
+
+function storeOr503(
+  res: Response,
+  store: WorkContextArtifactStore | null,
+  operation: string
+): WorkContextArtifactStore | null {
+  if (store) return store;
+  sendGatewayError(res, 'SERVER_UNAVAILABLE', 'WorkContext artifact store is unavailable', true, {
+    reasonCode: 'WORK_CONTEXT_ARTIFACT_STORE_UNAVAILABLE',
+    operation,
+  });
+  return null;
+}
+
+function dirSizeBytes(root: string): { bytes: number; files: number; largestBytes: number } {
+  let bytes = 0;
+  let files = 0;
+  let largestBytes = 0;
+  function walk(dir: string): void {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile()) {
+        const size = statSync(full).size;
+        bytes += size;
+        files += 1;
+        largestBytes = Math.max(largestBytes, size);
+      }
+    }
+  }
+  walk(root);
+  return { bytes, files, largestBytes };
+}
+
+function diagnosticsFor(
+  s: WorkContextArtifactStore,
+  diagnostics: WorkContextArtifactRouterDeps['diagnostics']
+): Record<string, unknown> {
+  const all = s.list({ includeSuperseded: true, limit: 200 });
+  const largestFromIndex = Math.max(0, ...all.map((record) => record.metadata.payloadBytes));
+  const payload = diagnostics?.payloadRoot
+    ? dirSizeBytes(diagnostics.payloadRoot)
+    : {
+        bytes: all.reduce((sum, record) => sum + record.metadata.payloadBytes, 0),
+        files: all.length,
+        largestBytes: largestFromIndex,
+      };
+  return {
+    ok: true,
+    storage: {
+      dbPath: diagnostics?.dbPath ?? null,
+      dbBytes:
+        diagnostics?.dbPath && existsSync(diagnostics.dbPath)
+          ? statSync(diagnostics.dbPath).size
+          : null,
+      payloadRoot: diagnostics?.payloadRoot ?? null,
+      payloadBytes: payload.bytes,
+      payloadFileCount: payload.files,
+      largestPayloadBytes: Math.max(payload.largestBytes, largestFromIndex),
+      artifactCount: all.length,
+      integrity: 'read-index-ok',
+      maxPublishBytes:
+        diagnostics?.maxPublishBytes ?? DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES,
+      maxExportBytes:
+        diagnostics?.maxExportBytes ?? DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES,
+    },
+    recentArtifacts: all.slice(0, 10).map((record) => ({
+      id: record.metadata.id,
+      workContextId: record.metadata.workContextId,
+      taskRef: record.metadata.taskRef,
+      payloadSha256: record.metadata.payloadSha256,
+      payloadBytes: record.metadata.payloadBytes,
+      capturedAt: record.metadata.capturedAt,
+    })),
+  };
+}
+
+function queryListInput(req: Request): WorkContextArtifactListInput | 'invalid-task-ref' | 'missing-filter' {
+  const workContextId = readString(req.query['workContextId'] ?? req.query['work-context-id']);
+  const taskRef = readQueryTaskRef(req);
+  if (taskRef === 'invalid') return 'invalid-task-ref';
+  if (!workContextId && !taskRef) return 'missing-filter';
+  const projectId = readString(req.query['projectId'] ?? req.query['project-id']);
+  const stage = readStage(req.query['stage']);
+  const includeSuperseded = readBoolean(req.query['includeSuperseded'] ?? req.query['include-superseded']);
+  const limit = readLimit(req.query['limit']);
+  return {
+    ...(workContextId ? { workContextId } : {}),
+    ...(projectId ? { projectId } : {}),
+    ...(taskRef ? { taskRef } : {}),
+    ...(stage ? { stage } : {}),
+    ...(includeSuperseded !== undefined ? { includeSuperseded } : {}),
+    ...(limit ? { limit } : {}),
+  };
+}
+
+export function createWorkContextArtifactRouter(
+  deps: WorkContextArtifactRouterDeps
+): Router {
+  const router = Router();
+  const auth = deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
+  const maxPublishBytes =
+    deps.diagnostics?.maxPublishBytes ?? DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES;
+  const maxExportBytes =
+    deps.diagnostics?.maxExportBytes ?? DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES;
+
+  router.get('/work-context-artifacts/doctor', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const s = storeOr503(res, deps.store, 'doctor');
+    if (!s) return;
+    try {
+      res.json({ diagnostics: diagnosticsFor(s, deps.diagnostics) });
+    } catch (err) {
+      if (err instanceof WorkContextArtifactStoreError) {
+        mapStoreError(res, err, { operation: 'doctor' });
+        return;
+      }
+      sendGatewayError(res, 'INTERNAL', 'failed to inspect WorkContext artifact storage', true, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_DIAGNOSTIC_FAILED',
+        operation: 'doctor',
+      });
+    }
+  });
+
+  router.post('/work-context-artifacts', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const s = storeOr503(res, deps.store, 'publish');
+    if (!s) return;
+    const body = bodyRecord(req);
+    const workContextId = readString(body['workContextId']);
+    if (!workContextId) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'workContextId is required', false, {
+        reasonCode: 'WORK_CONTEXT_ID_REQUIRED',
+        operation: 'publish',
+        field: 'workContextId',
+      });
+      return;
+    }
+    if (!ensureWorkContext(res, deps.workContextStore, workContextId, 'publish')) return;
+    const artifact = body['artifact'];
+    if (!isPipelineHandoffArtifact(artifact)) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact must be a PipelineHandoffArtifact', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
+        operation: 'publish',
+        workContextId,
+        field: 'artifact',
+      });
+      return;
+    }
+    const payloadBytes = Buffer.byteLength(JSON.stringify(artifact), 'utf8');
+    if (payloadBytes > maxPublishBytes) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact payload exceeds publish size cap', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_PAYLOAD',
+        operation: 'publish',
+        workContextId,
+        artifactId: artifact.id,
+        payloadBytes,
+        maxBytes: maxPublishBytes,
+      });
+      return;
+    }
+    const current = currentHeadSha(req, body);
+    if (current && artifact.head.headSha !== current) {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'artifact head is stale for the requested current head', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_STALE_HEAD',
+        operation: 'publish',
+        workContextId,
+        artifactId: artifact.id,
+        artifactHeadSha: artifact.head.headSha,
+        currentHeadSha: current,
+      });
+      return;
+    }
+    const taskRef = readTaskRef(body['taskRef']);
+    const stage = readStage(body['stage']);
+    const provenanceActorId = readString(body['provenanceActorId']);
+    const visibility = readVisibility(body['visibility']);
+    const artifactIdOverride = readString(body['id']);
+    const projectId = readString(body['projectId']);
+    const kind = readString(body['kind']) as StorePipelineHandoffArtifactInput['kind'] | undefined;
+    const title = readString(body['title']);
+    const summary = readString(body['summary']);
+    const capturedAt = readString(body['capturedAt']);
+    const supersedesArtifactId = readString(body['supersedesArtifactId']);
+    const input: StorePipelineHandoffArtifactInput = {
+      artifact: artifact as PipelineHandoffArtifact,
+      workContextId,
+      ...(artifactIdOverride ? { id: artifactIdOverride } : {}),
+      ...(projectId ? { projectId } : {}),
+      ...(taskRef ? { taskRef } : {}),
+      ...(stage ? { stage } : {}),
+      ...(provenanceActorId ? { provenanceActorId } : {}),
+      ...(visibility ? { visibility } : {}),
+      ...(kind ? { kind } : {}),
+      ...(title ? { title } : {}),
+      ...(summary ? { summary } : {}),
+      ...(capturedAt ? { capturedAt } : {}),
+      ...(supersedesArtifactId ? { supersedesArtifactId } : {}),
+    };
+    try {
+      const stored = s.storePipelineHandoffArtifact(input);
+      const actorId = readString(body['actorId']) ?? provenanceActorId;
+      const shouldPin = readBoolean(body['pin']) ?? false;
+      const pinned =
+        shouldPin && deps.workContextStore
+          ? pinArtifactRef(deps.workContextStore, workContextId, stored.metadata, actorId)
+          : undefined;
+      res.status(201).json({
+        artifact: recordEnvelope(stored, current),
+        ...(pinned ? { pin: pinned } : {}),
+      });
+    } catch (err) {
+      if (err instanceof WorkContextArtifactStoreError) {
+        mapStoreError(res, err, { operation: 'publish', workContextId, artifactId: artifact.id });
+        return;
+      }
+      sendGatewayError(res, 'INTERNAL', 'failed to store WorkContext artifact', true, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
+        operation: 'publish',
+        workContextId,
+        artifactId: artifact.id,
+      });
+    }
+  });
+
+  router.get('/work-context-artifacts', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const s = storeOr503(res, deps.store, 'list');
+    if (!s) return;
+    const input = queryListInput(req);
+    if (input === 'invalid-task-ref') {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'taskRefKind and taskRefId are both required when filtering by taskRef', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_TASK_REF_REQUIRED',
+        operation: 'list',
+      });
+      return;
+    }
+    if (input === 'missing-filter') {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'workContextId or taskRef is required', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_FILTER_REQUIRED',
+        operation: 'list',
+      });
+      return;
+    }
+    if (input.workContextId && !ensureWorkContext(res, deps.workContextStore, input.workContextId, 'list')) return;
+    const current = currentHeadSha(req);
+    res.json({ artifacts: s.list(input).map((record) => recordEnvelope(record, current)) });
+  });
+
+  router.get('/work-context-artifacts/:id', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const s = storeOr503(res, deps.store, 'show');
+    if (!s) return;
+    const id = req.params['id'] ?? '';
+    const publicOnly = readBoolean(req.query['public']) ?? false;
+    const current = currentHeadSha(req);
+    try {
+      if (publicOnly) {
+        const publicCopy = s.publicSummary(id);
+        if (!publicCopy) {
+          sendGatewayError(res, 'NOT_FOUND', 'public WorkContext artifact not found', false, {
+            reasonCode: 'WORK_CONTEXT_ARTIFACT_PUBLIC_COPY_NOT_FOUND',
+            operation: 'show',
+            artifactId: id,
+          });
+          return;
+        }
+        res.json({ artifact: publicCopy });
+        return;
+      }
+      const record = s.read(id);
+      if (!record) {
+        sendGatewayError(res, 'NOT_FOUND', 'WorkContext artifact not found', false, {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND',
+          operation: 'show',
+          artifactId: id,
+        });
+        return;
+      }
+      res.json({ artifact: readEnvelope(record, current) });
+    } catch (err) {
+      if (err instanceof WorkContextArtifactStoreError) {
+        mapStoreError(res, err, { operation: 'show', artifactId: id });
+        return;
+      }
+      sendGatewayError(res, 'INTERNAL', 'failed to read WorkContext artifact', true, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
+        operation: 'show',
+        artifactId: id,
+      });
+    }
+  });
+
+  router.get('/work-context-artifacts/:id/export', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const s = storeOr503(res, deps.store, 'export');
+    if (!s) return;
+    const id = req.params['id'] ?? '';
+    try {
+      const publicCopy = s.publicSummary(id);
+      if (!publicCopy) {
+        sendGatewayError(res, 'FORBIDDEN', 'artifact is not available for public export', false, {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_UNSAFE_PUBLIC_COPY',
+          operation: 'export',
+          artifactId: id,
+        });
+        return;
+      }
+      const exportBytes = Buffer.byteLength(JSON.stringify(publicCopy), 'utf8');
+      if (exportBytes > maxExportBytes) {
+        sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact export exceeds public export size cap', false, {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_EXPORT',
+          operation: 'export',
+          artifactId: id,
+          exportBytes,
+          maxBytes: maxExportBytes,
+        });
+        return;
+      }
+      res.json({ artifact: publicCopy, export: { mode: 'public-summary', rawPayloadAvailable: false, exportBytes, maxBytes: maxExportBytes } });
+    } catch (err) {
+      if (err instanceof WorkContextArtifactStoreError) {
+        mapStoreError(res, err, { operation: 'export', artifactId: id });
+        return;
+      }
+      sendGatewayError(res, 'INTERNAL', 'failed to export WorkContext artifact', true, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
+        operation: 'export',
+        artifactId: id,
+      });
+    }
+  });
+
+  router.post('/work-context-artifacts/:id/pin', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const s = storeOr503(res, deps.store, 'pin');
+    if (!s) return;
+    const body = bodyRecord(req);
+    const workContextId = readString(body['workContextId']);
+    const artifactId = req.params['id'] ?? '';
+    if (!workContextId) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'workContextId is required', false, {
+        reasonCode: 'WORK_CONTEXT_ID_REQUIRED',
+        operation: 'pin',
+        artifactId,
+        field: 'workContextId',
+      });
+      return;
+    }
+    if (!ensureWorkContext(res, deps.workContextStore, workContextId, 'pin')) return;
+    const record = s.get(artifactId);
+    if (!record) {
+      sendGatewayError(res, 'NOT_FOUND', 'WorkContext artifact not found', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND',
+        operation: 'pin',
+        artifactId,
+        workContextId,
+      });
+      return;
+    }
+    const pinned = pinArtifactRef(deps.workContextStore!, workContextId, record.metadata, readString(body['actorId']));
+    res.status(pinned.alreadyPinned ? 200 : 201).json({
+      artifact: recordEnvelope(record),
+      artifactRef: pinned.artifactRef,
+      workContext: pinned.workContext,
+      alreadyPinned: pinned.alreadyPinned,
+    });
+  });
+
+  router.post('/work-context-artifacts/:id/unpin', auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const s = storeOr503(res, deps.store, 'unpin');
+    if (!s) return;
+    const body = bodyRecord(req);
+    const workContextId = readString(body['workContextId']);
+    const artifactId = req.params['id'] ?? '';
+    if (!workContextId) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'workContextId is required', false, {
+        reasonCode: 'WORK_CONTEXT_ID_REQUIRED',
+        operation: 'unpin',
+        artifactId,
+        field: 'workContextId',
+      });
+      return;
+    }
+    if (!ensureWorkContext(res, deps.workContextStore, workContextId, 'unpin')) return;
+    const result = unpinArtifactRef(deps.workContextStore!, workContextId, artifactId, readString(body['actorId']));
+    res.json({ workContext: result.workContext, removed: result.removed, lifecycle: { artifactDeleted: false } });
+  });
+
+  return router;
+}
+
+export function writeArtifactExport(path: string, payload: unknown): void {
+  writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
