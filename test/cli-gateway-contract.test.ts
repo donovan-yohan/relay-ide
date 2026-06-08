@@ -362,6 +362,39 @@ describe('CLI gateway contract', () => {
       auditRedaction: { expectation: 'bounded-redacted' },
       scopeKinds: ['work-context'],
     });
+    expect(schemaAcceptsCommandInput('work-context-artifacts.publish', {})).toBe(
+      false
+    );
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.publish', {
+        workContextId: 'wc:contract',
+        artifact: {},
+      })
+    ).toBe(true);
+    expect(schemaAcceptsCommandInput('work-context-artifacts.show', { id: 'artifact:1' })).toBe(
+      true
+    );
+    expect(schemaAcceptsCommandInput('work-context-artifacts.export', { id: 'artifact:1' })).toBe(
+      true
+    );
+    expect(schemaAcceptsCommandInput('work-context-artifacts.pin', { id: 'artifact:1' })).toBe(
+      false
+    );
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.pin', {
+        id: 'artifact:1',
+        workContextId: 'wc:contract',
+      })
+    ).toBe(true);
+    expect(schemaAcceptsCommandInput('work-context-artifacts.unpin', { id: 'artifact:1' })).toBe(
+      false
+    );
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.unpin', {
+        id: 'artifact:1',
+        workContextId: 'wc:contract',
+      })
+    ).toBe(true);
     expect(relayCommandDefinition('sessions.stream')).toMatchObject({
       sideEffect: 'stream',
       requiresConfirmation: false,

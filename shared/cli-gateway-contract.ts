@@ -1637,13 +1637,23 @@ const workContextArtifactIdInputSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: {
     id: stringSchema,
-    workContextId: stringSchema,
-    actorId: stringSchema,
     currentHeadSha: stringSchema,
     public: booleanSchema,
     output: stringSchema,
   },
   required: ['id'],
+};
+
+const workContextArtifactPinInputSchema: RelayJsonSchema = {
+  title: 'WorkContextArtifactPinInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    workContextId: stringSchema,
+    actorId: stringSchema,
+  },
+  required: ['id', 'workContextId'],
 };
 
 const workContextArtifactDoctorInputSchema: RelayJsonSchema = {
@@ -3198,7 +3208,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['context:write'],
-    inputSchema: workContextArtifactIdInputSchema,
+    inputSchema: workContextArtifactPinInputSchema,
     outputSchema: okOutput('WorkContextArtifactPinOutput', workContextArtifactRecordOutputSchema),
     errorCodes: workContextArtifactWriteErrorCodes,
   },
@@ -3211,7 +3221,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['context:write'],
-    inputSchema: workContextArtifactIdInputSchema,
+    inputSchema: workContextArtifactPinInputSchema,
     outputSchema: okOutput('WorkContextArtifactUnpinOutput', workContextArtifactRecordOutputSchema),
     errorCodes: workContextArtifactWriteErrorCodes,
   },
