@@ -4352,6 +4352,7 @@ async function main(): Promise<void> {
     workContextStore.close();
     iaStore?.close();
     contextPacketStore?.close();
+    workContextArtifactStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {
