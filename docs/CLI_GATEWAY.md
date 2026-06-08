@@ -10,6 +10,8 @@ relay-ide v1 nodes list --json
 relay-ide v1 sessions list --json
 relay-ide v1 sessions get --id <session-id-or-global-id> --json
 relay-ide v1 sessions create --input-json '{...}' --json
+relay-ide v1 tickets start-work --input-json '{...}' --json
+relay-ide v1 branches open-session --input-json '{...}' --json
 relay-ide v1 sessions attach --id <session-id-or-global-id> --json
 relay-ide v1 sessions detach --id <session-id-or-global-id> --json
 relay-ide v1 sessions kill --id <session-id-or-global-id> [--confirmation-token <token>] --json
@@ -254,12 +256,12 @@ This boundary is part of the #797/#798/#802 split: #427 provided the trust-tier/
 
 `settings.*` and `webhooks.*` expose a narrow operational slice for CLI/agent adapters. They are not a raw config API, and they are browser-operator-session-only for now.
 
-| Command | Current auth boundary | Side effect | Contract |
-| --- | --- | --- | --- |
-| `relay-ide v1 settings get --json` | Browser operator session | read | Returns only `defaultAgent`, `defaultContinue`, `defaultYolo`, `defaultNotifications`, `claudeFullscreen`, `renamerTool`, and `updateChannel`, plus redaction metadata. |
-| `relay-ide v1 settings update --input-json '{...}' --json` | Browser operator session | write | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed. |
-| `relay-ide v1 webhooks status --json` | Browser operator session | read | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata. |
-| `relay-ide v1 webhooks ping --json` | Browser operator session | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs. |
+| Command                                                    | Current auth boundary    | Side effect | Contract                                                                                                                                                                |
+| ---------------------------------------------------------- | ------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `relay-ide v1 settings get --json`                         | Browser operator session | read        | Returns only `defaultAgent`, `defaultContinue`, `defaultYolo`, `defaultNotifications`, `claudeFullscreen`, `renamerTool`, and `updateChannel`, plus redaction metadata. |
+| `relay-ide v1 settings update --input-json '{...}' --json` | Browser operator session | write       | Updates one allowlisted key. Unknown keys, wrong value types, command/path-shaped `defaultAgent`, and unconfirmed risky transitions fail closed.                        |
+| `relay-ide v1 webhooks status --json`                      | Browser operator session | read        | Returns bounded webhook relay status, repo webhook states, Smee connection status, and redaction metadata.                                                              |
+| `relay-ide v1 webhooks ping --json`                        | Browser operator session | write/probe | Runs a safe configuration ping/status probe without delivering secrets or raw webhook URLs.                                                                             |
 
 Settings update accepts either `--input-json` / `--input-file` with `{ "key", "value", "confirmRiskyWrite"? }` or typed flags (`--key`, `--value` / `--value-json`, optional `--confirm-risky-write`). `defaultYolo: true` and `updateChannel` changes require `confirmRiskyWrite: true`; otherwise the hub returns `CONFIRMATION_REQUIRED` with a bounded challenge that names only the key and requested value. The shared security policy still defines settings/webhook capability bits as future grant names, but they are not trusted for these routes yet.
 
@@ -293,6 +295,58 @@ Supported now:
 - `controlMode=agent-driven` only for routed node creation, where hub/node policy and hand-back state can be checked
 - descriptor-only attach with `sessions attach --id ... --json`
 - safe detach with `sessions detach --id ... --json`; this resolves the session and releases only the CLI gateway handle, leaving the underlying Relay session/process running
+
+## Ticket and branch workflow session commands
+
+`tickets start-work` and `branches open-session` are stable v1 workflow commands for adapters that want a single backend contract for “resolve this ticket or branch into a worktree and open a Relay session.” They intentionally sit above raw `sessions create`: the CLI resolves the local git branch/worktree policy first, then creates a normal `/sessions` backend session with `repoPath`, `worktreePath`, `branchName`, session options, and optional initial prompt/control handoff metadata. The local `/sessions` path derives `cwd` from the resolved repo/worktree and workflow delegation does not send an explicit `cwd` field.
+
+Supported now:
+
+- local repo execution only (`repo.nodeId` may be omitted or `local`); remote node workflow routing returns `UNSUPPORTED` until node-side git/worktree capability routing exists
+- `branch.name`, or `pr.head`, or `pr.number` (via `gh pr view`) as the branch target
+- worktree policy `reuse-existing` (default), `create-if-missing`, or `reject-if-missing`
+- optional `worktree.worktreePath` for an explicit existing or newly-created worktree path
+- optional dirty/conflict overrides with `worktree.allowDirty` and `worktree.allowConflicted`
+- `session` options forwarded through the existing session-create validator (`type`, `mode`, `agent`, `terminalBackend`, dimensions, continuation policy, `workContextId`, `controlMode`)
+- `prompt.mode="initial-prompt"` to deliver prompt text through the stable `sessions.create.initialPrompt` path; raw PTY prompt injection is deliberately not a gateway contract
+
+Minimal examples:
+
+```json
+{
+  "ticket": {
+    "source": "github",
+    "id": "871",
+    "url": "https://github.com/donovan-yohan/relay-ide/issues/871"
+  },
+  "repo": { "repoPath": "/Users/me/code/relay-ide" },
+  "branch": {
+    "name": "issue-871-backend-start-work-branch-contract",
+    "base": "origin/nightly"
+  },
+  "worktree": { "mode": "create-if-missing" },
+  "session": { "type": "agent", "agent": "claude" },
+  "prompt": { "mode": "initial-prompt", "prompt": "Work issue #871." }
+}
+```
+
+```json
+{
+  "repo": { "repoPath": "/Users/me/code/relay-ide" },
+  "pr": { "number": 123 },
+  "worktree": { "mode": "reuse-existing" },
+  "session": { "type": "terminal", "terminalBackend": "relay-pty" }
+}
+```
+
+Fail-closed behavior:
+
+- workflow commands require `RELAY_IDE_BROWSER_TOKEN` before git/worktree mutation; `--actor-token` is read-only in this slice
+- missing `ticket` on `tickets.startWork`, missing `repo.repoPath`, or missing branch/PR identity returns `INVALID_ARGUMENT`
+- missing worktree under `reuse-existing` / `reject-if-missing` returns `NOT_FOUND`
+- unknown branch without a provided base under `create-if-missing` returns `NOT_FOUND`
+- dirty or conflicted worktrees return `SESSION_CONFLICT` unless explicitly allowed
+- explicit unsupported prompt handoff with `requireTypedDelivery=true` returns `UNSUPPORTED`
 
 ### Typed environment IDs (#626)
 
