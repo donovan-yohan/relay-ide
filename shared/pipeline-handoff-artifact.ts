@@ -1,4 +1,4 @@
-import type { TaskRef, ArtifactKind } from './work-context.js';
+import { ARTIFACT_KINDS, type TaskRef, type ArtifactKind } from './work-context.js';
 
 export const PIPELINE_HANDOFF_ARTIFACT_SCHEMA_VERSION = 1 as const;
 
@@ -233,7 +233,9 @@ const IMPLEMENTATION_DECISION_SET = new Set<string>(
 const QA_VERDICT_SET = new Set<string>(PIPELINE_HANDOFF_QA_VERDICTS);
 const REVIEW_VERDICT_SET = new Set<string>(PIPELINE_HANDOFF_REVIEW_VERDICTS);
 const RELEASE_VERDICT_SET = new Set<string>(PIPELINE_HANDOFF_RELEASE_VERDICTS);
-const SHA_RE = /^[a-f0-9]{40,64}$/i;
+const ARTIFACT_KIND_SET = ARTIFACT_KINDS;
+const GIT_SHA_RE = /^[a-f0-9]{40,64}$/i;
+const SHA256_RE = /^[a-f0-9]{64}$/i;
 const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 const GITHUB_TASK_KINDS = new Set<string>(['github-issue', 'github-pr']);
 
@@ -244,14 +246,22 @@ const FORBIDDEN_FIELD_NAMES = new Set<string>([
   'authorization',
   'bearer',
   'clientSecret',
+  'capabilityGrant',
+  'credential',
   'cookie',
   'env',
   'environment',
+  'grant',
+  'grantHandle',
+  'grantToken',
   'hermesDbPath',
   'hermesProfilePath',
   'localPath',
   'logPayload',
   'messages',
+  'nodeCredential',
+  'pairToken',
+  'pairingToken',
   'profilePath',
   'providerAuth',
   'rawContent',
@@ -263,12 +273,16 @@ const FORBIDDEN_FIELD_NAMES = new Set<string>([
   'stdout',
   'token',
   'transcript',
+  'xRelayNodeCredential',
 ]);
 
 const SECRET_TEXT_RE =
-  /(?:bearer\s+[a-z0-9._~+/-]+=*|sk-[a-z0-9_-]{8,}|relay-sac-v1[a-z0-9._-]*)/gi;
+  /(?:bearer\s+[a-z0-9._~+/-]+=*|sk-[a-z0-9_-]{8,}|relay-(?:sac|ohg|grant|auth|pair)-v1[a-z0-9._-]*|pair_[a-z0-9_-]{8,})/gi;
 const ABSOLUTE_LOCAL_PATH_RE =
   /(?:^|[\s:=('"])(?:\/home\/[^\s)'"]+|\/Users\/[^\s)'"]+|\/tmp\/[^\s)'"]+)/g;
+const WINDOWS_ABSOLUTE_PATH_RE = /(?:^|[\s:=('"])[a-z]:[\\/][^\s)'"]+/gi;
+const UNC_PATH_RE = /(?:^|[\s:=('"])\\\\[^\s\\/'"]+[\\/][^\s)'"]+/g;
+const KANBAN_TASK_ID_RE = /\bt_[a-f0-9]{8,}\b/gi;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -295,7 +309,15 @@ function isIsoTimestamp(value: unknown): value is string {
 }
 
 function isSha(value: unknown): value is string {
-  return typeof value === 'string' && SHA_RE.test(value);
+  return typeof value === 'string' && GIT_SHA_RE.test(value);
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === 'string' && SHA256_RE.test(value);
+}
+
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[a-z]:[\\/]/i.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(value);
 }
 
 function isSafeRelativePath(value: unknown): value is string {
@@ -304,6 +326,7 @@ function isSafeRelativePath(value: unknown): value is string {
   return (
     value.trim().length > 0 &&
     !value.startsWith('/') &&
+    !isWindowsAbsolutePath(value) &&
     !value.includes('..') &&
     !SECRET_TEXT_RE.test(value)
   );
@@ -311,6 +334,22 @@ function isSafeRelativePath(value: unknown): value is string {
 
 function normalizedFieldName(key: string): string {
   return key.replace(/[_\s-]/g, '').toLowerCase();
+}
+
+function isForbiddenFieldName(key: string): boolean {
+  const normalized = normalizedFieldName(key);
+  if (
+    Array.from(FORBIDDEN_FIELD_NAMES).some(
+      (forbidden) => normalized === normalizedFieldName(forbidden)
+    )
+  ) {
+    return true;
+  }
+  return (
+    /(?:auth|authorization|bearer|credential|grant|pairtoken|pairingtoken|secret|token)/.test(
+      normalized
+    ) && !['taskrefs'].includes(normalized)
+  );
 }
 
 function collectUnsafeFields(
@@ -326,11 +365,8 @@ function collectUnsafeFields(
   }
   if (!isRecord(value)) return errors;
   for (const [key, nested] of Object.entries(value)) {
-    const normalized = normalizedFieldName(key);
-    for (const forbidden of Array.from(FORBIDDEN_FIELD_NAMES)) {
-      if (normalized === normalizedFieldName(forbidden)) {
-        errors.push(`unsafe handoff field rejected: ${path}.${key}`);
-      }
+    if (isForbiddenFieldName(key)) {
+      errors.push(`unsafe handoff field rejected: ${path}.${key}`);
     }
     collectUnsafeFields(nested, `${path}.${key}`, errors);
   }
@@ -345,11 +381,21 @@ function collectUnsafePublicText(
   if (typeof value === 'string') {
     SECRET_TEXT_RE.lastIndex = 0;
     ABSOLUTE_LOCAL_PATH_RE.lastIndex = 0;
+    WINDOWS_ABSOLUTE_PATH_RE.lastIndex = 0;
+    UNC_PATH_RE.lastIndex = 0;
+    KANBAN_TASK_ID_RE.lastIndex = 0;
     if (SECRET_TEXT_RE.test(value)) {
       errors.push(`secret-looking text rejected from public handoff: ${path}`);
     }
-    if (ABSOLUTE_LOCAL_PATH_RE.test(value)) {
+    if (
+      ABSOLUTE_LOCAL_PATH_RE.test(value) ||
+      WINDOWS_ABSOLUTE_PATH_RE.test(value) ||
+      UNC_PATH_RE.test(value)
+    ) {
       errors.push(`local absolute path rejected from public handoff: ${path}`);
+    }
+    if (KANBAN_TASK_ID_RE.test(value)) {
+      errors.push(`private Kanban task id rejected from public handoff: ${path}`);
     }
     return errors;
   }
@@ -489,8 +535,8 @@ function validateEvidence(
           return;
         }
         if (!hasString(artifact.id)) errors.push(`${artifactPath}.id is required`);
-        if (!hasString(artifact.kind)) {
-          errors.push(`${artifactPath}.kind is required`);
+        if (!isEnumValue(artifact.kind, ARTIFACT_KIND_SET)) {
+          errors.push(`${artifactPath}.kind must be a valid artifact kind`);
         }
         if (!isOptionalString(artifact.title)) {
           errors.push(`${artifactPath}.title must be a string`);
@@ -501,8 +547,8 @@ function validateEvidence(
         if (!isOptionalString(artifact.summary)) {
           errors.push(`${artifactPath}.summary must be a string`);
         }
-        if (artifact.hashSha256 !== undefined && !isSha(artifact.hashSha256)) {
-          errors.push(`${artifactPath}.hashSha256 must be a sha when present`);
+        if (artifact.hashSha256 !== undefined && !isSha256(artifact.hashSha256)) {
+          errors.push(`${artifactPath}.hashSha256 must be a 64-character sha256 when present`);
         }
       });
     }
@@ -760,12 +806,24 @@ export function isPipelineHandoffArtifactStale(
 function redactPublicText(value: string): string {
   SECRET_TEXT_RE.lastIndex = 0;
   ABSOLUTE_LOCAL_PATH_RE.lastIndex = 0;
+  WINDOWS_ABSOLUTE_PATH_RE.lastIndex = 0;
+  UNC_PATH_RE.lastIndex = 0;
+  KANBAN_TASK_ID_RE.lastIndex = 0;
   return value
     .replace(SECRET_TEXT_RE, '[redacted-secret]')
     .replace(ABSOLUTE_LOCAL_PATH_RE, (match) => {
       const prefix = " \t:=('\"".includes(match[0] ?? '') ? match[0] : '';
       return `${prefix}[redacted-local-path]`;
-    });
+    })
+    .replace(WINDOWS_ABSOLUTE_PATH_RE, (match) => {
+      const prefix = " \t:=('\"".includes(match[0] ?? '') ? match[0] : '';
+      return `${prefix}[redacted-local-path]`;
+    })
+    .replace(UNC_PATH_RE, (match) => {
+      const prefix = " \t:=('\"".includes(match[0] ?? '') ? match[0] : '';
+      return `${prefix}[redacted-local-path]`;
+    })
+    .replace(KANBAN_TASK_ID_RE, '[redacted-kanban-task]');
 }
 
 function sanitizeTextTree<T>(value: T): T {

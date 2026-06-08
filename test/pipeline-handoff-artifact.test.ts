@@ -236,11 +236,77 @@ describe('PipelineHandoffArtifact schema', () => {
     expect(result.errors.join('\n')).toContain('$.stages[0].rawTranscript');
   });
 
+  it('rejects Relay auth/grant/pair-token fields and token forms', () => {
+    const unsafe = {
+      ...baseArtifact(),
+      relayGrantHandle: 'relay-grant-v1.secretmaterial',
+      stages: [
+        {
+          ...implementationStage(),
+          pairToken: 'pair_abcd1234',
+          summary: 'minted pair_abcd1234 for local pairing',
+        },
+      ],
+    };
+
+    const schemaResult = validatePipelineHandoffArtifact(unsafe);
+    const publicResult = validatePublicPipelineHandoffArtifact(unsafe as PipelineHandoffArtifact);
+
+    expect(schemaResult.valid).toBe(false);
+    expect(schemaResult.errors.join('\n')).toContain('$.relayGrantHandle');
+    expect(schemaResult.errors.join('\n')).toContain('$.stages[0].pairToken');
+    expect(publicResult.valid).toBe(false);
+    expect(publicResult.errors.join('\n')).toContain('secret-looking text rejected');
+    expect(publicResult.errors.join('\n')).not.toContain('pair_abcd1234');
+  });
+
+  it('requires exact sha256 artifact hashes and runtime ArtifactKind values', () => {
+    const validHash = 'c'.repeat(64);
+    const artifact = baseArtifact([
+      {
+        ...implementationStage(),
+        acceptanceEvidence: [
+          {
+            ...evidence(),
+            artifacts: [
+              { id: 'diff-1', kind: 'diff', hashSha256: validHash },
+              { id: 'report-1', kind: 'not-a-kind', hashSha256: 'd'.repeat(40) },
+            ],
+          },
+        ],
+      },
+    ] as PipelineHandoffStage[]);
+
+    const result = validatePipelineHandoffArtifact(artifact);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('kind must be a valid artifact kind');
+    expect(result.errors.join('\n')).toContain('hashSha256 must be a 64-character sha256');
+    expect(result.errors.join('\n')).not.toContain(validHash);
+  });
+
+  it('rejects Windows/UNC absolute paths in changedFiles', () => {
+    const artifact = baseArtifact([
+      {
+        ...implementationStage(),
+        changedFiles: ['C:\\Users\\donovan\\secret.txt', '\\\\server\\share\\secret.txt'],
+      },
+    ]);
+
+    const result = validatePipelineHandoffArtifact(artifact);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('changedFiles must be relative');
+    expect(result.errors.join('\n')).not.toContain('C:\\Users\\donovan');
+    expect(result.errors.join('\n')).not.toContain('\\\\server\\share');
+  });
+
   it('redacts/omits unsafe fields for public PR or issue handoff comments', () => {
     const artifact = baseArtifact([
       {
         ...implementationStage(),
-        summary: 'ran from /home/donovanyohan/private/worktree with Bearer abcdefghijk',
+        summary:
+          'ran from /home/donovanyohan/private/worktree, C:\\Users\\donovan\\Relay, \\\\server\\share\\relay, t_93c3c750 with Bearer abcdefghijk and pair_abcd1234',
         commands: [
           {
             ...command(),
@@ -250,7 +316,15 @@ describe('PipelineHandoffArtifact schema', () => {
       },
     ]);
 
-    expect(validatePublicPipelineHandoffArtifact(artifact).valid).toBe(false);
+    const publicResult = validatePublicPipelineHandoffArtifact(artifact);
+    expect(publicResult.valid).toBe(false);
+    expect(publicResult.errors.join('\n')).toContain('local absolute path rejected');
+    expect(publicResult.errors.join('\n')).toContain('private Kanban task id rejected');
+    expect(publicResult.errors.join('\n')).toContain('secret-looking text rejected');
+    expect(publicResult.errors.join('\n')).not.toContain('C:\\Users\\donovan');
+    expect(publicResult.errors.join('\n')).not.toContain('\\\\server\\share');
+    expect(publicResult.errors.join('\n')).not.toContain('t_93c3c750');
+    expect(publicResult.errors.join('\n')).not.toContain('pair_abcd1234');
 
     const sanitized = sanitizePipelineHandoffArtifactForPublic(artifact);
     const publicMarkdown = renderPipelineHandoffMarkdown(artifact, { public: true });
@@ -260,8 +334,13 @@ describe('PipelineHandoffArtifact schema', () => {
     ]);
     expect(validatePublicPipelineHandoffArtifact(sanitized).errors).toEqual([]);
     expect(publicMarkdown).not.toContain('/home/donovanyohan');
+    expect(publicMarkdown).not.toContain('C:\\Users\\donovan');
+    expect(publicMarkdown).not.toContain('\\\\server\\share');
+    expect(publicMarkdown).not.toContain('t_93c3c750');
     expect(publicMarkdown).not.toContain('Bearer abcdefghijk');
+    expect(publicMarkdown).not.toContain('pair_abcd1234');
     expect(publicMarkdown).toContain('[redacted-local-path]');
+    expect(publicMarkdown).toContain('[redacted-kanban-task]');
     expect(publicMarkdown).toContain('[redacted-secret]');
   });
 });

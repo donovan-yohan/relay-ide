@@ -265,7 +265,7 @@ const TAB_KINDS = new Set<string>([
   'html',
   'other',
 ]);
-const ARTIFACT_KINDS = new Set<string>([
+export const ARTIFACT_KINDS = new Set<string>([
   'file',
   'diff',
   'log-ref',
