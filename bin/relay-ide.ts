@@ -412,6 +412,15 @@ interface WorkflowWorktreeResolution {
   conflicted: boolean;
 }
 
+interface WorkflowPrResolutionMeta extends Record<string, unknown> {
+  number?: number;
+  head: string;
+  base?: unknown;
+  headOid?: string;
+  fetchRef?: string;
+  remoteRef?: string;
+}
+
 function isGatewayRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -608,18 +617,96 @@ async function workflowBranchExists(
   return { local: Boolean(local), remote: Boolean(remote) };
 }
 
+async function workflowRefOid(
+  repoPath: string,
+  refName: string
+): Promise<string | undefined> {
+  const result = await workflowGitOptional(repoPath, ['rev-parse', '--verify', refName]);
+  return result?.stdout.trim() || undefined;
+}
+
+function assertWorkflowRefMatchesPrHead(
+  commandName: WorkflowGatewayCommand,
+  refName: string,
+  actualOid: string | undefined,
+  prMeta: WorkflowPrResolutionMeta
+): void {
+  if (!prMeta.headOid || !actualOid || actualOid === prMeta.headOid) return;
+  workflowError(
+    commandName,
+    'SESSION_CONFLICT',
+    'resolved branch does not match the PR head commit',
+    {
+      reasonCode: 'PR_HEAD_MISMATCH',
+      branchName: prMeta.head,
+      refName,
+      actualOid,
+      expectedOid: prMeta.headOid,
+      prNumber: prMeta.number ?? null,
+    }
+  );
+}
+
+async function prepareWorkflowPrHeadBranch(
+  commandName: WorkflowGatewayCommand,
+  repoPath: string,
+  branchName: string,
+  branchState: { local: boolean; remote: boolean },
+  prMeta: WorkflowPrResolutionMeta | undefined
+): Promise<void> {
+  if (!prMeta?.fetchRef || !prMeta.remoteRef) return;
+
+  await workflowGit(
+    commandName,
+    repoPath,
+    ['fetch', 'origin', `+${prMeta.fetchRef}:${prMeta.remoteRef}`],
+    'UPSTREAM_ERROR',
+    'PR_HEAD_FETCH_FAILED'
+  );
+
+  const fetchedOid = await workflowRefOid(repoPath, prMeta.remoteRef);
+  assertWorkflowRefMatchesPrHead(commandName, prMeta.remoteRef, fetchedOid, prMeta);
+
+  if (branchState.local) {
+    const localOid = await workflowRefOid(repoPath, `refs/heads/${branchName}`);
+    assertWorkflowRefMatchesPrHead(commandName, `refs/heads/${branchName}`, localOid, prMeta);
+    return;
+  }
+
+  await workflowGit(
+    commandName,
+    repoPath,
+    ['branch', branchName, prMeta.remoteRef],
+    'UPSTREAM_ERROR',
+    'BRANCH_CREATE_FROM_PR_HEAD_FAILED'
+  );
+  branchState.local = true;
+}
+
+async function assertWorkflowWorktreeMatchesPrHead(
+  commandName: WorkflowGatewayCommand,
+  worktreePath: string,
+  prMeta: WorkflowPrResolutionMeta | undefined
+): Promise<void> {
+  if (!prMeta?.headOid) return;
+  const worktreeOid = await workflowRefOid(worktreePath, 'HEAD');
+  assertWorkflowRefMatchesPrHead(commandName, 'HEAD', worktreeOid, prMeta);
+}
+
 async function resolveWorkflowBranchFromPr(
   commandName: WorkflowGatewayCommand,
   repoPath: string,
   pr: Record<string, unknown> | undefined,
   explicitBranch: string | undefined
-): Promise<{ branchName: string; prMeta?: Record<string, unknown> }> {
+): Promise<{ branchName: string; prMeta?: WorkflowPrResolutionMeta }> {
   if (explicitBranch) {
-    return pr ? { branchName: explicitBranch, prMeta: pr } : { branchName: explicitBranch };
+    return pr
+      ? { branchName: explicitBranch, prMeta: { ...pr, head: explicitBranch } }
+      : { branchName: explicitBranch };
   }
   const prHead = workflowString(commandName, pr, 'head');
   if (prHead) {
-    return pr ? { branchName: prHead, prMeta: pr } : { branchName: prHead };
+    return pr ? { branchName: prHead, prMeta: { ...pr, head: prHead } } : { branchName: prHead };
   }
   const prNumber = pr?.['number'];
   if (prNumber === undefined) {
@@ -635,20 +722,31 @@ async function resolveWorkflowBranchFromPr(
   try {
     const { stdout } = (await execFileAsync(
       'gh',
-      ['pr', 'view', String(prNumber), '--json', 'headRefName,baseRefName,url,title,number'],
+      [
+        'pr',
+        'view',
+        String(prNumber),
+        '--json',
+        'headRefName,headRefOid,baseRefName,url,title,number',
+      ],
       { cwd: repoPath, timeout: 15000 }
     )) as WorkflowGitResult;
     const data = JSON.parse(stdout) as Record<string, unknown>;
     const head = typeof data['headRefName'] === 'string' ? data['headRefName'] : '';
+    const headOid = typeof data['headRefOid'] === 'string' ? data['headRefOid'] : '';
     if (!head) throw new Error('PR headRefName missing');
+    if (!headOid) throw new Error('PR headRefOid missing');
     return {
       branchName: head,
       prMeta: {
-        number: data['number'] ?? prNumber,
+        number: typeof data['number'] === 'number' ? data['number'] : prNumber,
         url: data['url'],
         title: data['title'],
         head,
         base: data['baseRefName'],
+        headOid,
+        fetchRef: `refs/pull/${prNumber}/head`,
+        remoteRef: `refs/remotes/origin/pr-${prNumber}`,
       },
     };
   } catch (error) {
@@ -762,6 +860,13 @@ async function resolveWorkflowWorktree(
       path.join(resolvedRepoPath, '.worktrees', branchSlug(branchName));
     const branchState = await workflowBranchExists(resolvedRepoPath, branchName);
     const branchBase = workflowString(commandName, branch, 'base') ?? workflowString(commandName, prMeta, 'base');
+    await prepareWorkflowPrHeadBranch(
+      commandName,
+      resolvedRepoPath,
+      branchName,
+      branchState,
+      prMeta
+    );
     if (!branchState.local && branchState.remote) {
       await workflowGit(
         commandName,
@@ -795,6 +900,7 @@ async function resolveWorkflowWorktree(
   }
 
   const finalWorktreePath = path.resolve(existing.path);
+  await assertWorkflowWorktreeMatchesPrHead(commandName, finalWorktreePath, prMeta);
   const conflicted = Boolean(
     (await workflowGit(
       commandName,
@@ -941,7 +1047,9 @@ async function runGatewayWorkflow(
   const input = parseGatewayInputObject(commandName, commandArgs);
   requireWorkflowGatewayAuth(commandName);
   if (commandName === 'tickets.startWork') {
-    workflowInputRecord(commandName, input, 'ticket', true);
+    const ticket = workflowInputRecord(commandName, input, 'ticket', true);
+    workflowString(commandName, ticket, 'source', true);
+    workflowString(commandName, ticket, 'id', true);
   }
   const resolved = await resolveWorkflowWorktree(commandName, input);
   const { body, promptHandoff, controlHandoff } = workflowSessionBody(

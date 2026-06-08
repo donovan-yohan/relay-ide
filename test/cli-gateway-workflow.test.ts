@@ -276,3 +276,125 @@ test('missing gh CLI while resolving pr.number returns a typed GH_CLI_MISSING er
     },
   });
 });
+
+test('pr.number create-if-missing fetches the PR head instead of creating from base', async () => {
+  const repo = createCleanRepo('main');
+  const origin = path.join(mkTempRoot('workflow-origin'), 'origin.git');
+  execFileSync('git', ['init', '--bare', origin], { env: GIT_ENV, stdio: 'ignore' });
+  git(repo, ['remote', 'add', 'origin', origin]);
+  git(repo, ['push', 'origin', 'main']);
+  execFileSync('git', ['--git-dir', origin, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+  const baseSha = git(repo, ['rev-parse', 'HEAD']).trim();
+
+  git(repo, ['checkout', '-b', 'temporary-pr-head']);
+  fs.writeFileSync(path.join(repo, 'PR.md'), '# actual PR head\n');
+  git(repo, ['add', 'PR.md']);
+  git(repo, ['commit', '-m', 'actual pr head']);
+  const prHeadSha = git(repo, ['rev-parse', 'HEAD']).trim();
+  git(repo, ['push', 'origin', 'HEAD:refs/pull/879/head']);
+  git(repo, ['checkout', 'main']);
+  git(repo, ['branch', '-D', 'temporary-pr-head']);
+
+  const binDir = path.join(mkTempRoot('workflow-gh'), 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  const ghPath = path.join(binDir, 'gh');
+  fs.writeFileSync(
+    ghPath,
+    `#!/usr/bin/env node\nconsole.log(${JSON.stringify(
+      JSON.stringify({
+        headRefName: 'feature-from-fork',
+        headRefOid: prHeadSha,
+        baseRefName: 'main',
+        url: 'https://github.com/donovan-yohan/relay-ide/pull/879',
+        title: 'fixture PR',
+        number: 879,
+      })
+    )});\n`
+  );
+  fs.chmodSync(ghPath, 0o755);
+
+  const captured: CapturedRequest[] = [];
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const rawBody = Buffer.concat(chunks).toString('utf8');
+      captured.push({
+        method: req.method,
+        url: req.url,
+        ...(rawBody ? { body: JSON.parse(rawBody) as Record<string, unknown> } : {}),
+      });
+      res.setHeader('content-type', 'application/json');
+      if (req.method === 'POST' && req.url === '/sessions') {
+        res.statusCode = 201;
+        res.end(JSON.stringify({ id: 'session-pr-head', type: 'terminal', mode: 'pty' }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+    });
+  });
+
+  const port = await listen(server);
+  try {
+    const result = await runRelay(
+      workflowArgs('branches open-session', {
+        repo: { repoPath: repo },
+        pr: { number: 879 },
+        worktree: { mode: 'create-if-missing' },
+        session: { type: 'terminal', mode: 'pty' },
+      }),
+      {
+        ...process.env,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+        RELAY_IDE_BROWSER_TOKEN: 'browser-token',
+        RELAY_IDE_PORT: String(port),
+      }
+    );
+
+    expect(result.stderr).toBe('');
+    expect(result.code).toBe(0);
+    const envelope = parseEnvelope(result.stdout);
+    expect(envelope).toMatchObject({ ok: true, command: 'branches.openSession' });
+    expect(captured).toHaveLength(1);
+    expect(captured[0].body).toMatchObject({
+      branchName: 'feature-from-fork',
+      type: 'terminal',
+      mode: 'pty',
+    });
+    const worktreePath = captured[0].body?.worktreePath as string;
+    expect(git(worktreePath, ['rev-parse', 'HEAD']).trim()).toBe(prHeadSha);
+    expect(git(worktreePath, ['rev-parse', 'HEAD']).trim()).not.toBe(baseSha);
+  } finally {
+    await close(server);
+  }
+});
+
+test('tickets.startWork validates ticket.source and ticket.id before session creation', async () => {
+  const repo = createCleanRepo('main');
+  const result = await runRelay(
+    workflowArgs('tickets start-work', {
+      ticket: { source: 'github' },
+      repo: { repoPath: repo },
+      branch: { name: 'main' },
+      worktree: { mode: 'reuse-existing', worktreePath: repo },
+      session: { type: 'terminal', mode: 'pty' },
+    }),
+    {
+      ...process.env,
+      RELAY_IDE_BROWSER_TOKEN: 'browser-token',
+      RELAY_IDE_PORT: '9',
+    }
+  );
+
+  expect(result.code).toBe(1);
+  const envelope = parseEnvelope(result.stdout);
+  expect(envelope).toMatchObject({
+    ok: false,
+    command: 'tickets.startWork',
+    error: {
+      code: 'INVALID_ARGUMENT',
+      details: { field: 'id' },
+    },
+  });
+});
