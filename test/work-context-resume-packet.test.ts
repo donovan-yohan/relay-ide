@@ -19,6 +19,7 @@ import {
   createWorkContextPrivacyMetadata,
   type ArtifactRef,
   type TaskRef,
+  type WorkContextPrivacyClass,
 } from '../shared/work-context.js';
 
 const cleanup: Array<() => void> = [];
@@ -145,7 +146,7 @@ function handoff(input: {
   };
 }
 
-function pinnedRef(id: string): ArtifactRef {
+function pinnedRef(id: string, classification: WorkContextPrivacyClass = 'internal'): ArtifactRef {
   return {
     id: `artifact:work-context-artifact:${id}`,
     kind: 'report',
@@ -154,7 +155,7 @@ function pinnedRef(id: string): ArtifactRef {
     producedAt: now,
     summary: 'Pinned summary only; raw payload omitted.',
     privacy: createWorkContextPrivacyMetadata({
-      classification: 'internal',
+      classification,
       retention: 'project',
       rawPayloadStored: false,
       redaction: { redacted: true, strategy: 'summary', classes: ['artifact'] },
@@ -354,7 +355,7 @@ describe('WorkContext resume packet generator', () => {
         ...snapshot,
         artifacts: [
           {
-            ...pinnedRef('bad-uri'),
+            ...pinnedRef('bad-uri', 'public'),
             uri: 'relay://work-context-artifacts/%E0%A4%A',
           },
         ],
@@ -365,6 +366,51 @@ describe('WorkContext resume packet generator', () => {
     });
 
     expect(packet.pinnedArtifacts[0]?.uri).toBe('relay://work-context-artifacts/%25E0%25A4%25A');
+  });
+
+  it('omits private artifact refs from public-safe pinned and artifact summaries', () => {
+    const { contextStore } = stores();
+    contextStore.create({ id: 'wc:private-artifacts', tasks: [issueRef] });
+    const snapshot = contextStore.getResumeSnapshot('wc:private-artifacts', { sessions: [], nodes: [] });
+    const privatePinned = {
+      ...pinnedRef('private-artifact'),
+      id: 'PRIVATE ID MUST NOT LEAK',
+      title: 'PRIVATE TITLE MUST NOT LEAK',
+      summary: 'PRIVATE SUMMARY MUST NOT LEAK',
+      uri: 'relay://work-context-artifacts/private-artifact',
+    };
+    const publicPinned = {
+      ...pinnedRef('public-artifact', 'public'),
+      title: 'public artifact title',
+      summary: 'public artifact summary',
+    };
+
+    const packet = buildWorkContextResumePacket({
+      snapshot: {
+        ...snapshot,
+        artifacts: [privatePinned, publicPinned],
+      },
+      artifactRecords: [],
+      options: { publicSafe: true, currentHeadSha },
+      generatedAt: now,
+    });
+
+    const json = JSON.stringify(packet);
+    const emittedArtifactRefs = [...packet.pinnedArtifacts, ...packet.artifacts];
+    expect(packet.pinnedArtifacts).toHaveLength(1);
+    expect(packet.artifacts).toHaveLength(1);
+    expect(packet.pinnedArtifacts[0]?.title).toBe('public artifact title');
+    expect(packet.artifacts[0]?.title).toBe('public artifact title');
+    expect(emittedArtifactRefs.every((artifact) => artifact.privacyClass === 'public')).toBe(true);
+    expect(emittedArtifactRefs.every((artifact) => artifact.publicSafe)).toBe(true);
+    expect(emittedArtifactRefs.some((artifact) => artifact.id === 'PRIVATE ID MUST NOT LEAK')).toBe(false);
+    expect(emittedArtifactRefs.some((artifact) => artifact.title === 'PRIVATE TITLE MUST NOT LEAK')).toBe(false);
+    expect(emittedArtifactRefs.some((artifact) => artifact.summary === 'PRIVATE SUMMARY MUST NOT LEAK')).toBe(false);
+    expect(emittedArtifactRefs.some((artifact) => artifact.uri?.includes('private-artifact'))).toBe(false);
+    expect(json).not.toContain('PRIVATE ID MUST NOT LEAK');
+    expect(json).not.toContain('PRIVATE TITLE MUST NOT LEAK');
+    expect(json).not.toContain('PRIVATE SUMMARY MUST NOT LEAK');
+    expect(json).not.toContain('private-artifact');
   });
 
   it('surfaces blocked gate evidence and unresolved decisions', () => {

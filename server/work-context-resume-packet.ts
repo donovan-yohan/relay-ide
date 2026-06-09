@@ -399,6 +399,7 @@ function summarizePinnedArtifacts(
   const recordsById = new Map(records.map((record) => [record.metadata.id, record]));
   return pinned
     .filter((artifact) => artifact.uri?.startsWith('relay://work-context-artifacts/'))
+    .filter((artifact) => includeArtifactRefInResume(artifact, publicSafe))
     .map((artifact) => {
       const record = artifact.uri ? recordsById.get(lastUriSegment(artifact.uri)) : undefined;
       const stale = Boolean(
@@ -426,6 +427,7 @@ function summarizeArtifactRefs(
   maxArtifacts: number
 ): WorkContextResumeArtifactSummary[] {
   return artifacts
+    .filter((artifact) => includeArtifactRefInResume(artifact, publicSafe))
     .map((artifact) => ({
       id: safeText(artifact.id, publicSafe),
       kind: artifact.kind,
@@ -885,6 +887,14 @@ function truncateString(value: string, maxChars: number): string {
 
 function isPublicPrivacy(value: WorkContextPrivacyClass): boolean {
   return value === 'public';
+}
+
+function isPublicArtifactRef(artifact: ArtifactRef): boolean {
+  return isPublicPrivacy(artifact.privacy.classification);
+}
+
+function includeArtifactRefInResume(artifact: ArtifactRef, publicSafe: boolean): boolean {
+  return !publicSafe || isPublicArtifactRef(artifact);
 }
 
 function publicSafeDistinctions(publicSafe: boolean): string[] {
