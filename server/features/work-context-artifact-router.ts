@@ -825,67 +825,70 @@ export function createWorkContextArtifactRouter(
     }
   });
 
+  const transferHandler = (operation: 'copy' | 'export'): RequestHandler => {
+    return (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+      const s = storeOr503(res, deps.store, operation);
+      if (!s) return;
+      const id = req.params['id'] ?? '';
+      try {
+        const record = s.get(id);
+        if (!record) {
+          sendGatewayError(res, 'NOT_FOUND', 'WorkContext artifact not found', false, {
+            reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND',
+            operation,
+            artifactId: id,
+          });
+          return;
+        }
+        const publicCopy = s.publicSummary(id);
+        if (!publicCopy) {
+          sendGatewayError(res, 'FORBIDDEN', 'artifact is not available for public export', false, {
+            reasonCode: 'WORK_CONTEXT_ARTIFACT_UNSAFE_PUBLIC_COPY',
+            operation,
+            artifactId: id,
+          });
+          return;
+        }
+        const exportBytes = Buffer.byteLength(JSON.stringify(publicCopy, null, 2), 'utf8');
+        if (exportBytes > maxExportBytes) {
+          sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact export exceeds public export size cap', false, {
+            reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_EXPORT',
+            operation,
+            artifactId: id,
+            exportBytes,
+            maxBytes: maxExportBytes,
+          });
+          return;
+        }
+        res.json({
+          artifact: publicCopy,
+          [operation]: {
+            mode: 'public-summary',
+            rawPayloadAvailable: false,
+            exportBytes,
+            maxBytes: maxExportBytes,
+          },
+        });
+      } catch (err) {
+        if (err instanceof WorkContextArtifactStoreError) {
+          mapStoreError(res, err, { operation, artifactId: id });
+          return;
+        }
+        sendGatewayError(res, 'INTERNAL', 'failed to export WorkContext artifact', true, {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
+          operation,
+          artifactId: id,
+        });
+      }
+    };
+  };
+
+  router.get('/work-context-artifacts/:id/export', copyAuth, transferHandler('export'));
   router.get([
-    '/work-context-artifacts/:id/export',
     '/work-context-artifacts/:id/copy',
     '/pipeline-handoff-artifacts/:id/copy',
-  ], copyAuth, (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
-    const operation = req.path.endsWith('/copy') ? 'copy' : 'export';
-    const s = storeOr503(res, deps.store, operation);
-    if (!s) return;
-    const id = req.params['id'] ?? '';
-    try {
-      const record = s.get(id);
-      if (!record) {
-        sendGatewayError(res, 'NOT_FOUND', 'WorkContext artifact not found', false, {
-          reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND',
-          operation,
-          artifactId: id,
-        });
-        return;
-      }
-      const publicCopy = s.publicSummary(id);
-      if (!publicCopy) {
-        sendGatewayError(res, 'FORBIDDEN', 'artifact is not available for public export', false, {
-          reasonCode: 'WORK_CONTEXT_ARTIFACT_UNSAFE_PUBLIC_COPY',
-          operation,
-          artifactId: id,
-        });
-        return;
-      }
-      const exportBytes = Buffer.byteLength(JSON.stringify(publicCopy, null, 2), 'utf8');
-      if (exportBytes > maxExportBytes) {
-        sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact export exceeds public export size cap', false, {
-          reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_EXPORT',
-          operation,
-          artifactId: id,
-          exportBytes,
-          maxBytes: maxExportBytes,
-        });
-        return;
-      }
-      res.json({
-        artifact: publicCopy,
-        [operation]: {
-          mode: 'public-summary',
-          rawPayloadAvailable: false,
-          exportBytes,
-          maxBytes: maxExportBytes,
-        },
-      });
-    } catch (err) {
-      if (err instanceof WorkContextArtifactStoreError) {
-        mapStoreError(res, err, { operation, artifactId: id });
-        return;
-      }
-      sendGatewayError(res, 'INTERNAL', 'failed to export WorkContext artifact', true, {
-        reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
-        operation,
-        artifactId: id,
-      });
-    }
-  });
+  ], copyAuth, transferHandler('copy'));
 
   router.post('/work-context-artifacts/:id/pin', writeAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;

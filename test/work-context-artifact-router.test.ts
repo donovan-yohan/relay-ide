@@ -392,6 +392,16 @@ describe('WorkContext artifact router', () => {
       copy: { mode: 'public-summary', rawPayloadAvailable: false },
     });
 
+    const copiedWithSlash = await fetch(
+      `${baseUrl}/pipeline-handoff-artifacts/${encodeURIComponent(attachedArtifact.id)}/copy/`,
+      { headers: actorHeaders('handoff-artifacts.copy') }
+    );
+    expect(copiedWithSlash.status).toBe(200);
+    expect(await json(copiedWithSlash)).toMatchObject({
+      artifact: { metadata: { id: attachedArtifact.id } },
+      copy: { mode: 'public-summary', rawPayloadAvailable: false },
+    });
+
     const qaStage: PipelineHandoffArtifact['stages'][number] = {
       stage: 'qa',
       addedAt: now,
