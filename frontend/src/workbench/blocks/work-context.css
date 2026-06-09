@@ -270,17 +270,27 @@
 }
 
 .block-work-context__handoff-actions button:hover,
-.block-work-context__handoff-actions a:hover {
+.block-work-context__handoff-actions a:hover,
+.block-work-context__handoff-actions button:focus-visible,
+.block-work-context__handoff-actions a:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
 }
 
 .block-work-context__handoff-actions button:focus-visible,
 .block-work-context__handoff-actions a:focus-visible {
-  border-color: var(--accent);
-  color: var(--accent);
   outline: 1px solid var(--accent);
   outline-offset: 2px;
+}
+
+.block-work-context__handoff-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.block-work-context__handoff-actions button:disabled:hover {
+  border-color: var(--border);
+  color: var(--text-muted);
 }
 
 .block-work-context__handoff-actions span,

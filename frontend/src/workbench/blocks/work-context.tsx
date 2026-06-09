@@ -126,6 +126,7 @@ function HandoffArtifactTimeline({
     <div className="block-work-context__handoff-list">
       {artifacts.map((artifact) => {
         const summary = summarizeHandoffArtifact(artifact);
+        const canCopy = artifact.metadata.visibility === 'public';
         const copy =
           copyState?.artifactId === artifact.metadata.id ? copyState : null;
         return (
@@ -188,9 +189,15 @@ function HandoffArtifactTimeline({
             </div>
 
             <div className="block-work-context__handoff-actions">
-              <button type="button" onClick={() => void handleCopy(artifact.metadata.id)}>
-                copy sanitized
-              </button>
+              {canCopy ? (
+                <button type="button" onClick={() => void handleCopy(artifact.metadata.id)}>
+                  copy sanitized
+                </button>
+              ) : (
+                <button type="button" disabled>
+                  private copy unavailable
+                </button>
+              )}
               {summary.openUrl ? (
                 <a href={summary.openUrl} target="_blank" rel="noreferrer">
                   open
