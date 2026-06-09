@@ -805,14 +805,20 @@ export async function fetchPipelineHandoffArtifacts({
   const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
   if (!includePayload) return artifacts;
   return Promise.all(
-    artifacts.map((artifact) =>
-      artifact.payload
-        ? artifact
-        : fetchPipelineHandoffArtifact(
-            artifact.metadata.id,
-            currentHeadSha ? { currentHeadSha } : {}
-          )
-    )
+    artifacts.map(async (artifact) => {
+      if (artifact.payload) return artifact;
+      try {
+        return await fetchPipelineHandoffArtifact(
+          artifact.metadata.id,
+          currentHeadSha ? { currentHeadSha } : {}
+        );
+      } catch (err) {
+        return {
+          ...artifact,
+          payloadError: err instanceof Error ? err.message : String(err),
+        };
+      }
+    })
   );
 }
 

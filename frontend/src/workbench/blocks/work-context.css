@@ -146,6 +146,10 @@
   border-color: color-mix(in srgb, var(--status-warning) 65%, var(--border));
 }
 
+.block-work-context__handoff-card--failed {
+  border-color: color-mix(in srgb, var(--status-error) 65%, var(--border));
+}
+
 .block-work-context__handoff-card--unknown {
   border-color: color-mix(in srgb, var(--status-info) 45%, var(--border));
 }
@@ -180,6 +184,10 @@
 
 .block-work-context__handoff-card--stale .block-work-context__handoff-state-pill {
   color: var(--status-warning);
+}
+
+.block-work-context__handoff-card--failed .block-work-context__handoff-state-pill {
+  color: var(--status-error);
 }
 
 .block-work-context__handoff-card--unknown .block-work-context__handoff-state-pill {
@@ -294,12 +302,14 @@
 }
 
 .block-work-context__handoff-actions span,
-.block-work-context__handoff-copy {
+.block-work-context__handoff-copy,
+.block-work-context__handoff-payload-error {
   color: var(--text-muted);
   font-size: var(--font-size-xs);
 }
 
-.block-work-context__handoff-copy--error {
+.block-work-context__handoff-copy--error,
+.block-work-context__handoff-payload-error {
   color: var(--status-error);
 }
 

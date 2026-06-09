@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { PipelineHandoffArtifact } from '../shared/pipeline-handoff-artifact.js';
 import {
+  formatDownstreamFocus,
   formatHandoffArtifactCopy,
   missingHandoffArtifactSummary,
+  safeExternalUrl,
   summarizeHandoffArtifact,
   type PipelineHandoffArtifactEnvelope,
 } from '../frontend/src/lib/pipeline-handoff-timeline.js';
@@ -130,6 +132,58 @@ describe('pipeline handoff timeline summary', () => {
     expect(summary.state).toBe('stale');
     expect(summary.stateLabel).toBe('stale');
     expect(summary.shortHeadSha).toBe('1111111');
+  });
+
+  it('marks artifacts current when API staleness is exact-head clean', () => {
+    const summary = summarizeHandoffArtifact(
+      envelope(artifact(), {
+        staleness: {
+          stale: false,
+          staleIf: { headShaChanges: true },
+          artifactHeadSha: HEAD_A,
+          currentHeadSha: HEAD_A,
+        },
+      })
+    );
+
+    expect(summary.state).toBe('current');
+    expect(summary.stateLabel).toBe('current');
+  });
+
+  it('marks an isolated payload fetch failure as failed without losing metadata', () => {
+    const summary = summarizeHandoffArtifact(
+      envelope(artifact(), { payload: undefined, payloadError: 'HTTP 404' }),
+      HEAD_A
+    );
+
+    expect(summary.state).toBe('failed');
+    expect(summary.stateLabel).toBe('failed');
+    expect(summary.payloadError).toBe('HTTP 404');
+    expect(summary.stageLabel).toBe('implementation');
+  });
+
+  it('filters unsafe open URLs and formats truncated downstream focus', () => {
+    expect(safeExternalUrl('javascript:alert(1)')).toBeNull();
+    expect(safeExternalUrl('http://example.test')).toBeNull();
+    expect(safeExternalUrl('https://github.com/donovan-yohan/relay-ide')).toBe(
+      'https://github.com/donovan-yohan/relay-ide'
+    );
+    const unsafeTaskRef = artifact({
+      scope: {
+        ...artifact().scope,
+        taskRefs: [
+          {
+            kind: 'github-issue',
+            id: '885',
+            url: 'javascript:alert(1)',
+          },
+        ],
+      },
+    });
+    expect(summarizeHandoffArtifact(envelope(unsafeTaskRef), HEAD_A).openUrl).toBe(
+      'https://github.com/donovan-yohan/relay-ide/pull/901'
+    );
+    expect(formatDownstreamFocus(['qa', 'review', 'release'])).toBe('qa · review · +1');
   });
 
   it('surfaces failed or blocking downstream verdicts', () => {

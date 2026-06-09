@@ -7,7 +7,12 @@ import {
 } from '../../../shared/pipeline-handoff-artifact.js';
 import type { ArtifactKind, TaskRef } from '../../../shared/work-context.js';
 
-export type HandoffArtifactState = 'missing' | 'current' | 'stale' | 'unknown';
+export type HandoffArtifactState =
+  | 'missing'
+  | 'current'
+  | 'stale'
+  | 'failed'
+  | 'unknown';
 
 export interface PublicPipelineHandoffArtifactSummary {
   id: string;
@@ -41,6 +46,7 @@ export interface PipelineHandoffArtifactEnvelope {
   metadata: PublicPipelineHandoffArtifactSummary;
   payload?: PipelineHandoffArtifact;
   staleness?: PipelineHandoffArtifactStaleness;
+  payloadError?: string;
 }
 
 export interface HandoffTimelineStageSummary {
@@ -60,6 +66,7 @@ export interface HandoffTimelineSummary {
   verdict: string;
   downstreamFocus: string[];
   openUrl: string | null;
+  payloadError: string | null;
   stages: HandoffTimelineStageSummary[];
 }
 
@@ -111,6 +118,7 @@ function stateFor(
   envelope: PipelineHandoffArtifactEnvelope,
   currentHeadSha?: string | null
 ): HandoffArtifactState {
+  if (envelope.payloadError) return 'failed';
   const head = artifactHeadSha(envelope);
   if (envelope.staleness?.stale) return 'stale';
   if (currentHeadSha && head) return currentHeadSha === head ? 'current' : 'stale';
@@ -126,18 +134,45 @@ function labelForState(state: HandoffArtifactState): string {
       return 'current';
     case 'stale':
       return 'stale';
+    case 'failed':
+      return 'failed';
     case 'unknown':
       return 'captured';
   }
 }
 
+export function safeExternalUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(
+      value,
+      typeof window === 'undefined' ? 'http://localhost' : window.location.origin
+    );
+    if (url.protocol !== 'https:') return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 function openUrlFor(envelope: PipelineHandoffArtifactEnvelope): string | null {
-  return (
-    envelope.metadata.taskRef?.url ??
-    envelope.payload?.head.pr?.url ??
-    envelope.payload?.scope.taskRefs.find((taskRef) => taskRef.url)?.url ??
-    null
-  );
+  const candidates = [
+    envelope.metadata.taskRef?.url,
+    envelope.payload?.head.pr?.url,
+    ...(envelope.payload?.scope.taskRefs.map((taskRef) => taskRef.url) ?? []),
+  ];
+  for (const candidate of candidates) {
+    const safeUrl = safeExternalUrl(candidate);
+    if (safeUrl) return safeUrl;
+  }
+  return null;
+}
+
+export function formatDownstreamFocus(items: string[], limit = 2): string {
+  if (items.length === 0) return 'none';
+  const visible = items.slice(0, limit).join(' · ');
+  const hidden = items.length - limit;
+  return hidden > 0 ? `${visible} · +${hidden}` : visible;
 }
 
 export function summarizeHandoffArtifact(
@@ -158,6 +193,7 @@ export function summarizeHandoffArtifact(
     verdict: stageVerdict(stage),
     downstreamFocus: stage?.downstreamFocus ?? [],
     openUrl: openUrlFor(envelope),
+    payloadError: envelope.payloadError ?? null,
     stages: STAGE_ORDER.map((name) => {
       const item = presentStages.get(name);
       return {
@@ -181,6 +217,7 @@ export function missingHandoffArtifactSummary(): HandoffTimelineSummary {
     verdict: 'missing',
     downstreamFocus: [],
     openUrl: null,
+    payloadError: null,
     stages: STAGE_ORDER.map((stage) => ({
       stage,
       status: 'missing',

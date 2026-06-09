@@ -17,12 +17,16 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { WorkbenchBlockRenderer } from '../../../../shared/workbench-block-types.js';
+import type { WorkContext } from '../../../../shared/work-context.js';
+import type { WorkContextActiveGroup } from '../../lib/types.js';
 import {
   copyPipelineHandoffArtifact,
   fetchActiveWork,
+  fetchDivergence,
   fetchPipelineHandoffArtifacts,
 } from '../../lib/api.js';
 import {
+  formatDownstreamFocus,
   formatHandoffArtifactCopy,
   summarizeHandoffArtifact,
   type PipelineHandoffArtifactEnvelope,
@@ -52,21 +56,43 @@ function formatTimestamp(iso: string): string {
 const REFETCH_MS = 15_000;
 const HANDOFF_REFETCH_MS = 30_000;
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function currentHeadRepoPath(
+  workContext: WorkContext | null,
+  group: WorkContextActiveGroup | null
+): string | null {
+  return (
+    workContext?.anchors.worktree?.localPath ??
+    group?.sessions.find((session) => session.live)?.worktreePath ??
+    group?.sessions[0]?.worktreePath ??
+    workContext?.anchors.repo?.localPath ??
+    group?.sessions.find((session) => session.live)?.repoPath ??
+    group?.sessions[0]?.repoPath ??
+    null
+  );
+}
+
+function clipboardWriter(): Clipboard['writeText'] | null {
+  if (typeof navigator === 'undefined') return null;
+  return navigator.clipboard?.writeText?.bind(navigator.clipboard) ?? null;
+}
+
 interface HandoffArtifactTimelineProps {
   artifacts: PipelineHandoffArtifactEnvelope[];
   loading: boolean;
   error: unknown;
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  currentHeadSha?: string | null;
 }
 
 function HandoffArtifactTimeline({
   artifacts,
   loading,
   error,
+  currentHeadSha,
 }: HandoffArtifactTimelineProps) {
   const [copyState, setCopyState] = useState<{
     artifactId: string;
@@ -75,10 +101,19 @@ function HandoffArtifactTimeline({
   } | null>(null);
 
   const handleCopy = useCallback(async (artifactId: string) => {
+    const writeText = clipboardWriter();
+    if (!writeText) {
+      setCopyState({
+        artifactId,
+        status: 'error',
+        message: 'clipboard unavailable in this browser',
+      });
+      return;
+    }
     try {
       const copied = await copyPipelineHandoffArtifact(artifactId);
       const text = formatHandoffArtifactCopy(copied.artifact);
-      await navigator.clipboard.writeText(text);
+      await writeText(text);
       setCopyState({
         artifactId,
         status: 'copied',
@@ -125,7 +160,7 @@ function HandoffArtifactTimeline({
   return (
     <div className="block-work-context__handoff-list">
       {artifacts.map((artifact) => {
-        const summary = summarizeHandoffArtifact(artifact);
+        const summary = summarizeHandoffArtifact(artifact, currentHeadSha);
         const canCopy = artifact.metadata.visibility === 'public';
         const copy =
           copyState?.artifactId === artifact.metadata.id ? copyState : null;
@@ -181,12 +216,14 @@ function HandoffArtifactTimeline({
 
             <div className="block-work-context__handoff-focus">
               <span>downstream focus</span>
-              <strong>
-                {summary.downstreamFocus.length > 0
-                  ? summary.downstreamFocus.slice(0, 2).join(' · ')
-                  : 'none'}
-              </strong>
+              <strong>{formatDownstreamFocus(summary.downstreamFocus)}</strong>
             </div>
+
+            {summary.payloadError ? (
+              <div className="block-work-context__handoff-payload-error" role="alert">
+                payload unavailable: {summary.payloadError}
+              </div>
+            ) : null}
 
             <div className="block-work-context__handoff-actions">
               {canCopy ? (
@@ -199,7 +236,7 @@ function HandoffArtifactTimeline({
                 </button>
               )}
               {summary.openUrl ? (
-                <a href={summary.openUrl} target="_blank" rel="noreferrer">
+                <a href={summary.openUrl} target="_blank" rel="noopener noreferrer">
                   open
                 </a>
               ) : (
@@ -238,15 +275,28 @@ export const WorkContextBlock: WorkbenchBlockRenderer<'work-context'> = ({
     staleTime: REFETCH_MS / 2,
   });
 
-  const workContext = useMemo(() => {
+  const workContextGroup = useMemo(() => {
     if (!groups) return null;
     for (const group of groups) {
       if (group.context?.id === workContextRef || group.id === workContextRef) {
-        return group.context;
+        return group;
       }
     }
     return null;
   }, [groups, workContextRef]);
+  const workContext = workContextGroup?.context ?? null;
+  const headRepoPath = useMemo(
+    () => currentHeadRepoPath(workContext, workContextGroup),
+    [workContext, workContextGroup]
+  );
+  const { data: currentHead } = useQuery({
+    queryKey: ['work-context-current-head', headRepoPath],
+    queryFn: () => fetchDivergence(headRepoPath ?? ''),
+    enabled: !!headRepoPath,
+    refetchInterval: HANDOFF_REFETCH_MS,
+    staleTime: HANDOFF_REFETCH_MS / 2,
+  });
+  const currentHeadSha = currentHead?.headSha ?? null;
 
   const {
     data: handoffArtifacts = [],
@@ -254,12 +304,14 @@ export const WorkContextBlock: WorkbenchBlockRenderer<'work-context'> = ({
     error: handoffError,
   } = useQuery({
     queryKey: ['pipeline-handoff-artifacts', workContext?.id],
-    queryFn: () =>
-      fetchPipelineHandoffArtifacts({
-        workContextId: workContext!.id,
+    queryFn: () => {
+      if (!workContext) return [];
+      return fetchPipelineHandoffArtifacts({
+        workContextId: workContext.id,
         includePayload: true,
         limit: 4,
-      }),
+      });
+    },
     enabled: !!workContext,
     refetchInterval: HANDOFF_REFETCH_MS,
     staleTime: HANDOFF_REFETCH_MS / 2,
@@ -369,6 +421,7 @@ export const WorkContextBlock: WorkbenchBlockRenderer<'work-context'> = ({
           artifacts={handoffArtifacts}
           loading={handoffLoading}
           error={handoffError}
+          currentHeadSha={currentHeadSha}
         />
       </div>
 
