@@ -35,6 +35,10 @@ relay-ide v1 work-context-artifacts pin --id <artifact-id> --work-context-id <wo
 relay-ide v1 work-context-artifacts unpin --id <artifact-id> --work-context-id <work-context-id> --json
 relay-ide v1 work-context-artifacts export --id <artifact-id> [--output <path>] --json
 relay-ide v1 work-context-artifacts doctor --json
+relay-ide v1 handoff-artifacts attach --work-context-id <work-context-id> --artifact-file <pipeline-handoff-artifact.json> --json
+relay-ide v1 handoff-artifacts list --work-context-id <work-context-id> [--stage <implementation|qa|review|release>] [--current-head-sha <sha>] --json
+relay-ide v1 handoff-artifacts show --id <artifact-id> [--current-head-sha <sha>] [--public] --json
+relay-ide v1 handoff-artifacts copy --id <artifact-id> [--output <path>] --json
 relay-ide v1 supervisor sessions --json
 relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
 relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json
@@ -105,6 +109,19 @@ The schema is the source of truth for adapter generation. A command missing from
 
 WorkContext artifact operations are also part of the stable manifest: `work-context-artifacts.publish`, `list`, `show`, `pin`, `unpin`, `export`, and `doctor`. These commands expose PipelineHandoffArtifact storage through the hub without giving adapters private database paths or raw transcript access. `publish` accepts the artifact object through `--input-json`, `--input-file`, or `--artifact-file`; `list` is bounded and metadata-only; `show` validates payload integrity; `export` returns only the sanitized public-summary form and never raw payload bytes; `doctor` reports bounded store health/manifest metadata. Stale-head checks use `currentHeadSha` / `--current-head-sha` and return typed gateway errors rather than silently accepting evidence for the wrong PR head. The current actor-token lane remains read-only: artifact writes (`publish`, `pin`, and `unpin`) require the browser-session gateway path until scoped write grants are implemented.
 
+### Pipeline handoff artifacts (#883/#884)
+
+`handoff-artifacts.*` is the stable adapter-facing affordance for the #883 `PipelineHandoffArtifact` schema. It uses the same WorkContext artifact store as `work-context-artifacts.*`, but exposes pipeline-specific names and route checks so implementation, QA, review, and release agents can exchange exact-head handoff layers without private database paths or raw transcript access.
+
+| Command | CLI shape | Hub API path | Notes |
+| ------- | --------- | ------------ | ----- |
+| `handoff-artifacts.attach` | `relay-ide v1 handoff-artifacts attach --work-context-id <id> --artifact-file <pipeline-handoff-artifact.json> --json` | `POST /pipeline-handoff-artifacts` | Requires `context:write`. Accepts the same validated artifact body as `work-context-artifacts.publish` through `--input-json`, `--input-file`, or `--artifact-file`. Optional metadata flags include `--project-id`, `--task-ref-kind/--task-ref-id`, `--stage`, `--visibility`, `--kind`, `--title`, `--summary`, `--current-head-sha`, `--supersedes-artifact-id`, and `--pin`. `--supersedes-artifact-id` is append-only: new layers may append stages, but must not mutate previous stages or change the covered head. |
+| `handoff-artifacts.list` | `relay-ide v1 handoff-artifacts list --work-context-id <id> --json` or `--task-ref-kind <kind> --task-ref-id <id>` | `GET /pipeline-handoff-artifacts` | Requires `context:read`. Returns bounded metadata only. Optional filters: `--project-id`, `--stage <implementation|qa|review|release>`, `--limit`, `--include-superseded`, and `--current-head-sha`. |
+| `handoff-artifacts.show` | `relay-ide v1 handoff-artifacts show --id <artifact-id> [--current-head-sha <sha>] [--public] --json` | `GET /pipeline-handoff-artifacts/:id` | Requires `context:read`. Without `--public`, returns the stored artifact envelope with payload integrity validation. With `--public`, returns only the sanitized public summary and fails closed if no safe public copy exists. |
+| `handoff-artifacts.copy` | `relay-ide v1 handoff-artifacts copy --id <artifact-id> [--output <path>] --json` | `GET /pipeline-handoff-artifacts/:id/copy` | Requires `context:read`. Returns the bounded public-safe summary and can also write that JSON result to `--output`. Raw payload export is intentionally unsupported. |
+
+Stale-head handling is explicit. `attach --current-head-sha <sha>` rejects mismatched artifact heads with `SESSION_CONFLICT` and `reasonCode: WORK_CONTEXT_ARTIFACT_STALE_HEAD`; `list --current-head-sha <sha>` and `show --current-head-sha <sha>` include `staleness` metadata (`stale`, `artifactHeadSha`, `currentHeadSha`) instead of silently accepting evidence for the wrong PR head. The current actor-token lane remains read-only: `handoff-artifacts.list`, `show`, and `copy` work with `--actor-token` / `RELAY_IDE_ACTOR_TOKEN`; `handoff-artifacts.attach` still requires the browser-session gateway path until scoped write grants are implemented.
+
 ## Command taxonomy
 
 Relay command metadata is defined in [`shared/relay-command-manifest.ts`](../shared/relay-command-manifest.ts) as a projection of this v1 gateway contract. That module adds product-facing fields on top of each stable gateway command: `id`/`name`, label, description/summary, supported surfaces, input/output schemas, capability hints, side-effect class, confirmation requirement, scope kinds, and the public handler projection.
@@ -129,7 +146,7 @@ The #857 inventory is kept in [`docs/refactor/857-action-parity-inventory.md`](r
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.
 
-Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
+Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `work-context-artifacts.*`, `handoff-artifacts.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
 
 ### Scoped actor credential MVP (#805)
 
@@ -145,6 +162,9 @@ The first scoped actor credential slice supports only this read-only hub-backed 
 | `relay-ide v1 work-context-artifacts show --id <id> --json` | `work-context-artifacts.show` | `session:read` | Reads one artifact envelope and validates stored payload integrity; requires `context:read`. |
 | `relay-ide v1 work-context-artifacts export --id <id> --json` | `work-context-artifacts.export` | `session:read` | Exports only the sanitized public-summary copy; requires `context:read`. |
 | `relay-ide v1 work-context-artifacts doctor --json` | `work-context-artifacts.doctor` | `session:read` | Reads bounded artifact store diagnostics; requires `context:read`. |
+| `relay-ide v1 handoff-artifacts list --work-context-id <id> --json` | `handoff-artifacts.list` | `session:read` | Reads bounded PipelineHandoffArtifact metadata; requires `context:read`. |
+| `relay-ide v1 handoff-artifacts show --id <id> --json` | `handoff-artifacts.show` | `session:read` | Reads one PipelineHandoffArtifact envelope or safe public copy; requires `context:read`. |
+| `relay-ide v1 handoff-artifacts copy --id <id> --json` | `handoff-artifacts.copy` | `session:read` | Copies only the sanitized public-summary form; raw payload export is unsupported and requires `context:read`. |
 
 Pass the credential with `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`; `--actor-token` wins when both are present. `--correlation-id` or `RELAY_IDE_CORRELATION_ID` may be supplied for audit correlation. The CLI sends actor credentials as bearer auth with `x-relay-cli-gateway: v1`, `x-relay-cli-actor-token: v1`, `x-relay-cli-command`, and capability hints in `x-relay-capabilities`.
 
@@ -159,6 +179,9 @@ relay-ide v1 work-context-artifacts list --work-context-id <work-context-id> --a
 relay-ide v1 work-context-artifacts show --id <artifact-id> --actor-token "$token" --json
 relay-ide v1 work-context-artifacts export --id <artifact-id> --actor-token "$token" --json
 relay-ide v1 work-context-artifacts doctor --actor-token "$token" --json
+relay-ide v1 handoff-artifacts list --work-context-id <work-context-id> --actor-token "$token" --json
+relay-ide v1 handoff-artifacts show --id <artifact-id> --current-head-sha <sha> --actor-token "$token" --json
+relay-ide v1 handoff-artifacts copy --id <artifact-id> --output ./handoff-public.json --actor-token "$token" --json
 ```
 
 Local discovery commands (`relay-ide v1 --list --json`, `relay-ide v1 schema --json`, and `relay-ide v1 nodes manifest --json`) remain unauthenticated. Browser-session bearer compatibility remains for legacy local/dev gateway invocations through `RELAY_IDE_BROWSER_TOKEN`; that path is separate from the actor-token lane and must not be described as a scoped actor credential. When an invocation presents `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`, the actor-token lane does not fall back to browser cookies/PIN state or node credentials. `--port` or `RELAY_IDE_PORT` selects the local hub port; otherwise Relay uses the default port.

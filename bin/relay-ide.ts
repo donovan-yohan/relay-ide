@@ -1478,6 +1478,9 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'work-context-artifacts.show',
   'work-context-artifacts.export',
   'work-context-artifacts.doctor',
+  'handoff-artifacts.list',
+  'handoff-artifacts.show',
+  'handoff-artifacts.copy',
 ]);
 
 function gatewayActorToken(): string {
@@ -1596,7 +1599,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -3552,6 +3555,97 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
   });
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- mirrors the stable handoff-artifacts attach/list/show/copy argv contract explicitly.
+async function runGatewayHandoffArtifacts(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const artifactArgs = gatewayArgs.slice(2);
+  if (subcommand === 'attach') {
+    const commandName: RelayCliGatewayCommand = 'handoff-artifacts.attach';
+    const input = addWorkContextArtifactBodyFlags(
+      commandName,
+      parseGatewayInputObject(commandName, artifactArgs),
+      artifactArgs
+    );
+    if (typeof input['workContextId'] !== 'string') {
+      gatewayInvalid(commandName, '--work-context-id is required', { field: 'workContextId' });
+    }
+    if (typeof input['artifact'] !== 'object' || input['artifact'] === null) {
+      gatewayInvalid(commandName, '--artifact-file or input artifact is required', { field: 'artifact' });
+    }
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: '/pipeline-handoff-artifacts',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  if (subcommand === 'list') {
+    const commandName: RelayCliGatewayCommand = 'handoff-artifacts.list';
+    const query = new URLSearchParams();
+    const workContextId = gatewayArg(artifactArgs, '--work-context-id');
+    const projectId = gatewayArg(artifactArgs, '--project-id');
+    const stage = gatewayArg(artifactArgs, '--stage');
+    const limit = gatewayArg(artifactArgs, '--limit');
+    const currentHeadSha = gatewayArg(artifactArgs, '--current-head-sha');
+    const taskRef = workContextArtifactTaskRefFromArgs(commandName, artifactArgs);
+    if (workContextId) query.set('workContextId', workContextId);
+    if (projectId) query.set('projectId', projectId);
+    if (stage) query.set('stage', stage);
+    if (limit) query.set('limit', limit);
+    if (currentHeadSha) query.set('currentHeadSha', currentHeadSha);
+    if (artifactArgs.includes('--include-superseded')) query.set('includeSuperseded', 'true');
+    if (taskRef) {
+      query.set('taskRefKind', String(taskRef['kind']));
+      query.set('taskRefId', String(taskRef['id']));
+    }
+    if (!workContextId && !taskRef) {
+      gatewayInvalid(commandName, '--work-context-id or --task-ref-kind/--task-ref-id is required');
+    }
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/pipeline-handoff-artifacts?${query.toString()}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  if (subcommand === 'show') {
+    const commandName: RelayCliGatewayCommand = 'handoff-artifacts.show';
+    const id = gatewayArg(artifactArgs, '--id') ?? artifactArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    const query = new URLSearchParams();
+    const currentHeadSha = gatewayArg(artifactArgs, '--current-head-sha');
+    if (currentHeadSha) query.set('currentHeadSha', currentHeadSha);
+    if (artifactArgs.includes('--public')) query.set('public', 'true');
+    const suffix = query.toString();
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/pipeline-handoff-artifacts/${encodeURIComponent(id)}${suffix ? `?${suffix}` : ''}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  if (subcommand === 'copy') {
+    const commandName: RelayCliGatewayCommand = 'handoff-artifacts.copy';
+    const id = gatewayArg(artifactArgs, '--id') ?? artifactArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/pipeline-handoff-artifacts/${encodeURIComponent(id)}/copy`,
+      capabilities: ['context:read'],
+    });
+    const output = gatewayArg(artifactArgs, '--output');
+    if (output) {
+      writeGatewayOutputFile(commandName, output, result);
+    }
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  gatewayInvalid('handoff-artifacts.show', 'unknown handoff-artifacts command', {
+    args: gatewayArgs,
+  });
+}
+
 async function runGatewayArtifacts(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const artifactArgs = gatewayArgs.slice(2);
@@ -3969,6 +4063,7 @@ async function runGatewayV1(): Promise<never> {
   if (top === 'handoffs') return runGatewayHandoffs(gatewayArgs);
   if (top === 'work-context-artifacts')
     return runGatewayWorkContextArtifacts(gatewayArgs);
+  if (top === 'handoff-artifacts') return runGatewayHandoffArtifacts(gatewayArgs);
   if (top === 'artifacts') return runGatewayArtifacts(gatewayArgs);
   if (top === 'supervisor') return runGatewaySupervisor(gatewayArgs);
   if (top === 'events') return runGatewayEvents(gatewayArgs);

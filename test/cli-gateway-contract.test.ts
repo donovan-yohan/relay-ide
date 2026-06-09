@@ -167,6 +167,10 @@ describe('CLI gateway contract', () => {
       'work-context-artifacts.unpin',
       'work-context-artifacts.export',
       'work-context-artifacts.doctor',
+      'handoff-artifacts.attach',
+      'handoff-artifacts.list',
+      'handoff-artifacts.show',
+      'handoff-artifacts.copy',
       'inbox.send',
       'inbox.list',
       'inbox.get',
@@ -362,6 +366,18 @@ describe('CLI gateway contract', () => {
       auditRedaction: { expectation: 'bounded-redacted' },
       scopeKinds: ['work-context'],
     });
+    expect(relayCommandDefinition('handoff-artifacts.attach')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context'],
+    });
+    expect(relayCommandDefinition('handoff-artifacts.copy')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['work-context'],
+    });
     expect(schemaAcceptsCommandInput('work-context-artifacts.publish', {})).toBe(
       false
     );
@@ -377,6 +393,18 @@ describe('CLI gateway contract', () => {
     expect(schemaAcceptsCommandInput('work-context-artifacts.export', { id: 'artifact:1' })).toBe(
       true
     );
+    expect(schemaAcceptsCommandInput('handoff-artifacts.attach', {})).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('handoff-artifacts.attach', {
+        workContextId: 'wc:contract',
+        artifact: {},
+      })
+    ).toBe(true);
+    expect(schemaAcceptsCommandInput('handoff-artifacts.list', { workContextId: 'wc:contract' })).toBe(
+      true
+    );
+    expect(schemaAcceptsCommandInput('handoff-artifacts.show', { id: 'artifact:1' })).toBe(true);
+    expect(schemaAcceptsCommandInput('handoff-artifacts.copy', { id: 'artifact:1' })).toBe(true);
     expect(schemaAcceptsCommandInput('work-context-artifacts.pin', { id: 'artifact:1' })).toBe(
       false
     );
@@ -872,6 +900,10 @@ describe('CLI gateway contract', () => {
       'work-context-artifacts.unpin',
       'work-context-artifacts.export',
       'work-context-artifacts.doctor',
+      'handoff-artifacts.attach',
+      'handoff-artifacts.list',
+      'handoff-artifacts.show',
+      'handoff-artifacts.copy',
       'inbox.send',
       'inbox.list',
       'inbox.get',

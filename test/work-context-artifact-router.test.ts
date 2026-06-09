@@ -35,7 +35,10 @@ type ArtifactReadCommand =
   | 'work-context-artifacts.list'
   | 'work-context-artifacts.show'
   | 'work-context-artifacts.export'
-  | 'work-context-artifacts.doctor';
+  | 'work-context-artifacts.doctor'
+  | 'handoff-artifacts.list'
+  | 'handoff-artifacts.show'
+  | 'handoff-artifacts.copy';
 
 function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoffArtifact {
   return {
@@ -81,6 +84,18 @@ function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoff
     ],
     ...input,
   };
+}
+
+function reorderJsonObjectKeys(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((item) => reorderJsonObjectKeys(item));
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .reverse()
+      .map((key) => [key, reorderJsonObjectKeys(record[key])])
+  );
 }
 
 function createWorkContext(id: WorkContextId): WorkContext {
@@ -310,6 +325,143 @@ describe('WorkContext artifact router', () => {
       }
     );
     expect(unpin.status).toBe(403);
+  });
+
+  it('attaches, lists, shows, and copies handoff artifacts on dedicated route/auth names', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-handoff';
+    const workContextStore = fakeWorkContextStore(createWorkContext(workContextId));
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore,
+      requireReadAuth: {
+        handoffList: actorReadAuth('handoff-artifacts.list'),
+        handoffShow: actorReadAuth('handoff-artifacts.show'),
+        handoffCopy: actorReadAuth('handoff-artifacts.copy'),
+      },
+      requireWriteAuth: actorWriteAuth,
+    });
+    const attachedArtifact = artifact({ id: 'pipeline-handoff:router:handoff-attach' });
+    const attach = await fetch(`${baseUrl}/pipeline-handoff-artifacts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write,context:read',
+      },
+      body: JSON.stringify({
+        workContextId,
+        artifact: attachedArtifact,
+        stage: 'implementation',
+        visibility: 'public',
+        actorId: 'agent:kani-backend',
+      }),
+    });
+    expect(attach.status).toBe(201);
+    expect(await json(attach)).toMatchObject({
+      artifact: { metadata: { id: attachedArtifact.id, workContextId, stage: 'implementation' } },
+    });
+
+    const wrongLane = await fetch(
+      `${baseUrl}/pipeline-handoff-artifacts?workContextId=${encodeURIComponent(workContextId)}`,
+      { headers: actorHeaders('work-context-artifacts.list') }
+    );
+    expect(wrongLane.status).toBe(401);
+    expect(await json(wrongLane)).toMatchObject({ error: { expectedCommand: 'handoff-artifacts.list' } });
+
+    const list = await fetch(
+      `${baseUrl}/pipeline-handoff-artifacts?workContextId=${encodeURIComponent(workContextId)}`,
+      { headers: actorHeaders('handoff-artifacts.list') }
+    );
+    expect(list.status).toBe(200);
+    expect((await json(list)).artifacts).toHaveLength(1);
+
+    const show = await fetch(`${baseUrl}/pipeline-handoff-artifacts/${encodeURIComponent(attachedArtifact.id)}`, {
+      headers: actorHeaders('handoff-artifacts.show'),
+    });
+    expect(show.status).toBe(200);
+    expect(await json(show)).toMatchObject({ artifact: { payload: { id: attachedArtifact.id } } });
+
+    const copied = await fetch(
+      `${baseUrl}/pipeline-handoff-artifacts/${encodeURIComponent(attachedArtifact.id)}/copy`,
+      { headers: actorHeaders('handoff-artifacts.copy') }
+    );
+    expect(copied.status).toBe(200);
+    expect(await json(copied)).toMatchObject({
+      artifact: { metadata: { id: attachedArtifact.id } },
+      copy: { mode: 'public-summary', rawPayloadAvailable: false },
+    });
+
+    const copiedWithSlash = await fetch(
+      `${baseUrl}/pipeline-handoff-artifacts/${encodeURIComponent(attachedArtifact.id)}/copy/`,
+      { headers: actorHeaders('handoff-artifacts.copy') }
+    );
+    expect(copiedWithSlash.status).toBe(200);
+    expect(await json(copiedWithSlash)).toMatchObject({
+      artifact: { metadata: { id: attachedArtifact.id } },
+      copy: { mode: 'public-summary', rawPayloadAvailable: false },
+    });
+
+    const qaStage: PipelineHandoffArtifact['stages'][number] = {
+      stage: 'qa',
+      addedAt: now,
+      actorId: 'agent:kame-qa',
+      summary: 'added qa layer',
+      acceptanceEvidence: [
+        { label: 'router', disposition: 'provided', summary: 'append-only route exercised' },
+      ],
+      commands: [],
+      downstreamFocus: ['review handoff artifact lane'],
+      nonGoals: [],
+      verdict: 'passed',
+      testedHeadSha: headSha,
+      findings: [],
+    };
+
+    const appendEquivalentArtifact = artifact({
+      id: 'pipeline-handoff:router:handoff-append-reordered',
+      stages: [
+        reorderJsonObjectKeys(attachedArtifact.stages[0]) as PipelineHandoffArtifact['stages'][number],
+        qaStage,
+      ],
+    });
+    const appendEquivalent = await fetch(`${baseUrl}/pipeline-handoff-artifacts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write,context:read',
+      },
+      body: JSON.stringify({
+        workContextId,
+        artifact: appendEquivalentArtifact,
+        supersedesArtifactId: attachedArtifact.id,
+      }),
+    });
+    expect(appendEquivalent.status).toBe(201);
+
+    const appendViolationArtifact = artifact({
+      id: 'pipeline-handoff:router:handoff-append-violation',
+      stages: [
+        { ...attachedArtifact.stages[0]!, summary: 'mutated original implementation layer' },
+        qaStage,
+      ],
+    });
+    const appendViolation = await fetch(`${baseUrl}/pipeline-handoff-artifacts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write,context:read',
+      },
+      body: JSON.stringify({
+        workContextId,
+        artifact: appendViolationArtifact,
+        supersedesArtifactId: attachedArtifact.id,
+      }),
+    });
+    expect(appendViolation.status).toBe(400);
+    expect(await json(appendViolation)).toMatchObject({
+      error: { details: { reasonCode: 'WORK_CONTEXT_ARTIFACT_APPEND_ONLY_VIOLATION', operation: 'attach' } },
+    });
   });
 
   it('publishes, lists, shows, pins, unpins, exports, and doctors artifacts', async () => {

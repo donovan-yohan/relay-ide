@@ -50,6 +50,10 @@ export type RelayCliGatewayCommand =
   | 'work-context-artifacts.unpin'
   | 'work-context-artifacts.export'
   | 'work-context-artifacts.doctor'
+  | 'handoff-artifacts.attach'
+  | 'handoff-artifacts.list'
+  | 'handoff-artifacts.show'
+  | 'handoff-artifacts.copy'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -3249,6 +3253,68 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['context:read'],
     inputSchema: workContextArtifactDoctorInputSchema,
     outputSchema: okOutput('WorkContextArtifactDoctorOutput', workContextArtifactRecordOutputSchema),
+    errorCodes: workContextArtifactReadErrorCodes,
+  },
+  {
+    name: 'handoff-artifacts.attach',
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoff-artifacts',
+      'attach',
+      '--work-context-id',
+      '<work-context-id>',
+      '--artifact-file',
+      '<pipeline-handoff-artifact.json>',
+      '--json',
+    ],
+    summary:
+      'Attach a validated PipelineHandoffArtifact layer to a WorkContext/TaskRef/PR lane; superseding writes must append stages without changing prior layers.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workContextArtifactPublishInputSchema,
+    outputSchema: okOutput('HandoffArtifactAttachOutput', workContextArtifactRecordOutputSchema),
+    errorCodes: workContextArtifactWriteErrorCodes,
+  },
+  {
+    name: 'handoff-artifacts.list',
+    cli: ['relay-ide', 'v1', 'handoff-artifacts', 'list', '--work-context-id', '<work-context-id>', '--json'],
+    summary:
+      'List PipelineHandoffArtifact metadata by WorkContext or task ref without reading raw payload files.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextArtifactListInputSchema,
+    outputSchema: okOutput('HandoffArtifactListOutput', workContextArtifactListOutputSchema),
+    errorCodes: workContextArtifactReadErrorCodes,
+  },
+  {
+    name: 'handoff-artifacts.show',
+    cli: ['relay-ide', 'v1', 'handoff-artifacts', 'show', '--id', '<artifact-id>', '--json'],
+    summary:
+      'Read one PipelineHandoffArtifact by id with integrity validation and optional stale-head metadata.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextArtifactIdInputSchema,
+    outputSchema: okOutput('HandoffArtifactShowOutput', workContextArtifactRecordOutputSchema),
+    errorCodes: workContextArtifactReadErrorCodes,
+  },
+  {
+    name: 'handoff-artifacts.copy',
+    cli: ['relay-ide', 'v1', 'handoff-artifacts', 'copy', '--id', '<artifact-id>', '--output', '<path>', '--json'],
+    summary:
+      'Copy the bounded public-safe PipelineHandoffArtifact summary; raw payload export is intentionally unsupported.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextArtifactIdInputSchema,
+    outputSchema: okOutput('HandoffArtifactCopyOutput', workContextArtifactRecordOutputSchema),
     errorCodes: workContextArtifactReadErrorCodes,
   },
   {

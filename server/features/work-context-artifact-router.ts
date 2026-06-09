@@ -5,6 +5,7 @@ import { Router } from 'express';
 import type { Request, RequestHandler, Response } from 'express';
 
 import type { RelayCliGatewayErrorCode } from '../../shared/cli-gateway-contract.js';
+import { stableJsonEquals } from '../../shared/stable-json.js';
 import {
   createWorkContextPrivacyMetadata,
   type ArtifactRef,
@@ -44,6 +45,9 @@ export interface WorkContextArtifactRouterDeps {
     list?: RequestHandler;
     show?: RequestHandler;
     export?: RequestHandler;
+    handoffList?: RequestHandler;
+    handoffShow?: RequestHandler;
+    handoffCopy?: RequestHandler;
     doctor?: RequestHandler;
   };
   requireWriteAuth?: RequestHandler;
@@ -269,6 +273,100 @@ function readEnvelope(
 
 function persistedArtifactPayloadBytes(artifact: PipelineHandoffArtifact): number {
   return Buffer.byteLength(JSON.stringify(artifact, null, 2), 'utf8');
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return stableJsonEquals(left, right);
+}
+
+function ensureAppendOnlySupersedes(
+  res: Response,
+  store: WorkContextArtifactStore,
+  input: {
+    workContextId: WorkContextId;
+    artifact: PipelineHandoffArtifact;
+    supersedesArtifactId?: string;
+    operation: string;
+  }
+): boolean {
+  const { supersedesArtifactId } = input;
+  if (!supersedesArtifactId) return true;
+  let previous: WorkContextArtifactReadResult | null;
+  try {
+    previous = store.read(supersedesArtifactId);
+  } catch (err) {
+    if (err instanceof WorkContextArtifactStoreError) {
+      mapStoreError(res, err, {
+        operation: input.operation,
+        artifactId: input.artifact.id,
+        supersedesArtifactId,
+      });
+      return false;
+    }
+    sendGatewayError(res, 'INTERNAL', 'failed to read superseded WorkContext artifact', true, {
+      reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
+      operation: input.operation,
+      artifactId: input.artifact.id,
+      supersedesArtifactId,
+    });
+    return false;
+  }
+  if (!previous?.payload) {
+    sendGatewayError(res, 'NOT_FOUND', 'superseded artifact not found', false, {
+      reasonCode: 'WORK_CONTEXT_ARTIFACT_SUPERSEDES_NOT_FOUND',
+      operation: input.operation,
+      artifactId: input.artifact.id,
+      supersedesArtifactId,
+    });
+    return false;
+  }
+  if (previous.metadata.workContextId !== input.workContextId) {
+    sendGatewayError(res, 'INVALID_ARGUMENT', 'superseded artifact belongs to a different WorkContext', false, {
+      reasonCode: 'WORK_CONTEXT_ARTIFACT_SUPERSEDES_SCOPE_MISMATCH',
+      operation: input.operation,
+      artifactId: input.artifact.id,
+      supersedesArtifactId,
+      workContextId: input.workContextId,
+      supersededWorkContextId: previous.metadata.workContextId,
+    });
+    return false;
+  }
+  if (previous.payload.head.headSha !== input.artifact.head.headSha) {
+    sendGatewayError(res, 'SESSION_CONFLICT', 'artifact head is stale for the superseded handoff layer', false, {
+      reasonCode: 'WORK_CONTEXT_ARTIFACT_STALE_HEAD',
+      operation: input.operation,
+      artifactId: input.artifact.id,
+      supersedesArtifactId,
+      artifactHeadSha: input.artifact.head.headSha,
+      supersededHeadSha: previous.payload.head.headSha,
+    });
+    return false;
+  }
+  if (input.artifact.stages.length <= previous.payload.stages.length) {
+    sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact must append at least one handoff stage layer', false, {
+      reasonCode: 'WORK_CONTEXT_ARTIFACT_APPEND_ONLY_VIOLATION',
+      operation: input.operation,
+      artifactId: input.artifact.id,
+      supersedesArtifactId,
+      previousStageCount: previous.payload.stages.length,
+      nextStageCount: input.artifact.stages.length,
+    });
+    return false;
+  }
+  for (let index = 0; index < previous.payload.stages.length; index += 1) {
+    const stage = previous.payload.stages[index]!;
+    if (sameJson(stage, input.artifact.stages[index])) continue;
+    sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact changed an existing handoff stage layer', false, {
+      reasonCode: 'WORK_CONTEXT_ARTIFACT_APPEND_ONLY_VIOLATION',
+      operation: input.operation,
+      artifactId: input.artifact.id,
+      supersedesArtifactId,
+      stageIndex: index,
+      stage: stage.stage,
+    });
+    return false;
+  }
+  return true;
 }
 
 function mapStoreError(
@@ -512,6 +610,18 @@ export function createWorkContextArtifactRouter(
   const auth = deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
   const readAuth = deps.requireReadAuth ?? {};
   const writeAuth = deps.requireWriteAuth ?? auth;
+  const routeAuth = (fallback: RequestHandler, handoff?: RequestHandler): RequestHandler => {
+    return (req, res, next) => {
+      if (req.path.startsWith('/pipeline-handoff-artifacts')) {
+        (handoff ?? fallback)(req, res, next);
+        return;
+      }
+      fallback(req, res, next);
+    };
+  };
+  const listAuth = routeAuth(readAuth.list ?? auth, readAuth.handoffList);
+  const showAuth = routeAuth(readAuth.show ?? auth, readAuth.handoffShow);
+  const copyAuth = routeAuth(readAuth.export ?? auth, readAuth.handoffCopy);
   const maxPublishBytes =
     deps.diagnostics?.maxPublishBytes ?? DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES;
   const maxExportBytes =
@@ -535,26 +645,27 @@ export function createWorkContextArtifactRouter(
     }
   });
 
-  router.post('/work-context-artifacts', writeAuth, (req, res) => {
+  router.post(['/work-context-artifacts', '/pipeline-handoff-artifacts'], writeAuth, (req, res) => {
+    const operation = req.path.startsWith('/pipeline-handoff-artifacts') ? 'attach' : 'publish';
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
-    const s = storeOr503(res, deps.store, 'publish');
+    const s = storeOr503(res, deps.store, operation);
     if (!s) return;
     const body = bodyRecord(req);
     const workContextId = readString(body['workContextId']);
     if (!workContextId) {
       sendGatewayError(res, 'INVALID_ARGUMENT', 'workContextId is required', false, {
         reasonCode: 'WORK_CONTEXT_ID_REQUIRED',
-        operation: 'publish',
+        operation,
         field: 'workContextId',
       });
       return;
     }
-    if (!ensureWorkContext(res, deps.workContextStore, workContextId, 'publish')) return;
+    if (!ensureWorkContext(res, deps.workContextStore, workContextId, operation)) return;
     const artifact = body['artifact'];
     if (!isPipelineHandoffArtifact(artifact)) {
       sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact must be a PipelineHandoffArtifact', false, {
         reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
-        operation: 'publish',
+        operation,
         workContextId,
         field: 'artifact',
       });
@@ -564,7 +675,7 @@ export function createWorkContextArtifactRouter(
     if (payloadBytes > maxPublishBytes) {
       sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact payload exceeds publish size cap', false, {
         reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_PAYLOAD',
-        operation: 'publish',
+        operation,
         workContextId,
         artifactId: artifact.id,
         payloadBytes,
@@ -576,7 +687,7 @@ export function createWorkContextArtifactRouter(
     if (current && artifact.head.headSha !== current) {
       sendGatewayError(res, 'SESSION_CONFLICT', 'artifact head is stale for the requested current head', false, {
         reasonCode: 'WORK_CONTEXT_ARTIFACT_STALE_HEAD',
-        operation: 'publish',
+        operation,
         workContextId,
         artifactId: artifact.id,
         artifactHeadSha: artifact.head.headSha,
@@ -611,6 +722,16 @@ export function createWorkContextArtifactRouter(
       ...(supersedesArtifactId ? { supersedesArtifactId } : {}),
     };
     try {
+      if (
+        !ensureAppendOnlySupersedes(res, s, {
+          workContextId,
+          artifact: artifact as PipelineHandoffArtifact,
+          ...(supersedesArtifactId ? { supersedesArtifactId } : {}),
+          operation,
+        })
+      ) {
+        return;
+      }
       const stored = s.storePipelineHandoffArtifact(input);
       const actorId = readString(body['actorId']) ?? provenanceActorId;
       const shouldPin = readBoolean(body['pin']) ?? false;
@@ -624,19 +745,19 @@ export function createWorkContextArtifactRouter(
       });
     } catch (err) {
       if (err instanceof WorkContextArtifactStoreError) {
-        mapStoreError(res, err, { operation: 'publish', workContextId, artifactId: artifact.id });
+        mapStoreError(res, err, { operation, workContextId, artifactId: artifact.id });
         return;
       }
       sendGatewayError(res, 'INTERNAL', 'failed to store WorkContext artifact', true, {
         reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
-        operation: 'publish',
+        operation,
         workContextId,
         artifactId: artifact.id,
       });
     }
   });
 
-  router.get('/work-context-artifacts', readAuth.list ?? auth, (req, res) => {
+  router.get(['/work-context-artifacts', '/pipeline-handoff-artifacts'], listAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const s = storeOr503(res, deps.store, 'list');
     if (!s) return;
@@ -660,7 +781,7 @@ export function createWorkContextArtifactRouter(
     res.json({ artifacts: s.list(input).map((record) => recordEnvelope(record, current)) });
   });
 
-  router.get('/work-context-artifacts/:id', readAuth.show ?? auth, (req, res) => {
+  router.get(['/work-context-artifacts/:id', '/pipeline-handoff-artifacts/:id'], showAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const s = storeOr503(res, deps.store, 'show');
     if (!s) return;
@@ -704,54 +825,70 @@ export function createWorkContextArtifactRouter(
     }
   });
 
-  router.get('/work-context-artifacts/:id/export', readAuth.export ?? auth, (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
-    const s = storeOr503(res, deps.store, 'export');
-    if (!s) return;
-    const id = req.params['id'] ?? '';
-    try {
-      const record = s.get(id);
-      if (!record) {
-        sendGatewayError(res, 'NOT_FOUND', 'WorkContext artifact not found', false, {
-          reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND',
-          operation: 'export',
+  const transferHandler = (operation: 'copy' | 'export'): RequestHandler => {
+    return (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+      const s = storeOr503(res, deps.store, operation);
+      if (!s) return;
+      const id = req.params['id'] ?? '';
+      try {
+        const record = s.get(id);
+        if (!record) {
+          sendGatewayError(res, 'NOT_FOUND', 'WorkContext artifact not found', false, {
+            reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND',
+            operation,
+            artifactId: id,
+          });
+          return;
+        }
+        const publicCopy = s.publicSummary(id);
+        if (!publicCopy) {
+          sendGatewayError(res, 'FORBIDDEN', 'artifact is not available for public export', false, {
+            reasonCode: 'WORK_CONTEXT_ARTIFACT_UNSAFE_PUBLIC_COPY',
+            operation,
+            artifactId: id,
+          });
+          return;
+        }
+        const exportBytes = Buffer.byteLength(JSON.stringify(publicCopy, null, 2), 'utf8');
+        if (exportBytes > maxExportBytes) {
+          sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact export exceeds public export size cap', false, {
+            reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_EXPORT',
+            operation,
+            artifactId: id,
+            exportBytes,
+            maxBytes: maxExportBytes,
+          });
+          return;
+        }
+        res.json({
+          artifact: publicCopy,
+          [operation]: {
+            mode: 'public-summary',
+            rawPayloadAvailable: false,
+            exportBytes,
+            maxBytes: maxExportBytes,
+          },
+        });
+      } catch (err) {
+        if (err instanceof WorkContextArtifactStoreError) {
+          mapStoreError(res, err, { operation, artifactId: id });
+          return;
+        }
+        sendGatewayError(res, 'INTERNAL', 'failed to export WorkContext artifact', true, {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
+          operation,
           artifactId: id,
         });
-        return;
       }
-      const publicCopy = s.publicSummary(id);
-      if (!publicCopy) {
-        sendGatewayError(res, 'FORBIDDEN', 'artifact is not available for public export', false, {
-          reasonCode: 'WORK_CONTEXT_ARTIFACT_UNSAFE_PUBLIC_COPY',
-          operation: 'export',
-          artifactId: id,
-        });
-        return;
-      }
-      const exportBytes = Buffer.byteLength(JSON.stringify(publicCopy, null, 2), 'utf8');
-      if (exportBytes > maxExportBytes) {
-        sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact export exceeds public export size cap', false, {
-          reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_EXPORT',
-          operation: 'export',
-          artifactId: id,
-          exportBytes,
-          maxBytes: maxExportBytes,
-        });
-        return;
-      }
-      res.json({ artifact: publicCopy, export: { mode: 'public-summary', rawPayloadAvailable: false, exportBytes, maxBytes: maxExportBytes } });
-    } catch (err) {
-      if (err instanceof WorkContextArtifactStoreError) {
-        mapStoreError(res, err, { operation: 'export', artifactId: id });
-        return;
-      }
-      sendGatewayError(res, 'INTERNAL', 'failed to export WorkContext artifact', true, {
-        reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
-        operation: 'export',
-        artifactId: id,
-      });
-    }
-  });
+    };
+  };
+
+  router.get('/work-context-artifacts/:id/export', copyAuth, transferHandler('export'));
+  router.get([
+    '/work-context-artifacts/:id/copy',
+    '/pipeline-handoff-artifacts/:id/copy',
+  ], copyAuth, transferHandler('copy'));
 
   router.post('/work-context-artifacts/:id/pin', writeAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;

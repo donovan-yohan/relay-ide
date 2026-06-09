@@ -120,6 +120,10 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'work-context-artifacts.unpin': 'unpin workcontext artifact',
   'work-context-artifacts.export': 'export workcontext artifact',
   'work-context-artifacts.doctor': 'doctor workcontext artifact store',
+  'handoff-artifacts.attach': 'attach pipeline handoff artifact',
+  'handoff-artifacts.list': 'list pipeline handoff artifacts',
+  'handoff-artifacts.show': 'show pipeline handoff artifact',
+  'handoff-artifacts.copy': 'copy pipeline handoff artifact',
   'inbox.send': 'send inbox message',
   'inbox.list': 'list inbox messages',
   'inbox.get': 'inbox message details',
@@ -176,6 +180,7 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'work-context-artifacts.publish',
   'work-context-artifacts.pin',
   'work-context-artifacts.unpin',
+  'handoff-artifacts.attach',
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
@@ -207,6 +212,7 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
   if (name.startsWith('work-context-artifacts.')) return ['work-context'];
+  if (name.startsWith('handoff-artifacts.')) return ['work-context'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];
   if (name.startsWith('handoffs.'))

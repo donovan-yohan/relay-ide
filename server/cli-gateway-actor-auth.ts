@@ -34,6 +34,9 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'work-context-artifacts.show',
   'work-context-artifacts.export',
   'work-context-artifacts.doctor',
+  'handoff-artifacts.list',
+  'handoff-artifacts.show',
+  'handoff-artifacts.copy',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
