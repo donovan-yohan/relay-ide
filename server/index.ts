@@ -2568,24 +2568,45 @@ async function main(): Promise<void> {
     '/work-contexts',
     createWorkContextRouter({
       store: workContextStore,
+      artifactStore: workContextArtifactStore,
       requireAuth,
-      requireReadAuth: (req, res, next) => {
-        if (isCliGatewayActorTokenRequest(req)) {
-          const id = req.params['id'];
-          requireCliGatewayActorAuth(
-            ['session:read'],
-            {
-              ...(id ? { workContextIds: [id] } : {}),
-            },
-            'work-contexts.get'
-          )(req, res, next);
-          return;
-        }
-        if (isCliGatewayV1Request(req)) {
-          requireCliGatewayAuth(req, res, next);
-          return;
-        }
-        requireAuth(req, res, next);
+      requireReadAuth: {
+        get: (req, res, next) => {
+          if (isCliGatewayActorTokenRequest(req)) {
+            const id = req.params['id'];
+            requireCliGatewayActorAuth(
+              ['session:read'],
+              {
+                ...(id ? { workContextIds: [id] } : {}),
+              },
+              'work-contexts.get'
+            )(req, res, next);
+            return;
+          }
+          if (isCliGatewayV1Request(req)) {
+            requireCliGatewayAuth(req, res, next);
+            return;
+          }
+          requireAuth(req, res, next);
+        },
+        resume: (req, res, next) => {
+          if (isCliGatewayActorTokenRequest(req)) {
+            const id = req.params['id'];
+            requireCliGatewayActorAuth(
+              ['session:read'],
+              {
+                ...(id ? { workContextIds: [id] } : {}),
+              },
+              'work-contexts.resume'
+            )(req, res, next);
+            return;
+          }
+          if (isCliGatewayV1Request(req)) {
+            requireCliGatewayAuth(req, res, next);
+            return;
+          }
+          requireAuth(req, res, next);
+        },
       },
       getSessions: async () => {
         const [localSessions, remoteSessions] = await Promise.all([

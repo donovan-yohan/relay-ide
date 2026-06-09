@@ -38,6 +38,7 @@ export type RelayCliGatewayCommand =
   | 'files.read'
   | 'files.write'
   | 'work-contexts.get'
+  | 'work-contexts.resume'
   | 'context.create'
   | 'context.get'
   | 'context.list'
@@ -1269,6 +1270,21 @@ const workContextGetInputSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
   properties: { id: stringSchema },
+  required: ['id'],
+};
+
+const workContextResumeInputSchema: RelayJsonSchema = {
+  title: 'WorkContextResumeInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    currentHeadSha: stringSchema,
+    publicSafe: booleanSchema,
+    maxArtifacts: { type: 'integer', minimum: 1, maximum: 200 },
+    maxAuditRefs: { type: 'integer', minimum: 1, maximum: 200 },
+    maxChars: { type: 'integer', minimum: 4000, maximum: 200000 },
+  },
   required: ['id'],
 };
 
@@ -3044,6 +3060,40 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
         workContext: { type: 'object', additionalProperties: true },
       },
       required: ['workContext'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'work-contexts.resume',
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-contexts',
+      'resume',
+      '--id',
+      '<work-context-id>',
+      '--json',
+    ],
+    summary:
+      'Generate a bounded deterministic WorkContext resume packet without raw logs, transcripts, or LLM history summarization.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: workContextResumeInputSchema,
+    outputSchema: okOutput('WorkContextsResumeOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        resume: { type: 'object', additionalProperties: true },
+      },
+      required: ['resume'],
     }),
     errorCodes: [
       'UNAUTHORIZED',
