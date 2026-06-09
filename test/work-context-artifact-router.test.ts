@@ -86,6 +86,18 @@ function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoff
   };
 }
 
+function reorderJsonObjectKeys(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((item) => reorderJsonObjectKeys(item));
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .reverse()
+      .map((key) => [key, reorderJsonObjectKeys(record[key])])
+  );
+}
+
 function createWorkContext(id: WorkContextId): WorkContext {
   return {
     schemaVersion: WORK_CONTEXT_SCHEMA_VERSION,
@@ -380,41 +392,48 @@ describe('WorkContext artifact router', () => {
       copy: { mode: 'public-summary', rawPayloadAvailable: false },
     });
 
+    const qaStage: PipelineHandoffArtifact['stages'][number] = {
+      stage: 'qa',
+      addedAt: now,
+      actorId: 'agent:kame-qa',
+      summary: 'added qa layer',
+      acceptanceEvidence: [
+        { label: 'router', disposition: 'provided', summary: 'append-only route exercised' },
+      ],
+      commands: [],
+      downstreamFocus: ['review handoff artifact lane'],
+      nonGoals: [],
+      verdict: 'passed',
+      testedHeadSha: headSha,
+      findings: [],
+    };
+
+    const appendEquivalentArtifact = artifact({
+      id: 'pipeline-handoff:router:handoff-append-reordered',
+      stages: [
+        reorderJsonObjectKeys(attachedArtifact.stages[0]) as PipelineHandoffArtifact['stages'][number],
+        qaStage,
+      ],
+    });
+    const appendEquivalent = await fetch(`${baseUrl}/pipeline-handoff-artifacts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write,context:read',
+      },
+      body: JSON.stringify({
+        workContextId,
+        artifact: appendEquivalentArtifact,
+        supersedesArtifactId: attachedArtifact.id,
+      }),
+    });
+    expect(appendEquivalent.status).toBe(201);
+
     const appendViolationArtifact = artifact({
       id: 'pipeline-handoff:router:handoff-append-violation',
       stages: [
-        {
-          stage: 'implementation',
-          addedAt: now,
-          actorId: 'agent:kani-backend',
-          summary: 'mutated original implementation layer',
-          acceptanceEvidence: [
-            { label: 'router', disposition: 'provided', summary: 'express routes exercised' },
-          ],
-          commands: [
-            { label: 'test', command: 'vitest', status: 'passed', summary: 'router test', exitCode: 0 },
-          ],
-          downstreamFocus: ['verify append-only validation'],
-          nonGoals: [],
-          decision: 'implemented',
-          changedFiles: ['server/features/work-context-artifact-router.ts'],
-          migrationOrStateRisk: 'none',
-        },
-        {
-          stage: 'qa',
-          addedAt: now,
-          actorId: 'agent:kame-qa',
-          summary: 'added qa layer',
-          acceptanceEvidence: [
-            { label: 'router', disposition: 'provided', summary: 'append-only route exercised' },
-          ],
-          commands: [],
-          downstreamFocus: ['review handoff artifact lane'],
-          nonGoals: [],
-          verdict: 'passed',
-          testedHeadSha: headSha,
-          findings: [],
-        },
+        { ...attachedArtifact.stages[0]!, summary: 'mutated original implementation layer' },
+        qaStage,
       ],
     });
     const appendViolation = await fetch(`${baseUrl}/pipeline-handoff-artifacts`, {

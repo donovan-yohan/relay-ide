@@ -5,6 +5,7 @@ import { Router } from 'express';
 import type { Request, RequestHandler, Response } from 'express';
 
 import type { RelayCliGatewayErrorCode } from '../../shared/cli-gateway-contract.js';
+import { stableJsonEquals } from '../../shared/stable-json.js';
 import {
   createWorkContextPrivacyMetadata,
   type ArtifactRef,
@@ -275,7 +276,7 @@ function persistedArtifactPayloadBytes(artifact: PipelineHandoffArtifact): numbe
 }
 
 function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return stableJsonEquals(left, right);
 }
 
 function ensureAppendOnlySupersedes(
