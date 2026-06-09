@@ -1474,6 +1474,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.list',
   'sessions.get',
   'work-contexts.get',
+  'work-contexts.resume',
   'work-context-artifacts.list',
   'work-context-artifacts.show',
   'work-context-artifacts.export',
@@ -1599,7 +1600,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -2922,20 +2923,43 @@ async function runGatewayFiles(gatewayArgs: string[]): Promise<never> {
 async function runGatewayWorkContexts(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const workContextArgs = gatewayArgs.slice(2);
-  if (subcommand !== 'get') {
-    gatewayInvalid('work-contexts.get', 'unknown work-contexts command', {
-      args: gatewayArgs,
+  if (subcommand === 'get') {
+    const id = gatewayArg(workContextArgs, '--id') ?? workContextArgs[0];
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('work-contexts.get', '--id is required');
+    const result = await gatewayHttpJson({
+      commandName: 'work-contexts.get',
+      pathName: `/work-contexts/${encodeURIComponent(id)}`,
+      capabilities: ['session:read'],
     });
+    printGatewayEnvelope(gatewayOk('work-contexts.get', result), 0);
   }
-  const id = gatewayArg(workContextArgs, '--id') ?? workContextArgs[0];
-  if (!id || id.startsWith('--'))
-    gatewayInvalid('work-contexts.get', '--id is required');
-  const result = await gatewayHttpJson({
-    commandName: 'work-contexts.get',
-    pathName: `/work-contexts/${encodeURIComponent(id)}`,
-    capabilities: ['session:read'],
+  if (subcommand === 'resume') {
+    const commandName: RelayCliGatewayCommand = 'work-contexts.resume';
+    const id = gatewayArg(workContextArgs, '--id') ?? workContextArgs[0];
+    if (!id || id.startsWith('--'))
+      gatewayInvalid(commandName, '--id is required');
+    const query = new URLSearchParams();
+    const currentHeadSha = gatewayArg(workContextArgs, '--current-head-sha');
+    const maxArtifacts = gatewayArg(workContextArgs, '--max-artifacts');
+    const maxAuditRefs = gatewayArg(workContextArgs, '--max-audit-refs');
+    const maxChars = gatewayArg(workContextArgs, '--max-chars');
+    if (currentHeadSha) query.set('currentHeadSha', currentHeadSha);
+    if (maxArtifacts) query.set('maxArtifacts', maxArtifacts);
+    if (maxAuditRefs) query.set('maxAuditRefs', maxAuditRefs);
+    if (maxChars) query.set('maxChars', maxChars);
+    if (workContextArgs.includes('--public')) query.set('public', 'true');
+    const suffix = query.toString();
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/work-contexts/${encodeURIComponent(id)}/resume${suffix ? `?${suffix}` : ''}`,
+      capabilities: ['session:read'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  gatewayInvalid('work-contexts.get', 'unknown work-contexts command', {
+    args: gatewayArgs,
   });
-  printGatewayEnvelope(gatewayOk('work-contexts.get', result), 0);
 }
 
 async function runGatewayContext(gatewayArgs: string[]): Promise<never> {

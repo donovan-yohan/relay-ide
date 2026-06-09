@@ -28,6 +28,13 @@ import {
   type WorkContextId,
   type WorkContextTabKind,
 } from '../shared/work-context.js';
+import {
+  buildWorkContextResumePacket,
+  readWorkContextArtifactsForResume,
+  resumeArtifactScanLimit,
+  type WorkContextResumePacketOptions,
+} from './work-context-resume-packet.js';
+import type { WorkContextArtifactStore } from './work-context-artifacts.js';
 
 const logger = createLogger('work-contexts');
 
@@ -292,10 +299,16 @@ export interface WorkContextStore {
   findSessionWorkContextIds(session: SessionSummary): WorkContextId[];
 }
 
+export interface WorkContextReadAuthHandlers {
+  get?: RequestHandler;
+  resume?: RequestHandler;
+}
+
 export interface WorkContextRouterDeps {
   store: WorkContextStore;
+  artifactStore?: WorkContextArtifactStore | null;
   requireAuth?: RequestHandler;
-  requireReadAuth?: RequestHandler;
+  requireReadAuth?: RequestHandler | WorkContextReadAuthHandlers;
   getSessions: () => Promise<SessionSummary[]> | SessionSummary[];
   getNodes?: () => HubNodeSummary[];
 }
@@ -639,7 +652,7 @@ export class WorkContextStoreError extends Error {
 export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
   const router = Router();
   const auth = deps.requireAuth ?? ((_req, _res, next) => next());
-  const readAuth = deps.requireReadAuth ?? auth;
+  const readAuth = resolveWorkContextReadAuth(deps.requireReadAuth, auth);
 
   router.get('/', auth, (_req, res) => {
     res.json({ workContexts: deps.store.list() });
@@ -704,14 +717,27 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
     }
   });
 
-  router.get('/:id/resume', auth, async (req, res) => {
+  router.get('/:id/resume', readAuth.resume, async (req, res) => {
     try {
+      const id = req.params['id'] ?? '';
       const sessions = await deps.getSessions();
       const nodes = deps.getNodes?.() ?? [];
+      const options = resumeOptionsFromQuery(req.query);
+      const snapshot = deps.store.getResumeSnapshot(id, {
+        sessions,
+        nodes,
+      });
+      const artifactRecords = readWorkContextArtifactsForResume({
+        store: deps.artifactStore,
+        workContextId: id,
+        limit: resumeArtifactScanLimit(options),
+      });
       res.json({
-        resume: deps.store.getResumeSnapshot(req.params['id'] ?? '', {
-          sessions,
-          nodes,
+        resume: buildWorkContextResumePacket({
+          snapshot,
+          artifactRecords,
+          artifactStoreAvailable: Boolean(deps.artifactStore),
+          options,
         }),
       });
     } catch (err) {
@@ -731,7 +757,7 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
     }
   });
 
-  router.get('/:id', readAuth, (req, res) => {
+  router.get('/:id', readAuth.get, (req, res) => {
     const context = deps.store.get(req.params['id'] ?? '');
     if (!context) {
       res.status(404).json({ error: 'work_context_not_found' });
@@ -809,6 +835,18 @@ export function createWorkContextRouter(deps: WorkContextRouterDeps): Router {
   return router;
 }
 
+function resolveWorkContextReadAuth(
+  readAuth: RequestHandler | WorkContextReadAuthHandlers | undefined,
+  fallback: RequestHandler
+): Required<WorkContextReadAuthHandlers> {
+  if (!readAuth) return { get: fallback, resume: fallback };
+  if (typeof readAuth === 'function') return { get: readAuth, resume: readAuth };
+  return {
+    get: readAuth.get ?? fallback,
+    resume: readAuth.resume ?? readAuth.get ?? fallback,
+  };
+}
+
 interface SessionRefBody {
   sessionId: string;
   nodeId?: string;
@@ -818,6 +856,56 @@ interface SessionRefBody {
   cwd?: string;
   agent?: string;
   controlMode?: SessionSummary['controlMode'];
+}
+
+function resumeOptionsFromQuery(
+  query: Record<string, unknown>
+): WorkContextResumePacketOptions {
+  const options: WorkContextResumePacketOptions = {};
+  const currentHeadSha = queryString(query, 'currentHeadSha', 'current-head-sha');
+  if (currentHeadSha) options.currentHeadSha = currentHeadSha;
+  const publicSafe = queryBoolean(query, 'public', 'publicSafe', 'public-safe');
+  if (publicSafe !== undefined) options.publicSafe = publicSafe;
+  const maxArtifacts = queryInt(query, 'maxArtifacts', 'max-artifacts');
+  if (maxArtifacts !== undefined) options.maxArtifacts = maxArtifacts;
+  const maxAuditRefs = queryInt(query, 'maxAuditRefs', 'max-audit-refs');
+  if (maxAuditRefs !== undefined) options.maxAuditRefs = maxAuditRefs;
+  const maxChars = queryInt(query, 'maxChars', 'max-chars');
+  if (maxChars !== undefined) options.maxChars = maxChars;
+  return options;
+}
+
+function queryString(
+  query: Record<string, unknown>,
+  ...keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = query[key];
+    const scalar = Array.isArray(value) ? value[0] : value;
+    if (typeof scalar === 'string' && scalar.trim()) return scalar;
+  }
+  return undefined;
+}
+
+function queryBoolean(
+  query: Record<string, unknown>,
+  ...keys: string[]
+): boolean | undefined {
+  const value = queryString(query, ...keys);
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  return undefined;
+}
+
+function queryInt(
+  query: Record<string, unknown>,
+  ...keys: string[]
+): number | undefined {
+  const value = queryString(query, ...keys);
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.trunc(parsed);
 }
 
 function buildContextFromInput(

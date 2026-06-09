@@ -108,6 +108,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'files.read': 'read session file',
   'files.write': 'write session file',
   'work-contexts.get': 'work context details',
+  'work-contexts.resume': 'work context resume packet',
   'context.create': 'create context packet',
   'context.get': 'context packet details',
   'context.list': 'list context packets',
