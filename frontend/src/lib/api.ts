@@ -30,6 +30,15 @@ import type {
   WorkspaceEvidenceStatResponse,
 } from '../../../shared/workspace-evidence.js';
 import type {
+  PipelineHandoffArtifact,
+  PipelineHandoffStageName,
+} from '../../../shared/pipeline-handoff-artifact.js';
+import type { TaskRef } from '../../../shared/work-context.js';
+import type {
+  PipelineHandoffArtifactEnvelope,
+  PublicPipelineHandoffArtifactSummary,
+} from './pipeline-handoff-timeline.js';
+import type {
   SessionSummary,
   WorktreeInfo,
   Repo,
@@ -750,6 +759,99 @@ export async function fetchActiveWork(): Promise<WorkContextActiveGroup[]> {
     await fetch('/work-contexts/active')
   );
   return Array.isArray(data.groups) ? data.groups : [];
+}
+
+export interface FetchPipelineHandoffArtifactsOptions {
+  workContextId?: string;
+  taskRef?: Pick<TaskRef, 'kind' | 'id'>;
+  stage?: PipelineHandoffStageName;
+  currentHeadSha?: string;
+  includeSuperseded?: boolean;
+  includePayload?: boolean;
+  limit?: number;
+}
+
+const HANDOFF_ARTIFACT_HEADERS: HeadersInit = {
+  'x-relay-capabilities': 'context:read',
+};
+
+export async function fetchPipelineHandoffArtifacts({
+  workContextId,
+  taskRef,
+  stage,
+  currentHeadSha,
+  includeSuperseded,
+  includePayload = false,
+  limit = 8,
+}: FetchPipelineHandoffArtifactsOptions): Promise<PipelineHandoffArtifactEnvelope[]> {
+  const params = new URLSearchParams();
+  if (workContextId) params.set('workContextId', workContextId);
+  if (taskRef) {
+    params.set('taskRefKind', taskRef.kind);
+    params.set('taskRefId', taskRef.id);
+  }
+  if (stage) params.set('stage', stage);
+  if (currentHeadSha) params.set('currentHeadSha', currentHeadSha);
+  if (includeSuperseded !== undefined) {
+    params.set('includeSuperseded', String(includeSuperseded));
+  }
+  params.set('limit', String(limit));
+
+  const data = await json<{ artifacts?: PipelineHandoffArtifactEnvelope[] }>(
+    await fetch(`/pipeline-handoff-artifacts?${params.toString()}`, {
+      headers: HANDOFF_ARTIFACT_HEADERS,
+    })
+  );
+  const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+  if (!includePayload) return artifacts;
+  return Promise.all(
+    artifacts.map((artifact) =>
+      artifact.payload
+        ? artifact
+        : fetchPipelineHandoffArtifact(
+            artifact.metadata.id,
+            currentHeadSha ? { currentHeadSha } : {}
+          )
+    )
+  );
+}
+
+export async function fetchPipelineHandoffArtifact(
+  artifactId: string,
+  options: { currentHeadSha?: string } = {}
+): Promise<PipelineHandoffArtifactEnvelope> {
+  const params = new URLSearchParams();
+  if (options.currentHeadSha) params.set('currentHeadSha', options.currentHeadSha);
+  const suffix = params.size > 0 ? `?${params.toString()}` : '';
+  const data = await json<{ artifact: PipelineHandoffArtifactEnvelope }>(
+    await fetch(`/pipeline-handoff-artifacts/${encodeURIComponent(artifactId)}${suffix}`, {
+      headers: HANDOFF_ARTIFACT_HEADERS,
+    })
+  );
+  return data.artifact;
+}
+
+export interface CopyPipelineHandoffArtifactResult {
+  artifact: {
+    metadata: PublicPipelineHandoffArtifactSummary;
+    payload?: PipelineHandoffArtifact;
+  };
+  copy: {
+    mode: 'public-summary';
+    rawPayloadAvailable: false;
+    exportBytes: number;
+    maxBytes: number;
+  };
+}
+
+export async function copyPipelineHandoffArtifact(
+  artifactId: string
+): Promise<CopyPipelineHandoffArtifactResult> {
+  return json<CopyPipelineHandoffArtifactResult>(
+    await fetch(`/pipeline-handoff-artifacts/${encodeURIComponent(artifactId)}/copy`, {
+      headers: HANDOFF_ARTIFACT_HEADERS,
+    })
+  );
 }
 
 // ── #728 IA Workspace bar (consumes the #733 CRUD API) ──────────────────────
