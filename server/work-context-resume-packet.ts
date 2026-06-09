@@ -35,6 +35,12 @@ const BLOCKING_VERDICTS = new Set([
   'not-released',
 ]);
 const UNRESOLVED_DECISIONS = new Set(['blocked', 'deferred']);
+const MAX_PAYLOAD_TASK_REFS = 50;
+const MAX_PAYLOAD_NON_GOALS = 20;
+const MAX_PAYLOAD_STAGES = PIPELINE_HANDOFF_STAGES.length;
+const MAX_STAGE_EVIDENCE_ITEMS = 20;
+const MAX_STAGE_COMMAND_ITEMS = 20;
+const MAX_STAGE_FOCUS_ITEMS = 20;
 
 export interface WorkContextResumePacketLimits {
   maxArtifacts: number;
@@ -189,7 +195,7 @@ export function buildWorkContextResumePacket(input: {
   const goal = deriveGoal(input.snapshot.workContext.tasks, payloads, publicSafe);
   const nonGoals = boundedUniqueStrings(
     payloads.flatMap((record) =>
-      record.payload.scope.nonGoals.map((item) => safeText(item, publicSafe))
+      payloadNonGoals(record.payload).map((item) => safeText(item, publicSafe))
     ),
     20
   );
@@ -280,7 +286,74 @@ function stableArtifactRecords(
 function hasPayload(
   record: WorkContextArtifactReadResult
 ): record is WorkContextArtifactReadResult & { payload: PipelineHandoffArtifact } {
-  return record.payload !== undefined;
+  return isPipelineHandoffPayload(record.payload);
+}
+
+function isPipelineHandoffPayload(value: unknown): value is PipelineHandoffArtifact {
+  if (!isRecordObject(value)) return false;
+  if (typeof value.id !== 'string' || typeof value.title !== 'string') return false;
+  if (typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string') return false;
+  if (!isRecordObject(value.scope)) return false;
+  if (typeof value.scope.summary !== 'string') return false;
+  if (!isRecordObject(value.head)) return false;
+  if (typeof value.head.headSha !== 'string') return false;
+  if (!isRecordObject(value.head.staleIf)) return false;
+  if (value.head.staleIf.headShaChanges !== true) return false;
+  return true;
+}
+
+function isRecordObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function payloadTaskRefs(payload: PipelineHandoffArtifact, publicSafe: boolean): TaskRef[] {
+  const rawTaskRefs = Array.isArray(payload.scope.taskRefs) ? payload.scope.taskRefs : [];
+  const taskRefs = rawTaskRefs.slice(0, MAX_PAYLOAD_TASK_REFS).filter(isTaskRef);
+  return publicSafe
+    ? taskRefs.filter(isPublicTaskRef).map((task) => safeTaskRef(task, true))
+    : taskRefs;
+}
+
+function payloadNonGoals(payload: PipelineHandoffArtifact): string[] {
+  return Array.isArray(payload.scope.nonGoals)
+    ? payload.scope.nonGoals
+        .slice(0, MAX_PAYLOAD_NON_GOALS)
+        .filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
+function payloadStages(payload: PipelineHandoffArtifact): PipelineHandoffStage[] {
+  return Array.isArray(payload.stages)
+    ? payload.stages.slice(0, MAX_PAYLOAD_STAGES).filter(isPipelineHandoffStage)
+    : [];
+}
+
+function isTaskRef(value: unknown): value is TaskRef {
+  return (
+    isRecordObject(value) &&
+    typeof value.kind === 'string' &&
+    typeof value.id === 'string' &&
+    (value.title === undefined || typeof value.title === 'string') &&
+    (value.url === undefined || typeof value.url === 'string') &&
+    (value.status === undefined || typeof value.status === 'string')
+  );
+}
+
+function isPipelineHandoffStage(value: unknown): value is PipelineHandoffStage {
+  if (!isRecordObject(value)) return false;
+  if (!PIPELINE_HANDOFF_STAGES.includes(value.stage as PipelineHandoffStageName)) return false;
+  if (typeof value.addedAt !== 'string') return false;
+  if (typeof value.summary !== 'string') return false;
+  switch (value.stage) {
+    case 'implementation':
+      return typeof value.decision === 'string';
+    case 'qa':
+    case 'review':
+    case 'release':
+      return typeof value.verdict === 'string';
+    default:
+      return false;
+  }
 }
 
 function deriveGoal(
@@ -293,14 +366,9 @@ function deriveGoal(
     ? tasks.filter(isPublicTaskRef).map((task) => safeTaskRef(task, true))
     : tasks;
   if (latestPayload) {
-    const payloadTaskRefs = publicSafe
-      ? latestPayload.scope.taskRefs
-          .filter(isPublicTaskRef)
-          .map((task) => safeTaskRef(task, true))
-      : latestPayload.scope.taskRefs;
     return {
       summary: safeText(latestPayload.scope.summary, publicSafe),
-      taskRefs: payloadTaskRefs,
+      taskRefs: payloadTaskRefs(latestPayload, publicSafe),
       status: 'present',
       source: 'artifact',
     };
@@ -381,7 +449,7 @@ function summarizeEvidence(
   for (const record of payloads) {
     const artifact = record.payload;
     const stale = currentHeadSha ? isPipelineHandoffArtifactStale(artifact, currentHeadSha) : false;
-    for (const stage of [...artifact.stages].sort(compareStages)) {
+    for (const stage of payloadStages(artifact).sort(compareStages)) {
       evidence.push({
         key: evidenceKey(record, stage),
         stage: stage.stage,
@@ -396,18 +464,59 @@ function summarizeEvidence(
         ...(currentHeadSha ? { currentHeadSha } : {}),
         stale,
         historical: stale,
-        acceptanceEvidence: stage.acceptanceEvidence.map((item) => safeEvidence(item, publicSafe)),
-        commands: stage.commands.map((command) => ({
+        acceptanceEvidence: stageAcceptanceEvidence(stage).map((item) => safeEvidence(item, publicSafe)),
+        commands: stageCommands(stage).map((command) => ({
           label: safeText(command.label, publicSafe),
           status: command.status,
           summary: safeText(command.summary, publicSafe),
           ...(command.exitCode !== undefined ? { exitCode: command.exitCode } : {}),
         })),
-        downstreamFocus: stage.downstreamFocus.map((item) => safeText(item, publicSafe)),
+        downstreamFocus: stageDownstreamFocus(stage).map((item) => safeText(item, publicSafe)),
       });
     }
   }
   return evidence.sort(compareEvidenceLatestFirst);
+}
+
+function stageAcceptanceEvidence(stage: PipelineHandoffStage): PipelineHandoffEvidence[] {
+  return Array.isArray(stage.acceptanceEvidence)
+    ? stage.acceptanceEvidence.slice(0, MAX_STAGE_EVIDENCE_ITEMS).filter(isPipelineHandoffEvidence)
+    : [];
+}
+
+function stageCommands(stage: PipelineHandoffStage): PipelineHandoffStage['commands'] {
+  return Array.isArray(stage.commands)
+    ? stage.commands.slice(0, MAX_STAGE_COMMAND_ITEMS).filter(isPipelineHandoffCommand)
+    : [];
+}
+
+function stageDownstreamFocus(stage: PipelineHandoffStage): string[] {
+  return Array.isArray(stage.downstreamFocus)
+    ? stage.downstreamFocus
+        .slice(0, MAX_STAGE_FOCUS_ITEMS)
+        .filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
+function isPipelineHandoffEvidence(value: unknown): value is PipelineHandoffEvidence {
+  return (
+    isRecordObject(value) &&
+    typeof value.label === 'string' &&
+    typeof value.disposition === 'string' &&
+    typeof value.summary === 'string'
+  );
+}
+
+function isPipelineHandoffCommand(
+  value: unknown
+): value is PipelineHandoffStage['commands'][number] {
+  return (
+    isRecordObject(value) &&
+    typeof value.label === 'string' &&
+    typeof value.status === 'string' &&
+    typeof value.summary === 'string' &&
+    (value.exitCode === undefined || typeof value.exitCode === 'number')
+  );
 }
 
 function latestByKey(items: WorkContextResumeGateEvidence[]): WorkContextResumeGateEvidence[] {
@@ -765,6 +874,7 @@ function safeText(value: string | undefined, publicSafe: boolean): string {
   return value
     .replace(/\bt_[a-f0-9]{8,}\b/gi, '[redacted-kanban-task]')
     .replace(/(?:\/home\/|\/Users\/|\/tmp\/)[^\s)'",]+/g, '[redacted-local-path]')
+    .replace(/(?<![A-Za-z])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s)'",]+[\\/][^\\/\s)'",]+[\\/])[^\s)'",]+/g, '[redacted-local-path]')
     .replace(/(?:bearer\s+|sk-|relay-(?:sac|auth|grant|pair)-v1)[a-z0-9._~+/-]+=*/gi, '[redacted-secret]');
 }
 
@@ -794,7 +904,12 @@ function publicSafeDistinctions(publicSafe: boolean): string[] {
 
 function lastUriSegment(uri: string): string {
   const index = uri.lastIndexOf('/');
-  return decodeURIComponent(index >= 0 ? uri.slice(index + 1) : uri);
+  const segment = index >= 0 ? uri.slice(index + 1) : uri;
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
 }
 
 function boundedUniqueStrings(values: string[], max: number): string[] {

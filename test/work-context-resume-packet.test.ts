@@ -8,7 +8,7 @@ import {
   buildWorkContextResumePacket,
   readWorkContextArtifactsForResume,
 } from '../server/work-context-resume-packet.js';
-import { createWorkContextArtifactStore } from '../server/work-context-artifacts.js';
+import { createWorkContextArtifactStore, type WorkContextArtifactReadResult } from '../server/work-context-artifacts.js';
 import { createWorkContextStore } from '../server/work-contexts.js';
 import {
   PIPELINE_HANDOFF_ARTIFACT_SCHEMA_VERSION,
@@ -265,6 +265,108 @@ describe('WorkContext resume packet generator', () => {
     expect(packet.suggestedNextAction.kind).toBe('resolve-blockers');
   });
 
+  it('ignores legacy artifact records with null payloads', () => {
+    const { contextStore } = stores();
+    contextStore.create({ id: 'wc:null-payload', tasks: [issueRef] });
+    const artifactRecords = [
+      {
+        metadata: {
+          id: 'pipeline-handoff:null-payload',
+          workContextId: 'wc:null-payload',
+          kind: 'pipeline-handoff',
+          title: 'legacy null payload',
+          summary: 'legacy row with missing JSON payload',
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+          capturedAt: now,
+          payloadKind: 'pipeline-handoff',
+          payloadMediaType: 'application/json',
+          payloadSha256: '0'.repeat(64),
+          payloadBytes: 0,
+        },
+        payloadPath: '/tmp/missing-payload.json',
+        payload: null,
+      },
+    ] as unknown as WorkContextArtifactReadResult[];
+
+    const packet = buildWorkContextResumePacket({
+      snapshot: contextStore.getResumeSnapshot('wc:null-payload', { sessions: [], nodes: [] }),
+      artifactRecords,
+      artifactStoreAvailable: true,
+      options: { currentHeadSha },
+      generatedAt: now,
+    });
+
+    expect(packet.goal.source).toBe('work-context');
+    expect(packet.evidence.current).toEqual([]);
+    expect(packet.evidence.missing[0]?.source).toBe('missing-current-evidence');
+  });
+
+  it('treats malformed pipeline stage arrays as empty evidence', () => {
+    const { contextStore } = stores();
+    contextStore.create({ id: 'wc:malformed-stages', tasks: [issueRef] });
+    const malformed = {
+      ...handoff({ id: 'pipeline-handoff:malformed-stages', stages: [stage({ stage: 'implementation' })] }),
+      stages: null,
+    };
+    const artifactRecords = [
+      {
+        metadata: {
+          id: 'pipeline-handoff:malformed-stages',
+          workContextId: 'wc:malformed-stages',
+          kind: 'pipeline-handoff',
+          title: 'malformed stages',
+          summary: 'stage list is not an array',
+          visibility: 'internal',
+          createdAt: now,
+          updatedAt: now,
+          capturedAt: now,
+          payloadKind: 'pipeline-handoff',
+          payloadMediaType: 'application/json',
+          payloadSha256: '1'.repeat(64),
+          payloadBytes: 1,
+        },
+        payloadPath: '/tmp/malformed-stages.json',
+        payload: malformed,
+      },
+    ] as unknown as WorkContextArtifactReadResult[];
+
+    const packet = buildWorkContextResumePacket({
+      snapshot: contextStore.getResumeSnapshot('wc:malformed-stages', { sessions: [], nodes: [] }),
+      artifactRecords,
+      artifactStoreAvailable: true,
+      options: { currentHeadSha },
+      generatedAt: now,
+    });
+
+    expect(packet.goal.summary).toBe('resume packet mission state');
+    expect(packet.evidence.current).toEqual([]);
+  });
+
+  it('does not throw on malformed pinned artifact URI percent encoding', () => {
+    const { contextStore } = stores();
+    contextStore.create({ id: 'wc:bad-uri', tasks: [issueRef] });
+    const snapshot = contextStore.getResumeSnapshot('wc:bad-uri', { sessions: [], nodes: [] });
+
+    const packet = buildWorkContextResumePacket({
+      snapshot: {
+        ...snapshot,
+        artifacts: [
+          {
+            ...pinnedRef('bad-uri'),
+            uri: 'relay://work-context-artifacts/%E0%A4%A',
+          },
+        ],
+      },
+      artifactRecords: [],
+      options: { publicSafe: true, currentHeadSha },
+      generatedAt: now,
+    });
+
+    expect(packet.pinnedArtifacts[0]?.uri).toBe('relay://work-context-artifacts/%25E0%25A4%25A');
+  });
+
   it('surfaces blocked gate evidence and unresolved decisions', () => {
     const { contextStore, artifactStore } = stores();
     contextStore.create({ id: 'wc:blocked', tasks: [issueRef] });
@@ -403,16 +505,16 @@ describe('WorkContext resume packet generator', () => {
         ...snapshot,
         workContext: {
           ...snapshot.workContext,
-          title: 'handoff t_deadbeef from /home/donovan/private',
+          title: 'handoff t_deadbeef from /home/donovan/private and C:\\Users\\donovan\\secret\\repo',
           anchors: {
             session: {
               nodeId: 'local',
               sessionId: 'sess-secret',
               tabKind: 'agent',
-              cwd: '/home/donovan/private/repo',
+              cwd: 'C:\\Users\\donovan\\secret\\repo',
               agent: 'claude',
             },
-            repo: { localPath: '/home/donovan/private/repo' },
+            repo: { localPath: 'C:\\Users\\donovan\\secret\\repo' },
             worktree: { localPath: '/home/donovan/private/repo/.worktrees/x' },
           },
           actors: [{ kind: 'agent', id: 'agent:kani-backend' }],
@@ -445,6 +547,7 @@ describe('WorkContext resume packet generator', () => {
     expect(packet.workContext.actors).toEqual([]);
     expect(packet.workContext.tasks).toEqual([issueRef]);
     expect(json).not.toContain('/home/donovan');
+    expect(json).not.toContain('C:\\\\Users\\\\donovan');
     expect(json).not.toContain('t_deadbeef');
     expect(json).not.toContain('sess-secret');
     expect(json).not.toContain('repoPath');
