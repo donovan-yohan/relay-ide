@@ -126,8 +126,23 @@ function nodeBadgeFor(
   nodeId: string | undefined,
   ctx: SummaryContext
 ): NodeBadge | undefined {
+  return sessionNodeBadge(nodeId, ctx.findNode);
+}
+
+/**
+ * Derive the node-identity badge for a session, shared by the tab chrome and
+ * the sidebar session list (#864). Local-node sessions stay visually quiet
+ * (returns `undefined`) so the common single-host case is not cluttered;
+ * cross-node sessions surface the node label + heartbeat status, falling back
+ * to the raw node id with `'unknown'` status when the node summary is not yet
+ * loaded.
+ */
+export function sessionNodeBadge(
+  nodeId: string | undefined,
+  findNode: SummaryContext['findNode']
+): NodeBadge | undefined {
   if (!nodeId || nodeId === DEFAULT_LOCAL_NODE_ID) return undefined;
-  const info = ctx.findNode?.(nodeId);
+  const info = findNode?.(nodeId);
   if (!info) {
     return { label: nodeId, status: 'unknown' };
   }

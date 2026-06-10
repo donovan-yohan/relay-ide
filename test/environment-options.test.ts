@@ -396,6 +396,198 @@ describe('buildEnvironmentOptions', () => {
     expect(linuxOpt?.capabilities).not.toContain('session:create:terminal');
   });
 
+  it('marks updating nodes as freshness=updating with a reason (#861(A))', () => {
+    const options = buildEnvironmentOptions({
+      inventory: inventory(),
+      nodes: [
+        node(),
+        node({
+          nodeId: 'linux',
+          status: 'updating',
+          displayName: 'linux lab',
+          capabilities: {
+            ...node().capabilities,
+            agents: { claude: 'available' },
+          },
+        }),
+      ],
+      selectedAgent: 'claude',
+      sessionType: 'agent',
+      generatedAt: GENERATED_AT,
+    });
+    const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
+    expect(linuxOpt?.freshness).toBe('updating');
+    expect(linuxOpt?.degradedReasons?.[0]?.message).toContain('updating');
+  });
+
+  it('maps helper major-skew-error onto a typed version-skew reason (#861(C))', () => {
+    const options = buildEnvironmentOptions({
+      inventory: inventory(),
+      nodes: [
+        node(),
+        node({
+          nodeId: 'linux',
+          displayName: 'linux lab',
+          helperSkew: {
+            category: 'major-skew-error',
+            helperVersion: '1.0.0',
+            hubVersion: '3.0.0',
+            message: 'helper binary is too old',
+            remediationHint: 'run relay-ide update on linux',
+          },
+          capabilities: {
+            ...node().capabilities,
+            agents: { claude: 'available' },
+          },
+        }),
+      ],
+      selectedAgent: 'claude',
+      sessionType: 'agent',
+      generatedAt: GENERATED_AT,
+    });
+    const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
+    expect(linuxOpt?.freshness).toBe('stale');
+    const skew = linuxOpt?.degradedReasons?.find(
+      (r) => r.kind === 'version-skew'
+    );
+    expect(skew?.kind).toBe('version-skew');
+    if (skew?.kind === 'version-skew') {
+      expect(skew.scope).toBe('helper');
+      expect(skew.category).toBe('major-skew-error');
+      expect(skew.message).toBe('helper binary is too old');
+      expect(skew.remediationHint).toBe('run relay-ide update on linux');
+    }
+  });
+
+  it('still surfaces protocol version skew after the version-skew migration (#861(C))', () => {
+    const options = buildEnvironmentOptions({
+      inventory: inventory(),
+      nodes: [
+        node(),
+        node({
+          nodeId: 'linux',
+          displayName: 'linux lab',
+          version: {
+            state: 'version-skew',
+            nodeProtocolVersion: '0.9',
+            hubProtocolVersion: '1.0',
+          },
+          capabilities: {
+            ...node().capabilities,
+            agents: { claude: 'available' },
+          },
+        }),
+      ],
+      selectedAgent: 'claude',
+      sessionType: 'agent',
+      generatedAt: GENERATED_AT,
+    });
+    const linuxOpt = options.find((o) => o.node.nodeId === 'linux');
+    expect(linuxOpt?.freshness).toBe('stale');
+    const skew = linuxOpt?.degradedReasons?.find(
+      (r) => r.kind === 'version-skew'
+    );
+    expect(skew?.kind).toBe('version-skew');
+    if (skew?.kind === 'version-skew') {
+      // No more `{ kind: 'other', code: 'version-skew' }` — it is now typed
+      // with scope 'protocol', preserving the original copy.
+      expect(skew.scope).toBe('protocol');
+      expect(skew.category).toBe('version-skew');
+      expect(skew.message).toBe('node has version skew');
+    }
+    // Legacy 'other'/code path must no longer fire for skew.
+    expect(
+      linuxOpt?.degradedReasons?.some(
+        (r) => r.kind === 'other' && r.code === 'version-skew'
+      ) ?? false
+    ).toBe(false);
+  });
+
+  it('enumerates agentProviders with mixed availabilities including unknown (#861(B))', () => {
+    const options = buildEnvironmentOptions({
+      inventory: inventory(),
+      nodes: [
+        node({
+          capabilities: {
+            ...node().capabilities,
+            agents: {
+              claude: 'available',
+              codex: 'unavailable',
+              hermes: 'degraded',
+              opencode: 'unknown',
+            },
+          },
+        }),
+      ],
+      selectedAgent: 'claude',
+      sessionType: 'agent',
+      generatedAt: GENERATED_AT,
+    });
+    const opt = options.find((o) => o.node.nodeId === 'local');
+    const providers = opt?.node.agentProviders ?? [];
+    const byId = new Map(providers.map((p) => [p.id, p]));
+    expect(byId.get('claude')?.availability).toBe('available');
+    expect(byId.get('claude')?.reason).toBeUndefined();
+    expect(byId.get('codex')?.availability).toBe('unavailable');
+    expect(byId.get('codex')?.reason).toBe('UNSUPPORTED_CAPABILITY');
+    expect(byId.get('hermes')?.availability).toBe('degraded');
+    expect(byId.get('hermes')?.reason).toBe('REPAIR_REQUIRED');
+    expect(byId.get('opencode')?.availability).toBe('unknown');
+    expect(byId.get('opencode')?.reason).toBe('NODE_UNSUPPORTED');
+  });
+
+  it('omits agentProviders entirely for a node with no agents (#861(B))', () => {
+    const options = buildEnvironmentOptions({
+      inventory: null,
+      nodes: [
+        node(),
+        node({
+          nodeId: 'linux',
+          displayName: 'linux lab',
+          homeDir: '/home/linux',
+          capabilities: { ...node().capabilities, agents: {} },
+        }),
+      ],
+      selectedAgent: 'claude',
+      sessionType: 'terminal',
+      generatedAt: GENERATED_AT,
+    });
+    const remote = options.find((o) => o.node.nodeId === 'linux');
+    expect(remote?.node.agentProviders).toBeUndefined();
+  });
+
+  it('agentProviders presence does not leak repo metadata onto a free cwd option (#861(B))', () => {
+    // Free-cwd invariant: a remote node with no inventory surfaces a free cwd
+    // option. Adding agentProviders must not introduce a repoInstance/bench.
+    const options = buildEnvironmentOptions({
+      inventory: null,
+      nodes: [
+        node(),
+        node({
+          nodeId: 'linux',
+          displayName: 'linux lab',
+          homeDir: '/home/linux',
+          capabilities: {
+            ...node().capabilities,
+            agents: { claude: 'available', codex: 'unavailable' },
+          },
+        }),
+      ],
+      selectedAgent: 'claude',
+      sessionType: 'agent',
+      generatedAt: GENERATED_AT,
+    });
+    const remote = options.find((o) => o.node.nodeId === 'linux');
+    expect(remote?.cwdMode).toBe('free');
+    expect(remote?.repoInstance).toBeUndefined();
+    expect(remote?.bench).toBeUndefined();
+    // But the providers are still enumerated on the node summary.
+    expect((remote?.node.agentProviders ?? []).map((p) => p.id)).toEqual([
+      'claude',
+      'codex',
+    ]);
+  });
+
   it('does not silently merge a stale/offline node into another node', () => {
     // Critical correctness property of #629: stale/offline nodes still appear
     // as their own options with a degraded reason. They are NEVER replaced
@@ -446,5 +638,37 @@ describe('firstDegradedReasonMessage', () => {
         { kind: 'node-stale', lastSeenAt: '2026-05-18T00:00:00.000Z' },
       ])
     ).toBe('node stale since 2026-05-18T00:00:00.000Z');
+  });
+
+  it('describes version-skew reasons with the remediation hint (#861(C))', () => {
+    expect(
+      firstDegradedReasonMessage([
+        {
+          kind: 'version-skew',
+          scope: 'helper',
+          category: 'major-skew-error',
+          message: 'helper binary is too old',
+          remediationHint: 'run relay-ide update',
+        },
+      ])
+    ).toBe('helper binary is too old — run relay-ide update');
+    expect(
+      firstDegradedReasonMessage([
+        {
+          kind: 'version-skew',
+          scope: 'protocol',
+          category: 'incompatible',
+          message: 'node protocol is incompatible',
+        },
+      ])
+    ).toBe('node protocol is incompatible');
+  });
+
+  it('describes cwd-invalid reasons (#861(D))', () => {
+    expect(
+      firstDegradedReasonMessage([
+        { kind: 'cwd-invalid', cwd: '/gone', message: 'cwd no longer exists' },
+      ])
+    ).toBe('cwd no longer exists');
   });
 });

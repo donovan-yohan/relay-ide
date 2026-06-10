@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import type {
   Workspace,
   Repo,
@@ -9,6 +10,8 @@ import type {
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
 import { deriveColor } from '../lib/colors.js';
+import { fetchHubNodes } from '../lib/api.js';
+import type { SummaryNodeInfo } from '../lib/workspace-summary.js';
 import CipherText from './CipherText.js';
 import TuiButton from './TuiButton.js';
 import TuiProgress from './TuiProgress.js';
@@ -99,6 +102,29 @@ export function WorkspaceGroup({
   loadingItems = EMPTY_SET,
 }: WorkspaceGroupProps) {
   const sidebarItems = useSessionsStore((s) => s.sidebarItems);
+  // #864: reuse the shared hub-nodes query (same key as WorkspaceArea) so
+  // sidebar session rows can label cross-node sessions without prop-drilling
+  // node summaries down from the app shell.
+  const hubNodesQuery = useQuery({
+    queryKey: ['hub-nodes'],
+    queryFn: fetchHubNodes,
+    staleTime: Infinity,
+    refetchOnWindowFocus: 'always',
+  });
+  const nodeIndex = useMemo<Map<string, SummaryNodeInfo>>(() => {
+    const map = new Map<string, SummaryNodeInfo>();
+    for (const node of hubNodesQuery.data ?? []) {
+      map.set(node.nodeId, {
+        label: node.displayName || node.nodeId,
+        status: node.status,
+      });
+    }
+    return map;
+  }, [hubNodesQuery.data]);
+  const findNode = useMemo(
+    () => (id: string) => nodeIndex.get(id),
+    [nodeIndex]
+  );
   const themeColor = workspace.themeColor ?? deriveColor(workspace.name);
   const accentBorder = `color-mix(in srgb, ${themeColor} 30%, transparent)`;
   const workspaceSessions = useMemo(
@@ -190,6 +216,7 @@ export function WorkspaceGroup({
                 orgPrs={orgPrs ?? []}
                 loadingItems={loadingItems}
                 sidebarItems={sidebarItems}
+                findNode={findNode}
               />
             ))
           )}

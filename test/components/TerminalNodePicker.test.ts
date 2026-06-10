@@ -134,6 +134,47 @@ describe('TerminalNodePicker buildChoices', () => {
     });
   });
 
+  it('blocks updating nodes — they cannot accept new launches mid-update (#861)', () => {
+    const choices = buildChoices([
+      node({ nodeId: 'upd', displayName: 'upd', status: 'updating' }),
+    ]);
+    expect(choices[1]).toMatchObject({
+      disabled: true,
+      disabledReason: 'node is updating',
+    });
+  });
+
+  it('blocks helper major-skew nodes; minor-skew warn stays launchable (#861)', () => {
+    const choices = buildChoices([
+      node({
+        nodeId: 'major',
+        displayName: 'major',
+        helperSkew: {
+          category: 'major-skew-error',
+          helperVersion: '8.0.0',
+          hubVersion: '9.9.9',
+          message: 'helper is a major version behind the hub',
+        },
+      }),
+      node({
+        nodeId: 'minor',
+        displayName: 'minor',
+        helperSkew: {
+          category: 'minor-skew-warn',
+          helperVersion: '9.7.0',
+          hubVersion: '9.9.9',
+          message: 'helper is a few minor versions behind the hub',
+        },
+      }),
+    ]);
+    expect(choices[1]).toMatchObject({
+      disabled: true,
+      disabledReason: 'node helper is incompatible',
+    });
+    // minor-skew is warn-only: the node stays selectable.
+    expect(choices[2]?.disabled).toBe(false);
+  });
+
   it('marks nodes with sessionResume = tmux as resumable', () => {
     const choices = buildChoices([
       node({ nodeId: 'tmux', displayName: 'tmux', status: 'online' }),

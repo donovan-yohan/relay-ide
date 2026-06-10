@@ -36,6 +36,11 @@ export const ENVIRONMENT_FRESHNESS_VALUES = [
   'fresh',
   'stale',
   'offline',
+  // #861(A): a node mid-update (`HubNodeStatus === 'updating'`) cannot accept
+  // new launches. It is neither stale (heartbeat fine) nor offline (still
+  // reachable), so it gets a distinct freshness so the picker can render a
+  // dedicated badge and the launch boundary can block with a distinct code.
+  'updating',
 ] as const;
 
 export type EnvironmentFreshness = (typeof ENVIRONMENT_FRESHNESS_VALUES)[number];
@@ -47,11 +52,26 @@ export const ENVIRONMENT_DEGRADED_REASONS = [
   'repo-missing',
   'worktree-missing',
   'auth-failed',
+  // #861(C): hub↔node version skew, split into protocol (node-link) and helper
+  // (binary) scopes. Replaces the legacy 'other'/code mapping for skew.
+  'version-skew',
+  // #861(D): the selected cwd is invalid on the target node (deleted, no
+  // longer a repo root, permission denied, etc.).
+  'cwd-invalid',
   'other',
 ] as const;
 
 export type EnvironmentDegradedReasonKind =
   (typeof ENVIRONMENT_DEGRADED_REASONS)[number];
+
+/**
+ * #861(C): scope of a {@link EnvironmentDegradedReason} `version-skew` reason.
+ *   - `'protocol'` — the node-link protocol version is skewed/incompatible
+ *     (maps from `HubNodeSummary.version.state`).
+ *   - `'helper'`   — the helper binary version is skewed
+ *     (maps from `HubNodeSummary.helperSkew.category`).
+ */
+export type EnvironmentVersionSkewScope = 'protocol' | 'helper';
 
 export type EnvironmentDegradedReason =
   | { kind: 'node-offline'; lastSeenAt?: string; message?: string }
@@ -65,6 +85,33 @@ export type EnvironmentDegradedReason =
     }
   | { kind: 'worktree-missing'; localPath: string; message?: string }
   | { kind: 'auth-failed'; message: string; capability?: RelayCapabilityBit }
+  | {
+      // #861(C): hub↔node version skew. `category` is the source-of-truth string
+      // — for `scope: 'helper'` it is a `HubNodeHelperSkewCategory`
+      // (`minor-skew-warn` | `major-skew-error`); for `scope: 'protocol'` it is
+      // a `HubNodeVersionState` (`version-skew` | `incompatible`). Kept as a
+      // free string here so this shared shape does not import the frozen
+      // protocol unions.
+      kind: 'version-skew';
+      scope: EnvironmentVersionSkewScope;
+      category: string;
+      message: string;
+      remediationHint?: string;
+    }
+  | {
+      /**
+       * #861(D): the resolved cwd is invalid on the target node. This variant +
+       * its guards exist now so consuming surfaces (badges, launch gating) can
+       * be wired against a stable shape, but live population is DEFERRED to the
+       * launcher slices (#862/#863) which actually probe the node for the cwd.
+       * No converter in this slice emits it; the converter only knows
+       * inventory-derived cwds, never runtime cwd validity.
+       */
+      kind: 'cwd-invalid';
+      cwd: string;
+      code?: string;
+      message: string;
+    }
   | { kind: 'other'; message: string; code?: string };
 
 /**
@@ -74,6 +121,44 @@ export type EnvironmentDegradedReason =
  * sits outside the selected repo (e.g. a sibling vendored tree).
  */
 export type EnvironmentCwdMode = 'repo' | 'free' | 'explicit-outside-repo';
+
+/**
+ * #861(B): availability of an agent provider on a node, derived 1:1 from the
+ * frozen `NodeCapabilityStatus` (`available | degraded | unavailable | unknown`)
+ * so the data layer never invents a fifth state the protocol can't express.
+ */
+export type EnvironmentProviderAvailability =
+  | 'available'
+  | 'degraded'
+  | 'unavailable'
+  | 'unknown';
+
+export const ENVIRONMENT_PROVIDER_AVAILABILITY_VALUES = [
+  'available',
+  'degraded',
+  'unavailable',
+  'unknown',
+] as const;
+
+/**
+ * #861(B): a single agent provider (e.g. `claude`, `codex`) advertised by a
+ * node, with its launchability. Derived from
+ * `HubNodeSummary.capabilities.agents` — `id` is the agent key, `availability`
+ * maps 1:1 from `NodeCapabilityStatus`. `reason` is sourced from the
+ * `RelayNodeErrorCode` vocabulary for non-available providers so the picker can
+ * explain why a provider is unselectable without a parallel string table.
+ *
+ * This is DATA ONLY (#861 Agent A scope). It carries no launcher UI; the
+ * provider-selection surface is #862/#863.
+ */
+export interface EnvironmentAgentProvider {
+  id: string;
+  availability: EnvironmentProviderAvailability;
+  /** Optional auth/login status string when the node reports one. */
+  authStatus?: string;
+  /** Short reason (RelayNodeErrorCode-derived) when not `available`. */
+  reason?: string;
+}
 
 /**
  * Display node identity for the picker. Mirrors the slim
@@ -86,6 +171,11 @@ export interface EnvironmentNodeSummary {
   kind: 'local' | 'remote';
   displayName?: string;
   online?: boolean;
+  /**
+   * #861(B): agent providers advertised by this node. Optional — present once
+   * the converter has node capability data. Data-only; no launcher UI here.
+   */
+  agentProviders?: EnvironmentAgentProvider[];
 }
 
 /**
@@ -213,11 +303,47 @@ export function isEnvironmentDegradedReason(
         (value.capability === undefined ||
           isRelayCapabilityBit(value.capability))
       );
+    case 'version-skew':
+      return (
+        (value.scope === 'protocol' || value.scope === 'helper') &&
+        hasString(value.category) &&
+        hasString(value.message) &&
+        isOptionalString(value.remediationHint)
+      );
+    case 'cwd-invalid':
+      return (
+        hasString(value.cwd) &&
+        hasString(value.message) &&
+        isOptionalString(value.code)
+      );
     case 'other':
       return hasString(value.message) && isOptionalString(value.code);
     default:
       return false;
   }
+}
+
+function isEnvironmentProviderAvailability(
+  value: unknown
+): value is EnvironmentProviderAvailability {
+  return (
+    typeof value === 'string' &&
+    (ENVIRONMENT_PROVIDER_AVAILABILITY_VALUES as readonly string[]).includes(
+      value
+    )
+  );
+}
+
+function isEnvironmentAgentProvider(
+  value: unknown
+): value is EnvironmentAgentProvider {
+  if (!isRecord(value)) return false;
+  return (
+    hasString(value.id) &&
+    isEnvironmentProviderAvailability(value.availability) &&
+    isOptionalString(value.authStatus) &&
+    isOptionalString(value.reason)
+  );
 }
 
 function isEnvironmentNodeSummary(
@@ -228,7 +354,10 @@ function isEnvironmentNodeSummary(
     hasString(value.nodeId) &&
     (value.kind === 'local' || value.kind === 'remote') &&
     isOptionalString(value.displayName) &&
-    (value.online === undefined || typeof value.online === 'boolean')
+    (value.online === undefined || typeof value.online === 'boolean') &&
+    (value.agentProviders === undefined ||
+      (Array.isArray(value.agentProviders) &&
+        value.agentProviders.every(isEnvironmentAgentProvider)))
   );
 }
 
@@ -340,6 +469,8 @@ function hasValidCwdContainment(value: Record<string, unknown>): boolean {
 function hasValidDegradedReasons(value: Record<string, unknown>): boolean {
   if (value.degradedReasons === undefined) return true;
   if (!Array.isArray(value.degradedReasons)) return false;
+  // Only `fresh` forbids reasons. `stale`, `offline`, and `updating` (#861(A))
+  // all carry at least one degraded reason explaining the non-fresh state.
   if (value.freshness === 'fresh' && value.degradedReasons.length > 0) {
     return false;
   }

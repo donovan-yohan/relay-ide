@@ -174,11 +174,47 @@ describe('environment-option type guards', () => {
     });
     expect(isEnvironmentOption(option)).toBe(false);
   });
+
+  it('accepts a node summary carrying agentProviders (#861(B))', () => {
+    const option = baseOption({
+      node: {
+        ...baseNode(),
+        agentProviders: [
+          { id: 'claude', availability: 'available' },
+          {
+            id: 'codex',
+            availability: 'unavailable',
+            reason: 'UNSUPPORTED_CAPABILITY',
+          },
+          { id: 'hermes', availability: 'unknown', authStatus: 'logged-out' },
+        ],
+      },
+    });
+    expect(isEnvironmentOption(option)).toBe(true);
+  });
+
+  it('rejects an agentProvider with an invalid availability (#861(B))', () => {
+    const option = baseOption({
+      node: {
+        ...baseNode(),
+        agentProviders: [
+          { id: 'claude', availability: 'maybe' as never },
+        ],
+      },
+    });
+    expect(isEnvironmentOption(option)).toBe(false);
+  });
 });
 
 describe('environment-option freshness + degraded reasons', () => {
-  it('freshness enum is exhaustively fresh/stale/offline', () => {
-    expect(ENVIRONMENT_FRESHNESS_VALUES).toEqual(['fresh', 'stale', 'offline']);
+  it('freshness enum is exhaustively fresh/stale/offline/updating', () => {
+    // #861(A): 'updating' is a distinct freshness for a node mid-update.
+    expect(ENVIRONMENT_FRESHNESS_VALUES).toEqual([
+      'fresh',
+      'stale',
+      'offline',
+      'updating',
+    ]);
     for (const value of ENVIRONMENT_FRESHNESS_VALUES) {
       expect(isEnvironmentFreshness(value)).toBe(true);
     }
@@ -195,6 +231,8 @@ describe('environment-option freshness + degraded reasons', () => {
           return 'stale';
         case 'offline':
           return 'offline';
+        case 'updating':
+          return 'updating';
         default: {
           const exhaustive: never = value;
           return exhaustive;
@@ -204,6 +242,7 @@ describe('environment-option freshness + degraded reasons', () => {
     expect(describeFreshness('fresh')).toBe('fresh');
     expect(describeFreshness('stale')).toBe('stale');
     expect(describeFreshness('offline')).toBe('offline');
+    expect(describeFreshness('updating')).toBe('updating');
   });
 
   it('degraded reason discriminator covers every known variant', () => {
@@ -214,6 +253,9 @@ describe('environment-option freshness + degraded reasons', () => {
       'repo-missing',
       'worktree-missing',
       'auth-failed',
+      // #861(C)/(D): version-skew + cwd-invalid join the union.
+      'version-skew',
+      'cwd-invalid',
       'other',
     ]);
     expect(new Set(ENVIRONMENT_DEGRADED_REASONS)).toEqual(expectedKinds);
@@ -232,6 +274,10 @@ describe('environment-option freshness + degraded reasons', () => {
           return `worktree ${reason.localPath} missing`;
         case 'auth-failed':
           return `auth failed: ${reason.message}`;
+        case 'version-skew':
+          return `${reason.scope} skew (${reason.category}): ${reason.message}`;
+        case 'cwd-invalid':
+          return `cwd invalid ${reason.cwd}: ${reason.message}`;
         case 'other':
           return `other: ${reason.message}`;
         default: {
@@ -275,6 +321,62 @@ describe('environment-option freshness + degraded reasons', () => {
     ).toBe(false);
   });
 
+  it('isEnvironmentDegradedReason validates version-skew (#861(C))', () => {
+    expect(
+      isEnvironmentDegradedReason({
+        kind: 'version-skew',
+        scope: 'helper',
+        category: 'major-skew-error',
+        message: 'helper binary is too old',
+        remediationHint: 'run relay-ide update',
+      })
+    ).toBe(true);
+    expect(
+      isEnvironmentDegradedReason({
+        kind: 'version-skew',
+        scope: 'protocol',
+        category: 'incompatible',
+        message: 'node protocol is incompatible',
+      })
+    ).toBe(true);
+    // Bad scope rejected.
+    expect(
+      isEnvironmentDegradedReason({
+        kind: 'version-skew',
+        scope: 'wire',
+        category: 'x',
+        message: 'm',
+      })
+    ).toBe(false);
+    // Missing message rejected.
+    expect(
+      isEnvironmentDegradedReason({
+        kind: 'version-skew',
+        scope: 'helper',
+        category: 'minor-skew-warn',
+      })
+    ).toBe(false);
+  });
+
+  it('isEnvironmentDegradedReason validates cwd-invalid (#861(D))', () => {
+    expect(
+      isEnvironmentDegradedReason({
+        kind: 'cwd-invalid',
+        cwd: '/gone',
+        message: 'cwd no longer exists',
+        code: 'ENOENT',
+      })
+    ).toBe(true);
+    // message required.
+    expect(
+      isEnvironmentDegradedReason({ kind: 'cwd-invalid', cwd: '/gone' })
+    ).toBe(false);
+    // cwd required.
+    expect(
+      isEnvironmentDegradedReason({ kind: 'cwd-invalid', message: 'm' })
+    ).toBe(false);
+  });
+
   it('attaches degradedReasons array on stale/offline options', () => {
     const option = baseOption({
       freshness: 'stale',
@@ -292,6 +394,21 @@ describe('environment-option freshness + degraded reasons', () => {
       degradedReasons: [{ kind: 'node-stale', lastSeenAt: 'x' }],
     });
     expect(isEnvironmentOption(option)).toBe(false);
+  });
+
+  it('allows degradedReasons on an updating option (#861(A))', () => {
+    const option = baseOption({
+      freshness: 'updating',
+      degradedReasons: [
+        {
+          kind: 'other',
+          message:
+            'node is updating — new sessions blocked until update completes',
+          code: 'updating',
+        },
+      ],
+    });
+    expect(isEnvironmentOption(option)).toBe(true);
   });
 });
 
