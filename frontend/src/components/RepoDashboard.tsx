@@ -387,6 +387,14 @@ export function RepoDashboard({
   // Default non-git/free-directory workspaces to the evidence tab, but never
   // override a tab the user has manually picked.
   const tabManuallyPicked = useRef(false);
+  // RepoDashboard is reused (no key) across workspace switches, so the
+  // manual-pick guard must reset whenever the active repo path changes,
+  // otherwise the A1 auto-default-to-evidence stops firing after the user
+  // picks any tab. Placed before the auto-default effect so the reset runs
+  // first on the render where data resolves for the new repoPath.
+  useEffect(() => {
+    tabManuallyPicked.current = false;
+  }, [repoPath]);
   useEffect(() => {
     if (tabManuallyPicked.current) return;
     if (data && !data.isGitRepo) setActiveTab('evidence');

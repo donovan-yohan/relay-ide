@@ -20,6 +20,24 @@ function fileName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+};
+
+// The evidence preview type has no mimeType field, so derive a best-effort
+// image MIME from the file extension. Browsers will not render an <img> whose
+// src uses application/octet-stream; default to image/* for unknown extensions.
+function imageMimeForPath(path: string): string {
+  const dot = path.lastIndexOf('.');
+  const ext = dot === -1 ? '' : path.slice(dot + 1).toLowerCase();
+  return IMAGE_MIME_BY_EXTENSION[ext] ?? 'image/*';
+}
+
 export function WorkspaceEvidencePreview({
   root,
   selectedPath,
@@ -97,7 +115,7 @@ export function WorkspaceEvidencePreview({
         body = (
           <div className="evidence-preview__image">
             <img
-              src={`data:application/octet-stream;base64,${content}`}
+              src={`data:${imageMimeForPath(selectedPath)};base64,${content}`}
               alt={fileName(selectedPath)}
             />
           </div>

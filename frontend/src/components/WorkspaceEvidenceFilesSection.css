@@ -45,7 +45,11 @@
   cursor: pointer;
   padding: 1px 6px;
   font-family: inherit;
-  font-size: 0.6rem;
+  font-size: var(--font-size-xs);
+}
+
+.evidence-files__retry:hover {
+  background: color-mix(in srgb, var(--border) 10%, transparent);
 }
 
 @media (max-width: 600px) {

@@ -71,6 +71,13 @@ export function WorkspaceEvidenceDashboard({
         </div>
       );
     }
+    if (sectionState === 'permission-denied') {
+      return (
+        <div className="section-message">
+          permission denied reading this directory
+        </div>
+      );
+    }
     if (sectionState === 'ready' && root) {
       return <WorkspaceEvidenceFilesSection root={root} />;
     }
