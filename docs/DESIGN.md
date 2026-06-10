@@ -81,7 +81,7 @@ Relay is moving from a repo/worktree-first UI toward the #444 six-layer model: `
 - Scrollback buffer: max 256KB per session, FIFO eviction
 - `relay-pty` is the default backend for new PTY sessions. `tmux-compat` keeps legacy tmux-backed sessions resumable/importable and provides tmux-specific copy-mode/resume behavior only when that backend is selected.
 - PTY sessions survive browser disconnects through their selected backend: `relay-pty` keeps the direct `RelayPtySession` process attached to the server, while `tmux-compat` reattaches `node-pty` to the stable tmux session.
-- Session auto-deleted when PTY exits; WebSocket closed with code 1000
+- Session auto-deleted when PTY exits; WebSocket closed with code 1000; if a write or resize arrives after the session has been reaped, the socket is closed with application close code 4404 (`session-not-found`) instead of surfacing an unhandled throw (#905)
 - `claudeArgs` from POST body merged with `config.claudeArgs` (config args first)
 - Re-attaching to a previous agent conversation uses agent-specific continue args (`--continue` for Claude, `resume --last` for Codex); reconnecting to a live PTY session requires no special args
 - **Stable tmux naming:** tmux session names use the environment prefix plus a sanitized display slug and session-id suffix: `relay-dev-<slug>-<id8>` in dev mode (`RELAY_IDE_DEV_INSTANCE=1`), `relay-self-<slug>-<id8>` in self-host mode, and `relay-ide-<slug>-<id8>` in production. Agent sessions prefer a repo/branch slug for identifiable `tmux ls` output; the browser-facing display name remains independent.
