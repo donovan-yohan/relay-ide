@@ -516,11 +516,7 @@ export function RepoDashboard({
       ) : activeTab === 'tickets' ? (
         <TicketsPanel onStartWork={setStartWorkIssue} />
       ) : (
-        <WorkspaceEvidenceDashboard
-          key={repoPath}
-          repoPath={repoPath}
-          workspaceName={workspaceName}
-        />
+        <WorkspaceEvidenceDashboard key={repoPath} repoPath={repoPath} />
       )}
       <div className="cta-row">
         <TuiButton variant="primary" onClick={onNewSession}>

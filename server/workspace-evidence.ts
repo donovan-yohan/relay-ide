@@ -517,6 +517,8 @@ function previewKindForPath(filePath: string, api: PathApi): WorkspaceEvidencePr
   if (ext === '.json' || ext === '.jsonl') return 'json';
   if (ext === '.log' || ext === '.out' || ext === '.err') return 'log';
   if (ext === '.diff' || ext === '.patch') return 'diff';
+  // .svg stays 'html-source' (sandboxed) — it is markup, not raster bytes.
+  if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.gif' || ext === '.webp') return 'image';
   if (ext === '.html' || ext === '.htm' || ext === '.svg') return 'html-source';
   const textExts = new Set([
     '.txt',
@@ -908,6 +910,29 @@ async function handlePreview(
     return errorResponse('preview', relayErrorReason(readResponse), readResponse.message, relayState(readResponse), root.ref, root.nodeId);
   }
   const read = readResponse as FileRpcReadResponse;
+  if (kind === 'image') {
+    // Image previews skip the utf8 decode (which rejects binary) and return
+    // raw base64 bytes for an <img src="data:...">. The oversized cap was
+    // already enforced above via stat.size > maxBytes.
+    const bytes = read.encoding === 'base64' ? Buffer.from(read.content, 'base64') : Buffer.from(read.content, 'utf8');
+    const imageHash = sha256Hex(bytes);
+    return {
+      operation: 'preview',
+      root,
+      path: entry.path,
+      entry: { ...entry, contentHash: imageHash },
+      preview: {
+        state: 'available',
+        kind: 'image',
+        encoding: 'base64',
+        content: bytes.toString('base64'),
+        bytesRead: read.bytesRead,
+        maxBytes: read.maxBytes,
+        truncated: read.truncatedBytes || read.truncatedLines,
+        contentHash: imageHash,
+      },
+    };
+  }
   const decoded = decodeReadContent(read);
   if (decoded.ok === false) {
     return {

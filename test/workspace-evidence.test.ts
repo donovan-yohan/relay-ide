@@ -281,6 +281,38 @@ describe('workspace evidence router', () => {
     expect(unsupported.body.preview).toMatchObject({ state: 'unsupported', unsupportedReason: 'WORKSPACE_EVIDENCE_UNSUPPORTED' });
   });
 
+  it('serves a base64 image preview for raster image files (#897)', async () => {
+    const root = tmpRoot();
+    // Smallest valid PNG: a 1x1 image. Raw bytes contain NUL, so the utf8
+    // decode path would reject it as binary — the image branch must serve it.
+    const pngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+    const pngBytes = Buffer.from(pngBase64, 'base64');
+    fs.writeFileSync(path.join(root, 'pixel.png'), pngBytes);
+    fs.writeFileSync(path.join(root, 'archive.bin'), 'abc');
+
+    const { port } = await listen(createWorkspaceEvidenceRouter({ getConfig: () => asConfig([root]) }));
+    const roots = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
+    const rootRef = roots.body.roots[0].ref;
+
+    const image = await postJson<{
+      preview: { state: string; kind: string; encoding: string; content: string; contentHash?: string };
+    }>(port, '/workspace-evidence/preview', { rootRef, path: 'pixel.png', maxBytes: 1024 });
+    expect(image.status).toBe(200);
+    expect(image.body.preview).toMatchObject({ state: 'available', kind: 'image', encoding: 'base64' });
+    expect(image.body.preview.content.length).toBeGreaterThan(0);
+    expect(Buffer.from(image.body.preview.content, 'base64').equals(pngBytes)).toBe(true);
+    expect(image.body.preview.contentHash).toMatch(/^[a-f0-9]{64}$/);
+
+    const binary = await postJson<{ preview: { state: string; unsupportedReason: string } }>(
+      port,
+      '/workspace-evidence/preview',
+      { rootRef, path: 'archive.bin', maxBytes: 1024 }
+    );
+    expect(binary.status).toBe(200);
+    expect(binary.body.preview).toMatchObject({ state: 'unsupported', unsupportedReason: 'WORKSPACE_EVIDENCE_UNSUPPORTED' });
+  });
+
   it('reports unavailable local roots instead of pretending missing paths are browsable', async () => {
     const root = path.join(tmpRoot(), 'missing');
     const { port } = await listen(createWorkspaceEvidenceRouter({ getConfig: () => asConfig([root]) }));

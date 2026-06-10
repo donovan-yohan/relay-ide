@@ -12,7 +12,6 @@ import './WorkspaceEvidenceDashboard.css';
 export interface WorkspaceEvidenceDashboardProps {
   repoPath: string;
   workspaceId?: string;
-  workspaceName?: string;
 }
 
 export function WorkspaceEvidenceDashboard({

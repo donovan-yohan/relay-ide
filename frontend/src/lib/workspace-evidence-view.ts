@@ -140,8 +140,11 @@ export function mapPreviewToRenderKind(
       return { mode: 'log', language: 'log' };
     case 'html-source':
       return { mode: 'unsupported' };
+    case 'image':
+      return preview.encoding === 'base64'
+        ? { mode: 'image' }
+        : { mode: 'binary' };
     case 'binary':
-      if (preview.encoding === 'base64') return { mode: 'image' };
       return { mode: 'binary' };
     case 'unsupported':
       return { mode: 'unsupported' };

@@ -232,6 +232,22 @@ describe('mapPreviewToRenderKind', () => {
     });
   });
 
+  it('maps available base64 image kind to image mode', () => {
+    expect(
+      mapPreviewToRenderKind(
+        makePreview({ state: 'available', kind: 'image', encoding: 'base64' })
+      )
+    ).toEqual({ mode: 'image' });
+  });
+
+  it('maps an image kind without base64 encoding to binary mode', () => {
+    expect(
+      mapPreviewToRenderKind(
+        makePreview({ state: 'available', kind: 'image', encoding: 'none' })
+      )
+    ).toEqual({ mode: 'binary' });
+  });
+
   it('maps html-source to unsupported', () => {
     expect(
       mapPreviewToRenderKind(makePreview({ kind: 'html-source' }))

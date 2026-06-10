@@ -44,6 +44,7 @@ export type WorkspaceEvidencePreviewKind =
   | 'log'
   | 'diff'
   | 'html-source'
+  | 'image'
   | 'binary'
   | 'unsupported';
 

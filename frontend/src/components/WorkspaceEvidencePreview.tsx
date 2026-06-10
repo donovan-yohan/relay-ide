@@ -65,9 +65,7 @@ export function WorkspaceEvidencePreview({
   }
 
   let body: ReactNode;
-  if (query.isLoading) {
-    body = <div className="evidence-preview__notice">loading…</div>;
-  } else if (query.isError) {
+  if (query.isError) {
     const err = query.error as WorkspaceEvidenceApiError | Error;
     const reason =
       'error' in err && err.error ? err.error.reason : undefined;
@@ -82,8 +80,10 @@ export function WorkspaceEvidencePreview({
     } else {
       body = <div className="evidence-preview__notice">failed to load preview</div>;
     }
+  } else if (query.isPending || !query.data) {
+    body = <div className="evidence-preview__notice">loading…</div>;
   } else {
-    const preview = query.data!.preview;
+    const preview = query.data.preview;
     const { mode, language } = mapPreviewToRenderKind(preview);
     const content = preview.content ?? '';
     switch (mode) {
