@@ -20,7 +20,7 @@ The shipped app is mid-migration toward that vocabulary. Existing repo/worktree 
 | Dependency                                             | Why                                                                 |
 | ------------------------------------------------------ | ------------------------------------------------------------------- |
 | [Node.js 24+](https://nodejs.org/)                     | Runtime and build target                                            |
-| [tmux](https://github.com/tmux/tmux/wiki)              | Required PTY/session substrate for interactive terminals and agents |
+| [tmux](https://github.com/tmux/tmux/wiki)              | Required only for the `tmux-compat` backend; new sessions default to `relay-pty` |
 | Agent CLI such as Claude Code, Codex, OpenCode, Hermes | Relay launches configured agent frameworks from the node `PATH`     |
 | [GitHub CLI (`gh`)](https://cli.github.com/)           | Optional; used by PR/CI surfaces when available                     |
 | [Tailscale](https://tailscale.com/)                    | Optional but recommended for private phone/tablet access            |
@@ -96,19 +96,36 @@ Commands:
     install                           Install/start the hub background service
     uninstall                         Stop and remove the hub background service
     status                            Show hub service status
-    logs                              Print platform log commands for the hub service
+    logs [--lines <n>] [--follow]     Print or follow local hub log files
+    nodes [--json]                    List paired nodes with status/capability summary
+    doctor [--json]                   Run bounded hub/node diagnostics
+    node-logs <nodeId> [--lines <n>] [--follow]
+                                       Print or follow logs from a paired remote node
   install            Back-compat alias for relay-ide hub install
   uninstall          Back-compat alias for relay-ide hub uninstall
   status             Back-compat alias for relay-ide hub status
   manifest           Print local node capability manifest as JSON
+  v1 ... --json      Versioned CLI gateway JSON contract for nodes/sessions/files
+  diag               Collect local diagnostics
+    bundle [--output <dir>] [--lines <n>] [--json]
+                                       Write a timestamped redacted diagnostics directory
+  audit              Manage local security audit logs
+    verify [--db <path>] [--json]
+                                       Verify the hash-chained security audit log
   node               Manage relay-node pairing and diagnostics
     status                             Show local node/service status
-    logs                               Print platform log commands
-    doctor --hub <url>                 Check hub reachability and local node capability
+    logs [--lines <n>] [--follow]      Print or follow local node log files
+    doctor [--hub <url>] [--json]      Diagnose local node health and hub reachability; surfaces all degraded reasons
+    pair --hub <url> --pair-token <token>
+                                       Exchange a pair token with a hub and send one heartbeat (pair-only, no service)
+    mint-pair-token --hub <url> --operator-grant <handle> [--display-name <name>] [--platform <name>] [--task-ref <ref>] [--json]
+                                       Mint a short-lived node pair token through the scoped operator-grant lane
+    install --hub <url> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
+                                       Install relay-ide globally via npm and optionally set up the local service (no pairing)
     connect --hub <url> --pair-token <token>
-                                       Exchange a pair token and send one heartbeat
-    install --hub <url> --pair-token <token> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
-                                       Pair the node, then install/start the local Relay-managed service when requested/available
+                                       Exchange a pair token and send one heartbeat (back-compat alias for 'pair')
+    ssh-bootstrap --target <host> --hub <url>
+                                       Print a paste-able bash script to install and pair on a remote host via SSH
     link --hub <url>                   Open and hold the persistent /hub/node-link reverse WebSocket (foreground)
   worktree           Manage git worktrees (wraps git worktree)
     add [path] [-b branch] [--yolo]   Create worktree and launch Claude
@@ -158,11 +175,11 @@ Bare `relay-ide` and `relay-ide hub` run the hub web server. A node can pair wit
 ```bash
 relay-ide manifest
 relay-ide node doctor --hub http://hub.example:3456
-relay-ide node connect --hub http://hub.example:3456 --pair-token <token>
+relay-ide node pair --hub http://hub.example:3456 --pair-token <token>
 relay-ide node link --hub http://hub.example:3456
 ```
 
-`relay-ide node install` pairs the node and installs/starts a Relay-managed service when the selected service mode supports it. Bootstrap diagnostics exist for pairing and local capability checks; do not assume every planned remote file/log capability is shipped unless the relevant doc and tests say so.
+`relay-ide node pair` exchanges a pair token and sends one heartbeat (pair-only, no service); `relay-ide node connect` is a back-compat alias for `pair`. `relay-ide node install` installs relay-ide globally and optionally sets up the local service (no pairing). Bootstrap diagnostics exist for pairing and local capability checks; do not assume every planned remote file/log capability is shipped unless the relevant doc and tests say so.
 
 ## Features
 

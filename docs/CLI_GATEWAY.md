@@ -7,22 +7,32 @@ relay-ide v1 --list --json
 relay-ide v1 schema --json
 relay-ide v1 nodes manifest --json
 relay-ide v1 nodes list --json
+relay-ide v1 repos add --input-json '{...}' --json
+relay-ide v1 workspaces launch --input-json '{...}' --json
+relay-ide v1 worktrees create --input-json '{...}' --json
+relay-ide v1 worktrees status --input-json '{...}' --json
+relay-ide v1 worktrees delete --input-json '{...}' --json
+relay-ide v1 worktrees archive --input-json '{...}' --json
 relay-ide v1 sessions list --json
 relay-ide v1 sessions get --id <session-id-or-global-id> --json
 relay-ide v1 sessions create --input-json '{...}' --json
 relay-ide v1 tickets start-work --input-json '{...}' --json
 relay-ide v1 branches open-session --input-json '{...}' --json
+relay-ide v1 sessions renew --id <session-id> --ttl-seconds <seconds> --json
 relay-ide v1 sessions attach --id <session-id-or-global-id> --json
 relay-ide v1 sessions detach --id <session-id-or-global-id> --json
 relay-ide v1 sessions kill --id <session-id-or-global-id> [--confirmation-token <token>] --json
 relay-ide v1 sessions rename --id <session-id-or-global-id> --display-name 'new name' --json
 relay-ide v1 sessions stream --id <session-id-or-global-id> --mode ndjson --json
 relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --wait-for ok --json
+relay-ide v1 sessions interventions --id <session-id> --json
+relay-ide v1 sessions hand-back --id <session-id> --latest-seen-intervention-event-id <event-id> --json
 relay-ide v1 files list --session-id <session-id> --path <path> --json
 relay-ide v1 files stat --session-id <session-id> --path <path> --json
 relay-ide v1 files read --session-id <session-id> --path <path> --max-bytes 32768 --max-lines 2000 --json
 relay-ide v1 files write --session-id <session-id> --path <path> --mode <create|overwrite|append> --file <local-path|-> --json
 relay-ide v1 work-contexts get --id <work-context-id> --json
+relay-ide v1 work-contexts resume --id <work-context-id> --json
 relay-ide v1 context create --input-json '{...}' --json
 relay-ide v1 context get --id <context-packet-id> --json
 relay-ide v1 context list [--work-context-id <work-context-id>] --json
@@ -39,6 +49,19 @@ relay-ide v1 handoff-artifacts attach --work-context-id <work-context-id> --arti
 relay-ide v1 handoff-artifacts list --work-context-id <work-context-id> [--stage <implementation|qa|review|release>] [--current-head-sha <sha>] --json
 relay-ide v1 handoff-artifacts show --id <artifact-id> [--current-head-sha <sha>] [--public] --json
 relay-ide v1 handoff-artifacts copy --id <artifact-id> [--output <path>] --json
+relay-ide v1 inbox send --input-json '{...}' --json
+relay-ide v1 inbox list --target-session-id <global-session-id> --json
+relay-ide v1 inbox get --id <inbox-message-id> --json
+relay-ide v1 inbox ack --id <inbox-message-id> --json
+relay-ide v1 inbox resolve --id <inbox-message-id> --json
+relay-ide v1 inbox ignore --id <inbox-message-id> --json
+relay-ide v1 handoffs plan --input-json '{...}' --json
+relay-ide v1 handoffs create --input-json '{...}' --json
+relay-ide v1 handoffs status --run-id <run-id> --json
+relay-ide v1 handoffs cancel --run-id <run-id> --json
+relay-ide v1 handoffs resume --run-id <run-id> --json
+relay-ide v1 handoffs launch --run-id <run-id> --json
+relay-ide v1 artifacts read --ref <artifact-ref> --json
 relay-ide v1 supervisor sessions --json
 relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
 relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json

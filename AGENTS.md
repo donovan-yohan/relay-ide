@@ -39,7 +39,9 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Devbox deploy      | `docs/references/devbox-hub-deploy.md` | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene        |
 | Dogfood recovery   | `docs/references/dogfood-recovery.md`  | Relay-develops-Relay proof loop, recovery, diagnostics, no-force-merge gate                    |
 | Self-hosting       | `docs/SELF_HOSTING.md`                 | Build Relay with Relay using isolated dev config/ports/tmux                                    |
-| Security policy    | `docs/SECURITY_POLICY.md`              | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary                    |
+| Security policy    | `docs/SECURITY_POLICY.md`              | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary, exact-operation approvals, handshake grants |
+| Handshake grants   | `docs/OPERATOR_HANDSHAKE_GRANTS.md`    | One-time `relay-ohg-v1` operator handshake grant lane: ceremony, bounded scope, fail-closed validation |
+| rmux helper        | `docs/RMUX_HELPER_PROTOCOL.md`         | Experimental #707/#745 JSON/stdin-stdout boundary spec for a throwaway `relay-rmux-helper` prototype |
 | Session durability | `docs/SESSION_DURABILITY.md`           | Process-owner vs attach-handle, derived durability state machine, transition emission          |
 | Hub/node pkg       | `docs/RELAY_HUB_NODE_PACKAGING.md`     | Hub vs node command shape, npm package decision, install/update commands                       |
 | Node bootstrap     | `docs/RELAY_NODE_BOOTSTRAP.md`         | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics                    |
@@ -49,7 +51,8 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | CLI gateway        | `docs/CLI_GATEWAY.md`                  | Versioned `relay-ide v1 ... --json` contract for external agent adapters                       |
 | Web chat           | `docs/WEB_CHAT.md`                     | Experimental adapter-shaped web chat surface for agent CLIs (status, scope, limits)            |
 | Provider guide     | `docs/provider-guide.md`               | Authoring/configuring agent framework providers (Claude/Codex/OpenCode/Hermes/custom)          |
-| ADRs               | `docs/adrs/`                           | Accepted ADRs (latest: ADR-015 core primitives, ADR-016 node isolation, ADR-017 brain-as-peer) |
+| Handoff template   | `docs/pipeline-handoff-artifact-template.md` | PipelineHandoffArtifact authoring template: stages, evidence dispositions, exact-head fields |
+| ADRs               | `docs/adrs/`                           | Accepted ADRs (latest: ADR-017 brain-as-peer, ADR-018 command-mediated handoff, ADR-019 context-packet storage) |
 | Learnings          | `docs/LEARNINGS.md`                    | Persistent cross-session learnings                                                             |
 | Project skills     | `.chalk/skills/<name>/SKILL.md`        | Repo-local skills (see §Skills)                                                                |
 | Work tracking      | GitHub Issues                          | `donovan-yohan/relay-ide` — use `/ticket` or `gh issue`                                        |
@@ -78,6 +81,8 @@ Issue workflow: `backlog` (rough) → `refined` (scoped) → `todo` (planned) �
 - Hub/node is the current architecture direction: the hub owns the web UI; nodes expose local capabilities and PTY/session execution through hub-mediated links. The local hub is itself a node (`server/local-node.ts`).
 - External agent brains (Hermes, Claude, Codex, custom) are hub-level session peers via the versioned CLI gateway (`relay-ide v1 ... --json`), not protocol clients on `/hub/node-link`. See ADR-017 and `docs/CLI_GATEWAY.md`.
 - Routed PTY sessions are scoped, revocable, and capability-gated (#426/#427). Mode changes and human interventions on `agent-driven` tabs emit hash-chained audit envelopes (#470/#499); raw bytes stay on the source system.
+- Durable evidence layer: WorkContext artifacts + pipeline handoff artifacts (`work-context-artifacts.*` / `handoff-artifacts.*` gateway verbs, same store, exact-head append-only) carry stage evidence without raw transcripts; resume packets (#901) and handoff timelines (#902) read it back. See `docs/pipeline-handoff-artifact-template.md`.
+- Workspace evidence dashboard (#897) is a read-only `evidence` tab over `/workspace-evidence/*` with capability-driven file/artifact/session/surface sections — a client over Relay action contracts, never a browser-only write path.
 - Agent frameworks are configurable; built-ins include Claude Code, Codex, OpenCode, and Hermes. Do not hard-code Claude-only assumptions in new docs or UI copy.
 - `node-pty` needs native compile; `postinstall` fixes prebuilt binaries on macOS.
 - Strip `CLAUDECODE` from PTY env so Claude sessions nest.
