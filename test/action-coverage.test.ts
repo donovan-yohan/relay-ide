@@ -21,7 +21,8 @@ import { workspaceOpenFileBrowser } from '../frontend/src/lib/actions/definition
 import { actionDescriptorFromMeta } from '../frontend/src/lib/actions/descriptors.js';
 import { stableCommandNames } from '../shared/cli-gateway-contract.js';
 
-// Full allowlist: 60 palettable action IDs (15 Phase 2 + 44 Phase 3 + 1 from #630)
+// Full allowlist: 61 palettable action IDs (15 Phase 2 + 44 Phase 3 + 1 from #630
+// + workspace.launch from #870)
 const ACTION_ALLOWLIST = [
   // Session (10)
   'session.new-agent',
@@ -34,9 +35,10 @@ const ACTION_ALLOWLIST = [
   'session.customize',
   'session.switch-to-tab',
   'session.rename',
-  // Workspace (2)
+  // Workspace (3)
   'workspace.add',
   'workspace.new-worktree',
+  'workspace.launch',
   // PR (11)
   'pr.create',
   'pr.push-branch',
@@ -232,6 +234,78 @@ describe('Action Coverage', () => {
     expect(descriptor.confirmation.required).toBe(false);
     expect(descriptor.contract).toMatchObject({
       relayCommandName: 'sessions.rename',
+      stable: true,
+      source: 'shared/relay-command-manifest.ts',
+    });
+  });
+
+  it('bridges worktrees.delete as a destructive, confirmation-gated Relay action descriptor', () => {
+    const action = cliGatewayCommandActions.find(
+      (entry) => entry.relayCommand.name === 'worktrees.delete'
+    );
+    expect(action).toBeTruthy();
+    const descriptor = action!.descriptor;
+
+    expect(descriptor.id).toBe('worktrees.delete');
+    expect(descriptor.stable).toBe(true);
+    expect(descriptor.sideEffect).toBe('destructive');
+    expect(descriptor.confirmation.required).toBe(true);
+    expect(descriptor.contract).toMatchObject({
+      relayCommandName: 'worktrees.delete',
+      stable: true,
+      source: 'shared/relay-command-manifest.ts',
+    });
+  });
+
+  it('bridges worktrees.archive as a destructive, confirmation-gated Relay action descriptor', () => {
+    const action = cliGatewayCommandActions.find(
+      (entry) => entry.relayCommand.name === 'worktrees.archive'
+    );
+    expect(action).toBeTruthy();
+    const descriptor = action!.descriptor;
+
+    expect(descriptor.id).toBe('worktrees.archive');
+    expect(descriptor.stable).toBe(true);
+    expect(descriptor.sideEffect).toBe('destructive');
+    expect(descriptor.confirmation.required).toBe(true);
+    expect(descriptor.contract).toMatchObject({
+      relayCommandName: 'worktrees.archive',
+      stable: true,
+      source: 'shared/relay-command-manifest.ts',
+    });
+  });
+
+  it('bridges worktrees.create as a non-destructive write Relay action descriptor', () => {
+    const action = cliGatewayCommandActions.find(
+      (entry) => entry.relayCommand.name === 'worktrees.create'
+    );
+    expect(action).toBeTruthy();
+    const descriptor = action!.descriptor;
+
+    expect(descriptor.id).toBe('worktrees.create');
+    expect(descriptor.stable).toBe(true);
+    expect(descriptor.sideEffect).toBe('write');
+    expect(descriptor.confirmation.required).toBe(false);
+    expect(descriptor.contract).toMatchObject({
+      relayCommandName: 'worktrees.create',
+      stable: true,
+      source: 'shared/relay-command-manifest.ts',
+    });
+  });
+
+  it('bridges workspaces.launch as a non-destructive write Relay action descriptor', () => {
+    const action = cliGatewayCommandActions.find(
+      (entry) => entry.relayCommand.name === 'workspaces.launch'
+    );
+    expect(action).toBeTruthy();
+    const descriptor = action!.descriptor;
+
+    expect(descriptor.id).toBe('workspaces.launch');
+    expect(descriptor.stable).toBe(true);
+    expect(descriptor.sideEffect).toBe('write');
+    expect(descriptor.confirmation.required).toBe(false);
+    expect(descriptor.contract).toMatchObject({
+      relayCommandName: 'workspaces.launch',
       stable: true,
       source: 'shared/relay-command-manifest.ts',
     });
