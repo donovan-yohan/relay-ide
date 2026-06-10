@@ -82,9 +82,9 @@ import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.js';
 import type { AddWorkspaceDialogHandle } from './components/dialogs/AddWorkspaceDialog.js';
 import WorkspaceSettingsDialog from './components/dialogs/WorkspaceSettingsDialog.js';
 import type { WorkspaceSettingsDialogHandle } from './components/dialogs/WorkspaceSettingsDialog.js';
-import EnvPickerDialog from './components/dialogs/EnvPickerDialog.js';
+import EnvPickerLauncher from './components/dialogs/EnvPickerLauncher.js';
+import type { LaunchEnvironmentResult } from './lib/launch-environment.js';
 import HandoffPlanDialog from './components/dialogs/HandoffPlanDialog.js';
-import { reposToEnvironmentOptions } from './lib/repo-to-environment.js';
 import AnalyticsDashboard from './components/AnalyticsDashboard.js';
 import SessionDetail from './components/SessionDetail.js';
 import FullPageDiff from './components/FullPageDiff.js';
@@ -494,6 +494,8 @@ function TerminalAreaContent({
   // Store access (layout / sidebar values not in derived state hook)
   const openSidebar = useUiStore((s) => s.openSidebar);
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
+  // #862: empty-state secondary action opens the env picker modal.
+  const setActiveModal = useUiStore((s) => s.setActiveModal);
   const hydrateUtilityRailState = useUiStore((s) => s.hydrateUtilityRailState);
   const setUtilityRailWidth = useUiStore((s) => s.setUtilityRailWidth);
   const saveUtilityRailState = useUiStore((s) => s.saveUtilityRailState);
@@ -713,6 +715,8 @@ function TerminalAreaContent({
           description="point to any folder on your machine. git repos get pr tracking and branch management."
           actionLabel="+ add project"
           onAction={onAddWorkspace}
+          secondaryActionLabel="start a terminal on a node"
+          onSecondaryAction={() => setActiveModal({ modal: 'env-picker' })}
           hint={
             onboardingHints.showNoReposHint ? (
               <Hint id={HINT_NO_REPOS} variant="inline-text">
@@ -871,6 +875,10 @@ export default function App() {
   const authNeedsSetup = useAuthStore((s) => s.needsSetup);
   const checkExistingAuth = useAuthStore((s) => s.checkExistingAuth);
   const loadFrameworks = useConfigStore((s) => s.loadFrameworks);
+  // Default agent for the env-picker capability gating (#862). Terminal MVP
+  // gates only shell/backend, but the shared option builder still takes the
+  // selected agent — pass the configured default.
+  const defaultAgent = useConfigStore((s) => s.defaultAgent);
 
   // ── UI store ───────────────────────────────────────────────────────────────
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
@@ -893,16 +901,6 @@ export default function App() {
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
   const recallSessionForWorkspace = useSessionsStore(
     (s) => s.recallSessionForWorkspace
-  );
-
-  // #630: env picker candidates derived from known repos. Memoized so the
-  // dialog's internal effects (default-selection memo, etc.) don't refire
-  // on unrelated App rerenders. The `generatedAt` is intentionally bound to
-  // the `repos` reference — when repos change we get fresh stamps; when they
-  // don't we keep the same option identities (Gemini PR #646 feedback).
-  const envPickerOptions = useMemo(
-    () => reposToEnvironmentOptions(repos, new Date().toISOString()),
-    [repos]
   );
 
   // ── Boot store ─────────────────────────────────────────────────────────────
@@ -1032,6 +1030,30 @@ export default function App() {
   const handleModalClose = useCallback(() => {
     setActiveModal(null);
   }, [setActiveModal]);
+
+  // #862: stable fallback workspace for the env picker. Only used when the
+  // repo inventory is empty / hasn't surfaced the active workspace. Memoized so
+  // the launcher's option list keeps reference equality across rerenders that
+  // don't change the active workspace identity.
+  const envPickerFallbackWorkspace = useMemo(() => {
+    const ws = activeRepoPath
+      ? repos.find((w) => w.path === activeRepoPath)
+      : undefined;
+    return ws
+      ? { name: ws.name, path: ws.path, isGitRepo: ws.isGitRepo }
+      : null;
+  }, [activeRepoPath, repos]);
+
+  // #862: navigate to the freshly launched terminal session. The picker already
+  // closes itself on success; this only wires the new session as active.
+  const onEnvPickerLaunched = useCallback(
+    (result: LaunchEnvironmentResult) => {
+      if (result.kind === 'launched' && result.result.session) {
+        handleNewSessionCreated(result.result.session.id);
+      }
+    },
+    [handleNewSessionCreated]
+  );
 
   // Wire the module-level notifications forwarder to the live navigateToSession
   useEffect(() => {
@@ -1333,15 +1355,21 @@ export default function App() {
           }
         }}
       />
-      {/* #630: command-palette "start work in environment…" target. Driven by
-          the `env-picker` ActiveModal variant. Options derive from known
-          repos as a stopgap until the full env-inventory feed lands (#615).
-          Memoized on `repos` so the picker's internal effects don't fire on
-          unrelated App rerenders (Gemini PR #646 feedback). */}
-      <EnvPickerDialog
+      {/* #862: command-palette / empty-state "start a terminal on a node"
+          target. Driven by the `env-picker` ActiveModal variant. Options derive
+          from the single shared read model (`buildEnvironmentOptions`) over the
+          `['hub-nodes']` + `['repo-inventory']` queries — replacing the #630
+          repo-only stopgap. The launcher owns those `useQuery` calls so they run
+          inside the QueryClientProvider boundary. Terminal MVP: bare-shell
+          launch (`launchOverrides={{ type: 'terminal' }}`); agent picking is
+          #863. The active workspace (if any) is only a fallback when inventory
+          is empty — the picker still surfaces a launchable local node otherwise. */}
+      <EnvPickerLauncher
         open={activeModal?.modal === 'env-picker'}
-        options={envPickerOptions}
         onClose={handleModalClose}
+        selectedAgent={defaultAgent}
+        fallbackWorkspace={envPickerFallbackWorkspace}
+        onLaunched={onEnvPickerLaunched}
       />
       <HandoffPlanDialog
         open={activeModal?.modal === 'handoff-plan'}

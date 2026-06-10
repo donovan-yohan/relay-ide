@@ -127,6 +127,12 @@ describe('sessionStartWorkInEnv action meta', () => {
     expect(matchSearch('environment')).toBe(true);
     expect(matchSearch('env')).toBe(true);
     expect(matchSearch('node')).toBe(true);
+    // #862: the env picker is now the terminal launcher. The palette must
+    // surface it under the terminal-first search terms too.
+    expect(matchSearch('terminal')).toBe(true);
+    expect(matchSearch('start-work')).toBe(true);
+    expect(matchSearch('launch')).toBe(true);
+    expect(matchSearch('shell')).toBe(true);
   });
 
   it('appears alongside other session-category actions in getAllActions', () => {

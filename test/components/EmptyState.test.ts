@@ -40,6 +40,13 @@ describe('EmptyState', () => {
     expect(tsxSource).toContain('onAction?:');
   });
 
+  it('has optional secondary action props (#862)', () => {
+    expect(tsxSource).toContain('secondaryActionLabel?:');
+    expect(tsxSource).toContain('onSecondaryAction?:');
+    // Secondary action renders as a ghost-variant button per DESIGN.md.
+    expect(tsxSource).toContain('variant="ghost"');
+  });
+
   it('imports TuiButton', () => {
     expect(tsxSource).toContain("from './TuiButton'");
   });

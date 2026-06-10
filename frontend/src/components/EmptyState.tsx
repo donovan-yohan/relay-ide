@@ -8,6 +8,13 @@ export interface EmptyStateProps {
   description?: string;
   actionLabel?: string;
   onAction?: () => void;
+  /**
+   * Optional secondary action rendered as a ghost button beneath the primary
+   * one (#862). Used for the empty-state "start a terminal on a node" path so
+   * the primary "+ add project" CTA stays unchanged.
+   */
+  secondaryActionLabel?: string;
+  onSecondaryAction?: () => void;
   hint?: React.ReactNode;
 }
 
@@ -17,6 +24,8 @@ export function EmptyState({
   description,
   actionLabel,
   onAction,
+  secondaryActionLabel,
+  onSecondaryAction,
   hint,
 }: EmptyStateProps) {
   return (
@@ -36,6 +45,12 @@ export function EmptyState({
       {actionLabel && onAction && (
         <TuiButton variant="primary" onClick={onAction}>
           {actionLabel}
+        </TuiButton>
+      )}
+
+      {secondaryActionLabel && onSecondaryAction && (
+        <TuiButton variant="ghost" onClick={onSecondaryAction}>
+          {secondaryActionLabel}
         </TuiButton>
       )}
     </div>

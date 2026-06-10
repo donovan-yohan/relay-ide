@@ -579,14 +579,19 @@ export function buildEnvironmentOptions(
       generatedAt
     );
     options.push(...fallback);
+    // Mark local as emitted so the paired-but-empty pass below does not also
+    // add a redundant free-cwd home row for the same local node.
+    emittedNodeIds.add(DEFAULT_LOCAL_NODE_ID);
   }
 
-  // Append paired-but-empty nodes (remote nodes with no inventory) as free
-  // cwd entries. Mirrors the existing dialog behavior where remote nodes
-  // surface a free-text cwd lane even without repo metadata.
+  // Append paired-but-empty nodes (nodes with no inventory hits) as free cwd
+  // entries. This includes the local node: on a repo-less hub (#862 primary
+  // use case) with no inventory and no fallbackWorkspace, the local node must
+  // still yield a launchable free-cwd/home row so bare shell launch is always
+  // reachable. Mirrors the existing behavior for remote paired-but-empty nodes
+  // (which already surface free-cwd rows from node.homeDir).
   for (const node of input.nodes) {
     if (emittedNodeIds.has(node.nodeId)) continue;
-    if (node.nodeId === DEFAULT_LOCAL_NODE_ID) continue;
     const { freshness, reasons } = nodeFreshnessAndReasons(
       node,
       input.sessionType,

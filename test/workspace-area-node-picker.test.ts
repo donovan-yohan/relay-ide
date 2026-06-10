@@ -15,8 +15,14 @@ const mocks = vi.hoisted(() => ({
   refreshAll: vi.fn(),
   setActiveSessionId: vi.fn(),
   showToast: vi.fn(),
-  activeWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide' },
-  worktreePath: '/Users/kyle/relay-ide/.worktrees/feature',
+  setActiveModal: vi.fn(),
+  activeWorkspace: {
+    name: 'relay-ide',
+    path: '/Users/kyle/relay-ide',
+  } as { name: string; path: string } | null,
+  worktreePath: '/Users/kyle/relay-ide/.worktrees/feature' as
+    | string
+    | undefined,
   hubNodes: [] as HubNodeSummary[],
 }));
 
@@ -32,7 +38,7 @@ vi.mock('../frontend/src/lib/api.js', () => ({
 vi.mock('../frontend/src/lib/session-utils.js', () => ({
   createAgentSession: mocks.createAgentSession,
   getCurrentSessionContext: () => ({
-    currentRepoPath: mocks.activeWorkspace.path,
+    currentRepoPath: mocks.activeWorkspace?.path,
     currentActiveWorkspace: mocks.activeWorkspace,
     currentActiveSession: mocks.worktreePath
       ? { id: 'sess-active', worktreePath: mocks.worktreePath }
@@ -58,6 +64,7 @@ vi.mock('../frontend/src/lib/stores/ui.js', () => {
     fileWordWrap: false,
     closeFileTab: vi.fn(),
     sendToTargetSessionId: null,
+    setActiveModal: mocks.setActiveModal,
   };
   const useUiStore = (selector: (s: typeof state) => unknown) =>
     selector(state);
@@ -252,7 +259,10 @@ afterEach(async () => {
   mocks.refreshAll.mockReset();
   mocks.setActiveSessionId.mockReset();
   mocks.showToast.mockReset();
+  mocks.setActiveModal.mockReset();
   mocks.hubNodes = [];
+  mocks.activeWorkspace = { name: 'relay-ide', path: '/Users/kyle/relay-ide' };
+  mocks.worktreePath = '/Users/kyle/relay-ide/.worktrees/feature';
   window.localStorage.clear();
 });
 
@@ -264,7 +274,10 @@ describe('WorkspaceArea terminal node picker', () => {
     await act(async () => {
       root!.render(
         React.createElement(WorkspaceArea, {
-          workspacePath: mocks.activeWorkspace.path,
+          // `workspacePath` is the rendered worktree cwd; it is independent of
+          // the session context's `currentActiveWorkspace` that gates the
+          // tab-plus branch, so the repo-less case still needs a string here.
+          workspacePath: mocks.activeWorkspace?.path ?? '/Users/kyle',
           sessions: [],
           onImageUpload: vi.fn(),
           onCopyModeChange: vi.fn(),
@@ -364,5 +377,58 @@ describe('WorkspaceArea terminal node picker', () => {
     expect(mocks.setActiveSessionId).toHaveBeenCalledWith(
       'remote-home-session'
     );
+  });
+
+  // #862: active-workspace local branch must stay behavior-identical — the
+  // local tab-plus still launches a repo-scoped terminal via createAgentSession
+  // (NOT the env-picker modal). Locks the unchanged path against regression.
+  it('creates a repo-scoped terminal from the local tab-plus when a workspace is active', async () => {
+    mocks.createAgentSession.mockResolvedValue({
+      session: { id: 'local-session' },
+      error: null,
+    });
+
+    await renderWorkspaceArea();
+
+    await act(async () => {
+      (
+        container!.querySelector(
+          '[data-track="workspace.add-terminal.local"]'
+        ) as HTMLButtonElement
+      ).click();
+    });
+
+    expect(mocks.setActiveModal).not.toHaveBeenCalled();
+    expect(mocks.setActivePane).toHaveBeenCalledWith('pane-1');
+    const payload = mocks.createAgentSession.mock.calls.at(-1)?.[0];
+    expect(payload).toMatchObject({
+      type: 'terminal',
+      repoPath: '/Users/kyle/relay-ide',
+      worktreePath: '/Users/kyle/relay-ide/.worktrees/feature',
+      sessionLane: 'local-repo',
+    });
+    expect(mocks.setActiveSessionId).toHaveBeenCalledWith('local-session');
+  });
+
+  // #862: repo-less hub (no active workspace) — the local tab-plus opens the
+  // env-picker modal instead of silently bailing, so the user can pick a
+  // node/cwd to launch a terminal against.
+  it('opens the env-picker modal from the local tab-plus when no workspace is active', async () => {
+    mocks.activeWorkspace = null;
+    mocks.worktreePath = undefined;
+
+    await renderWorkspaceArea();
+
+    await act(async () => {
+      (
+        container!.querySelector(
+          '[data-track="workspace.add-terminal.local"]'
+        ) as HTMLButtonElement
+      ).click();
+    });
+
+    expect(mocks.setActiveModal).toHaveBeenCalledWith({ modal: 'env-picker' });
+    expect(mocks.createAgentSession).not.toHaveBeenCalled();
+    expect(mocks.setActiveSessionId).not.toHaveBeenCalled();
   });
 });

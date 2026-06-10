@@ -95,6 +95,22 @@ describe('environmentToCreateSessionOptions', () => {
     expect(opts.cwd).toBe('/tmp/scratch');
   });
 
+  // #862: a fully free-cwd terminal launch (no repoInstance, no bench — the
+  // repo-less tab-plus → env-picker path) must leak NEITHER repoPath NOR
+  // worktreePath. Guards the acceptance "no stale repo metadata leak".
+  it('maps a free-cwd terminal launch with no repoPath/worktreePath', () => {
+    const opt = freshOption({
+      cwdMode: 'free',
+      cwd: '/tmp/scratch',
+    });
+    delete (opt as { repoInstance?: unknown }).repoInstance;
+    const opts = environmentToCreateSessionOptions(opt, { type: 'terminal' });
+    expect(opts.type).toBe('terminal');
+    expect(opts.cwd).toBe('/tmp/scratch');
+    expect(opts).not.toHaveProperty('repoPath');
+    expect(opts).not.toHaveProperty('worktreePath');
+  });
+
   it('forwards agent + type overrides', () => {
     const opts = environmentToCreateSessionOptions(freshOption(), {
       type: 'agent',

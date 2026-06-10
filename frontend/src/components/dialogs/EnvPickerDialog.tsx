@@ -206,6 +206,16 @@ export function EnvPickerDialog({
     onClose();
   }, [onClose]);
 
+  // #862: terminal-first copy. When the caller launches a bare terminal
+  // (`launchOverrides.type === 'terminal'` — e.g. the repo-less tab-plus
+  // entry point) the heading names the verb explicitly so the modal reads as
+  // a terminal launcher rather than the generic agent "start work" framing.
+  // Lowercase per DESIGN.md; no layout change.
+  const dialogTitle =
+    launchOverrides?.type === 'terminal'
+      ? 'start terminal in environment'
+      : 'start work in environment';
+
   if (!open) return null;
 
   const handleBackdropClick = (event: React.MouseEvent) => {
@@ -227,10 +237,10 @@ export function EnvPickerDialog({
         className="env-picker-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="start work in environment"
+        aria-label={dialogTitle}
       >
         <header className="env-picker-dialog__header">
-          <h2 className="env-picker-dialog__title">start work in environment</h2>
+          <h2 className="env-picker-dialog__title">{dialogTitle}</h2>
           <button
             type="button"
             className="env-picker-dialog__close"
