@@ -1555,6 +1555,13 @@ export interface CreateSessionBody {
   needsBranchRename?: boolean | undefined;
   newWorktree?: boolean | undefined;
   branchRenamePrompt?: string | undefined;
+  /**
+   * One-shot typed prompt delivered by the server once the agent reaches
+   * `waiting-for-input` (server/sessions.ts; route field name `initialPrompt`).
+   * This is the typed prompt-handoff path used by tickets.startWork /
+   * branches.openSession instead of post-create raw PTY keystroke injection.
+   */
+  initialPrompt?: string | undefined;
   sessionLane?: SessionLane | undefined;
   /** #740: Bench-inherited env overrides applied additively to the PTY env.
    *  Reserved keys (`PATH`, `RELAY_*`) are refused by the backend. */
