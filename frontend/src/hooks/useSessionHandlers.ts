@@ -14,14 +14,17 @@ import {
   fetchIaBenches,
   fetchWorkspaceSettings,
   fetchWorktreeStatus,
-  killSession,
-  deleteWorktree,
-  launchWorkspaceSession,
 } from '../lib/api.js';
 import {
   executeSessionKillAction,
   executeSessionRenameAction,
 } from '../lib/actions/session-lifecycle.js';
+import {
+  executeWorkspaceLaunchAction,
+  executeWorktreeArchiveAction,
+  executeWorktreeCreateAction,
+  executeWorktreeDeleteAction,
+} from '../lib/actions/workspace-lifecycle.js';
 import type { BenchCreatePayload } from '../lib/state/view-tree.js';
 import {
   derivePrAction,
@@ -373,9 +376,16 @@ export function useSessionHandlers({
       if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
       useSessionsStore.getState().setLoading(loadingKey);
       try {
-        const { branchName, worktreePath } = await createWorktree(
-          workspace.path
-        );
+        // #870: route the createWorktree step through the stable worktrees.create
+        // descriptor/executor. The createAgentSession tail below stays the #867
+        // sessions.create path. Inspect the envelope rather than fire-and-forget.
+        const worktreeResult = await executeWorktreeCreateAction({
+          repoPath: workspace.path,
+        });
+        if (!worktreeResult.ok) {
+          throw new Error(worktreeResult.error.message);
+        }
+        const { branchName, worktreePath } = worktreeResult.data;
         const { session, error } = await createAgentSession({
           repoPath: workspace.path,
           worktreePath,
@@ -422,7 +432,19 @@ export function useSessionHandlers({
       if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
       useSessionsStore.getState().setLoading(loadingKey);
       try {
-        const result = await launchWorkspaceSession(workspaceId);
+        // #870: route launch through the stable workspaces.launch descriptor/
+        // executor. Errors surface on the envelope (!ok) rather than as a throw,
+        // so the existing alert path keys off result.error here.
+        const launchResult = await executeWorkspaceLaunchAction({ workspaceId });
+        if (!launchResult.ok) {
+          logger.error(
+            '[workspace-session] launch failed:',
+            launchResult.error
+          );
+          alert(`workspace launch failed: ${launchResult.error.message}`);
+          return;
+        }
+        const result = launchResult.data;
         await useSessionsStore.getState().refreshAll();
         useSessionsStore.getState().setActiveSessionId(result.id);
         useUiStore.getState().setActiveRepoPath(result.repoPath ?? null);
@@ -439,10 +461,6 @@ export function useSessionHandlers({
           logger.warn('[workspace-session] partial failure:', result.warnings);
           alert(`workspace launched with warnings:\n${msgs}`);
         }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'unknown error';
-        logger.error('[workspace-session] launch failed:', err);
-        alert(`workspace launch failed: ${message}`);
       } finally {
         useSessionsStore.getState().clearLoading(loadingKey);
       }
@@ -671,20 +689,28 @@ export function useSessionHandlers({
     const session = resolveSessionByKey(sessionState.sessions, sessionId);
     if (!session) return;
 
-    // Kill the session. Archive still proceeds to worktree cleanup if the
-    // session was already gone or the backend close fails.
-    try {
-      await killSession(session.id, session.nodeId);
-    } catch (error) {
-      logger.warn('Failed to close session before archive:', error);
+    // #870: kill the session through the shared sessions.kill executor. Archive
+    // still proceeds to worktree cleanup if the session was already gone or the
+    // backend close fails (best-effort — inspect the envelope, do not throw).
+    const killResult = await executeSessionKillAction({
+      id: session.id,
+      ...(session.nodeId ? { nodeId: session.nodeId } : {}),
+    });
+    if (!killResult.ok) {
+      logger.warn('Failed to close session before archive:', killResult.error);
     }
 
-    // If worktree session, delete the worktree too
+    // #870: if a worktree session, ARCHIVE the worktree (branch-PRESERVING) via
+    // the worktrees.archive executor. This is a deliberate behavior change from
+    // the prior deleteWorktree call, which removed the branch. Best-effort — the
+    // worktree may already be gone — so a non-ok envelope is logged, not thrown.
     if (session.worktreePath && session.repoPath) {
-      try {
-        await deleteWorktree(session.worktreePath, session.repoPath);
-      } catch {
-        // Best effort — worktree may already be gone
+      const archiveResult = await executeWorktreeArchiveAction({
+        repoPath: session.repoPath,
+        worktreePath: session.worktreePath,
+      });
+      if (!archiveResult.ok) {
+        logger.warn('Failed to archive worktree:', archiveResult.error);
       }
     }
 
@@ -811,14 +837,23 @@ export function useSessionHandlers({
         const status = await fetchWorktreeStatus(wt.path);
         const hasActive = status.activeSessions.length > 0;
         if (status.hasUncommittedChanges) {
+          // Dirty worktree: DeleteWorktreeDialog stays the confirmation surface
+          // layered over the destructive worktrees.delete contract.
           deleteWorktreeDialogRef.current?.open(wt, hasActive);
         } else {
+          // #870: clean worktree — route the delete through the stable
+          // worktrees.delete descriptor/executor. Preserve the existing force
+          // semantics (force only when an active session must be torn down) and
+          // inspect the envelope rather than fire-and-forget.
           useSessionsStore.getState().setLoading(wt.path);
           try {
-            if (hasActive) {
-              await deleteWorktree(wt.path, wt.repoPath, true);
-            } else {
-              await deleteWorktree(wt.path, wt.repoPath);
+            const deleteResult = await executeWorktreeDeleteAction({
+              repoPath: wt.repoPath,
+              worktreePath: wt.path,
+              ...(hasActive ? { force: true } : {}),
+            });
+            if (!deleteResult.ok) {
+              throw new Error(deleteResult.error.message);
             }
           } finally {
             useSessionsStore.getState().clearLoading(wt.path);

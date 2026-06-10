@@ -1225,6 +1225,7 @@ export default function App() {
     handleCloseSession,
     handleSelectSession,
     handleNewWorktree,
+    handleLaunchWorkspaceSession,
     handleOpenSettings,
     handleRenameActiveSession,
     handleArchive,

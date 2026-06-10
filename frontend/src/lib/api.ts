@@ -1482,8 +1482,12 @@ export async function createWorktree(
       body: JSON.stringify({ branch }),
     }
   );
+  // Throw the typed HttpError (status/code/details preserved) so the shared
+  // worktrees.create action bridge can normalize gateway error codes; existing
+  // callers that read `error.message` stay backward-compatible since HttpError
+  // extends Error with the same message string.
   if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to create worktree'));
+    throw await httpErrorFromResponse(res, 'Failed to create worktree');
   }
   return jsonEither<{
     branchName: string;
@@ -1725,15 +1729,30 @@ export async function fetchWorktreeStatus(
 export async function deleteWorktree(
   worktreePath: string,
   repoPath: string,
-  force?: boolean
+  force?: boolean,
+  // The DELETE /worktrees route treats `deleteBranch !== false` as true, so an
+  // omitted flag deletes the branch. Archive (branch-PRESERVING) MUST pass
+  // `false` explicitly; delete (branch-DELETING) leaves it undefined.
+  deleteBranch?: boolean
 ): Promise<void> {
   const res = await fetch('/worktrees', {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ worktreePath, repoPath, force }),
+    body: JSON.stringify({
+      worktreePath,
+      repoPath,
+      force,
+      ...(deleteBranch !== undefined ? { deleteBranch } : {}),
+    }),
   });
+  // The DELETE /worktrees route is force-only — it never emits the
+  // CONFIRMATION_REQUIRED challenge envelope (the 409 bodies are plain-string
+  // `{ error: 'active_sessions' | 'uncommitted_changes' }`), so there is no
+  // confirmation-retry registration here. The blocking conditions surface as
+  // a typed HttpError whose `code` carries the plain-string reason; callers
+  // re-issue with force after the DeleteWorktreeDialog status-check confirms.
   if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to delete worktree'));
+    throw await httpErrorFromResponse(res, 'Failed to delete worktree');
   }
 }
 
@@ -2246,10 +2265,11 @@ export async function launchWorkspaceSession(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts ?? {}),
   });
+  // Throw the typed HttpError so workspaces.launch can normalize gateway codes
+  // (NOT_FOUND for a missing workspace id, etc.); message stays identical for
+  // existing string-reading callers.
   if (!res.ok)
-    throw new Error(
-      await parseErrorBody(res, 'Failed to launch workspace session')
-    );
+    throw await httpErrorFromResponse(res, 'Failed to launch workspace session');
   return jsonEither<
     SessionSummary & { warnings?: Array<{ repoPath: string; error: string }> }
   >(res);

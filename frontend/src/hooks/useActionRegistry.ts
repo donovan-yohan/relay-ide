@@ -23,6 +23,7 @@ import { isFrameworkAvailable } from '../components/dialogs/CustomizeSessionDial
 import {
   workspaceAdd,
   workspaceNewWorktree,
+  workspaceLaunch,
 } from '../lib/actions/definitions/workspace.js';
 import {
   prCreate,
@@ -122,6 +123,7 @@ export interface UseActionRegistryParams {
   handleCloseSession: (id: string) => void;
   handleSelectSession: (id: string) => void;
   handleNewWorktree: (workspace: Repo) => void;
+  handleLaunchWorkspaceSession: (workspaceId: string) => void;
   handleOpenSettings: (workspace?: Repo) => void;
   handleRenameActiveSession: () => void;
   handleArchive: () => void;
@@ -139,6 +141,7 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
     handleCloseSession,
     handleSelectSession,
     handleNewWorktree,
+    handleLaunchWorkspaceSession,
     handleOpenSettings,
     handleRenameActiveSession,
     navigateToDashboard,
@@ -273,6 +276,30 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
                 .repos.find((w) => w.path === currentRepoPath)
             : undefined;
           if (ws) handleNewWorktree(ws);
+        },
+      },
+      {
+        // #870: Command Center surface for the stable workspaces.launch verb.
+        // Resolves the active workspace-group id and delegates to the shared
+        // launch handler (which routes through executeWorkspaceLaunchAction).
+        ...workspaceLaunch,
+        handler: () => {
+          // `when`/`disabledReason` gate on ctx.workspacePath (an active repo
+          // path), but the launch handler keys on activeWorkspaceId (a
+          // workspace-group id). Those can diverge — a repo can be active before
+          // any workspace group has been launched. Fail closed VISIBLY rather
+          // than silently no-op so a click never appears to do nothing.
+          const workspaceId = useUiStore.getState().activeWorkspaceId;
+          if (!workspaceId) {
+            logger.error(
+              'workspace launch requested with no active workspace group'
+            );
+            alert(
+              'No active workspace group to launch. Open or launch a workspace first.'
+            );
+            return;
+          }
+          handleLaunchWorkspaceSession(workspaceId);
         },
       },
 

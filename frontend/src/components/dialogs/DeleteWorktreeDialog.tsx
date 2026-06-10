@@ -6,7 +6,7 @@ import React, {
 } from 'react';
 import DialogShell, { type DialogShellHandle } from './DialogShell.js';
 import TuiButton from '../TuiButton.js';
-import { deleteWorktree } from '../../lib/api.js';
+import { executeWorktreeDeleteAction } from '../../lib/actions/workspace-lifecycle.js';
 import { useSessionsStore } from '../../lib/stores/sessions.js';
 import type { WorktreeInfo } from '../../lib/types.js';
 import './DeleteWorktreeDialog.css';
@@ -43,7 +43,18 @@ const DeleteWorktreeDialog = forwardRef<DeleteWorktreeDialogHandle>(
       setError('');
       useSessionsStore.getState().setLoading(worktree.path);
       try {
-        await deleteWorktree(worktree.path, worktree.repoPath, true);
+        // #870: this dialog is the confirmation surface over the destructive
+        // worktrees.delete contract. It always force-deletes (dirty/active
+        // worktree), preserving the prior force re-send flow. Surface a non-ok
+        // envelope through the existing error message.
+        const result = await executeWorktreeDeleteAction({
+          repoPath: worktree.repoPath,
+          worktreePath: worktree.path,
+          force: true,
+        });
+        if (!result.ok) {
+          throw new Error(result.error.message);
+        }
         shellRef.current?.close();
       } catch (err: unknown) {
         setError(
