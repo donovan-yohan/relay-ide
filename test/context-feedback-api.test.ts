@@ -138,6 +138,61 @@ test('context feedback api lists inbox feedback and drives review state transiti
   });
 });
 
+test('context feedback api creates an artifact-ref packet preserving artifactId end to end (#898)', async () => {
+  installFetch([
+    {
+      contextPacket: {
+        id: 'cp:art-1',
+        kind: 'artifact-ref',
+        artifactRef: {
+          artifactId: 'artifact:evidence-7',
+          kind: 'report',
+          title: 'Evidence bundle',
+        },
+        createdAt: '2026-05-28T00:00:00.000Z',
+        createdBy: 'relay-web',
+      },
+    },
+    {
+      message: {
+        id: 'im:art-1',
+        targetSessionId: 'local:session-1',
+        contextPacketIds: ['cp:art-1'],
+        state: 'queued',
+        createdAt: '2026-05-28T00:00:01.000Z',
+        createdBy: 'relay-web',
+      },
+    },
+  ]);
+
+  const packet = await createContextPacket({
+    kind: 'artifact-ref',
+    artifactRef: {
+      artifactId: 'artifact:evidence-7',
+      kind: 'report',
+      title: 'Evidence bundle',
+    },
+    createdBy: 'relay-web',
+  });
+  const message = await sendInboxMessage({
+    targetSessionId: 'local:session-1',
+    contextPacketIds: [packet.id],
+    text: 'review this evidence artifact',
+    createdBy: 'relay-web',
+  });
+
+  // The typed ref identity survives the create request body...
+  expect(packet.kind).toBe('artifact-ref');
+  expect(packet.artifactRef?.artifactId).toBe('artifact:evidence-7');
+  expect(JSON.parse(String(requests[0]?.init?.body))).toMatchObject({
+    kind: 'artifact-ref',
+    artifactRef: { artifactId: 'artifact:evidence-7' },
+  });
+  // ...and is carried by reference into the inbox message.
+  expect(message.contextPacketIds).toEqual(['cp:art-1']);
+  expect(requests.map((request) => request.url)).toEqual(['/context', '/inbox']);
+});
+
 test('context feedback api previews inbox feedback through the non-consuming endpoint', async () => {
   installFetch([
     {

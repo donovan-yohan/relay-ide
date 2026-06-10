@@ -33,7 +33,7 @@ import type {
   WorktreeInstanceId,
 } from './identity.js';
 import type { WorkspaceId } from './workspace.js';
-import type { WorkContextId } from './work-context.js';
+import type { ArtifactKind, WorkContextId } from './work-context.js';
 import {
   fileResourceRefEquals,
   fileResourceRefSummary,
@@ -240,6 +240,97 @@ export function anchorRefSummary(anchor: AnchorRef): string {
 }
 
 // ---------------------------------------------------------------------------
+// Artifact-ref primitive (#898)
+// ---------------------------------------------------------------------------
+
+/**
+ * A ref-only pointer to a durable WorkContext artifact (the evidence layer,
+ * `server/work-context-artifacts.ts`). Like the rest of this module it carries
+ * pointers + bounded metadata, never artifact bytes: resolution re-reads the
+ * artifact through the gateway under capability. `artifactId` is the identity;
+ * the remaining fields are advisory decorations for rendering the chip/audit
+ * row without a round-trip.
+ */
+export interface ArtifactPacketRef {
+  /** Stable artifact id (the store's primary key). Identity carrier. */
+  artifactId: string;
+  /** WorkContext the artifact belongs to, when known. */
+  workContextId?: WorkContextId;
+  /** Content hash of the artifact payload at capture, for freshness display. */
+  payloadSha256?: string;
+  /** Artifact kind (`shared/work-context.ts` `ArtifactKind`). */
+  kind?: ArtifactKind;
+  /** Human label, bounded by `MAX_ARTIFACT_TITLE_BYTES`. */
+  title?: string;
+  /**
+   * Public/remote-safe locator (e.g. `owner/repo#123`, a gateway URL). NEVER a
+   * raw local filesystem path — those are rejected by `parseArtifactPacketRef`
+   * (privacy: local paths never leave the source system, mirroring the
+   * artifact store's public sanitizer).
+   */
+  uri?: string;
+}
+
+/** Max captured `ArtifactPacketRef.title` length in bytes. Parser truncates. */
+export const MAX_ARTIFACT_TITLE_BYTES = 512;
+
+// Rejects any value that looks like an absolute local filesystem path or a
+// file:// URI. `artifactId`/`uri` are single locators, not prose, so we anchor
+// at the start (`^`) and keep the check strict:
+//   - `/…`              any Unix absolute path (leading slash)
+//   - `[A-Za-z]:[\\/]` Windows drive (C:\, C:/, d:\, …)
+//   - `\\\\`            UNC share (\\server\share)
+//   - `file:`           file:// URI (case-insensitive)
+// Kept browser-safe (no `node:path`): this module imports no builtins.
+const ABSOLUTE_LOCAL_PATH_PREFIX_RE = /^(?:\/|[a-z]:[\\/]|\\\\|file:)/i;
+
+/** True if `value` looks like an absolute local filesystem path or file: URI. */
+function looksLikeAbsoluteLocalPath(value: string): boolean {
+  return ABSOLUTE_LOCAL_PATH_PREFIX_RE.test(value);
+}
+
+/**
+ * Parse + validate an unknown payload into an `ArtifactPacketRef`. Returns
+ * `null` on any validation failure (mirrors `parseAnchorRef`). Requires a
+ * non-empty `artifactId`; rejects `artifactId`/`uri` values that look like
+ * absolute local paths (privacy). Copies ONLY the declared fields — stray
+ * unknown keys are dropped. `title` is truncated to `MAX_ARTIFACT_TITLE_BYTES`
+ * UTF-8 bytes (not `.length`).
+ */
+export function parseArtifactPacketRef(
+  payload: unknown
+): ArtifactPacketRef | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  const artifactId = p['artifactId'];
+  if (typeof artifactId !== 'string' || artifactId.trim().length === 0) {
+    return null;
+  }
+  if (looksLikeAbsoluteLocalPath(artifactId)) return null;
+  const ref: ArtifactPacketRef = { artifactId };
+  if (typeof p['workContextId'] === 'string') {
+    ref.workContextId = p['workContextId'];
+  }
+  if (typeof p['payloadSha256'] === 'string') {
+    ref.payloadSha256 = p['payloadSha256'];
+  }
+  if (typeof p['kind'] === 'string') {
+    ref.kind = p['kind'] as ArtifactKind;
+  }
+  if (typeof p['title'] === 'string') {
+    ref.title = truncateUtf8(p['title'], MAX_ARTIFACT_TITLE_BYTES);
+  }
+  if (typeof p['uri'] === 'string') {
+    // A raw local path must never travel in a ref (it would leak the source
+    // system's filesystem layout). Reject the whole ref rather than silently
+    // drop the uri.
+    if (looksLikeAbsoluteLocalPath(p['uri'])) return null;
+    ref.uri = p['uri'];
+  }
+  return ref;
+}
+
+// ---------------------------------------------------------------------------
 // Context packet envelope
 // ---------------------------------------------------------------------------
 
@@ -254,13 +345,17 @@ export function anchorRefSummary(anchor: AnchorRef): string {
  *                       support for these is deferred (#760).
  *   - `note`          — freeform text only; no anchor (the `note` field holds
  *                       the body).
+ *   - `artifact-ref`  — a ref-only pointer to a durable WorkContext artifact
+ *                       (`ArtifactPacketRef`). No `PromptAttachment` surface
+ *                       yet (#898); deferred like the reserved kinds.
  */
 export type ContextPacketKind =
   | 'file-anchor'
   | 'file-ref'
   | 'diff-ref'
   | 'log-ref'
-  | 'note';
+  | 'note'
+  | 'artifact-ref';
 
 export const CONTEXT_PACKET_KINDS: readonly ContextPacketKind[] = [
   'file-anchor',
@@ -268,6 +363,7 @@ export const CONTEXT_PACKET_KINDS: readonly ContextPacketKind[] = [
   'diff-ref',
   'log-ref',
   'note',
+  'artifact-ref',
 ] as const;
 
 /**
@@ -300,6 +396,8 @@ export interface ContextPacket {
   anchor?: AnchorRef;
   /** Set for `file-ref`: whole-file pointer with no range. */
   fileRef?: FileResourceRef;
+  /** Set for `artifact-ref`: ref-only pointer to a WorkContext artifact. */
+  artifactRef?: ArtifactPacketRef;
   /** Freeform body. Required for `note`; optional annotation otherwise. */
   note?: string;
   /** IA/workbench placement. */
@@ -514,10 +612,12 @@ export function contextPacketToPromptAttachment(
     }
     // C4: `note` packets carry no attachable ref — the body rides the inbox
     // message `text`, never the prompt attachment list. Reserved kinds have no
-    // attachment surface in MVP.
+    // attachment surface in MVP. `artifact-ref` has no `PromptAttachment`
+    // surface yet either (#898) — its prompt projection is deferred.
     case 'note':
     case 'diff-ref':
     case 'log-ref':
+    case 'artifact-ref':
     default:
       return null;
   }
@@ -628,6 +728,7 @@ const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
  *   - `file-anchor` requires a valid `anchor` (`parseAnchorRef`).
  *   - `file-ref` requires a valid whole-file `fileRef` (`parseFileResourceRef`).
  *   - `note` requires a non-empty `note` body.
+ *   - `artifact-ref` requires a valid `artifactRef` (`parseArtifactPacketRef`).
  *   - reserved kinds (`diff-ref`/`log-ref`) parse the envelope but carry no
  *     anchor/ref payload in MVP (#760).
  */
@@ -658,6 +759,10 @@ export function parseContextPacket(payload: unknown): ContextPacket | null {
     const fileRef = parseFileResourceRef(p['fileRef']);
     if (!fileRef) return null;
     packet.fileRef = fileRef;
+  } else if (kind === 'artifact-ref') {
+    const artifactRef = parseArtifactPacketRef(p['artifactRef']);
+    if (!artifactRef) return null;
+    packet.artifactRef = artifactRef;
   } else if (kind === 'note') {
     if (typeof p['note'] !== 'string' || p['note'].trim().length === 0) {
       return null;

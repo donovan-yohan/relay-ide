@@ -2,6 +2,7 @@ import type { WorkbenchLayout } from '../../../shared/workbench-layout-types.js'
 import type {
   AnchorRef,
   AnchorState,
+  ArtifactPacketRef,
   ContextPacket,
   ContextPacketBinding,
   ContextPacketKind,
@@ -296,6 +297,8 @@ export type DecoratedInboxMessage = SessionInboxMessage & {
 export interface CreateContextPacketRequest {
   kind: ContextPacketKind;
   anchor?: AnchorRef;
+  /** Set for `artifact-ref` (#898): ref-only pointer to a WorkContext artifact. */
+  artifactRef?: ArtifactPacketRef;
   note?: string;
   binding?: ContextPacketBinding;
   createdBy?: string;

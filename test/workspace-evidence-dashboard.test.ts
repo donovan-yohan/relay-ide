@@ -14,6 +14,11 @@ const mocks = vi.hoisted(() => ({
   listEntries: [] as unknown[],
   activeWork: [] as unknown[],
   backendConnectionStatus: 'connected' as string,
+  // keyed by workContextId → { data?, isLoading?, isError? }
+  artifactsByContext: {} as Record<
+    string,
+    { data?: unknown[]; isLoading?: boolean; isError?: boolean }
+  >,
 }));
 
 vi.mock('@tanstack/react-query', () => ({
@@ -37,6 +42,16 @@ vi.mock('@tanstack/react-query', () => ({
     }
     return { data: undefined, isLoading: false, isError: false };
   },
+  useQueries: (opts: { queries: { queryKey: unknown[] }[] }) =>
+    opts.queries.map((query) => {
+      const wcId = query.queryKey[1] as string;
+      const entry = mocks.artifactsByContext[wcId] ?? {};
+      return {
+        data: entry.data ?? [],
+        isLoading: entry.isLoading ?? false,
+        isError: entry.isError ?? false,
+      };
+    }),
   useQueryClient: () => ({ fetchQuery: vi.fn() }),
 }));
 
@@ -45,12 +60,21 @@ vi.mock('../frontend/src/lib/api.js', () => ({
   fetchWorkspaceEvidenceList: vi.fn(),
   fetchWorkspaceEvidencePreview: vi.fn(),
   fetchActiveWork: vi.fn(),
+  fetchPipelineHandoffArtifacts: vi.fn(),
+  copyPipelineHandoffArtifact: vi.fn(),
 }));
 
 vi.mock('../frontend/src/lib/stores/sessions.js', () => {
   const useSessionsStore = (
-    selector: (s: { backendConnectionStatus: string }) => unknown
-  ) => selector({ backendConnectionStatus: mocks.backendConnectionStatus });
+    selector: (s: {
+      backendConnectionStatus: string;
+      sessions: unknown[];
+    }) => unknown
+  ) =>
+    selector({
+      backendConnectionStatus: mocks.backendConnectionStatus,
+      sessions: [],
+    });
   return { useSessionsStore };
 });
 
@@ -132,7 +156,43 @@ afterEach(async () => {
   mocks.listEntries = [];
   mocks.activeWork = [];
   mocks.backendConnectionStatus = 'connected';
+  mocks.artifactsByContext = {};
 });
+
+function activeGroupForRepo(
+  groupId: string,
+  contextId: string,
+  repoPath: string
+) {
+  return {
+    id: groupId,
+    context: { id: contextId, anchors: { repo: { localPath: repoPath } } },
+    node: { nodeId: 'local', status: 'unknown' },
+    sessions: [],
+    staleReadModel: false,
+  };
+}
+
+function artifactEnvelope(overrides: Record<string, unknown> = {}) {
+  return {
+    metadata: {
+      id: 'art-1',
+      workContextId: 'wc-1',
+      kind: 'report',
+      title: 'qa evidence',
+      summary: 'qa passed all checks',
+      visibility: 'public',
+      capturedAt: '2026-06-10T00:00:00.000Z',
+      payloadKind: 'pipeline-handoff-artifact',
+      payloadSha256: 'abcdef0123456789',
+      payloadBytes: 128,
+      stage: 'qa',
+      headSha: 'deadbeefcafebabe',
+      taskRef: { kind: 'github-issue', id: '898' },
+      ...overrides,
+    },
+  };
+}
 
 describe('WorkspaceEvidenceDashboard', () => {
   it('renders files section and repo decoration for a repo-backed root', async () => {
@@ -185,5 +245,80 @@ describe('WorkspaceEvidenceDashboard', () => {
     expect(
       container!.querySelector('[data-track="evidence.files"]')
     ).toBeNull();
+  });
+
+  it('keeps files/artifacts/sessions/surfaces as distinct data-track sections', async () => {
+    mocks.roots = [repoRoot()];
+    await renderDashboard('/repo');
+    expect(
+      container!.querySelector('[data-track="evidence.files"]')
+    ).toBeTruthy();
+    expect(
+      container!.querySelector('[data-track="evidence.artifacts"]')
+    ).toBeTruthy();
+    expect(
+      container!.querySelector('[data-track="evidence.sessions"]')
+    ).toBeTruthy();
+    expect(
+      container!.querySelector('[data-track="evidence.surfaces"]')
+    ).toBeTruthy();
+  });
+
+  it('renders artifact cards preserving kind/visibility/headSha from a matched context', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
+    mocks.artifactsByContext = { 'wc-1': { data: [artifactEnvelope()] } };
+    await renderDashboard('/repo');
+    const cards = container!.querySelectorAll(
+      '[data-track="evidence.artifact-card"]'
+    );
+    expect(cards.length).toBe(1);
+    const text = cards[0]!.textContent ?? '';
+    expect(text).toContain('qa evidence');
+    expect(text).toContain('report');
+    expect(text).toContain('public');
+    expect(text).toContain('qa');
+    expect(text).toContain('github-issue:898');
+    // headSha rendered short (7 chars), full in title attr
+    expect(text).toContain('deadbee');
+  });
+
+  it('shows the no-work-context empty state when no context binds the repo', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/other-repo')];
+    await renderDashboard('/repo');
+    const section = container!.querySelector(
+      '[data-track="evidence.artifacts"]'
+    );
+    expect(section!.textContent).toContain('no work context bound');
+    expect(
+      section!.querySelector('[data-track="evidence.artifact-card"]')
+    ).toBeNull();
+  });
+
+  it('shows the no-typed-evidence-refs state when a context has zero artifacts', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
+    mocks.artifactsByContext = { 'wc-1': { data: [] } };
+    await renderDashboard('/repo');
+    const section = container!.querySelector(
+      '[data-track="evidence.artifacts"]'
+    );
+    expect(section!.textContent).toContain('no typed evidence refs yet');
+  });
+
+  it('renders an inline error for a failed artifact query without crashing siblings', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
+    mocks.artifactsByContext = { 'wc-1': { isError: true } };
+    await renderDashboard('/repo');
+    const section = container!.querySelector(
+      '[data-track="evidence.artifacts"]'
+    );
+    expect(section!.textContent).toContain('failed to load artifacts');
+    // sibling sections still render
+    expect(
+      container!.querySelector('[data-track="evidence.sessions"]')
+    ).toBeTruthy();
   });
 });

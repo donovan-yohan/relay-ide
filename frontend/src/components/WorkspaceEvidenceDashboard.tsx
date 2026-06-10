@@ -5,6 +5,7 @@ import {
   resolveWorkspaceEvidenceRoot,
   workspaceEvidenceSectionState,
 } from '../lib/workspace-evidence-view.js';
+import WorkspaceEvidenceArtifactsSection from './WorkspaceEvidenceArtifactsSection.js';
 import WorkspaceEvidenceFilesSection from './WorkspaceEvidenceFilesSection.js';
 import WorkspaceEvidenceSessionsSection from './WorkspaceEvidenceSessionsSection.js';
 import './WorkspaceEvidenceDashboard.css';
@@ -116,10 +117,7 @@ export function WorkspaceEvidenceDashboard({
         {renderFilesSection()}
       </section>
 
-      <section className="dashboard-section" data-track="evidence.artifacts">
-        <div className="section-heading">artifacts</div>
-        <div className="section-message">no typed evidence refs yet</div>
-      </section>
+      <WorkspaceEvidenceArtifactsSection repoPath={repoPath} />
 
       <WorkspaceEvidenceSessionsSection repoPath={repoPath} />
 

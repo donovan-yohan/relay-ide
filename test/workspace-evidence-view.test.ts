@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   mapPreviewToRenderKind,
+  resolveWorkContextIdsForRepo,
   resolveWorkspaceEvidenceRoot,
   workspaceEvidenceSectionState,
 } from '../frontend/src/lib/workspace-evidence-view.js';
@@ -9,6 +10,14 @@ import type {
   WorkspaceEvidencePreview,
   WorkspaceEvidenceRoot,
 } from '../shared/workspace-evidence.js';
+import type {
+  WorkContextActiveGroup,
+  WorkContextSessionSummary,
+} from '../frontend/src/lib/types.js';
+import type {
+  WorkContext,
+  WorkContextAnchors,
+} from '../shared/work-context.js';
 
 function makeRoot(
   overrides: Partial<WorkspaceEvidenceRoot> & { path?: string | null } = {}
@@ -264,5 +273,102 @@ describe('mapPreviewToRenderKind', () => {
     expect(mapPreviewToRenderKind(makePreview({ state: 'not-found' }))).toEqual({
       mode: 'error',
     });
+  });
+});
+
+describe('resolveWorkContextIdsForRepo (#898)', () => {
+  function makeGroup(
+    id: string,
+    contextId: string | null,
+    opts: {
+      anchors?: Partial<WorkContextAnchors>;
+      sessions?: Partial<WorkContextSessionSummary>[];
+    } = {}
+  ): WorkContextActiveGroup {
+    const context =
+      contextId === null
+        ? null
+        : ({
+            id: contextId,
+            anchors: (opts.anchors ?? {}) as WorkContextAnchors,
+          } as unknown as WorkContext);
+    return {
+      id,
+      context,
+      node: { nodeId: 'local', status: 'unknown' },
+      sessions: (opts.sessions ?? []) as WorkContextSessionSummary[],
+      staleReadModel: false,
+    };
+  }
+
+  it('matches via anchors.repo.localPath', () => {
+    const group = makeGroup('g1', 'wc-1', {
+      anchors: { repo: { localPath: '/repo' } },
+    });
+    expect(resolveWorkContextIdsForRepo([group], '/repo')).toEqual(['wc-1']);
+  });
+
+  it('matches via anchors.worktree.localPath', () => {
+    const group = makeGroup('g1', 'wc-1', {
+      anchors: { worktree: { localPath: '/repo/wt' } },
+    });
+    expect(resolveWorkContextIdsForRepo([group], '/repo/wt')).toEqual([
+      'wc-1',
+    ]);
+  });
+
+  it('matches via a session repoPath', () => {
+    const group = makeGroup('g1', 'wc-1', {
+      sessions: [{ repoPath: '/repo' }],
+    });
+    expect(resolveWorkContextIdsForRepo([group], '/repo')).toEqual(['wc-1']);
+  });
+
+  it('matches via a session worktreePath', () => {
+    const group = makeGroup('g1', 'wc-1', {
+      sessions: [{ worktreePath: '/repo/wt' }],
+    });
+    expect(resolveWorkContextIdsForRepo([group], '/repo/wt')).toEqual([
+      'wc-1',
+    ]);
+  });
+
+  it('matches via a session cwd', () => {
+    const group = makeGroup('g1', 'wc-1', {
+      sessions: [{ cwd: '/repo' }],
+    });
+    expect(resolveWorkContextIdsForRepo([group], '/repo')).toEqual(['wc-1']);
+  });
+
+  it('dedups multiple matching groups sharing a context id, preserving order', () => {
+    const groups = [
+      makeGroup('g1', 'wc-1', { anchors: { repo: { localPath: '/repo' } } }),
+      makeGroup('g2', 'wc-2', { sessions: [{ cwd: '/repo' }] }),
+      makeGroup('g3', 'wc-1', { sessions: [{ repoPath: '/repo' }] }),
+    ];
+    expect(resolveWorkContextIdsForRepo(groups, '/repo')).toEqual([
+      'wc-1',
+      'wc-2',
+    ]);
+  });
+
+  it('returns [] when no group matches the repo path', () => {
+    const groups = [
+      makeGroup('g1', 'wc-1', { anchors: { repo: { localPath: '/other' } } }),
+      makeGroup('g2', 'wc-2', { sessions: [{ cwd: '/elsewhere' }] }),
+    ];
+    expect(resolveWorkContextIdsForRepo(groups, '/repo')).toEqual([]);
+  });
+
+  it('returns [] for an empty repoPath', () => {
+    const group = makeGroup('g1', 'wc-1', {
+      anchors: { repo: { localPath: '/repo' } },
+    });
+    expect(resolveWorkContextIdsForRepo([group], '')).toEqual([]);
+  });
+
+  it('skips groups with a null context even when sessions match', () => {
+    const group = makeGroup('g1', null, { sessions: [{ cwd: '/repo' }] });
+    expect(resolveWorkContextIdsForRepo([group], '/repo')).toEqual([]);
   });
 });
