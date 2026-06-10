@@ -128,6 +128,9 @@ export function createContextInboxStoreAdapter(
         kind: input.kind,
         ...(input.anchor !== undefined ? { anchor: input.anchor } : {}),
         ...(input.fileRef !== undefined ? { fileRef: input.fileRef } : {}),
+        ...(input.artifactRef !== undefined
+          ? { artifactRef: input.artifactRef }
+          : {}),
         ...(input.note !== undefined ? { note: input.note } : {}),
         ...(input.binding !== undefined ? { binding: input.binding } : {}),
         createdBy: input.createdBy,

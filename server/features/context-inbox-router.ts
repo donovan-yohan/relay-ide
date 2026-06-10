@@ -66,6 +66,7 @@ export interface CreateContextPacketInput {
   kind: ContextPacketKind;
   anchor?: ContextPacket['anchor'];
   fileRef?: ContextPacket['fileRef'];
+  artifactRef?: ContextPacket['artifactRef'];
   note?: string;
   binding?: ContextPacketBinding;
   createdBy: string;
@@ -339,6 +340,7 @@ const CONTEXT_PACKET_KIND_SET = new Set<ContextPacketKind>([
   'diff-ref',
   'log-ref',
   'note',
+  'artifact-ref',
 ]);
 
 function readPacketKind(value: unknown): ContextPacketKind | undefined {
@@ -693,6 +695,76 @@ function validateAnchorPayload(payload: unknown): FieldValidationHint[] {
   return hints;
 }
 
+// Rejects any value that looks like an absolute local filesystem path or a
+// file:// URI — mirrored identically from `shared/context-packet.ts`. A raw
+// local path must never travel in a ref (it leaks the source system's
+// filesystem layout). Anchored at the start: `artifactId`/`uri` are single
+// locators, not prose:
+//   - `/…`              any Unix absolute path (leading slash)
+//   - `[A-Za-z]:[\\/]` Windows drive (C:\, C:/, …)
+//   - `\\\\`            UNC share (\\server\share)
+//   - `file:`           file:// URI (case-insensitive)
+const ABSOLUTE_LOCAL_PATH_PREFIX_RE = /^(?:\/|[a-z]:[\\/]|\\\\|file:)/i;
+
+function looksLikeAbsoluteLocalPath(value: string): boolean {
+  return ABSOLUTE_LOCAL_PATH_PREFIX_RE.test(value);
+}
+
+// #898: validate the `artifact-ref` packet's `artifactRef` payload for typed
+// 400 field hints. Identity (`artifactId`) is required and non-empty; the
+// remaining fields are advisory decorations (optional, typed when present). The
+// shared `parseArtifactPacketRef` enforces the same rules + truncates `title`;
+// these hints surface a friendly per-field error BEFORE the parser drops the
+// whole ref to `null`.
+function validateArtifactRefPayload(payload: unknown): FieldValidationHint[] {
+  if (!isRecord(payload)) {
+    return [
+      {
+        field: 'artifactRef',
+        message: 'is required and must be an object for kind=artifact-ref',
+      },
+    ];
+  }
+  const hints: FieldValidationHint[] = [];
+  const artifactId = payload['artifactId'];
+  if (!isNonEmptyString(artifactId)) {
+    hints.push({
+      field: 'artifactRef.artifactId',
+      message: 'is required and must be a non-empty string',
+    });
+  } else if (looksLikeAbsoluteLocalPath(artifactId)) {
+    hints.push({
+      field: 'artifactRef.artifactId',
+      message: 'must not be an absolute local filesystem path',
+    });
+  }
+  for (const field of [
+    'workContextId',
+    'payloadSha256',
+    'kind',
+    'title',
+  ] as const) {
+    if (payload[field] !== undefined && typeof payload[field] !== 'string') {
+      hints.push({
+        field: `artifactRef.${field}`,
+        message: 'must be a string when set',
+      });
+    }
+  }
+  const uri = payload['uri'];
+  if (uri !== undefined) {
+    if (typeof uri !== 'string') {
+      hints.push({ field: 'artifactRef.uri', message: 'must be a string when set' });
+    } else if (looksLikeAbsoluteLocalPath(uri)) {
+      hints.push({
+        field: 'artifactRef.uri',
+        message: 'must not be an absolute local filesystem path',
+      });
+    }
+  }
+  return hints;
+}
+
 function validateContextBindingPayload(
   payload: unknown
 ): FieldValidationHint[] {
@@ -728,6 +800,9 @@ function validateContextCreatePayload(
       return hints;
     case 'file-ref':
       hints.push(...validateFileResourceRefPayload(body['fileRef'], 'fileRef'));
+      return hints;
+    case 'artifact-ref':
+      hints.push(...validateArtifactRefPayload(body['artifactRef']));
       return hints;
     case 'note':
       if (!readString(body['note'])) {
@@ -925,6 +1000,9 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
           : {}),
         ...(body['fileRef'] !== undefined
           ? { fileRef: body['fileRef'] as ContextPacket['fileRef'] }
+          : {}),
+        ...(body['artifactRef'] !== undefined
+          ? { artifactRef: body['artifactRef'] as ContextPacket['artifactRef'] }
           : {}),
         ...(readString(body['note']) ? { note: body['note'] as string } : {}),
         ...(body['binding'] !== undefined

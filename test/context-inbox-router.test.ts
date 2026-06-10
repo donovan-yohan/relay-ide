@@ -88,6 +88,9 @@ function createFakeStore(): ContextInboxStore & { _markDelivered: boolean } {
         kind: input.kind,
         ...(input.anchor !== undefined ? { anchor: input.anchor } : {}),
         ...(input.fileRef !== undefined ? { fileRef: input.fileRef } : {}),
+        ...(input.artifactRef !== undefined
+          ? { artifactRef: input.artifactRef }
+          : {}),
         ...(input.note !== undefined ? { note: input.note } : {}),
         ...(input.binding !== undefined ? { binding: input.binding } : {}),
         createdBy: input.createdBy,
@@ -677,6 +680,140 @@ describe('context/inbox gateway router', () => {
     });
     expect(missing.status).toBe(404);
     expect(missing.body.error.code).toBe('NOT_FOUND');
+  });
+
+  // #898: artifact-ref packets ride the SAME context.create → inbox path as
+  // every other kind, so a later agent retrieves the typed evidence target
+  // through `inbox.list` — the path used outside the browser.
+  it('context.create kind=artifact-ref echoes the typed ref (201)', async () => {
+    const created = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'artifact-ref',
+        artifactRef: {
+          artifactId: 'artifact:stage-report-1',
+          workContextId: 'wc:xyz',
+          kind: 'report',
+          title: 'Stage report',
+          uri: 'donovan-yohan/relay-ide#898',
+        },
+        createdBy: 'agent_1',
+      },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.contextPacket.kind).toBe('artifact-ref');
+    expect(created.body.contextPacket.artifactRef).toEqual({
+      artifactId: 'artifact:stage-report-1',
+      workContextId: 'wc:xyz',
+      kind: 'report',
+      title: 'Stage report',
+      uri: 'donovan-yohan/relay-ide#898',
+    });
+  });
+
+  it('context.create kind=artifact-ref without artifactId → 400 INVALID_CONTEXT_PACKET', async () => {
+    const bad = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'artifact-ref',
+        artifactRef: { title: 'no id here' },
+        createdBy: 'agent_1',
+      },
+    });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(bad.body.error.message).toContain('artifactRef.artifactId');
+    expect(bad.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(bad.body.error.details.fieldErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'artifactRef.artifactId' }),
+      ])
+    );
+  });
+
+  it('context.create kind=artifact-ref with an absolute local path artifactId → 400', async () => {
+    const leak = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'artifact-ref',
+        artifactRef: { artifactId: '/home/donovan/secret.json' },
+        createdBy: 'agent_1',
+      },
+    });
+    expect(leak.status).toBe(400);
+    expect(leak.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(leak.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(leak.body.error.details.fieldErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'artifactRef.artifactId' }),
+      ])
+    );
+  });
+
+  it('context.create kind=artifact-ref with a /var/ path artifactId → 400', async () => {
+    const leak = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'artifact-ref',
+        artifactRef: { artifactId: '/var/log/relay/audit.log' },
+        createdBy: 'agent_1',
+      },
+    });
+    expect(leak.status).toBe(400);
+    expect(leak.body.error.code).toBe('INVALID_ARGUMENT');
+    expect(leak.body.error.details.reasonCode).toBe('INVALID_CONTEXT_PACKET');
+    expect(leak.body.error.details.fieldErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'artifactRef.artifactId' }),
+      ])
+    );
+  });
+
+  it('inbox flow: a message referencing an artifact-ref packet lists the typed target', async () => {
+    const created = await req('POST', '/context', {
+      caps: 'context:write',
+      body: {
+        kind: 'artifact-ref',
+        artifactRef: {
+          artifactId: 'artifact:evidence-7',
+          kind: 'report',
+          title: 'Evidence bundle',
+        },
+        createdBy: 'agent_1',
+      },
+    });
+    expect(created.status).toBe(201);
+    const packetId = created.body.contextPacket.id as string;
+
+    const sent = await req('POST', '/inbox', {
+      caps: 'inbox:write',
+      body: {
+        targetSessionId: 'node1:s898',
+        contextPacketIds: [packetId],
+        text: 'review this evidence artifact',
+        createdBy: 'agent_1',
+      },
+    });
+    expect(sent.status).toBe(201);
+
+    const listed = await req('GET', '/inbox?targetSessionId=node1:s898', {
+      caps: 'inbox:read',
+    });
+    expect(listed.status).toBe(200);
+    expect(listed.body.messages).toHaveLength(1);
+    expect(listed.body.messages[0].contextPackets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: packetId,
+          kind: 'artifact-ref',
+          artifactRef: expect.objectContaining({
+            artifactId: 'artifact:evidence-7',
+            kind: 'report',
+            title: 'Evidence bundle',
+          }),
+        }),
+      ])
+    );
   });
 });
 

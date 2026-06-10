@@ -17,11 +17,13 @@ import {
   parseInboxMessageId,
   parseContextPacket,
   parseInboxMessage,
+  parseArtifactPacketRef,
   validateInboxTransition,
   contextPacketToPromptAttachment,
   utf8ByteLength,
   truncateUtf8,
   MAX_ANCHOR_QUOTE_BYTES,
+  MAX_ARTIFACT_TITLE_BYTES,
   type ContextPacket,
 } from '../shared/context-packet.js';
 import { createFileResourceRef } from '../shared/file-resource-ref.js';
@@ -569,6 +571,192 @@ describe('context-packet: parsers', () => {
     expect(parseContextPacket(null)).toBeNull();
     expect(parseContextPacket({ id: 'cp:x', kind: 'bogus', createdBy: 'a', createdAt: '2026-05-27T00:00:00.000Z' })).toBeNull();
     expect(parseInboxMessage({ id: 'im:x', state: 'queued', createdBy: 'a', createdAt: '2026-05-27T00:00:00.000Z', contextPacketIds: [] })).toBeNull();
+  });
+});
+
+// ── artifact-ref packets (#898) ──────────────────────────────────────────────
+
+describe('context-packet: artifact-ref (#898)', () => {
+  function artifactPacket(
+    artifactRef: Record<string, unknown>
+  ): Record<string, unknown> {
+    return {
+      id: createContextPacketId('art'),
+      kind: 'artifact-ref',
+      artifactRef,
+      createdBy: 'agent:1',
+      createdAt: '2026-05-27T00:00:00.000Z',
+    };
+  }
+
+  it('round-trips an artifact-ref packet preserving every ref field', () => {
+    const ref = {
+      artifactId: 'artifact:abc123',
+      workContextId: 'wc:xyz',
+      payloadSha256: 'deadbeef',
+      kind: 'report' as const,
+      title: 'Stage report',
+      uri: 'donovan-yohan/relay-ide#898',
+    };
+    const parsed = parseContextPacket(artifactPacket(ref));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.kind).toBe('artifact-ref');
+    expect(parsed!.artifactRef).toEqual(ref);
+  });
+
+  it('parses a minimal artifact-ref (artifactId only)', () => {
+    const parsed = parseContextPacket(
+      artifactPacket({ artifactId: 'artifact:min' })
+    );
+    expect(parsed!.artifactRef).toEqual({ artifactId: 'artifact:min' });
+  });
+
+  it('rejects an artifact-ref packet with a missing/empty artifactId', () => {
+    expect(parseContextPacket(artifactPacket({}))).toBeNull();
+    expect(parseContextPacket(artifactPacket({ artifactId: '' }))).toBeNull();
+    expect(parseContextPacket(artifactPacket({ artifactId: '   ' }))).toBeNull();
+    expect(
+      parseContextPacket(artifactPacket({ artifactId: 42 }))
+    ).toBeNull();
+  });
+
+  it('rejects an artifact-ref packet with no artifactRef at all', () => {
+    const packet = artifactPacket({});
+    delete packet.artifactRef;
+    expect(parseContextPacket(packet)).toBeNull();
+  });
+
+  it('rejects an unknown kind (old-client compat: union stays closed)', () => {
+    expect(
+      parseContextPacket({
+        id: createContextPacketId('u'),
+        kind: 'artifact', // not the additive 'artifact-ref'
+        artifactRef: { artifactId: 'artifact:abc' },
+        createdBy: 'a',
+        createdAt: '2026-05-27T00:00:00.000Z',
+      })
+    ).toBeNull();
+  });
+
+  it('rejects an artifactId that looks like an absolute local path', () => {
+    for (const bad of [
+      '/home/donovan/secret.txt',
+      '/Users/donovan/secret.txt',
+      '/tmp/scratch',
+      '/var/log/app.log',
+      '/opt/relay/config',
+      '/etc/passwd',
+      '/srv/data',
+      '/mnt/backup',
+      '/root/.ssh/id_rsa',
+      '/just-a-leading-slash',
+      'C:\\Users\\donovan\\secret',
+      'C:/windows/system32',
+      '\\\\server\\share\\file',
+      'file:///etc/passwd',
+      'FILE:///home/donovan/secret',
+    ]) {
+      expect(parseArtifactPacketRef({ artifactId: bad })).toBeNull();
+      expect(parseContextPacket(artifactPacket({ artifactId: bad }))).toBeNull();
+    }
+  });
+
+  it('rejects a uri that looks like an absolute local path or file: URI', () => {
+    for (const bad of [
+      '/home/donovan/out.json',
+      '/tmp/x',
+      '/var/run/relay.sock',
+      'd:/data/file',
+      '\\\\host\\share',
+      'file:///etc/passwd',
+      'FILE:///home/donovan/secret',
+      'C:/x',
+    ]) {
+      expect(
+        parseArtifactPacketRef({ artifactId: 'artifact:ok', uri: bad })
+      ).toBeNull();
+    }
+  });
+
+  it('drops stray unknown fields, copying only declared ref fields', () => {
+    const ref = parseArtifactPacketRef({
+      artifactId: 'artifact:abc',
+      title: 'keep me',
+      bogus: 'drop me',
+      anchor: { ref: {} },
+      payloadBytes: 1234,
+    });
+    expect(ref).toEqual({ artifactId: 'artifact:abc', title: 'keep me' });
+  });
+
+  it('bounds title to MAX_ARTIFACT_TITLE_BYTES utf-8 bytes', () => {
+    const longTitle = 'z'.repeat(MAX_ARTIFACT_TITLE_BYTES + 100);
+    const ref = parseArtifactPacketRef({
+      artifactId: 'artifact:abc',
+      title: longTitle,
+    });
+    expect(ref).not.toBeNull();
+    expect(utf8ByteLength(ref!.title!)).toBeLessThanOrEqual(
+      MAX_ARTIFACT_TITLE_BYTES
+    );
+  });
+
+  it('artifact-ref packet -> null prompt attachment (deferred surface)', () => {
+    const packet: ContextPacket = {
+      id: createContextPacketId('art'),
+      kind: 'artifact-ref',
+      artifactRef: { artifactId: 'artifact:abc' },
+      createdBy: 'a',
+      createdAt: '2026-05-27T00:00:00.000Z',
+    };
+    expect(contextPacketToPromptAttachment(packet)).toBeNull();
+  });
+
+  // Store-level round trip (#898): the envelope persists through SQLite and the
+  // typed ref is recovered intact — kind is free TEXT, the ref rides packet_json.
+  it('creates -> gets an artifact-ref packet preserving every ref field', () => {
+    const { store } = makeStore();
+    const created = store.createContextPacket({
+      kind: 'artifact-ref',
+      artifactRef: {
+        artifactId: 'artifact:handoff-1',
+        workContextId: 'wc:xyz',
+        payloadSha256: 'deadbeef',
+        kind: 'report',
+        title: 'Stage report',
+        uri: 'donovan-yohan/relay-ide#898',
+      },
+      createdBy: 'agent:1',
+      binding: { workspaceId: 'ws:team', nodeId: 'local' },
+    });
+    expect(created.id.startsWith('cp:')).toBe(true);
+    expect(created.kind).toBe('artifact-ref');
+
+    const read = store.getContextPacket(created.id);
+    expect(read).not.toBeNull();
+    expect(read!.artifactRef).toEqual({
+      artifactId: 'artifact:handoff-1',
+      workContextId: 'wc:xyz',
+      payloadSha256: 'deadbeef',
+      kind: 'report',
+      title: 'Stage report',
+      uri: 'donovan-yohan/relay-ide#898',
+    });
+    expect(store.listContextPackets().map((p) => p.id)).toContain(created.id);
+  });
+
+  it('rejects an artifact-ref packet with no artifactId (store level)', () => {
+    const { store } = makeStore();
+    expect(() =>
+      store.createContextPacket({
+        kind: 'artifact-ref',
+        artifactRef: { artifactId: '' } as never,
+        createdBy: 'a',
+      })
+    ).toThrow(/invalid_context_packet/);
+    expect(() =>
+      store.createContextPacket({ kind: 'artifact-ref', createdBy: 'a' })
+    ).toThrow(ContextPacketStoreError);
   });
 });
 

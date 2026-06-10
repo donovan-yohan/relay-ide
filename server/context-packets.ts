@@ -129,6 +129,7 @@ export interface ContextPacketCreateInput {
   kind?: ContextPacket['kind'];
   anchor?: ContextPacket['anchor'];
   fileRef?: ContextPacket['fileRef'];
+  artifactRef?: ContextPacket['artifactRef'];
   note?: ContextPacket['note'];
   binding?: ContextPacket['binding'];
   createdBy?: string;
@@ -543,11 +544,13 @@ function buildPacketFromInput(
     createdAt: now,
     ...(input.anchor ? { anchor: input.anchor } : {}),
     ...(input.fileRef ? { fileRef: input.fileRef } : {}),
+    ...(input.artifactRef ? { artifactRef: input.artifactRef } : {}),
     ...(input.note ? { note: input.note } : {}),
     ...(input.binding ? { binding: input.binding } : {}),
   };
   // Validate through the shared parser so kind-specific shape rules
-  // (file-anchor needs anchor, note needs body, etc.) are enforced once.
+  // (file-anchor needs anchor, artifact-ref needs artifactRef, note needs
+  // body, etc.) are enforced once.
   const parsed = parseContextPacket(draft);
   if (!parsed) {
     throw new ContextPacketStoreError(400, 'invalid_context_packet');

@@ -2,6 +2,8 @@ import type {
   WorkspaceEvidencePreview,
   WorkspaceEvidenceRoot,
 } from '../../../shared/workspace-evidence.js';
+import type { WorkContextId } from '../../../shared/work-context.js';
+import type { WorkContextActiveGroup } from './types.js';
 
 export type EvidenceSectionState =
   | 'no-workspace'
@@ -152,4 +154,41 @@ export function mapPreviewToRenderKind(
     default:
       return { mode: 'text', language: 'text' };
   }
+}
+
+/**
+ * #898: resolve the WorkContext ids bound to a workspace's `repoPath`, used by
+ * the evidence-dashboard artifacts section to scope `fetchPipelineHandoffArtifacts`
+ * queries. A group matches when the context's repo/worktree anchor localPath
+ * equals `repoPath`, OR any of the group's sessions runs at that path
+ * (`repoPath`/`worktreePath`/`cwd`). Ids are deduped while preserving group
+ * order so the first-N cap in the UI stays deterministic. Reads off the same
+ * `['active-work']` data the sessions section consumes — no extra fetch.
+ */
+export function resolveWorkContextIdsForRepo(
+  groups: WorkContextActiveGroup[],
+  repoPath: string
+): WorkContextId[] {
+  if (!repoPath) return [];
+  const ids: WorkContextId[] = [];
+  const seen = new Set<WorkContextId>();
+  for (const group of groups) {
+    const context = group.context;
+    if (!context) continue;
+    const anchors = context.anchors;
+    const matchesAnchor =
+      anchors.repo?.localPath === repoPath ||
+      anchors.worktree?.localPath === repoPath;
+    const matchesSession = group.sessions.some(
+      (session) =>
+        session.repoPath === repoPath ||
+        session.worktreePath === repoPath ||
+        session.cwd === repoPath
+    );
+    if (!matchesAnchor && !matchesSession) continue;
+    if (seen.has(context.id)) continue;
+    seen.add(context.id);
+    ids.push(context.id);
+  }
+  return ids;
 }
