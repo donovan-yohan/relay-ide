@@ -293,6 +293,11 @@ This makes Tab and pane customization (#263) viable without making tmux the only
 | `GET`    | `/workspaces/changed-files`              | List changed files in a repo (`?path=X&base=ref`)                                                                                                   |
 | `GET`    | `/workspaces/divergence`                 | Branch divergence, line delta, dirty summary, base candidates, and capped side-specific commits (`?path=X&base=ref`)                                |
 | `GET`    | `/workspaces/file-diff`                  | Get unified diff for a single file (`?path=X&file=Y&base=ref`)                                                                                      |
+| `GET`    | `/workspace-evidence/roots`              | List capability-tagged workspace evidence roots across nodes (flat list; client filters by `repoPath`/`workspaceId`)                                |
+| `POST`   | `/workspace-evidence/list`               | List directory entries for a resolved root ref (body: `{rootRef, path?, maxEntries?}`)                                                              |
+| `POST`   | `/workspace-evidence/stat`               | Stat a single path within a root (body: `{rootRef, path?}`)                                                                                         |
+| `POST`   | `/workspace-evidence/read`               | Read bounded UTF-8 file content within a root (body: `{rootRef, path, maxBytes?}`)                                                                  |
+| `POST`   | `/workspace-evidence/preview`            | Bounded read-only file preview; returns 200 with `preview.state`/`preview.kind` for oversized/binary/unsupported (body: `{rootRef, path, maxBytes?}`) |
 
 ## WebSocket Channels
 

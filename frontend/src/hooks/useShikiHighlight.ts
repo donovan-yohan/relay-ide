@@ -41,6 +41,22 @@ export function useShikiHighlight(
 
   // Track the current tokenization generation to discard stale results.
   const genRef = useRef(0);
+  // Track the (key, source) pair we last kicked tokenization off for, plus
+  // whether that pass has settled. This is the loop guard: registering an
+  // entry mutates the store, which re-runs the highlight effect (its dep array
+  // includes `entry`). Without this ref the effect would call
+  // `setEntry(... null)` again on that re-run — producing a fresh entry object
+  // each time and an unbounded setState→render→effect loop (React "maximum
+  // update depth exceeded" / minified error #185) that unmounts the app.
+  //
+  // `settled` distinguishes the two reasons an entry's highlightOutput can be
+  // null: still in-flight (don't re-kick — wait for it) vs evicted by GC after
+  // having been populated (do re-kick to re-highlight from cached source).
+  const kickedRef = useRef<{
+    key: string;
+    source: string;
+    settled: boolean;
+  } | null>(null);
 
   // Touch the tab on mount and whenever the key changes so the GC last-view
   // clock is refreshed. No dep-less effect — that would re-run on every render
@@ -52,7 +68,8 @@ export function useShikiHighlight(
   // Kick off highlighting when:
   //   (a) the entry doesn't exist yet, or
   //   (b) the source changed, or
-  //   (c) highlight output was evicted (entry exists but highlightOutput === null).
+  //   (c) highlight output was evicted by GC (entry exists, source matches,
+  //       but highlightOutput went null after previously being populated).
   useEffect(() => {
     if (!code) return;
 
@@ -62,19 +79,35 @@ export function useShikiHighlight(
     // Already highlighted and source matches — nothing to do.
     if (currentOutput !== null && currentSource === code) return;
 
+    // A tokenization pass is already in-flight for this exact (key, source)
+    // and has not settled yet; the null output just means it has not resolved.
+    // Re-registering here would loop — wait for it to call setHighlightOutput.
+    const kicked = kickedRef.current;
+    const inFlight =
+      kicked !== null &&
+      kicked.key === key &&
+      kicked.source === code &&
+      !kicked.settled &&
+      currentSource === code;
+    if (inFlight) return;
+
     // Register the entry immediately with null output so the GC store has
     // the source cached before the async highlight completes.
     setEntry(key, code, language, null);
 
     const gen = ++genRef.current;
+    const kick = { key, source: code, settled: false };
+    kickedRef.current = kick;
 
     tokenizeCode(code, language)
       .then((tokens) => {
+        kick.settled = true;
         if (gen !== genRef.current) return; // stale
         setHighlightOutput(key, tokens);
       })
       .catch(() => {
         // Tokenization failure is non-fatal — plain text stays visible.
+        kick.settled = true;
       });
   }, [key, code, language, entry, setEntry, setHighlightOutput]);
 
