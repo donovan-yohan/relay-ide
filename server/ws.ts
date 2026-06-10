@@ -63,6 +63,73 @@ function sendTerminalStreamEnvelope(
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(envelope));
 }
 
+// Application close code (4000-4999 range) for a terminal WS that wrote/resized
+// against a session the hub no longer has (e.g. reaped while a stale browser tab
+// stayed open). The terminal client only renders TerminalStreamEnvelope JSON or
+// raw bytes, so a JSON error blob would paint as terminal garbage — closing with
+// a typed code lets the client treat it as a session end instead. The non-1000
+// code routes the frontend through its reconnect/`/sessions` recheck path, which
+// discovers the session is gone and renders `[session ended]`.
+export const TERMINAL_WS_SESSION_NOT_FOUND_CLOSE_CODE = 4404;
+const TERMINAL_WS_SESSION_NOT_FOUND_REASON = 'session-not-found';
+
+function isSessionNotFoundError(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message.startsWith('Session not found:')
+  );
+}
+
+/**
+ * Minimal session-side dependency surface exercised by a terminal PTY ws
+ * message. Injected so the guard logic can be unit-tested without booting the
+ * full WebSocket server.
+ */
+interface TerminalPtySessionSink {
+  resize(id: string, cols: number, rows: number): void;
+  write(id: string, data: string): void;
+}
+
+/**
+ * Apply a terminal ws message's session side effect (resize or raw write),
+ * surviving a session-not-found throw from a reaped session (#905). Returns
+ * `'session-not-found'` when the socket was closed because the session is gone,
+ * `'applied'` once the side effect ran, or `null` when nothing was applied
+ * (e.g. a resize that was not the active owner). Any non-not-found throw is
+ * re-thrown so genuine faults stay visible.
+ */
+export function applyTerminalPtyMessage(
+  ws: WebSocket,
+  sessionId: string,
+  sink: TerminalPtySessionSink,
+  input:
+    | { kind: 'resize'; cols: number; rows: number; apply: boolean }
+    | { kind: 'write'; data: string }
+): 'applied' | 'session-not-found' | null {
+  try {
+    if (input.kind === 'resize') {
+      if (!input.apply) return null;
+      sink.resize(sessionId, input.cols, input.rows);
+    } else {
+      sink.write(sessionId, input.data);
+    }
+    return 'applied';
+  } catch (error) {
+    if (isSessionNotFoundError(error)) {
+      logger.warn(
+        `terminal ws message for missing session ${sessionId}; closing socket`
+      );
+      if (ws.readyState === ws.OPEN) {
+        ws.close(
+          TERMINAL_WS_SESSION_NOT_FOUND_CLOSE_CODE,
+          TERMINAL_WS_SESSION_NOT_FOUND_REASON
+        );
+      }
+      return 'session-not-found';
+    }
+    throw error;
+  }
+}
+
 function ensureTerminalStreamState(session: Extract<Session, { mode: 'pty' }>) {
   if (!session.terminalStream) {
     session.terminalStream = createTerminalStreamState({
@@ -836,6 +903,16 @@ function setupWebSocket(
 
       ws.on('message', (msg) => {
         const str = msg.toString();
+        // Parse control frames (ping/resize) separately so a malformed JSON
+        // payload falls through to the raw-input write path. Side effects that
+        // reach into the session (resize/write) are deferred until after parsing
+        // so the parse-error catch never masks a session-not-found throw.
+        let pendingResize: {
+          cols: number;
+          rows: number;
+          owner: TerminalStreamResizeOwner;
+          clientId: string | null;
+        } | null = null;
         try {
           const parsed = JSON.parse(str);
           if (parsed && typeof parsed === 'object') {
@@ -848,35 +925,53 @@ function setupWebSocket(
               const cols = parseResizeDimension(payload['cols']);
               const rows = parseResizeDimension(payload['rows']);
               if (cols === null || rows === null) return;
-              const owner = parseResizeOwner(
-                payload['owner'] ?? attachContext.resizeOwner
-              );
-              const resizeEnvelope = recordTerminalStreamResize(
-                terminalStream,
-                {
-                  cols,
-                  rows,
-                  owner,
-                  sourceClientId:
-                    parseClientId(payload['clientId']) ??
-                    attachContext.clientId,
-                }
-              );
-              if (resizeEnvelope.payload.applied) {
-                sessions.resize(session.id, cols, rows);
-              }
-              for (const cb of session.terminalStreamSubscribers ?? []) {
-                cb(resizeEnvelope);
-              }
-              return;
+              pendingResize = {
+                cols,
+                rows,
+                owner: parseResizeOwner(
+                  payload['owner'] ?? attachContext.resizeOwner
+                ),
+                clientId: parseClientId(payload['clientId']),
+              };
             }
           }
         } catch (_) {
-          // ignore
+          // Non-JSON payload — treated as raw terminal input below.
+        }
+
+        // Writes/resizes against a reaped session throw synchronously from
+        // sessions.write/resize. An uncaught throw in this ws callback would
+        // take down the whole hub (#905); applyTerminalPtyMessage guards the
+        // session-touching path and closes the socket with a typed code instead.
+        if (pendingResize) {
+          const resizeEnvelope = recordTerminalStreamResize(terminalStream, {
+            cols: pendingResize.cols,
+            rows: pendingResize.rows,
+            owner: pendingResize.owner,
+            sourceClientId: pendingResize.clientId ?? attachContext.clientId,
+          });
+          const outcome = applyTerminalPtyMessage(ws, session.id, sessions, {
+            kind: 'resize',
+            cols: pendingResize.cols,
+            rows: pendingResize.rows,
+            apply: resizeEnvelope.payload.applied,
+          });
+          if (outcome === 'session-not-found') return;
+          for (const cb of session.terminalStreamSubscribers ?? []) {
+            cb(resizeEnvelope);
+          }
+          return;
         }
         // Route browser PTY input through the session write path so control
         // interventions are recorded before the active PTY receives input.
-        sessions.write(session.id, str);
+        if (
+          applyTerminalPtyMessage(ws, session.id, sessions, {
+            kind: 'write',
+            data: str,
+          }) === 'session-not-found'
+        ) {
+          return;
+        }
         // Update activity timestamp on user input (throttled broadcast to avoid storm)
         const now = Date.now();
         session.lastActivity = new Date(now).toISOString();
