@@ -9,7 +9,14 @@ import { gatewayOk } from '../shared/cli-gateway-contract.js';
 // Mock the shared sessions.kill executor so the close-active path resolves with
 // a successful gateway envelope without touching the network. The mock records
 // the input so we can assert the registry/handler routed the right session id.
-const executeSessionKillAction = vi.fn(
+// vi.hoisted so the fns exist when the hoisted vi.mock factory below runs.
+const { executeSessionKillAction, executeSessionRenameAction } = vi.hoisted(
+  () => ({
+    executeSessionKillAction: vi.fn(),
+    executeSessionRenameAction: vi.fn(),
+  })
+);
+executeSessionKillAction.mockImplementation(
   async (input: { id: string; nodeId?: string }) =>
     gatewayOk('sessions.kill', {
       ok: true,
@@ -21,7 +28,7 @@ const executeSessionKillAction = vi.fn(
       globalSessionId: `${input.nodeId ?? 'local'}:${input.id}`,
     })
 );
-const executeSessionRenameAction = vi.fn(
+executeSessionRenameAction.mockImplementation(
   async (input: { id: string; displayName: string; nodeId?: string }) =>
     gatewayOk('sessions.rename', {
       renamed: true,
