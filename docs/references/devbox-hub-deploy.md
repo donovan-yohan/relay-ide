@@ -73,6 +73,15 @@ relay-ide hub logs --lines 80
 
 `relay-ide update` is also valid when the devbox config already has the desired update channel; it updates the global package and restarts a detected service without re-pairing nodes.
 
+**Shell npm prefix override (e.g. Hermes profile via `NPM_CONFIG_PREFIX`):** On hosts where a shell profile sets `NPM_CONFIG_PREFIX` to a non-default path, `npm i -g relay-ide@nightly` installs into that prefix instead of the node tree the systemd service uses. The hub service will keep running the old version. Target the service's node tree explicitly:
+
+```bash
+npm i -g --prefix ~/.local/opt/node-v24.16.0-linux-x64 relay-ide@nightly
+grep '"version"' ~/.local/opt/node-v24.16.0-linux-x64/lib/node_modules/relay-ide/package.json
+```
+
+Confirm the version matches the expected nightly before restarting the service.
+
 ## Mac node-link update/restart
 
 Restart the Mac node link when node-side code changed, the protocol version changed, or hub verification reports `macbook-relay-node` as offline, stale, or incompatible. A hub-only UI/routing change does not require a node restart.
