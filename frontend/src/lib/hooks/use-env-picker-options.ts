@@ -53,9 +53,21 @@ export interface UseEnvPickerOptionsInput {
 
 /**
  * Derive the env-picker option list from the shared `['hub-nodes']` +
- * `['repo-inventory']` queries. Terminal MVP (#862): callers launch with
- * `launchOverrides={{ type: 'terminal' }}`, so `sessionType` is fixed to
- * `'terminal'` here (agent provider gating is #863's scope).
+ * `['repo-inventory']` queries.
+ *
+ * #863 decision — `sessionType` stays fixed to `'terminal'` here even though the
+ * launcher now supports agent launches. `buildEnvironmentOptions`' `sessionType`
+ * only gates the node row's freshness/capability bits (shell + terminal backend
+ * for `'terminal'`; additionally the selected agent's capability for
+ * `'agent'`). Threading `'agent'` through would mark a fresh node `stale`
+ * whenever the *currently-selected* agent is unavailable — which would also
+ * block that same node's plain terminal launch, violating the acceptance
+ * criterion that an unavailable agent must NOT block a shell. So node rows stay
+ * terminal-gated (always launchable for a shell), and the per-option agent
+ * provider choice is instead enforced fail-closed at the launch boundary in
+ * `launchEnvironment`, reading `option.node.agentProviders` (populated by #861).
+ * This keeps a single option list serving both launch kinds without a parallel
+ * agent-gated derivation.
  */
 export function useEnvPickerOptions(
   input: UseEnvPickerOptionsInput

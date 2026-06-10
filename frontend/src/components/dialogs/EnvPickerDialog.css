@@ -83,3 +83,59 @@
   padding: 4px 10px;
   text-transform: lowercase;
 }
+
+/* #863: launch-target chooser. Outline-only buttons per DESIGN.md
+   (transparent at rest, 1px border, 0 radius, lowercase). `terminal` is the
+   always-available default; agent providers selectable when available,
+   disabled with a visible reason otherwise. */
+.env-picker-dialog__targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px 2px;
+  border-top: 1px solid var(--border);
+}
+
+.env-picker-dialog__target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.env-picker-dialog__target:hover:not(:disabled),
+.env-picker-dialog__target:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  outline: none;
+}
+
+/* Persistent "chosen target" mark — accent border, matches the picker's
+   selected-row accent so the active launch target reads at a glance. */
+.env-picker-dialog__target--selected {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Disabled provider (degraded/unavailable/unknown): DESIGN.md disabled token
+   (opacity 0.4, not-allowed). The reason text stays readable so the user can
+   see WHY without hover. */
+.env-picker-dialog__target:disabled,
+.env-picker-dialog__target--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.env-picker-dialog__target-reason {
+  color: var(--text-muted);
+  font-size: 11px;
+}
