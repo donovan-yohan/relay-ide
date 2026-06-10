@@ -151,4 +151,31 @@ describe('launchEnvironment', () => {
     }
     expect(createSession).not.toHaveBeenCalled();
   });
+
+  it('blocks an updating environment with a distinct code (#861(A))', async () => {
+    // Injection (createSession override), not vi.mock — the launch boundary
+    // must never reach the network for a node mid-update.
+    const createSession = vi.fn(async () => ({
+      session: undefined,
+      error: null,
+    }));
+    const updating = freshOption({
+      freshness: 'updating',
+      degradedReasons: [
+        {
+          kind: 'other',
+          message:
+            'node is updating — new sessions blocked until update completes',
+          code: 'updating',
+        },
+      ],
+    });
+    const result = await launchEnvironment(updating, {}, createSession);
+    expect(result.kind).toBe('blocked');
+    if (result.kind === 'blocked') {
+      expect(result.reason.code).toBe('updating');
+      expect(result.reason.degradedReasons?.[0]?.kind).toBe('other');
+    }
+    expect(createSession).not.toHaveBeenCalled();
+  });
 });

@@ -173,6 +173,10 @@
 .ws-tab__node-dot--stale {
   background: var(--status-warning, #f59e0b);
 }
+.ws-tab__node-dot--updating {
+  background: var(--accent, #d97757);
+  animation: ws-pulse 1.4s infinite;
+}
 .ws-tab__node-dot--offline,
 .ws-tab__node-dot--revoked {
   background: var(--status-error, #ef4444);

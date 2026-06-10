@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionSummary } from '../frontend/src/lib/types.js';
-import { summaryForTab } from '../frontend/src/lib/workspace-summary.js';
+import {
+  sessionNodeBadge,
+  summaryForTab,
+} from '../frontend/src/lib/workspace-summary.js';
 import type { WorkspaceTab } from '../frontend/src/lib/workspace-layout.js';
 
 const fileTab = (
@@ -218,5 +221,44 @@ describe('summaryForTab — nodeBadge', () => {
       findNode: () => ({ label: 'WSL', status: 'offline' }),
     });
     expect(s.nodeBadge?.status).toBe('offline');
+  });
+});
+
+describe('sessionNodeBadge — shared sidebar/tab derivation (#864)', () => {
+  it('returns the node label + status for a remote node', () => {
+    const badge = sessionNodeBadge('mac', () => ({
+      label: 'macbook',
+      status: 'online',
+    }));
+    expect(badge).toEqual({ label: 'macbook', status: 'online' });
+  });
+
+  it('stays quiet for local-node sessions', () => {
+    expect(
+      sessionNodeBadge('local', () => ({ label: 'this host', status: 'online' }))
+    ).toBeUndefined();
+  });
+
+  it('stays quiet when the session has no nodeId', () => {
+    expect(sessionNodeBadge(undefined, () => undefined)).toBeUndefined();
+  });
+
+  it('falls back to the raw node id with unknown status when not yet loaded', () => {
+    expect(sessionNodeBadge('wsl-host', () => undefined)).toEqual({
+      label: 'wsl-host',
+      status: 'unknown',
+    });
+  });
+
+  it('surfaces stale/updating/offline node status for the badge', () => {
+    expect(
+      sessionNodeBadge('n', () => ({ label: 'n', status: 'stale' }))?.status
+    ).toBe('stale');
+    expect(
+      sessionNodeBadge('n', () => ({ label: 'n', status: 'updating' }))?.status
+    ).toBe('updating');
+    expect(
+      sessionNodeBadge('n', () => ({ label: 'n', status: 'offline' }))?.status
+    ).toBe('offline');
   });
 });

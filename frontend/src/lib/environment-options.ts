@@ -22,9 +22,11 @@
 // (#627) and `shared/safe-defaults.ts` (#628).
 
 import type {
+  EnvironmentAgentProvider,
   EnvironmentDegradedReason,
   EnvironmentFreshness,
   EnvironmentOption,
+  EnvironmentProviderAvailability,
 } from '../../../shared/environment-option.js';
 import type {
   HubNodeSummary,
@@ -98,19 +100,25 @@ function nodeFreshnessAndReasons(
       lastSeenAt: lastSeenAt ?? node.lastSeenAt ?? '',
       message: 'heartbeat is stale',
     });
-  }
-
-  const versionState = node.version?.state;
-  if (versionState === 'incompatible' || versionState === 'version-skew') {
-    if (freshness === 'fresh') freshness = 'stale';
+  } else if (node.status === 'updating') {
+    // #861(A): a node mid-update cannot accept new launches. Distinct from
+    // stale/offline so the picker and launch boundary can render/gate it
+    // separately. Copy mirrors `node-dashboard.ts` `disabledReason`.
+    freshness = 'updating';
     reasons.push({
       kind: 'other',
       message:
-        versionState === 'incompatible'
-          ? 'node protocol is incompatible'
-          : 'node has version skew',
-      code: versionState,
+        'node is updating — new sessions blocked until update completes',
+      code: 'updating',
     });
+  }
+
+  // #861(C): protocol + helper version skew, mapped to the typed `version-skew`
+  // reason. Extracted into a helper to keep this function's branch count low.
+  const skewReasons = versionSkewReasons(node);
+  if (skewReasons.length > 0) {
+    if (freshness === 'fresh') freshness = 'stale';
+    reasons.push(...skewReasons);
   }
 
   if (capabilityProblem(node.capabilities.core.shell) !== null) {
@@ -146,6 +154,49 @@ function nodeFreshnessAndReasons(
   }
 
   return { freshness, reasons };
+}
+
+/**
+ * #861(C): derive `version-skew` degraded reasons for a node, covering both the
+ * node-link protocol version (`scope: 'protocol'`) and the helper binary
+ * (`scope: 'helper'`). Protocol copy is preserved 1:1 from the legacy
+ * `{ kind: 'other', code: versionState }` mapping so existing UI strings do not
+ * regress; helper copy is taken verbatim from the node's `helperSkew` summary,
+ * matching the established `node-dashboard.ts` `disabledReason` rendering.
+ */
+function versionSkewReasons(
+  node: HubNodeSummary
+): EnvironmentDegradedReason[] {
+  const reasons: EnvironmentDegradedReason[] = [];
+  const versionState = node.version?.state;
+  if (versionState === 'incompatible' || versionState === 'version-skew') {
+    reasons.push({
+      kind: 'version-skew',
+      scope: 'protocol',
+      category: versionState,
+      message:
+        versionState === 'incompatible'
+          ? 'node protocol is incompatible'
+          : 'node has version skew',
+    });
+  }
+  const helperSkew = node.helperSkew;
+  if (
+    helperSkew &&
+    (helperSkew.category === 'minor-skew-warn' ||
+      helperSkew.category === 'major-skew-error')
+  ) {
+    reasons.push({
+      kind: 'version-skew',
+      scope: 'helper',
+      category: helperSkew.category,
+      message: helperSkew.message,
+      ...(helperSkew.remediationHint
+        ? { remediationHint: helperSkew.remediationHint }
+        : {}),
+    });
+  }
+  return reasons;
 }
 
 function capabilityProblem(
@@ -232,12 +283,63 @@ function syntheticLocalNode(): HubNodeSummary {
   };
 }
 
+/**
+ * #861(B): map a node's `NodeCapabilityStatus` for one agent provider to a
+ * short reason string sourced from the `RelayNodeErrorCode` vocabulary. Only
+ * non-`available` providers get a reason; `available` returns `undefined`.
+ */
+function providerReasonFor(
+  status: NodeCapabilityStatus
+): string | undefined {
+  switch (status) {
+    case 'available':
+      return undefined;
+    case 'unavailable':
+      // The provider is not installed/usable on the node.
+      return 'UNSUPPORTED_CAPABILITY';
+    case 'degraded':
+      // Present but not fully ready (e.g. auth/login required).
+      return 'REPAIR_REQUIRED';
+    case 'unknown':
+    default:
+      // Capability not reported by the node manifest.
+      return 'NODE_UNSUPPORTED';
+  }
+}
+
+/**
+ * #861(B): derive the `EnvironmentAgentProvider[]` for a node from
+ * `node.capabilities.agents`. `availability` maps 1:1 from
+ * `NodeCapabilityStatus`; `reason` is filled from the `RelayNodeErrorCode`
+ * vocabulary for non-available providers. Data-only — no launcher UI.
+ *
+ * Iteration order follows `Object.entries`, which preserves the insertion
+ * order of the agents record as the node reported it.
+ */
+function agentProvidersFor(
+  node: HubNodeSummary
+): EnvironmentAgentProvider[] {
+  return Object.entries(node.capabilities.agents ?? {}).map(
+    ([id, status]) => {
+      const availability: EnvironmentProviderAvailability = status;
+      const reason = providerReasonFor(status);
+      return {
+        id,
+        availability,
+        ...(reason ? { reason } : {}),
+      } satisfies EnvironmentAgentProvider;
+    }
+  );
+}
+
 function nodeSummary(node: HubNodeSummary): EnvironmentOption['node'] {
+  const agentProviders = agentProvidersFor(node);
   return {
     nodeId: node.nodeId,
     kind: node.nodeId === DEFAULT_LOCAL_NODE_ID ? 'local' : 'remote',
     ...(node.displayName ? { displayName: node.displayName } : {}),
     online: node.status === 'online',
+    ...(agentProviders.length > 0 ? { agentProviders } : {}),
   };
 }
 
@@ -551,6 +653,16 @@ export function firstDegradedReasonMessage(
       return reason.message ?? `worktree missing at ${reason.localPath}`;
     case 'auth-failed':
       return reason.message;
+    case 'version-skew':
+      // #861(C): message is always present on the typed reason; remediationHint
+      // is appended when set, mirroring node-dashboard.ts disabledReason copy.
+      return reason.remediationHint
+        ? `${reason.message} — ${reason.remediationHint}`
+        : reason.message;
+    case 'cwd-invalid':
+      // #861(D): live population is deferred to the launcher slices; this arm
+      // exists so the never-default exhaustiveness check stays green.
+      return reason.message ?? `cwd unavailable at ${reason.cwd}`;
     case 'other':
       return reason.message;
     default: {

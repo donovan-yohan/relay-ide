@@ -141,6 +141,16 @@ function describeDegradedReason(reason: EnvironmentDegradedReason): string {
       return reason.message ?? `worktree missing at ${reason.localPath}`;
     case 'auth-failed':
       return reason.message;
+    case 'version-skew':
+      // #861(C): render message + optional remediationHint, matching the
+      // node-dashboard disabledReason copy convention.
+      return reason.remediationHint
+        ? `${reason.message} — ${reason.remediationHint}`
+        : reason.message;
+    case 'cwd-invalid':
+      // #861(D): live population deferred to the launcher slices; this arm
+      // keeps the exhaustive guard green for the new shared union member.
+      return reason.message ?? `cwd unavailable at ${reason.cwd}`;
     case 'other':
       return reason.message;
     default: {

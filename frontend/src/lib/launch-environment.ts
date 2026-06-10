@@ -22,8 +22,11 @@
 // store-state mutation of its own beyond what `createAgentSession` already
 // performs. Tests can inject a `createSession` override.
 
-import type { EnvironmentOption } from '../../../shared/environment-option.js';
-import type { EnvironmentDegradedReason } from '../../../shared/environment-option.js';
+import type {
+  EnvironmentDegradedReason,
+  EnvironmentFreshness,
+  EnvironmentOption,
+} from '../../../shared/environment-option.js';
 import {
   createAgentSession,
   type CreateAgentSessionOptions,
@@ -40,7 +43,10 @@ export type LaunchEnvironmentResult =
 
 export type LaunchBlockedReason =
   | { code: 'stale'; degradedReasons?: EnvironmentDegradedReason[] }
-  | { code: 'offline'; degradedReasons?: EnvironmentDegradedReason[] };
+  | { code: 'offline'; degradedReasons?: EnvironmentDegradedReason[] }
+  // #861(A): node is mid-update. Distinct from stale/offline so callers can
+  // surface "blocked until update completes" copy instead of a generic retry.
+  | { code: 'updating'; degradedReasons?: EnvironmentDegradedReason[] };
 
 export interface LaunchEnvironmentOptions {
   /** Override the launch type. Defaults to 'terminal' (a bare shell launch). */
@@ -59,6 +65,19 @@ export interface LaunchEnvironmentOptions {
  */
 export function canLaunchEnvironment(option: EnvironmentOption): boolean {
   return option.freshness === 'fresh';
+}
+
+/**
+ * Map a non-fresh freshness onto a typed {@link LaunchBlockedReason} `code`.
+ * `updating` (#861(A)) is distinct so callers can render "blocked until update
+ * completes" copy; everything else that is not `offline` collapses to `stale`.
+ */
+function blockedCodeFor(
+  freshness: EnvironmentFreshness
+): LaunchBlockedReason['code'] {
+  if (freshness === 'offline') return 'offline';
+  if (freshness === 'updating') return 'updating';
+  return 'stale';
 }
 
 /**
@@ -104,8 +123,7 @@ export async function launchEnvironment(
   ) => Promise<CreateAgentSessionResult> = createAgentSession
 ): Promise<LaunchEnvironmentResult> {
   if (!canLaunchEnvironment(option)) {
-    const code: LaunchBlockedReason['code'] =
-      option.freshness === 'offline' ? 'offline' : 'stale';
+    const code: LaunchBlockedReason['code'] = blockedCodeFor(option.freshness);
     const reason: LaunchBlockedReason = option.degradedReasons
       ? { code, degradedReasons: option.degradedReasons }
       : { code };

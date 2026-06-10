@@ -26,6 +26,11 @@ import { showToast } from '../lib/stores/toasts.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { scopedSessionKey, sessionKeyMatches } from '../lib/session-keys.js';
 import { useUiStore } from '../lib/stores/ui.js';
+import {
+  sessionNodeBadge,
+  type NodeBadge,
+  type SummaryContext,
+} from '../lib/workspace-summary.js';
 import './RepoItem.css';
 
 const DOUBLE_CLICK_DELAY_MS = 200;
@@ -52,6 +57,12 @@ export interface RepoItemProps {
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   loadingItems?: Set<string> | undefined;
+  /**
+   * #864: lookup for cross-node session identity. When provided, session rows
+   * whose owning node is non-local render a node badge. Injected (not read from
+   * a store) so the sidebar list stays testable without query/store mocks.
+   */
+  findNode?: SummaryContext['findNode'];
 }
 
 const settingsSvg = (
@@ -235,6 +246,27 @@ function PrStatusBadge({ pr }: PrStatusBadgeProps) {
   );
 }
 
+/**
+ * #864: cross-node identity badge for a session-list row. Renders the node
+ * label and a heartbeat dot so users can answer "where is this running?"
+ * without opening a detail panel. Local-node sessions never render this badge
+ * (the badge is `undefined`), keeping the common single-host case quiet.
+ */
+function SessionNodeBadge({ badge }: { badge: NodeBadge }) {
+  return (
+    <span
+      className={`session-node-badge session-node-badge--${badge.status}`}
+      title={`node: ${badge.label} (${badge.status})`}
+    >
+      <span
+        className={`session-node-dot session-node-dot--${badge.status}`}
+        aria-hidden
+      />
+      <span className="session-node-label">{badge.label}</span>
+    </span>
+  );
+}
+
 interface SessionGroupRowProps {
   groupPath: string;
   groupSessions: SessionSummary[];
@@ -243,6 +275,7 @@ interface SessionGroupRowProps {
   attention: boolean;
   dotState: DisplayState;
   matchedPr: PullRequest | undefined;
+  nodeBadge: NodeBadge | undefined;
   cancelLongPress: () => void;
   onSelectSession: (id: string) => void;
   onDeleteSession?: ((id: string) => void) | undefined;
@@ -259,6 +292,7 @@ function SessionGroupRow({
   attention,
   dotState,
   matchedPr,
+  nodeBadge,
   cancelLongPress,
   onSelectSession,
   onDeleteSession,
@@ -297,6 +331,7 @@ function SessionGroupRow({
         {groupSessions.length > 1 ? (
           <span className="session-count-badge">{groupSessions.length}</span>
         ) : null}
+        {nodeBadge ? <SessionNodeBadge badge={nodeBadge} /> : null}
         {matchedPr ? <PrStatusBadge pr={matchedPr} /> : null}
       </div>
       <div className="session-row-secondary">
@@ -500,6 +535,7 @@ export function RepoItem({
   collapsed = false,
   onToggleCollapse,
   loadingItems = EMPTY_SET,
+  findNode,
 }: RepoItemProps) {
   const initialColor = useMemo(() => deriveColor(repo.name), [repo.name]);
   const initial = repo.name.charAt(0).toUpperCase();
@@ -662,6 +698,7 @@ export function RepoItem({
                 sidebarItem !== undefined &&
                 isAttentionState(sidebarItem.displayState);
               const dotState = sidebarItem?.displayState ?? 'inactive';
+              const nodeBadge = sessionNodeBadge(rep.nodeId, findNode);
               return (
                 <SessionGroupRow
                   key={groupPath}
@@ -672,6 +709,7 @@ export function RepoItem({
                   attention={attention}
                   dotState={dotState}
                   matchedPr={matchedPr}
+                  nodeBadge={nodeBadge}
                   cancelLongPress={cancelLongPress}
                   onSelectSession={onSelectSession}
                   onDeleteSession={onDeleteSession}

@@ -327,9 +327,19 @@ export function nodeShellBlockReason(
   if (node.status === 'offline') return 'node is offline';
   if (node.status === 'stale') return 'heartbeat is stale';
   if (node.status === 'revoked') return 'node is revoked';
+  // #861(A): a node mid-update can't accept new launches. Mirror the typed
+  // EnvironmentFreshness 'updating' so this legacy string path matches the
+  // read-model vocabulary the picker badges use.
+  if (node.status === 'updating') return 'node is updating';
   const versionState = node.version?.state;
   if (versionState === 'incompatible') return 'node protocol is incompatible';
   if (versionState === 'version-skew') return 'node has version skew';
+  // #861(C): helper-binary (not node-link protocol) version skew. Only the
+  // hard major-skew error blocks launches; minor-skew is warn-only and stays
+  // launchable, matching the typed `version-skew` reason scopes.
+  if (node.helperSkew?.category === 'major-skew-error') {
+    return 'node helper is incompatible';
+  }
   const shellProblem = capabilityProblem(node.capabilities.core.shell, 'shell');
   if (shellProblem) return shellProblem;
   const backendProblem = terminalBackendProblem(node);
