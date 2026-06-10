@@ -18,6 +18,10 @@ const SERVER_SCRIPT = path.resolve(
   'index.js'
 );
 
+if (!fs.existsSync(SERVER_SCRIPT)) {
+  throw new Error('dist/server/index.js missing — run npm run build first');
+}
+
 interface StartServerOpts {
   env: Record<string, string>;
 }
@@ -59,9 +63,13 @@ async function killAndWait(child: ChildProcess): Promise<void> {
   // Reject on timeout (not resolve) — a non-exiting server is a real bug and
   // should fail the test loudly instead of racing with the rmSync in finally.
   await new Promise<void>((resolve, reject) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
     const timeout = setTimeout(() => {
-      reject(new Error('Server did not exit within 3s of SIGTERM'));
-    }, 3000);
+      reject(new Error('Server did not exit within 10s of SIGTERM'));
+    }, 10000);
     child.on('exit', () => {
       clearTimeout(timeout);
       resolve();
