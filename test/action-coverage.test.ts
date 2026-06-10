@@ -5,12 +5,24 @@ import {
   _resetForTesting,
 } from '../frontend/src/lib/actions/registry.js';
 import type { Action, ActionMeta } from '../frontend/src/lib/actions/types.js';
-import { sessionActions } from '../frontend/src/lib/actions/definitions/session.js';
+import {
+  sessionActions,
+  sessionStartOnTicket,
+} from '../frontend/src/lib/actions/definitions/session.js';
 import { workspaceActions } from '../frontend/src/lib/actions/definitions/workspace.js';
-import { prActions } from '../frontend/src/lib/actions/definitions/pr.js';
+import {
+  prActions,
+  prFixConflicts,
+  prSwitchBranch,
+  prCopyBranchName,
+  prOpenExternal,
+} from '../frontend/src/lib/actions/definitions/pr.js';
 import { settingsActions } from '../frontend/src/lib/actions/definitions/settings.js';
 import { sidebarActions } from '../frontend/src/lib/actions/definitions/sidebar.js';
-import { dashboardActions } from '../frontend/src/lib/actions/definitions/dashboard.js';
+import {
+  dashboardActions,
+  dashboardOpenPrSession,
+} from '../frontend/src/lib/actions/definitions/dashboard.js';
 import {
   terminalActions,
   terminalScrollTop,
@@ -309,6 +321,71 @@ describe('Action Coverage', () => {
       stable: true,
       source: 'shared/relay-command-manifest.ts',
     });
+  });
+
+  it('bridges tickets.startWork as a non-destructive write Relay action descriptor', () => {
+    const action = cliGatewayCommandActions.find(
+      (entry) => entry.relayCommand.name === 'tickets.startWork'
+    );
+    expect(action).toBeTruthy();
+    const descriptor = action!.descriptor;
+
+    expect(descriptor.id).toBe('tickets.startWork');
+    expect(descriptor.stable).toBe(true);
+    expect(descriptor.sideEffect).toBe('write');
+    expect(descriptor.confirmation.required).toBe(false);
+    expect(descriptor.contract).toMatchObject({
+      relayCommandName: 'tickets.startWork',
+      stable: true,
+      source: 'shared/relay-command-manifest.ts',
+    });
+  });
+
+  it('bridges branches.openSession as a non-destructive write Relay action descriptor', () => {
+    const action = cliGatewayCommandActions.find(
+      (entry) => entry.relayCommand.name === 'branches.openSession'
+    );
+    expect(action).toBeTruthy();
+    const descriptor = action!.descriptor;
+
+    expect(descriptor.id).toBe('branches.openSession');
+    expect(descriptor.stable).toBe(true);
+    expect(descriptor.sideEffect).toBe('write');
+    expect(descriptor.confirmation.required).toBe(false);
+    expect(descriptor.contract).toMatchObject({
+      relayCommandName: 'branches.openSession',
+      stable: true,
+      source: 'shared/relay-command-manifest.ts',
+    });
+  });
+
+  it('attaches start-work descriptors to the ticket/PR/dashboard entry points (#871/#876)', () => {
+    // session.start-on-ticket (StartWorkModal) bridges to tickets.startWork.
+    expect(sessionStartOnTicket.descriptor?.id).toBe('tickets.startWork');
+    expect(sessionStartOnTicket.descriptor?.contract?.relayCommandName).toBe(
+      'tickets.startWork'
+    );
+
+    // pr.fix-conflicts and pr.switch-branch open a session on a PR/branch
+    // target through branches.openSession.
+    expect(prFixConflicts.descriptor?.id).toBe('branches.openSession');
+    expect(prFixConflicts.descriptor?.contract?.relayCommandName).toBe(
+      'branches.openSession'
+    );
+    expect(prSwitchBranch.descriptor?.id).toBe('branches.openSession');
+    expect(prSwitchBranch.descriptor?.contract?.relayCommandName).toBe(
+      'branches.openSession'
+    );
+
+    // dashboard.open-pr-session also bridges to branches.openSession.
+    expect(dashboardOpenPrSession.descriptor?.id).toBe('branches.openSession');
+    expect(dashboardOpenPrSession.descriptor?.contract?.relayCommandName).toBe(
+      'branches.openSession'
+    );
+
+    // UI-only exceptions stay descriptor-free.
+    expect(prCopyBranchName.descriptor).toBeUndefined();
+    expect(prOpenExternal.descriptor).toBeUndefined();
   });
 
   it('projects UI-only actions without promoting them to stable Relay commands', () => {

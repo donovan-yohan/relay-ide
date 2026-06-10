@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GitHubIssue, JiraIssue, AnyIssue, Repo } from '../lib/types.js';
-import { ConflictError, fetchWorkspaces } from '../lib/api.js';
-import { createAgentSession } from '../lib/session-utils.js';
+import { fetchWorkspaces } from '../lib/api.js';
+import { executeTicketStartWorkAction } from '../lib/actions/start-work-lifecycle.js';
 import { TuiButton } from './TuiButton.js';
 import './StartWorkModal.css';
 
@@ -43,6 +43,17 @@ type TicketContext = {
   source: 'github' | 'jira';
 };
 
+// The composite executors return RelayCliGatewayEnvelope<unknown>; the success
+// data projects to workflowCommandOutputSchema with a required `session.id`.
+// Narrow it defensively rather than asserting the wire shape.
+function sessionIdFromWorkflowData(data: unknown): string | undefined {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const session = (data as { session?: unknown }).session;
+  if (typeof session !== 'object' || session === null) return undefined;
+  const id = (session as { id?: unknown }).id;
+  return typeof id === 'string' ? id : undefined;
+}
+
 function useWorkspaceLoader(source: 'github' | 'jira', open: boolean) {
   const [workspaces, setWorkspaces] = useState<Repo[]>([]);
   const [selectedPath, setSelectedPath] = useState('');
@@ -83,27 +94,43 @@ function useStartWork(
     setLoading(true);
     setError(null);
     try {
-      const { session, error } = await createAgentSession({
-        repoPath,
-        worktreePath: null,
-        type: 'agent',
-        branchName,
-        ticketContext: buildCtx(),
+      // #871/#876: route start-work through the composite tickets.startWork
+      // executor. The ticket envelope maps `ticketId` -> `id` (keeping the
+      // GH-number formatting semantics buildCtx already applies) and passes the
+      // explicit repo path + branch + reuse-existing worktree policy. The
+      // executor's createSession tail still carries ticketContext for the PTY.
+      const ctx = buildCtx();
+      const result = await executeTicketStartWorkAction({
+        ticket: {
+          source: ctx.source,
+          id: ctx.ticketId,
+          title: ctx.title,
+          url: ctx.url,
+        },
+        repo: { repoPath },
+        branch: { name: branchName },
+        worktree: { mode: 'reuse-existing' },
       });
-      if (error instanceof ConflictError) {
-        if (session?.id) onSessionCreated(session.id);
-        onClose();
-        return;
+      if (!result.ok) {
+        // SESSION_CONFLICT carries details.sessionId and is focus-existing
+        // success in the UI — preserve the prior ConflictError behavior exactly.
+        const conflictSessionId =
+          result.error.code === 'SESSION_CONFLICT' &&
+          typeof result.error.details?.sessionId === 'string'
+            ? result.error.details.sessionId
+            : undefined;
+        if (conflictSessionId) {
+          onSessionCreated(conflictSessionId);
+          onClose();
+          return;
+        }
+        throw new Error(result.error.message);
       }
-      if (!session?.id) throw error;
-      onSessionCreated(session.id);
+      const sessionId = sessionIdFromWorkflowData(result.data);
+      if (!sessionId) throw new Error('Failed to start work');
+      onSessionCreated(sessionId);
       onClose();
     } catch (err) {
-      if (err instanceof ConflictError) {
-        onSessionCreated(err.sessionId);
-        onClose();
-        return;
-      }
       setError(err instanceof Error ? err.message : 'Failed to start work');
     } finally {
       setLoading(false);

@@ -9,6 +9,10 @@ import {
   sessionRenameActionAvailability,
   sessionRenameActionDescriptor,
 } from '../session-lifecycle.js';
+import {
+  ticketStartWorkActionAvailability,
+  ticketStartWorkActionDescriptor,
+} from '../start-work-lifecycle.js';
 
 const launchDescriptor = sessionCreateActionDescriptor();
 const launchRequiresContext = (ctx: ActionContext) =>
@@ -27,6 +31,15 @@ const killRequiresSession = (ctx: ActionContext) =>
 const renameDescriptor = sessionRenameActionDescriptor();
 const renameRequiresSession = (ctx: ActionContext) =>
   sessionRenameActionAvailability({ sessionMissing: !ctx.sessionId }).reason;
+
+// #871/#876: session.start-on-ticket is the ticket start-work entry point
+// (StartWorkModal). It carries the composite tickets.startWork descriptor so
+// agents/operators discover the stable contract; availability gates on an
+// active workspace, mirroring the existing `when` predicate (and #870).
+const ticketStartWorkDescriptor = ticketStartWorkActionDescriptor();
+const ticketStartWorkRequiresWorkspace = (ctx: ActionContext) =>
+  ticketStartWorkActionAvailability({ workspaceMissing: !ctx.workspacePath })
+    .reason;
 
 export const sessionNewAgent: ActionMeta = {
   id: 'session.new-agent',
@@ -92,6 +105,8 @@ export const sessionStartOnTicket: ActionMeta = {
   category: 'session',
   icon: '◆',
   when: (ctx) => !!ctx.workspacePath,
+  disabledReason: ticketStartWorkRequiresWorkspace,
+  descriptor: ticketStartWorkDescriptor,
 };
 
 export const sessionCustomize: ActionMeta = {
