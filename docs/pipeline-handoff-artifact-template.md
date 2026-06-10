@@ -17,6 +17,44 @@ Status: shared contract/template foundation for issue #883.
 - Artifacts must not store raw transcripts, PTY bytes, env, provider auth, secrets, raw local paths, or unbounded logs.
 - Public PR/issue comments must be sanitized before posting: omit private Kanban refs and redact local paths/secret-looking values.
 
+## Standard live Relay worker publication pattern
+
+Workers should publish the handoff artifact while the lane is live, not reconstruct it after the PR lands:
+
+1. **Implementation** creates the artifact with one `implementation` stage and calls `handoff-artifacts.attach` for the current WorkContext.
+2. **QA** reads the latest non-stale artifact for the same `workContextId`/PR head, appends a `qa` stage, and calls `handoff-artifacts.attach --supersedes-artifact-id <implementation-artifact-id>`.
+3. **Review** appends a `review` stage the same way, superseding the QA artifact.
+4. **Release** appends a `release` stage, superseding the review artifact.
+
+Each publication must repeat the same public-safe `head` block for the exact PR/head it covers:
+
+```json
+{
+  "head": {
+    "repo": { "ownerRepo": "donovan-yohan/relay-ide" },
+    "base": { "name": "nightly" },
+    "branch": { "name": "issue-903-live-handoff-artifacts" },
+    "pr": { "number": 904, "url": "https://github.com/donovan-yohan/relay-ide/pull/904" },
+    "headSha": "1111111111111111111111111111111111111111",
+    "staleIf": { "headShaChanges": true },
+    "capturedAt": "2026-06-10T00:00:00.000Z"
+  }
+}
+```
+
+Stage-specific exact-head fields must also equal `head.headSha`:
+
+| Worker stage | Stage field that must equal `head.headSha` | Publish command shape |
+| ------------ | ------------------------------------------ | --------------------- |
+| implementation | artifact-level `head.headSha` covers the implementation layer | `relay-ide v1 handoff-artifacts attach --work-context-id <wc> --artifact-file implementation.json --current-head-sha <headSha> --stage implementation --visibility public --json` |
+| QA | `testedHeadSha` | `relay-ide v1 handoff-artifacts attach --work-context-id <wc> --artifact-file qa.json --current-head-sha <headSha> --supersedes-artifact-id <implementation-artifact-id> --stage qa --visibility public --json` |
+| review | `reviewedHeadSha` | `relay-ide v1 handoff-artifacts attach --work-context-id <wc> --artifact-file review.json --current-head-sha <headSha> --supersedes-artifact-id <qa-artifact-id> --stage review --visibility public --json` |
+| release | `verifiedHeadSha` | `relay-ide v1 handoff-artifacts attach --work-context-id <wc> --artifact-file release.json --current-head-sha <headSha> --supersedes-artifact-id <review-artifact-id> --stage release --visibility public --json` |
+
+Before public PR/issue posting, use `handoff-artifacts copy` or `renderPipelineHandoffMarkdown(artifact, { public: true })`. Public-safe output must not include local paths, private queue/task IDs, secrets/env, raw logs/transcripts, or dispatcher internals.
+
+The smoke fixture at `test/fixtures/pipeline-handoff/live-worker-pattern.json` demonstrates attaching an implementation layer and appending QA through the stable `handoff-artifacts.*` route surface.
+
 ## Private Kanban JSON skeleton
 
 Use this inside private Kanban comments where internal task refs may be useful. Keep paths relative and evidence summaries bounded.

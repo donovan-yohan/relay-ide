@@ -18,7 +18,10 @@ import type {
 } from '../server/work-contexts.js';
 import {
   PIPELINE_HANDOFF_ARTIFACT_SCHEMA_VERSION,
+  isPipelineHandoffArtifactStale,
+  validatePublicPipelineHandoffArtifact,
   type PipelineHandoffArtifact,
+  type PipelineHandoffQaStage,
 } from '../shared/pipeline-handoff-artifact.js';
 import {
   WORK_CONTEXT_SCHEMA_VERSION,
@@ -31,6 +34,16 @@ const now = '2026-06-08T12:00:00.000Z';
 const headSha = 'a'.repeat(40);
 const nextHeadSha = 'b'.repeat(40);
 const cleanup: Array<() => void> = [];
+
+interface LiveWorkerPatternFixture {
+  workContextId: string;
+  currentHeadSha: string;
+  qaArtifactId: string;
+  qaUpdatedAt: string;
+  implementationArtifact: PipelineHandoffArtifact;
+  qaStage: PipelineHandoffQaStage;
+}
+
 type ArtifactReadCommand =
   | 'work-context-artifacts.list'
   | 'work-context-artifacts.show'
@@ -39,6 +52,24 @@ type ArtifactReadCommand =
   | 'handoff-artifacts.list'
   | 'handoff-artifacts.show'
   | 'handoff-artifacts.copy';
+
+function loadLiveWorkerPatternFixture(): LiveWorkerPatternFixture {
+  return JSON.parse(
+    fs.readFileSync(
+      path.join(process.cwd(), 'test', 'fixtures', 'pipeline-handoff', 'live-worker-pattern.json'),
+      'utf8'
+    )
+  ) as LiveWorkerPatternFixture;
+}
+
+function appendQaArtifact(fixture: LiveWorkerPatternFixture): PipelineHandoffArtifact {
+  return {
+    ...fixture.implementationArtifact,
+    id: fixture.qaArtifactId,
+    updatedAt: fixture.qaUpdatedAt,
+    stages: [...fixture.implementationArtifact.stages, fixture.qaStage],
+  };
+}
 
 function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoffArtifact {
   return {
@@ -461,6 +492,91 @@ describe('WorkContext artifact router', () => {
     expect(appendViolation.status).toBe(400);
     expect(await json(appendViolation)).toMatchObject({
       error: { details: { reasonCode: 'WORK_CONTEXT_ARTIFACT_APPEND_ONLY_VIOLATION', operation: 'attach' } },
+    });
+  });
+
+  it('live-worker-pattern attaches implementation and appends QA through handoff-artifacts surface', async () => {
+    const fixture = loadLiveWorkerPatternFixture();
+    const qaArtifact = appendQaArtifact(fixture);
+    const { root, store } = tmpStore();
+    const workContextStore = fakeWorkContextStore(createWorkContext(fixture.workContextId));
+    const { baseUrl } = await serve({ root, store, workContextStore });
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-relay-capabilities': 'context:write,context:read',
+    };
+
+    for (const artifactLayer of [fixture.implementationArtifact, qaArtifact]) {
+      const publicValidation = validatePublicPipelineHandoffArtifact(artifactLayer);
+      expect(publicValidation.errors).toEqual([]);
+      expect(publicValidation.valid).toBe(true);
+      expect(artifactLayer.head.pr).toEqual(fixture.implementationArtifact.head.pr);
+      expect(artifactLayer.head.headSha).toBe(fixture.currentHeadSha);
+      expect(artifactLayer.head.staleIf).toEqual({ headShaChanges: true });
+      expect(isPipelineHandoffArtifactStale(artifactLayer, fixture.currentHeadSha)).toBe(false);
+      expect(JSON.stringify(artifactLayer)).not.toMatch(/\/home\/|\/Users\/|t_[0-9a-f]{8}|OPENAI_API_KEY|rawTranscript|dispatcher/i);
+    }
+
+    const implementationAttach = await fetch(`${baseUrl}/pipeline-handoff-artifacts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        workContextId: fixture.workContextId,
+        artifact: fixture.implementationArtifact,
+        stage: 'implementation',
+        visibility: 'public',
+        currentHeadSha: fixture.currentHeadSha,
+      }),
+    });
+    expect(implementationAttach.status).toBe(201);
+    expect(await json(implementationAttach)).toMatchObject({
+      artifact: {
+        metadata: {
+          id: fixture.implementationArtifact.id,
+          workContextId: fixture.workContextId,
+          stage: 'implementation',
+          headSha: fixture.currentHeadSha,
+        },
+        staleness: { stale: false, currentHeadSha: fixture.currentHeadSha },
+      },
+    });
+
+    const qaAppend = await fetch(`${baseUrl}/pipeline-handoff-artifacts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        workContextId: fixture.workContextId,
+        artifact: qaArtifact,
+        stage: 'qa',
+        visibility: 'public',
+        currentHeadSha: fixture.currentHeadSha,
+        supersedesArtifactId: fixture.implementationArtifact.id,
+      }),
+    });
+    expect(qaAppend.status).toBe(201);
+    expect(await json(qaAppend)).toMatchObject({
+      artifact: {
+        metadata: {
+          id: qaArtifact.id,
+          workContextId: fixture.workContextId,
+          stage: 'qa',
+          supersedesArtifactId: fixture.implementationArtifact.id,
+          headSha: fixture.currentHeadSha,
+        },
+        staleness: { stale: false, currentHeadSha: fixture.currentHeadSha },
+      },
+    });
+
+    const showQa = await fetch(
+      `${baseUrl}/pipeline-handoff-artifacts/${encodeURIComponent(qaArtifact.id)}?currentHeadSha=${fixture.currentHeadSha}`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(showQa.status).toBe(200);
+    expect(await json(showQa)).toMatchObject({
+      artifact: {
+        payload: { stages: [{ stage: 'implementation' }, { stage: 'qa' }] },
+        staleness: { stale: false, currentHeadSha: fixture.currentHeadSha },
+      },
     });
   });
 
