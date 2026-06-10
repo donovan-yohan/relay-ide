@@ -660,9 +660,12 @@ export function WorkspaceArea({
           const { currentActiveWorkspace, currentWorktreePath } =
             getCurrentSessionContext();
           if (!currentActiveWorkspace) {
-            workspaceLogger.warn(
-              'no active workspace — cannot create terminal'
-            );
+            // #862: no active workspace (repo-less hub) — route through the
+            // env-picker so the user can pick a node/cwd to launch a terminal
+            // against, instead of silently bailing. The picker derives its
+            // options from the canonical env inventory and launches a bare
+            // terminal (launchOverrides={{ type: 'terminal' }} wired in App).
+            useUiStore.getState().setActiveModal({ modal: 'env-picker' });
             return;
           }
           // The new session lands in whichever pane is active; activate
