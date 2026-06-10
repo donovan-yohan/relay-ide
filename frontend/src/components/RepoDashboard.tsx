@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchDashboard } from '../lib/api.js';
 import { createAgentSession } from '../lib/session-utils.js';
@@ -18,6 +18,7 @@ import TicketsPanel from './TicketsPanel.js';
 import StartWorkModal from './StartWorkModal.js';
 import { useScrollOverflow } from '../hooks/useScrollOverflow.js';
 import { formatCompact, formatResetAt } from '../lib/utils.js';
+import WorkspaceEvidenceDashboard from './WorkspaceEvidenceDashboard.js';
 import './RepoDashboard.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -35,7 +36,7 @@ export interface RepoDashboardProps {
   hint?: React.ReactNode;
 }
 
-type ActiveTab = 'overview' | 'tickets';
+type ActiveTab = 'overview' | 'tickets' | 'evidence';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -383,6 +384,19 @@ export function RepoDashboard({
     refetchOnWindowFocus: true,
   });
 
+  // Default non-git/free-directory workspaces to the evidence tab, but never
+  // override a tab the user has manually picked.
+  const tabManuallyPicked = useRef(false);
+  useEffect(() => {
+    if (tabManuallyPicked.current) return;
+    if (data && !data.isGitRepo) setActiveTab('evidence');
+  }, [data]);
+
+  const pickTab = (tab: ActiveTab) => {
+    tabManuallyPicked.current = true;
+    setActiveTab(tab);
+  };
+
   const processedPrs = useMemo((): PullRequest[] => {
     if (!data) return [];
     let prs = data.prs;
@@ -401,98 +415,104 @@ export function RepoDashboard({
   return (
     <div className="repo-dashboard">
       {hint && <div className="repo-dashboard__hint">{hint}</div>}
-      {data && !data.isGitRepo ? (
-        <div className="non-git-notice">
-          <span className="non-git-msg">not a git repository</span>
-          <div className="cta-row">
-            <TuiButton
-              variant="primary"
-              disabled={creatingTerminal}
-              onClick={() => {
-                setTerminalError(null);
-                setCreatingTerminal(true);
-                void createAgentSession({
-                  type: 'terminal',
-                  repoPath,
-                  cwd: repoPath,
-                }).then(({ session, error }) => {
-                  setCreatingTerminal(false);
-                  if (error && !session) {
-                    setTerminalError(
-                      error instanceof Error ? error.message : 'failed to open terminal'
-                    );
-                  } else if (session) {
-                    onSessionCreated?.(session.id);
-                  }
-                });
-              }}
-            >
-              {creatingTerminal ? 'opening...' : '+ open terminal'}
-            </TuiButton>
-          </div>
-          {terminalError && (
-            <p className="non-git-error">{terminalError}</p>
-          )}
-        </div>
-      ) : (
-        <>
-          <div className="tab-strip">
-            <button
-              className={[
-                'tab-btn',
-                activeTab === 'overview' && 'tab-btn--active',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              onClick={() => setActiveTab('overview')}
-            >
-              Overview
-            </button>
-            <button
-              className={[
-                'tab-btn',
-                activeTab === 'tickets' && 'tab-btn--active',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              onClick={() => setActiveTab('tickets')}
-            >
-              Tickets
-            </button>
-          </div>
+      <div className="tab-strip">
+        <button
+          className={['tab-btn', activeTab === 'overview' && 'tab-btn--active']
+            .filter(Boolean)
+            .join(' ')}
+          onClick={() => pickTab('overview')}
+        >
+          overview
+        </button>
+        <button
+          className={['tab-btn', activeTab === 'tickets' && 'tab-btn--active']
+            .filter(Boolean)
+            .join(' ')}
+          onClick={() => pickTab('tickets')}
+        >
+          tickets
+        </button>
+        <button
+          className={['tab-btn', activeTab === 'evidence' && 'tab-btn--active']
+            .filter(Boolean)
+            .join(' ')}
+          onClick={() => pickTab('evidence')}
+        >
+          evidence
+        </button>
+      </div>
 
-          {activeTab === 'overview' ? (
-            <>
-              <UsageSection repoSessions={repoSessions} repoPath={repoPath} />
-              <section
-                className={[
-                  'dashboard-section',
-                  'dashboard-section--scroll',
-                  prHasOverflow && 'has-overflow',
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-                ref={prScrollRef}
+      {activeTab === 'overview' ? (
+        data && !data.isGitRepo ? (
+          <div className="non-git-notice">
+            <span className="non-git-msg">not a git repository</span>
+            <div className="cta-row">
+              <TuiButton
+                variant="primary"
+                disabled={creatingTerminal}
+                onClick={() => {
+                  setTerminalError(null);
+                  setCreatingTerminal(true);
+                  void createAgentSession({
+                    type: 'terminal',
+                    repoPath,
+                    cwd: repoPath,
+                  }).then(({ session, error }) => {
+                    setCreatingTerminal(false);
+                    if (error && !session) {
+                      setTerminalError(
+                        error instanceof Error
+                          ? error.message
+                          : 'failed to open terminal'
+                      );
+                    } else if (session) {
+                      onSessionCreated?.(session.id);
+                    }
+                  });
+                }}
               >
-                <div className="section-heading">open pull requests</div>
-                <PrListBody
-                  data={data}
-                  isLoading={isLoading}
-                  isError={isError}
-                  workspaceName={workspaceName}
-                  searchQuery={searchQuery}
-                  processedPrs={processedPrs}
-                  onSearchChange={setSearchQuery}
-                  onOpenPrSession={onOpenPrSession}
-                  onPrAction={onPrAction}
-                />
-              </section>
-              <ActivitySection data={data} isLoading={isLoading} />
-            </>
-          ) : (
-            <TicketsPanel onStartWork={setStartWorkIssue} />
-          )}
-        </>
+                {creatingTerminal ? 'opening...' : '+ open terminal'}
+              </TuiButton>
+            </div>
+            {terminalError && <p className="non-git-error">{terminalError}</p>}
+          </div>
+        ) : (
+          <>
+            <UsageSection repoSessions={repoSessions} repoPath={repoPath} />
+            <section
+              className={[
+                'dashboard-section',
+                'dashboard-section--scroll',
+                prHasOverflow && 'has-overflow',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              ref={prScrollRef}
+            >
+              <div className="section-heading">open pull requests</div>
+              <PrListBody
+                data={data}
+                isLoading={isLoading}
+                isError={isError}
+                workspaceName={workspaceName}
+                searchQuery={searchQuery}
+                processedPrs={processedPrs}
+                onSearchChange={setSearchQuery}
+                onOpenPrSession={onOpenPrSession}
+                onPrAction={onPrAction}
+              />
+            </section>
+            <ActivitySection data={data} isLoading={isLoading} />
+          </>
+        )
+      ) : activeTab === 'tickets' ? (
+        <TicketsPanel onStartWork={setStartWorkIssue} />
+      ) : (
+        <WorkspaceEvidenceDashboard
+          key={repoPath}
+          repoPath={repoPath}
+          workspaceName={workspaceName}
+        />
       )}
       <div className="cta-row">
         <TuiButton variant="primary" onClick={onNewSession}>

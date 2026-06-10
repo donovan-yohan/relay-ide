@@ -188,7 +188,7 @@ describe('RepoDashboard ticket flow', () => {
     });
 
     const ticketsTab = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Tickets'
+      (button) => button.textContent === 'tickets'
     );
     expect(ticketsTab).toBeTruthy();
 
