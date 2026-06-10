@@ -114,10 +114,19 @@ function ArtifactCard({
         )}
       </div>
       <div className="evidence-artifact__actions">
+        {/* #890 contract: copy/export are public-only; CLI 403s identically — UI
+            must match instead of erroring. Private artifacts disable the button. */}
         <button
           className="evidence-artifact__action"
-          onClick={handleCopy}
-          disabled={copyState.kind === 'copying'}
+          onClick={meta.visibility === 'public' ? handleCopy : undefined}
+          disabled={
+            meta.visibility !== 'public' || copyState.kind === 'copying'
+          }
+          title={
+            meta.visibility !== 'public'
+              ? 'private artifact — copy/export requires public visibility'
+              : undefined
+          }
         >
           {copyState.kind === 'copying' ? 'copying' : 'copy summary'}
         </button>

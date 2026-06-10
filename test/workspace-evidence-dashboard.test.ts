@@ -321,4 +321,42 @@ describe('WorkspaceEvidenceDashboard', () => {
       container!.querySelector('[data-track="evidence.sessions"]')
     ).toBeTruthy();
   });
+
+  it('disables copy button with private-artifact title for a private artifact', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
+    mocks.artifactsByContext = {
+      'wc-1': { data: [artifactEnvelope({ visibility: 'private' })] },
+    };
+    await renderDashboard('/repo');
+    const card = container!.querySelector(
+      '[data-track="evidence.artifact-card"]'
+    );
+    const copyBtn = Array.from(card!.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('copy summary')
+    );
+    expect(copyBtn).toBeTruthy();
+    expect((copyBtn as HTMLButtonElement).disabled).toBe(true);
+    expect((copyBtn as HTMLButtonElement).title).toBe(
+      'private artifact — copy/export requires public visibility'
+    );
+  });
+
+  it('renders copy button enabled for a public artifact', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
+    mocks.artifactsByContext = {
+      'wc-1': { data: [artifactEnvelope({ visibility: 'public' })] },
+    };
+    await renderDashboard('/repo');
+    const card = container!.querySelector(
+      '[data-track="evidence.artifact-card"]'
+    );
+    const copyBtn = Array.from(card!.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('copy summary')
+    );
+    expect(copyBtn).toBeTruthy();
+    expect((copyBtn as HTMLButtonElement).disabled).toBe(false);
+    expect((copyBtn as HTMLButtonElement).title).toBeFalsy();
+  });
 });
