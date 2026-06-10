@@ -1396,7 +1396,16 @@ export async function fetchDashboard(repoPath: string): Promise<DashboardData> {
       hasGhCli: !raw.pullRequests?.error,
     };
   } catch (err) {
-    if (err instanceof HttpError && err.code === 'NOT_GIT') {
+    // The /workspaces/dashboard handler responds to a non-git directory with
+    // `{ error: 'not_git_repo', code: 'NOT_GIT' }`. httpErrorFromResponse
+    // derives HttpError.code from the string `error` field (taking precedence
+    // over the structured `code`), so the parsed code is 'not_git_repo' — not
+    // 'NOT_GIT'. Match both so the non-git path (and the evidence-tab default
+    // it drives) fires regardless of which field the error parser surfaces.
+    if (
+      err instanceof HttpError &&
+      (err.code === 'not_git_repo' || err.code === 'NOT_GIT')
+    ) {
       return {
         isGitRepo: false,
         prs: [],

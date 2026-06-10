@@ -77,14 +77,17 @@ export function workspaceEvidenceSectionState(
   if (!ctx.hasWorkspaceSelected) return 'no-workspace';
   if (!ctx.backendConnected) return 'offline';
   if (!root) return 'no-root';
-  if (root.status === 'offline' || root.status === 'unavailable') return 'offline';
-  if (root.status === 'permission-denied') return 'permission-denied';
+  // A deleted root path surfaces as status='unavailable' with a NOT_FOUND
+  // reason. Check the reason before mapping 'unavailable' → 'offline' so the
+  // missing-root case is not mistaken for an offline node.
   if (
     root.unavailableReason === 'WORKSPACE_EVIDENCE_ROOT_NOT_FOUND' ||
     root.capabilities.reason === 'WORKSPACE_EVIDENCE_ROOT_NOT_FOUND'
   ) {
     return 'missing-root';
   }
+  if (root.status === 'offline' || root.status === 'unavailable') return 'offline';
+  if (root.status === 'permission-denied') return 'permission-denied';
   if (root.status === 'unsupported' || !root.capabilities.list) {
     return 'unsupported';
   }

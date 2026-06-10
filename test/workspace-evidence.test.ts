@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
@@ -141,6 +142,29 @@ describe('workspace evidence router', () => {
     expect(res.body.roots.every((root) => root.capabilities.write === false)).toBe(true);
     expect(res.body.roots.find((root) => root.path === worktree)?.ref.workspaceId).toBe('ws_a');
     expect(res.body.roots.find((root) => root.path === plain)?.nodeId).toBe(DEFAULT_LOCAL_NODE_ID);
+  });
+
+  it('populates repo.currentBranch for an available git-backed root (#897 BUG 4)', async () => {
+    const repo = tmpRoot();
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+    git('init', '-b', 'evidence-branch');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(repo, 'README.md'), '# repo\n');
+    git('add', '.');
+    git('commit', '-m', 'init');
+
+    const { port } = await listen(
+      createWorkspaceEvidenceRouter({ getConfig: () => asConfig([repo]) })
+    );
+
+    const res = await getJson<{ roots: WorkspaceEvidenceRoot[] }>(port, '/workspace-evidence/roots');
+    expect(res.status).toBe(200);
+    const root = res.body.roots.find((r) => r.path === repo);
+    expect(root?.kind).toBe('repo');
+    expect(root?.status).toBe('available');
+    expect(root?.repo?.currentBranch).toBe('evidence-branch');
   });
 
   it('exposes production remote node home roots with offline/online route state', async () => {

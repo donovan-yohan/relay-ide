@@ -164,6 +164,32 @@ describe('workspaceEvidenceSectionState', () => {
       )
     ).toBe('missing-root');
   });
+
+  it('prioritizes missing-root over offline for a deleted root path (live payload)', () => {
+    // Exactly what the server returns when a configured root path no longer
+    // exists on disk: status='unavailable' AND the NOT_FOUND reason.
+    expect(
+      workspaceEvidenceSectionState(
+        makeRoot({
+          status: 'unavailable',
+          unavailableReason: 'WORKSPACE_EVIDENCE_ROOT_NOT_FOUND',
+        }),
+        ctx
+      )
+    ).toBe('missing-root');
+  });
+
+  it('still returns offline for a genuinely offline node (no NOT_FOUND reason)', () => {
+    expect(
+      workspaceEvidenceSectionState(
+        makeRoot({
+          status: 'offline',
+          unavailableReason: 'WORKSPACE_EVIDENCE_NODE_OFFLINE',
+        }),
+        ctx
+      )
+    ).toBe('offline');
+  });
 });
 
 describe('mapPreviewToRenderKind', () => {

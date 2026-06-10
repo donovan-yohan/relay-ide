@@ -7,6 +7,7 @@ import type { RequestHandler, Response } from 'express';
 import express from 'express';
 
 import { executeLocalFileRpc } from './file-rpc.js';
+import { getCurrentBranch } from './git.js';
 import type { Config } from './types.js';
 import type { HubNodeSummary, RelayNodeError } from '../shared/relay-node-protocol.js';
 import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../shared/relay-node-protocol.js';
@@ -137,6 +138,28 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+// Build the git-specific `repo` block for a local root. For git-backed roots
+// that are actually reachable we resolve the current branch so the dashboard
+// can render its branch decoration. Branch lookup is read-only and best-effort:
+// getCurrentBranch returns null (never throws) on a detached HEAD or git
+// failure, and we only probe when the root is available to avoid wasted
+// subprocesses. Returns undefined for plain directories (no repo block).
+async function buildLocalRepoInfo(
+  absolute: string,
+  kind: WorkspaceEvidenceRoot['kind'],
+  rootStatus: WorkspaceEvidenceRoot['status']
+): Promise<NonNullable<WorkspaceEvidenceRoot['repo']> | undefined> {
+  if (kind !== 'repo' && kind !== 'worktree') return undefined;
+  const currentBranch =
+    rootStatus === 'available' ? await getCurrentBranch(absolute) : null;
+  return {
+    repoPath: absolute,
+    repoInstanceId: createRepoInstanceId(DEFAULT_LOCAL_NODE_ID, absolute),
+    isGitRepo: true,
+    ...(currentBranch ? { currentBranch } : {}),
+  };
+}
+
 async function buildLocalRoot(rootPath: string, workspaceId?: string): Promise<WorkspaceEvidenceRoot> {
   const absolute = path.resolve(rootPath);
   let rootStats: Stats | null = null;
@@ -176,6 +199,7 @@ async function buildLocalRoot(rootPath: string, workspaceId?: string): Promise<W
   const backing: WorkspaceEvidenceRoot['backing'] = kind === 'worktree' ? 'worktree' : kind === 'repo' ? 'repo' : 'directory';
   const ref = localRootRef(absolute, kind);
   if (workspaceId) ref.workspaceId = workspaceId;
+  const repoInfo = await buildLocalRepoInfo(absolute, kind, rootStatus);
   const root: WorkspaceEvidenceRoot = {
     ref,
     name: path.basename(absolute) || absolute,
@@ -197,15 +221,7 @@ async function buildLocalRoot(rootPath: string, workspaceId?: string): Promise<W
           },
     ...(rootUnavailableReason ? { unavailableReason: rootUnavailableReason } : {}),
     ...(rootMessage ? { message: rootMessage } : {}),
-    ...(kind === 'repo' || kind === 'worktree'
-      ? {
-          repo: {
-            repoPath: absolute,
-            repoInstanceId: createRepoInstanceId(DEFAULT_LOCAL_NODE_ID, absolute),
-            isGitRepo: true,
-          },
-        }
-      : {}),
+    ...(repoInfo ? { repo: repoInfo } : {}),
     ...(kind === 'worktree'
       ? {
           worktree: {
