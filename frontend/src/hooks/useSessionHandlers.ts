@@ -16,9 +16,12 @@ import {
   fetchWorktreeStatus,
   killSession,
   deleteWorktree,
-  renameSession as renameSessionApi,
   launchWorkspaceSession,
 } from '../lib/api.js';
+import {
+  executeSessionKillAction,
+  executeSessionRenameAction,
+} from '../lib/actions/session-lifecycle.js';
 import type { BenchCreatePayload } from '../lib/state/view-tree.js';
 import {
   derivePrAction,
@@ -90,7 +93,16 @@ export function useSessionHandlers({
     const id = state.activeSessionId;
     const session = id ? resolveSessionByKey(state.sessions, id) : undefined;
     if (name?.trim() && session) {
-      await renameSessionApi(session.id, name.trim());
+      // Route through the shared sessions.rename executor; passing the owning
+      // node lets the default api executor keep its node-aware PATCH routing.
+      const result = await executeSessionRenameAction({
+        id: session.id,
+        displayName: name.trim(),
+        ...(session.nodeId ? { nodeId: session.nodeId } : {}),
+      });
+      if (!result.ok) {
+        logger.error('Failed to rename session:', result.error);
+      }
     }
   }, []);
 
@@ -897,10 +909,15 @@ export function useSessionHandlers({
         sessionId: localSessionId,
         nodeId: targetNodeId,
       } = resolveSessionCloseTarget(state.sessions, sessionId, nodeId);
-      // Kill session via API, then refresh
-      void killSession(localSessionId, targetNodeId)
-        .catch((error) => {
-          logger.error('Failed to close session:', error);
+      // Close = kill + tab-selection UI. Route the kill through the shared
+      // sessions.kill executor with the resolved owning node, then refresh
+      // regardless of outcome. Tab selection below stays synchronous so the UI
+      // advances without waiting on the kill.
+      void executeSessionKillAction({ id: localSessionId, nodeId: targetNodeId })
+        .then((result) => {
+          if (!result.ok) {
+            logger.error('Failed to close session:', result.error);
+          }
         })
         .finally(() => useSessionsStore.getState().refreshAll());
       const currentActiveSessionId = state.activeSessionId;
