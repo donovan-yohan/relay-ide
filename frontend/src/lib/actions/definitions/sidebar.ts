@@ -1,4 +1,14 @@
-import type { ActionMeta } from '../types.js';
+import type { ActionContext, ActionMeta } from '../types.js';
+import {
+  sessionRenameActionAvailability,
+  sessionRenameActionDescriptor,
+} from '../session-lifecycle.js';
+
+// #869: sidebar.rename-session collapses into the sessions.rename descriptor —
+// same stable command and executor as session.rename, just a different entry point.
+const renameDescriptor = sessionRenameActionDescriptor();
+const renameRequiresSession = (ctx: ActionContext) =>
+  sessionRenameActionAvailability({ sessionMissing: !ctx.sessionId }).reason;
 
 export const sidebarCollapse: ActionMeta = {
   id: 'sidebar.collapse',
@@ -33,6 +43,8 @@ export const sidebarRenameSession: ActionMeta = {
   category: 'sidebar',
   icon: '~',
   when: (ctx) => !!ctx.sessionId,
+  disabledReason: renameRequiresSession,
+  descriptor: renameDescriptor,
 };
 
 export const sidebarDeleteWorktree: ActionMeta = {

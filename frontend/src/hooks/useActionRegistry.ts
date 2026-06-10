@@ -93,7 +93,8 @@ import { cliGatewayCommandActions } from '../lib/actions/definitions/cli-gateway
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
-import { ConflictError, killSession, setDefaultYolo } from '../lib/api.js';
+import { ConflictError, setDefaultYolo } from '../lib/api.js';
+import { executeSessionKillAction } from '../lib/actions/session-lifecycle.js';
 import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
 import type { Repo } from '../lib/types.js';
@@ -210,10 +211,15 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
               useSessionsStore.getState().sessions,
               id
             );
-            try {
-              await killSession(sessionId, nodeId);
-            } catch (err) {
-              logger.error('Failed to kill session', err);
+            // Route through the shared sessions.kill executor. Resolving the
+            // owning node here and passing it in the input keeps the existing
+            // owning-node DELETE routing intact via the default api executor.
+            const result = await executeSessionKillAction({
+              id: sessionId,
+              nodeId,
+            });
+            if (!result.ok) {
+              logger.error('Failed to kill session', result.error);
             }
             await useSessionsStore.getState().refreshAll();
           }

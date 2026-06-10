@@ -3,6 +3,12 @@ import {
   sessionCreateActionAvailability,
   sessionCreateActionDescriptor,
 } from '../session-create.js';
+import {
+  sessionKillActionAvailability,
+  sessionKillActionDescriptor,
+  sessionRenameActionAvailability,
+  sessionRenameActionDescriptor,
+} from '../session-lifecycle.js';
 
 const launchDescriptor = sessionCreateActionDescriptor();
 const launchRequiresContext = (ctx: ActionContext) =>
@@ -10,6 +16,17 @@ const launchRequiresContext = (ctx: ActionContext) =>
     ...(ctx.workspacePath ? { workspacePath: ctx.workspacePath } : {}),
     ...(ctx.cwd ? { cwd: ctx.cwd } : {}),
   }).reason;
+
+// #869: session.kill is the stable destructive lifecycle verb. session.close-active
+// bridges to the SAME descriptor — close is kill plus tab-selection UI, with no
+// separate sessions.close command in the manifest.
+const killDescriptor = sessionKillActionDescriptor();
+const killRequiresSession = (ctx: ActionContext) =>
+  sessionKillActionAvailability({ sessionMissing: !ctx.sessionId }).reason;
+
+const renameDescriptor = sessionRenameActionDescriptor();
+const renameRequiresSession = (ctx: ActionContext) =>
+  sessionRenameActionAvailability({ sessionMissing: !ctx.sessionId }).reason;
 
 export const sessionNewAgent: ActionMeta = {
   id: 'session.new-agent',
@@ -42,6 +59,8 @@ export const sessionCloseActive: ActionMeta = {
   icon: '×',
   shortcut: { key: 'mod+w' },
   when: (ctx) => !!ctx.sessionId,
+  disabledReason: killRequiresSession,
+  descriptor: killDescriptor,
 };
 
 export const sessionKill: ActionMeta = {
@@ -51,6 +70,8 @@ export const sessionKill: ActionMeta = {
   category: 'session',
   icon: '■',
   when: (ctx) => !!ctx.sessionId,
+  disabledReason: killRequiresSession,
+  descriptor: killDescriptor,
 };
 
 export const sessionStartOnRepo: ActionMeta = {
@@ -98,6 +119,8 @@ export const sessionRename: ActionMeta = {
   category: 'session',
   icon: '~',
   when: (ctx) => !!ctx.sessionId,
+  disabledReason: renameRequiresSession,
+  descriptor: renameDescriptor,
 };
 
 // #630: command-palette entry that opens the EnvironmentPicker (#627) and

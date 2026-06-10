@@ -1687,13 +1687,22 @@ export async function killSession(
 
 export async function renameSession(
   id: string,
-  displayName: string
-): Promise<void> {
-  await fetch('/sessions/' + id, {
+  displayName: string,
+  nodeId?: NodeId | string
+): Promise<SessionSummary> {
+  const sessionPath =
+    nodeId && nodeId !== DEFAULT_LOCAL_NODE_ID
+      ? `/hub/nodes/${encodeURIComponent(nodeId)}/sessions/${encodeURIComponent(id)}`
+      : `/sessions/${encodeURIComponent(id)}`;
+  const res = await fetch(sessionPath, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ displayName }),
   });
+  // The local PATCH 404 body is `{error:'Session not found'}` (non-envelope);
+  // httpErrorFromResponse normalizes both that and routed RelayError envelopes.
+  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to rename session');
+  return jsonEither<SessionSummary>(res);
 }
 
 export async function fetchWorktreeStatus(

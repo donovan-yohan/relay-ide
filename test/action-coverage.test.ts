@@ -201,6 +201,42 @@ describe('Action Coverage', () => {
     });
   });
 
+  it('bridges sessions.kill as a destructive, confirmation-gated Relay action descriptor', () => {
+    const action = cliGatewayCommandActions.find(
+      (entry) => entry.relayCommand.name === 'sessions.kill'
+    );
+    expect(action).toBeTruthy();
+    const descriptor = action!.descriptor;
+
+    expect(descriptor.id).toBe('sessions.kill');
+    expect(descriptor.stable).toBe(true);
+    expect(descriptor.sideEffect).toBe('destructive');
+    expect(descriptor.confirmation.required).toBe(true);
+    expect(descriptor.contract).toMatchObject({
+      relayCommandName: 'sessions.kill',
+      stable: true,
+      source: 'shared/relay-command-manifest.ts',
+    });
+  });
+
+  it('bridges sessions.rename as a non-destructive write Relay action descriptor', () => {
+    const action = cliGatewayCommandActions.find(
+      (entry) => entry.relayCommand.name === 'sessions.rename'
+    );
+    expect(action).toBeTruthy();
+    const descriptor = action!.descriptor;
+
+    expect(descriptor.id).toBe('sessions.rename');
+    expect(descriptor.stable).toBe(true);
+    expect(descriptor.sideEffect).toBe('write');
+    expect(descriptor.confirmation.required).toBe(false);
+    expect(descriptor.contract).toMatchObject({
+      relayCommandName: 'sessions.rename',
+      stable: true,
+      source: 'shared/relay-command-manifest.ts',
+    });
+  });
+
   it('projects UI-only actions without promoting them to stable Relay commands', () => {
     const descriptor = actionDescriptorFromMeta(terminalScrollTop, {
       view: 'session',

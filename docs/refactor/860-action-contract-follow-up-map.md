@@ -25,6 +25,27 @@ The first converted vertical is session launch through the stable command id `se
 
 This documents only the converted `sessions.create` launch family. Other action groups below remain follow-up work.
 
+## #869 converted lifecycle slice
+
+The second converted vertical is session close/kill/rename through the stable command ids `sessions.kill` and `sessions.rename`:
+
+- Stable CLI/API commands: `relay-ide v1 sessions kill --id <session-id> --json` and `relay-ide v1 sessions rename --id <session-id> --display-name <display-name> --json`
+- Shared descriptor source: `sessionKillActionDescriptor()` / `sessionRenameActionDescriptor()` in `frontend/src/lib/actions/session-lifecycle.ts`, generated from `relayCommandDefinition('sessions.kill')` and `relayCommandDefinition('sessions.rename')`
+- Browser action metadata using the descriptors: `session.close-active` and `session.kill` bridge to `sessions.kill`; `session.rename` and `sidebar.rename-session` bridge to `sessions.rename`
+- Typed input: `{ id, confirmationToken? }` for kill and `{ id, displayName }` for rename, matching the `sessions.kill` / `sessions.rename` input schemas
+- Typed success result: the normal v1 `RelayCliGatewayEnvelope` with `ok`, `contract`, `contractVersion`, `command`, and `data` carrying session identity. Kill data is `{ ok, killed, id, sessionId, requestedId, nodeId, globalSessionId }`; rename data is `{ renamed, id, sessionId, requestedId, nodeId, globalSessionId, displayName, session? }`
+- Typed failure result: the normal v1 gateway error envelope from `gatewayError('sessions.kill', ...)` / `gatewayError('sessions.rename', ...)`, including stable codes `NOT_FOUND`, `NODE_OFFLINE`, `FORBIDDEN`, `CONFIRMATION_REQUIRED`, and `UPSTREAM_ERROR`. Session-control `reasonCode`s (`SESSION_NOT_FOUND`, `SESSION_DISCONNECTED`, `CONTROL_STATE_STALE`, `CONTROL_STATE_UNKNOWN`, `CAPABILITY_REQUIRED`) ride on `error.details.reasonCode`; stale/unknown control state and disconnected/unsupported-mode sessions surface as gateway `FORBIDDEN`
+- Confirmation/side-effect: `sessions.kill` is a destructive command (`sideEffect: 'destructive'`, `confirmation.required: true`); execution delegates to api.ts `killSession`, whose `registerConfirmationRetry` loop remains the single confirmation-token path. `sessions.rename` is a non-destructive write (`sideEffect: 'write'`, `confirmation.required: false`)
+- Availability/capability behavior: `sessionKillActionAvailability()` / `sessionRenameActionAvailability()` report the shared availability shape with the `session:read` + `session:control:kill` / `session:control:rename` capability hints. Missing session, offline node, unsupported session mode, and stale/unknown control state map to `unavailable`
+
+### `session.close-active` → `sessions.kill` split rationale
+
+`close` is `kill` plus a tab-selection UI layered on top, not a distinct verb. Closing the active tab destroys the underlying session, which is exactly the `sessions.kill` destructive contract; the only extra behavior is selecting the next tab in the web UI, which stays browser-only. No new `sessions.close` command is introduced. `sessions.detach` already owns the non-destructive close path (handle-release only) and is untouched by this slice.
+
+### `sidebar.rename-session` → `sessions.rename` collapse
+
+`sidebar.rename-session` was a duplicate browser-only rename affordance. It collapses into the single `sessions.rename` descriptor and shares the same executor; there is no separate sidebar rename command. The sidebar entry point remains a UI affordance over the one stable rename contract.
+
 ## Follow-up issues
 
 | Issue                                                         | Group                                    | Owner area                          | Gap type                | Scope                                                                                                                                                                                     | Parent closeout impact                                                           |
