@@ -33,6 +33,35 @@
   gap: 6px;
 }
 
+.hub-node-panel-state {
+  border: 1px solid var(--border);
+  padding: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+.hub-node-panel-state--error {
+  color: var(--status-warning);
+}
+
+.hub-node-panel-state button {
+  margin-left: 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+
+.hub-node-panel-state button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .hub-node-card {
   border: 1px solid var(--border);
   border-radius: 0;
@@ -156,7 +185,8 @@
 }
 
 .hub-node-readiness,
-.hub-node-warning {
+.hub-node-warning,
+.hub-node-locality {
   margin-top: 6px;
   padding-left: var(--icon-slot-width);
   font-size: var(--font-size-xs);
@@ -177,6 +207,78 @@
 
 .hub-node-warning {
   color: var(--status-warning);
+}
+
+.hub-node-locality {
+  color: var(--text-muted);
+}
+
+.hub-node-locality-banner {
+  margin-bottom: 8px;
+  border: 1px solid color-mix(in srgb, var(--status-warning) 45%, var(--border));
+  padding: 8px;
+  color: var(--status-warning);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.hub-node-locality--empty {
+  color: var(--text-muted);
+}
+
+.hub-node-locality--unavailable {
+  color: var(--status-warning);
+}
+
+.hub-node-locality-summary {
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.hub-node-locality-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hub-node-locality-repo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  min-width: 0;
+  padding: 4px 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+.hub-node-locality-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-node-locality-branch {
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.hub-node-locality-path {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-node-locality-worktrees,
+.hub-node-locality-more {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
 }
 
 .hub-node-capabilities {

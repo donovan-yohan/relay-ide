@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   useUiStore,
   MIN_SIDEBAR_WIDTH,
@@ -9,9 +9,18 @@ import {
 } from '../lib/stores/ui.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import type { Repo, WorktreeInfo, PullRequest } from '../lib/types.js';
-import { fetchOrgPrs } from '../lib/api.js';
+import {
+  fetchHubNodes,
+  fetchOrgPrs,
+  fetchRepoInventory,
+  HttpError,
+} from '../lib/api.js';
+import {
+  deriveHubNodeDashboardRows,
+  deriveNodeRepoLocality,
+  repoLocalityMapSummary,
+} from '../lib/state/node-dashboard.js';
 import WorkspaceGroup from './WorkspaceGroup.js';
-import { HubNodeDashboardPanel } from './HubNodeDashboard.js';
 import RepoItem from './RepoItem.js';
 import { SessionHistoryPanel } from './SessionHistoryPanel.js';
 import { ViewSpineTree } from './ViewSpineTree.js';
@@ -74,6 +83,69 @@ function useSidebarResize() {
   }, []);
 
   return { startResize, resetWidth };
+}
+
+function nodeQueryErrorLabel(error: unknown): string {
+  if (error instanceof HttpError && error.status === 401)
+    return 'auth required';
+  if (error instanceof Error && error.message) return error.message;
+  return 'unavailable';
+}
+
+interface NodesSidebarSummaryProps {
+  onOpenNodes: () => void;
+}
+
+function NodesSidebarSummary({ onOpenNodes }: NodesSidebarSummaryProps) {
+  const queryClient = useQueryClient();
+  const nodesQuery = useQuery({
+    queryKey: ['hub-nodes'],
+    queryFn: fetchHubNodes,
+    staleTime: Infinity,
+    refetchOnWindowFocus: 'always',
+    retry: false,
+  });
+  const inventoryQuery = useQuery({
+    queryKey: ['repo-inventory'],
+    queryFn: fetchRepoInventory,
+    staleTime: 60_000,
+    retry: false,
+    enabled: false,
+    initialData: () => queryClient.getQueryData(['repo-inventory']),
+  });
+  const nodes = useMemo(() => nodesQuery.data ?? [], [nodesQuery.data]);
+  const rows = useMemo(() => deriveHubNodeDashboardRows(nodes), [nodes]);
+  const localityByNode = useMemo(
+    () => deriveNodeRepoLocality(inventoryQuery.data),
+    [inventoryQuery.data]
+  );
+  const readyCount = rows.filter((row) => row.attachable).length;
+  const attentionCount = rows.filter((row) => !row.attachable).length;
+  const locality = inventoryQuery.isError
+    ? 'repo locality unavailable'
+    : repoLocalityMapSummary(localityByNode);
+  const summary = nodesQuery.isLoading
+    ? 'loading node registry...'
+    : nodesQuery.isError
+      ? nodeQueryErrorLabel(nodesQuery.error)
+      : nodes.length === 0
+        ? 'no paired nodes yet'
+        : `${readyCount}/${nodes.length} ready${attentionCount > 0 ? ` · ${attentionCount} need attention` : ''}`;
+
+  return (
+    <button
+      type="button"
+      className="sidebar-nodes-summary"
+      onClick={onOpenNodes}
+      aria-label="open nodes section"
+    >
+      <span className="sidebar-nodes-summary-main">
+        <span className="sidebar-nodes-summary-title">nodes</span>
+        <span className="sidebar-nodes-summary-status">{summary}</span>
+      </span>
+      <span className="sidebar-nodes-summary-meta">{locality}</span>
+    </button>
+  );
 }
 
 // ── Sortable repo wrapper for DnD ──
@@ -457,6 +529,14 @@ export function Sidebar({
   const handleHomeBrand = useCallback(() => {
     useUiStore.getState().setActiveRepoPath(null);
     useUiStore.getState().setAnalyticsView(null);
+    useUiStore.getState().setOrgDashboardTab('active-work');
+    useSessionsStore.getState().setActiveSessionId(null);
+    closeSidebar();
+  }, [closeSidebar]);
+  const handleOpenNodes = useCallback(() => {
+    useUiStore.getState().setActiveRepoPath(null);
+    useUiStore.getState().setAnalyticsView(null);
+    useUiStore.getState().setOrgDashboardTab('nodes');
     useSessionsStore.getState().setActiveSessionId(null);
     closeSidebar();
   }, [closeSidebar]);
@@ -559,7 +639,7 @@ export function Sidebar({
             </div>
           ) : (
             <div className="sidebar-workspace-list">
-              <HubNodeDashboardPanel />
+              <NodesSidebarSummary onOpenNodes={handleOpenNodes} />
               <WorkspaceGroupsList
                 sortedGroups={sortedGroups}
                 reposByPath={reposByPath}
@@ -626,7 +706,10 @@ export function Sidebar({
               + add project
             </TuiButton>
             <button
-              className={['sidebar-settings-icon-btn', analyticsView !== null && 'active']
+              className={[
+                'sidebar-settings-icon-btn',
+                analyticsView !== null && 'active',
+              ]
                 .filter(Boolean)
                 .join(' ')}
               data-track="sidebar.analytics"

@@ -7,6 +7,7 @@ import {
   savePreset,
   deletePreset,
 } from '../lib/api.js';
+import { useUiStore, type OrgDashboardTab } from '../lib/stores/ui.js';
 import { sortPrs } from '../lib/pr-utils.js';
 import type {
   PullRequest,
@@ -16,6 +17,7 @@ import type {
 } from '../lib/types.js';
 import TicketsPanel from './TicketsPanel.js';
 import ActiveWorkSurface from './ActiveWorkSurface.js';
+import { HubNodeDashboardPanel } from './HubNodeDashboard.js';
 import SecurityAuditPanel from './SecurityAuditPanel.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import { TuiButton } from './TuiButton.js';
@@ -28,8 +30,6 @@ export interface OrgDashboardProps {
   onOpenPrSession: (pr: PullRequest) => void;
   onPrAction: (pr: PullRequest) => void;
 }
-
-type ActiveTab = 'active-work' | 'prs' | 'tickets' | 'audit';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -392,13 +392,42 @@ function PrsTab({ onOpenPrSession, onPrAction }: PrsTabProps) {
   );
 }
 
+function tabButtonClass(
+  activeTab: OrgDashboardTab,
+  target: OrgDashboardTab
+): string {
+  return ['tab-btn', activeTab === target ? 'tab-btn--active' : '']
+    .filter(Boolean)
+    .join(' ');
+}
+
+// ── NodesTab sub-component ────────────────────────────────────────────────────
+
+function NodesTab() {
+  return (
+    <section className="nodes-section" aria-label="nodes management">
+      <div className="nodes-section-header">
+        <div>
+          <div className="nodes-section-title">nodes</div>
+          <div className="nodes-section-subtitle">
+            hub registry, readiness, and repo/worktree locality reported by each
+            node
+          </div>
+        </div>
+      </div>
+      <HubNodeDashboardPanel />
+    </section>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function OrgDashboard({
   onOpenPrSession,
   onPrAction,
 }: OrgDashboardProps) {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('active-work');
+  const activeTab = useUiStore((s) => s.orgDashboardTab);
+  const setActiveTab = useUiStore((s) => s.setOrgDashboardTab);
 
   return (
     <div className="org-dashboard">
@@ -408,48 +437,38 @@ export function OrgDashboard({
       {/* tab-strip uses raw buttons intentionally — underline-indicator navigation, not TuiButton actions */}
       <div className="tab-strip">
         <button
-          className={[
-            'tab-btn',
-            activeTab === 'active-work' ? 'tab-btn--active' : '',
-          ]
-            .filter(Boolean)
-            .join(' ')}
+          className={tabButtonClass(activeTab, 'active-work')}
           onClick={() => setActiveTab('active-work')}
         >
           active work
         </button>
         <button
-          className={['tab-btn', activeTab === 'prs' ? 'tab-btn--active' : '']
-            .filter(Boolean)
-            .join(' ')}
+          className={tabButtonClass(activeTab, 'nodes')}
+          onClick={() => setActiveTab('nodes')}
+        >
+          nodes
+        </button>
+        <button
+          className={tabButtonClass(activeTab, 'prs')}
           onClick={() => setActiveTab('prs')}
         >
           prs
         </button>
         <button
-          className={[
-            'tab-btn',
-            activeTab === 'tickets' ? 'tab-btn--active' : '',
-          ]
-            .filter(Boolean)
-            .join(' ')}
+          className={tabButtonClass(activeTab, 'tickets')}
           onClick={() => setActiveTab('tickets')}
         >
           tickets
         </button>
         <button
-          className={[
-            'tab-btn',
-            activeTab === 'audit' ? 'tab-btn--active' : '',
-          ]
-            .filter(Boolean)
-            .join(' ')}
+          className={tabButtonClass(activeTab, 'audit')}
           onClick={() => setActiveTab('audit')}
         >
           audit
         </button>
       </div>
       {activeTab === 'active-work' && <ActiveWorkSurface />}
+      {activeTab === 'nodes' && <NodesTab />}
       {activeTab === 'prs' && (
         <PrsTab onOpenPrSession={onOpenPrSession} onPrAction={onPrAction} />
       )}

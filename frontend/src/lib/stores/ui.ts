@@ -58,6 +58,13 @@ export type UtilityRailTab =
   | 'stats'
   | 'terminal';
 
+export type OrgDashboardTab =
+  | 'active-work'
+  | 'nodes'
+  | 'prs'
+  | 'tickets'
+  | 'audit';
+
 export interface WorkspaceReviewState {
   activeFilePath: string | null;
   diffSource: DiffSource;
@@ -191,7 +198,9 @@ export function loadViewSpinePins(): Set<string> {
     const parsed = JSON.parse(stored) as unknown;
     if (!Array.isArray(parsed)) return new Set();
     return new Set(
-      parsed.filter((id): id is string => typeof id === 'string' && id.length > 0)
+      parsed.filter(
+        (id): id is string => typeof id === 'string' && id.length > 0
+      )
     );
   } catch {
     return new Set();
@@ -330,7 +339,10 @@ function normalizeReviewState(
   const next = defaultReviewState();
   if (typeof legacyFilePath === 'string') next.activeFilePath = legacyFilePath;
   if (!value) return next;
-  if (typeof value.activeFilePath === 'string' || value.activeFilePath === null) {
+  if (
+    typeof value.activeFilePath === 'string' ||
+    value.activeFilePath === null
+  ) {
     next.activeFilePath = value.activeFilePath;
   }
   if (
@@ -380,7 +392,8 @@ function normalizePlacements(
   value: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>> | undefined
 ): Partial<Record<UtilityRailTab, UtilitySurfacePlacement>> | undefined {
   if (!value) return undefined;
-  const placements: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>> = {};
+  const placements: Partial<Record<UtilityRailTab, UtilitySurfacePlacement>> =
+    {};
   for (const tab of UTILITY_RAIL_TABS) {
     const placement = value[tab];
     if (isUtilitySurfacePlacement(placement)) placements[tab] = placement;
@@ -412,7 +425,9 @@ function normalizeUtilityRailState(
       : next.selectedRailTab;
   next.width = clampUtilityRailWidth(value.width ?? next.width);
 
-  const anchoredPaneWidths = normalizeAnchoredPaneWidths(value.anchoredPaneWidths);
+  const anchoredPaneWidths = normalizeAnchoredPaneWidths(
+    value.anchoredPaneWidths
+  );
   if (anchoredPaneWidths) next.anchoredPaneWidths = anchoredPaneWidths;
   const placements = normalizePlacements(value.placements);
   if (placements) next.placements = placements;
@@ -428,7 +443,9 @@ function normalizeUtilityRailState(
     next.branchBase = value.branchBase;
   }
 
-  const utilityTerminalIds = normalizeUtilityTerminalIds(value.utilityTerminalIds);
+  const utilityTerminalIds = normalizeUtilityTerminalIds(
+    value.utilityTerminalIds
+  );
   if (utilityTerminalIds) {
     next.utilityTerminalIds = utilityTerminalIds;
     next.selectedUtilityTerminalId = utilityTerminalIds.includes(
@@ -441,16 +458,17 @@ function normalizeUtilityRailState(
   return next;
 }
 
-function syncSelectedUtilityTerminal(
-  state: WorkspaceUtilityRailState
-): void {
+function syncSelectedUtilityTerminal(state: WorkspaceUtilityRailState): void {
   const ids = state.utilityTerminalIds ?? [];
   if (ids.length === 0) {
     delete state.utilityTerminalIds;
     delete state.selectedUtilityTerminalId;
     return;
   }
-  if (!state.selectedUtilityTerminalId || !ids.includes(state.selectedUtilityTerminalId)) {
+  if (
+    !state.selectedUtilityTerminalId ||
+    !ids.includes(state.selectedUtilityTerminalId)
+  ) {
     state.selectedUtilityTerminalId = ids[0]!;
   }
 }
@@ -583,6 +601,7 @@ export interface UiState {
   sendToTargetSessionId: string | null;
   lastChangedFiles: string[];
   analyticsView: AnalyticsView;
+  orgDashboardTab: OrgDashboardTab;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
   /** #732: view-spine MVP flag. Default false; backed by localStorage. */
@@ -620,6 +639,7 @@ export interface UiState {
   setFileDiffDefaultBranch: (branch: string) => void;
   setLastChangedFiles: (files: string[]) => void;
   setAnalyticsView: (v: AnalyticsView) => void;
+  setOrgDashboardTab: (tab: OrgDashboardTab) => void;
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
@@ -662,6 +682,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   activeFileTabKey: null,
   sendToTargetSessionId: null,
   analyticsView: null,
+  orgDashboardTab: 'active-work',
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
@@ -872,7 +893,10 @@ export const useUiStore = create<UiState>()((set, get) => ({
       (state) => {
         state.visible = true;
         if (!options?.preserveSelectedTab) state.selectedRailTab = 'review';
-        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        const current = normalizeReviewState(
+          state.review,
+          state.reviewFilePath
+        );
         const derived = deriveReviewStateFromBase(options?.base, current);
         const activeFilePath = options?.filePath ?? current.activeFilePath;
         const shouldResetHunkIndex =
@@ -883,7 +907,9 @@ export const useUiStore = create<UiState>()((set, get) => ({
           ...current,
           ...derived,
           activeFilePath,
-          currentHunkIndex: shouldResetHunkIndex ? -1 : current.currentHunkIndex,
+          currentHunkIndex: shouldResetHunkIndex
+            ? -1
+            : current.currentHunkIndex,
         };
         if (state.review.activeFilePath) {
           state.reviewFilePath = state.review.activeFilePath;
@@ -905,7 +931,10 @@ export const useUiStore = create<UiState>()((set, get) => ({
       workspacePath,
       get().utilityRailByWorkspace[workspacePath],
       (state) => {
-        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        const current = normalizeReviewState(
+          state.review,
+          state.reviewFilePath
+        );
         state.review = {
           ...current,
           activeFilePath: filePath,
@@ -927,7 +956,10 @@ export const useUiStore = create<UiState>()((set, get) => ({
       workspacePath,
       get().utilityRailByWorkspace[workspacePath],
       (state) => {
-        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        const current = normalizeReviewState(
+          state.review,
+          state.reviewFilePath
+        );
         state.review = { ...current, diffSource: source, currentHunkIndex: -1 };
       }
     );
@@ -943,7 +975,10 @@ export const useUiStore = create<UiState>()((set, get) => ({
       workspacePath,
       get().utilityRailByWorkspace[workspacePath],
       (state) => {
-        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        const current = normalizeReviewState(
+          state.review,
+          state.reviewFilePath
+        );
         state.review = {
           ...current,
           defaultBranch: branch || 'main',
@@ -963,7 +998,10 @@ export const useUiStore = create<UiState>()((set, get) => ({
       workspacePath,
       get().utilityRailByWorkspace[workspacePath],
       (state) => {
-        const current = normalizeReviewState(state.review, state.reviewFilePath);
+        const current = normalizeReviewState(
+          state.review,
+          state.reviewFilePath
+        );
         state.review = {
           ...current,
           currentHunkIndex: Math.max(-1, Math.trunc(index)),
@@ -1051,8 +1089,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
       workspacePath,
       current,
       (state) => {
-        state.utilityTerminalIds = (state.utilityTerminalIds ?? []).filter((id) =>
-          liveTerminalSessionIds.has(id)
+        state.utilityTerminalIds = (state.utilityTerminalIds ?? []).filter(
+          (id) => liveTerminalSessionIds.has(id)
         );
         syncSelectedUtilityTerminal(state);
       }
@@ -1068,6 +1106,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setFileDiffDefaultBranch: (branch) => set({ fileDiffDefaultBranch: branch }),
   setLastChangedFiles: (files) => set({ lastChangedFiles: files }),
   setAnalyticsView: (v) => set({ analyticsView: v }),
+  setOrgDashboardTab: (tab) => set({ orgDashboardTab: tab }),
   setActiveModal: (v) => set({ activeModal: v }),
 
   saveRightSidebarWidth: () =>
