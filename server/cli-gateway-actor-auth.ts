@@ -91,6 +91,7 @@ export interface CliGatewayActorValidationInput {
   token: string;
   capabilities: readonly RelayCapabilityBit[];
   scope?: ScopedActorCredentialScope;
+  deferWorkContextScope?: boolean;
   correlationId?: string;
 }
 
@@ -215,7 +216,10 @@ export function validateCliGatewayActorCredential(
     requiredCapabilities: [...input.capabilities],
     scope: {
       taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF,
-      ...scopeForValidation(input.scope),
+      ...scopeForValidation(
+        input.scope,
+        input.deferWorkContextScope ? { deferWorkContextScope: true } : {}
+      ),
     },
     ...(input.correlationId ? { correlationId: input.correlationId } : {}),
   });
@@ -404,7 +408,8 @@ export function rotateCliGatewayActorCredentialWithGrant(
 }
 
 function scopeForValidation(
-  scope: ScopedActorCredentialScope | undefined
+  scope: ScopedActorCredentialScope | undefined,
+  options: { deferWorkContextScope?: boolean } = {}
 ): HandshakeGrantValidationScope {
   const taskRef = taskRefForGrantValidation(scope?.taskRefs);
   return {
@@ -416,6 +421,7 @@ function scopeForValidation(
     ...(scope?.workContextIds?.[0]
       ? { workContextId: scope.workContextIds[0] }
       : {}),
+    ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
     ...(scope?.repoIds?.[0] ? { repoId: scope.repoIds[0] } : {}),
     ...(scope?.pathPrefixes?.[0] ? { path: scope.pathPrefixes[0] } : {}),
     ...(taskRef ? { taskRef } : {}),

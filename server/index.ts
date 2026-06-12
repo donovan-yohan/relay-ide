@@ -159,6 +159,7 @@ import {
   createWorkContextArtifactRouter,
   DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES,
   DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES,
+  readWorkContextArtifactQueryWorkContextId,
 } from './features/work-context-artifact-router.js';
 import {
   initWorkContextArtifactStore,
@@ -1705,7 +1706,8 @@ async function main(): Promise<void> {
       globalSessionIds?: string[];
       workContextIds?: string[];
     },
-    expectedCommand?: CliGatewayActorReadCommand
+    expectedCommand?: CliGatewayActorReadCommand,
+    options: { deferWorkContextScope?: boolean } = {}
   ): express.RequestHandler => {
     return (req, res, next) => {
       if (!isCliGatewayV1Request(req)) {
@@ -1734,6 +1736,7 @@ async function main(): Promise<void> {
           token: bearerActorToken(req),
           capabilities,
           ...(scope ? { scope } : {}),
+          ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
           ...(correlationId ? { correlationId } : {}),
         }
       );
@@ -1757,16 +1760,26 @@ async function main(): Promise<void> {
   };
 
   const requireCliGatewayReadAuth = (
-    expectedCommand?: CliGatewayActorReadCommand
+    expectedCommand?: CliGatewayActorReadCommand,
+    options: { deferWorkContextScope?: boolean } = {}
   ): express.RequestHandler =>
-    requireCliGatewayActorAuth(['session:read'], undefined, expectedCommand);
+    requireCliGatewayActorAuth(['session:read'], undefined, expectedCommand, options);
 
   const requireCliGatewayAuthForActorCommand = (
-    expectedCommand: CliGatewayActorReadCommand
+    expectedCommand: CliGatewayActorReadCommand,
+    options: {
+      scopeForRequest?: (req: express.Request) => { workContextIds?: string[] } | undefined;
+      deferWorkContextScope?: boolean;
+    } = {}
   ): express.RequestHandler => {
     return (req, res, next) => {
       if (isCliGatewayActorTokenRequest(req)) {
-        requireCliGatewayReadAuth(expectedCommand)(req, res, next);
+        requireCliGatewayActorAuth(
+          ['session:read'],
+          options.scopeForRequest?.(req),
+          expectedCommand,
+          { ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}) }
+        )(req, res, next);
         return;
       }
       requireCliGatewayAuth(req, res, next);
@@ -2081,16 +2094,32 @@ async function main(): Promise<void> {
       workContextStore,
     })
   );
+  const workContextScopeFromQuery = (req: express.Request): { workContextIds?: string[] } | undefined => {
+    const workContextId = readWorkContextArtifactQueryWorkContextId(req.query);
+    return workContextId ? { workContextIds: [workContextId] } : undefined;
+  };
   app.use(
     createWorkContextArtifactRouter({
       requireAuth: requireCliGatewayAuth,
       requireReadAuth: {
-        list: requireCliGatewayAuthForActorCommand('work-context-artifacts.list'),
-        show: requireCliGatewayAuthForActorCommand('work-context-artifacts.show'),
-        export: requireCliGatewayAuthForActorCommand('work-context-artifacts.export'),
-        handoffList: requireCliGatewayAuthForActorCommand('handoff-artifacts.list'),
-        handoffShow: requireCliGatewayAuthForActorCommand('handoff-artifacts.show'),
-        handoffCopy: requireCliGatewayAuthForActorCommand('handoff-artifacts.copy'),
+        list: requireCliGatewayAuthForActorCommand('work-context-artifacts.list', {
+          scopeForRequest: workContextScopeFromQuery,
+        }),
+        show: requireCliGatewayAuthForActorCommand('work-context-artifacts.show', {
+          deferWorkContextScope: true,
+        }),
+        export: requireCliGatewayAuthForActorCommand('work-context-artifacts.export', {
+          deferWorkContextScope: true,
+        }),
+        handoffList: requireCliGatewayAuthForActorCommand('handoff-artifacts.list', {
+          scopeForRequest: workContextScopeFromQuery,
+        }),
+        handoffShow: requireCliGatewayAuthForActorCommand('handoff-artifacts.show', {
+          deferWorkContextScope: true,
+        }),
+        handoffCopy: requireCliGatewayAuthForActorCommand('handoff-artifacts.copy', {
+          deferWorkContextScope: true,
+        }),
         doctor: requireCliGatewayAuthForActorCommand('work-context-artifacts.doctor'),
       },
       requireWriteAuth: requireCliGatewayWriteAuth,

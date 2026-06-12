@@ -126,6 +126,7 @@ export interface HandshakeGrantValidationScope {
   sessionId?: string;
   globalSessionId?: string;
   workContextId?: string;
+  deferWorkContextScope?: boolean;
   repoId?: string;
   path?: string;
   taskRef?: string;
