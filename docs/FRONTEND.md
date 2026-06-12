@@ -8,7 +8,7 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 - Vite builds `frontend/` to `dist/frontend/`; Express serves compiled output in production
 - Source dev uses `npm run dev`: real backend on `127.0.0.1:3457`, Vite HMR frontend on `127.0.0.1:5173`, with REST and `/ws/*` requests proxied so frontend code keeps relative fetch/WebSocket URLs
 - Self-host dev uses `npm run dev:self`: same supervised backend + Vite HMR loop, but with per-worktree allocated ports, isolated config under `~/.config/relay-ide/self-host/`, and the `relay-self-` tmux prefix so Relay can safely build Relay inside an installed Relay session
-- xterm.js consumed as npm dependency (`@xterm/xterm`, `@xterm/addon-fit`); it remains the browser renderer while tmux owns the server-side session/process substrate
+- xterm.js consumed as npm dependency (`@xterm/xterm`, `@xterm/addon-fit`); it remains the browser renderer while the selected terminal backend owns server-side session/process execution (`relay-pty` by default, `tmux-compat` for legacy/import/resume cases)
 - Current implementation still has repo-centric state (`activeRepoPath`, `repoPath`, `worktreePath`) in App/sidebar/session paths; docs should describe that as the local repo Project/Bench case, not the full IA model
 - `WorkspaceTab` session tabs can carry `nodeId`; non-local terminal creation routes through `/hub/nodes/:nodeId/sessions`, and PTY sockets route through `/nodes/:nodeId/ws/sessions/:sessionId`
 - Utility rail context is derived from the active tab/session: local repo tabs expose file/git resources, remote tabs show explicit remote unavailable states until #428, and free/non-git local tabs can browse files without git widgets

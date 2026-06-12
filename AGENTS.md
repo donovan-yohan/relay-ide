@@ -1,6 +1,6 @@
 # relay-ide
 
-Relay Agentic Development Environment — a hub/node web workspace for AI coding agents, terminals, and repo-aware development from any device. TypeScript + ESM backend (Express + node-pty + tmux + WebSocket) → `dist/`. React 19 frontend (Zustand + TanStack Query + Vite) → `dist/frontend/`.
+Relay Agentic Development Environment — a hub/node web workspace for AI coding agents, terminals, and repo-aware development from any device. TypeScript + ESM backend (Express + node-pty + terminal backends + WebSocket) → `dist/`. React 19 frontend (Zustand + TanStack Query + Vite) → `dist/frontend/`.
 
 > This file is the map, not the manual. Keep under 120 lines. Push detail into `docs/*.md`.
 > `CLAUDE.md` is a symlink to this file — edit `AGENTS.md` and Claude will see it. Do not hand-edit generated `.claude/`, `.codex/`, `opencode.json` — they come from `.chalk/` via [chalkbag](https://github.com/donovan-yohan/chalk-bag).
@@ -28,6 +28,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | ------------------ | -------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | Docs index         | `docs/README.md`                       | Current source-of-truth docs vs historical plans/spikes                                        |
 | Architecture       | `docs/ARCHITECTURE.md`                 | Module boundaries, data flow, API routes, ADR rules                                            |
+| Boo/session model  | `docs/BOO_PHILOSOPHY.md`               | Scriptable session substrate, rendered-screen gaps, operator-cockpit roadmap                   |
 | Workbench          | `docs/WORKBENCH_BOUNDARY.md`           | Relay product boundary, #552 nouns, mobile/pair/dogfood acceptance                             |
 | Visual Design      | `DESIGN.md`                            | Product framing, TUI aesthetic, colors, spacing, buttons                                       |
 | Design             | `docs/DESIGN.md`                       | Backend patterns, auth flow, PTY management, session types                                     |
@@ -87,7 +88,7 @@ Issue workflow: `backlog` (rough) → `refined` (scoped) → `todo` (planned) �
 - Agent frameworks are configurable; built-ins include Claude Code, Codex, OpenCode, and Hermes. Do not hard-code Claude-only assumptions in new docs or UI copy.
 - `node-pty` needs native compile; `postinstall` fixes prebuilt binaries on macOS.
 - Strip `CLAUDECODE` from PTY env so Claude sessions nest.
-- New interactive agent and terminal sessions default to RelayPtySession (`relay-pty`); tmux is the explicit `tmux-compat` import/fallback backend. xterm.js remains the browser renderer.
+- New interactive agent and terminal sessions default to `relay-pty`; tmux is the explicit `tmux-compat` import/fallback backend. xterm.js remains the browser renderer.
 - 256KB scrollback cap per session; oldest trimmed FIFO.
 - Config: `~/.config/relay-ide/config.json` (global) or `./config.json` (local dev).
 - PIN reset: `relay-ide pin reset` on the host (interactive TTY).
