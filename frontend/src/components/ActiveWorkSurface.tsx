@@ -59,6 +59,11 @@ function taskLabel(group: WorkContextActiveGroup): string {
   );
 }
 
+export function activeWorkContextLabel(group: WorkContextActiveGroup): string {
+  if (group.context?.id) return `workcontext ${shortId(group.context.id)}`;
+  return `unbound session group ${shortId(group.id)}`;
+}
+
 function taskRefs(
   group: WorkContextActiveGroup
 ): Array<{ id: string; label: string; url?: string }> {
@@ -154,12 +159,11 @@ export function repoKind(
 }
 
 export function repoBindingLabel(
-  group: WorkContextActiveGroup,
   session: WorkContextSessionSummary,
   repos: Repo[]
 ): string | null {
   const kind = repoKind(session, repos);
-  const repoPath = session.repoPath ?? group.context?.anchors?.repo?.localPath;
+  const repoPath = session.repoPath;
 
   if (kind === 'directory') {
     const nodeLabel =
@@ -170,10 +174,56 @@ export function repoBindingLabel(
     return `${nodeLabel} · ${cwd} · directory`;
   }
 
-  const repo = session.repoName ?? group.context?.anchors?.repo?.ownerRepo;
+  if (kind !== 'repo' || !repoPath) return null;
+
+  const repo = session.repoName ?? repos.find((r) => r.path === repoPath)?.name;
   if (!repo && !repoPath) return null;
-  const branch = session.branchName ?? group.context?.anchors?.repo?.branchName;
+  const branch = session.branchName;
   return [repo ?? repoPath, branch].filter(Boolean).join(' · ');
+}
+
+export function activeWorkAnchorLabel(
+  group: WorkContextActiveGroup,
+  session: WorkContextSessionSummary | undefined,
+  repos: Repo[]
+): string {
+  const nodeLabel = group.node.displayName ?? group.node.nodeId;
+  const nodeKind = group.node.kind ?? 'remote';
+  const cwd = session?.cwd ?? group.context?.anchors?.session?.cwd ?? 'no cwd reported';
+  if (session) {
+    const kind = repoKind(session, repos);
+    if (kind === 'directory') {
+      return `${nodeLabel} · ${cwd} · directory`;
+    }
+    const repoLabel = repoBindingLabel(session, repos);
+    if (repoLabel) return `repo ${repoLabel}`;
+  }
+  const anchorPrefix =
+    session?.nodeId && session.nodeId !== DEFAULT_LOCAL_NODE_ID
+      ? `remote ${nodeLabel}`
+      : nodeKind === 'local'
+        ? 'local'
+        : `${nodeKind} ${nodeLabel}`;
+  return `${anchorPrefix} · ${cwd} · no repo binding`;
+}
+
+function controlSummary(
+  controlState: ReturnType<typeof activeWorkMobileControlState>,
+  session?: WorkContextSessionSummary
+): string {
+  const mode = session?.controlMode ?? 'unknown control mode';
+  const freshness = session?.controlFreshness
+    ? `control ${session.controlFreshness}`
+    : 'control freshness unknown';
+  const disabled = [
+    controlState.attachDisabledReason
+      ? `attach disabled: ${controlState.attachDisabledReason}`
+      : 'attach available',
+    controlState.smallInputDisabledReason
+      ? `input disabled: ${controlState.smallInputDisabledReason}`
+      : 'input available',
+  ];
+  return [mode, freshness, ...disabled].join(' · ');
 }
 
 function sessionMeta(
@@ -191,7 +241,7 @@ function sessionMeta(
       : undefined,
   ].filter(Boolean) as string[];
   const kind = repoKind(session, repos);
-  const binding = repoBindingLabel(group, session, repos);
+  const binding = repoBindingLabel(session, repos);
   if (kind === 'directory') {
     // directory-kind: hide git-only meta (branch, PR chips handled at card level)
     if (binding) meta.push(binding);
@@ -325,22 +375,12 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
 
         <div className="active-work-grid">
           <div>
+            <span className="active-work-label">workcontext</span>
+            <span>{activeWorkContextLabel(group)}</span>
+          </div>
+          <div>
             <span className="active-work-label">anchor</span>
-            <span>
-              {(() => {
-                const nodeLabel = group.node.displayName ?? group.node.nodeId;
-                const cwd = primarySession?.cwd ?? 'no cwd';
-                if (primarySession) {
-                  const kind = repoKind(primarySession, repos);
-                  if (kind === 'directory') {
-                    return `${nodeLabel} · ${cwd} · directory`;
-                  }
-                  const repoLabel = repoBindingLabel(group, primarySession, repos);
-                  if (repoLabel) return `repo ${repoLabel}`;
-                }
-                return `${group.node.kind ?? 'remote'} · ${cwd}`;
-              })()}
-            </span>
+            <span>{activeWorkAnchorLabel(group, primarySession, repos)}</span>
           </div>
           <div>
             <span className="active-work-label">freshness</span>
@@ -359,6 +399,18 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
                 ? actors.join(' / ')
                 : (primarySession?.agent ?? 'unknown actor')}
             </span>
+          </div>
+          <div>
+            <span className="active-work-label">session</span>
+            <span>
+              {primarySession
+                ? `${shortId(primarySession.globalSessionId ?? primarySession.id)} · ${primarySession.relationship}`
+                : 'no session selected'}
+            </span>
+          </div>
+          <div>
+            <span className="active-work-label">control</span>
+            <span>{controlSummary(controlState, primarySession)}</span>
           </div>
           <div>
             <span className="active-work-label">latest</span>
@@ -559,11 +611,19 @@ export default function ActiveWorkSurface() {
   ).length;
 
   if (isLoading)
-    return <div className="state-message">loading active work...</div>;
+    return (
+      <div className="state-message">
+        loading active work cockpit — checking workcontexts, node freshness,
+        mailbox refs, and artifacts...
+      </div>
+    );
   if (isError) {
     return (
       <div className="state-message state-message--error">
-        <span>could not load active work.</span>
+        <span>
+          could not load active work cockpit. prs, tickets, nodes, and audit stay
+          available as secondary tabs; retry to refresh workcontext status.
+        </span>
         <TuiButton size="sm" variant="ghost" onClick={() => void refetch()}>
           retry
         </TuiButton>
@@ -579,7 +639,10 @@ export default function ActiveWorkSurface() {
       <div className="active-work-surface__header">
         <div>
           <h2>active work</h2>
-          <p>grouped by workcontext across local and remote nodes</p>
+          <p>
+            primary operator cockpit grouped by workcontext across local, remote,
+            repo-bound, and free sessions
+          </p>
         </div>
         <div className="active-work-surface__summary">
           <span>{groups.length} contexts</span>
@@ -588,10 +651,12 @@ export default function ActiveWorkSurface() {
       </div>
       {groups.length === 0 ? (
         <div className="active-work-empty">
-          <span>no active work yet</span>
+          <span>no active work in the cockpit</span>
           <span>
-            start from assistant, issue, or desktop relay; this surface will
-            group the resulting workcontext here.
+            start from an issue, assistant, or node terminal; workcontexts,
+            mailboxes, artifacts, and stale/offline node state will appear here.
+            prs, tickets, nodes, and audit stay available above as secondary
+            context.
           </span>
         </div>
       ) : (

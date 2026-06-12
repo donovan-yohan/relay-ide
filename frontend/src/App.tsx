@@ -21,7 +21,6 @@ import { useTelemetryStore } from './lib/stores/telemetry.js';
 import { sendPtyData } from './lib/ws.js';
 import {
   useOnboardingHints,
-  HINT_NO_REPOS,
   HINT_REPO_ADDED_NO_SESSIONS,
 } from './hooks/useOnboardingHints.js';
 import { useHintsStore } from './lib/stores/hints.js';
@@ -59,7 +58,6 @@ import { getActiveTerminalHandle } from './lib/terminal-refs.js';
 import PrTopBar from './components/PrTopBar.js';
 import RepoDashboard from './components/RepoDashboard.js';
 import OrgDashboard from './components/OrgDashboard.js';
-import EmptyState from './components/EmptyState.js';
 import Toolbar from './components/Toolbar.js';
 import MobileHeader from './components/MobileHeader.js';
 import SessionStatusBar from './components/SessionStatusBar.js';
@@ -122,12 +120,8 @@ initNotifications((sessionId: string, sessionType: string) => {
 // Tracks session/repo count transitions and returns onboarding hint state.
 // Extracted to reduce TerminalAreaContent's cyclomatic complexity.
 
-function useTerminalOnboardingHints(
-  reposLength: number,
-  sessionsLength: number
-) {
+function useTerminalOnboardingHints(sessionsLength: number) {
   const prevSessionsRef = useRef(sessionsLength);
-  const prevReposRef = useRef(reposLength);
   const [sessionJustStarted, setSessionJustStarted] = useState(false);
   const markHintSeen = useHintsStore((s) => s.markSeen);
 
@@ -146,13 +140,6 @@ function useTerminalOnboardingHints(
     }
     prevSessionsRef.current = sessionsLength;
   }, [sessionsLength, markHintSeen]);
-
-  useEffect(() => {
-    if (prevReposRef.current === 0 && reposLength > 0) {
-      markHintSeen(HINT_NO_REPOS);
-    }
-    prevReposRef.current = reposLength;
-  }, [reposLength, markHintSeen]);
 
   return { sessionJustStarted };
 }
@@ -186,7 +173,6 @@ function resolveTerminalFilePath(
 function useTerminalDerivedState() {
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const analyticsView = useUiStore((s) => s.analyticsView);
-  const isNodesTab = useUiStore((s) => s.orgDashboardTab === 'nodes');
   const sessions = useSessionsStore((s) => s.sessions);
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
@@ -256,11 +242,9 @@ function useTerminalDerivedState() {
       resolveAppViewMode({
         analyticsView,
         hasActiveSession,
-        reposLength: repos.length,
         activeRepoPath,
-        isNodesTab,
       }),
-    [analyticsView, hasActiveSession, repos.length, activeRepoPath, isNodesTab]
+    [analyticsView, hasActiveSession, activeRepoPath]
   );
 
   return {
@@ -467,7 +451,6 @@ function useUtilityTerminalHandlers({
 interface TerminalAreaContentProps {
   setSpotlightOpen: React.Dispatch<React.SetStateAction<boolean>>;
   fileTreeSidebarRef: React.RefObject<FileTreeHandle | null>;
-  onAddWorkspace: () => void;
   onImageUpload: (text: string, showInsert: boolean, path?: string) => void;
   onQuickAgent: () => Promise<void>;
   onNewWorktree: (workspace: Repo) => Promise<void>;
@@ -483,7 +466,6 @@ interface TerminalAreaContentProps {
 function TerminalAreaContent({
   setSpotlightOpen,
   fileTreeSidebarRef,
-  onAddWorkspace,
   onImageUpload,
   onQuickAgent,
   onNewWorktree,
@@ -498,8 +480,6 @@ function TerminalAreaContent({
   // Store access (layout / sidebar values not in derived state hook)
   const openSidebar = useUiStore((s) => s.openSidebar);
   const keyboardOpen = useUiStore((s) => s.keyboardOpen);
-  // #862: empty-state secondary action opens the env picker modal.
-  const setActiveModal = useUiStore((s) => s.setActiveModal);
   const hydrateUtilityRailState = useUiStore((s) => s.hydrateUtilityRailState);
   const setUtilityRailWidth = useUiStore((s) => s.setUtilityRailWidth);
   const saveUtilityRailState = useUiStore((s) => s.saveUtilityRailState);
@@ -547,10 +527,7 @@ function TerminalAreaContent({
   );
 
   // ── Onboarding hints ──────────────────────────────────────────────────────
-  const { sessionJustStarted } = useTerminalOnboardingHints(
-    repos.length,
-    sessions.length
-  );
+  const { sessionJustStarted } = useTerminalOnboardingHints(sessions.length);
 
   // ── Copy mode ─────────────────────────────────────────────────────────────
   const [copyModeActive, setCopyModeActive] = useState(false);
@@ -712,25 +689,6 @@ function TerminalAreaContent({
         onRightSidebarClick={handleToggleUtilityRail}
         hidden={keyboardOpen}
       />
-
-      {viewMode === 'empty' && (
-        <EmptyState
-          heading="add a project to get started"
-          description="point to any folder on your machine. git repos get pr tracking and branch management."
-          actionLabel="+ add project"
-          onAction={onAddWorkspace}
-          secondaryActionLabel="start a terminal on a node"
-          onSecondaryAction={() => setActiveModal({ modal: 'env-picker' })}
-          hint={
-            onboardingHints.showNoReposHint ? (
-              <Hint id={HINT_NO_REPOS} variant="inline-text">
-                relay-ide manages agents and terminals across your projects.
-              </Hint>
-            ) : undefined
-          }
-        />
-      )}
-
       {viewMode === 'org' && (
         <OrgDashboard
           onOpenPrSession={onOpenPrSession}
@@ -1319,7 +1277,6 @@ export default function App() {
         <TerminalAreaContent
           setSpotlightOpen={setSpotlightOpen}
           fileTreeSidebarRef={fileTreeSidebarRef}
-          onAddWorkspace={handleAddWorkspace}
           onImageUpload={handleImageUpload}
           onQuickAgent={handleQuickAgent}
           onNewWorktree={handleNewWorktree}
