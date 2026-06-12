@@ -188,6 +188,7 @@ describe('CLI gateway contract', () => {
       'supervisor.snapshot',
       'supervisor.sessions',
       'supervisor.sendText',
+      'supervisor.sendKey',
       'supervisor.submit',
       'events.subscribe',
       'settings.get',
@@ -448,6 +449,13 @@ describe('CLI gateway contract', () => {
       scopeKinds: ['session'],
     });
     expect(relayCommandDefinition('supervisor.sendText')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      controlRequirements: ['fresh-control-state'],
+      auditRedaction: { expectation: 'hashes-only' },
+      scopeKinds: ['session'],
+    });
+    expect(relayCommandDefinition('supervisor.sendKey')).toMatchObject({
       sideEffect: 'write',
       requiresConfirmation: false,
       controlRequirements: ['fresh-control-state'],
@@ -922,6 +930,7 @@ describe('CLI gateway contract', () => {
       'supervisor.snapshot',
       'supervisor.sessions',
       'supervisor.sendText',
+      'supervisor.sendKey',
       'supervisor.submit',
       'events.subscribe',
     ] as const;

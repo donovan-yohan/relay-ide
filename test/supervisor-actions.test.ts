@@ -5,6 +5,7 @@ import {
   type SupervisorActionSessionBoundary,
 } from '../server/supervisor-actions.js';
 import type { Session, SessionSummary } from '../server/types.js';
+import { supervisorActionRequiredCapabilities } from '../shared/supervisor-actions.js';
 
 function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -56,6 +57,7 @@ describe('typed supervisor actions', () => {
     expect(response).toMatchObject({ command: 'supervisor.sessions', count: 3 });
     expect(response.sessions[0]?.actions).toEqual({
       sendText: { allowed: true },
+      sendKey: { allowed: true },
       submit: { allowed: true },
     });
     expect(response.sessions[1]?.actions.sendText).toMatchObject({
@@ -102,21 +104,77 @@ describe('typed supervisor actions', () => {
     expect(JSON.stringify(sendText)).not.toContain('hello');
   });
 
-  it.each(['sendText', 'submit'] as const)(
+  it('maps canonical sendKey names to terminal bytes while auditing only the key name', () => {
+    const writes: string[] = [];
+    const result = executeSupervisorAction({
+      boundary: boundary({ 'sess-1': session() }, writes),
+      action: 'sendKey',
+      targetIds: ['sess-1'],
+      key: 'arrow-up',
+      now: new Date('2026-05-16T00:00:02.000Z'),
+    });
+
+    expect(writes).toEqual(['sess-1:\u001b[A']);
+    expect(result).toMatchObject({
+      command: 'supervisor.sendKey',
+      action: 'sendKey',
+      counts: { requested: 1, succeeded: 1, denied: 0, failed: 0, skipped: 0 },
+      audit: {
+        action: 'sendKey',
+        key: 'arrow-up',
+        targetSessionIds: ['sess-1'],
+        targetCount: 1,
+        content: {
+          rawContentAvailable: false,
+          byteCount: 3,
+          charCount: 3,
+          lineCount: 1,
+          classes: ['named-key'],
+          redacted: true,
+        },
+      },
+      results: [{ sessionId: 'sess-1', ok: true, key: 'arrow-up' }],
+    });
+    expect(JSON.stringify(result)).not.toContain('\u001b[A');
+  });
+
+  it.each(['ArrowUp', 'up', '\u001b[A', 'ctrl-m', 'arrow-up\n'])(
+    'rejects non-canonical sendKey input %s before writing',
+    (key) => {
+      const writes: string[] = [];
+      const result = executeSupervisorAction({
+        boundary: boundary({ 'sess-1': session() }, writes),
+        action: 'sendKey',
+        targetIds: ['sess-1'],
+        key,
+      });
+
+      expect(writes).toEqual([]);
+      expect(result.counts).toMatchObject({ requested: 1, succeeded: 0, failed: 1 });
+      expect(result.results[0]?.error).toMatchObject({
+        code: 'INVALID_ARGUMENT',
+        reasonCode: 'KEY_INVALID',
+      });
+    }
+  );
+
+  it.each(['sendText', 'sendKey', 'submit'] as const)(
     'reports capability-denied %s without writing to targets',
     (action) => {
       const writes: string[] = [];
+      const deniedCapability = supervisorActionRequiredCapabilities(action)[1];
       const result = executeSupervisorAction({
         boundary: boundary({ 'sess-1': session() }, writes),
         action,
         targetIds: ['sess-1'],
         text: action === 'sendText' ? 'hello' : undefined,
+        key: action === 'sendKey' ? 'escape' : undefined,
         deniedByCapability: {
           code: 'FORBIDDEN',
           reasonCode: 'CAPABILITY_REQUIRED',
-          message: 'missing required capability: tab:intervention:send-text',
+          message: `missing required capability: ${deniedCapability}`,
           retryable: false,
-          details: { capability: 'tab:intervention:send-text' },
+          details: { capability: deniedCapability },
         },
       });
 

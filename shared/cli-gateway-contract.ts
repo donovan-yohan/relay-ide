@@ -4,6 +4,7 @@ import {
   CONTEXT_PACKET_KINDS,
   SESSION_INBOX_MESSAGE_STATES,
 } from './context-packet.js';
+import { SUPERVISOR_SEND_KEY_NAMES } from './supervisor-actions.js';
 
 export const RELAY_CLI_GATEWAY_MAJOR = 'v1' as const;
 export const RELAY_CLI_GATEWAY_CONTRACT_VERSION = '1.0' as const;
@@ -71,6 +72,7 @@ export type RelayCliGatewayCommand =
   | 'supervisor.snapshot'
   | 'supervisor.sessions'
   | 'supervisor.sendText'
+  | 'supervisor.sendKey'
   | 'supervisor.submit'
   | 'events.subscribe'
   | 'settings.get'
@@ -1725,6 +1727,20 @@ const supervisorSendTextInputSchema: RelayJsonSchema = {
   oneOf: [{ required: ['id'] }, { required: ['targetIds'] }],
 };
 
+const supervisorSendKeyInputSchema: RelayJsonSchema = {
+  title: 'SupervisorSendKeyInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    targetIds: { type: 'array', items: stringSchema },
+    key: { type: 'string', enum: SUPERVISOR_SEND_KEY_NAMES },
+    actor: { type: 'object', additionalProperties: true },
+  },
+  required: ['key'],
+  oneOf: [{ required: ['id'] }, { required: ['targetIds'] }],
+};
+
 const supervisorSubmitInputSchema: RelayJsonSchema = {
   title: 'SupervisorSubmitInput',
   type: 'object',
@@ -1889,9 +1905,14 @@ const supervisorSessionsOutputSchema: RelayJsonSchema = {
 };
 
 const supervisorActionOutputSchema = (
-  command: 'supervisor.sendText' | 'supervisor.submit'
+  command: 'supervisor.sendText' | 'supervisor.sendKey' | 'supervisor.submit'
 ): RelayJsonSchema => {
-  const action = command === 'supervisor.submit' ? 'submit' : 'sendText';
+  const action =
+    command === 'supervisor.submit'
+      ? 'submit'
+      : command === 'supervisor.sendKey'
+        ? 'sendKey'
+        : 'sendText';
   return {
     type: 'object',
     additionalProperties: true,
@@ -3716,6 +3737,32 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     outputSchema: okOutput(
       'SupervisorSendTextOutput',
       supervisorActionOutputSchema('supervisor.sendText')
+    ),
+    errorCodes: gatewaySupervisorErrorCodes,
+  },
+  {
+    name: 'supervisor.sendKey',
+    cli: [
+      'relay-ide',
+      'v1',
+      'supervisor',
+      'send-key',
+      '--id',
+      '<session-id>',
+      '--key',
+      '<key-name>',
+      '--json',
+    ],
+    summary:
+      'Send one canonical closed-enum key to one or more PTY sessions as a typed supervisor intervention.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:attach', 'tab:intervention:send-key'],
+    inputSchema: supervisorSendKeyInputSchema,
+    outputSchema: okOutput(
+      'SupervisorSendKeyOutput',
+      supervisorActionOutputSchema('supervisor.sendKey')
     ),
     errorCodes: gatewaySupervisorErrorCodes,
   },

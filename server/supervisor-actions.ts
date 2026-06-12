@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 
 import { normalizeControlStateSummary, type ControlActor, type ControlMode } from '../shared/control-state.js';
 import {
+  SUPERVISOR_SEND_KEY_NAMES,
   supervisorActionCommandId,
   type SupervisorActionAuditSummary,
   type SupervisorActionCounts,
@@ -10,13 +11,30 @@ import {
   type SupervisorActionResponse,
   type SupervisorActionTargetResult,
   type SupervisorActionType,
+  type SupervisorSendKeyName,
   type SupervisorSessionEligibility,
   type SupervisorSessionsResponse,
 } from '../shared/supervisor-actions.js';
 import { DEFAULT_LOCAL_NODE_ID, createGlobalSessionId } from '../shared/identity.js';
+import { encodeTerminalInput, type TerminalInputKey } from './terminal-model-backend.js';
 import type { Session, SessionSummary } from './types.js';
 
 const MAX_SUPERVISOR_TEXT_CHARS = 1000;
+const SUPERVISOR_SEND_KEY_INPUTS: Record<SupervisorSendKeyName, TerminalInputKey> = {
+  escape: 'Escape',
+  tab: 'Tab',
+  'arrow-up': 'ArrowUp',
+  'arrow-down': 'ArrowDown',
+  'arrow-left': 'ArrowLeft',
+  'arrow-right': 'ArrowRight',
+  'ctrl-c': 'CtrlC',
+  'ctrl-d': 'CtrlD',
+  home: 'Home',
+  end: 'End',
+  'page-up': 'PageUp',
+  'page-down': 'PageDown',
+};
+const SUPERVISOR_SEND_KEY_NAME_SET = new Set<string>(SUPERVISOR_SEND_KEY_NAMES);
 const DEFAULT_SUPERVISOR_ACTOR: ControlActor = {
   kind: 'agent',
   id: 'relay-supervisor',
@@ -57,9 +75,48 @@ function targetIdentity(session: Session | SessionSummary | undefined, requested
 }
 
 function validationError(
-  validation: { ok: true; text: string } | { ok: false; error: SupervisorActionError }
+  validation:
+    | { ok: true; text: string }
+    | { ok: true; key: SupervisorSendKeyName; payload: string }
+    | { ok: false; error: SupervisorActionError }
 ): SupervisorActionError | undefined {
   return 'error' in validation ? validation.error : undefined;
+}
+
+function validateActionPayload(
+  action: SupervisorActionType,
+  text: unknown,
+  key: unknown
+):
+  | { ok: true; text: string }
+  | { ok: true; key: SupervisorSendKeyName; payload: string }
+  | { ok: false; error: SupervisorActionError } {
+  if (action === 'sendText') {
+    return validateLiteralText(text);
+  }
+  if (action === 'sendKey') {
+    return validateSendKey(key);
+  }
+  return { ok: true, text: '\n' };
+}
+
+function payloadForValidation(
+  validation:
+    | { ok: true; text: string }
+    | { ok: true; key: SupervisorSendKeyName; payload: string }
+    | { ok: false; error: SupervisorActionError }
+): string {
+  if (!validation.ok) return '';
+  return 'payload' in validation ? validation.payload : validation.text;
+}
+
+function keyForValidation(
+  validation:
+    | { ok: true; text: string }
+    | { ok: true; key: SupervisorSendKeyName; payload: string }
+    | { ok: false; error: SupervisorActionError }
+): SupervisorSendKeyName | undefined {
+  return validation.ok && 'key' in validation ? validation.key : undefined;
 }
 
 function countLines(input: string): number {
@@ -67,14 +124,23 @@ function countLines(input: string): number {
   return input.split(/\r\n|\r|\n/).length;
 }
 
-function redactionForPayload(payload: string): SupervisorActionRedactionMetadata {
+function redactionForPayload(
+  payload: string,
+  action: SupervisorActionType
+): SupervisorActionRedactionMetadata {
+  const classes =
+    action === 'submit'
+      ? ['submit']
+      : action === 'sendKey'
+        ? ['named-key']
+        : ['literal-text'];
   return {
     rawContentAvailable: false,
     hashSha256: sha256(payload),
     byteCount: Buffer.byteLength(payload, 'utf8'),
     charCount: Array.from(payload).length,
     lineCount: countLines(payload),
-    classes: payload === '\n' ? ['submit'] : ['literal-text'],
+    classes,
     redacted: true,
   };
 }
@@ -119,6 +185,46 @@ function validateLiteralText(text: unknown): { ok: true; text: string } | { ok: 
     };
   }
   return { ok: true, text };
+}
+
+function validateSendKey(
+  key: unknown
+):
+  | { ok: true; key: SupervisorSendKeyName; payload: string }
+  | { ok: false; error: SupervisorActionError } {
+  if (typeof key !== 'string' || key.length === 0) {
+    return {
+      ok: false,
+      error: error(
+        'INVALID_ARGUMENT',
+        'KEY_REQUIRED',
+        'sendKey requires one canonical --key name',
+        false,
+        { allowedKeys: SUPERVISOR_SEND_KEY_NAMES }
+      ),
+    };
+  }
+  if (!SUPERVISOR_SEND_KEY_NAME_SET.has(key)) {
+    return {
+      ok: false,
+      error: error(
+        'INVALID_ARGUMENT',
+        'KEY_INVALID',
+        'sendKey accepts only canonical closed-enum key names',
+        false,
+        { field: 'key', allowedKeys: SUPERVISOR_SEND_KEY_NAMES }
+      ),
+    };
+  }
+  const canonicalKey = key as SupervisorSendKeyName;
+  return {
+    ok: true,
+    key: canonicalKey,
+    payload: encodeTerminalInput({
+      type: 'key',
+      key: SUPERVISOR_SEND_KEY_INPUTS[canonicalKey],
+    }).sequence,
+  };
 }
 
 function missingSessionError(requestedId: string): SupervisorActionError {
@@ -180,6 +286,7 @@ export function listSupervisorSessions(sessions: readonly SessionSummary[]): Sup
         ...(session.controlFreshness === undefined ? {} : { controlFreshness: session.controlFreshness }),
         actions: {
           sendText: { allowed, ...(reason ? { reasonCode: reason } : {}) },
+          sendKey: { allowed, ...(reason ? { reasonCode: reason } : {}) },
           submit: { allowed, ...(reason ? { reasonCode: reason } : {}) },
         },
       };
@@ -193,16 +300,16 @@ export function executeSupervisorAction(input: {
   action: SupervisorActionType;
   targetIds: readonly string[];
   text?: unknown;
+  key?: unknown;
   actor?: ControlActor;
   now?: Date;
   deniedByCapability?: SupervisorActionError;
 }): SupervisorActionResponse {
   const actor = input.actor ?? DEFAULT_SUPERVISOR_ACTOR;
   const timestamp = (input.now ?? new Date()).toISOString();
-  const validation = input.action === 'sendText'
-    ? validateLiteralText(input.text)
-    : { ok: true as const, text: '\n' };
-  const payload = validation.ok ? validation.text : '';
+  const validation = validateActionPayload(input.action, input.text, input.key);
+  const payload = payloadForValidation(validation);
+  const canonicalKey = keyForValidation(validation);
   const payloadValidationError = validationError(validation);
   const results: SupervisorActionTargetResult[] = [];
 
@@ -242,6 +349,7 @@ export function executeSupervisorAction(input: {
         ok: true,
         action: input.action,
         bytesWritten: Buffer.byteLength(payload, 'utf8'),
+        ...(canonicalKey === undefined ? {} : { key: canonicalKey }),
         interventionEventId: write.eventId,
         ...(write.modeBefore === undefined ? {} : { controlModeBefore: write.modeBefore }),
         ...(write.modeAfter === undefined ? {} : { controlModeAfter: write.modeAfter }),
@@ -264,8 +372,9 @@ export function executeSupervisorAction(input: {
     actor: actorSummary(actor),
     targetSessionIds: results.map((result) => result.sessionId),
     targetCount: results.length,
+    ...(canonicalKey === undefined ? {} : { key: canonicalKey }),
     timestamp,
-    ...(validation.ok ? { content: redactionForPayload(payload) } : {}),
+    ...(validation.ok ? { content: redactionForPayload(payload, input.action) } : {}),
     counts,
     rawContentStored: false,
     partialFailure: counts.failed > 0 || counts.denied > 0 || counts.skipped > 0,
