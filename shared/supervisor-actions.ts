@@ -7,6 +7,7 @@ import type { RelayCapabilityBit } from './security-policy.js';
 
 export const SUPERVISOR_SESSIONS_COMMAND_ID = 'supervisor.sessions' as const;
 export const SUPERVISOR_SEND_TEXT_COMMAND_ID = 'supervisor.sendText' as const;
+export const SUPERVISOR_SEND_KEY_COMMAND_ID = 'supervisor.sendKey' as const;
 export const SUPERVISOR_SUBMIT_COMMAND_ID = 'supervisor.submit' as const;
 
 export const SUPERVISOR_READ_REQUIRED_CAPABILITIES = [
@@ -19,12 +20,34 @@ export const SUPERVISOR_SEND_TEXT_REQUIRED_CAPABILITIES = [
   'tab:intervention:send-text',
 ] as const satisfies readonly RelayCapabilityBit[];
 
+export const SUPERVISOR_SEND_KEY_REQUIRED_CAPABILITIES = [
+  'session:attach',
+  'tab:intervention:send-key',
+] as const satisfies readonly RelayCapabilityBit[];
+
 export const SUPERVISOR_SUBMIT_REQUIRED_CAPABILITIES = [
   'session:attach',
   'tab:intervention:submit',
 ] as const satisfies readonly RelayCapabilityBit[];
 
-export type SupervisorActionType = 'sendText' | 'submit';
+export const SUPERVISOR_SEND_KEY_NAMES = [
+  'escape',
+  'tab',
+  'arrow-up',
+  'arrow-down',
+  'arrow-left',
+  'arrow-right',
+  'ctrl-c',
+  'ctrl-d',
+  'home',
+  'end',
+  'page-up',
+  'page-down',
+] as const;
+
+export type SupervisorSendKeyName = (typeof SUPERVISOR_SEND_KEY_NAMES)[number];
+
+export type SupervisorActionType = 'sendText' | 'sendKey' | 'submit';
 
 export type SupervisorActionErrorCode =
   | 'FORBIDDEN'
@@ -47,6 +70,8 @@ export type SupervisorActionReasonCode =
   | 'TEXT_REQUIRED'
   | 'TEXT_TOO_LARGE'
   | 'TEXT_MUST_BE_LITERAL'
+  | 'KEY_REQUIRED'
+  | 'KEY_INVALID'
   | 'UPSTREAM_WRITE_FAILED';
 
 export interface SupervisorActionError {
@@ -74,6 +99,7 @@ export interface SupervisorActionTargetResult {
   ok: boolean;
   action: SupervisorActionType;
   bytesWritten?: number;
+  key?: SupervisorSendKeyName;
   interventionEventId?: string;
   controlModeBefore?: ControlMode;
   controlModeAfter?: ControlMode;
@@ -99,6 +125,7 @@ export interface SupervisorActionAuditSummary {
   };
   targetSessionIds: string[];
   targetCount: number;
+  key?: SupervisorSendKeyName;
   timestamp: string;
   content?: SupervisorActionRedactionMetadata;
   counts: SupervisorActionCounts;
@@ -109,6 +136,7 @@ export interface SupervisorActionAuditSummary {
 export interface SupervisorActionResponse {
   command:
     | typeof SUPERVISOR_SEND_TEXT_COMMAND_ID
+    | typeof SUPERVISOR_SEND_KEY_COMMAND_ID
     | typeof SUPERVISOR_SUBMIT_COMMAND_ID;
   action: SupervisorActionType;
   results: SupervisorActionTargetResult[];
@@ -144,17 +172,18 @@ export interface SupervisorSessionsResponse {
 export function supervisorActionRequiredCapabilities(
   action: SupervisorActionType
 ): readonly RelayCapabilityBit[] {
-  return action === 'sendText'
-    ? SUPERVISOR_SEND_TEXT_REQUIRED_CAPABILITIES
-    : SUPERVISOR_SUBMIT_REQUIRED_CAPABILITIES;
+  if (action === 'sendText') return SUPERVISOR_SEND_TEXT_REQUIRED_CAPABILITIES;
+  if (action === 'sendKey') return SUPERVISOR_SEND_KEY_REQUIRED_CAPABILITIES;
+  return SUPERVISOR_SUBMIT_REQUIRED_CAPABILITIES;
 }
 
 export function supervisorActionCommandId(
   action: SupervisorActionType
 ):
   | typeof SUPERVISOR_SEND_TEXT_COMMAND_ID
+  | typeof SUPERVISOR_SEND_KEY_COMMAND_ID
   | typeof SUPERVISOR_SUBMIT_COMMAND_ID {
-  return action === 'sendText'
-    ? SUPERVISOR_SEND_TEXT_COMMAND_ID
-    : SUPERVISOR_SUBMIT_COMMAND_ID;
+  if (action === 'sendText') return SUPERVISOR_SEND_TEXT_COMMAND_ID;
+  if (action === 'sendKey') return SUPERVISOR_SEND_KEY_COMMAND_ID;
+  return SUPERVISOR_SUBMIT_COMMAND_ID;
 }

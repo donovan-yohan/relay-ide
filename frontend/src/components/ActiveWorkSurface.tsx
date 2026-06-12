@@ -19,7 +19,9 @@ import { useUiStore } from '../lib/stores/ui.js';
 import {
   activeWorkAttentionPriority,
   activeWorkMobileControlState,
+  activeWorkPrimarySession,
   activeWorkSessionActivationKey,
+  activeWorkSessionActivationRepoPath,
   activeWorkStateLabel,
 } from '../lib/active-work-control.js';
 import SessionMailboxPanel, {
@@ -57,6 +59,11 @@ function taskLabel(group: WorkContextActiveGroup): string {
     firstTask?.id ??
     'unassigned active work'
   );
+}
+
+export function activeWorkContextLabel(group: WorkContextActiveGroup): string {
+  if (group.context?.id) return `workcontext ${shortId(group.context.id)}`;
+  return `unbound session group ${shortId(group.id)}`;
 }
 
 function taskRefs(
@@ -143,25 +150,49 @@ function latestStatus(group: WorkContextActiveGroup): string {
     : 'session has no work context yet';
 }
 
+type SessionRepoBinding = {
+  repo: Repo;
+  kind: 'repo' | 'directory';
+};
+
 export function repoKind(
   session: WorkContextSessionSummary,
   repos: Repo[]
 ): 'repo' | 'directory' | null {
-  if (!session.repoPath) return null;
-  const match = repos.find((r) => r.path === session.repoPath);
-  if (!match) return null;
-  return match.kind ?? (match.isGitRepo ? 'repo' : 'directory');
+  return resolveSessionRepoBinding(session, repos)?.kind ?? null;
 }
 
-export function repoBindingLabel(
-  group: WorkContextActiveGroup,
+function repoKindFor(repo: Repo): 'repo' | 'directory' {
+  return repo.kind ?? (repo.isGitRepo ? 'repo' : 'directory');
+}
+
+function normalizedNodeId(nodeId: string | undefined): string {
+  return nodeId ?? DEFAULT_LOCAL_NODE_ID;
+}
+
+function resolveSessionRepoBinding(
   session: WorkContextSessionSummary,
   repos: Repo[]
-): string | null {
-  const kind = repoKind(session, repos);
-  const repoPath = session.repoPath ?? group.context?.anchors?.repo?.localPath;
+): SessionRepoBinding | null {
+  const repoPath = session.repoPath;
+  if (!repoPath) return null;
+  const sessionNodeId = normalizedNodeId(session.nodeId);
+  const repo = repos.find(
+    (candidate) =>
+      candidate.path === repoPath &&
+      normalizedNodeId(candidate.nodeId) === sessionNodeId
+  );
+  if (!repo) return null;
+  return { repo, kind: repoKindFor(repo) };
+}
 
-  if (kind === 'directory') {
+function formatRepoBindingLabel(
+  session: WorkContextSessionSummary,
+  binding: SessionRepoBinding
+): string | null {
+  const repoPath = session.repoPath;
+
+  if (binding.kind === 'directory') {
     const nodeLabel =
       session.nodeId && session.nodeId !== DEFAULT_LOCAL_NODE_ID
         ? session.nodeId
@@ -170,10 +201,66 @@ export function repoBindingLabel(
     return `${nodeLabel} · ${cwd} · directory`;
   }
 
-  const repo = session.repoName ?? group.context?.anchors?.repo?.ownerRepo;
-  if (!repo && !repoPath) return null;
-  const branch = session.branchName ?? group.context?.anchors?.repo?.branchName;
-  return [repo ?? repoPath, branch].filter(Boolean).join(' · ');
+  if (!repoPath) return null;
+
+  const repoName = session.repoName ?? binding.repo.name;
+  const branch = session.branchName;
+  return [repoName ?? repoPath, branch].filter(Boolean).join(' · ');
+}
+
+export function repoBindingLabel(
+  session: WorkContextSessionSummary,
+  repos: Repo[]
+): string | null {
+  const binding = resolveSessionRepoBinding(session, repos);
+  if (!binding) return null;
+  return formatRepoBindingLabel(session, binding);
+}
+
+export function activeWorkAnchorLabel(
+  group: WorkContextActiveGroup,
+  session: WorkContextSessionSummary | undefined,
+  repos: Repo[]
+): string {
+  const nodeLabel = group.node.displayName ?? group.node.nodeId;
+  const nodeKind = group.node.kind ?? 'remote';
+  const cwd = session?.cwd ?? group.context?.anchors?.session?.cwd ?? 'no cwd reported';
+  if (session) {
+    const binding = resolveSessionRepoBinding(session, repos);
+    if (binding?.kind === 'directory') {
+      return `${nodeLabel} · ${cwd} · directory`;
+    }
+    const repoLabel = binding
+      ? formatRepoBindingLabel(session, binding)
+      : null;
+    if (repoLabel) return `repo ${repoLabel}`;
+  }
+  const anchorPrefix =
+    session?.nodeId && session.nodeId !== DEFAULT_LOCAL_NODE_ID
+      ? `remote ${nodeLabel}`
+      : nodeKind === 'local'
+        ? 'local'
+        : `${nodeKind} ${nodeLabel}`;
+  return `${anchorPrefix} · ${cwd} · no repo binding`;
+}
+
+function controlSummary(
+  controlState: ReturnType<typeof activeWorkMobileControlState>,
+  session?: WorkContextSessionSummary
+): string {
+  const mode = session?.controlMode ?? 'unknown control mode';
+  const freshness = session?.controlFreshness
+    ? `control ${session.controlFreshness}`
+    : 'control freshness unknown';
+  const disabled = [
+    controlState.attachDisabledReason
+      ? `attach disabled: ${controlState.attachDisabledReason}`
+      : 'attach available',
+    controlState.smallInputDisabledReason
+      ? `input disabled: ${controlState.smallInputDisabledReason}`
+      : 'input available',
+  ];
+  return [mode, freshness, ...disabled].join(' · ');
 }
 
 function sessionMeta(
@@ -190,13 +277,13 @@ function sessionMeta(
       ? `control ${session.controlFreshness}`
       : undefined,
   ].filter(Boolean) as string[];
-  const kind = repoKind(session, repos);
-  const binding = repoBindingLabel(group, session, repos);
-  if (kind === 'directory') {
+  const binding = resolveSessionRepoBinding(session, repos);
+  const bindingLabel = binding ? formatRepoBindingLabel(session, binding) : null;
+  if (binding?.kind === 'directory') {
     // directory-kind: hide git-only meta (branch, PR chips handled at card level)
-    if (binding) meta.push(binding);
-  } else if (binding) {
-    meta.push(`repo ${binding}`);
+    if (bindingLabel) meta.push(bindingLabel);
+  } else if (bindingLabel) {
+    meta.push(`repo ${bindingLabel}`);
   } else {
     meta.push('no repo binding');
   }
@@ -213,15 +300,7 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
   const [inputStatus, setInputStatus] = useState<string | null>(null);
   const [isSubmittingInput, setIsSubmittingInput] = useState(false);
   const isSubmittingInputRef = useRef(false);
-  const primarySession =
-    group.sessions.find(
-      (session) =>
-        session.live &&
-        (session.agentState === 'permission-prompt' ||
-          session.agentState === 'waiting-for-input')
-    ) ??
-    group.sessions.find((session) => session.live) ??
-    group.sessions[0];
+  const primarySession = activeWorkPrimarySession(group);
   const controlState = activeWorkMobileControlState(group, primarySession);
   const actors = actorLabels(group);
   const refs = taskRefs(group);
@@ -230,9 +309,7 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
   const handleAttach = useCallback(() => {
     if (!primarySession || controlState.attachDisabledReason) return;
     const activationKey = activeWorkSessionActivationKey(primarySession);
-    const nodeId = primarySession.nodeId ?? DEFAULT_LOCAL_NODE_ID;
-    const isLocal = nodeId === DEFAULT_LOCAL_NODE_ID;
-    setActiveRepoPath(isLocal ? (primarySession.repoPath ?? null) : null);
+    setActiveRepoPath(activeWorkSessionActivationRepoPath(primarySession));
     setActiveSessionId(activationKey);
     void refreshAll().then(() => setActiveSessionId(activationKey));
   }, [
@@ -325,22 +402,12 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
 
         <div className="active-work-grid">
           <div>
+            <span className="active-work-label">workcontext</span>
+            <span>{activeWorkContextLabel(group)}</span>
+          </div>
+          <div>
             <span className="active-work-label">anchor</span>
-            <span>
-              {(() => {
-                const nodeLabel = group.node.displayName ?? group.node.nodeId;
-                const cwd = primarySession?.cwd ?? 'no cwd';
-                if (primarySession) {
-                  const kind = repoKind(primarySession, repos);
-                  if (kind === 'directory') {
-                    return `${nodeLabel} · ${cwd} · directory`;
-                  }
-                  const repoLabel = repoBindingLabel(group, primarySession, repos);
-                  if (repoLabel) return `repo ${repoLabel}`;
-                }
-                return `${group.node.kind ?? 'remote'} · ${cwd}`;
-              })()}
-            </span>
+            <span>{activeWorkAnchorLabel(group, primarySession, repos)}</span>
           </div>
           <div>
             <span className="active-work-label">freshness</span>
@@ -359,6 +426,18 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
                 ? actors.join(' / ')
                 : (primarySession?.agent ?? 'unknown actor')}
             </span>
+          </div>
+          <div>
+            <span className="active-work-label">session</span>
+            <span>
+              {primarySession
+                ? `${shortId(primarySession.globalSessionId ?? primarySession.id)} · ${primarySession.relationship}`
+                : 'no session selected'}
+            </span>
+          </div>
+          <div>
+            <span className="active-work-label">control</span>
+            <span>{controlSummary(controlState, primarySession)}</span>
           </div>
           <div>
             <span className="active-work-label">latest</span>
@@ -559,11 +638,19 @@ export default function ActiveWorkSurface() {
   ).length;
 
   if (isLoading)
-    return <div className="state-message">loading active work...</div>;
+    return (
+      <div className="state-message">
+        loading active work cockpit — checking workcontexts, node freshness,
+        mailbox refs, and artifacts...
+      </div>
+    );
   if (isError) {
     return (
       <div className="state-message state-message--error">
-        <span>could not load active work.</span>
+        <span>
+          could not load active work cockpit. prs, tickets, nodes, and audit stay
+          available as secondary tabs; retry to refresh workcontext status.
+        </span>
         <TuiButton size="sm" variant="ghost" onClick={() => void refetch()}>
           retry
         </TuiButton>
@@ -579,7 +666,10 @@ export default function ActiveWorkSurface() {
       <div className="active-work-surface__header">
         <div>
           <h2>active work</h2>
-          <p>grouped by workcontext across local and remote nodes</p>
+          <p>
+            primary operator cockpit grouped by workcontext across local, remote,
+            repo-bound, and free sessions
+          </p>
         </div>
         <div className="active-work-surface__summary">
           <span>{groups.length} contexts</span>
@@ -588,10 +678,12 @@ export default function ActiveWorkSurface() {
       </div>
       {groups.length === 0 ? (
         <div className="active-work-empty">
-          <span>no active work yet</span>
+          <span>no active work in the cockpit</span>
           <span>
-            start from assistant, issue, or desktop relay; this surface will
-            group the resulting workcontext here.
+            start from an issue, assistant, or node terminal; workcontexts,
+            mailboxes, artifacts, and stale/offline node state will appear here.
+            prs, tickets, nodes, and audit stay available above as secondary
+            context.
           </span>
         </div>
       ) : (

@@ -432,7 +432,13 @@ export function OrgDashboard({
   return (
     <div className="org-dashboard">
       <div className="org-header">
-        <span className="org-title">all workspaces</span>
+        <div>
+          <span className="org-title">work cockpit</span>
+          <div className="org-subtitle">
+            active work is primary; prs, tickets, nodes, and audit are verified
+            context
+          </div>
+        </div>
       </div>
       {/* tab-strip uses raw buttons intentionally — underline-indicator navigation, not TuiButton actions */}
       <div className="tab-strip">

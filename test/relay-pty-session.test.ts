@@ -113,6 +113,11 @@ describe('TerminalModelBackend — libghostty-vt', () => {
     expect(encodeTerminalInput({ type: 'key', key: 'ArrowLeft' }).sequence).toBe('\x1b[D');
     expect(encodeTerminalInput({ type: 'key', key: 'ArrowRight' }).sequence).toBe('\x1b[C');
     expect(encodeTerminalInput({ type: 'key', key: 'CtrlC' }).sequence).toBe('\x03');
+    expect(encodeTerminalInput({ type: 'key', key: 'CtrlD' }).sequence).toBe('\x04');
+    expect(encodeTerminalInput({ type: 'key', key: 'Home' }).sequence).toBe('\x1b[H');
+    expect(encodeTerminalInput({ type: 'key', key: 'End' }).sequence).toBe('\x1b[F');
+    expect(encodeTerminalInput({ type: 'key', key: 'PageUp' }).sequence).toBe('\x1b[5~');
+    expect(encodeTerminalInput({ type: 'key', key: 'PageDown' }).sequence).toBe('\x1b[6~');
   });
 });
 

@@ -63,6 +63,16 @@ Not stable today:
 
 Promote any new screen/read/wait primitive through `shared/cli-gateway-contract.ts` and `docs/CLI_GATEWAY.md` before external adapters rely on it. See `BOO_PHILOSOPHY.md` for the current audit and boundary rules.
 
+## Rendered screen snapshots
+
+The rendered screen API is intentionally backed by the `relay-pty` terminal model, not tmux text scraping. `GET /sessions/:id/screen` and `relay-ide v1 sessions screen --id <session-id-or-global-id> --json` return the libghostty-vt visible rows/text, cursor/title/mode metadata, geometry, freshness metadata, and optional bounded scrollback (`--scrollback --max-lines <n>`, capped server-side).
+
+Fail-closed behavior is part of the contract:
+
+- `tmux-compat` sessions return `UNSUPPORTED` / `SESSION_SCREEN_UNSUPPORTED_BACKEND`.
+- disconnected or cleaned-up sessions return `SESSION_CONFLICT` / `SESSION_SCREEN_STALE` rather than stale rendered output.
+- remote sessions that cannot be resolved by the local gateway return a typed `NODE_OFFLINE` / `SESSION_SCREEN_ROUTED_UNAVAILABLE` response.
+
 ## Operator rollout pattern
 
 Recommended operating pattern:

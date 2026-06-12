@@ -25,6 +25,7 @@ relay-ide v1 sessions kill --id <session-id-or-global-id> [--confirmation-token 
 relay-ide v1 sessions rename --id <session-id-or-global-id> --display-name 'new name' --json
 relay-ide v1 sessions stream --id <session-id-or-global-id> --mode ndjson --json
 relay-ide v1 sessions wait --id <session-id-or-global-id> --output-text 'ready' --timeout-ms 30000 --json
+relay-ide v1 sessions screen --id <session-id-or-global-id> [--scrollback --max-lines 200] --json
 relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --wait-for ok --json
 relay-ide v1 sessions interventions --id <session-id> --json
 relay-ide v1 sessions hand-back --id <session-id> --latest-seen-intervention-event-id <event-id> --json
@@ -67,6 +68,8 @@ relay-ide v1 supervisor sessions --json
 relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json
 relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json
 relay-ide v1 supervisor send-text --target-ids <session-id-1,session-id-2> --text <literal-text> --json
+relay-ide v1 supervisor send-key --id <session-id-or-global-id> --key <escape|tab|arrow-up|arrow-down|arrow-left|arrow-right|ctrl-c|ctrl-d|home|end|page-up|page-down> --json
+relay-ide v1 supervisor send-key --target-ids <session-id-1,session-id-2> --key <escape|tab|arrow-up|arrow-down|arrow-left|arrow-right|ctrl-c|ctrl-d|home|end|page-up|page-down> --json
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --json
 relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
 relay-ide v1 events subscribe --topic <sessions|nodes|audit> --json
@@ -185,6 +188,7 @@ The first scoped actor credential slice supports only this read-only hub-backed 
 | `relay-ide v1 nodes list --json`                  | `nodes.list`        | `session:read`      | Reads summarized hub/node inventory.                                                                |
 | `relay-ide v1 sessions list --json`               | `sessions.list`     | `session:read`      | Reads session descriptors and control summaries.                                                    |
 | `relay-ide v1 sessions get --id <id> --json`      | `sessions.get`      | `session:read`      | Validates the credential against the requested session/global session id when scoped that narrowly. |
+| `relay-ide v1 sessions screen --id <id> --json`   | `sessions.screen`   | `session:read`      | Returns a bounded relay-pty/libghostty rendered screen snapshot; tmux-compat and remote-unavailable sessions fail closed with typed errors. |
 | `relay-ide v1 work-contexts get --id <id> --json` | `work-contexts.get` | `session:read`      | Validates work-context scope when the credential is scoped to a work context.                       |
 | `relay-ide v1 work-context-artifacts list --work-context-id <id> --json` | `work-context-artifacts.list` | `session:read` | Reads bounded artifact metadata; requires `context:read` capability hint and enforces exact WorkContext scope when present. |
 | `relay-ide v1 work-context-artifacts show --id <id> --json` | `work-context-artifacts.show` | `session:read` | Reads one artifact envelope after metadata-derived WorkContext scope authorization; validates stored payload integrity; requires `context:read`. |
@@ -553,14 +557,17 @@ Commands:
 | `relay-ide v1 supervisor snapshot --id <session-id-or-global-id> --json`                        | Reads one redacted supervisor snapshot.                                                  | `session:read`, `tab:intervention:read`        |
 | `relay-ide v1 supervisor send-text --id <session-id-or-global-id> --text <literal-text> --json` | Sends bounded literal text as a typed intervention.                                      | `session:attach`, `tab:intervention:send-text` |
 | `relay-ide v1 supervisor send-text --target-ids <id-1,id-2> --text <literal-text> --json`       | Sends the same bounded literal text to multiple sessions and reports per-target results. | `session:attach`, `tab:intervention:send-text` |
+| `relay-ide v1 supervisor send-key --id <session-id-or-global-id> --key <key-name> --json`        | Sends one canonical closed-enum key as a typed intervention.                             | `session:attach`, `tab:intervention:send-key`  |
+| `relay-ide v1 supervisor send-key --target-ids <id-1,id-2> --key <key-name> --json`              | Sends the same canonical key to multiple sessions and reports per-target results.        | `session:attach`, `tab:intervention:send-key`  |
 | `relay-ide v1 supervisor submit --id <session-id-or-global-id> --json`                          | Sends Enter (`\n`) as a typed intervention.                                              | `session:attach`, `tab:intervention:submit`    |
 | `relay-ide v1 supervisor submit --target-ids <id-1,id-2> --json`                                | Sends Enter to multiple sessions and reports per-target results.                         | `session:attach`, `tab:intervention:submit`    |
 
 Inputs:
 
-- `supervisor.sessions` takes no input and returns `{ command: "supervisor.sessions", sessions, count }`. Each session includes `sessionId`, optional `globalSessionId`/`nodeId`, `mode`, `status`, optional `controlMode`/`controlFreshness`, and `actions.sendText` / `actions.submit` eligibility. Ineligible actions carry a `reasonCode` such as `SESSION_DISCONNECTED`, `SESSION_MODE_UNSUPPORTED`, `CONTROL_STATE_STALE`, or `CONTROL_STATE_UNKNOWN`.
+- `supervisor.sessions` takes no input and returns `{ command: "supervisor.sessions", sessions, count }`. Each session includes `sessionId`, optional `globalSessionId`/`nodeId`, `mode`, `status`, optional `controlMode`/`controlFreshness`, and `actions.sendText` / `actions.sendKey` / `actions.submit` eligibility. Ineligible actions carry a `reasonCode` such as `SESSION_DISCONNECTED`, `SESSION_MODE_UNSUPPORTED`, `CONTROL_STATE_STALE`, or `CONTROL_STATE_UNKNOWN`.
 - `supervisor.snapshot` requires `id`. Optional `--expected-control-mode <agent-driven|human-driven|co-driven>` and `--latest-seen-intervention-event-id <event-id>` are preflight guards. Stale or mismatched control state returns `CONTROL_STATE_STALE`; an unacknowledged newer intervention returns `INTERVENTION_ACK_REQUIRED`. The snapshot path is read-only: it never writes to the session, accepts prompts, or stores raw prompt/transcript/PTY/provider state.
 - `supervisor.sendText` requires `text` plus exactly one target shape: `id` or `targetIds`. CLI flags are `--id`, positional `<id>`, or comma-separated `--target-ids`; `--input-json` / `--input-file` may provide the same object shape, including optional `actor` metadata. Text must be non-empty literal text, at most 1000 characters, with no CR/LF, ESC, DEL, or control characters except tab. Use `supervisor.submit` for Enter instead of embedding a newline.
+- `supervisor.sendKey` requires `key` plus exactly one target shape: `id` or `targetIds`. CLI flags are `--id`, positional `<id>`, comma-separated `--target-ids`, and `--key`; `--input-json` / `--input-file` may provide the same object shape, including optional `actor` metadata. Keys are a closed enum only: `escape`, `tab`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `ctrl-c`, `ctrl-d`, `home`, `end`, `page-up`, and `page-down`. Aliases, function keys, raw escape/control strings, newlines, and arbitrary byte payloads are rejected; Relay maps the canonical name to substrate bytes behind the capability/control/audit boundary.
 - `supervisor.submit` requires `id` or `targetIds`, accepts optional `actor` metadata via JSON input, and writes exactly `\n`. It does not accept a text payload.
 
 Successful action envelope shape:
@@ -624,9 +631,9 @@ Action failure semantics:
 
 - CLI parse/auth/connectivity failures return a normal `ok: false` gateway envelope and the CLI exits nonzero. Examples: malformed `--input-json`, missing `RELAY_IDE_BROWSER_TOKEN`, unreachable hub, missing `--id`/`--target-ids`, or missing `--text` for `send-text`.
 - Once the action request reaches the hub, target-level problems are reported in the successful action envelope under `data.results[].error` with aggregate `data.counts` and `data.audit.partialFailure`. This preserves multi-target partial success instead of failing the whole command on the first bad target.
-- Per-target errors use typed `code`, `reasonCode`, `message`, `retryable`, and optional `details`. Current reason codes include `CAPABILITY_REQUIRED`, `SESSION_NOT_FOUND`, `SESSION_DISCONNECTED`, `CONTROL_STATE_STALE`, `CONTROL_STATE_UNKNOWN`, `SESSION_MODE_UNSUPPORTED`, `TEXT_REQUIRED`, `TEXT_TOO_LARGE`, `TEXT_MUST_BE_LITERAL`, and `UPSTREAM_WRITE_FAILED`.
+- Per-target errors use typed `code`, `reasonCode`, `message`, `retryable`, and optional `details`. Current reason codes include `CAPABILITY_REQUIRED`, `SESSION_NOT_FOUND`, `SESSION_DISCONNECTED`, `CONTROL_STATE_STALE`, `CONTROL_STATE_UNKNOWN`, `SESSION_MODE_UNSUPPORTED`, `TEXT_REQUIRED`, `TEXT_TOO_LARGE`, `TEXT_MUST_BE_LITERAL`, `KEY_REQUIRED`, `KEY_INVALID`, and `UPSTREAM_WRITE_FAILED`.
 - `counts.denied` is for capability denials (`FORBIDDEN`). Other per-target errors increment `counts.failed`. `counts.skipped` is reserved for future fan-out decisions.
-- Audit stores actor summary, target session IDs/count, action type, timestamp, hashes/counts/classes for content, and the aggregate partial-failure flag. Raw supervisor text is not returned or stored by default.
+- Audit stores actor summary, target session IDs/count, action type, optional canonical send-key name, timestamp, hashes/counts/classes for content, and the aggregate partial-failure flag. Raw supervisor text or mapped terminal bytes are not returned or stored by default.
 
 This is deliberately distinct from raw PTY input and terminal substrates:
 

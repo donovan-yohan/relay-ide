@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { validateSessionCreateRequest } from '../server/index.js';
+import {
+  parseRenderedScreenMaxLines,
+  validateSessionCreateRequest,
+} from '../server/index.js';
 import type { Config } from '../server/types.js';
 import type { WorkContextStore } from '../server/work-context.js';
 
@@ -200,5 +203,21 @@ describe('validateSessionCreateRequest', () => {
     expect(result).toBe(false);
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ error: 'work_context_not_found' });
+  });
+});
+
+describe('parseRenderedScreenMaxLines', () => {
+  it('accepts string and pre-parsed numeric query values', () => {
+    expect(parseRenderedScreenMaxLines('5')).toBe(5);
+    expect(parseRenderedScreenMaxLines(5)).toBe(5);
+  });
+
+  it('rejects blank, fractional, zero, and negative query values', () => {
+    expect(parseRenderedScreenMaxLines('')).toBeUndefined();
+    expect(parseRenderedScreenMaxLines('1.5')).toBeUndefined();
+    expect(parseRenderedScreenMaxLines(1.5)).toBeUndefined();
+    expect(parseRenderedScreenMaxLines('0')).toBeUndefined();
+    expect(parseRenderedScreenMaxLines(0)).toBeUndefined();
+    expect(parseRenderedScreenMaxLines(-1)).toBeUndefined();
   });
 });

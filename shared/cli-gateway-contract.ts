@@ -4,6 +4,7 @@ import {
   CONTEXT_PACKET_KINDS,
   SESSION_INBOX_MESSAGE_STATES,
 } from './context-packet.js';
+import { SUPERVISOR_SEND_KEY_NAMES } from './supervisor-actions.js';
 
 export const RELAY_CLI_GATEWAY_MAJOR = 'v1' as const;
 export const RELAY_CLI_GATEWAY_CONTRACT_VERSION = '1.0' as const;
@@ -31,6 +32,7 @@ export type RelayCliGatewayCommand =
   | 'sessions.rename'
   | 'sessions.stream'
   | 'sessions.wait'
+  | 'sessions.screen'
   | 'sessions.input'
   | 'sessions.interventions'
   | 'sessions.handBack'
@@ -72,6 +74,7 @@ export type RelayCliGatewayCommand =
   | 'supervisor.snapshot'
   | 'supervisor.sessions'
   | 'supervisor.sendText'
+  | 'supervisor.sendKey'
   | 'supervisor.submit'
   | 'events.subscribe'
   | 'settings.get'
@@ -678,6 +681,155 @@ const sessionWaitOutputSchema: RelayJsonSchema = {
     'truncated',
     'timeoutMs',
     'maxBytes',
+  ],
+};
+
+const sessionScreenInputSchema: RelayJsonSchema = {
+  title: 'SessionsScreenInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    scrollback: booleanSchema,
+    maxLines: { type: 'number', minimum: 1, maximum: 1000 },
+  },
+  required: ['id'],
+};
+
+const renderedTerminalLineSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    text: stringSchema,
+  },
+};
+
+const sessionScreenOutputSchema: RelayJsonSchema = {
+  title: 'SessionsScreenOutput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    session: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: stringSchema,
+        requestedId: stringSchema,
+        nodeId: stringSchema,
+        globalSessionId: stringSchema,
+        type: stringSchema,
+        mode: stringSchema,
+        status: stringSchema,
+        displayName: stringSchema,
+      },
+      required: ['id', 'nodeId', 'globalSessionId', 'mode', 'status'],
+    },
+    backend: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        terminalBackend: { type: 'string', enum: ['relay-pty'] },
+        modelBackend: { const: 'libghostty-vt' },
+        runtime: { const: 'relay-pty/libghostty-vt' },
+      },
+      required: ['terminalBackend', 'modelBackend', 'runtime'],
+    },
+    geometry: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        rows: { type: 'number', minimum: 1 },
+        cols: { type: 'number', minimum: 1 },
+      },
+      required: ['rows', 'cols'],
+    },
+    capturedAt: stringSchema,
+    freshness: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        state: { type: 'string', enum: ['fresh'] },
+        lastActivityAt: stringSchema,
+        modelGeneratedAt: stringSchema,
+      },
+      required: ['state', 'lastActivityAt', 'modelGeneratedAt'],
+    },
+    visible: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        text: stringSchema,
+        rows: { type: 'array', items: renderedTerminalLineSchema },
+      },
+      required: ['text', 'rows'],
+    },
+    cursor: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        row: { type: 'number', minimum: 0 },
+        col: { type: 'number', minimum: 0 },
+      },
+      required: ['row', 'col'],
+    },
+    title: nullableStringSchema,
+    modes: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        altScreen: booleanSchema,
+        applicationCursorKeys: { type: ['boolean', 'null'] },
+        mouseTracking: { type: ['boolean', 'null'] },
+        bracketedPaste: { type: ['boolean', 'null'] },
+      },
+      required: [
+        'altScreen',
+        'applicationCursorKeys',
+        'mouseTracking',
+        'bracketedPaste',
+      ],
+    },
+    scrollback: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        requested: booleanSchema,
+        included: booleanSchema,
+        rows: { type: 'array', items: renderedTerminalLineSchema },
+        availableRows: { type: 'number', minimum: 0 },
+        includedRows: { type: 'number', minimum: 0 },
+        maxLines: { type: 'number', minimum: 1, maximum: 1000 },
+        truncated: booleanSchema,
+        omittedRows: { type: 'number', minimum: 0 },
+        bytesDropped: { type: 'number', minimum: 0 },
+        capacityBytes: { type: 'number', minimum: 1 },
+      },
+      required: [
+        'requested',
+        'included',
+        'rows',
+        'availableRows',
+        'includedRows',
+        'truncated',
+        'omittedRows',
+        'bytesDropped',
+        'capacityBytes',
+      ],
+    },
+    unsupported: { type: 'array', items: stringSchema },
+  },
+  required: [
+    'session',
+    'backend',
+    'geometry',
+    'capturedAt',
+    'freshness',
+    'visible',
+    'cursor',
+    'title',
+    'modes',
+    'scrollback',
+    'unsupported',
   ],
 };
 
@@ -1816,6 +1968,20 @@ const supervisorSendTextInputSchema: RelayJsonSchema = {
   oneOf: [{ required: ['id'] }, { required: ['targetIds'] }],
 };
 
+const supervisorSendKeyInputSchema: RelayJsonSchema = {
+  title: 'SupervisorSendKeyInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    targetIds: { type: 'array', items: stringSchema },
+    key: { type: 'string', enum: SUPERVISOR_SEND_KEY_NAMES },
+    actor: { type: 'object', additionalProperties: true },
+  },
+  required: ['key'],
+  oneOf: [{ required: ['id'] }, { required: ['targetIds'] }],
+};
+
 const supervisorSubmitInputSchema: RelayJsonSchema = {
   title: 'SupervisorSubmitInput',
   type: 'object',
@@ -1980,9 +2146,14 @@ const supervisorSessionsOutputSchema: RelayJsonSchema = {
 };
 
 const supervisorActionOutputSchema = (
-  command: 'supervisor.sendText' | 'supervisor.submit'
+  command: 'supervisor.sendText' | 'supervisor.sendKey' | 'supervisor.submit'
 ): RelayJsonSchema => {
-  const action = command === 'supervisor.submit' ? 'submit' : 'sendText';
+  const action =
+    command === 'supervisor.submit'
+      ? 'submit'
+      : command === 'supervisor.sendKey'
+        ? 'sendKey'
+        : 'sendText';
   return {
     type: 'object',
     additionalProperties: true,
@@ -2904,6 +3075,37 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'UNSUPPORTED',
       'NOT_FOUND',
       'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.screen',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'screen',
+      '--id',
+      '<session-id-or-global-id>',
+      '--json',
+    ],
+    summary:
+      'Read a bounded rendered terminal screen snapshot for a local relay-pty session from the libghostty terminal model.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: sessionScreenInputSchema,
+    outputSchema: okOutput('SessionsScreenOutput', sessionScreenOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'UNSUPPORTED',
+      'SESSION_CONFLICT',
       'NODE_OFFLINE',
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
@@ -3841,6 +4043,32 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     outputSchema: okOutput(
       'SupervisorSendTextOutput',
       supervisorActionOutputSchema('supervisor.sendText')
+    ),
+    errorCodes: gatewaySupervisorErrorCodes,
+  },
+  {
+    name: 'supervisor.sendKey',
+    cli: [
+      'relay-ide',
+      'v1',
+      'supervisor',
+      'send-key',
+      '--id',
+      '<session-id>',
+      '--key',
+      '<key-name>',
+      '--json',
+    ],
+    summary:
+      'Send one canonical closed-enum key to one or more PTY sessions as a typed supervisor intervention.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:attach', 'tab:intervention:send-key'],
+    inputSchema: supervisorSendKeyInputSchema,
+    outputSchema: okOutput(
+      'SupervisorSendKeyOutput',
+      supervisorActionOutputSchema('supervisor.sendKey')
     ),
     errorCodes: gatewaySupervisorErrorCodes,
   },
