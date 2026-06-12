@@ -405,7 +405,7 @@ describe('WorkContext artifact router', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...actorHeaders('work-context-artifacts.publish', 'context:write,context:read'),
+        ...actorHeaders('work-context-artifacts.publish', 'artifact:write,context:read'),
       },
       body: JSON.stringify({ workContextId, artifact: artifact({ id: 'pipeline-handoff:router:denied' }) }),
     });
@@ -418,7 +418,7 @@ describe('WorkContext artifact router', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...actorHeaders('work-context-artifacts.pin', 'context:write,context:read'),
+          ...actorHeaders('work-context-artifacts.pin', 'artifact:write,context:read'),
         },
         body: JSON.stringify({ workContextId }),
       }
@@ -431,7 +431,7 @@ describe('WorkContext artifact router', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...actorHeaders('work-context-artifacts.unpin', 'context:write,context:read'),
+          ...actorHeaders('work-context-artifacts.unpin', 'artifact:write,context:read'),
         },
         body: JSON.stringify({ workContextId }),
       }
@@ -530,7 +530,7 @@ describe('WorkContext artifact router', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-relay-capabilities': 'context:write,context:read',
+        'x-relay-capabilities': 'artifact:write,context:read',
       },
       body: JSON.stringify({
         workContextId,
@@ -612,7 +612,7 @@ describe('WorkContext artifact router', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-relay-capabilities': 'context:write,context:read',
+        'x-relay-capabilities': 'artifact:write,context:read',
       },
       body: JSON.stringify({
         workContextId,
@@ -633,7 +633,7 @@ describe('WorkContext artifact router', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-relay-capabilities': 'context:write,context:read',
+        'x-relay-capabilities': 'artifact:write,context:read',
       },
       body: JSON.stringify({
         workContextId,
@@ -655,7 +655,7 @@ describe('WorkContext artifact router', () => {
     const { baseUrl } = await serve({ root, store, workContextStore });
     const headers = {
       'Content-Type': 'application/json',
-      'x-relay-capabilities': 'context:write,context:read',
+      'x-relay-capabilities': 'artifact:write,context:read',
     };
 
     for (const artifactLayer of [fixture.implementationArtifact, qaArtifact]) {
@@ -739,7 +739,7 @@ describe('WorkContext artifact router', () => {
     const { baseUrl } = await serve({ root, store, workContextStore });
     const headers = {
       'Content-Type': 'application/json',
-      'x-relay-capabilities': 'context:write,context:read',
+      'x-relay-capabilities': 'artifact:write,context:read',
     };
 
     const publish = await fetch(`${baseUrl}/work-context-artifacts`, {
@@ -816,7 +816,7 @@ describe('WorkContext artifact router', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-relay-capabilities': 'context:write,context:read',
+        'x-relay-capabilities': 'artifact:write,context:read',
       },
       body: JSON.stringify({
         workContextId,
@@ -865,7 +865,7 @@ describe('WorkContext artifact router', () => {
     });
     const headers = {
       'Content-Type': 'application/json',
-      'x-relay-capabilities': 'context:write,context:read',
+      'x-relay-capabilities': 'artifact:write,context:read',
     };
 
     const conflict = await fetch(`${baseUrl}/work-context-artifacts`, {
@@ -932,7 +932,7 @@ describe('WorkContext artifact router', () => {
     });
     const headers = {
       'Content-Type': 'application/json',
-      'x-relay-capabilities': 'context:write,context:read',
+      'x-relay-capabilities': 'artifact:write,context:read',
     };
 
     const withCapabilities = viewArtifact({
@@ -1032,7 +1032,7 @@ describe('WorkContext artifact router', () => {
     });
     const headers = {
       'Content-Type': 'application/json',
-      'x-relay-capabilities': 'context:write,context:read',
+      'x-relay-capabilities': 'artifact:write,context:read',
     };
 
     const oversizedPublish = await fetch(`${baseUrl}/work-context-artifacts`, {
@@ -1125,7 +1125,7 @@ describe('WorkContext artifact router', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-relay-capabilities': 'context:write',
+        'x-relay-capabilities': 'artifact:write',
       },
       body: JSON.stringify({ workContextId, artifact: artifact(), currentHeadSha: nextHeadSha }),
     });
