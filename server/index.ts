@@ -834,7 +834,10 @@ function parseRenderedScreenBooleanQuery(value: unknown): boolean {
   return false;
 }
 
-function parseRenderedScreenMaxLines(value: unknown): number | undefined {
+export function parseRenderedScreenMaxLines(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= 1 ? value : undefined;
+  }
   if (typeof value !== 'string' || value.trim() === '') return undefined;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) return undefined;

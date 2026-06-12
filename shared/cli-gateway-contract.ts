@@ -714,6 +714,7 @@ const sessionScreenOutputSchema: RelayJsonSchema = {
       required: [
         'requested',
         'included',
+        'rows',
         'availableRows',
         'includedRows',
         'truncated',

@@ -23,6 +23,7 @@ import { serializeAll, restoreFromDisk } from '../server/sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from '../server/types.js';
 import type { PtySession } from '../server/types.js';
 import { LOCAL_COMPATIBILITY_SESSION_INTENT } from '../shared/session-envelope.js';
+import { DEFAULT_SESSION_REPLAY_CAPACITY_BYTES } from '../shared/session-replay.js';
 
 // Track created session IDs so we can clean up after each test
 const createdIds: string[] = [];
@@ -952,6 +953,40 @@ describe('sessions', () => {
     const visible = snapshot!.visible as { text?: string; rows?: unknown[] };
     expect(visible.text).toContain('SCREEN_SNAPSHOT_READY');
     expect(Array.isArray(visible.rows)).toBe(true);
+  });
+
+  it('defaults rendered screen scrollback counters for legacy relay-pty records', () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      cols: 80,
+      rows: 12,
+      useTmux: false,
+    });
+    createdIds.push(result.id);
+
+    const session = sessions.get(result.id) as PtySession;
+    delete (session as Partial<PtySession>).scrollbackBytesEvicted;
+    delete (session as Partial<PtySession>).scrollbackCapacityBytes;
+
+    const resultSnapshot = sessions.getRenderedScreenSnapshot(result.id, {
+      includeScrollback: true,
+      maxScrollbackLines: 5,
+    });
+
+    expect(resultSnapshot.ok).toBe(true);
+    if (!resultSnapshot.ok) throw new Error('expected rendered screen snapshot');
+    expect(resultSnapshot.snapshot).toMatchObject({
+      scrollback: {
+        rows: expect.any(Array),
+        bytesDropped: 0,
+        capacityBytes: DEFAULT_SESSION_REPLAY_CAPACITY_BYTES,
+      },
+    });
   });
 
   it('fails closed for rendered screen snapshots on tmux-compat sessions', () => {

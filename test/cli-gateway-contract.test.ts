@@ -1080,6 +1080,7 @@ describe('CLI gateway contract', () => {
                 maxLines: { maximum: 1000 },
                 truncated: { type: 'boolean' },
               },
+              required: expect.arrayContaining(['rows']),
             },
           },
         },

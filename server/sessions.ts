@@ -773,16 +773,26 @@ function get(id: string): Session | undefined {
   return sessions.get(id);
 }
 
+function sessionScrollbackCapacityMetadata(session: PtySession): {
+  bytesDropped: number;
+  capacityBytes: number;
+} {
+  return {
+    bytesDropped: session.scrollbackBytesEvicted ?? 0,
+    // Prefer the per-session effective cap so snapshots report the actual
+    // eviction threshold; fall back only when a legacy/test record predates
+    // the counter.
+    capacityBytes:
+      session.scrollbackCapacityBytes || DEFAULT_SESSION_REPLAY_CAPACITY_BYTES,
+  };
+}
+
 function getReplaySnapshot(id: string): SessionReplaySnapshot | null {
   const session = sessions.get(id);
   if (!session || session.mode !== 'pty') return null;
   const payload = session.scrollback.join('');
-  const bytesDropped = session.scrollbackBytesEvicted;
-  // Prefer the per-session effective cap so the snapshot reports the
-  // actual eviction threshold for that session; fall back to the shared
-  // default only when a legacy/test session record predates the field.
-  const capacityBytes =
-    session.scrollbackCapacityBytes || DEFAULT_SESSION_REPLAY_CAPACITY_BYTES;
+  const { bytesDropped, capacityBytes } =
+    sessionScrollbackCapacityMetadata(session);
   return {
     sessionId: session.id,
     payload,
@@ -928,6 +938,8 @@ function getRenderedScreenSnapshot(
       includeScrollback,
       maxLines
     );
+    const { bytesDropped, capacityBytes } =
+      sessionScrollbackCapacityMetadata(session);
     return {
       ok: true,
       snapshot: {
@@ -970,8 +982,8 @@ function getRenderedScreenSnapshot(
           ...(includeScrollback ? { maxLines } : {}),
           truncated: scrollback.truncated,
           omittedRows: scrollback.omittedRows,
-          bytesDropped: session.scrollbackBytesEvicted,
-          capacityBytes: session.scrollbackCapacityBytes,
+          bytesDropped,
+          capacityBytes,
         },
         unsupported: terminal.unsupported,
       },
