@@ -93,7 +93,12 @@ function inventory(): AggregatedRepoInventoryResponse {
         worktreeInstanceId: 'node-1:/repo/relay-ide/.worktrees/921',
         localPath: '/repo/relay-ide/.worktrees/921',
         branchName: 'frontend/921-nodes-section',
-        displayName: '921',
+        displayName: 'locality primary bench',
+      },
+      {
+        worktreeInstanceId: 'node-1:C:\\repo\\relay-ide\\.worktrees\\win-921',
+        localPath: 'C:\\repo\\relay-ide\\.worktrees\\win-921',
+        branchName: 'fix/windows-locality',
       },
     ],
     reportedAt: '2026-01-02T03:04:00.000Z',
@@ -202,8 +207,23 @@ describe('HubNodeDashboard', () => {
 
     expect(locality).toBeDefined();
     expect(locality ? repoLocalitySummary(locality) : '').toBe(
-      '1 repo · 1 worktree'
+      '1 repo · 2 worktrees'
     );
+
+    expect(locality?.repos[0]?.worktrees).toEqual([
+      {
+        worktreeInstanceId: 'node-1:/repo/relay-ide/.worktrees/921',
+        localPath: '/repo/relay-ide/.worktrees/921',
+        branchName: 'frontend/921-nodes-section',
+        displayName: 'locality primary bench',
+      },
+      {
+        worktreeInstanceId: 'node-1:C:\\repo\\relay-ide\\.worktrees\\win-921',
+        localPath: 'C:\\repo\\relay-ide\\.worktrees\\win-921',
+        branchName: 'fix/windows-locality',
+        displayName: 'win-921',
+      },
+    ]);
 
     const html = renderToStaticMarkup(
       React.createElement(HubNodeDashboard, {
@@ -213,10 +233,16 @@ describe('HubNodeDashboard', () => {
       })
     );
 
-    expect(html).toContain('repo locality: 1 repo · 1 worktree');
+    expect(html).toContain('repo locality: 1 repo · 2 worktrees');
     expect(html).toContain('relay-ide');
-    expect(html).toContain('frontend/921-nodes-section');
     expect(html).toContain('/repo/relay-ide');
+    expect(html).toContain('worktrees');
+    expect(html).toContain('locality primary bench');
+    expect(html).toContain('/repo/relay-ide/.worktrees/921');
+    expect(html).toContain('frontend/921-nodes-section');
+    expect(html).toContain('win-921');
+    expect(html).toContain('C:\\repo\\relay-ide\\.worktrees\\win-921');
+    expect(html).toContain('fix/windows-locality');
   });
 
   it('renders an explicit empty locality state when a node has no report', () => {

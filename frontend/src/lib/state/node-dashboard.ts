@@ -117,6 +117,11 @@ function serviceManagerStatus(kind: string): NodeCapabilityStatus {
   return kind ? 'available' : 'unknown';
 }
 
+function fallbackWorktreeDisplayName(localPath: string): string {
+  const normalizedPath = localPath.replace(/[\\/]+$/, '');
+  return normalizedPath.split(/[\\/]/).pop() || localPath;
+}
+
 function localityWorktree(
   worktree: RepoInventoryWorktreeInstance
 ): NodeRepoLocalityWorktree {
@@ -124,10 +129,7 @@ function localityWorktree(
     worktreeInstanceId: worktree.worktreeInstanceId,
     localPath: worktree.localPath,
     branchName: worktree.branchName,
-    displayName:
-      worktree.displayName ??
-      worktree.localPath.split('/').pop() ??
-      worktree.localPath,
+    displayName: worktree.displayName ?? fallbackWorktreeDisplayName(worktree.localPath),
   };
 }
 

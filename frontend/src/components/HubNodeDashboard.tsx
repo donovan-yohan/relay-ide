@@ -85,6 +85,9 @@ function DegradedReasonsExpander({
 // NodeHelperMeta — helper version + file-rpc status line
 // ---------------------------------------------------------------------------
 
+const MAX_LOCALITY_REPOS = 3;
+const MAX_LOCALITY_WORKTREES_PER_REPO = 3;
+
 interface NodeLocalityProps {
   locality: NodeRepoLocality | undefined;
 }
@@ -104,9 +107,15 @@ function NodeLocality({ locality }: NodeLocalityProps) {
         repo locality: {repoLocalitySummary(locality)}
       </div>
       <ul className="hub-node-locality-list" role="list">
-        {locality.repos.slice(0, 3).map((repo) => {
+        {locality.repos.slice(0, MAX_LOCALITY_REPOS).map((repo) => {
           const branch =
             repo.currentBranch ?? repo.defaultBranch ?? 'unknown branch';
+          const visibleWorktrees = repo.worktrees.slice(
+            0,
+            MAX_LOCALITY_WORKTREES_PER_REPO
+          );
+          const hiddenWorktreeCount =
+            repo.worktrees.length - visibleWorktrees.length;
           return (
             <li key={repo.repoInstanceId} className="hub-node-locality-repo">
               <span className="hub-node-locality-name">{repo.name}</span>
@@ -114,19 +123,56 @@ function NodeLocality({ locality }: NodeLocalityProps) {
               <span className="hub-node-locality-path" title={repo.localPath}>
                 {repo.localPath}
               </span>
-              {repo.worktrees.length > 0 && (
-                <span className="hub-node-locality-worktrees">
-                  {repo.worktrees.length === 1
-                    ? '1 worktree'
-                    : `${repo.worktrees.length} worktrees`}
-                </span>
+              {visibleWorktrees.length > 0 && (
+                <div
+                  className="hub-node-locality-worktrees"
+                  aria-label={`${repo.name} worktrees`}
+                >
+                  <div className="hub-node-locality-worktrees-label">
+                    worktrees
+                  </div>
+                  <ul className="hub-node-locality-worktree-list" role="list">
+                    {visibleWorktrees.map((worktree) => {
+                      const worktreeBranch =
+                        worktree.branchName ?? 'unknown branch';
+                      return (
+                        <li
+                          key={worktree.worktreeInstanceId}
+                          className="hub-node-locality-worktree"
+                        >
+                          <span className="hub-node-locality-worktree-name">
+                            {worktree.displayName}
+                          </span>
+                          <span
+                            className="hub-node-locality-worktree-branch"
+                            title={worktreeBranch}
+                          >
+                            {worktreeBranch}
+                          </span>
+                          <span
+                            className="hub-node-locality-worktree-path"
+                            title={worktree.localPath}
+                          >
+                            {worktree.localPath}
+                          </span>
+                        </li>
+                      );
+                    })}
+                    {hiddenWorktreeCount > 0 && (
+                      <li className="hub-node-locality-worktree-more">
+                        +{hiddenWorktreeCount} more{' '}
+                        {hiddenWorktreeCount === 1 ? 'worktree' : 'worktrees'}
+                      </li>
+                    )}
+                  </ul>
+                </div>
               )}
             </li>
           );
         })}
-        {locality.repoCount > 3 && (
+        {locality.repoCount > MAX_LOCALITY_REPOS && (
           <li className="hub-node-locality-more">
-            +{locality.repoCount - 3} more repos on this node
+            +{locality.repoCount - MAX_LOCALITY_REPOS} more repos on this node
           </li>
         )}
       </ul>
