@@ -41,6 +41,7 @@ import {
   getUtilityTerminalSessions,
 } from './lib/utility-terminals.js';
 import { deriveUtilityRailContext } from './lib/utility-rail-context.js';
+import { resolveAppViewMode } from './lib/state/app-view-mode.js';
 import { initAnalytics, destroyAnalytics, track } from './lib/analytics.js';
 import { startShikiGc } from './lib/stores/shiki-gc.js';
 import type { ActionContext } from './lib/actions/types.js';
@@ -185,6 +186,7 @@ function resolveTerminalFilePath(
 function useTerminalDerivedState() {
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const analyticsView = useUiStore((s) => s.analyticsView);
+  const isNodesTab = useUiStore((s) => s.orgDashboardTab === 'nodes');
   const sessions = useSessionsStore((s) => s.sessions);
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
@@ -249,15 +251,17 @@ function useTerminalDerivedState() {
     [activeRepoPath, activeSession]
   );
 
-  const viewMode = useMemo<
-    'empty' | 'org' | 'dashboard' | 'session' | 'analytics'
-  >(() => {
-    if (analyticsView !== null) return 'analytics';
-    if (hasActiveSession) return 'session';
-    if (!repos.length) return 'empty';
-    if (!activeRepoPath) return 'org';
-    return 'dashboard';
-  }, [analyticsView, repos.length, activeRepoPath, hasActiveSession]);
+  const viewMode = useMemo(
+    () =>
+      resolveAppViewMode({
+        analyticsView,
+        hasActiveSession,
+        reposLength: repos.length,
+        activeRepoPath,
+        isNodesTab,
+      }),
+    [analyticsView, hasActiveSession, repos.length, activeRepoPath, isNodesTab]
+  );
 
   return {
     activeRepoPath,
