@@ -77,7 +77,7 @@ const KEY_SEQUENCES: Record<TerminalInputKey, string> = {
 };
 
 export function isTerminalInputKey(key: string): key is TerminalInputKey {
-  return key in KEY_SEQUENCES;
+  return Object.prototype.hasOwnProperty.call(KEY_SEQUENCES, key);
 }
 
 /**
@@ -87,12 +87,22 @@ export function isTerminalInputKey(key: string): key is TerminalInputKey {
  * typed and auditable.
  */
 export function encodeTerminalInput(input: TerminalInput): EncodedTerminalInput {
-  const sequence = input.type === 'text' ? input.text : KEY_SEQUENCES[input.key];
+  const sequence =
+    input.type === 'text'
+      ? input.text
+      : terminalInputSequence(input.key);
   return {
     input,
     sequence,
     bytes: Buffer.from(sequence, 'utf8'),
   };
+}
+
+function terminalInputSequence(key: TerminalInputKey): string {
+  if (!isTerminalInputKey(key)) {
+    throw new Error(`Unsupported terminal input key: ${String(key)}`);
+  }
+  return KEY_SEQUENCES[key];
 }
 
 export interface LibghosttyTerminalModelBackendOptions {
