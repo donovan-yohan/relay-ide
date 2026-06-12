@@ -37,6 +37,7 @@ import {
   AGENT_VIEW_SCHEMA_VERSION,
   type ViewArtifactPackage,
 } from '../shared/agent-view-artifact.js';
+import type { RelayCapabilityBit } from '../shared/security-policy.js';
 import {
   WORK_CONTEXT_SCHEMA_VERSION,
   createWorkContextPrivacyMetadata,
@@ -240,6 +241,7 @@ async function serve(input: {
   maxExportBytes?: number;
   requireReadAuth?: Parameters<typeof createWorkContextArtifactRouter>[0]['requireReadAuth'];
   requireWriteAuth?: express.RequestHandler;
+  requireWriteActorAuth?: Parameters<typeof createWorkContextArtifactRouter>[0]['requireWriteActorAuth'];
 }): Promise<{ baseUrl: string; server: http.Server }> {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
@@ -249,6 +251,9 @@ async function serve(input: {
       workContextStore: input.workContextStore,
       ...(input.requireReadAuth ? { requireReadAuth: input.requireReadAuth } : {}),
       ...(input.requireWriteAuth ? { requireWriteAuth: input.requireWriteAuth } : {}),
+      ...(input.requireWriteActorAuth
+        ? { requireWriteActorAuth: input.requireWriteActorAuth }
+        : {}),
       diagnostics: {
         dbPath: path.join(input.root, 'work-context-artifacts.db'),
         payloadRoot: path.join(input.root, 'payloads'),
@@ -303,10 +308,11 @@ function actorHeadersWithToken(command: string, token: string): Record<string, s
 
 function scopedActorReadAuth(
   registry: ScopedActorCredentialRegistry,
-  expectedCommand: ArtifactReadCommand,
+  expectedCommand: string,
   options: {
     scopeForRequest?: (req: express.Request) => { workContextIds?: string[] } | undefined;
     deferWorkContextScope?: boolean;
+    capabilities?: readonly RelayCapabilityBit[];
   } = {}
 ): express.RequestHandler {
   return (req, res, next) => {
@@ -320,7 +326,7 @@ function scopedActorReadAuth(
     }
     const validation = validateCliGatewayActorCredential(registry, {
       token: bearerActorToken(req),
-      capabilities: ['session:read'],
+      capabilities: options.capabilities ?? ['session:read'],
       ...(options.scopeForRequest ? { scope: options.scopeForRequest(req) } : {}),
       ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
     });
@@ -508,6 +514,80 @@ describe('WorkContext artifact router', () => {
     expect(await json(wrongShow)).toMatchObject({
       error: { details: { reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE' } },
     });
+  });
+
+  it('denies scoped actor pin and unpin writes outside the credential WorkContext scope', async () => {
+    const { root, store } = tmpStore();
+    const allowedWorkContextId = 'wc:router-scoped-write-allowed';
+    const deniedWorkContextId = 'wc:router-scoped-write-denied';
+    const workContextStore = fakeWorkContextStore(
+      createWorkContext(allowedWorkContextId),
+      createWorkContext(deniedWorkContextId)
+    );
+    const stored = store.storePipelineHandoffArtifact({
+      workContextId: allowedWorkContextId,
+      visibility: 'public',
+      artifact: artifact({ id: 'pipeline-handoff:router:scoped-write' }),
+    });
+    const registry = new ScopedActorCredentialRegistry({
+      secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
+    });
+    const allowed = issueCliGatewayActorCredential(registry, {
+      capabilities: ['artifact:write'],
+      scope: { workContextIds: [allowedWorkContextId] },
+    });
+    const requireWriteActorAuth: Parameters<
+      typeof createWorkContextArtifactRouter
+    >[0]['requireWriteActorAuth'] = (command, options) =>
+      scopedActorReadAuth(registry, command, {
+        capabilities: ['artifact:write'],
+        ...(options?.scopeForRequest
+          ? { scopeForRequest: options.scopeForRequest }
+          : {}),
+        ...(options?.deferWorkContextScope
+          ? { deferWorkContextScope: true }
+          : {}),
+      });
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore,
+      requireWriteActorAuth,
+    });
+
+    const pin = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(stored.metadata.id)}/pin`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...actorHeadersWithToken('work-context-artifacts.pin', allowed.token),
+        },
+        body: JSON.stringify({ workContextId: deniedWorkContextId }),
+      }
+    );
+    expect(pin.status).toBe(403);
+    expect(await json(pin)).toMatchObject({
+      error: { details: { reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE' } },
+    });
+    expect(workContextStore.get(deniedWorkContextId)?.artifacts).toHaveLength(0);
+
+    const unpin = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(stored.metadata.id)}/unpin`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...actorHeadersWithToken('work-context-artifacts.unpin', allowed.token),
+        },
+        body: JSON.stringify({ workContextId: deniedWorkContextId }),
+      }
+    );
+    expect(unpin.status).toBe(403);
+    expect(await json(unpin)).toMatchObject({
+      error: { details: { reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE' } },
+    });
+    expect(workContextStore.get(deniedWorkContextId)?.artifacts).toHaveLength(0);
   });
 
   it('attaches, lists, shows, and copies handoff artifacts on dedicated route/auth names', async () => {

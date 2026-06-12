@@ -1207,6 +1207,15 @@ export function createWorkContextArtifactRouter(
       });
       return;
     }
+    if (
+      denyUnauthorizedActorWorkContextScope(req, res, {
+        workContextId,
+        operation: 'pin',
+        artifactId,
+      })
+    ) {
+      return;
+    }
     if (!ensureWorkContext(res, deps.workContextStore, workContextId, 'pin')) return;
     const record = s.get(artifactId);
     if (!record) {
@@ -1241,6 +1250,15 @@ export function createWorkContextArtifactRouter(
         artifactId,
         field: 'workContextId',
       });
+      return;
+    }
+    if (
+      denyUnauthorizedActorWorkContextScope(req, res, {
+        workContextId,
+        operation: 'unpin',
+        artifactId,
+      })
+    ) {
       return;
     }
     if (!ensureWorkContext(res, deps.workContextStore, workContextId, 'unpin')) return;

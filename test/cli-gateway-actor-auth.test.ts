@@ -329,6 +329,17 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
   expect(
     classifyCliGatewayCredentialLane(
       req({
+        method: 'PUT',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'context.create',
+      }),
+      'context.create'
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
         method: 'POST',
         authorization: `Bearer ${token}`,
         actorMarker: 'v1',

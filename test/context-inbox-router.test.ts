@@ -25,6 +25,11 @@ import {
 import { createFileResourceRef } from '../shared/file-resource-ref.js';
 import type { AnchorStateResolver } from '../server/context-adapters/file-range.js';
 import type { ResolveAnchorOutcome } from '../server/anchor-resolution.js';
+import {
+  attachAuthenticatedCliGatewayActorCredential,
+  type CliGatewayActorWriteCommand,
+} from '../server/cli-gateway-actor-auth.js';
+import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
 import type {
   WorkContextStore,
   WorkContextLifecycleEventInput,
@@ -284,19 +289,83 @@ function createFakeWorkContextStore(
 
 const ALL_CAPS = 'context:read,context:write,inbox:read,inbox:write';
 
+function testActorCredential(
+  scope: ScopedActorCredentialRecord['scope']
+): ScopedActorCredentialRecord {
+  return {
+    id: 'sac:test',
+    actor: { type: 'cli', id: 'cli:test' },
+    issuer: { id: 'issuer:test' },
+    audience: 'relay:cli-gateway:v1',
+    capabilities: ['inbox:write'],
+    scope,
+    issuedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    correlationId: 'corr:test',
+  };
+}
+
+function scopeIncludes(
+  granted: readonly string[] | undefined,
+  requested: readonly string[] | undefined
+): boolean {
+  return !granted?.length || !!requested?.some((value) => granted.includes(value));
+}
+
+function actorCredentialMatchesRequestScope(
+  credential: ScopedActorCredentialRecord,
+  requestScope:
+    | {
+        nodeIds?: string[];
+        workContextIds?: string[];
+        sessionIds?: string[];
+        globalSessionIds?: string[];
+      }
+    | undefined
+): boolean {
+  const scope = credential.scope;
+  return (
+    scopeIncludes(scope.workContextIds, requestScope?.workContextIds) &&
+    scopeIncludes(scope.globalSessionIds, requestScope?.globalSessionIds) &&
+    scopeIncludes(scope.sessionIds, requestScope?.sessionIds) &&
+    scopeIncludes(scope.nodeIds, requestScope?.nodeIds)
+  );
+}
+
 let server: Server;
 let baseUrl: string;
 
 function mount(
   store: ContextInboxStore | null,
   resolveAnchorState?: AnchorStateResolver,
-  workContextStore?: WorkContextStore
+  workContextStore?: WorkContextStore,
+  actorCredential?: ScopedActorCredentialRecord
 ): Promise<void> {
   const app = express();
   app.use(express.json());
   app.use(
     createContextInboxRouter({
       requireAuth: (_req, _res, next) => next(),
+      requireWriteActorAuth: actorCredential
+        ? (_expectedCommand: CliGatewayActorWriteCommand, options) =>
+            (req, res, next) => {
+              const requestScope = options?.scopeForRequest?.(req);
+              if (
+                requestScope &&
+                !actorCredentialMatchesRequestScope(actorCredential, requestScope)
+              ) {
+                res.status(403).json({
+                  error: {
+                    code: 'FORBIDDEN',
+                    reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE',
+                  },
+                });
+                return;
+              }
+              attachAuthenticatedCliGatewayActorCredential(req, actorCredential);
+              next();
+            }
+        : undefined,
       store,
       workContextStore,
       // Default to a resolver that never resolves (null) so existing tests stay
@@ -555,6 +624,68 @@ describe('context/inbox gateway router', () => {
     );
     expect(reIgnore.status).toBe(409);
     expect(reIgnore.body.error.code).toBe('SESSION_CONFLICT');
+  });
+
+  it('authorizes scoped actor inbox transitions against stored WorkContext and session targets before mutation', async () => {
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    const store = createFakeStore();
+    await mount(
+      store,
+      undefined,
+      createFakeWorkContextStore(),
+      testActorCredential({ workContextIds: ['wc:allowed'] })
+    );
+
+    const denied = store.createInboxMessage({
+      targetWorkContextId: 'wc:denied',
+      contextPacketIds: [],
+      createdBy: 'agent_1',
+    });
+    const rejected = await req(
+      'POST',
+      `/inbox/${encodeURIComponent(denied.id)}/ack`,
+      { caps: 'inbox:write' }
+    );
+    expect(rejected.status).toBe(403);
+    expect(rejected.body.error.reasonCode).toBe(
+      'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE'
+    );
+    expect(store.getInboxMessage(denied.id, { markDelivered: false })?.state).toBe(
+      'queued'
+    );
+
+    const allowedWorkContext = store.createInboxMessage({
+      targetWorkContextId: 'wc:allowed',
+      contextPacketIds: [],
+      createdBy: 'agent_1',
+    });
+    const ack = await req(
+      'POST',
+      `/inbox/${encodeURIComponent(allowedWorkContext.id)}/ack`,
+      { caps: 'inbox:write' }
+    );
+    expect(ack.status).toBe(200);
+    expect(ack.body.message.state).toBe('acknowledged');
+
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    await mount(
+      store,
+      undefined,
+      createFakeWorkContextStore(),
+      testActorCredential({ sessionIds: ['s-allowed'] })
+    );
+    const allowedSession = store.createInboxMessage({
+      targetSessionId: 'node1:s-allowed',
+      contextPacketIds: [],
+      createdBy: 'agent_1',
+    });
+    const sessionAck = await req(
+      'POST',
+      `/inbox/${encodeURIComponent(allowedSession.id)}/ack`,
+      { caps: 'inbox:write' }
+    );
+    expect(sessionAck.status).toBe(200);
+    expect(sessionAck.body.message.state).toBe('acknowledged');
   });
 
   it('denies write verbs lacking the capability bit with 403 FORBIDDEN', async () => {

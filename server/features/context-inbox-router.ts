@@ -31,7 +31,7 @@ import { Router } from 'express';
 import type { RequestHandler, Request, Response } from 'express';
 
 import type { RelayCliGatewayErrorCode } from '../../shared/cli-gateway-contract.js';
-import type { GlobalSessionId } from '../../shared/identity.js';
+import { parseGlobalSessionId, type GlobalSessionId } from '../../shared/identity.js';
 import {
   createWorkContextPrivacyMetadata,
   type ArtifactRef,
@@ -39,8 +39,15 @@ import {
 } from '../../shared/work-context.js';
 import {
   authenticatedCliGatewayActorCredential,
+  cliGatewayActorFailure,
+  cliGatewayCorrelationId,
+  sendCliGatewayActorFailure,
   type CliGatewayActorWriteCommand,
 } from '../cli-gateway-actor-auth.js';
+import type {
+  ScopedActorCredentialRecord,
+  ScopedActorCredentialValidationFailureReason,
+} from '../../shared/scoped-actor-credentials.js';
 import type { WorkContextStore } from '../work-contexts.js';
 import {
   TERMINAL_INBOX_MESSAGE_STATES,
@@ -358,6 +365,110 @@ function writeScopeFromBody(
         ...(taskRef ? { taskRefs: [taskRef] } : {}),
       }
     : undefined;
+}
+
+function actorScopeForInboxMessage(
+  message: SessionInboxMessage | null
+):
+  | {
+      nodeIds?: string[];
+      workContextIds?: string[];
+      sessionIds?: string[];
+      globalSessionIds?: string[];
+    }
+  | undefined {
+  if (!message) return undefined;
+  const parsedSessionId = message.targetSessionId
+    ? parseGlobalSessionId(message.targetSessionId)
+    : null;
+  return message.targetWorkContextId || message.targetSessionId
+    ? {
+        ...(message.targetWorkContextId
+          ? { workContextIds: [message.targetWorkContextId] }
+          : {}),
+        ...(parsedSessionId ? { nodeIds: [parsedSessionId.nodeId] } : {}),
+        ...(parsedSessionId
+          ? { sessionIds: [parsedSessionId.localSessionId] }
+          : {}),
+        ...(message.targetSessionId
+          ? { globalSessionIds: [message.targetSessionId] }
+          : {}),
+      }
+    : undefined;
+}
+
+function firstMissingActorScopeReason(
+  credential: ScopedActorCredentialRecord,
+  message: SessionInboxMessage
+): ScopedActorCredentialValidationFailureReason | null {
+  const scope = credential.scope;
+  const parsedSessionId = message.targetSessionId
+    ? parseGlobalSessionId(message.targetSessionId)
+    : null;
+  let scopedDimensionSeen = false;
+
+  if (scope.workContextIds?.length) {
+    scopedDimensionSeen = true;
+    if (!message.targetWorkContextId) return 'missing_scope';
+    if (!scope.workContextIds.includes(message.targetWorkContextId)) {
+      return 'wrong_work_context_scope';
+    }
+  }
+
+  if (scope.globalSessionIds?.length) {
+    scopedDimensionSeen = true;
+    if (!message.targetSessionId) return 'missing_scope';
+    if (!scope.globalSessionIds.includes(message.targetSessionId)) {
+      return 'wrong_global_session_scope';
+    }
+  }
+
+  if (scope.sessionIds?.length) {
+    scopedDimensionSeen = true;
+    if (!parsedSessionId) return 'missing_scope';
+    if (!scope.sessionIds.includes(parsedSessionId.localSessionId)) {
+      return 'wrong_session_scope';
+    }
+  }
+
+  if (scope.nodeIds?.length) {
+    scopedDimensionSeen = true;
+    if (!parsedSessionId) return 'missing_scope';
+    if (!scope.nodeIds.includes(parsedSessionId.nodeId)) {
+      return 'wrong_node_scope';
+    }
+  }
+
+  if (
+    scope.repoIds?.length ||
+    scope.pathPrefixes?.length ||
+    scope.taskRefs?.length
+  ) {
+    return 'missing_scope';
+  }
+
+  return scopedDimensionSeen ? null : 'missing_scope';
+}
+
+function denyActorScopeMismatch(
+  req: Request,
+  res: Response,
+  message: SessionInboxMessage
+): boolean {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  if (!credential) return false;
+  const reason = firstMissingActorScopeReason(credential, message);
+  if (!reason) return false;
+  const correlationId = cliGatewayCorrelationId(req);
+  sendCliGatewayActorFailure(
+    res,
+    cliGatewayActorFailure({
+      reason,
+      credentialId: credential.id,
+      ...(correlationId ? { correlationId } : {}),
+    })
+  );
+  return true;
 }
 
 function readString(value: unknown): string | undefined {
@@ -1380,6 +1491,12 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
         });
         return;
       }
+      const message = s.getInboxMessage(id, { markDelivered: false });
+      if (!message) {
+        sendUpdateFailure(res, { ok: false, reason: 'not_found' });
+        return;
+      }
+      if (denyActorScopeMismatch(req, res, message)) return;
       const actorId = readString(bodyRecord(req)['actorId']);
       const result = s.updateInboxState(id, targetState, actorId);
       if (result.ok === false) {
@@ -1390,9 +1507,28 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     };
   }
 
-  router.post('/inbox/:id/ack', writeActorAuth('inbox.ack', { deferWorkContextScope: true }), transitionHandler('acknowledged'));
-  router.post('/inbox/:id/resolve', writeActorAuth('inbox.resolve', { deferWorkContextScope: true }), transitionHandler('resolved'));
-  router.post('/inbox/:id/ignore', writeActorAuth('inbox.ignore', { deferWorkContextScope: true }), transitionHandler('ignored'));
+  const transitionScopeForRequest = (req: Request) => {
+    const id = req.params['id'] ?? '';
+    return actorScopeForInboxMessage(
+      id ? deps.store?.getInboxMessage(id, { markDelivered: false }) ?? null : null
+    );
+  };
+
+  router.post(
+    '/inbox/:id/ack',
+    writeActorAuth('inbox.ack', { scopeForRequest: transitionScopeForRequest }),
+    transitionHandler('acknowledged')
+  );
+  router.post(
+    '/inbox/:id/resolve',
+    writeActorAuth('inbox.resolve', { scopeForRequest: transitionScopeForRequest }),
+    transitionHandler('resolved')
+  );
+  router.post(
+    '/inbox/:id/ignore',
+    writeActorAuth('inbox.ignore', { scopeForRequest: transitionScopeForRequest }),
+    transitionHandler('ignored')
+  );
 
   return router;
 }

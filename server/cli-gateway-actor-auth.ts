@@ -225,9 +225,7 @@ export function isSupportedCliGatewayActorWriteRequest(
   req: Request,
   expectedCommand?: CliGatewayActorWriteCommand
 ): boolean {
-  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
-    return false;
-  }
+  if (req.method !== 'POST') return false;
   if (!expectedCommand || !cliGatewayActorWriteCommandSet.has(expectedCommand)) {
     return false;
   }
