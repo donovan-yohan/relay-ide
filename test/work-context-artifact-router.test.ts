@@ -1,4 +1,5 @@
 import express from 'express';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -23,6 +24,11 @@ import {
   type PipelineHandoffArtifact,
   type PipelineHandoffQaStage,
 } from '../shared/pipeline-handoff-artifact.js';
+import {
+  AGENT_VIEW_MANIFEST_KIND,
+  AGENT_VIEW_SCHEMA_VERSION,
+  type ViewArtifactPackage,
+} from '../shared/agent-view-artifact.js';
 import {
   WORK_CONTEXT_SCHEMA_VERSION,
   createWorkContextPrivacyMetadata,
@@ -113,6 +119,35 @@ function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoff
         migrationOrStateRisk: 'isolated WorkContext artifact store only',
       },
     ],
+    ...input,
+  };
+}
+
+function viewArtifact(input: Partial<ViewArtifactPackage> = {}): ViewArtifactPackage {
+  const manifest = {
+    kind: AGENT_VIEW_MANIFEST_KIND,
+    schemaVersion: AGENT_VIEW_SCHEMA_VERSION,
+    title: 'Router static view',
+    description: 'Router view artifact fixture',
+    entry: 'index.html',
+    authoring: { actorId: 'agent:kani-backend', harness: 'router-test' },
+    createdAt: now,
+    updatedAt: now,
+    scope: {
+      repo: 'example-org/example-project',
+      taskRefs: [{ kind: 'github-issue', id: '830', url: 'https://github.com/example-org/example-project/issues/830' }],
+    },
+    sources: [{ label: 'Issue 830', url: 'https://github.com/example-org/example-project/issues/830', kind: 'github-issue' }],
+    capabilities: [],
+    export: { policy: 'private' },
+    revision: { id: 'agent-view:router:aaaaaaaa' },
+  } satisfies ViewArtifactPackage['manifest'];
+  return {
+    manifest,
+    files: {
+      'index.html': '<main><h1>Router static view</h1></main>',
+      'style.css': 'main { color: #123; }',
+    },
     ...input,
   };
 }
@@ -651,6 +686,211 @@ describe('WorkContext artifact router', () => {
     );
     expect(unpin.status).toBe(200);
     expect(await json(unpin)).toMatchObject({ removed: true, lifecycle: { artifactDeleted: false } });
+  });
+
+  it('publishes agent view artifacts and exposes an authenticated package route', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-view';
+    const workContextStore = fakeWorkContextStore(createWorkContext(workContextId));
+    const { baseUrl } = await serve({ root, store, workContextStore });
+    const pkg = viewArtifact();
+
+    const publish = await fetch(`${baseUrl}/work-context-artifacts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write,context:read',
+      },
+      body: JSON.stringify({
+        workContextId,
+        viewArtifact: pkg,
+        pin: true,
+        actorId: 'agent:kani-backend',
+      }),
+    });
+    expect(publish.status).toBe(201);
+    const publishBody = await json(publish);
+    expect(publishBody).toMatchObject({
+      artifact: {
+        metadata: {
+          id: pkg.manifest.revision.id,
+          payloadKind: 'agent-view-artifact',
+          workContextId,
+        },
+      },
+      pin: { alreadyPinned: false },
+    });
+    const payloadJson = JSON.stringify(pkg, null, 2);
+    expect((publishBody.artifact as { metadata: Record<string, unknown> }).metadata.payloadSha256).toBe(
+      createHash('sha256').update(payloadJson).digest('hex')
+    );
+
+    const packageRead = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(pkg.manifest.revision.id)}/view-package`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(packageRead.status).toBe(200);
+    expect(await json(packageRead)).toMatchObject({
+      artifact: {
+        metadata: { id: pkg.manifest.revision.id, payloadKind: 'agent-view-artifact' },
+        viewArtifact: { manifest: { revision: { id: pkg.manifest.revision.id } }, files: pkg.files },
+      },
+    });
+  });
+
+  it('rejects ambiguous publish payloads and keeps handoff routes handoff-only', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-view-xor';
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore: fakeWorkContextStore(createWorkContext(workContextId)),
+    });
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-relay-capabilities': 'context:write,context:read',
+    };
+
+    const conflict = await fetch(`${baseUrl}/work-context-artifacts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ workContextId, artifact: artifact(), viewArtifact: viewArtifact() }),
+    });
+    expect(conflict.status).toBe(400);
+    expect(await json(conflict)).toMatchObject({
+      error: { details: { reasonCode: 'WORK_CONTEXT_ARTIFACT_PAYLOAD_CONFLICT' } },
+    });
+
+    const wrongSurface = await fetch(`${baseUrl}/pipeline-handoff-artifacts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ workContextId, viewArtifact: viewArtifact() }),
+    });
+    expect(wrongSurface.status).toBe(400);
+    expect(await json(wrongSurface)).toMatchObject({
+      error: { details: { reasonCode: 'WORK_CONTEXT_ARTIFACT_KIND_MISMATCH', operation: 'attach' } },
+    });
+  });
+
+  it('keeps agent view artifacts out of pipeline handoff list/show surfaces', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-handoff-filter';
+    const handoff = store.storePipelineHandoffArtifact({ workContextId, artifact: artifact() });
+    const view = store.storeAgentViewArtifact({ workContextId, viewArtifact: viewArtifact() });
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore: fakeWorkContextStore(createWorkContext(workContextId)),
+    });
+    const readHeaders = { 'x-relay-capabilities': 'context:read' };
+
+    const handoffList = await fetch(`${baseUrl}/pipeline-handoff-artifacts?workContextId=${encodeURIComponent(workContextId)}`, {
+      headers: readHeaders,
+    });
+    expect(handoffList.status).toBe(200);
+    const handoffListBody = await json(handoffList);
+    expect((handoffListBody.artifacts as Array<{ metadata: { id: string } }>).map((entry) => entry.metadata.id)).toEqual([
+      handoff.metadata.id,
+    ]);
+
+    const allList = await fetch(`${baseUrl}/work-context-artifacts?workContextId=${encodeURIComponent(workContextId)}`, {
+      headers: readHeaders,
+    });
+    expect(allList.status).toBe(200);
+    expect((await json(allList)).artifacts as unknown[]).toHaveLength(2);
+
+    const viewViaHandoffRoute = await fetch(`${baseUrl}/pipeline-handoff-artifacts/${encodeURIComponent(view.metadata.id)}`, {
+      headers: readHeaders,
+    });
+    expect(viewViaHandoffRoute.status).toBe(404);
+  });
+
+  it('rejects unsafe or oversized agent view artifact publishes', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-view-guardrails';
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore: fakeWorkContextStore(createWorkContext(workContextId)),
+    });
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-relay-capabilities': 'context:write,context:read',
+    };
+
+    const withCapabilities = viewArtifact({
+      manifest: { ...viewArtifact().manifest, revision: { id: 'agent-view:router:capabilities' }, capabilities: ['network'] },
+    });
+    const denied = await fetch(`${baseUrl}/work-context-artifacts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ workContextId, viewArtifact: withCapabilities }),
+    });
+    expect(denied.status).toBe(400);
+    expect(await json(denied)).toMatchObject({
+      error: { details: { field: 'viewArtifact', reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED' } },
+    });
+
+    const oversizedFiles = Object.fromEntries(
+      Array.from({ length: 14 }, (_, index) => [`chunk-${index}.css`, 'x'.repeat(40 * 1024)])
+    );
+    const oversized = viewArtifact({
+      manifest: { ...viewArtifact().manifest, revision: { id: 'agent-view:router:oversized' } },
+      files: { 'index.html': '<main>oversized</main>', ...oversizedFiles },
+    });
+    const oversizedPublish = await fetch(`${baseUrl}/work-context-artifacts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ workContextId, viewArtifact: oversized }),
+    });
+    expect(oversizedPublish.status).toBe(400);
+  });
+
+  it('exports agent view artifacts as sanitized manifest-only public copies', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-view-export';
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore: fakeWorkContextStore(createWorkContext(workContextId)),
+    });
+    const privateStored = store.storeAgentViewArtifact({
+      workContextId,
+      viewArtifact: viewArtifact({ manifest: { ...viewArtifact().manifest, revision: { id: 'agent-view:router:private-export' } } }),
+    });
+    const privateExport = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(privateStored.metadata.id)}/export`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(privateExport.status).toBe(403);
+
+    const publicPkg = viewArtifact({
+      manifest: {
+        ...viewArtifact().manifest,
+        description: 'Public route from /home/operator/relay with t_12345678 scratch id',
+        export: { policy: 'public' },
+        revision: { id: 'agent-view:router:public-export' },
+      },
+      files: { 'index.html': '<main>private raw html /home/operator/relay t_12345678</main>' },
+    });
+    const publicStored = store.storeAgentViewArtifact({ workContextId, viewArtifact: publicPkg });
+    const publicExport = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(publicStored.metadata.id)}/export`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(publicExport.status).toBe(200);
+    const publicBody = await json(publicExport);
+    expect(publicBody).toMatchObject({
+      artifact: {
+        metadata: { id: publicStored.metadata.id, payloadKind: 'agent-view-artifact' },
+        payload: { manifest: { revision: { id: 'agent-view:router:public-export' } } },
+      },
+      export: { mode: 'public-summary', rawPayloadAvailable: false },
+    });
+    expect(JSON.stringify(publicBody)).toContain('[redacted-local-path]');
+    expect(JSON.stringify(publicBody)).toContain('[redacted-kanban-task]');
+    expect(JSON.stringify(publicBody)).not.toContain('private raw html');
+    expect(JSON.stringify(publicBody)).not.toContain('files');
   });
 
   it('enforces publish and export guardrails with persisted public bytes', async () => {

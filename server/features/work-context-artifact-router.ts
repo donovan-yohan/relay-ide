@@ -18,9 +18,15 @@ import {
   type PipelineHandoffArtifact,
   type PipelineHandoffStageName,
 } from '../../shared/pipeline-handoff-artifact.js';
+import {
+  AGENT_VIEW_MAX_TOTAL_BYTES,
+  validateAgentViewArtifact,
+  type ViewArtifactPackage,
+} from '../../shared/agent-view-artifact.js';
 import type { WorkContextStore } from '../work-contexts.js';
 import {
   WorkContextArtifactStoreError,
+  type StoreAgentViewArtifactInput,
   type StorePipelineHandoffArtifactInput,
   type WorkContextArtifactListInput,
   type WorkContextArtifactMetadata,
@@ -275,6 +281,10 @@ function persistedArtifactPayloadBytes(artifact: PipelineHandoffArtifact): numbe
   return Buffer.byteLength(JSON.stringify(artifact, null, 2), 'utf8');
 }
 
+function persistedViewArtifactPayloadBytes(viewArtifact: ViewArtifactPackage): number {
+  return Buffer.byteLength(JSON.stringify(viewArtifact, null, 2), 'utf8');
+}
+
 function sameJson(left: unknown, right: unknown): boolean {
   return stableJsonEquals(left, right);
 }
@@ -311,7 +321,7 @@ function ensureAppendOnlySupersedes(
     });
     return false;
   }
-  if (!previous?.payload) {
+  if (!previous?.payload || !isPipelineHandoffArtifact(previous.payload)) {
     sendGatewayError(res, 'NOT_FOUND', 'superseded artifact not found', false, {
       reasonCode: 'WORK_CONTEXT_ARTIFACT_SUPERSEDES_NOT_FOUND',
       operation: input.operation,
@@ -383,7 +393,9 @@ function mapStoreError(
       });
       return;
     case 'invalid_pipeline_handoff_artifact':
+    case 'invalid_agent_view_artifact':
     case 'artifact_id_mismatch':
+    case 'artifact_supersedes_mismatch':
       sendGatewayError(res, 'INVALID_ARGUMENT', err.message, false, {
         reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
         ...details,
@@ -603,6 +615,91 @@ function queryListInput(req: Request): WorkContextArtifactListInput | 'invalid-t
   };
 }
 
+function storeViewArtifactPublish(input: {
+  res: Response;
+  store: WorkContextArtifactStore;
+  workContextStore?: WorkContextStore;
+  body: Record<string, unknown>;
+  viewArtifact: ViewArtifactPackage;
+  workContextId: WorkContextId;
+  operation: string;
+  maxPublishBytes: number;
+}): void {
+  const { res, store, workContextStore, body, viewArtifact, workContextId, operation, maxPublishBytes } = input;
+  const payloadBytes = persistedViewArtifactPayloadBytes(viewArtifact);
+  if (payloadBytes > AGENT_VIEW_MAX_TOTAL_BYTES) {
+    sendGatewayError(res, 'INVALID_ARGUMENT', 'viewArtifact payload exceeds agent view size cap', false, {
+      reasonCode: 'WORK_CONTEXT_ARTIFACT_VIEW_OVERSIZE_PAYLOAD',
+      operation,
+      workContextId,
+      artifactId: viewArtifact.manifest.revision.id,
+      payloadBytes,
+      maxBytes: AGENT_VIEW_MAX_TOTAL_BYTES,
+    });
+    return;
+  }
+  if (payloadBytes > maxPublishBytes) {
+    sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact payload exceeds publish size cap', false, {
+      reasonCode: 'WORK_CONTEXT_ARTIFACT_OVERSIZE_PAYLOAD',
+      operation,
+      workContextId,
+      artifactId: viewArtifact.manifest.revision.id,
+      payloadBytes,
+      maxBytes: maxPublishBytes,
+    });
+    return;
+  }
+  const provenanceActorId = readString(body['provenanceActorId']);
+  const id = readString(body['id']);
+  const projectId = readString(body['projectId']);
+  const taskRef = readTaskRef(body['taskRef']);
+  const stage = readStage(body['stage']);
+  const visibility = readVisibility(body['visibility']);
+  const kind = readString(body['kind']) as StoreAgentViewArtifactInput['kind'] | undefined;
+  const title = readString(body['title']);
+  const summary = readString(body['summary']);
+  const capturedAt = readString(body['capturedAt']);
+  const supersedesArtifactId = readString(body['supersedesArtifactId']);
+  const inputRecord: StoreAgentViewArtifactInput = {
+    viewArtifact,
+    workContextId,
+  };
+  if (id) inputRecord.id = id;
+  if (projectId) inputRecord.projectId = projectId;
+  if (taskRef) inputRecord.taskRef = taskRef;
+  if (stage) inputRecord.stage = stage;
+  if (provenanceActorId) inputRecord.provenanceActorId = provenanceActorId;
+  if (visibility) inputRecord.visibility = visibility;
+  if (kind) inputRecord.kind = kind;
+  if (title) inputRecord.title = title;
+  if (summary) inputRecord.summary = summary;
+  if (capturedAt) inputRecord.capturedAt = capturedAt;
+  if (supersedesArtifactId) inputRecord.supersedesArtifactId = supersedesArtifactId;
+  try {
+    const stored = store.storeAgentViewArtifact(inputRecord);
+    const actorId = readString(body['actorId']) ?? provenanceActorId;
+    const shouldPin = readBoolean(body['pin']) ?? false;
+    const pinned = shouldPin && workContextStore
+      ? pinArtifactRef(workContextStore, workContextId, stored.metadata, actorId)
+      : undefined;
+    res.status(201).json({
+      artifact: recordEnvelope(stored),
+      ...(pinned ? { pin: pinned } : {}),
+    });
+  } catch (err) {
+    if (err instanceof WorkContextArtifactStoreError) {
+      mapStoreError(res, err, { operation, workContextId, artifactId: viewArtifact.manifest.revision.id });
+      return;
+    }
+    sendGatewayError(res, 'INTERNAL', 'failed to store WorkContext view artifact', true, {
+      reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
+      operation,
+      workContextId,
+      artifactId: viewArtifact.manifest.revision.id,
+    });
+  }
+}
+
 export function createWorkContextArtifactRouter(
   deps: WorkContextArtifactRouterDeps
 ): Router {
@@ -645,6 +742,7 @@ export function createWorkContextArtifactRouter(
     }
   });
 
+  // eslint-disable-next-line complexity, sonarjs/cognitive-complexity -- publish validates either handoff artifacts or static view artifacts before shared store/pin handling.
   router.post(['/work-context-artifacts', '/pipeline-handoff-artifacts'], writeAuth, (req, res) => {
     const operation = req.path.startsWith('/pipeline-handoff-artifacts') ? 'attach' : 'publish';
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
@@ -661,8 +759,50 @@ export function createWorkContextArtifactRouter(
       return;
     }
     if (!ensureWorkContext(res, deps.workContextStore, workContextId, operation)) return;
+    const viewArtifact = body['viewArtifact'];
     const artifact = body['artifact'];
-    if (!isPipelineHandoffArtifact(artifact)) {
+    if (viewArtifact !== undefined && artifact !== undefined) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'exactly one of artifact or viewArtifact is allowed', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_PAYLOAD_CONFLICT',
+        operation,
+        workContextId,
+      });
+      return;
+    }
+    if (req.path.startsWith('/pipeline-handoff-artifacts') && viewArtifact !== undefined) {
+      sendGatewayError(res, 'INVALID_ARGUMENT', 'pipeline-handoff-artifacts only accepts PipelineHandoffArtifact payloads', false, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_KIND_MISMATCH',
+        operation,
+        workContextId,
+        field: 'viewArtifact',
+      });
+      return;
+    }
+    if (viewArtifact !== undefined) {
+      const validation = validateAgentViewArtifact(viewArtifact);
+      if (!validation.valid) {
+        sendGatewayError(res, 'INVALID_ARGUMENT', 'viewArtifact must be a valid AgentViewArtifact package', false, {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
+          operation,
+          workContextId,
+          field: 'viewArtifact',
+          validationErrors: validation.errors,
+        });
+        return;
+      }
+      storeViewArtifactPublish({
+        res,
+        store: s,
+        ...(deps.workContextStore ? { workContextStore: deps.workContextStore } : {}),
+        body,
+        viewArtifact: viewArtifact as ViewArtifactPackage,
+        workContextId,
+        operation,
+        maxPublishBytes,
+      });
+      return;
+    }
+    if (artifact === undefined || !isPipelineHandoffArtifact(artifact)) {
       sendGatewayError(res, 'INVALID_ARGUMENT', 'artifact must be a PipelineHandoffArtifact', false, {
         reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
         operation,
@@ -778,7 +918,40 @@ export function createWorkContextArtifactRouter(
     }
     if (input.workContextId && !ensureWorkContext(res, deps.workContextStore, input.workContextId, 'list')) return;
     const current = currentHeadSha(req);
-    res.json({ artifacts: s.list(input).map((record) => recordEnvelope(record, current)) });
+    const listed = s.list(input);
+    const artifacts = req.path.startsWith('/pipeline-handoff-artifacts')
+      ? listed.filter((record) => record.metadata.payloadKind === 'pipeline-handoff-artifact')
+      : listed;
+    res.json({ artifacts: artifacts.map((record) => recordEnvelope(record, current)) });
+  });
+
+  router.get('/work-context-artifacts/:id/view-package', showAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    const s = storeOr503(res, deps.store, 'show-view-package');
+    if (!s) return;
+    const id = req.params['id'] ?? '';
+    try {
+      const record = s.readViewArtifactPackage(id);
+      if (!record) {
+        sendGatewayError(res, 'NOT_FOUND', 'WorkContext view artifact not found', false, {
+          reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND',
+          operation: 'show-view-package',
+          artifactId: id,
+        });
+        return;
+      }
+      res.json({ artifact: { metadata: record.metadata, viewArtifact: record.payload } });
+    } catch (err) {
+      if (err instanceof WorkContextArtifactStoreError) {
+        mapStoreError(res, err, { operation: 'show-view-package', artifactId: id });
+        return;
+      }
+      sendGatewayError(res, 'INTERNAL', 'failed to read WorkContext view artifact package', true, {
+        reasonCode: 'WORK_CONTEXT_ARTIFACT_INTERNAL_ERROR',
+        operation: 'show-view-package',
+        artifactId: id,
+      });
+    }
   });
 
   router.get(['/work-context-artifacts/:id', '/pipeline-handoff-artifacts/:id'], showAuth, (req, res) => {
@@ -803,7 +976,7 @@ export function createWorkContextArtifactRouter(
         return;
       }
       const record = s.read(id);
-      if (!record) {
+      if (!record || (req.path.startsWith('/pipeline-handoff-artifacts') && record.metadata.payloadKind !== 'pipeline-handoff-artifact')) {
         sendGatewayError(res, 'NOT_FOUND', 'WorkContext artifact not found', false, {
           reasonCode: 'WORK_CONTEXT_ARTIFACT_NOT_FOUND',
           operation: 'show',

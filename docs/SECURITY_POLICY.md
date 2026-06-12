@@ -2,6 +2,8 @@
 
 Relay separates node capability discovery from hub-granted policy. A node manifest says what a node appears able to do right now; the hub ACL says what the hub is willing to route to that node. Manifest data is availability/probe evidence, never a grant.
 
+Agent-authored static HTML/CSS evidence uses the constrained view artifact model in `docs/AGENT_VIEW_ARTIFACTS.md`; its MVP denies all declared runtime capabilities and renders only through an empty-sandbox iframe.
+
 ## Auth lanes and browser-session boundary
 
 Relay auth is split into lanes. The current route inventory is checked into `server/auth.ts` as `AUTH_ROUTE_LANE_INVENTORY`; this section explains the policy boundary behind that source-of-truth table.

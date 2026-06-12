@@ -62,6 +62,7 @@ vi.mock('../frontend/src/lib/api.js', () => ({
   fetchActiveWork: vi.fn(),
   fetchPipelineHandoffArtifacts: vi.fn(),
   copyPipelineHandoffArtifact: vi.fn(),
+  fetchAgentViewArtifactPackage: vi.fn(),
 }));
 
 vi.mock('../frontend/src/lib/stores/sessions.js', () => {
@@ -358,5 +359,38 @@ describe('WorkspaceEvidenceDashboard', () => {
     expect(copyBtn).toBeTruthy();
     expect((copyBtn as HTMLButtonElement).disabled).toBe(false);
     expect((copyBtn as HTMLButtonElement).title).toBeFalsy();
+  });
+
+  it('shows open view for an agent-authored static view artifact', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
+    mocks.artifactsByContext = {
+      'wc-1': {
+        data: [artifactEnvelope({ payloadKind: 'agent-view-artifact' })],
+      },
+    };
+    await renderDashboard('/repo');
+    const card = container!.querySelector(
+      '[data-track="evidence.artifact-card"]'
+    );
+    const openViewBtn = Array.from(card!.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('open view')
+    );
+    expect(openViewBtn).toBeTruthy();
+    expect((openViewBtn as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('does not show open view for pipeline handoff artifacts', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
+    mocks.artifactsByContext = { 'wc-1': { data: [artifactEnvelope()] } };
+    await renderDashboard('/repo');
+    const card = container!.querySelector(
+      '[data-track="evidence.artifact-card"]'
+    );
+    const openViewBtn = Array.from(card!.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('open view')
+    );
+    expect(openViewBtn).toBeUndefined();
   });
 });

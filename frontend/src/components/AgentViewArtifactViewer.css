@@ -1,0 +1,205 @@
+.agent-view-artifact-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.agent-view-artifact-viewer__modal {
+  width: min(1120px, calc(100vw - 32px));
+  height: min(860px, calc(100vh - 32px));
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.agent-view-artifact-viewer__chrome {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.agent-view-artifact-viewer__eyebrow {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.agent-view-artifact-viewer__title {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  text-transform: lowercase;
+}
+
+.agent-view-artifact-viewer__close {
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.agent-view-artifact-viewer__close:hover,
+.agent-view-artifact-viewer__close:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.agent-view-artifact-viewer__message {
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.agent-view-artifact-viewer__message--error {
+  color: var(--status-error);
+}
+
+.agent-view-artifact-viewer__content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.agent-view-artifact-viewer__provenance {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-size: var(--font-size-xs);
+}
+
+.agent-view-artifact-viewer__provenance-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.agent-view-artifact-viewer__provenance-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--font-size-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-view-artifact-viewer__provenance-pill {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  padding: 1px 5px;
+}
+
+.agent-view-artifact-viewer__description {
+  margin: 0;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+}
+
+.agent-view-artifact-viewer__meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.agent-view-artifact-viewer__meta div {
+  min-width: 0;
+}
+
+.agent-view-artifact-viewer__meta dt {
+  margin: 0 0 2px;
+  color: var(--text-muted);
+}
+
+.agent-view-artifact-viewer__meta dd {
+  margin: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-view-artifact-viewer__sources {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.agent-view-artifact-viewer__sources-label {
+  flex: 0 0 auto;
+}
+
+.agent-view-artifact-viewer__source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agent-view-artifact-viewer__source-list li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.agent-view-artifact-viewer__source-link {
+  color: var(--status-info);
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+}
+
+.agent-view-artifact-viewer__source-link:hover,
+.agent-view-artifact-viewer__source-link:focus-visible {
+  color: var(--text);
+}
+
+.agent-view-artifact-viewer__source-kind,
+.agent-view-artifact-viewer__empty {
+  color: var(--text-muted);
+}
+
+.agent-view-artifact-viewer__frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #ffffff;
+}
+
+@media (max-width: 720px) {
+  .agent-view-artifact-viewer__modal {
+    width: 100vw;
+    height: 100vh;
+  }
+
+  .agent-view-artifact-viewer__meta {
+    grid-template-columns: 1fr;
+  }
+}

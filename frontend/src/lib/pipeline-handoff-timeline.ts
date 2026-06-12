@@ -25,7 +25,7 @@ export interface PublicPipelineHandoffArtifactSummary {
   summary: string;
   visibility: 'private' | 'public';
   capturedAt: string;
-  payloadKind: 'pipeline-handoff-artifact';
+  payloadKind: 'pipeline-handoff-artifact' | 'agent-view-artifact';
   payloadSha256: string;
   payloadBytes: number;
   prNumber?: number;
