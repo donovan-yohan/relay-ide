@@ -177,7 +177,7 @@ function sendGatewayError(
 function denyUnauthorizedActorWorkContextScope(
   req: Request,
   res: Response,
-  input: { workContextId: string; operation: string; artifactId?: string }
+  input: { workContextId: string; operation: string; artifactId?: string; redactWorkContextId?: boolean }
 ): boolean {
   const credential = authenticatedCliGatewayActorCredential(req);
   const scopedWorkContextIds = credential?.scope.workContextIds;
@@ -191,7 +191,7 @@ function denyUnauthorizedActorWorkContextScope(
     {
       reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE',
       operation: input.operation,
-      workContextId: input.workContextId,
+      ...(input.redactWorkContextId ? {} : { workContextId: input.workContextId }),
       ...(input.artifactId ? { artifactId: input.artifactId } : {}),
       credentialId: credential?.id ?? 'unknown',
     }
@@ -1035,6 +1035,7 @@ export function createWorkContextArtifactRouter(
           workContextId: metadataRecord.metadata.workContextId,
           operation: 'show-view-package',
           artifactId: id,
+          redactWorkContextId: true,
         })
       ) {
         return;
@@ -1077,6 +1078,7 @@ export function createWorkContextArtifactRouter(
           workContextId: metadataRecord.metadata.workContextId,
           operation: 'show',
           artifactId: id,
+          redactWorkContextId: true,
         })
       ) {
         return;
@@ -1138,6 +1140,7 @@ export function createWorkContextArtifactRouter(
             workContextId: record.metadata.workContextId,
             operation,
             artifactId: id,
+            redactWorkContextId: true,
           })
         ) {
           return;
@@ -1227,6 +1230,16 @@ export function createWorkContextArtifactRouter(
       });
       return;
     }
+    if (
+      denyUnauthorizedActorWorkContextScope(req, res, {
+        workContextId: record.metadata.workContextId,
+        operation: 'pin',
+        artifactId,
+        redactWorkContextId: true,
+      })
+    ) {
+      return;
+    }
     const pinned = pinArtifactRef(deps.workContextStore!, workContextId, record.metadata, readString(body['actorId']));
     res.status(pinned.alreadyPinned ? 200 : 201).json({
       artifact: recordEnvelope(record),
@@ -1262,6 +1275,18 @@ export function createWorkContextArtifactRouter(
       return;
     }
     if (!ensureWorkContext(res, deps.workContextStore, workContextId, 'unpin')) return;
+    const record = s.get(artifactId);
+    if (
+      record &&
+      denyUnauthorizedActorWorkContextScope(req, res, {
+        workContextId: record.metadata.workContextId,
+        operation: 'unpin',
+        artifactId,
+        redactWorkContextId: true,
+      })
+    ) {
+      return;
+    }
     const result = unpinArtifactRef(deps.workContextStore!, workContextId, artifactId, readString(body['actorId']));
     res.json({ workContext: result.workContext, removed: result.removed, lifecycle: { artifactDeleted: false } });
   });
