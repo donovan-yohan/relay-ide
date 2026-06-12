@@ -112,6 +112,7 @@ import {
 } from '../shared/security-audit.js';
 import {
   encodeTerminalInput,
+  isTerminalInputKey,
   type TerminalInputKey,
 } from './terminal-model-backend.js';
 
@@ -1302,25 +1303,14 @@ function ptySessionForTerminalControl(id: string): PtySession {
   return session;
 }
 
-const SUPPORTED_TERMINAL_INPUT_KEYS = new Set<TerminalInputKey>([
-  'Enter',
-  'Escape',
-  'Tab',
-  'ArrowUp',
-  'ArrowDown',
-  'ArrowLeft',
-  'ArrowRight',
-  'CtrlC',
-]);
-
 function toTerminalInputKey(key: string): TerminalInputKey {
-  if (SUPPORTED_TERMINAL_INPUT_KEYS.has(key as TerminalInputKey)) {
-    return key as TerminalInputKey;
+  if (isTerminalInputKey(key)) {
+    return key;
   }
   throw new Error(`Unsupported relay-pty input key: ${key}`);
 }
 
-async function sendTmuxKeys(id: string, keys: string[]): Promise<void> {
+async function sendTerminalKeys(id: string, keys: string[]): Promise<void> {
   const session = ptySessionForTerminalControl(id);
   if (session.terminalBackend === 'relay-pty') {
     for (const key of keys) {
@@ -1336,7 +1326,7 @@ async function sendTmuxKeys(id: string, keys: string[]): Promise<void> {
   await execFileAsync(TMUX_COMMAND, ['send-keys', '-t', target, ...keys]);
 }
 
-async function sendTmuxText(id: string, text: string): Promise<void> {
+async function sendTerminalText(id: string, text: string): Promise<void> {
   const session = ptySessionForTerminalControl(id);
   if (session.terminalBackend === 'relay-pty') {
     const encoded = encodeTerminalInput({ type: 'text', text });
@@ -1347,7 +1337,7 @@ async function sendTmuxText(id: string, text: string): Promise<void> {
   await execFileAsync(TMUX_COMMAND, ['send-keys', '-t', target, '-l', text]);
 }
 
-async function captureTmuxPane(id: string): Promise<string> {
+async function captureTerminalVisibleText(id: string): Promise<string> {
   const session = ptySessionForTerminalControl(id);
   if (session.terminalBackend === 'relay-pty') {
     if (!session.terminalModel) {
@@ -1364,6 +1354,13 @@ async function captureTmuxPane(id: string): Promise<string> {
   ]);
   return stdout;
 }
+
+/** @deprecated Use sendTerminalKeys for backend-neutral terminal control. */
+const sendTmuxKeys = sendTerminalKeys;
+/** @deprecated Use sendTerminalText for backend-neutral terminal input. */
+const sendTmuxText = sendTerminalText;
+/** @deprecated Use captureTerminalVisibleText for backend-neutral visible text capture. */
+const captureTmuxPane = captureTerminalVisibleText;
 
 function nextTerminalName(): string {
   return `Terminal ${++terminalCounter}`;
@@ -2423,6 +2420,9 @@ export {
   detachForRestart,
   killAllTmuxSessions,
   resize,
+  sendTerminalKeys,
+  sendTerminalText,
+  captureTerminalVisibleText,
   sendTmuxKeys,
   sendTmuxText,
   captureTmuxPane,

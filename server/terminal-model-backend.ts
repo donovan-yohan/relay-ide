@@ -76,6 +76,10 @@ const KEY_SEQUENCES: Record<TerminalInputKey, string> = {
   CtrlC: '\x03',
 };
 
+export function isTerminalInputKey(key: string): key is TerminalInputKey {
+  return key in KEY_SEQUENCES;
+}
+
 /**
  * Encodes the small supervisor/mobile input vocabulary into real terminal bytes.
  * This is intentionally smaller than raw PTY writes; callers that need arbitrary

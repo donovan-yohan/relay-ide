@@ -256,10 +256,10 @@ describe('framework-driven PTY handler', () => {
     expect(session.tmuxSessionName).toBe('');
     expect(session.terminalModel).toBeTruthy();
 
-    await sessions.sendTmuxText(result.id, 'relay-pty-ok\n');
+    await sessions.sendTerminalText(result.id, 'relay-pty-ok\n');
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    await expect(sessions.captureTmuxPane(result.id)).resolves.toContain(
+    await expect(sessions.captureTerminalVisibleText(result.id)).resolves.toContain(
       'relay-pty-ok'
     );
   });

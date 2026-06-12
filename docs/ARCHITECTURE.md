@@ -237,7 +237,7 @@ Tmux compatibility session names are stable and human-readable:
 - The slug is sanitized to alphanumeric/hyphen characters and capped before the session id suffix.
 - Restore paths preserve the original session id and tmux session name so browser tabs can reconnect to the same server-side process after a server restart.
 - On startup, the server requires tmux only when the effective backend is `tmux-compat`. If the named tmux session still exists, Relay reattaches with `tmux -u attach-session -t <name>`. If it does not, agent sessions fall back to agent-specific continue args and create a fresh tmux-backed compatibility process.
-- `sessions.ts` exposes targeted tmux helpers (`sendTmuxKeys`, `sendTmuxText`, `captureTmuxPane`) for `tmux-compat` sessions only; new backend-neutral code should use the session/terminal backend abstraction instead of assuming tmux verbs.
+- `sessions.ts` exposes backend-neutral terminal helpers (`sendTerminalKeys`, `sendTerminalText`, `captureTerminalVisibleText`) for terminal input and rendered/visible screen capture. Those helpers branch on `relay-pty` vs `tmux-compat`; tmux-specific commands stay behind the `tmux-compat` branch, with legacy `sendTmuxKeys` / `sendTmuxText` / `captureTmuxPane` aliases kept only for compatibility.
 
 This makes Tab and pane customization (#263) viable without making tmux the only process owner. Browser-level tabs and panes can be rearranged freely while `relay-pty` owns direct PTY sessions and `tmux-compat` keeps stable tmux process identity for reconnect, restore, resize, copy-mode, import, and cleanup.
 
