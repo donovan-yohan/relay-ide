@@ -44,6 +44,10 @@ export const RELAY_CAPABILITY_BITS = [
   'context:write',
   'inbox:read',
   'inbox:write',
+  // #943: scoped actor write lane for bounded WorkContext artifact evidence.
+  // Kept distinct from `context:write` so context-packet writers do not
+  // automatically gain durable artifact/handoff publishing authority.
+  'artifact:write',
   // #873: stable CLI gateway contracts for safe settings reads/writes and
   // redacted webhook operational checks. `settings:write` is high-risk by
   // default; individual risky values still require command-level confirmation.
@@ -88,6 +92,7 @@ export const LEGACY_DEFAULT_ALLOWED_CAPABILITIES = [
   'context:write',
   'inbox:read',
   'inbox:write',
+  'artifact:write',
   'settings:read',
   'integration:webhook:read',
 ] as const satisfies readonly RelayCapabilityBit[];

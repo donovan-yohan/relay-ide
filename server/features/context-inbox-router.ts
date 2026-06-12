@@ -37,6 +37,10 @@ import {
   type ArtifactRef,
   type WorkContextId,
 } from '../../shared/work-context.js';
+import {
+  authenticatedCliGatewayActorCredential,
+  type CliGatewayActorWriteCommand,
+} from '../cli-gateway-actor-auth.js';
 import type { WorkContextStore } from '../work-contexts.js';
 import {
   TERMINAL_INBOX_MESSAGE_STATES,
@@ -159,6 +163,21 @@ export interface ContextInboxRouterDeps {
   store: ContextInboxStore | null;
   workContextStore?: WorkContextStore;
   requireAuth?: RequestHandler;
+  requireWriteActorAuth?: (
+    expectedCommand: CliGatewayActorWriteCommand,
+    options?: {
+      scopeForRequest?: (req: Request) =>
+        | {
+            workContextIds?: string[];
+            sessionIds?: string[];
+            globalSessionIds?: string[];
+            repoIds?: string[];
+            taskRefs?: string[];
+          }
+        | undefined;
+      deferWorkContextScope?: boolean;
+    }
+  ) => RequestHandler;
   /**
    * #760: resolve a `file-anchor` packet's DERIVED `AnchorState` at read time.
    * Defaults to the hub-registered #766 resolver. A `null` resolution (no
@@ -298,6 +317,8 @@ function denyMissingCapability(
   required: readonly string[]
 ): boolean {
   const provided = parseCapabilityHeader(req.header('x-relay-capabilities'));
+  const actorCredential = authenticatedCliGatewayActorCredential(req);
+  for (const capability of actorCredential?.capabilities ?? []) provided.add(capability);
   const missing = required.filter((cap) => !provided.has(cap));
   if (missing.length === 0) return false;
   sendGatewayError(
@@ -319,6 +340,24 @@ function bodyRecord(req: Request): Record<string, unknown> {
     !Array.isArray(req.body)
     ? (req.body as Record<string, unknown>)
     : {};
+}
+
+function writeScopeFromBody(
+  req: Request
+): { workContextIds?: string[]; sessionIds?: string[]; globalSessionIds?: string[]; repoIds?: string[]; taskRefs?: string[] } | undefined {
+  const body = bodyRecord(req);
+  const workContextId = readString(body['workContextId']) ?? readString(body['targetWorkContextId']);
+  const sessionId = readString(body['targetSessionId']);
+  const taskRef = readString(body['taskRef']);
+  const repoId = readString(body['repoId']);
+  return workContextId || sessionId || taskRef || repoId
+    ? {
+        ...(workContextId ? { workContextIds: [workContextId] } : {}),
+        ...(sessionId ? { sessionIds: [sessionId], globalSessionIds: [sessionId] } : {}),
+        ...(repoId ? { repoIds: [repoId] } : {}),
+        ...(taskRef ? { taskRefs: [taskRef] } : {}),
+      }
+    : undefined;
 }
 
 function readString(value: unknown): string | undefined {
@@ -855,8 +894,10 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   const router = Router();
   const auth =
     deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
-  // #760: derived `AnchorState` decoration resolver. Defaults to the hub
-  // registry; `resolveAnchorWithRegisteredFetcher` returns `null` when the hub
+  const writeActorAuth = (
+    command: CliGatewayActorWriteCommand,
+    options?: Parameters<NonNullable<ContextInboxRouterDeps['requireWriteActorAuth']>>[1]
+  ): RequestHandler => deps.requireWriteActorAuth?.(command, options) ?? auth;
   // has not wired a fetcher, in which case packets pass through undecorated.
   const resolveAnchorState: AnchorStateResolver =
     deps.resolveAnchorState ?? resolveAnchorWithRegisteredFetcher;
@@ -961,7 +1002,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   }
 
   // -- context.create ------------------------------------------------------
-  router.post('/context', auth, (req, res) => {
+  router.post('/context', writeActorAuth('context.create', { scopeForRequest: writeScopeFromBody }), (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const s = store(res);
     if (!s) return;
@@ -1025,7 +1066,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   // The packet body stays in the context-packet store; WorkContext artifacts are
   // the durable handoff/review pool. Unpin removes only that artifact ref and
   // writes an audit lifecycle event; it never deletes the packet itself.
-  router.post('/context/:id/pin', auth, async (req, res, next) => {
+  router.post('/context/:id/pin', writeActorAuth('context.pin', { scopeForRequest: writeScopeFromBody }), async (req, res, next) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const s = store(res);
     const wcStore = workContexts(res);
@@ -1085,7 +1126,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     }
   });
 
-  router.post('/context/:id/unpin', auth, (req, res) => {
+  router.post('/context/:id/unpin', writeActorAuth('context.unpin', { scopeForRequest: writeScopeFromBody }), (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const s = store(res);
     const wcStore = workContexts(res);
@@ -1196,7 +1237,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   });
 
   // -- inbox.send ----------------------------------------------------------
-  router.post('/inbox', auth, (req, res) => {
+  router.post('/inbox', writeActorAuth('inbox.send', { scopeForRequest: writeScopeFromBody }), (req, res) => {
     if (denyMissingCapability(req, res, [INBOX_WRITE])) return;
     const s = store(res);
     if (!s) return;
@@ -1349,9 +1390,9 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     };
   }
 
-  router.post('/inbox/:id/ack', auth, transitionHandler('acknowledged'));
-  router.post('/inbox/:id/resolve', auth, transitionHandler('resolved'));
-  router.post('/inbox/:id/ignore', auth, transitionHandler('ignored'));
+  router.post('/inbox/:id/ack', writeActorAuth('inbox.ack', { deferWorkContextScope: true }), transitionHandler('acknowledged'));
+  router.post('/inbox/:id/resolve', writeActorAuth('inbox.resolve', { deferWorkContextScope: true }), transitionHandler('resolved'));
+  router.post('/inbox/:id/ignore', writeActorAuth('inbox.ignore', { deferWorkContextScope: true }), transitionHandler('ignored'));
 
   return router;
 }

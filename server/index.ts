@@ -241,6 +241,7 @@ import {
   classifyCliGatewayCredentialLane,
   cliGatewayActorFailure,
   cliGatewayCorrelationId,
+  cliGatewayActorCommandCapabilities,
   createCliGatewayActorRegistry,
   createCliGatewayHandshakeGrantRegistry,
   isCliGatewayActorTokenRequest,
@@ -251,9 +252,11 @@ import {
   rotateCliGatewayActorCredentialWithGrant,
   sendCliGatewayActorFailure,
   validateCliGatewayActorCredential,
+  type CliGatewayActorCommand,
   type CliGatewayActorIssueInput,
   type CliGatewayActorReadCommand,
 } from './cli-gateway-actor-auth.js';
+import type { RelayCapabilityBit } from '../shared/security-policy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1752,14 +1755,16 @@ async function main(): Promise<void> {
   };
 
   const requireCliGatewayActorAuth = (
-    capabilities: readonly ['session:read'],
+    capabilities: readonly RelayCapabilityBit[],
     scope?: {
       nodeIds?: string[];
       sessionIds?: string[];
       globalSessionIds?: string[];
       workContextIds?: string[];
+      repoIds?: string[];
+      taskRefs?: string[];
     },
-    expectedCommand?: CliGatewayActorReadCommand,
+    expectedCommand?: CliGatewayActorCommand,
     options: { deferWorkContextScope?: boolean } = {}
   ): express.RequestHandler => {
     return (req, res, next) => {
@@ -1819,16 +1824,25 @@ async function main(): Promise<void> {
     requireCliGatewayActorAuth(['session:read'], undefined, expectedCommand, options);
 
   const requireCliGatewayAuthForActorCommand = (
-    expectedCommand: CliGatewayActorReadCommand,
+    expectedCommand: CliGatewayActorCommand,
     options: {
-      scopeForRequest?: (req: express.Request) => { workContextIds?: string[] } | undefined;
+      capabilities?: readonly RelayCapabilityBit[];
+      scopeForRequest?: (req: express.Request) =>
+        | {
+            workContextIds?: string[];
+            sessionIds?: string[];
+            globalSessionIds?: string[];
+            repoIds?: string[];
+            taskRefs?: string[];
+          }
+        | undefined;
       deferWorkContextScope?: boolean;
     } = {}
   ): express.RequestHandler => {
     return (req, res, next) => {
       if (isCliGatewayActorTokenRequest(req)) {
         requireCliGatewayActorAuth(
-          ['session:read'],
+          options.capabilities ?? cliGatewayActorCommandCapabilities(expectedCommand),
           options.scopeForRequest?.(req),
           expectedCommand,
           { ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}) }
@@ -2143,6 +2157,7 @@ async function main(): Promise<void> {
   app.use(
     createContextInboxRouter({
       requireAuth: requireCliGatewayAuth,
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
       store: contextInboxStore,
       workContextStore,
     })
@@ -2176,6 +2191,7 @@ async function main(): Promise<void> {
         doctor: requireCliGatewayAuthForActorCommand('work-context-artifacts.doctor'),
       },
       requireWriteAuth: requireCliGatewayWriteAuth,
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
       store: workContextArtifactStore,
       workContextStore,
       diagnostics: {

@@ -181,7 +181,7 @@ Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `
 
 ### Scoped actor credential MVP (#805)
 
-The first scoped actor credential slice supports only this read-only hub-backed set:
+The scoped actor credential slice supports the read-only hub-backed set plus the closed write allowlist below. Write credentials must be issued for audience `relay:cli-gateway:v1`, include only the requested command's capability bit, and match the requested WorkContext/session/global-session/repo/task scope. The lane remains separate from browser cookies, node credentials, pair tokens, and `relay-ohg-v1...` handshake grants.
 
 | CLI command                                       | Stable command id   | Required capability | Notes                                                                                               |
 | ------------------------------------------------- | ------------------- | ------------------- | --------------------------------------------------------------------------------------------------- |
@@ -194,6 +194,17 @@ The first scoped actor credential slice supports only this read-only hub-backed 
 | `relay-ide v1 work-context-artifacts show --id <id> --json` | `work-context-artifacts.show` | `session:read` | Reads one artifact envelope after metadata-derived WorkContext scope authorization; validates stored payload integrity; requires `context:read`. |
 | `relay-ide v1 work-context-artifacts export --id <id> --json` | `work-context-artifacts.export` | `session:read` | Exports only the sanitized public-summary copy after metadata-derived WorkContext scope authorization; requires `context:read`. |
 | `relay-ide v1 work-context-artifacts doctor --json` | `work-context-artifacts.doctor` | `session:read` | Reads bounded artifact store diagnostics; requires `context:read`. |
+
+Write allowlist:
+
+| CLI command | Stable command id | Required capability | Notes |
+| --- | --- | --- | --- |
+| `relay-ide v1 context create ... --actor-token <token>` | `context.create` | `context:write` | Creates a context packet when the body target scope matches. |
+| `relay-ide v1 context pin/unpin ... --actor-token <token>` | `context.pin` / `context.unpin` | `context:write` | Pins or unpins a context packet for an authorized target. |
+| `relay-ide v1 inbox send ... --actor-token <token>` | `inbox.send` | `inbox:write` | Sends an inbox message only for the matched target session/global session/work-context/repo/task scope. |
+| `relay-ide v1 inbox ack/resolve/ignore ... --actor-token <token>` | `inbox.ack` / `inbox.resolve` / `inbox.ignore` | `inbox:write` | Applies state transitions; message/work-context scope is checked before mutation. |
+| `relay-ide v1 work-context-artifacts publish/pin/unpin ... --actor-token <token>` | `work-context-artifacts.publish` / `work-context-artifacts.pin` / `work-context-artifacts.unpin` | `artifact:write` | Writes artifact-store entries only for matched WorkContext/repo/task metadata; artifact id routes re-check stored metadata before mutation. |
+| `relay-ide v1 handoff-artifacts attach ... --actor-token <token>` | `handoff-artifacts.attach` | `artifact:write` | Uses the same artifact-store write lane as `work-context-artifacts.publish`. |
 | `relay-ide v1 handoff-artifacts list --work-context-id <id> --json` | `handoff-artifacts.list` | `session:read` | Reads bounded PipelineHandoffArtifact metadata; requires `context:read` and enforces exact WorkContext scope when present. |
 | `relay-ide v1 handoff-artifacts show --id <id> --json` | `handoff-artifacts.show` | `session:read` | Reads one PipelineHandoffArtifact envelope or safe public copy after metadata-derived WorkContext scope authorization; requires `context:read`. |
 | `relay-ide v1 handoff-artifacts copy --id <id> --json` | `handoff-artifacts.copy` | `session:read` | Copies only the sanitized public-summary form after metadata-derived WorkContext scope authorization; raw payload export is unsupported and requires `context:read`. |
@@ -297,7 +308,7 @@ Grant-backed requests are denied before minting when the handle is revoked, expi
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Browser cookie / PIN session | Existing browser login/PIN session cookie.                                                                         | Browser UI, operator endpoints such as mint/list/revoke above, and legacy CLI gateway compatibility paths that have not migrated yet. | The scoped actor-token lane, `/hub/node-link`, heartbeat, node pairing/reconnect.                                                                         | Browser cookie/token material is redacted; use safe session/operator metadata only.                                                                       |
 | Node credential              | Node credential material issued through node pairing/lifecycle.                                                    | Node heartbeat and `/hub/node-link`.                                                                                                  | Browser UI auth, CLI actor token, “act as human/agent” auth.                                                                                              | Use node id and credential id/hash; never log raw node token material.                                                                                    |
-| Scoped actor token           | Explicit `--actor-token` / `RELAY_IDE_ACTOR_TOKEN` issued by the scoped actor registry for `relay:cli-gateway:v1`. | The read-only MVP allowlist listed above.                                                                                              | Browser routes, node link/heartbeat, writes, control actions, session input/streaming, event streaming, or any command outside the implemented allowlist. | Use actor id/type, issuer, credential id/jti, requested/granted/denied bits, safe scope summary/hash, and correlation id; never emit raw bearer material. |
+| Scoped actor token           | Explicit `--actor-token` / `RELAY_IDE_ACTOR_TOKEN` issued by the scoped actor registry for `relay:cli-gateway:v1`. | The read allowlist above plus the closed write allowlist for `context:write`, `inbox:write`, and `artifact:write`. | Browser routes, node link/heartbeat, control/session input/settings/webhook/file/repo mutation, or any command outside the implemented allowlist. | Use actor id/type, issuer, credential id/jti, requested/granted capability bits, requested scope hash/ids, and correlation id; redact raw `relay-sac-v1...` bearer values. |
 
 ### Failure examples
 
