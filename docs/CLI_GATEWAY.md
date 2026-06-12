@@ -24,6 +24,7 @@ relay-ide v1 sessions detach --id <session-id-or-global-id> --json
 relay-ide v1 sessions kill --id <session-id-or-global-id> [--confirmation-token <token>] --json
 relay-ide v1 sessions rename --id <session-id-or-global-id> --display-name 'new name' --json
 relay-ide v1 sessions stream --id <session-id-or-global-id> --mode ndjson --json
+relay-ide v1 sessions wait --id <session-id-or-global-id> --output-text 'ready' --timeout-ms 30000 --json
 relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --wait-for ok --json
 relay-ide v1 sessions interventions --id <session-id> --json
 relay-ide v1 sessions hand-back --id <session-id> --latest-seen-intervention-event-id <event-id> --json
@@ -512,6 +513,16 @@ Caps are contract-level and conservative:
 - `--idle-timeout-ms N` detaches after N ms without output.
 - If stdout backpressure is observed, the CLI closes the stream instead of dropping frames; the final envelope reports `backpressureClosed: true`.
 
+`relay-ide v1 sessions wait --id <id> --output-text <text> --timeout-ms 30000 --json` is the first-class bounded wait primitive for raw PTY output. It opens the same temporary authenticated attach socket as `stream`, watches UTF-8 bytes until the raw output contains `<text>`, then detaches only the CLI/WebSocket handle. Success returns one normal JSON envelope with `data.model: "raw-output"`, `data.status: "matched"`, `predicate: { kind: "output-text", value: <text> }`, `elapsedMs`, `bytesObserved`, `truncated`, `timeoutMs`, `maxBytes`, and session/node metadata.
+
+Idle waits use the same raw-output model but wait for quiet instead of a substring:
+
+```bash
+relay-ide v1 sessions wait --id remote-session-1 --idle-ms 1000 --timeout-ms 30000 --json
+```
+
+Exactly one predicate is allowed: `--output-text <text>`, `--idle-ms <ms>`, or `--screen-text <text>`. The current MVP intentionally does not implement rendered-screen matching; `--screen-text` fails with `UNSUPPORTED` and `details.reasonCode: "RENDERED_SCREEN_UNSUPPORTED"` so adapters do not silently confuse raw stream bytes with visible terminal screen state. Mixed or missing predicates fail with `INVALID_ARGUMENT` before the CLI attaches. Timeouts, closed attach streams, and max-byte caps fail with nonzero gateway envelopes (`WAIT_TIMEOUT`, `SESSION_STREAM_CLOSED`, `WAIT_MAX_BYTES_EXCEEDED` in `details.reasonCode`) instead of falling back to sleep/poll loops. `--timeout-ms` and `--max-bytes` are bounded; the default wait timeout is 30 seconds and the default observation cap is 65536 bytes.
+
 `relay-ide v1 sessions input --id <id> --data <text> --json` sends one UTF-8 chunk to the PTY attach path and then detaches the CLI handle. `--data-base64` is available for arbitrary bytes encoded as base64, and `--stdin` reads the chunk from standard input. Exactly one of `--data`, `--data-base64`, or `--stdin` is required; mixed or missing input sources fail with `INVALID_ARGUMENT` before Relay opens the temporary attach socket. For smoke tests and adapter handshakes, `--wait-for <text>` keeps the temporary attach open until the observed raw output contains the marker, then returns a single `sessions.input` envelope with `matched`, `output`, `bytesSent`, and `bytesReceived`. Use `--timeout-ms <n>` and `--max-bytes <n>` to bound the wait.
 
 `sessions.input --wait-for` is a raw PTY-output substring wait. It is not a rendered-screen wait and must not be treated as proof of visible viewport/cursor/title state. A future Boo-style screen wait must be added as a separate stable gateway command/schema before adapters depend on terminal-model semantics.
@@ -522,7 +533,7 @@ Example:
 relay-ide v1 sessions input --id remote-session-1 --data 'printf relay-ok\\n\n' --wait-for relay-ok --json
 ```
 
-`stream` and `input` detach only their CLI/WebSocket handle. They do not kill the underlying Relay session or selected terminal-backend process. Missing sessions, expired envelopes, rejected policy, offline nodes, and closed attach sockets surface as typed gateway error envelopes; adapter authors must not fall back to private `/hub/node-link` messages.
+`stream`, `wait`, and `input` detach only their CLI/WebSocket handle. They do not kill the underlying Relay session or selected terminal-backend process. Missing sessions, expired envelopes, rejected policy, offline nodes, and closed attach sockets surface as typed gateway error envelopes; adapter authors must not fall back to private `/hub/node-link` messages.
 
 ## Provider-native state commands
 
@@ -720,9 +731,9 @@ File commands must surface unavailable node, missing path, denied capability, st
 
 The first #430 proof intentionally stops at one generated Claude-style tool/function bundle in `shared/cli-gateway-claude-tools.ts`. It reads `shared/cli-gateway-contract.ts` / `relay-ide v1 schema --json` shape and emits Anthropic-compatible tool definitions (`name`, `description`, `input_schema`) for only the hello-world path: `nodes.list`, `sessions.create`, `files.read`, and `sessions.detach`.
 
-The Hermes-facing smoke in `shared/cli-gateway-hermes-tools.ts` uses the same contract manifest to emit Hermes tool descriptors (`name`, `description`, `parameters`), MCP descriptors (`name`, `description`, `inputSchema`), and OpenAI-style function descriptors (`type: "function"`, `function.parameters`). Its smoke path adds the now-stable PTY exchange commands: `nodes.list`, `sessions.create`, `files.read`, `sessions.stream`, `sessions.input`, and `sessions.detach`.
+The Hermes-facing smoke in `shared/cli-gateway-hermes-tools.ts` uses the same contract manifest to emit Hermes tool descriptors (`name`, `description`, `parameters`), MCP descriptors (`name`, `description`, `inputSchema`), and OpenAI-style function descriptors (`type: "function"`, `function.parameters`). Its smoke path adds the now-stable PTY exchange commands: `nodes.list`, `sessions.create`, `files.read`, `sessions.stream`, `sessions.wait`, `sessions.input`, and `sessions.detach`.
 
-The Codex-facing smoke in `shared/cli-gateway-codex-tools.ts` derives the same command subset from the v1 manifest and emits Codex/OpenAI-compatible function descriptors in both common shapes: Chat Completions-style nested tools (`type: "function"`, `function.parameters`) and Responses-style flat function tools (`type: "function"`, `name`, `parameters`). Its fake hub/node example runs only public `relay-ide v1 ... --json` commands: `nodes.list`, scoped `sessions.create`, read-only `files.read`, bounded `sessions.stream`, `sessions.input`, and descriptor-only `sessions.detach`.
+The Codex-facing smoke in `shared/cli-gateway-codex-tools.ts` derives the same command subset from the v1 manifest and emits Codex/OpenAI-compatible function descriptors in both common shapes: Chat Completions-style nested tools (`type: "function"`, `function.parameters`) and Responses-style flat function tools (`type: "function"`, `name`, `parameters`). Its fake hub/node example runs only public `relay-ide v1 ... --json` commands: `nodes.list`, scoped `sessions.create`, read-only `files.read`, bounded `sessions.stream`, bounded `sessions.wait`, `sessions.input`, and descriptor-only `sessions.detach`.
 
 These smoke runners are deliberately thin: generated definitions select stable v1 CLI commands, Relay's existing CLI gateway does the hub/node/File RPC/PTY work, and `sessions.detach` remains descriptor-only so it does not kill the underlying session. Production Claude/Codex/Hermes packages, Codex runtime packaging, event subscriptions beyond PTY output, multi-session orchestration, File RPC write/delete/tail, arbitrary exec, stdin-backed adapter streaming, and private node-link shortcuts remain deferred.
 

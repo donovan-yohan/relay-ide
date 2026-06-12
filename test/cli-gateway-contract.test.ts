@@ -112,6 +112,10 @@ function schemaAcceptsCommandInput(
   return schemaMatches(commandSpec(commandName).inputSchema, value);
 }
 
+function schemaAcceptsSessionWait(value: Record<string, unknown>): boolean {
+  return schemaAcceptsCommandInput('sessions.wait', value);
+}
+
 function schemaAcceptsSessionInput(value: Record<string, unknown>): boolean {
   return schemaAcceptsCommandInput('sessions.input', value);
 }
@@ -147,6 +151,7 @@ describe('CLI gateway contract', () => {
       'sessions.kill',
       'sessions.rename',
       'sessions.stream',
+      'sessions.wait',
       'sessions.input',
       'sessions.interventions',
       'sessions.handBack',
@@ -429,6 +434,26 @@ describe('CLI gateway contract', () => {
       requiresConfirmation: false,
       auditRedaction: { expectation: 'stream-redacted' },
     });
+    expect(relayCommandDefinition('sessions.wait')).toMatchObject({
+      sideEffect: 'stream',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'stream-redacted' },
+      scopeKinds: ['session'],
+    });
+    expect(schemaAcceptsSessionWait({ id: 's1' })).toBe(false);
+    expect(
+      schemaAcceptsSessionWait({
+        id: 's1',
+        outputText: 'ready',
+        timeoutMs: 30000,
+        maxBytes: 65536,
+      })
+    ).toBe(true);
+    expect(schemaAcceptsSessionWait({ id: 's1', idleMs: 1000 })).toBe(true);
+    expect(schemaAcceptsSessionWait({ id: 's1', screenText: 'ready' })).toBe(true);
+    expect(
+      schemaAcceptsSessionWait({ id: 's1', outputText: 'ready', idleMs: 1000 })
+    ).toBe(false);
     expect(relayCommandDefinition('handoffs.create')).toMatchObject({
       sideEffect: 'destructive',
       requiresConfirmation: true,
@@ -881,6 +906,7 @@ describe('CLI gateway contract', () => {
       'sessions.attach',
       'sessions.detach',
       'sessions.stream',
+      'sessions.wait',
       'sessions.input',
       'sessions.interventions',
       'sessions.handBack',

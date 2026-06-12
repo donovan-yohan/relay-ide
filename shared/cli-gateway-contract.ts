@@ -30,6 +30,7 @@ export type RelayCliGatewayCommand =
   | 'sessions.kill'
   | 'sessions.rename'
   | 'sessions.stream'
+  | 'sessions.wait'
   | 'sessions.input'
   | 'sessions.interventions'
   | 'sessions.handBack'
@@ -588,6 +589,96 @@ const sessionStreamEventSchema: RelayJsonSchema = {
     backpressureClosed: booleanSchema,
   },
   required: ['event', 'sessionId'],
+};
+
+const sessionWaitCommonProperties = {
+  id: stringSchema,
+  outputText: stringSchema,
+  idleMs: { type: 'number', minimum: 1, maximum: 300000 },
+  screenText: stringSchema,
+  timeoutMs: { type: 'number', minimum: 1, maximum: 300000 },
+  maxBytes: { type: 'number', minimum: 1, maximum: 1048576 },
+} satisfies Record<string, RelayJsonSchema>;
+
+const sessionWaitInputSchema: RelayJsonSchema = {
+  title: 'SessionsWaitInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: sessionWaitCommonProperties,
+  required: ['id'],
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: stringSchema,
+        outputText: stringSchema,
+        timeoutMs: sessionWaitCommonProperties.timeoutMs,
+        maxBytes: sessionWaitCommonProperties.maxBytes,
+      },
+      required: ['id', 'outputText'],
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: stringSchema,
+        idleMs: sessionWaitCommonProperties.idleMs,
+        timeoutMs: sessionWaitCommonProperties.timeoutMs,
+        maxBytes: sessionWaitCommonProperties.maxBytes,
+      },
+      required: ['id', 'idleMs'],
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: stringSchema,
+        screenText: stringSchema,
+        timeoutMs: sessionWaitCommonProperties.timeoutMs,
+        maxBytes: sessionWaitCommonProperties.maxBytes,
+      },
+      required: ['id', 'screenText'],
+    },
+  ],
+};
+
+const sessionWaitOutputSchema: RelayJsonSchema = {
+  title: 'SessionsWaitOutput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    model: { const: 'raw-output' },
+    status: { type: 'string', enum: ['matched', 'idle'] },
+    sessionId: stringSchema,
+    nodeId: stringSchema,
+    globalSessionId: stringSchema,
+    predicate: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { type: 'string', enum: ['output-text', 'idle-ms'] },
+        value: { type: ['string', 'number'] },
+      },
+      required: ['kind', 'value'],
+    },
+    elapsedMs: { type: 'number', minimum: 0 },
+    bytesObserved: { type: 'number', minimum: 0 },
+    truncated: booleanSchema,
+    timeoutMs: { type: 'number', minimum: 1 },
+    maxBytes: { type: 'number', minimum: 1 },
+  },
+  required: [
+    'model',
+    'status',
+    'sessionId',
+    'predicate',
+    'elapsedMs',
+    'bytesObserved',
+    'truncated',
+    'timeoutMs',
+    'maxBytes',
+  ],
 };
 
 const sessionInputCommonProperties = {
@@ -2777,6 +2868,40 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'NODE_OFFLINE',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'sessions.wait',
+    cli: [
+      'relay-ide',
+      'v1',
+      'sessions',
+      'wait',
+      '--id',
+      '<session-id>',
+      '--output-text',
+      '<text>',
+      '--timeout-ms',
+      '30000',
+      '--json',
+    ],
+    summary:
+      'Attach to a PTY session and wait for raw UTF-8 output or bounded idle without mutating session lifecycle.',
+    stable: true,
+    transport: 'hub-http-or-node-rpc',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'session:attach'],
+    inputSchema: sessionWaitInputSchema,
+    outputSchema: okOutput('SessionsWaitOutput', sessionWaitOutputSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'UNSUPPORTED',
       'NOT_FOUND',
       'FORBIDDEN',
       'NODE_OFFLINE',

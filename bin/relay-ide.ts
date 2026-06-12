@@ -1602,7 +1602,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -2565,6 +2565,231 @@ async function runGatewaySessionStream(sessionArgs: string[]): Promise<never> {
   process.exit(0);
 }
 
+type GatewaySessionWaitPredicate =
+  | { kind: 'output-text'; value: string }
+  | { kind: 'idle-ms'; value: number };
+
+function parseGatewaySessionWaitPredicate(
+  sessionArgs: string[]
+): GatewaySessionWaitPredicate {
+  const outputText = gatewayArg(sessionArgs, '--output-text');
+  const idleMs = gatewayOptionalPositiveInt(
+    'sessions.wait',
+    sessionArgs,
+    '--idle-ms',
+    300000
+  );
+  const screenText = gatewayArg(sessionArgs, '--screen-text');
+  const providedCount = [
+    outputText !== undefined,
+    idleMs !== undefined,
+    screenText !== undefined,
+  ].filter(Boolean).length;
+
+  if (providedCount !== 1) {
+    gatewayInvalid(
+      'sessions.wait',
+      'exactly one of --output-text, --idle-ms, or --screen-text is required',
+      {
+        reasonCode:
+          providedCount === 0
+            ? 'WAIT_PREDICATE_REQUIRED'
+            : 'WAIT_PREDICATES_MIXED',
+        predicates: {
+          outputText: outputText !== undefined,
+          idleMs: idleMs !== undefined,
+          screenText: screenText !== undefined,
+        },
+      }
+    );
+  }
+
+  if (screenText !== undefined) {
+    printGatewayEnvelope(
+      gatewayError('sessions.wait', {
+        code: 'UNSUPPORTED',
+        message:
+          'sessions.wait --screen-text requires rendered-screen matching, which is not implemented by the raw-output MVP',
+        retryable: false,
+        details: {
+          reasonCode: 'RENDERED_SCREEN_UNSUPPORTED',
+          model: 'rendered-screen',
+          supportedModels: ['raw-output'],
+          predicate: { kind: 'screen-text', value: screenText },
+        },
+      }),
+      1
+    );
+  }
+
+  if (outputText !== undefined) return { kind: 'output-text', value: outputText };
+  return { kind: 'idle-ms', value: idleMs! };
+}
+
+async function runGatewaySessionWait(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.wait', sessionArgs);
+  const predicate = parseGatewaySessionWaitPredicate(sessionArgs);
+  const timeoutMs =
+    gatewayOptionalPositiveInt(
+      'sessions.wait',
+      sessionArgs,
+      '--timeout-ms',
+      300000
+    ) ?? 30000;
+  const maxBytes =
+    gatewayOptionalPositiveInt(
+      'sessions.wait',
+      sessionArgs,
+      '--max-bytes',
+      1048576
+    ) ?? 65536;
+  const target = await resolveGatewayPtyTarget(id, 'sessions.wait');
+  const { ws, opened } = gatewayCreatePtyWebSocket('sessions.wait', target);
+  const startedAt = Date.now();
+  let outputWindow = '';
+  let bytesObserved = 0;
+  let truncated = false;
+  let settled = false;
+  const waitTimers: { timeout?: NodeJS.Timeout; idle?: NodeJS.Timeout } = {};
+
+  const elapsedMs = (): number => Math.max(0, Date.now() - startedAt);
+
+  const clearWaitTimers = (): void => {
+    if (waitTimers.timeout) clearTimeout(waitTimers.timeout);
+    if (waitTimers.idle) clearTimeout(waitTimers.idle);
+  };
+
+  const closeWaitSocket = (code: number, reason: string): void => {
+    try {
+      ws.close(code, reason);
+    } catch {
+      /* already closing */
+    }
+  };
+
+  const finishOk = (status: 'matched' | 'idle'): void => {
+    if (settled) return;
+    settled = true;
+    clearWaitTimers();
+    closeWaitSocket(1000, 'sessions.wait complete');
+    printGatewayEnvelope(
+      gatewayOk('sessions.wait', {
+        model: 'raw-output',
+        status,
+        ...gatewayTargetPayload(target),
+        predicate,
+        elapsedMs: elapsedMs(),
+        bytesObserved,
+        truncated,
+        timeoutMs,
+        maxBytes,
+      }),
+      0
+    );
+  };
+
+  const finishError = (
+    reasonCode: string,
+    message: string,
+    extraDetails: Record<string, unknown> = {},
+    code: RelayCliGatewayErrorCode = 'UPSTREAM_ERROR',
+    retryable = true
+  ): void => {
+    if (settled) return;
+    settled = true;
+    clearWaitTimers();
+    closeWaitSocket(1011, reasonCode);
+    printGatewayEnvelope(
+      gatewayError('sessions.wait', {
+        code,
+        message,
+        retryable,
+        details: {
+          reasonCode,
+          model: 'raw-output',
+          ...gatewayTargetPayload(target),
+          predicate,
+          elapsedMs: elapsedMs(),
+          bytesObserved,
+          truncated,
+          timeoutMs,
+          maxBytes,
+          ...extraDetails,
+        },
+      }),
+      1
+    );
+  };
+
+  const refreshIdleTimer = (): void => {
+    if (predicate.kind !== 'idle-ms') return;
+    if (waitTimers.idle) clearTimeout(waitTimers.idle);
+    waitTimers.idle = setTimeout(() => finishOk('idle'), predicate.value);
+    waitTimers.idle.unref?.();
+  };
+
+  const observeWaitOutput = (text: string): void => {
+    const nextBytes = Buffer.byteLength(text, 'utf8');
+    if (bytesObserved + nextBytes > maxBytes) {
+      bytesObserved = maxBytes;
+      truncated = true;
+      finishError(
+        'WAIT_MAX_BYTES_EXCEEDED',
+        `PTY output exceeded maxBytes before sessions.wait predicate completed`,
+        { status: 'max-bytes' }
+      );
+      return;
+    }
+    bytesObserved += nextBytes;
+    refreshIdleTimer();
+    if (predicate.kind !== 'output-text') return;
+
+    outputWindow += text;
+    if (outputWindow.includes(predicate.value)) {
+      finishOk('matched');
+      return;
+    }
+    const retainedSuffixLength = Math.max(0, predicate.value.length - 1);
+    if (outputWindow.length > retainedSuffixLength)
+      outputWindow = outputWindow.slice(-retainedSuffixLength);
+  };
+
+  waitTimers.timeout = setTimeout(() => {
+    finishError(
+      'WAIT_TIMEOUT',
+      predicate.kind === 'output-text'
+        ? `timed out waiting for raw PTY output: ${predicate.value}`
+        : `timed out waiting for PTY idle period: ${predicate.value}ms`,
+      { status: 'timeout' }
+    );
+  }, timeoutMs);
+  waitTimers.timeout.unref?.();
+
+  ws.on('message', (data) => {
+    if (settled) return;
+    observeWaitOutput(data.toString('utf8'));
+  });
+
+  ws.once('close', (code, reason) => {
+    if (settled) return;
+    finishError('SESSION_STREAM_CLOSED', 'PTY stream closed before sessions.wait completed', {
+      status: 'closed',
+      closeCode: code,
+      reason: reason.toString('utf8'),
+    });
+  });
+  ws.once('error', (error) => {
+    if (settled) return;
+    const message = error instanceof Error ? error.message : String(error);
+    finishError('PTY_STREAM_ERROR', `PTY stream error: ${message}`, {}, gatewayWsErrorCode(message));
+  });
+
+  await opened;
+  refreshIdleTimer();
+  await new Promise(() => {});
+  process.exit(0);
+}
+
 function gatewayInputData(sessionArgs: string[]): string {
   const data = gatewayArg(sessionArgs, '--data');
   const dataBase64 = gatewayArg(sessionArgs, '--data-base64');
@@ -2814,6 +3039,7 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
     return runGatewaySessionRename(sessionArgs);
   if (sessionSubcommand === 'stream')
     return runGatewaySessionStream(sessionArgs);
+  if (sessionSubcommand === 'wait') return runGatewaySessionWait(sessionArgs);
   if (sessionSubcommand === 'input') return runGatewaySessionInput(sessionArgs);
   if (sessionSubcommand === 'interventions') {
     return runGatewaySessionInterventions(sessionArgs);
