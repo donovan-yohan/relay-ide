@@ -230,4 +230,68 @@ describe('active-work-surface anchor rendering', () => {
     );
     expect(activeWorkContextLabel(group)).toBe('unbound session group group-1');
   });
+
+  it('does not bind a remote same-path session to a local configured repo', () => {
+    const session = makeSession({
+      id: 'remote-same-path',
+      nodeId: 'mac-node',
+      cwd: '/home/user/relay-ide',
+      repoPath: '/home/user/relay-ide',
+      repoName: undefined,
+      branchName: undefined,
+    });
+    const repos = [
+      makeRepo('/home/user/relay-ide', 'repo', {
+        name: 'relay-ide',
+        defaultBranch: 'nightly',
+        currentBranch: 'nightly',
+        nodeId: 'local',
+      }),
+    ];
+    const group = makeGroup([session], {
+      node: {
+        nodeId: 'mac-node',
+        status: 'online',
+        displayName: 'mac node',
+        kind: 'remote',
+      },
+    });
+
+    expect(repoKind(session, repos)).toBeNull();
+    expect(repoBindingLabel(session, repos)).toBeNull();
+    expect(activeWorkAnchorLabel(group, session, repos)).toBe(
+      'remote mac node · /home/user/relay-ide · no repo binding'
+    );
+  });
+
+  it('binds a same-path repo when the session node matches the repo node', () => {
+    const session = makeSession({
+      nodeId: 'mac-node',
+      cwd: '/home/user/relay-ide',
+      repoPath: '/home/user/relay-ide',
+      branchName: 'nightly',
+    });
+    const repos = [
+      makeRepo('/home/user/relay-ide', 'repo', {
+        name: 'relay-ide',
+        defaultBranch: 'nightly',
+        currentBranch: 'nightly',
+        nodeId: 'mac-node',
+      }),
+    ];
+    const group = makeGroup([session], {
+      node: {
+        nodeId: 'mac-node',
+        status: 'online',
+        displayName: 'mac node',
+        kind: 'remote',
+      },
+    });
+
+    expect(repoKind(session, repos)).toBe('repo');
+    expect(repoBindingLabel(session, repos)).toBe('relay-ide · nightly');
+    expect(activeWorkAnchorLabel(group, session, repos)).toBe(
+      'repo relay-ide · nightly'
+    );
+  });
 });
