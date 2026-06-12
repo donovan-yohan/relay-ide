@@ -3,8 +3,10 @@ import type { Request } from 'express';
 import {
   CLI_GATEWAY_ACTOR_AUDIENCE,
   CLI_GATEWAY_ACTOR_READ_COMMANDS,
+  CLI_GATEWAY_ACTOR_WRITE_COMMANDS,
   CLI_GATEWAY_READ_SCOPE_TASK_REF,
   CliGatewayActorGrantError,
+  cliGatewayActorCommandCapabilities,
   cliGatewayActorFailure,
   classifyCliGatewayCredentialLane,
   issueCliGatewayActorCredential,
@@ -168,6 +170,34 @@ test('validates WorkContext-scoped actor credentials against exact artifact read
   ).toMatchObject({ ok: true, grantedBits: ['session:read'] });
 });
 
+test('validates scoped actor write credentials without forcing the read task sentinel', () => {
+  const scopedRegistry = registry();
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['context:write', 'inbox:write', 'artifact:write'],
+    scope: { workContextIds: ['wc:allowed'], repoIds: ['repo-1'], taskRefs: ['task-1'] },
+  });
+
+  expect(issued.credential).toMatchObject({
+    capabilities: ['context:write', 'inbox:write', 'artifact:write'],
+    scope: { workContextIds: ['wc:allowed'], repoIds: ['repo-1'], taskRefs: ['task-1'] },
+  });
+  expect(issued.credential.scope.taskRefs).not.toContain(CLI_GATEWAY_READ_SCOPE_TASK_REF);
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:write'],
+      scope: { workContextIds: ['wc:allowed'], repoIds: ['repo-1'], taskRefs: ['task-1'] },
+    })
+  ).toMatchObject({ ok: true, grantedBits: ['context:write'] });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:write'],
+      scope: { workContextIds: ['wc:allowed'], taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_task_scope' });
+});
+
 test('classifies only server-bound read-only CLI gateway actor routes into the actor lane', () => {
   const token = 'relay-sac-v1.credential-id.[REDACTED]';
   expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toEqual([
@@ -242,6 +272,94 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
   expect(classifyCliGatewayCredentialLane(req({ authorization: 'Bearer node-secret', nodeId: 'n1' }))).toBe(
     'node-credential-lane'
   );
+});
+
+test('classifies explicitly scoped CLI gateway actor write routes into the actor lane', () => {
+  const token = 'relay-sac-v1.credential-id.[REDACTED]';
+  expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toEqual([
+    'context.create',
+    'context.pin',
+    'context.unpin',
+    'inbox.send',
+    'inbox.ack',
+    'inbox.resolve',
+    'inbox.ignore',
+    'work-context-artifacts.publish',
+    'work-context-artifacts.pin',
+    'work-context-artifacts.unpin',
+    'handoff-artifacts.attach',
+  ]);
+
+  for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {
+    expect(
+      classifyCliGatewayCredentialLane(
+        req({
+          method: 'POST',
+          authorization: `Bearer ${token}`,
+          actorMarker: 'v1',
+          command,
+        }),
+        command
+      ),
+      command
+    ).toBe('scoped-actor-credential');
+  }
+
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'POST',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+      }),
+      'context.create'
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'GET',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'context.create',
+      }),
+      'context.create'
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'PUT',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'context.create',
+      }),
+      'context.create'
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'POST',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'context.pin',
+      }),
+      'context.create'
+    )
+  ).toBe('unsupported-route');
+});
+
+test('maps write actor commands to required Relay capability bits', () => {
+  expect(cliGatewayActorCommandCapabilities('nodes.list')).toEqual(['session:read']);
+  expect(cliGatewayActorCommandCapabilities('context.create')).toEqual(['context:write']);
+  expect(cliGatewayActorCommandCapabilities('inbox.send')).toEqual(['inbox:write']);
+  expect(cliGatewayActorCommandCapabilities('work-context-artifacts.publish')).toEqual([
+    'artifact:write',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('handoff-artifacts.attach')).toEqual([
+    'artifact:write',
+  ]);
 });
 
 test('denies spoofed actor command headers on non-MVP route identities', () => {

@@ -3794,7 +3794,7 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
       pathName: '/work-context-artifacts',
       method: 'POST',
       body: input,
-      capabilities: ['context:write'],
+      capabilities: ['artifact:write'],
     });
     printGatewayEnvelope(gatewayOk(commandName, result), 0);
   }
@@ -3856,7 +3856,7 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
       pathName: `/work-context-artifacts/${encodeURIComponent(id)}/${subcommand}`,
       method: 'POST',
       body: { workContextId, ...(actorId ? { actorId } : {}) },
-      capabilities: ['context:write'],
+      capabilities: ['artifact:write'],
     });
     printGatewayEnvelope(gatewayOk(commandName, result), 0);
   }
@@ -3911,7 +3911,7 @@ async function runGatewayHandoffArtifacts(gatewayArgs: string[]): Promise<never>
       pathName: '/pipeline-handoff-artifacts',
       method: 'POST',
       body: input,
-      capabilities: ['context:write'],
+      capabilities: ['artifact:write'],
     });
     printGatewayEnvelope(gatewayOk(commandName, result), 0);
   }

@@ -35,11 +35,14 @@ import {
   type WorkContextArtifactStore,
   type WorkContextArtifactVisibility,
 } from '../work-context-artifacts.js';
-import { authenticatedCliGatewayActorCredential } from '../cli-gateway-actor-auth.js';
+import {
+  authenticatedCliGatewayActorCredential,
+  type CliGatewayActorWriteCommand,
+} from '../cli-gateway-actor-auth.js';
 
 export const WORK_CONTEXT_ARTIFACT_URI_PREFIX = 'relay://work-context-artifacts/';
 const CONTEXT_READ = 'context:read';
-const CONTEXT_WRITE = 'context:write';
+const ARTIFACT_WRITE = 'artifact:write';
 const STAGES = new Set(['implementation', 'qa', 'review', 'release']);
 export const DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES = 1024 * 1024;
 export const DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES = 512 * 1024;
@@ -58,6 +61,19 @@ export interface WorkContextArtifactRouterDeps {
     doctor?: RequestHandler;
   };
   requireWriteAuth?: RequestHandler;
+  requireWriteActorAuth?: (
+    expectedCommand: CliGatewayActorWriteCommand,
+    options?: {
+      scopeForRequest?: (req: Request) =>
+        | {
+            workContextIds?: string[];
+            repoIds?: string[];
+            taskRefs?: string[];
+          }
+        | undefined;
+      deferWorkContextScope?: boolean;
+    }
+  ) => RequestHandler;
   diagnostics?: {
     dbPath: string;
     payloadRoot: string;
@@ -161,7 +177,7 @@ function sendGatewayError(
 function denyUnauthorizedActorWorkContextScope(
   req: Request,
   res: Response,
-  input: { workContextId: string; operation: string; artifactId?: string }
+  input: { workContextId: string; operation: string; artifactId?: string; redactWorkContextId?: boolean }
 ): boolean {
   const credential = authenticatedCliGatewayActorCredential(req);
   const scopedWorkContextIds = credential?.scope.workContextIds;
@@ -175,7 +191,7 @@ function denyUnauthorizedActorWorkContextScope(
     {
       reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE',
       operation: input.operation,
-      workContextId: input.workContextId,
+      ...(input.redactWorkContextId ? {} : { workContextId: input.workContextId }),
       ...(input.artifactId ? { artifactId: input.artifactId } : {}),
       credentialId: credential?.id ?? 'unknown',
     }
@@ -189,6 +205,8 @@ function denyMissingCapability(
   required: readonly string[]
 ): boolean {
   const provided = parseCapabilityHeader(req.header('x-relay-capabilities'));
+  const actorCredential = authenticatedCliGatewayActorCredential(req);
+  for (const capability of actorCredential?.capabilities ?? []) provided.add(capability);
   const missing = required.filter((cap) => !provided.has(cap));
   if (missing.length === 0) return false;
   sendGatewayError(res, 'FORBIDDEN', `missing required capability: ${missing[0]}`, false, {
@@ -202,6 +220,23 @@ function bodyRecord(req: Request): Record<string, unknown> {
   return typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body)
     ? (req.body as Record<string, unknown>)
     : {};
+}
+
+function writeScopeFromBody(
+  req: Request
+): { workContextIds?: string[]; repoIds?: string[]; taskRefs?: string[] } | undefined {
+  const body = bodyRecord(req);
+  const workContextId = readString(body['workContextId']);
+  const repoId = readString(body['repoId']) ?? readString(body['projectId']);
+  const task = readTaskRef(body['taskRef']);
+  const taskRef = task ? `${task.kind}:${task.id}` : undefined;
+  return workContextId || repoId || taskRef
+    ? {
+        ...(workContextId ? { workContextIds: [workContextId] } : {}),
+        ...(repoId ? { repoIds: [repoId] } : {}),
+        ...(taskRef ? { taskRefs: [taskRef] } : {}),
+      }
+    : undefined;
 }
 
 function readString(value: unknown): string | undefined {
@@ -739,6 +774,10 @@ export function createWorkContextArtifactRouter(
   const auth = deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
   const readAuth = deps.requireReadAuth ?? {};
   const writeAuth = deps.requireWriteAuth ?? auth;
+  const writeActorAuth = (
+    command: CliGatewayActorWriteCommand,
+    options?: Parameters<NonNullable<WorkContextArtifactRouterDeps['requireWriteActorAuth']>>[1]
+  ): RequestHandler => deps.requireWriteActorAuth?.(command, options) ?? writeAuth;
   const routeAuth = (fallback: RequestHandler, handoff?: RequestHandler): RequestHandler => {
     return (req, res, next) => {
       if (req.path.startsWith('/pipeline-handoff-artifacts')) {
@@ -774,10 +813,16 @@ export function createWorkContextArtifactRouter(
     }
   });
 
-  // eslint-disable-next-line complexity, sonarjs/cognitive-complexity -- publish validates either handoff artifacts or static view artifacts before shared store/pin handling.
-  router.post(['/work-context-artifacts', '/pipeline-handoff-artifacts'], writeAuth, (req, res) => {
+  router.post(
+    ['/work-context-artifacts', '/pipeline-handoff-artifacts'],
+    routeAuth(
+      writeActorAuth('work-context-artifacts.publish', { scopeForRequest: writeScopeFromBody }),
+      writeActorAuth('handoff-artifacts.attach', { scopeForRequest: writeScopeFromBody })
+    ),
+    // eslint-disable-next-line complexity, sonarjs/cognitive-complexity -- publish validates either handoff artifacts or static view artifacts before shared store/pin handling.
+    (req, res) => {
     const operation = req.path.startsWith('/pipeline-handoff-artifacts') ? 'attach' : 'publish';
-    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    if (denyMissingCapability(req, res, [ARTIFACT_WRITE])) return;
     const s = storeOr503(res, deps.store, operation);
     if (!s) return;
     const body = bodyRecord(req);
@@ -990,6 +1035,7 @@ export function createWorkContextArtifactRouter(
           workContextId: metadataRecord.metadata.workContextId,
           operation: 'show-view-package',
           artifactId: id,
+          redactWorkContextId: true,
         })
       ) {
         return;
@@ -1032,6 +1078,7 @@ export function createWorkContextArtifactRouter(
           workContextId: metadataRecord.metadata.workContextId,
           operation: 'show',
           artifactId: id,
+          redactWorkContextId: true,
         })
       ) {
         return;
@@ -1093,6 +1140,7 @@ export function createWorkContextArtifactRouter(
             workContextId: record.metadata.workContextId,
             operation,
             artifactId: id,
+            redactWorkContextId: true,
           })
         ) {
           return;
@@ -1146,8 +1194,8 @@ export function createWorkContextArtifactRouter(
     '/pipeline-handoff-artifacts/:id/copy',
   ], copyAuth, transferHandler('copy'));
 
-  router.post('/work-context-artifacts/:id/pin', writeAuth, (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+  router.post('/work-context-artifacts/:id/pin', writeActorAuth('work-context-artifacts.pin', { deferWorkContextScope: true }), (req, res) => {
+    if (denyMissingCapability(req, res, [ARTIFACT_WRITE])) return;
     const s = storeOr503(res, deps.store, 'pin');
     if (!s) return;
     const body = bodyRecord(req);
@@ -1162,6 +1210,15 @@ export function createWorkContextArtifactRouter(
       });
       return;
     }
+    if (
+      denyUnauthorizedActorWorkContextScope(req, res, {
+        workContextId,
+        operation: 'pin',
+        artifactId,
+      })
+    ) {
+      return;
+    }
     if (!ensureWorkContext(res, deps.workContextStore, workContextId, 'pin')) return;
     const record = s.get(artifactId);
     if (!record) {
@@ -1173,6 +1230,16 @@ export function createWorkContextArtifactRouter(
       });
       return;
     }
+    if (
+      denyUnauthorizedActorWorkContextScope(req, res, {
+        workContextId: record.metadata.workContextId,
+        operation: 'pin',
+        artifactId,
+        redactWorkContextId: true,
+      })
+    ) {
+      return;
+    }
     const pinned = pinArtifactRef(deps.workContextStore!, workContextId, record.metadata, readString(body['actorId']));
     res.status(pinned.alreadyPinned ? 200 : 201).json({
       artifact: recordEnvelope(record),
@@ -1182,8 +1249,8 @@ export function createWorkContextArtifactRouter(
     });
   });
 
-  router.post('/work-context-artifacts/:id/unpin', writeAuth, (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+  router.post('/work-context-artifacts/:id/unpin', writeActorAuth('work-context-artifacts.unpin', { deferWorkContextScope: true }), (req, res) => {
+    if (denyMissingCapability(req, res, [ARTIFACT_WRITE])) return;
     const s = storeOr503(res, deps.store, 'unpin');
     if (!s) return;
     const body = bodyRecord(req);
@@ -1198,7 +1265,28 @@ export function createWorkContextArtifactRouter(
       });
       return;
     }
+    if (
+      denyUnauthorizedActorWorkContextScope(req, res, {
+        workContextId,
+        operation: 'unpin',
+        artifactId,
+      })
+    ) {
+      return;
+    }
     if (!ensureWorkContext(res, deps.workContextStore, workContextId, 'unpin')) return;
+    const record = s.get(artifactId);
+    if (
+      record &&
+      denyUnauthorizedActorWorkContextScope(req, res, {
+        workContextId: record.metadata.workContextId,
+        operation: 'unpin',
+        artifactId,
+        redactWorkContextId: true,
+      })
+    ) {
+      return;
+    }
     const result = unpinArtifactRef(deps.workContextStore!, workContextId, artifactId, readString(body['actorId']));
     res.json({ workContext: result.workContext, removed: result.removed, lifecycle: { artifactDeleted: false } });
   });

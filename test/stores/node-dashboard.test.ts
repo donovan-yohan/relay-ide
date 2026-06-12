@@ -320,12 +320,15 @@ describe('hub node dashboard state', () => {
     // dev nodes; `settings:write` remains high-risk and this fixture's prod
     // policy still denies all four because it overrides allowed bits to
     // `session:read` only, preserving the challenge count at 2.
+    // #943 added `artifact:write` as a non-high-risk scoped actor grant for
+    // durable WorkContext artifact evidence. It is default-granted on dev and
+    // denied in the sandbox/prod override fixtures without adding challenges.
     expect(
       rows.map((row) => [row.security.trustTier, row.security.postureLabel])
     ).toEqual([
-      ['sandbox', 'allow 1 · challenge 0 · deny 32'],
-      ['dev', 'allow 18 · challenge 0 · deny 15'],
-      ['prod', 'allow 1 · challenge 2 · deny 30'],
+      ['sandbox', 'allow 1 · challenge 0 · deny 33'],
+      ['dev', 'allow 19 · challenge 0 · deny 15'],
+      ['prod', 'allow 1 · challenge 2 · deny 31'],
     ]);
     expect(rows[2].security).toMatchObject({
       tone: 'danger',

@@ -380,6 +380,14 @@ describe('CLI gateway contract', () => {
       auditRedaction: { expectation: 'action-summary' },
       scopeKinds: ['work-context'],
     });
+    for (const verb of [
+      'work-context-artifacts.publish',
+      'work-context-artifacts.pin',
+      'work-context-artifacts.unpin',
+      'handoff-artifacts.attach',
+    ] as const) {
+      expect(commandSpec(verb).capabilityHints).toEqual(['artifact:write']);
+    }
     expect(relayCommandDefinition('handoff-artifacts.copy')).toMatchObject({
       sideEffect: 'read',
       requiresConfirmation: false,

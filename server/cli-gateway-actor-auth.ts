@@ -24,7 +24,12 @@ export const CLI_GATEWAY_READ_SCOPE_TASK_REF = 'relay:cli-gateway:v1:read' as co
 export const CLI_GATEWAY_ACTOR_TOKEN_HEADER = 'x-relay-cli-actor-token' as const;
 export const CLI_GATEWAY_COMMAND_HEADER = 'x-relay-cli-command' as const;
 export const CLI_GATEWAY_CORRELATION_ID_HEADER = 'x-relay-correlation-id' as const;
-export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = ['session:read'] as const;
+export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = [
+  'session:read',
+  'context:write',
+  'inbox:write',
+  'artifact:write',
+] as const;
 export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'nodes.list',
   'sessions.list',
@@ -43,7 +48,28 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
 
+export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
+  'context.create',
+  'context.pin',
+  'context.unpin',
+  'inbox.send',
+  'inbox.ack',
+  'inbox.resolve',
+  'inbox.ignore',
+  'work-context-artifacts.publish',
+  'work-context-artifacts.pin',
+  'work-context-artifacts.unpin',
+  'handoff-artifacts.attach',
+] as const;
+export type CliGatewayActorWriteCommand =
+  (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
+export type CliGatewayActorCommand =
+  | CliGatewayActorReadCommand
+  | CliGatewayActorWriteCommand;
+
 const cliGatewayActorReadCommandSet = new Set<string>(CLI_GATEWAY_ACTOR_READ_COMMANDS);
+const cliGatewayActorWriteCommandSet = new Set<string>(CLI_GATEWAY_ACTOR_WRITE_COMMANDS);
+const cliGatewayActorGrantCapabilitySet = new Set<string>(CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES);
 
 export interface CliGatewayActorIssueInput {
   actor?: { type?: unknown; id?: unknown; displayName?: unknown };
@@ -159,7 +185,7 @@ export function isCliGatewayActorTokenRequest(req: Request): boolean {
 
 export function classifyCliGatewayCredentialLane(
   req: Request,
-  expectedCommand?: CliGatewayActorReadCommand
+  expectedCommand?: CliGatewayActorCommand
 ):
   | 'missing'
   | 'scoped-actor-credential'
@@ -173,7 +199,7 @@ export function classifyCliGatewayCredentialLane(
     return 'missing';
   }
   if (token.startsWith('relay-sac-v1.')) {
-    return isSupportedCliGatewayActorReadRequest(req, expectedCommand)
+    return isSupportedCliGatewayActorRequest(req, expectedCommand)
       ? 'scoped-actor-credential'
       : 'unsupported-route';
   }
@@ -195,9 +221,53 @@ export function isSupportedCliGatewayActorReadRequest(
   return command == null || command === expectedCommand;
 }
 
+export function isSupportedCliGatewayActorWriteRequest(
+  req: Request,
+  expectedCommand?: CliGatewayActorWriteCommand
+): boolean {
+  if (req.method !== 'POST') return false;
+  if (!expectedCommand || !cliGatewayActorWriteCommandSet.has(expectedCommand)) {
+    return false;
+  }
+  return req.header(CLI_GATEWAY_COMMAND_HEADER) === expectedCommand;
+}
+
+export function isSupportedCliGatewayActorRequest(
+  req: Request,
+  expectedCommand?: CliGatewayActorCommand
+): boolean {
+  if (!expectedCommand) return false;
+  if (cliGatewayActorReadCommandSet.has(expectedCommand)) {
+    return isSupportedCliGatewayActorReadRequest(
+      req,
+      expectedCommand as CliGatewayActorReadCommand
+    );
+  }
+  if (cliGatewayActorWriteCommandSet.has(expectedCommand)) {
+    return isSupportedCliGatewayActorWriteRequest(
+      req,
+      expectedCommand as CliGatewayActorWriteCommand
+    );
+  }
+  return false;
+}
+
+export function cliGatewayActorCommandCapabilities(
+  command: CliGatewayActorCommand
+): readonly RelayCapabilityBit[] {
+  if (cliGatewayActorReadCommandSet.has(command)) return ['session:read'];
+  if (command.startsWith('context.')) return ['context:write'];
+  if (command.startsWith('inbox.')) return ['inbox:write'];
+  return ['artifact:write'];
+}
+
 export function defaultCliGatewayActorScope(
-  overrides?: ScopedActorCredentialScope
+  overrides?: ScopedActorCredentialScope,
+  capabilities: readonly RelayCapabilityBit[] = ['session:read']
 ): ScopedActorCredentialScope {
+  if (!capabilities.includes('session:read')) {
+    return overrides ?? {};
+  }
   const taskRefs = uniqueStrings([
     CLI_GATEWAY_READ_SCOPE_TASK_REF,
     ...(overrides?.taskRefs ?? []),
@@ -212,16 +282,16 @@ export function validateCliGatewayActorCredential(
   registry: ScopedActorCredentialRegistry,
   input: CliGatewayActorValidationInput
 ): ScopedActorCredentialValidationResult {
+  const validationScope = scopeForValidation(
+    input.scope,
+    input.deferWorkContextScope ? { deferWorkContextScope: true } : {}
+  );
   return registry.validate(input.token, {
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     requiredCapabilities: [...input.capabilities],
-    scope: {
-      taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF,
-      ...scopeForValidation(
-        input.scope,
-        input.deferWorkContextScope ? { deferWorkContextScope: true } : {}
-      ),
-    },
+    scope: input.capabilities.includes('session:read')
+      ? { taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF, ...validationScope }
+      : validationScope,
     ...(input.correlationId ? { correlationId: input.correlationId } : {}),
   });
 }
@@ -279,7 +349,7 @@ export function issueCliGatewayActorCredential(
     issuer: coerceIssuer(input.issuer),
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     capabilities,
-    scope: defaultCliGatewayActorScope(scope),
+    scope: defaultCliGatewayActorScope(scope, capabilities),
     ttlMs,
     ...(typeof input.expiresAt === 'string' ? { expiresAt: input.expiresAt } : {}),
     ...(isRecord(input.metadata) ? { metadata: input.metadata } : {}),
@@ -728,7 +798,7 @@ function strictCliGatewayCapabilities(value: unknown): RelayCapabilityBit[] {
   if (capabilities.length !== value.length || capabilities.some((capability) => capability === '*')) {
     throw new CliGatewayActorGrantError(
       'capability_expansion',
-      'grant-backed CLI actor credentials are limited to the read-only CLI gateway capability allowlist'
+      'grant-backed CLI actor credentials are limited to the CLI gateway capability allowlist'
     );
   }
   if (capabilities.some((capability) => !isRelayCapabilityBit(capability))) {
@@ -737,13 +807,13 @@ function strictCliGatewayCapabilities(value: unknown): RelayCapabilityBit[] {
       'grant-backed lifecycle requires known Relay capability bits'
     );
   }
-  if (capabilities.some((capability) => capability !== CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES[0])) {
+  if (capabilities.some((capability) => !cliGatewayActorGrantCapabilitySet.has(capability))) {
     throw new CliGatewayActorGrantError(
       'capability_expansion',
-      'grant-backed CLI actor credentials are limited to the read-only CLI gateway capability allowlist'
+      'grant-backed CLI actor credentials are limited to the CLI gateway capability allowlist'
     );
   }
-  return ['session:read'];
+  return capabilities as RelayCapabilityBit[];
 }
 
 function strictScope(value: unknown): ScopedActorCredentialScope {
@@ -834,7 +904,9 @@ function coerceIssuer(value: unknown): { id: string; displayName?: string } {
 
 function coerceCapabilities(value: unknown): RelayCapabilityBit[] {
   if (!Array.isArray(value)) return ['session:read'];
-  const caps = value.filter((cap): cap is RelayCapabilityBit => cap === 'session:read');
+  const caps = value.filter(
+    (cap): cap is RelayCapabilityBit => typeof cap === 'string' && isRelayCapabilityBit(cap) && cliGatewayActorGrantCapabilitySet.has(cap)
+  );
   return caps.length ? caps : ['session:read'];
 }
 
