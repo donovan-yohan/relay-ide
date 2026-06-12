@@ -148,24 +148,49 @@ function latestStatus(group: WorkContextActiveGroup): string {
     : 'session has no work context yet';
 }
 
+type SessionRepoBinding = {
+  repo: Repo;
+  kind: 'repo' | 'directory';
+};
+
 export function repoKind(
   session: WorkContextSessionSummary,
   repos: Repo[]
 ): 'repo' | 'directory' | null {
-  if (!session.repoPath) return null;
-  const match = repos.find((r) => r.path === session.repoPath);
-  if (!match) return null;
-  return match.kind ?? (match.isGitRepo ? 'repo' : 'directory');
+  return resolveSessionRepoBinding(session, repos)?.kind ?? null;
 }
 
-export function repoBindingLabel(
+function repoKindFor(repo: Repo): 'repo' | 'directory' {
+  return repo.kind ?? (repo.isGitRepo ? 'repo' : 'directory');
+}
+
+function normalizedNodeId(nodeId: string | undefined): string {
+  return nodeId ?? DEFAULT_LOCAL_NODE_ID;
+}
+
+function resolveSessionRepoBinding(
   session: WorkContextSessionSummary,
   repos: Repo[]
+): SessionRepoBinding | null {
+  const repoPath = session.repoPath;
+  if (!repoPath) return null;
+  const sessionNodeId = normalizedNodeId(session.nodeId);
+  const repo = repos.find(
+    (candidate) =>
+      candidate.path === repoPath &&
+      normalizedNodeId(candidate.nodeId) === sessionNodeId
+  );
+  if (!repo) return null;
+  return { repo, kind: repoKindFor(repo) };
+}
+
+function formatRepoBindingLabel(
+  session: WorkContextSessionSummary,
+  binding: SessionRepoBinding
 ): string | null {
-  const kind = repoKind(session, repos);
   const repoPath = session.repoPath;
 
-  if (kind === 'directory') {
+  if (binding.kind === 'directory') {
     const nodeLabel =
       session.nodeId && session.nodeId !== DEFAULT_LOCAL_NODE_ID
         ? session.nodeId
@@ -174,12 +199,20 @@ export function repoBindingLabel(
     return `${nodeLabel} · ${cwd} · directory`;
   }
 
-  if (kind !== 'repo' || !repoPath) return null;
+  if (!repoPath) return null;
 
-  const repo = session.repoName ?? repos.find((r) => r.path === repoPath)?.name;
-  if (!repo && !repoPath) return null;
+  const repoName = session.repoName ?? binding.repo.name;
   const branch = session.branchName;
-  return [repo ?? repoPath, branch].filter(Boolean).join(' · ');
+  return [repoName ?? repoPath, branch].filter(Boolean).join(' · ');
+}
+
+export function repoBindingLabel(
+  session: WorkContextSessionSummary,
+  repos: Repo[]
+): string | null {
+  const binding = resolveSessionRepoBinding(session, repos);
+  if (!binding) return null;
+  return formatRepoBindingLabel(session, binding);
 }
 
 export function activeWorkAnchorLabel(
@@ -191,11 +224,13 @@ export function activeWorkAnchorLabel(
   const nodeKind = group.node.kind ?? 'remote';
   const cwd = session?.cwd ?? group.context?.anchors?.session?.cwd ?? 'no cwd reported';
   if (session) {
-    const kind = repoKind(session, repos);
-    if (kind === 'directory') {
+    const binding = resolveSessionRepoBinding(session, repos);
+    if (binding?.kind === 'directory') {
       return `${nodeLabel} · ${cwd} · directory`;
     }
-    const repoLabel = repoBindingLabel(session, repos);
+    const repoLabel = binding
+      ? formatRepoBindingLabel(session, binding)
+      : null;
     if (repoLabel) return `repo ${repoLabel}`;
   }
   const anchorPrefix =
@@ -240,13 +275,13 @@ function sessionMeta(
       ? `control ${session.controlFreshness}`
       : undefined,
   ].filter(Boolean) as string[];
-  const kind = repoKind(session, repos);
-  const binding = repoBindingLabel(session, repos);
-  if (kind === 'directory') {
+  const binding = resolveSessionRepoBinding(session, repos);
+  const bindingLabel = binding ? formatRepoBindingLabel(session, binding) : null;
+  if (binding?.kind === 'directory') {
     // directory-kind: hide git-only meta (branch, PR chips handled at card level)
-    if (binding) meta.push(binding);
-  } else if (binding) {
-    meta.push(`repo ${binding}`);
+    if (bindingLabel) meta.push(bindingLabel);
+  } else if (bindingLabel) {
+    meta.push(`repo ${bindingLabel}`);
   } else {
     meta.push('no repo binding');
   }
