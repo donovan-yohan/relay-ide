@@ -86,6 +86,10 @@ const KEY_SEQUENCES: Record<TerminalInputKey, string> = {
   PageDown: '\x1b[6~',
 };
 
+export function isTerminalInputKey(key: string): key is TerminalInputKey {
+  return Object.prototype.hasOwnProperty.call(KEY_SEQUENCES, key);
+}
+
 /**
  * Encodes the small supervisor/mobile input vocabulary into real terminal bytes.
  * This is intentionally smaller than raw PTY writes; callers that need arbitrary
@@ -93,12 +97,22 @@ const KEY_SEQUENCES: Record<TerminalInputKey, string> = {
  * typed and auditable.
  */
 export function encodeTerminalInput(input: TerminalInput): EncodedTerminalInput {
-  const sequence = input.type === 'text' ? input.text : KEY_SEQUENCES[input.key];
+  const sequence =
+    input.type === 'text'
+      ? input.text
+      : terminalInputSequence(input.key);
   return {
     input,
     sequence,
     bytes: Buffer.from(sequence, 'utf8'),
   };
+}
+
+function terminalInputSequence(key: string): string {
+  if (!isTerminalInputKey(key)) {
+    throw new Error(`Unsupported terminal input key: ${key}`);
+  }
+  return KEY_SEQUENCES[key];
 }
 
 export interface LibghosttyTerminalModelBackendOptions {

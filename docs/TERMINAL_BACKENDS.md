@@ -63,6 +63,16 @@ Not stable today:
 
 Promote any new screen/read/wait primitive through `shared/cli-gateway-contract.ts` and `docs/CLI_GATEWAY.md` before external adapters rely on it. See `BOO_PHILOSOPHY.md` for the current audit and boundary rules.
 
+## Backend-neutral terminal helpers
+
+Internal session control code should prefer backend-neutral terminal names:
+
+- `sendTerminalText` writes literal terminal input text to the active PTY backend.
+- `sendTerminalKeys` writes key/control input such as `Enter`, arrows, or `CtrlC`.
+- `captureTerminalVisibleText` captures the currently rendered/visible terminal text.
+
+For `relay-pty`, these helpers write through Relay's terminal input encoder and read the Relay terminal model's visible screen. For `tmux-compat`, they translate to the equivalent tmux target/capture commands. Legacy `sendTmuxText`, `sendTmuxKeys`, and `captureTmuxPane` exports remain compatibility aliases only; new code should not use tmux-shaped helper names unless it is explicitly working inside the `tmux-compat` adapter boundary.
+
 ## Rendered screen snapshots
 
 The rendered screen API is intentionally backed by the `relay-pty` terminal model, not tmux text scraping. `GET /sessions/:id/screen` and `relay-ide v1 sessions screen --id <session-id-or-global-id> --json` return the libghostty-vt visible rows/text, cursor/title/mode metadata, geometry, freshness metadata, and optional bounded scrollback (`--scrollback --max-lines <n>`, capped server-side).

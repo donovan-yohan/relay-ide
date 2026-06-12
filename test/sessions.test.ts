@@ -1029,7 +1029,32 @@ describe('sessions', () => {
     expect(session!.tmuxSessionName).toBe('');
   });
 
-  it('exposes targeted tmux-compat send and capture helpers', async () => {
+  it('rejects Object prototype terminal keys for relay-pty sessions', async () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      terminalBackend: 'relay-pty',
+    });
+    createdIds.push(result.id);
+
+    await sessions.sendTerminalText(result.id, 'VALID_KEY');
+    await sessions.sendTerminalKeys(result.id, ['Enter']);
+    await expect
+      .poll(() => sessions.captureTerminalVisibleText(result.id))
+      .toContain('VALID_KEY');
+
+    for (const inheritedKey of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+      await expect(sessions.sendTerminalKeys(result.id, [inheritedKey])).rejects.toThrow(
+        `Unsupported relay-pty input key: ${inheritedKey}`
+      );
+    }
+  });
+
+  it('exposes backend-neutral terminal send and visible text helpers for tmux-compat sessions', async () => {
     const result = sessions.create({
       repoName: 'test-repo',
       repoPath: '/tmp',
@@ -1042,12 +1067,12 @@ describe('sessions', () => {
     createdIds.push(result.id);
     await waitForTmuxSession(result.tmuxSessionName!);
 
-    await sessions.sendTmuxText(result.id, 'printf TMUX_TARGET_READY');
-    await sessions.sendTmuxKeys(result.id, ['Enter']);
+    await sessions.sendTerminalText(result.id, 'printf TMUX_TARGET_READY');
+    await sessions.sendTerminalKeys(result.id, ['Enter']);
 
     let captured = '';
     for (let i = 0; i < 20; i++) {
-      captured = await sessions.captureTmuxPane(result.id);
+      captured = await sessions.captureTerminalVisibleText(result.id);
       if (captured.includes('TMUX_TARGET_READY')) break;
       await delay(50);
     }

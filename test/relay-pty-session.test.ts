@@ -4,6 +4,7 @@ import type { IPty } from 'node-pty';
 import {
   createLibghosttyTerminalModelBackend,
   encodeTerminalInput,
+  isTerminalInputKey,
 } from '../server/terminal-model-backend.js';
 import {
   buildRelayPtySessionEnv,
@@ -118,6 +119,16 @@ describe('TerminalModelBackend — libghostty-vt', () => {
     expect(encodeTerminalInput({ type: 'key', key: 'End' }).sequence).toBe('\x1b[F');
     expect(encodeTerminalInput({ type: 'key', key: 'PageUp' }).sequence).toBe('\x1b[5~');
     expect(encodeTerminalInput({ type: 'key', key: 'PageDown' }).sequence).toBe('\x1b[6~');
+  });
+
+  it('rejects Object prototype names as terminal input keys', () => {
+    for (const key of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+      expect(isTerminalInputKey(key)).toBe(false);
+      const invalidInput = { type: 'key' as const, key } as Parameters<typeof encodeTerminalInput>[0];
+      expect(() => encodeTerminalInput(invalidInput)).toThrow(
+        `Unsupported terminal input key: ${key}`
+      );
+    }
   });
 });
 
