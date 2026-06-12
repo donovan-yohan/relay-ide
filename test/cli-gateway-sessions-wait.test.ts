@@ -3,6 +3,7 @@ import * as http from 'node:http';
 import { execFile } from 'node:child_process';
 import * as path from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { retainOutputPredicateSuffix } from '../shared/cli-gateway-sessions-wait.js';
 
 const RELAY_IDE_BIN = path.resolve('dist/bin/relay-ide.js');
 const servers: Array<{ server: http.Server; wss: WebSocketServer }> = [];
@@ -132,6 +133,27 @@ async function createWaitFixture(
 
 afterEach(async () => {
   for (const fixture of servers.splice(0)) await closeFixture(fixture);
+});
+
+test('sessions.wait output-text retention keeps no suffix for single-character predicates', () => {
+  let outputWindow = '';
+
+  for (let index = 0; index < 5; index += 1) {
+    outputWindow += '0123456789';
+    outputWindow = retainOutputPredicateSuffix(outputWindow, 'a');
+    expect(outputWindow).toBe('');
+  }
+});
+
+test('sessions.wait output-text retention keeps only the cross-frame match suffix', () => {
+  let outputWindow = '';
+
+  outputWindow += 'xxbooting rea';
+  outputWindow = retainOutputPredicateSuffix(outputWindow, 'ready marker');
+  expect(outputWindow).toBe('booting rea');
+
+  outputWindow += 'dy marker';
+  expect(outputWindow).toContain('ready marker');
 });
 
 test('sessions.wait resolves raw output-text matches with stable JSON metadata', async () => {

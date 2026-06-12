@@ -53,6 +53,7 @@ import {
   type RelayCliGatewayEnvelope,
   type RelayCliGatewayErrorCode,
 } from '../shared/cli-gateway-contract.js';
+import { retainOutputPredicateSuffix } from '../shared/cli-gateway-sessions-wait.js';
 import {
   gatewayCliInvalidArgumentError,
   gatewayCliInvalidJsonError,
@@ -2749,9 +2750,7 @@ async function runGatewaySessionWait(sessionArgs: string[]): Promise<never> {
       finishOk('matched');
       return;
     }
-    const retainedSuffixLength = Math.max(0, predicate.value.length - 1);
-    if (outputWindow.length > retainedSuffixLength)
-      outputWindow = outputWindow.slice(-retainedSuffixLength);
+    outputWindow = retainOutputPredicateSuffix(outputWindow, predicate.value);
   };
 
   waitTimers.timeout = setTimeout(() => {
