@@ -34,6 +34,7 @@ import type {
   PipelineHandoffArtifact,
   PipelineHandoffStageName,
 } from '../../../shared/pipeline-handoff-artifact.js';
+import type { ViewArtifactPackage } from '../../../shared/agent-view-artifact.js';
 import type { TaskRef } from '../../../shared/work-context.js';
 import type {
   PipelineHandoffArtifactEnvelope,
@@ -777,6 +778,23 @@ export interface FetchPipelineHandoffArtifactsOptions {
 const HANDOFF_ARTIFACT_HEADERS: HeadersInit = {
   'x-relay-capabilities': 'context:read',
 };
+
+export async function fetchAgentViewArtifactPackage(
+  artifactId: string
+): Promise<ViewArtifactPackage> {
+  const data = await json<{
+    artifact?: { viewArtifact?: ViewArtifactPackage };
+  }>(
+    await fetch(`/work-context-artifacts/${encodeURIComponent(artifactId)}/view-package`, {
+      headers: HANDOFF_ARTIFACT_HEADERS,
+    })
+  );
+  const pkg = data.artifact?.viewArtifact;
+  if (!pkg) {
+    throw new Error('view artifact package response was malformed');
+  }
+  return pkg;
+}
 
 export async function fetchPipelineHandoffArtifacts({
   workContextId,

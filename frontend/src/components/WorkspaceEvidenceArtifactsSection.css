@@ -97,6 +97,17 @@
   border-color: var(--accent);
 }
 
+.evidence-artifact__action--view {
+  color: var(--status-info);
+  border-color: var(--status-info);
+}
+
+.evidence-artifact__action--view:hover,
+.evidence-artifact__action--view:focus-visible {
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+  border-color: var(--status-info);
+}
+
 .evidence-artifact__action:disabled {
   opacity: 0.4;
   cursor: not-allowed;

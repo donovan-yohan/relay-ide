@@ -13,6 +13,7 @@ import type {
   PublicPipelineHandoffArtifactSummary,
 } from '../lib/pipeline-handoff-timeline.js';
 import type { WorkContextActiveGroup } from '../lib/types.js';
+import AgentViewArtifactViewer from './AgentViewArtifactViewer.js';
 import ArtifactFeedbackPanel from './ArtifactFeedbackPanel.js';
 import './WorkspaceEvidenceArtifactsSection.css';
 
@@ -20,7 +21,9 @@ import './WorkspaceEvidenceArtifactsSection.css';
 // METADATA + the bounded public `summary` text ONLY — never artifact-derived
 // HTML, never an iframe, never raw payload bytes. Copy/export goes through
 // `copyPipelineHandoffArtifact`, which returns the sanitized public-summary
-// form (rawPayloadAvailable: false). Do not add dangerouslySetInnerHTML here.
+// form (rawPayloadAvailable: false). The AgentViewArtifactViewer is the sole
+// sanctioned HTML render path for agent-authored view artifacts. Do not add
+// dangerouslySetInnerHTML here.
 
 export interface WorkspaceEvidenceArtifactsSectionProps {
   repoPath: string;
@@ -46,6 +49,7 @@ function ArtifactCard({
   const meta: PublicPipelineHandoffArtifactSummary = envelope.metadata;
   const sessions = useSessionsStore((s) => s.sessions);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [viewArtifactId, setViewArtifactId] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<
     | { kind: 'idle' }
     | { kind: 'copying' }
@@ -55,6 +59,7 @@ function ArtifactCard({
 
   const headShaShort = shortSha(meta.headSha);
   const payloadShaShort = shortHash(meta.payloadSha256);
+  const isAgentViewArtifact = meta.payloadKind === 'agent-view-artifact';
   const taskSource = meta.taskRef
     ? `${meta.taskRef.kind}:${meta.taskRef.id}`
     : null;
@@ -136,6 +141,15 @@ function ArtifactCard({
         >
           {feedbackOpen ? 'hide feedback' : 'feedback'}
         </button>
+        {isAgentViewArtifact && (
+          <button
+            className="evidence-artifact__action evidence-artifact__action--view"
+            onClick={() => setViewArtifactId(meta.id)}
+            type="button"
+          >
+            open view
+          </button>
+        )}
         {copyState.kind === 'copied' && (
           <span className="evidence-artifact__copy-state">
             copied · {copyState.bytes}b
@@ -161,6 +175,12 @@ function ArtifactCard({
           artifactLabel={`${meta.kind} · ${meta.title}`}
           sessions={sessions}
           preferredTargetSessionId={null}
+        />
+      )}
+      {viewArtifactId && (
+        <AgentViewArtifactViewer
+          artifactId={viewArtifactId}
+          onClose={() => setViewArtifactId(null)}
         />
       )}
     </div>

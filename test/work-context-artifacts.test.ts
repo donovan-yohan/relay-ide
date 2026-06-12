@@ -16,6 +16,11 @@ import {
   validatePublicPipelineHandoffArtifact,
   type PipelineHandoffArtifact,
 } from '../shared/pipeline-handoff-artifact.js';
+import {
+  AGENT_VIEW_MANIFEST_KIND,
+  AGENT_VIEW_SCHEMA_VERSION,
+  type ViewArtifactPackage,
+} from '../shared/agent-view-artifact.js';
 
 const now = '2026-06-08T12:00:00.000Z';
 const headSha = 'a'.repeat(40);
@@ -113,6 +118,35 @@ function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoff
         migrationOrStateRisk: 'new isolated SQLite index and payload directory only',
       },
     ],
+    ...input,
+  };
+}
+
+function viewArtifact(input: Partial<ViewArtifactPackage> = {}): ViewArtifactPackage {
+  const manifest = {
+    kind: AGENT_VIEW_MANIFEST_KIND,
+    schemaVersion: AGENT_VIEW_SCHEMA_VERSION,
+    title: 'Example static dashboard',
+    description: 'A static view for issue 830',
+    entry: 'index.html',
+    authoring: { actorId: 'agent:kani-backend', harness: 'vitest' },
+    createdAt: now,
+    updatedAt: now,
+    scope: {
+      repo: 'example-org/example-project',
+      taskRefs: [{ kind: 'github-issue', id: '830', url: 'https://github.com/example-org/example-project/issues/830' }],
+    },
+    sources: [{ label: 'Issue 830', url: 'https://github.com/example-org/example-project/issues/830', kind: 'github-issue' }],
+    capabilities: [],
+    export: { policy: 'private' },
+    revision: { id: 'agent-view:example:aaaaaaaa' },
+  } satisfies ViewArtifactPackage['manifest'];
+  return {
+    manifest,
+    files: {
+      'index.html': '<main><h1>Issue 830</h1><p>static bytes</p></main>',
+      'style.css': 'main { color: #111; }',
+    },
     ...input,
   };
 }
@@ -256,7 +290,158 @@ describe('WorkContext artifact store/index', () => {
     ]);
 
     const read = store.read(stored.metadata.id);
-    expect(read?.payload?.title).toBe('Example Project implementation handoff');
+    expect((read?.payload as PipelineHandoffArtifact | undefined)?.title).toBe('Example Project implementation handoff');
+  });
+
+  it('stores agent view artifacts with agent-view payload kind and sha-addressed packages', () => {
+    const { root, store } = tmpStore();
+    const pkg = viewArtifact();
+
+    const stored = store.storeAgentViewArtifact({
+      workContextId: 'wc:view',
+      projectId: 'project:example-org/example-project',
+      provenanceActorId: 'agent:kani-backend',
+      viewArtifact: pkg,
+    });
+
+    const payloadJson = JSON.stringify(pkg, null, 2);
+    expect(stored.metadata).toMatchObject({
+      id: 'agent-view:example:aaaaaaaa',
+      workContextId: 'wc:view',
+      projectId: 'project:example-org/example-project',
+      taskRef: { kind: 'github-issue', id: '830' },
+      kind: 'report',
+      visibility: 'private',
+      payloadKind: 'agent-view-artifact',
+      payloadSha256: sha256Hex(payloadJson),
+      payloadBytes: Buffer.byteLength(payloadJson, 'utf8'),
+    });
+    expect(stored.payloadPath.startsWith(path.join(root, 'payloads'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(stored.payloadPath, 'utf8'))).toEqual(pkg);
+    expect(store.readViewArtifactPackage(stored.metadata.id)?.payload).toEqual(pkg);
+    expect(store.read(stored.metadata.id)?.payload).toEqual(pkg);
+  });
+
+  it('normalizes agent view timestamps accepted by the shared contract', () => {
+    const { store } = tmpStore();
+    const pkg = viewArtifact({
+      manifest: { ...viewArtifact().manifest, updatedAt: '2026-06-08T12:00:03Z' },
+    });
+
+    const stored = store.storeAgentViewArtifact({ workContextId: 'wc:view-timestamp', viewArtifact: pkg });
+
+    expect(stored.metadata.capturedAt).toBe('2026-06-08T12:00:03.000Z');
+  });
+
+  it('rejects impossible agent view timestamps without date rollover', () => {
+    const { store } = tmpStore();
+    const pkg = viewArtifact({
+      manifest: { ...viewArtifact().manifest, updatedAt: '2026-02-30T12:00:03Z' },
+    });
+
+    expect(() =>
+      store.storeAgentViewArtifact({ workContextId: 'wc:view-invalid-timestamp', viewArtifact: pkg })
+    ).toThrow(WorkContextArtifactStoreError);
+  });
+
+  it('derives agent view supersession from manifest revision when top-level field is omitted', () => {
+    const { store } = tmpStore();
+    const first = store.storeAgentViewArtifact({
+      workContextId: 'wc:view-manifest-supersede',
+      viewArtifact: viewArtifact(),
+    });
+    const replacementPkg = viewArtifact({
+      manifest: {
+        ...viewArtifact().manifest,
+        updatedAt: '2026-06-08T12:10:00.000Z',
+        revision: { id: 'agent-view:example:manifest-supersedes', supersedes: first.metadata.id },
+      },
+    });
+
+    const replacement = store.storeAgentViewArtifact({
+      workContextId: 'wc:view-manifest-supersede',
+      viewArtifact: replacementPkg,
+    });
+
+    expect(replacement.metadata.supersedesArtifactId).toBe(first.metadata.id);
+    expect(store.list({ workContextId: 'wc:view-manifest-supersede' }).map((entry) => entry.metadata.id)).toEqual([
+      replacement.metadata.id,
+    ]);
+  });
+
+  it('rejects top-level visibility that disagrees with an agent view export policy', () => {
+    const { store } = tmpStore();
+
+    expect(() =>
+      store.storeAgentViewArtifact({
+        workContextId: 'wc:view-visibility',
+        viewArtifact: viewArtifact(),
+        visibility: 'public',
+      })
+    ).toThrow(WorkContextArtifactStoreError);
+  });
+
+  it('preserves supersede history for agent view artifacts without changing handoff rows', () => {
+    const { store } = tmpStore();
+    const first = store.storeAgentViewArtifact({
+      workContextId: 'wc:view-supersede',
+      viewArtifact: viewArtifact(),
+    });
+    const handoff = store.storePipelineHandoffArtifact({
+      workContextId: 'wc:view-supersede',
+      artifact: artifact({ id: 'pipeline-handoff:example:view-supersede' }),
+    });
+    const replacementPkg = viewArtifact({
+      manifest: {
+        ...viewArtifact().manifest,
+        updatedAt: '2026-06-08T12:10:00.000Z',
+        revision: { id: 'agent-view:example:bbbbbbbb', supersedes: first.metadata.id },
+      },
+    });
+
+    const replacement = store.storeAgentViewArtifact({
+      workContextId: 'wc:view-supersede',
+      viewArtifact: replacementPkg,
+      supersedesArtifactId: first.metadata.id,
+    });
+
+    expect(replacement.metadata.supersedesArtifactId).toBe(first.metadata.id);
+    expect(store.get(first.metadata.id)?.metadata.payloadKind).toBe('agent-view-artifact');
+    expect(store.get(handoff.metadata.id)?.metadata.payloadKind).toBe('pipeline-handoff-artifact');
+    expect(store.list({ workContextId: 'wc:view-supersede' }).map((entry) => entry.metadata.id).sort()).toEqual([
+      handoff.metadata.id,
+      replacement.metadata.id,
+    ].sort());
+  });
+
+  it('backfills agent view task refs from manifest scope during migration', () => {
+    const { root, store } = tmpStore();
+    const pkg = viewArtifact({
+      manifest: {
+        ...viewArtifact().manifest,
+        scope: {
+          ...viewArtifact().manifest.scope,
+          taskRefs: [
+            { kind: 'github-issue', id: '830' },
+            { kind: 'github-pr', id: '920' },
+          ],
+        },
+      },
+    });
+    const stored = store.storeAgentViewArtifact({ workContextId: 'wc:view-backfill', viewArtifact: pkg });
+    const db = new Database(path.join(root, 'index.db'));
+    cleanup.push(() => db.close());
+    db.prepare('DELETE FROM work_context_artifact_task_refs WHERE artifact_id = ?').run(stored.metadata.id);
+
+    const reopened = createWorkContextArtifactStore({
+      dbPath: path.join(root, 'index.db'),
+      payloadRoot: path.join(root, 'payloads'),
+    });
+    cleanup.push(() => reopened.close());
+
+    expect(reopened.list({ taskRef: { kind: 'github-pr', id: '920' } })[0]?.metadata.id).toBe(
+      stored.metadata.id
+    );
   });
 
   it('indexes every task ref from a handoff artifact payload', () => {
@@ -465,24 +650,56 @@ describe('WorkContext artifact store/index', () => {
     });
 
     const publicCopy = store.publicSummary(stored.metadata.id);
+    const publicPayload = publicCopy?.payload as PipelineHandoffArtifact | undefined;
     expect(publicCopy?.metadata).not.toHaveProperty('payloadPath');
     expect(publicCopy?.metadata.taskRef).toMatchObject({
       kind: 'github-issue',
       id: '42',
     });
-    expect(publicCopy?.payload?.scope.taskRefs).toEqual([
+    expect(publicPayload?.scope.taskRefs).toEqual([
       {
         kind: 'github-issue',
         id: '42',
         url: 'https://github.com/example-org/example-project/issues/42',
       },
     ]);
-    expect(publicCopy?.payload?.stages[0]?.actorId).toBe('agent');
-    expect(publicCopy?.payload?.stages[0]?.summary).toContain('[redacted-local-path]');
+    expect(publicPayload?.stages[0]?.actorId).toBe('agent');
+    expect(publicPayload?.stages[0]?.summary).toContain('[redacted-local-path]');
     expect(
-      publicCopy?.payload?.scope.nonGoals.some((item) => /kanban|dispatcher|worktree/i.test(item))
+      publicPayload?.scope.nonGoals.some((item) => /kanban|dispatcher|worktree/i.test(item))
     ).toBe(false);
-    expect(validatePublicPipelineHandoffArtifact(publicCopy?.payload as PipelineHandoffArtifact).valid).toBe(true);
+    expect(validatePublicPipelineHandoffArtifact(publicPayload as PipelineHandoffArtifact).valid).toBe(true);
+  });
+
+  it('returns public summaries for agent view artifacts with sanitized manifest only', () => {
+    const { store } = tmpStore();
+    const pkg = viewArtifact({
+      manifest: {
+        ...viewArtifact().manifest,
+        description: 'Public view from /home/operator/relay with t_12345678 internal scratch id',
+        export: { policy: 'public' },
+        revision: { id: 'agent-view:example:public' },
+      },
+      files: {
+        'index.html': '<main>raw html bytes mention /home/operator/relay and t_12345678</main>',
+      },
+    });
+    const stored = store.storeAgentViewArtifact({
+      workContextId: 'wc:view-public-copy',
+      viewArtifact: pkg,
+    });
+
+    const publicCopy = store.publicSummary(stored.metadata.id);
+    expect(publicCopy?.metadata.payloadKind).toBe('agent-view-artifact');
+    expect(publicCopy?.payload).toMatchObject({
+      manifest: {
+        revision: { id: 'agent-view:example:public' },
+        description: expect.stringContaining('[redacted-local-path]'),
+      },
+    });
+    expect(JSON.stringify(publicCopy)).toContain('[redacted-kanban-task]');
+    expect(JSON.stringify(publicCopy)).not.toContain('raw html bytes mention');
+    expect(JSON.stringify(publicCopy)).not.toContain('files');
   });
 
   it('does not expose private artifacts through publicSummary', () => {

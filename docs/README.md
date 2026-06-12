@@ -16,6 +16,7 @@ This index separates current source-of-truth docs from historical plans and spik
 | Quality               | `QUALITY.md`                      | Test strategy, isolation rules, known gate behavior                                          |
 | Handoff artifacts     | `pipeline-handoff-artifact-template.md` | Live worker publication pattern and public-safe PipelineHandoffArtifact templates      |
 | CLI gateway           | `CLI_GATEWAY.md`                        | Versioned `relay-ide v1 ... --json` adapter contract, auth lanes, command taxonomy     |
+| Agent view artifacts  | `AGENT_VIEW_ARTIFACTS.md`               | Static HTML/CSS WorkContext view artifact contract, package route, security model       |
 | Security policy       | `SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, exact-operation approvals, handshake grants |
 | Handshake grants      | `OPERATOR_HANDSHAKE_GRANTS.md`          | One-time operator grant ceremony copy, lane separation, validation, audit/redaction contract |
 | rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`               | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                |

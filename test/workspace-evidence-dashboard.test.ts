@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     string,
     { data?: unknown[]; isLoading?: boolean; isError?: boolean }
   >,
+  fetchAgentViewArtifactPackage: vi.fn(),
 }));
 
 vi.mock('@tanstack/react-query', () => ({
@@ -62,6 +63,7 @@ vi.mock('../frontend/src/lib/api.js', () => ({
   fetchActiveWork: vi.fn(),
   fetchPipelineHandoffArtifacts: vi.fn(),
   copyPipelineHandoffArtifact: vi.fn(),
+  fetchAgentViewArtifactPackage: mocks.fetchAgentViewArtifactPackage,
 }));
 
 vi.mock('../frontend/src/lib/stores/sessions.js', () => {
@@ -157,6 +159,7 @@ afterEach(async () => {
   mocks.activeWork = [];
   mocks.backendConnectionStatus = 'connected';
   mocks.artifactsByContext = {};
+  mocks.fetchAgentViewArtifactPackage.mockReset();
 });
 
 function activeGroupForRepo(
@@ -190,6 +193,29 @@ function artifactEnvelope(overrides: Record<string, unknown> = {}) {
       headSha: 'deadbeefcafebabe',
       taskRef: { kind: 'github-issue', id: '898' },
       ...overrides,
+    },
+  };
+}
+
+function viewArtifactPackage() {
+  return {
+    manifest: {
+      kind: 'relay.agentView',
+      schemaVersion: 1,
+      title: 'workspace view artifact',
+      description: 'static evidence viewer fixture',
+      entry: 'index.html',
+      authoring: { actorId: 'agent-alpha', harness: 'vitest' },
+      createdAt: '2026-06-10T00:00:00Z',
+      updatedAt: '2026-06-10T00:01:00Z',
+      scope: { repo: 'relay-ide', taskRefs: [{ kind: 'github-issue', id: '830' }] },
+      sources: [],
+      capabilities: [],
+      export: { policy: 'private' },
+      revision: { id: 'art-1' },
+    },
+    files: {
+      'index.html': '<main>workspace static view</main>',
     },
   };
 }
@@ -358,5 +384,53 @@ describe('WorkspaceEvidenceDashboard', () => {
     expect(copyBtn).toBeTruthy();
     expect((copyBtn as HTMLButtonElement).disabled).toBe(false);
     expect((copyBtn as HTMLButtonElement).title).toBeFalsy();
+  });
+
+  it('opens the viewer and fetches the package for an agent-authored static view artifact', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
+    mocks.artifactsByContext = {
+      'wc-1': {
+        data: [artifactEnvelope({ payloadKind: 'agent-view-artifact' })],
+      },
+    };
+    mocks.fetchAgentViewArtifactPackage.mockResolvedValue(viewArtifactPackage());
+    await renderDashboard('/repo');
+    const card = container!.querySelector(
+      '[data-track="evidence.artifact-card"]'
+    );
+    const openViewBtn = Array.from(card!.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('open view')
+    );
+    expect(openViewBtn).toBeTruthy();
+    expect((openViewBtn as HTMLButtonElement).disabled).toBe(false);
+
+    await act(async () => {
+      (openViewBtn as HTMLButtonElement).click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mocks.fetchAgentViewArtifactPackage).toHaveBeenCalledWith('art-1');
+    expect(
+      container!.querySelector('[data-track="agent-view-artifact.viewer"]')
+    ).toBeTruthy();
+    expect(container!.textContent).toContain('workspace view artifact');
+  });
+
+  it('does not show open view for pipeline handoff artifacts', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
+    mocks.artifactsByContext = { 'wc-1': { data: [artifactEnvelope()] } };
+    await renderDashboard('/repo');
+    const card = container!.querySelector(
+      '[data-track="evidence.artifact-card"]'
+    );
+    const openViewBtn = Array.from(card!.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('open view')
+    );
+    expect(openViewBtn).toBeUndefined();
+    expect(mocks.fetchAgentViewArtifactPackage).not.toHaveBeenCalled();
   });
 });

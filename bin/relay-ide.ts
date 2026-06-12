@@ -145,6 +145,8 @@ Commands:
     list                               Forward to git worktree list
   browser            Open an HTML file in the remote viewer
     <path>             Path to HTML file
+  v1 work-context-artifacts publish --artifact-file <json>|--view-file <json> --work-context-id <id> --json
+                     Publish a handoff artifact or agent-authored static HTML view artifact
   pin                Manage authentication PIN
     reset              Reset the PIN (interactive, requires TTY)
 
@@ -3456,8 +3458,15 @@ function addWorkContextArtifactBodyFlags(
   if (taskRef && body['taskRef'] === undefined) body['taskRef'] = taskRef;
   if (args.includes('--pin')) body['pin'] = true;
   const artifactFile = gatewayArg(args, '--artifact-file');
+  const viewFile = gatewayArg(args, '--view-file');
+  if (artifactFile && viewFile) {
+    gatewayInvalid(commandName, '--artifact-file and --view-file are mutually exclusive');
+  }
   if (artifactFile && body['artifact'] === undefined) {
     body['artifact'] = gatewayReadJsonFile(commandName, artifactFile);
+  }
+  if (viewFile && body['viewArtifact'] === undefined) {
+    body['viewArtifact'] = gatewayReadJsonFile(commandName, viewFile);
   }
   return body;
 }
@@ -3476,8 +3485,12 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
     if (typeof input['workContextId'] !== 'string') {
       gatewayInvalid(commandName, '--work-context-id is required', { field: 'workContextId' });
     }
-    if (typeof input['artifact'] !== 'object' || input['artifact'] === null) {
-      gatewayInvalid(commandName, '--artifact-file or input artifact is required', { field: 'artifact' });
+    const hasArtifact = isGatewayRecord(input['artifact']);
+    const hasViewArtifact = isGatewayRecord(input['viewArtifact']);
+    if (hasArtifact === hasViewArtifact) {
+      gatewayInvalid(commandName, 'exactly one of artifact or viewArtifact is required', {
+        fields: ['artifact', 'viewArtifact'],
+      });
     }
     const result = await gatewayHttpJson({
       commandName,
