@@ -62,7 +62,7 @@ Use these rules when updating docs, issues, or UI copy:
 
 - Say **terminal backend** unless the behavior is specifically `tmux-compat`.
 - Say **raw PTY stream/input** for `sessions.stream` and `sessions.input`.
-- Say **typed supervisor action** for `supervisor.sendText` / `supervisor.submit` command IDs, or `relay-ide v1 supervisor send-text` / `supervisor submit` CLI argv.
+- Say **typed supervisor action** for `supervisor.sendText` / `supervisor.submit` command IDs, or `relay-ide v1 supervisor send-text` / `relay-ide v1 supervisor submit` CLI argv.
 - Do not call raw stream/input a rendered-screen API.
 - Do not imply `relay-pty` sessions survive server restart as the same live process.
 - Do not tell adapters to use internal REST routes, browser WebSockets, node-link, tmux, or private provider stores as contracts.
