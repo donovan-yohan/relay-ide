@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  activeWorkAnchorLabel,
+  activeWorkContextLabel,
   repoBindingLabel,
   repoKind,
 } from '../frontend/src/components/ActiveWorkSurface.js';
@@ -12,7 +14,7 @@ function makeSession(
   return {
     id: 'sess-1',
     nodeId: 'local',
-    tabKind: 'primary',
+    tabKind: 'terminal',
     type: 'terminal',
     cwd: '/home/user/my-project',
     repoPath: '/home/user/my-project',
@@ -24,7 +26,8 @@ function makeSession(
 }
 
 function makeGroup(
-  sessions: WorkContextSessionSummary[] = []
+  sessions: WorkContextSessionSummary[] = [],
+  overrides: Partial<WorkContextActiveGroup> = {}
 ): WorkContextActiveGroup {
   return {
     id: 'group-1',
@@ -37,6 +40,7 @@ function makeGroup(
     },
     sessions,
     staleReadModel: false,
+    ...overrides,
   };
 }
 
@@ -64,10 +68,13 @@ describe('active-work-surface anchor rendering', () => {
     const kind = repoKind(session, repos);
     expect(kind).toBe('directory');
 
-    const label = repoBindingLabel(group, session, repos);
+    const label = repoBindingLabel(session, repos);
     expect(label).toMatch(/local/);
     expect(label).toMatch(/\/home\/user\/my-project/);
     expect(label).toMatch(/directory/);
+    expect(activeWorkAnchorLabel(group, session, repos)).toBe(
+      'local · /home/user/my-project · directory'
+    );
   });
 
   it('repo-kind session anchor includes repo name and branch', () => {
@@ -84,18 +91,25 @@ describe('active-work-surface anchor rendering', () => {
     const kind = repoKind(session, repos);
     expect(kind).toBe('repo');
 
-    const label = repoBindingLabel(group, session, repos);
+    const label = repoBindingLabel(session, repos);
     expect(label).toContain('relay-ide');
     expect(label).toContain('nightly');
-    // should NOT contain 'directory'
     expect(label).not.toContain('directory');
+    expect(activeWorkAnchorLabel(group, session, repos)).toBe(
+      'repo relay-ide · nightly'
+    );
   });
 
-  it('session with no matching repo returns null kind', () => {
+  it('session with no matching repo returns null kind and no repo-binding cockpit copy', () => {
     const session = makeSession({ repoPath: '/some/unknown/path' });
     const repos: Repo[] = [];
+    const group = makeGroup([session]);
 
     expect(repoKind(session, repos)).toBeNull();
+    expect(repoBindingLabel(session, repos)).toBeNull();
+    expect(activeWorkAnchorLabel(group, session, repos)).toBe(
+      'local · /home/user/my-project · no repo binding'
+    );
   });
 
   it('directory-kind shows remote node name in anchor', () => {
@@ -105,11 +119,47 @@ describe('active-work-surface anchor rendering', () => {
       repoPath: '/srv/workspace',
     });
     const repos = [makeRepo('/srv/workspace', 'directory')];
-    const group = makeGroup([session]);
+    const group = makeGroup([session], {
+      node: {
+        nodeId: 'remote-server',
+        status: 'online',
+        displayName: 'mac node',
+        kind: 'remote',
+      },
+    });
 
-    const label = repoBindingLabel(group, session, repos);
+    const label = repoBindingLabel(session, repos);
     expect(label).toContain('remote-server');
     expect(label).toContain('/srv/workspace');
     expect(label).toContain('directory');
+    expect(activeWorkAnchorLabel(group, session, repos)).toBe(
+      'mac node · /srv/workspace · directory'
+    );
+  });
+
+  it('repo-less remote/free sessions are honest about node/cwd without repo badges', () => {
+    const session = makeSession({
+      nodeId: 'mac-node',
+      cwd: '/tmp/scratch',
+      repoPath: undefined,
+      repoName: undefined,
+      branchName: undefined,
+      tabKind: 'other',
+    });
+    const group = makeGroup([session], {
+      node: {
+        nodeId: 'mac-node',
+        status: 'offline',
+        displayName: 'mac node',
+        kind: 'remote',
+      },
+      staleReadModel: true,
+    });
+
+    expect(repoBindingLabel(session, [])).toBeNull();
+    expect(activeWorkAnchorLabel(group, session, [])).toBe(
+      'remote mac node · /tmp/scratch · no repo binding'
+    );
+    expect(activeWorkContextLabel(group)).toBe('unbound session group group-1');
   });
 });
