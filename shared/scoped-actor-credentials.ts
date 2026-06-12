@@ -81,6 +81,7 @@ export interface ScopedActorCredentialValidationScope {
   sessionId?: string;
   globalSessionId?: string;
   workContextId?: string;
+  deferWorkContextScope?: boolean;
   repoId?: string;
   path?: string;
   taskRef?: string;
@@ -697,6 +698,7 @@ type ScopeValidationRule = {
   values: string[] | undefined;
   requested: string | undefined;
   wrongReason: ScopedActorCredentialValidationFailureReason;
+  deferred?: boolean;
   matches?: (values: string[], requested: string) => boolean;
 };
 
@@ -723,6 +725,7 @@ function validateCredentialScope(
     {
       values: credentialScope.workContextIds,
       requested: expectedScope?.workContextId,
+      deferred: expectedScope?.deferWorkContextScope === true,
       wrongReason: 'wrong_work_context_scope',
     },
     {
@@ -750,7 +753,7 @@ function validateCredentialScope(
     if (!matches(rule.values, rule.requested)) return rule.wrongReason;
   }
 
-  return rules.some((rule) => rule.values && !rule.requested)
+  return rules.some((rule) => rule.values && !rule.requested && !rule.deferred)
     ? 'missing_scope'
     : null;
 }

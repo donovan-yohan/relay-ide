@@ -35,6 +35,7 @@ import {
   type WorkContextArtifactStore,
   type WorkContextArtifactVisibility,
 } from '../work-context-artifacts.js';
+import { authenticatedCliGatewayActorCredential } from '../cli-gateway-actor-auth.js';
 
 export const WORK_CONTEXT_ARTIFACT_URI_PREFIX = 'relay://work-context-artifacts/';
 const CONTEXT_READ = 'context:read';
@@ -155,6 +156,31 @@ function sendGatewayError(
   details?: Record<string, unknown>
 ): void {
   res.status(statusForCode(code)).json(gatewayErrorBody(code, message, retryable, details));
+}
+
+function denyUnauthorizedActorWorkContextScope(
+  req: Request,
+  res: Response,
+  input: { workContextId: string; operation: string; artifactId?: string }
+): boolean {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  const scopedWorkContextIds = credential?.scope.workContextIds;
+  if (!scopedWorkContextIds?.length) return false;
+  if (scopedWorkContextIds.includes(input.workContextId)) return false;
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    'scoped CLI actor credential rejected: CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE',
+    false,
+    {
+      reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE',
+      operation: input.operation,
+      workContextId: input.workContextId,
+      ...(input.artifactId ? { artifactId: input.artifactId } : {}),
+      credentialId: credential?.id ?? 'unknown',
+    }
+  );
+  return true;
 }
 
 function denyMissingCapability(
@@ -596,8 +622,14 @@ function diagnosticsFor(
   };
 }
 
+export function readWorkContextArtifactQueryWorkContextId(
+  query: Request['query']
+): string | undefined {
+  return readString(query['workContextId'] ?? query['work-context-id']);
+}
+
 function queryListInput(req: Request): WorkContextArtifactListInput | 'invalid-task-ref' | 'missing-filter' {
-  const workContextId = readString(req.query['workContextId'] ?? req.query['work-context-id']);
+  const workContextId = readWorkContextArtifactQueryWorkContextId(req.query);
   const taskRef = readQueryTaskRef(req);
   if (taskRef === 'invalid') return 'invalid-task-ref';
   if (!workContextId && !taskRef) return 'missing-filter';
@@ -927,6 +959,15 @@ export function createWorkContextArtifactRouter(
       });
       return;
     }
+    if (
+      input.workContextId &&
+      denyUnauthorizedActorWorkContextScope(req, res, {
+        workContextId: input.workContextId,
+        operation: 'list',
+      })
+    ) {
+      return;
+    }
     if (input.workContextId && !ensureWorkContext(res, deps.workContextStore, input.workContextId, 'list')) return;
     const current = currentHeadSha(req);
     const listed = s.list(input);
@@ -942,6 +983,17 @@ export function createWorkContextArtifactRouter(
     if (!s) return;
     const id = req.params['id'] ?? '';
     try {
+      const metadataRecord = s.get(id);
+      if (
+        metadataRecord &&
+        denyUnauthorizedActorWorkContextScope(req, res, {
+          workContextId: metadataRecord.metadata.workContextId,
+          operation: 'show-view-package',
+          artifactId: id,
+        })
+      ) {
+        return;
+      }
       const record = s.readViewArtifactPackage(id);
       if (!record) {
         sendGatewayError(res, 'NOT_FOUND', 'WorkContext view artifact not found', false, {
@@ -973,6 +1025,17 @@ export function createWorkContextArtifactRouter(
     const publicOnly = readBoolean(req.query['public']) ?? false;
     const current = currentHeadSha(req);
     try {
+      const metadataRecord = s.get(id);
+      if (
+        metadataRecord &&
+        denyUnauthorizedActorWorkContextScope(req, res, {
+          workContextId: metadataRecord.metadata.workContextId,
+          operation: 'show',
+          artifactId: id,
+        })
+      ) {
+        return;
+      }
       if (publicOnly) {
         const publicCopy = s.publicSummary(id);
         if (!publicCopy) {
@@ -1023,6 +1086,15 @@ export function createWorkContextArtifactRouter(
             operation,
             artifactId: id,
           });
+          return;
+        }
+        if (
+          denyUnauthorizedActorWorkContextScope(req, res, {
+            workContextId: record.metadata.workContextId,
+            operation,
+            artifactId: id,
+          })
+        ) {
           return;
         }
         const publicCopy = s.publicSummary(id);

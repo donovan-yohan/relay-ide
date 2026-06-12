@@ -9,6 +9,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createWorkContextArtifactRouter } from '../server/features/work-context-artifact-router.js';
 import {
+  attachAuthenticatedCliGatewayActorCredential,
+  bearerActorToken,
+  cliGatewayActorFailure,
+  issueCliGatewayActorCredential,
+  validateCliGatewayActorCredential,
+} from '../server/cli-gateway-actor-auth.js';
+import { ScopedActorCredentialRegistry } from '../shared/scoped-actor-credentials.js';
+import {
   createWorkContextArtifactStore,
   type WorkContextArtifactStore,
 } from '../server/work-context-artifacts.js';
@@ -289,6 +297,44 @@ function actorReadAuth(expectedCommand: ArtifactReadCommand): express.RequestHan
   };
 }
 
+function actorHeadersWithToken(command: string, token: string): Record<string, string> {
+  return { ...actorHeaders(command), authorization: `Bearer ${token}` };
+}
+
+function scopedActorReadAuth(
+  registry: ScopedActorCredentialRegistry,
+  expectedCommand: ArtifactReadCommand,
+  options: {
+    scopeForRequest?: (req: express.Request) => { workContextIds?: string[] } | undefined;
+    deferWorkContextScope?: boolean;
+  } = {}
+): express.RequestHandler {
+  return (req, res, next) => {
+    if (req.header('x-relay-cli-actor-token') !== 'v1') {
+      next();
+      return;
+    }
+    if (req.header('x-relay-cli-command') !== expectedCommand) {
+      res.status(401).json({ error: { code: 'UNAUTHORIZED', expectedCommand } });
+      return;
+    }
+    const validation = validateCliGatewayActorCredential(registry, {
+      token: bearerActorToken(req),
+      capabilities: ['session:read'],
+      ...(options.scopeForRequest ? { scope: options.scopeForRequest(req) } : {}),
+      ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
+    });
+    if ('reason' in validation) {
+      res.status(validation.reason === 'missing_scope' || validation.reason.startsWith('wrong_') ? 403 : 401).json({
+        error: cliGatewayActorFailure({ reason: validation.reason, credentialId: validation.credentialId }),
+      });
+      return;
+    }
+    attachAuthenticatedCliGatewayActorCredential(req, validation.credential);
+    next();
+  };
+}
+
 const actorWriteAuth: express.RequestHandler = (req, res, next) => {
   if (req.header('x-relay-cli-actor-token') === 'v1') {
     res.status(403).json({
@@ -391,6 +437,77 @@ describe('WorkContext artifact router', () => {
       }
     );
     expect(unpin.status).toBe(403);
+  });
+
+  it('honors actor credential workContextIds for list and deferred show reads', async () => {
+    const { root, store } = tmpStore();
+    const workContextId = 'wc:router-scoped-allowed';
+    const wrongWorkContextId = 'wc:router-scoped-denied';
+    const workContextStore = fakeWorkContextStore(
+      createWorkContext(workContextId),
+      createWorkContext(wrongWorkContextId)
+    );
+    const stored = store.storePipelineHandoffArtifact({
+      workContextId,
+      visibility: 'public',
+      artifact: artifact({ id: 'pipeline-handoff:router:scoped-allowed' }),
+    });
+    const registry = new ScopedActorCredentialRegistry({
+      secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
+    });
+    const allowed = issueCliGatewayActorCredential(registry, {
+      scope: { workContextIds: [workContextId] },
+    });
+    const denied = issueCliGatewayActorCredential(registry, {
+      scope: { workContextIds: [wrongWorkContextId] },
+    });
+    const scopeForRequest = (req: express.Request): { workContextIds?: string[] } | undefined => {
+      const raw = req.query['workContextId'];
+      return typeof raw === 'string' && raw ? { workContextIds: [raw] } : undefined;
+    };
+    const { baseUrl } = await serve({
+      root,
+      store,
+      workContextStore,
+      requireReadAuth: {
+        list: scopedActorReadAuth(registry, 'work-context-artifacts.list', { scopeForRequest }),
+        show: scopedActorReadAuth(registry, 'work-context-artifacts.show', {
+          deferWorkContextScope: true,
+        }),
+      },
+    });
+
+    const list = await fetch(
+      `${baseUrl}/work-context-artifacts?workContextId=${encodeURIComponent(workContextId)}`,
+      { headers: actorHeadersWithToken('work-context-artifacts.list', allowed.token) }
+    );
+    expect(list.status).toBe(200);
+    expect((await json(list)).artifacts).toHaveLength(1);
+
+    const wrongList = await fetch(
+      `${baseUrl}/work-context-artifacts?workContextId=${encodeURIComponent(workContextId)}`,
+      { headers: actorHeadersWithToken('work-context-artifacts.list', denied.token) }
+    );
+    expect(wrongList.status).toBe(403);
+    expect(await json(wrongList)).toMatchObject({
+      error: { reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE' },
+    });
+
+    const show = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(stored.metadata.id)}`,
+      { headers: actorHeadersWithToken('work-context-artifacts.show', allowed.token) }
+    );
+    expect(show.status).toBe(200);
+    expect(await json(show)).toMatchObject({ artifact: { metadata: { workContextId } } });
+
+    const wrongShow = await fetch(
+      `${baseUrl}/work-context-artifacts/${encodeURIComponent(stored.metadata.id)}`,
+      { headers: actorHeadersWithToken('work-context-artifacts.show', denied.token) }
+    );
+    expect(wrongShow.status).toBe(403);
+    expect(await json(wrongShow)).toMatchObject({
+      error: { details: { reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE' } },
+    });
   });
 
   it('attaches, lists, shows, and copies handoff artifacts on dedicated route/auth names', async () => {

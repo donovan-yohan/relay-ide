@@ -183,15 +183,17 @@ The first scoped actor credential slice supports only this read-only hub-backed 
 | `relay-ide v1 sessions list --json`               | `sessions.list`     | `session:read`      | Reads session descriptors and control summaries.                                                    |
 | `relay-ide v1 sessions get --id <id> --json`      | `sessions.get`      | `session:read`      | Validates the credential against the requested session/global session id when scoped that narrowly. |
 | `relay-ide v1 work-contexts get --id <id> --json` | `work-contexts.get` | `session:read`      | Validates work-context scope when the credential is scoped to a work context.                       |
-| `relay-ide v1 work-context-artifacts list --work-context-id <id> --json` | `work-context-artifacts.list` | `session:read` | Reads bounded artifact metadata; requires `context:read` capability hint. |
-| `relay-ide v1 work-context-artifacts show --id <id> --json` | `work-context-artifacts.show` | `session:read` | Reads one artifact envelope and validates stored payload integrity; requires `context:read`. |
-| `relay-ide v1 work-context-artifacts export --id <id> --json` | `work-context-artifacts.export` | `session:read` | Exports only the sanitized public-summary copy; requires `context:read`. |
+| `relay-ide v1 work-context-artifacts list --work-context-id <id> --json` | `work-context-artifacts.list` | `session:read` | Reads bounded artifact metadata; requires `context:read` capability hint and enforces exact WorkContext scope when present. |
+| `relay-ide v1 work-context-artifacts show --id <id> --json` | `work-context-artifacts.show` | `session:read` | Reads one artifact envelope after metadata-derived WorkContext scope authorization; validates stored payload integrity; requires `context:read`. |
+| `relay-ide v1 work-context-artifacts export --id <id> --json` | `work-context-artifacts.export` | `session:read` | Exports only the sanitized public-summary copy after metadata-derived WorkContext scope authorization; requires `context:read`. |
 | `relay-ide v1 work-context-artifacts doctor --json` | `work-context-artifacts.doctor` | `session:read` | Reads bounded artifact store diagnostics; requires `context:read`. |
-| `relay-ide v1 handoff-artifacts list --work-context-id <id> --json` | `handoff-artifacts.list` | `session:read` | Reads bounded PipelineHandoffArtifact metadata; requires `context:read`. |
-| `relay-ide v1 handoff-artifacts show --id <id> --json` | `handoff-artifacts.show` | `session:read` | Reads one PipelineHandoffArtifact envelope or safe public copy; requires `context:read`. |
-| `relay-ide v1 handoff-artifacts copy --id <id> --json` | `handoff-artifacts.copy` | `session:read` | Copies only the sanitized public-summary form; raw payload export is unsupported and requires `context:read`. |
+| `relay-ide v1 handoff-artifacts list --work-context-id <id> --json` | `handoff-artifacts.list` | `session:read` | Reads bounded PipelineHandoffArtifact metadata; requires `context:read` and enforces exact WorkContext scope when present. |
+| `relay-ide v1 handoff-artifacts show --id <id> --json` | `handoff-artifacts.show` | `session:read` | Reads one PipelineHandoffArtifact envelope or safe public copy after metadata-derived WorkContext scope authorization; requires `context:read`. |
+| `relay-ide v1 handoff-artifacts copy --id <id> --json` | `handoff-artifacts.copy` | `session:read` | Copies only the sanitized public-summary form after metadata-derived WorkContext scope authorization; raw payload export is unsupported and requires `context:read`. |
 
 Pass the credential with `--actor-token` or `RELAY_IDE_ACTOR_TOKEN`; `--actor-token` wins when both are present. `--correlation-id` or `RELAY_IDE_CORRELATION_ID` may be supplied for audit correlation. The CLI sends actor credentials as bearer auth with `x-relay-cli-gateway: v1`, `x-relay-cli-actor-token: v1`, `x-relay-cli-command`, and capability hints in `x-relay-capabilities`.
+
+For artifact list commands, WorkContext-scoped actor credentials are checked against the requested `--work-context-id` (or `workContextId`/`work-context-id` query parameter). For artifact id reads/copies/exports, the gateway first loads artifact metadata, checks the stored `workContextId` against the actor credential `scope.workContextIds`, and only then reads or returns artifact payload/public-summary content. A mismatched scoped credential fails closed with `CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE`.
 
 Examples:
 

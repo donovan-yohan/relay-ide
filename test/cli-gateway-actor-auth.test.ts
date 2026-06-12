@@ -133,6 +133,41 @@ test('issues and validates bounded read-only CLI gateway actor credentials', () 
   expect(validation).toMatchObject({ ok: true, grantedBits: ['session:read'] });
 });
 
+test('validates WorkContext-scoped actor credentials against exact artifact read scopes', () => {
+  const scopedRegistry = registry();
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    scope: { workContextIds: ['wc:allowed'] },
+  });
+
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['session:read'],
+    })
+  ).toMatchObject({ ok: false, reason: 'missing_scope' });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['session:read'],
+      scope: { workContextIds: ['wc:allowed'] },
+    })
+  ).toMatchObject({ ok: true, grantedBits: ['session:read'] });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['session:read'],
+      scope: { workContextIds: ['wc:other'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_work_context_scope' });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['session:read'],
+      deferWorkContextScope: true,
+    })
+  ).toMatchObject({ ok: true, grantedBits: ['session:read'] });
+});
+
 test('classifies only server-bound read-only CLI gateway actor routes into the actor lane', () => {
   const token = 'relay-sac-v1.credential-id.[REDACTED]';
   expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toEqual([
