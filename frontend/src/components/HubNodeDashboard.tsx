@@ -3,11 +3,14 @@ import { useQuery } from '@tanstack/react-query';
 import type { HubNodeSummary } from '../../../shared/relay-node-protocol.js';
 import { RELAY_NODE_LINK_PROTOCOL_VERSION } from '../../../shared/relay-node-protocol.js';
 import type { NodeManifestDegradedReason } from '../../../shared/node-manifest.js';
-import { fetchHubNodes } from '../lib/api.js';
+import { fetchHubNodes, fetchRepoInventory, HttpError } from '../lib/api.js';
 import {
   deriveHubNodeDashboardRows,
+  deriveNodeRepoLocality,
   hubNodeDashboardSummary,
+  repoLocalitySummary,
   type HubNodeDashboardRow,
+  type NodeRepoLocality,
 } from '../lib/state/node-dashboard.js';
 import './HubNodeDashboard.css';
 
@@ -82,6 +85,117 @@ function DegradedReasonsExpander({
 // NodeHelperMeta — helper version + file-rpc status line
 // ---------------------------------------------------------------------------
 
+const MAX_LOCALITY_REPOS = 3;
+const MAX_LOCALITY_WORKTREES_PER_REPO = 3;
+
+interface NodeLocalityProps {
+  locality: NodeRepoLocality | undefined;
+}
+
+function NodeLocality({ locality }: NodeLocalityProps) {
+  if (!locality || locality.repoCount === 0) {
+    return (
+      <div className="hub-node-locality hub-node-locality--empty">
+        no repo locality reported yet
+      </div>
+    );
+  }
+
+  return (
+    <div className="hub-node-locality" aria-label="repo locality">
+      <div className="hub-node-locality-summary">
+        repo locality: {repoLocalitySummary(locality)}
+      </div>
+      <ul className="hub-node-locality-list" role="list">
+        {locality.repos.slice(0, MAX_LOCALITY_REPOS).map((repo) => {
+          const branch =
+            repo.currentBranch ?? repo.defaultBranch ?? 'unknown branch';
+          const visibleWorktrees = repo.worktrees.slice(
+            0,
+            MAX_LOCALITY_WORKTREES_PER_REPO
+          );
+          const hiddenWorktreeCount =
+            repo.worktrees.length - visibleWorktrees.length;
+          return (
+            <li key={repo.repoInstanceId} className="hub-node-locality-repo">
+              <span className="hub-node-locality-name">{repo.name}</span>
+              <span className="hub-node-locality-branch">{branch}</span>
+              <span className="hub-node-locality-path" title={repo.localPath}>
+                {repo.localPath}
+              </span>
+              {visibleWorktrees.length > 0 && (
+                <div
+                  className="hub-node-locality-worktrees"
+                  aria-label={`${repo.name} worktrees`}
+                >
+                  <div className="hub-node-locality-worktrees-label">
+                    worktrees
+                  </div>
+                  <ul className="hub-node-locality-worktree-list" role="list">
+                    {visibleWorktrees.map((worktree) => {
+                      const worktreeBranch =
+                        worktree.branchName ?? 'unknown branch';
+                      return (
+                        <li
+                          key={worktree.worktreeInstanceId}
+                          className="hub-node-locality-worktree"
+                        >
+                          <span className="hub-node-locality-worktree-name">
+                            {worktree.displayName}
+                          </span>
+                          <span
+                            className="hub-node-locality-worktree-branch"
+                            title={worktreeBranch}
+                          >
+                            {worktreeBranch}
+                          </span>
+                          <span
+                            className="hub-node-locality-worktree-path"
+                            title={worktree.localPath}
+                          >
+                            {worktree.localPath}
+                          </span>
+                        </li>
+                      );
+                    })}
+                    {hiddenWorktreeCount > 0 && (
+                      <li className="hub-node-locality-worktree-more">
+                        +{hiddenWorktreeCount} more{' '}
+                        {hiddenWorktreeCount === 1 ? 'worktree' : 'worktrees'}
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+            </li>
+          );
+        })}
+        {locality.repoCount > MAX_LOCALITY_REPOS && (
+          <li className="hub-node-locality-more">
+            +{locality.repoCount - MAX_LOCALITY_REPOS} more repos on this node
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof HttpError && error.status === 401) {
+    return error.message || 'authorization required';
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return 'request failed';
+}
+
+function nodesErrorMessage(error: unknown): string {
+  if (error instanceof HttpError && error.status === 401) {
+    return error.message || 'authorization required';
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return 'could not load hub nodes';
+}
+
 interface NodeHelperMetaProps {
   row: HubNodeDashboardRow;
 }
@@ -115,12 +229,16 @@ export interface HubNodeDashboardProps {
   nodes: HubNodeSummary[];
   now?: Date;
   expectedProtocolVersion?: string;
+  localityByNode?: Map<string, NodeRepoLocality>;
+  inventoryError?: string;
 }
 
 export function HubNodeDashboard({
   nodes,
   now,
   expectedProtocolVersion = RELAY_NODE_LINK_PROTOCOL_VERSION,
+  localityByNode,
+  inventoryError,
 }: HubNodeDashboardProps) {
   const deriveOptions = useMemo(
     () => ({ ...(now ? { now } : {}), expectedProtocolVersion }),
@@ -145,6 +263,11 @@ export function HubNodeDashboard({
           <div className="hub-node-dashboard-summary">{summary}</div>
         </div>
       </div>
+      {inventoryError && (
+        <div className="hub-node-locality-banner">
+          repo locality unavailable: {inventoryError}
+        </div>
+      )}
       <div className="hub-node-dashboard-list">
         {rows.map((row) => (
           <article
@@ -184,6 +307,7 @@ export function HubNodeDashboard({
             <div className="hub-node-readiness">
               {row.disabledReason ?? row.workReadiness}
             </div>
+            <NodeLocality locality={localityByNode?.get(row.nodeId)} />
             {row.versionWarning && (
               <div className="hub-node-warning">{row.versionWarning}</div>
             )}
@@ -244,16 +368,58 @@ export function HubNodeDashboard({
 }
 
 export function HubNodeDashboardPanel() {
-  const { data: nodes } = useQuery({
+  const {
+    data: nodes,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['hub-nodes'],
     queryFn: fetchHubNodes,
     staleTime: Infinity,
     refetchOnWindowFocus: 'always',
     retry: false,
   });
+  const inventoryQuery = useQuery({
+    queryKey: ['repo-inventory'],
+    queryFn: fetchRepoInventory,
+    staleTime: 60_000,
+    retry: false,
+    enabled: Boolean(nodes?.length) && !isError,
+  });
 
-  if (!nodes || nodes.length === 0) return null;
-  return <HubNodeDashboard nodes={nodes} />;
+  const localityByNode = useMemo(
+    () => deriveNodeRepoLocality(inventoryQuery.data),
+    [inventoryQuery.data]
+  );
+
+  if (isLoading) {
+    return <div className="hub-node-panel-state">loading nodes...</div>;
+  }
+  if (isError) {
+    return (
+      <div className="hub-node-panel-state hub-node-panel-state--error">
+        nodes unavailable: {nodesErrorMessage(error)}
+        <button type="button" onClick={() => void refetch()}>
+          retry
+        </button>
+      </div>
+    );
+  }
+  if (!nodes || nodes.length === 0) {
+    return <div className="hub-node-panel-state">no paired nodes yet</div>;
+  }
+
+  return (
+    <HubNodeDashboard
+      nodes={nodes}
+      localityByNode={localityByNode}
+      {...(inventoryQuery.isError
+        ? { inventoryError: errorMessage(inventoryQuery.error) }
+        : {})}
+    />
+  );
 }
 
 export default HubNodeDashboard;

@@ -2,13 +2,25 @@ import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { HubNodeSummary } from '../../shared/relay-node-protocol.js';
+import type { AggregatedRepoInventoryResponse } from '../../shared/repo-inventory.js';
 import { HubNodeDashboard } from '../../frontend/src/components/HubNodeDashboard.js';
+import {
+  deriveNodeRepoLocality,
+  repoLocalitySummary,
+} from '../../frontend/src/lib/state/node-dashboard.js';
 
 const now = new Date('2026-01-02T03:05:00.000Z');
 
 function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
   return {
     nodeId: 'node-1',
+    identity: {
+      nodeId: 'node-1',
+      displayName: 'dev mac',
+      hostname: 'dev-mac.local',
+      createdAt: '2026-01-02T03:00:00.000Z',
+      pairedAt: '2026-01-02T03:00:00.000Z',
+    },
     displayName: 'dev mac',
     hostname: 'dev-mac.local',
     platform: 'darwin',
@@ -17,6 +29,18 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     protocolVersion: '1.0',
     status: 'online',
     connection: { route: 'reverse-link', status: 'connected' },
+    trust: { state: 'trusted', level: 'standard', tier: 'dev' },
+    credentialState: 'active',
+    credential: {
+      credentialId: 'cred-1',
+      issuedAt: '2026-01-02T03:00:00.000Z',
+      state: 'active',
+    },
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 11, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
@@ -37,6 +61,74 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
     lastSeenAt: '2026-01-02T03:04:30.000Z',
     credentialId: 'cred-1',
     ...overrides,
+  };
+}
+
+function inventory(): AggregatedRepoInventoryResponse {
+  const repo = {
+    repoInstanceId: 'node-1:/repo/relay-ide',
+    nodeId: 'node-1',
+    localPath: '/repo/relay-ide',
+    name: 'relay-ide',
+    isGitRepo: true,
+    defaultBranch: 'nightly',
+    currentBranch: 'frontend/921-nodes-section',
+    repoIdentity: 'github.com/donovan-yohan/relay-ide',
+    selectedRemote: {
+      name: 'origin',
+      url: 'https://github.com/donovan-yohan/relay-ide.git',
+      identity: 'github.com/donovan-yohan/relay-ide',
+      provider: 'github' as const,
+      host: 'github.com',
+      path: 'donovan-yohan/relay-ide',
+      owner: 'donovan-yohan',
+      repoName: 'relay-ide',
+    },
+    remotes: [],
+    repoIdentityWarnings: [],
+    dirty: null,
+    divergence: null,
+    worktrees: [
+      {
+        worktreeInstanceId: 'node-1:/repo/relay-ide/.worktrees/921',
+        localPath: '/repo/relay-ide/.worktrees/921',
+        branchName: 'frontend/921-nodes-section',
+        displayName: 'locality primary bench',
+      },
+      {
+        worktreeInstanceId: 'node-1:C:\\repo\\relay-ide\\.worktrees\\win-921',
+        localPath: 'C:\\repo\\relay-ide\\.worktrees\\win-921',
+        branchName: 'fix/windows-locality',
+      },
+    ],
+    reportedAt: '2026-01-02T03:04:00.000Z',
+  };
+  return {
+    generatedAt: '2026-01-02T03:04:00.000Z',
+    groups: [
+      {
+        groupId: 'github.com/donovan-yohan/relay-ide',
+        repoIdentity: 'github.com/donovan-yohan/relay-ide',
+        displayName: 'relay-ide',
+        selectedRemote: repo.selectedRemote,
+        remotes: [],
+        warnings: [],
+        instances: [repo],
+        identityDebug: {
+          groupedBy: 'repoIdentity',
+          repoIdentity: 'github.com/donovan-yohan/relay-ide',
+          instanceCount: 1,
+          nodeIds: ['node-1'],
+        },
+      },
+    ],
+    reports: [
+      {
+        nodeId: 'node-1',
+        generatedAt: '2026-01-02T03:04:00.000Z',
+        repos: [repo],
+      },
+    ],
   };
 }
 
@@ -107,5 +199,61 @@ describe('HubNodeDashboard', () => {
     expect(html).toContain('ssh');
     expect(html).toContain('tailscale');
     expect(html).toContain('service');
+  });
+
+  it('renders repo/worktree locality from inventory without inventing missing data', () => {
+    const localityByNode = deriveNodeRepoLocality(inventory());
+    const locality = localityByNode.get('node-1');
+
+    expect(locality).toBeDefined();
+    expect(locality ? repoLocalitySummary(locality) : '').toBe(
+      '1 repo · 2 worktrees'
+    );
+
+    expect(locality?.repos[0]?.worktrees).toEqual([
+      {
+        worktreeInstanceId: 'node-1:/repo/relay-ide/.worktrees/921',
+        localPath: '/repo/relay-ide/.worktrees/921',
+        branchName: 'frontend/921-nodes-section',
+        displayName: 'locality primary bench',
+      },
+      {
+        worktreeInstanceId: 'node-1:C:\\repo\\relay-ide\\.worktrees\\win-921',
+        localPath: 'C:\\repo\\relay-ide\\.worktrees\\win-921',
+        branchName: 'fix/windows-locality',
+        displayName: 'win-921',
+      },
+    ]);
+
+    const html = renderToStaticMarkup(
+      React.createElement(HubNodeDashboard, {
+        now,
+        nodes: [node()],
+        localityByNode,
+      })
+    );
+
+    expect(html).toContain('repo locality: 1 repo · 2 worktrees');
+    expect(html).toContain('relay-ide');
+    expect(html).toContain('/repo/relay-ide');
+    expect(html).toContain('worktrees');
+    expect(html).toContain('locality primary bench');
+    expect(html).toContain('/repo/relay-ide/.worktrees/921');
+    expect(html).toContain('frontend/921-nodes-section');
+    expect(html).toContain('win-921');
+    expect(html).toContain('C:\\repo\\relay-ide\\.worktrees\\win-921');
+    expect(html).toContain('fix/windows-locality');
+  });
+
+  it('renders an explicit empty locality state when a node has no report', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(HubNodeDashboard, {
+        now,
+        nodes: [node({ nodeId: 'missing-locality' })],
+        localityByNode: deriveNodeRepoLocality(inventory()),
+      })
+    );
+
+    expect(html).toContain('no repo locality reported yet');
   });
 });

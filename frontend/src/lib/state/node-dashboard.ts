@@ -5,6 +5,11 @@ import {
   type NodeCapabilityStatus,
 } from '../../../../shared/relay-node-protocol.js';
 import type { NodeManifestDegradedReason } from '../../../../shared/node-manifest.js';
+import type {
+  AggregatedRepoInventoryResponse,
+  RepoInventoryRepoInstance,
+  RepoInventoryWorktreeInstance,
+} from '../../../../shared/repo-inventory.js';
 import {
   deriveNodeSecurityVisibility,
   type NodeSecurityVisibility,
@@ -43,6 +48,31 @@ export interface HubNodeDashboardRow {
   fileRpcAvailable: boolean | null;
   /** Structured degraded reasons from the manifest. Empty on healthy nodes. */
   degradedReasons: NodeManifestDegradedReason[];
+}
+
+export interface NodeRepoLocalityRepo {
+  repoInstanceId: string;
+  name: string;
+  localPath: string;
+  currentBranch: string | null;
+  defaultBranch: string | null;
+  worktrees: NodeRepoLocalityWorktree[];
+  reportedAt: string;
+}
+
+export interface NodeRepoLocalityWorktree {
+  worktreeInstanceId: string;
+  localPath: string;
+  branchName: string | null;
+  displayName: string;
+}
+
+export interface NodeRepoLocality {
+  nodeId: string;
+  generatedAt: string;
+  repoCount: number;
+  worktreeCount: number;
+  repos: NodeRepoLocalityRepo[];
 }
 
 interface DeriveOptions {
@@ -85,6 +115,85 @@ function serviceManagerStatus(kind: string): NodeCapabilityStatus {
   if (kind === 'unsupported') return 'unavailable';
   if (kind === 'manual' || kind === 'wsl-manual') return 'degraded';
   return kind ? 'available' : 'unknown';
+}
+
+function fallbackWorktreeDisplayName(localPath: string): string {
+  const normalizedPath = localPath.replace(/[\\/]+$/, '');
+  return normalizedPath.split(/[\\/]/).pop() || localPath;
+}
+
+function localityWorktree(
+  worktree: RepoInventoryWorktreeInstance
+): NodeRepoLocalityWorktree {
+  return {
+    worktreeInstanceId: worktree.worktreeInstanceId,
+    localPath: worktree.localPath,
+    branchName: worktree.branchName,
+    displayName: worktree.displayName ?? fallbackWorktreeDisplayName(worktree.localPath),
+  };
+}
+
+function localityRepo(repo: RepoInventoryRepoInstance): NodeRepoLocalityRepo {
+  return {
+    repoInstanceId: repo.repoInstanceId,
+    name: repo.selectedRemote?.repoName ?? repo.name,
+    localPath: repo.localPath,
+    currentBranch: repo.currentBranch,
+    defaultBranch: repo.defaultBranch,
+    worktrees: repo.worktrees.map(localityWorktree),
+    reportedAt: repo.reportedAt,
+  };
+}
+
+export function deriveNodeRepoLocality(
+  inventory: AggregatedRepoInventoryResponse | undefined
+): Map<string, NodeRepoLocality> {
+  const localityByNode = new Map<string, NodeRepoLocality>();
+  for (const report of inventory?.reports ?? []) {
+    const repos = report.repos.map(localityRepo);
+    localityByNode.set(report.nodeId, {
+      nodeId: report.nodeId,
+      generatedAt: report.generatedAt,
+      repoCount: repos.length,
+      worktreeCount: repos.reduce(
+        (sum, repo) => sum + repo.worktrees.length,
+        0
+      ),
+      repos,
+    });
+  }
+  return localityByNode;
+}
+
+export function repoLocalitySummary(locality: NodeRepoLocality): string {
+  if (locality.repoCount === 0) return 'no repo locality reported yet';
+  const repoLabel =
+    locality.repoCount === 1 ? '1 repo' : `${locality.repoCount} repos`;
+  const worktreeLabel =
+    locality.worktreeCount === 1
+      ? '1 worktree'
+      : `${locality.worktreeCount} worktrees`;
+  return `${repoLabel} · ${worktreeLabel}`;
+}
+
+export function repoLocalityMapSummary(
+  localityByNode: Map<string, NodeRepoLocality>
+): string {
+  const totals = Array.from(localityByNode.values()).reduce(
+    (acc, locality) => ({
+      repoCount: acc.repoCount + locality.repoCount,
+      worktreeCount: acc.worktreeCount + locality.worktreeCount,
+    }),
+    { repoCount: 0, worktreeCount: 0 }
+  );
+  if (totals.repoCount === 0) return 'no repo locality reported yet';
+  const repoLabel =
+    totals.repoCount === 1 ? '1 repo' : `${totals.repoCount} repos`;
+  const worktreeLabel =
+    totals.worktreeCount === 1
+      ? '1 worktree'
+      : `${totals.worktreeCount} worktrees`;
+  return `${repoLabel} · ${worktreeLabel}`;
 }
 
 function blockerLabel(
