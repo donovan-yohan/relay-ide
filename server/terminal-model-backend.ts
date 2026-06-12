@@ -98,9 +98,9 @@ export function encodeTerminalInput(input: TerminalInput): EncodedTerminalInput 
   };
 }
 
-function terminalInputSequence(key: TerminalInputKey): string {
+function terminalInputSequence(key: string): string {
   if (!isTerminalInputKey(key)) {
-    throw new Error(`Unsupported terminal input key: ${String(key)}`);
+    throw new Error(`Unsupported terminal input key: ${key}`);
   }
   return KEY_SEQUENCES[key];
 }
