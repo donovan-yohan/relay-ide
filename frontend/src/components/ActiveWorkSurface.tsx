@@ -19,7 +19,9 @@ import { useUiStore } from '../lib/stores/ui.js';
 import {
   activeWorkAttentionPriority,
   activeWorkMobileControlState,
+  activeWorkPrimarySession,
   activeWorkSessionActivationKey,
+  activeWorkSessionActivationRepoPath,
   activeWorkStateLabel,
 } from '../lib/active-work-control.js';
 import SessionMailboxPanel, {
@@ -298,15 +300,7 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
   const [inputStatus, setInputStatus] = useState<string | null>(null);
   const [isSubmittingInput, setIsSubmittingInput] = useState(false);
   const isSubmittingInputRef = useRef(false);
-  const primarySession =
-    group.sessions.find(
-      (session) =>
-        session.live &&
-        (session.agentState === 'permission-prompt' ||
-          session.agentState === 'waiting-for-input')
-    ) ??
-    group.sessions.find((session) => session.live) ??
-    group.sessions[0];
+  const primarySession = activeWorkPrimarySession(group);
   const controlState = activeWorkMobileControlState(group, primarySession);
   const actors = actorLabels(group);
   const refs = taskRefs(group);
@@ -315,9 +309,7 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
   const handleAttach = useCallback(() => {
     if (!primarySession || controlState.attachDisabledReason) return;
     const activationKey = activeWorkSessionActivationKey(primarySession);
-    const nodeId = primarySession.nodeId ?? DEFAULT_LOCAL_NODE_ID;
-    const isLocal = nodeId === DEFAULT_LOCAL_NODE_ID;
-    setActiveRepoPath(isLocal ? (primarySession.repoPath ?? null) : null);
+    setActiveRepoPath(activeWorkSessionActivationRepoPath(primarySession));
     setActiveSessionId(activationKey);
     void refreshAll().then(() => setActiveSessionId(activationKey));
   }, [

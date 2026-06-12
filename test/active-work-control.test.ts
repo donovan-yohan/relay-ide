@@ -7,7 +7,10 @@ import type {
 import {
   activeWorkAttentionPriority,
   activeWorkMobileControlState,
+  activeWorkNextAttentionTarget,
+  activeWorkPrimarySession,
   activeWorkSessionActivationKey,
+  activeWorkSessionActivationRepoPath,
   activeWorkStateLabel,
 } from '../frontend/src/lib/active-work-control.js';
 
@@ -176,5 +179,150 @@ describe('active work mobile control helpers', () => {
     expect(
       activeWorkSessionActivationKey(session({ id: 'local-session-2' }))
     ).toBe('local:local-session-2');
+  });
+
+  it('selects the same live primary session the cockpit would attach to', () => {
+    const prompt = session({
+      id: 'needs-input',
+      agentState: 'waiting-for-input',
+      repoPath: '/repo/relay-ide',
+      lastActivity: '2026-05-17T00:02:00.000Z',
+    });
+    const liveProcessing = session({
+      id: 'processing-session',
+      agentState: 'processing',
+      lastActivity: '2026-05-17T00:03:00.000Z',
+    });
+    const work = group({ sessions: [liveProcessing, prompt] });
+
+    expect(activeWorkPrimarySession(work)).toBe(prompt);
+    expect(activeWorkNextAttentionTarget([work])).toMatchObject({
+      group: work,
+      session: prompt,
+      activationKey: 'local:needs-input',
+      activationRepoPath: '/repo/relay-ide',
+      priority: 0,
+    });
+  });
+
+  it('skips stale/offline/last-known groups and chooses the highest-priority actionable target', () => {
+    const offline = group({
+      id: 'offline-work',
+      node: { nodeId: 'remote-a', status: 'offline', kind: 'remote' },
+      sessions: [session({ id: 'offline-session', nodeId: 'remote-a' })],
+    });
+    const stale = group({
+      id: 'stale-work',
+      staleReadModel: true,
+      sessions: [session({ id: 'stale-session' })],
+    });
+    const lastKnown = group({
+      id: 'last-known-work',
+      sessions: [session({ id: 'old-session', live: false })],
+    });
+    const running = group({
+      id: 'running-work',
+      sessions: [
+        session({
+          id: 'running-session',
+          agentState: 'processing',
+          lastActivity: '2026-05-17T00:01:00.000Z',
+        }),
+      ],
+    });
+    const errored = group({
+      id: 'error-work',
+      sessions: [
+        session({
+          id: 'error-session',
+          agentState: 'error',
+          lastActivity: '2026-05-17T00:00:00.000Z',
+        }),
+      ],
+    });
+
+    const target = activeWorkNextAttentionTarget([
+      offline,
+      stale,
+      running,
+      lastKnown,
+      errored,
+    ]);
+
+    expect(target?.group.id).toBe('error-work');
+    expect(target?.activationKey).toBe('local:error-session');
+    expect(target?.priority).toBe(3);
+  });
+
+  it('uses deterministic recency and id tie-breakers inside a priority bucket', () => {
+    const older = group({
+      id: 'b-work',
+      sessions: [
+        session({
+          id: 'older-session',
+          agentState: 'permission-prompt',
+          lastActivity: '2026-05-17T00:01:00.000Z',
+        }),
+      ],
+    });
+    const newer = group({
+      id: 'z-work',
+      sessions: [
+        session({
+          id: 'newer-session',
+          agentState: 'permission-prompt',
+          lastActivity: '2026-05-17T00:02:00.000Z',
+        }),
+      ],
+    });
+    const sameTimeA = group({
+      id: 'a-work',
+      sessions: [
+        session({
+          id: 'same-time-a',
+          agentState: 'permission-prompt',
+          lastActivity: '2026-05-17T00:02:00.000Z',
+        }),
+      ],
+    });
+
+    expect(activeWorkNextAttentionTarget([older, newer])?.session.id).toBe(
+      'newer-session'
+    );
+    expect(activeWorkNextAttentionTarget([newer, sameTimeA])?.group.id).toBe(
+      'a-work'
+    );
+  });
+
+  it('reports no actionable target and avoids stale repo activation for remote/free sessions', () => {
+    const offlineOnly = group({
+      id: 'offline-only',
+      node: { nodeId: 'remote-a', status: 'offline', kind: 'remote' },
+      sessions: [session({ id: 'remote-offline', nodeId: 'remote-a' })],
+    });
+    expect(activeWorkNextAttentionTarget([offlineOnly])).toBeNull();
+
+    const remote = session({
+      id: 'remote-live',
+      nodeId: 'remote-a',
+      repoPath: '/remote/repo/that-must-not-be-activated-locally',
+      globalSessionId: 'remote-a:remote-live',
+    });
+    const freeLocal = session({ id: 'free-local', repoPath: undefined });
+
+    expect(activeWorkSessionActivationRepoPath(remote)).toBeNull();
+    expect(activeWorkSessionActivationRepoPath(freeLocal)).toBeNull();
+    expect(
+      activeWorkNextAttentionTarget([
+        group({
+          id: 'remote-work',
+          node: { nodeId: 'remote-a', status: 'online', kind: 'remote' },
+          sessions: [remote],
+        }),
+      ])
+    ).toMatchObject({
+      activationKey: 'remote-a:remote-live',
+      activationRepoPath: null,
+    });
   });
 });
