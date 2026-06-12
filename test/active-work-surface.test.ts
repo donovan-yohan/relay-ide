@@ -44,7 +44,11 @@ function makeGroup(
   };
 }
 
-function makeRepo(path: string, kind: 'repo' | 'directory'): Repo {
+function makeRepo(
+  path: string,
+  kind: 'repo' | 'directory',
+  overrides: Partial<Repo> = {}
+): Repo {
   return {
     path,
     name: path.split('/').pop() ?? path,
@@ -52,6 +56,7 @@ function makeRepo(path: string, kind: 'repo' | 'directory'): Repo {
     kind,
     defaultBranch: kind === 'repo' ? 'main' : null,
     currentBranch: kind === 'repo' ? 'main' : null,
+    ...overrides,
   };
 }
 
@@ -112,13 +117,76 @@ describe('active-work-surface anchor rendering', () => {
     );
   });
 
+  it('remote session does not bind to a local repo with the same path', () => {
+    const session = makeSession({
+      nodeId: 'mac-node',
+      cwd: '/Users/user/relay-ide',
+      repoPath: '/Users/user/relay-ide',
+      repoName: 'relay-ide',
+      branchName: 'feature/active-work',
+    });
+    const repos = [makeRepo('/Users/user/relay-ide', 'repo')];
+    const group = makeGroup([session], {
+      node: {
+        nodeId: 'mac-node',
+        status: 'online',
+        displayName: 'mac node',
+        kind: 'remote',
+      },
+    });
+
+    expect(repoKind(session, repos)).toBeNull();
+    expect(repoBindingLabel(session, repos)).toBeNull();
+    expect(activeWorkAnchorLabel(group, session, repos)).toBe(
+      'remote mac node · /Users/user/relay-ide · no repo binding'
+    );
+    expect(activeWorkAnchorLabel(group, session, repos)).toMatch(
+      /no repo binding$/
+    );
+  });
+
+  it('remote session binds to a repo on the matching remote node', () => {
+    const session = makeSession({
+      nodeId: 'mac-node',
+      cwd: '/Users/user/relay-ide',
+      repoPath: '/Users/user/relay-ide',
+      repoName: undefined,
+      branchName: 'feature/active-work',
+    });
+    const repos = [
+      makeRepo('/Users/user/relay-ide', 'repo', { name: 'local-relay' }),
+      makeRepo('/Users/user/relay-ide', 'repo', {
+        nodeId: 'mac-node',
+        name: 'remote-relay',
+      }),
+    ];
+    const group = makeGroup([session], {
+      node: {
+        nodeId: 'mac-node',
+        status: 'online',
+        displayName: 'mac node',
+        kind: 'remote',
+      },
+    });
+
+    expect(repoKind(session, repos)).toBe('repo');
+    expect(repoBindingLabel(session, repos)).toBe(
+      'remote-relay · feature/active-work'
+    );
+    expect(activeWorkAnchorLabel(group, session, repos)).toBe(
+      'repo remote-relay · feature/active-work'
+    );
+  });
+
   it('directory-kind shows remote node name in anchor', () => {
     const session = makeSession({
       nodeId: 'remote-server',
       cwd: '/srv/workspace',
       repoPath: '/srv/workspace',
     });
-    const repos = [makeRepo('/srv/workspace', 'directory')];
+    const repos = [
+      makeRepo('/srv/workspace', 'directory', { nodeId: 'remote-server' }),
+    ];
     const group = makeGroup([session], {
       node: {
         nodeId: 'remote-server',
