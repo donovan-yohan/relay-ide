@@ -24,6 +24,7 @@ relay-ide v1 sessions detach --id <session-id-or-global-id> --json
 relay-ide v1 sessions kill --id <session-id-or-global-id> [--confirmation-token <token>] --json
 relay-ide v1 sessions rename --id <session-id-or-global-id> --display-name 'new name' --json
 relay-ide v1 sessions stream --id <session-id-or-global-id> --mode ndjson --json
+relay-ide v1 sessions screen --id <session-id-or-global-id> [--scrollback --max-lines 200] --json
 relay-ide v1 sessions input --id <session-id-or-global-id> --data 'echo ok\n' --wait-for ok --json
 relay-ide v1 sessions interventions --id <session-id> --json
 relay-ide v1 sessions hand-back --id <session-id> --latest-seen-intervention-event-id <event-id> --json
@@ -186,6 +187,7 @@ The first scoped actor credential slice supports only this read-only hub-backed 
 | `relay-ide v1 nodes list --json`                  | `nodes.list`        | `session:read`      | Reads summarized hub/node inventory.                                                                |
 | `relay-ide v1 sessions list --json`               | `sessions.list`     | `session:read`      | Reads session descriptors and control summaries.                                                    |
 | `relay-ide v1 sessions get --id <id> --json`      | `sessions.get`      | `session:read`      | Validates the credential against the requested session/global session id when scoped that narrowly. |
+| `relay-ide v1 sessions screen --id <id> --json`   | `sessions.screen`   | `session:read`      | Returns a bounded relay-pty/libghostty rendered screen snapshot; tmux-compat and remote-unavailable sessions fail closed with typed errors. |
 | `relay-ide v1 work-contexts get --id <id> --json` | `work-contexts.get` | `session:read`      | Validates work-context scope when the credential is scoped to a work context.                       |
 | `relay-ide v1 work-context-artifacts list --work-context-id <id> --json` | `work-context-artifacts.list` | `session:read` | Reads bounded artifact metadata; requires `context:read` capability hint and enforces exact WorkContext scope when present. |
 | `relay-ide v1 work-context-artifacts show --id <id> --json` | `work-context-artifacts.show` | `session:read` | Reads one artifact envelope after metadata-derived WorkContext scope authorization; validates stored payload integrity; requires `context:read`. |

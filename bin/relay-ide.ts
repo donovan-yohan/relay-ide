@@ -1481,6 +1481,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'nodes.list',
   'sessions.list',
   'sessions.get',
+  'sessions.screen',
   'work-contexts.get',
   'work-contexts.resume',
   'work-context-artifacts.list',
@@ -2592,6 +2593,27 @@ function gatewayInputData(sessionArgs: string[]): string {
   return fs.readFileSync(0, 'utf8');
 }
 
+async function runGatewaySessionScreen(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.screen', sessionArgs);
+  const maxLines = gatewayOptionalPositiveInt(
+    'sessions.screen',
+    sessionArgs,
+    '--max-lines',
+    1000
+  );
+  const includeScrollback = sessionArgs.includes('--scrollback');
+  const query = new URLSearchParams();
+  if (includeScrollback) query.set('scrollback', '1');
+  if (maxLines !== undefined) query.set('maxLines', String(maxLines));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const data = await gatewayHttpJson({
+    commandName: 'sessions.screen',
+    pathName: `/sessions/${encodeURIComponent(id)}/screen${suffix}`,
+    capabilities: ['session:read'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.screen', data), 0);
+}
+
 async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
   const id = requireGatewaySessionId('sessions.input', sessionArgs);
   const input = gatewayInputData(sessionArgs);
@@ -2820,6 +2842,8 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
     return runGatewaySessionRename(sessionArgs);
   if (sessionSubcommand === 'stream')
     return runGatewaySessionStream(sessionArgs);
+  if (sessionSubcommand === 'screen')
+    return runGatewaySessionScreen(sessionArgs);
   if (sessionSubcommand === 'input') return runGatewaySessionInput(sessionArgs);
   if (sessionSubcommand === 'interventions') {
     return runGatewaySessionInterventions(sessionArgs);
