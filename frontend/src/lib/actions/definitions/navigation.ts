@@ -39,9 +39,25 @@ export const navOpenFile: ActionMeta = {
   when: (ctx) => !!ctx.sessionId,
 };
 
+export const navNextAttentionWork: ActionMeta = {
+  id: 'navigation.next-attention-work',
+  label: 'jump to next attention-needed work',
+  description:
+    'activate the highest-priority actionable WorkContext session from Active Work',
+  aliases: [
+    'next active work',
+    'active work attention',
+    'workcontext attention',
+    'jump to workcontext',
+  ],
+  category: 'navigation',
+  icon: '◆',
+};
+
 export const navigationActions: ActionMeta[] = [
   navPreviousTab,
   navNextTab,
   navSwitchToTab,
   navOpenFile,
+  navNextAttentionWork,
 ];

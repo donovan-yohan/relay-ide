@@ -89,12 +89,14 @@ import {
   navNextTab,
   navSwitchToTab,
   navOpenFile,
+  navNextAttentionWork,
 } from '../lib/actions/definitions/navigation.js';
 import { cliGatewayCommandActions } from '../lib/actions/definitions/cli-gateway.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
-import { ConflictError, setDefaultYolo } from '../lib/api.js';
+import { useToastStore } from '../lib/stores/toasts.js';
+import { ConflictError, fetchActiveWork, setDefaultYolo } from '../lib/api.js';
 import { executeSessionKillAction } from '../lib/actions/session-lifecycle.js';
 import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
@@ -109,6 +111,7 @@ import { getActiveTerminalHandle } from '../lib/terminal-refs.js';
 import type { CustomizeSessionDialogHandle } from '../components/dialogs/CustomizeSessionDialog.js';
 import type { DeleteWorktreeDialogHandle } from '../components/dialogs/DeleteWorktreeDialog.js';
 import type { WorkspaceSettingsDialogHandle } from '../components/dialogs/WorkspaceSettingsDialog.js';
+import { activeWorkNextAttentionTarget } from '../lib/active-work-control.js';
 
 const logger = createLogger('ActionRegistry');
 
@@ -433,6 +436,40 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       },
 
       // ── Navigation ──────────────────────────────────────────────────────────
+      {
+        ...navNextAttentionWork,
+        handler: async () => {
+          try {
+            const groups = await fetchActiveWork();
+            const target = activeWorkNextAttentionTarget(groups);
+            if (!target) {
+              useToastStore
+                .getState()
+                .showToast('no actionable active work needs attention', 'info');
+              return;
+            }
+
+            const sessions = useSessionsStore.getState();
+            const ui = useUiStore.getState();
+            ui.setAnalyticsView(null);
+            ui.setActiveRepoPath(target.activationRepoPath);
+            sessions.setActiveSessionId(target.activationKey);
+            sessions.handleUserViewed(target.activationKey);
+            ui.closeSidebar();
+            window.setTimeout(() => getActiveTerminalHandle()?.focusTerm(), 0);
+            void sessions.refreshAll().then(() => {
+              useUiStore.getState().setActiveRepoPath(target.activationRepoPath);
+              useSessionsStore.getState().setActiveSessionId(target.activationKey);
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.error('Failed to jump to next active work target', error);
+            useToastStore
+              .getState()
+              .showToast(`could not load active work: ${message}`);
+          }
+        },
+      },
       {
         ...navPreviousTab,
         handler: () => {
