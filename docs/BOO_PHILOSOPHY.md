@@ -20,7 +20,7 @@ The durable rules are:
 | --- | --- | --- |
 | `new` / detached session | **Partial.** `sessions.create` creates local or routed sessions and returns a descriptor; `sessions.detach` releases the CLI handle without killing the process. There is no explicit `--detached` terminal-multiplexer-style create flag because Relay sessions are already hub-owned handles once created. | `docs/CLI_GATEWAY.md`, `shared/cli-gateway-contract.ts` |
 | `ls --json` | **Implemented.** `sessions.list` / `sessions.get` expose stable JSON descriptors. | `docs/CLI_GATEWAY.md` |
-| `send --text` / `send --key` | **Partial.** Raw `sessions.input` can write bytes; typed `supervisor.sendText` and `supervisor.submit` are auditable. Enter is covered by `supervisor.submit`; missing keys include Escape, Tab, arrows, Ctrl-C, and function keys without raw byte encoding. | `docs/CLI_GATEWAY.md` |
+| `send --text` / `send --key` | **Partial.** Raw `sessions.input` can write bytes; typed `supervisor.sendText`, `supervisor.sendKey`, and `supervisor.submit` are auditable. Enter is covered by `supervisor.submit`; named keys cover Escape, Tab, arrows, Ctrl-C/Ctrl-D, Home/End, and Page Up/Down. Function keys and arbitrary keymaps remain out of scope. | `docs/CLI_GATEWAY.md` |
 | `wait --text` / `wait --idle` | **Partial.** `sessions.input --wait-for` does bounded raw output substring waiting; `sessions.stream --idle-timeout-ms` detaches a stream after quiet. Missing: standalone wait command and rendered-screen/cursor/title/mode predicates. | `docs/CLI_GATEWAY.md` |
 | `peek --json` / rendered screen | **Missing as stable API.** `relay-pty` maintains a libghostty-backed model internally for relay-pty sessions, and internal helpers can read visible text, but no stable gateway command exposes rendered screen JSON/scrollback. | `docs/TERMINAL_BACKENDS.md`, `server/terminal-model-backend.ts` |
 | `attach` / optional UI | **Partial.** Browser attach and CLI descriptor attach exist; `sessions.stream` attaches to the PTY stream. Missing: power-user CLI/TUI cockpit comparable to `boo ui`; current cockpit is web-first. | `docs/CLI_GATEWAY.md`, `docs/WORKBENCH_BOUNDARY.md` |
@@ -33,7 +33,7 @@ The durable rules are:
 - Versioned JSON gateway discovery and schemas: `relay-ide v1 --list --json` and `relay-ide v1 schema --json`.
 - Stable session descriptor/lifecycle commands: `sessions.list`, `sessions.get`, `sessions.create`, `sessions.attach`, `sessions.detach`, `sessions.kill`, `sessions.rename`.
 - Raw PTY stream/input primitives: `sessions.stream --mode ndjson`, `sessions.input --data|--data-base64|--stdin` with `--wait-for`, `--timeout-ms`, and `--max-bytes`.
-- Typed supervisor actions: `supervisor.sessions`, `supervisor.snapshot`, `supervisor.sendText`, and `supervisor.submit` with capability/error metadata.
+- Typed supervisor actions: `supervisor.sessions`, `supervisor.snapshot`, `supervisor.sendText`, `supervisor.sendKey`, and `supervisor.submit` with capability/error metadata.
 - `relay-pty` as the default non-tmux PTY backend, with `tmux-compat` retained for legacy/import/resume cases.
 - Internal libghostty-vt terminal model for relay-pty sessions, used by backend helpers and attention detection.
 - Active Work / workbench/control-plane nouns: `WorkContext`, `Actor`, `Session`, `Node`, `Artifact`, `AuditEvent`, `CapabilityGrant`.
@@ -51,7 +51,7 @@ The durable rules are:
 
 - Stable rendered-screen snapshot API with rows/cols/cursor/title/modes/viewport/scrollback JSON.
 - Stable rendered-screen wait API (`wait --screen-text`, `wait --idle`, `wait --title`, etc.).
-- Stable named-key API for arrows, Escape, Tab, Ctrl-C, and function keys under typed audit/capability semantics.
+- Stable function-key/keymap API beyond the closed `supervisor.sendKey` MVP enum.
 - Durable relay-pty live process reattach across server restart. Browser disconnect is fine; server restart durability is still where `tmux-compat` has the stronger story.
 - A terminal-multiplexer-style power-user CLI/TUI session manager. Relay's richer cockpit is currently web/dashboard oriented.
 - Workbench canvas as the primary integrated cockpit surface.
@@ -62,7 +62,7 @@ Use these rules when updating docs, issues, or UI copy:
 
 - Say **terminal backend** unless the behavior is specifically `tmux-compat`.
 - Say **raw PTY stream/input** for `sessions.stream` and `sessions.input`.
-- Say **typed supervisor action** for `supervisor.sendText` / `supervisor.submit` command IDs, or `relay-ide v1 supervisor send-text` / `relay-ide v1 supervisor submit` CLI argv.
+- Say **typed supervisor action** for `supervisor.sendText` / `supervisor.sendKey` / `supervisor.submit` command IDs, or `relay-ide v1 supervisor send-text` / `relay-ide v1 supervisor send-key` / `relay-ide v1 supervisor submit` CLI argv.
 - Do not call raw stream/input a rendered-screen API.
 - Do not imply `relay-pty` sessions survive server restart as the same live process.
 - Do not tell adapters to use internal REST routes, browser WebSockets, node-link, tmux, or private provider stores as contracts.

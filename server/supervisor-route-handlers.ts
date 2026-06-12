@@ -54,7 +54,7 @@ function supervisorActionErrorStatus(error: SupervisorActionError): number {
 function actionFromParam(
   actionParam: string | undefined
 ): SupervisorActionType | undefined {
-  return actionParam === 'sendText' || actionParam === 'submit'
+  return actionParam === 'sendText' || actionParam === 'sendKey' || actionParam === 'submit'
     ? actionParam
     : undefined;
 }
@@ -161,9 +161,8 @@ function supervisorActionCapabilitiesDecision(
   const header = req.header('x-relay-capabilities') ?? undefined;
   if (header === undefined || header.trim().length === 0) {
     const highRiskCapability =
-      action === 'submit'
-        ? 'tab:intervention:submit'
-        : 'tab:intervention:send-text';
+      capabilities.find((capability) => capability.startsWith('tab:intervention:')) ??
+      'session:attach';
     return missingCapabilityEvidenceDecision(highRiskCapability);
   }
   return capabilitiesDecisionFromRequest(req, capabilities);
@@ -195,7 +194,7 @@ export function handleSupervisorActionRequest(
   if (!action) {
     const error = supervisorActionError(
       'TARGET_SELECTOR_INVALID',
-      'supervisor action must be sendText or submit',
+      'supervisor action must be sendText, sendKey, or submit',
       { field: 'action' }
     );
     res.status(supervisorActionErrorStatus(error)).json({ error });
@@ -223,6 +222,7 @@ export function handleSupervisorActionRequest(
     action,
     targetIds: targets.targetIds,
     text: body['text'],
+    key: body['key'],
     ...(actor === undefined ? {} : { actor }),
   });
   res.json(result);

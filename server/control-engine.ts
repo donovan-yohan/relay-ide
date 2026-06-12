@@ -25,7 +25,7 @@ import {
 } from './intervention-log.js';
 
 export type ControlModeAction = 'join' | 'take-over' | 'hand-back';
-export type SupervisorInterventionAction = 'sendText' | 'submit';
+export type SupervisorInterventionAction = 'sendText' | 'sendKey' | 'submit';
 
 export interface ControlEngineOptions {
   inputDebounceMs?: number;
@@ -521,7 +521,9 @@ export function recordSupervisorAction(
     kind:
       input.action === 'sendText'
         ? 'supervisor-send-text'
-        : 'supervisor-submit',
+        : input.action === 'sendKey'
+          ? 'supervisor-send-key'
+          : 'supervisor-submit',
     payload: input.payload,
     modeBefore: before.controlMode,
     modeAfter,
