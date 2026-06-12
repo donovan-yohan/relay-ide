@@ -2,7 +2,7 @@
 
 Relay supports two PTY execution backends for local and routed node sessions:
 
-- `relay-pty` (default): the direct `RelayPtySession` runtime using Relay's PTY/libghostty-vt pipeline.
+- `relay-pty` (default): Relay's direct PTY/libghostty-vt-backed pipeline for new sessions. Production session creation currently runs through `pty-handler` with `node-pty` plus a terminal model; the standalone `RelayPtySession` class is not the production registry owner yet.
 - `tmux-compat`: the legacy compatibility path. Relay launches sessions through tmux and reattaches to tmux sessions across browser reconnects and server restarts.
 
 Existing tmux sessions and legacy saved state stay on `tmux-compat`, but new sessions use `relay-pty` unless an explicit session/repo/workspace/global setting selects `tmux-compat`.
@@ -42,7 +42,26 @@ Backend selection happens when a session is created or restored from saved sessi
 - Old session manifests that only have `useTmux` are normalized into a backend before launch/restore.
 - Missing or unknown new-session `terminalBackend` values fall back to `relay-pty`; legacy serialized sessions without `terminalBackend` still restore as `tmux-compat`.
 - Startup only requires tmux when the effective backend is `tmux-compat`, but any session resolved to `tmux-compat` still needs tmux available.
-- Relay-pty sessions do not import existing tmux process state. They start new `RelayPtySession` processes and expose `RELAY_IDE_SESSION_RUNTIME=relay-pty/libghostty-vt` to the child environment.
+- Relay-pty sessions do not import existing tmux process state. They start a new direct PTY session and expose `RELAY_IDE_SESSION_RUNTIME=relay-pty/libghostty-vt` to the child environment.
+
+## Automation and rendered-screen boundary
+
+`relay-pty` keeps Relay on the path toward Boo-style terminal automation: Relay owns the PTY process path, can maintain a libghostty-backed terminal model, and can expose backend-neutral control primitives without depending on tmux pane scraping. That does **not** mean every terminal-model capability is already public API.
+
+Public stable adapter contract today:
+
+- raw stream/input through `relay-ide v1 sessions stream` and `relay-ide v1 sessions input`;
+- typed supervisor actions through `relay-ide v1 supervisor send-text` and `relay-ide v1 supervisor submit`.
+
+Built internally, not adapter-facing: relay-pty visible-text/model helpers used by backend code.
+
+Not stable today:
+
+- rendered-screen snapshot JSON with rows, cols, cursor, title, modes, viewport, and scrollback;
+- rendered-screen wait predicates such as “screen contains text,” “title changed,” or “terminal is idle”;
+- direct adapter access to libghostty state, browser xterm.js internals, `tmux capture-pane`, or private `/hub/node-link` frames.
+
+Promote any new screen/read/wait primitive through `shared/cli-gateway-contract.ts` and `docs/CLI_GATEWAY.md` before external adapters rely on it. See `BOO_PHILOSOPHY.md` for the current audit and boundary rules.
 
 ## Operator rollout pattern
 

@@ -14,7 +14,7 @@ Relay should answer:
 
 The product promise is not "run every agent inside Relay." The promise is: start or observe work anywhere, attach from any device, hand control between assistant/terminal/pair sessions, and keep a bounded audit trail without forcing the operator to reconstruct state from terminals, chats, issue comments, PRs, and logs.
 
-Mobile is a first-class control surface: status, latest bounded output, artifacts, approvals, small input, attach, hand-back, pause/kill/retry where policy allows, and stale/offline state. It is not a full phone IDE.
+The target Relay operator surface is a cockpit, not a raw terminal clone: operator views should show active WorkContexts, nodes, actors/control mode, latest bounded status, artifacts, approvals, stale/offline state, and safe controls first. Current desktop chrome is still mid-migration and terminal attach remains available for deep interaction. Mobile is a first-class version of that control surface: status, latest bounded output, artifacts, approvals, small input, attach, hand-back, pause/kill/retry where policy allows, and stale/offline state. It is not a full phone IDE.
 
 ## Hard boundaries and non-goals
 

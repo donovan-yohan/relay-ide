@@ -77,9 +77,11 @@ relay-ide v1 webhooks ping --json
 
 This contract is for external brain-as-peer adapters (#430). It is intentionally separate from the internal `/hub/node-link` WebSocket protocol. Adapter packages must generate native tool/function definitions from `relay-ide v1 schema --json` or the committed source manifest in `shared/cli-gateway-contract.ts`; do not hand-code Hermes/Claude/Codex-specific schemas. `inbox list --target-session-id` expects the scoped session key form (`local:<session-id>` for local sessions or `<nodeId>:<session-id>` for routed sessions); passing a raw session id (without the node prefix) returns an empty list.
 
+Boo/adapter rule: `relay-ide v1 ... --json` is Relay's scriptable session substrate. External agents should compose sessions, files, WorkContexts, artifacts, events, inbox, and supervisor actions through this contract. They must not speak private `/hub/node-link`, scrape browser WebSockets, read provider databases, shell out to tmux/rmux directly, or infer durable state from raw transcripts when a Relay-owned command exists or needs to be added.
+
 ## Envelope
 
-Every gateway command returns one JSON envelope on stdout. Human-readable CLI behavior outside `v1 ... --json` is unchanged.
+Most gateway commands return one JSON envelope on stdout. Streaming commands such as `sessions.stream` and `events.subscribe` emit newline-delimited gateway envelopes and document their own final/closed envelope behavior. Human-readable CLI behavior outside `v1 ... --json` is unchanged.
 
 Success:
 
@@ -290,7 +292,7 @@ Grant-backed requests are denied before minting when the handle is revoked, expi
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Browser cookie / PIN session | Existing browser login/PIN session cookie.                                                                         | Browser UI, operator endpoints such as mint/list/revoke above, and legacy CLI gateway compatibility paths that have not migrated yet. | The scoped actor-token lane, `/hub/node-link`, heartbeat, node pairing/reconnect.                                                                         | Browser cookie/token material is redacted; use safe session/operator metadata only.                                                                       |
 | Node credential              | Node credential material issued through node pairing/lifecycle.                                                    | Node heartbeat and `/hub/node-link`.                                                                                                  | Browser UI auth, CLI actor token, “act as human/agent” auth.                                                                                              | Use node id and credential id/hash; never log raw node token material.                                                                                    |
-| Scoped actor token           | Explicit `--actor-token` / `RELAY_IDE_ACTOR_TOKEN` issued by the scoped actor registry for `relay:cli-gateway:v1`. | The four read-only MVP commands listed above.                                                                                         | Browser routes, node link/heartbeat, writes, control actions, session input/streaming, event streaming, or any command outside the implemented allowlist. | Use actor id/type, issuer, credential id/jti, requested/granted/denied bits, safe scope summary/hash, and correlation id; never emit raw bearer material. |
+| Scoped actor token           | Explicit `--actor-token` / `RELAY_IDE_ACTOR_TOKEN` issued by the scoped actor registry for `relay:cli-gateway:v1`. | The read-only MVP allowlist listed above.                                                                                              | Browser routes, node link/heartbeat, writes, control actions, session input/streaming, event streaming, or any command outside the implemented allowlist. | Use actor id/type, issuer, credential id/jti, requested/granted/denied bits, safe scope summary/hash, and correlation id; never emit raw bearer material. |
 
 ### Failure examples
 
@@ -510,7 +512,9 @@ Caps are contract-level and conservative:
 - `--idle-timeout-ms N` detaches after N ms without output.
 - If stdout backpressure is observed, the CLI closes the stream instead of dropping frames; the final envelope reports `backpressureClosed: true`.
 
-`relay-ide v1 sessions input --id <id> --data <text> --json` sends one UTF-8 chunk to the PTY attach path and then detaches the CLI handle. `--data-base64` is available for arbitrary bytes encoded as base64, and `--stdin` reads the chunk from standard input. Exactly one of `--data`, `--data-base64`, or `--stdin` is required; mixed or missing input sources fail with `INVALID_ARGUMENT` before Relay opens the temporary attach socket. For smoke tests and adapter handshakes, `--wait-for <text>` keeps the temporary attach open until the observed output contains the marker, then returns a single `sessions.input` envelope with `matched`, `output`, `bytesSent`, and `bytesReceived`.
+`relay-ide v1 sessions input --id <id> --data <text> --json` sends one UTF-8 chunk to the PTY attach path and then detaches the CLI handle. `--data-base64` is available for arbitrary bytes encoded as base64, and `--stdin` reads the chunk from standard input. Exactly one of `--data`, `--data-base64`, or `--stdin` is required; mixed or missing input sources fail with `INVALID_ARGUMENT` before Relay opens the temporary attach socket. For smoke tests and adapter handshakes, `--wait-for <text>` keeps the temporary attach open until the observed raw output contains the marker, then returns a single `sessions.input` envelope with `matched`, `output`, `bytesSent`, and `bytesReceived`. Use `--timeout-ms <n>` and `--max-bytes <n>` to bound the wait.
+
+`sessions.input --wait-for` is a raw PTY-output substring wait. It is not a rendered-screen wait and must not be treated as proof of visible viewport/cursor/title state. A future Boo-style screen wait must be added as a separate stable gateway command/schema before adapters depend on terminal-model semantics.
 
 Example:
 
@@ -518,7 +522,7 @@ Example:
 relay-ide v1 sessions input --id remote-session-1 --data 'printf relay-ok\\n\n' --wait-for relay-ok --json
 ```
 
-`stream` and `input` detach only their CLI/WebSocket handle. They do not kill the underlying Relay session or tmux process. Missing sessions, expired envelopes, rejected policy, offline nodes, and closed attach sockets surface as typed gateway error envelopes; adapter authors must not fall back to private `/hub/node-link` messages.
+`stream` and `input` detach only their CLI/WebSocket handle. They do not kill the underlying Relay session or selected terminal-backend process. Missing sessions, expired envelopes, rejected policy, offline nodes, and closed attach sockets surface as typed gateway error envelopes; adapter authors must not fall back to private `/hub/node-link` messages.
 
 ## Provider-native state commands
 

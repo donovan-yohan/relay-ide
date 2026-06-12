@@ -5,14 +5,16 @@ If you want to familiarize yourself with the codebase, you are in the right plac
 
 ## Bird's Eye View
 
-Relay IDE is a federated workbench and control plane for agentic development across online devices, accessed through a hub-served web UI. A user opens the web UI in a browser, authenticates with a PIN, and gets a tab connected to a tmux-backed agent/terminal session running either on the hub machine or on a paired Relay node. The hub manages auth, UI, routing, node registry state, reverse node-link RPC, aggregated repo inventory, Active Work read model, capability/audit policy, and local hub-as-node sessions; each node owns its own PTY/session execution and local filesystem/git checkout state. External agent brains (Hermes, Claude, Codex, custom) integrate as hub-level session peers through the versioned `relay-ide v1 ... --json` CLI gateway, not by speaking the internal node-link protocol (ADR-017).
+Relay IDE is a federated workbench and control plane for agentic development across online devices, accessed through a hub-served web UI and stable CLI gateway. A user opens the web UI in a browser, authenticates with a PIN, and gets a tab connected to an agent/terminal session running either on the hub machine or on a paired Relay node. New sessions default to the direct `relay-pty` terminal backend; `tmux-compat` remains the explicit legacy/import/resume backend. The hub manages auth, UI, routing, node registry state, reverse node-link RPC, aggregated repo inventory, Active Work read model, capability/audit policy, and local hub-as-node sessions; each node owns its own PTY/session execution and local filesystem/git checkout state. External agent brains (Hermes, Claude, Codex, custom) integrate as hub-level session peers through the versioned `relay-ide v1 ... --json` CLI gateway, not by speaking the internal node-link protocol (ADR-017).
 
 Product boundary: Relay is a federated workbench/control plane for shared identity, routing, context handoff, bounded inspection/control, and audit trails across existing tools. It is not a replacement for Hermes Agent, GitHub, Kanban, tmux, or native Claude/Codex/OpenCode/Hermes CLIs, and it must not scrape raw Hermes profile databases, provider auth, env, or unbounded transcripts/logs. `docs/WORKBENCH_BOUNDARY.md` is the canonical source for #552 workbench nouns (`WorkContext`, `Actor`, `TaskRef`, `Artifact`, `AuditEvent`, `CapabilityGrant`, etc.) and mobile/pair/dogfood journey acceptance criteria.
+
+`docs/BOO_PHILOSOPHY.md` captures the current Boo-style session substrate audit. In this architecture, raw PTY streams, typed supervisor actions, and future rendered-screen/model APIs are separate contracts. The browser terminal renderer is not the adapter-facing source of truth; stable automation must go through `relay-ide v1 ... --json` or documented APIs.
 
 Input: browser keystrokes, session management commands, clipboard images.
 Output: terminal rendering via xterm.js, real-time session state updates.
 
-The system has two compilation targets: a TypeScript + ESM backend (Express + node-pty + tmux + WebSocket) compiled to `dist/`, and a React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
+The system has two compilation targets: a TypeScript + ESM backend (Express + node-pty + terminal backends + WebSocket) compiled to `dist/`, and a React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
 
 ## Six-Layer Vocabulary Contract (#444)
 
@@ -68,7 +70,7 @@ Keep these names precise where they describe implemented plumbing:
 | `workspaces.ts`                         | Legacy repo-folder compatibility router: dashboard, settings, CI status, branch switch, path autocomplete. These `/workspaces` routes are not the future six-layer Workspace entity source of truth.                                                               |
 | `workspace-groups.ts`                   | Current workspace grouping CRUD for user-organized repo groups; compatibility surface until six-layer Workspace/Project persistence lands.                                                                                                                         |
 | `sessions.ts`                           | Session registry: routes `create()` to pty-handler, lifecycle ops, restore/reattach, idle sweep                                                                                                                                                                    |
-| `pty-handler.ts`                        | PTY session creation via node-pty attached to tmux, scrollback buffering (256KB), tmux session naming, continue-retry                                                                                                                                              |
+| `pty-handler.ts`                        | PTY session creation via node-pty and selected terminal backend (`relay-pty` direct PTY or `tmux-compat`), scrollback buffering (256KB), compatibility tmux naming, continue-retry                                                                                 |
 | `git.ts`                                | Git/GitHub CLI integration: branches, activity feed, CI status, PR lookup, branch switch, branch lifecycle state computation (`ensureBranchLocal`, `isPrMerged`, `computeBranchLifecycleState`); exports `extractOwnerRepo` and `buildRepoMap` for webhook-manager |
 | `ws.ts`                                 | WebSocket upgrade handler: binary relay for PTY I/O + resize JSON, event broadcast channel                                                                                                                                                                         |
 | `utils.ts`                              | Shared server utilities                                                                                                                                                                                                                                            |
@@ -173,9 +175,9 @@ Unit/integration tests use `vitest` (migrated from `node:test` on 2026-04-03). T
 **PTY relay:**
 
 ```
-Browser (xterm.js) <--WebSocket /ws/:id--> ws.ts <--PTY I/O--> node-pty <--attaches/spawns--> tmux session <--runs--> agent CLI / shell
+Browser (xterm.js) <--WebSocket /ws/:id--> ws.ts <--session backend abstraction--> relay-pty direct PTY or tmux-compat
                                               |
-                                         scrollback buffer (in-memory, per session)
+                                         bounded replay/scrollback + relay-pty terminal model where available
 ```
 
 **Event channel:**
@@ -190,7 +192,7 @@ Browser (React)    <--WebSocket /ws/events-- ws.ts <-- watcher.ts (fs.watch on .
 ```
 Browser <--WS /nodes/:nodeId/ws/sessions/:sessionId--> Hub
 Hub     <--WS /hub/node-link (reverse outbound link)--> Node
-Node    <--node-pty/tmux--> shell / agent CLI
+Node    <--terminal backend: relay-pty or tmux-compat--> shell / agent CLI
 ```
 
 Implemented today:
@@ -335,7 +337,7 @@ Browser-facing channels require authentication via `token` cookie verified durin
 
 **Auth:** HTTP and WebSocket routes are grouped by auth lane in `server/auth.ts` (`AUTH_ROUTE_LANE_INVENTORY`). Browser UI routes use browser-session cookies from PIN login or first-run PIN setup; scoped actor credentials are delegated bounded capabilities for agents, CLIs, and automation systems; CLI gateway routes currently accept browser-session compatibility while naming `scoped-actor-credential` as the migration lane; node heartbeat and `/hub/node-link` use node credentials; pairing exchange uses pair tokens; setup/login/health routes are public-local-only. Dev-instance flags isolate config/tmux/process behavior and do not satisfy auth. Rate limiting is per-IP for browser PIN attempts.
 
-**Session lifecycle:** Runtime session records are in-memory during normal operation, while tmux owns the durable process tree. Multiple sessions per directory are allowed (multi-tab support). PTY exit triggers automatic cleanup. Scrollback buffers cap at 256KB with FIFO eviction. PTY spawns are wrapped with `trap '' PIPE; exec` to prevent SIGPIPE from killing sessions. During auto-updates, sessions are serialized to disk (`pending-sessions.json` + scrollback files) and restored on restart by reattaching to the preserved tmux name when possible.
+**Session lifecycle:** Runtime session records are in-memory during normal operation. `relay-pty` owns new direct PTY processes; `tmux-compat` owns legacy/import sessions that need tmux reattach behavior. Multiple sessions per directory are allowed (multi-tab support). PTY exit triggers automatic cleanup. Scrollback buffers cap at 256KB with FIFO eviction. PTY spawns are wrapped with `trap '' PIPE; exec` to prevent SIGPIPE from killing sessions. During auto-updates, sessions are serialized to disk (`pending-sessions.json` + scrollback files) and restored on restart; tmux-backed compatibility sessions may reattach to the preserved tmux name, while direct `relay-pty` sessions restore metadata/scrollback and restart according to the backend/session rules rather than live-migrating a process.
 
 ---
 

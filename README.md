@@ -1,6 +1,6 @@
 # relay-ide
 
-Relay IDE is an agentic development environment for running AI coding agents and terminals from a browser. A Relay hub hosts the web UI; local or remote nodes provide shells, agent CLIs, repo inventory, and tmux-backed session execution. Repos and worktrees are first-class development context, but they are optional bindings on sessions/tabs rather than the definition of a workspace.
+Relay IDE is an agentic development environment for running AI coding agents and terminals from a browser or CLI. A Relay hub hosts the web UI and stable JSON gateway; local or remote nodes provide shells, agent CLIs, repo inventory, and terminal-backend session execution. New sessions default to the direct `relay-pty` backend, while `tmux-compat` remains the legacy/import/resume fallback. Repos and worktrees are first-class development context, but they are optional bindings on sessions/tabs rather than the definition of a workspace.
 
 ## Current model
 
@@ -185,9 +185,10 @@ relay-ide node link --hub http://hub.example:3456
 
 ### Agent and terminal sessions
 
-- Launch tmux-backed agent or terminal sessions from the browser.
+- Launch agent or terminal sessions from the browser or stable JSON gateway.
 - Built-in framework definitions exist for Claude Code, Codex, OpenCode, and Hermes; config can override or add frameworks.
-- Session rows carry agent type, cwd/repo/worktree context when available, state, scrollback, and reconnect behavior.
+- Session rows carry agent type, node/cwd/repo/worktree context when available, state, scrollback, and reconnect behavior.
+- Scriptable gateway commands let adapters list/create/attach/detach/kill/rename sessions, stream raw PTY output, send bounded input, publish artifacts, and call typed supervisor actions without private browser or node-link APIs.
 - `worktree add` remains a repo helper and currently launches Claude for the legacy fast path.
 
 ### Repo and worktree context
@@ -205,7 +206,8 @@ relay-ide node link --hub http://hub.example:3456
 
 ### UI surfaces
 
-- Browser terminal rendering uses xterm.js; tmux owns process/session durability on the node.
+- Browser terminal rendering uses xterm.js. Process ownership is handled by the selected terminal backend: `relay-pty` for new direct PTY sessions, `tmux-compat` for legacy/import/resume sessions that need tmux behavior.
+- Active Work and workbench/control surfaces organize WorkContexts, nodes, actors, artifacts, approvals, and capability-gated actions; terminal attach is one surface, not the whole product.
 - The frontend is React 19 with Zustand and TanStack Query.
 - Vite HMR is available in source dev. Non-dev runtime serves `dist/frontend`: `npm start` rebuilds before starting, but package/global runs (`relay-ide`) or direct `node dist/server/index.js` use the already-built bundle, so run `npm run build` after frontend source edits when you are not using Vite HMR.
 

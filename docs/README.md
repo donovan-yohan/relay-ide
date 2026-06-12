@@ -10,6 +10,7 @@ This index separates current source-of-truth docs from historical plans and spik
 | User onboarding       | `../README.md`                    | Install, run, CLI, config, hub/node overview                                                 |
 | Product/design system | `../DESIGN.md`                    | Product positioning, visual language, spacing/color/button rules                             |
 | Architecture          | `ARCHITECTURE.md`                 | Module boundaries, API routes, data flow, ADR index                                          |
+| Boo/session substrate | `BOO_PHILOSOPHY.md`               | Scriptable session substrate audit, rendered-screen gaps, operator-cockpit roadmap           |
 | Workbench boundary    | `WORKBENCH_BOUNDARY.md`           | Relay-as-control-plane scope, canonical nouns, mobile/dogfood journeys                       |
 | Backend design notes  | `DESIGN.md`                       | Backend patterns, auth/session/PTY behavior                                                  |
 | Frontend              | `FRONTEND.md`                     | React components, frontend state, UI entrypoints                                             |
@@ -52,6 +53,10 @@ This index separates current source-of-truth docs from historical plans and spik
 
 Current implementation is incremental. Do not claim the full six-layer persistence/UI migration is complete unless the implementing PR and tests have landed.
 
+## Boo-style session substrate baseline
+
+`BOO_PHILOSOPHY.md` is the current audit and boundary doc for the `coder/boo`-inspired direction: Relay should be both a scriptable CLI/API session substrate and an operator cockpit over existing agent CLIs/terminals. The stable adapter contract is `relay-ide v1 ... --json`; private node-link/browser routes, direct tmux/rmux commands, provider profile stores, and raw transcript scraping are not adapter contracts. Keep the detailed raw-PTY vs supervisor vs rendered-screen taxonomy in that focused doc.
+
 ## Historical, proposed, and audit material
 
 These directories are useful evidence, but they are not current product docs by default:
@@ -70,5 +75,6 @@ These directories are useful evidence, but they are not current product docs by 
 
 - Evidence first: source files, tests, package scripts, and CLI help beat old plans.
 - Do not overclaim planned work as shipped: especially File RPC beyond the listed v1 commands, `logs.tail`/node-log proxying, high-risk approval UX/auth strength beyond the exact-operation #807 contract, and the complete six-layer UI/data migration.
+- Do not overclaim Boo-style primitives as shipped: stable rendered-screen snapshots, rendered-screen wait, named key commands, a primary WorkContext cockpit, and tmux-free live process reattach across server restart remain follow-up work unless the current docs/code prove otherwise.
 - Keep `AGENTS.md` compact; add details here or in focused docs instead.
 - When a historical plan is still linked from a current doc, label it as historical/proposed unless implementation has been verified.
