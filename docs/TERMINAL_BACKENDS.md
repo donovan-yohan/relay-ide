@@ -73,6 +73,16 @@ Internal session control code should prefer backend-neutral terminal names:
 
 For `relay-pty`, these helpers write through Relay's terminal input encoder and read the Relay terminal model's visible screen. For `tmux-compat`, they translate to the equivalent tmux target/capture commands. Legacy `sendTmuxText`, `sendTmuxKeys`, and `captureTmuxPane` exports remain compatibility aliases only; new code should not use tmux-shaped helper names unless it is explicitly working inside the `tmux-compat` adapter boundary.
 
+## Rendered screen snapshots
+
+The rendered screen API is intentionally backed by the `relay-pty` terminal model, not tmux text scraping. `GET /sessions/:id/screen` and `relay-ide v1 sessions screen --id <session-id-or-global-id> --json` return the libghostty-vt visible rows/text, cursor/title/mode metadata, geometry, freshness metadata, and optional bounded scrollback (`--scrollback --max-lines <n>`, capped server-side).
+
+Fail-closed behavior is part of the contract:
+
+- `tmux-compat` sessions return `UNSUPPORTED` / `SESSION_SCREEN_UNSUPPORTED_BACKEND`.
+- disconnected or cleaned-up sessions return `SESSION_CONFLICT` / `SESSION_SCREEN_STALE` rather than stale rendered output.
+- remote sessions that cannot be resolved by the local gateway return a typed `NODE_OFFLINE` / `SESSION_SCREEN_ROUTED_UNAVAILABLE` response.
+
 ## Operator rollout pattern
 
 Recommended operating pattern:

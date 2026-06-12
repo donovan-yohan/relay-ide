@@ -46,6 +46,81 @@ export function activeWorkAttentionPriority(
   return 6;
 }
 
+export function activeWorkPrimarySession(
+  group: WorkContextActiveGroup
+): WorkContextSessionSummary | undefined {
+  return (
+    group.sessions.find(
+      (session) =>
+        session.live &&
+        (session.agentState === 'permission-prompt' ||
+          session.agentState === 'waiting-for-input')
+    ) ??
+    group.sessions.find((session) => session.live) ??
+    group.sessions[0]
+  );
+}
+
+export function activeWorkSessionActivationRepoPath(
+  session: WorkContextSessionSummary
+): string | null {
+  const nodeId = session.nodeId ?? DEFAULT_LOCAL_NODE_ID;
+  return nodeId === DEFAULT_LOCAL_NODE_ID ? (session.repoPath ?? null) : null;
+}
+
+export interface ActiveWorkNextAttentionTarget {
+  group: WorkContextActiveGroup;
+  session: WorkContextSessionSummary;
+  activationKey: string;
+  activationRepoPath: string | null;
+  priority: number;
+}
+
+function inverseTimestamp(value: string | undefined): string {
+  const timestamp = Date.parse(value ?? '');
+  const sortable = Number.isFinite(timestamp)
+    ? Number.MAX_SAFE_INTEGER - timestamp
+    : Number.MAX_SAFE_INTEGER;
+  return String(sortable).padStart(16, '0');
+}
+
+function activeWorkTargetSortKey(target: ActiveWorkNextAttentionTarget): string {
+  const lastActivity = target.session.lastActivity ?? target.session.associatedAt;
+  return [
+    target.priority.toString().padStart(2, '0'),
+    // Newer activity wins inside the same Active Work priority bucket.
+    inverseTimestamp(lastActivity),
+    target.group.id,
+    target.activationKey,
+  ].join('\u0000');
+}
+
+export function activeWorkNextAttentionTarget(
+  groups: WorkContextActiveGroup[]
+): ActiveWorkNextAttentionTarget | null {
+  const targets = groups.flatMap((group) => {
+    const session = activeWorkPrimarySession(group);
+    if (!session) return [];
+    const controlState = activeWorkMobileControlState(group, session);
+    if (controlState.attachDisabledReason) return [];
+    return [
+      {
+        group,
+        session,
+        activationKey: activeWorkSessionActivationKey(session),
+        activationRepoPath: activeWorkSessionActivationRepoPath(session),
+        priority: activeWorkAttentionPriority(group),
+      },
+    ];
+  });
+
+  return (
+    [...targets].sort((a, b) =>
+      activeWorkTargetSortKey(a).localeCompare(activeWorkTargetSortKey(b))
+    )[0] ?? null
+  );
+}
+
 export function activeWorkStateLabel(group: WorkContextActiveGroup): string {
   if (
     group.sessions.some((session) => session.agentState === 'permission-prompt')

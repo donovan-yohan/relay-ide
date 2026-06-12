@@ -60,6 +60,7 @@ export type InterventionSource =
 export type InterventionKind =
   | 'human-input'
   | 'supervisor-send-text'
+  | 'supervisor-send-key'
   | 'supervisor-submit'
   | 'join'
   | 'take-over'

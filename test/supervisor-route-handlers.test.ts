@@ -229,6 +229,60 @@ describe('supervisor route handlers', () => {
     });
   });
 
+  it('requires send-key capability evidence for supervisor sendKey actions', () => {
+    const sessions = supervisorBoundary();
+    const res = jsonResponse();
+
+    handleSupervisorActionRequest(
+      supervisorActionRequest({
+        action: 'sendKey',
+        body: { id: 'sess-1', key: 'escape' },
+      }),
+      res,
+      sessions
+    );
+
+    expect(sessions.supervisorWrite).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: expect.objectContaining({
+        code: 'FORBIDDEN',
+        reasonCode: 'CAPABILITY_REQUIRED',
+        details: expect.objectContaining({
+          capability: 'tab:intervention:send-key',
+        }),
+      }),
+    });
+  });
+
+  it('sends canonical sendKey requests through the supervisor boundary', () => {
+    const sessions = supervisorBoundary();
+    const res = jsonResponse();
+
+    handleSupervisorActionRequest(
+      supervisorActionRequest({
+        action: 'sendKey',
+        body: { id: 'sess-1', key: 'tab' },
+        capabilities: 'session:attach,tab:intervention:send-key',
+      }),
+      res,
+      sessions
+    );
+
+    expect(sessions.supervisorWrite).toHaveBeenCalledWith(
+      'sess-1',
+      expect.objectContaining({ action: 'sendKey', payload: '\t' })
+    );
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'supervisor.sendKey',
+        action: 'sendKey',
+        audit: expect.objectContaining({ key: 'tab' }),
+      })
+    );
+  });
+
   it('preserves multi-target partial-failure semantics for valid supervisor action requests', () => {
     const sessions = supervisorBoundary({
       'sess-1': session({ id: 'sess-1' }),

@@ -15,7 +15,12 @@ export type TerminalInputKey =
   | 'ArrowDown'
   | 'ArrowLeft'
   | 'ArrowRight'
-  | 'CtrlC';
+  | 'CtrlC'
+  | 'CtrlD'
+  | 'Home'
+  | 'End'
+  | 'PageUp'
+  | 'PageDown';
 
 export type TerminalInput =
   | { type: 'text'; text: string }
@@ -74,6 +79,11 @@ const KEY_SEQUENCES: Record<TerminalInputKey, string> = {
   ArrowRight: '\x1b[C',
   ArrowLeft: '\x1b[D',
   CtrlC: '\x03',
+  CtrlD: '\x04',
+  Home: '\x1b[H',
+  End: '\x1b[F',
+  PageUp: '\x1b[5~',
+  PageDown: '\x1b[6~',
 };
 
 export function isTerminalInputKey(key: string): key is TerminalInputKey {

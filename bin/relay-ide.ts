@@ -68,6 +68,12 @@ import {
   parseWorktreeInstanceId,
 } from '../shared/identity.js';
 import {
+  SUPERVISOR_SEND_KEY_NAMES,
+  supervisorActionCommandId,
+  supervisorActionRequiredCapabilities,
+  type SupervisorActionType,
+} from '../shared/supervisor-actions.js';
+import {
   isFileRpcOperation,
   FILE_RPC_MAX_WRITE_BYTES,
   type FileRpcOperation,
@@ -1475,6 +1481,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'nodes.list',
   'sessions.list',
   'sessions.get',
+  'sessions.screen',
   'work-contexts.get',
   'work-contexts.resume',
   'work-context-artifacts.list',
@@ -2586,6 +2593,27 @@ function gatewayInputData(sessionArgs: string[]): string {
   return fs.readFileSync(0, 'utf8');
 }
 
+async function runGatewaySessionScreen(sessionArgs: string[]): Promise<never> {
+  const id = requireGatewaySessionId('sessions.screen', sessionArgs);
+  const maxLines = gatewayOptionalPositiveInt(
+    'sessions.screen',
+    sessionArgs,
+    '--max-lines',
+    1000
+  );
+  const includeScrollback = sessionArgs.includes('--scrollback');
+  const query = new URLSearchParams();
+  if (includeScrollback) query.set('scrollback', '1');
+  if (maxLines !== undefined) query.set('maxLines', String(maxLines));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const data = await gatewayHttpJson({
+    commandName: 'sessions.screen',
+    pathName: `/sessions/${encodeURIComponent(id)}/screen${suffix}`,
+    capabilities: ['session:read'],
+  });
+  printGatewayEnvelope(gatewayOk('sessions.screen', data), 0);
+}
+
 async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
   const id = requireGatewaySessionId('sessions.input', sessionArgs);
   const input = gatewayInputData(sessionArgs);
@@ -2814,6 +2842,8 @@ async function runGatewaySessions(gatewayArgs: string[]): Promise<never> {
     return runGatewaySessionRename(sessionArgs);
   if (sessionSubcommand === 'stream')
     return runGatewaySessionStream(sessionArgs);
+  if (sessionSubcommand === 'screen')
+    return runGatewaySessionScreen(sessionArgs);
   if (sessionSubcommand === 'input') return runGatewaySessionInput(sessionArgs);
   if (sessionSubcommand === 'interventions') {
     return runGatewaySessionInterventions(sessionArgs);
@@ -3221,7 +3251,7 @@ async function runGatewaySupervisorSessions(): Promise<never> {
 }
 
 function parseGatewaySupervisorActionBody(
-  commandName: 'supervisor.sendText' | 'supervisor.submit',
+  commandName: 'supervisor.sendText' | 'supervisor.sendKey' | 'supervisor.submit',
   supervisorArgs: string[]
 ): Record<string, unknown> {
   const body = parseGatewayInputObject(commandName, supervisorArgs);
@@ -3249,11 +3279,19 @@ function parseGatewaySupervisorActionBody(
   ) {
     body['text'] = text;
   }
+  const key = gatewayArg(supervisorArgs, '--key');
+  if (
+    commandName === 'supervisor.sendKey' &&
+    key !== undefined &&
+    body['key'] === undefined
+  ) {
+    body['key'] = key;
+  }
   return body;
 }
 
 function validateGatewaySupervisorActionBody(
-  commandName: 'supervisor.sendText' | 'supervisor.submit',
+  commandName: 'supervisor.sendText' | 'supervisor.sendKey' | 'supervisor.submit',
   body: Record<string, unknown>
 ): void {
   if (
@@ -3262,6 +3300,24 @@ function validateGatewaySupervisorActionBody(
   ) {
     gatewayInvalid(commandName, '--text is required for supervisor send-text', {
       field: 'text',
+    });
+  }
+  if (
+    commandName === 'supervisor.sendKey' &&
+    (typeof body['key'] !== 'string' || body['key'].length === 0)
+  ) {
+    gatewayInvalid(commandName, '--key is required for supervisor send-key', {
+      field: 'key',
+    });
+  }
+  if (
+    commandName === 'supervisor.sendKey' &&
+    typeof body['key'] === 'string' &&
+    !(SUPERVISOR_SEND_KEY_NAMES as readonly string[]).includes(body['key'])
+  ) {
+    gatewayInvalid(commandName, '--key must be one canonical supervisor key name', {
+      field: 'key',
+      allowedKeys: SUPERVISOR_SEND_KEY_NAMES,
     });
   }
   const id = body['id'];
@@ -3306,19 +3362,21 @@ async function runGatewaySupervisorAction(
   subcommand: string,
   supervisorArgs: string[]
 ): Promise<never> {
-  const commandName =
-    subcommand === 'submit' ? 'supervisor.submit' : 'supervisor.sendText';
+  const action: SupervisorActionType =
+    subcommand === 'submit'
+      ? 'submit'
+      : subcommand === 'send-key' || subcommand === 'sendKey'
+        ? 'sendKey'
+        : 'sendText';
+  const commandName = supervisorActionCommandId(action);
   const body = parseGatewaySupervisorActionBody(commandName, supervisorArgs);
   validateGatewaySupervisorActionBody(commandName, body);
   const result = await gatewayHttpJson({
     commandName,
-    pathName: `/supervisor/actions/${commandName === 'supervisor.submit' ? 'submit' : 'sendText'}`,
+    pathName: `/supervisor/actions/${action}`,
     method: 'POST',
     body,
-    capabilities:
-      commandName === 'supervisor.submit'
-        ? ['session:attach', 'tab:intervention:submit']
-        : ['session:attach', 'tab:intervention:send-text'],
+    capabilities: supervisorActionRequiredCapabilities(action),
   });
   printGatewayEnvelope(gatewayOk(commandName, result), 0);
 }
@@ -3402,6 +3460,8 @@ async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
   if (
     subcommand === 'send-text' ||
     subcommand === 'sendText' ||
+    subcommand === 'send-key' ||
+    subcommand === 'sendKey' ||
     subcommand === 'submit'
   ) {
     return runGatewaySupervisorAction(subcommand, supervisorArgs);

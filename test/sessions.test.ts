@@ -23,6 +23,7 @@ import { serializeAll, restoreFromDisk } from '../server/sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from '../server/types.js';
 import type { PtySession } from '../server/types.js';
 import { LOCAL_COMPATIBILITY_SESSION_INTENT } from '../shared/session-envelope.js';
+import { DEFAULT_SESSION_REPLAY_CAPACITY_BYTES } from '../shared/session-replay.js';
 
 // Track created session IDs so we can clean up after each test
 const createdIds: string[] = [];
@@ -895,6 +896,119 @@ describe('sessions', () => {
     expect(result.terminalBackend).toBe('relay-pty');
     expect(result.useTmux).toBe(false);
     expect(result.tmuxSessionName).toBe('');
+  });
+
+  it('returns a bounded rendered screen snapshot for relay-pty sessions', async () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/sh',
+      args: ['-i'],
+      cols: 80,
+      rows: 12,
+      useTmux: false,
+    });
+    createdIds.push(result.id);
+
+    sessions.write(result.id, 'printf SCREEN_SNAPSHOT_READY\\n');
+    sessions.write(result.id, '\n');
+
+    let snapshot: Record<string, unknown> | undefined;
+    for (let i = 0; i < 20; i++) {
+      const resultSnapshot = sessions.getRenderedScreenSnapshot(result.id, {
+        requestedId: result.globalSessionId,
+        includeScrollback: true,
+        maxScrollbackLines: 5,
+      });
+      expect(resultSnapshot.ok).toBe(true);
+      if (resultSnapshot.ok) {
+        snapshot = resultSnapshot.snapshot;
+        const visible = snapshot.visible as { text?: string };
+        if (visible.text?.includes('SCREEN_SNAPSHOT_READY')) break;
+      }
+      await delay(50);
+    }
+
+    expect(snapshot).toBeDefined();
+    expect(snapshot).toMatchObject({
+      session: {
+        id: result.id,
+        requestedId: result.globalSessionId,
+        nodeId: 'local',
+        globalSessionId: result.globalSessionId,
+        status: 'active',
+      },
+      backend: {
+        terminalBackend: 'relay-pty',
+        runtime: 'relay-pty/libghostty-vt',
+      },
+      scrollback: {
+        requested: true,
+        included: true,
+        maxLines: 5,
+      },
+    });
+    const visible = snapshot!.visible as { text?: string; rows?: unknown[] };
+    expect(visible.text).toContain('SCREEN_SNAPSHOT_READY');
+    expect(Array.isArray(visible.rows)).toBe(true);
+  });
+
+  it('defaults rendered screen scrollback counters for legacy relay-pty records', () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/cat',
+      args: [],
+      cols: 80,
+      rows: 12,
+      useTmux: false,
+    });
+    createdIds.push(result.id);
+
+    const session = sessions.get(result.id) as PtySession;
+    delete (session as Partial<PtySession>).scrollbackBytesEvicted;
+    delete (session as Partial<PtySession>).scrollbackCapacityBytes;
+
+    const resultSnapshot = sessions.getRenderedScreenSnapshot(result.id, {
+      includeScrollback: true,
+      maxScrollbackLines: 5,
+    });
+
+    expect(resultSnapshot.ok).toBe(true);
+    if (!resultSnapshot.ok) throw new Error('expected rendered screen snapshot');
+    expect(resultSnapshot.snapshot).toMatchObject({
+      scrollback: {
+        rows: expect.any(Array),
+        bytesDropped: 0,
+        capacityBytes: DEFAULT_SESSION_REPLAY_CAPACITY_BYTES,
+      },
+    });
+  });
+
+  it('fails closed for rendered screen snapshots on tmux-compat sessions', () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/sh',
+      args: ['-i'],
+      terminalBackend: 'tmux-compat',
+    });
+    createdIds.push(result.id);
+
+    const snapshot = sessions.getRenderedScreenSnapshot(result.id);
+    expect(snapshot).toMatchObject({
+      ok: false,
+      error: {
+        code: 'UNSUPPORTED',
+        reasonCode: 'SESSION_SCREEN_UNSUPPORTED_BACKEND',
+      },
+    });
   });
 
   it('list includes useTmux and tmuxSessionName fields', () => {

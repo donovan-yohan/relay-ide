@@ -100,6 +100,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'sessions.kill': 'kill session process',
   'sessions.rename': 'rename session',
   'sessions.stream': 'stream session output',
+  'sessions.screen': 'read rendered terminal screen snapshot',
   'sessions.input': 'send session input',
   'sessions.interventions': 'session interventions',
   'sessions.handBack': 'hand back session control',
@@ -141,6 +142,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'supervisor.snapshot': 'supervisor snapshot',
   'supervisor.sessions': 'supervisor sessions',
   'supervisor.sendText': 'supervisor send text',
+  'supervisor.sendKey': 'supervisor send key',
   'supervisor.submit': 'supervisor submit',
   'events.subscribe': 'subscribe gateway events',
   'settings.get': 'safe settings get',
@@ -172,6 +174,7 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.input',
   'sessions.handBack',
   'supervisor.sendText',
+  'supervisor.sendKey',
   'supervisor.submit',
   'files.write',
   'handoffs.cancel',
@@ -256,6 +259,7 @@ function controlRequirementsForGatewayCommand(
   }
   if (
     spec.name === 'supervisor.sendText' ||
+    spec.name === 'supervisor.sendKey' ||
     spec.name === 'supervisor.submit'
   ) {
     requirements.push('fresh-control-state');
@@ -280,6 +284,7 @@ function auditExpectationForGatewayCommand(
   if (
     spec.name === 'supervisor.snapshot' ||
     spec.name === 'supervisor.sendText' ||
+    spec.name === 'supervisor.sendKey' ||
     spec.name === 'supervisor.submit'
   )
     return 'hashes-only';

@@ -1,27 +1,24 @@
 import type { AnalyticsView } from '../stores/ui.js';
 
-export type AppViewMode = 'empty' | 'org' | 'dashboard' | 'session' | 'analytics';
+export type AppViewMode = 'org' | 'dashboard' | 'session' | 'analytics';
 
 export interface ResolveAppViewModeInput {
   analyticsView: AnalyticsView;
   hasActiveSession: boolean;
-  reposLength: number;
   activeRepoPath: string | null;
-  isNodesTab: boolean;
 }
 
 export function resolveAppViewMode({
   analyticsView,
   hasActiveSession,
-  reposLength,
   activeRepoPath,
-  isNodesTab,
 }: ResolveAppViewModeInput): AppViewMode {
   if (analyticsView !== null) return 'analytics';
   if (hasActiveSession) return 'session';
-  if (!reposLength) {
-    return !activeRepoPath && isNodesTab ? 'org' : 'empty';
-  }
+
+  // The no-session / no-explicit-project landing path is the WorkContext
+  // cockpit, even before a local repo has been added. RepoDashboard remains
+  // reserved for an explicit repo/project selection.
   if (!activeRepoPath) return 'org';
   return 'dashboard';
 }

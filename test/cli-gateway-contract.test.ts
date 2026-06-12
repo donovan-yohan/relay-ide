@@ -147,6 +147,7 @@ describe('CLI gateway contract', () => {
       'sessions.kill',
       'sessions.rename',
       'sessions.stream',
+      'sessions.screen',
       'sessions.input',
       'sessions.interventions',
       'sessions.handBack',
@@ -188,6 +189,7 @@ describe('CLI gateway contract', () => {
       'supervisor.snapshot',
       'supervisor.sessions',
       'supervisor.sendText',
+      'supervisor.sendKey',
       'supervisor.submit',
       'events.subscribe',
       'settings.get',
@@ -448,6 +450,13 @@ describe('CLI gateway contract', () => {
       scopeKinds: ['session'],
     });
     expect(relayCommandDefinition('supervisor.sendText')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      controlRequirements: ['fresh-control-state'],
+      auditRedaction: { expectation: 'hashes-only' },
+      scopeKinds: ['session'],
+    });
+    expect(relayCommandDefinition('supervisor.sendKey')).toMatchObject({
       sideEffect: 'write',
       requiresConfirmation: false,
       controlRequirements: ['fresh-control-state'],
@@ -881,6 +890,7 @@ describe('CLI gateway contract', () => {
       'sessions.attach',
       'sessions.detach',
       'sessions.stream',
+      'sessions.screen',
       'sessions.input',
       'sessions.interventions',
       'sessions.handBack',
@@ -922,6 +932,7 @@ describe('CLI gateway contract', () => {
       'supervisor.snapshot',
       'supervisor.sessions',
       'supervisor.sendText',
+      'supervisor.sendKey',
       'supervisor.submit',
       'events.subscribe',
     ] as const;
@@ -1055,6 +1066,38 @@ describe('CLI gateway contract', () => {
         data: { properties: { event: { enum: ['data', 'closed'] } } },
       },
     });
+
+    const screen = commandSpec('sessions.screen');
+    expect(screen.capabilityHints).toEqual(['session:read']);
+    expect(screen.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ['id'],
+      properties: { maxLines: { maximum: 1000 } },
+    });
+    expect(screen.outputSchema).toMatchObject({
+      properties: {
+        data: {
+          properties: {
+            visible: {
+              properties: {
+                text: { type: 'string' },
+                rows: { type: 'array' },
+              },
+            },
+            scrollback: {
+              properties: {
+                maxLines: { maximum: 1000 },
+                truncated: { type: 'boolean' },
+              },
+              required: expect.arrayContaining(['rows']),
+            },
+          },
+        },
+      },
+    });
+    expect(screen.errorCodes).toEqual(
+      expect.arrayContaining(['SESSION_CONFLICT', 'UNSUPPORTED', 'UPSTREAM_ERROR'])
+    );
 
     const input = commandSpec('sessions.input');
     expect(input.capabilityHints).toEqual(['session:read', 'session:attach']);
