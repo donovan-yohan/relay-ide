@@ -12,6 +12,7 @@ export const CLI_GATEWAY_HERMES_SMOKE_COMMANDS = [
   'sessions.create',
   'files.read',
   'sessions.stream',
+  'sessions.wait',
   'sessions.input',
   'sessions.detach',
 ] as const satisfies readonly RelayCliGatewayCommand[];
@@ -177,6 +178,9 @@ function gatewayArgsForGeneratedTool(
       ['idleTimeoutMs', '--idle-timeout-ms'],
     ]);
   }
+  if (tool.relay.command === 'sessions.wait') {
+    return gatewaySessionWaitArgs(input);
+  }
   if (tool.relay.command === 'sessions.kill') {
     return appendOptionalFlags(replaceGatewayInputPlaceholders(cliArgs, input), input, [
       ['confirmationToken', '--confirmation-token'],
@@ -202,6 +206,41 @@ function gatewaySessionInputArgs(input: Record<string, unknown>): string[] {
   }
   for (const [field, flag] of [
     ['waitFor', '--wait-for'],
+    ['timeoutMs', '--timeout-ms'],
+    ['maxBytes', '--max-bytes'],
+  ] as const) {
+    const value = input[field];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      throw new Error(`generated Relay CLI tool input ${field} must be a string or number`);
+    }
+    args.push(flag, String(value));
+  }
+  args.push('--json');
+  return args;
+}
+
+function gatewaySessionWaitArgs(input: Record<string, unknown>): string[] {
+  const id = requiredStringInput(input, ['id', 'sessionId'], '<session-id>');
+  const args = ['v1', 'sessions', 'wait', '--id', id];
+  let predicateCount = 0;
+  for (const [field, flag] of [
+    ['outputText', '--output-text'],
+    ['idleMs', '--idle-ms'],
+    ['screenText', '--screen-text'],
+  ] as const) {
+    const value = input[field];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      throw new Error(`generated Relay CLI tool input ${field} must be a string or number`);
+    }
+    predicateCount += 1;
+    args.push(flag, String(value));
+  }
+  if (predicateCount !== 1) {
+    throw new Error('generated Relay Hermes gateway tool input must include exactly one wait predicate');
+  }
+  for (const [field, flag] of [
     ['timeoutMs', '--timeout-ms'],
     ['maxBytes', '--max-bytes'],
   ] as const) {

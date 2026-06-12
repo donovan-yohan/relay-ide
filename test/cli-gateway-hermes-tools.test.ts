@@ -41,6 +41,7 @@ test('generates Hermes tool, MCP, and function descriptors from the v1 contract'
     'relay_gateway_sessions_create',
     'relay_gateway_files_read',
     'relay_gateway_sessions_stream',
+    'relay_gateway_sessions_wait',
     'relay_gateway_sessions_input',
     'relay_gateway_sessions_detach',
   ]);
@@ -216,6 +217,22 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
       data: { event: 'closed', frames: 1, truncated: false },
     });
 
+    const wait = await runner.callTool('relay_gateway_sessions_wait', {
+      id: 'remote-session-1',
+      outputText: 'stream-marker',
+      timeoutMs: 500,
+    });
+    expect(wait).toMatchObject({
+      ok: true,
+      command: 'sessions.wait',
+      data: {
+        model: 'raw-output',
+        status: 'matched',
+        predicate: { kind: 'output-text', value: 'stream-marker' },
+        nodeId: 'node-a',
+      },
+    });
+
     const input = await runner.callTool('relay_gateway_sessions_input', {
       id: 'remote-session-1',
       data: 'marker-input\n',
@@ -244,6 +261,7 @@ test('generated Hermes CLI gateway tools run the fake hub/node adapter smoke ove
     'POST /hub/nodes/node-a/sessions',
     'GET /sessions/remote-session-1',
     'POST /hub/nodes/node-a/sessions/remote-session-1/files/read',
+    'GET /sessions/remote-session-1',
     'GET /sessions/remote-session-1',
     'GET /sessions/remote-session-1',
     'GET /sessions/remote-session-1',

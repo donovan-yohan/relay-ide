@@ -100,6 +100,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'sessions.kill': 'kill session process',
   'sessions.rename': 'rename session',
   'sessions.stream': 'stream session output',
+  'sessions.wait': 'wait for session output',
   'sessions.screen': 'read rendered terminal screen snapshot',
   'sessions.input': 'send session input',
   'sessions.interventions': 'session interventions',
@@ -153,6 +154,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
 
 const STREAM_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.stream',
+  'sessions.wait',
   'events.subscribe',
 ]);
 
@@ -279,8 +281,7 @@ function auditExpectationForGatewayCommand(
   ) {
     return 'schema-only';
   }
-  if (spec.name === 'sessions.stream' || spec.name === 'events.subscribe')
-    return 'stream-redacted';
+  if (STREAM_GATEWAY_COMMANDS.has(spec.name)) return 'stream-redacted';
   if (
     spec.name === 'supervisor.snapshot' ||
     spec.name === 'supervisor.sendText' ||
