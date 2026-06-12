@@ -29,6 +29,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'nodes.list',
   'sessions.list',
   'sessions.get',
+  'sessions.screen',
   'work-contexts.get',
   'work-contexts.resume',
   'work-context-artifacts.list',

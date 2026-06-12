@@ -897,6 +897,85 @@ describe('sessions', () => {
     expect(result.tmuxSessionName).toBe('');
   });
 
+  it('returns a bounded rendered screen snapshot for relay-pty sessions', async () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/sh',
+      args: ['-i'],
+      cols: 80,
+      rows: 12,
+      useTmux: false,
+    });
+    createdIds.push(result.id);
+
+    sessions.write(result.id, 'printf SCREEN_SNAPSHOT_READY\\n');
+    sessions.write(result.id, '\n');
+
+    let snapshot: Record<string, unknown> | undefined;
+    for (let i = 0; i < 20; i++) {
+      const resultSnapshot = sessions.getRenderedScreenSnapshot(result.id, {
+        requestedId: result.globalSessionId,
+        includeScrollback: true,
+        maxScrollbackLines: 5,
+      });
+      expect(resultSnapshot.ok).toBe(true);
+      if (resultSnapshot.ok) {
+        snapshot = resultSnapshot.snapshot;
+        const visible = snapshot.visible as { text?: string };
+        if (visible.text?.includes('SCREEN_SNAPSHOT_READY')) break;
+      }
+      await delay(50);
+    }
+
+    expect(snapshot).toBeDefined();
+    expect(snapshot).toMatchObject({
+      session: {
+        id: result.id,
+        requestedId: result.globalSessionId,
+        nodeId: 'local',
+        globalSessionId: result.globalSessionId,
+        status: 'active',
+      },
+      backend: {
+        terminalBackend: 'relay-pty',
+        runtime: 'relay-pty/libghostty-vt',
+      },
+      scrollback: {
+        requested: true,
+        included: true,
+        maxLines: 5,
+      },
+    });
+    const visible = snapshot!.visible as { text?: string; rows?: unknown[] };
+    expect(visible.text).toContain('SCREEN_SNAPSHOT_READY');
+    expect(Array.isArray(visible.rows)).toBe(true);
+  });
+
+  it('fails closed for rendered screen snapshots on tmux-compat sessions', () => {
+    const result = sessions.create({
+      repoName: 'test-repo',
+      repoPath: '/tmp',
+      worktreePath: null,
+      cwd: '/tmp',
+      command: '/bin/sh',
+      args: ['-i'],
+      terminalBackend: 'tmux-compat',
+    });
+    createdIds.push(result.id);
+
+    const snapshot = sessions.getRenderedScreenSnapshot(result.id);
+    expect(snapshot).toMatchObject({
+      ok: false,
+      error: {
+        code: 'UNSUPPORTED',
+        reasonCode: 'SESSION_SCREEN_UNSUPPORTED_BACKEND',
+      },
+    });
+  });
+
   it('list includes useTmux and tmuxSessionName fields', () => {
     const result = sessions.create({
       repoName: 'test-repo',

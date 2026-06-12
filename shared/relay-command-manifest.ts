@@ -100,6 +100,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'sessions.kill': 'kill session process',
   'sessions.rename': 'rename session',
   'sessions.stream': 'stream session output',
+  'sessions.screen': 'read rendered terminal screen snapshot',
   'sessions.input': 'send session input',
   'sessions.interventions': 'session interventions',
   'sessions.handBack': 'hand back session control',

@@ -794,6 +794,202 @@ function getReplaySnapshot(id: string): SessionReplaySnapshot | null {
   };
 }
 
+const MAX_RENDERED_SCREEN_SCROLLBACK_LINES = 1000;
+const DEFAULT_RENDERED_SCREEN_SCROLLBACK_LINES = 200;
+
+export interface RenderedScreenSnapshotOptions {
+  requestedId?: string;
+  includeScrollback?: boolean;
+  maxScrollbackLines?: number;
+}
+
+export interface RenderedScreenSnapshotError {
+  code: 'NOT_FOUND' | 'UNSUPPORTED' | 'SESSION_CONFLICT' | 'UPSTREAM_ERROR';
+  reasonCode: string;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, unknown>;
+}
+
+export type RenderedScreenSnapshotResult =
+  | { ok: true; snapshot: Record<string, unknown> }
+  | { ok: false; error: RenderedScreenSnapshotError };
+
+function renderedScreenError(
+  error: RenderedScreenSnapshotError
+): RenderedScreenSnapshotResult {
+  return { ok: false, error };
+}
+
+function boundedScrollbackLines(
+  rows: unknown[],
+  requested: boolean,
+  maxLines: number
+): {
+  rows: unknown[];
+  availableRows: number;
+  includedRows: number;
+  truncated: boolean;
+  omittedRows: number;
+} {
+  if (!requested) {
+    return {
+      rows: [],
+      availableRows: 0,
+      includedRows: 0,
+      truncated: false,
+      omittedRows: 0,
+    };
+  }
+  const availableRows = rows.length;
+  const omittedRows = Math.max(0, availableRows - maxLines);
+  const included = omittedRows > 0 ? rows.slice(omittedRows) : rows;
+  return {
+    rows: included,
+    availableRows,
+    includedRows: included.length,
+    truncated: omittedRows > 0,
+    omittedRows,
+  };
+}
+
+function getRenderedScreenSnapshot(
+  id: string,
+  options: RenderedScreenSnapshotOptions = {}
+): RenderedScreenSnapshotResult {
+  const session = sessions.get(id);
+  if (!session) {
+    return renderedScreenError({
+      code: 'NOT_FOUND',
+      reasonCode: 'SESSION_NOT_FOUND',
+      message: 'session was not found',
+      retryable: false,
+      details: { sessionId: id },
+    });
+  }
+  if (session.mode !== 'pty') {
+    return renderedScreenError({
+      code: 'UNSUPPORTED',
+      reasonCode: 'SESSION_SCREEN_UNSUPPORTED_MODE',
+      message: 'rendered screen snapshots are only supported for PTY sessions',
+      retryable: false,
+      details: { sessionId: id, mode: session.mode },
+    });
+  }
+  if (session.status !== 'active' || session.cleanedUp) {
+    return renderedScreenError({
+      code: 'SESSION_CONFLICT',
+      reasonCode: 'SESSION_SCREEN_STALE',
+      message: 'rendered screen model is unavailable for a disconnected session',
+      retryable: false,
+      details: { sessionId: id, status: session.status },
+    });
+  }
+  if (session.terminalBackend !== 'relay-pty') {
+    return renderedScreenError({
+      code: 'UNSUPPORTED',
+      reasonCode: 'SESSION_SCREEN_UNSUPPORTED_BACKEND',
+      message:
+        'rendered screen snapshots require the relay-pty terminal backend; tmux scraping is intentionally unsupported',
+      retryable: false,
+      details: { sessionId: id, terminalBackend: session.terminalBackend },
+    });
+  }
+  if (!session.terminalModel) {
+    return renderedScreenError({
+      code: 'UNSUPPORTED',
+      reasonCode: 'SESSION_SCREEN_MODEL_UNAVAILABLE',
+      message: 'relay-pty session does not have a terminal model attached',
+      retryable: false,
+      details: { sessionId: id, terminalBackend: session.terminalBackend },
+    });
+  }
+
+  const includeScrollback = options.includeScrollback === true;
+  const maxLines = Math.min(
+    MAX_RENDERED_SCREEN_SCROLLBACK_LINES,
+    Math.max(
+      1,
+      Math.floor(
+        options.maxScrollbackLines ?? DEFAULT_RENDERED_SCREEN_SCROLLBACK_LINES
+      )
+    )
+  );
+  const nodeId = DEFAULT_LOCAL_NODE_ID;
+  const globalSessionId = createGlobalSessionId(nodeId, session.id);
+
+  try {
+    const terminal = session.terminalModel.snapshot({
+      includeScrollback,
+      includeCells: false,
+    });
+    const scrollback = boundedScrollbackLines(
+      (terminal.scrollbackLines ?? []) as unknown[],
+      includeScrollback,
+      maxLines
+    );
+    return {
+      ok: true,
+      snapshot: {
+        session: {
+          id: session.id,
+          requestedId: options.requestedId ?? id,
+          nodeId,
+          globalSessionId,
+          type: session.type,
+          mode: session.mode,
+          status: session.status,
+          displayName: session.displayName,
+        },
+        backend: {
+          terminalBackend: session.terminalBackend,
+          modelBackend: terminal.backend,
+          runtime: 'relay-pty/libghostty-vt',
+          backendInfo: terminal.backendInfo,
+        },
+        geometry: { rows: terminal.rows, cols: terminal.cols },
+        capturedAt: terminal.generatedAt,
+        freshness: {
+          state: 'fresh',
+          lastActivityAt: session.lastActivity,
+          modelGeneratedAt: terminal.generatedAt,
+        },
+        visible: {
+          text: terminal.visibleText,
+          rows: terminal.visibleLines,
+        },
+        cursor: terminal.cursor,
+        title: terminal.title,
+        modes: terminal.modes,
+        scrollback: {
+          requested: includeScrollback,
+          included: includeScrollback,
+          rows: scrollback.rows,
+          availableRows: scrollback.availableRows,
+          includedRows: scrollback.includedRows,
+          ...(includeScrollback ? { maxLines } : {}),
+          truncated: scrollback.truncated,
+          omittedRows: scrollback.omittedRows,
+          bytesDropped: session.scrollbackBytesEvicted,
+          capacityBytes: session.scrollbackCapacityBytes,
+        },
+        unsupported: terminal.unsupported,
+      },
+    };
+  } catch (error) {
+    return renderedScreenError({
+      code: 'UPSTREAM_ERROR',
+      reasonCode: 'SESSION_SCREEN_MODEL_UNAVAILABLE',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'terminal model snapshot failed unexpectedly',
+      retryable: true,
+      details: { sessionId: id },
+    });
+  }
+}
+
 function renew(input: {
   id: string;
   expiresAt: string;
@@ -2443,6 +2639,7 @@ export {
   setSessionNodeStatusResolver,
   refreshDurability,
   getReplaySnapshot,
+  getRenderedScreenSnapshot,
   nextTerminalName,
   nextAgentName,
   serializeAll,

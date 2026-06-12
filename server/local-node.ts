@@ -3,6 +3,10 @@ import type { CreateResult } from './sessions.js';
 import type { CreateParams } from './sessions.js';
 import type { CreateWebParams } from './web-session-handler.js';
 import type { SessionRenewResult } from './session-envelope-registry.js';
+import type {
+  RenderedScreenSnapshotOptions,
+  RenderedScreenSnapshotResult,
+} from './sessions.js';
 import type { Session, SessionSummary } from './types.js';
 import type { SupervisorInterventionAction } from './control-engine.js';
 import type { SessionReplaySnapshot } from '../shared/session-replay.js';
@@ -54,6 +58,10 @@ export interface NodeSessionBoundary {
     options?: { nodeId?: string; limit?: number }
   ): InterventionRecord[];
   getReplaySnapshot(id: string): SessionReplaySnapshot | null;
+  getRenderedScreenSnapshot(
+    id: string,
+    options?: RenderedScreenSnapshotOptions
+  ): RenderedScreenSnapshotResult;
   handBackToAgent(input: {
     id: string;
     latestSeenInterventionEventId?: string;
@@ -99,6 +107,7 @@ const defaultSessionBoundary: NodeSessionBoundary = {
   supervisorWrite: sessionsModule.supervisorWrite,
   getInterventions: sessionsModule.getInterventions,
   getReplaySnapshot: sessionsModule.getReplaySnapshot,
+  getRenderedScreenSnapshot: sessionsModule.getRenderedScreenSnapshot,
   handBackToAgent: sessionsModule.handBackToAgent,
 };
 

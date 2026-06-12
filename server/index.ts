@@ -36,6 +36,7 @@ import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
 import { createLocalRelayNode } from './local-node.js';
+import { DEFAULT_LOCAL_NODE_ID, parseGlobalSessionId } from '../shared/identity.js';
 import {
   WorktreeWatcher,
   BranchWatcher,
@@ -826,6 +827,55 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
 
 function activePtySessionCount(): number {
   return countActivePtySessions(localRelayNode.sessions.list());
+}
+
+function parseRenderedScreenBooleanQuery(value: unknown): boolean {
+  if (value === true || value === 'true' || value === '1') return true;
+  return false;
+}
+
+function parseRenderedScreenMaxLines(value: unknown): number | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return undefined;
+  return parsed;
+}
+
+function resolveLocalScreenSessionId(requestedId: string):
+  | { kind: 'local'; id: string }
+  | { kind: 'remote'; nodeId: string; localSessionId: string }
+  | { kind: 'missing' } {
+  if (localRelayNode.sessions.get(requestedId)) {
+    return { kind: 'local', id: requestedId };
+  }
+  const parsed = parseGlobalSessionId(requestedId);
+  if (!parsed) return { kind: 'missing' };
+  if (parsed.nodeId !== DEFAULT_LOCAL_NODE_ID) {
+    return {
+      kind: 'remote',
+      nodeId: parsed.nodeId,
+      localSessionId: parsed.localSessionId,
+    };
+  }
+  if (localRelayNode.sessions.get(parsed.localSessionId)) {
+    return { kind: 'local', id: parsed.localSessionId };
+  }
+  return { kind: 'missing' };
+}
+
+function renderedScreenErrorStatus(code: string): number {
+  switch (code) {
+    case 'NOT_FOUND':
+      return 404;
+    case 'SESSION_CONFLICT':
+      return 409;
+    case 'UNSUPPORTED':
+      return 422;
+    case 'UPSTREAM_ERROR':
+      return 503;
+    default:
+      return 500;
+  }
 }
 
 function sendPtyCapacityError(
@@ -3161,6 +3211,71 @@ async function main(): Promise<void> {
         return;
       }
       res.json(remote);
+    }
+  );
+
+  app.get(
+    '/sessions/:id/screen',
+    requireScopedSessionAuthForActorCommand('sessions.screen'),
+    (req, res) => {
+      const decision = capabilityDecisionFromRequest(
+        req,
+        CONTROL_READ_CAPABILITY
+      );
+      if (decision.decision !== 'allow') {
+        const error = capabilityError(decision);
+        res.status(sessionControlErrorStatus(error)).json({ error });
+        return;
+      }
+      const requestedId = req.params['id'] as string;
+      const resolved = resolveLocalScreenSessionId(requestedId);
+      if (resolved.kind === 'remote') {
+        res.status(503).json({
+          error: {
+            code: 'NODE_OFFLINE',
+            reasonCode: 'SESSION_SCREEN_ROUTED_UNAVAILABLE',
+            message:
+              'rendered screen snapshots are only available for sessions owned by this node in this slice',
+            retryable: true,
+            details: {
+              nodeId: resolved.nodeId,
+              sessionId: resolved.localSessionId,
+            },
+          },
+        });
+        return;
+      }
+      if (resolved.kind === 'missing') {
+        res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            reasonCode: 'SESSION_NOT_FOUND',
+            message: 'session was not found or is not locally readable',
+            retryable: false,
+            details: { sessionId: requestedId },
+          },
+        });
+        return;
+      }
+
+      const maxScrollbackLines = parseRenderedScreenMaxLines(req.query.maxLines);
+      const result = localRelayNode.sessions.getRenderedScreenSnapshot(
+        resolved.id,
+        {
+          requestedId,
+          includeScrollback: parseRenderedScreenBooleanQuery(
+            req.query.scrollback
+          ),
+          ...(maxScrollbackLines === undefined ? {} : { maxScrollbackLines }),
+        }
+      );
+      if (result.ok === false) {
+        res.status(renderedScreenErrorStatus(result.error.code)).json({
+          error: result.error,
+        });
+        return;
+      }
+      res.json(result.snapshot);
     }
   );
 
