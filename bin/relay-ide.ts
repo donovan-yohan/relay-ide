@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { Buffer } from 'node:buffer';
+import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import * as service from '../server/service.js';
@@ -73,7 +74,7 @@ import {
   FILE_RPC_MAX_WRITE_BYTES,
   type FileRpcOperation,
 } from '../shared/file-rpc.js';
-import { WebSocket } from 'ws';
+import { WebSocket, type RawData } from 'ws';
 
 const execFileAsync = promisify(execFile);
 
@@ -2729,28 +2730,39 @@ async function runGatewaySessionWait(sessionArgs: string[]): Promise<never> {
     waitTimers.idle.unref?.();
   };
 
-  const observeWaitOutput = (text: string): void => {
-    const nextBytes = Buffer.byteLength(text, 'utf8');
-    if (bytesObserved + nextBytes > maxBytes) {
-      bytesObserved = maxBytes;
-      truncated = true;
+  const outputDecoder = new StringDecoder('utf8');
+
+  const observeWaitOutput = (data: RawData): void => {
+    const frame = Array.isArray(data)
+      ? Buffer.concat(data)
+      : Buffer.isBuffer(data)
+        ? data
+        : Buffer.from(data);
+    const nextBytes = frame.byteLength;
+    const remainingBytes = Math.max(0, maxBytes - bytesObserved);
+    const exceedsMaxBytes = nextBytes > remainingBytes;
+    const observedBytes = exceedsMaxBytes ? remainingBytes : nextBytes;
+    const observedFrame = exceedsMaxBytes ? frame.subarray(0, observedBytes) : frame;
+
+    bytesObserved += observedBytes;
+    if (exceedsMaxBytes) truncated = true;
+    if (observedBytes > 0) refreshIdleTimer();
+    if (predicate.kind === 'output-text') {
+      outputWindow += observedBytes > 0 ? outputDecoder.write(observedFrame) : '';
+      if (outputWindow.includes(predicate.value)) {
+        finishOk('matched');
+        return;
+      }
+      outputWindow = retainOutputPredicateSuffix(outputWindow, predicate.value);
+    }
+
+    if (exceedsMaxBytes) {
       finishError(
         'WAIT_MAX_BYTES_EXCEEDED',
         `PTY output exceeded maxBytes before sessions.wait predicate completed`,
         { status: 'max-bytes' }
       );
-      return;
     }
-    bytesObserved += nextBytes;
-    refreshIdleTimer();
-    if (predicate.kind !== 'output-text') return;
-
-    outputWindow += text;
-    if (outputWindow.includes(predicate.value)) {
-      finishOk('matched');
-      return;
-    }
-    outputWindow = retainOutputPredicateSuffix(outputWindow, predicate.value);
   };
 
   waitTimers.timeout = setTimeout(() => {
@@ -2766,7 +2778,7 @@ async function runGatewaySessionWait(sessionArgs: string[]): Promise<never> {
 
   ws.on('message', (data) => {
     if (settled) return;
-    observeWaitOutput(data.toString('utf8'));
+    observeWaitOutput(data);
   });
 
   ws.once('close', (code, reason) => {

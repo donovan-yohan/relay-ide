@@ -186,6 +186,58 @@ test('sessions.wait resolves raw output-text matches with stable JSON metadata',
   expect((envelope.data as Record<string, unknown>).bytesObserved).toBeGreaterThan(0);
 });
 
+test('sessions.wait resolves output-text at the max-byte boundary before rejecting extra frame bytes', async () => {
+  const fixture = await createWaitFixture((ws) => {
+    ws.send('ready plus extra bytes after match');
+  });
+  const result = await runRelay(
+    waitArgs(['--output-text', 'ready', '--timeout-ms', '500', '--max-bytes', '5']),
+    String(fixture.port)
+  );
+
+  expect(result.stderr).toBe('');
+  expect(result.code).toBe(0);
+  expect(parseEnvelope(result.stdout)).toMatchObject({
+    ok: true,
+    command: 'sessions.wait',
+    data: {
+      model: 'raw-output',
+      status: 'matched',
+      predicate: { kind: 'output-text', value: 'ready' },
+      bytesObserved: 5,
+      truncated: true,
+      maxBytes: 5,
+    },
+  });
+});
+
+test('sessions.wait does not synthesize replacement-character matches at UTF-8 byte caps', async () => {
+  const fixture = await createWaitFixture((ws) => {
+    ws.send(Buffer.from('éx', 'utf8'));
+  });
+  const result = await runRelay(
+    waitArgs(['--output-text', '\uFFFD', '--timeout-ms', '500', '--max-bytes', '1']),
+    String(fixture.port)
+  );
+
+  expect(result.stderr).toBe('');
+  expect(result.code).toBe(1);
+  expect(parseEnvelope(result.stdout)).toMatchObject({
+    ok: false,
+    command: 'sessions.wait',
+    error: {
+      code: 'UPSTREAM_ERROR',
+      details: {
+        reasonCode: 'WAIT_MAX_BYTES_EXCEEDED',
+        status: 'max-bytes',
+        bytesObserved: 1,
+        truncated: true,
+        maxBytes: 1,
+      },
+    },
+  });
+});
+
 test('sessions.wait resolves idle-ms after the PTY stream goes quiet', async () => {
   const fixture = await createWaitFixture((ws) => {
     ws.send('one frame');
