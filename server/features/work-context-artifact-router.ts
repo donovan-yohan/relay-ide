@@ -663,18 +663,18 @@ function storeViewArtifactPublish(input: {
   const inputRecord: StoreAgentViewArtifactInput = {
     viewArtifact,
     workContextId,
+    ...(id ? { id } : {}),
+    ...(projectId ? { projectId } : {}),
+    ...(taskRef ? { taskRef } : {}),
+    ...(stage ? { stage } : {}),
+    ...(provenanceActorId ? { provenanceActorId } : {}),
+    ...(visibility ? { visibility } : {}),
+    ...(kind ? { kind } : {}),
+    ...(title ? { title } : {}),
+    ...(summary ? { summary } : {}),
+    ...(capturedAt ? { capturedAt } : {}),
+    ...(supersedesArtifactId ? { supersedesArtifactId } : {}),
   };
-  if (id) inputRecord.id = id;
-  if (projectId) inputRecord.projectId = projectId;
-  if (taskRef) inputRecord.taskRef = taskRef;
-  if (stage) inputRecord.stage = stage;
-  if (provenanceActorId) inputRecord.provenanceActorId = provenanceActorId;
-  if (visibility) inputRecord.visibility = visibility;
-  if (kind) inputRecord.kind = kind;
-  if (title) inputRecord.title = title;
-  if (summary) inputRecord.summary = summary;
-  if (capturedAt) inputRecord.capturedAt = capturedAt;
-  if (supersedesArtifactId) inputRecord.supersedesArtifactId = supersedesArtifactId;
   try {
     const stored = store.storeAgentViewArtifact(inputRecord);
     const actorId = readString(body['actorId']) ?? provenanceActorId;
@@ -781,13 +781,24 @@ export function createWorkContextArtifactRouter(
     if (viewArtifact !== undefined) {
       const validation = validateAgentViewArtifact(viewArtifact);
       if (!validation.valid) {
-        sendGatewayError(res, 'INVALID_ARGUMENT', 'viewArtifact must be a valid AgentViewArtifact package', false, {
-          reasonCode: 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
-          operation,
-          workContextId,
-          field: 'viewArtifact',
-          validationErrors: validation.errors,
-        });
+        const oversized = validation.errors.some((error) => error.code === 'view_oversize');
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          oversized
+            ? 'viewArtifact payload exceeds agent view size cap'
+            : 'viewArtifact must be a valid AgentViewArtifact package',
+          false,
+          {
+            reasonCode: oversized
+              ? 'WORK_CONTEXT_ARTIFACT_VIEW_OVERSIZE_PAYLOAD'
+              : 'WORK_CONTEXT_ARTIFACT_VALIDATION_FAILED',
+            operation,
+            workContextId,
+            field: 'viewArtifact',
+            validationErrors: validation.errors,
+          }
+        );
         return;
       }
       storeViewArtifactPublish({

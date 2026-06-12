@@ -21,7 +21,7 @@ type LoadState =
 function sourceHref(source: AgentViewSource): string | null {
   try {
     const url = new URL(source.url);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    if (url.protocol !== 'https:') return null;
     return url.toString();
   } catch {
     return null;

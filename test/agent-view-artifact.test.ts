@@ -225,6 +225,14 @@ describe('validateAgentViewArtifact — manifest schema', () => {
     expect(codes(result)).toContain('view_invalid_manifest');
   });
 
+  it('rejects impossible calendar timestamps', () => {
+    const result = validateAgentViewArtifact(
+      validPackage({ manifest: manifest({ createdAt: '2026-02-30T01:02:03Z' }) })
+    );
+    expect(result.valid).toBe(false);
+    expect(codes(result)).toContain('view_invalid_manifest');
+  });
+
   it('rejects secret-looking text in the manifest', () => {
     const result = validateAgentViewArtifact(
       validPackage({
@@ -252,6 +260,8 @@ describe('validateAgentViewArtifact — html/css tripwire', () => {
   const cases: Array<[string, string]> = [
     ['script tag', '<html><body><script>alert(1)</script></body></html>'],
     ['onerror handler', '<html><body><img src=x onerror="alert(1)"></body></html>'],
+    ['script slash separator', '<html><body><script/src="https://evil"></script></body></html>'],
+    ['slash-separated onerror handler', '<html><body><img/src=x/onerror="alert(1)"></body></html>'],
     ['javascript uri', '<html><body><a href="javascript:alert(1)">x</a></body></html>'],
     ['nested iframe', '<html><body><iframe src="https://evil"></iframe></body></html>'],
     ['object tag', '<html><body><object data="x"></object></body></html>'],

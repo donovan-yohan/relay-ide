@@ -134,4 +134,21 @@ describe('AgentViewArtifactViewer', () => {
     );
     expect(links[1]!.href).toBe('https://example.com/design');
   });
+
+  it('renders http source URLs as inert text', async () => {
+    mocks.fetchAgentViewArtifactPackage.mockResolvedValue({
+      ...pkg,
+      manifest: {
+        ...pkg.manifest,
+        sources: [{ label: 'plain http source', url: 'http://example.com/plain', kind: 'doc' }],
+      },
+    });
+    await renderViewer();
+
+    const provenance = container!.querySelector(
+      '.agent-view-artifact-viewer__provenance'
+    );
+    expect(provenance!.textContent).toContain('plain http source');
+    expect(provenance!.querySelector('a')).toBeNull();
+  });
 });

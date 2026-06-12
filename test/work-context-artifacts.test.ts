@@ -333,6 +333,17 @@ describe('WorkContext artifact store/index', () => {
     expect(stored.metadata.capturedAt).toBe('2026-06-08T12:00:03.000Z');
   });
 
+  it('rejects impossible agent view timestamps without date rollover', () => {
+    const { store } = tmpStore();
+    const pkg = viewArtifact({
+      manifest: { ...viewArtifact().manifest, updatedAt: '2026-02-30T12:00:03Z' },
+    });
+
+    expect(() =>
+      store.storeAgentViewArtifact({ workContextId: 'wc:view-invalid-timestamp', viewArtifact: pkg })
+    ).toThrow(WorkContextArtifactStoreError);
+  });
+
   it('derives agent view supersession from manifest revision when top-level field is omitted', () => {
     const { store } = tmpStore();
     const first = store.storeAgentViewArtifact({
@@ -401,6 +412,36 @@ describe('WorkContext artifact store/index', () => {
       handoff.metadata.id,
       replacement.metadata.id,
     ].sort());
+  });
+
+  it('backfills agent view task refs from manifest scope during migration', () => {
+    const { root, store } = tmpStore();
+    const pkg = viewArtifact({
+      manifest: {
+        ...viewArtifact().manifest,
+        scope: {
+          ...viewArtifact().manifest.scope,
+          taskRefs: [
+            { kind: 'github-issue', id: '830' },
+            { kind: 'github-pr', id: '920' },
+          ],
+        },
+      },
+    });
+    const stored = store.storeAgentViewArtifact({ workContextId: 'wc:view-backfill', viewArtifact: pkg });
+    const db = new Database(path.join(root, 'index.db'));
+    cleanup.push(() => db.close());
+    db.prepare('DELETE FROM work_context_artifact_task_refs WHERE artifact_id = ?').run(stored.metadata.id);
+
+    const reopened = createWorkContextArtifactStore({
+      dbPath: path.join(root, 'index.db'),
+      payloadRoot: path.join(root, 'payloads'),
+    });
+    cleanup.push(() => reopened.close());
+
+    expect(reopened.list({ taskRef: { kind: 'github-pr', id: '920' } })[0]?.metadata.id).toBe(
+      stored.metadata.id
+    );
   });
 
   it('indexes every task ref from a handoff artifact payload', () => {

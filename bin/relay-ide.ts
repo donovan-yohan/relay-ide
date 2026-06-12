@@ -3485,11 +3485,10 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
     if (typeof input['workContextId'] !== 'string') {
       gatewayInvalid(commandName, '--work-context-id is required', { field: 'workContextId' });
     }
-    if (
-      (typeof input['artifact'] !== 'object' || input['artifact'] === null) &&
-      (typeof input['viewArtifact'] !== 'object' || input['viewArtifact'] === null)
-    ) {
-      gatewayInvalid(commandName, '--artifact-file, --view-file, input artifact, or input viewArtifact is required', {
+    const hasArtifact = isGatewayRecord(input['artifact']);
+    const hasViewArtifact = isGatewayRecord(input['viewArtifact']);
+    if (hasArtifact === hasViewArtifact) {
+      gatewayInvalid(commandName, 'exactly one of artifact or viewArtifact is required', {
         fields: ['artifact', 'viewArtifact'],
       });
     }

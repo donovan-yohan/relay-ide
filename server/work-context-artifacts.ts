@@ -41,7 +41,7 @@ const WINDOWS_ABSOLUTE_PATH_RE = /(?:^|[\s:=('"])[a-z]:[\\/][^\s)'"]+/gi;
 const UNC_PATH_RE = /(?:^|[\s:=('"])\\\\[^\s\\/'"]+[\\/][^\s)'"]+/g;
 const KANBAN_TASK_ID_RE = /\bt_[a-f0-9]{8,}\b/gi;
 const STRICT_ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const AGENT_VIEW_ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const AGENT_VIEW_ISO_TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS work_context_artifacts (
@@ -532,14 +532,14 @@ export function createWorkContextArtifactStore(input: {
         storeInput.capturedAt ?? storeInput.viewArtifact.manifest.updatedAt,
         'capturedAt'
       );
-      const payloadJson = JSON.stringify(storeInput.viewArtifact, null, 2);
-      const payloadSha256 = sha256Hex(payloadJson);
-      const payloadPath = writePayloadFile(payloadJson, payloadSha256);
-      const payloadBytes = Buffer.byteLength(payloadJson, 'utf8');
       const visibility = storeInput.viewArtifact.manifest.export.policy;
       if (storeInput.visibility !== undefined && storeInput.visibility !== visibility) {
         throw new WorkContextArtifactStoreError(400, 'artifact_visibility_mismatch');
       }
+      const payloadJson = JSON.stringify(storeInput.viewArtifact, null, 2);
+      const payloadSha256 = sha256Hex(payloadJson);
+      const payloadPath = writePayloadFile(payloadJson, payloadSha256);
+      const payloadBytes = Buffer.byteLength(payloadJson, 'utf8');
       const metadata: WorkContextArtifactMetadata = {
         id: artifactId,
         workContextId: storeInput.workContextId,
@@ -760,9 +760,16 @@ function payloadTaskRefs(row: WorkContextArtifactRow): IndexedTaskRef[] {
     assertPayloadSha256(raw, row);
     const parsed = JSON.parse(raw) as unknown;
     if (!isRecord(parsed)) return [];
-    const scope = parsed.scope;
-    if (!isRecord(scope) || !Array.isArray(scope.taskRefs)) return [];
-    return scope.taskRefs.filter(isIndexableTaskRef);
+    const directScope = parsed.scope;
+    const manifest = parsed.manifest;
+    const manifestScope = isRecord(manifest) ? manifest.scope : undefined;
+    const directRefs = isRecord(directScope) && Array.isArray(directScope.taskRefs)
+      ? directScope.taskRefs
+      : [];
+    const manifestRefs = isRecord(manifestScope) && Array.isArray(manifestScope.taskRefs)
+      ? manifestScope.taskRefs
+      : [];
+    return [...directRefs, ...manifestRefs].filter(isIndexableTaskRef);
   } catch {
     return [];
   }
@@ -876,14 +883,37 @@ function assertIsoTimestamp(value: string, label: string): void {
 }
 
 function normalizeAgentViewIsoTimestamp(value: string, label: string): string {
-  if (!AGENT_VIEW_ISO_TIMESTAMP_RE.test(value)) {
-    throw new WorkContextArtifactStoreError(400, `${label}_invalid`);
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = parseAgentViewIsoTimestamp(value);
+  if (!parsed) {
     throw new WorkContextArtifactStoreError(400, `${label}_invalid`);
   }
   return parsed.toISOString();
+}
+
+function parseAgentViewIsoTimestamp(value: string): Date | null {
+  const match = AGENT_VIEW_ISO_TIMESTAMP_RE.exec(value);
+  if (!match) return null;
+  const [, rawYear, rawMonth, rawDay, rawHour, rawMinute, rawSecond, rawFraction] = match;
+  const year = Number(rawYear);
+  const month = Number(rawMonth);
+  const day = Number(rawDay);
+  const hour = Number(rawHour);
+  const minute = Number(rawMinute);
+  const second = Number(rawSecond);
+  const milliseconds = rawFraction ? Number(rawFraction.padEnd(3, '0')) : 0;
+  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second, milliseconds));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() + 1 !== month ||
+    parsed.getUTCDate() !== day ||
+    parsed.getUTCHours() !== hour ||
+    parsed.getUTCMinutes() !== minute ||
+    parsed.getUTCSeconds() !== second ||
+    parsed.getUTCMilliseconds() !== milliseconds
+  ) {
+    return null;
+  }
+  return parsed;
 }
 
 function assertNonEmptyString(value: string, label: string): void {

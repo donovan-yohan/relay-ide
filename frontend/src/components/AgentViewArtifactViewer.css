@@ -172,7 +172,7 @@
 .agent-view-artifact-viewer__source-link {
   color: var(--status-info);
   text-decoration: none;
-  border-bottom: 1px solid currentColor;
+  border-bottom: 1px solid currentcolor;
 }
 
 .agent-view-artifact-viewer__source-link:hover,

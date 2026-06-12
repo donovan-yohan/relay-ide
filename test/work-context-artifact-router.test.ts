@@ -844,6 +844,9 @@ describe('WorkContext artifact router', () => {
       body: JSON.stringify({ workContextId, viewArtifact: oversized }),
     });
     expect(oversizedPublish.status).toBe(400);
+    expect(await json(oversizedPublish)).toMatchObject({
+      error: { details: { reasonCode: 'WORK_CONTEXT_ARTIFACT_VIEW_OVERSIZE_PAYLOAD' } },
+    });
   });
 
   it('exports agent view artifacts as sanitized manifest-only public copies', async () => {

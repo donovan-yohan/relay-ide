@@ -122,7 +122,7 @@ export interface AgentViewValidationResult {
 
 // --- shared helpers -------------------------------------------------------
 
-const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const ISO_TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/;
 
 // Secret/credential redaction block — mirrors shared/pipeline-handoff-artifact.ts.
 const SECRET_TEXT_RE =
@@ -134,11 +134,11 @@ const UNC_PATH_RE = /(?:^|[\s:=('"])\\\\[^\s\\/'"]+[\\/][^\s)'"]+/g;
 const KANBAN_TASK_ID_RE = /\bt_[a-f0-9]{8,}\b/gi;
 
 // HTML tripwire patterns — defense in depth, NOT the primary control.
-const HTML_SCRIPT_RE = /<script[\s>]/i;
+const HTML_SCRIPT_RE = /<script\b/i;
 const HTML_SCRIPT_CLOSE_RE = /<\/script\s*>/i;
-const HTML_INLINE_HANDLER_RE = /\son[a-z][a-z0-9-]*\s*=/i;
+const HTML_INLINE_HANDLER_RE = /\bon[a-z][a-z0-9-]*\s*=/i;
 const HTML_JAVASCRIPT_URI_RE = /javascript\s*:/i;
-const HTML_DANGEROUS_TAG_RE = /<(?:iframe|object|embed)[\s>]/i;
+const HTML_DANGEROUS_TAG_RE = /<(?:iframe|object|embed)\b/i;
 const CSS_RAW_HTML_BREAKOUT_RE = /<\/?(?:style|script|iframe|object|embed|html|body|head)\b/i;
 
 // `<link rel="stylesheet">` / `<script>` stripping for assembleInlinedHtml.
@@ -161,8 +161,34 @@ function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
 }
 
+function parseIsoTimestamp(value: string): Date | null {
+  const match = ISO_TIMESTAMP_RE.exec(value);
+  if (!match) return null;
+  const [, rawYear, rawMonth, rawDay, rawHour, rawMinute, rawSecond, rawFraction] = match;
+  const year = Number(rawYear);
+  const month = Number(rawMonth);
+  const day = Number(rawDay);
+  const hour = Number(rawHour);
+  const minute = Number(rawMinute);
+  const second = Number(rawSecond);
+  const milliseconds = rawFraction ? Number(rawFraction.padEnd(3, '0')) : 0;
+  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second, milliseconds));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() + 1 !== month ||
+    parsed.getUTCDate() !== day ||
+    parsed.getUTCHours() !== hour ||
+    parsed.getUTCMinutes() !== minute ||
+    parsed.getUTCSeconds() !== second ||
+    parsed.getUTCMilliseconds() !== milliseconds
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
 function isIsoTimestamp(value: unknown): value is string {
-  return typeof value === 'string' && ISO_TIMESTAMP_RE.test(value);
+  return typeof value === 'string' && parseIsoTimestamp(value) !== null;
 }
 
 function byteLength(value: string): number {
