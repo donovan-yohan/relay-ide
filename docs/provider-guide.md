@@ -177,3 +177,12 @@ For each provider:
 ## 11. Deletion policy
 
 When a provider is fully V2-native, delete replaced V1 code in the same provider stack. If a temporary bridge is used to keep the stack moving, the PR must explicitly label it as temporary and include the deletion target in its body.
+
+## 12. Agent collaboration: role defaults + prompt appendix (#953)
+
+Relay-launched agent sessions are not isolated terminals — other agents and operators can discover and message them through the CLI gateway (`roster.list`, `inbox.*`, `events subscribe --topic inbox`). To teach a session how to collaborate, two provider-neutral primitives live in `shared/agent-roster.ts`:
+
+- **Role-default map** (`DEFAULT_AGENT_ROLE_MAP` / `roleForAgent(agent)`): a lightweight collaboration hint keyed by the lowercased agent kind — `claude → implementer`, `codex → reviewer`, `hermes`/`ebi → orchestrator`, `opencode → implementer`, everything else `collaborator`. It is a HINT (surfaced as `RosterEntry.role`), not an authorization boundary, and deliberately not a closed union — register a default for a custom provider by extending the map, or override per call. Do not hard-code the architecture around these agents.
+- **Collaboration prompt appendix** (`collaborationPromptAppendix({ role, provider })`): the canonical, succinct system-prompt block that tells an agent how to identify its own session/work context, list active collaborators (`roster.list`), send/ack inbox messages, and subscribe to inbox events instead of polling. It explicitly avoids raw tmux/PTY steering.
+
+This is the **authoring source** so docs and any future launcher agree on one text. Wiring the appendix into the live launch path is a follow-up: today there is no system-prompt injection seam (`server/protocol-adapter.ts` `SessionOptions.systemPrompt` is inert, and the PTY path only injects hook settings). The smallest future seam is appending framework-derived args (e.g. Claude `--append-system-prompt <appendix>`) at `createPtySession` after `resolveAgentFramework`, reusing the reserved `AgentFramework.extraArgs` slot. Until then, providers can render the appendix into their own launch prompt from the shared helper.

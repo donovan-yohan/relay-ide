@@ -293,7 +293,11 @@ function writeGatewayOutputFile(
 ): void {
   const resolvedOutputPath = path.resolve(outputPath);
   try {
-    fs.writeFileSync(resolvedOutputPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(
+      resolvedOutputPath,
+      `${JSON.stringify(payload, null, 2)}\n`,
+      'utf8'
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     printGatewayEnvelope(
@@ -1498,6 +1502,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'handoff-artifacts.copy',
   'workflow-runs.list',
   'workflow-runs.get',
+  'roster.list',
 ]);
 
 function gatewayActorToken(): string {
@@ -2636,7 +2641,8 @@ function parseGatewaySessionWaitPredicate(
     );
   }
 
-  if (outputText !== undefined) return { kind: 'output-text', value: outputText };
+  if (outputText !== undefined)
+    return { kind: 'output-text', value: outputText };
   return { kind: 'idle-ms', value: idleMs! };
 }
 
@@ -2754,13 +2760,16 @@ async function runGatewaySessionWait(sessionArgs: string[]): Promise<never> {
     const remainingBytes = Math.max(0, maxBytes - bytesObserved);
     const exceedsMaxBytes = nextBytes > remainingBytes;
     const observedBytes = exceedsMaxBytes ? remainingBytes : nextBytes;
-    const observedFrame = exceedsMaxBytes ? frame.subarray(0, observedBytes) : frame;
+    const observedFrame = exceedsMaxBytes
+      ? frame.subarray(0, observedBytes)
+      : frame;
 
     bytesObserved += observedBytes;
     if (exceedsMaxBytes) truncated = true;
     if (observedBytes > 0) refreshIdleTimer();
     if (predicate.kind === 'output-text') {
-      outputWindow += observedBytes > 0 ? outputDecoder.write(observedFrame) : '';
+      outputWindow +=
+        observedBytes > 0 ? outputDecoder.write(observedFrame) : '';
       if (outputWindow.includes(predicate.value)) {
         finishOk('matched');
         return;
@@ -2795,16 +2804,25 @@ async function runGatewaySessionWait(sessionArgs: string[]): Promise<never> {
 
   ws.once('close', (code, reason) => {
     if (settled) return;
-    finishError('SESSION_STREAM_CLOSED', 'PTY stream closed before sessions.wait completed', {
-      status: 'closed',
-      closeCode: code,
-      reason: reason.toString('utf8'),
-    });
+    finishError(
+      'SESSION_STREAM_CLOSED',
+      'PTY stream closed before sessions.wait completed',
+      {
+        status: 'closed',
+        closeCode: code,
+        reason: reason.toString('utf8'),
+      }
+    );
   });
   ws.once('error', (error) => {
     if (settled) return;
     const message = error instanceof Error ? error.message : String(error);
-    finishError('PTY_STREAM_ERROR', `PTY stream error: ${message}`, {}, gatewayWsErrorCode(message));
+    finishError(
+      'PTY_STREAM_ERROR',
+      `PTY stream error: ${message}`,
+      {},
+      gatewayWsErrorCode(message)
+    );
   });
 
   await opened;
@@ -3493,7 +3511,10 @@ async function runGatewaySupervisorSessions(): Promise<never> {
 }
 
 function parseGatewaySupervisorActionBody(
-  commandName: 'supervisor.sendText' | 'supervisor.sendKey' | 'supervisor.submit',
+  commandName:
+    | 'supervisor.sendText'
+    | 'supervisor.sendKey'
+    | 'supervisor.submit',
   supervisorArgs: string[]
 ): Record<string, unknown> {
   const body = parseGatewayInputObject(commandName, supervisorArgs);
@@ -3533,7 +3554,10 @@ function parseGatewaySupervisorActionBody(
 }
 
 function validateGatewaySupervisorActionBody(
-  commandName: 'supervisor.sendText' | 'supervisor.sendKey' | 'supervisor.submit',
+  commandName:
+    | 'supervisor.sendText'
+    | 'supervisor.sendKey'
+    | 'supervisor.submit',
   body: Record<string, unknown>
 ): void {
   if (
@@ -3557,10 +3581,14 @@ function validateGatewaySupervisorActionBody(
     typeof body['key'] === 'string' &&
     !(SUPERVISOR_SEND_KEY_NAMES as readonly string[]).includes(body['key'])
   ) {
-    gatewayInvalid(commandName, '--key must be one canonical supervisor key name', {
-      field: 'key',
-      allowedKeys: SUPERVISOR_SEND_KEY_NAMES,
-    });
+    gatewayInvalid(
+      commandName,
+      '--key must be one canonical supervisor key name',
+      {
+        field: 'key',
+        allowedKeys: SUPERVISOR_SEND_KEY_NAMES,
+      }
+    );
   }
   const id = body['id'];
   const targetIds = body['targetIds'];
@@ -3715,21 +3743,33 @@ async function runGatewaySupervisor(gatewayArgs: string[]): Promise<never> {
   });
 }
 
-function gatewayReadJsonFile(commandName: RelayCliGatewayCommand, filePath: string): Record<string, unknown> {
+function gatewayReadJsonFile(
+  commandName: RelayCliGatewayCommand,
+  filePath: string
+): Record<string, unknown> {
   try {
-    return parseGatewayJson(commandName, fs.readFileSync(path.resolve(filePath), 'utf8'));
+    return parseGatewayJson(
+      commandName,
+      fs.readFileSync(path.resolve(filePath), 'utf8')
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     gatewayInvalid(commandName, `could not read JSON file: ${message}`);
   }
 }
 
-function workContextArtifactTaskRefFromArgs(commandName: RelayCliGatewayCommand, args: string[]): Record<string, unknown> | undefined {
+function workContextArtifactTaskRefFromArgs(
+  commandName: RelayCliGatewayCommand,
+  args: string[]
+): Record<string, unknown> | undefined {
   const kind = gatewayArg(args, '--task-ref-kind');
   const id = gatewayArg(args, '--task-ref-id');
   if (!kind && !id) return undefined;
   if (!kind || !id) {
-    gatewayInvalid(commandName, '--task-ref-kind and --task-ref-id are both required');
+    gatewayInvalid(
+      commandName,
+      '--task-ref-kind and --task-ref-id are both required'
+    );
   }
   return { kind, id };
 }
@@ -3762,7 +3802,10 @@ function addWorkContextArtifactBodyFlags(
   const artifactFile = gatewayArg(args, '--artifact-file');
   const viewFile = gatewayArg(args, '--view-file');
   if (artifactFile && viewFile) {
-    gatewayInvalid(commandName, '--artifact-file and --view-file are mutually exclusive');
+    gatewayInvalid(
+      commandName,
+      '--artifact-file and --view-file are mutually exclusive'
+    );
   }
   if (artifactFile && body['artifact'] === undefined) {
     body['artifact'] = gatewayReadJsonFile(commandName, artifactFile);
@@ -3774,25 +3817,34 @@ function addWorkContextArtifactBodyFlags(
 }
 
 // eslint-disable-next-line complexity, sonarjs/cognitive-complexity -- CLI gateway subcommand dispatcher keeps each public verb's argv mapping explicit.
-async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<never> {
+async function runGatewayWorkContextArtifacts(
+  gatewayArgs: string[]
+): Promise<never> {
   const subcommand = gatewayArgs[1];
   const artifactArgs = gatewayArgs.slice(2);
   if (subcommand === 'publish') {
-    const commandName: RelayCliGatewayCommand = 'work-context-artifacts.publish';
+    const commandName: RelayCliGatewayCommand =
+      'work-context-artifacts.publish';
     const input = addWorkContextArtifactBodyFlags(
       commandName,
       parseGatewayInputObject(commandName, artifactArgs),
       artifactArgs
     );
     if (typeof input['workContextId'] !== 'string') {
-      gatewayInvalid(commandName, '--work-context-id is required', { field: 'workContextId' });
+      gatewayInvalid(commandName, '--work-context-id is required', {
+        field: 'workContextId',
+      });
     }
     const hasArtifact = isGatewayRecord(input['artifact']);
     const hasViewArtifact = isGatewayRecord(input['viewArtifact']);
     if (hasArtifact === hasViewArtifact) {
-      gatewayInvalid(commandName, 'exactly one of artifact or viewArtifact is required', {
-        fields: ['artifact', 'viewArtifact'],
-      });
+      gatewayInvalid(
+        commandName,
+        'exactly one of artifact or viewArtifact is required',
+        {
+          fields: ['artifact', 'viewArtifact'],
+        }
+      );
     }
     const result = await gatewayHttpJson({
       commandName,
@@ -3811,19 +3863,26 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
     const stage = gatewayArg(artifactArgs, '--stage');
     const limit = gatewayArg(artifactArgs, '--limit');
     const currentHeadSha = gatewayArg(artifactArgs, '--current-head-sha');
-    const taskRef = workContextArtifactTaskRefFromArgs(commandName, artifactArgs);
+    const taskRef = workContextArtifactTaskRefFromArgs(
+      commandName,
+      artifactArgs
+    );
     if (workContextId) query.set('workContextId', workContextId);
     if (projectId) query.set('projectId', projectId);
     if (stage) query.set('stage', stage);
     if (limit) query.set('limit', limit);
     if (currentHeadSha) query.set('currentHeadSha', currentHeadSha);
-    if (artifactArgs.includes('--include-superseded')) query.set('includeSuperseded', 'true');
+    if (artifactArgs.includes('--include-superseded'))
+      query.set('includeSuperseded', 'true');
     if (taskRef) {
       query.set('taskRefKind', String(taskRef['kind']));
       query.set('taskRefId', String(taskRef['id']));
     }
     if (!workContextId && !taskRef) {
-      gatewayInvalid(commandName, '--work-context-id or --task-ref-kind/--task-ref-id is required');
+      gatewayInvalid(
+        commandName,
+        '--work-context-id or --task-ref-kind/--task-ref-id is required'
+      );
     }
     const result = await gatewayHttpJson({
       commandName,
@@ -3835,7 +3894,8 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
   if (subcommand === 'show') {
     const commandName: RelayCliGatewayCommand = 'work-context-artifacts.show';
     const id = gatewayArg(artifactArgs, '--id') ?? artifactArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid(commandName, '--id is required');
     const query = new URLSearchParams();
     const currentHeadSha = gatewayArg(artifactArgs, '--current-head-sha');
     if (currentHeadSha) query.set('currentHeadSha', currentHeadSha);
@@ -3850,11 +3910,17 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
   }
   if (subcommand === 'pin' || subcommand === 'unpin') {
     const commandName: RelayCliGatewayCommand =
-      subcommand === 'pin' ? 'work-context-artifacts.pin' : 'work-context-artifacts.unpin';
+      subcommand === 'pin'
+        ? 'work-context-artifacts.pin'
+        : 'work-context-artifacts.unpin';
     const id = gatewayArg(artifactArgs, '--id') ?? artifactArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid(commandName, '--id is required');
     const workContextId = gatewayArg(artifactArgs, '--work-context-id');
-    if (!workContextId) gatewayInvalid(commandName, '--work-context-id is required', { field: 'workContextId' });
+    if (!workContextId)
+      gatewayInvalid(commandName, '--work-context-id is required', {
+        field: 'workContextId',
+      });
     const actorId = gatewayArg(artifactArgs, '--actor-id');
     const result = await gatewayHttpJson({
       commandName,
@@ -3868,7 +3934,8 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
   if (subcommand === 'export') {
     const commandName: RelayCliGatewayCommand = 'work-context-artifacts.export';
     const id = gatewayArg(artifactArgs, '--id') ?? artifactArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid(commandName, '--id is required');
     const result = await gatewayHttpJson({
       commandName,
       pathName: `/work-context-artifacts/${encodeURIComponent(id)}/export`,
@@ -3889,9 +3956,13 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
     });
     printGatewayEnvelope(gatewayOk(commandName, result), 0);
   }
-  gatewayInvalid('work-context-artifacts.show', 'unknown work-context-artifacts command', {
-    args: gatewayArgs,
-  });
+  gatewayInvalid(
+    'work-context-artifacts.show',
+    'unknown work-context-artifacts command',
+    {
+      args: gatewayArgs,
+    }
+  );
 }
 
 function addWorkContextMessageQueryParam(
@@ -3923,7 +3994,10 @@ function addWorkContextMessageBodyFlags(
   const payloadFile = gatewayArg(args, '--payload-file');
   const payloadJson = gatewayArg(args, '--payload-json');
   if (payloadFile && payloadJson) {
-    gatewayInvalid('work-context-messages.append', '--payload-file and --payload-json are mutually exclusive');
+    gatewayInvalid(
+      'work-context-messages.append',
+      '--payload-file and --payload-json are mutually exclusive'
+    );
   }
   if ((payloadFile || payloadJson) && body['payload'] !== undefined) {
     gatewayInvalid(
@@ -3932,15 +4006,23 @@ function addWorkContextMessageBodyFlags(
     );
   }
   if (payloadFile) {
-    body['payload'] = gatewayReadJsonFile('work-context-messages.append', payloadFile);
+    body['payload'] = gatewayReadJsonFile(
+      'work-context-messages.append',
+      payloadFile
+    );
   }
   if (payloadJson) {
-    body['payload'] = parseGatewayJson('work-context-messages.append', payloadJson);
+    body['payload'] = parseGatewayJson(
+      'work-context-messages.append',
+      payloadJson
+    );
   }
   return body;
 }
 
-async function runGatewayWorkContextMessages(gatewayArgs: string[]): Promise<never> {
+async function runGatewayWorkContextMessages(
+  gatewayArgs: string[]
+): Promise<never> {
   const subcommand = gatewayArgs[1];
   const messageArgs = gatewayArgs.slice(2);
   if (subcommand === 'append') {
@@ -3950,13 +4032,17 @@ async function runGatewayWorkContextMessages(gatewayArgs: string[]): Promise<nev
       messageArgs
     );
     if (typeof input['workContextId'] !== 'string') {
-      gatewayInvalid(commandName, '--work-context-id is required', { field: 'workContextId' });
+      gatewayInvalid(commandName, '--work-context-id is required', {
+        field: 'workContextId',
+      });
     }
     if (typeof input['kind'] !== 'string') {
       gatewayInvalid(commandName, '--kind is required', { field: 'kind' });
     }
     if (typeof input['summary'] !== 'string') {
-      gatewayInvalid(commandName, '--summary is required', { field: 'summary' });
+      gatewayInvalid(commandName, '--summary is required', {
+        field: 'summary',
+      });
     }
     const result = await gatewayHttpJson({
       commandName,
@@ -3985,8 +4071,16 @@ async function runGatewayWorkContextMessages(gatewayArgs: string[]): Promise<nev
     ] as const) {
       addWorkContextMessageQueryParam(query, messageArgs, flag, key);
     }
-    if (!query.has('workContextId') && !query.has('threadId') && !query.has('parentMessageId') && !(query.has('refKind') && query.has('refValue'))) {
-      gatewayInvalid(commandName, '--work-context-id, --thread-id, --parent-message-id, or --ref-kind/--ref-value is required');
+    if (
+      !query.has('workContextId') &&
+      !query.has('threadId') &&
+      !query.has('parentMessageId') &&
+      !(query.has('refKind') && query.has('refValue'))
+    ) {
+      gatewayInvalid(
+        commandName,
+        '--work-context-id, --thread-id, --parent-message-id, or --ref-kind/--ref-value is required'
+      );
     }
     const result = await gatewayHttpJson({
       commandName,
@@ -3998,7 +4092,8 @@ async function runGatewayWorkContextMessages(gatewayArgs: string[]): Promise<nev
   if (subcommand === 'show') {
     const commandName: RelayCliGatewayCommand = 'work-context-messages.show';
     const id = gatewayArg(messageArgs, '--id') ?? messageArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid(commandName, '--id is required');
     const result = await gatewayHttpJson({
       commandName,
       pathName: `/work-context-messages/${encodeURIComponent(id)}`,
@@ -4018,13 +4113,19 @@ async function runGatewayWorkContextMessages(gatewayArgs: string[]): Promise<nev
     });
     printGatewayEnvelope(gatewayOk(commandName, result), 0);
   }
-  gatewayInvalid('work-context-messages.show', 'unknown work-context-messages command', {
-    args: gatewayArgs,
-  });
+  gatewayInvalid(
+    'work-context-messages.show',
+    'unknown work-context-messages command',
+    {
+      args: gatewayArgs,
+    }
+  );
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- mirrors the stable handoff-artifacts attach/list/show/copy argv contract explicitly.
-async function runGatewayHandoffArtifacts(gatewayArgs: string[]): Promise<never> {
+async function runGatewayHandoffArtifacts(
+  gatewayArgs: string[]
+): Promise<never> {
   const subcommand = gatewayArgs[1];
   const artifactArgs = gatewayArgs.slice(2);
   if (subcommand === 'attach') {
@@ -4035,10 +4136,16 @@ async function runGatewayHandoffArtifacts(gatewayArgs: string[]): Promise<never>
       artifactArgs
     );
     if (typeof input['workContextId'] !== 'string') {
-      gatewayInvalid(commandName, '--work-context-id is required', { field: 'workContextId' });
+      gatewayInvalid(commandName, '--work-context-id is required', {
+        field: 'workContextId',
+      });
     }
     if (typeof input['artifact'] !== 'object' || input['artifact'] === null) {
-      gatewayInvalid(commandName, '--artifact-file or input artifact is required', { field: 'artifact' });
+      gatewayInvalid(
+        commandName,
+        '--artifact-file or input artifact is required',
+        { field: 'artifact' }
+      );
     }
     const result = await gatewayHttpJson({
       commandName,
@@ -4057,19 +4164,26 @@ async function runGatewayHandoffArtifacts(gatewayArgs: string[]): Promise<never>
     const stage = gatewayArg(artifactArgs, '--stage');
     const limit = gatewayArg(artifactArgs, '--limit');
     const currentHeadSha = gatewayArg(artifactArgs, '--current-head-sha');
-    const taskRef = workContextArtifactTaskRefFromArgs(commandName, artifactArgs);
+    const taskRef = workContextArtifactTaskRefFromArgs(
+      commandName,
+      artifactArgs
+    );
     if (workContextId) query.set('workContextId', workContextId);
     if (projectId) query.set('projectId', projectId);
     if (stage) query.set('stage', stage);
     if (limit) query.set('limit', limit);
     if (currentHeadSha) query.set('currentHeadSha', currentHeadSha);
-    if (artifactArgs.includes('--include-superseded')) query.set('includeSuperseded', 'true');
+    if (artifactArgs.includes('--include-superseded'))
+      query.set('includeSuperseded', 'true');
     if (taskRef) {
       query.set('taskRefKind', String(taskRef['kind']));
       query.set('taskRefId', String(taskRef['id']));
     }
     if (!workContextId && !taskRef) {
-      gatewayInvalid(commandName, '--work-context-id or --task-ref-kind/--task-ref-id is required');
+      gatewayInvalid(
+        commandName,
+        '--work-context-id or --task-ref-kind/--task-ref-id is required'
+      );
     }
     const result = await gatewayHttpJson({
       commandName,
@@ -4081,7 +4195,8 @@ async function runGatewayHandoffArtifacts(gatewayArgs: string[]): Promise<never>
   if (subcommand === 'show') {
     const commandName: RelayCliGatewayCommand = 'handoff-artifacts.show';
     const id = gatewayArg(artifactArgs, '--id') ?? artifactArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid(commandName, '--id is required');
     const query = new URLSearchParams();
     const currentHeadSha = gatewayArg(artifactArgs, '--current-head-sha');
     if (currentHeadSha) query.set('currentHeadSha', currentHeadSha);
@@ -4097,7 +4212,8 @@ async function runGatewayHandoffArtifacts(gatewayArgs: string[]): Promise<never>
   if (subcommand === 'copy') {
     const commandName: RelayCliGatewayCommand = 'handoff-artifacts.copy';
     const id = gatewayArg(artifactArgs, '--id') ?? artifactArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid(commandName, '--id is required');
     const result = await gatewayHttpJson({
       commandName,
       pathName: `/pipeline-handoff-artifacts/${encodeURIComponent(id)}/copy`,
@@ -4109,9 +4225,13 @@ async function runGatewayHandoffArtifacts(gatewayArgs: string[]): Promise<never>
     }
     printGatewayEnvelope(gatewayOk(commandName, result), 0);
   }
-  gatewayInvalid('handoff-artifacts.show', 'unknown handoff-artifacts command', {
-    args: gatewayArgs,
-  });
+  gatewayInvalid(
+    'handoff-artifacts.show',
+    'unknown handoff-artifacts command',
+    {
+      args: gatewayArgs,
+    }
+  );
 }
 
 async function runGatewayArtifacts(gatewayArgs: string[]): Promise<never> {
@@ -4406,7 +4526,10 @@ async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const workflowArgs = gatewayArgs.slice(2);
   if (subcommand === 'publish') {
-    const input = parseGatewayInputObject('workflow-runs.publish', workflowArgs);
+    const input = parseGatewayInputObject(
+      'workflow-runs.publish',
+      workflowArgs
+    );
     const result = await gatewayHttpJson({
       commandName: 'workflow-runs.publish',
       pathName: '/workflow-runs',
@@ -4418,7 +4541,8 @@ async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'update') {
     const id = gatewayArg(workflowArgs, '--id') ?? workflowArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid('workflow-runs.update', '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('workflow-runs.update', '--id is required');
     const input = parseGatewayInputObject('workflow-runs.update', workflowArgs);
     const result = await gatewayHttpJson({
       commandName: 'workflow-runs.update',
@@ -4431,7 +4555,8 @@ async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'list') {
     const workContextId = gatewayArg(workflowArgs, '--work-context-id');
-    if (!workContextId) gatewayInvalid('workflow-runs.list', '--work-context-id is required');
+    if (!workContextId)
+      gatewayInvalid('workflow-runs.list', '--work-context-id is required');
     const query = new URLSearchParams({ workContextId });
     const state = gatewayArg(workflowArgs, '--state');
     const providerRuntime = gatewayArg(workflowArgs, '--provider-runtime');
@@ -4448,7 +4573,8 @@ async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'get') {
     const id = gatewayArg(workflowArgs, '--id') ?? workflowArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid('workflow-runs.get', '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('workflow-runs.get', '--id is required');
     const result = await gatewayHttpJson({
       commandName: 'workflow-runs.get',
       pathName: `/workflow-runs/${encodeURIComponent(id)}`,
@@ -4457,6 +4583,40 @@ async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
     printGatewayEnvelope(gatewayOk('workflow-runs.get', result), 0);
   }
   gatewayInvalid('workflow-runs.get', 'unknown workflow-runs command', {
+    args: gatewayArgs,
+  });
+}
+
+async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const rosterArgs = gatewayArgs.slice(2);
+  if (subcommand === 'list') {
+    const query = new URLSearchParams();
+    const workContextId = gatewayArg(rosterArgs, '--work-context-id');
+    const repo = gatewayArg(rosterArgs, '--repo');
+    const nodeId = gatewayArg(rosterArgs, '--node-id');
+    const provider = gatewayArg(rosterArgs, '--provider');
+    const role = gatewayArg(rosterArgs, '--role');
+    const limit = gatewayArg(rosterArgs, '--limit');
+    if (workContextId) query.set('workContextId', workContextId);
+    if (repo) query.set('repo', repo);
+    if (nodeId) query.set('nodeId', nodeId);
+    if (provider) query.set('provider', provider);
+    if (role) query.set('role', role);
+    if (limit) query.set('limit', limit);
+    if (rosterArgs.includes('--include-terminals'))
+      query.set('includeTerminals', 'true');
+    if (rosterArgs.includes('--needs-attention'))
+      query.set('needsAttention', 'true');
+    const search = query.toString();
+    const result = await gatewayHttpJson({
+      commandName: 'roster.list',
+      pathName: search ? `/roster?${search}` : '/roster',
+      capabilities: ['session:read'],
+    });
+    printGatewayEnvelope(gatewayOk('roster.list', result), 0);
+  }
+  gatewayInvalid('roster.list', 'unknown roster command', {
     args: gatewayArgs,
   });
 }
@@ -4617,8 +4777,10 @@ async function runGatewayV1(): Promise<never> {
     return runGatewayWorkContextMessages(gatewayArgs);
   if (top === 'work-context-artifacts')
     return runGatewayWorkContextArtifacts(gatewayArgs);
-  if (top === 'handoff-artifacts') return runGatewayHandoffArtifacts(gatewayArgs);
+  if (top === 'handoff-artifacts')
+    return runGatewayHandoffArtifacts(gatewayArgs);
   if (top === 'workflow-runs') return runGatewayWorkflowRuns(gatewayArgs);
+  if (top === 'roster') return runGatewayRoster(gatewayArgs);
   if (top === 'artifacts') return runGatewayArtifacts(gatewayArgs);
   if (top === 'supervisor') return runGatewaySupervisor(gatewayArgs);
   if (top === 'events') return runGatewayEvents(gatewayArgs);

@@ -20,10 +20,13 @@ import {
 } from '../shared/security-policy.js';
 
 export const CLI_GATEWAY_ACTOR_AUDIENCE = 'relay:cli-gateway:v1' as const;
-export const CLI_GATEWAY_READ_SCOPE_TASK_REF = 'relay:cli-gateway:v1:read' as const;
-export const CLI_GATEWAY_ACTOR_TOKEN_HEADER = 'x-relay-cli-actor-token' as const;
+export const CLI_GATEWAY_READ_SCOPE_TASK_REF =
+  'relay:cli-gateway:v1:read' as const;
+export const CLI_GATEWAY_ACTOR_TOKEN_HEADER =
+  'x-relay-cli-actor-token' as const;
 export const CLI_GATEWAY_COMMAND_HEADER = 'x-relay-cli-command' as const;
-export const CLI_GATEWAY_CORRELATION_ID_HEADER = 'x-relay-correlation-id' as const;
+export const CLI_GATEWAY_CORRELATION_ID_HEADER =
+  'x-relay-correlation-id' as const;
 export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = [
   'session:read',
   'context:read',
@@ -50,6 +53,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'work-context-messages.list',
   'work-context-messages.show',
   'work-context-messages.query',
+  'roster.list',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
@@ -76,9 +80,15 @@ export type CliGatewayActorCommand =
   | CliGatewayActorReadCommand
   | CliGatewayActorWriteCommand;
 
-const cliGatewayActorReadCommandSet = new Set<string>(CLI_GATEWAY_ACTOR_READ_COMMANDS);
-const cliGatewayActorWriteCommandSet = new Set<string>(CLI_GATEWAY_ACTOR_WRITE_COMMANDS);
-const cliGatewayActorGrantCapabilitySet = new Set<string>(CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES);
+const cliGatewayActorReadCommandSet = new Set<string>(
+  CLI_GATEWAY_ACTOR_READ_COMMANDS
+);
+const cliGatewayActorWriteCommandSet = new Set<string>(
+  CLI_GATEWAY_ACTOR_WRITE_COMMANDS
+);
+const cliGatewayActorGrantCapabilitySet = new Set<string>(
+  CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES
+);
 const cliGatewayActorReadPostCommandSet = new Set<string>([
   'work-context-messages.query',
 ]);
@@ -169,13 +179,17 @@ export function attachAuthenticatedCliGatewayActorCredential(
   req: Request,
   credential: ScopedActorCredentialRecord
 ): void {
-  (req as RequestWithAuthenticatedCliGatewayActor)[AUTHENTICATED_CLI_GATEWAY_ACTOR_CREDENTIAL] = credential;
+  (req as RequestWithAuthenticatedCliGatewayActor)[
+    AUTHENTICATED_CLI_GATEWAY_ACTOR_CREDENTIAL
+  ] = credential;
 }
 
 export function authenticatedCliGatewayActorCredential(
   req: Request
 ): ScopedActorCredentialRecord | undefined {
-  return (req as RequestWithAuthenticatedCliGatewayActor)[AUTHENTICATED_CLI_GATEWAY_ACTOR_CREDENTIAL];
+  return (req as RequestWithAuthenticatedCliGatewayActor)[
+    AUTHENTICATED_CLI_GATEWAY_ACTOR_CREDENTIAL
+  ];
 }
 
 export function bearerActorToken(req: Request): string {
@@ -245,7 +259,10 @@ export function isSupportedCliGatewayActorWriteRequest(
   expectedCommand?: CliGatewayActorWriteCommand
 ): boolean {
   if (req.method !== 'POST' && req.method !== 'PATCH') return false;
-  if (!expectedCommand || !cliGatewayActorWriteCommandSet.has(expectedCommand)) {
+  if (
+    !expectedCommand ||
+    !cliGatewayActorWriteCommandSet.has(expectedCommand)
+  ) {
     return false;
   }
   return req.header(CLI_GATEWAY_COMMAND_HEADER) === expectedCommand;
@@ -351,7 +368,10 @@ export function cliGatewayActorFailure(input: {
             ? 'CLI_ACTOR_ROUTE_UNSUPPORTED'
             : 'CLI_ACTOR_CREDENTIAL_UNSUPPORTED_TYPE';
   return {
-    code: reason && forbiddenActorReasons.has(reason) ? 'FORBIDDEN' : 'UNAUTHORIZED',
+    code:
+      reason && forbiddenActorReasons.has(reason)
+        ? 'FORBIDDEN'
+        : 'UNAUTHORIZED',
     reasonCode,
     message: cliGatewayActorMessage(reasonCode),
     retryable: false,
@@ -378,7 +398,9 @@ export function issueCliGatewayActorCredential(
     capabilities,
     scope: defaultCliGatewayActorScope(scope, capabilities),
     ttlMs,
-    ...(typeof input.expiresAt === 'string' ? { expiresAt: input.expiresAt } : {}),
+    ...(typeof input.expiresAt === 'string'
+      ? { expiresAt: input.expiresAt }
+      : {}),
     ...(isRecord(input.metadata) ? { metadata: input.metadata } : {}),
     ...(typeof input.correlationId === 'string'
       ? { correlationId: input.correlationId }
@@ -397,7 +419,9 @@ export function issueCliGatewayActorCredentialWithGrant(
     actor: request.actor,
     issuer: {
       id: grant.id,
-      ...(grant.issuer.displayName ? { displayName: grant.issuer.displayName } : {}),
+      ...(grant.issuer.displayName
+        ? { displayName: grant.issuer.displayName }
+        : {}),
     },
     grantId: grant.id,
     audience: request.audience,
@@ -421,7 +445,9 @@ export function listCliGatewayActorCredentialsWithGrant(
   return {
     credentials: registry
       .listCredentials()
-      .filter((credential) => credentialMatchesGrantLifecycleRequest(credential, request)),
+      .filter((credential) =>
+        credentialMatchesGrantLifecycleRequest(credential, request)
+      ),
   };
 }
 
@@ -447,8 +473,12 @@ export function revokeCliGatewayActorCredentialWithGrant(
   const grant = validateCliGatewayLifecycleGrant(grantRegistry, request, true);
   const credential = registry.revoke(credentialId, {
     revokedBy: `grant:${grant.id}`,
-    ...(typeof input.metadata === 'object' && input.metadata && 'reason' in input.metadata
-      ? { reason: String((input.metadata as { reason?: unknown }).reason ?? '') }
+    ...(typeof input.metadata === 'object' &&
+    input.metadata &&
+    'reason' in input.metadata
+      ? {
+          reason: String((input.metadata as { reason?: unknown }).reason ?? ''),
+        }
       : {}),
     correlationId: request.correlationId,
   });
@@ -467,7 +497,11 @@ export function rotateCliGatewayActorCredentialWithGrant(
   grantRegistry: HandshakeGrantRegistry,
   credentialId: string,
   input: CliGatewayGrantActorLifecycleInput
-): { token: string; credential: ScopedActorCredentialRecord; revoked: ScopedActorCredentialRecord } {
+): {
+  token: string;
+  credential: ScopedActorCredentialRecord;
+  revoked: ScopedActorCredentialRecord;
+} {
   const existing = registry.getCredential(credentialId);
   if (!existing) {
     throw new CliGatewayActorGrantError(
@@ -485,7 +519,9 @@ export function rotateCliGatewayActorCredentialWithGrant(
     actor: existing.actor,
     issuer: {
       id: grant.id,
-      ...(grant.issuer.displayName ? { displayName: grant.issuer.displayName } : {}),
+      ...(grant.issuer.displayName
+        ? { displayName: grant.issuer.displayName }
+        : {}),
     },
     grantId: grant.id,
     audience: existing.audience,
@@ -526,7 +562,9 @@ function scopeForValidation(
   };
 }
 
-function taskRefForGrantValidation(taskRefs: readonly string[] | undefined): string | undefined {
+function taskRefForGrantValidation(
+  taskRefs: readonly string[] | undefined
+): string | undefined {
   if (!taskRefs?.length) return undefined;
   return (
     taskRefs.find((taskRef) => taskRef !== CLI_GATEWAY_READ_SCOPE_TASK_REF) ??
@@ -553,7 +591,10 @@ function scopeIsAuthorizedByRequest(
 ): boolean {
   return (
     scopeDimensionIsAuthorized(credentialScope.nodeIds, requestScope.nodeIds) &&
-    scopeDimensionIsAuthorized(credentialScope.sessionIds, requestScope.sessionIds) &&
+    scopeDimensionIsAuthorized(
+      credentialScope.sessionIds,
+      requestScope.sessionIds
+    ) &&
     scopeDimensionIsAuthorized(
       credentialScope.globalSessionIds,
       requestScope.globalSessionIds
@@ -563,7 +604,10 @@ function scopeIsAuthorizedByRequest(
       requestScope.workContextIds
     ) &&
     scopeDimensionIsAuthorized(credentialScope.repoIds, requestScope.repoIds) &&
-    scopeDimensionIsAuthorized(credentialScope.pathPrefixes, requestScope.pathPrefixes) &&
+    scopeDimensionIsAuthorized(
+      credentialScope.pathPrefixes,
+      requestScope.pathPrefixes
+    ) &&
     scopeDimensionIsAuthorized(credentialScope.taskRefs, requestScope.taskRefs)
   );
 }
@@ -619,7 +663,9 @@ function strictGrantLifecycleRequest(
   }
   if (input.audience !== CLI_GATEWAY_ACTOR_AUDIENCE) {
     throw new CliGatewayActorGrantError(
-      typeof input.audience === 'string' ? 'audience_expansion' : 'audience_required',
+      typeof input.audience === 'string'
+        ? 'audience_expansion'
+        : 'audience_required',
       'grant-backed CLI actor credentials require audience relay:cli-gateway:v1'
     );
   }
@@ -627,10 +673,13 @@ function strictGrantLifecycleRequest(
   const capabilities = options.capabilities
     ? [...options.capabilities]
     : strictCliGatewayCapabilities(input.capabilities);
-  const scope = defaultCliGatewayActorScope(options.scope ?? strictScope(input.scope));
+  const scope = defaultCliGatewayActorScope(
+    options.scope ?? strictScope(input.scope)
+  );
   const ttlRequired = options.ttlRequired ?? true;
   const ttlMs = typeof input.ttlMs === 'number' ? input.ttlMs : undefined;
-  const expiresAt = typeof input.expiresAt === 'string' ? input.expiresAt : undefined;
+  const expiresAt =
+    typeof input.expiresAt === 'string' ? input.expiresAt : undefined;
   if (ttlRequired && ttlMs == null && !expiresAt) {
     throw new CliGatewayActorGrantError(
       'ttl_required',
@@ -667,12 +716,17 @@ function validateCliGatewayLifecycleGrant(
     requiredCapabilities: request.capabilities,
     actor: request.actor,
     ...(request.deviceId ? { deviceId: request.deviceId } : {}),
-    ...(request.sessionBinding ? { sessionBinding: request.sessionBinding } : {}),
+    ...(request.sessionBinding
+      ? { sessionBinding: request.sessionBinding }
+      : {}),
     scope: scopeForValidation(request.scope),
     consume: false,
     correlationId: request.correlationId,
   };
-  const preflight = grantRegistry.validate(request.grantHandle, validationInput);
+  const preflight = grantRegistry.validate(
+    request.grantHandle,
+    validationInput
+  );
   if (preflight.ok === false) {
     throw new CliGatewayActorGrantError(
       preflight.reason,
@@ -713,7 +767,10 @@ function validateRequestedScopeAgainstGrant(
     grantValues: readonly string[] | undefined;
     requestValues: readonly string[] | undefined;
     wrongReason: HandshakeGrantValidationFailureReason;
-    matches?: (grantValues: readonly string[], requestedValue: string) => boolean;
+    matches?: (
+      grantValues: readonly string[],
+      requestedValue: string
+    ) => boolean;
   }[] = [
     {
       grantValues: grantScope.nodeIds,
@@ -745,7 +802,9 @@ function validateRequestedScopeAgainstGrant(
       requestValues: requestScope.pathPrefixes,
       wrongReason: 'wrong_path_scope',
       matches: (prefixes, requestedPath) =>
-        prefixes.some((prefix) => pathMatchesGrantPrefix(requestedPath, prefix)),
+        prefixes.some((prefix) =>
+          pathMatchesGrantPrefix(requestedPath, prefix)
+        ),
     },
     {
       grantValues: grantScope.taskRefs,
@@ -759,10 +818,12 @@ function validateRequestedScopeAgainstGrant(
     if (!requestValues.length) continue;
     const grantValues = rule.grantValues;
     if (!grantValues?.length) {
-      if (requestOnlyScopeDimensionIsAllowed(rule.wrongReason, requestValues)) continue;
+      if (requestOnlyScopeDimensionIsAllowed(rule.wrongReason, requestValues))
+        continue;
       return rule.wrongReason;
     }
-    const matches = rule.matches ?? ((values, requested) => values.includes(requested));
+    const matches =
+      rule.matches ?? ((values, requested) => values.includes(requested));
     if (!requestValues.every((value) => matches(grantValues, value))) {
       return rule.wrongReason;
     }
@@ -779,7 +840,8 @@ function requestValuesForGrantScopeRule(rule: {
   if (rule.wrongReason !== 'wrong_task_scope') return requestValues;
   return requestValues.filter(
     (taskRef) =>
-      taskRef !== CLI_GATEWAY_READ_SCOPE_TASK_REF || rule.grantValues?.includes(taskRef)
+      taskRef !== CLI_GATEWAY_READ_SCOPE_TASK_REF ||
+      rule.grantValues?.includes(taskRef)
   );
 }
 
@@ -801,7 +863,11 @@ function pathMatchesGrantPrefix(path: string, prefix: string): boolean {
 }
 
 function strictActor(value: unknown): HandshakeGrantActor {
-  if (!isRecord(value) || typeof value.type !== 'string' || typeof value.id !== 'string') {
+  if (
+    !isRecord(value) ||
+    typeof value.type !== 'string' ||
+    typeof value.id !== 'string'
+  ) {
     throw new CliGatewayActorGrantError(
       'actor_required',
       'grant-backed lifecycle requires actor type and id'
@@ -810,7 +876,9 @@ function strictActor(value: unknown): HandshakeGrantActor {
   return {
     type: value.type,
     id: value.id,
-    ...(typeof value.displayName === 'string' ? { displayName: value.displayName } : {}),
+    ...(typeof value.displayName === 'string'
+      ? { displayName: value.displayName }
+      : {}),
   };
 }
 
@@ -821,8 +889,13 @@ function strictCliGatewayCapabilities(value: unknown): RelayCapabilityBit[] {
       'grant-backed lifecycle requires explicit capability bits'
     );
   }
-  const capabilities = value.filter((entry): entry is string => typeof entry === 'string');
-  if (capabilities.length !== value.length || capabilities.some((capability) => capability === '*')) {
+  const capabilities = value.filter(
+    (entry): entry is string => typeof entry === 'string'
+  );
+  if (
+    capabilities.length !== value.length ||
+    capabilities.some((capability) => capability === '*')
+  ) {
     throw new CliGatewayActorGrantError(
       'capability_expansion',
       'grant-backed CLI actor credentials are limited to the CLI gateway capability allowlist'
@@ -834,7 +907,11 @@ function strictCliGatewayCapabilities(value: unknown): RelayCapabilityBit[] {
       'grant-backed lifecycle requires known Relay capability bits'
     );
   }
-  if (capabilities.some((capability) => !cliGatewayActorGrantCapabilitySet.has(capability))) {
+  if (
+    capabilities.some(
+      (capability) => !cliGatewayActorGrantCapabilitySet.has(capability)
+    )
+  ) {
     throw new CliGatewayActorGrantError(
       'capability_expansion',
       'grant-backed CLI actor credentials are limited to the CLI gateway capability allowlist'
@@ -854,9 +931,13 @@ function strictScope(value: unknown): ScopedActorCredentialScope {
   return scope;
 }
 
-function strictSessionBinding(value: Record<string, unknown>): HandshakeGrantSessionBinding {
+function strictSessionBinding(
+  value: Record<string, unknown>
+): HandshakeGrantSessionBinding {
   return {
-    ...(typeof value['sessionId'] === 'string' ? { sessionId: value['sessionId'] } : {}),
+    ...(typeof value['sessionId'] === 'string'
+      ? { sessionId: value['sessionId'] }
+      : {}),
     ...(typeof value['globalSessionId'] === 'string'
       ? { globalSessionId: value['globalSessionId'] }
       : {}),
@@ -869,21 +950,22 @@ function strictSessionBinding(value: Record<string, unknown>): HandshakeGrantSes
   };
 }
 
-const forbiddenActorReasons = new Set<ScopedActorCredentialValidationFailureReason>([
-  'unsupported_actor_type',
-  'wrong_audience',
-  'unknown_audience',
-  'missing_scope',
-  'wrong_node_scope',
-  'wrong_session_scope',
-  'wrong_global_session_scope',
-  'wrong_work_context_scope',
-  'wrong_repo_scope',
-  'wrong_path_scope',
-  'wrong_task_scope',
-  'unknown_capability',
-  'insufficient_capability',
-]);
+const forbiddenActorReasons =
+  new Set<ScopedActorCredentialValidationFailureReason>([
+    'unsupported_actor_type',
+    'wrong_audience',
+    'unknown_audience',
+    'missing_scope',
+    'wrong_node_scope',
+    'wrong_session_scope',
+    'wrong_global_session_scope',
+    'wrong_work_context_scope',
+    'wrong_repo_scope',
+    'wrong_path_scope',
+    'wrong_task_scope',
+    'unknown_capability',
+    'insufficient_capability',
+  ]);
 
 function cliGatewayActorReasonCode(
   reason: ScopedActorCredentialValidationFailureReason
@@ -908,7 +990,11 @@ function cliGatewayActorMessage(reasonCode: string): string {
   }
 }
 
-function coerceActor(value: unknown): { type: string; id: string; displayName?: string } {
+function coerceActor(value: unknown): {
+  type: string;
+  id: string;
+  displayName?: string;
+} {
   const actor = isRecord(value) ? value : {};
   return {
     type: typeof actor.type === 'string' ? actor.type : 'cli',
@@ -932,7 +1018,10 @@ function coerceIssuer(value: unknown): { id: string; displayName?: string } {
 function coerceCapabilities(value: unknown): RelayCapabilityBit[] {
   if (!Array.isArray(value)) return ['session:read'];
   const caps = value.filter(
-    (cap): cap is RelayCapabilityBit => typeof cap === 'string' && isRelayCapabilityBit(cap) && cliGatewayActorGrantCapabilitySet.has(cap)
+    (cap): cap is RelayCapabilityBit =>
+      typeof cap === 'string' &&
+      isRelayCapabilityBit(cap) &&
+      cliGatewayActorGrantCapabilitySet.has(cap)
   );
   return caps.length ? caps : ['session:read'];
 }
@@ -951,7 +1040,9 @@ function coerceScope(value: unknown): ScopedActorCredentialScope | undefined {
   ] as const) {
     const raw = value[key];
     if (Array.isArray(raw)) {
-      const strings = raw.filter((entry): entry is string => typeof entry === 'string');
+      const strings = raw.filter(
+        (entry): entry is string => typeof entry === 'string'
+      );
       if (strings.length) scope[outputKey] = strings;
     }
   }

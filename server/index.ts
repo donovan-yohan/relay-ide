@@ -36,7 +36,10 @@ import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 import { getTmuxPrefix } from './pty-handler.js';
 import { setupWebSocket } from './ws.js';
 import { createLocalRelayNode } from './local-node.js';
-import { DEFAULT_LOCAL_NODE_ID, parseGlobalSessionId } from '../shared/identity.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  parseGlobalSessionId,
+} from '../shared/identity.js';
 import {
   WorktreeWatcher,
   BranchWatcher,
@@ -164,6 +167,7 @@ import {
   readWorkContextArtifactQueryWorkContextId,
 } from './features/work-context-artifact-router.js';
 import { createWorkflowRunRouter } from './features/workflow-run-router.js';
+import { createAgentRosterRouter } from './features/agent-roster-router.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
 import {
   initWorkContextArtifactStore,
@@ -848,7 +852,9 @@ function parseRenderedScreenBooleanQuery(value: unknown): boolean {
   return false;
 }
 
-export function parseRenderedScreenMaxLines(value: unknown): number | undefined {
+export function parseRenderedScreenMaxLines(
+  value: unknown
+): number | undefined {
   if (typeof value === 'number') {
     return Number.isInteger(value) && value >= 1 ? value : undefined;
   }
@@ -858,7 +864,9 @@ export function parseRenderedScreenMaxLines(value: unknown): number | undefined 
   return parsed;
 }
 
-function resolveLocalScreenSessionId(requestedId: string):
+function resolveLocalScreenSessionId(
+  requestedId: string
+):
   | { kind: 'local'; id: string }
   | { kind: 'remote'; nodeId: string; localSessionId: string }
   | { kind: 'missing' } {
@@ -1384,7 +1392,9 @@ function initWorkContextArtifactStoreBestEffort(
   }
 }
 
-function initWorkflowRunStoreBestEffort(configDir: string): WorkflowRunStore | null {
+function initWorkflowRunStoreBestEffort(
+  configDir: string
+): WorkflowRunStore | null {
   try {
     return initWorkflowRunStore(configDir);
   } catch (err) {
@@ -1649,9 +1659,11 @@ async function main(): Promise<void> {
 
   // WorkContext artifact store (#889/#890). Own SQLite/payload files; routes
   // degrade to typed 503 when initialization fails so hub startup stays useful.
-  const workContextArtifactStore = initWorkContextArtifactStoreBestEffort(configDir);
+  const workContextArtifactStore =
+    initWorkContextArtifactStoreBestEffort(configDir);
   const workflowRunStore = initWorkflowRunStoreBestEffort(configDir);
-  const workContextMessageStore = initWorkContextMessageStoreBestEffort(configDir);
+  const workContextMessageStore =
+    initWorkContextMessageStoreBestEffort(configDir);
   const cliGatewayEventBus = createCliGatewayEventBus();
 
   try {
@@ -1834,7 +1846,9 @@ async function main(): Promise<void> {
           token: bearerActorToken(req),
           capabilities,
           ...(scope ? { scope } : {}),
-          ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
+          ...(options.deferWorkContextScope
+            ? { deferWorkContextScope: true }
+            : {}),
           ...(correlationId ? { correlationId } : {}),
         }
       );
@@ -1861,7 +1875,12 @@ async function main(): Promise<void> {
     expectedCommand?: CliGatewayActorReadCommand,
     options: { deferWorkContextScope?: boolean } = {}
   ): express.RequestHandler =>
-    requireCliGatewayActorAuth(['session:read'], undefined, expectedCommand, options);
+    requireCliGatewayActorAuth(
+      ['session:read'],
+      undefined,
+      expectedCommand,
+      options
+    );
 
   const requireCliGatewayAuthForActorCommand = (
     expectedCommand: CliGatewayActorCommand,
@@ -1882,10 +1901,15 @@ async function main(): Promise<void> {
     return (req, res, next) => {
       if (isCliGatewayActorTokenRequest(req)) {
         requireCliGatewayActorAuth(
-          options.capabilities ?? cliGatewayActorCommandCapabilities(expectedCommand),
+          options.capabilities ??
+            cliGatewayActorCommandCapabilities(expectedCommand),
           options.scopeForRequest?.(req),
           expectedCommand,
-          { ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}) }
+          {
+            ...(options.deferWorkContextScope
+              ? { deferWorkContextScope: true }
+              : {}),
+          }
         )(req, res, next);
         return;
       }
@@ -2203,44 +2227,89 @@ async function main(): Promise<void> {
       events: cliGatewayEventBus,
     })
   );
-  const workContextScopeFromQuery = (req: express.Request): { workContextIds?: string[] } | undefined => {
+  const workContextScopeFromQuery = (
+    req: express.Request
+  ): { workContextIds?: string[] } | undefined => {
     const workContextId = readWorkContextArtifactQueryWorkContextId(req.query);
     return workContextId ? { workContextIds: [workContextId] } : undefined;
   };
-  const workContextMessageScopeFromBody = (req: express.Request): { workContextIds?: string[] } | undefined => {
-    const body = typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
-    const filter = typeof body['filter'] === 'object' && body['filter'] !== null && !Array.isArray(body['filter']) ? body['filter'] as Record<string, unknown> : body;
-    const workContextId = typeof filter['workContextId'] === 'string' ? filter['workContextId'] : undefined;
+  const workContextMessageScopeFromBody = (
+    req: express.Request
+  ): { workContextIds?: string[] } | undefined => {
+    const body =
+      typeof req.body === 'object' &&
+      req.body !== null &&
+      !Array.isArray(req.body)
+        ? (req.body as Record<string, unknown>)
+        : {};
+    const filter =
+      typeof body['filter'] === 'object' &&
+      body['filter'] !== null &&
+      !Array.isArray(body['filter'])
+        ? (body['filter'] as Record<string, unknown>)
+        : body;
+    const workContextId =
+      typeof filter['workContextId'] === 'string'
+        ? filter['workContextId']
+        : undefined;
     return workContextId ? { workContextIds: [workContextId] } : undefined;
   };
-  const workflowRunScopeFromParams = (req: express.Request): { workContextIds?: string[] } | undefined => {
-    const workflowRunId = typeof req.params['id'] === 'string' ? req.params['id'] : '';
-    const workflowRun = workflowRunId && workflowRunStore ? workflowRunStore.get(workflowRunId) : null;
-    return workflowRun ? { workContextIds: [workflowRun.workContextId] } : undefined;
+  const workflowRunScopeFromParams = (
+    req: express.Request
+  ): { workContextIds?: string[] } | undefined => {
+    const workflowRunId =
+      typeof req.params['id'] === 'string' ? req.params['id'] : '';
+    const workflowRun =
+      workflowRunId && workflowRunStore
+        ? workflowRunStore.get(workflowRunId)
+        : null;
+    return workflowRun
+      ? { workContextIds: [workflowRun.workContextId] }
+      : undefined;
   };
   app.use(
     createWorkContextArtifactRouter({
       requireAuth: requireCliGatewayAuth,
       requireReadAuth: {
-        list: requireCliGatewayAuthForActorCommand('work-context-artifacts.list', {
-          scopeForRequest: workContextScopeFromQuery,
-        }),
-        show: requireCliGatewayAuthForActorCommand('work-context-artifacts.show', {
-          deferWorkContextScope: true,
-        }),
-        export: requireCliGatewayAuthForActorCommand('work-context-artifacts.export', {
-          deferWorkContextScope: true,
-        }),
-        handoffList: requireCliGatewayAuthForActorCommand('handoff-artifacts.list', {
-          scopeForRequest: workContextScopeFromQuery,
-        }),
-        handoffShow: requireCliGatewayAuthForActorCommand('handoff-artifacts.show', {
-          deferWorkContextScope: true,
-        }),
-        handoffCopy: requireCliGatewayAuthForActorCommand('handoff-artifacts.copy', {
-          deferWorkContextScope: true,
-        }),
-        doctor: requireCliGatewayAuthForActorCommand('work-context-artifacts.doctor'),
+        list: requireCliGatewayAuthForActorCommand(
+          'work-context-artifacts.list',
+          {
+            scopeForRequest: workContextScopeFromQuery,
+          }
+        ),
+        show: requireCliGatewayAuthForActorCommand(
+          'work-context-artifacts.show',
+          {
+            deferWorkContextScope: true,
+          }
+        ),
+        export: requireCliGatewayAuthForActorCommand(
+          'work-context-artifacts.export',
+          {
+            deferWorkContextScope: true,
+          }
+        ),
+        handoffList: requireCliGatewayAuthForActorCommand(
+          'handoff-artifacts.list',
+          {
+            scopeForRequest: workContextScopeFromQuery,
+          }
+        ),
+        handoffShow: requireCliGatewayAuthForActorCommand(
+          'handoff-artifacts.show',
+          {
+            deferWorkContextScope: true,
+          }
+        ),
+        handoffCopy: requireCliGatewayAuthForActorCommand(
+          'handoff-artifacts.copy',
+          {
+            deferWorkContextScope: true,
+          }
+        ),
+        doctor: requireCliGatewayAuthForActorCommand(
+          'work-context-artifacts.doctor'
+        ),
       },
       requireWriteAuth: requireCliGatewayWriteAuth,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
@@ -2272,21 +2341,90 @@ async function main(): Promise<void> {
       events: cliGatewayEventBus,
     })
   );
+  // roster.list (#953): derived, redacted active-agent roster. Scoped on
+  // `session:read` like sessions.list; when the caller filters by
+  // ?workContextId= the actor credential must also carry that WorkContext
+  // (fail-closed via scopeForRequest). Without a workContextId filter it
+  // behaves like sessions.list (broad session:read read scope).
+  const rosterScopeFromQuery = (
+    req: express.Request
+  ): { workContextIds?: string[] } | undefined => {
+    const workContextId =
+      typeof req.query['workContextId'] === 'string'
+        ? req.query['workContextId'].trim()
+        : '';
+    return workContextId ? { workContextIds: [workContextId] } : undefined;
+  };
+  const rosterCapabilitiesForAgent = (agent: string): readonly string[] => {
+    if (!agent || agent === 'terminal') return [];
+    try {
+      const caps = resolveFramework(startupConfig, agent).capabilities;
+      const names: string[] = [];
+      if (caps.supportsHooks) names.push('hooks');
+      if (caps.supportsContinue) names.push('continue');
+      if (caps.supportsYolo) names.push('yolo');
+      if (caps.supportsTelemetry) names.push('telemetry');
+      if (caps.supportsAttachedRuntime) names.push('attached-runtime');
+      if (caps.supportsWebSessions) names.push('web-sessions');
+      return names;
+    } catch {
+      // Unknown / unregistered framework — surface no capability claims.
+      return [];
+    }
+  };
+  app.use(
+    createAgentRosterRouter({
+      requireAuth: requireCliGatewayAuth,
+      requireReadAuth: {
+        list: requireCliGatewayAuthForActorCommand('roster.list', {
+          scopeForRequest: rosterScopeFromQuery,
+        }),
+      },
+      nodeId: DEFAULT_LOCAL_NODE_ID,
+      listSessions: () =>
+        localRelayNode.sessions
+          .list()
+          .map((session) => withWorkContextMetadata(workContextStore, session)),
+      resolveCapabilities: rosterCapabilitiesForAgent,
+      pendingInboxCount: (session) => {
+        const target = session.globalSessionId;
+        if (!target || !contextInboxStore) return 0;
+        return contextInboxStore
+          .listInboxMessages(
+            { targetSessionId: target },
+            { markDelivered: false }
+          )
+          .filter(
+            (message) =>
+              message.state === 'queued' || message.state === 'delivered'
+          ).length;
+      },
+    })
+  );
   app.use(
     createWorkContextMessageRouter({
       requireAuth: requireCliGatewayAuth,
       requireReadAuth: {
-        list: requireCliGatewayAuthForActorCommand('work-context-messages.list', {
-          scopeForRequest: workContextScopeFromQuery,
-          deferWorkContextScope: true,
-        }),
-        query: requireCliGatewayAuthForActorCommand('work-context-messages.query', {
-          scopeForRequest: workContextMessageScopeFromBody,
-          deferWorkContextScope: true,
-        }),
-        show: requireCliGatewayAuthForActorCommand('work-context-messages.show', {
-          deferWorkContextScope: true,
-        }),
+        list: requireCliGatewayAuthForActorCommand(
+          'work-context-messages.list',
+          {
+            scopeForRequest: workContextScopeFromQuery,
+            deferWorkContextScope: true,
+          }
+        ),
+        query: requireCliGatewayAuthForActorCommand(
+          'work-context-messages.query',
+          {
+            scopeForRequest: workContextMessageScopeFromBody,
+            deferWorkContextScope: true,
+          }
+        ),
+        show: requireCliGatewayAuthForActorCommand(
+          'work-context-messages.show',
+          {
+            deferWorkContextScope: true,
+          }
+        ),
       },
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
       store: workContextMessageStore,
@@ -3370,7 +3508,9 @@ async function main(): Promise<void> {
         return;
       }
 
-      const maxScrollbackLines = parseRenderedScreenMaxLines(req.query.maxLines);
+      const maxScrollbackLines = parseRenderedScreenMaxLines(
+        req.query.maxLines
+      );
       const result = localRelayNode.sessions.getRenderedScreenSnapshot(
         resolved.id,
         {
