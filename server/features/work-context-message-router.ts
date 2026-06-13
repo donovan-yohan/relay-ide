@@ -203,6 +203,26 @@ function filterFromBody(body: Record<string, unknown>): WorkContextMessageListFi
 }
 
 function requireFilterScope(res: Response, filter: WorkContextMessageListFilter): boolean {
+  if (Boolean(filter.refKind) !== Boolean(filter.refValue)) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'refKind and refValue must be provided together',
+      false,
+      { fields: ['refKind', 'refValue'] }
+    );
+    return false;
+  }
+  if (filter.audienceId && !filter.audienceKind) {
+    sendGatewayError(
+      res,
+      'INVALID_ARGUMENT',
+      'audienceKind is required when audienceId is provided',
+      false,
+      { fields: ['audienceKind', 'audienceId'] }
+    );
+    return false;
+  }
   if (filter.workContextId || (filter.refKind && filter.refValue) || filter.threadId || filter.parentMessageId) {
     return true;
   }

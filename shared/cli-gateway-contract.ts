@@ -3610,7 +3610,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: { message: workContextMessageEnvelopeSchema },
       required: ['message'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'],
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'INVALID_JSON', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'],
   },
   {
     name: 'work-context-messages.list',

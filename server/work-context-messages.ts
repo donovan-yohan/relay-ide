@@ -220,10 +220,15 @@ export function initWorkContextMessageStore(configDir: string): WorkContextMessa
 
 export function createWorkContextMessageStore(dbPath: string): WorkContextMessageStore {
   const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
-  db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  try {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 
   const selectById = db.prepare(
     `SELECT * FROM work_context_messages WHERE id = ?`
@@ -344,6 +349,22 @@ export function createWorkContextMessageStore(dbPath: string): WorkContextMessag
       return parseRow(selectById.get(id) as WorkContextMessageRow | undefined);
     },
     list(filter = {}) {
+      if (Boolean(filter.refKind) !== Boolean(filter.refValue)) {
+        throw new WorkContextMessageStoreError(
+          400,
+          'message_filter_invalid',
+          'refKind and refValue must be provided together',
+          { fields: ['refKind', 'refValue'] }
+        );
+      }
+      if (filter.audienceId && !filter.audienceKind) {
+        throw new WorkContextMessageStoreError(
+          400,
+          'message_filter_invalid',
+          'audienceKind is required when audienceId is provided',
+          { fields: ['audienceKind', 'audienceId'] }
+        );
+      }
       const clauses: string[] = [];
       const params: Record<string, unknown> = { limit: cleanLimit(filter.limit) };
       if (filter.workContextId) {

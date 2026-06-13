@@ -7,6 +7,7 @@ import type {
 
 export const WORK_CONTEXT_MESSAGE_SCHEMA_VERSION = 1 as const;
 export const WORK_CONTEXT_MESSAGE_PAYLOAD_MAX_BYTES = 256 * 1024;
+export const WORK_CONTEXT_MESSAGE_PAYLOAD_MAX_DEPTH = 50;
 export const WORK_CONTEXT_MESSAGE_SUMMARY_MAX_CHARS = 2000;
 
 export const CORE_WORK_CONTEXT_MESSAGE_KINDS = [
@@ -205,7 +206,9 @@ function optionalString(value: unknown): string | undefined {
 }
 
 function normalizeKey(key: string): string {
-  return key.toLowerCase().replace(/[^a-z0-9_]/g, '');
+  const lower = key.toLowerCase();
+  if (lower === '__proto__') return lower;
+  return lower.replace(/[^a-z0-9]/g, '');
 }
 
 function parseSender(value: unknown): WorkContextMessageActor {
@@ -343,8 +346,16 @@ function parseRefs(value: unknown, parentMessageId?: string, replyToMessageId?: 
   return refs;
 }
 
-function sanitizePayloadValue(value: unknown, path: string, omitted: string[]): unknown {
-  if (Array.isArray(value)) return value.map((entry, index) => sanitizePayloadValue(entry, `${path}[${index}]`, omitted));
+function sanitizePayloadValue(value: unknown, path: string, omitted: string[], depth = 0): unknown {
+  if (depth > WORK_CONTEXT_MESSAGE_PAYLOAD_MAX_DEPTH) {
+    throw new WorkContextMessageValidationError('message payload is too deeply nested', {
+      field: path,
+      maxDepth: WORK_CONTEXT_MESSAGE_PAYLOAD_MAX_DEPTH,
+    });
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry, index) => sanitizePayloadValue(entry, `${path}[${index}]`, omitted, depth + 1));
+  }
   if (!isRecord(value)) return value;
   const cleaned: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
@@ -352,9 +363,21 @@ function sanitizePayloadValue(value: unknown, path: string, omitted: string[]): 
       omitted.push(path ? `${path}.${key}` : key);
       continue;
     }
-    cleaned[key] = sanitizePayloadValue(child, path ? `${path}.${key}` : key, omitted);
+    cleaned[key] = sanitizePayloadValue(child, path ? `${path}.${key}` : key, omitted, depth + 1);
   }
   return cleaned;
+}
+
+function stablePayloadByteCount(payload: WorkContextMessagePayload): number {
+  let byteCount = 0;
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    payload.byteCount = byteCount;
+    const nextByteCount = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+    if (nextByteCount === byteCount) return byteCount;
+    byteCount = nextByteCount;
+  }
+  payload.byteCount = byteCount;
+  return Buffer.byteLength(JSON.stringify(payload), 'utf8');
 }
 
 function parsePayload(value: unknown): { payload: WorkContextMessagePayload; redaction: WorkContextMessageRedactionMetadata } {
@@ -390,7 +413,7 @@ function parsePayload(value: unknown): { payload: WorkContextMessagePayload; red
   }
   const sha256 = optionalString(source['sha256']);
   if (sha256) payload.sha256 = sha256;
-  const payloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  const payloadBytes = stablePayloadByteCount(payload);
   if (payloadBytes > WORK_CONTEXT_MESSAGE_PAYLOAD_MAX_BYTES) {
     throw new WorkContextMessageValidationError('message payload is too large; store large bodies as artifacts and reference them', {
       field: 'payload',

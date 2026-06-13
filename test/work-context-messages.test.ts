@@ -38,6 +38,8 @@ function messageInput(overrides: Record<string, unknown> = {}): Record<string, u
       body: {
         arbitraryContract: { ok: true },
         token: 'must-redact',
+        access_token: 'must-redact-snake-case',
+        raw_transcript: 'must-redact-raw-transcript',
         nested: { password: 'must-redact-too', keep: 'safe' },
       },
     },
@@ -118,8 +120,11 @@ describe('WorkContext message store', () => {
     });
     expect(first.redaction.omittedKeys).toEqual([
       'payload.body.token',
+      'payload.body.access_token',
+      'payload.body.raw_transcript',
       'payload.body.nested.password',
     ]);
+    expect(first.payload.byteCount).toBe(Buffer.byteLength(JSON.stringify(first.payload), 'utf8'));
 
     const reply = store.append(
       messageInput({
@@ -147,6 +152,19 @@ describe('WorkContext message store', () => {
     expect(message.id).not.toBe('wcm:caller-controlled');
     expect(message.createdAt).not.toBe('2000-01-01T00:00:00.000Z');
     expect(message.updatedAt).toBe(message.createdAt);
+  });
+
+  it('rejects deeply nested payloads and incomplete filter pairs', () => {
+    const store = withStore('defensive-validation');
+    store.append(messageInput());
+    let body: unknown = 'leaf';
+    for (let index = 0; index < 55; index += 1) body = { child: body };
+
+    expect(() =>
+      store.append(messageInput({ payload: { mediaType: 'application/json', encoding: 'json', body } }))
+    ).toThrow(/deeply nested/);
+    expect(() => store.list({ workContextId: 'wc:949', refKind: 'task.github-issue' })).toThrow(/refKind/);
+    expect(() => store.list({ workContextId: 'wc:949', audienceId: 'qa' })).toThrow(/audienceKind/);
   });
 
   it('derives thread roots server-side instead of trusting caller-provided threadId', () => {
@@ -207,6 +225,14 @@ describe('WorkContext message router', () => {
     const unbounded = await jsonFetch(`${baseUrl}/work-context-messages`);
     expect(unbounded.status).toBe(400);
     expect(unbounded.body.error.code).toBe('INVALID_ARGUMENT');
+
+    const partialRef = await jsonFetch(`${baseUrl}/work-context-messages?workContextId=wc%3A949&refKind=task.github-issue`);
+    expect(partialRef.status).toBe(400);
+    expect(partialRef.body.error.message).toMatch(/refKind and refValue/);
+
+    const partialAudience = await jsonFetch(`${baseUrl}/work-context-messages?workContextId=wc%3A949&audienceId=qa`);
+    expect(partialAudience.status).toBe(400);
+    expect(partialAudience.body.error.message).toMatch(/audienceKind/);
 
     const unavailable = await startRouter(null);
     const response = await jsonFetch(`${unavailable.baseUrl}/work-context-messages?workContextId=wc%3A949`);
