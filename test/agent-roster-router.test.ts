@@ -181,11 +181,39 @@ describe('agent roster router', () => {
       )
     ).toEqual(['sess-codex']);
     expect(
-      (await get('/roster?role=reviewer')).body.roster.map(
+      (await get('/roster?role=Reviewer')).body.roster.map(
         (e: any) => e.sessionId
       )
     ).toEqual(['sess-codex']);
     expect((await get('/roster?needsAttention=false')).body.count).toBe(0);
+  });
+
+  it('matches Windows-style repo path suffixes', async () => {
+    await new Promise<void>((resolve) =>
+      server ? server.close(() => resolve()) : resolve()
+    );
+    await mount({
+      listSessions: () => [
+        {
+          id: 'sess-windows',
+          globalSessionId: 'node-a:sess-windows',
+          nodeId: 'node-a',
+          agent: 'codex',
+          type: 'agent',
+          displayName: 'Windows Codex review',
+          repoPath: 'C:\\Users\\u\\windows-repo',
+          repoName: 'windows-repo',
+          status: 'active',
+          agentState: 'idle',
+          lastActivity: '2026-06-13T00:30:00.000Z',
+        },
+      ],
+    });
+    expect(
+      (await get('/roster?repo=windows-repo')).body.roster.map(
+        (e: any) => e.sessionId
+      )
+    ).toEqual(['sess-windows']);
   });
 
   it('fails closed when the session:read capability header is missing', async () => {

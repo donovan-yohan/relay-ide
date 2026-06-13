@@ -93,10 +93,10 @@ export function deriveRosterAttention(input: {
   else if (input.agentState === 'waiting-for-input')
     reasons.push('waiting-for-input');
   if (input.agentState === 'error') reasons.push('error');
-  const pendingInboxCount = Math.max(
-    0,
-    Math.trunc(input.pendingInboxCount ?? 0)
-  );
+  const rawPendingInboxCount = Math.trunc(input.pendingInboxCount ?? 0);
+  const pendingInboxCount = Number.isFinite(rawPendingInboxCount)
+    ? Math.max(0, rawPendingInboxCount)
+    : 0;
   if (pendingInboxCount > 0) reasons.push('pending-inbox');
   return { needsAttention: reasons.length > 0, reasons, pendingInboxCount };
 }

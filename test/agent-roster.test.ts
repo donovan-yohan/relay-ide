@@ -75,6 +75,16 @@ describe('deriveRosterAttention', () => {
       deriveRosterAttention({ pendingInboxCount: 2.9 }).pendingInboxCount
     ).toBe(2);
   });
+
+  it('guards non-finite inbox counts before JSON projection', () => {
+    expect(
+      deriveRosterAttention({ pendingInboxCount: Number.NaN }).pendingInboxCount
+    ).toBe(0);
+    expect(
+      deriveRosterAttention({ pendingInboxCount: Number.POSITIVE_INFINITY })
+        .pendingInboxCount
+    ).toBe(0);
+  });
 });
 
 describe('projectRosterEntry', () => {

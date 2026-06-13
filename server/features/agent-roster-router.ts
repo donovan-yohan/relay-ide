@@ -64,11 +64,9 @@ function sendGatewayError(
           : code === 'INTERNAL'
             ? 500
             : 400;
-  res
-    .status(status)
-    .json({
-      error: { code, message, retryable, ...(details ? { details } : {}) },
-    });
+  res.status(status).json({
+    error: { code, message, retryable, ...(details ? { details } : {}) },
+  });
 }
 
 function denyMissingCapability(
@@ -115,7 +113,9 @@ function matchesRepo(entry: RosterEntry, repo: string): boolean {
   if (entry.repoName === repo) return true;
   if (
     entry.repoPath &&
-    (entry.repoPath.endsWith(`/${repo}`) || entry.cwd === repo)
+    (entry.repoPath.endsWith(`/${repo}`) ||
+      entry.repoPath.endsWith(`\\${repo}`) ||
+      entry.cwd === repo)
   )
     return true;
   return false;
@@ -135,7 +135,7 @@ export function createAgentRosterRouter(deps: AgentRosterRouterDeps): Router {
     const repo = readString(req.query['repo']);
     const nodeId = readString(req.query['nodeId']);
     const provider = readString(req.query['provider']);
-    const role = readString(req.query['role']);
+    const role = readString(req.query['role'])?.toLowerCase();
     const includeTerminals = readBool(req.query['includeTerminals']) ?? false;
     const needsAttention = readBool(req.query['needsAttention']);
     const limit = readLimit(req.query['limit']);
