@@ -5,6 +5,7 @@ import {
   SESSION_INBOX_MESSAGE_STATES,
 } from './context-packet.js';
 import { SUPERVISOR_SEND_KEY_NAMES } from './supervisor-actions.js';
+import { AGENT_ROLES } from './agent-roster.js';
 
 export const RELAY_CLI_GATEWAY_MAJOR = 'v1' as const;
 export const RELAY_CLI_GATEWAY_CONTRACT_VERSION = '1.0' as const;
@@ -66,6 +67,7 @@ export type RelayCliGatewayCommand =
   | 'workflow-runs.update'
   | 'workflow-runs.list'
   | 'workflow-runs.get'
+  | 'roster.list'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -1562,7 +1564,10 @@ const workContextMessageEnvelopeSchema: RelayJsonSchema = {
     workContextId: stringSchema,
     kind: stringSchema,
     sender: { type: 'object', additionalProperties: true },
-    audience: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    audience: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+    },
     summary: stringSchema,
     refs: { type: 'object', additionalProperties: true },
     payloadSchema: stringSchema,
@@ -1572,7 +1577,15 @@ const workContextMessageEnvelopeSchema: RelayJsonSchema = {
     updatedAt: { type: 'string', format: 'date-time' },
     redaction: { type: 'object', additionalProperties: true },
   },
-  required: ['id', 'workContextId', 'kind', 'sender', 'summary', 'payload', 'createdAt'],
+  required: [
+    'id',
+    'workContextId',
+    'kind',
+    'sender',
+    'summary',
+    'payload',
+    'createdAt',
+  ],
 };
 
 const workContextMessageAppendInputSchema: RelayJsonSchema = {
@@ -1583,7 +1596,10 @@ const workContextMessageAppendInputSchema: RelayJsonSchema = {
     workContextId: stringSchema,
     kind: stringSchema,
     sender: { type: 'object', additionalProperties: true },
-    audience: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    audience: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+    },
     summary: stringSchema,
     refs: { type: 'object', additionalProperties: true },
     parentMessageId: stringSchema,
@@ -1946,7 +1962,10 @@ const workContextArtifactPublishInputSchema: RelayJsonSchema = {
     workContextId: stringSchema,
     projectId: stringSchema,
     taskRef: workContextArtifactTaskRefSchema,
-    stage: { type: 'string', enum: ['implementation', 'qa', 'review', 'release'] },
+    stage: {
+      type: 'string',
+      enum: ['implementation', 'qa', 'review', 'release'],
+    },
     provenanceActorId: stringSchema,
     actorId: stringSchema,
     visibility: { type: 'string', enum: ['private', 'public'] },
@@ -1970,7 +1989,10 @@ const workContextArtifactListInputSchema: RelayJsonSchema = {
     workContextId: stringSchema,
     projectId: stringSchema,
     taskRef: workContextArtifactTaskRefSchema,
-    stage: { type: 'string', enum: ['implementation', 'qa', 'review', 'release'] },
+    stage: {
+      type: 'string',
+      enum: ['implementation', 'qa', 'review', 'release'],
+    },
     includeSuperseded: booleanSchema,
     limit: { type: 'number', minimum: 1, maximum: 200 },
     currentHeadSha: stringSchema,
@@ -2152,7 +2174,10 @@ const workContextArtifactListOutputSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    artifacts: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    artifacts: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+    },
   },
   required: ['artifacts'],
 };
@@ -2324,7 +2349,15 @@ const workflowRunProjectionSchema: RelayJsonSchema = {
     version: { type: 'number', minimum: 1 },
     redaction: { type: 'object', additionalProperties: true },
   },
-  required: ['id', 'runId', 'providerRuntime', 'workContextId', 'state', 'version', 'redaction'],
+  required: [
+    'id',
+    'runId',
+    'providerRuntime',
+    'workContextId',
+    'state',
+    'version',
+    'redaction',
+  ],
 };
 
 const workflowRunPublishInputSchema: RelayJsonSchema = {
@@ -2384,8 +2417,113 @@ const workflowRunOutputDataSchema: RelayJsonSchema = {
 const workflowRunListOutputDataSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
-  properties: { workflowRuns: { type: 'array', items: workflowRunProjectionSchema } },
+  properties: {
+    workflowRuns: { type: 'array', items: workflowRunProjectionSchema },
+  },
   required: ['workflowRuns'],
+};
+
+const rosterAttentionSchema: RelayJsonSchema = {
+  title: 'RosterAttention',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    needsAttention: booleanSchema,
+    reasons: {
+      type: 'array',
+      items: {
+        type: 'string',
+        enum: [
+          'permission-prompt',
+          'waiting-for-input',
+          'error',
+          'pending-inbox',
+        ],
+      },
+    },
+    pendingInboxCount: { type: 'number', minimum: 0 },
+  },
+  required: ['needsAttention', 'reasons', 'pendingInboxCount'],
+};
+
+const rosterActorSchema: RelayJsonSchema = {
+  title: 'RosterActor',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', enum: ['agent', 'human', 'system'] },
+    id: stringSchema,
+    displayName: stringSchema,
+  },
+  required: ['kind'],
+};
+
+const rosterEntrySchema: RelayJsonSchema = {
+  title: 'RosterEntry',
+  type: 'object',
+  // Redaction-safe, metadata-only projection (#953). Never carries transcript,
+  // prompt, raw bytes, provider-private state, tokens, or env.
+  additionalProperties: false,
+  properties: {
+    sessionId: stringSchema,
+    globalSessionId: stringSchema,
+    nodeId: stringSchema,
+    provider: stringSchema,
+    sessionType: stringSchema,
+    role: { type: 'string', enum: [...AGENT_ROLES] },
+    displayName: stringSchema,
+    repoPath: stringSchema,
+    repoName: stringSchema,
+    worktreePath: nullableStringSchema,
+    branchName: stringSchema,
+    cwd: stringSchema,
+    workContextId: stringSchema,
+    controlMode: stringSchema,
+    status: stringSchema,
+    agentState: stringSchema,
+    attention: rosterAttentionSchema,
+    capabilities: { type: 'array', items: stringSchema },
+    activeActors: { type: 'array', items: rosterActorSchema },
+    lastActivity: stringSchema,
+    createdAt: stringSchema,
+  },
+  required: [
+    'sessionId',
+    'provider',
+    'sessionType',
+    'role',
+    'displayName',
+    'attention',
+    'capabilities',
+  ],
+};
+
+const rosterListInputSchema: RelayJsonSchema = {
+  title: 'RosterListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workContextId: stringSchema,
+    repo: stringSchema,
+    nodeId: stringSchema,
+    provider: stringSchema,
+    role: { type: 'string', enum: [...AGENT_ROLES] },
+    includeTerminals: booleanSchema,
+    needsAttention: booleanSchema,
+    limit: { type: 'number', minimum: 1, maximum: 200 },
+  },
+};
+
+const rosterListOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    roster: { type: 'array', items: rosterEntrySchema },
+    generatedAt: { type: 'string', format: 'date-time' },
+    count: { type: 'number', minimum: 0 },
+    nodeId: stringSchema,
+  },
+  required: ['roster', 'generatedAt', 'count'],
 };
 
 const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
@@ -3596,7 +3734,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'work-context-messages.append',
-    cli: ['relay-ide', 'v1', 'work-context-messages', 'append', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-messages',
+      'append',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Append a WorkContext-scoped message envelope with agent/repo-defined payload data.',
     stable: true,
@@ -3610,12 +3756,29 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: { message: workContextMessageEnvelopeSchema },
       required: ['message'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'INVALID_JSON', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'INVALID_JSON',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+    ],
   },
   {
     name: 'work-context-messages.list',
-    cli: ['relay-ide', 'v1', 'work-context-messages', 'list', '--work-context-id', '<id>', '--json'],
-    summary: 'List bounded WorkContext message envelopes by context/thread/ref filters.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-messages',
+      'list',
+      '--work-context-id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'List bounded WorkContext message envelopes by context/thread/ref filters.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -3624,31 +3787,68 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     outputSchema: okOutput('WorkContextMessagesListOutput', {
       type: 'object',
       additionalProperties: false,
-      properties: { messages: { type: 'array', items: workContextMessageEnvelopeSchema } },
+      properties: {
+        messages: { type: 'array', items: workContextMessageEnvelopeSchema },
+      },
       required: ['messages'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
   },
   {
     name: 'work-context-messages.show',
-    cli: ['relay-ide', 'v1', 'work-context-messages', 'show', '--id', '<message-id>', '--json'],
-    summary: 'Read one WorkContext message envelope by id after WorkContext scope checks.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-messages',
+      'show',
+      '--id',
+      '<message-id>',
+      '--json',
+    ],
+    summary:
+      'Read one WorkContext message envelope by id after WorkContext scope checks.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['context:read'],
-    inputSchema: { title: 'WorkContextMessagesShowInput', type: 'object', additionalProperties: false, properties: { id: stringSchema }, required: ['id'] },
+    inputSchema: {
+      title: 'WorkContextMessagesShowInput',
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: stringSchema },
+      required: ['id'],
+    },
     outputSchema: okOutput('WorkContextMessagesShowOutput', {
       type: 'object',
       additionalProperties: false,
       properties: { message: workContextMessageEnvelopeSchema },
       required: ['message'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
   },
   {
     name: 'work-context-messages.query',
-    cli: ['relay-ide', 'v1', 'work-context-messages', 'query', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-messages',
+      'query',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Query WorkContext messages with repo/agent-owned payload schemas preserved as opaque data.',
     stable: true,
@@ -3665,7 +3865,13 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       },
       required: ['messages'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+    ],
   },
   {
     name: 'context.create',
@@ -3788,12 +3994,23 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['artifact:write'],
     inputSchema: workContextArtifactPublishInputSchema,
-    outputSchema: okOutput('WorkContextArtifactPublishOutput', workContextArtifactRecordOutputSchema),
+    outputSchema: okOutput(
+      'WorkContextArtifactPublishOutput',
+      workContextArtifactRecordOutputSchema
+    ),
     errorCodes: workContextArtifactWriteErrorCodes,
   },
   {
     name: 'work-context-artifacts.list',
-    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'list', '--work-context-id', '<work-context-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-artifacts',
+      'list',
+      '--work-context-id',
+      '<work-context-id>',
+      '--json',
+    ],
     summary:
       'List WorkContext artifact metadata by WorkContext or task ref without reading raw payload files.',
     stable: true,
@@ -3801,12 +4018,23 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: workContextArtifactListInputSchema,
-    outputSchema: okOutput('WorkContextArtifactListOutput', workContextArtifactListOutputSchema),
+    outputSchema: okOutput(
+      'WorkContextArtifactListOutput',
+      workContextArtifactListOutputSchema
+    ),
     errorCodes: workContextArtifactReadErrorCodes,
   },
   {
     name: 'work-context-artifacts.show',
-    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'show', '--id', '<artifact-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-artifacts',
+      'show',
+      '--id',
+      '<artifact-id>',
+      '--json',
+    ],
     summary:
       'Read one WorkContext artifact by id with integrity validation and optional stale-head metadata.',
     stable: true,
@@ -3814,12 +4042,25 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: workContextArtifactIdInputSchema,
-    outputSchema: okOutput('WorkContextArtifactShowOutput', workContextArtifactRecordOutputSchema),
+    outputSchema: okOutput(
+      'WorkContextArtifactShowOutput',
+      workContextArtifactRecordOutputSchema
+    ),
     errorCodes: workContextArtifactReadErrorCodes,
   },
   {
     name: 'work-context-artifacts.pin',
-    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'pin', '--id', '<artifact-id>', '--work-context-id', '<work-context-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-artifacts',
+      'pin',
+      '--id',
+      '<artifact-id>',
+      '--work-context-id',
+      '<work-context-id>',
+      '--json',
+    ],
     summary:
       'Pin a stored WorkContext artifact ref into a WorkContext without copying raw payload bytes.',
     stable: true,
@@ -3827,12 +4068,25 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['artifact:write'],
     inputSchema: workContextArtifactPinInputSchema,
-    outputSchema: okOutput('WorkContextArtifactPinOutput', workContextArtifactRecordOutputSchema),
+    outputSchema: okOutput(
+      'WorkContextArtifactPinOutput',
+      workContextArtifactRecordOutputSchema
+    ),
     errorCodes: workContextArtifactWriteErrorCodes,
   },
   {
     name: 'work-context-artifacts.unpin',
-    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'unpin', '--id', '<artifact-id>', '--work-context-id', '<work-context-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-artifacts',
+      'unpin',
+      '--id',
+      '<artifact-id>',
+      '--work-context-id',
+      '<work-context-id>',
+      '--json',
+    ],
     summary:
       'Unpin a WorkContext artifact ref from a WorkContext without deleting the stored artifact.',
     stable: true,
@@ -3840,12 +4094,25 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['artifact:write'],
     inputSchema: workContextArtifactPinInputSchema,
-    outputSchema: okOutput('WorkContextArtifactUnpinOutput', workContextArtifactRecordOutputSchema),
+    outputSchema: okOutput(
+      'WorkContextArtifactUnpinOutput',
+      workContextArtifactRecordOutputSchema
+    ),
     errorCodes: workContextArtifactWriteErrorCodes,
   },
   {
     name: 'work-context-artifacts.export',
-    cli: ['relay-ide', 'v1', 'work-context-artifacts', 'export', '--id', '<artifact-id>', '--output', '<path>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-artifacts',
+      'export',
+      '--id',
+      '<artifact-id>',
+      '--output',
+      '<path>',
+      '--json',
+    ],
     summary:
       'Export the bounded public summary form of a WorkContext artifact; raw payload export is intentionally unsupported.',
     stable: true,
@@ -3853,7 +4120,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: workContextArtifactIdInputSchema,
-    outputSchema: okOutput('WorkContextArtifactExportOutput', workContextArtifactRecordOutputSchema),
+    outputSchema: okOutput(
+      'WorkContextArtifactExportOutput',
+      workContextArtifactRecordOutputSchema
+    ),
     errorCodes: workContextArtifactReadErrorCodes,
   },
   {
@@ -3866,7 +4136,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: workContextArtifactDoctorInputSchema,
-    outputSchema: okOutput('WorkContextArtifactDoctorOutput', workContextArtifactRecordOutputSchema),
+    outputSchema: okOutput(
+      'WorkContextArtifactDoctorOutput',
+      workContextArtifactRecordOutputSchema
+    ),
     errorCodes: workContextArtifactReadErrorCodes,
   },
   {
@@ -3889,12 +4162,23 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['artifact:write'],
     inputSchema: workContextArtifactPublishInputSchema,
-    outputSchema: okOutput('HandoffArtifactAttachOutput', workContextArtifactRecordOutputSchema),
+    outputSchema: okOutput(
+      'HandoffArtifactAttachOutput',
+      workContextArtifactRecordOutputSchema
+    ),
     errorCodes: workContextArtifactWriteErrorCodes,
   },
   {
     name: 'handoff-artifacts.list',
-    cli: ['relay-ide', 'v1', 'handoff-artifacts', 'list', '--work-context-id', '<work-context-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoff-artifacts',
+      'list',
+      '--work-context-id',
+      '<work-context-id>',
+      '--json',
+    ],
     summary:
       'List PipelineHandoffArtifact metadata by WorkContext or task ref without reading raw payload files.',
     stable: true,
@@ -3902,12 +4186,23 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: workContextArtifactListInputSchema,
-    outputSchema: okOutput('HandoffArtifactListOutput', workContextArtifactListOutputSchema),
+    outputSchema: okOutput(
+      'HandoffArtifactListOutput',
+      workContextArtifactListOutputSchema
+    ),
     errorCodes: workContextArtifactReadErrorCodes,
   },
   {
     name: 'handoff-artifacts.show',
-    cli: ['relay-ide', 'v1', 'handoff-artifacts', 'show', '--id', '<artifact-id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoff-artifacts',
+      'show',
+      '--id',
+      '<artifact-id>',
+      '--json',
+    ],
     summary:
       'Read one PipelineHandoffArtifact by id with integrity validation and optional stale-head metadata.',
     stable: true,
@@ -3915,12 +4210,25 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: workContextArtifactIdInputSchema,
-    outputSchema: okOutput('HandoffArtifactShowOutput', workContextArtifactRecordOutputSchema),
+    outputSchema: okOutput(
+      'HandoffArtifactShowOutput',
+      workContextArtifactRecordOutputSchema
+    ),
     errorCodes: workContextArtifactReadErrorCodes,
   },
   {
     name: 'handoff-artifacts.copy',
-    cli: ['relay-ide', 'v1', 'handoff-artifacts', 'copy', '--id', '<artifact-id>', '--output', '<path>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'handoff-artifacts',
+      'copy',
+      '--id',
+      '<artifact-id>',
+      '--output',
+      '<path>',
+      '--json',
+    ],
     summary:
       'Copy the bounded public-safe PipelineHandoffArtifact summary; raw payload export is intentionally unsupported.',
     stable: true,
@@ -3928,7 +4236,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: workContextArtifactIdInputSchema,
-    outputSchema: okOutput('HandoffArtifactCopyOutput', workContextArtifactRecordOutputSchema),
+    outputSchema: okOutput(
+      'HandoffArtifactCopyOutput',
+      workContextArtifactRecordOutputSchema
+    ),
     errorCodes: workContextArtifactReadErrorCodes,
   },
   {
@@ -4335,7 +4646,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'workflow-runs.publish',
-    cli: ['relay-ide', 'v1', 'workflow-runs', 'publish', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'workflow-runs',
+      'publish',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Publish a bounded WorkContext-scoped external workflow run projection without raw transcripts or provider-private state.',
     stable: true,
@@ -4343,12 +4662,33 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:write'],
     inputSchema: workflowRunPublishInputSchema,
-    outputSchema: okOutput('WorkflowRunPublishOutput', workflowRunOutputDataSchema),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    outputSchema: okOutput(
+      'WorkflowRunPublishOutput',
+      workflowRunOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'workflow-runs.update',
-    cli: ['relay-ide', 'v1', 'workflow-runs', 'update', '--id', '<id>', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'workflow-runs',
+      'update',
+      '--id',
+      '<id>',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Update a bounded WorkContext-scoped workflow run projection, optionally with an expected version guard.',
     stable: true,
@@ -4356,20 +4696,49 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:write'],
     inputSchema: workflowRunUpdateInputSchema,
-    outputSchema: okOutput('WorkflowRunUpdateOutput', workflowRunOutputDataSchema),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    outputSchema: okOutput(
+      'WorkflowRunUpdateOutput',
+      workflowRunOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'workflow-runs.list',
-    cli: ['relay-ide', 'v1', 'workflow-runs', 'list', '--work-context-id', '<id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'workflow-runs',
+      'list',
+      '--work-context-id',
+      '<id>',
+      '--json',
+    ],
     summary: 'List bounded workflow run projections by WorkContext.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: workflowRunListInputSchema,
-    outputSchema: okOutput('WorkflowRunListOutput', workflowRunListOutputDataSchema),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    outputSchema: okOutput(
+      'WorkflowRunListOutput',
+      workflowRunListOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'workflow-runs.get',
@@ -4381,7 +4750,34 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['context:read'],
     inputSchema: workflowRunGetInputSchema,
     outputSchema: okOutput('WorkflowRunGetOutput', workflowRunOutputDataSchema),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'roster.list',
+    cli: ['relay-ide', 'v1', 'roster', 'list', '--json'],
+    summary:
+      'List active agent/session roster entries (redacted, derived) scoped to a repo or WorkContext for cross-agent discovery.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: rosterListInputSchema,
+    outputSchema: okOutput('RosterListOutput', rosterListOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
   },
   {
     name: 'events.subscribe',
@@ -4405,7 +4801,12 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     // `context:read`; `inbox` needs `inbox:read`. Generators that surface
     // this verb should request the superset so a single tool definition covers
     // every topic.
-    capabilityHints: ['session:read', 'tab:intervention:read', 'context:read', 'inbox:read'],
+    capabilityHints: [
+      'session:read',
+      'tab:intervention:read',
+      'context:read',
+      'inbox:read',
+    ],
     inputSchema: eventsSubscribeInputSchema,
     outputSchema: okOutput('EventsSubscribeFrame', eventsSubscribeFrameSchema),
     errorCodes: [

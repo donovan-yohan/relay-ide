@@ -135,6 +135,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'workflow-runs.update': 'update workflow run projection',
   'workflow-runs.list': 'list workflow run projections',
   'workflow-runs.get': 'workflow run details',
+  'roster.list': 'list active agent roster',
   'inbox.send': 'send inbox message',
   'inbox.list': 'list inbox messages',
   'inbox.get': 'inbox message details',
@@ -232,6 +233,7 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('work-context-artifacts.')) return ['work-context'];
   if (name.startsWith('handoff-artifacts.')) return ['work-context'];
   if (name.startsWith('workflow-runs.')) return ['work-context'];
+  if (name.startsWith('roster.')) return ['repo', 'work-context', 'session'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];
   if (name.startsWith('handoffs.'))

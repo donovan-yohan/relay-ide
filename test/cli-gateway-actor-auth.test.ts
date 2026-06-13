@@ -100,7 +100,8 @@ function req(input: {
 }): Request {
   const headers = new Map<string, string>();
   if (input.authorization) headers.set('authorization', input.authorization);
-  if (input.actorMarker) headers.set('x-relay-cli-actor-token', input.actorMarker);
+  if (input.actorMarker)
+    headers.set('x-relay-cli-actor-token', input.actorMarker);
   if (input.command) headers.set('x-relay-cli-command', input.command);
   if (input.cookie) headers.set('cookie', input.cookie);
   if (input.nodeId) headers.set('x-relay-node-id', input.nodeId);
@@ -174,26 +175,43 @@ test('validates scoped actor write credentials without forcing the read task sen
   const scopedRegistry = registry();
   const issued = issueCliGatewayActorCredential(scopedRegistry, {
     capabilities: ['context:write', 'inbox:write', 'artifact:write'],
-    scope: { workContextIds: ['wc:allowed'], repoIds: ['repo-1'], taskRefs: ['task-1'] },
+    scope: {
+      workContextIds: ['wc:allowed'],
+      repoIds: ['repo-1'],
+      taskRefs: ['task-1'],
+    },
   });
 
   expect(issued.credential).toMatchObject({
     capabilities: ['context:write', 'inbox:write', 'artifact:write'],
-    scope: { workContextIds: ['wc:allowed'], repoIds: ['repo-1'], taskRefs: ['task-1'] },
+    scope: {
+      workContextIds: ['wc:allowed'],
+      repoIds: ['repo-1'],
+      taskRefs: ['task-1'],
+    },
   });
-  expect(issued.credential.scope.taskRefs).not.toContain(CLI_GATEWAY_READ_SCOPE_TASK_REF);
+  expect(issued.credential.scope.taskRefs).not.toContain(
+    CLI_GATEWAY_READ_SCOPE_TASK_REF
+  );
   expect(
     validateCliGatewayActorCredential(scopedRegistry, {
       token: issued.token,
       capabilities: ['context:write'],
-      scope: { workContextIds: ['wc:allowed'], repoIds: ['repo-1'], taskRefs: ['task-1'] },
+      scope: {
+        workContextIds: ['wc:allowed'],
+        repoIds: ['repo-1'],
+        taskRefs: ['task-1'],
+      },
     })
   ).toMatchObject({ ok: true, grantedBits: ['context:write'] });
   expect(
     validateCliGatewayActorCredential(scopedRegistry, {
       token: issued.token,
       capabilities: ['context:write'],
-      scope: { workContextIds: ['wc:allowed'], taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF] },
+      scope: {
+        workContextIds: ['wc:allowed'],
+        taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+      },
     })
   ).toMatchObject({ ok: false, reason: 'wrong_task_scope' });
 });
@@ -219,6 +237,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'work-context-messages.list',
     'work-context-messages.show',
     'work-context-messages.query',
+    'roster.list',
   ]);
   expect(
     classifyCliGatewayCredentialLane(
@@ -269,7 +288,10 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     )
   ).toBe('unsupported-route');
   expect(
-    classifyCliGatewayCredentialLane(req({ authorization: `Bearer ${token}`, actorMarker: 'v1' }), 'nodes.list')
+    classifyCliGatewayCredentialLane(
+      req({ authorization: `Bearer ${token}`, actorMarker: 'v1' }),
+      'nodes.list'
+    )
   ).toBe('scoped-actor-credential');
   expect(
     classifyCliGatewayCredentialLane(
@@ -293,12 +315,14 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
       'nodes.list'
     )
   ).toBe('unsupported-route');
-  expect(classifyCliGatewayCredentialLane(req({ cookie: 'token=browser' }))).toBe(
-    'browser-cookie-lane'
-  );
-  expect(classifyCliGatewayCredentialLane(req({ authorization: 'Bearer node-secret', nodeId: 'n1' }))).toBe(
-    'node-credential-lane'
-  );
+  expect(
+    classifyCliGatewayCredentialLane(req({ cookie: 'token=browser' }))
+  ).toBe('browser-cookie-lane');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({ authorization: 'Bearer node-secret', nodeId: 'n1' })
+    )
+  ).toBe('node-credential-lane');
 });
 
 test('classifies explicitly scoped CLI gateway actor write routes into the actor lane', () => {
@@ -381,21 +405,42 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
 });
 
 test('maps write actor commands to required Relay capability bits', () => {
-  expect(cliGatewayActorCommandCapabilities('nodes.list')).toEqual(['session:read']);
-  expect(cliGatewayActorCommandCapabilities('context.create')).toEqual(['context:write']);
-  expect(cliGatewayActorCommandCapabilities('inbox.send')).toEqual(['inbox:write']);
-  expect(cliGatewayActorCommandCapabilities('work-context-artifacts.publish')).toEqual([
-    'artifact:write',
+  expect(cliGatewayActorCommandCapabilities('nodes.list')).toEqual([
+    'session:read',
   ]);
-  expect(cliGatewayActorCommandCapabilities('handoff-artifacts.attach')).toEqual([
-    'artifact:write',
+  expect(cliGatewayActorCommandCapabilities('context.create')).toEqual([
+    'context:write',
   ]);
-  expect(cliGatewayActorCommandCapabilities('workflow-runs.list')).toEqual(['context:read']);
-  expect(cliGatewayActorCommandCapabilities('workflow-runs.get')).toEqual(['context:read']);
-  expect(cliGatewayActorCommandCapabilities('workflow-runs.publish')).toEqual(['context:write']);
-  expect(cliGatewayActorCommandCapabilities('workflow-runs.update')).toEqual(['context:write']);
-  expect(cliGatewayActorCommandCapabilities('work-context-messages.list')).toEqual(['context:read']);
-  expect(cliGatewayActorCommandCapabilities('work-context-messages.append')).toEqual(['context:write']);
+  expect(cliGatewayActorCommandCapabilities('inbox.send')).toEqual([
+    'inbox:write',
+  ]);
+  expect(
+    cliGatewayActorCommandCapabilities('work-context-artifacts.publish')
+  ).toEqual(['artifact:write']);
+  expect(
+    cliGatewayActorCommandCapabilities('handoff-artifacts.attach')
+  ).toEqual(['artifact:write']);
+  expect(cliGatewayActorCommandCapabilities('workflow-runs.list')).toEqual([
+    'context:read',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('workflow-runs.get')).toEqual([
+    'context:read',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('workflow-runs.publish')).toEqual([
+    'context:write',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('workflow-runs.update')).toEqual([
+    'context:write',
+  ]);
+  expect(
+    cliGatewayActorCommandCapabilities('work-context-messages.list')
+  ).toEqual(['context:read']);
+  expect(
+    cliGatewayActorCommandCapabilities('work-context-messages.append')
+  ).toEqual(['context:write']);
+  expect(cliGatewayActorCommandCapabilities('roster.list')).toEqual([
+    'session:read',
+  ]);
 });
 
 test('denies spoofed actor command headers on non-MVP route identities', () => {
@@ -430,15 +475,28 @@ test('allows only the MVP actor command and route identity pairs', () => {
     { command: 'sessions.screen', expected: 'sessions.screen' },
     { command: 'work-contexts.get', expected: 'work-contexts.get' },
     { command: 'work-contexts.resume', expected: 'work-contexts.resume' },
-    { command: 'work-context-artifacts.list', expected: 'work-context-artifacts.list' },
-    { command: 'work-context-artifacts.show', expected: 'work-context-artifacts.show' },
-    { command: 'work-context-artifacts.export', expected: 'work-context-artifacts.export' },
-    { command: 'work-context-artifacts.doctor', expected: 'work-context-artifacts.doctor' },
+    {
+      command: 'work-context-artifacts.list',
+      expected: 'work-context-artifacts.list',
+    },
+    {
+      command: 'work-context-artifacts.show',
+      expected: 'work-context-artifacts.show',
+    },
+    {
+      command: 'work-context-artifacts.export',
+      expected: 'work-context-artifacts.export',
+    },
+    {
+      command: 'work-context-artifacts.doctor',
+      expected: 'work-context-artifacts.doctor',
+    },
     { command: 'handoff-artifacts.list', expected: 'handoff-artifacts.list' },
     { command: 'handoff-artifacts.show', expected: 'handoff-artifacts.show' },
     { command: 'handoff-artifacts.copy', expected: 'handoff-artifacts.copy' },
     { command: 'workflow-runs.list', expected: 'workflow-runs.list' },
     { command: 'workflow-runs.get', expected: 'workflow-runs.get' },
+    { command: 'roster.list', expected: 'roster.list' },
   ] as const;
 
   for (const { command, expected } of allowed) {
@@ -502,7 +560,9 @@ test('mints lists rotates and revokes CLI actor credentials with grant-backed li
     },
     actor: GRANT_ACTOR,
   });
-  expect(JSON.stringify(issued)).not.toContain('abcdef0123456789abcdef0123456789');
+  expect(JSON.stringify(issued)).not.toContain(
+    'abcdef0123456789abcdef0123456789'
+  );
 
   const validation = validateCliGatewayActorCredential(scopedRegistry, {
     token: issued.token,
@@ -528,17 +588,21 @@ test('mints lists rotates and revokes CLI actor credentials with grant-backed li
     sessionIds: ['session-2'],
     taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
   };
-  const otherIssued = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
-    ...grantLifecycleInput(
-      approveGrant(grants, 'grant-mint-other', {
-        actor: otherActor,
-        scope: otherScope,
-      }),
-      'mint-other'
-    ),
-    actor: otherActor,
-    scope: otherScope,
-  });
+  const otherIssued = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-mint-other', {
+          actor: otherActor,
+          scope: otherScope,
+        }),
+        'mint-other'
+      ),
+      actor: otherActor,
+      scope: otherScope,
+    }
+  );
 
   const listed = listCliGatewayActorCredentialsWithGrant(
     scopedRegistry,
@@ -585,7 +649,9 @@ test('mints lists rotates and revokes CLI actor credentials with grant-backed li
     rotated.credential.id,
     {
       ...grantLifecycleInput(approveGrant(grants, 'grant-revoke'), 'revoke'),
-      metadata: { reason: 'rotating bearer relay-sac-v1.supersecretcredentialmaterial' },
+      metadata: {
+        reason: 'rotating bearer relay-sac-v1.supersecretcredentialmaterial',
+      },
     }
   );
   expect(revoked).toMatchObject({
@@ -593,7 +659,9 @@ test('mints lists rotates and revokes CLI actor credentials with grant-backed li
     revokedBy: 'grant:grant-revoke',
   });
   expect(revoked.revocationReason).toContain('[REDACTED]');
-  expect(revoked.revocationReason).not.toContain('supersecretcredentialmaterial');
+  expect(revoked.revocationReason).not.toContain(
+    'supersecretcredentialmaterial'
+  );
 });
 
 test('denies grant-backed CLI actor lifecycle expansion and lane-mixing attempts', () => {
@@ -637,8 +705,18 @@ test('rejects grant-backed lifecycle requests that expand multi-value scope dime
   const grants = grantRegistry();
 
   const scopeExpansionCases = [
-    { key: 'nodeIds', allowed: 'node-1', denied: 'node-2', reason: 'wrong_node_scope' },
-    { key: 'sessionIds', allowed: 'session-1', denied: 'session-2', reason: 'wrong_session_scope' },
+    {
+      key: 'nodeIds',
+      allowed: 'node-1',
+      denied: 'node-2',
+      reason: 'wrong_node_scope',
+    },
+    {
+      key: 'sessionIds',
+      allowed: 'session-1',
+      denied: 'session-2',
+      reason: 'wrong_session_scope',
+    },
     {
       key: 'globalSessionIds',
       allowed: 'global-session-1',
@@ -651,9 +729,24 @@ test('rejects grant-backed lifecycle requests that expand multi-value scope dime
       denied: 'work-context-2',
       reason: 'wrong_work_context_scope',
     },
-    { key: 'repoIds', allowed: 'repo-1', denied: 'repo-2', reason: 'wrong_repo_scope' },
-    { key: 'pathPrefixes', allowed: '/allowed', denied: '/blocked', reason: 'wrong_path_scope' },
-    { key: 'taskRefs', allowed: CLI_GATEWAY_READ_SCOPE_TASK_REF, denied: 'task-other', reason: 'wrong_task_scope' },
+    {
+      key: 'repoIds',
+      allowed: 'repo-1',
+      denied: 'repo-2',
+      reason: 'wrong_repo_scope',
+    },
+    {
+      key: 'pathPrefixes',
+      allowed: '/allowed',
+      denied: '/blocked',
+      reason: 'wrong_path_scope',
+    },
+    {
+      key: 'taskRefs',
+      allowed: CLI_GATEWAY_READ_SCOPE_TASK_REF,
+      denied: 'task-other',
+      reason: 'wrong_task_scope',
+    },
   ] as const;
 
   for (const { key, allowed, denied, reason } of scopeExpansionCases) {
@@ -685,31 +778,41 @@ test('rejects request-only lifecycle scope dimensions absent from the approved g
   expectGrantError(
     () =>
       issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
-        ...grantLifecycleInput(approveGrant(grants, 'grant-mint-request-only-node'), 'mint-request-only-node'),
+        ...grantLifecycleInput(
+          approveGrant(grants, 'grant-mint-request-only-node'),
+          'mint-request-only-node'
+        ),
         scope: requestOnlyNodeScope,
       }),
     'wrong_node_scope'
   );
   expect(scopedRegistry.listCredentials()).toHaveLength(0);
 
-  const allowedCredential = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
-    ...grantLifecycleInput(
-      approveGrant(grants, 'grant-mint-node-bound', {
-        scope: {
-          sessionIds: ['session-1'],
-          nodeIds: ['node-allowed'],
-          taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
-        },
-      }),
-      'mint-node-bound'
-    ),
-    scope: { sessionIds: ['session-1'], nodeIds: ['node-allowed'] },
-  });
+  const allowedCredential = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-mint-node-bound', {
+          scope: {
+            sessionIds: ['session-1'],
+            nodeIds: ['node-allowed'],
+            taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+          },
+        }),
+        'mint-node-bound'
+      ),
+      scope: { sessionIds: ['session-1'], nodeIds: ['node-allowed'] },
+    }
+  );
 
   expectGrantError(
     () =>
       listCliGatewayActorCredentialsWithGrant(scopedRegistry, grants, {
-        ...grantLifecycleInput(approveGrant(grants, 'grant-list-request-only-node'), 'list-request-only-node'),
+        ...grantLifecycleInput(
+          approveGrant(grants, 'grant-list-request-only-node'),
+          'list-request-only-node'
+        ),
         scope: requestOnlyNodeScope,
       }),
     'wrong_node_scope'
@@ -721,7 +824,10 @@ test('rejects request-only lifecycle scope dimensions absent from the approved g
         scopedRegistry,
         grants,
         allowedCredential.credential.id,
-        grantLifecycleInput(approveGrant(grants, 'grant-rotate-request-only-node'), 'rotate-request-only-node')
+        grantLifecycleInput(
+          approveGrant(grants, 'grant-rotate-request-only-node'),
+          'rotate-request-only-node'
+        )
       ),
     'wrong_node_scope'
   );
@@ -732,30 +838,39 @@ test('rejects request-only lifecycle scope dimensions absent from the approved g
         scopedRegistry,
         grants,
         allowedCredential.credential.id,
-        grantLifecycleInput(approveGrant(grants, 'grant-revoke-request-only-node'), 'revoke-request-only-node')
+        grantLifecycleInput(
+          approveGrant(grants, 'grant-revoke-request-only-node'),
+          'revoke-request-only-node'
+        )
       ),
     'wrong_node_scope'
   );
 
-  expect(scopedRegistry.getCredential(allowedCredential.credential.id)).not.toHaveProperty(
-    'revokedAt'
-  );
+  expect(
+    scopedRegistry.getCredential(allowedCredential.credential.id)
+  ).not.toHaveProperty('revokedAt');
 });
 
 test('allows only the default CLI gateway taskRef when the grant omits task scope', () => {
   const scopedRegistry = registry();
   const grants = grantRegistry();
 
-  const issued = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
-    ...grantLifecycleInput(
-      approveGrant(grants, 'grant-default-taskref', {
-        scope: { sessionIds: ['session-1'] },
-      }),
-      'default-taskref'
-    ),
-    scope: { sessionIds: ['session-1'] },
-  });
-  expect(issued.credential.scope.taskRefs).toEqual([CLI_GATEWAY_READ_SCOPE_TASK_REF]);
+  const issued = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-default-taskref', {
+          scope: { sessionIds: ['session-1'] },
+        }),
+        'default-taskref'
+      ),
+      scope: { sessionIds: ['session-1'] },
+    }
+  );
+  expect(issued.credential.scope.taskRefs).toEqual([
+    CLI_GATEWAY_READ_SCOPE_TASK_REF,
+  ]);
 
   expectGrantError(
     () =>
@@ -780,10 +895,14 @@ test('keeps grant-specific task scope while preserving the read gateway marker',
     scope: { taskRefs: [dogfoodTaskRef] },
   });
 
-  const issued = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
-    ...grantLifecycleInput(handle, 'dogfood-taskref'),
-    scope: { taskRefs: [dogfoodTaskRef] },
-  });
+  const issued = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(handle, 'dogfood-taskref'),
+      scope: { taskRefs: [dogfoodTaskRef] },
+    }
+  );
 
   expect(issued.credential.scope.taskRefs).toEqual([
     CLI_GATEWAY_READ_SCOPE_TASK_REF,
@@ -804,20 +923,27 @@ test('denies mixed allowed and disallowed list scopes before exposing credential
   const sessionOne = issueCliGatewayActorCredentialWithGrant(
     scopedRegistry,
     grants,
-    grantLifecycleInput(approveGrant(grants, 'grant-list-seed-session-1'), 'list-seed-session-1')
+    grantLifecycleInput(
+      approveGrant(grants, 'grant-list-seed-session-1'),
+      'list-seed-session-1'
+    )
   );
-  const sessionTwo = issueCliGatewayActorCredentialWithGrant(scopedRegistry, grants, {
-    ...grantLifecycleInput(
-      approveGrant(grants, 'grant-list-seed-session-2', {
-        scope: {
-          sessionIds: ['session-2'],
-          taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
-        },
-      }),
-      'list-seed-session-2'
-    ),
-    scope: { sessionIds: ['session-2'] },
-  });
+  const sessionTwo = issueCliGatewayActorCredentialWithGrant(
+    scopedRegistry,
+    grants,
+    {
+      ...grantLifecycleInput(
+        approveGrant(grants, 'grant-list-seed-session-2', {
+          scope: {
+            sessionIds: ['session-2'],
+            taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+          },
+        }),
+        'list-seed-session-2'
+      ),
+      scope: { sessionIds: ['session-2'] },
+    }
+  );
 
   const mixedHandle = approveGrant(grants, 'grant-list-mixed-session');
   try {
@@ -828,7 +954,9 @@ test('denies mixed allowed and disallowed list scopes before exposing credential
     throw new Error('expected wrong_session_scope for mixed list scope');
   } catch (error) {
     expect(error).toBeInstanceOf(CliGatewayActorGrantError);
-    expect((error as CliGatewayActorGrantError).reason).toBe('wrong_session_scope');
+    expect((error as CliGatewayActorGrantError).reason).toBe(
+      'wrong_session_scope'
+    );
   }
 
   const listed = listCliGatewayActorCredentialsWithGrant(

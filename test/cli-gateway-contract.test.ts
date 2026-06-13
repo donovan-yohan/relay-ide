@@ -204,6 +204,7 @@ describe('CLI gateway contract', () => {
       'workflow-runs.update',
       'workflow-runs.list',
       'workflow-runs.get',
+      'roster.list',
       'events.subscribe',
       'settings.get',
       'settings.update',
@@ -316,6 +317,16 @@ describe('CLI gateway contract', () => {
       auditRedaction: { expectation: 'bounded-redacted' },
       scopeKinds: ['repo', 'worktree'],
     });
+    expect(commandSpec('roster.list')).toMatchObject({
+      capabilityHints: ['session:read'],
+      cli: ['relay-ide', 'v1', 'roster', 'list', '--json'],
+    });
+    expect(relayCommandDefinition('roster.list')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['repo', 'work-context', 'session'],
+    });
     expect(relayCommandDefinition('worktrees.create')).toMatchObject({
       sideEffect: 'write',
       requiresConfirmation: false,
@@ -358,7 +369,9 @@ describe('CLI gateway contract', () => {
         worktreePath: '/tmp/repo/.worktrees/one',
       })
     ).toBe(true);
-    expect(relayCommandDefinition('work-context-artifacts.publish')).toMatchObject({
+    expect(
+      relayCommandDefinition('work-context-artifacts.publish')
+    ).toMatchObject({
       sideEffect: 'write',
       requiresConfirmation: false,
       auditRedaction: { expectation: 'action-summary' },
@@ -370,13 +383,17 @@ describe('CLI gateway contract', () => {
       auditRedaction: { expectation: 'action-summary' },
       scopeKinds: ['work-context'],
     });
-    expect(relayCommandDefinition('work-context-artifacts.unpin')).toMatchObject({
+    expect(
+      relayCommandDefinition('work-context-artifacts.unpin')
+    ).toMatchObject({
       sideEffect: 'write',
       requiresConfirmation: false,
       auditRedaction: { expectation: 'action-summary' },
       scopeKinds: ['work-context'],
     });
-    expect(relayCommandDefinition('work-context-artifacts.export')).toMatchObject({
+    expect(
+      relayCommandDefinition('work-context-artifacts.export')
+    ).toMatchObject({
       sideEffect: 'read',
       requiresConfirmation: false,
       auditRedaction: { expectation: 'bounded-redacted' },
@@ -402,45 +419,61 @@ describe('CLI gateway contract', () => {
       auditRedaction: { expectation: 'bounded-redacted' },
       scopeKinds: ['work-context'],
     });
-    expect(schemaAcceptsCommandInput('work-context-artifacts.publish', {})).toBe(
-      false
-    );
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.publish', {})
+    ).toBe(false);
     expect(
       schemaAcceptsCommandInput('work-context-artifacts.publish', {
         workContextId: 'wc:contract',
         artifact: {},
       })
     ).toBe(true);
-    expect(schemaAcceptsCommandInput('work-context-artifacts.show', { id: 'artifact:1' })).toBe(
-      true
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.show', {
+        id: 'artifact:1',
+      })
+    ).toBe(true);
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.export', {
+        id: 'artifact:1',
+      })
+    ).toBe(true);
+    expect(schemaAcceptsCommandInput('handoff-artifacts.attach', {})).toBe(
+      false
     );
-    expect(schemaAcceptsCommandInput('work-context-artifacts.export', { id: 'artifact:1' })).toBe(
-      true
-    );
-    expect(schemaAcceptsCommandInput('handoff-artifacts.attach', {})).toBe(false);
     expect(
       schemaAcceptsCommandInput('handoff-artifacts.attach', {
         workContextId: 'wc:contract',
         artifact: {},
       })
     ).toBe(true);
-    expect(schemaAcceptsCommandInput('handoff-artifacts.list', { workContextId: 'wc:contract' })).toBe(
-      true
-    );
-    expect(schemaAcceptsCommandInput('handoff-artifacts.show', { id: 'artifact:1' })).toBe(true);
-    expect(schemaAcceptsCommandInput('handoff-artifacts.copy', { id: 'artifact:1' })).toBe(true);
-    expect(schemaAcceptsCommandInput('work-context-artifacts.pin', { id: 'artifact:1' })).toBe(
-      false
-    );
+    expect(
+      schemaAcceptsCommandInput('handoff-artifacts.list', {
+        workContextId: 'wc:contract',
+      })
+    ).toBe(true);
+    expect(
+      schemaAcceptsCommandInput('handoff-artifacts.show', { id: 'artifact:1' })
+    ).toBe(true);
+    expect(
+      schemaAcceptsCommandInput('handoff-artifacts.copy', { id: 'artifact:1' })
+    ).toBe(true);
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.pin', {
+        id: 'artifact:1',
+      })
+    ).toBe(false);
     expect(
       schemaAcceptsCommandInput('work-context-artifacts.pin', {
         id: 'artifact:1',
         workContextId: 'wc:contract',
       })
     ).toBe(true);
-    expect(schemaAcceptsCommandInput('work-context-artifacts.unpin', { id: 'artifact:1' })).toBe(
-      false
-    );
+    expect(
+      schemaAcceptsCommandInput('work-context-artifacts.unpin', {
+        id: 'artifact:1',
+      })
+    ).toBe(false);
     expect(
       schemaAcceptsCommandInput('work-context-artifacts.unpin', {
         id: 'artifact:1',
@@ -468,7 +501,9 @@ describe('CLI gateway contract', () => {
       })
     ).toBe(true);
     expect(schemaAcceptsSessionWait({ id: 's1', idleMs: 1000 })).toBe(true);
-    expect(schemaAcceptsSessionWait({ id: 's1', screenText: 'ready' })).toBe(true);
+    expect(schemaAcceptsSessionWait({ id: 's1', screenText: 'ready' })).toBe(
+      true
+    );
     expect(
       schemaAcceptsSessionWait({ id: 's1', outputText: 'ready', idleMs: 1000 })
     ).toBe(false);
@@ -984,6 +1019,7 @@ describe('CLI gateway contract', () => {
       'workflow-runs.update',
       'workflow-runs.list',
       'workflow-runs.get',
+      'roster.list',
       'events.subscribe',
     ] as const;
 
@@ -1146,7 +1182,11 @@ describe('CLI gateway contract', () => {
       },
     });
     expect(screen.errorCodes).toEqual(
-      expect.arrayContaining(['SESSION_CONFLICT', 'UNSUPPORTED', 'UPSTREAM_ERROR'])
+      expect.arrayContaining([
+        'SESSION_CONFLICT',
+        'UNSUPPORTED',
+        'UPSTREAM_ERROR',
+      ])
     );
 
     const input = commandSpec('sessions.input');
