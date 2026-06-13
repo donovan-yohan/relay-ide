@@ -47,6 +47,9 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'handoff-artifacts.copy',
   'workflow-runs.list',
   'workflow-runs.get',
+  'work-context-messages.list',
+  'work-context-messages.show',
+  'work-context-messages.query',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
@@ -65,6 +68,7 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'handoff-artifacts.attach',
   'workflow-runs.publish',
   'workflow-runs.update',
+  'work-context-messages.append',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -75,6 +79,9 @@ export type CliGatewayActorCommand =
 const cliGatewayActorReadCommandSet = new Set<string>(CLI_GATEWAY_ACTOR_READ_COMMANDS);
 const cliGatewayActorWriteCommandSet = new Set<string>(CLI_GATEWAY_ACTOR_WRITE_COMMANDS);
 const cliGatewayActorGrantCapabilitySet = new Set<string>(CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES);
+const cliGatewayActorReadPostCommandSet = new Set<string>([
+  'work-context-messages.query',
+]);
 
 export interface CliGatewayActorIssueInput {
   actor?: { type?: unknown; id?: unknown; displayName?: unknown };
@@ -218,9 +225,16 @@ export function isSupportedCliGatewayActorReadRequest(
   req: Request,
   expectedCommand?: CliGatewayActorReadCommand
 ): boolean {
-  if (req.method !== 'GET') return false;
   if (!expectedCommand || !cliGatewayActorReadCommandSet.has(expectedCommand)) {
     return false;
+  }
+  if (req.method !== 'GET') {
+    if (
+      req.method !== 'POST' ||
+      !cliGatewayActorReadPostCommandSet.has(expectedCommand)
+    ) {
+      return false;
+    }
   }
   const command = req.header(CLI_GATEWAY_COMMAND_HEADER);
   return command == null || command === expectedCommand;
@@ -260,7 +274,12 @@ export function isSupportedCliGatewayActorRequest(
 export function cliGatewayActorCommandCapabilities(
   command: CliGatewayActorCommand
 ): readonly RelayCapabilityBit[] {
-  if (command === 'workflow-runs.list' || command === 'workflow-runs.get')
+  if (command === 'work-context-messages.append') return ['context:write'];
+  if (
+    command === 'workflow-runs.list' ||
+    command === 'workflow-runs.get' ||
+    command.startsWith('work-context-messages.')
+  )
     return ['context:read'];
   if (cliGatewayActorReadCommandSet.has(command)) return ['session:read'];
   if (command.startsWith('workflow-runs.')) return ['context:write'];

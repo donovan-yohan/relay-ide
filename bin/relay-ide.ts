@@ -1486,6 +1486,9 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.screen',
   'work-contexts.get',
   'work-contexts.resume',
+  'work-context-messages.list',
+  'work-context-messages.show',
+  'work-context-messages.query',
   'work-context-artifacts.list',
   'work-context-artifacts.show',
   'work-context-artifacts.export',
@@ -3891,6 +3894,135 @@ async function runGatewayWorkContextArtifacts(gatewayArgs: string[]): Promise<ne
   });
 }
 
+function addWorkContextMessageQueryParam(
+  query: URLSearchParams,
+  args: string[],
+  flag: string,
+  key: string
+): void {
+  const value = gatewayArg(args, flag);
+  if (value) query.set(key, value);
+}
+
+function addWorkContextMessageBodyFlags(
+  body: Record<string, unknown>,
+  args: string[]
+): Record<string, unknown> {
+  for (const [flag, key] of [
+    ['--work-context-id', 'workContextId'],
+    ['--kind', 'kind'],
+    ['--summary', 'summary'],
+    ['--payload-schema', 'payloadSchema'],
+    ['--visibility', 'visibility'],
+    ['--parent-message-id', 'parentMessageId'],
+    ['--reply-to-message-id', 'replyToMessageId'],
+  ] as const) {
+    const value = gatewayArg(args, flag);
+    if (value !== undefined) body[key] = value;
+  }
+  const payloadFile = gatewayArg(args, '--payload-file');
+  const payloadJson = gatewayArg(args, '--payload-json');
+  if (payloadFile && payloadJson) {
+    gatewayInvalid('work-context-messages.append', '--payload-file and --payload-json are mutually exclusive');
+  }
+  if ((payloadFile || payloadJson) && body['payload'] !== undefined) {
+    gatewayInvalid(
+      'work-context-messages.append',
+      '--input-json payload, --payload-file, and --payload-json are mutually exclusive'
+    );
+  }
+  if (payloadFile) {
+    body['payload'] = gatewayReadJsonFile('work-context-messages.append', payloadFile);
+  }
+  if (payloadJson) {
+    body['payload'] = parseGatewayJson('work-context-messages.append', payloadJson);
+  }
+  return body;
+}
+
+async function runGatewayWorkContextMessages(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const messageArgs = gatewayArgs.slice(2);
+  if (subcommand === 'append') {
+    const commandName: RelayCliGatewayCommand = 'work-context-messages.append';
+    const input = addWorkContextMessageBodyFlags(
+      parseGatewayInputObject(commandName, messageArgs),
+      messageArgs
+    );
+    if (typeof input['workContextId'] !== 'string') {
+      gatewayInvalid(commandName, '--work-context-id is required', { field: 'workContextId' });
+    }
+    if (typeof input['kind'] !== 'string') {
+      gatewayInvalid(commandName, '--kind is required', { field: 'kind' });
+    }
+    if (typeof input['summary'] !== 'string') {
+      gatewayInvalid(commandName, '--summary is required', { field: 'summary' });
+    }
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: '/work-context-messages',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  if (subcommand === 'list') {
+    const commandName: RelayCliGatewayCommand = 'work-context-messages.list';
+    const query = new URLSearchParams();
+    for (const [flag, key] of [
+      ['--work-context-id', 'workContextId'],
+      ['--kind', 'kind'],
+      ['--sender-id', 'senderId'],
+      ['--audience-kind', 'audienceKind'],
+      ['--audience-id', 'audienceId'],
+      ['--payload-schema', 'payloadSchema'],
+      ['--thread-id', 'threadId'],
+      ['--parent-message-id', 'parentMessageId'],
+      ['--ref-kind', 'refKind'],
+      ['--ref-value', 'refValue'],
+      ['--limit', 'limit'],
+    ] as const) {
+      addWorkContextMessageQueryParam(query, messageArgs, flag, key);
+    }
+    if (!query.has('workContextId') && !query.has('threadId') && !query.has('parentMessageId') && !(query.has('refKind') && query.has('refValue'))) {
+      gatewayInvalid(commandName, '--work-context-id, --thread-id, --parent-message-id, or --ref-kind/--ref-value is required');
+    }
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/work-context-messages?${query.toString()}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  if (subcommand === 'show') {
+    const commandName: RelayCliGatewayCommand = 'work-context-messages.show';
+    const id = gatewayArg(messageArgs, '--id') ?? messageArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid(commandName, '--id is required');
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/work-context-messages/${encodeURIComponent(id)}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  if (subcommand === 'query') {
+    const commandName: RelayCliGatewayCommand = 'work-context-messages.query';
+    const input = parseGatewayInputObject(commandName, messageArgs);
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: '/work-context-messages/query',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  gatewayInvalid('work-context-messages.show', 'unknown work-context-messages command', {
+    args: gatewayArgs,
+  });
+}
+
 // eslint-disable-next-line sonarjs/cognitive-complexity -- mirrors the stable handoff-artifacts attach/list/show/copy argv contract explicitly.
 async function runGatewayHandoffArtifacts(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
@@ -4481,6 +4613,8 @@ async function runGatewayV1(): Promise<never> {
   if (top === 'context') return runGatewayContext(gatewayArgs);
   if (top === 'inbox') return runGatewayInbox(gatewayArgs);
   if (top === 'handoffs') return runGatewayHandoffs(gatewayArgs);
+  if (top === 'work-context-messages')
+    return runGatewayWorkContextMessages(gatewayArgs);
   if (top === 'work-context-artifacts')
     return runGatewayWorkContextArtifacts(gatewayArgs);
   if (top === 'handoff-artifacts') return runGatewayHandoffArtifacts(gatewayArgs);

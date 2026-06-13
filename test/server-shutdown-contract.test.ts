@@ -23,8 +23,9 @@ describe('server shutdown store closing contract', () => {
     expect(gracefulShutdownStart).toBeGreaterThanOrEqual(0);
     expect(signalHandlerStart).toBeGreaterThan(gracefulShutdownStart);
     expect(gracefulShutdownSource).toContain('workContextArtifactStore?.close();');
+    expect(gracefulShutdownSource).toContain('workContextMessageStore?.close();');
     expect(gracefulShutdownSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+closeInterventionLog\(\);/
+      /contextPacketStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+closeInterventionLog\(\);/
     );
   });
 
@@ -39,5 +40,6 @@ describe('server shutdown store closing contract', () => {
     expect(updateRestartStart).toBeGreaterThanOrEqual(0);
     expect(updateResponseStart).toBeGreaterThan(updateRestartStart);
     expect(updateRestartSource).toContain('workContextArtifactStore?.close();');
+    expect(updateRestartSource).toContain('workContextMessageStore?.close();');
   });
 });

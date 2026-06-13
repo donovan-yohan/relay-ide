@@ -42,6 +42,10 @@ export type RelayCliGatewayCommand =
   | 'files.write'
   | 'work-contexts.get'
   | 'work-contexts.resume'
+  | 'work-context-messages.append'
+  | 'work-context-messages.list'
+  | 'work-context-messages.show'
+  | 'work-context-messages.query'
   | 'context.create'
   | 'context.get'
   | 'context.list'
@@ -1546,6 +1550,69 @@ const workContextResumeInputSchema: RelayJsonSchema = {
     maxChars: { type: 'integer', minimum: 4000, maximum: 200000 },
   },
   required: ['id'],
+};
+
+const workContextMessageEnvelopeSchema: RelayJsonSchema = {
+  title: 'WorkContextMessageEnvelope',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    schemaVersion: { type: 'number' },
+    id: stringSchema,
+    workContextId: stringSchema,
+    kind: stringSchema,
+    sender: { type: 'object', additionalProperties: true },
+    audience: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    summary: stringSchema,
+    refs: { type: 'object', additionalProperties: true },
+    payloadSchema: stringSchema,
+    payload: { type: 'object', additionalProperties: true },
+    visibility: { type: 'string', enum: ['private', 'internal', 'public'] },
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' },
+    redaction: { type: 'object', additionalProperties: true },
+  },
+  required: ['id', 'workContextId', 'kind', 'sender', 'summary', 'payload', 'createdAt'],
+};
+
+const workContextMessageAppendInputSchema: RelayJsonSchema = {
+  title: 'WorkContextMessageAppendInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    workContextId: stringSchema,
+    kind: stringSchema,
+    sender: { type: 'object', additionalProperties: true },
+    audience: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    summary: stringSchema,
+    refs: { type: 'object', additionalProperties: true },
+    parentMessageId: stringSchema,
+    replyToMessageId: stringSchema,
+    payloadSchema: stringSchema,
+    payload: { type: 'object', additionalProperties: true },
+    visibility: { type: 'string', enum: ['private', 'internal', 'public'] },
+  },
+  required: ['workContextId', 'kind', 'summary'],
+};
+
+const workContextMessageQueryInputSchema: RelayJsonSchema = {
+  title: 'WorkContextMessageQueryInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    workContextId: stringSchema,
+    kind: stringSchema,
+    senderId: stringSchema,
+    audienceKind: stringSchema,
+    audienceId: stringSchema,
+    payloadSchema: stringSchema,
+    threadId: stringSchema,
+    parentMessageId: stringSchema,
+    refKind: stringSchema,
+    refValue: stringSchema,
+    limit: { type: 'integer', minimum: 1, maximum: 200 },
+    filter: { type: 'object', additionalProperties: true },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -3526,6 +3593,79 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],
+  },
+  {
+    name: 'work-context-messages.append',
+    cli: ['relay-ide', 'v1', 'work-context-messages', 'append', '--input-json', '<json>', '--json'],
+    summary:
+      'Append a WorkContext-scoped message envelope with agent/repo-defined payload data.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workContextMessageAppendInputSchema,
+    outputSchema: okOutput('WorkContextMessagesAppendOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { message: workContextMessageEnvelopeSchema },
+      required: ['message'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'INVALID_JSON', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'],
+  },
+  {
+    name: 'work-context-messages.list',
+    cli: ['relay-ide', 'v1', 'work-context-messages', 'list', '--work-context-id', '<id>', '--json'],
+    summary: 'List bounded WorkContext message envelopes by context/thread/ref filters.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextMessageQueryInputSchema,
+    outputSchema: okOutput('WorkContextMessagesListOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { messages: { type: 'array', items: workContextMessageEnvelopeSchema } },
+      required: ['messages'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE'],
+  },
+  {
+    name: 'work-context-messages.show',
+    cli: ['relay-ide', 'v1', 'work-context-messages', 'show', '--id', '<message-id>', '--json'],
+    summary: 'Read one WorkContext message envelope by id after WorkContext scope checks.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: { title: 'WorkContextMessagesShowInput', type: 'object', additionalProperties: false, properties: { id: stringSchema }, required: ['id'] },
+    outputSchema: okOutput('WorkContextMessagesShowOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { message: workContextMessageEnvelopeSchema },
+      required: ['message'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE'],
+  },
+  {
+    name: 'work-context-messages.query',
+    cli: ['relay-ide', 'v1', 'work-context-messages', 'query', '--input-json', '<json>', '--json'],
+    summary:
+      'Query WorkContext messages with repo/agent-owned payload schemas preserved as opaque data.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextMessageQueryInputSchema,
+    outputSchema: okOutput('WorkContextMessagesQueryOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        messages: { type: 'array', items: workContextMessageEnvelopeSchema },
+        filter: workContextMessageQueryInputSchema,
+      },
+      required: ['messages'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE'],
   },
   {
     name: 'context.create',
