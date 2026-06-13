@@ -58,6 +58,10 @@ export type RelayCliGatewayCommand =
   | 'handoff-artifacts.list'
   | 'handoff-artifacts.show'
   | 'handoff-artifacts.copy'
+  | 'workflow-runs.publish'
+  | 'workflow-runs.update'
+  | 'workflow-runs.list'
+  | 'workflow-runs.get'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -1477,7 +1481,16 @@ export const gatewayErrorSchema: RelayJsonSchema = {
   required: ['ok', 'contract', 'contractVersion', 'command', 'error'],
 };
 
-export const EVENTS_SUBSCRIBE_TOPICS = ['sessions', 'nodes', 'audit'] as const;
+export const EVENTS_SUBSCRIBE_TOPICS = [
+  'sessions',
+  'nodes',
+  'audit',
+  'context',
+  'inbox',
+  'work-context-artifacts',
+  'handoff-artifacts',
+  'workflow-runs',
+] as const;
 export type EventsSubscribeTopic = (typeof EVENTS_SUBSCRIBE_TOPICS)[number];
 
 const eventsSubscribeInputSchema: RelayJsonSchema = {
@@ -1489,8 +1502,12 @@ const eventsSubscribeInputSchema: RelayJsonSchema = {
       type: 'string',
       enum: EVENTS_SUBSCRIBE_TOPICS,
       description:
-        'Non-destructive event topic to subscribe to: sessions lifecycle/control, node link status, or redacted audit envelopes.',
+        'Non-destructive event topic to subscribe to: sessions lifecycle/control, node link status, redacted audit envelopes, or WorkContext workflow metadata.',
     },
+    cursor: stringSchema,
+    workContextId: stringSchema,
+    sessionId: stringSchema,
+    globalSessionId: stringSchema,
     maxEvents: {
       type: 'number',
       minimum: 1,
@@ -2216,12 +2233,92 @@ const eventsSubscribeFrameSchema: RelayJsonSchema = {
     topic: { type: 'string', enum: EVENTS_SUBSCRIBE_TOPICS },
     sequence: { type: 'number', minimum: 0 },
     occurredAt: { type: 'string', format: 'date-time' },
+    cursor: { type: 'string' },
+    replay: { type: 'boolean' },
+    replayDropped: { type: 'boolean' },
     payload: { type: 'object', additionalProperties: true },
     frames: { type: 'number', minimum: 0 },
     closeCode: { type: 'number' },
     reason: { type: 'string' },
   },
   required: ['event', 'topic', 'sequence'],
+};
+
+const workflowRunProjectionSchema: RelayJsonSchema = {
+  title: 'WorkflowRunProjection',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    providerRuntime: stringSchema,
+    workContextId: stringSchema,
+    state: stringSchema,
+    version: { type: 'number', minimum: 1 },
+    redaction: { type: 'object', additionalProperties: true },
+  },
+  required: ['id', 'runId', 'providerRuntime', 'workContextId', 'state', 'version', 'redaction'],
+};
+
+const workflowRunPublishInputSchema: RelayJsonSchema = {
+  title: 'WorkflowRunPublishInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    providerRuntime: stringSchema,
+    workContextId: stringSchema,
+    definition: { type: 'object', additionalProperties: true },
+    state: stringSchema,
+  },
+  required: ['runId', 'providerRuntime', 'workContextId', 'definition'],
+};
+
+const workflowRunUpdateInputSchema: RelayJsonSchema = {
+  title: 'WorkflowRunUpdateInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    expectedVersion: { type: 'number', minimum: 1 },
+    state: stringSchema,
+  },
+};
+
+const workflowRunListInputSchema: RelayJsonSchema = {
+  title: 'WorkflowRunListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workContextId: stringSchema,
+    state: stringSchema,
+    providerRuntime: stringSchema,
+    limit: { type: 'number', minimum: 1, maximum: 100 },
+  },
+  required: ['workContextId'],
+};
+
+const workflowRunGetInputSchema: RelayJsonSchema = {
+  title: 'WorkflowRunGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema },
+  required: ['id'],
+};
+
+const workflowRunOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { workflowRun: workflowRunProjectionSchema },
+  required: ['workflowRun'],
+};
+
+const workflowRunListOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { workflowRuns: { type: 'array', items: workflowRunProjectionSchema } },
+  required: ['workflowRuns'],
 };
 
 const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
@@ -4097,6 +4194,56 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     errorCodes: gatewaySupervisorErrorCodes,
   },
   {
+    name: 'workflow-runs.publish',
+    cli: ['relay-ide', 'v1', 'workflow-runs', 'publish', '--input-json', '<json>', '--json'],
+    summary:
+      'Publish a bounded WorkContext-scoped external workflow run projection without raw transcripts or provider-private state.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workflowRunPublishInputSchema,
+    outputSchema: okOutput('WorkflowRunPublishOutput', workflowRunOutputDataSchema),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'workflow-runs.update',
+    cli: ['relay-ide', 'v1', 'workflow-runs', 'update', '--id', '<id>', '--input-json', '<json>', '--json'],
+    summary:
+      'Update a bounded WorkContext-scoped workflow run projection, optionally with an expected version guard.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workflowRunUpdateInputSchema,
+    outputSchema: okOutput('WorkflowRunUpdateOutput', workflowRunOutputDataSchema),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'workflow-runs.list',
+    cli: ['relay-ide', 'v1', 'workflow-runs', 'list', '--work-context-id', '<id>', '--json'],
+    summary: 'List bounded workflow run projections by WorkContext.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workflowRunListInputSchema,
+    outputSchema: okOutput('WorkflowRunListOutput', workflowRunListOutputDataSchema),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
+    name: 'workflow-runs.get',
+    cli: ['relay-ide', 'v1', 'workflow-runs', 'get', '--id', '<id>', '--json'],
+    summary: 'Get one bounded workflow run projection by Relay workflowRun id.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workflowRunGetInputSchema,
+    outputSchema: okOutput('WorkflowRunGetOutput', workflowRunOutputDataSchema),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SERVER_UNAVAILABLE', 'UPSTREAM_ERROR'],
+  },
+  {
     name: 'events.subscribe',
     cli: [
       'relay-ide',
@@ -4112,12 +4259,13 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
-    // Union of capabilities across all topics: `sessions` and `nodes` need
-    // `session:read`; `audit` additionally needs `tab:intervention:read`
-    // (enforced by the hub router on the `audit` topic). Generators that
-    // surface this verb should request the superset so a single tool
-    // definition covers every topic.
-    capabilityHints: ['session:read', 'tab:intervention:read'],
+    // Union of capabilities across all topics: legacy `sessions` and `nodes`
+    // need `session:read`; `audit` additionally needs
+    // `tab:intervention:read`; WorkContext metadata topics need
+    // `context:read`; `inbox` needs `inbox:read`. Generators that surface
+    // this verb should request the superset so a single tool definition covers
+    // every topic.
+    capabilityHints: ['session:read', 'tab:intervention:read', 'context:read', 'inbox:read'],
     inputSchema: eventsSubscribeInputSchema,
     outputSchema: okOutput('EventsSubscribeFrame', eventsSubscribeFrameSchema),
     errorCodes: [

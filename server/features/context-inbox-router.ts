@@ -49,6 +49,7 @@ import type {
   ScopedActorCredentialValidationFailureReason,
 } from '../../shared/scoped-actor-credentials.js';
 import type { WorkContextStore } from '../work-contexts.js';
+import type { CliGatewayEventBus } from '../cli-gateway-event-bus.js';
 import {
   TERMINAL_INBOX_MESSAGE_STATES,
   type ContextPacket,
@@ -169,6 +170,7 @@ export interface ContextInboxStore {
 export interface ContextInboxRouterDeps {
   store: ContextInboxStore | null;
   workContextStore?: WorkContextStore;
+  events?: Pick<CliGatewayEventBus, 'publish'>;
   requireAuth?: RequestHandler;
   requireWriteActorAuth?: (
     expectedCommand: CliGatewayActorWriteCommand,
@@ -1061,6 +1063,38 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     return contextPackets.length > 0 ? { ...message, contextPackets } : message;
   }
 
+  function emitContextEvent(type: string, packet: ContextPacket, workContextId?: string): void {
+    deps.events?.publish({
+      topic: 'context',
+      type,
+      ...(workContextId ? { workContextId } : {}),
+      payload: {
+        contextPacketId: packet.id,
+        kind: packet.kind,
+        createdBy: packet.createdBy,
+        ...(packet.binding?.nodeId ? { nodeId: packet.binding.nodeId } : {}),
+        ...(packet.binding?.workspaceId ? { workspaceId: packet.binding.workspaceId } : {}),
+      },
+    });
+  }
+
+  function emitInboxEvent(type: string, message: SessionInboxMessage, previousState?: SessionInboxMessageState): void {
+    deps.events?.publish({
+      topic: 'inbox',
+      type,
+      ...(message.targetWorkContextId ? { workContextId: message.targetWorkContextId } : {}),
+      ...(message.targetSessionId ? { globalSessionId: message.targetSessionId } : {}),
+      payload: {
+        messageId: message.id,
+        state: message.state,
+        ...(previousState ? { previousState } : {}),
+        createdBy: message.createdBy,
+        contextPacketCount: message.contextPacketIds.length,
+        contextPacketIds: message.contextPacketIds,
+      },
+    });
+  }
+
   function workContexts(res: Response): WorkContextStore | null {
     if (!deps.workContextStore) {
       sendGatewayError(
@@ -1162,6 +1196,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
           : {}),
         createdBy,
       });
+      emitContextEvent('context.created', contextPacket);
       res.status(201).json({ contextPacket });
     } catch (err) {
       sendGatewayError(
@@ -1220,6 +1255,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
           artifacts: [artifact],
           summary: `Pinned context packet ${packet.id} to WorkContext ${workContextId}`,
         });
+        emitContextEvent('context.pinned', packet, workContextId);
       }
       const pinned = await pinnedContextPacketsFor(s, workContextId);
       res.status(alreadyPinned ? 200 : 201).json({
@@ -1279,6 +1315,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
         })
       : updated;
     const packet = s.getPacket(packetId);
+    if (removed && packet) emitContextEvent('context.unpinned', packet, workContextId);
     res.json({
       workContext,
       ...(packet ? { contextPacket: packet } : {}),
@@ -1376,6 +1413,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
         ...(readString(body['text']) ? { text: body['text'] as string } : {}),
         createdBy,
       });
+      emitInboxEvent('inbox.sent', message);
       res.status(201).json({ message });
     } catch (err) {
       sendGatewayError(
@@ -1503,6 +1541,7 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
         sendUpdateFailure(res, result);
         return;
       }
+      emitInboxEvent('inbox.state-changed', result.message, message.state);
       res.json({ message: result.message });
     };
   }

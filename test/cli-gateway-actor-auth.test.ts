@@ -214,6 +214,8 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'handoff-artifacts.list',
     'handoff-artifacts.show',
     'handoff-artifacts.copy',
+    'workflow-runs.list',
+    'workflow-runs.get',
   ]);
   expect(
     classifyCliGatewayCredentialLane(
@@ -288,6 +290,8 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'work-context-artifacts.pin',
     'work-context-artifacts.unpin',
     'handoff-artifacts.attach',
+    'workflow-runs.publish',
+    'workflow-runs.update',
   ]);
 
   for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {
@@ -360,6 +364,10 @@ test('maps write actor commands to required Relay capability bits', () => {
   expect(cliGatewayActorCommandCapabilities('handoff-artifacts.attach')).toEqual([
     'artifact:write',
   ]);
+  expect(cliGatewayActorCommandCapabilities('workflow-runs.list')).toEqual(['context:read']);
+  expect(cliGatewayActorCommandCapabilities('workflow-runs.get')).toEqual(['context:read']);
+  expect(cliGatewayActorCommandCapabilities('workflow-runs.publish')).toEqual(['context:write']);
+  expect(cliGatewayActorCommandCapabilities('workflow-runs.update')).toEqual(['context:write']);
 });
 
 test('denies spoofed actor command headers on non-MVP route identities', () => {
@@ -401,6 +409,8 @@ test('allows only the MVP actor command and route identity pairs', () => {
     { command: 'handoff-artifacts.list', expected: 'handoff-artifacts.list' },
     { command: 'handoff-artifacts.show', expected: 'handoff-artifacts.show' },
     { command: 'handoff-artifacts.copy', expected: 'handoff-artifacts.copy' },
+    { command: 'workflow-runs.list', expected: 'workflow-runs.list' },
+    { command: 'workflow-runs.get', expected: 'workflow-runs.get' },
   ] as const;
 
   for (const { command, expected } of allowed) {

@@ -26,6 +26,7 @@ export const CLI_GATEWAY_COMMAND_HEADER = 'x-relay-cli-command' as const;
 export const CLI_GATEWAY_CORRELATION_ID_HEADER = 'x-relay-correlation-id' as const;
 export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = [
   'session:read',
+  'context:read',
   'context:write',
   'inbox:write',
   'artifact:write',
@@ -44,6 +45,8 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'handoff-artifacts.list',
   'handoff-artifacts.show',
   'handoff-artifacts.copy',
+  'workflow-runs.list',
+  'workflow-runs.get',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
@@ -60,6 +63,8 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'work-context-artifacts.pin',
   'work-context-artifacts.unpin',
   'handoff-artifacts.attach',
+  'workflow-runs.publish',
+  'workflow-runs.update',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -225,7 +230,7 @@ export function isSupportedCliGatewayActorWriteRequest(
   req: Request,
   expectedCommand?: CliGatewayActorWriteCommand
 ): boolean {
-  if (req.method !== 'POST') return false;
+  if (req.method !== 'POST' && req.method !== 'PATCH') return false;
   if (!expectedCommand || !cliGatewayActorWriteCommandSet.has(expectedCommand)) {
     return false;
   }
@@ -255,7 +260,10 @@ export function isSupportedCliGatewayActorRequest(
 export function cliGatewayActorCommandCapabilities(
   command: CliGatewayActorCommand
 ): readonly RelayCapabilityBit[] {
+  if (command === 'workflow-runs.list' || command === 'workflow-runs.get')
+    return ['context:read'];
   if (cliGatewayActorReadCommandSet.has(command)) return ['session:read'];
+  if (command.startsWith('workflow-runs.')) return ['context:write'];
   if (command.startsWith('context.')) return ['context:write'];
   if (command.startsWith('inbox.')) return ['inbox:write'];
   return ['artifact:write'];
