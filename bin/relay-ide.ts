@@ -3797,7 +3797,7 @@ function addWorkContextArtifactBodyFlags(
     if (value !== undefined) body[key] = value;
   }
   const taskRef = workContextArtifactTaskRefFromArgs(commandName, args);
-  if (taskRef && body['taskRef'] === undefined) body['taskRef'] = taskRef;
+  if (taskRef) body['taskRef'] = taskRef;
   if (args.includes('--pin')) body['pin'] = true;
   const artifactFile = gatewayArg(args, '--artifact-file');
   const viewFile = gatewayArg(args, '--view-file');

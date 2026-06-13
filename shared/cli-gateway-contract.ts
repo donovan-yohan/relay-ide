@@ -2429,7 +2429,18 @@ const rosterAttentionSchema: RelayJsonSchema = {
   additionalProperties: false,
   properties: {
     needsAttention: booleanSchema,
-    reasons: { type: 'array', items: stringSchema },
+    reasons: {
+      type: 'array',
+      items: {
+        type: 'string',
+        enum: [
+          'permission-prompt',
+          'waiting-for-input',
+          'error',
+          'pending-inbox',
+        ],
+      },
+    },
     pendingInboxCount: { type: 'number', minimum: 0 },
   },
   required: ['needsAttention', 'reasons', 'pendingInboxCount'],
@@ -2440,7 +2451,7 @@ const rosterActorSchema: RelayJsonSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    kind: stringSchema,
+    kind: { type: 'string', enum: ['agent', 'human', 'system'] },
     id: stringSchema,
     displayName: stringSchema,
   },

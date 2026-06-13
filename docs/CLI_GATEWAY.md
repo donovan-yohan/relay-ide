@@ -205,6 +205,7 @@ The scoped actor credential slice supports the read-only hub-backed set plus the
 | ------------------------------------------------------------------------ | ------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `relay-ide v1 nodes list --json`                                         | `nodes.list`                    | `session:read`      | Reads summarized hub/node inventory.                                                                                                             |
 | `relay-ide v1 sessions list --json`                                      | `sessions.list`                 | `session:read`      | Reads session descriptors and control summaries.                                                                                                 |
+| `relay-ide v1 roster list --json`                                        | `roster.list`                   | `session:read`      | Reads the redacted active-agent roster; validates WorkContext scope when `--work-context-id` is present.                                         |
 | `relay-ide v1 sessions get --id <id> --json`                             | `sessions.get`                  | `session:read`      | Validates the credential against the requested session/global session id when scoped that narrowly.                                              |
 | `relay-ide v1 sessions screen --id <id> --json`                          | `sessions.screen`               | `session:read`      | Returns a bounded relay-pty/libghostty rendered screen snapshot; tmux-compat and remote-unavailable sessions fail closed with typed errors.      |
 | `relay-ide v1 work-contexts get --id <id> --json`                        | `work-contexts.get`             | `session:read`      | Validates work-context scope when the credential is scoped to a work context.                                                                    |
@@ -782,13 +783,18 @@ Topics:
 - `sessions` — session lifecycle (`session.started`, `session.ended`) and `tab.mode-changed` envelopes scoped to the current hub.
 - `nodes` — `node.online`, `node.offline`, `node.revoked` envelopes from the hub node registry (#586/`hub-node-registry`).
 - `audit` — redacted summaries of `tab.mode-changed` and `tab.intervention` envelopes (hash-chained at storage time per #470/#499). Raw intervention payloads, raw keylogs, and full terminal transcripts are never streamed through this gateway.
+- `context` — metadata for context packet create/pin/unpin activity, scoped by WorkContext/session/global session where available.
+- `inbox` — metadata for `inbox.sent` and `inbox.state-changed` frames, including state transitions and redacted target/source summaries.
+- `work-context-artifacts` — metadata for WorkContext artifact publication/pin/export lifecycle events; never raw payload bytes.
+- `handoff-artifacts` — metadata for pipeline handoff artifact attach/list-visible lifecycle events, using the same safe artifact store envelope.
+- `workflow-runs` — metadata for workflow run publication/update events and bounded run state changes.
 
 Each frame is a `events.subscribe` success envelope whose `data` carries:
 
 ```json
 {
   "event": "open" | "event" | "closed",
-  "topic": "sessions" | "nodes" | "audit",
+  "topic": "sessions" | "nodes" | "audit" | "context" | "inbox" | "work-context-artifacts" | "handoff-artifacts" | "workflow-runs",
   "sequence": 0,
   "occurredAt": "2026-05-19T00:00:00.000Z",
   "payload": { "type": "session.started", "sessionId": "..." }
@@ -801,7 +807,7 @@ The first envelope is always `event: "open"`. The final envelope is always `even
 - `--idle-timeout-ms N` detaches after N ms without an event frame.
 - If stdout backpressure is observed, the CLI aborts the upstream stream and emits `closed` with `reason: "stdout backpressure"`.
 
-Capability gating fails closed: `sessions` and `nodes` require `session:read`; `audit` additionally requires `tab:intervention:read`. Unknown topics surface as `INVALID_ARGUMENT` with `details.field: "topic"` before the CLI opens any hub request. Missing or denied capabilities surface as `FORBIDDEN` envelopes. The hub side enforces the same gate; the CLI side enforces the same allowlist. This is the only `events.*` verb in v1 — no `events.publish`, no `events.replay`, no event-bus write surface.
+Capability gating fails closed: `sessions` and `nodes` require `session:read`; `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs` require `context:read`; `inbox` requires `inbox:read`; `audit` additionally requires `tab:intervention:read`. Unknown topics surface as `INVALID_ARGUMENT` with `details.field: "topic"` before the CLI opens any hub request. Missing or denied capabilities surface as `FORBIDDEN` envelopes. The hub side enforces the same gate; the CLI side enforces the same allowlist. This is the only `events.*` verb in v1 — no `events.publish`, no `events.replay`, no event-bus write surface.
 
 Smoke form:
 

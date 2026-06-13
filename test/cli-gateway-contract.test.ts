@@ -317,6 +317,16 @@ describe('CLI gateway contract', () => {
       auditRedaction: { expectation: 'bounded-redacted' },
       scopeKinds: ['repo', 'worktree'],
     });
+    expect(commandSpec('roster.list')).toMatchObject({
+      capabilityHints: ['session:read'],
+      cli: ['relay-ide', 'v1', 'roster', 'list', '--json'],
+    });
+    expect(relayCommandDefinition('roster.list')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['repo', 'work-context', 'session'],
+    });
     expect(relayCommandDefinition('worktrees.create')).toMatchObject({
       sideEffect: 'write',
       requiresConfirmation: false,

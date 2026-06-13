@@ -159,8 +159,13 @@ describe('agent roster router', () => {
   });
 
   it('sorts attention-needing entries first', async () => {
-    const { body } = await get('/roster');
-    expect(body.roster[0].attention.needsAttention).toBe(true);
+    const { body } = await get('/roster?includeTerminals=true');
+    const byId = body.roster.map((entry: any) => entry.sessionId);
+    expect(byId.indexOf('sess-claude')).toBeLessThan(
+      byId.indexOf('sess-shell')
+    );
+    expect(byId.indexOf('sess-codex')).toBeLessThan(byId.indexOf('sess-shell'));
+    expect(body.roster.at(-1).attention.needsAttention).toBe(false);
   });
 
   it('scopes by workContextId, repo, provider, role, and needsAttention', async () => {
