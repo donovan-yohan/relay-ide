@@ -11,7 +11,16 @@ import {
 } from '../../shared/cli-gateway-contract.js';
 
 const RELAY_BIN = 'dist/bin/relay-ide.js';
-const ALLOWED_TOPICS = ['sessions', 'nodes', 'audit'] as const;
+const ALLOWED_TOPICS = [
+  'sessions',
+  'nodes',
+  'audit',
+  'context',
+  'inbox',
+  'work-context-artifacts',
+  'handoff-artifacts',
+  'workflow-runs',
+] as const;
 
 type CapturedRequest = {
   method: string | undefined;
@@ -269,7 +278,9 @@ describe('CLI gateway events.subscribe contract', () => {
     expect(spec.cli).toContain('subscribe');
     expect(spec.cli).toContain('--topic');
     expect(spec.cli).toContain('--json');
-    expect(spec.capabilityHints).toContain('session:read');
+    expect(spec.capabilityHints).toEqual(
+      expect.arrayContaining(['session:read', 'tab:intervention:read', 'context:read', 'inbox:read'])
+    );
     expect(spec.transport).toBe('hub-http');
 
     // No destructive ops in the verb's argument surface.
@@ -279,7 +290,7 @@ describe('CLI gateway events.subscribe contract', () => {
 
     const inputProps = spec.inputSchema.properties ?? {};
     expect(inputProps['topic']).toBeDefined();
-    expect(inputProps['topic']?.enum).toEqual(expect.arrayContaining(['sessions', 'nodes', 'audit']));
+    expect(inputProps['topic']?.enum).toEqual(expect.arrayContaining([...ALLOWED_TOPICS]));
 
     expect(spec.errorCodes).toEqual(
       expect.arrayContaining(['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN'])
@@ -297,7 +308,7 @@ describe('CLI gateway events.subscribe contract', () => {
     );
     expect(dataProps['topic']).toBeDefined();
     expect(dataProps['topic']?.enum).toEqual(
-      expect.arrayContaining(['sessions', 'nodes', 'audit'])
+      expect.arrayContaining([...ALLOWED_TOPICS])
     );
     expect(dataProps['sequence']).toBeDefined();
   });
@@ -448,6 +459,56 @@ describe('CLI gateway events.subscribe runtime', () => {
       (e) => e.ok && (e.data as { event: string }).event === 'closed'
     );
     expect(closed).toBeDefined();
+  });
+
+  it('subscribes to workflow-runs metadata with context read capability', async () => {
+    hub = await startFakeHub();
+
+    const runPromise = runCli(
+      ['v1', 'events', 'subscribe', '--topic', 'workflow-runs', '--max-events', '1', '--json'],
+      {
+        RELAY_IDE_PORT: String(hub.port),
+        RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      },
+      { timeoutMs: 5000 }
+    );
+
+    const streamRes = await hub.whenSubscribed();
+    ndjsonWrite(streamRes, { event: 'open', topic: 'workflow-runs', sequence: 0 });
+    ndjsonWrite(streamRes, {
+      event: 'event',
+      topic: 'workflow-runs',
+      sequence: 1,
+      cursor: 'cg:1:1',
+      occurredAt: '2026-05-19T00:00:00.000Z',
+      payload: {
+        type: 'workflow-run.state-changed',
+        workflowRunId: 'workflow-run:test',
+        workContextId: 'wc:test',
+        state: 'succeeded',
+        redaction: {
+          rawPayloadIncluded: false,
+          rawTranscriptIncluded: false,
+          artifactBodyIncluded: false,
+        },
+      },
+    });
+
+    const result = await runPromise;
+    expect(result.exitCode).toBe(0);
+
+    const captured = hub.captured.find((entry) => entry.url?.startsWith('/events'));
+    expect(captured?.url).toContain('topic=workflow-runs');
+    expect(captured?.capabilities).toContain('context:read');
+
+    const dataFrame = result.envelopes.find(
+      (e) => e.ok && e.command === 'events.subscribe' && (e.data as { event: string }).event === 'event'
+    );
+    if (!dataFrame || !dataFrame.ok) throw new Error('expected workflow-runs event frame');
+    const data = dataFrame.data as { topic: string; payload: { type?: string; workflowRunId?: string } };
+    expect(data.topic).toBe('workflow-runs');
+    expect(data.payload.type).toBe('workflow-run.state-changed');
+    expect(data.payload.workflowRunId).toBe('workflow-run:test');
   });
 
   it('subscribes to the audit topic with the union of required capabilities', async () => {

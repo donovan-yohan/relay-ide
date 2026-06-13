@@ -6,6 +6,13 @@ import {
 } from '../shared/cli-gateway-contract.js';
 import type { TabControlEvent } from '../shared/control-state.js';
 import type { HubNodeStatusEvent } from './hub-node-registry.js';
+import {
+  eventMatchesFilter,
+  type CliGatewayEventBus,
+  type CliGatewayEventFilter,
+  type CliGatewayMetadataEvent,
+  type CliGatewayMetadataTopic,
+} from './cli-gateway-event-bus.js';
 
 const ALLOWED_TOPICS: readonly EventsSubscribeTopic[] = EVENTS_SUBSCRIBE_TOPICS;
 
@@ -27,6 +34,11 @@ const REQUIRED_TOPIC_CAPABILITIES: Record<EventsSubscribeTopic, readonly string[
   sessions: ['session:read'],
   nodes: ['session:read'],
   audit: ['session:read', 'tab:intervention:read'],
+  context: ['context:read'],
+  inbox: ['inbox:read'],
+  'work-context-artifacts': ['context:read'],
+  'handoff-artifacts': ['context:read'],
+  'workflow-runs': ['context:read'],
 };
 
 export interface CliGatewayEventsHooks {
@@ -46,8 +58,24 @@ export interface CliGatewayEventsHooks {
 export interface CliGatewayEventsRouterOptions {
   cliGatewayAuth: RequestHandler;
   hooks: CliGatewayEventsHooks;
+  eventBus?: CliGatewayEventBus;
   /** Optional now() override for deterministic tests. */
   now?: () => Date;
+}
+
+function isMetadataTopic(topic: EventsSubscribeTopic): topic is CliGatewayMetadataTopic {
+  return (
+    topic === 'context' ||
+    topic === 'inbox' ||
+    topic === 'work-context-artifacts' ||
+    topic === 'handoff-artifacts' ||
+    topic === 'workflow-runs'
+  );
+}
+
+function queryString(req: Request, key: string): string | undefined {
+  const value = req.query[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 interface SubscriberHandle {
@@ -106,6 +134,27 @@ function nodePayload(event: HubNodeStatusEvent): Record<string, unknown> {
     nodeId: event.nodeId,
     status: event.status,
     lastSeenAt: event.lastSeenAt,
+  };
+}
+
+function metadataEventFrame(
+  topic: CliGatewayMetadataTopic,
+  sequence: number,
+  event: CliGatewayMetadataEvent,
+  replay?: true
+): Record<string, unknown> {
+  return {
+    event: 'event',
+    topic,
+    sequence,
+    occurredAt: event.occurredAt,
+    cursor: event.cursor,
+    ...(replay ? { replay } : {}),
+    payload: {
+      type: event.type,
+      ...event.payload,
+      redaction: event.redaction,
+    },
   };
 }
 
@@ -215,7 +264,47 @@ export function createCliGatewayEventsRouter(
       }
     };
 
-    if (topic === 'sessions') {
+    if (isMetadataTopic(topic)) {
+      if (!options.eventBus) {
+        res.statusCode = 503;
+        writeNdjson(res, {
+          event: 'error',
+          topic,
+          sequence: sequence++,
+          occurredAt: now().toISOString(),
+          payload: { code: 'SERVER_UNAVAILABLE', message: 'metadata event bus is unavailable' },
+        });
+        res.end();
+        return;
+      }
+      const filter: CliGatewayEventFilter = {};
+      const workContextId = queryString(req, 'workContextId');
+      const sessionId = queryString(req, 'sessionId');
+      const globalSessionId = queryString(req, 'globalSessionId');
+      if (workContextId) filter.workContextId = workContextId;
+      if (sessionId) filter.sessionId = sessionId;
+      if (globalSessionId) filter.globalSessionId = globalSessionId;
+      const replay = options.eventBus.replay(topic, queryString(req, 'cursor'));
+      if (replay.replayDropped) {
+        writeNdjson(res, {
+          event: 'open',
+          topic,
+          sequence: sequence++,
+          occurredAt: now().toISOString(),
+          replayDropped: true,
+        });
+      }
+      for (const event of replay.events) {
+        if (!eventMatchesFilter(event, filter)) continue;
+        writeNdjson(res, metadataEventFrame(topic, sequence++, event, true));
+      }
+      subs.push(
+        options.eventBus.subscribe(topic, (event) => {
+          if (!eventMatchesFilter(event, filter)) return;
+          writeNdjson(res, metadataEventFrame(topic, sequence++, event));
+        })
+      );
+    } else if (topic === 'sessions') {
       subs.push(
         options.hooks.onSessionCreate((sessionId, cwd, branchName) => {
           emit(

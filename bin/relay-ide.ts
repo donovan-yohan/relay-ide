@@ -1493,6 +1493,8 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'handoff-artifacts.list',
   'handoff-artifacts.show',
   'handoff-artifacts.copy',
+  'workflow-runs.list',
+  'workflow-runs.get',
 ]);
 
 function gatewayActorToken(): string {
@@ -4040,7 +4042,17 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
 
   const token = gatewayRequiredToken('events.subscribe');
   const port = gatewayWsPort();
-  const url = `http://127.0.0.1:${port}/events?topic=${encodeURIComponent(topic)}`;
+  const query = new URLSearchParams({ topic });
+  for (const [flag, key] of [
+    ['--cursor', 'cursor'],
+    ['--work-context-id', 'workContextId'],
+    ['--session-id', 'sessionId'],
+    ['--global-session-id', 'globalSessionId'],
+  ] as const) {
+    const value = gatewayArg(eventsArgs, flag);
+    if (value) query.set(key, value);
+  }
+  const url = `http://127.0.0.1:${port}/events?${query.toString()}`;
 
   // Use fetch with an AbortController; stream the body as NDJSON.
   const controller = new AbortController();
@@ -4052,11 +4064,10 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
 
   let res: Response;
   try {
-    // `audit` topic requires `tab:intervention:read` in addition to
-    // `session:read` (enforced by the hub router). Other topics only need
-    // `session:read`.
-    const capabilities =
-      topic === 'audit' ? 'session:read,tab:intervention:read' : 'session:read';
+    // Topic-specific capabilities are enforced by the hub router. Metadata
+    // WorkContext topics use context:read, inbox uses inbox:read, and legacy
+    // session/node topics use session:read.
+    const capabilities = eventsSubscribeCapabilities(topic);
     res = await fetch(url, {
       method: 'GET',
       headers: {
@@ -4259,6 +4270,81 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
   }
 }
 
+async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const workflowArgs = gatewayArgs.slice(2);
+  if (subcommand === 'publish') {
+    const input = parseGatewayInputObject('workflow-runs.publish', workflowArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'workflow-runs.publish',
+      pathName: '/workflow-runs',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('workflow-runs.publish', result), 0);
+  }
+  if (subcommand === 'update') {
+    const id = gatewayArg(workflowArgs, '--id') ?? workflowArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid('workflow-runs.update', '--id is required');
+    const input = parseGatewayInputObject('workflow-runs.update', workflowArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'workflow-runs.update',
+      pathName: `/workflow-runs/${encodeURIComponent(id)}`,
+      method: 'PATCH',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('workflow-runs.update', result), 0);
+  }
+  if (subcommand === 'list') {
+    const workContextId = gatewayArg(workflowArgs, '--work-context-id');
+    if (!workContextId) gatewayInvalid('workflow-runs.list', '--work-context-id is required');
+    const query = new URLSearchParams({ workContextId });
+    const state = gatewayArg(workflowArgs, '--state');
+    const providerRuntime = gatewayArg(workflowArgs, '--provider-runtime');
+    const limit = gatewayArg(workflowArgs, '--limit');
+    if (state) query.set('state', state);
+    if (providerRuntime) query.set('providerRuntime', providerRuntime);
+    if (limit) query.set('limit', limit);
+    const result = await gatewayHttpJson({
+      commandName: 'workflow-runs.list',
+      pathName: `/workflow-runs?${query.toString()}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('workflow-runs.list', result), 0);
+  }
+  if (subcommand === 'get') {
+    const id = gatewayArg(workflowArgs, '--id') ?? workflowArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid('workflow-runs.get', '--id is required');
+    const result = await gatewayHttpJson({
+      commandName: 'workflow-runs.get',
+      pathName: `/workflow-runs/${encodeURIComponent(id)}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('workflow-runs.get', result), 0);
+  }
+  gatewayInvalid('workflow-runs.get', 'unknown workflow-runs command', {
+    args: gatewayArgs,
+  });
+}
+
+function eventsSubscribeCapabilities(topic: string): string {
+  switch (topic) {
+    case 'audit':
+      return 'session:read,tab:intervention:read';
+    case 'inbox':
+      return 'inbox:read';
+    case 'context':
+    case 'work-context-artifacts':
+    case 'handoff-artifacts':
+    case 'workflow-runs':
+      return 'context:read';
+    default:
+      return 'session:read';
+  }
+}
+
 async function runGatewayEvents(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   if (subcommand === 'subscribe')
@@ -4398,6 +4484,7 @@ async function runGatewayV1(): Promise<never> {
   if (top === 'work-context-artifacts')
     return runGatewayWorkContextArtifacts(gatewayArgs);
   if (top === 'handoff-artifacts') return runGatewayHandoffArtifacts(gatewayArgs);
+  if (top === 'workflow-runs') return runGatewayWorkflowRuns(gatewayArgs);
   if (top === 'artifacts') return runGatewayArtifacts(gatewayArgs);
   if (top === 'supervisor') return runGatewaySupervisor(gatewayArgs);
   if (top === 'events') return runGatewayEvents(gatewayArgs);

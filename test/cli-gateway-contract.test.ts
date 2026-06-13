@@ -196,6 +196,10 @@ describe('CLI gateway contract', () => {
       'supervisor.sendText',
       'supervisor.sendKey',
       'supervisor.submit',
+      'workflow-runs.publish',
+      'workflow-runs.update',
+      'workflow-runs.list',
+      'workflow-runs.get',
       'events.subscribe',
       'settings.get',
       'settings.update',
@@ -968,6 +972,10 @@ describe('CLI gateway contract', () => {
       'supervisor.sendText',
       'supervisor.sendKey',
       'supervisor.submit',
+      'workflow-runs.publish',
+      'workflow-runs.update',
+      'workflow-runs.list',
+      'workflow-runs.get',
       'events.subscribe',
     ] as const;
 

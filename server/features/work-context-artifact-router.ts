@@ -24,6 +24,7 @@ import {
   type ViewArtifactPackage,
 } from '../../shared/agent-view-artifact.js';
 import type { WorkContextStore } from '../work-contexts.js';
+import type { CliGatewayEventBus } from '../cli-gateway-event-bus.js';
 import {
   WorkContextArtifactStoreError,
   type StoreAgentViewArtifactInput,
@@ -50,6 +51,7 @@ export const DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES = 512 * 1024;
 export interface WorkContextArtifactRouterDeps {
   store: WorkContextArtifactStore | null;
   workContextStore?: WorkContextStore;
+  events?: Pick<CliGatewayEventBus, 'publish'>;
   requireAuth?: RequestHandler;
   requireReadAuth?: {
     list?: RequestHandler;
@@ -682,6 +684,39 @@ function queryListInput(req: Request): WorkContextArtifactListInput | 'invalid-t
   };
 }
 
+function emitArtifactEvent(
+  events: Pick<CliGatewayEventBus, 'publish'> | undefined,
+  topic: 'work-context-artifacts' | 'handoff-artifacts',
+  type: string,
+  record: WorkContextArtifactRecord,
+  actorId?: string,
+  pinned?: boolean
+): void {
+  const { metadata } = record;
+  events?.publish({
+    topic,
+    type,
+    workContextId: metadata.workContextId,
+    ...(actorId ? { actor: { id: actorId, kind: 'cli-gateway' } } : {}),
+    payload: {
+      artifactId: metadata.id,
+      payloadKind: metadata.payloadKind,
+      kind: metadata.kind,
+      title: metadata.title,
+      visibility: metadata.visibility,
+      taskRef: metadata.taskRef,
+      ...(metadata.stage ? { stage: metadata.stage } : {}),
+      ...(metadata.projectId ? { projectId: metadata.projectId } : {}),
+      ...(metadata.provenanceActorId ? { provenanceActorId: metadata.provenanceActorId } : {}),
+      ...(metadata.prNumber !== undefined ? { prNumber: metadata.prNumber } : {}),
+      ...(metadata.headSha ? { headSha: metadata.headSha } : {}),
+      ...(metadata.supersedesArtifactId ? { supersedesArtifactId: metadata.supersedesArtifactId } : {}),
+      ...(pinned !== undefined ? { pinned } : {}),
+      rawPayloadAvailable: false,
+    },
+  });
+}
+
 function storeViewArtifactPublish(input: {
   res: Response;
   store: WorkContextArtifactStore;
@@ -691,8 +726,9 @@ function storeViewArtifactPublish(input: {
   workContextId: WorkContextId;
   operation: string;
   maxPublishBytes: number;
+  events?: Pick<CliGatewayEventBus, 'publish'>;
 }): void {
-  const { res, store, workContextStore, body, viewArtifact, workContextId, operation, maxPublishBytes } = input;
+  const { res, store, workContextStore, body, viewArtifact, workContextId, operation, maxPublishBytes, events } = input;
   const payloadBytes = persistedViewArtifactPayloadBytes(viewArtifact);
   if (payloadBytes > AGENT_VIEW_MAX_TOTAL_BYTES) {
     sendGatewayError(res, 'INVALID_ARGUMENT', 'viewArtifact payload exceeds agent view size cap', false, {
@@ -749,6 +785,7 @@ function storeViewArtifactPublish(input: {
     const pinned = shouldPin && workContextStore
       ? pinArtifactRef(workContextStore, workContextId, stored.metadata, actorId)
       : undefined;
+    emitArtifactEvent(events, 'work-context-artifacts', 'artifact.published', stored, actorId, Boolean(pinned && !pinned.alreadyPinned));
     res.status(201).json({
       artifact: recordEnvelope(stored),
       ...(pinned ? { pin: pinned } : {}),
@@ -887,6 +924,7 @@ export function createWorkContextArtifactRouter(
         workContextId,
         operation,
         maxPublishBytes,
+        ...(deps.events ? { events: deps.events } : {}),
       });
       return;
     }
@@ -967,6 +1005,14 @@ export function createWorkContextArtifactRouter(
         shouldPin && deps.workContextStore
           ? pinArtifactRef(deps.workContextStore, workContextId, stored.metadata, actorId)
           : undefined;
+      emitArtifactEvent(
+        deps.events,
+        operation === 'attach' ? 'handoff-artifacts' : 'work-context-artifacts',
+        operation === 'attach' ? 'artifact.attached' : 'artifact.published',
+        stored,
+        actorId,
+        Boolean(pinned && !pinned.alreadyPinned)
+      );
       res.status(201).json({
         artifact: recordEnvelope(stored, current),
         ...(pinned ? { pin: pinned } : {}),
@@ -1241,6 +1287,7 @@ export function createWorkContextArtifactRouter(
       return;
     }
     const pinned = pinArtifactRef(deps.workContextStore!, workContextId, record.metadata, readString(body['actorId']));
+    emitArtifactEvent(deps.events, 'work-context-artifacts', 'artifact.pinned', record, readString(body['actorId']), !pinned.alreadyPinned);
     res.status(pinned.alreadyPinned ? 200 : 201).json({
       artifact: recordEnvelope(record),
       artifactRef: pinned.artifactRef,
@@ -1288,6 +1335,7 @@ export function createWorkContextArtifactRouter(
       return;
     }
     const result = unpinArtifactRef(deps.workContextStore!, workContextId, artifactId, readString(body['actorId']));
+    if (record && result.removed) emitArtifactEvent(deps.events, 'work-context-artifacts', 'artifact.unpinned', record, readString(body['actorId']), false);
     res.json({ workContext: result.workContext, removed: result.removed, lifecycle: { artifactDeleted: false } });
   });
 

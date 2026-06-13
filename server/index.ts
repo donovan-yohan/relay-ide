@@ -134,6 +134,7 @@ import {
 } from './credential-rotation-scheduler.js';
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
+import { createCliGatewayEventBus } from './cli-gateway-event-bus.js';
 import { createCliGatewaySettingsRouter } from './cli-gateway-settings.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import {
@@ -162,10 +163,15 @@ import {
   DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES,
   readWorkContextArtifactQueryWorkContextId,
 } from './features/work-context-artifact-router.js';
+import { createWorkflowRunRouter } from './features/workflow-run-router.js';
 import {
   initWorkContextArtifactStore,
   type WorkContextArtifactStore,
 } from './work-context-artifacts.js';
+import {
+  initWorkflowRunStore,
+  type WorkflowRunStore,
+} from './workflow-runs.js';
 import {
   createAnchorFileFetcher,
   createAnchorContentFetcher,
@@ -1373,6 +1379,18 @@ function initWorkContextArtifactStoreBestEffort(
   }
 }
 
+function initWorkflowRunStoreBestEffort(configDir: string): WorkflowRunStore | null {
+  try {
+    return initWorkflowRunStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Workflow run store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 async function ensureStartupTerminalBackendAvailable(
   startupConfig: Config
 ): Promise<void> {
@@ -1613,6 +1631,8 @@ async function main(): Promise<void> {
   // WorkContext artifact store (#889/#890). Own SQLite/payload files; routes
   // degrade to typed 503 when initialization fails so hub startup stays useful.
   const workContextArtifactStore = initWorkContextArtifactStoreBestEffort(configDir);
+  const workflowRunStore = initWorkflowRunStoreBestEffort(configDir);
+  const cliGatewayEventBus = createCliGatewayEventBus();
 
   try {
     initInterventionLog(configDir);
@@ -2160,11 +2180,17 @@ async function main(): Promise<void> {
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
       store: contextInboxStore,
       workContextStore,
+      events: cliGatewayEventBus,
     })
   );
   const workContextScopeFromQuery = (req: express.Request): { workContextIds?: string[] } | undefined => {
     const workContextId = readWorkContextArtifactQueryWorkContextId(req.query);
     return workContextId ? { workContextIds: [workContextId] } : undefined;
+  };
+  const workflowRunScopeFromParams = (req: express.Request): { workContextIds?: string[] } | undefined => {
+    const workflowRunId = typeof req.params['id'] === 'string' ? req.params['id'] : '';
+    const workflowRun = workflowRunId && workflowRunStore ? workflowRunStore.get(workflowRunId) : null;
+    return workflowRun ? { workContextIds: [workflowRun.workContextId] } : undefined;
   };
   app.use(
     createWorkContextArtifactRouter({
@@ -2194,12 +2220,30 @@ async function main(): Promise<void> {
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
       store: workContextArtifactStore,
       workContextStore,
+      events: cliGatewayEventBus,
       diagnostics: {
         dbPath: path.join(configDir, 'work-context-artifacts.db'),
         payloadRoot: path.join(configDir, 'work-context-artifacts', 'payloads'),
         maxPublishBytes: DEFAULT_WORK_CONTEXT_ARTIFACT_PUBLISH_MAX_BYTES,
         maxExportBytes: DEFAULT_WORK_CONTEXT_ARTIFACT_EXPORT_MAX_BYTES,
       },
+    })
+  );
+  app.use(
+    createWorkflowRunRouter({
+      requireAuth: requireCliGatewayAuth,
+      requireReadAuth: {
+        list: requireCliGatewayAuthForActorCommand('workflow-runs.list', {
+          scopeForRequest: workContextScopeFromQuery,
+        }),
+        get: requireCliGatewayAuthForActorCommand('workflow-runs.get', {
+          scopeForRequest: workflowRunScopeFromParams,
+        }),
+      },
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
+      store: workflowRunStore,
+      workContextStore,
+      events: cliGatewayEventBus,
     })
   );
   // #766/#759: production `AnchorFileFetcher` wired to the session-scoped File
@@ -2232,6 +2276,7 @@ async function main(): Promise<void> {
   app.use(
     createCliGatewayEventsRouter(express, {
       cliGatewayAuth: requireCliGatewayAuth,
+      eventBus: cliGatewayEventBus,
       hooks: {
         onSessionCreate: (cb) => sessions.onSessionCreate(cb),
         onSessionEnd: (cb) => sessions.onSessionEnd(cb),
@@ -4471,6 +4516,7 @@ async function main(): Promise<void> {
         iaStore?.close();
         contextPacketStore?.close();
         workContextArtifactStore?.close();
+        workflowRunStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -4556,6 +4602,7 @@ async function main(): Promise<void> {
     iaStore?.close();
     contextPacketStore?.close();
     workContextArtifactStore?.close();
+    workflowRunStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {
