@@ -164,10 +164,15 @@ import {
   readWorkContextArtifactQueryWorkContextId,
 } from './features/work-context-artifact-router.js';
 import { createWorkflowRunRouter } from './features/workflow-run-router.js';
+import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
 import {
   initWorkContextArtifactStore,
   type WorkContextArtifactStore,
 } from './work-context-artifacts.js';
+import {
+  initWorkContextMessageStore,
+  type WorkContextMessageStore,
+} from './work-context-messages.js';
 import {
   initWorkflowRunStore,
   type WorkflowRunStore,
@@ -1391,6 +1396,20 @@ function initWorkflowRunStoreBestEffort(configDir: string): WorkflowRunStore | n
   }
 }
 
+function initWorkContextMessageStoreBestEffort(
+  configDir: string
+): WorkContextMessageStore | null {
+  try {
+    return initWorkContextMessageStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'WorkContext message store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 async function ensureStartupTerminalBackendAvailable(
   startupConfig: Config
 ): Promise<void> {
@@ -1632,6 +1651,7 @@ async function main(): Promise<void> {
   // degrade to typed 503 when initialization fails so hub startup stays useful.
   const workContextArtifactStore = initWorkContextArtifactStoreBestEffort(configDir);
   const workflowRunStore = initWorkflowRunStoreBestEffort(configDir);
+  const workContextMessageStore = initWorkContextMessageStoreBestEffort(configDir);
   const cliGatewayEventBus = createCliGatewayEventBus();
 
   try {
@@ -2187,6 +2207,12 @@ async function main(): Promise<void> {
     const workContextId = readWorkContextArtifactQueryWorkContextId(req.query);
     return workContextId ? { workContextIds: [workContextId] } : undefined;
   };
+  const workContextMessageScopeFromBody = (req: express.Request): { workContextIds?: string[] } | undefined => {
+    const body = typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
+    const filter = typeof body['filter'] === 'object' && body['filter'] !== null && !Array.isArray(body['filter']) ? body['filter'] as Record<string, unknown> : body;
+    const workContextId = typeof filter['workContextId'] === 'string' ? filter['workContextId'] : undefined;
+    return workContextId ? { workContextIds: [workContextId] } : undefined;
+  };
   const workflowRunScopeFromParams = (req: express.Request): { workContextIds?: string[] } | undefined => {
     const workflowRunId = typeof req.params['id'] === 'string' ? req.params['id'] : '';
     const workflowRun = workflowRunId && workflowRunStore ? workflowRunStore.get(workflowRunId) : null;
@@ -2242,6 +2268,28 @@ async function main(): Promise<void> {
       },
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
       store: workflowRunStore,
+      workContextStore,
+      events: cliGatewayEventBus,
+    })
+  );
+  app.use(
+    createWorkContextMessageRouter({
+      requireAuth: requireCliGatewayAuth,
+      requireReadAuth: {
+        list: requireCliGatewayAuthForActorCommand('work-context-messages.list', {
+          scopeForRequest: workContextScopeFromQuery,
+          deferWorkContextScope: true,
+        }),
+        query: requireCliGatewayAuthForActorCommand('work-context-messages.query', {
+          scopeForRequest: workContextMessageScopeFromBody,
+          deferWorkContextScope: true,
+        }),
+        show: requireCliGatewayAuthForActorCommand('work-context-messages.show', {
+          deferWorkContextScope: true,
+        }),
+      },
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
+      store: workContextMessageStore,
       workContextStore,
       events: cliGatewayEventBus,
     })
@@ -4517,6 +4565,7 @@ async function main(): Promise<void> {
         contextPacketStore?.close();
         workContextArtifactStore?.close();
         workflowRunStore?.close();
+        workContextMessageStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -4603,6 +4652,7 @@ async function main(): Promise<void> {
     contextPacketStore?.close();
     workContextArtifactStore?.close();
     workflowRunStore?.close();
+    workContextMessageStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {

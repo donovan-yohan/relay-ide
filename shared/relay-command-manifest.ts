@@ -111,6 +111,10 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'files.write': 'write session file',
   'work-contexts.get': 'work context details',
   'work-contexts.resume': 'work context resume packet',
+  'work-context-messages.append': 'append work context message',
+  'work-context-messages.list': 'list work context messages',
+  'work-context-messages.show': 'show work context message',
+  'work-context-messages.query': 'query work context messages',
   'context.create': 'create context packet',
   'context.get': 'context packet details',
   'context.list': 'list context packets',
@@ -187,6 +191,7 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'context.create',
   'context.pin',
   'context.unpin',
+  'work-context-messages.append',
   'work-context-artifacts.publish',
   'work-context-artifacts.pin',
   'work-context-artifacts.unpin',
@@ -223,6 +228,7 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('worktrees.')) return ['repo', 'worktree'];
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
+  if (name.startsWith('work-context-messages.')) return ['work-context'];
   if (name.startsWith('work-context-artifacts.')) return ['work-context'];
   if (name.startsWith('handoff-artifacts.')) return ['work-context'];
   if (name.startsWith('workflow-runs.')) return ['work-context'];

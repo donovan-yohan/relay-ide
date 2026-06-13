@@ -216,6 +216,9 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'handoff-artifacts.copy',
     'workflow-runs.list',
     'workflow-runs.get',
+    'work-context-messages.list',
+    'work-context-messages.show',
+    'work-context-messages.query',
   ]);
   expect(
     classifyCliGatewayCredentialLane(
@@ -268,6 +271,28 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
   expect(
     classifyCliGatewayCredentialLane(req({ authorization: `Bearer ${token}`, actorMarker: 'v1' }), 'nodes.list')
   ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'POST',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'work-context-messages.query',
+      }),
+      'work-context-messages.query'
+    )
+  ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'POST',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'nodes.list',
+      }),
+      'nodes.list'
+    )
+  ).toBe('unsupported-route');
   expect(classifyCliGatewayCredentialLane(req({ cookie: 'token=browser' }))).toBe(
     'browser-cookie-lane'
   );
@@ -292,6 +317,7 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'handoff-artifacts.attach',
     'workflow-runs.publish',
     'workflow-runs.update',
+    'work-context-messages.append',
   ]);
 
   for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {
@@ -368,6 +394,8 @@ test('maps write actor commands to required Relay capability bits', () => {
   expect(cliGatewayActorCommandCapabilities('workflow-runs.get')).toEqual(['context:read']);
   expect(cliGatewayActorCommandCapabilities('workflow-runs.publish')).toEqual(['context:write']);
   expect(cliGatewayActorCommandCapabilities('workflow-runs.update')).toEqual(['context:write']);
+  expect(cliGatewayActorCommandCapabilities('work-context-messages.list')).toEqual(['context:read']);
+  expect(cliGatewayActorCommandCapabilities('work-context-messages.append')).toEqual(['context:write']);
 });
 
 test('denies spoofed actor command headers on non-MVP route identities', () => {
