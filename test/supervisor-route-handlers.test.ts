@@ -334,6 +334,31 @@ describe('supervisor route handlers', () => {
     });
   });
 
+  it('rejects non-boolean submit option fields before writing (#958)', () => {
+    const sessions = supervisorBoundary();
+    const res = jsonResponse();
+
+    handleSupervisorActionRequest(
+      supervisorActionRequest({
+        action: 'submit',
+        body: { id: 'sess-1', dryRun: 'true' },
+        capabilities: 'session:attach,tab:intervention:submit',
+      }),
+      res,
+      sessions
+    );
+
+    expect(sessions.supervisorWrite).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({
+      error: expect.objectContaining({
+        code: 'INVALID_ARGUMENT',
+        reasonCode: 'TARGET_SELECTOR_INVALID',
+        details: { field: 'dryRun' },
+      }),
+    });
+  });
+
   it('types and submits inline text with submit + send-text capabilities (#958)', () => {
     const sessions = supervisorBoundary();
     const res = jsonResponse();

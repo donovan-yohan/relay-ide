@@ -142,6 +142,22 @@ function validateSupervisorActionTargets(
   return { ok: true, targetIds: targetIds.map((entry) => entry.trim()) };
 }
 
+function validateSubmitBooleanOptions(
+  body: Record<string, unknown>
+): SupervisorActionError | undefined {
+  for (const field of ['clearInput', 'paste', 'dryRun'] as const) {
+    const value = body[field];
+    if (value !== undefined && typeof value !== 'boolean') {
+      return supervisorActionError(
+        'TARGET_SELECTOR_INVALID',
+        `${field} must be a boolean when provided`,
+        { field }
+      );
+    }
+  }
+  return undefined;
+}
+
 function missingCapabilityEvidenceDecision(
   capability: ControlCapabilityDecision['capability']
 ): ControlCapabilityDecision {
@@ -220,6 +236,16 @@ export function handleSupervisorActionRequest(
     action === 'submit' &&
     typeof body['text'] === 'string' &&
     (body['text'] as string).length > 0;
+
+  if (action === 'submit') {
+    const submitOptionsError = validateSubmitBooleanOptions(body);
+    if (submitOptionsError) {
+      res
+        .status(supervisorActionErrorStatus(submitOptionsError))
+        .json({ error: submitOptionsError });
+      return;
+    }
+  }
 
   const decision = supervisorActionCapabilitiesDecision(req, action, hasSubmitText);
   if (decision.decision !== 'allow') {
