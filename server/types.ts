@@ -31,6 +31,10 @@ import type {
 } from '../shared/control-state.js';
 import type { SessionEnvelope } from '../shared/session-envelope.js';
 import type { SessionDurabilityState } from '../shared/session-durability.js';
+// Runtime value import (#955): the single shared authoring source for the
+// launch-time collaboration system-prompt appendix. `shared/agent-roster.ts`
+// has no `server/` imports, so this stays a one-way, cycle-free dependency.
+import { collaborationPromptAppendix } from '../shared/agent-roster.js';
 import type { TerminalModelBackend } from './terminal-model-backend.js';
 
 export type AgentState =
@@ -68,6 +72,15 @@ export interface AgentFramework {
   yoloArgs: string[];
   yoloEnv?: Record<string, string>;
   extraArgs?: string[];
+  /**
+   * Provider-specific CLI flag used to APPEND text to the framework's default
+   * system prompt at launch (#955). Set only for frameworks that natively
+   * support it (e.g. Claude Code `--append-system-prompt`). Paired with the
+   * `supportsCollaborationPrompt` capability so unsupported providers never
+   * receive another provider's flag. The injected text is the shared
+   * collaboration appendix, never raw transcripts/secrets/provider state.
+   */
+  collaborationPromptArg?: string;
   parserType: string;
   eventSource: EventSourceType;
   capabilities: {
@@ -77,6 +90,14 @@ export interface AgentFramework {
     supportsTelemetry: boolean;
     supportsAttachedRuntime: boolean;
     supportsWebSessions?: boolean;
+    /**
+     * Whether Relay may inject the launch-time collaboration system-prompt
+     * appendix (#955) via `collaborationPromptArg`. Optional so custom
+     * frameworks resolved by `resolveFramework` are unaffected (they default
+     * to unsupported and skip safely). An operator can opt a builtin out by
+     * overriding this to `false` in `config.frameworks`.
+     */
+    supportsCollaborationPrompt?: boolean;
   };
 }
 
@@ -87,6 +108,9 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
     command: 'claude',
     continueArgs: ['--continue'],
     yoloArgs: ['--dangerously-skip-permissions'],
+    // Claude Code natively appends (not replaces) the default system prompt
+    // with this flag, in both interactive/TUI and print modes (#955).
+    collaborationPromptArg: '--append-system-prompt',
     parserType: 'claude',
     eventSource: 'hooks',
     capabilities: {
@@ -95,6 +119,10 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: true,
       supportsAttachedRuntime: true,
+      // Relay teaches Claude-launched sessions to collaborate through the CLI
+      // gateway at launch (#955). Other providers stay opted out until their
+      // own append-prompt mechanism is verified (see provider-guide §12).
+      supportsCollaborationPrompt: true,
       // De-advertised pending end-to-end verification of the Claude web
       // session protocol. See issue #300. The ClaudeProtocolAdapter exists
       // in server/protocol-adapters/claude-adapter.ts but has not been
@@ -257,6 +285,37 @@ export const AGENT_CONTINUE_ARGS: Record<string, string[]> = Object.fromEntries(
 export const AGENT_YOLO_ARGS: Record<string, string[]> = Object.fromEntries(
   Object.values(BUILTIN_FRAMEWORKS).map((f) => [f.id, f.yoloArgs])
 );
+
+/**
+ * Launch-time collaboration prompt args for a framework (#955 / #952 / #953).
+ *
+ * Returns `[collaborationPromptArg, <appendix>]` when the framework explicitly
+ * declares `capabilities.supportsCollaborationPrompt` AND a provider-specific
+ * `collaborationPromptArg` (e.g. Claude `--append-system-prompt`); otherwise
+ * `[]` so unsupported providers (codex/opencode/hermes/custom) skip safely and
+ * never receive another provider's flag.
+ *
+ * The appendix text is sourced from the single shared authoring helper
+ * `collaborationPromptAppendix` (no duplicated/drifting prose) and contains
+ * only Relay CLI-gateway guidance — never raw transcripts, secrets, tokens, or
+ * provider-store paths. It is derived fresh at each spawn and is intentionally
+ * NOT persisted on the session, so it stays consistent across restores and
+ * never enters serialized session state.
+ */
+export function collaborationPromptArgsForFramework(
+  framework: AgentFramework
+): string[] {
+  if (
+    !framework.capabilities.supportsCollaborationPrompt ||
+    !framework.collaborationPromptArg
+  ) {
+    return [];
+  }
+  return [
+    framework.collaborationPromptArg,
+    collaborationPromptAppendix({ provider: framework.id }),
+  ];
+}
 
 // Session types — discriminated union on `mode`
 interface BaseSession {
