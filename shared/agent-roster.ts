@@ -238,10 +238,16 @@ export function projectRosterEntry(
  * Collaboration system-prompt appendix (#953). A succinct, provider-neutral
  * block teaching a Relay-launched agent how to collaborate through Relay's
  * owned CLI/API primitives instead of acting like an isolated terminal. This is
- * the AUTHORING source; wiring it into the live launch path (e.g. Claude
- * `--append-system-prompt`) is a follow-up slice — there is no prompt-injection
- * seam today (`server/protocol-adapter.ts` `systemPrompt` is inert). Exposed as
- * a tested building block so docs and any future launcher agree on one text.
+ * the single AUTHORING source for that text.
+ *
+ * It is wired into the live PTY launch path for providers that declare support
+ * (#955): `collaborationPromptArgsForFramework` (server/types.ts) pairs this
+ * text with the framework's `collaborationPromptArg` (Claude
+ * `--append-system-prompt`) and `createPtySession` appends it at launch.
+ * Providers without that capability skip safely and may render this same text
+ * into their own launch prompt. The string carries only Relay CLI-gateway
+ * guidance — never transcripts, prompts, raw PTY bytes, tokens, or env — so it
+ * is safe to pass as a launch argument.
  */
 export function collaborationPromptAppendix(
   input: {

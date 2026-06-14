@@ -19,6 +19,7 @@ import type {
 import {
   AGENT_COMMANDS,
   AGENT_CONTINUE_ARGS,
+  collaborationPromptArgsForFramework,
   resolveFramework,
 } from './types.js';
 import { readMeta, writeMeta } from './config.js';
@@ -942,7 +943,8 @@ function resolveSpawnTarget(
   tmuxSessionName: string;
 } {
   const terminalBackend =
-    paramTerminalBackend ?? (paramUseTmux === true ? 'tmux-compat' : 'relay-pty');
+    paramTerminalBackend ??
+    (paramUseTmux === true ? 'tmux-compat' : 'relay-pty');
   const useTmux = terminalBackend === 'tmux-compat';
   const tmuxSessionName =
     paramTmuxSessionName ||
@@ -1153,7 +1155,9 @@ export function handleTerminalAttentionUpdate(
   const terminalModel = session.terminalModel;
   if (!terminalModel) return;
 
-  const attention = detectTerminalAttentionPrompt(terminalModel.getVisibleText());
+  const attention = detectTerminalAttentionPrompt(
+    terminalModel.getVisibleText()
+  );
   if (!attention) {
     if (
       session.agentState === 'permission-prompt' &&
@@ -1251,6 +1255,19 @@ export function createPtySession(
   const resolvedCommand =
     command || framework.commandOverride || framework.command;
 
+  // #955: teach Relay-launched agents to collaborate through Relay's CLI
+  // gateway by appending the provider-supported collaboration system-prompt
+  // flag (e.g. Claude `--append-system-prompt`). Appended to the TAIL so the
+  // existing continue/claudeArgs/yolo ordering is preserved verbatim. Skipped
+  // when a custom `command` overrides the framework CLI (the provider flag may
+  // be invalid there, matching the `injectClaudeHooks` gate) and for any
+  // framework that does not declare support. Derived fresh here and never
+  // persisted on the session, so it survives restore and never enters
+  // serialized state.
+  const launchArgs = command
+    ? rawArgs
+    : [...rawArgs, ...collaborationPromptArgsForFramework(framework)];
+
   const effectiveEventSource: EventSourceType = forceOutputParser
     ? 'parser'
     : framework.eventSource;
@@ -1282,7 +1299,7 @@ export function createPtySession(
     paramHookToken,
     paramHooksActive,
     paramClaudeFullscreen,
-    rawArgs,
+    launchArgs,
     portInjectionParams,
     relaySessionEnvParams,
     paramEnvOverrides
@@ -1476,7 +1493,7 @@ export function createPtySession(
     proc.onExit(() => {
       if (canRetry && Date.now() - spawnTime < 3000) {
         const retried = tryRetrySpawn(session, {
-          rawArgs,
+          rawArgs: launchArgs,
           continueArgs,
           settingsPath,
           resolvedCommand,
