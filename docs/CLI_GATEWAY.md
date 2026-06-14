@@ -76,6 +76,7 @@ relay-ide v1 supervisor send-text --target-ids <session-id-1,session-id-2> --tex
 relay-ide v1 supervisor send-key --id <session-id-or-global-id> --key <escape|tab|arrow-up|arrow-down|arrow-left|arrow-right|ctrl-c|ctrl-d|home|end|page-up|page-down> --json
 relay-ide v1 supervisor send-key --target-ids <session-id-1,session-id-2> --key <escape|tab|arrow-up|arrow-down|arrow-left|arrow-right|ctrl-c|ctrl-d|home|end|page-up|page-down> --json
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --json
+relay-ide v1 supervisor submit --id <session-id-or-global-id> --text 'multi-line prompt' [--clear-input] [--paste] [--dry-run] --json
 relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
 relay-ide v1 events subscribe --topic <sessions|nodes|audit|context|inbox|work-context-artifacts|handoff-artifacts|workflow-runs> [--work-context-id <id>] [--session-id <id>] [--global-session-id <id>] [--cursor <cursor>] [--max-events <n>] --json
 relay-ide v1 settings get --json
@@ -561,6 +562,8 @@ Exactly one predicate is allowed: `--output-text <text>`, `--idle-ms <ms>`, or `
 
 `sessions.input --wait-for` is a raw PTY-output substring wait. It is not a rendered-screen wait and must not be treated as proof of visible viewport/cursor/title state. A future Boo-style screen wait must be added as a separate stable gateway command/schema before adapters depend on terminal-model semantics.
 
+To steer an interactive agent/TUI — type a prompt and submit it — prefer the typed [`supervisor submit`](#supervisor-typed-actions-and-rmux-mapping-704) primitive over raw `sessions.input` scripts. `supervisor submit --text ...` hides newline/carriage-return weirdness (it appends the submit carriage return itself, so you never send a second `\r`), handles paste-ish/long bodies, optionally clears the current input, and returns structured submission evidence. Raw `sessions.input` is for narrow smoke/debug and emergency fallback.
+
 Example:
 
 ```bash
@@ -589,8 +592,9 @@ Commands:
 | `relay-ide v1 supervisor send-text --target-ids <id-1,id-2> --text <literal-text> --json`       | Sends the same bounded literal text to multiple sessions and reports per-target results. | `session:attach`, `tab:intervention:send-text` |
 | `relay-ide v1 supervisor send-key --id <session-id-or-global-id> --key <key-name> --json`       | Sends one canonical closed-enum key as a typed intervention.                             | `session:attach`, `tab:intervention:send-key`  |
 | `relay-ide v1 supervisor send-key --target-ids <id-1,id-2> --key <key-name> --json`             | Sends the same canonical key to multiple sessions and reports per-target results.        | `session:attach`, `tab:intervention:send-key`  |
-| `relay-ide v1 supervisor submit --id <session-id-or-global-id> --json`                          | Sends Enter (`\n`) as a typed intervention.                                              | `session:attach`, `tab:intervention:submit`    |
-| `relay-ide v1 supervisor submit --target-ids <id-1,id-2> --json`                                | Sends Enter to multiple sessions and reports per-target results.                         | `session:attach`, `tab:intervention:submit`    |
+| `relay-ide v1 supervisor submit --id <session-id-or-global-id> --json`                          | Submits Enter (carriage return) as a typed intervention.                                 | `session:attach`, `tab:intervention:submit`    |
+| `relay-ide v1 supervisor submit --id <id> --text <prompt> [--clear-input] [--paste] [--dry-run] --json` | Typed submit primitive: optionally clears the input, types a (multi-line) body, then submits with an owned carriage return; returns structured submission evidence (#958). | `session:attach`, `tab:intervention:submit`, `tab:intervention:send-text` (only when `--text` is present) |
+| `relay-ide v1 supervisor submit --target-ids <id-1,id-2> --json`                                | Submits to multiple sessions and reports per-target results.                             | `session:attach`, `tab:intervention:submit`    |
 
 Inputs:
 
@@ -598,7 +602,12 @@ Inputs:
 - `supervisor.snapshot` requires `id`. Optional `--expected-control-mode <agent-driven|human-driven|co-driven>` and `--latest-seen-intervention-event-id <event-id>` are preflight guards. Stale or mismatched control state returns `CONTROL_STATE_STALE`; an unacknowledged newer intervention returns `INTERVENTION_ACK_REQUIRED`. The snapshot path is read-only: it never writes to the session, accepts prompts, or stores raw prompt/transcript/PTY/provider state.
 - `supervisor.sendText` requires `text` plus exactly one target shape: `id` or `targetIds`. CLI flags are `--id`, positional `<id>`, or comma-separated `--target-ids`; `--input-json` / `--input-file` may provide the same object shape, including optional `actor` metadata. Text must be non-empty literal text, at most 1000 characters, with no CR/LF, ESC, DEL, or control characters except tab. Use `supervisor.submit` for Enter instead of embedding a newline.
 - `supervisor.sendKey` requires `key` plus exactly one target shape: `id` or `targetIds`. CLI flags are `--id`, positional `<id>`, comma-separated `--target-ids`, and `--key`; `--input-json` / `--input-file` may provide the same object shape, including optional `actor` metadata. Keys are a closed enum only: `escape`, `tab`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `ctrl-c`, `ctrl-d`, `home`, `end`, `page-up`, and `page-down`. Aliases, function keys, raw escape/control strings, newlines, and arbitrary byte payloads are rejected; Relay maps the canonical name to substrate bytes behind the capability/control/audit boundary.
-- `supervisor.submit` requires `id` or `targetIds`, accepts optional `actor` metadata via JSON input, and writes exactly `\n`. It does not accept a text payload.
+- `supervisor.submit` is the typed submit primitive for agent/TUI steering (#958). It requires `id` or `targetIds` and accepts optional `actor` metadata. It owns the submission: it always ends with a single carriage return (Enter, `\r`) — the carriage return the browser Enter key sends — so callers never need to send a second raw `\r`. (The pre-#958 behavior wrote a bare line feed `\n`, which is exactly what left text sitting unsubmitted in carriage-return-driven TUIs.) Optional fields:
+  - `text` (CLI `--text`, also accepted via `--input-json`): a message body to type before submitting. Unlike `send-text`, it may contain newlines (multi-line prompts) and tabs, up to 100,000 characters; embedded `\r\n` / lone `\r` are normalized to `\n` and trailing newlines are stripped before the owned carriage return is appended. ESC/DEL and other control bytes are still rejected (`TEXT_MUST_BE_LITERAL`) so this stays a typed text primitive, not a raw byte-injection API. Supplying `text` additionally requires the `tab:intervention:send-text` capability.
+  - `clearInput` (CLI `--clear-input`): clears the current input buffer first (best-effort Ctrl-U), so a partially-typed prompt is replaced rather than appended to.
+  - `paste` (CLI `--paste`): wraps the body in DEC 2004 bracketed-paste markers so long/multi-line content is inserted as one paste; recommended for paste-ish bodies.
+  - `dryRun` (CLI `--dry-run`): previews the planned submission — eligibility, ordered `steps`, and `charsAccepted`/`plannedBytes` — without writing to the PTY or emitting an audit intervention.
+  - Each `data.results[]` entry carries submission evidence: `charsAccepted`, `bytesAccepted`, `submitPerformed`, `submitKey` (`enter`), `clearInputPerformed`, `pasteBracketed`, `steps` (`clear-input` → `type-text` → `submit`), `bytesWritten` / `plannedBytes`, and a best-effort `postSubmit` observation (`{ available, agentState, idle }`) derived from the session snapshot when the backend exposes a classified state.
 
 Successful action envelope shape:
 
@@ -667,7 +676,7 @@ Action failure semantics:
 
 This is deliberately distinct from raw PTY input and terminal substrates:
 
-- `sessions input` remains the raw PTY input path for narrow smoke/debug use. It writes bytes through the temporary attach path, can wait for output markers, and is useful for adapter handshake tests, but it is not the blessed typed agent-to-agent command API.
+- `sessions input` (and the underlying `POST /sessions/:id/input`) remains the raw PTY input path for narrow smoke/debug use. It writes bytes through the temporary attach path, can wait for output markers, and is useful for adapter handshake tests, but it is **not** the blessed typed agent-to-agent command API. To steer a running agent/TUI — type a prompt and have it submit — use `supervisor submit --text ...` (#958), which owns the carriage return and returns structured submission evidence; the old raw-input pattern of "POST text with a newline, then POST a second `\r` to make it submit" is an emergency fallback only.
 - Existing browser/human PTY input remains a different event/API path from supervisor automation interventions.
 - rmux/tmux panes may become backing substrates for Relay sessions, but adapters must not call rmux actions, rmux broadcast, tmux send-keys, or shell commands as stable Relay API. Add or extend a Relay-owned `relay-ide v1 supervisor ... --json` command first, then map that typed command to the substrate behind Relay capability, control-state, and hashes-only audit checks.
 

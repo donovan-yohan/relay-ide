@@ -73,6 +73,7 @@ import {
   SUPERVISOR_SEND_KEY_NAMES,
   supervisorActionCommandId,
   supervisorActionRequiredCapabilities,
+  supervisorSubmitRequiredCapabilities,
   type SupervisorActionType,
 } from '../shared/supervisor-actions.js';
 import {
@@ -3536,7 +3537,8 @@ function parseGatewaySupervisorActionBody(
   }
   const text = gatewayArg(supervisorArgs, '--text');
   if (
-    commandName === 'supervisor.sendText' &&
+    (commandName === 'supervisor.sendText' ||
+      commandName === 'supervisor.submit') &&
     text !== undefined &&
     body['text'] === undefined
   ) {
@@ -3549,6 +3551,18 @@ function parseGatewaySupervisorActionBody(
     body['key'] === undefined
   ) {
     body['key'] = key;
+  }
+  // Submit-only boolean flags (#958).
+  if (commandName === 'supervisor.submit') {
+    if (supervisorArgs.includes('--clear-input') && body['clearInput'] === undefined) {
+      body['clearInput'] = true;
+    }
+    if (supervisorArgs.includes('--paste') && body['paste'] === undefined) {
+      body['paste'] = true;
+    }
+    if (supervisorArgs.includes('--dry-run') && body['dryRun'] === undefined) {
+      body['dryRun'] = true;
+    }
   }
   return body;
 }
@@ -3641,12 +3655,20 @@ async function runGatewaySupervisorAction(
   const commandName = supervisorActionCommandId(action);
   const body = parseGatewaySupervisorActionBody(commandName, supervisorArgs);
   validateGatewaySupervisorActionBody(commandName, body);
+  // A submit that carries an inline text body must also present the send-text
+  // capability so the hub accepts the typed content (#958).
+  const capabilities =
+    action === 'submit'
+      ? supervisorSubmitRequiredCapabilities(
+          typeof body['text'] === 'string' && body['text'].length > 0
+        )
+      : supervisorActionRequiredCapabilities(action);
   const result = await gatewayHttpJson({
     commandName,
     pathName: `/supervisor/actions/${action}`,
     method: 'POST',
     body,
-    capabilities: supervisorActionRequiredCapabilities(action),
+    capabilities,
   });
   printGatewayEnvelope(gatewayOk(commandName, result), 0);
 }

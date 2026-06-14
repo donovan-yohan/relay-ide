@@ -14,12 +14,32 @@ import {
   type SupervisorSendKeyName,
   type SupervisorSessionEligibility,
   type SupervisorSessionsResponse,
+  type SupervisorSubmitObservation,
+  type SupervisorSubmitStep,
 } from '../shared/supervisor-actions.js';
 import { DEFAULT_LOCAL_NODE_ID, createGlobalSessionId } from '../shared/identity.js';
 import { encodeTerminalInput, type TerminalInputKey } from './terminal-model-backend.js';
 import type { Session, SessionSummary } from './types.js';
 
 const MAX_SUPERVISOR_TEXT_CHARS = 1000;
+// A submit body is the typed primitive's "paste-ish" lane (#958): it may carry
+// multi-line prompts, so its cap is much larger than the single-line sendText
+// limit, but it is still bounded so this never becomes an unbounded write API.
+const MAX_SUPERVISOR_SUBMIT_TEXT_CHARS = 100_000;
+// The submit primitive owns the carriage return so callers never need to send a
+// second `\r`. We reuse the canonical Enter encoding (CR, not LF) — the LF the
+// old submit wrote is exactly what left text sitting unsubmitted in TUIs (#958).
+const SUBMIT_ENTER_SEQUENCE = encodeTerminalInput({
+  type: 'key',
+  key: 'Enter',
+}).sequence;
+// Ctrl-U (unix-line-discard): a best-effort, provider-generic "clear the current
+// input line" before typing. Not provider-specific magic; standard readline/TUI.
+const CLEAR_INPUT_SEQUENCE = '\u0015';
+// DEC 2004 bracketed paste markers. Wrapping a multi-line/long body lets the TUI
+// treat embedded newlines as literal content instead of premature submissions.
+const BRACKETED_PASTE_START = '\u001b[200~';
+const BRACKETED_PASTE_END = '\u001b[201~';
 const SUPERVISOR_SEND_KEY_INPUTS: Record<SupervisorSendKeyName, TerminalInputKey> = {
   escape: 'Escape',
   tab: 'Tab',
@@ -97,7 +117,9 @@ function validateActionPayload(
   if (action === 'sendKey') {
     return validateSendKey(key);
   }
-  return { ok: true, text: '\n' };
+  // `submit` is handled by buildSubmitPlan() (#958), not here. This fallback is
+  // unreachable for submit but kept for exhaustiveness of the action union.
+  return { ok: true, text: SUBMIT_ENTER_SEQUENCE };
 }
 
 function payloadForValidation(
@@ -126,21 +148,23 @@ function countLines(input: string): number {
 
 function redactionForPayload(
   payload: string,
-  action: SupervisorActionType
+  action: SupervisorActionType,
+  classesOverride?: readonly string[]
 ): SupervisorActionRedactionMetadata {
   const classes =
-    action === 'submit'
+    classesOverride ??
+    (action === 'submit'
       ? ['submit']
       : action === 'sendKey'
         ? ['named-key']
-        : ['literal-text'];
+        : ['literal-text']);
   return {
     rawContentAvailable: false,
     hashSha256: sha256(payload),
     byteCount: Buffer.byteLength(payload, 'utf8'),
     charCount: Array.from(payload).length,
     lineCount: countLines(payload),
-    classes,
+    classes: [...classes],
     redacted: true,
   };
 }
@@ -227,6 +251,172 @@ function validateSendKey(
   };
 }
 
+/**
+ * The fully-resolved byte plan + evidence for one `supervisor.submit` (#958).
+ * Computed once per request and reused for every target (the bytes are
+ * identical across targets); per-target evidence is layered on at write time.
+ */
+interface SupervisorSubmitPlan {
+  /** Exact bytes written to the PTY: [clear?] + [body|bracketed-body] + CR. */
+  payload: string;
+  /** The normalized text body (no control framing, trailing newlines stripped). */
+  body: string;
+  charsAccepted: number;
+  bytesAccepted: number;
+  plannedBytes: number;
+  clearInputPerformed: boolean;
+  pasteBracketed: boolean;
+  steps: SupervisorSubmitStep[];
+  classes: string[];
+}
+
+/**
+ * Normalize a submit body: collapse CRLF / lone CR to LF so embedded line breaks
+ * are consistent, then strip trailing newlines. The primitive appends exactly
+ * one owned carriage return, so callers never need to send a second `\r` (#958).
+ */
+function normalizeSubmitBody(text: string): string {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\n+$/u, '');
+}
+
+function validateSubmitText(
+  text: string
+): { ok: true; text: string } | { ok: false; error: SupervisorActionError } {
+  if (Array.from(text).length > MAX_SUPERVISOR_SUBMIT_TEXT_CHARS) {
+    return {
+      ok: false,
+      error: error(
+        'INVALID_ARGUMENT',
+        'TEXT_TOO_LARGE',
+        `supervisor.submit text is limited to ${MAX_SUPERVISOR_SUBMIT_TEXT_CHARS} characters`,
+        false,
+        { maxChars: MAX_SUPERVISOR_SUBMIT_TEXT_CHARS }
+      ),
+    };
+  }
+  // Newlines (\n, \r) and tabs are allowed in a submit body — multi-line prompts
+  // are the whole point. Other C0 control bytes and ESC (0x1b) / DEL (0x7f) are
+  // rejected so this stays a typed text primitive, not a raw byte-injection API.
+  const hasDisallowedControl = Array.from(text).some((char) => {
+    const code = char.charCodeAt(0);
+    return (
+      code === 0x1b ||
+      code === 0x7f ||
+      (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d)
+    );
+  });
+  if (hasDisallowedControl) {
+    return {
+      ok: false,
+      error: error(
+        'INVALID_ARGUMENT',
+        'TEXT_MUST_BE_LITERAL',
+        'supervisor.submit text accepts literal text (newlines and tabs allowed); control/escape sequences are not permitted',
+        false
+      ),
+    };
+  }
+  return { ok: true, text };
+}
+
+/**
+ * Build the submit byte plan. Order: optional clear-input (Ctrl-U), optional
+ * typed body (raw or bracketed-paste-wrapped), then the owned carriage return.
+ */
+function buildSubmitPlan(input: {
+  text?: unknown;
+  clearInput?: boolean | undefined;
+  paste?: boolean | undefined;
+}):
+  | { ok: true; plan: SupervisorSubmitPlan }
+  | { ok: false; error: SupervisorActionError } {
+  let body = '';
+  const hasText = input.text !== undefined && input.text !== null;
+  if (hasText) {
+    if (typeof input.text !== 'string') {
+      return {
+        ok: false,
+        error: error(
+          'INVALID_ARGUMENT',
+          'TEXT_REQUIRED',
+          'supervisor.submit text must be a string when provided',
+          false
+        ),
+      };
+    }
+    const validated = validateSubmitText(input.text);
+    if (!validated.ok) return validated;
+    body = normalizeSubmitBody(validated.text);
+  }
+
+  const clearInputPerformed = input.clearInput === true;
+  const pasteBracketed = input.paste === true && body.length > 0;
+  const steps: SupervisorSubmitStep[] = [];
+  const parts: string[] = [];
+  if (clearInputPerformed) {
+    parts.push(CLEAR_INPUT_SEQUENCE);
+    steps.push('clear-input');
+  }
+  if (body.length > 0) {
+    parts.push(
+      pasteBracketed
+        ? `${BRACKETED_PASTE_START}${body}${BRACKETED_PASTE_END}`
+        : body
+    );
+    steps.push('type-text');
+  }
+  parts.push(SUBMIT_ENTER_SEQUENCE);
+  steps.push('submit');
+
+  const payload = parts.join('');
+  const classes = [
+    'submit',
+    ...(body.length > 0 ? ['literal-text'] : []),
+    ...(pasteBracketed ? ['paste'] : []),
+    ...(clearInputPerformed ? ['clear-input'] : []),
+  ];
+  return {
+    ok: true,
+    plan: {
+      payload,
+      body,
+      charsAccepted: Array.from(body).length,
+      bytesAccepted: Buffer.byteLength(body, 'utf8'),
+      plannedBytes: Buffer.byteLength(payload, 'utf8'),
+      clearInputPerformed,
+      pasteBracketed,
+      steps,
+      classes,
+    },
+  };
+}
+
+/**
+ * Best-effort derived post-submit state (#958). Reads the last-known agent state
+ * from the resolved session snapshot; returns `available: false` when no derived
+ * state exists yet (mock/dry-run/unclassified). Never exposes raw bytes.
+ */
+function observePostSubmit(
+  session: Session,
+  observedAt: string
+): SupervisorSubmitObservation {
+  const agentState = (session as { agentState?: unknown }).agentState;
+  if (typeof agentState === 'string' && agentState.length > 0) {
+    const idle = (session as { idle?: unknown }).idle;
+    return {
+      available: true,
+      agentState,
+      ...(typeof idle === 'boolean' ? { idle } : {}),
+      source: 'session-snapshot',
+      observedAt,
+    };
+  }
+  return { available: false };
+}
+
 function missingSessionError(requestedId: string): SupervisorActionError {
   return error('NOT_FOUND', 'SESSION_NOT_FOUND', 'session was not found or is not locally writable', false, { sessionId: requestedId });
 }
@@ -295,76 +485,207 @@ export function listSupervisorSessions(sessions: readonly SessionSummary[]): Sup
   };
 }
 
+/** Resolved byte plan + redaction for one action, shared across all targets. */
+interface PreparedSupervisorAction {
+  payload: string;
+  canonicalKey?: SupervisorSendKeyName;
+  payloadValidationError?: SupervisorActionError;
+  auditContent?: SupervisorActionRedactionMetadata;
+  submitPlan?: SupervisorSubmitPlan;
+}
+
+interface SupervisorTargetContext {
+  action: SupervisorActionType;
+  actor: ControlActor;
+  dryRun: boolean;
+  boundary: SupervisorActionSessionBoundary;
+  timestamp: string;
+  deniedByCapability?: SupervisorActionError;
+}
+
+/**
+ * Resolve the byte plan + redaction once. Submit composes optional clear-input +
+ * optional typed text + an owned carriage return (#958); sendText/sendKey keep
+ * their existing literal/named-key validation.
+ */
+function prepareSupervisorAction(
+  action: SupervisorActionType,
+  text: unknown,
+  key: unknown,
+  clearInput: boolean | undefined,
+  paste: boolean | undefined
+): PreparedSupervisorAction {
+  if (action === 'submit') {
+    const planResult = buildSubmitPlan({ text, clearInput, paste });
+    if (!planResult.ok) {
+      return { payload: '', payloadValidationError: planResult.error };
+    }
+    return {
+      payload: planResult.plan.payload,
+      submitPlan: planResult.plan,
+      auditContent: redactionForPayload(
+        planResult.plan.body,
+        'submit',
+        planResult.plan.classes
+      ),
+    };
+  }
+  const validation = validateActionPayload(action, text, key);
+  const payload = payloadForValidation(validation);
+  const canonicalKey = keyForValidation(validation);
+  const payloadValidationError = validationError(validation);
+  return {
+    payload,
+    ...(canonicalKey === undefined ? {} : { canonicalKey }),
+    ...(payloadValidationError ? { payloadValidationError } : {}),
+    ...(validation.ok
+      ? { auditContent: redactionForPayload(payload, action) }
+      : {}),
+  };
+}
+
+/** Submit evidence layered onto a successful real (non-dry-run) write (#958). */
+function submitSuccessEvidence(
+  submitPlan: SupervisorSubmitPlan,
+  session: Session,
+  timestamp: string
+): Partial<SupervisorActionTargetResult> {
+  return {
+    charsAccepted: submitPlan.charsAccepted,
+    bytesAccepted: submitPlan.bytesAccepted,
+    submitPerformed: true,
+    submitKey: 'enter',
+    clearInputPerformed: submitPlan.clearInputPerformed,
+    pasteBracketed: submitPlan.pasteBracketed,
+    steps: submitPlan.steps,
+    postSubmit: observePostSubmit(session, timestamp),
+  };
+}
+
+/** Submit dry-run preview: planned evidence with nothing written (#958). */
+function submitDryRunResult(
+  identity: ReturnType<typeof targetIdentity>,
+  submitPlan: SupervisorSubmitPlan
+): SupervisorActionTargetResult {
+  return {
+    ...identity,
+    ok: true,
+    action: 'submit',
+    dryRun: true,
+    plannedBytes: submitPlan.plannedBytes,
+    charsAccepted: submitPlan.charsAccepted,
+    bytesAccepted: submitPlan.bytesAccepted,
+    submitPerformed: false,
+    submitKey: 'enter',
+    clearInputPerformed: submitPlan.clearInputPerformed,
+    pasteBracketed: submitPlan.pasteBracketed,
+    steps: submitPlan.steps,
+    postSubmit: { available: false },
+  };
+}
+
+/** Run one target: guard checks, then dry-run preview or a real write. */
+function runSupervisorTarget(
+  id: string,
+  prepared: PreparedSupervisorAction,
+  ctx: SupervisorTargetContext
+): SupervisorActionTargetResult {
+  const session = id ? ctx.boundary.get(id) : undefined;
+  const identity = targetIdentity(session, id);
+  const fail = (error: SupervisorActionError): SupervisorActionTargetResult => ({
+    ...identity,
+    ok: false,
+    action: ctx.action,
+    error,
+  });
+
+  if (ctx.deniedByCapability) return fail(ctx.deniedByCapability);
+  if (prepared.payloadValidationError) return fail(prepared.payloadValidationError);
+  if (!session) return fail(missingSessionError(id));
+  const preflight = targetPreflight(session);
+  if (preflight) return fail(preflight);
+
+  if (prepared.submitPlan && ctx.dryRun) {
+    return submitDryRunResult(identity, prepared.submitPlan);
+  }
+
+  try {
+    const write = ctx.boundary.supervisorWrite(session.id, {
+      action: ctx.action,
+      actor: ctx.actor,
+      payload: prepared.payload,
+    });
+    return {
+      ...identity,
+      ok: true,
+      action: ctx.action,
+      bytesWritten: Buffer.byteLength(prepared.payload, 'utf8'),
+      ...(prepared.canonicalKey === undefined ? {} : { key: prepared.canonicalKey }),
+      interventionEventId: write.eventId,
+      ...(write.modeBefore === undefined ? {} : { controlModeBefore: write.modeBefore }),
+      ...(write.modeAfter === undefined ? {} : { controlModeAfter: write.modeAfter }),
+      ...(prepared.submitPlan
+        ? submitSuccessEvidence(prepared.submitPlan, session, ctx.timestamp)
+        : {}),
+    };
+  } catch (caught) {
+    const message =
+      caught instanceof Error ? caught.message : 'failed to write supervisor action';
+    return fail(
+      error('UPSTREAM_ERROR', 'UPSTREAM_WRITE_FAILED', message, true, {
+        sessionId: session.id,
+      })
+    );
+  }
+}
+
 export function executeSupervisorAction(input: {
   boundary: SupervisorActionSessionBoundary;
   action: SupervisorActionType;
   targetIds: readonly string[];
   text?: unknown;
   key?: unknown;
+  /** Submit-only (#958): clear the current input buffer before typing. */
+  clearInput?: boolean;
+  /** Submit-only (#958): wrap a multi-line/long body in bracketed-paste markers. */
+  paste?: boolean;
+  /** Submit-only (#958): preview the plan + evidence without writing/auditing. */
+  dryRun?: boolean;
   actor?: ControlActor;
   now?: Date;
   deniedByCapability?: SupervisorActionError;
 }): SupervisorActionResponse {
   const actor = input.actor ?? DEFAULT_SUPERVISOR_ACTOR;
   const timestamp = (input.now ?? new Date()).toISOString();
-  const validation = validateActionPayload(input.action, input.text, input.key);
-  const payload = payloadForValidation(validation);
-  const canonicalKey = keyForValidation(validation);
-  const payloadValidationError = validationError(validation);
-  const results: SupervisorActionTargetResult[] = [];
+  const dryRun = input.action === 'submit' && input.dryRun === true;
+  const prepared = prepareSupervisorAction(
+    input.action,
+    input.text,
+    input.key,
+    input.clearInput,
+    input.paste
+  );
 
-  const uniqueTargetIds = Array.from(new Set(input.targetIds.filter((id) => id.trim().length > 0)));
+  const uniqueTargetIds = Array.from(
+    new Set(input.targetIds.filter((id) => id.trim().length > 0))
+  );
   if (uniqueTargetIds.length === 0) {
     uniqueTargetIds.push('');
   }
 
-  for (const id of uniqueTargetIds) {
-    const session = id ? input.boundary.get(id) : undefined;
-    const identity = targetIdentity(session, id);
-    if (input.deniedByCapability) {
-      results.push({ ...identity, ok: false, action: input.action, error: input.deniedByCapability });
-      continue;
-    }
-    if (payloadValidationError) {
-      results.push({ ...identity, ok: false, action: input.action, error: payloadValidationError });
-      continue;
-    }
-    if (!session) {
-      results.push({ ...identity, ok: false, action: input.action, error: missingSessionError(id) });
-      continue;
-    }
-    const preflight = targetPreflight(session);
-    if (preflight) {
-      results.push({ ...identity, ok: false, action: input.action, error: preflight });
-      continue;
-    }
-    try {
-      const write = input.boundary.supervisorWrite(session.id, {
-        action: input.action,
-        actor,
-        payload,
-      });
-      const targetResult: SupervisorActionTargetResult = {
-        ...identity,
-        ok: true,
-        action: input.action,
-        bytesWritten: Buffer.byteLength(payload, 'utf8'),
-        ...(canonicalKey === undefined ? {} : { key: canonicalKey }),
-        interventionEventId: write.eventId,
-        ...(write.modeBefore === undefined ? {} : { controlModeBefore: write.modeBefore }),
-        ...(write.modeAfter === undefined ? {} : { controlModeAfter: write.modeAfter }),
-      };
-      results.push(targetResult);
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : 'failed to write supervisor action';
-      results.push({
-        ...identity,
-        ok: false,
-        action: input.action,
-        error: error('UPSTREAM_ERROR', 'UPSTREAM_WRITE_FAILED', message, true, { sessionId: session.id }),
-      });
-    }
-  }
+  const ctx: SupervisorTargetContext = {
+    action: input.action,
+    actor,
+    dryRun,
+    boundary: input.boundary,
+    timestamp,
+    ...(input.deniedByCapability
+      ? { deniedByCapability: input.deniedByCapability }
+      : {}),
+  };
+  const results = uniqueTargetIds.map((id) =>
+    runSupervisorTarget(id, prepared, ctx)
+  );
 
   const counts = tally(results);
   const audit: SupervisorActionAuditSummary = {
@@ -372,12 +693,13 @@ export function executeSupervisorAction(input: {
     actor: actorSummary(actor),
     targetSessionIds: results.map((result) => result.sessionId),
     targetCount: results.length,
-    ...(canonicalKey === undefined ? {} : { key: canonicalKey }),
+    ...(prepared.canonicalKey === undefined ? {} : { key: prepared.canonicalKey }),
     timestamp,
-    ...(validation.ok ? { content: redactionForPayload(payload, input.action) } : {}),
+    ...(prepared.auditContent ? { content: prepared.auditContent } : {}),
     counts,
     rawContentStored: false,
     partialFailure: counts.failed > 0 || counts.denied > 0 || counts.skipped > 0,
+    ...(dryRun ? { dryRun: true } : {}),
   };
   return {
     command: supervisorActionCommandId(input.action),

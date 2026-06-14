@@ -2095,6 +2095,26 @@ const supervisorSubmitInputSchema: RelayJsonSchema = {
   properties: {
     id: stringSchema,
     targetIds: { type: 'array', items: stringSchema },
+    text: {
+      ...stringSchema,
+      description:
+        'Optional message body to type before submitting. May contain newlines (multi-line prompts) and tabs; control/escape sequences are rejected. The command appends the carriage return itself — callers must not include a trailing Enter. Requires the tab:intervention:send-text capability in addition to tab:intervention:submit.',
+    },
+    clearInput: {
+      ...booleanSchema,
+      description:
+        'Clear the current input buffer (best-effort Ctrl-U) before typing/submitting.',
+    },
+    paste: {
+      ...booleanSchema,
+      description:
+        'Wrap the text body in bracketed-paste markers so multi-line/long content is inserted as one paste instead of submitting line-by-line.',
+    },
+    dryRun: {
+      ...booleanSchema,
+      description:
+        'Preview the planned submission (bytes/chars accepted, steps, eligibility) without writing to the PTY or emitting an audit intervention.',
+    },
     actor: { type: 'object', additionalProperties: true },
   },
   oneOf: [{ required: ['id'] }, { required: ['targetIds'] }],
@@ -4629,10 +4649,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'submit',
       '--id',
       '<session-id>',
+      '[--text',
+      '<text>]',
+      '[--clear-input]',
+      '[--paste]',
+      '[--dry-run]',
       '--json',
     ],
     summary:
-      'Submit Enter to one or more PTY sessions as a typed supervisor intervention.',
+      'Typed submit primitive for agent/TUI steering: optionally type a (multi-line) text body, optionally clear the input first, then submit with an owned carriage return — callers never send a second Enter. Returns structured submission evidence. Inline text additionally requires tab:intervention:send-text.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
