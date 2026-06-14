@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import {
   SUPERVISOR_READ_REQUIRED_CAPABILITIES,
   supervisorActionRequiredCapabilities,
+  supervisorSubmitRequiredCapabilities,
   type SupervisorActionError,
   type SupervisorActionType,
 } from '../shared/supervisor-actions.js';
@@ -141,6 +142,22 @@ function validateSupervisorActionTargets(
   return { ok: true, targetIds: targetIds.map((entry) => entry.trim()) };
 }
 
+function validateSubmitBooleanOptions(
+  body: Record<string, unknown>
+): SupervisorActionError | undefined {
+  for (const field of ['clearInput', 'paste', 'dryRun'] as const) {
+    const value = body[field];
+    if (value !== undefined && typeof value !== 'boolean') {
+      return supervisorActionError(
+        'TARGET_SELECTOR_INVALID',
+        `${field} must be a boolean when provided`,
+        { field }
+      );
+    }
+  }
+  return undefined;
+}
+
 function missingCapabilityEvidenceDecision(
   capability: ControlCapabilityDecision['capability']
 ): ControlCapabilityDecision {
@@ -155,9 +172,15 @@ function missingCapabilityEvidenceDecision(
 
 function supervisorActionCapabilitiesDecision(
   req: Request,
-  action: SupervisorActionType
+  action: SupervisorActionType,
+  hasSubmitText: boolean
 ): ControlCapabilityDecision {
-  const capabilities = supervisorActionRequiredCapabilities(action);
+  // A submit that types an inline text body needs the send-text capability in
+  // addition to the submit capability (#958).
+  const capabilities =
+    action === 'submit'
+      ? supervisorSubmitRequiredCapabilities(hasSubmitText)
+      : supervisorActionRequiredCapabilities(action);
   const header = req.header('x-relay-capabilities') ?? undefined;
   if (header === undefined || header.trim().length === 0) {
     const highRiskCapability =
@@ -209,7 +232,22 @@ export function handleSupervisorActionRequest(
     return;
   }
 
-  const decision = supervisorActionCapabilitiesDecision(req, action);
+  const hasSubmitText =
+    action === 'submit' &&
+    typeof body['text'] === 'string' &&
+    (body['text'] as string).length > 0;
+
+  if (action === 'submit') {
+    const submitOptionsError = validateSubmitBooleanOptions(body);
+    if (submitOptionsError) {
+      res
+        .status(supervisorActionErrorStatus(submitOptionsError))
+        .json({ error: submitOptionsError });
+      return;
+    }
+  }
+
+  const decision = supervisorActionCapabilitiesDecision(req, action, hasSubmitText);
   if (decision.decision !== 'allow') {
     const error = capabilityError(decision);
     res.status(sessionControlErrorStatus(error)).json({ error });
@@ -223,6 +261,14 @@ export function handleSupervisorActionRequest(
     targetIds: targets.targetIds,
     text: body['text'],
     key: body['key'],
+    // Submit-only options (#958); ignored for sendText/sendKey.
+    ...(action === 'submit'
+      ? {
+          clearInput: body['clearInput'] === true,
+          paste: body['paste'] === true,
+          dryRun: body['dryRun'] === true,
+        }
+      : {}),
     ...(actor === undefined ? {} : { actor }),
   });
   res.json(result);

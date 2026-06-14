@@ -283,6 +283,104 @@ describe('supervisor route handlers', () => {
     );
   });
 
+  it('submits a plain Enter (carriage return) with only the submit capability', () => {
+    const sessions = supervisorBoundary();
+    const res = jsonResponse();
+
+    handleSupervisorActionRequest(
+      supervisorActionRequest({
+        action: 'submit',
+        body: { id: 'sess-1' },
+        capabilities: 'session:attach,tab:intervention:submit',
+      }),
+      res,
+      sessions
+    );
+
+    expect(sessions.supervisorWrite).toHaveBeenCalledWith(
+      'sess-1',
+      expect.objectContaining({ action: 'submit', payload: '\r' })
+    );
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'supervisor.submit', action: 'submit' })
+    );
+  });
+
+  it('requires the send-text capability when a submit carries inline text (#958)', () => {
+    const sessions = supervisorBoundary();
+    const res = jsonResponse();
+
+    handleSupervisorActionRequest(
+      supervisorActionRequest({
+        action: 'submit',
+        body: { id: 'sess-1', text: 'do the thing' },
+        capabilities: 'session:attach,tab:intervention:submit',
+      }),
+      res,
+      sessions
+    );
+
+    expect(sessions.supervisorWrite).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: expect.objectContaining({
+        code: 'FORBIDDEN',
+        reasonCode: 'CAPABILITY_REQUIRED',
+        details: expect.objectContaining({
+          capability: 'tab:intervention:send-text',
+        }),
+      }),
+    });
+  });
+
+  it('rejects non-boolean submit option fields before writing (#958)', () => {
+    const sessions = supervisorBoundary();
+    const res = jsonResponse();
+
+    handleSupervisorActionRequest(
+      supervisorActionRequest({
+        action: 'submit',
+        body: { id: 'sess-1', dryRun: 'true' },
+        capabilities: 'session:attach,tab:intervention:submit',
+      }),
+      res,
+      sessions
+    );
+
+    expect(sessions.supervisorWrite).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({
+      error: expect.objectContaining({
+        code: 'INVALID_ARGUMENT',
+        reasonCode: 'TARGET_SELECTOR_INVALID',
+        details: { field: 'dryRun' },
+      }),
+    });
+  });
+
+  it('types and submits inline text with submit + send-text capabilities (#958)', () => {
+    const sessions = supervisorBoundary();
+    const res = jsonResponse();
+
+    handleSupervisorActionRequest(
+      supervisorActionRequest({
+        action: 'submit',
+        body: { id: 'sess-1', text: 'run it\n' },
+        capabilities:
+          'session:attach,tab:intervention:submit,tab:intervention:send-text',
+      }),
+      res,
+      sessions
+    );
+
+    expect(sessions.supervisorWrite).toHaveBeenCalledWith(
+      'sess-1',
+      expect.objectContaining({ action: 'submit', payload: 'run it\r' })
+    );
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
   it('preserves multi-target partial-failure semantics for valid supervisor action requests', () => {
     const sessions = supervisorBoundary({
       'sess-1': session({ id: 'sess-1' }),
