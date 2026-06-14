@@ -109,7 +109,6 @@ describe('collaborationPromptArgsForFramework (#955)', () => {
     // Capability declared but no provider flag → cannot inject → [].
     const noArg: AgentFramework = {
       ...BUILTIN_FRAMEWORKS.codex,
-      collaborationPromptArg: undefined,
       capabilities: {
         ...BUILTIN_FRAMEWORKS.codex.capabilities,
         supportsCollaborationPrompt: true,
