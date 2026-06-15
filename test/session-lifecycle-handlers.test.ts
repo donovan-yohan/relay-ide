@@ -275,6 +275,42 @@ describe('session lifecycle handlers', () => {
     });
   });
 
+  it('refreshes session state after a successful active-session rename', async () => {
+    const fetchMock = stubSuccessfulFetch();
+    const promptMock = vi.fn(() => 'qa renamed session');
+    vi.stubGlobal('prompt', promptMock);
+    const local = makeSession({
+      id: 'rename-session-1',
+      displayName: 'Terminal 2',
+    });
+    useSessionsStore.setState({
+      sessions: [local],
+      activeSessionId: local.id,
+    });
+
+    let handlers: SessionHandlers | undefined;
+    await act(async () => {
+      root!.render(
+        React.createElement(SessionHandlersHarness, {
+          onReady: (next) => {
+            handlers = next;
+          },
+        })
+      );
+    });
+
+    await act(async () => {
+      await handlers!.handleRenameActiveSession();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/sessions/rename-session-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName: 'qa renamed session' }),
+    });
+    expect(refreshAll).toHaveBeenCalledTimes(1);
+  });
+
   it('routes archive cleanup for remote sessions through the owning node', async () => {
     const fetchMock = stubSuccessfulFetch();
     const remote = makeSession({
