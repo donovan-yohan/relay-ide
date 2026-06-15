@@ -8,14 +8,40 @@ import {
   type RosterEntry,
   type RosterSessionInput,
 } from '../../shared/agent-roster.js';
+import {
+  mergeRosterWithPresence,
+  type AgentPresence,
+} from '../../shared/agent-presence.js';
 
 // `roster.list` (#953): a read-only, redacted, DERIVED projection of the live
 // session read model so humans and agents can discover already-running
-// collaborators in the same repo / WorkContext. No new persistence; not an
-// event stream. Capability-gated on `session:read` like `sessions.list`, and
-// optionally WorkContext-scoped (see the mount in `server/index.ts`).
+// collaborators in the same repo / WorkContext.
+//
+// `roster.register` / `roster.updateSelf` (#964): explicit, self-declared agent
+// presence. An agent registers/updates its own role/use-case/status/capability
+// hints (capability-gated on `context:write`); the GET projection MERGES this
+// self-declared overlay into the derived entries — derived identity/control
+// fields always win, self-declaration only decorates the soft collaboration
+// subset, and stale (TTL-expired) presence is dropped. The merge surfaces
+// non-Relay-launched agents that have no live session as `self-declared` rows.
 
 const SESSION_READ = 'session:read';
+const CONTEXT_WRITE = 'context:write';
+
+/**
+ * Minimal port the router needs from the presence store. Kept structural so the
+ * router unit-tests can inject a fake without booting SQLite. Implemented by
+ * `server/agent-presence-store.ts`.
+ */
+export interface RosterPresencePort {
+  register(input: Record<string, unknown>): AgentPresence;
+  updateSelf(input: Record<string, unknown>): AgentPresence;
+  list(filter: {
+    workContextId?: string;
+    nodeId?: string;
+    repoPath?: string;
+  }): AgentPresence[];
+}
 
 export interface AgentRosterRouterDeps {
   /**
@@ -31,8 +57,27 @@ export interface AgentRosterRouterDeps {
   roleOverrides?: Readonly<Record<string, AgentRole>>;
   /** Node id stamped on the roster envelope. */
   nodeId?: string;
+  /** Explicit self-declared presence store (#964). Omit to disable the overlay. */
+  presence?: RosterPresencePort | undefined;
   requireAuth?: RequestHandler;
   requireReadAuth?: { list?: RequestHandler };
+  /** Write-command actor-auth factory (mirrors the inbox/workflow routers). */
+  requireWriteActorAuth?: (
+    expectedCommand: 'roster.register' | 'roster.updateSelf',
+    options?: {
+      scopeForRequest?: (req: Request) =>
+        | {
+            workContextIds?: string[];
+            sessionIds?: string[];
+            globalSessionIds?: string[];
+            repoIds?: string[];
+            taskRefs?: string[];
+          }
+        | undefined;
+    }
+  ) => RequestHandler;
+  /** Resolve the authenticated actor id (audit attribution for register/update). */
+  resolveActorId?: (req: Request) => string | undefined;
   /** Optional now() override for deterministic tests. */
   now?: () => Date;
 }
@@ -107,6 +152,14 @@ function readLimit(value: unknown): number | undefined {
     : undefined;
 }
 
+function bodyRecord(req: Request): Record<string, unknown> {
+  return typeof req.body === 'object' &&
+    req.body !== null &&
+    !Array.isArray(req.body)
+    ? (req.body as Record<string, unknown>)
+    : {};
+}
+
 /** Repo filter: match an exact path, a repo name, or a trailing path segment. */
 function matchesRepo(entry: RosterEntry, repo: string): boolean {
   if (entry.repoPath === repo) return true;
@@ -121,12 +174,47 @@ function matchesRepo(entry: RosterEntry, repo: string): boolean {
   return false;
 }
 
+/** Map a thrown presence-store error (duck-typed status/code) to a gateway error. */
+function presenceErrorToGateway(err: unknown): {
+  code: RelayCliGatewayErrorCode;
+  message: string;
+  details?: Record<string, unknown>;
+} {
+  if (err && typeof err === 'object' && 'status' in err) {
+    const record = err as Record<string, unknown>;
+    const status = record['status'];
+    const code = record['code'];
+    const message =
+      typeof record['message'] === 'string'
+        ? record['message']
+        : 'presence write failed';
+    const reasonCode = typeof code === 'string' ? code : undefined;
+    const gatewayCode: RelayCliGatewayErrorCode =
+      status === 404
+        ? 'NOT_FOUND'
+        : status === 403
+          ? 'FORBIDDEN'
+          : status === 400
+            ? 'INVALID_ARGUMENT'
+            : 'INTERNAL';
+    return {
+      code: gatewayCode,
+      message,
+      ...(reasonCode ? { details: { reasonCode } } : {}),
+    };
+  }
+  return { code: 'INTERNAL', message: 'presence write failed' };
+}
+
 export function createAgentRosterRouter(deps: AgentRosterRouterDeps): Router {
   const router = Router();
   const auth =
     deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
   const readAuth = deps.requireReadAuth ?? {};
   const now = deps.now ?? (() => new Date());
+  const writeAuth = (
+    command: 'roster.register' | 'roster.updateSelf'
+  ): RequestHandler => deps.requireWriteActorAuth?.(command) ?? auth;
 
   router.get('/roster', readAuth.list ?? auth, async (req, res) => {
     if (denyMissingCapability(req, res, [SESSION_READ])) return;
@@ -164,6 +252,23 @@ export function createAgentRosterRouter(deps: AgentRosterRouterDeps): Router {
       })
     );
 
+    // Merge explicit self-declared presence (#964). Failure here is non-fatal:
+    // the roster degrades to derived-only rather than 503 on a presence glitch.
+    if (deps.presence) {
+      try {
+        const presenceRecords = deps.presence.list({
+          ...(workContextId ? { workContextId } : {}),
+          ...(nodeId ? { nodeId } : {}),
+        });
+        entries = mergeRosterWithPresence(entries, presenceRecords, {
+          now: now(),
+          ...(deps.roleOverrides ? { roleOverrides: deps.roleOverrides } : {}),
+        });
+      } catch {
+        // Leave `entries` as the derived projection.
+      }
+    }
+
     entries = entries.filter((entry) => {
       if (!includeTerminals && entry.sessionType !== 'agent') return false;
       if (workContextId && entry.workContextId !== workContextId) return false;
@@ -197,6 +302,58 @@ export function createAgentRosterRouter(deps: AgentRosterRouterDeps): Router {
       ...(deps.nodeId ? { nodeId: deps.nodeId } : {}),
     });
   });
+
+  const presenceWrite =
+    (kind: 'register' | 'updateSelf'): RequestHandler =>
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      if (!deps.presence) {
+        sendGatewayError(
+          res,
+          'SERVER_UNAVAILABLE',
+          'agent presence store is unavailable',
+          true,
+          { reasonCode: 'PRESENCE_STORE_UNAVAILABLE' }
+        );
+        return;
+      }
+      const body = bodyRecord(req);
+      const registeredBy =
+        deps.resolveActorId?.(req) ??
+        readString(body['createdBy']) ??
+        readString(body['registeredBy']);
+      const input: Record<string, unknown> = {
+        ...body,
+        ...(registeredBy ? { registeredBy } : {}),
+      };
+      try {
+        const presence =
+          kind === 'register'
+            ? deps.presence.register(input)
+            : deps.presence.updateSelf(input);
+        res.json({ presence });
+      } catch (err) {
+        const mapped = presenceErrorToGateway(err);
+        sendGatewayError(
+          res,
+          mapped.code,
+          mapped.message,
+          false,
+          mapped.details
+        );
+      }
+    };
+
+  router.post(
+    '/roster/register',
+    writeAuth('roster.register'),
+    presenceWrite('register')
+  );
+  router.post(
+    '/roster/update-self',
+    writeAuth('roster.updateSelf'),
+    presenceWrite('updateSelf')
+  );
 
   return router;
 }

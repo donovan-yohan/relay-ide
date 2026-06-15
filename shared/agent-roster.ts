@@ -66,7 +66,10 @@ export type RosterAttentionReason =
   | 'permission-prompt'
   | 'waiting-for-input'
   | 'error'
-  | 'pending-inbox';
+  | 'pending-inbox'
+  // Self-declared via the explicit presence overlay (#964). Additive only: it
+  // can raise `needsAttention`, never clear a derived reason.
+  | 'self-declared';
 
 export interface RosterAttention {
   /** True when any attention reason is present. */
@@ -109,6 +112,32 @@ export interface RosterActor {
 }
 
 /**
+ * Provenance of a roster entry once the explicit presence overlay (#964) is
+ * folded in: `derived` (session read model only), `self-declared` (an explicit
+ * presence record with no matching live session — e.g. a non-Relay-launched
+ * agent), or `merged` (a live session decorated with its self-declared overlay).
+ */
+export type RosterEntryOrigin = 'derived' | 'self-declared' | 'merged';
+
+/**
+ * The safe, self-declared overlay echoed onto a `merged` / `self-declared`
+ * roster entry. Mirrors the sanitized presence fields; carries no secrets,
+ * tokens, transcripts, or raw payloads (see `agent-presence.ts`).
+ */
+export interface SelfDeclaredPresence {
+  presenceId: string;
+  registeredBy?: string;
+  role?: AgentRole;
+  displayName?: string;
+  useCase?: string;
+  statusText?: string;
+  needsAttention?: boolean;
+  capabilityHints?: string[];
+  updatedAt: string;
+  expiresAt: string;
+}
+
+/**
  * One active agent/session in the roster. Redaction-safe: identity + control +
  * coarse status only. Field set tracks the #953 acceptance list.
  */
@@ -141,6 +170,14 @@ export interface RosterEntry {
   activeActors?: RosterActor[];
   lastActivity?: string;
   createdAt?: string;
+  /**
+   * Provenance once explicit presence (#964) is merged in. Omitted on a purely
+   * derived entry (treat as `derived`); set to `merged` / `self-declared` by the
+   * presence merge so a reader can tell which fields are self-declared.
+   */
+  origin?: RosterEntryOrigin;
+  /** Sanitized self-declared overlay applied to this entry, when present. */
+  selfDeclared?: SelfDeclaredPresence;
 }
 
 export interface AgentRoster {
@@ -348,6 +385,7 @@ export function collaborationPromptAppendix(
     '',
     '- Identify yourself / your work context: `relay-ide v1 sessions list --json` and `relay-ide v1 work-contexts get --json`.',
     '- Discover active collaborators in this repo / work context: `relay-ide v1 roster list --json` (filter with `--repo` or `--work-context-id`).',
+    '- Announce yourself so others can find you, then heartbeat: `relay-ide v1 roster register --input-json \'{"role":"implementer","useCase":"<what you are doing>","sessionId":"<your session id>"}\' --json`, and periodically `relay-ide v1 roster update-self --input-json \'{"statusText":"<current status>"}\' --json`. Declare only role/use-case/status/capability hints — keep it metadata-only and never include anything sensitive.',
     '- Send a direct message / context to another session: `relay-ide v1 inbox send --json`.',
     '- Check and acknowledge your inbox at task boundaries: `relay-ide v1 inbox list --json`, then `inbox ack` / `inbox resolve` / `inbox ignore`.',
     '- React to messages and attention without a polling loop: subscribe to `relay-ide v1 events subscribe --topic inbox --json` and `relay-ide v1 events subscribe --topic attention --json` (use the per-event `cursor` with `--cursor` to resume).',

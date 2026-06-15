@@ -3,8 +3,12 @@ import http from 'node:http';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createAgentRosterRouter } from '../server/features/agent-roster-router.js';
+import {
+  createAgentRosterRouter,
+  type RosterPresencePort,
+} from '../server/features/agent-roster-router.js';
 import type { RosterSessionInput } from '../shared/agent-roster.js';
+import type { AgentPresence } from '../shared/agent-presence.js';
 
 let server: http.Server | undefined;
 let baseUrl = '';
@@ -98,6 +102,72 @@ async function get(
   const res = await fetch(`${baseUrl}${route}`, { method: 'GET', headers });
   const text = await res.text();
   return { status: res.status, body: text ? JSON.parse(text) : {} };
+}
+
+async function post(
+  route: string,
+  body: unknown,
+  caps = 'context:write'
+): Promise<{ status: number; body: any }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (caps) headers['x-relay-capabilities'] = caps;
+  const res = await fetch(`${baseUrl}${route}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : {} };
+}
+
+/** In-memory presence port: exercises the router's body→port + error mapping. */
+function fakePresencePort(seed: AgentPresence[] = []): RosterPresencePort & {
+  records: AgentPresence[];
+} {
+  const records = [...seed];
+  return {
+    records,
+    register(input) {
+      const record: AgentPresence = {
+        id: 'pres:test',
+        registeredBy: String(input['registeredBy'] ?? ''),
+        createdAt: '2026-06-13T03:59:00.000Z',
+        updatedAt: '2026-06-13T03:59:30.000Z',
+        expiresAt: '2026-06-13T05:00:00.000Z',
+        ...(typeof input['role'] === 'string'
+          ? { role: input['role'] as AgentPresence['role'] }
+          : {}),
+        ...(typeof input['useCase'] === 'string'
+          ? { useCase: input['useCase'] as string }
+          : {}),
+      };
+      records.push(record);
+      return record;
+    },
+    updateSelf(input) {
+      const found = records.find((r) => r.id === input['id']);
+      if (!found) {
+        const err = Object.assign(new Error('not found'), {
+          status: 404,
+          code: 'agent_presence_not_found',
+        });
+        throw err;
+      }
+      return found;
+    },
+    list() {
+      return records;
+    },
+  };
+}
+
+async function remount(
+  overrides: Partial<Parameters<typeof createAgentRosterRouter>[0]>
+): Promise<void> {
+  await new Promise<void>((resolve) =>
+    server ? server.close(() => resolve()) : resolve()
+  );
+  await mount(overrides);
 }
 
 beforeEach(async () => {
@@ -257,5 +327,132 @@ describe('agent roster router', () => {
     const { status, body } = await get('/roster');
     expect(status).toBe(503);
     expect(body.error).toMatchObject({ code: 'SERVER_UNAVAILABLE' });
+  });
+});
+
+describe('agent roster presence overlay (#964)', () => {
+  it('registers self-declared presence under context:write', async () => {
+    const port = fakePresencePort();
+    await remount({ presence: port });
+    const { status, body } = await post('/roster/register', {
+      createdBy: 'actor:claude-1',
+      globalSessionId: 'node-a:sess-claude',
+      role: 'reviewer',
+      useCase: 'reviewing #964',
+    });
+    expect(status).toBe(200);
+    expect(body.presence).toMatchObject({
+      id: 'pres:test',
+      registeredBy: 'actor:claude-1',
+      role: 'reviewer',
+    });
+    expect(port.records).toHaveLength(1);
+  });
+
+  it('rejects presence writes without the context:write capability', async () => {
+    await remount({ presence: fakePresencePort() });
+    const { status, body } = await post(
+      '/roster/register',
+      { createdBy: 'a' },
+      'session:read'
+    );
+    expect(status).toBe(403);
+    expect(body.error).toMatchObject({
+      code: 'FORBIDDEN',
+      details: { capability: 'context:write' },
+    });
+  });
+
+  it('fails closed (503) when no presence store is wired', async () => {
+    await remount({});
+    const { status, body } = await post('/roster/register', { createdBy: 'a' });
+    expect(status).toBe(503);
+    expect(body.error).toMatchObject({ code: 'SERVER_UNAVAILABLE' });
+  });
+
+  it('maps a store NOT_FOUND into a gateway NOT_FOUND on update-self', async () => {
+    await remount({ presence: fakePresencePort() });
+    const { status, body } = await post('/roster/update-self', {
+      createdBy: 'actor:claude-1',
+      id: 'pres:missing',
+    });
+    expect(status).toBe(404);
+    expect(body.error).toMatchObject({
+      code: 'NOT_FOUND',
+      details: { reasonCode: 'agent_presence_not_found' },
+    });
+  });
+
+  it('merges self-declared presence into the derived roster', async () => {
+    const port = fakePresencePort([
+      // overlay onto the live claude session
+      {
+        id: 'pres:claude',
+        registeredBy: 'actor:claude-1',
+        globalSessionId: 'node-a:sess-claude',
+        role: 'orchestrator',
+        useCase: 'driving the lane',
+        capabilityHints: ['web-sessions'],
+        createdAt: '2026-06-13T03:00:00.000Z',
+        updatedAt: '2026-06-13T03:30:00.000Z',
+        expiresAt: '2026-06-13T05:00:00.000Z',
+      },
+      // self-declared-only external agent (no live session)
+      {
+        id: 'pres:ext',
+        registeredBy: 'actor:ext-1',
+        sessionId: 'external-hermes',
+        provider: 'hermes',
+        displayName: 'Hermes orchestrator',
+        repoPath: '/home/u/relay-ide',
+        workContextId: 'wc:1',
+        createdAt: '2026-06-13T03:00:00.000Z',
+        updatedAt: '2026-06-13T03:45:00.000Z',
+        expiresAt: '2026-06-13T05:00:00.000Z',
+      },
+    ]);
+    await remount({ presence: port });
+    const { body } = await get('/roster');
+    const byId = Object.fromEntries(
+      body.roster.map((e: any) => [e.sessionId, e])
+    );
+    // merged entry: derived identity kept, soft overlay applied
+    expect(byId['sess-claude']).toMatchObject({
+      origin: 'merged',
+      provider: 'claude',
+      role: 'orchestrator',
+      controlMode: 'agent-driven',
+    });
+    expect(byId['sess-claude'].capabilities).toContain('web-sessions');
+    expect(byId['sess-claude'].selfDeclared).toMatchObject({
+      presenceId: 'pres:claude',
+      useCase: 'driving the lane',
+    });
+    // synthesized self-declared external agent surfaces in the roster
+    expect(byId['external-hermes']).toMatchObject({
+      origin: 'self-declared',
+      provider: 'hermes',
+      role: 'orchestrator',
+      displayName: 'Hermes orchestrator',
+    });
+  });
+
+  it('drops expired presence from the merged roster', async () => {
+    const port = fakePresencePort([
+      {
+        id: 'pres:stale',
+        registeredBy: 'actor:ext-1',
+        sessionId: 'ghost-agent',
+        provider: 'codex',
+        createdAt: '2026-06-13T01:00:00.000Z',
+        updatedAt: '2026-06-13T01:30:00.000Z',
+        expiresAt: '2026-06-13T02:00:00.000Z', // before the router's frozen now
+      },
+    ]);
+    await remount({ presence: port });
+    const { body } = await get('/roster');
+    expect(
+      body.roster.map((e: any) => e.sessionId)
+    ).not.toContain('ghost-agent');
   });
 });

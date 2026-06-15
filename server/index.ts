@@ -89,6 +89,10 @@ import {
   type ContextPacketStore,
 } from './context-packets.js';
 import {
+  initAgentPresenceStore,
+  type AgentPresenceStore,
+} from './agent-presence-store.js';
+import {
   initInterventionLog,
   closeInterventionLog,
 } from './intervention-log.js';
@@ -254,6 +258,7 @@ import {
 } from './supervisor-route-handlers.js';
 import {
   attachAuthenticatedCliGatewayActorCredential,
+  authenticatedCliGatewayActorCredential,
   bearerActorToken,
   classifyCliGatewayCredentialLane,
   cliGatewayActorFailure,
@@ -1394,6 +1399,36 @@ function initWorkContextArtifactStoreBestEffort(
   }
 }
 
+/**
+ * Boot the #964 explicit agent presence store, or `null` when init fails (the
+ * roster then degrades to its derived projection and presence writes 503).
+ * Extracted from `main()` to keep that boot function under the complexity gate.
+ */
+function initAgentPresenceStoreBestEffort(
+  configDir: string
+): AgentPresenceStore | null {
+  try {
+    return initAgentPresenceStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Agent presence store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
+/**
+ * Audit-attributed actor id for an explicit-presence (#964) write, sourced from
+ * the authenticated CLI-gateway actor credential. Module-scoped so `main()`
+ * stays under the complexity gate.
+ */
+function presenceActorIdFromRequest(
+  req: express.Request
+): string | undefined {
+  return authenticatedCliGatewayActorCredential(req)?.actor?.id;
+}
+
 function initWorkflowRunStoreBestEffort(
   configDir: string
 ): WorkflowRunStore | null {
@@ -1658,6 +1693,13 @@ async function main(): Promise<void> {
       err instanceof Error ? err.message : err
     );
   }
+
+  // Explicit agent presence store (#964, child of #953). Own SQLite file
+  // (`agent-presence.db`); new table only, non-destructive. Backs
+  // roster.register / roster.updateSelf and the roster.list self-declared
+  // overlay. Guarded so a DB error degrades to "no explicit presence" (the
+  // roster falls back to the derived projection) rather than failing boot.
+  const agentPresenceStore = initAgentPresenceStoreBestEffort(configDir);
 
   // WorkContext artifact store (#889/#890). Own SQLite/payload files; routes
   // degrade to typed 503 when initialization fails so hub startup stays useful.
@@ -2382,6 +2424,13 @@ async function main(): Promise<void> {
           scopeForRequest: rosterScopeFromQuery,
         }),
       },
+      // roster.register / roster.updateSelf (#964): explicit self-declared
+      // presence writes, capability-gated on `context:write` via the actor
+      // command auth, with the authenticated actor id as the audit-attributed
+      // `registeredBy`. Disabled (writes fail closed) when the store is absent.
+      presence: agentPresenceStore ?? undefined,
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
+      resolveActorId: presenceActorIdFromRequest,
       nodeId: DEFAULT_LOCAL_NODE_ID,
       listSessions: () =>
         localRelayNode.sessions
@@ -4842,6 +4891,7 @@ async function main(): Promise<void> {
     workContextStore.close();
     iaStore?.close();
     contextPacketStore?.close();
+    agentPresenceStore?.close();
     workContextArtifactStore?.close();
     workflowRunStore?.close();
     workContextMessageStore?.close();

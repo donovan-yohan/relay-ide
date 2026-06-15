@@ -62,6 +62,8 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'context.create',
   'context.pin',
   'context.unpin',
+  'roster.register',
+  'roster.updateSelf',
   'inbox.send',
   'inbox.ack',
   'inbox.resolve',
@@ -301,6 +303,10 @@ export function cliGatewayActorCommandCapabilities(
   if (cliGatewayActorReadCommandSet.has(command)) return ['session:read'];
   if (command.startsWith('workflow-runs.')) return ['context:write'];
   if (command.startsWith('context.')) return ['context:write'];
+  // Explicit self-declared presence (#964) is collaboration-context metadata —
+  // gate the writes on context:write (roster.list reads stay session:read).
+  if (command === 'roster.register' || command === 'roster.updateSelf')
+    return ['context:write'];
   if (command.startsWith('inbox.')) return ['inbox:write'];
   return ['artifact:write'];
 }

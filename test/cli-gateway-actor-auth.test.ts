@@ -331,6 +331,8 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'context.create',
     'context.pin',
     'context.unpin',
+    'roster.register',
+    'roster.updateSelf',
     'inbox.send',
     'inbox.ack',
     'inbox.resolve',
@@ -440,6 +442,14 @@ test('maps write actor commands to required Relay capability bits', () => {
   ).toEqual(['context:write']);
   expect(cliGatewayActorCommandCapabilities('roster.list')).toEqual([
     'session:read',
+  ]);
+  // roster.register / roster.updateSelf (#964) are collaboration-context writes
+  // gated on context:write, NOT the artifact:write default fallthrough.
+  expect(cliGatewayActorCommandCapabilities('roster.register')).toEqual([
+    'context:write',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('roster.updateSelf')).toEqual([
+    'context:write',
   ]);
 });
 
