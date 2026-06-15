@@ -675,6 +675,9 @@ export function useSessionHandlers({
           return;
         }
         logger.error('Failed to open branch session:', result.error);
+        useToastStore
+          .getState()
+          .showToast(result.error.message || 'failed to open branch session');
         return;
       }
 

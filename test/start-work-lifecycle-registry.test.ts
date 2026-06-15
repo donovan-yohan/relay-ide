@@ -82,6 +82,7 @@ import type { GitHubIssue, PullRequest } from '../frontend/src/lib/types.js';
 import { useSessionHandlers } from '../frontend/src/hooks/useSessionHandlers.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
+import { useToastStore } from '../frontend/src/lib/stores/toasts.js';
 import { StartWorkModal } from '../frontend/src/components/StartWorkModal.js';
 import {
   prFixConflicts,
@@ -170,6 +171,7 @@ describe('start-work lifecycle action registry wiring (#871/#876)', () => {
       refreshAll: refreshAll as unknown as typeof originalRefreshAll,
     });
     useUiStore.setState({ activeRepoPath: '/repo/relay-ide' });
+    useToastStore.setState({ toasts: [] });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -187,6 +189,7 @@ describe('start-work lifecycle action registry wiring (#871/#876)', () => {
       activeSessionId: null,
       refreshAll: originalRefreshAll,
     });
+    useToastStore.setState({ toasts: [] });
     vi.restoreAllMocks();
   });
 
@@ -289,6 +292,32 @@ describe('start-work lifecycle action registry wiring (#871/#876)', () => {
     // Success path: store refreshed and new session focused.
     expect(refreshAll).toHaveBeenCalledTimes(1);
     expect(useSessionsStore.getState().activeSessionId).toBe('branch-session');
+  });
+
+  it('handleOpenBranchSession surfaces non-conflict executor failures with a toast', async () => {
+    executeBranchOpenSessionAction.mockImplementationOnce(async () =>
+      gatewayError('branches.openSession', {
+        code: 'NODE_OFFLINE',
+        message: 'remote node is offline',
+        retryable: true,
+        details: { nodeId: 'remote-1' },
+      })
+    );
+
+    const handlers = await mountHandlers();
+    await act(async () => {
+      await handlers.handleOpenBranchSession('feature/named', '/repo/relay-ide');
+    });
+    await flushPromises();
+
+    expect(refreshAll).not.toHaveBeenCalled();
+    expect(useSessionsStore.getState().activeSessionId).toBeNull();
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        message: 'remote node is offline',
+        variant: 'error',
+      }),
+    ]);
   });
 
   it('passes existingWorktreePath from the store-state fast path when a worktree already exists', async () => {
