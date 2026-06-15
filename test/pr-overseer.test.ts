@@ -532,6 +532,7 @@ describe('gh pr observer', () => {
                 pullRequest: {
                   reviewThreads: {
                     nodes: Array.isArray(threads) ? threads : [{ isResolved: threads }],
+                    pageInfo: { hasNextPage: false },
                   },
                 },
               },
@@ -582,7 +583,7 @@ describe('gh pr observer', () => {
     expect(obs.closingIssueNumbers).toEqual([960]);
   });
 
-  it('ignores null GraphQL review-thread nodes when counting unresolved threads', async () => {
+  it('null GraphQL review-thread nodes fail closed instead of defaulting to zero unresolved threads', async () => {
     const observer = createGhPrObserver({
       exec: execReturning(
         {
@@ -596,13 +597,65 @@ describe('gh pr observer', () => {
           comments: [],
           closingIssuesReferences: [{ number: 960 }],
         },
-        [null, { isResolved: true }, { isResolved: false }, {}, null]
+        [null]
       ),
     });
 
     const obs = await observer(target);
-    expect(obs.ok).toBe(true);
-    expect(obs.reviews?.unresolvedThreadCount).toBe(1);
+    expect(obs).toMatchObject({ ok: false, unavailableReason: 'error' });
+    expect(obs.reviews).toBeUndefined();
+  });
+
+  it('malformed GraphQL review-thread nodes fail closed instead of being counted as resolved', async () => {
+    const observer = createGhPrObserver({
+      exec: execReturning(
+        {
+          number: 1234,
+          state: 'OPEN',
+          isDraft: false,
+          headRefOid: HEAD,
+          mergeable: 'MERGEABLE',
+          statusCheckRollup: [],
+          latestReviews: [],
+          comments: [],
+          closingIssuesReferences: [{ number: 960 }],
+        },
+        [{}]
+      ),
+    });
+
+    const obs = await observer(target);
+    expect(obs).toMatchObject({ ok: false, unavailableReason: 'error' });
+    expect(obs.reviews).toBeUndefined();
+  });
+
+  it('null GraphQL review-thread nodes cannot make the store derive a ready handoff', async () => {
+    const viewJson = {
+      number: 1234,
+      state: 'OPEN',
+      isDraft: false,
+      headRefOid: HEAD,
+      mergeable: 'MERGEABLE',
+      reviewDecision: 'APPROVED',
+      latestReviews: [{ author: { login: 'reviewer' }, state: 'APPROVED' }],
+      statusCheckRollup: [
+        { __typename: 'CheckRun', status: 'COMPLETED', conclusion: 'SUCCESS', name: 'build' },
+      ],
+      comments: [],
+      closingIssuesReferences: [{ number: 960 }],
+    };
+    const observer = createGhPrObserver({ exec: execReturning(viewJson, [null]) });
+    const failedSnapshot = await observer(target);
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    store.register(baseRegister);
+
+    const record = store.observe('pr-overseer:test-1', {}, failedSnapshot);
+
+    expect(record.lastFetch).toMatchObject({ ok: false, unavailableReason: 'error' });
+    expect(record.status).not.toBe('ready');
+    expect(record.handoff.ready).toBe(false);
+    expect(record.lastObservation).toBeUndefined();
   });
 
   it('GraphQL review-thread failure yields ok:false (fail-closed, not unresolvedThreadCount:0)', async () => {

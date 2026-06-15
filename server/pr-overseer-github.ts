@@ -305,6 +305,11 @@ async function fetchUnresolvedThreadCount(
   if (reviewThreads.pageInfo?.hasNextPage === true) {
     throw new Error('GraphQL reviewThreads query returned a partial page');
   }
+  for (const node of reviewThreads.nodes) {
+    if (!node || typeof node.isResolved !== 'boolean') {
+      throw new Error('GraphQL reviewThreads query returned malformed nodes');
+    }
+  }
   return reviewThreads.nodes.filter((n) => n?.isResolved === false).length;
 }
 
