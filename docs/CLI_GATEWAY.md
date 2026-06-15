@@ -807,6 +807,7 @@ Topics:
 - `audit` — redacted summaries of `tab.mode-changed` and `tab.intervention` envelopes (hash-chained at storage time per #470/#499). Raw intervention payloads, raw keylogs, and full terminal transcripts are never streamed through this gateway.
 - `context` — metadata for context packet create/pin/unpin activity, scoped by WorkContext/session/global session where available.
 - `inbox` — metadata for `inbox.sent` and `inbox.state-changed` frames, including state transitions and redacted target/source summaries.
+- `attention` — metadata for local agent session backend-state transitions (`attention.state-changed`), including derived `needsAttention`/`reasons[]` and repo/session scope hints.
 - `work-context-artifacts` — metadata for WorkContext artifact publication/pin/export lifecycle events; never raw payload bytes.
 - `handoff-artifacts` — metadata for pipeline handoff artifact attach/list-visible lifecycle events, using the same safe artifact store envelope.
 - `workflow-runs` — metadata for workflow run publication/update events and bounded run state changes.
@@ -816,7 +817,7 @@ Each frame is a `events.subscribe` success envelope whose `data` carries:
 ```json
 {
   "event": "open" | "event" | "closed",
-  "topic": "sessions" | "nodes" | "audit" | "context" | "inbox" | "work-context-artifacts" | "handoff-artifacts" | "workflow-runs",
+  "topic": "sessions" | "nodes" | "audit" | "context" | "inbox" | "attention" | "work-context-artifacts" | "handoff-artifacts" | "workflow-runs",
   "sequence": 0,
   "occurredAt": "2026-05-19T00:00:00.000Z",
   "payload": { "type": "session.started", "sessionId": "..." }
@@ -829,7 +830,7 @@ The first envelope is always `event: "open"`. The final envelope is always `even
 - `--idle-timeout-ms N` detaches after N ms without an event frame.
 - If stdout backpressure is observed, the CLI aborts the upstream stream and emits `closed` with `reason: "stdout backpressure"`.
 
-Capability gating fails closed: `sessions` and `nodes` require `session:read`; `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs` require `context:read`; `inbox` requires `inbox:read`; `audit` additionally requires `tab:intervention:read`. Unknown topics surface as `INVALID_ARGUMENT` with `details.field: "topic"` before the CLI opens any hub request. Missing or denied capabilities surface as `FORBIDDEN` envelopes. The hub side enforces the same gate; the CLI side enforces the same allowlist. This is the only `events.*` verb in v1 — no `events.publish`, no `events.replay`, no event-bus write surface.
+Capability gating fails closed: `sessions`, `nodes`, and `attention` require `session:read`; `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs` require `context:read`; `inbox` requires `inbox:read`; `audit` additionally requires `tab:intervention:read`. Unknown topics surface as `INVALID_ARGUMENT` with `details.field: "topic"` before the CLI opens any hub request. Missing or denied capabilities surface as `FORBIDDEN` envelopes. The hub side enforces the same gate; the CLI side enforces the same allowlist. This is the only `events.*` verb in v1 — no `events.publish`, no `events.replay`, no event-bus write surface.
 
 Smoke form:
 
@@ -839,4 +840,4 @@ relay-ide v1 events subscribe --topic sessions --max-events 1 --json
 
 ## Deferred work
 
-Event subscription beyond `events.subscribe` (multi-topic fan-out, cursor/resume, replay), multi-session fan-out, File RPC delete/tail, arbitrary exec/destructive operations, stronger approval authentication, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.
+Event subscription beyond `events.subscribe` (multi-topic fan-out, durable cross-restart replay, cross-node aggregation), multi-session fan-out, File RPC delete/tail, arbitrary exec/destructive operations, stronger approval authentication, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.

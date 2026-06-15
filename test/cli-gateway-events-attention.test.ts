@@ -123,6 +123,10 @@ function openStream(
                 return;
               }
               const timer = setTimeout(() => {
+                const index = waiters.findIndex((w) => w.timer === timer);
+                if (index >= 0) {
+                  waiters.splice(index, 1);
+                }
                 rej2(
                   new Error(
                     `timeout waiting for ${label ?? 'frames'}; got ${JSON.stringify(frames)}`
