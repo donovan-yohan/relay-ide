@@ -8,6 +8,10 @@ import {
 import type { TabControlEvent } from '../shared/control-state.js';
 import type { HubNodeStatusEvent } from './hub-node-registry.js';
 import {
+  authenticatedCliGatewayActorCredential,
+  isCliGatewayActorTokenRequest,
+} from './cli-gateway-actor-auth.js';
+import {
   eventMatchesFilter,
   type CliGatewayEventBus,
   type CliGatewayEventFilter,
@@ -29,6 +33,13 @@ function parseCapabilityHeader(value: string | undefined): Set<string> {
       .map((entry) => entry.trim())
       .filter(Boolean)
   );
+}
+
+function validatedRequestCapabilities(req: Request): Set<string> {
+  const actorCredential = authenticatedCliGatewayActorCredential(req);
+  if (actorCredential) return new Set(actorCredential.capabilities);
+  if (isCliGatewayActorTokenRequest(req)) return new Set();
+  return parseCapabilityHeader(req.header('x-relay-capabilities'));
 }
 
 export interface CliGatewayEventsHooks {
@@ -189,7 +200,7 @@ export function createCliGatewayEventsRouter(
     }
     const topic: EventsSubscribeTopic = topicParam;
 
-    const capabilities = parseCapabilityHeader(req.header('x-relay-capabilities'));
+    const capabilities = validatedRequestCapabilities(req);
     const required = EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES[topic];
     const missing = required.filter((cap) => !capabilities.has(cap));
     if (missing.length > 0) {

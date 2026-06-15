@@ -54,6 +54,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'automation-runs.get',
   'pr-overseer.list',
   'pr-overseer.get',
+  'events.subscribe',
   'work-context-messages.list',
   'work-context-messages.show',
   'work-context-messages.query',
@@ -303,6 +304,7 @@ export function isSupportedCliGatewayActorRequest(
 export function cliGatewayActorCommandCapabilities(
   command: CliGatewayActorCommand
 ): readonly RelayCapabilityBit[] {
+  if (command === 'events.subscribe') return ['context:read'];
   if (command === 'work-context-messages.append') return ['context:write'];
   if (
     command === 'workflow-runs.list' ||

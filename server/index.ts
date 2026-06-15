@@ -226,7 +226,11 @@ import type {
   WorkspaceSettings,
 } from './types.js';
 import type { SessionLane } from '../shared/session-lane.js';
-import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
+import {
+  EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
+  type EventsSubscribeTopic,
+  type RelayCliGatewayError,
+} from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeLocalGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 import { resolveFramework } from './types.js';
 import { semverLessThan, clampDimension } from './utils.js';
@@ -275,6 +279,7 @@ import {
   attachAuthenticatedCliGatewayActorCredential,
   authenticatedCliGatewayActorCredential,
   bearerActorToken,
+  CLI_GATEWAY_READ_SCOPE_TASK_REF,
   classifyCliGatewayCredentialLane,
   cliGatewayActorFailure,
   cliGatewayCorrelationId,
@@ -2023,6 +2028,31 @@ async function main(): Promise<void> {
     res.status(401).json(auth.cliGatewayOrBrowserAuthRequiredChallenge());
   };
 
+  const requireCliGatewayEventsAuth: express.RequestHandler = (req, res, next) => {
+    if (!isCliGatewayActorTokenRequest(req)) {
+      requireCliGatewayAuth(req, res, next);
+      return;
+    }
+    const topic = typeof req.query['topic'] === 'string' ? req.query['topic'] : undefined;
+    const capabilities =
+      topic && Object.prototype.hasOwnProperty.call(EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES, topic)
+        ? EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES[topic as EventsSubscribeTopic]
+        : (['session:read'] as const);
+    const workContextId = typeof req.query['workContextId'] === 'string' ? req.query['workContextId'].trim() : '';
+    const sessionId = typeof req.query['sessionId'] === 'string' ? req.query['sessionId'].trim() : '';
+    const globalSessionId = typeof req.query['globalSessionId'] === 'string' ? req.query['globalSessionId'].trim() : '';
+    requireCliGatewayActorAuth(
+      capabilities,
+      {
+        taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+        ...(workContextId ? { workContextIds: [workContextId] } : {}),
+        ...(sessionId ? { sessionIds: [sessionId] } : {}),
+        ...(globalSessionId ? { globalSessionIds: [globalSessionId] } : {}),
+      },
+      'events.subscribe'
+    )(req, res, next);
+  };
+
   const requireCliGatewayWriteAuth: express.RequestHandler = (
     req,
     res,
@@ -2627,7 +2657,7 @@ async function main(): Promise<void> {
   registerFileRangeContentFetcher(anchorContentFetcher);
   app.use(
     createCliGatewayEventsRouter(express, {
-      cliGatewayAuth: requireCliGatewayAuth,
+      cliGatewayAuth: requireCliGatewayEventsAuth,
       eventBus: cliGatewayEventBus,
       hooks: {
         onSessionCreate: (cb) => sessions.onSessionCreate(cb),

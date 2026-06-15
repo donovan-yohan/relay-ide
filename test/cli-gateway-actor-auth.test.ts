@@ -238,6 +238,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'automation-runs.get',
     'pr-overseer.list',
     'pr-overseer.get',
+    'events.subscribe',
     'work-context-messages.list',
     'work-context-messages.show',
     'work-context-messages.query',
@@ -297,6 +298,37 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
       'nodes.list'
     )
   ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'events.subscribe',
+      }),
+      'events.subscribe'
+    )
+  ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'nodes.list',
+      }),
+      'events.subscribe'
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'POST',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'events.subscribe',
+      }),
+      'events.subscribe'
+    )
+  ).toBe('unsupported-route');
   expect(
     classifyCliGatewayCredentialLane(
       req({
@@ -436,6 +468,9 @@ test('maps write actor commands to required Relay capability bits', () => {
     'context:read',
   ]);
   expect(cliGatewayActorCommandCapabilities('workflow-runs.get')).toEqual([
+    'context:read',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('events.subscribe')).toEqual([
     'context:read',
   ]);
   expect(cliGatewayActorCommandCapabilities('workflow-runs.publish')).toEqual([
