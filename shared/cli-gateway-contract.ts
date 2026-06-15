@@ -1,5 +1,8 @@
 import { RELAY_NODE_LINK_PROTOCOL_VERSION } from './relay-node-protocol.js';
-import { RELAY_SECURITY_POLICY_VERSION } from './security-policy.js';
+import {
+  RELAY_SECURITY_POLICY_VERSION,
+  type RelayCapabilityBit,
+} from './security-policy.js';
 import {
   CONTEXT_PACKET_KINDS,
   SESSION_INBOX_MESSAGE_STATES,
@@ -1513,6 +1516,22 @@ export const EVENTS_SUBSCRIBE_TOPICS = [
   'pr-overseer',
 ] as const;
 export type EventsSubscribeTopic = (typeof EVENTS_SUBSCRIBE_TOPICS)[number];
+
+export const EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES = {
+  sessions: ['session:read'],
+  nodes: ['session:read'],
+  audit: ['session:read', 'tab:intervention:read'],
+  context: ['context:read'],
+  inbox: ['inbox:read'],
+  // Attention/session-state is a derived projection of the session read model,
+  // gated like `sessions`/`roster.list` on `session:read`.
+  attention: ['session:read'],
+  'work-context-artifacts': ['context:read'],
+  'handoff-artifacts': ['context:read'],
+  'workflow-runs': ['context:read'],
+  'automation-runs': ['context:read'],
+  'pr-overseer': ['context:read'],
+} as const satisfies Record<EventsSubscribeTopic, readonly RelayCapabilityBit[]>;
 
 const eventsSubscribeInputSchema: RelayJsonSchema = {
   title: 'EventsSubscribeInput',

@@ -2,6 +2,7 @@ import type express from 'express';
 import type { Request, Response, RequestHandler } from 'express';
 import {
   EVENTS_SUBSCRIBE_TOPICS,
+  EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
   type EventsSubscribeTopic,
 } from '../shared/cli-gateway-contract.js';
 import type { TabControlEvent } from '../shared/control-state.js';
@@ -29,22 +30,6 @@ function parseCapabilityHeader(value: string | undefined): Set<string> {
       .filter(Boolean)
   );
 }
-
-const REQUIRED_TOPIC_CAPABILITIES: Record<EventsSubscribeTopic, readonly string[]> = {
-  sessions: ['session:read'],
-  nodes: ['session:read'],
-  audit: ['session:read', 'tab:intervention:read'],
-  context: ['context:read'],
-  inbox: ['inbox:read'],
-  // Attention/session-state is a derived projection of the session read model,
-  // gated like `sessions`/`roster.list` on `session:read`.
-  attention: ['session:read'],
-  'work-context-artifacts': ['context:read'],
-  'handoff-artifacts': ['context:read'],
-  'workflow-runs': ['context:read'],
-  'automation-runs': ['context:read'],
-  'pr-overseer': ['context:read'],
-};
 
 export interface CliGatewayEventsHooks {
   /** Subscribe to session lifecycle (create/end). Return an unsubscribe fn. */
@@ -205,7 +190,7 @@ export function createCliGatewayEventsRouter(
     const topic: EventsSubscribeTopic = topicParam;
 
     const capabilities = parseCapabilityHeader(req.header('x-relay-capabilities'));
-    const required = REQUIRED_TOPIC_CAPABILITIES[topic];
+    const required = EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES[topic];
     const missing = required.filter((cap) => !capabilities.has(cap));
     if (missing.length > 0) {
       res.status(403).json({

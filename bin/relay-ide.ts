@@ -46,6 +46,7 @@ import { createDiagnosticsBundle } from '../server/diagnostics-bundle.js';
 import { writeNodeCredentialFile } from './node-credential-file.js';
 import {
   EVENTS_SUBSCRIBE_TOPICS,
+  EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
   RELAY_CLI_GATEWAY_CONTRACT,
   gatewayError,
   gatewayOk,
@@ -4857,20 +4858,8 @@ async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {
   });
 }
 
-function eventsSubscribeCapabilities(topic: string): string {
-  switch (topic) {
-    case 'audit':
-      return 'session:read,tab:intervention:read';
-    case 'inbox':
-      return 'inbox:read';
-    case 'context':
-    case 'work-context-artifacts':
-    case 'handoff-artifacts':
-    case 'workflow-runs':
-      return 'context:read';
-    default:
-      return 'session:read';
-  }
+function eventsSubscribeCapabilities(topic: EventsSubscribeTopic): string {
+  return EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES[topic].join(',');
 }
 
 async function runGatewayEvents(gatewayArgs: string[]): Promise<never> {
