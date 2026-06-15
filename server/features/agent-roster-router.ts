@@ -259,6 +259,7 @@ export function createAgentRosterRouter(deps: AgentRosterRouterDeps): Router {
         const presenceRecords = deps.presence.list({
           ...(workContextId ? { workContextId } : {}),
           ...(nodeId ? { nodeId } : {}),
+          ...(repo ? { repoPath: repo } : {}),
         });
         entries = mergeRosterWithPresence(entries, presenceRecords, {
           now: now(),

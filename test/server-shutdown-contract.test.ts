@@ -40,7 +40,11 @@ describe('server shutdown store closing contract', () => {
 
     expect(updateRestartStart).toBeGreaterThanOrEqual(0);
     expect(updateResponseStart).toBeGreaterThan(updateRestartStart);
+    expect(updateRestartSource).toContain('agentPresenceStore?.close();');
     expect(updateRestartSource).toContain('workContextArtifactStore?.close();');
     expect(updateRestartSource).toContain('workContextMessageStore?.close();');
+    expect(updateRestartSource).toMatch(
+      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);/
+    );
   });
 });

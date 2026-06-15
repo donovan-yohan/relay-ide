@@ -532,6 +532,8 @@ test('returns stable typed denials without token material', () => {
   expect(failure).toMatchObject({
     code: 'UNAUTHORIZED',
     reasonCode: 'CLI_ACTOR_ROUTE_UNSUPPORTED',
+    message:
+      'scoped CLI actor credentials are limited to supported CLI gateway route and command pairs',
     retryable: false,
     lane: 'denied',
     acceptedLanes: ['scoped-actor-credential'],

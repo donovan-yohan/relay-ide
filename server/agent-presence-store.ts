@@ -223,6 +223,10 @@ export function createAgentPresenceStore(
       const nowIso = nowDate.toISOString();
       const id = readId(input) ?? stablePresenceId(registeredBy, fields);
       const existing = getLive(id, true);
+      if (existing && existing.registeredBy !== registeredBy) {
+        // Explicit ids are allowed for stable addressing, not ownership transfer.
+        throw new AgentPresenceStoreError(403, 'agent_presence_not_owner');
+      }
       const ttlSeconds = fields.ttlSeconds ?? PRESENCE_DEFAULT_TTL_SECONDS;
       const record: AgentPresence = {
         ...presenceFieldsToRecord(fields),
@@ -377,6 +381,7 @@ function stablePresenceId(
     fields.sessionId ??
     fields.workContextId ??
     fields.repoPath ??
+    fields.nodeId ??
     '';
   const digest = crypto
     .createHash('sha1')

@@ -110,6 +110,50 @@ describe('AgentPresenceStore.register', () => {
     expect(store.list()).toHaveLength(1);
   });
 
+  it('keeps node-scoped registrations distinct for the same actor', () => {
+    const clock = makeClock('2026-06-15T12:00:00.000Z');
+    const store = makeStore(clock.now);
+    const first = store.register({
+      registeredBy: 'actor:claude-1',
+      nodeId: 'node-a',
+      statusText: 'on node a',
+    });
+    const second = store.register({
+      registeredBy: 'actor:claude-1',
+      nodeId: 'node-b',
+      statusText: 'on node b',
+    });
+
+    expect(second.id).not.toBe(first.id);
+    expect(store.list({ nodeId: 'node-a' })[0].statusText).toBe('on node a');
+    expect(store.list({ nodeId: 'node-b' })[0].statusText).toBe('on node b');
+  });
+
+  it('rejects explicit-id register hijacks from another actor', () => {
+    const clock = makeClock('2026-06-15T12:00:00.000Z');
+    const store = makeStore(clock.now);
+    store.register({
+      registeredBy: 'actor:claude-1',
+      id: 'pres:manual',
+      statusText: 'mine',
+    });
+
+    try {
+      store.register({
+        registeredBy: 'actor:evil',
+        id: 'pres:manual',
+        statusText: 'steal it',
+      });
+      throw new Error('expected register to throw');
+    } catch (err) {
+      expect((err as AgentPresenceStoreError).status).toBe(403);
+      expect((err as AgentPresenceStoreError).code).toBe(
+        'agent_presence_not_owner'
+      );
+    }
+    expect(store.get('pres:manual')?.registeredBy).toBe('actor:claude-1');
+  });
+
   it('rejects unsafe fields and missing attribution as 400s', () => {
     const clock = makeClock('2026-06-15T12:00:00.000Z');
     const store = makeStore(clock.now);

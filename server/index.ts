@@ -4804,6 +4804,7 @@ async function main(): Promise<void> {
         workContextStore.close();
         iaStore?.close();
         contextPacketStore?.close();
+        agentPresenceStore?.close();
         workContextArtifactStore?.close();
         workflowRunStore?.close();
         workContextMessageStore?.close();

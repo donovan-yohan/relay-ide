@@ -982,7 +982,7 @@ function cliGatewayActorReasonCode(
 function cliGatewayActorMessage(reasonCode: string): string {
   switch (reasonCode) {
     case 'CLI_ACTOR_CREDENTIAL_MISSING':
-      return 'CLI gateway read commands require --actor-token or RELAY_IDE_ACTOR_TOKEN';
+      return 'CLI gateway actor commands require --actor-token or RELAY_IDE_ACTOR_TOKEN';
     case 'CLI_ACTOR_BROWSER_COOKIE_REJECTED':
       return 'browser cookies are not accepted for the scoped CLI actor lane';
     case 'CLI_ACTOR_NODE_CREDENTIAL_REJECTED':
@@ -990,7 +990,7 @@ function cliGatewayActorMessage(reasonCode: string): string {
     case 'CLI_ACTOR_CREDENTIAL_UNSUPPORTED_TYPE':
       return 'unsupported CLI gateway credential type';
     case 'CLI_ACTOR_ROUTE_UNSUPPORTED':
-      return 'scoped CLI actor credentials are limited to the read-only CLI gateway smoke surface';
+      return 'scoped CLI actor credentials are limited to supported CLI gateway route and command pairs';
     default:
       return `scoped CLI actor credential rejected: ${reasonCode}`;
   }

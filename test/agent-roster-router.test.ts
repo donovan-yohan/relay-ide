@@ -123,10 +123,13 @@ async function post(
 /** In-memory presence port: exercises the router's body→port + error mapping. */
 function fakePresencePort(seed: AgentPresence[] = []): RosterPresencePort & {
   records: AgentPresence[];
+  listFilters: Array<Parameters<RosterPresencePort['list']>[0]>;
 } {
   const records = [...seed];
+  const listFilters: Array<Parameters<RosterPresencePort['list']>[0]> = [];
   return {
     records,
+    listFilters,
     register(input) {
       const record: AgentPresence = {
         id: 'pres:test',
@@ -155,8 +158,15 @@ function fakePresencePort(seed: AgentPresence[] = []): RosterPresencePort & {
       }
       return found;
     },
-    list() {
-      return records;
+    list(filter) {
+      listFilters.push(filter);
+      return records.filter((record) => {
+        if (filter.workContextId && record.workContextId !== filter.workContextId)
+          return false;
+        if (filter.nodeId && record.nodeId !== filter.nodeId) return false;
+        if (filter.repoPath && record.repoPath !== filter.repoPath) return false;
+        return true;
+      });
     },
   };
 }
@@ -435,6 +445,43 @@ describe('agent roster presence overlay (#964)', () => {
       role: 'orchestrator',
       displayName: 'Hermes orchestrator',
     });
+  });
+
+  it('threads the repo filter into the presence store read boundary', async () => {
+    const port = fakePresencePort([
+      {
+        id: 'pres:relay',
+        registeredBy: 'actor:ext-1',
+        sessionId: 'external-hermes',
+        provider: 'hermes',
+        repoPath: '/home/u/relay-ide',
+        createdAt: '2026-06-13T03:00:00.000Z',
+        updatedAt: '2026-06-13T03:45:00.000Z',
+        expiresAt: '2026-06-13T05:00:00.000Z',
+      },
+      {
+        id: 'pres:other',
+        registeredBy: 'actor:ext-2',
+        sessionId: 'external-codex',
+        provider: 'codex',
+        repoPath: '/home/u/other-repo',
+        createdAt: '2026-06-13T03:00:00.000Z',
+        updatedAt: '2026-06-13T03:45:00.000Z',
+        expiresAt: '2026-06-13T05:00:00.000Z',
+      },
+    ]);
+    await remount({ presence: port });
+    const { body } = await get(
+      `/roster?repo=${encodeURIComponent('/home/u/relay-ide')}`
+    );
+
+    expect(port.listFilters[0]).toMatchObject({ repoPath: '/home/u/relay-ide' });
+    expect(body.roster.map((e: any) => e.sessionId)).toContain(
+      'external-hermes'
+    );
+    expect(body.roster.map((e: any) => e.sessionId)).not.toContain(
+      'external-codex'
+    );
   });
 
   it('drops expired presence from the merged roster', async () => {
