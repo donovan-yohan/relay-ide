@@ -4,7 +4,8 @@ export type CliGatewayMetadataTopic =
   | 'attention'
   | 'work-context-artifacts'
   | 'handoff-artifacts'
-  | 'workflow-runs';
+  | 'workflow-runs'
+  | 'automation-runs';
 
 export interface CliGatewayEventRedaction {
   rawPayloadIncluded: false;

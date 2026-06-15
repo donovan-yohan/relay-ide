@@ -171,6 +171,7 @@ import {
   readWorkContextArtifactQueryWorkContextId,
 } from './features/work-context-artifact-router.js';
 import { createWorkflowRunRouter } from './features/workflow-run-router.js';
+import { createAutomationRunRouter } from './features/automation-run-router.js';
 import { createAgentRosterRouter } from './features/agent-roster-router.js';
 import { buildAttentionEventInput } from '../shared/agent-roster.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
@@ -186,6 +187,14 @@ import {
   initWorkflowRunStore,
   type WorkflowRunStore,
 } from './workflow-runs.js';
+import {
+  initAutomationRunStore,
+  type AutomationRunStore,
+} from './automation-runs.js';
+import {
+  resolveAutomationRunTargetLiveness,
+  type AutomationRunLivenessResolver,
+} from '../shared/automation-run.js';
 import {
   createAnchorFileFetcher,
   createAnchorContentFetcher,
@@ -1443,6 +1452,20 @@ function initWorkflowRunStoreBestEffort(
   }
 }
 
+function initAutomationRunStoreBestEffort(
+  configDir: string
+): AutomationRunStore | null {
+  try {
+    return initAutomationRunStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Automation run store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 function initWorkContextMessageStoreBestEffort(
   configDir: string
 ): WorkContextMessageStore | null {
@@ -1706,6 +1729,7 @@ async function main(): Promise<void> {
   const workContextArtifactStore =
     initWorkContextArtifactStoreBestEffort(configDir);
   const workflowRunStore = initWorkflowRunStoreBestEffort(configDir);
+  const automationRunStore = initAutomationRunStoreBestEffort(configDir);
   const workContextMessageStore =
     initWorkContextMessageStoreBestEffort(configDir);
   const cliGatewayEventBus = createCliGatewayEventBus();
@@ -2381,6 +2405,45 @@ async function main(): Promise<void> {
       },
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
       store: workflowRunStore,
+      workContextStore,
+      events: cliGatewayEventBus,
+    })
+  );
+  // automation-runs (#959): Relay-visible registry of operator crons / watchdogs
+  // driving Relay sessions. The liveness resolver probes the live local session
+  // registry so a watcher pointed at a session id that no longer exists derives
+  // a `gone` target → `cleanup-needed` status, a finished session derives
+  // `ended`, and a remote-node-scoped target derives `unknown` (cross-node
+  // target liveness is a documented follow-up).
+  const automationRunLivenessResolver: AutomationRunLivenessResolver = (target) =>
+    resolveAutomationRunTargetLiveness(
+      target,
+      localRelayNode.sessions.list(),
+      DEFAULT_LOCAL_NODE_ID
+    );
+  const automationRunScopeFromParams = (
+    req: express.Request
+  ): { workContextIds?: string[] } | undefined => {
+    const id = typeof req.params['id'] === 'string' ? req.params['id'] : '';
+    const run = id && automationRunStore ? automationRunStore.get(id) : null;
+    return run?.workContextId
+      ? { workContextIds: [run.workContextId] }
+      : undefined;
+  };
+  app.use(
+    createAutomationRunRouter({
+      requireAuth: requireCliGatewayAuth,
+      requireReadAuth: {
+        list: requireCliGatewayAuthForActorCommand('automation-runs.list', {
+          scopeForRequest: workContextScopeFromQuery,
+        }),
+        get: requireCliGatewayAuthForActorCommand('automation-runs.get', {
+          scopeForRequest: automationRunScopeFromParams,
+        }),
+      },
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
+      store: automationRunStore,
+      resolveLiveness: automationRunLivenessResolver,
       workContextStore,
       events: cliGatewayEventBus,
     })
@@ -4807,6 +4870,7 @@ async function main(): Promise<void> {
         agentPresenceStore?.close();
         workContextArtifactStore?.close();
         workflowRunStore?.close();
+        automationRunStore?.close();
         workContextMessageStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
@@ -4895,6 +4959,7 @@ async function main(): Promise<void> {
     agentPresenceStore?.close();
     workContextArtifactStore?.close();
     workflowRunStore?.close();
+    automationRunStore?.close();
     workContextMessageStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {

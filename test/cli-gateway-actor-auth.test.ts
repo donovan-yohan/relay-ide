@@ -234,6 +234,8 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'handoff-artifacts.copy',
     'workflow-runs.list',
     'workflow-runs.get',
+    'automation-runs.list',
+    'automation-runs.get',
     'work-context-messages.list',
     'work-context-messages.show',
     'work-context-messages.query',
@@ -343,6 +345,9 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'handoff-artifacts.attach',
     'workflow-runs.publish',
     'workflow-runs.update',
+    'automation-runs.register',
+    'automation-runs.observe',
+    'automation-runs.retire',
     'work-context-messages.append',
   ]);
 
@@ -506,6 +511,8 @@ test('allows only the MVP actor command and route identity pairs', () => {
     { command: 'handoff-artifacts.copy', expected: 'handoff-artifacts.copy' },
     { command: 'workflow-runs.list', expected: 'workflow-runs.list' },
     { command: 'workflow-runs.get', expected: 'workflow-runs.get' },
+    { command: 'automation-runs.list', expected: 'automation-runs.list' },
+    { command: 'automation-runs.get', expected: 'automation-runs.get' },
     { command: 'roster.list', expected: 'roster.list' },
   ] as const;
 

@@ -67,6 +67,11 @@ export type RelayCliGatewayCommand =
   | 'workflow-runs.update'
   | 'workflow-runs.list'
   | 'workflow-runs.get'
+  | 'automation-runs.register'
+  | 'automation-runs.observe'
+  | 'automation-runs.retire'
+  | 'automation-runs.list'
+  | 'automation-runs.get'
   | 'roster.list'
   | 'roster.register'
   | 'roster.updateSelf'
@@ -1499,6 +1504,7 @@ export const EVENTS_SUBSCRIBE_TOPICS = [
   'work-context-artifacts',
   'handoff-artifacts',
   'workflow-runs',
+  'automation-runs',
 ] as const;
 export type EventsSubscribeTopic = (typeof EVENTS_SUBSCRIBE_TOPICS)[number];
 
@@ -2449,6 +2455,142 @@ const workflowRunListOutputDataSchema: RelayJsonSchema = {
     workflowRuns: { type: 'array', items: workflowRunProjectionSchema },
   },
   required: ['workflowRuns'],
+};
+
+const automationRunTargetSchema: RelayJsonSchema = {
+  title: 'AutomationRunTarget',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    sessionId: stringSchema,
+    globalSessionId: stringSchema,
+    label: stringSchema,
+    lastKnownState: {
+      type: 'string',
+      enum: ['alive', 'gone', 'ended', 'unknown'],
+    },
+    lastCheckedAt: stringSchema,
+  },
+  required: ['lastKnownState'],
+};
+
+const automationRunRecordSchema: RelayJsonSchema = {
+  title: 'AutomationRunRecord',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    name: stringSchema,
+    kind: stringSchema,
+    runId: stringSchema,
+    owner: { type: 'object', additionalProperties: true },
+    repoPath: stringSchema,
+    workContextId: stringSchema,
+    targets: { type: 'array', items: automationRunTargetSchema },
+    status: stringSchema,
+    staleReasons: { type: 'array', items: stringSchema },
+    heartbeat: { type: 'object', additionalProperties: true },
+    cleanup: { type: 'object', additionalProperties: true },
+    version: { type: 'number', minimum: 1 },
+    redaction: { type: 'object', additionalProperties: true },
+  },
+  required: [
+    'id',
+    'name',
+    'kind',
+    'owner',
+    'targets',
+    'status',
+    'staleReasons',
+    'heartbeat',
+    'cleanup',
+    'version',
+    'redaction',
+  ],
+};
+
+const automationRunRegisterInputSchema: RelayJsonSchema = {
+  title: 'AutomationRunRegisterInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    name: stringSchema,
+    kind: { type: 'string', enum: ['watchdog', 'cron', 'automation', 'oversight', 'manual'] },
+    runId: stringSchema,
+    owner: { type: 'object', additionalProperties: true },
+    repoPath: stringSchema,
+    workContextId: stringSchema,
+    targets: { type: 'array', items: automationRunTargetSchema },
+    links: { type: 'object', additionalProperties: true },
+    expiresAt: stringSchema,
+    ttlSeconds: { type: 'number', minimum: 30, maximum: 604800 },
+    observationSummary: stringSchema,
+  },
+  required: ['name', 'kind', 'owner', 'targets'],
+};
+
+const automationRunObserveInputSchema: RelayJsonSchema = {
+  title: 'AutomationRunObserveInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    summary: stringSchema,
+    targets: { type: 'array', items: automationRunTargetSchema },
+    ttlSeconds: { type: 'number', minimum: 30, maximum: 604800 },
+    expiresAt: stringSchema,
+  },
+};
+
+const automationRunRetireInputSchema: RelayJsonSchema = {
+  title: 'AutomationRunRetireInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    reason: stringSchema,
+    retiredBy: stringSchema,
+  },
+};
+
+const automationRunListInputSchema: RelayJsonSchema = {
+  title: 'AutomationRunListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workContextId: stringSchema,
+    repoPath: stringSchema,
+    status: { type: 'string', enum: ['active', 'stale', 'cleanup-needed', 'retired'] },
+    kind: { type: 'string', enum: ['watchdog', 'cron', 'automation', 'oversight', 'manual'] },
+    orchestrator: stringSchema,
+    includeRetired: booleanSchema,
+    limit: { type: 'number', minimum: 1, maximum: 100 },
+  },
+};
+
+const automationRunGetInputSchema: RelayJsonSchema = {
+  title: 'AutomationRunGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema },
+  required: ['id'],
+};
+
+const automationRunOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { automationRun: automationRunRecordSchema },
+  required: ['automationRun'],
+};
+
+const automationRunListOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    automationRuns: { type: 'array', items: automationRunRecordSchema },
+  },
+  required: ['automationRuns'],
 };
 
 const rosterAttentionSchema: RelayJsonSchema = {
@@ -4915,6 +5057,134 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['context:read'],
     inputSchema: workflowRunGetInputSchema,
     outputSchema: okOutput('WorkflowRunGetOutput', workflowRunOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'automation-runs.register',
+    cli: [
+      'relay-ide',
+      'v1',
+      'automation-runs',
+      'register',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Register (or replace) a Relay-visible automation/watchdog run with its target session ids, owner/orchestrator, links, and heartbeat TTL so a cron/watcher is trackable and retirable instead of silent.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: automationRunRegisterInputSchema,
+    outputSchema: okOutput('AutomationRunRegisterOutput', automationRunOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'automation-runs.observe',
+    cli: [
+      'relay-ide',
+      'v1',
+      'automation-runs',
+      'observe',
+      '--id',
+      '<id>',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Record a heartbeat/observation for an automation run, refreshing its TTL and re-probing target session liveness so a watcher that stops reporting goes stale instead of running silently forever.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: automationRunObserveInputSchema,
+    outputSchema: okOutput('AutomationRunObserveOutput', automationRunOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'automation-runs.retire',
+    cli: [
+      'relay-ide',
+      'v1',
+      'automation-runs',
+      'retire',
+      '--id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Retire an automation run as the safe, idempotent cleanup path; retiring an already-retired run is a no-op.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: automationRunRetireInputSchema,
+    outputSchema: okOutput('AutomationRunRetireOutput', automationRunOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'automation-runs.list',
+    cli: ['relay-ide', 'v1', 'automation-runs', 'list', '--json'],
+    summary:
+      'List automation/watchdog runs with derived status (active/stale/cleanup-needed/retired) and stale target-session reasons, filterable by WorkContext, repo, status, kind, or orchestrator.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: automationRunListInputSchema,
+    outputSchema: okOutput('AutomationRunListOutput', automationRunListOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'automation-runs.get',
+    cli: ['relay-ide', 'v1', 'automation-runs', 'get', '--id', '<id>', '--json'],
+    summary:
+      'Get one automation/watchdog run by id with derived status and live target-session liveness.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: automationRunGetInputSchema,
+    outputSchema: okOutput('AutomationRunGetOutput', automationRunOutputDataSchema),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',

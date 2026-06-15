@@ -636,8 +636,13 @@ describe('hub/node packaging decision', () => {
 
   it('uses USERNAME as the Windows CLI actor fallback before relay-ide-cli', () => {
     const cliSource = readRepoFile('bin/relay-ide.ts');
-    const actorFallbackStart = cliSource.indexOf('const actorId =');
-    const actorFallbackEnd = cliSource.indexOf('const body: Record<string, unknown> = {};', actorFallbackStart);
+    const actorFallbackStart = cliSource.indexOf(
+      "getNodeArg(nodeArgs, '--actor-id')"
+    );
+    const actorFallbackEnd = cliSource.indexOf(
+      'const body: Record<string, unknown> = {};',
+      actorFallbackStart
+    );
     const actorFallbackSource = cliSource.slice(actorFallbackStart, actorFallbackEnd);
 
     expect(actorFallbackStart).toBeGreaterThanOrEqual(0);
