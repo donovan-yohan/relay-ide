@@ -17,6 +17,7 @@ const ALLOWED_TOPICS = [
   'audit',
   'context',
   'inbox',
+  'attention',
   'work-context-artifacts',
   'handoff-artifacts',
   'workflow-runs',
@@ -509,6 +510,83 @@ describe('CLI gateway events.subscribe runtime', () => {
     expect(data.topic).toBe('workflow-runs');
     expect(data.payload.type).toBe('workflow-run.state-changed');
     expect(data.payload.workflowRunId).toBe('workflow-run:test');
+  });
+
+  it('passes attention cursor/replay through to the CLI envelope for resume', async () => {
+    // #963: an automation loop resumes from the per-event cursor. The CLI must
+    // surface `cursor` and `replay` (not just `payload`) so the resume + gap
+    // contract works end-to-end.
+    hub = await startFakeHub();
+
+    const runPromise = runCli(
+      [
+        'v1',
+        'events',
+        'subscribe',
+        '--topic',
+        'attention',
+        '--session-id',
+        'local:s1',
+        '--max-events',
+        '1',
+        '--json',
+      ],
+      {
+        RELAY_IDE_PORT: String(hub.port),
+        RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      },
+      { timeoutMs: 5000 }
+    );
+
+    const streamRes = await hub.whenSubscribed();
+    ndjsonWrite(streamRes, { event: 'open', topic: 'attention', sequence: 0 });
+    ndjsonWrite(streamRes, {
+      event: 'event',
+      topic: 'attention',
+      sequence: 1,
+      cursor: 'cg:42:7',
+      replay: true,
+      occurredAt: '2026-06-15T00:00:00.000Z',
+      payload: {
+        type: 'attention.state-changed',
+        sessionId: 's1',
+        backendState: 'permission',
+        needsAttention: true,
+        reasons: ['permission-prompt'],
+        redaction: {
+          rawPayloadIncluded: false,
+          rawTranscriptIncluded: false,
+          artifactBodyIncluded: false,
+        },
+      },
+    });
+
+    const result = await runPromise;
+    expect(result.exitCode).toBe(0);
+
+    const captured = hub.captured.find((entry) => entry.url?.startsWith('/events'));
+    expect(captured?.url).toContain('topic=attention');
+    expect(captured?.url).toContain('sessionId=local%3As1');
+    expect(captured?.capabilities).toContain('session:read');
+
+    const dataFrame = result.envelopes.find(
+      (e) =>
+        e.ok &&
+        e.command === 'events.subscribe' &&
+        (e.data as { event: string }).event === 'event'
+    );
+    if (!dataFrame || !dataFrame.ok) throw new Error('expected attention event frame');
+    const data = dataFrame.data as {
+      topic: string;
+      cursor?: string;
+      replay?: boolean;
+      payload: { backendState?: string; needsAttention?: boolean };
+    };
+    expect(data.topic).toBe('attention');
+    expect(data.cursor).toBe('cg:42:7');
+    expect(data.replay).toBe(true);
+    expect(data.payload.backendState).toBe('permission');
+    expect(data.payload.needsAttention).toBe(true);
   });
 
   it('subscribes to the audit topic with the union of required capabilities', async () => {

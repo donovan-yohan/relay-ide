@@ -1493,6 +1493,7 @@ export const EVENTS_SUBSCRIBE_TOPICS = [
   'audit',
   'context',
   'inbox',
+  'attention',
   'work-context-artifacts',
   'handoff-artifacts',
   'workflow-runs',
@@ -1508,12 +1509,17 @@ const eventsSubscribeInputSchema: RelayJsonSchema = {
       type: 'string',
       enum: EVENTS_SUBSCRIBE_TOPICS,
       description:
-        'Non-destructive event topic to subscribe to: sessions lifecycle/control, node link status, redacted audit envelopes, or WorkContext workflow metadata.',
+        'Non-destructive event topic to subscribe to: sessions lifecycle/control, node link status, redacted audit envelopes, WorkContext workflow metadata, inbox message lifecycle, or derived attention/session-state transitions for active-agent steering.',
     },
     cursor: stringSchema,
     workContextId: stringSchema,
     sessionId: stringSchema,
     globalSessionId: stringSchema,
+    repoPath: {
+      ...stringSchema,
+      description:
+        'Exact repo checkout path filter. Only the `attention` topic carries repoPath, so other topics never match this filter.',
+    },
     maxEvents: {
       type: 'number',
       minimum: 1,

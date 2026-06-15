@@ -168,6 +168,7 @@ import {
 } from './features/work-context-artifact-router.js';
 import { createWorkflowRunRouter } from './features/workflow-run-router.js';
 import { createAgentRosterRouter } from './features/agent-roster-router.js';
+import { buildAttentionEventInput } from '../shared/agent-roster.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
 import {
   initWorkContextArtifactStore,
@@ -197,6 +198,7 @@ import { collectLocalRepoInventory } from './repo-inventory.js';
 import type {
   AgentType,
   AutomationSettings,
+  BackendDisplayState,
   Config,
   ContinuePolicy,
   SessionSummary,
@@ -3215,6 +3217,56 @@ async function main(): Promise<void> {
         }
         push.notifySessionAttention(sessionId, session);
       }
+    }
+  });
+
+  // Evented attention/session-state for active-agent steering (#963, child of
+  // #952). A derived, redaction-safe projection of the session read model: when
+  // an agent session's backend state transitions, publish a metadata-only frame
+  // onto the `attention` CLI-gateway topic so operators/agents react to
+  // "needs-attention / state changed" without a polling or screen-watchdog loop.
+  // It rides the same in-memory bus as `inbox`, so it inherits cursor/resume +
+  // gap (`replayDropped`) + backpressure semantics. The frame NEVER carries
+  // transcripts, prompts, raw PTY bytes, tokens, or env — only identity,
+  // control, and coarse attention metadata (same boundary as `roster.list`).
+  const openInboxCountForGlobalId = (globalSessionId?: string): number => {
+    if (!globalSessionId || !contextInboxStore) return 0;
+    return contextInboxStore
+      .listInboxMessages({ targetSessionId: globalSessionId }, { markDelivered: false })
+      .filter(
+        (message) => message.state === 'queued' || message.state === 'delivered'
+      ).length;
+  };
+  const lastAttentionState = new Map<string, BackendDisplayState>();
+  // Prune the previous-state map on session end so it does not grow unbounded
+  // and so a reused session id never inherits a dead session's
+  // `previousBackendState`. Mirrors the `lastPushState.delete` cleanup above.
+  sessions.onSessionEnd((sessionId) => {
+    lastAttentionState.delete(sessionId);
+  });
+  sessions.onBackendStateChange((sessionId, state, permissionType) => {
+    try {
+      const summary = localRelayNode.sessions
+        .list()
+        .find((entry) => entry.id === sessionId);
+      // Attention is an agent-collaboration signal. Terminals (and sessions that
+      // have already gone) are out of scope; their lifecycle is on `sessions`.
+      // Skip them BEFORE touching the map so terminals never pollute it.
+      if (!summary || summary.type === 'terminal') return;
+      const previousBackendState = lastAttentionState.get(sessionId);
+      lastAttentionState.set(sessionId, state);
+      const decorated = withWorkContextMetadata(workContextStore, summary);
+      cliGatewayEventBus.publish(
+        buildAttentionEventInput(decorated, {
+          backendState: state,
+          previousBackendState,
+          pendingInboxCount: openInboxCountForGlobalId(summary.globalSessionId),
+          ...(permissionType ? { permissionType } : {}),
+          nodeId: summary.nodeId ?? DEFAULT_LOCAL_NODE_ID,
+        })
+      );
+    } catch (err) {
+      logger.error('attention event publish failed:', err);
     }
   });
 

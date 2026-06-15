@@ -235,6 +235,93 @@ export function projectRosterEntry(
 }
 
 /**
+ * Metadata-only `attention` event projection (#963, child of #952). Pure shape
+ * builder so the live emitter in `server/index.ts` stays a thin adapter and the
+ * projection is unit-testable without booting the hub. The result is fed to the
+ * CLI-gateway metadata event bus (`topic: 'attention'`), which stamps
+ * cursor/occurredAt/redaction and applies the payload redaction pass.
+ *
+ * Hard rule (same boundary as `RosterEntry`): NEVER include transcript text,
+ * prompts, raw PTY bytes, provider-private state, tokens, or env. Only identity,
+ * control, and coarse attention/session-state metadata.
+ */
+export interface AttentionEventInput {
+  topic: 'attention';
+  type: 'attention.state-changed';
+  /** Local session id (also the primary `--session-id` filter key). */
+  sessionId: string;
+  /** Node-scoped session id (the `--global-session-id` filter key). */
+  globalSessionId?: string;
+  workContextId?: string;
+  nodeId: string;
+  /** Repo checkout path — the `--repo-path` filter key. */
+  repoPath?: string;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Project one session-state transition into an `attention` event input. Derives
+ * `needsAttention`/`reasons` via {@link deriveRosterAttention} so the roster and
+ * the event stream agree on what "needs attention" means.
+ */
+export function buildAttentionEventInput(
+  session: RosterSessionInput,
+  opts: {
+    /** Backend display state (idle|running|permission|error|initializing). */
+    backendState: string;
+    /** Prior backend display state, if known (omitted on first transition). */
+    previousBackendState?: string | undefined;
+    /** Open (queued/delivered) inbox count targeting this session. */
+    pendingInboxCount?: number | undefined;
+    /** Permission prompt kind when the transition is into a permission state. */
+    permissionType?: string | undefined;
+    /** Owning node id. */
+    nodeId: string;
+    roleOverrides?: Readonly<Record<string, AgentRole>> | undefined;
+  }
+): AttentionEventInput {
+  const provider = (session.agent ?? '').trim();
+  const attention = deriveRosterAttention({
+    agentState: session.agentState,
+    pendingInboxCount: opts.pendingInboxCount,
+  });
+  return {
+    topic: 'attention',
+    type: 'attention.state-changed',
+    sessionId: session.id,
+    ...(session.globalSessionId
+      ? { globalSessionId: session.globalSessionId }
+      : {}),
+    ...(session.workContextId ? { workContextId: session.workContextId } : {}),
+    nodeId: opts.nodeId,
+    ...(session.repoPath ? { repoPath: session.repoPath } : {}),
+    payload: {
+      sessionId: session.id,
+      ...(session.globalSessionId
+        ? { globalSessionId: session.globalSessionId }
+        : {}),
+      backendState: opts.backendState,
+      ...(opts.previousBackendState
+        ? { previousBackendState: opts.previousBackendState }
+        : {}),
+      ...(session.agentState ? { agentState: session.agentState } : {}),
+      needsAttention: attention.needsAttention,
+      reasons: attention.reasons,
+      pendingInboxCount: attention.pendingInboxCount,
+      ...(opts.permissionType ? { permissionType: opts.permissionType } : {}),
+      provider,
+      role: roleForAgent(provider, opts.roleOverrides),
+      sessionType: session.type ?? 'agent',
+      ...(session.repoName ? { repoName: session.repoName } : {}),
+      ...(session.branchName ? { branchName: session.branchName } : {}),
+      ...(session.worktreePath !== undefined && session.worktreePath !== null
+        ? { worktreePath: session.worktreePath }
+        : {}),
+    },
+  };
+}
+
+/**
  * Collaboration system-prompt appendix (#953). A succinct, provider-neutral
  * block teaching a Relay-launched agent how to collaborate through Relay's
  * owned CLI/API primitives instead of acting like an isolated terminal. This is
@@ -263,7 +350,7 @@ export function collaborationPromptAppendix(
     '- Discover active collaborators in this repo / work context: `relay-ide v1 roster list --json` (filter with `--repo` or `--work-context-id`).',
     '- Send a direct message / context to another session: `relay-ide v1 inbox send --json`.',
     '- Check and acknowledge your inbox at task boundaries: `relay-ide v1 inbox list --json`, then `inbox ack` / `inbox resolve` / `inbox ignore`.',
-    '- React to messages and attention without a polling loop: subscribe to `relay-ide v1 events subscribe --topic inbox --json`.',
+    '- React to messages and attention without a polling loop: subscribe to `relay-ide v1 events subscribe --topic inbox --json` and `relay-ide v1 events subscribe --topic attention --json` (use the per-event `cursor` with `--cursor` to resume).',
     '- Escalate a blocker or question by sending an inbox message to the relevant session or work context rather than spamming status checks.',
   ].join('\n');
 }
