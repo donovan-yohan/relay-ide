@@ -4322,6 +4322,7 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
     ['--work-context-id', 'workContextId'],
     ['--session-id', 'sessionId'],
     ['--global-session-id', 'globalSessionId'],
+    ['--repo-path', 'repoPath'],
   ] as const) {
     const value = gatewayArg(eventsArgs, flag);
     if (value) query.set(key, value);
@@ -4468,12 +4469,22 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
       frame['payload'] && typeof frame['payload'] === 'object'
         ? (frame['payload'] as Record<string, unknown>)
         : undefined;
+    // Resume + gap signals: the per-event `cursor` is what an automation loop
+    // passes back via `--cursor` to resume; `replay` marks backfilled frames
+    // and `replayDropped` marks a gap where the cursor aged out of the buffer.
+    const cursor =
+      typeof frame['cursor'] === 'string' ? (frame['cursor'] as string) : undefined;
+    const replay = frame['replay'] === true ? true : undefined;
+    const replayDropped = frame['replayDropped'] === true ? true : undefined;
 
     const envelope: Record<string, unknown> = {
       event: eventType,
       topic: frameTopic,
       sequence: sequence++,
       ...(occurredAt ? { occurredAt } : {}),
+      ...(cursor ? { cursor } : {}),
+      ...(replay ? { replay } : {}),
+      ...(replayDropped ? { replayDropped } : {}),
       ...(payload ? { payload } : {}),
     };
 

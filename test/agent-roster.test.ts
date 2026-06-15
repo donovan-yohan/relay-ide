@@ -182,6 +182,7 @@ describe('collaborationPromptAppendix', () => {
     expect(text).toContain('relay-ide v1 roster list');
     expect(text).toContain('relay-ide v1 inbox');
     expect(text).toContain('events subscribe --topic inbox');
+    expect(text).toContain('events subscribe --topic attention');
     expect(text.toLowerCase()).not.toContain('tmux');
     expect(text.toLowerCase()).not.toContain('pty');
   });

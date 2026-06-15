@@ -1,6 +1,7 @@
 export type CliGatewayMetadataTopic =
   | 'context'
   | 'inbox'
+  | 'attention'
   | 'work-context-artifacts'
   | 'handoff-artifacts'
   | 'workflow-runs';
@@ -19,6 +20,13 @@ export interface CliGatewayMetadataEvent {
   workContextId?: string;
   sessionId?: string;
   globalSessionId?: string;
+  /**
+   * Repo checkout path this event is scoped to, when the source carries one
+   * (currently the `attention` topic). Indexed so `--repo-path` can filter the
+   * stream without exposing repo bodies. Other topics omit it and therefore
+   * never match a repoPath filter.
+   */
+  repoPath?: string;
   nodeId?: string;
   actor?: { id?: string; kind?: string };
   payload: Record<string, unknown>;
@@ -29,6 +37,8 @@ export interface CliGatewayEventFilter {
   workContextId?: string;
   sessionId?: string;
   globalSessionId?: string;
+  /** Exact repo checkout path match (only `attention` events carry repoPath). */
+  repoPath?: string;
 }
 
 export interface CliGatewayEventReplayResult {
@@ -87,6 +97,7 @@ export function eventMatchesFilter(
   if (filter.workContextId && event.workContextId !== filter.workContextId) return false;
   if (filter.sessionId && event.sessionId !== filter.sessionId) return false;
   if (filter.globalSessionId && event.globalSessionId !== filter.globalSessionId) return false;
+  if (filter.repoPath && event.repoPath !== filter.repoPath) return false;
   return true;
 }
 

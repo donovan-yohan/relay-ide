@@ -36,6 +36,9 @@ const REQUIRED_TOPIC_CAPABILITIES: Record<EventsSubscribeTopic, readonly string[
   audit: ['session:read', 'tab:intervention:read'],
   context: ['context:read'],
   inbox: ['inbox:read'],
+  // Attention/session-state is a derived projection of the session read model,
+  // gated like `sessions`/`roster.list` on `session:read`.
+  attention: ['session:read'],
   'work-context-artifacts': ['context:read'],
   'handoff-artifacts': ['context:read'],
   'workflow-runs': ['context:read'],
@@ -67,6 +70,7 @@ function isMetadataTopic(topic: EventsSubscribeTopic): topic is CliGatewayMetada
   return (
     topic === 'context' ||
     topic === 'inbox' ||
+    topic === 'attention' ||
     topic === 'work-context-artifacts' ||
     topic === 'handoff-artifacts' ||
     topic === 'workflow-runs'
@@ -281,11 +285,16 @@ export function createCliGatewayEventsRouter(
       const workContextId = queryString(req, 'workContextId');
       const sessionId = queryString(req, 'sessionId');
       const globalSessionId = queryString(req, 'globalSessionId');
+      const repoPath = queryString(req, 'repoPath');
       if (workContextId) filter.workContextId = workContextId;
       if (sessionId) filter.sessionId = sessionId;
       if (globalSessionId) filter.globalSessionId = globalSessionId;
+      if (repoPath) filter.repoPath = repoPath;
       const replay = options.eventBus.replay(topic, queryString(req, 'cursor'));
       if (replay.replayDropped) {
+        // Gap/drop signal: the requested cursor fell out of the bounded replay
+        // buffer. The consumer must treat its local view as stale and may have
+        // missed frames between its cursor and the oldest buffered event.
         writeNdjson(res, {
           event: 'open',
           topic,
@@ -301,7 +310,18 @@ export function createCliGatewayEventsRouter(
       subs.push(
         options.eventBus.subscribe(topic, (event) => {
           if (!eventMatchesFilter(event, filter)) return;
-          writeNdjson(res, metadataEventFrame(topic, sequence++, event));
+          const ok = writeNdjson(res, metadataEventFrame(topic, sequence++, event));
+          if (!ok) {
+            // Backpressure — the socket buffer is full. Drop the subscriber
+            // rather than grow memory unbounded; the consumer resumes from its
+            // last seen cursor on reconnect.
+            unsubscribeAll();
+            try {
+              res.end();
+            } catch {
+              /* ending */
+            }
+          }
         })
       );
     } else if (topic === 'sessions') {

@@ -78,7 +78,7 @@ relay-ide v1 supervisor send-key --target-ids <session-id-1,session-id-2> --key 
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --json
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --text 'multi-line prompt' [--clear-input] [--paste] [--dry-run] --json
 relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
-relay-ide v1 events subscribe --topic <sessions|nodes|audit|context|inbox|work-context-artifacts|handoff-artifacts|workflow-runs> [--work-context-id <id>] [--session-id <id>] [--global-session-id <id>] [--cursor <cursor>] [--max-events <n>] --json
+relay-ide v1 events subscribe --topic <sessions|nodes|audit|context|inbox|attention|work-context-artifacts|handoff-artifacts|workflow-runs> [--work-context-id <id>] [--session-id <id>] [--global-session-id <id>] [--repo-path <path>] [--cursor <cursor>] [--max-events <n>] --json
 relay-ide v1 settings get --json
 relay-ide v1 settings update --input-json '{"key":"defaultYolo","value":true,"confirmRiskyWrite":true}' --json
 relay-ide v1 webhooks status --json
@@ -94,7 +94,20 @@ Boo/adapter rule: `relay-ide v1 ... --json` is Relay's scriptable session substr
 Relay exposes agent collaboration as generic, Relay-owned primitives — not a Hermes-specific endpoint and not raw PTY/tmux byte injection. Two surfaces work together so agents and operators steer running work without polling loops:
 
 - **Evented delivery (#945).** `events subscribe --topic inbox` streams `inbox.sent` / `inbox.state-changed` (with `previousState`) metadata frames as messages move through `queued → delivered → acknowledged → resolved|ignored`. Sibling topics cover `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs`. Every frame is metadata-only (ids, refs, state transition, actor/source summary, cursor) — never raw bodies, prompts, transcripts, tokens, or env — and is filterable by `--work-context-id` / `--session-id` / `--global-session-id` with `--cursor` replay. This is the push surface for "tell this agent something now" and "know when an agent needs attention"; do not build timer-poll loops as the product answer.
+- **Evented attention/session-state (#963, child of #952).** `events subscribe --topic attention` streams `attention.state-changed` metadata frames whenever a local agent session's backend display state transitions (`idle | running | permission | error | initializing`). Each frame's payload carries the derived collaboration signal — `backendState`, `previousBackendState`, `agentState`, `needsAttention`, `reasons[]` (`permission-prompt | waiting-for-input | error | pending-inbox`), `pendingInboxCount`, optional `permissionType`, plus identity hints (`sessionId`, `globalSessionId`, `provider`, `role`, `repoName`, `branchName`, `worktreePath`). `needsAttention`/`reasons` use the same `deriveRosterAttention` heuristic as `roster.list`, so a given frame's derived signal matches what `roster.list` would report at that instant. The topic fires **on backend-state transitions only**: it is the right surface for permission/error/idle/waiting transitions. It is NOT a complete inbox-backlog feed — a message arriving for an otherwise-idle agent does not change backend state, so it surfaces on `--topic inbox` (and is reflected in the next attention frame's `pendingInboxCount` whenever a transition next fires), not as its own attention frame. Subscribe to both `attention` and `inbox` to cover "agent changed state" and "agent has mail". Terminals are excluded; session create/end stays on the `sessions` topic. This is the Relay-owned replacement for cron jobs and screen/replay watchdog loops that scrape a PTY to ask "is this agent waiting on me yet?" — subscribe once and react to the transition instead. Capability-gated on `session:read`.
 - **Discovery (`roster.list`).** A read-only, **derived, redaction-safe** projection of the live session read model so an agent can answer "who else is working in this repo / WorkContext, and who needs me?" before sending a message. No new persistence; capability-gated on `session:read`. When called with `--work-context-id`, a scoped actor credential must also carry that WorkContext (fail-closed); without it the command behaves like `sessions.list` (broad `session:read` read scope).
+
+### Cursor / resume / gap / backpressure (metadata topics)
+
+`inbox`, `attention`, `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs` share one in-memory metadata bus, so they share the same resume contract:
+
+- **Cursor.** Every live and replayed event frame carries an opaque `cursor`. Persist the last-seen cursor; on reconnect pass it as `--cursor <cursor>`. Replayed frames are tagged `replay: true`.
+- **Resume.** With a known cursor, the hub replays only the buffered frames *after* it, then continues live. Scope filters (`--session-id`, `--global-session-id`, `--work-context-id`, `--repo-path`) apply to replayed frames too.
+- **Gap / drop.** The replay buffer is bounded (default 1000 frames/topic, oldest trimmed FIFO). If your cursor has already aged out, the hub emits an extra `open` frame with `replayDropped: true` before replaying everything it still holds. Treat `replayDropped` as "you may have missed frames between your cursor and the oldest retained one" — re-sync via `roster.list` / `inbox list` if you need exact state.
+- **Backpressure.** If a subscriber stops reading and the socket buffer fills, the hub drops that subscriber and closes the stream rather than growing memory unbounded; the CLI emits a `closed` frame (`closeCode 1013`, `reason: "stdout backpressure"` on the CLI side). Reconnect with your last cursor to resume.
+- **Scope.** `--repo-path` is an exact checkout-path match and is only meaningful for the `attention` topic (other topics do not carry `repoPath`, so they never match it). Worktree-level granularity is available via `--session-id` (each worktree session has a distinct id). Cross-node attention aggregation and durable (cross-restart) replay are documented residuals — this slice is local-node / in-memory.
+
+This is local-node, in-memory only: the buffer does not survive a hub restart and does not aggregate remote-node sessions. Durable + cross-node attention/inbox streaming is the next slice.
 
 `roster.list` fields (per entry): `sessionId`, `globalSessionId`, `nodeId`, `provider` (agent kind), `sessionType` (`agent`|`terminal`), `role`, `displayName`, `repoPath`/`repoName`/`worktreePath`/`branchName`/`cwd`, `workContextId`, `controlMode`, `status`, `agentState`, `attention` (`{ needsAttention, reasons[], pendingInboxCount }`), `capabilities[]` (framework flags), `activeActors[]` (kind/id/displayName), `lastActivity`, `createdAt`. The envelope adds `generatedAt`, `count`, and `nodeId`.
 
@@ -794,6 +807,7 @@ Topics:
 - `audit` — redacted summaries of `tab.mode-changed` and `tab.intervention` envelopes (hash-chained at storage time per #470/#499). Raw intervention payloads, raw keylogs, and full terminal transcripts are never streamed through this gateway.
 - `context` — metadata for context packet create/pin/unpin activity, scoped by WorkContext/session/global session where available.
 - `inbox` — metadata for `inbox.sent` and `inbox.state-changed` frames, including state transitions and redacted target/source summaries.
+- `attention` — metadata for local agent session backend-state transitions (`attention.state-changed`), including derived `needsAttention`/`reasons[]` and repo/session scope hints.
 - `work-context-artifacts` — metadata for WorkContext artifact publication/pin/export lifecycle events; never raw payload bytes.
 - `handoff-artifacts` — metadata for pipeline handoff artifact attach/list-visible lifecycle events, using the same safe artifact store envelope.
 - `workflow-runs` — metadata for workflow run publication/update events and bounded run state changes.
@@ -803,7 +817,7 @@ Each frame is a `events.subscribe` success envelope whose `data` carries:
 ```json
 {
   "event": "open" | "event" | "closed",
-  "topic": "sessions" | "nodes" | "audit" | "context" | "inbox" | "work-context-artifacts" | "handoff-artifacts" | "workflow-runs",
+  "topic": "sessions" | "nodes" | "audit" | "context" | "inbox" | "attention" | "work-context-artifacts" | "handoff-artifacts" | "workflow-runs",
   "sequence": 0,
   "occurredAt": "2026-05-19T00:00:00.000Z",
   "payload": { "type": "session.started", "sessionId": "..." }
@@ -816,7 +830,7 @@ The first envelope is always `event: "open"`. The final envelope is always `even
 - `--idle-timeout-ms N` detaches after N ms without an event frame.
 - If stdout backpressure is observed, the CLI aborts the upstream stream and emits `closed` with `reason: "stdout backpressure"`.
 
-Capability gating fails closed: `sessions` and `nodes` require `session:read`; `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs` require `context:read`; `inbox` requires `inbox:read`; `audit` additionally requires `tab:intervention:read`. Unknown topics surface as `INVALID_ARGUMENT` with `details.field: "topic"` before the CLI opens any hub request. Missing or denied capabilities surface as `FORBIDDEN` envelopes. The hub side enforces the same gate; the CLI side enforces the same allowlist. This is the only `events.*` verb in v1 — no `events.publish`, no `events.replay`, no event-bus write surface.
+Capability gating fails closed: `sessions`, `nodes`, and `attention` require `session:read`; `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs` require `context:read`; `inbox` requires `inbox:read`; `audit` additionally requires `tab:intervention:read`. Unknown topics surface as `INVALID_ARGUMENT` with `details.field: "topic"` before the CLI opens any hub request. Missing or denied capabilities surface as `FORBIDDEN` envelopes. The hub side enforces the same gate; the CLI side enforces the same allowlist. This is the only `events.*` verb in v1 — no `events.publish`, no `events.replay`, no event-bus write surface.
 
 Smoke form:
 
@@ -826,4 +840,4 @@ relay-ide v1 events subscribe --topic sessions --max-events 1 --json
 
 ## Deferred work
 
-Event subscription beyond `events.subscribe` (multi-topic fan-out, cursor/resume, replay), multi-session fan-out, File RPC delete/tail, arbitrary exec/destructive operations, stronger approval authentication, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.
+Event subscription beyond `events.subscribe` (multi-topic fan-out, durable cross-restart replay, cross-node aggregation), multi-session fan-out, File RPC delete/tail, arbitrary exec/destructive operations, stronger approval authentication, and adapter packages are follow-up work. If a future adapter needs a missing primitive, extend this CLI contract first; do not bypass it with `/hub/node-link` or browser WebSocket protocol clients.
