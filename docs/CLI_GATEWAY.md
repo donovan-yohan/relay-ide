@@ -64,6 +64,11 @@ relay-ide v1 inbox ignore --id <inbox-message-id> --json
 relay-ide v1 roster list [--repo <repo-name-or-path>] [--work-context-id <work-context-id>] [--provider <agent-kind>] [--role <implementer|reviewer|orchestrator|context|collaborator>] [--node-id <node-id>] [--needs-attention] [--include-terminals] [--limit <n>] --json
 relay-ide v1 roster register --input-json '{"role":"implementer","useCase":"...","sessionId":"...","statusText":"...","capabilityHints":["..."],"ttlSeconds":120}' --json
 relay-ide v1 roster update-self --input-json '{"sessionId":"...","statusText":"...","needsAttention":true}' --json
+relay-ide v1 automation-runs register --input-json '{"name":"...","kind":"watchdog","owner":{"orchestrator":"hermes"},"targets":[{"sessionId":"..."}],"workContextId":"...","ttlSeconds":300}' --json
+relay-ide v1 automation-runs observe --id <automation-run-id> --input-json '{"summary":"..."}' --json
+relay-ide v1 automation-runs retire --id <automation-run-id> [--reason '<why>'] [--retired-by '<who>'] --json
+relay-ide v1 automation-runs list [--work-context-id <id>] [--repo-path <path>] [--status <active|stale|cleanup-needed|retired>] [--kind <watchdog|cron|automation|oversight|manual>] [--orchestrator <name>] [--include-retired] [--limit <n>] --json
+relay-ide v1 automation-runs get --id <automation-run-id> --json
 relay-ide v1 handoffs plan --input-json '{...}' --json
 relay-ide v1 handoffs create --input-json '{...}' --json
 relay-ide v1 handoffs status --run-id <run-id> --json
@@ -80,7 +85,7 @@ relay-ide v1 supervisor send-key --target-ids <session-id-1,session-id-2> --key 
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --json
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --text 'multi-line prompt' [--clear-input] [--paste] [--dry-run] --json
 relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
-relay-ide v1 events subscribe --topic <sessions|nodes|audit|context|inbox|attention|work-context-artifacts|handoff-artifacts|workflow-runs> [--work-context-id <id>] [--session-id <id>] [--global-session-id <id>] [--repo-path <path>] [--cursor <cursor>] [--max-events <n>] --json
+relay-ide v1 events subscribe --topic <sessions|nodes|audit|context|inbox|attention|work-context-artifacts|handoff-artifacts|workflow-runs|automation-runs> [--work-context-id <id>] [--session-id <id>] [--global-session-id <id>] [--repo-path <path>] [--cursor <cursor>] [--max-events <n>] --json
 relay-ide v1 settings get --json
 relay-ide v1 settings update --input-json '{"key":"defaultYolo","value":true,"confirmRiskyWrite":true}' --json
 relay-ide v1 webhooks status --json
@@ -127,6 +132,28 @@ This is local-node, in-memory only: the buffer does not survive a hub restart an
 `roster.list` fields (per entry): `sessionId`, `globalSessionId`, `nodeId`, `provider` (agent kind), `sessionType` (`agent`|`terminal`), `role`, `displayName`, `repoPath`/`repoName`/`worktreePath`/`branchName`/`cwd`, `workContextId`, `controlMode`, `status`, `agentState`, `attention` (`{ needsAttention, reasons[], pendingInboxCount }`, where `reasons` may include `self-declared` from an explicit presence hint), `capabilities[]` (framework flags), `activeActors[]` (kind/id/displayName), `lastActivity`, `createdAt`. When explicit presence (#964) is folded in, an entry also carries `origin` (`derived` | `merged` | `self-declared`; omitted means `derived`) and `selfDeclared` (`{ presenceId, registeredBy?, role?, displayName?, useCase?, statusText?, needsAttention?, capabilityHints?, updatedAt, expiresAt }`). The envelope adds `generatedAt`, `count`, and `nodeId`.
 
 `role` is a lightweight collaboration **hint** (default map: `claude → implementer`, `codex → reviewer`, `hermes`/`ebi → orchestrator`, else `collaborator`), not an authorization boundary and not a hard-coded architecture — Relay projects one collaboration vocabulary across providers. `attention.needsAttention` is derived (`agentState ∈ {permission-prompt, waiting-for-input, error}` or a non-empty pending inbox backlog); the roster never mutates inbox state (it reads with delivery suppressed). Terminals are excluded unless `--include-terminals`. Cross-node aggregation of remote sessions into the roster is a documented follow-up; this slice projects locally-owned sessions (already WorkContext-decorated).
+
+## Automation / watchdog run registry (#959)
+
+`automation-runs.*` is a Relay-visible registry of operator crons, watchdogs, and automations that drive Relay sessions. It exists so a watcher that keeps firing at a session id that no longer exists is **obvious and retirable** instead of silent: the run's target session ids, owner/orchestrator, linked issue/PR, last observation, and cleanup state all live in Relay, and Relay itself probes whether the target sessions are still alive. This is intentionally distinct from `workflow-runs.*` (the provider-runtime workflow-VM projection); it does not replace Hermes cron and is not a Kanban board.
+
+A run record carries: `id` (Relay-owned), `name`, `kind` (`watchdog|cron|automation|oversight|manual`), optional external `runId` (e.g. a Hermes cron id), `owner.orchestrator`, optional `repoPath`/`workContextId`, `targets[]` (session ids), `links` (`taskRefs`, `prUrls`, `issueUrls`), `heartbeat` (TTL + `expiresAt`), optional hard `expiresAt`, `lastObservation`, `cleanup`, `createdAt`/`updatedAt`/`version`, and a `redaction` block. `status` and `staleReasons` are **derived at read time**, never written directly.
+
+Derived `status`:
+
+- `active` — targets resolve alive and the heartbeat is fresh.
+- `cleanup-needed` — a target session is `gone` (404 / killed) or `ended` (done), or a hard `expiresAt` has passed. This is the #959 incident; `staleReasons` names the cause (`target-session-gone`, `target-session-ended`, `hard-expiry`).
+- `stale` — the heartbeat lapsed (`heartbeat-expired`): the watcher stopped checking in. This is the **no-silent-infinite-watchdog** guard — a watchdog can never stay green forever without re-observing.
+- `retired` — terminal; set by `automation-runs.retire`.
+
+How operator crons/watchdogs should register and retire themselves:
+
+1. **Register once at start.** `automation-runs register` with the target session ids, a short `ttlSeconds` heartbeat, the owning orchestrator, and any linked issue/PR. Pass a stable `id` to make re-registration idempotent (create-or-replace, revives a retired run). Capability: `context:write`.
+2. **Heartbeat each tick.** Call `automation-runs observe --id <id>` on every watcher iteration. Each observe refreshes the TTL and re-probes target liveness; skip it and the run goes `stale` so an abandoned watchdog is visible. Capability: `context:write`.
+3. **Retire when done.** When the PR merges / the task closes / the watcher should stop, call `automation-runs retire --id <id> --reason '<why>'`. Retire is idempotent: a second retire is a no-op that preserves the original retire metadata and version. Capability: `context:write`.
+4. **Find cleanup work.** `automation-runs list --status cleanup-needed` (or `--status stale`) is the read surface that makes dead targets and quiet watchdogs obvious; `get`/`list` always reflect live target liveness. Capabilities: `context:read`.
+
+Reads are side-effect free — `get`/`list` overlay a fresh liveness probe and derive status without bumping `version`. Target liveness is resolved against the **local** session registry in this slice; remote-node targets resolve `unknown` (cross-node target liveness is a documented follow-up). Like `workflow-runs`, run lifecycle frames publish on the metadata event bus under `events subscribe --topic automation-runs` (`automation-run.registered` / `.observed` / `.status-changed` / `.retired`), metadata-only and redaction-safe (no raw payloads, transcripts, or secrets; secret-shaped register/observe fields are rejected with `AUTOMATION_RUN_VALIDATION_FAILED`).
 
 ## Envelope
 
@@ -224,7 +251,7 @@ The #857 inventory is kept in [`docs/refactor/857-action-parity-inventory.md`](r
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.
 
-Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `work-context-artifacts.*`, `handoff-artifacts.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
+Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `work-context-artifacts.*`, `handoff-artifacts.*`, `workflow-runs.*`, `automation-runs.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
 
 ### Scoped actor credential MVP (#805)
 
@@ -252,6 +279,7 @@ Write allowlist:
 | `relay-ide v1 inbox send ... --actor-token <token>`                               | `inbox.send`                                                                                     | `inbox:write`       | Sends an inbox message only for the matched target session/global session/work-context/repo/task scope.                                                              |
 | `relay-ide v1 inbox ack/resolve/ignore ... --actor-token <token>`                 | `inbox.ack` / `inbox.resolve` / `inbox.ignore`                                                   | `inbox:write`       | Applies state transitions; message/work-context scope is checked before mutation.                                                                                    |
 | `relay-ide v1 roster register/update-self --input-json '{...}' --actor-token <token>`            | `roster.register` / `roster.updateSelf`                                                           | `context:write`     | Self-declared presence overlay (#964). Allowlisted safe fields only; unknown/secret-shaped keys rejected; heartbeat-expiring (TTL); `update-self` is owner-scoped and fails closed `NOT_FOUND`/`FORBIDDEN`.                          |
+| `relay-ide v1 automation-runs register/observe/retire ... --actor-token <token>` | `automation-runs.register` / `automation-runs.observe` / `automation-runs.retire`                | `context:write`     | Watchdog/cron run registry (#959). Secret-shaped fields rejected; WorkContext scope checked when the run carries one; retire is idempotent. Reads (`automation-runs.list`/`automation-runs.get`) require `context:read`. |
 | `relay-ide v1 work-context-artifacts publish/pin/unpin ... --actor-token <token>` | `work-context-artifacts.publish` / `work-context-artifacts.pin` / `work-context-artifacts.unpin` | `artifact:write`    | Writes artifact-store entries only for matched WorkContext/repo/task metadata; artifact id routes re-check stored metadata before mutation.                          |
 | `relay-ide v1 handoff-artifacts attach ... --actor-token <token>`                 | `handoff-artifacts.attach`                                                                       | `artifact:write`    | Uses the same artifact-store write lane as `work-context-artifacts.publish`.                                                                                         |
 | `relay-ide v1 handoff-artifacts list --work-context-id <id> --json`               | `handoff-artifacts.list`                                                                         | `session:read`      | Reads bounded PipelineHandoffArtifact metadata; requires `context:read` and enforces exact WorkContext scope when present.                                           |

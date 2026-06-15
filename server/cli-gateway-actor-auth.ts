@@ -50,6 +50,8 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'handoff-artifacts.copy',
   'workflow-runs.list',
   'workflow-runs.get',
+  'automation-runs.list',
+  'automation-runs.get',
   'work-context-messages.list',
   'work-context-messages.show',
   'work-context-messages.query',
@@ -74,6 +76,9 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'handoff-artifacts.attach',
   'workflow-runs.publish',
   'workflow-runs.update',
+  'automation-runs.register',
+  'automation-runs.observe',
+  'automation-runs.retire',
   'work-context-messages.append',
 ] as const;
 export type CliGatewayActorWriteCommand =
@@ -297,11 +302,14 @@ export function cliGatewayActorCommandCapabilities(
   if (
     command === 'workflow-runs.list' ||
     command === 'workflow-runs.get' ||
+    command === 'automation-runs.list' ||
+    command === 'automation-runs.get' ||
     command.startsWith('work-context-messages.')
   )
     return ['context:read'];
   if (cliGatewayActorReadCommandSet.has(command)) return ['session:read'];
   if (command.startsWith('workflow-runs.')) return ['context:write'];
+  if (command.startsWith('automation-runs.')) return ['context:write'];
   if (command.startsWith('context.')) return ['context:write'];
   // Explicit self-declared presence (#964) is collaboration-context metadata —
   // gate the writes on context:write (roster.list reads stay session:read).

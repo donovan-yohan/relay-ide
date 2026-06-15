@@ -135,6 +135,11 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'workflow-runs.update': 'update workflow run projection',
   'workflow-runs.list': 'list workflow run projections',
   'workflow-runs.get': 'workflow run details',
+  'automation-runs.register': 'register automation/watchdog run',
+  'automation-runs.observe': 'observe automation/watchdog run',
+  'automation-runs.retire': 'retire automation/watchdog run',
+  'automation-runs.list': 'list automation/watchdog runs',
+  'automation-runs.get': 'automation/watchdog run details',
   'roster.list': 'list active agent roster',
   'roster.register': 'register self-declared agent presence',
   'roster.updateSelf': 'update self-declared agent presence',
@@ -201,6 +206,9 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'handoff-artifacts.attach',
   'workflow-runs.publish',
   'workflow-runs.update',
+  'automation-runs.register',
+  'automation-runs.observe',
+  'automation-runs.retire',
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
@@ -237,6 +245,8 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('work-context-artifacts.')) return ['work-context'];
   if (name.startsWith('handoff-artifacts.')) return ['work-context'];
   if (name.startsWith('workflow-runs.')) return ['work-context'];
+  if (name.startsWith('automation-runs.'))
+    return ['work-context', 'repo', 'session'];
   if (name.startsWith('roster.')) return ['repo', 'work-context', 'session'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];

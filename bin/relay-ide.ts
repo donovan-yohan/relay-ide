@@ -1503,6 +1503,8 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'handoff-artifacts.copy',
   'workflow-runs.list',
   'workflow-runs.get',
+  'automation-runs.list',
+  'automation-runs.get',
   'roster.list',
 ]);
 
@@ -4620,6 +4622,94 @@ async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
   });
 }
 
+function automationRunListSearch(runArgs: string[]): string {
+  const query = new URLSearchParams();
+  for (const [flag, key] of [
+    ['--work-context-id', 'workContextId'],
+    ['--repo-path', 'repoPath'],
+    ['--status', 'status'],
+    ['--kind', 'kind'],
+    ['--orchestrator', 'orchestrator'],
+    ['--limit', 'limit'],
+  ] as const) {
+    const value = gatewayArg(runArgs, flag);
+    if (value) query.set(key, value);
+  }
+  if (runArgs.includes('--include-retired')) query.set('includeRetired', 'true');
+  return query.toString();
+}
+
+async function runGatewayAutomationRuns(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const runArgs = gatewayArgs.slice(2);
+  if (subcommand === 'register') {
+    const input = parseGatewayInputObject('automation-runs.register', runArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'automation-runs.register',
+      pathName: '/automation-runs',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('automation-runs.register', result), 0);
+  }
+  if (subcommand === 'observe') {
+    const id = gatewayArg(runArgs, '--id') ?? runArgs[0];
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('automation-runs.observe', '--id is required');
+    const input = parseGatewayInputObject('automation-runs.observe', runArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'automation-runs.observe',
+      pathName: `/automation-runs/${encodeURIComponent(id)}/observe`,
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('automation-runs.observe', result), 0);
+  }
+  if (subcommand === 'retire') {
+    const id = gatewayArg(runArgs, '--id') ?? runArgs[0];
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('automation-runs.retire', '--id is required');
+    const reason = gatewayArg(runArgs, '--reason');
+    const retiredBy = gatewayArg(runArgs, '--retired-by');
+    const body: Record<string, unknown> = {};
+    if (reason) body['reason'] = reason;
+    if (retiredBy) body['retiredBy'] = retiredBy;
+    const result = await gatewayHttpJson({
+      commandName: 'automation-runs.retire',
+      pathName: `/automation-runs/${encodeURIComponent(id)}/retire`,
+      method: 'POST',
+      body,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('automation-runs.retire', result), 0);
+  }
+  if (subcommand === 'list') {
+    const search = automationRunListSearch(runArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'automation-runs.list',
+      pathName: search ? `/automation-runs?${search}` : '/automation-runs',
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('automation-runs.list', result), 0);
+  }
+  if (subcommand === 'get') {
+    const id = gatewayArg(runArgs, '--id') ?? runArgs[0];
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('automation-runs.get', '--id is required');
+    const result = await gatewayHttpJson({
+      commandName: 'automation-runs.get',
+      pathName: `/automation-runs/${encodeURIComponent(id)}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('automation-runs.get', result), 0);
+  }
+  gatewayInvalid('automation-runs.get', 'unknown automation-runs command', {
+    args: gatewayArgs,
+  });
+}
+
 async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const rosterArgs = gatewayArgs.slice(2);
@@ -4835,6 +4925,7 @@ async function runGatewayV1(): Promise<never> {
   if (top === 'handoff-artifacts')
     return runGatewayHandoffArtifacts(gatewayArgs);
   if (top === 'workflow-runs') return runGatewayWorkflowRuns(gatewayArgs);
+  if (top === 'automation-runs') return runGatewayAutomationRuns(gatewayArgs);
   if (top === 'roster') return runGatewayRoster(gatewayArgs);
   if (top === 'artifacts') return runGatewayArtifacts(gatewayArgs);
   if (top === 'supervisor') return runGatewaySupervisor(gatewayArgs);

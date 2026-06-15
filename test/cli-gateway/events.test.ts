@@ -21,6 +21,7 @@ const ALLOWED_TOPICS = [
   'work-context-artifacts',
   'handoff-artifacts',
   'workflow-runs',
+  'automation-runs',
 ] as const;
 
 type CapturedRequest = {
