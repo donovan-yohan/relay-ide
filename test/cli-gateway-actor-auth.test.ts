@@ -331,6 +331,8 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'context.create',
     'context.pin',
     'context.unpin',
+    'roster.register',
+    'roster.updateSelf',
     'inbox.send',
     'inbox.ack',
     'inbox.resolve',
@@ -441,6 +443,14 @@ test('maps write actor commands to required Relay capability bits', () => {
   expect(cliGatewayActorCommandCapabilities('roster.list')).toEqual([
     'session:read',
   ]);
+  // roster.register / roster.updateSelf (#964) are collaboration-context writes
+  // gated on context:write, NOT the artifact:write default fallthrough.
+  expect(cliGatewayActorCommandCapabilities('roster.register')).toEqual([
+    'context:write',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('roster.updateSelf')).toEqual([
+    'context:write',
+  ]);
 });
 
 test('denies spoofed actor command headers on non-MVP route identities', () => {
@@ -522,6 +532,8 @@ test('returns stable typed denials without token material', () => {
   expect(failure).toMatchObject({
     code: 'UNAUTHORIZED',
     reasonCode: 'CLI_ACTOR_ROUTE_UNSUPPORTED',
+    message:
+      'scoped CLI actor credentials are limited to supported CLI gateway route and command pairs',
     retryable: false,
     lane: 'denied',
     acceptedLanes: ['scoped-actor-credential'],

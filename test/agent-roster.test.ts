@@ -180,6 +180,9 @@ describe('collaborationPromptAppendix', () => {
     const text = collaborationPromptAppendix({ provider: 'codex' });
     expect(text).toContain('role: reviewer');
     expect(text).toContain('relay-ide v1 roster list');
+    // #964: external agents are told how to self-declare + heartbeat presence.
+    expect(text).toContain('relay-ide v1 roster register');
+    expect(text).toContain('roster update-self');
     expect(text).toContain('relay-ide v1 inbox');
     expect(text).toContain('events subscribe --topic inbox');
     expect(text).toContain('events subscribe --topic attention');

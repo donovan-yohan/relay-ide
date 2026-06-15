@@ -1622,7 +1622,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|roster list|roster register|roster update-self|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -4623,6 +4623,28 @@ async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
 async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const rosterArgs = gatewayArgs.slice(2);
+  if (subcommand === 'register') {
+    const input = parseGatewayInputObject('roster.register', rosterArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'roster.register',
+      pathName: '/roster/register',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('roster.register', result), 0);
+  }
+  if (subcommand === 'update-self') {
+    const input = parseGatewayInputObject('roster.updateSelf', rosterArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'roster.updateSelf',
+      pathName: '/roster/update-self',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('roster.updateSelf', result), 0);
+  }
   if (subcommand === 'list') {
     const query = new URLSearchParams();
     const workContextId = gatewayArg(rosterArgs, '--work-context-id');

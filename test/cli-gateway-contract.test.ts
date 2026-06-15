@@ -205,6 +205,8 @@ describe('CLI gateway contract', () => {
       'workflow-runs.list',
       'workflow-runs.get',
       'roster.list',
+      'roster.register',
+      'roster.updateSelf',
       'events.subscribe',
       'settings.get',
       'settings.update',
@@ -325,6 +327,30 @@ describe('CLI gateway contract', () => {
       sideEffect: 'read',
       requiresConfirmation: false,
       auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['repo', 'work-context', 'session'],
+    });
+    // roster.register / roster.updateSelf (#964): explicit self-declared
+    // presence writes — capability-gated on context:write (not session:read),
+    // never confirmation-gated, and the input schema fails closed on unknown
+    // (potentially secret-shaped) fields.
+    expect(commandSpec('roster.register')).toMatchObject({
+      capabilityHints: ['context:write'],
+      cli: ['relay-ide', 'v1', 'roster', 'register', '--input-json', '<json>', '--json'],
+    });
+    expect(commandSpec('roster.register').inputSchema.additionalProperties).toBe(
+      false
+    );
+    expect(
+      commandSpec('roster.updateSelf').inputSchema.additionalProperties
+    ).toBe(false);
+    expect(relayCommandDefinition('roster.register')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      scopeKinds: ['repo', 'work-context', 'session'],
+    });
+    expect(relayCommandDefinition('roster.updateSelf')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
       scopeKinds: ['repo', 'work-context', 'session'],
     });
     expect(relayCommandDefinition('worktrees.create')).toMatchObject({
@@ -1020,6 +1046,8 @@ describe('CLI gateway contract', () => {
       'workflow-runs.list',
       'workflow-runs.get',
       'roster.list',
+      'roster.register',
+      'roster.updateSelf',
       'events.subscribe',
     ] as const;
 

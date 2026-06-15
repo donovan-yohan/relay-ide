@@ -62,6 +62,8 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'context.create',
   'context.pin',
   'context.unpin',
+  'roster.register',
+  'roster.updateSelf',
   'inbox.send',
   'inbox.ack',
   'inbox.resolve',
@@ -301,6 +303,10 @@ export function cliGatewayActorCommandCapabilities(
   if (cliGatewayActorReadCommandSet.has(command)) return ['session:read'];
   if (command.startsWith('workflow-runs.')) return ['context:write'];
   if (command.startsWith('context.')) return ['context:write'];
+  // Explicit self-declared presence (#964) is collaboration-context metadata —
+  // gate the writes on context:write (roster.list reads stay session:read).
+  if (command === 'roster.register' || command === 'roster.updateSelf')
+    return ['context:write'];
   if (command.startsWith('inbox.')) return ['inbox:write'];
   return ['artifact:write'];
 }
@@ -976,7 +982,7 @@ function cliGatewayActorReasonCode(
 function cliGatewayActorMessage(reasonCode: string): string {
   switch (reasonCode) {
     case 'CLI_ACTOR_CREDENTIAL_MISSING':
-      return 'CLI gateway read commands require --actor-token or RELAY_IDE_ACTOR_TOKEN';
+      return 'CLI gateway actor commands require --actor-token or RELAY_IDE_ACTOR_TOKEN';
     case 'CLI_ACTOR_BROWSER_COOKIE_REJECTED':
       return 'browser cookies are not accepted for the scoped CLI actor lane';
     case 'CLI_ACTOR_NODE_CREDENTIAL_REJECTED':
@@ -984,7 +990,7 @@ function cliGatewayActorMessage(reasonCode: string): string {
     case 'CLI_ACTOR_CREDENTIAL_UNSUPPORTED_TYPE':
       return 'unsupported CLI gateway credential type';
     case 'CLI_ACTOR_ROUTE_UNSUPPORTED':
-      return 'scoped CLI actor credentials are limited to the read-only CLI gateway smoke surface';
+      return 'scoped CLI actor credentials are limited to supported CLI gateway route and command pairs';
     default:
       return `scoped CLI actor credential rejected: ${reasonCode}`;
   }

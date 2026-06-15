@@ -180,12 +180,23 @@ When a provider is fully V2-native, delete replaced V1 code in the same provider
 
 ## 12. Agent collaboration: role defaults + prompt appendix (#953)
 
-Relay-launched agent sessions are not isolated terminals — other agents and operators can discover and message them through the CLI gateway (`roster.list`, `inbox.*`, `events subscribe --topic inbox`). To teach a session how to collaborate, two provider-neutral primitives live in `shared/agent-roster.ts`:
+Relay-launched agent sessions are not isolated terminals — other agents and operators can discover and message them through the CLI gateway (`roster.list`, `roster.register`/`roster.updateSelf`, `inbox.*`, `events subscribe --topic inbox`). To teach a session how to collaborate, two provider-neutral primitives live in `shared/agent-roster.ts`:
 
 - **Role-default map** (`DEFAULT_AGENT_ROLE_MAP` / `roleForAgent(agent)`): a lightweight collaboration hint keyed by the lowercased agent kind — `claude → implementer`, `codex → reviewer`, `hermes`/`ebi → orchestrator`, `opencode → implementer`, everything else `collaborator`. It is a HINT (surfaced as `RosterEntry.role`), not an authorization boundary, and deliberately not a closed union — register a default for a custom provider by extending the map, or override per call. Do not hard-code the architecture around these agents.
-- **Collaboration prompt appendix** (`collaborationPromptAppendix({ role, provider })`): the canonical, succinct system-prompt block that tells an agent how to identify its own session/work context, list active collaborators (`roster.list`), send/ack inbox messages, and subscribe to inbox events instead of polling. It explicitly avoids raw tmux/PTY steering.
+- **Collaboration prompt appendix** (`collaborationPromptAppendix({ role, provider })`): the canonical, succinct system-prompt block that tells an agent how to identify its own session/work context, list active collaborators (`roster.list`), self-declare its own presence (`roster.register` / `roster.updateSelf`), send/ack inbox messages, and subscribe to inbox events instead of polling. It explicitly avoids raw tmux/PTY steering.
 
 This is the **single authoring source** so docs and the launcher agree on one text.
+
+### Explicit self-declared presence (#964)
+
+Beyond the derived `roster.list` projection, an agent can publish an explicit presence overlay so non-Relay-launched agents and richer role/use-case/status surface for discovery:
+
+- **`roster.register`** create-or-replaces the calling agent's presence record; **`roster.updateSelf`** patches it and refreshes its heartbeat. Both are `context:write` writes (the read `roster.list` stays `session:read`).
+- Declare only the allowlisted safe subset — `role`, `displayName`, `useCase`, `statusText`, `needsAttention`, `capabilityHints[]`, plus self-claimed scope (`sessionId`/`globalSessionId`/`workContextId`/`repoPath`/`nodeId`/`provider`) and `ttlSeconds`. The schema is `additionalProperties: false` and the store re-sanitizes: secret-shaped keys are **rejected**, unknown keys dropped, text control-char-stripped + length-bounded. Never put secrets, tokens, transcripts, prompts, or provider-private state in presence.
+- Presence is **heartbeat-expiring** (TTL default 120s, clamped 10–3600). Re-register or `update-self` before expiry; `roster.list` drops stale records and writes sweep them. It is non-authoritative discovery metadata, never an authorization input.
+- On merge, derived session fields win for identity/control; self-declaration only overlays the soft subset and is tagged `origin: "merged"`, while an external agent with no live session surfaces as `origin: "self-declared"`. See `docs/CLI_GATEWAY.md` §"Explicit presence safe-field allowlist + expiry (#964)".
+
+Custom providers need no code change to participate — the appendix (and these CLI verbs) are provider-neutral. A provider that renders the appendix into its own launch prompt automatically teaches its agents to register/update-self.
 
 ### Launch-time injection (#955)
 

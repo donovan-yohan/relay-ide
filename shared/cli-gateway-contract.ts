@@ -68,6 +68,8 @@ export type RelayCliGatewayCommand =
   | 'workflow-runs.list'
   | 'workflow-runs.get'
   | 'roster.list'
+  | 'roster.register'
+  | 'roster.updateSelf'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -2464,12 +2466,34 @@ const rosterAttentionSchema: RelayJsonSchema = {
           'waiting-for-input',
           'error',
           'pending-inbox',
+          'self-declared',
         ],
       },
     },
     pendingInboxCount: { type: 'number', minimum: 0 },
   },
   required: ['needsAttention', 'reasons', 'pendingInboxCount'],
+};
+
+// Self-declared overlay (#964) echoed onto a merged / self-declared roster
+// entry. Redaction-safe: no secrets, tokens, transcripts, or raw payloads.
+const selfDeclaredPresenceSchema: RelayJsonSchema = {
+  title: 'SelfDeclaredPresence',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    presenceId: stringSchema,
+    registeredBy: stringSchema,
+    role: { type: 'string', enum: [...AGENT_ROLES] },
+    displayName: stringSchema,
+    useCase: stringSchema,
+    statusText: stringSchema,
+    needsAttention: booleanSchema,
+    capabilityHints: { type: 'array', items: stringSchema },
+    updatedAt: { type: 'string', format: 'date-time' },
+    expiresAt: { type: 'string', format: 'date-time' },
+  },
+  required: ['presenceId', 'updatedAt', 'expiresAt'],
 };
 
 const rosterActorSchema: RelayJsonSchema = {
@@ -2512,6 +2536,11 @@ const rosterEntrySchema: RelayJsonSchema = {
     activeActors: { type: 'array', items: rosterActorSchema },
     lastActivity: stringSchema,
     createdAt: stringSchema,
+    origin: {
+      type: 'string',
+      enum: ['derived', 'self-declared', 'merged'],
+    },
+    selfDeclared: selfDeclaredPresenceSchema,
   },
   required: [
     'sessionId',
@@ -2550,6 +2579,111 @@ const rosterListOutputDataSchema: RelayJsonSchema = {
     nodeId: stringSchema,
   },
   required: ['roster', 'generatedAt', 'count'],
+};
+
+// roster.register / roster.updateSelf (#964): explicit self-declared presence.
+// `additionalProperties: false` is the FIRST redaction line — unknown/secret
+// fields are rejected at the contract before the store ever sees them; the
+// store (`sanitizePresenceInput`) re-checks as defense in depth.
+const presenceWriteInputSchema: RelayJsonSchema = {
+  title: 'PresenceWriteInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: {
+      ...stringSchema,
+      description:
+        'Target an existing presence record by id (returned by register). Otherwise the id is stably derived from the actor + session/scope.',
+    },
+    sessionId: stringSchema,
+    globalSessionId: stringSchema,
+    workContextId: stringSchema,
+    repoPath: stringSchema,
+    nodeId: stringSchema,
+    provider: stringSchema,
+    role: { type: 'string', enum: [...AGENT_ROLES] },
+    displayName: stringSchema,
+    useCase: {
+      ...stringSchema,
+      description: 'Free-text role/use-case hint, e.g. "implementing #964".',
+    },
+    statusText: {
+      ...stringSchema,
+      description: 'Self-declared coarse status, e.g. "running tests".',
+    },
+    needsAttention: {
+      ...booleanSchema,
+      description:
+        'Self-declared attention hint. Additive: it can raise needsAttention on the merged roster entry but never clears a derived reason.',
+    },
+    capabilityHints: { type: 'array', items: stringSchema },
+    ttlSeconds: {
+      type: 'number',
+      minimum: 10,
+      maximum: 3600,
+      description:
+        'Heartbeat TTL. Stale presence past now+ttl is filtered from the roster and swept (default 120s).',
+    },
+    createdBy: {
+      ...stringSchema,
+      description:
+        'Optional actor attribution. The server prefers the authenticated actor id and only falls back to this.',
+    },
+  },
+};
+
+const presenceRegisterInputSchema: RelayJsonSchema = {
+  ...presenceWriteInputSchema,
+  title: 'PresenceRegisterInput',
+};
+
+const presenceUpdateInputSchema: RelayJsonSchema = {
+  ...presenceWriteInputSchema,
+  title: 'PresenceUpdateSelfInput',
+};
+
+const agentPresenceSchema: RelayJsonSchema = {
+  title: 'AgentPresence',
+  type: 'object',
+  // Redaction-safe self-declared record (#964). Mirrors RosterEntry's boundary.
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    sessionId: stringSchema,
+    globalSessionId: stringSchema,
+    workContextId: stringSchema,
+    repoPath: stringSchema,
+    nodeId: stringSchema,
+    provider: stringSchema,
+    role: { type: 'string', enum: [...AGENT_ROLES] },
+    displayName: stringSchema,
+    useCase: stringSchema,
+    statusText: stringSchema,
+    needsAttention: booleanSchema,
+    capabilityHints: { type: 'array', items: stringSchema },
+    registeredBy: stringSchema,
+    createdAt: { type: 'string', format: 'date-time' },
+    updatedAt: { type: 'string', format: 'date-time' },
+    expiresAt: { type: 'string', format: 'date-time' },
+  },
+  required: [
+    'id',
+    'registeredBy',
+    'createdAt',
+    'updatedAt',
+    'expiresAt',
+  ],
+};
+
+const presenceWriteOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    presence: agentPresenceSchema,
+    /** Unknown (non-secret) input keys that were dropped during sanitization. */
+    droppedKeys: { type: 'array', items: stringSchema },
+  },
+  required: ['presence'],
 };
 
 const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
@@ -4801,6 +4935,64 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['session:read'],
     inputSchema: rosterListInputSchema,
     outputSchema: okOutput('RosterListOutput', rosterListOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'roster.register',
+    cli: [
+      'relay-ide',
+      'v1',
+      'roster',
+      'register',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Register/refresh self-declared agent presence (role/use-case/status/capability hints) for the current session/repo/WorkContext. Redaction-safe + heartbeat-expiring; merged into roster.list.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: presenceRegisterInputSchema,
+    outputSchema: okOutput('RosterRegisterOutput', presenceWriteOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'roster.updateSelf',
+    cli: [
+      'relay-ide',
+      'v1',
+      'roster',
+      'update-self',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Patch the calling agent’s existing presence record and refresh its heartbeat. Fails closed (NOT_FOUND) if no live self-declared presence exists; never alters another agent’s record.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: presenceUpdateInputSchema,
+    outputSchema: okOutput(
+      'RosterUpdateSelfOutput',
+      presenceWriteOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
