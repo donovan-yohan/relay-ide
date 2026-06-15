@@ -116,7 +116,9 @@ export function useSessionHandlers({
       });
       if (!result.ok) {
         logger.error('Failed to rename session:', result.error);
+        return;
       }
+      await useSessionsStore.getState().refreshAll();
     }
   }, []);
 
