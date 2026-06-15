@@ -246,9 +246,9 @@ function classifyGhError(err: unknown): PrOverseerUnavailableReason {
 }
 
 /**
- * Best-effort unresolved-review-thread count via GraphQL. `gh pr view --json`
- * does not expose thread resolution, so this is a separate bounded query that
- * fails closed to 0 (treated as "no known blocking threads") on any error.
+ * Unresolved-review-thread count via GraphQL. `gh pr view --json` does not
+ * expose thread resolution, so this is a separate bounded query. Throws on any
+ * error — callers must handle failure as `ok: false` (fail-closed).
  */
 async function fetchUnresolvedThreadCount(
   target: PrObserveTarget,
@@ -259,37 +259,53 @@ async function fetchUnresolvedThreadCount(
   const query = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100) { nodes { isResolved } }
+      reviewThreads(first: 100) {
+        nodes { isResolved }
+        pageInfo { hasNextPage }
+      }
     }
   }
 }`;
-  try {
-    const { stdout } = await exec(
-      'gh',
-      [
-        'api',
-        'graphql',
-        '-f',
-        `query=${query}`,
-        '-f',
-        `owner=${owner}`,
-        '-f',
-        `repo=${repo}`,
-        '-F',
-        `number=${target.number}`,
-      ],
-      { cwd: target.repoPath, timeout: GH_GRAPHQL_TIMEOUT_MS }
-    );
-    const parsed = JSON.parse(stdout) as {
-      data?: {
-        repository?: { pullRequest?: { reviewThreads?: { nodes?: Array<{ isResolved?: boolean } | null> } } };
-      };
+  const { stdout } = await exec(
+    'gh',
+    [
+      'api',
+      'graphql',
+      '-f',
+      `query=${query}`,
+      '-f',
+      `owner=${owner}`,
+      '-f',
+      `repo=${repo}`,
+      '-F',
+      `number=${target.number}`,
+    ],
+    { cwd: target.repoPath, timeout: GH_GRAPHQL_TIMEOUT_MS }
+  );
+  const parsed = JSON.parse(stdout) as {
+    errors?: unknown[];
+    data?: {
+      repository?: {
+        pullRequest?: {
+          reviewThreads?: {
+            nodes?: Array<{ isResolved?: boolean } | null>;
+            pageInfo?: { hasNextPage?: boolean };
+          } | null;
+        } | null;
+      } | null;
     };
-    const nodes = parsed?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
-    return nodes.filter((n) => n?.isResolved === false).length;
-  } catch {
-    return 0;
+  };
+  if (Array.isArray(parsed.errors) && parsed.errors.length > 0) {
+    throw new Error('GraphQL reviewThreads query returned errors');
   }
+  const reviewThreads = parsed.data?.repository?.pullRequest?.reviewThreads;
+  if (!reviewThreads || !Array.isArray(reviewThreads.nodes)) {
+    throw new Error('GraphQL reviewThreads query returned no nodes');
+  }
+  if (reviewThreads.pageInfo?.hasNextPage === true) {
+    throw new Error('GraphQL reviewThreads query returned a partial page');
+  }
+  return reviewThreads.nodes.filter((n) => n?.isResolved === false).length;
 }
 
 export interface GhPrObserverOptions {
@@ -332,10 +348,18 @@ export function createGhPrObserver(options: GhPrObserverOptions = {}): PrObserve
     }
 
     const state = mapPrState(raw.state);
-    const unresolvedThreadCount =
-      includeReviewThreads && state === 'OPEN'
-        ? await fetchUnresolvedThreadCount(target, exec)
-        : 0;
+    let unresolvedThreadCount = 0;
+    if (includeReviewThreads && state === 'OPEN') {
+      try {
+        unresolvedThreadCount = await fetchUnresolvedThreadCount(target, exec);
+      } catch (threadErr) {
+        logger.warn(
+          `pr-overseer graphql thread query failed for ${target.ownerRepo}#${target.number}:`,
+          threadErr instanceof Error ? threadErr.message : threadErr
+        );
+        return { ok: false, fetchedAt, unavailableReason: 'error' };
+      }
+    }
 
     return {
       ok: true,

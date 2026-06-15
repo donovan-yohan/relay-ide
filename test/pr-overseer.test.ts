@@ -549,6 +549,203 @@ describe('gh pr observer', () => {
     expect(obs.reviews?.unresolvedThreadCount).toBe(1);
   });
 
+  it('GraphQL review-thread failure yields ok:false (fail-closed, not unresolvedThreadCount:0)', async () => {
+    const viewJson = {
+      number: 1234,
+      state: 'OPEN',
+      isDraft: false,
+      headRefOid: HEAD,
+      mergeable: 'MERGEABLE',
+      reviewDecision: 'APPROVED',
+      latestReviews: [{ author: { login: 'reviewer' }, state: 'APPROVED' }],
+      statusCheckRollup: [],
+      comments: [],
+      closingIssuesReferences: [{ number: 960 }],
+    };
+    const observer = createGhPrObserver({
+      exec: async (file, execArgs) => {
+        if (file === 'gh' && execArgs[0] === 'pr' && execArgs[1] === 'view') {
+          return { stdout: JSON.stringify(viewJson), stderr: '' };
+        }
+        if (file === 'gh' && execArgs[0] === 'api' && execArgs[1] === 'graphql') {
+          throw new Error('GraphQL rate limit exceeded');
+        }
+        throw new Error(`unexpected exec ${file} ${execArgs.join(' ')}`);
+      },
+    });
+    const obs = await observer(target);
+    expect(obs.ok).toBe(false);
+    expect(obs.unavailableReason).toBe('error');
+    // Must not have a pr payload that could be used to derive ready.
+    expect(obs.pr).toBeUndefined();
+  });
+
+  it('parseable GraphQL errors fail closed instead of defaulting to zero unresolved threads', async () => {
+    const viewJson = {
+      number: 1234,
+      state: 'OPEN',
+      isDraft: false,
+      headRefOid: HEAD,
+      mergeable: 'MERGEABLE',
+      reviewDecision: 'APPROVED',
+      latestReviews: [{ author: { login: 'reviewer' }, state: 'APPROVED' }],
+      statusCheckRollup: [],
+      comments: [],
+      closingIssuesReferences: [{ number: 960 }],
+    };
+    const observer = createGhPrObserver({
+      exec: async (file, execArgs) => {
+        if (file === 'gh' && execArgs[0] === 'pr' && execArgs[1] === 'view') {
+          return { stdout: JSON.stringify(viewJson), stderr: '' };
+        }
+        if (file === 'gh' && execArgs[0] === 'api' && execArgs[1] === 'graphql') {
+          return { stdout: JSON.stringify({ errors: [{ message: 'rate limited' }], data: null }), stderr: '' };
+        }
+        throw new Error(`unexpected exec ${file} ${execArgs.join(' ')}`);
+      },
+    });
+
+    const obs = await observer(target);
+    expect(obs).toMatchObject({ ok: false, unavailableReason: 'error' });
+    expect(obs.reviews).toBeUndefined();
+  });
+
+  it('missing GraphQL reviewThread nodes fail closed instead of defaulting to zero', async () => {
+    const viewJson = {
+      number: 1234,
+      state: 'OPEN',
+      isDraft: false,
+      headRefOid: HEAD,
+      mergeable: 'MERGEABLE',
+      reviewDecision: 'APPROVED',
+      latestReviews: [{ author: { login: 'reviewer' }, state: 'APPROVED' }],
+      statusCheckRollup: [],
+      comments: [],
+      closingIssuesReferences: [{ number: 960 }],
+    };
+    const observer = createGhPrObserver({
+      exec: async (file, execArgs) => {
+        if (file === 'gh' && execArgs[0] === 'pr' && execArgs[1] === 'view') {
+          return { stdout: JSON.stringify(viewJson), stderr: '' };
+        }
+        if (file === 'gh' && execArgs[0] === 'api' && execArgs[1] === 'graphql') {
+          return {
+            stdout: JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: null } } } }),
+            stderr: '',
+          };
+        }
+        throw new Error(`unexpected exec ${file} ${execArgs.join(' ')}`);
+      },
+    });
+
+    const obs = await observer(target);
+    expect(obs).toMatchObject({ ok: false, unavailableReason: 'error' });
+  });
+
+  it('partial GraphQL review-thread pages fail closed until pagination is supported', async () => {
+    const viewJson = {
+      number: 1234,
+      state: 'OPEN',
+      isDraft: false,
+      headRefOid: HEAD,
+      mergeable: 'MERGEABLE',
+      reviewDecision: 'APPROVED',
+      latestReviews: [{ author: { login: 'reviewer' }, state: 'APPROVED' }],
+      statusCheckRollup: [],
+      comments: [],
+      closingIssuesReferences: [{ number: 960 }],
+    };
+    const observer = createGhPrObserver({
+      exec: async (file, execArgs) => {
+        if (file === 'gh' && execArgs[0] === 'pr' && execArgs[1] === 'view') {
+          return { stdout: JSON.stringify(viewJson), stderr: '' };
+        }
+        if (file === 'gh' && execArgs[0] === 'api' && execArgs[1] === 'graphql') {
+          return {
+            stdout: JSON.stringify({
+              data: {
+                repository: {
+                  pullRequest: {
+                    reviewThreads: { nodes: [{ isResolved: true }], pageInfo: { hasNextPage: true } },
+                  },
+                },
+              },
+            }),
+            stderr: '',
+          };
+        }
+        throw new Error(`unexpected exec ${file} ${execArgs.join(' ')}`);
+      },
+    });
+
+    const obs = await observer(target);
+    expect(obs).toMatchObject({ ok: false, unavailableReason: 'error' });
+  });
+
+  it('GraphQL failure propagates to store as lastFetch failed and handoff.ready:false', async () => {
+    const viewJson = {
+      number: 1234,
+      state: 'OPEN',
+      isDraft: false,
+      headRefOid: HEAD,
+      mergeable: 'MERGEABLE',
+      reviewDecision: 'APPROVED',
+      latestReviews: [{ author: { login: 'reviewer' }, state: 'APPROVED' }],
+      statusCheckRollup: [],
+      comments: [],
+      closingIssuesReferences: [{ number: 960 }],
+    };
+    const graphqlFails: PrOverseerExec = async (file, execArgs) => {
+      if (file === 'gh' && execArgs[0] === 'pr' && execArgs[1] === 'view') {
+        return { stdout: JSON.stringify(viewJson), stderr: '' };
+      }
+      throw new Error('GraphQL unavailable');
+    };
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    store.register(baseRegister);
+    // First observe succeeds, putting the run into ready.
+    store.observe('pr-overseer:test-1', {}, readyObservation());
+    expect(store.get('pr-overseer:test-1')?.status).toBe('ready');
+    // Second observe: gh pr view succeeds but GraphQL thread query fails.
+    const observer = createGhPrObserver({ exec: graphqlFails });
+    const failedSnapshot = await observer(target);
+    const record = store.observe('pr-overseer:test-1', {}, failedSnapshot);
+    expect(record.lastFetch).toMatchObject({ ok: false, unavailableReason: 'error' });
+    expect(record.staleHeadRisk.lastFetchFailed).toBe(true);
+    expect(record.handoff.ready).toBe(false);
+    expect(record.status).toBe('stale');
+    // Last good observation snapshot must be retained.
+    expect(record.lastObservation?.snapshot.pr?.headSha).toBe(HEAD);
+  });
+
+  it('includeReviewThreads:false skips the GraphQL query; a throwing exec still returns ok:true', async () => {
+    const viewJson = {
+      number: 1234,
+      state: 'OPEN',
+      isDraft: false,
+      headRefOid: HEAD,
+      mergeable: 'MERGEABLE',
+      reviewDecision: 'APPROVED',
+      latestReviews: [],
+      statusCheckRollup: [],
+      comments: [],
+      closingIssuesReferences: [],
+    };
+    const observer = createGhPrObserver({
+      includeReviewThreads: false,
+      exec: async (file, execArgs) => {
+        if (file === 'gh' && execArgs[0] === 'pr' && execArgs[1] === 'view') {
+          return { stdout: JSON.stringify(viewJson), stderr: '' };
+        }
+        throw new Error('GraphQL must not be called');
+      },
+    });
+    const obs = await observer(target);
+    expect(obs.ok).toBe(true);
+    expect(obs.reviews?.unresolvedThreadCount).toBe(0);
+  });
+
   it('degrades to ok:false when gh is missing', async () => {
     const observer = createGhPrObserver({
       exec: async () => {
