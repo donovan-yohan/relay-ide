@@ -362,12 +362,14 @@ export function createAutomationRunStore(input: {
       // than an arbitrary superset cap: a stale/cleanup-needed run has an old
       // updated_at and would otherwise sort past a cap and silently vanish from
       // a `--status cleanup-needed` listing — the exact runs #959 must surface.
-      // The set is operator-watchdog scale and further bounded by the WHERE.
-      const rows = db
-        .prepare(`SELECT record_json FROM automation_runs ${where} ORDER BY updated_at DESC`)
-        .all(params) as AutomationRunRow[];
-      const now = clock();
       const limit = cleanLimit(filter.limit);
+      let sql = `SELECT record_json FROM automation_runs ${where} ORDER BY updated_at DESC`;
+      if (!filter.status) {
+        sql += ' LIMIT @limit';
+        params['limit'] = limit;
+      }
+      const rows = db.prepare(sql).all(params) as AutomationRunRow[];
+      const now = clock();
       const out: AutomationRunRecord[] = [];
       for (const row of rows) {
         const stored = parseRow(row);

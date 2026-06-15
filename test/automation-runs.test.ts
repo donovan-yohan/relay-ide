@@ -218,6 +218,20 @@ describe('automation run store', () => {
     store.close();
   });
 
+  it('rejects excessively deep payloads before recursive secret scanning can overflow', () => {
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    let nested: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 25; i += 1) {
+      nested = { child: nested };
+    }
+
+    expect(() =>
+      store.register({ ...baseRegister, metadata: nested }, resolverFor(new Set()))
+    ).toThrow(/maximum nested depth/);
+    store.close();
+  });
+
   it('flags a finished (ended) target session as cleanup-needed', () => {
     const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
     const store = makeStore(clock.now);

@@ -232,6 +232,7 @@ export function resolveAutomationRunTargetLiveness(
 export const AUTOMATION_RUN_SUMMARY_MAX_BYTES = 4 * 1024;
 export const AUTOMATION_RUN_MAX_TARGETS = 100;
 export const AUTOMATION_RUN_MAX_LINKS = 50;
+export const AUTOMATION_RUN_MAX_INPUT_DEPTH = 20;
 export const AUTOMATION_RUN_TTL_MIN_SECONDS = 30;
 export const AUTOMATION_RUN_TTL_MAX_SECONDS = 7 * 24 * 60 * 60;
 export const AUTOMATION_RUN_TTL_DEFAULT_SECONDS = 300;
@@ -308,9 +309,22 @@ function truncateUtf8(value: string, maxBytes: number): { value: string; truncat
   };
 }
 
-function collectForbiddenKeys(value: unknown, path = '$', found: string[] = []): string[] {
+function collectForbiddenKeys(
+  value: unknown,
+  path = '$',
+  found: string[] = [],
+  depth = 0
+): string[] {
+  if (depth > AUTOMATION_RUN_MAX_INPUT_DEPTH) {
+    throw new AutomationRunValidationError('automation run payload exceeds maximum nested depth', {
+      path,
+      maxDepth: AUTOMATION_RUN_MAX_INPUT_DEPTH,
+    });
+  }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => collectForbiddenKeys(item, `${path}[${index}]`, found));
+    value.forEach((item, index) =>
+      collectForbiddenKeys(item, `${path}[${index}]`, found, depth + 1)
+    );
     return found;
   }
   if (!isRecord(value)) return found;
@@ -320,7 +334,7 @@ function collectForbiddenKeys(value: unknown, path = '$', found: string[] = []):
       found.push(`${path}.${key}`);
       continue;
     }
-    collectForbiddenKeys(child, `${path}.${key}`, found);
+    collectForbiddenKeys(child, `${path}.${key}`, found, depth + 1);
   }
   return found;
 }
