@@ -875,10 +875,15 @@ export function computePrOverseerBlockers(input: {
       snapshot.reviews.changesRequestedBy.length > 0
     ) {
       blockers.push('review-changes-requested');
-    } else if (snapshot.reviews.decision === 'REVIEW_REQUIRED') {
+    } else if (snapshot.reviews.decision !== 'APPROVED') {
       blockers.push('review-required');
     }
     if (snapshot.reviews.unresolvedThreadCount > 0) blockers.push('unresolved-review-threads');
+  } else {
+    // Successful OPEN observations with missing review evidence are unknown, not
+    // approved. Future/injected observers may emit partial snapshots; never let a
+    // partial snapshot hand off to the release train.
+    blockers.push('review-required');
   }
   if (pr.mergeable === 'CONFLICTING') blockers.push('merge-conflict');
   else if (pr.mergeable === 'UNKNOWN') blockers.push('mergeability-unknown');

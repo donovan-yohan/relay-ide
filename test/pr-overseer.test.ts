@@ -108,6 +108,36 @@ describe('pr overseer store', () => {
     });
   });
 
+  it('successful OPEN observation without review evidence does not derive ready handoff', () => {
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    store.register(baseRegister);
+    const obs = readyObservation();
+    delete obs.reviews;
+
+    const record = store.observe('pr-overseer:test-1', { summary: 'partial observer snapshot' }, obs);
+
+    expect(record.status).toBe('observing');
+    expect(record.blockers).toEqual(['review-required']);
+    expect(record.handoff.ready).toBe(false);
+    expect(record.requiredNextAction).toMatchObject({ action: 'await-review', actor: 'release-train' });
+  });
+
+  it('successful OPEN observation with unknown review decision does not derive ready handoff', () => {
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    store.register(baseRegister);
+    const obs = readyObservation();
+    obs.reviews = { decision: null, changesRequestedBy: [], approvedBy: [], unresolvedThreadCount: 0 };
+
+    const record = store.observe('pr-overseer:test-1', { summary: 'unknown review evidence' }, obs);
+
+    expect(record.status).toBe('observing');
+    expect(record.blockers).toEqual(['review-required']);
+    expect(record.handoff.ready).toBe(false);
+    expect(record.requiredNextAction).toMatchObject({ action: 'await-review', actor: 'release-train' });
+  });
+
   it('failed checks make the run blocked with a fix-checks action (no handoff)', () => {
     const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
     const store = makeStore(clock.now);
@@ -454,6 +484,32 @@ describe('computePrOverseerBlockers (pure)', () => {
     );
     expect(view.status).toBe('observing');
     expect(view.blockers).toContain('pr-draft');
+  });
+
+  it('unknown review evidence is a soft review-required blocker', () => {
+    const missingReviews = readyObservation();
+    delete missingReviews.reviews;
+    expect(computePrOverseerBlockers({ snapshot: missingReviews })).toContain('review-required');
+
+    const unknownReviewDecision = readyObservation();
+    unknownReviewDecision.reviews = {
+      decision: null,
+      changesRequestedBy: [],
+      approvedBy: [],
+      unresolvedThreadCount: 0,
+    };
+    const view = derivePrOverseerView(
+      {
+        pr: { ownerRepo: 'o/r', number: 1 },
+        heartbeat: { expiresAt: '2999-01-01T00:00:00.000Z' },
+        lastObservation: { observedAt: '2026-06-15T00:00:00.000Z', snapshot: unknownReviewDecision },
+        cleanup: { state: 'none' },
+      },
+      '2026-06-15T00:00:01.000Z'
+    );
+    expect(view.status).toBe('observing');
+    expect(view.blockers).toEqual(['review-required']);
+    expect(view.handoff.ready).toBe(false);
   });
 });
 
