@@ -180,7 +180,8 @@ export function createAgentPresenceStore(
     if (!row) return null;
     const presence = rowToPresenceSafe(row);
     if (!presence) return null;
-    if (!includeExpired && Date.parse(presence.expiresAt) <= now().getTime()) {
+    const expires = Date.parse(presence.expiresAt);
+    if (!includeExpired && (!Number.isFinite(expires) || expires <= now().getTime())) {
       return null;
     }
     return presence;

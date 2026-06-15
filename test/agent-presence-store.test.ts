@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -37,14 +38,22 @@ function makeClock(startIso: string): {
   };
 }
 
-function makeStore(now: () => Date): AgentPresenceStore {
+function makeStoreWithPath(now: () => Date): {
+  store: AgentPresenceStore;
+  dbPath: string;
+} {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-presence-test-'));
   tmpDirs.push(dir);
-  const store = createAgentPresenceStore(path.join(dir, 'agent-presence.db'), {
+  const dbPath = path.join(dir, 'agent-presence.db');
+  const store = createAgentPresenceStore(dbPath, {
     now,
   });
   openStores.push(store);
-  return store;
+  return { store, dbPath };
+}
+
+function makeStore(now: () => Date): AgentPresenceStore {
+  return makeStoreWithPath(now).store;
 }
 
 afterEach(() => {
@@ -194,6 +203,30 @@ describe('AgentPresenceStore.updateSelf', () => {
     clock.advanceMs(11_000);
     expect(() =>
       store.updateSelf({ registeredBy: 'actor:claude-1', id: registered.id })
+    ).toThrowError(/not_found/);
+  });
+
+  it('treats malformed expiry rows as stale instead of live', () => {
+    const clock = makeClock('2026-06-15T12:00:00.000Z');
+    const { store, dbPath } = makeStoreWithPath(clock.now);
+    const registered = store.register({
+      registeredBy: 'actor:claude-1',
+      globalSessionId: 'node-a:sess-1',
+    });
+    const db = new Database(dbPath);
+    db.prepare('UPDATE agent_presence SET expires_at = ? WHERE id = ?').run(
+      'not-a-date',
+      registered.id
+    );
+    db.close();
+
+    expect(store.get(registered.id)).toBeNull();
+    expect(() =>
+      store.updateSelf({
+        registeredBy: 'actor:claude-1',
+        id: registered.id,
+        statusText: 'still here',
+      })
     ).toThrowError(/not_found/);
   });
 });

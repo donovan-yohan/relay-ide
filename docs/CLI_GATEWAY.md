@@ -63,7 +63,7 @@ relay-ide v1 inbox resolve --id <inbox-message-id> --json
 relay-ide v1 inbox ignore --id <inbox-message-id> --json
 relay-ide v1 roster list [--repo <repo-name-or-path>] [--work-context-id <work-context-id>] [--provider <agent-kind>] [--role <implementer|reviewer|orchestrator|context|collaborator>] [--node-id <node-id>] [--needs-attention] [--include-terminals] [--limit <n>] --json
 relay-ide v1 roster register --input-json '{"role":"implementer","useCase":"...","sessionId":"...","statusText":"...","capabilityHints":["..."],"ttlSeconds":120}' --json
-relay-ide v1 roster update-self --input-json '{"statusText":"...","needsAttention":true}' --json
+relay-ide v1 roster update-self --input-json '{"sessionId":"...","statusText":"...","needsAttention":true}' --json
 relay-ide v1 handoffs plan --input-json '{...}' --json
 relay-ide v1 handoffs create --input-json '{...}' --json
 relay-ide v1 handoffs status --run-id <run-id> --json
