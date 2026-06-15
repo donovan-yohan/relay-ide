@@ -90,7 +90,7 @@ Issue workflow: `backlog` (rough) → `refined` (scoped) → `todo` (planned) �
 - Strip `CLAUDECODE` from PTY env so Claude sessions nest.
 - New interactive agent and terminal sessions default to `relay-pty`; tmux is the explicit `tmux-compat` import/fallback backend. xterm.js remains the browser renderer.
 - 256KB scrollback cap per session; oldest trimmed FIFO.
-- Config: `~/.config/relay-ide/config.json` (global) or `./config.json` (local dev).
+- Config + all runtime SQLite live in the config dir: `~/.config/relay-ide/` (global), `~/.config/relay-ide/dev/<slug>-<hash>/` (`npm run dev`), never the repo checkout by default (#961). See `docs/SELF_HOSTING.md` § Runtime state directory and cleanup.
 - PIN reset: `relay-ide pin reset` on the host (interactive TTY).
 - Node.js ≥ 24.0.0 — `nvm use` from `.nvmrc`.
 - Relative imports end in `.js`; builtins use `node:` prefix.

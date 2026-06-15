@@ -23,6 +23,7 @@ import {
   normalizeTerminalBackend,
   resolveSessionSettings,
 } from './config.js';
+import { resolveSourceLaunchConfigPath } from './runtime-state-paths.js';
 import * as auth from './auth.js';
 import * as sessions from './sessions.js';
 import {
@@ -300,11 +301,24 @@ const cliGatewayActorRegistry = createCliGatewayActorRegistry();
 const cliGatewayHandshakeGrantRegistry =
   createCliGatewayHandshakeGrantRegistry();
 
-// When run via CLI bin, config lives in ~/.config/relay-ide/
-// When run directly (development), fall back to local config.json
+// When run via the CLI bin or the dev runner, RELAY_IDE_CONFIG is set
+// explicitly. When run directly from source (e.g. `node dist/server/index.js`),
+// default the config — and therefore every runtime SQLite store beside it — to
+// a per-checkout app-data directory instead of the repo root, so runtime state
+// never spills into the checkout (#961). See server/runtime-state-paths.ts.
+const sourceLaunchConfig = resolveSourceLaunchConfigPath(
+  path.join(__dirname, '..', '..'),
+  { fileName: 'config.json', namespace: 'source' }
+);
 const CONFIG_PATH =
-  process.env.RELAY_IDE_CONFIG ||
-  path.join(__dirname, '..', '..', 'config.json');
+  process.env.RELAY_IDE_CONFIG || sourceLaunchConfig.configPath;
+if (!process.env.RELAY_IDE_CONFIG && sourceLaunchConfig.legacyConfigPath) {
+  logger.warn(
+    'Ignoring legacy repo-root config %s; runtime state now lives at %s. Move the old file there or set RELAY_IDE_CONFIG to keep using it (#961).',
+    sourceLaunchConfig.legacyConfigPath,
+    CONFIG_PATH
+  );
+}
 
 const DEFAULT_GITHUB_CLIENT_ID = 'Ov23lilheF3LelYSo0bu';
 

@@ -1,12 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import os from 'node:os';
 
 import {
   PortAllocator,
   upsertPortsInEnvFile,
 } from '../server/port-allocator.js';
+import {
+  pathHash,
+  relayAppDataDir,
+  resolveSourceLaunchConfigPath,
+  safePathSlug,
+} from '../server/runtime-state-paths.js';
 
 const DEV_BACKEND_PORT = 3457;
 const DEV_FRONTEND_PORT = 5173;
@@ -39,6 +44,13 @@ export interface DevModeOptions {
   frontendHost: string;
   backendTarget: string;
   configPath: string;
+  /**
+   * Legacy in-repo config (`config.dev.json`) that still exists on disk but is
+   * no longer the default (#961). Non-null only when ordinary `npm run dev`
+   * relocated the default to app-data yet found an old in-repo file; callers
+   * surface this so the user can migrate it. `null` otherwise.
+   */
+  legacyConfigPath: string | null;
   tmuxPrefix: string;
   portMapping: Record<string, number> | null;
 }
@@ -75,33 +87,6 @@ function normalizeTmuxPrefix(prefix: string | undefined): string | null {
   return sanitized.endsWith('-') ? sanitized : `${sanitized}-`;
 }
 
-function userConfigDir(
-  env: Record<string, string | undefined>,
-  homedir: string
-): string {
-  const xdgConfigHome = env.XDG_CONFIG_HOME?.trim();
-  return path.join(xdgConfigHome || path.join(homedir, '.config'), 'relay-ide');
-}
-
-function safePathSlug(inputPath: string): string {
-  return (
-    path
-      .basename(path.resolve(inputPath))
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40) || 'workspace'
-  );
-}
-
-function pathHash(inputPath: string): string {
-  return crypto
-    .createHash('sha256')
-    .update(path.resolve(inputPath))
-    .digest('hex')
-    .slice(0, 12);
-}
-
 export function resolveSelfHostConfigPath(
   packageRoot: string,
   options: ResolveSelfHostConfigPathOptions = {}
@@ -109,7 +94,7 @@ export function resolveSelfHostConfigPath(
   const env = options.env ?? process.env;
   const home = options.homedir ?? os.homedir();
   const stateDir = path.join(
-    userConfigDir(env, home),
+    relayAppDataDir(env, home),
     'self-host',
     `${safePathSlug(packageRoot)}-${pathHash(packageRoot)}`
   );
@@ -145,16 +130,32 @@ export async function resolveDevModeOptions(
   const packageRoot = path.resolve(params.packageRoot);
   const selfHost = isSelfHostRequested(argv, env);
   const explicitConfigPath = getArgValue(argv, '--config');
-  const configPath = path.resolve(
-    explicitConfigPath ??
-      (selfHost ? undefined : env.RELAY_IDE_CONFIG) ??
-      (selfHost
-        ? resolveSelfHostConfigPath(packageRoot, {
-            env,
-            homedir: params.homedir,
-          })
-        : path.join(packageRoot, 'config.dev.json'))
-  );
+
+  // Precedence: explicit `--config` > `RELAY_IDE_CONFIG` (non-self-host) >
+  // mode default. The ordinary-dev default now lives under app-data instead of
+  // `<repo>/config.dev.json` so runtime SQLite never spills into the checkout
+  // (#961). An existing in-repo `config.dev.json` is surfaced (not silently
+  // honored) via `legacyConfigPath` so the user can migrate or pin it.
+  let configPath: string;
+  let legacyConfigPath: string | null = null;
+  if (explicitConfigPath) {
+    configPath = path.resolve(explicitConfigPath);
+  } else if (!selfHost && env.RELAY_IDE_CONFIG) {
+    configPath = path.resolve(env.RELAY_IDE_CONFIG);
+  } else if (selfHost) {
+    configPath = path.resolve(
+      resolveSelfHostConfigPath(packageRoot, { env, homedir: params.homedir })
+    );
+  } else {
+    const resolved = resolveSourceLaunchConfigPath(packageRoot, {
+      fileName: 'config.dev.json',
+      namespace: 'dev',
+      env,
+      homedir: params.homedir,
+    });
+    configPath = resolved.configPath;
+    legacyConfigPath = resolved.legacyConfigPath;
+  }
 
   let portMapping: Record<string, number> | null = null;
   if (selfHost) {
@@ -209,6 +210,7 @@ export async function resolveDevModeOptions(
     frontendHost,
     backendTarget,
     configPath,
+    legacyConfigPath,
     tmuxPrefix:
       normalizeTmuxPrefix(env.RELAY_IDE_TMUX_PREFIX) ??
       (selfHost ? SELF_HOST_TMUX_PREFIX : DEV_TMUX_PREFIX),
