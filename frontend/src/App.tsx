@@ -33,8 +33,12 @@ import {
 import type { Repo, PullRequest, SessionSummary } from './lib/types.js';
 import { estimateTerminalDimensions } from './lib/utils.js';
 import { createSessionWithoutActivation } from './lib/session-utils.js';
-import { resolveSessionByKey, scopedSessionKey } from './lib/session-keys.js';
-import { killSession } from './lib/api.js';
+import {
+  resolveSessionByKey,
+  resolveSessionCloseTarget,
+  scopedSessionKey,
+} from './lib/session-keys.js';
+import { executeSessionKillAction } from './lib/actions/session-lifecycle.js';
 import {
   getMainWorkspaceSessions,
   getUtilityTerminalSessions,
@@ -401,11 +405,15 @@ function useUtilityTerminalHandlers({
         .getUtilityRailState(utilityRailStateKey);
       removeUtilityTerminal(utilityRailStateKey, sessionId);
       try {
-        const session = resolveSessionByKey(
+        const { sessionId: localSessionId, nodeId } = resolveSessionCloseTarget(
           useSessionsStore.getState().sessions,
           sessionId
         );
-        await killSession(session?.id ?? sessionId, session?.nodeId);
+        const result = await executeSessionKillAction({
+          id: localSessionId,
+          nodeId,
+        });
+        if (!result.ok) throw new Error(result.error.message);
         await useSessionsStore.getState().refreshAll();
       } catch (error) {
         useUiStore.setState({
