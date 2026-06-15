@@ -533,6 +533,10 @@ function clampTtl(value: unknown, fallback: number): number {
   return Math.min(PR_OVERSEER_TTL_MAX_SECONDS, Math.max(PR_OVERSEER_TTL_MIN_SECONDS, rounded));
 }
 
+function normalizeComparisonSha(value: string | undefined): string | undefined {
+  return value ? value.toLowerCase() : undefined;
+}
+
 /** Normalize a head SHA: hex only, lowercased, bounded. Returns undefined if empty/invalid. */
 export function normalizeHeadSha(value: unknown): string | undefined {
   const raw = optionalString(value);
@@ -839,7 +843,9 @@ export function computePrOverseerBlockers(input: {
   const pr = snapshot.pr;
   if (!pr) return [];
   const blockers: PrOverseerBlockerKind[] = [];
-  const observedHead = pr.headSha;
+  const observedHead = normalizeComparisonSha(pr.headSha);
+  const normalizedExpectedHead = normalizeComparisonSha(expectedHeadSha);
+  const normalizedCurrentHead = normalizeComparisonSha(currentHeadSha);
 
   const issueClosesOut = (): boolean => {
     if (!issue) return true; // no linked issue → nothing to cross-check
@@ -883,10 +889,9 @@ export function computePrOverseerBlockers(input: {
   // cross-fork PR whose head ref was deleted) is also divergence — the evidence
   // covers an UNKNOWN head and must never read as exact-head-current.
   const headDiverged =
-    (expectedHeadSha && observedHead && expectedHeadSha !== observedHead) ||
-    (currentHeadSha && observedHead && currentHeadSha !== observedHead) ||
-    (currentHeadSha && !observedHead) ||
-    (expectedHeadSha && !observedHead);
+    !observedHead ||
+    (normalizedExpectedHead && observedHead && normalizedExpectedHead !== observedHead) ||
+    (normalizedCurrentHead && observedHead && normalizedCurrentHead !== observedHead);
   if (headDiverged) blockers.push('stale-head');
 
   if (!issueClosesOut()) blockers.push('issue-closeout-mismatch');
@@ -900,20 +905,20 @@ export function derivePrOverseerStaleHeadRisk(
   opts: PrOverseerReadOptions = {}
 ): PrOverseerStaleHeadRisk {
   const now = Date.parse(nowIso);
-  const observedHeadSha = input.lastObservation?.snapshot.pr?.headSha;
-  const expectedHeadSha = input.expectedHeadSha;
-  const currentHeadSha = opts.currentHeadSha;
+  const observedHeadSha = normalizeComparisonSha(input.lastObservation?.snapshot.pr?.headSha);
+  const expectedHeadSha = normalizeComparisonSha(input.expectedHeadSha);
+  const currentHeadSha = normalizeComparisonSha(opts.currentHeadSha);
   const observedAt = input.lastObservation?.observedAt;
   const evidenceAgeSeconds =
     observedAt && !Number.isNaN(Date.parse(observedAt))
       ? Math.max(0, Math.round((now - Date.parse(observedAt)) / 1000))
       : undefined;
   const heartbeatExpired = Date.parse(input.heartbeat.expiresAt) <= now;
+  const hasPrSnapshot = Boolean(input.lastObservation?.snapshot.pr);
   const diverged = Boolean(
-    (expectedHeadSha && observedHeadSha && expectedHeadSha !== observedHeadSha) ||
-      (currentHeadSha && observedHeadSha && currentHeadSha !== observedHeadSha) ||
-      (currentHeadSha && !observedHeadSha) ||
-      (expectedHeadSha && !observedHeadSha)
+    (hasPrSnapshot && !observedHeadSha) ||
+      (expectedHeadSha && observedHeadSha && expectedHeadSha !== observedHeadSha) ||
+      (currentHeadSha && observedHeadSha && currentHeadSha !== observedHeadSha)
   );
   return {
     diverged,

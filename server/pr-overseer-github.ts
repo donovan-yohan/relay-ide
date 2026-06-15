@@ -282,11 +282,11 @@ async function fetchUnresolvedThreadCount(
     );
     const parsed = JSON.parse(stdout) as {
       data?: {
-        repository?: { pullRequest?: { reviewThreads?: { nodes?: Array<{ isResolved?: boolean }> } } };
+        repository?: { pullRequest?: { reviewThreads?: { nodes?: Array<{ isResolved?: boolean } | null> } } };
       };
     };
     const nodes = parsed?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
-    return nodes.filter((n) => n.isResolved === false).length;
+    return nodes.filter((n) => n?.isResolved === false).length;
   } catch {
     return 0;
   }

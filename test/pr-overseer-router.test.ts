@@ -155,6 +155,9 @@ describe('pr overseer router', () => {
     await req('POST', '/pr-overseers/pr-overseer:router-1/observe', {});
     const ok = await req('GET', `/pr-overseers/pr-overseer:router-1?currentHeadSha=${HEAD}`);
     expect(ok.body.prOverseer.status).toBe('ready');
+    const upper = await req('GET', `/pr-overseers/pr-overseer:router-1?currentHeadSha=${HEAD.toUpperCase()}`);
+    expect(upper.body.prOverseer.status).toBe('ready');
+    expect(upper.body.prOverseer.blockers).not.toContain('stale-head');
     const bad = await req('GET', `/pr-overseers/pr-overseer:router-1?currentHeadSha=${'c'.repeat(40)}`);
     expect(bad.body.prOverseer.status).toBe('blocked');
     expect(bad.body.prOverseer.handoff.ready).toBe(false);

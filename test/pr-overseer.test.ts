@@ -185,6 +185,33 @@ describe('pr overseer store', () => {
     expect(mismatched?.handoff.exactHeadEvidenceCurrent).toBe(false);
   });
 
+  it('treats caller-supplied currentHeadSha as case-insensitive', () => {
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    store.register(baseRegister);
+    store.observe('pr-overseer:test-1', {}, readyObservation());
+
+    const current = store.get('pr-overseer:test-1', { currentHeadSha: HEAD.toUpperCase() });
+    expect(current?.status).toBe('ready');
+    expect(current?.blockers).not.toContain('stale-head');
+    expect(current?.handoff.exactHeadEvidenceCurrent).toBe(true);
+  });
+
+  it('treats observe-updated expectedHeadSha as case-insensitive', () => {
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    store.register(baseRegister);
+
+    const record = store.observe(
+      'pr-overseer:test-1',
+      { expectedHeadSha: HEAD.toUpperCase() },
+      readyObservation()
+    );
+    expect(record.status).toBe('ready');
+    expect(record.blockers).not.toContain('stale-head');
+    expect(record.staleHeadRisk.expectedHeadSha).toBe(HEAD);
+  });
+
   it('a merged PR derives merged status', () => {
     const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
     const store = makeStore(clock.now);
@@ -319,18 +346,18 @@ describe('pr overseer store', () => {
     expect(record.staleHeadRisk.diverged).toBe(true);
   });
 
-  it('handoff is never ready without a confirmed observed head, even when status would be ready', () => {
+  it('blocks a successful observation without a confirmed observed head', () => {
     const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
     const store = makeStore(clock.now);
     store.register(baseRegister); // no expectedHeadSha
     const headless = readyObservation();
     delete headless.pr!.headSha;
     const record = store.observe('pr-overseer:test-1', {}, headless);
-    // No expected/current head asserted → no stale-head blocker → status ready,
-    // but the handoff gate must still be closed because the head is unverifiable.
-    expect(record.status).toBe('ready');
+    expect(record.status).toBe('blocked');
+    expect(record.blockers).toContain('stale-head');
     expect(record.handoff.ready).toBe(false);
     expect(record.handoff.exactHeadEvidenceCurrent).toBe(false);
+    expect(record.staleHeadRisk.diverged).toBe(true);
   });
 
   it('a closed-without-merge PR derives closed status with a none action', () => {
@@ -433,7 +460,10 @@ describe('computePrOverseerBlockers (pure)', () => {
 describe('gh pr observer', () => {
   const target = { ownerRepo: 'donovan-yohan/relay-ide', number: 1234, repoPath: '/repo' };
 
-  function execReturning(viewJson: unknown, threadsResolved = true): PrOverseerExec {
+  function execReturning(
+    viewJson: unknown,
+    threads: boolean | Array<{ isResolved?: boolean } | null> = true
+  ): PrOverseerExec {
     return async (file, execArgs) => {
       if (file === 'gh' && execArgs[0] === 'pr' && execArgs[1] === 'view') {
         return { stdout: JSON.stringify(viewJson), stderr: '' };
@@ -442,7 +472,13 @@ describe('gh pr observer', () => {
         return {
           stdout: JSON.stringify({
             data: {
-              repository: { pullRequest: { reviewThreads: { nodes: [{ isResolved: threadsResolved }] } } },
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    nodes: Array.isArray(threads) ? threads : [{ isResolved: threads }],
+                  },
+                },
+              },
             },
           }),
           stderr: '',
@@ -488,6 +524,29 @@ describe('gh pr observer', () => {
     expect(obs.reviews?.unresolvedThreadCount).toBe(1);
     expect(obs.botComments).toMatchObject({ count: 1, sources: ['coderabbitai[bot]'] });
     expect(obs.closingIssueNumbers).toEqual([960]);
+  });
+
+  it('ignores null GraphQL review-thread nodes when counting unresolved threads', async () => {
+    const observer = createGhPrObserver({
+      exec: execReturning(
+        {
+          number: 1234,
+          state: 'OPEN',
+          isDraft: false,
+          headRefOid: HEAD,
+          mergeable: 'MERGEABLE',
+          statusCheckRollup: [],
+          latestReviews: [],
+          comments: [],
+          closingIssuesReferences: [{ number: 960 }],
+        },
+        [null, { isResolved: true }, { isResolved: false }, {}, null]
+      ),
+    });
+
+    const obs = await observer(target);
+    expect(obs.ok).toBe(true);
+    expect(obs.reviews?.unresolvedThreadCount).toBe(1);
   });
 
   it('degrades to ok:false when gh is missing', async () => {
