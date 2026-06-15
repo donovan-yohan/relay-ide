@@ -236,6 +236,8 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'workflow-runs.get',
     'automation-runs.list',
     'automation-runs.get',
+    'pr-overseer.list',
+    'pr-overseer.get',
     'work-context-messages.list',
     'work-context-messages.show',
     'work-context-messages.query',
@@ -348,6 +350,9 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'automation-runs.register',
     'automation-runs.observe',
     'automation-runs.retire',
+    'pr-overseer.register',
+    'pr-overseer.observe',
+    'pr-overseer.retire',
     'work-context-messages.append',
   ]);
 
@@ -513,6 +518,8 @@ test('allows only the MVP actor command and route identity pairs', () => {
     { command: 'workflow-runs.get', expected: 'workflow-runs.get' },
     { command: 'automation-runs.list', expected: 'automation-runs.list' },
     { command: 'automation-runs.get', expected: 'automation-runs.get' },
+    { command: 'pr-overseer.list', expected: 'pr-overseer.list' },
+    { command: 'pr-overseer.get', expected: 'pr-overseer.get' },
     { command: 'roster.list', expected: 'roster.list' },
   ] as const;
 

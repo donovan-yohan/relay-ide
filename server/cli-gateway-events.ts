@@ -43,6 +43,7 @@ const REQUIRED_TOPIC_CAPABILITIES: Record<EventsSubscribeTopic, readonly string[
   'handoff-artifacts': ['context:read'],
   'workflow-runs': ['context:read'],
   'automation-runs': ['context:read'],
+  'pr-overseer': ['context:read'],
 };
 
 export interface CliGatewayEventsHooks {
@@ -75,7 +76,8 @@ function isMetadataTopic(topic: EventsSubscribeTopic): topic is CliGatewayMetada
     topic === 'work-context-artifacts' ||
     topic === 'handoff-artifacts' ||
     topic === 'workflow-runs' ||
-    topic === 'automation-runs'
+    topic === 'automation-runs' ||
+    topic === 'pr-overseer'
   );
 }
 

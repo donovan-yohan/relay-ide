@@ -140,6 +140,11 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'automation-runs.retire': 'retire automation/watchdog run',
   'automation-runs.list': 'list automation/watchdog runs',
   'automation-runs.get': 'automation/watchdog run details',
+  'pr-overseer.register': 'register pr/check/review overseer',
+  'pr-overseer.observe': 'observe pr checks/reviews/mergeability',
+  'pr-overseer.retire': 'retire pr overseer',
+  'pr-overseer.list': 'list pr overseers',
+  'pr-overseer.get': 'pr overseer details + handoff readiness',
   'roster.list': 'list active agent roster',
   'roster.register': 'register self-declared agent presence',
   'roster.updateSelf': 'update self-declared agent presence',
@@ -209,6 +214,9 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'automation-runs.register',
   'automation-runs.observe',
   'automation-runs.retire',
+  'pr-overseer.register',
+  'pr-overseer.observe',
+  'pr-overseer.retire',
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
@@ -246,6 +254,8 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('handoff-artifacts.')) return ['work-context'];
   if (name.startsWith('workflow-runs.')) return ['work-context'];
   if (name.startsWith('automation-runs.'))
+    return ['work-context', 'repo', 'session'];
+  if (name.startsWith('pr-overseer.'))
     return ['work-context', 'repo', 'session'];
   if (name.startsWith('roster.')) return ['repo', 'work-context', 'session'];
   if (name.startsWith('context.')) return ['work-context', 'session'];

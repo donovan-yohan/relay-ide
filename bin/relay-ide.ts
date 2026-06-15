@@ -1505,6 +1505,8 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workflow-runs.get',
   'automation-runs.list',
   'automation-runs.get',
+  'pr-overseer.list',
+  'pr-overseer.get',
   'roster.list',
 ]);
 
@@ -4710,6 +4712,95 @@ async function runGatewayAutomationRuns(gatewayArgs: string[]): Promise<never> {
   });
 }
 
+function prOverseerListSearch(runArgs: string[]): string {
+  const query = new URLSearchParams();
+  for (const [flag, key] of [
+    ['--work-context-id', 'workContextId'],
+    ['--repo-path', 'repoPath'],
+    ['--owner-repo', 'ownerRepo'],
+    ['--status', 'status'],
+    ['--orchestrator', 'orchestrator'],
+    ['--limit', 'limit'],
+  ] as const) {
+    const value = gatewayArg(runArgs, flag);
+    if (value) query.set(key, value);
+  }
+  if (runArgs.includes('--include-retired')) query.set('includeRetired', 'true');
+  return query.toString();
+}
+
+async function runGatewayPrOverseer(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const runArgs = gatewayArgs.slice(2);
+  if (subcommand === 'register') {
+    const input = parseGatewayInputObject('pr-overseer.register', runArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'pr-overseer.register',
+      pathName: '/pr-overseers',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('pr-overseer.register', result), 0);
+  }
+  if (subcommand === 'observe') {
+    const id = gatewayArg(runArgs, '--id') ?? runArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid('pr-overseer.observe', '--id is required');
+    const input = parseGatewayInputObject('pr-overseer.observe', runArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'pr-overseer.observe',
+      pathName: `/pr-overseers/${encodeURIComponent(id)}/observe`,
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('pr-overseer.observe', result), 0);
+  }
+  if (subcommand === 'retire') {
+    const id = gatewayArg(runArgs, '--id') ?? runArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid('pr-overseer.retire', '--id is required');
+    const reason = gatewayArg(runArgs, '--reason');
+    const retiredBy = gatewayArg(runArgs, '--retired-by');
+    const body: Record<string, unknown> = {};
+    if (reason) body['reason'] = reason;
+    if (retiredBy) body['retiredBy'] = retiredBy;
+    const result = await gatewayHttpJson({
+      commandName: 'pr-overseer.retire',
+      pathName: `/pr-overseers/${encodeURIComponent(id)}/retire`,
+      method: 'POST',
+      body,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('pr-overseer.retire', result), 0);
+  }
+  if (subcommand === 'list') {
+    const search = prOverseerListSearch(runArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'pr-overseer.list',
+      pathName: search ? `/pr-overseers?${search}` : '/pr-overseers',
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('pr-overseer.list', result), 0);
+  }
+  if (subcommand === 'get') {
+    const id = gatewayArg(runArgs, '--id') ?? runArgs[0];
+    if (!id || id.startsWith('--')) gatewayInvalid('pr-overseer.get', '--id is required');
+    const currentHeadSha = gatewayArg(runArgs, '--current-head-sha');
+    const query = currentHeadSha
+      ? `?currentHeadSha=${encodeURIComponent(currentHeadSha)}`
+      : '';
+    const result = await gatewayHttpJson({
+      commandName: 'pr-overseer.get',
+      pathName: `/pr-overseers/${encodeURIComponent(id)}${query}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('pr-overseer.get', result), 0);
+  }
+  gatewayInvalid('pr-overseer.get', 'unknown pr-overseer command', {
+    args: gatewayArgs,
+  });
+}
+
 async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const rosterArgs = gatewayArgs.slice(2);
@@ -4906,32 +4997,37 @@ async function runGatewayV1(): Promise<never> {
     );
   }
   if (!json) gatewayUsage();
-  if (top === 'nodes') return runGatewayNodes(gatewayArgs);
-  if (top === 'repos') return runGatewayRepos(gatewayArgs);
-  if (top === 'workspaces') return runGatewayWorkspaces(gatewayArgs);
-  if (top === 'worktrees') return runGatewayWorktrees(gatewayArgs);
-  if (top === 'sessions') return runGatewaySessions(gatewayArgs);
-  if (top === 'tickets') return runGatewayTickets(gatewayArgs);
-  if (top === 'branches') return runGatewayBranches(gatewayArgs);
-  if (top === 'files') return runGatewayFiles(gatewayArgs);
-  if (top === 'work-contexts') return runGatewayWorkContexts(gatewayArgs);
-  if (top === 'context') return runGatewayContext(gatewayArgs);
-  if (top === 'inbox') return runGatewayInbox(gatewayArgs);
-  if (top === 'handoffs') return runGatewayHandoffs(gatewayArgs);
-  if (top === 'work-context-messages')
-    return runGatewayWorkContextMessages(gatewayArgs);
-  if (top === 'work-context-artifacts')
-    return runGatewayWorkContextArtifacts(gatewayArgs);
-  if (top === 'handoff-artifacts')
-    return runGatewayHandoffArtifacts(gatewayArgs);
-  if (top === 'workflow-runs') return runGatewayWorkflowRuns(gatewayArgs);
-  if (top === 'automation-runs') return runGatewayAutomationRuns(gatewayArgs);
-  if (top === 'roster') return runGatewayRoster(gatewayArgs);
-  if (top === 'artifacts') return runGatewayArtifacts(gatewayArgs);
-  if (top === 'supervisor') return runGatewaySupervisor(gatewayArgs);
-  if (top === 'events') return runGatewayEvents(gatewayArgs);
-  if (top === 'settings') return runGatewaySettings(gatewayArgs);
-  if (top === 'webhooks') return runGatewayWebhooks(gatewayArgs);
+  // Top-level group → handler. All handlers take the full gateway argv and never
+  // return (each prints an envelope and exits). A table keeps this dispatch flat
+  // instead of an ever-growing if-chain.
+  const gatewayGroupHandlers: Record<string, (a: string[]) => Promise<never>> = {
+    nodes: runGatewayNodes,
+    repos: runGatewayRepos,
+    workspaces: runGatewayWorkspaces,
+    worktrees: runGatewayWorktrees,
+    sessions: runGatewaySessions,
+    tickets: runGatewayTickets,
+    branches: runGatewayBranches,
+    files: runGatewayFiles,
+    'work-contexts': runGatewayWorkContexts,
+    context: runGatewayContext,
+    inbox: runGatewayInbox,
+    handoffs: runGatewayHandoffs,
+    'work-context-messages': runGatewayWorkContextMessages,
+    'work-context-artifacts': runGatewayWorkContextArtifacts,
+    'handoff-artifacts': runGatewayHandoffArtifacts,
+    'workflow-runs': runGatewayWorkflowRuns,
+    'automation-runs': runGatewayAutomationRuns,
+    'pr-overseer': runGatewayPrOverseer,
+    roster: runGatewayRoster,
+    artifacts: runGatewayArtifacts,
+    supervisor: runGatewaySupervisor,
+    events: runGatewayEvents,
+    settings: runGatewaySettings,
+    webhooks: runGatewayWebhooks,
+  };
+  const groupHandler = top ? gatewayGroupHandlers[top] : undefined;
+  if (groupHandler) return groupHandler(gatewayArgs);
   gatewayInvalid('contract.list', 'unknown v1 gateway command', {
     args: gatewayArgs,
   });

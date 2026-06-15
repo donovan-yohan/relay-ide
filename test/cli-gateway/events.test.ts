@@ -22,6 +22,7 @@ const ALLOWED_TOPICS = [
   'handoff-artifacts',
   'workflow-runs',
   'automation-runs',
+  'pr-overseer',
 ] as const;
 
 type CapturedRequest = {
