@@ -32,8 +32,21 @@ const {
   frontendHost,
   backendTarget,
   configPath,
+  legacyConfigPath,
   tmuxPrefix,
 } = mode;
+
+// #961: runtime state (config + SQLite) now lives under app-data, not the repo
+// checkout. If a legacy in-repo config.dev.json is still present, surface it so
+// the user can migrate or pin it — we never read or delete it automatically.
+if (legacyConfigPath) {
+  console.warn(
+    `relay dev: ignoring legacy in-repo config ${legacyConfigPath}.\n` +
+      `  Runtime state now lives at ${path.dirname(configPath)} (see docs/SELF_HOSTING.md).\n` +
+      `  To keep old settings: move ${path.basename(legacyConfigPath)} (and any *.db files) there,\n` +
+      `  or run with RELAY_IDE_CONFIG=${legacyConfigPath} to pin the old location.`
+  );
+}
 
 const children = new Set<ChildProcess>();
 let shuttingDown = false;

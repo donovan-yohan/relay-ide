@@ -34,8 +34,26 @@ test('server index.ts uses correct path depth to reach dist/frontend/', async ()
     indexSource.includes("path.join(__dirname, '..', 'frontend')")
   ).toBeTruthy();
 
-  // Config fallback must also go up two levels
+  // #961: the from-source config fallback must NOT default into the repo root.
+  // It now resolves to a per-checkout app-data dir via resolveSourceLaunchConfigPath.
   expect(
     indexSource.includes("path.join(__dirname, '..', '..', 'config.json')")
-  ).toBeTruthy();
+  ).toBe(false);
+  expect(indexSource.includes('resolveSourceLaunchConfigPath')).toBe(true);
+});
+
+test('no package.json script pins RELAY_IDE_CONFIG to a repo-relative path (#961)', () => {
+  // A repo-relative RELAY_IDE_CONFIG (e.g. ./config.dev.json) anchors the config
+  // dir — and every SQLite store beside it — to npm's cwd = the checkout root,
+  // spilling runtime state into the repo. Scripts must either omit the var (use
+  // the app-data default) or compute an absolute path.
+  const pkg = JSON.parse(
+    fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')
+  ) as { scripts: Record<string, string> };
+
+  const offenders = Object.entries(pkg.scripts).filter(([, cmd]) =>
+    /RELAY_IDE_CONFIG=(\.|[^"'\s]*\$\{?PWD)/.test(cmd)
+  );
+
+  expect(offenders).toEqual([]);
 });

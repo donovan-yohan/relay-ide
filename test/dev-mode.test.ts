@@ -33,22 +33,93 @@ afterEach(() => {
 });
 
 describe('dev mode option resolution', () => {
-  it('keeps ordinary dev mode on fixed dev defaults with repo-local dev config', async () => {
-    const packageRoot = makeTmpDir();
+  it('keeps ordinary dev mode on fixed dev defaults but relocates config out of the checkout (#961)', async () => {
+    const home = makeTmpDir();
+    const xdgConfigHome = path.join(home, '.config');
+    const packageRoot = path.join(home, 'src', 'relay-ide');
+    fs.mkdirSync(packageRoot, { recursive: true });
 
     const options = await resolveDevModeOptions({
       argv: ['dev'],
-      env: {},
+      env: { XDG_CONFIG_HOME: xdgConfigHome },
       packageRoot,
-      homedir: packageRoot,
+      homedir: home,
     });
 
     expect(options.selfHost).toBe(false);
     expect(options.backendPort).toBe('3457');
     expect(options.frontendPort).toBe('5173');
-    expect(options.configPath).toBe(path.join(packageRoot, 'config.dev.json'));
     expect(options.tmuxPrefix).toBe('relay-dev-');
     expect(options.portMapping).toBeNull();
+    // Runtime state (config + the SQLite stores beside it) must not land in the
+    // checkout — the whole point of #961.
+    expect(options.configPath.startsWith(packageRoot)).toBe(false);
+    expect(
+      options.configPath.startsWith(path.join(xdgConfigHome, 'relay-ide', 'dev'))
+    ).toBe(true);
+    expect(options.configPath.endsWith('config.dev.json')).toBe(true);
+    expect(options.legacyConfigPath).toBeNull();
+  });
+
+  it('ordinary dev mode surfaces (but does not honor) a legacy in-repo config.dev.json (#961)', async () => {
+    const home = makeTmpDir();
+    const xdgConfigHome = path.join(home, '.config');
+    const packageRoot = path.join(home, 'src', 'relay-ide');
+    fs.mkdirSync(packageRoot, { recursive: true });
+    const legacy = path.join(packageRoot, 'config.dev.json');
+    fs.writeFileSync(legacy, '{}', 'utf8');
+
+    const options = await resolveDevModeOptions({
+      argv: ['dev'],
+      env: { XDG_CONFIG_HOME: xdgConfigHome },
+      packageRoot,
+      homedir: home,
+    });
+
+    // Default still moves out of the checkout; the old file is reported so the
+    // runner can warn, but it is never read or deleted.
+    expect(options.configPath.startsWith(packageRoot)).toBe(false);
+    expect(options.legacyConfigPath).toBe(legacy);
+    expect(fs.existsSync(legacy)).toBe(true);
+  });
+
+  it('ordinary dev mode honors an explicit RELAY_IDE_CONFIG', async () => {
+    const home = makeTmpDir();
+    const packageRoot = path.join(home, 'src', 'relay-ide');
+    const explicit = path.join(home, 'custom', 'config.dev.json');
+    fs.mkdirSync(packageRoot, { recursive: true });
+
+    const options = await resolveDevModeOptions({
+      argv: ['dev'],
+      env: {
+        XDG_CONFIG_HOME: path.join(home, '.config'),
+        RELAY_IDE_CONFIG: explicit,
+      },
+      packageRoot,
+      homedir: home,
+    });
+
+    expect(options.configPath).toBe(explicit);
+    expect(options.legacyConfigPath).toBeNull();
+  });
+
+  it('ordinary dev mode honors an explicit --config flag over RELAY_IDE_CONFIG', async () => {
+    const home = makeTmpDir();
+    const packageRoot = path.join(home, 'src', 'relay-ide');
+    const flagConfig = path.join(home, 'flag', 'config.dev.json');
+    fs.mkdirSync(packageRoot, { recursive: true });
+
+    const options = await resolveDevModeOptions({
+      argv: ['dev', '--config', flagConfig],
+      env: {
+        XDG_CONFIG_HOME: path.join(home, '.config'),
+        RELAY_IDE_CONFIG: path.join(home, 'env', 'config.dev.json'),
+      },
+      packageRoot,
+      homedir: home,
+    });
+
+    expect(options.configPath).toBe(flagConfig);
   });
 
   it('resolves self-host config outside the repo and gives each worktree a stable identity', () => {

@@ -34,7 +34,7 @@ The `dev` command starts the real Express/WebSocket backend under a supervisor a
 | Mode                 | Command                         | Backend                   | Frontend                  | Config                                                             | Tmux prefix   | Use when                                          |
 | -------------------- | ------------------------------- | ------------------------- | ------------------------- | ------------------------------------------------------------------ | ------------- | ------------------------------------------------- |
 | Production/global    | `relay-ide` or `relay-ide --bg` | `0.0.0.0:3456` by default | compiled `dist/frontend/` | `~/.config/relay-ide/config.json`                                  | `relay-ide-`  | Daily hosted Relay instance                       |
-| Ordinary source dev  | `npm run dev`                   | `127.0.0.1:3457`          | `127.0.0.1:5173`          | `./config.dev.json`                                                | `relay-dev-`  | Local source development outside production Relay |
+| Ordinary source dev  | `npm run dev`                   | `127.0.0.1:3457`          | `127.0.0.1:5173`          | `~/.config/relay-ide/dev/<slug>-<hash>/config.dev.json`            | `relay-dev-`  | Local source development outside production Relay |
 | Self-host source dev | `npm run dev:self`              | allocator-chosen          | allocator-chosen          | `~/.config/relay-ide/self-host/<worktree-slug>-<hash>/config.json` | `relay-self-` | Building Relay from inside Relay                  |
 
 Both dev modes set `RELAY_IDE_DEV_INSTANCE=1` and a mode-specific `RELAY_IDE_TMUX_PREFIX` for process isolation. They do not disable auth; use the normal first-run PIN setup or browser-session login. Self-host mode can also be selected by running the CLI entrypoint directly with `relay-ide dev --self-host` from a source checkout, or by setting `RELAY_IDE_SELF_HOST=1` for the dev command.
@@ -87,11 +87,69 @@ Supported dev override variables:
 | `RELAY_IDE_DEV_BACKEND_HOST`  | `127.0.0.1`                       | Backend bind host                                                                                                                        |
 | `RELAY_IDE_DEV_FRONTEND_HOST` | `127.0.0.1`                       | Vite bind host                                                                                                                           |
 | `RELAY_IDE_DEV_BACKEND_URL`   | `http://127.0.0.1:<backend-port>` | Vite proxy target                                                                                                                        |
-| `RELAY_IDE_CONFIG`            | `./config.dev.json`               | Ignored to avoid inherited production config; pass `--config <path>` for an explicit self-host config override                           |
+| `RELAY_IDE_CONFIG`            | `~/.config/relay-ide/dev/<slug>-<hash>/config.dev.json` | Ignored to avoid inherited production config; pass `--config <path>` for an explicit self-host config override         |
 | `RELAY_IDE_DEV_INSTANCE`      | `1`                               | Marks a dev server for non-security behavior such as restart reason and cleanup isolation; does not bypass auth                           |
 | `RELAY_IDE_TMUX_PREFIX`       | mode-specific                     | Overrides the tmux prefix after normalization                                                                                            |
 
 Invalid self-host port overrides are treated as unset, so the allocator remains the fallback instead of fixed ordinary-dev ports. If you override ports, the effective backend/frontend ports are still written to the worktree `.env` managed block. Generic parent-process `RELAY_IDE_CONFIG` and `RELAY_IDE_PORT` values are intentionally ignored in self-host mode; this prevents a child Relay launched from production Relay from reusing the production config or port by accident.
+
+## Runtime state directory and cleanup
+
+Relay keeps **all** runtime state — the config file plus every SQLite store
+beside it — in the *config directory*, i.e. `dirname(<the config path above>)`.
+The stores include `work-contexts.db`, `context-packets.db`, `workflow-runs.db`,
+`work-context-artifacts.db`, `work-context-messages.db`, `automation-runs.db`,
+`agent-presence.db`, `analytics.db`, `relay-state.db`, `ia.db`,
+`interventions.db`, `security-audit.db`, and their `*-wal` / `*-shm` siblings,
+plus `logs/`, `telemetry/`, and `worktree-meta/`.
+
+Because the config directory drives where these land, **no launch mode writes
+runtime DBs into a repo checkout by default** (#961):
+
+| Launch mode                              | Runtime-state directory                          |
+| ---------------------------------------- | ------------------------------------------------ |
+| `relay-ide` / `relay-ide hub` (prod)     | `~/.config/relay-ide/`                            |
+| `npm run dev`                            | `~/.config/relay-ide/dev/<slug>-<hash>/`         |
+| `npm run dev:backend` (split dev)        | `~/.config/relay-ide/dev/<slug>-<hash>/` (shares `npm run dev`) |
+| `npm run dev:self`                       | `~/.config/relay-ide/self-host/<slug>-<hash>/`   |
+| `npm start` / `node dist/server/index.js` (raw) | `~/.config/relay-ide/source/<slug>-<hash>/` |
+| explicit `RELAY_IDE_CONFIG` / `--config` | `dirname(<that path>)`                            |
+
+`<slug>-<hash>` is derived from the absolute checkout path, so each
+worktree gets its own isolated state and two same-named worktrees never collide.
+(`$XDG_CONFIG_HOME` replaces `~/.config` when set.)
+
+### Inspect
+
+```bash
+# Where is this dev instance's runtime state?
+ls -la "$(dirname "${RELAY_IDE_CONFIG:-$HOME/.config/relay-ide/dev/}"/*/config.dev.json 2>/dev/null | head -1)" 2>/dev/null
+# Or just list everything Relay has created under app-data:
+ls -la ~/.config/relay-ide ~/.config/relay-ide/dev/* ~/.config/relay-ide/self-host/* 2>/dev/null
+```
+
+### Cleanup / migration
+
+To reclaim space or reset a dev instance, stop the instance first, then delete
+its directory — this is **per-checkout**, so it never touches production state:
+
+```bash
+rm -rf ~/.config/relay-ide/dev/<slug>-<hash>      # or .../self-host/<slug>-<hash>
+```
+
+If you have a legacy `config.dev.json` (and stray `*.db` files) in a repo root
+from before #961, `npm run dev` logs a one-time warning and ignores the old
+file. Migrate it without losing data by **moving** it into the new directory:
+
+```bash
+DEST=~/.config/relay-ide/dev/<slug>-<hash>
+mkdir -p "$DEST"
+mv config.dev.json *.db *.db-wal *.db-shm "$DEST"/   # from the repo root
+```
+
+Or discard it if the dogfood state is disposable (`rm` the same files). Never
+blanket-`rm` runtime DBs you have not first confirmed are stale — they hold real
+WorkContext / context-packet / workflow-run history.
 
 ## Running inside production Relay
 
