@@ -55,6 +55,7 @@ export type PrOverseerStatus = (typeof PR_OVERSEER_STATUSES)[number];
  */
 export const PR_OVERSEER_BLOCKER_KINDS = [
   'pr-draft',
+  'checks-unknown',
   'checks-pending',
   'checks-failed',
   'review-changes-requested',
@@ -192,6 +193,12 @@ export interface PrObservationBotComments {
   sources: string[];
 }
 
+export interface PrObservationClosingIssueRef {
+  ownerRepo: string;
+  number: number;
+  url?: string | undefined;
+}
+
 export interface PrObservationPr {
   number: number;
   url?: string | undefined;
@@ -221,6 +228,8 @@ export interface PrObservation {
   botComments?: PrObservationBotComments | undefined;
   /** Issue numbers the PR will auto-close on merge (`closingIssuesReferences`). */
   closingIssueNumbers?: number[] | undefined;
+  /** Repo-qualified issue refs the PR will auto-close on merge. Prefer over number-only matching. */
+  closingIssueRefs?: PrObservationClosingIssueRef[] | undefined;
 }
 
 // ─── Persisted record ──────────────────────────────────────────────────────────
@@ -560,10 +569,14 @@ function parsePositiveInt(value: unknown, field: string): number {
 
 function parseOwnerRepo(value: unknown, field: string): string {
   const raw = optionalString(value);
-  if (!raw || !/^[^/\s]+\/[^/\s]+$/.test(raw)) {
+  if (!raw || !isOwnerRepo(raw)) {
     throw new PrOverseerValidationError(`${field} must be in owner/repo form`, { field });
   }
   return raw;
+}
+
+function isOwnerRepo(value: string): boolean {
+  return /^[^/\s]+\/[^/\s]+$/.test(value);
 }
 
 function parseOwner(value: unknown): PrOverseerOwner {
@@ -745,6 +758,33 @@ function boundInt(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
 
+function boundClosingIssueNumbers(value: unknown, limit: number): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const numbers: number[] = [];
+  for (const item of value.slice(0, limit)) {
+    if (typeof item === 'number' && Number.isInteger(item) && item > 0) numbers.push(item);
+  }
+  return numbers;
+}
+
+function boundClosingIssueRefs(value: unknown, limit: number): PrObservationClosingIssueRef[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const refs: PrObservationClosingIssueRef[] = [];
+  for (const item of value.slice(0, limit)) {
+    if (!isRecord(item)) continue;
+    const ownerRepo = optionalString(item.ownerRepo);
+    const number = item.number;
+    if (!ownerRepo || !isOwnerRepo(ownerRepo)) continue;
+    if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) continue;
+    refs.push({
+      ownerRepo,
+      number,
+      ...(stringField(item, 'url') ? { url: stringField(item, 'url') } : {}),
+    });
+  }
+  return refs.length ? refs : undefined;
+}
+
 /**
  * Clamp an observer-produced snapshot to bounded, redaction-safe shape. The
  * observer is trusted Relay code, but this guarantees no unbounded array or stray
@@ -797,11 +837,10 @@ export function boundPrObservation(raw: PrObservation): PrObservation {
       sources: boundNames(raw.botComments.sources, PR_OVERSEER_MAX_NAMES),
     };
   }
-  if (Array.isArray(raw.closingIssueNumbers)) {
-    out.closingIssueNumbers = raw.closingIssueNumbers
-      .filter((n): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0)
-      .slice(0, PR_OVERSEER_MAX_NAMES);
-  }
+  const closingIssueNumbers = boundClosingIssueNumbers(raw.closingIssueNumbers, PR_OVERSEER_MAX_NAMES);
+  if (closingIssueNumbers) out.closingIssueNumbers = closingIssueNumbers;
+  const closingIssueRefs = boundClosingIssueRefs(raw.closingIssueRefs, PR_OVERSEER_MAX_NAMES);
+  if (closingIssueRefs) out.closingIssueRefs = closingIssueRefs;
   return out;
 }
 
@@ -837,9 +876,10 @@ export function computePrOverseerBlockers(input: {
   snapshot: PrObservation;
   expectedHeadSha?: string | undefined;
   issue?: PrOverseerIssueRef | undefined;
+  prOwnerRepo?: string | undefined;
   currentHeadSha?: string | undefined;
 }): PrOverseerBlockerKind[] {
-  const { snapshot, expectedHeadSha, issue, currentHeadSha } = input;
+  const { snapshot, expectedHeadSha, issue, prOwnerRepo, currentHeadSha } = input;
   const pr = snapshot.pr;
   if (!pr) return [];
   const blockers: PrOverseerBlockerKind[] = [];
@@ -849,6 +889,13 @@ export function computePrOverseerBlockers(input: {
 
   const issueClosesOut = (): boolean => {
     if (!issue) return true; // no linked issue → nothing to cross-check
+    const expectedOwnerRepo = (issue.ownerRepo ?? prOwnerRepo)?.toLowerCase();
+    const qualified = snapshot.closingIssueRefs ?? [];
+    if (expectedOwnerRepo && qualified.length > 0) {
+      return qualified.some(
+        (ref) => ref.number === issue.number && ref.ownerRepo.toLowerCase() === expectedOwnerRepo
+      );
+    }
     const closing = snapshot.closingIssueNumbers ?? [];
     return closing.includes(issue.number);
   };
@@ -865,7 +912,11 @@ export function computePrOverseerBlockers(input: {
 
   // OPEN PR.
   if (pr.isDraft) blockers.push('pr-draft');
-  if (snapshot.checks) {
+  if (!snapshot.checks) {
+    // Successful partial observations are still unknown check evidence. Unknown
+    // is not green; keep the run out of release handoff until checks are observed.
+    blockers.push('checks-unknown');
+  } else {
     if (snapshot.checks.failing > 0) blockers.push('checks-failed');
     else if (snapshot.checks.pending > 0) blockers.push('checks-pending');
   }
@@ -960,6 +1011,7 @@ export function derivePrOverseerStatus(
     snapshot,
     ...(input.expectedHeadSha ? { expectedHeadSha: input.expectedHeadSha } : {}),
     ...(input.issue ? { issue: input.issue } : {}),
+    prOwnerRepo: input.pr.ownerRepo,
     ...(opts.currentHeadSha ? { currentHeadSha: opts.currentHeadSha } : {}),
   });
   const prState = snapshot.pr?.state;
@@ -1066,12 +1118,15 @@ export function derivePrOverseerRequiredNextAction(
   }
   // observing (soft blockers only)
   const soft = firstBlocker(blockers, [
+    'checks-unknown',
     'checks-pending',
     'mergeability-unknown',
     'review-required',
     'pr-draft',
   ]);
   switch (soft) {
+    case 'checks-unknown':
+      return make('re-observe', 'operator', 'Check evidence is missing; re-run pr-overseer observe before handoff.');
     case 'checks-pending':
       return make('await-checks', 'none', 'Checks are still running; wait for the rollup to settle.');
     case 'mergeability-unknown':

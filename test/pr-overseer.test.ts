@@ -123,6 +123,21 @@ describe('pr overseer store', () => {
     expect(record.requiredNextAction).toMatchObject({ action: 'await-review', actor: 'release-train' });
   });
 
+  it('successful OPEN observation without check evidence does not derive ready handoff', () => {
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    store.register(baseRegister);
+    const obs = readyObservation();
+    delete obs.checks;
+
+    const record = store.observe('pr-overseer:test-1', { summary: 'partial observer snapshot' }, obs);
+
+    expect(record.status).toBe('observing');
+    expect(record.blockers).toEqual(['checks-unknown']);
+    expect(record.handoff.ready).toBe(false);
+    expect(record.requiredNextAction).toMatchObject({ action: 're-observe', actor: 'operator' });
+  });
+
   it('successful OPEN observation with unknown review decision does not derive ready handoff', () => {
     const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
     const store = makeStore(clock.now);
@@ -263,6 +278,21 @@ describe('pr overseer store', () => {
     expect(record.status).toBe('blocked');
     expect(record.blockers).toContain('issue-closeout-mismatch');
     expect(record.requiredNextAction).toMatchObject({ action: 'fix-issue-closeout', actor: 'implementer' });
+  });
+
+  it('issue auto-close compares ownerRepo when qualified closeout refs are available', () => {
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    store.register(baseRegister);
+    const obs = readyObservation();
+    obs.closingIssueNumbers = [960];
+    obs.closingIssueRefs = [{ ownerRepo: 'someone-else/relay-ide', number: 960 }];
+
+    const record = store.observe('pr-overseer:test-1', {}, obs);
+
+    expect(record.status).toBe('blocked');
+    expect(record.blockers).toContain('issue-closeout-mismatch');
+    expect(record.handoff.ready).toBe(false);
   });
 
   it('issue auto-close mismatch on a MERGED PR surfaces a verify action', () => {
@@ -569,7 +599,13 @@ describe('gh pr observer', () => {
           { __typename: 'StatusContext', state: 'SUCCESS', context: 'ci/legacy' },
         ],
         comments: [{ author: { login: 'coderabbitai[bot]' } }, { author: { login: 'human' } }],
-        closingIssuesReferences: [{ number: 960 }],
+        closingIssuesReferences: [
+          {
+            number: 960,
+            url: 'https://github.com/donovan-yohan/relay-ide/issues/960',
+            repository: { name: 'relay-ide', owner: { login: 'donovan-yohan' } },
+          },
+        ],
         updatedAt: '2026-06-15T00:00:00.000Z',
       }, false),
     });
@@ -581,6 +617,42 @@ describe('gh pr observer', () => {
     expect(obs.reviews?.unresolvedThreadCount).toBe(1);
     expect(obs.botComments).toMatchObject({ count: 1, sources: ['coderabbitai[bot]'] });
     expect(obs.closingIssueNumbers).toEqual([960]);
+    expect(obs.closingIssueRefs).toEqual([
+      {
+        ownerRepo: 'donovan-yohan/relay-ide',
+        number: 960,
+        url: 'https://github.com/donovan-yohan/relay-ide/issues/960',
+      },
+    ]);
+  });
+
+  it('missing gh statusCheckRollup remains missing check evidence, not observed zero checks', async () => {
+    const observer = createGhPrObserver({
+      exec: execReturning(
+        {
+          number: 1234,
+          state: 'OPEN',
+          isDraft: false,
+          headRefOid: HEAD,
+          mergeable: 'MERGEABLE',
+          reviewDecision: 'APPROVED',
+          latestReviews: [{ author: { login: 'reviewer' }, state: 'APPROVED' }],
+          comments: [],
+          closingIssuesReferences: [{ number: 960 }],
+        }
+      ),
+    });
+    const obs = await observer(target);
+    expect(obs.ok).toBe(true);
+    expect(obs.checks).toBeUndefined();
+
+    const clock = makeClock(Date.parse('2026-06-15T00:00:00.000Z'));
+    const store = makeStore(clock.now);
+    store.register(baseRegister);
+    const record = store.observe('pr-overseer:test-1', {}, obs);
+    expect(record.status).toBe('observing');
+    expect(record.blockers).toEqual(['checks-unknown']);
+    expect(record.handoff.ready).toBe(false);
   });
 
   it('null GraphQL review-thread nodes fail closed instead of defaulting to zero unresolved threads', async () => {

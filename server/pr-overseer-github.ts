@@ -7,6 +7,7 @@ import {
   type PrObservation,
   type PrObservationBotComments,
   type PrObservationChecks,
+  type PrObservationClosingIssueRef,
   type PrObservationReviews,
   type PrOverseerMergeableState,
   type PrOverseerPrState,
@@ -79,8 +80,17 @@ interface GhPrView {
   reviews?: GhReview[];
   statusCheckRollup?: GhStatusCheck[];
   comments?: GhComment[];
-  closingIssuesReferences?: Array<{ number?: number }>;
+  closingIssuesReferences?: Array<{
+    number?: number;
+    url?: string;
+    repository?: { name?: string; owner?: { login?: string } | null } | null;
+  }>;
   updatedAt?: string;
+}
+
+interface ClosingIssuesSummary {
+  closingIssueNumbers: number[];
+  closingIssueRefs: PrObservationClosingIssueRef[];
 }
 
 const PR_VIEW_FIELDS = [
@@ -175,8 +185,9 @@ function checkName(check: GhStatusCheck): string {
   return check.name ?? check.context ?? 'check';
 }
 
-function summarizeChecks(rollup: GhStatusCheck[] | undefined): PrObservationChecks {
-  const checks = Array.isArray(rollup) ? rollup : [];
+function summarizeChecks(rollup: GhStatusCheck[] | undefined): PrObservationChecks | undefined {
+  if (!Array.isArray(rollup)) return undefined;
+  const checks = rollup;
   let passing = 0;
   let failing = 0;
   let pending = 0;
@@ -229,6 +240,23 @@ function summarizeBotComments(comments: GhComment[] | undefined): PrObservationB
     if (!sources.includes(login) && sources.length < PR_OVERSEER_MAX_NAMES) sources.push(login);
   }
   return { count, sources };
+}
+
+function summarizeClosingIssues(refs: GhPrView['closingIssuesReferences']): ClosingIssuesSummary {
+  const summary: ClosingIssuesSummary = { closingIssueNumbers: [], closingIssueRefs: [] };
+  if (!Array.isArray(refs)) return summary;
+  for (const ref of refs.slice(0, PR_OVERSEER_MAX_NAMES)) {
+    if (typeof ref.number === 'number') summary.closingIssueNumbers.push(ref.number);
+    const owner = ref.repository?.owner?.login;
+    const repo = ref.repository?.name;
+    if (!owner || !repo || typeof ref.number !== 'number') continue;
+    summary.closingIssueRefs.push({
+      ownerRepo: `${owner}/${repo}`,
+      number: ref.number,
+      ...(ref.url ? { url: ref.url } : {}),
+    });
+  }
+  return summary;
 }
 
 function classifyGhError(err: unknown): PrOverseerUnavailableReason {
@@ -366,6 +394,9 @@ export function createGhPrObserver(options: GhPrObserverOptions = {}): PrObserve
       }
     }
 
+    const checks = summarizeChecks(raw.statusCheckRollup);
+    const closingIssues = summarizeClosingIssues(raw.closingIssuesReferences);
+
     return {
       ok: true,
       fetchedAt,
@@ -381,14 +412,11 @@ export function createGhPrObserver(options: GhPrObserverOptions = {}): PrObserve
         ...(raw.mergeStateStatus ? { mergeStateStatus: raw.mergeStateStatus } : {}),
         ...(raw.updatedAt ? { updatedAt: raw.updatedAt } : {}),
       },
-      checks: summarizeChecks(raw.statusCheckRollup),
+      ...(checks ? { checks } : {}),
       reviews: summarizeReviews(raw.reviewDecision, raw.latestReviews, unresolvedThreadCount),
       botComments: summarizeBotComments(raw.comments),
-      closingIssueNumbers: Array.isArray(raw.closingIssuesReferences)
-        ? raw.closingIssuesReferences
-            .map((ref) => ref.number)
-            .filter((n): n is number => typeof n === 'number')
-        : [],
+      closingIssueNumbers: closingIssues.closingIssueNumbers,
+      closingIssueRefs: closingIssues.closingIssueRefs,
     };
   };
 }
