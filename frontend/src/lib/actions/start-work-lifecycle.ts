@@ -772,7 +772,11 @@ async function executeWorkflow(args: {
       return gatewayError(args.command, resolvedPrompt.unsupported);
     }
 
-    const branchName = args.branch?.name;
+    const branchName = args.branch?.name ?? args.pr?.head;
+    const resolvedBranch =
+      branchName !== undefined
+        ? { ...(args.branch ?? {}), name: branchName }
+        : args.branch;
     const resolvedWorktree = await resolveWorktree(
       args.repo.repoPath,
       branchName,
@@ -805,7 +809,7 @@ async function executeWorkflow(args: {
       projectWorkflowOutput({
         session,
         repo: args.repo,
-        branch: args.branch,
+        branch: resolvedBranch,
         pr: args.pr,
         resolvedWorktree,
         worktreePolicy: args.worktree,

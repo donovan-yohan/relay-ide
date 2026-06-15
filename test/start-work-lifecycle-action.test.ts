@@ -302,6 +302,43 @@ describe('tickets.startWork + branches.openSession frontend action contract', ()
       expect(body.worktreePath).toBe('/repo/.worktrees/feat-foo');
     });
 
+    it('derives the branch name from pr.head for PR-only create-if-missing inputs', async () => {
+      const createWorktree: CreateWorktreeDep = vi.fn(async () =>
+        gatewayOk('worktrees.create', {
+          branchName: 'feature/from-pr',
+          mountainName: 'everest',
+          worktreePath: '/repo/.worktrees/feature-from-pr',
+        })
+      );
+      const createSession: CreateSessionDep = vi.fn(async () =>
+        sessionSummary({ branchName: undefined })
+      );
+      const result = await executeBranchOpenSessionAction(
+        {
+          repo: { repoPath: '/repo' },
+          pr: { number: 42, head: 'feature/from-pr', base: 'nightly' },
+          worktree: { mode: 'create-if-missing' },
+        },
+        { createWorktree, createSession }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(createWorktree).toHaveBeenCalledWith({
+        repoPath: '/repo',
+        branch: 'feature/from-pr',
+      });
+      const body = (createSession as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0] as CreateSessionBody;
+      expect(body.branchName).toBe('feature/from-pr');
+      if (!result.ok) throw new Error('expected ok envelope');
+      expect(result.data.branch).toMatchObject({ name: 'feature/from-pr' });
+      expect(result.data.pr).toMatchObject({
+        number: 42,
+        head: 'feature/from-pr',
+        base: 'nightly',
+      });
+    });
+
     it('fails closed when create-if-missing worktree create fails (surfaces the worktree reason)', async () => {
       const createWorktree: CreateWorktreeDep = vi.fn(async () =>
         executeWorktreeCreateFailure()
