@@ -1,5 +1,8 @@
 import { RELAY_NODE_LINK_PROTOCOL_VERSION } from './relay-node-protocol.js';
-import { RELAY_SECURITY_POLICY_VERSION } from './security-policy.js';
+import {
+  RELAY_SECURITY_POLICY_VERSION,
+  type RelayCapabilityBit,
+} from './security-policy.js';
 import {
   CONTEXT_PACKET_KINDS,
   SESSION_INBOX_MESSAGE_STATES,
@@ -72,6 +75,11 @@ export type RelayCliGatewayCommand =
   | 'automation-runs.retire'
   | 'automation-runs.list'
   | 'automation-runs.get'
+  | 'pr-overseer.register'
+  | 'pr-overseer.observe'
+  | 'pr-overseer.retire'
+  | 'pr-overseer.list'
+  | 'pr-overseer.get'
   | 'roster.list'
   | 'roster.register'
   | 'roster.updateSelf'
@@ -1505,8 +1513,25 @@ export const EVENTS_SUBSCRIBE_TOPICS = [
   'handoff-artifacts',
   'workflow-runs',
   'automation-runs',
+  'pr-overseer',
 ] as const;
 export type EventsSubscribeTopic = (typeof EVENTS_SUBSCRIBE_TOPICS)[number];
+
+export const EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES = {
+  sessions: ['session:read'],
+  nodes: ['session:read'],
+  audit: ['session:read', 'tab:intervention:read'],
+  context: ['context:read'],
+  inbox: ['inbox:read'],
+  // Attention/session-state is a derived projection of the session read model,
+  // gated like `sessions`/`roster.list` on `session:read`.
+  attention: ['session:read'],
+  'work-context-artifacts': ['context:read'],
+  'handoff-artifacts': ['context:read'],
+  'workflow-runs': ['context:read'],
+  'automation-runs': ['context:read'],
+  'pr-overseer': ['context:read'],
+} as const satisfies Record<EventsSubscribeTopic, readonly RelayCapabilityBit[]>;
 
 const eventsSubscribeInputSchema: RelayJsonSchema = {
   title: 'EventsSubscribeInput',
@@ -2591,6 +2616,169 @@ const automationRunListOutputDataSchema: RelayJsonSchema = {
     automationRuns: { type: 'array', items: automationRunRecordSchema },
   },
   required: ['automationRuns'],
+};
+
+// ─── PR / check / review overseer (#960) ───────────────────────────────────────
+
+const prOverseerPrRefSchema: RelayJsonSchema = {
+  title: 'PrOverseerPrRef',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ownerRepo: stringSchema,
+    number: { type: 'number', minimum: 1 },
+    url: stringSchema,
+  },
+  required: ['ownerRepo', 'number'],
+};
+
+const prOverseerIssueRefSchema: RelayJsonSchema = {
+  title: 'PrOverseerIssueRef',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ownerRepo: stringSchema,
+    number: { type: 'number', minimum: 1 },
+    url: stringSchema,
+  },
+  required: ['number'],
+};
+
+const prOverseerSessionRefSchema: RelayJsonSchema = {
+  title: 'PrOverseerSessionRef',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    sessionId: stringSchema,
+    globalSessionId: stringSchema,
+  },
+};
+
+const prOverseerRecordSchema: RelayJsonSchema = {
+  title: 'PrOverseerRecord',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    name: stringSchema,
+    owner: { type: 'object', additionalProperties: true },
+    repoPath: stringSchema,
+    workContextId: stringSchema,
+    session: prOverseerSessionRefSchema,
+    issue: prOverseerIssueRefSchema,
+    pr: prOverseerPrRefSchema,
+    expectedHeadSha: stringSchema,
+    status: stringSchema,
+    blockers: { type: 'array', items: stringSchema },
+    requiredNextAction: { type: 'object', additionalProperties: true },
+    handoff: { type: 'object', additionalProperties: true },
+    staleHeadRisk: { type: 'object', additionalProperties: true },
+    heartbeat: { type: 'object', additionalProperties: true },
+    cleanup: { type: 'object', additionalProperties: true },
+    version: { type: 'number', minimum: 1 },
+    redaction: { type: 'object', additionalProperties: true },
+  },
+  required: [
+    'id',
+    'name',
+    'owner',
+    'pr',
+    'status',
+    'blockers',
+    'requiredNextAction',
+    'handoff',
+    'staleHeadRisk',
+    'heartbeat',
+    'cleanup',
+    'version',
+    'redaction',
+  ],
+};
+
+const prOverseerRegisterInputSchema: RelayJsonSchema = {
+  title: 'PrOverseerRegisterInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    name: stringSchema,
+    owner: { type: 'object', additionalProperties: true },
+    repoPath: stringSchema,
+    workContextId: stringSchema,
+    session: prOverseerSessionRefSchema,
+    issue: prOverseerIssueRefSchema,
+    pr: prOverseerPrRefSchema,
+    expectedHeadSha: stringSchema,
+    links: { type: 'object', additionalProperties: true },
+    ttlSeconds: { type: 'number', minimum: 30, maximum: 604800 },
+    observationSummary: stringSchema,
+  },
+  required: ['name', 'owner', 'pr'],
+};
+
+const prOverseerObserveInputSchema: RelayJsonSchema = {
+  title: 'PrOverseerObserveInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    summary: stringSchema,
+    expectedHeadSha: stringSchema,
+    ttlSeconds: { type: 'number', minimum: 30, maximum: 604800 },
+  },
+};
+
+const prOverseerRetireInputSchema: RelayJsonSchema = {
+  title: 'PrOverseerRetireInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    reason: stringSchema,
+    retiredBy: stringSchema,
+  },
+};
+
+const prOverseerListInputSchema: RelayJsonSchema = {
+  title: 'PrOverseerListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workContextId: stringSchema,
+    repoPath: stringSchema,
+    ownerRepo: stringSchema,
+    status: {
+      type: 'string',
+      enum: ['pending', 'observing', 'blocked', 'ready', 'merged', 'closed', 'stale', 'retired'],
+    },
+    orchestrator: stringSchema,
+    includeRetired: booleanSchema,
+    limit: { type: 'number', minimum: 1, maximum: 100 },
+  },
+};
+
+const prOverseerGetInputSchema: RelayJsonSchema = {
+  title: 'PrOverseerGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema, currentHeadSha: stringSchema },
+  required: ['id'],
+};
+
+const prOverseerOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { prOverseer: prOverseerRecordSchema },
+  required: ['prOverseer'],
+};
+
+const prOverseerListOutputDataSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    prOverseers: { type: 'array', items: prOverseerRecordSchema },
+  },
+  required: ['prOverseers'],
 };
 
 const rosterAttentionSchema: RelayJsonSchema = {
@@ -5185,6 +5373,108 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['context:read'],
     inputSchema: automationRunGetInputSchema,
     outputSchema: okOutput('AutomationRunGetOutput', automationRunOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'pr-overseer.register',
+    cli: ['relay-ide', 'v1', 'pr-overseer', 'register', '--input-json', '<json>', '--json'],
+    summary:
+      'Link a Relay agent session/issue/WorkContext to the GitHub PR it is shipping so checks, reviews, mergeability, and issue closeout can be observed and surfaced as structured blockers + a required next action.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: prOverseerRegisterInputSchema,
+    outputSchema: okOutput('PrOverseerRegisterOutput', prOverseerOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'pr-overseer.observe',
+    cli: ['relay-ide', 'v1', 'pr-overseer', 'observe', '--id', '<id>', '--input-json', '<json>', '--json'],
+    summary:
+      "Observe the linked PR's current GitHub checks/reviews/mergeability/issue-closeout, store an exact-head evidence snapshot, refresh the heartbeat, and return the derived status, blockers, stale-head risk, required next action, and handoff readiness.",
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: prOverseerObserveInputSchema,
+    outputSchema: okOutput('PrOverseerObserveOutput', prOverseerOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'pr-overseer.retire',
+    cli: ['relay-ide', 'v1', 'pr-overseer', 'retire', '--id', '<id>', '--json'],
+    summary:
+      'Retire a PR overseer as the safe, idempotent terminal path (PR merged / abandoned); retiring an already-retired overseer is a no-op.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: prOverseerRetireInputSchema,
+    outputSchema: okOutput('PrOverseerRetireOutput', prOverseerOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'pr-overseer.list',
+    cli: ['relay-ide', 'v1', 'pr-overseer', 'list', '--json'],
+    summary:
+      'List PR overseers with derived status (pending/observing/blocked/ready/merged/closed/stale/retired) and blockers, filterable by WorkContext, repo, owner/repo, status, or orchestrator. Reads are GitHub-free (last stored evidence + read-time staleness).',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: prOverseerListInputSchema,
+    outputSchema: okOutput('PrOverseerListOutput', prOverseerListOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'pr-overseer.get',
+    cli: ['relay-ide', 'v1', 'pr-overseer', 'get', '--id', '<id>', '--json'],
+    summary:
+      'Get one PR overseer by id with the last stored exact-head evidence and derived status/blockers/handoff. Pass --current-head-sha to assert the head you are about to QA/merge matches the evidence (stale-head safety).',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: prOverseerGetInputSchema,
+    outputSchema: okOutput('PrOverseerGetOutput', prOverseerOutputDataSchema),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',

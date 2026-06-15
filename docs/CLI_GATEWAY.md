@@ -69,6 +69,11 @@ relay-ide v1 automation-runs observe --id <automation-run-id> --input-json '{"su
 relay-ide v1 automation-runs retire --id <automation-run-id> [--reason '<why>'] [--retired-by '<who>'] --json
 relay-ide v1 automation-runs list [--work-context-id <id>] [--repo-path <path>] [--status <active|stale|cleanup-needed|retired>] [--kind <watchdog|cron|automation|oversight|manual>] [--orchestrator <name>] [--include-retired] [--limit <n>] --json
 relay-ide v1 automation-runs get --id <automation-run-id> --json
+relay-ide v1 pr-overseer register --input-json '{"name":"...","owner":{"orchestrator":"ebi"},"pr":{"ownerRepo":"donovan-yohan/relay-ide","number":1234},"issue":{"number":960},"session":{"sessionId":"..."},"workContextId":"...","expectedHeadSha":"<sha>","ttlSeconds":600}' --json
+relay-ide v1 pr-overseer observe --id <pr-overseer-id> --input-json '{"summary":"...","expectedHeadSha":"<sha>"}' --json
+relay-ide v1 pr-overseer retire --id <pr-overseer-id> [--reason '<why>'] [--retired-by '<who>'] --json
+relay-ide v1 pr-overseer list [--work-context-id <id>] [--repo-path <path>] [--owner-repo <owner/repo>] [--status <pending|observing|blocked|ready|merged|closed|stale|retired>] [--orchestrator <name>] [--include-retired] [--limit <n>] --json
+relay-ide v1 pr-overseer get --id <pr-overseer-id> [--current-head-sha <sha>] --json
 relay-ide v1 handoffs plan --input-json '{...}' --json
 relay-ide v1 handoffs create --input-json '{...}' --json
 relay-ide v1 handoffs status --run-id <run-id> --json
@@ -85,7 +90,7 @@ relay-ide v1 supervisor send-key --target-ids <session-id-1,session-id-2> --key 
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --json
 relay-ide v1 supervisor submit --id <session-id-or-global-id> --text 'multi-line prompt' [--clear-input] [--paste] [--dry-run] --json
 relay-ide v1 supervisor submit --target-ids <session-id-1,session-id-2> --json
-relay-ide v1 events subscribe --topic <sessions|nodes|audit|context|inbox|attention|work-context-artifacts|handoff-artifacts|workflow-runs|automation-runs> [--work-context-id <id>] [--session-id <id>] [--global-session-id <id>] [--repo-path <path>] [--cursor <cursor>] [--max-events <n>] --json
+relay-ide v1 events subscribe --topic <sessions|nodes|audit|context|inbox|attention|work-context-artifacts|handoff-artifacts|workflow-runs|automation-runs|pr-overseer> [--work-context-id <id>] [--session-id <id>] [--global-session-id <id>] [--repo-path <path>] [--cursor <cursor>] [--max-events <n>] --json
 relay-ide v1 settings get --json
 relay-ide v1 settings update --input-json '{"key":"defaultYolo","value":true,"confirmRiskyWrite":true}' --json
 relay-ide v1 webhooks status --json
@@ -119,7 +124,7 @@ Relay exposes agent collaboration as generic, Relay-owned primitives — not a H
 
 ### Cursor / resume / gap / backpressure (metadata topics)
 
-`inbox`, `attention`, `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs` share one in-memory metadata bus, so they share the same resume contract:
+`inbox`, `attention`, `context`, `work-context-artifacts`, `handoff-artifacts`, `workflow-runs`, `automation-runs`, and `pr-overseer` share one in-memory metadata bus, so they share the same resume contract:
 
 - **Cursor.** Every live and replayed event frame carries an opaque `cursor`. Persist the last-seen cursor; on reconnect pass it as `--cursor <cursor>`. Replayed frames are tagged `replay: true`.
 - **Resume.** With a known cursor, the hub replays only the buffered frames *after* it, then continues live. Scope filters (`--session-id`, `--global-session-id`, `--work-context-id`, `--repo-path`) apply to replayed frames too.
@@ -154,6 +159,43 @@ How operator crons/watchdogs should register and retire themselves:
 4. **Find cleanup work.** `automation-runs list --status cleanup-needed` (or `--status stale`) is the read surface that makes dead targets and quiet watchdogs obvious; `get`/`list` always reflect live target liveness. Capabilities: `context:read`.
 
 Reads are side-effect free — `get`/`list` overlay a fresh liveness probe and derive status without bumping `version`. Target liveness is resolved against the **local** session registry in this slice; remote-node targets resolve `unknown` (cross-node target liveness is a documented follow-up). Like `workflow-runs`, run lifecycle frames publish on the metadata event bus under `events subscribe --topic automation-runs` (`automation-run.registered` / `.observed` / `.status-changed` / `.retired`), metadata-only and redaction-safe (no raw payloads, transcripts, or secrets; secret-shaped register/observe fields are rejected with `AUTOMATION_RUN_VALIDATION_FAILED`).
+
+## PR / check / review overseer (#960, refs #956)
+
+`pr-overseer.*` links a Relay-driven implementation session to the GitHub PR it is shipping and turns the manual "poll the PR, read the checks/reviews, decide what's blocking, steer the agent, hand off for release" loop into a Relay-owned product surface. The overnight #956 run only worked because Ebi did that polling by hand; this primitive is the Relay-owned replacement. It is **observe + evidence only**: it never merges, approves, or mutates the PR — the actual QA/review/merge decision stays with the authorized tester/release agent (Codex or other). It is intentionally distinct from `handoff-artifacts.*` (durable stage evidence an agent authors) and `automation-runs.*` (the watcher driving it); a watchdog cron can register an `automation-run` whose linked PR is overseen by a `pr-overseer`.
+
+A record carries: `id` (Relay-owned), `name`, `owner.orchestrator`, optional `repoPath`/`workContextId`, optional `session` (the implementation session being steered), optional `issue` (the issue being shipped), required `pr` (`{ ownerRepo, number, url? }`), optional `expectedHeadSha` (the head the session believes it pushed), `links`, `heartbeat` (TTL + `expiresAt`), `lastObservation` (the last **successful** GitHub snapshot), `lastFetch` (the most recent fetch attempt, success or failure), `cleanup`, timestamps/`version`, and a `redaction` block. `status`, `blockers`, `requiredNextAction`, `handoff`, and `staleHeadRisk` are **derived at read time**, never written directly.
+
+`observe` is the only command that hits GitHub: it reads the PR's checks/reviews/mergeability/issue-closeout through the operator's existing `gh` CLI (no PATs plumbed through Relay), stores a bounded exact-head snapshot, refreshes the heartbeat, and returns the full derived view. `get`/`list` are **GitHub-free** — they replay the last stored evidence plus read-time staleness, so reads never hit rate limits. The observer never throws: a missing/unauthenticated `gh` or a deleted PR degrades to a failed-fetch snapshot (`lastFetch.ok: false`) that keeps the last good evidence rather than destroying it.
+
+Derived `status` (precedence `retired > pending > merged > closed > blocked > stale > observing > ready`):
+
+- `pending` — registered, never successfully observed.
+- `observing` — open PR with only **soft** blockers (checks still running, draft, mergeability still computing, review not yet requested). In progress; not yet handoff-ready.
+- `blocked` — open PR with a **hard** blocker: `checks-failed`, `review-changes-requested`, `unresolved-review-threads`, `merge-conflict`, `stale-head` (the evidence head diverged from the session's `expectedHeadSha` or a caller-asserted `currentHeadSha`), or `issue-closeout-mismatch` (the PR does not reference the linked issue as auto-closing).
+- `ready` — open PR, zero blockers, exact-head evidence current and fresh. The **only** state where a handoff is safe.
+- `merged` / `closed` — terminal PR states (a merged PR still surfaces `issue-closeout-mismatch` so the operator verifies the issue actually closed).
+- `stale` — the heartbeat lapsed **or** the last fetch failed: the evidence could not be confirmed current, so the run is never reported `ready` until a successful re-observe. This is the **no-silent-stale-evidence** guard.
+- `retired` — terminal; set by `pr-overseer.retire`.
+
+`requiredNextAction` (`{ action, actor, summary, blockers[] }`) is the structured steering directive: e.g. `fix-checks`/`address-review`/`resync-head` → `actor: implementer`; `await-checks`/`await-mergeability` → `actor: none` (wait); `hand-off-to-release-train` → `actor: release-train`; `re-observe`/`observe-first` → `actor: operator`. `handoff` (`{ ready, exactHeadEvidenceCurrent, evidenceHeadSha, evidenceAgeSeconds, blockedBy[], recommendedActor }`) is the **safe-handoff gate**: a tester/release agent must treat `ready: false` as "do not QA/review/merge yet". To make the exact-head check explicit, a release agent passes `pr-overseer get --id <id> --current-head-sha <the-head-it-is-about-to-merge>`; a mismatch against the stored evidence forces `blocked` + `stale-head` so evidence for the wrong head can never read as `ready`. Bot comments (CodeRabbit/Gemini/etc.) are summarized as informational evidence (counts + bot logins only, never bodies) and **never gate** readiness, so the overseer does not depend on any bot being present.
+
+How a release train uses it:
+
+1. **Register at PR open.** The implementer (or its orchestrator) calls `pr-overseer register` with the `pr`, the `issue` being shipped, the `session` id, the `workContextId`, and optionally the `expectedHeadSha` it just pushed. Capability: `context:write`.
+2. **Observe each tick.** `pr-overseer observe --id <id>` refreshes the GitHub snapshot + heartbeat and returns the derived blockers + next action. An orchestrator reads `requiredNextAction` to steer the implementation session (e.g. via `supervisor submit`). Capability: `context:write`.
+3. **Hand off only when `handoff.ready` and exact-head-current.** A tester/release agent calls `pr-overseer get --id <id> --current-head-sha <head>`; it proceeds to QA/review/merge **only** if `handoff.ready === true` for that exact head. The primitive itself never merges. Capabilities: `context:read`.
+4. **Retire when done.** On merge/abandon, `pr-overseer retire --id <id> --reason '<why>'` (idempotent). Capability: `context:write`.
+
+Run lifecycle frames publish on the metadata event bus under `events subscribe --topic pr-overseer` (`pr-overseer.registered` / `.observed` / `.status-changed` / `.retired`), metadata-only and redaction-safe (ids/refs/derived state only — no PR bodies, transcripts, or secrets; secret-shaped register/observe fields are rejected with `PR_OVERSEER_VALIDATION_FAILED`). Reads resolve against the **local** store; cross-node aggregation is a documented follow-up.
+
+### Release-train roles (#956)
+
+The same record is consumed by every framework — Relay hard-codes no Claude-only behavior. The roles below are collaboration **hints** (matching the `roster.list` default map), not authorization boundaries:
+
+- **Ebi / Hermes (orchestrator).** Owns the loop: registers the overseer, runs `observe` on a cadence (often as a registered `automation-run` watchdog), reads `requiredNextAction`, and steers the right session — without hand-rolled GitHub polling or cookie scripts.
+- **Claude (implementer).** The Relay-launched session shipping the PR. Acts on `actor: implementer` next actions (`fix-checks`, `address-review`, `resync-head`, `fix-issue-closeout`) and pushes; the next `observe` re-checks exact-head evidence.
+- **Codex / tester / release agent (release-train).** Consumes `handoff.ready` + `--current-head-sha` as the safe gate to QA/review and merge through its own authorized path. It never relies on the overseer to merge, and it refuses to act on stale, failed, or unknown evidence (`handoff.ready: false`).
 
 ## Envelope
 
@@ -280,6 +322,7 @@ Write allowlist:
 | `relay-ide v1 inbox ack/resolve/ignore ... --actor-token <token>`                 | `inbox.ack` / `inbox.resolve` / `inbox.ignore`                                                   | `inbox:write`       | Applies state transitions; message/work-context scope is checked before mutation.                                                                                    |
 | `relay-ide v1 roster register/update-self --input-json '{...}' --actor-token <token>`            | `roster.register` / `roster.updateSelf`                                                           | `context:write`     | Self-declared presence overlay (#964). Allowlisted safe fields only; unknown/secret-shaped keys rejected; heartbeat-expiring (TTL); `update-self` is owner-scoped and fails closed `NOT_FOUND`/`FORBIDDEN`.                          |
 | `relay-ide v1 automation-runs register/observe/retire ... --actor-token <token>` | `automation-runs.register` / `automation-runs.observe` / `automation-runs.retire`                | `context:write`     | Watchdog/cron run registry (#959). Secret-shaped fields rejected; WorkContext scope checked when the run carries one; retire is idempotent. Reads (`automation-runs.list`/`automation-runs.get`) require `context:read`. |
+| `relay-ide v1 pr-overseer register/observe/retire ... --actor-token <token>`     | `pr-overseer.register` / `pr-overseer.observe` / `pr-overseer.retire`                            | `context:write`     | PR/check/review overseer (#960). Secret-shaped fields rejected; `workContextId` immutable across re-register and scope checked when the record carries one; `observe` fetches GitHub via the operator's `gh` and never merges; retire is idempotent. Reads (`pr-overseer.list`/`pr-overseer.get`) require `context:read`. |
 | `relay-ide v1 work-context-artifacts publish/pin/unpin ... --actor-token <token>` | `work-context-artifacts.publish` / `work-context-artifacts.pin` / `work-context-artifacts.unpin` | `artifact:write`    | Writes artifact-store entries only for matched WorkContext/repo/task metadata; artifact id routes re-check stored metadata before mutation.                          |
 | `relay-ide v1 handoff-artifacts attach ... --actor-token <token>`                 | `handoff-artifacts.attach`                                                                       | `artifact:write`    | Uses the same artifact-store write lane as `work-context-artifacts.publish`.                                                                                         |
 | `relay-ide v1 handoff-artifacts list --work-context-id <id> --json`               | `handoff-artifacts.list`                                                                         | `session:read`      | Reads bounded PipelineHandoffArtifact metadata; requires `context:read` and enforces exact WorkContext scope when present.                                           |

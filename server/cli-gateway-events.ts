@@ -2,10 +2,15 @@ import type express from 'express';
 import type { Request, Response, RequestHandler } from 'express';
 import {
   EVENTS_SUBSCRIBE_TOPICS,
+  EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
   type EventsSubscribeTopic,
 } from '../shared/cli-gateway-contract.js';
 import type { TabControlEvent } from '../shared/control-state.js';
 import type { HubNodeStatusEvent } from './hub-node-registry.js';
+import {
+  authenticatedCliGatewayActorCredential,
+  isCliGatewayActorTokenRequest,
+} from './cli-gateway-actor-auth.js';
 import {
   eventMatchesFilter,
   type CliGatewayEventBus,
@@ -30,20 +35,12 @@ function parseCapabilityHeader(value: string | undefined): Set<string> {
   );
 }
 
-const REQUIRED_TOPIC_CAPABILITIES: Record<EventsSubscribeTopic, readonly string[]> = {
-  sessions: ['session:read'],
-  nodes: ['session:read'],
-  audit: ['session:read', 'tab:intervention:read'],
-  context: ['context:read'],
-  inbox: ['inbox:read'],
-  // Attention/session-state is a derived projection of the session read model,
-  // gated like `sessions`/`roster.list` on `session:read`.
-  attention: ['session:read'],
-  'work-context-artifacts': ['context:read'],
-  'handoff-artifacts': ['context:read'],
-  'workflow-runs': ['context:read'],
-  'automation-runs': ['context:read'],
-};
+function validatedRequestCapabilities(req: Request): Set<string> {
+  const actorCredential = authenticatedCliGatewayActorCredential(req);
+  if (actorCredential) return new Set(actorCredential.capabilities);
+  if (isCliGatewayActorTokenRequest(req)) return new Set();
+  return parseCapabilityHeader(req.header('x-relay-capabilities'));
+}
 
 export interface CliGatewayEventsHooks {
   /** Subscribe to session lifecycle (create/end). Return an unsubscribe fn. */
@@ -75,7 +72,8 @@ function isMetadataTopic(topic: EventsSubscribeTopic): topic is CliGatewayMetada
     topic === 'work-context-artifacts' ||
     topic === 'handoff-artifacts' ||
     topic === 'workflow-runs' ||
-    topic === 'automation-runs'
+    topic === 'automation-runs' ||
+    topic === 'pr-overseer'
   );
 }
 
@@ -202,8 +200,8 @@ export function createCliGatewayEventsRouter(
     }
     const topic: EventsSubscribeTopic = topicParam;
 
-    const capabilities = parseCapabilityHeader(req.header('x-relay-capabilities'));
-    const required = REQUIRED_TOPIC_CAPABILITIES[topic];
+    const capabilities = validatedRequestCapabilities(req);
+    const required = EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES[topic];
     const missing = required.filter((cap) => !capabilities.has(cap));
     if (missing.length > 0) {
       res.status(403).json({

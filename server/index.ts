@@ -173,6 +173,7 @@ import {
 } from './features/work-context-artifact-router.js';
 import { createWorkflowRunRouter } from './features/workflow-run-router.js';
 import { createAutomationRunRouter } from './features/automation-run-router.js';
+import { createPrOverseerRouter } from './features/pr-overseer-router.js';
 import { createAgentRosterRouter } from './features/agent-roster-router.js';
 import { buildAttentionEventInput } from '../shared/agent-roster.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
@@ -196,6 +197,11 @@ import {
   resolveAutomationRunTargetLiveness,
   type AutomationRunLivenessResolver,
 } from '../shared/automation-run.js';
+import {
+  initPrOverseerStore,
+  type PrOverseerStore,
+} from './pr-overseer.js';
+import { createGhPrObserver } from './pr-overseer-github.js';
 import {
   createAnchorFileFetcher,
   createAnchorContentFetcher,
@@ -221,7 +227,11 @@ import type {
   WorkspaceSettings,
 } from './types.js';
 import type { SessionLane } from '../shared/session-lane.js';
-import type { RelayCliGatewayError } from '../shared/cli-gateway-contract.js';
+import {
+  EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
+  type EventsSubscribeTopic,
+  type RelayCliGatewayError,
+} from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeLocalGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
 import { resolveFramework } from './types.js';
 import { semverLessThan, clampDimension } from './utils.js';
@@ -270,6 +280,7 @@ import {
   attachAuthenticatedCliGatewayActorCredential,
   authenticatedCliGatewayActorCredential,
   bearerActorToken,
+  CLI_GATEWAY_READ_SCOPE_TASK_REF,
   classifyCliGatewayCredentialLane,
   cliGatewayActorFailure,
   cliGatewayCorrelationId,
@@ -1480,6 +1491,18 @@ function initAutomationRunStoreBestEffort(
   }
 }
 
+function initPrOverseerStoreBestEffort(configDir: string): PrOverseerStore | null {
+  try {
+    return initPrOverseerStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'PR overseer store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 function initWorkContextMessageStoreBestEffort(
   configDir: string
 ): WorkContextMessageStore | null {
@@ -1744,6 +1767,7 @@ async function main(): Promise<void> {
     initWorkContextArtifactStoreBestEffort(configDir);
   const workflowRunStore = initWorkflowRunStoreBestEffort(configDir);
   const automationRunStore = initAutomationRunStoreBestEffort(configDir);
+  const prOverseerStore = initPrOverseerStoreBestEffort(configDir);
   const workContextMessageStore =
     initWorkContextMessageStoreBestEffort(configDir);
   const cliGatewayEventBus = createCliGatewayEventBus();
@@ -2016,6 +2040,31 @@ async function main(): Promise<void> {
       return;
     }
     res.status(401).json(auth.cliGatewayOrBrowserAuthRequiredChallenge());
+  };
+
+  const requireCliGatewayEventsAuth: express.RequestHandler = (req, res, next) => {
+    if (!isCliGatewayActorTokenRequest(req)) {
+      requireCliGatewayAuth(req, res, next);
+      return;
+    }
+    const topic = typeof req.query['topic'] === 'string' ? req.query['topic'] : undefined;
+    const capabilities =
+      topic && Object.prototype.hasOwnProperty.call(EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES, topic)
+        ? EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES[topic as EventsSubscribeTopic]
+        : (['session:read'] as const);
+    const workContextId = typeof req.query['workContextId'] === 'string' ? req.query['workContextId'].trim() : '';
+    const sessionId = typeof req.query['sessionId'] === 'string' ? req.query['sessionId'].trim() : '';
+    const globalSessionId = typeof req.query['globalSessionId'] === 'string' ? req.query['globalSessionId'].trim() : '';
+    requireCliGatewayActorAuth(
+      capabilities,
+      {
+        taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+        ...(workContextId ? { workContextIds: [workContextId] } : {}),
+        ...(sessionId ? { sessionIds: [sessionId] } : {}),
+        ...(globalSessionId ? { globalSessionIds: [globalSessionId] } : {}),
+      },
+      'events.subscribe'
+    )(req, res, next);
   };
 
   const requireCliGatewayWriteAuth: express.RequestHandler = (
@@ -2462,6 +2511,39 @@ async function main(): Promise<void> {
       events: cliGatewayEventBus,
     })
   );
+  // pr-overseer (#960, refs #956): link a Relay agent session/issue/WorkContext to
+  // the GitHub PR it is shipping and observe checks/reviews/mergeability/issue
+  // closeout. The gh-CLI-backed observer fetches a fresh snapshot only on
+  // `observe` (reads stay GitHub-free); it never throws, so a missing/unauth `gh`
+  // degrades to a failed-fetch snapshot rather than breaking the registry. No
+  // merge/approve action exists here — the primitive observes and emits exact-head
+  // evidence; the release decision stays with the authorized tester/release agent.
+  const prObserver = createGhPrObserver();
+  const prOverseerScopeFromParams = (
+    req: express.Request
+  ): { workContextIds?: string[] } | undefined => {
+    const id = typeof req.params['id'] === 'string' ? req.params['id'] : '';
+    const run = id && prOverseerStore ? prOverseerStore.get(id) : null;
+    return run?.workContextId ? { workContextIds: [run.workContextId] } : undefined;
+  };
+  app.use(
+    createPrOverseerRouter({
+      requireAuth: requireCliGatewayAuth,
+      requireReadAuth: {
+        list: requireCliGatewayAuthForActorCommand('pr-overseer.list', {
+          scopeForRequest: workContextScopeFromQuery,
+        }),
+        get: requireCliGatewayAuthForActorCommand('pr-overseer.get', {
+          scopeForRequest: prOverseerScopeFromParams,
+        }),
+      },
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
+      store: prOverseerStore,
+      observer: prObserver,
+      workContextStore,
+      events: cliGatewayEventBus,
+    })
+  );
   // roster.list (#953): derived, redacted active-agent roster. Scoped on
   // `session:read` like sessions.list; when the caller filters by
   // ?workContextId= the actor credential must also carry that WorkContext
@@ -2589,7 +2671,7 @@ async function main(): Promise<void> {
   registerFileRangeContentFetcher(anchorContentFetcher);
   app.use(
     createCliGatewayEventsRouter(express, {
-      cliGatewayAuth: requireCliGatewayAuth,
+      cliGatewayAuth: requireCliGatewayEventsAuth,
       eventBus: cliGatewayEventBus,
       hooks: {
         onSessionCreate: (cb) => sessions.onSessionCreate(cb),
@@ -4885,6 +4967,7 @@ async function main(): Promise<void> {
         workContextArtifactStore?.close();
         workflowRunStore?.close();
         automationRunStore?.close();
+        prOverseerStore?.close();
         workContextMessageStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
@@ -4974,6 +5057,7 @@ async function main(): Promise<void> {
     workContextArtifactStore?.close();
     workflowRunStore?.close();
     automationRunStore?.close();
+    prOverseerStore?.close();
     workContextMessageStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {

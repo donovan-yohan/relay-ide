@@ -236,6 +236,9 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'workflow-runs.get',
     'automation-runs.list',
     'automation-runs.get',
+    'pr-overseer.list',
+    'pr-overseer.get',
+    'events.subscribe',
     'work-context-messages.list',
     'work-context-messages.show',
     'work-context-messages.query',
@@ -298,6 +301,37 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
   expect(
     classifyCliGatewayCredentialLane(
       req({
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'events.subscribe',
+      }),
+      'events.subscribe'
+    )
+  ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'nodes.list',
+      }),
+      'events.subscribe'
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'POST',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'events.subscribe',
+      }),
+      'events.subscribe'
+    )
+  ).toBe('unsupported-route');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
         method: 'POST',
         authorization: `Bearer ${token}`,
         actorMarker: 'v1',
@@ -348,6 +382,9 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'automation-runs.register',
     'automation-runs.observe',
     'automation-runs.retire',
+    'pr-overseer.register',
+    'pr-overseer.observe',
+    'pr-overseer.retire',
     'work-context-messages.append',
   ]);
 
@@ -433,6 +470,9 @@ test('maps write actor commands to required Relay capability bits', () => {
   expect(cliGatewayActorCommandCapabilities('workflow-runs.get')).toEqual([
     'context:read',
   ]);
+  expect(cliGatewayActorCommandCapabilities('events.subscribe')).toEqual([
+    'context:read',
+  ]);
   expect(cliGatewayActorCommandCapabilities('workflow-runs.publish')).toEqual([
     'context:write',
   ]);
@@ -513,6 +553,8 @@ test('allows only the MVP actor command and route identity pairs', () => {
     { command: 'workflow-runs.get', expected: 'workflow-runs.get' },
     { command: 'automation-runs.list', expected: 'automation-runs.list' },
     { command: 'automation-runs.get', expected: 'automation-runs.get' },
+    { command: 'pr-overseer.list', expected: 'pr-overseer.list' },
+    { command: 'pr-overseer.get', expected: 'pr-overseer.get' },
     { command: 'roster.list', expected: 'roster.list' },
   ] as const;
 

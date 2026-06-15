@@ -1,13 +1,27 @@
-import express from 'express';
+import express, { type RequestHandler } from 'express';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import {
+  attachAuthenticatedCliGatewayActorCredential,
+  bearerActorToken,
+  cliGatewayActorFailure,
+  CLI_GATEWAY_READ_SCOPE_TASK_REF,
+  issueCliGatewayActorCredential,
+  validateCliGatewayActorCredential,
+} from '../server/cli-gateway-actor-auth.js';
 import { createCliGatewayEventsRouter } from '../server/cli-gateway-events.js';
 import {
   createCliGatewayEventBus,
   type CliGatewayEventBus,
 } from '../server/cli-gateway-event-bus.js';
+import {
+  EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
+  type EventsSubscribeTopic,
+} from '../shared/cli-gateway-contract.js';
+import { ScopedActorCredentialRegistry } from '../shared/scoped-actor-credentials.js';
+import type { RelayCapabilityBit } from '../shared/security-policy.js';
 
 // #963: server-side proof that the `attention` topic emits derived
 // session-state frames over the events router with cursor/resume, scope
@@ -26,11 +40,14 @@ function noopHooks() {
   };
 }
 
-async function mount(bus: CliGatewayEventBus): Promise<void> {
+async function mount(
+  bus: CliGatewayEventBus,
+  cliGatewayAuth: RequestHandler = (_req, _res, next) => next()
+): Promise<void> {
   const app = express();
   app.use(
     createCliGatewayEventsRouter(express, {
-      cliGatewayAuth: (_req, _res, next) => next(),
+      cliGatewayAuth,
       eventBus: bus,
       hooks: noopHooks(),
     })
@@ -43,6 +60,60 @@ async function mount(bus: CliGatewayEventBus): Promise<void> {
     });
   });
 }
+
+function eventScopeFromRequest(req: Parameters<RequestHandler>[0]): {
+  taskRefs: string[];
+  workContextIds?: string[];
+  sessionIds?: string[];
+  globalSessionIds?: string[];
+} {
+  const workContextId = typeof req.query['workContextId'] === 'string' ? req.query['workContextId'].trim() : '';
+  const sessionId = typeof req.query['sessionId'] === 'string' ? req.query['sessionId'].trim() : '';
+  const globalSessionId = typeof req.query['globalSessionId'] === 'string' ? req.query['globalSessionId'].trim() : '';
+  return {
+    taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+    ...(workContextId ? { workContextIds: [workContextId] } : {}),
+    ...(sessionId ? { sessionIds: [sessionId] } : {}),
+    ...(globalSessionId ? { globalSessionIds: [globalSessionId] } : {}),
+  };
+}
+
+function actorTokenAuth(registry: ScopedActorCredentialRegistry): RequestHandler {
+  return (req, res, next) => {
+    if (req.header('x-relay-cli-actor-token') !== 'v1') {
+      next();
+      return;
+    }
+    const topic = typeof req.query['topic'] === 'string' ? req.query['topic'] : undefined;
+    const capabilities =
+      topic && Object.prototype.hasOwnProperty.call(EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES, topic)
+        ? EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES[topic as EventsSubscribeTopic]
+        : (['session:read'] as const);
+    const validation = validateCliGatewayActorCredential(registry, {
+      token: bearerActorToken(req),
+      capabilities,
+      scope: eventScopeFromRequest(req),
+    });
+    if ('reason' in validation) {
+      const forbidden =
+        validation.reason === 'insufficient_capability' ||
+        validation.reason === 'missing_scope' ||
+        validation.reason.startsWith('wrong_');
+      res.status(forbidden ? 403 : 401).json({
+        error: cliGatewayActorFailure({
+          reason: validation.reason,
+          credentialId: validation.credentialId,
+          deniedBits: validation.deniedBits,
+        }),
+      });
+      return;
+    }
+    attachAuthenticatedCliGatewayActorCredential(req, validation.credential);
+    next();
+  };
+}
+
+const actorRegistrySecret = (): Buffer => Buffer.from('0123456789abcdef0123456789abcdef');
 
 interface Frame {
   event: string;
@@ -64,7 +135,8 @@ interface OpenStream {
 
 function openStream(
   query: string,
-  capabilities = 'session:read'
+  capabilities = 'session:read',
+  extraHeaders: Record<string, string> = {}
 ): Promise<OpenStream> {
   return new Promise((resolve, reject) => {
     const url = new URL(`${baseUrl}/events?${query}`);
@@ -76,6 +148,7 @@ function openStream(
           'x-relay-cli-gateway': 'v1',
           'x-relay-capabilities': capabilities,
           accept: 'application/x-ndjson',
+          ...extraHeaders,
         },
       },
       (res) => {
@@ -171,6 +244,56 @@ function publishAttention(
 afterEach(async () => {
   if (server) await new Promise<void>((resolve) => server?.close(() => resolve()));
   server = undefined;
+});
+
+function issueActorHeaders(
+  registry: ScopedActorCredentialRegistry,
+  capabilities: readonly RelayCapabilityBit[],
+  scope?: Record<string, string[]>
+): Record<string, string> {
+  const issued = issueCliGatewayActorCredential(registry, {
+    capabilities,
+    ...(scope ? { scope } : {}),
+  });
+  return {
+    'x-relay-cli-actor-token': 'v1',
+    authorization: `Bearer ${issued.token}`,
+  };
+}
+
+describe('events.subscribe actor capability gating', () => {
+  it('denies pr-overseer when a session-read actor self-asserts context:read', async () => {
+    const bus = createCliGatewayEventBus();
+    const registry = new ScopedActorCredentialRegistry({ secretBytes: actorRegistrySecret });
+    await mount(bus, actorTokenAuth(registry));
+
+    const stream = await openStream(
+      'topic=pr-overseer',
+      'context:read',
+      issueActorHeaders(registry, ['session:read'])
+    );
+
+    expect(stream.status).toBe(403);
+    stream.close();
+  });
+
+  it('allows pr-overseer when the authenticated actor actually has context:read', async () => {
+    const bus = createCliGatewayEventBus();
+    const registry = new ScopedActorCredentialRegistry({ secretBytes: actorRegistrySecret });
+    await mount(bus, actorTokenAuth(registry));
+
+    const stream = await openStream(
+      'topic=pr-overseer',
+      'context:read',
+      issueActorHeaders(registry, ['context:read'], {
+        taskRefs: [CLI_GATEWAY_READ_SCOPE_TASK_REF],
+      })
+    );
+
+    expect(stream.status).toBe(200);
+    expect(stream.frames[0]).toMatchObject({ event: 'open', topic: 'pr-overseer' });
+    stream.close();
+  });
 });
 
 describe('events.subscribe attention topic', () => {

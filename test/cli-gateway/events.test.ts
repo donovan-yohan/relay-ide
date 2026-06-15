@@ -3,6 +3,7 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  EVENTS_SUBSCRIBE_TOPICS,
   RELAY_CLI_GATEWAY_CONTRACT,
   commandSpec,
   stableCommandNames,
@@ -11,18 +12,11 @@ import {
 } from '../../shared/cli-gateway-contract.js';
 
 const RELAY_BIN = 'dist/bin/relay-ide.js';
-const ALLOWED_TOPICS = [
-  'sessions',
-  'nodes',
-  'audit',
-  'context',
-  'inbox',
-  'attention',
-  'work-context-artifacts',
-  'handoff-artifacts',
-  'workflow-runs',
-  'automation-runs',
-] as const;
+const ALLOWED_TOPICS = EVENTS_SUBSCRIBE_TOPICS;
+const TOPIC_SMOKE_EVENT_TYPES = {
+  'automation-runs': 'automation-run.status-changed',
+  'pr-overseer': 'pr-overseer.status-changed',
+} as const;
 
 type CapturedRequest = {
   method: string | undefined;
@@ -512,6 +506,48 @@ describe('CLI gateway events.subscribe runtime', () => {
     expect(data.payload.type).toBe('workflow-run.state-changed');
     expect(data.payload.workflowRunId).toBe('workflow-run:test');
   });
+
+  it.each(['automation-runs', 'pr-overseer'] as const)(
+    'subscribes to %s metadata with context read capability',
+    async (topic) => {
+      hub = await startFakeHub();
+
+      const runPromise = runCli(
+        ['v1', 'events', 'subscribe', '--topic', topic, '--max-events', '1', '--json'],
+        {
+          RELAY_IDE_PORT: String(hub.port),
+          RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+        },
+        { timeoutMs: 5000 }
+      );
+
+      const streamRes = await hub.whenSubscribed();
+      ndjsonWrite(streamRes, { event: 'open', topic, sequence: 0 });
+      ndjsonWrite(streamRes, {
+        event: 'event',
+        topic,
+        sequence: 1,
+        cursor: 'cg:1:1',
+        occurredAt: '2026-06-15T00:00:00.000Z',
+        payload: {
+          type: TOPIC_SMOKE_EVENT_TYPES[topic],
+          redaction: {
+            rawPayloadIncluded: false,
+            rawTranscriptIncluded: false,
+            artifactBodyIncluded: false,
+          },
+        },
+      });
+
+      const result = await runPromise;
+      expect(result.exitCode).toBe(0);
+
+      const captured = hub.captured.find((entry) => entry.url?.startsWith('/events'));
+      expect(captured?.url).toContain(`topic=${topic}`);
+      expect(captured?.capabilities).toContain('context:read');
+      expect(captured?.capabilities).not.toContain('session:read');
+    }
+  );
 
   it('passes attention cursor/replay through to the CLI envelope for resume', async () => {
     // #963: an automation loop resumes from the per-event cursor. The CLI must
