@@ -149,6 +149,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'roster.register': 'register self-declared agent presence',
   'roster.updateSelf': 'update self-declared agent presence',
   'cockpit.list': 'terminal attention cockpit',
+  'cockpit.get': 'terminal cockpit detail',
   'inbox.send': 'send inbox message',
   'inbox.list': 'list inbox messages',
   'inbox.get': 'inbox message details',

@@ -68,6 +68,15 @@ export interface TerminalCockpitActionState {
   disabledReason: string | null;
 }
 
+export interface TerminalCockpitCommandHint {
+  id: string;
+  label: string;
+  command?: string;
+  enabled: boolean;
+  disabledReason: string | null;
+  safety: 'read' | 'attach';
+}
+
 export interface TerminalCockpitItem {
   rank: number;
   priority: number;
@@ -84,7 +93,10 @@ export interface TerminalCockpitItem {
     artifacts: {
       count: number;
       latest: Array<
-        Pick<ArtifactRef, 'id' | 'kind' | 'title' | 'summary' | 'producedAt'>
+        Pick<
+          ArtifactRef,
+          'id' | 'kind' | 'title' | 'summary' | 'producedAt' | 'uri' | 'path'
+        >
       >;
     };
   };
@@ -132,6 +144,46 @@ export interface TerminalCockpitView {
   next: TerminalCockpitItem | null;
   items: TerminalCockpitItem[];
   readFirst: true;
+}
+
+export interface TerminalCockpitDetail {
+  generatedAt: string;
+  selector: {
+    workContextId: string;
+  };
+  item: TerminalCockpitItem;
+  actionHints: {
+    attach: TerminalCockpitCommandHint;
+    status: TerminalCockpitCommandHint[];
+    evidence: TerminalCockpitCommandHint[];
+    inbox: TerminalCockpitCommandHint[];
+    liveControls: TerminalCockpitCommandHint[];
+  };
+  readFirst: true;
+}
+
+function cliArg(value: string): string {
+  if (/^[A-Za-z0-9._:@%/+=,-]+$/.test(value)) return value;
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function commandHint(input: {
+  id: string;
+  label: string;
+  command?: string;
+  enabled?: boolean;
+  disabledReason?: string | null;
+  safety?: TerminalCockpitCommandHint['safety'];
+}): TerminalCockpitCommandHint {
+  const enabled = input.enabled ?? true;
+  return {
+    id: input.id,
+    label: input.label,
+    ...(enabled && input.command ? { command: input.command } : {}),
+    enabled,
+    disabledReason: enabled ? null : (input.disabledReason ?? 'not available'),
+    safety: input.safety ?? 'read',
+  };
 }
 
 function durabilityDisabledReason(
@@ -329,6 +381,8 @@ export function buildTerminalCockpitView(input: {
               ...(artifact.title ? { title: artifact.title } : {}),
               ...(artifact.summary ? { summary: artifact.summary } : {}),
               ...(artifact.producedAt ? { producedAt: artifact.producedAt } : {}),
+              ...(artifact.uri ? { uri: artifact.uri } : {}),
+              ...(artifact.path ? { path: artifact.path } : {}),
             })),
         },
       },
@@ -408,8 +462,210 @@ export function buildTerminalCockpitView(input: {
   };
 }
 
+function cockpitActionHints(
+  item: TerminalCockpitItem
+): TerminalCockpitDetail['actionHints'] {
+  const workContextId = cliArg(item.workContext.id);
+  const sessionId = cliArg(item.session.globalSessionId ?? item.session.id);
+  const latestArtifacts = item.workContext.artifacts.latest;
+  const attach = commandHint({
+    id: 'sessions.attach',
+    label: 'attach to live session',
+    ...(item.actions.attach.command ? { command: item.actions.attach.command } : {}),
+    enabled: item.actions.attach.enabled,
+    disabledReason: item.actions.attach.disabledReason,
+    safety: 'attach',
+  });
+  const status = [
+    commandHint({
+      id: 'cockpit.get',
+      label: 'refresh this cockpit detail',
+      command: `relay-ide v1 cockpit get --work-context-id ${workContextId} --json`,
+    }),
+    commandHint({
+      id: 'work-contexts.get',
+      label: 'read WorkContext status',
+      command: `relay-ide v1 work-contexts get --id ${workContextId} --json`,
+    }),
+    commandHint({
+      id: 'work-contexts.resume',
+      label: 'read bounded resume packet',
+      command: `relay-ide v1 work-contexts resume --id ${workContextId} --json`,
+    }),
+    commandHint({
+      id: 'sessions.get',
+      label: 'read selected session status',
+      command: `relay-ide v1 sessions get --id ${sessionId} --json`,
+    }),
+    commandHint({
+      id: 'context.list',
+      label: 'list context packets for this WorkContext',
+      command: `relay-ide v1 context list --work-context-id ${workContextId} --json`,
+    }),
+  ];
+  const evidence = [
+    commandHint({
+      id: 'work-context-artifacts.list',
+      label: 'list WorkContext artifacts',
+      command: `relay-ide v1 work-context-artifacts list --work-context-id ${workContextId} --json`,
+    }),
+    commandHint({
+      id: 'handoff-artifacts.list',
+      label: 'list pipeline handoff artifacts',
+      command: `relay-ide v1 handoff-artifacts list --work-context-id ${workContextId} --json`,
+    }),
+    ...latestArtifacts.flatMap((artifact) => {
+      const artifactId = cliArg(artifact.id);
+      const artifactHints = [
+        commandHint({
+          id: `work-context-artifacts.show:${artifact.id}`,
+          label: `show WorkContext artifact ${artifact.title ?? artifact.id}`,
+          command: `relay-ide v1 work-context-artifacts show --id ${artifactId} --json`,
+        }),
+        commandHint({
+          id: `work-context-artifacts.export:${artifact.id}`,
+          label: `export WorkContext artifact ${artifact.title ?? artifact.id}`,
+          command: `relay-ide v1 work-context-artifacts export --id ${artifactId} --json`,
+        }),
+      ];
+      const ref = artifact.uri ?? artifact.path;
+      if (ref) {
+        artifactHints.push(
+          commandHint({
+            id: `artifacts.read:${artifact.id}`,
+            label: `read artifact ref ${artifact.title ?? artifact.id}`,
+            command: `relay-ide v1 artifacts read --ref ${cliArg(ref)} --json`,
+          })
+        );
+      }
+      return artifactHints;
+    }),
+    commandHint({
+      id: 'handoff-artifacts.show',
+      label: 'show a handoff artifact after selecting its id',
+      enabled: false,
+      disabledReason:
+        'requires a handoff artifact id from relay-ide v1 handoff-artifacts list',
+    }),
+    commandHint({
+      id: 'handoff-artifacts.copy',
+      label: 'copy a handoff artifact after selecting its id',
+      enabled: false,
+      disabledReason:
+        'requires a handoff artifact id from relay-ide v1 handoff-artifacts list',
+    }),
+  ];
+  const inbox = [
+    commandHint({
+      id: 'sessions.interventions',
+      label: 'read session intervention timeline',
+      command: `relay-ide v1 sessions interventions --id ${sessionId} --json`,
+    }),
+    commandHint({
+      id: 'inbox.list.work-context',
+      label: 'list inbox messages for this WorkContext',
+      command: `relay-ide v1 inbox list --target-work-context-id ${workContextId} --json`,
+    }),
+    commandHint({
+      id: 'inbox.list.session',
+      label: 'list inbox messages for this session',
+      command: `relay-ide v1 inbox list --target-session-id ${sessionId} --json`,
+    }),
+  ];
+  const liveControls = [
+    attach,
+    commandHint({
+      id: 'sessions.input',
+      label: 'small input is intentionally not offered by cockpit',
+      enabled: false,
+      disabledReason: item.actions.smallInput.disabledReason,
+      safety: 'attach',
+    }),
+    commandHint({
+      id: 'sessions.kill',
+      label: 'destructive session controls are intentionally not offered',
+      enabled: false,
+      disabledReason: item.actions.destructive.disabledReason,
+      safety: 'attach',
+    }),
+  ];
+  return { attach, status, evidence, inbox, liveControls };
+}
+
+export function buildTerminalCockpitDetail(input: {
+  groups: TerminalCockpitActiveGroupInput[];
+  workContextId: string;
+  generatedAt?: string;
+}): TerminalCockpitDetail | null {
+  const view = buildTerminalCockpitView({
+    groups: input.groups,
+    ...(input.generatedAt ? { generatedAt: input.generatedAt } : {}),
+  });
+  const item = view.items.find(
+    (candidate) => candidate.workContext.id === input.workContextId
+  );
+  if (!item) return null;
+  return {
+    generatedAt: view.generatedAt,
+    selector: { workContextId: input.workContextId },
+    item,
+    actionHints: cockpitActionHints(item),
+    readFirst: true,
+  };
+}
+
 function fmt(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value : 'n/a';
+}
+
+function renderHints(title: string, hints: TerminalCockpitCommandHint[]): string[] {
+  const lines = [`${title}:`];
+  for (const hint of hints) {
+    lines.push(
+      `  - ${hint.label}: ${hint.enabled ? hint.command : `disabled — ${hint.disabledReason}`}`
+    );
+  }
+  return lines;
+}
+
+export function renderTerminalCockpitDetail(detail: TerminalCockpitDetail): string {
+  const item = detail.item;
+  const lines = [
+    'Relay terminal cockpit detail',
+    `generated: ${detail.generatedAt}`,
+    `read-first: ${detail.readFirst ? 'yes' : 'no'}; destructive controls: disabled`,
+    '',
+    `${item.attention.label} — ${item.workContext.id}`,
+  ];
+  if (item.workContext.title) lines.push(`title: ${item.workContext.title}`);
+  lines.push(
+    `why: ${item.attention.reasons.length ? item.attention.reasons.join(', ') : item.attention.label}`
+  );
+  lines.push(
+    `node: ${item.node.id} (${item.node.status}; freshness=${item.node.freshness}${item.node.lastSeenAt ? `; lastSeen=${item.node.lastSeenAt}` : ''})`
+  );
+  lines.push(
+    `session: ${item.session.id}${item.session.globalSessionId ? ` (${item.session.globalSessionId})` : ''} ${fmt(item.session.agent)} ${fmt(item.session.state)} durability=${fmt(item.session.durability)} live=${item.session.live}`
+  );
+  lines.push(
+    `control: mode=${fmt(item.session.controlMode)} freshness=${fmt(item.session.controlFreshness)} actors=${item.session.activeActors?.map((a) => a.displayName ?? a.id ?? a.kind).join(', ') ?? 'n/a'}`
+  );
+  if (item.workContext.taskRefs.length > 0) {
+    lines.push(
+      `task: ${item.workContext.taskRefs
+        .map((task) => `${task.kind}:${task.id}${task.status ? ` (${task.status})` : ''}`)
+        .join(', ')}`
+    );
+  }
+  lines.push(
+    `artifacts: ${item.workContext.artifacts.count}${item.workContext.artifacts.latest.length ? ` latest=${item.workContext.artifacts.latest.map((a) => a.title ?? a.id).join(', ')}` : ''}`
+  );
+  lines.push('', 'Commands');
+  lines.push(...renderHints('status', detail.actionHints.status));
+  lines.push(...renderHints('evidence', detail.actionHints.evidence));
+  lines.push(...renderHints('inbox/interventions', detail.actionHints.inbox));
+  lines.push(...renderHints('live controls', detail.actionHints.liveControls));
+  return `${lines.join('\n')}\n`;
 }
 
 export function renderTerminalCockpit(view: TerminalCockpitView): string {

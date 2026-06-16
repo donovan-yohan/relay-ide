@@ -1,17 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
+import type { WorkContextPrivacyMetadata } from '../shared/work-context.js';
 import {
+  buildTerminalCockpitDetail,
   buildTerminalCockpitView,
   renderTerminalCockpit,
+  renderTerminalCockpitDetail,
   type TerminalCockpitActiveGroupInput,
 } from '../shared/terminal-cockpit.js';
 
-const privacy = {
+const privacy: WorkContextPrivacyMetadata = {
   classification: 'internal',
   retention: 'project',
   rawPayloadStored: false,
   redaction: { redacted: false, strategy: 'none', classes: [] },
-} as const;
+};
 
 function group(
   id: string,
@@ -37,6 +40,7 @@ function group(
           kind: 'report',
           title: `status ${id}`,
           summary: 'bounded status evidence',
+          uri: `artifact-ref-${id}`,
           producedAt: '2026-01-01T00:05:00.000Z',
           privacy,
         },
@@ -207,5 +211,85 @@ describe('terminal cockpit view', () => {
     expect(screen).toContain('task: github-issue:934 (in-progress)');
     expect(screen).toContain('artifacts: 1 latest=status render');
     expect(screen).toContain('relay-ide v1 sessions attach --id local:session-render --json');
+  });
+
+  it('builds selected WorkContext detail with status/evidence/inbox/attach command hints', () => {
+    const detail = buildTerminalCockpitDetail({
+      generatedAt: '2026-01-01T00:10:00.000Z',
+      workContextId: 'selected',
+      groups: [group('other'), group('selected')],
+    });
+
+    expect(detail?.selector.workContextId).toBe('selected');
+    expect(detail?.item.workContext.id).toBe('selected');
+    expect(detail?.actionHints.status.map((hint) => hint.command)).toContain(
+      'relay-ide v1 work-contexts resume --id selected --json'
+    );
+    expect(detail?.actionHints.evidence.map((hint) => hint.command)).toEqual(
+      expect.arrayContaining([
+        'relay-ide v1 work-context-artifacts list --work-context-id selected --json',
+        'relay-ide v1 handoff-artifacts list --work-context-id selected --json',
+        'relay-ide v1 work-context-artifacts show --id artifact-selected --json',
+        'relay-ide v1 work-context-artifacts export --id artifact-selected --json',
+        'relay-ide v1 artifacts read --ref artifact-ref-selected --json',
+      ])
+    );
+    expect(detail?.actionHints.inbox.map((hint) => hint.command)).toContain(
+      'relay-ide v1 sessions interventions --id local:session-selected --json'
+    );
+    expect(detail?.actionHints.attach).toMatchObject({
+      id: 'sessions.attach',
+      enabled: true,
+      command: 'relay-ide v1 sessions attach --id local:session-selected --json',
+      safety: 'attach',
+    });
+
+    const screen = renderTerminalCockpitDetail(detail!);
+    expect(screen).toContain('Relay terminal cockpit detail');
+    expect(screen).toContain('Commands');
+    expect(screen).toContain('status:');
+    expect(screen).toContain('evidence:');
+    expect(screen).toContain('inbox/interventions:');
+    expect(screen).toContain('live controls:');
+  });
+
+  it('keeps stale detail attach hints disabled with explicit reasons', () => {
+    const detail = buildTerminalCockpitDetail({
+      workContextId: 'stale-detail',
+      groups: [
+        group('stale-detail', {
+          node: { nodeId: 'remote-2', status: 'stale' },
+          staleReadModel: true,
+          sessions: [
+            {
+              ...group('stale-detail').sessions[0]!,
+              nodeId: 'remote-2',
+              globalSessionId: 'remote-2:stale-detail-session',
+              live: false,
+              durability: 'stale-node',
+            },
+          ],
+        }),
+      ],
+    });
+
+    expect(detail?.actionHints.attach).toMatchObject({
+      enabled: false,
+      disabledReason: expect.stringContaining('stale node'),
+    });
+    expect(detail?.actionHints.liveControls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'sessions.input',
+          enabled: false,
+          disabledReason: expect.stringContaining('stale node'),
+        }),
+        expect.objectContaining({
+          id: 'sessions.kill',
+          enabled: false,
+          disabledReason: expect.stringContaining('destructive controls'),
+        }),
+      ])
+    );
   });
 });
