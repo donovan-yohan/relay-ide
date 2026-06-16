@@ -156,7 +156,6 @@ function getNodeCapabilities(
   // live in `server/features/frameworks.ts` and are layered on top via
   // `decorateManifestWithFrameworks`. Core never references framework
   // ids directly — neither in code nor in this comment.
-  const tmux = probeCommand('tmux', 'tmux', 'tmux', env);
   const relayPty: NodeCapabilityProbe = {
     id: 'relay-pty',
     label: 'Relay PTY',
@@ -167,27 +166,14 @@ function getNodeCapabilities(
   return {
     terminalBackends: {
       'relay-pty': relayPty,
-      'tmux-compat': {
-        ...tmux,
-        id: 'tmux-compat',
-        label: 'tmux compatibility',
-        message:
-          tmux.status === 'available'
-            ? 'tmux compatibility backend is available for legacy/imported sessions.'
-            : 'tmux compatibility backend is unavailable because tmux was not found on PATH.',
-      },
     },
-    tmux,
     git: probeCommand('git', 'Git', 'git', env),
     clipboard: probeClipboard(env, platform),
     browserAutomation: probeBrowserAutomation(),
     githubCli: probeCommand('githubCli', 'GitHub CLI', 'gh', env),
     tailscale: probeCommand('tailscale', 'Tailscale CLI', 'tailscale', env),
     ssh: probeCommand('ssh', 'SSH client', 'ssh', env, { versionArgs: ['-V'] }),
-    // #467: hosts with tmux get attach-by-name resume; others get a
-    // raw shell that dies on detach. #469 will introduce
-    // 'canonical-emulator' for server-side terminal state.
-    sessionResume: tmux.status === 'available' ? 'tmux' : 'none',
+    sessionResume: 'none',
     rmux: probeRmuxCapability({ env, platform }),
     agents: {},
   };

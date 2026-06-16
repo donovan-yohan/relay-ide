@@ -14,7 +14,7 @@ WSL2 is a Tier 1.5 Linux-like `relay-node` target. It is not native Windows node
 | Repo under `/mnt/c`                | Simulated/tested                                     | Manifest path mode test for `windows-mount`.                                                                                                             | Allowed with explicit caveats for slower file watching and Windows filesystem permission/case semantics.         |
 | Native Windows node                | Explicitly unsupported                               | Docs and manifest caveats state this boundary.                                                                                                           | Out of MVP scope; run Relay inside the WSL distro instead.                                                       |
 | Outbound hub link                  | Architecture-supported, not real-host validated here | Node-initiated WebSocket posture inherited from the federated node protocol.                                                                             | Do not require inbound hub-to-WSL networking.                                                                    |
-| PTY/tmux/session restore           | Not real-host validated here                         | No WSL2 host was reachable from this worker.                                                                                                             | Expected Linux-like, but #378 remains open until validated.                                                      |
+| `relay-pty`/session reconnect      | Not real-host validated here                         | No WSL2 host was reachable from this worker.                                                                                                             | Expected Linux-like for browser/node-link reconnect; server restart is cold resume only.                         |
 | Hook callback to relay-node        | Not real-host validated here                         | No WSL2 host or pair token was available.                                                                                                                | Must be validated before claiming WSL is fully supported.                                                        |
 | Clipboard image paste              | Capability-gated/degraded                            | Manifest caveats call this out; no bridge is assumed.                                                                                                    | Degraded unless a distro/Windows bridge is explicitly configured.                                                |
 | Browser automation                 | Capability-gated/degraded                            | Manifest reports Playwright availability separately.                                                                                                     | Available only if Linux/WSL browser deps are present.                                                            |
@@ -27,8 +27,7 @@ WSL2 is a Tier 1.5 Linux-like `relay-node` target. It is not native Windows node
 
 ```text
 relay-node in WSL distro
-  -> node-pty Linux backend
-  -> tmux
+  -> relay-pty/node-pty Linux backend
   -> shell/agent CLI inside the distro
   -> git/fs paths inside the distro
 ```
@@ -75,12 +74,12 @@ WSL capability state appears under `manifest.wsl`:
 
 Run this on a Windows 11/WSL2 machine before closing #378:
 
-| Case | Distro/service             | Repo path                | Required checks                                                                   |
-| ---- | -------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
-| A    | systemd enabled            | `/home/<user>/relay-ide` | pair node, heartbeat, create PTY, tmux restore, hook callback, git diff/file read |
-| B    | systemd disabled/manual    | `/home/<user>/relay-ide` | same checks, plus foreground/manual reconnect behavior                            |
-| C    | systemd enabled or manual  | `/mnt/c/.../relay-ide`   | same checks, plus watcher/path/perf caveats                                       |
-| D    | NAT vs mirrored networking | any                      | outbound WebSocket connects; port preview diagnostics only if implemented         |
+| Case | Distro/service             | Repo path                | Required checks                                                                                      |
+| ---- | -------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| A    | systemd enabled            | `/home/<user>/relay-ide` | pair node, heartbeat, create relay-pty session, browser reconnect, hook callback, git diff/file read |
+| B    | systemd disabled/manual    | `/home/<user>/relay-ide` | same checks, plus foreground/manual reconnect behavior                                               |
+| C    | systemd enabled or manual  | `/mnt/c/.../relay-ide`   | same checks, plus watcher/path/perf caveats                                                          |
+| D    | NAT vs mirrored networking | any                      | outbound WebSocket connects; port preview diagnostics only if implemented                            |
 
 Minimum command transcript from the WSL distro:
 
@@ -91,7 +90,6 @@ printf 'WSL_DISTRO_NAME=%s\n' "$WSL_DISTRO_NAME"
 printf 'WSL_INTEROP=%s\n' "$WSL_INTEROP"
 mount | grep -E ' /mnt/c |type 9p|drvfs' || true
 systemctl --user status relay-ide || true
-tmux -V
 node -v
 git --version
 relay-ide manifest

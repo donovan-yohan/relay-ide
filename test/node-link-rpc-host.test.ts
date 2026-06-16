@@ -189,8 +189,7 @@ describe('node-link-rpc-host', () => {
       type: 'sessions.create.error',
       error: {
         code: 'INVALID_REQUEST',
-        message:
-          'sessions.create payload.terminalBackend must be "relay-pty" or "tmux-compat"',
+        message: 'sessions.create payload.terminalBackend must be "relay-pty"',
       },
     });
   });
@@ -400,7 +399,10 @@ describe('node-link-rpc-host', () => {
     const { sent, ctx } = context();
 
     host.handle(
-      envelope('sessions.create', { type: 'terminal', controlMode: 'agent-driven' }),
+      envelope('sessions.create', {
+        type: 'terminal',
+        controlMode: 'agent-driven',
+      }),
       ctx
     );
 
@@ -557,22 +559,19 @@ describe('node-link-rpc-host', () => {
     });
   });
 
-  it(
-    'responds with INVALID_REQUEST when sessions.rename payload is missing displayName',
-    () => {
-      const localRelayNode = fakeLocalNode({ updateDisplayName: vi.fn() });
-      const host = createNodeLinkRpcHost({ localRelayNode });
-      const { sent, ctx } = context();
+  it('responds with INVALID_REQUEST when sessions.rename payload is missing displayName', () => {
+    const localRelayNode = fakeLocalNode({ updateDisplayName: vi.fn() });
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
 
-      host.handle(envelope('sessions.rename', { id: 'sess-1' }), ctx);
+    host.handle(envelope('sessions.rename', { id: 'sess-1' }), ctx);
 
-      expect(localRelayNode.sessions.updateDisplayName).not.toHaveBeenCalled();
-      expect(sent).toHaveLength(1);
-      expect(sent[0]!.type).toBe('sessions.rename.error');
-      const err = sent[0]!.error as RelayNodeError;
-      expect(err.code).toBe('INVALID_REQUEST');
-    }
-  );
+    expect(localRelayNode.sessions.updateDisplayName).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.type).toBe('sessions.rename.error');
+    const err = sent[0]!.error as RelayNodeError;
+    expect(err.code).toBe('INVALID_REQUEST');
+  });
 
   it('responds with INVALID_REQUEST when payload is missing type', () => {
     const localRelayNode = fakeLocalNode();
@@ -652,7 +651,10 @@ describe('node-link-rpc-host', () => {
     const host = createNodeLinkRpcHost({ localRelayNode, rotateCredential });
     const { sent, ctx } = context();
 
-    host.handle(envelope('credential.rotate', { credential: { nodeId: 'node-a' } }), ctx);
+    host.handle(
+      envelope('credential.rotate', { credential: { nodeId: 'node-a' } }),
+      ctx
+    );
     await vi.waitFor(() => expect(sent).toHaveLength(1));
 
     expect(rotateCredential).not.toHaveBeenCalled();
@@ -735,11 +737,16 @@ describe('node-link-rpc-host', () => {
 
     expect(empty.sent).toHaveLength(1);
     expect(empty.sent[0]!.type).toBe('logs.tail.result');
-    expect(empty.sent[0]!.payload).toMatchObject({ status: 'empty', output: '' });
+    expect(empty.sent[0]!.payload).toMatchObject({
+      status: 'empty',
+      output: '',
+    });
   });
 
   it('rejects malformed logs.tail follow requests with one error envelope', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-log-follow-invalid-'));
+    const tmp = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-node-log-follow-invalid-')
+    );
     const logDir = path.join(tmp, 'logs');
     fs.mkdirSync(logDir, { recursive: true });
     fs.writeFileSync(path.join(logDir, 'relay-ide.log'), 'initial\n', 'utf8');
@@ -762,7 +769,9 @@ describe('node-link-rpc-host', () => {
   });
 
   it('starts and cancels remote node log followers by streamId', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-log-follow-'));
+    const tmp = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-node-log-follow-')
+    );
     const logDir = path.join(tmp, 'logs');
     fs.mkdirSync(logDir, { recursive: true });
     fs.writeFileSync(path.join(logDir, 'relay-ide.log'), 'initial\n', 'utf8');
@@ -775,27 +784,49 @@ describe('node-link-rpc-host', () => {
     const { sent, ctx } = context();
 
     host.handle(
-      envelope('logs.tail', { lines: 1, follow: true }, { streamId: 'stream-1' }),
+      envelope(
+        'logs.tail',
+        { lines: 1, follow: true },
+        { streamId: 'stream-1' }
+      ),
       ctx
     );
     expect(sent[0]!.type).toBe('logs.tail.result');
 
-    fs.appendFileSync(path.join(logDir, 'relay-ide.log'), 'Authorization: Bearer abc.def.secret\n', 'utf8');
+    fs.appendFileSync(
+      path.join(logDir, 'relay-ide.log'),
+      'Authorization: Bearer abc.def.secret\n',
+      'utf8'
+    );
     await vi.waitFor(() => {
       expect(sent.some((entry) => entry.type === 'logs.tail.chunk')).toBe(true);
     });
-    const chunk = sent.find((entry) => entry.type === 'logs.tail.chunk')!.payload as { chunk: string };
+    const chunk = sent.find((entry) => entry.type === 'logs.tail.chunk')!
+      .payload as { chunk: string };
     expect(chunk.chunk).not.toContain('abc.def.secret');
 
-    host.handle(envelope('logs.tail.cancel', {}, { streamId: 'stream-1' }), ctx);
-    const chunkCount = sent.filter((entry) => entry.type === 'logs.tail.chunk').length;
-    fs.appendFileSync(path.join(logDir, 'relay-ide.log'), 'after cancel\n', 'utf8');
+    host.handle(
+      envelope('logs.tail.cancel', {}, { streamId: 'stream-1' }),
+      ctx
+    );
+    const chunkCount = sent.filter(
+      (entry) => entry.type === 'logs.tail.chunk'
+    ).length;
+    fs.appendFileSync(
+      path.join(logDir, 'relay-ide.log'),
+      'after cancel\n',
+      'utf8'
+    );
     await new Promise((resolve) => setTimeout(resolve, 1_100));
-    expect(sent.filter((entry) => entry.type === 'logs.tail.chunk')).toHaveLength(chunkCount);
+    expect(
+      sent.filter((entry) => entry.type === 'logs.tail.chunk')
+    ).toHaveLength(chunkCount);
   });
 
   it('rejects malformed fs.tail follow requests with one error envelope', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-file-tail-invalid-'));
+    const tmp = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-file-tail-invalid-')
+    );
     fs.writeFileSync(path.join(tmp, 'app.log'), 'initial\n', 'utf8');
     const localRelayNode = fakeLocalNode();
     const host = createNodeLinkRpcHost({ localRelayNode });
@@ -821,7 +852,9 @@ describe('node-link-rpc-host', () => {
   });
 
   it('starts and cancels bounded fs.tail followers by streamId', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-file-tail-follow-'));
+    const tmp = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-file-tail-follow-')
+    );
     const target = path.join(tmp, 'app.log');
     fs.writeFileSync(target, 'initial\n', 'utf8');
     const localRelayNode = fakeLocalNode();
@@ -846,7 +879,9 @@ describe('node-link-rpc-host', () => {
       ctx
     );
 
-    await vi.waitFor(() => expect(sent.some((entry) => entry.type === 'fs.tail.result')).toBe(true));
+    await vi.waitFor(() =>
+      expect(sent.some((entry) => entry.type === 'fs.tail.result')).toBe(true)
+    );
     expect(sent[0]!.payload).toMatchObject({
       operation: 'tail',
       content: 'initial\n',
@@ -857,7 +892,8 @@ describe('node-link-rpc-host', () => {
     await vi.waitFor(() => {
       expect(sent.some((entry) => entry.type === 'fs.tail.chunk')).toBe(true);
     });
-    const chunk = sent.find((entry) => entry.type === 'fs.tail.chunk')!.payload as {
+    const chunk = sent.find((entry) => entry.type === 'fs.tail.chunk')!
+      .payload as {
       content: string;
       truncatedBytes: boolean;
       skippedBytes: number;
@@ -866,15 +902,24 @@ describe('node-link-rpc-host', () => {
     expect(chunk.truncatedBytes).toBe(true);
     expect(chunk.skippedBytes).toBeGreaterThan(0);
 
-    host.handle(envelope('fs.tail.cancel', {}, { streamId: 'file-stream-1' }), ctx);
-    const chunkCount = sent.filter((entry) => entry.type === 'fs.tail.chunk').length;
+    host.handle(
+      envelope('fs.tail.cancel', {}, { streamId: 'file-stream-1' }),
+      ctx
+    );
+    const chunkCount = sent.filter(
+      (entry) => entry.type === 'fs.tail.chunk'
+    ).length;
     fs.appendFileSync(target, 'after cancel\n', 'utf8');
     await new Promise((resolve) => setTimeout(resolve, 1_100));
-    expect(sent.filter((entry) => entry.type === 'fs.tail.chunk')).toHaveLength(chunkCount);
+    expect(sent.filter((entry) => entry.type === 'fs.tail.chunk')).toHaveLength(
+      chunkCount
+    );
   });
 
   it('closes fs.tail followers with a typed retryable error when node-link writes backpressure', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-file-tail-backpressure-'));
+    const tmp = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-file-tail-backpressure-')
+    );
     const target = path.join(tmp, 'app.log');
     fs.writeFileSync(target, 'initial\n', 'utf8');
     const localRelayNode = fakeLocalNode();
@@ -906,13 +951,21 @@ describe('node-link-rpc-host', () => {
       backpressureCtx
     );
 
-    await vi.waitFor(() => expect(sent.some((entry) => entry.type === 'fs.tail.result')).toBe(true));
+    await vi.waitFor(() =>
+      expect(sent.some((entry) => entry.type === 'fs.tail.result')).toBe(true)
+    );
     fs.appendFileSync(target, 'blocked\n', 'utf8');
 
-    await vi.waitFor(() => expect(sendWithBackpressure).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => expect(sent.some((entry) => entry.type === 'fs.tail.error')).toBe(true));
+    await vi.waitFor(() =>
+      expect(sendWithBackpressure).toHaveBeenCalledTimes(1)
+    );
+    await vi.waitFor(() =>
+      expect(sent.some((entry) => entry.type === 'fs.tail.error')).toBe(true)
+    );
     const errorEnvelope = sent.find((entry) => entry.type === 'fs.tail.error')!;
-    expect((errorEnvelope.payload as { error: RelayNodeError }).error).toMatchObject({
+    expect(
+      (errorEnvelope.payload as { error: RelayNodeError }).error
+    ).toMatchObject({
       code: 'NODE_BUSY',
       retryable: true,
       details: { reasonCode: 'FILE_RPC_FOLLOW_BACKPRESSURE' },

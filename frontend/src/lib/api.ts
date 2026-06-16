@@ -420,7 +420,9 @@ function isWorkspaceEvidenceErrorResponse(
   );
 }
 
-async function workspaceEvidenceErrorFromResponse(res: Response): Promise<HttpError> {
+async function workspaceEvidenceErrorFromResponse(
+  res: Response
+): Promise<HttpError> {
   try {
     const data = (await res.json()) as unknown;
     if (isWorkspaceEvidenceErrorResponse(data)) {
@@ -785,9 +787,12 @@ export async function fetchAgentViewArtifactPackage(
   const data = await json<{
     artifact?: { viewArtifact?: ViewArtifactPackage };
   }>(
-    await fetch(`/work-context-artifacts/${encodeURIComponent(artifactId)}/view-package`, {
-      headers: HANDOFF_ARTIFACT_HEADERS,
-    })
+    await fetch(
+      `/work-context-artifacts/${encodeURIComponent(artifactId)}/view-package`,
+      {
+        headers: HANDOFF_ARTIFACT_HEADERS,
+      }
+    )
   );
   const pkg = data.artifact?.viewArtifact;
   if (!pkg) {
@@ -804,7 +809,9 @@ export async function fetchPipelineHandoffArtifacts({
   includeSuperseded,
   includePayload = false,
   limit = 8,
-}: FetchPipelineHandoffArtifactsOptions): Promise<PipelineHandoffArtifactEnvelope[]> {
+}: FetchPipelineHandoffArtifactsOptions): Promise<
+  PipelineHandoffArtifactEnvelope[]
+> {
   const params = new URLSearchParams();
   if (workContextId) params.set('workContextId', workContextId);
   if (taskRef) {
@@ -848,12 +855,16 @@ export async function fetchPipelineHandoffArtifact(
   options: { currentHeadSha?: string } = {}
 ): Promise<PipelineHandoffArtifactEnvelope> {
   const params = new URLSearchParams();
-  if (options.currentHeadSha) params.set('currentHeadSha', options.currentHeadSha);
+  if (options.currentHeadSha)
+    params.set('currentHeadSha', options.currentHeadSha);
   const suffix = params.size > 0 ? `?${params.toString()}` : '';
   const data = await json<{ artifact: PipelineHandoffArtifactEnvelope }>(
-    await fetch(`/pipeline-handoff-artifacts/${encodeURIComponent(artifactId)}${suffix}`, {
-      headers: HANDOFF_ARTIFACT_HEADERS,
-    })
+    await fetch(
+      `/pipeline-handoff-artifacts/${encodeURIComponent(artifactId)}${suffix}`,
+      {
+        headers: HANDOFF_ARTIFACT_HEADERS,
+      }
+    )
   );
   return data.artifact;
 }
@@ -875,9 +886,12 @@ export async function copyPipelineHandoffArtifact(
   artifactId: string
 ): Promise<CopyPipelineHandoffArtifactResult> {
   return json<CopyPipelineHandoffArtifactResult>(
-    await fetch(`/pipeline-handoff-artifacts/${encodeURIComponent(artifactId)}/copy`, {
-      headers: HANDOFF_ARTIFACT_HEADERS,
-    })
+    await fetch(
+      `/pipeline-handoff-artifacts/${encodeURIComponent(artifactId)}/copy`,
+      {
+        headers: HANDOFF_ARTIFACT_HEADERS,
+      }
+    )
   );
 }
 
@@ -1313,7 +1327,10 @@ export type WorkspaceEvidenceApiError = WorkspaceEvidenceErrorResponse;
 
 const WORKSPACE_EVIDENCE_PATH = '/workspace-evidence';
 
-async function postWorkspaceEvidence<T>(operation: 'list' | 'stat' | 'read' | 'preview', body: unknown): Promise<T> {
+async function postWorkspaceEvidence<T>(
+  operation: 'list' | 'stat' | 'read' | 'preview',
+  body: unknown
+): Promise<T> {
   const res = await fetch(`${WORKSPACE_EVIDENCE_PATH}/${operation}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1323,8 +1340,12 @@ async function postWorkspaceEvidence<T>(operation: 'list' | 'stat' | 'read' | 'p
   return res.json() as Promise<T>;
 }
 
-export async function fetchWorkspaceEvidenceRoots(): Promise<WorkspaceEvidenceRoot[]> {
-  const data = await json<{ roots?: WorkspaceEvidenceRoot[] }>(await fetch(`${WORKSPACE_EVIDENCE_PATH}/roots`));
+export async function fetchWorkspaceEvidenceRoots(): Promise<
+  WorkspaceEvidenceRoot[]
+> {
+  const data = await json<{ roots?: WorkspaceEvidenceRoot[] }>(
+    await fetch(`${WORKSPACE_EVIDENCE_PATH}/roots`)
+  );
   return Array.isArray(data.roots) ? data.roots : [];
 }
 
@@ -1349,7 +1370,10 @@ export async function fetchWorkspaceEvidenceRead(
 export async function fetchWorkspaceEvidencePreview(
   request: WorkspaceEvidencePreviewRequest
 ): Promise<WorkspaceEvidencePreviewResponse> {
-  return postWorkspaceEvidence<WorkspaceEvidencePreviewResponse>('preview', request);
+  return postWorkspaceEvidence<WorkspaceEvidencePreviewResponse>(
+    'preview',
+    request
+  );
 }
 
 export interface NodeFsWriteArgs {
@@ -1567,7 +1591,7 @@ export interface CreateSessionBody {
   claudeArgs?: string[] | undefined;
   yolo?: boolean | undefined;
   agent?: string | undefined;
-  terminalBackend?: 'relay-pty' | 'tmux-compat' | undefined;
+  terminalBackend?: 'relay-pty' | undefined;
   cols?: number | undefined;
   rows?: number | undefined;
   needsBranchRename?: boolean | undefined;
@@ -1730,7 +1754,8 @@ export async function renameSession(
   });
   // The local PATCH 404 body is `{error:'Session not found'}` (non-envelope);
   // httpErrorFromResponse normalizes both that and routed RelayError envelopes.
-  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to rename session');
+  if (!res.ok)
+    throw await httpErrorFromResponse(res, 'Failed to rename session');
   return jsonEither<SessionSummary>(res);
 }
 
@@ -2277,7 +2302,7 @@ export async function launchWorkspaceSession(
   opts?: {
     agent?: string;
     yolo?: boolean;
-    terminalBackend?: 'relay-pty' | 'tmux-compat';
+    terminalBackend?: 'relay-pty';
     claudeArgs?: string[];
     cols?: number;
     rows?: number;
@@ -2294,7 +2319,10 @@ export async function launchWorkspaceSession(
   // (NOT_FOUND for a missing workspace id, etc.); message stays identical for
   // existing string-reading callers.
   if (!res.ok)
-    throw await httpErrorFromResponse(res, 'Failed to launch workspace session');
+    throw await httpErrorFromResponse(
+      res,
+      'Failed to launch workspace session'
+    );
   return jsonEither<
     SessionSummary & { warnings?: Array<{ repoPath: string; error: string }> }
   >(res);

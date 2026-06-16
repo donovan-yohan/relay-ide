@@ -1076,7 +1076,7 @@ const workspaceLaunchInputSchema: RelayJsonSchema = {
     workspaceId: stringSchema,
     agent: stringSchema,
     yolo: booleanSchema,
-    terminalBackend: { type: 'string', enum: ['relay-pty', 'tmux-compat'] },
+    terminalBackend: { type: 'string', enum: ['relay-pty'] },
     claudeArgs: { type: 'array', items: stringSchema },
     cols: { type: 'number', minimum: 1, maximum: 500 },
     rows: { type: 'number', minimum: 1, maximum: 200 },
@@ -1358,7 +1358,7 @@ const workflowSessionOptionsInputSchema: RelayJsonSchema = {
     mode: { type: 'string', enum: ['pty', 'web'] },
     agent: stringSchema,
     yolo: booleanSchema,
-    terminalBackend: { type: 'string', enum: ['tmux-compat', 'relay-pty'] },
+    terminalBackend: { type: 'string', enum: ['relay-pty'] },
     cols: { type: 'number', minimum: 1, maximum: 500 },
     rows: { type: 'number', minimum: 1, maximum: 200 },
     continuePolicy: { type: 'string', enum: ['always', 'never'] },
@@ -1531,7 +1531,10 @@ export const EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES = {
   'workflow-runs': ['context:read'],
   'automation-runs': ['context:read'],
   'pr-overseer': ['context:read'],
-} as const satisfies Record<EventsSubscribeTopic, readonly RelayCapabilityBit[]>;
+} as const satisfies Record<
+  EventsSubscribeTopic,
+  readonly RelayCapabilityBit[]
+>;
 
 const eventsSubscribeInputSchema: RelayJsonSchema = {
   title: 'EventsSubscribeInput',
@@ -2541,7 +2544,10 @@ const automationRunRegisterInputSchema: RelayJsonSchema = {
   properties: {
     id: stringSchema,
     name: stringSchema,
-    kind: { type: 'string', enum: ['watchdog', 'cron', 'automation', 'oversight', 'manual'] },
+    kind: {
+      type: 'string',
+      enum: ['watchdog', 'cron', 'automation', 'oversight', 'manual'],
+    },
     runId: stringSchema,
     owner: { type: 'object', additionalProperties: true },
     repoPath: stringSchema,
@@ -2586,8 +2592,14 @@ const automationRunListInputSchema: RelayJsonSchema = {
   properties: {
     workContextId: stringSchema,
     repoPath: stringSchema,
-    status: { type: 'string', enum: ['active', 'stale', 'cleanup-needed', 'retired'] },
-    kind: { type: 'string', enum: ['watchdog', 'cron', 'automation', 'oversight', 'manual'] },
+    status: {
+      type: 'string',
+      enum: ['active', 'stale', 'cleanup-needed', 'retired'],
+    },
+    kind: {
+      type: 'string',
+      enum: ['watchdog', 'cron', 'automation', 'oversight', 'manual'],
+    },
     orchestrator: stringSchema,
     includeRetired: booleanSchema,
     limit: { type: 'number', minimum: 1, maximum: 100 },
@@ -2749,7 +2761,16 @@ const prOverseerListInputSchema: RelayJsonSchema = {
     ownerRepo: stringSchema,
     status: {
       type: 'string',
-      enum: ['pending', 'observing', 'blocked', 'ready', 'merged', 'closed', 'stale', 'retired'],
+      enum: [
+        'pending',
+        'observing',
+        'blocked',
+        'ready',
+        'merged',
+        'closed',
+        'stale',
+        'retired',
+      ],
     },
     orchestrator: stringSchema,
     includeRetired: booleanSchema,
@@ -2996,13 +3017,7 @@ const agentPresenceSchema: RelayJsonSchema = {
     updatedAt: { type: 'string', format: 'date-time' },
     expiresAt: { type: 'string', format: 'date-time' },
   },
-  required: [
-    'id',
-    'registeredBy',
-    'createdAt',
-    'updatedAt',
-    'expiresAt',
-  ],
+  required: ['id', 'registeredBy', 'createdAt', 'updatedAt', 'expiresAt'],
 };
 
 const presenceWriteOutputDataSchema: RelayJsonSchema = {
@@ -5272,7 +5287,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:write'],
     inputSchema: automationRunRegisterInputSchema,
-    outputSchema: okOutput('AutomationRunRegisterOutput', automationRunOutputDataSchema),
+    outputSchema: okOutput(
+      'AutomationRunRegisterOutput',
+      automationRunOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -5303,7 +5321,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:write'],
     inputSchema: automationRunObserveInputSchema,
-    outputSchema: okOutput('AutomationRunObserveOutput', automationRunOutputDataSchema),
+    outputSchema: okOutput(
+      'AutomationRunObserveOutput',
+      automationRunOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -5332,7 +5353,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:write'],
     inputSchema: automationRunRetireInputSchema,
-    outputSchema: okOutput('AutomationRunRetireOutput', automationRunOutputDataSchema),
+    outputSchema: okOutput(
+      'AutomationRunRetireOutput',
+      automationRunOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -5352,7 +5376,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: automationRunListInputSchema,
-    outputSchema: okOutput('AutomationRunListOutput', automationRunListOutputDataSchema),
+    outputSchema: okOutput(
+      'AutomationRunListOutput',
+      automationRunListOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -5364,7 +5391,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'automation-runs.get',
-    cli: ['relay-ide', 'v1', 'automation-runs', 'get', '--id', '<id>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'automation-runs',
+      'get',
+      '--id',
+      '<id>',
+      '--json',
+    ],
     summary:
       'Get one automation/watchdog run by id with derived status and live target-session liveness.',
     stable: true,
@@ -5372,7 +5407,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: automationRunGetInputSchema,
-    outputSchema: okOutput('AutomationRunGetOutput', automationRunOutputDataSchema),
+    outputSchema: okOutput(
+      'AutomationRunGetOutput',
+      automationRunOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -5384,7 +5422,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'pr-overseer.register',
-    cli: ['relay-ide', 'v1', 'pr-overseer', 'register', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'pr-overseer',
+      'register',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Link a Relay agent session/issue/WorkContext to the GitHub PR it is shipping so checks, reviews, mergeability, and issue closeout can be observed and surfaced as structured blockers + a required next action.',
     stable: true,
@@ -5392,7 +5438,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:write'],
     inputSchema: prOverseerRegisterInputSchema,
-    outputSchema: okOutput('PrOverseerRegisterOutput', prOverseerOutputDataSchema),
+    outputSchema: okOutput(
+      'PrOverseerRegisterOutput',
+      prOverseerOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -5405,7 +5454,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'pr-overseer.observe',
-    cli: ['relay-ide', 'v1', 'pr-overseer', 'observe', '--id', '<id>', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'pr-overseer',
+      'observe',
+      '--id',
+      '<id>',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       "Observe the linked PR's current GitHub checks/reviews/mergeability/issue-closeout, store an exact-head evidence snapshot, refresh the heartbeat, and return the derived status, blockers, stale-head risk, required next action, and handoff readiness.",
     stable: true,
@@ -5413,7 +5472,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:write'],
     inputSchema: prOverseerObserveInputSchema,
-    outputSchema: okOutput('PrOverseerObserveOutput', prOverseerOutputDataSchema),
+    outputSchema: okOutput(
+      'PrOverseerObserveOutput',
+      prOverseerOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -5434,7 +5496,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:write'],
     inputSchema: prOverseerRetireInputSchema,
-    outputSchema: okOutput('PrOverseerRetireOutput', prOverseerOutputDataSchema),
+    outputSchema: okOutput(
+      'PrOverseerRetireOutput',
+      prOverseerOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -5454,7 +5519,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:read'],
     inputSchema: prOverseerListInputSchema,
-    outputSchema: okOutput('PrOverseerListOutput', prOverseerListOutputDataSchema),
+    outputSchema: okOutput(
+      'PrOverseerListOutput',
+      prOverseerListOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
@@ -5522,7 +5590,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     requiresAuth: true,
     capabilityHints: ['context:write'],
     inputSchema: presenceRegisterInputSchema,
-    outputSchema: okOutput('RosterRegisterOutput', presenceWriteOutputDataSchema),
+    outputSchema: okOutput(
+      'RosterRegisterOutput',
+      presenceWriteOutputDataSchema
+    ),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',

@@ -1,5 +1,6 @@
 import {
   RELAY_NODE_LINK_PROTOCOL_VERSION,
+  nodeTerminalBackends,
   type HubNodeStatus,
   type HubNodeSummary,
   type NodeCapabilityStatus,
@@ -80,7 +81,12 @@ interface DeriveOptions {
   expectedProtocolVersion?: string;
 }
 
-const readinessCapabilities = ['shell', 'tmux', 'git', 'worktrees'] as const;
+const readinessCapabilities = [
+  'shell',
+  'terminalBackend',
+  'git',
+  'worktrees',
+] as const;
 
 function formatRelativeTime(iso: string, now: Date): string {
   const timestamp = Date.parse(iso);
@@ -129,7 +135,8 @@ function localityWorktree(
     worktreeInstanceId: worktree.worktreeInstanceId,
     localPath: worktree.localPath,
     branchName: worktree.branchName,
-    displayName: worktree.displayName ?? fallbackWorktreeDisplayName(worktree.localPath),
+    displayName:
+      worktree.displayName ?? fallbackWorktreeDisplayName(worktree.localPath),
   };
 }
 
@@ -242,9 +249,14 @@ function disabledReason(
 function capabilityHints(node: HubNodeSummary): HubNodeCapabilityHint[] {
   const core = node.capabilities.core;
   const agents = aggregateAgentStatus(node.capabilities.agents ?? {});
+  const terminalBackends = nodeTerminalBackends(node);
   return [
     { key: 'shell', label: 'shell', status: fallbackStatus(core?.shell) },
-    { key: 'tmux', label: 'tmux', status: fallbackStatus(core?.tmux) },
+    {
+      key: 'terminalBackend',
+      label: 'terminal backend',
+      status: fallbackStatus(terminalBackends['relay-pty']),
+    },
     { key: 'git', label: 'git', status: fallbackStatus(core?.git) },
     {
       key: 'worktrees',

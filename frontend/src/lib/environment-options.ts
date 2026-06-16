@@ -54,7 +54,7 @@ export interface BuildEnvironmentOptionsInput {
   nodes: HubNodeSummary[];
   /** Agent the dialog has selected — controls capability-missing reasons. */
   selectedAgent: AgentType;
-  /** 'agent' uses agent + shell + tmux requirement; 'terminal' is shell + tmux only. */
+  /** 'agent' uses agent + shell + terminal backend requirement; 'terminal' is shell + terminal backend only. */
   sessionType: 'agent' | 'terminal';
   /** Fallback when inventory is empty — typically the active workspace. */
   fallbackWorkspace?: {
@@ -107,8 +107,7 @@ function nodeFreshnessAndReasons(
     freshness = 'updating';
     reasons.push({
       kind: 'other',
-      message:
-        'node is updating — new sessions blocked until update completes',
+      message: 'node is updating — new sessions blocked until update completes',
       code: 'updating',
     });
   }
@@ -135,7 +134,7 @@ function nodeFreshnessAndReasons(
     reasons.push({
       kind: 'capability-missing',
       capability: 'session:create:terminal',
-      message: `terminal backend unavailable (relay-pty ${backends['relay-pty']}, tmux-compat ${backends['tmux-compat']})`,
+      message: `terminal backend unavailable (relay-pty ${backends['relay-pty']})`,
     });
   }
   if (sessionType === 'agent') {
@@ -164,9 +163,7 @@ function nodeFreshnessAndReasons(
  * regress; helper copy is taken verbatim from the node's `helperSkew` summary,
  * matching the established `node-dashboard.ts` `disabledReason` rendering.
  */
-function versionSkewReasons(
-  node: HubNodeSummary
-): EnvironmentDegradedReason[] {
+function versionSkewReasons(node: HubNodeSummary): EnvironmentDegradedReason[] {
   const reasons: EnvironmentDegradedReason[] = [];
   const versionState = node.version?.state;
   if (versionState === 'incompatible' || versionState === 'version-skew') {
@@ -213,8 +210,7 @@ function baseCapabilitiesFor(
 ): RelayCapabilityBit[] {
   if (!node) return [];
   const caps: RelayCapabilityBit[] = ['session:read'];
-  // New PTY sessions require shell plus at least one terminal backend. tmux is
-  // now the compatibility/import backend, not the terminal capability gate.
+  // New PTY sessions require shell plus relay-pty.
   const shellOk = capabilityProblem(node.capabilities.core.shell) === null;
   const terminalBackendOk = nodeHasTerminalBackend(node);
   if (shellOk && terminalBackendOk) {
@@ -257,10 +253,9 @@ function syntheticLocalNode(): HubNodeSummary {
       hubProtocolVersion: '1.0',
     },
     capabilities: {
-      totals: { available: 8, degraded: 0, unavailable: 0, unknown: 0 },
+      totals: { available: 7, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
@@ -269,7 +264,6 @@ function syntheticLocalNode(): HubNodeSummary {
       },
       terminalBackends: {
         'relay-pty': 'available',
-        'tmux-compat': 'available',
       },
       worktrees: 'available',
       agents: {},
@@ -288,9 +282,7 @@ function syntheticLocalNode(): HubNodeSummary {
  * short reason string sourced from the `RelayNodeErrorCode` vocabulary. Only
  * non-`available` providers get a reason; `available` returns `undefined`.
  */
-function providerReasonFor(
-  status: NodeCapabilityStatus
-): string | undefined {
+function providerReasonFor(status: NodeCapabilityStatus): string | undefined {
   switch (status) {
     case 'available':
       return undefined;
@@ -316,20 +308,16 @@ function providerReasonFor(
  * Iteration order follows `Object.entries`, which preserves the insertion
  * order of the agents record as the node reported it.
  */
-function agentProvidersFor(
-  node: HubNodeSummary
-): EnvironmentAgentProvider[] {
-  return Object.entries(node.capabilities.agents ?? {}).map(
-    ([id, status]) => {
-      const availability: EnvironmentProviderAvailability = status;
-      const reason = providerReasonFor(status);
-      return {
-        id,
-        availability,
-        ...(reason ? { reason } : {}),
-      } satisfies EnvironmentAgentProvider;
-    }
-  );
+function agentProvidersFor(node: HubNodeSummary): EnvironmentAgentProvider[] {
+  return Object.entries(node.capabilities.agents ?? {}).map(([id, status]) => {
+    const availability: EnvironmentProviderAvailability = status;
+    const reason = providerReasonFor(status);
+    return {
+      id,
+      availability,
+      ...(reason ? { reason } : {}),
+    } satisfies EnvironmentAgentProvider;
+  });
 }
 
 function nodeSummary(node: HubNodeSummary): EnvironmentOption['node'] {
@@ -629,7 +617,6 @@ function syntheticForUnknownNode(nodeId: NodeId): HubNodeSummary {
       core: {
         ...synthetic.capabilities.core,
         shell: 'unknown',
-        tmux: 'unknown',
       },
       agents: {},
     },

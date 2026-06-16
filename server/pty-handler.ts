@@ -54,138 +54,6 @@ const IDLE_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_SCROLLBACK_PER_SESSION = 256 * 1024; // 256KB
 const logger = createLogger('pty');
 
-function normalizeTmuxPrefix(prefix: string | undefined): string | null {
-  const sanitized = prefix
-    ?.trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+/, '');
-  if (!sanitized) return null;
-  return sanitized.endsWith('-') ? sanitized : `${sanitized}-`;
-}
-
-export function getTmuxPrefix(): string {
-  return (
-    normalizeTmuxPrefix(process.env.RELAY_IDE_TMUX_PREFIX) ??
-    (process.env.RELAY_IDE_DEV_INSTANCE === '1' ? 'relay-dev-' : 'relay-ide-')
-  );
-}
-
-export function generateTmuxSessionName(
-  displayName: string,
-  id: string
-): string {
-  const sanitized = displayName
-    .replace(/[^a-zA-Z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, 30);
-  return `${getTmuxPrefix()}${sanitized}-${id.slice(0, 8)}`;
-}
-
-export function resolveTmuxSpawn(
-  command: string,
-  args: string[],
-  tmuxSessionName: string,
-  env?: NodeJS.ProcessEnv
-): { command: string; args: string[] } {
-  const envArgs = tmuxEnvArgs(env);
-  return {
-    command: 'tmux',
-    args: [
-      '-u',
-      'new-session',
-      ...envArgs,
-      '-s',
-      tmuxSessionName,
-      '--',
-      command,
-      ...args,
-      ';',
-      'set',
-      'set-clipboard',
-      'on',
-      ';',
-      'set',
-      'allow-passthrough',
-      'on',
-      ';',
-      'set',
-      'mode-keys',
-      'vi',
-    ],
-  };
-}
-
-const VALID_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const TMUX_ENV_SENSITIVE_NAME = /(TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|KEY)/i;
-const TMUX_ENV_SENSITIVE_ALLOWLIST = new Set(['RELAY_IDE_TOKEN']);
-
-function tmuxEnvArgs(env: NodeJS.ProcessEnv | undefined): string[] {
-  if (!env) return [];
-  return Object.entries(env).flatMap(([key, value]) => {
-    if (!VALID_ENV_NAME.test(key) || value === undefined) return [];
-    if (
-      TMUX_ENV_SENSITIVE_NAME.test(key) &&
-      !TMUX_ENV_SENSITIVE_ALLOWLIST.has(key)
-    ) {
-      return [];
-    }
-    return ['-e', `${key}=${value}`];
-  });
-}
-
-function tmuxEnvWrapperPath(id: string): string {
-  return path.join(os.tmpdir(), 'relay-ide', id, 'tmux-env-wrapper.sh');
-}
-
-function writeTmuxEnvWrapper(
-  id: string,
-  command: string,
-  args: string[],
-  env: NodeJS.ProcessEnv
-): { command: string; args: string[]; wrapperPath: string } {
-  const dir = path.join(os.tmpdir(), 'relay-ide', id);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const wrapperPath = tmuxEnvWrapperPath(id);
-  const exports = Object.entries(env)
-    .filter(
-      (entry): entry is [string, string] =>
-        VALID_ENV_NAME.test(entry[0]) && entry[1] !== undefined
-    )
-    .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
-    .join('\n');
-  fs.writeFileSync(
-    wrapperPath,
-    `#!/bin/sh
-set -eu
-rm -f "$0"
-${exports}
-exec "$@"
-`,
-    { encoding: 'utf-8', mode: 0o700 }
-  );
-  fs.chmodSync(wrapperPath, 0o700);
-  return {
-    command: '/bin/sh',
-    args: [wrapperPath, command, ...args],
-    wrapperPath,
-  };
-}
-
-export function resolveTmuxWrappedSpawn(
-  id: string,
-  command: string,
-  args: string[],
-  tmuxSessionName: string,
-  env: NodeJS.ProcessEnv
-): { command: string; args: string[]; wrapperPath: string } {
-  const wrapped = writeTmuxEnvWrapper(id, command, args, env);
-  return {
-    ...resolveTmuxSpawn(wrapped.command, wrapped.args, tmuxSessionName),
-    wrapperPath: wrapped.wrapperPath,
-  };
-}
-
 function shellQuote(value: string): string {
   return "'" + value.replace(/'/g, "'\"'\"'") + "'";
 }
@@ -399,10 +267,6 @@ export type CreatePtyParams = {
   configPath?: string | undefined;
   configDir?: string | undefined;
   terminalBackend?: TerminalBackend | undefined;
-  useTmux?: boolean | undefined;
-  tmuxSessionName?: string | undefined;
-  tmuxDisplayName?: string | undefined;
-  tmuxAttach?: boolean | undefined;
   sessionCustomCommand?: string | null | undefined;
   sessionLane?: SessionLane | undefined;
   initialScrollback?: string[] | undefined;
@@ -483,7 +347,6 @@ function resolveAgentFramework(
 
 type HookSetupResult = {
   env: NodeJS.ProcessEnv;
-  tmuxEnv: NodeJS.ProcessEnv;
   hookToken: string;
   hooksActive: boolean;
   settingsPath: string;
@@ -494,8 +357,7 @@ function setupPluginHooks(
   id: string,
   port: number,
   hookToken: string,
-  env: Record<string, string>,
-  tmuxEnv: Record<string, string>
+  env: Record<string, string>
 ): { hookToken: string; hooksActive: boolean } {
   if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
   try {
@@ -506,7 +368,6 @@ function setupPluginHooks(
       RELAY_IDE_TOKEN: hookToken,
     };
     Object.assign(env, pluginEnv);
-    Object.assign(tmuxEnv, pluginEnv);
     return { hookToken, hooksActive: true };
   } catch (err) {
     logger.warn(
@@ -522,8 +383,7 @@ function setupCodexHooks(
   port: number,
   hookToken: string,
   configDir: string,
-  env: Record<string, string>,
-  tmuxEnv: Record<string, string>
+  env: Record<string, string>
 ): { hookToken: string; hooksActive: boolean } {
   if (!hookToken) hookToken = crypto.randomBytes(32).toString('hex');
   try {
@@ -534,7 +394,6 @@ function setupCodexHooks(
       configDir
     );
     env.CODEX_CONFIG_DIR = codexConfigDir;
-    tmuxEnv.CODEX_CONFIG_DIR = codexConfigDir;
     return { hookToken, hooksActive: true };
   } catch (err) {
     logger.warn(`Failed to write codex hooks adapter for session ${id}:`, err);
@@ -559,7 +418,6 @@ type PortInjectionParams = {
  */
 function injectPortEnvVars(
   env: Record<string, string>,
-  tmuxEnv: Record<string, string>,
   params: PortInjectionParams
 ): void {
   const { repoPath, worktreePath, cwd, portVariables, portAllocator } = params;
@@ -589,7 +447,6 @@ function injectPortEnvVars(
   for (const [varName, port] of Object.entries(portMapping)) {
     if (portVariables.includes(varName)) {
       env[varName] = String(port);
-      tmuxEnv[varName] = String(port);
     }
   }
 }
@@ -666,35 +523,28 @@ type RelaySessionEnvParams = {
  */
 export function injectRelaySessionEnvForTest(
   env: Record<string, string>,
-  tmuxEnv: Record<string, string>,
   params: RelaySessionEnvParams
 ): void {
-  return injectRelaySessionEnv(env, tmuxEnv, params);
+  return injectRelaySessionEnv(env, params);
 }
 
 function injectRelaySessionEnv(
   env: Record<string, string>,
-  tmuxEnv: Record<string, string>,
   params: RelaySessionEnvParams
 ): void {
   const { sessionId, nodeId, port, workContextId } = params;
 
   env.RELAY_NODE_ID = nodeId;
   env.RELAY_SESSION_ID = sessionId;
-  tmuxEnv.RELAY_NODE_ID = nodeId;
-  tmuxEnv.RELAY_SESSION_ID = sessionId;
 
   if (port !== undefined) {
     const hubUrl = `http://127.0.0.1:${port}`;
     env.RELAY_HUB_URL = hubUrl;
     env.RELAY_SOCKET = hubUrl;
-    tmuxEnv.RELAY_HUB_URL = hubUrl;
-    tmuxEnv.RELAY_SOCKET = hubUrl;
   }
 
   if (workContextId) {
     env.RELAY_WORK_CONTEXT_ID = workContextId;
-    tmuxEnv.RELAY_WORK_CONTEXT_ID = workContextId;
   }
 
   // Write per-session relayctl shim and prepend to PATH so it is only
@@ -702,9 +552,7 @@ function injectRelaySessionEnv(
   const shimBinDir = writeRelayctlShim(sessionId);
   if (shimBinDir) {
     const currentPath = env.PATH ?? process.env.PATH ?? '';
-    const currentTmuxPath = tmuxEnv.PATH ?? currentPath;
     env.PATH = `${shimBinDir}:${currentPath}`;
-    tmuxEnv.PATH = `${shimBinDir}:${currentTmuxPath}`;
   }
 }
 
@@ -722,14 +570,13 @@ function isReservedEnvKey(key: string): boolean {
 /**
  * Layer a Bench's persisted `envOverrides` onto the base PTY env (#740).
  * Additive: each non-reserved key is set (or overwritten) on both the process
- * env and the tmux update-environment set. Reserved keys (`PATH`, `RELAY_*`)
+ * env. Reserved keys (`PATH`, `RELAY_*`)
  * are skipped so Relay's own injection always wins. Empty record is a no-op.
  *
  * @internal exported as injectBenchEnvOverridesForTest for testing only.
  */
 function applyBenchEnvOverrides(
   env: Record<string, string>,
-  tmuxEnv: Record<string, string>,
   overrides: Record<string, string>
 ): void {
   for (const [key, value] of Object.entries(overrides)) {
@@ -742,17 +589,15 @@ function applyBenchEnvOverrides(
       continue;
     }
     env[key] = value;
-    tmuxEnv[key] = value;
   }
 }
 
 /** @internal Exposed for unit tests of bench env-override precedence. */
 export function injectBenchEnvOverridesForTest(
   env: Record<string, string>,
-  tmuxEnv: Record<string, string>,
   overrides: Record<string, string>
 ): void {
-  applyBenchEnvOverrides(env, tmuxEnv, overrides);
+  applyBenchEnvOverrides(env, overrides);
 }
 
 function buildPortInjectionParams(
@@ -817,37 +662,13 @@ function setupEnvAndHooks(
   envOverrides?: Record<string, string> | undefined
 ): HookSetupResult {
   const env = cleanEnv();
-  const tmuxEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (
-      value !== undefined &&
-      ([
-        'HOME',
-        'PATH',
-        'SHELL',
-        'TMPDIR',
-        'TEMP',
-        'TMP',
-        'TMUX_TMPDIR',
-        'LANG',
-        'LC_ALL',
-        'USER',
-        'LOGNAME',
-      ].includes(key) ||
-        key.startsWith('LC_'))
-    ) {
-      tmuxEnv[key] = value;
-    }
-  }
 
   if (framework.id === 'claude' && paramClaudeFullscreen === true) {
     env.CLAUDE_CODE_NO_FLICKER = '1';
-    tmuxEnv.CLAUDE_CODE_NO_FLICKER = '1';
   }
 
   if (paramYolo && framework.yoloEnv) {
     Object.assign(env, framework.yoloEnv);
-    Object.assign(tmuxEnv, framework.yoloEnv);
   }
 
   let hookToken = paramHookToken ?? '';
@@ -858,7 +679,7 @@ function setupEnvAndHooks(
   let settingsPath = '';
 
   if (effectiveEventSource === 'plugin' && port !== undefined) {
-    const result = setupPluginHooks(id, port, hookToken, env, tmuxEnv);
+    const result = setupPluginHooks(id, port, hookToken, env);
     hookToken = result.hookToken;
     pluginHooksActive = result.hooksActive;
   }
@@ -869,8 +690,7 @@ function setupEnvAndHooks(
       port,
       hookToken,
       configDir ?? process.cwd(),
-      env,
-      tmuxEnv
+      env
     );
     hookToken = result.hookToken;
     codexHooksActive = result.hooksActive;
@@ -891,7 +711,7 @@ function setupEnvAndHooks(
   }
 
   if (portInjectionParams) {
-    injectPortEnvVars(env, tmuxEnv, portInjectionParams);
+    injectPortEnvVars(env, portInjectionParams);
   }
 
   // #740: layer the anchoring Bench's persisted env overrides on top of the
@@ -899,18 +719,17 @@ function setupEnvAndHooks(
   // Relay-owned vars + relayctl PATH shim always win and can never be clobbered
   // by caller-supplied env.
   if (envOverrides) {
-    applyBenchEnvOverrides(env, tmuxEnv, envOverrides);
+    applyBenchEnvOverrides(env, envOverrides);
   }
 
   // Inject Relay-owned session identity env vars. These are set last so they
   // are never overwritten by hook, port, or bench-override injection above.
   if (relaySessionEnvParams) {
-    injectRelaySessionEnv(env, tmuxEnv, relaySessionEnvParams);
+    injectRelaySessionEnv(env, relaySessionEnvParams);
   }
 
   return {
     env,
-    tmuxEnv,
     hookToken,
     hooksActive: claudeHooksActive || codexHooksActive || pluginHooksActive,
     settingsPath,
@@ -919,91 +738,33 @@ function setupEnvAndHooks(
 }
 
 function resolveSpawnTarget(
-  command: string | undefined,
   resolvedCommand: string,
   args: string[],
-  paramUseTmux: boolean | undefined,
   paramTerminalBackend: TerminalBackend | undefined,
-  paramTmuxSessionName: string | undefined,
-  tmuxAttach: boolean | undefined,
-  tmuxDisplayName: string | undefined,
-  cwd: string,
   workContextId: string | undefined,
-  displayName: string | undefined,
-  repoName: string | undefined,
   id: string,
-  env: NodeJS.ProcessEnv,
-  tmuxEnv: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv
 ): {
   spawnCommand: string;
   spawnArgs: string[];
   spawnEnv: NodeJS.ProcessEnv;
   terminalBackend: TerminalBackend;
-  useTmux: boolean;
-  tmuxSessionName: string;
 } {
-  const terminalBackend =
-    paramTerminalBackend ??
-    (paramUseTmux === true ? 'tmux-compat' : 'relay-pty');
-  const useTmux = terminalBackend === 'tmux-compat';
-  const tmuxSessionName =
-    paramTmuxSessionName ||
-    (useTmux
-      ? generateTmuxSessionName(
-          tmuxDisplayName ||
-            displayName ||
-            repoName ||
-            path.basename(cwd) ||
-            'session',
-          id
-        )
-      : '');
-
-  const spawnEnv = useTmux
-    ? tmuxEnv
-    : buildRelayPtySessionEnv({
-        id,
-        env,
-        ...(workContextId ? { workContextId } : {}),
-      });
-
-  if (!useTmux) {
-    return {
-      spawnCommand: resolvedCommand,
-      spawnArgs: args,
-      spawnEnv,
-      terminalBackend,
-      useTmux,
-      tmuxSessionName,
-    };
-  }
-
-  if (tmuxAttach) {
-    return {
-      spawnCommand: resolvedCommand,
-      spawnArgs: args,
-      spawnEnv,
-      terminalBackend,
-      useTmux,
-      tmuxSessionName,
-    };
-  } else {
-    const tmux = resolveTmuxWrappedSpawn(
-      id,
-      resolvedCommand,
-      args,
-      tmuxSessionName,
-      env
+  if (paramTerminalBackend && paramTerminalBackend !== 'relay-pty') {
+    throw new Error(
+      `Unsupported terminal backend "${paramTerminalBackend}"; Relay now supports relay-pty only.`
     );
-    return {
-      spawnCommand: tmux.command,
-      spawnArgs: tmux.args,
-      spawnEnv,
-      terminalBackend,
-      useTmux,
-      tmuxSessionName,
-    };
   }
+  return {
+    spawnCommand: resolvedCommand,
+    spawnArgs: args,
+    spawnEnv: buildRelayPtySessionEnv({
+      id,
+      env,
+      ...(workContextId ? { workContextId } : {}),
+    }),
+    terminalBackend: 'relay-pty',
+  };
 }
 
 function buildSessionObject(
@@ -1016,8 +777,6 @@ function buildSessionObject(
   effectiveEventSource: EventSourceType,
   terminalBackend: TerminalBackend,
   terminalModel: TerminalModelBackend | undefined,
-  useTmux: boolean,
-  tmuxSessionName: string,
   createdAt: string,
   scrollbackCapacityBytes: number
 ): PtySession {
@@ -1075,8 +834,6 @@ function buildSessionObject(
       sessionCustomCommand !== undefined
         ? sessionCustomCommand
         : command || null,
-    useTmux,
-    tmuxSessionName,
     onPtyReplacedCallbacks: [],
     status: 'active' as SessionStatus,
     restored: paramRestored || false,
@@ -1216,20 +973,15 @@ export function createPtySession(
   const {
     id,
     agent = 'claude',
-    repoName,
     repoPath,
     worktreePath = null,
     cwd,
-    displayName,
     command,
     args: rawArgs = [],
     cols = 80,
     rows = 24,
     configPath,
     configDir,
-    useTmux: paramUseTmux,
-    tmuxSessionName: paramTmuxSessionName,
-    tmuxAttach,
     initialScrollback,
     port,
     forceOutputParser,
@@ -1305,66 +1057,34 @@ export function createPtySession(
     paramEnvOverrides
   );
 
-  const { env, tmuxEnv, hookToken, hooksActive, settingsPath } = hookSetup;
+  const { env, hookToken, hooksActive, settingsPath } = hookSetup;
   const args = hookSetup.args;
 
-  const {
-    spawnCommand,
-    spawnArgs,
-    spawnEnv,
-    terminalBackend,
-    useTmux,
-    tmuxSessionName,
-  } = resolveSpawnTarget(
-    command,
-    resolvedCommand,
-    args,
-    paramUseTmux,
-    params.terminalBackend,
-    paramTmuxSessionName,
-    tmuxAttach,
-    params.tmuxDisplayName,
-    cwd,
-    params.workContextId,
-    displayName,
-    repoName,
-    id,
-    env,
-    tmuxEnv
-  );
+  const { spawnCommand, spawnArgs, spawnEnv, terminalBackend } =
+    resolveSpawnTarget(
+      resolvedCommand,
+      args,
+      params.terminalBackend,
+      params.workContextId,
+      id,
+      env
+    );
 
-  let ptyProcess: pty.IPty;
-  try {
-    ptyProcess = pty.spawn(spawnCommand, spawnArgs, {
-      name: 'xterm-256color',
-      cols,
-      rows,
-      cwd,
-      env: spawnEnv,
-    });
-  } catch (err) {
-    if (!tmuxAttach) {
-      try {
-        fs.rmSync(tmuxEnvWrapperPath(id), { force: true });
-      } catch {
-        /* best effort */
-      }
-    }
-    throw err;
-  }
+  const ptyProcess = pty.spawn(spawnCommand, spawnArgs, {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd,
+    env: spawnEnv,
+  });
 
   const scrollback: string[] = initialScrollback ? [...initialScrollback] : [];
-  const terminalModel =
-    terminalBackend === 'relay-pty'
-      ? createLibghosttyTerminalModelBackend({
-          cols,
-          rows,
-          scrollbackLimit: 1000,
-        })
-      : undefined;
-  if (terminalModel) {
-    for (const chunk of scrollback) terminalModel.feed(chunk);
-  }
+  const terminalModel = createLibghosttyTerminalModelBackend({
+    cols,
+    rows,
+    scrollbackLimit: 1000,
+  });
+  for (const chunk of scrollback) terminalModel.feed(chunk);
   // Use a ref so tryRetrySpawn (called from onExit) can reset the byte counter
   const scrollbackRef = {
     bytes: initialScrollback
@@ -1386,8 +1106,6 @@ export function createPtySession(
     effectiveEventSource,
     terminalBackend,
     terminalModel,
-    useTmux,
-    tmuxSessionName,
     createdAt,
     maxScrollbackPerSession
   );
@@ -1497,13 +1215,10 @@ export function createPtySession(
           continueArgs,
           settingsPath,
           resolvedCommand,
-          useTmux,
-          tmuxSessionName,
           cols,
           rows,
           cwd,
           env,
-          tmuxEnv,
           workContextId: params.workContextId,
           scrollback,
           scrollbackRef,
@@ -1578,8 +1293,6 @@ export function createPtySession(
     cwd,
     customCommand: session.customCommand,
     terminalBackend,
-    useTmux,
-    tmuxSessionName,
     status: 'active' as SessionStatus,
     needsBranchRename: false,
     agentState: 'initializing',
@@ -1594,13 +1307,10 @@ type RetryContext = {
   continueArgs: string[];
   settingsPath: string;
   resolvedCommand: string;
-  useTmux: boolean;
-  tmuxSessionName: string;
   cols: number;
   rows: number;
   cwd: string;
   env: NodeJS.ProcessEnv;
-  tmuxEnv: NodeJS.ProcessEnv;
   workContextId: string | undefined;
   scrollback: string[];
   scrollbackRef: { bytes: number };
@@ -1629,42 +1339,19 @@ function tryRetrySpawn(
   ctx.scrollback.push(retryNotice);
   ctx.scrollbackRef.bytes = retryNotice.length;
 
-  let retryCommand = ctx.resolvedCommand;
-  let retrySpawnArgs = retryArgs;
-  if (ctx.useTmux && ctx.tmuxSessionName) {
-    const retryTmuxName = ctx.tmuxSessionName + '-retry';
-    session.tmuxSessionName = retryTmuxName;
-    const tmux = resolveTmuxWrappedSpawn(
-      ctx.id,
-      ctx.resolvedCommand,
-      retryArgs,
-      retryTmuxName,
-      ctx.env
-    );
-    retryCommand = tmux.command;
-    retrySpawnArgs = tmux.args;
-  }
-
   try {
-    return pty.spawn(retryCommand, retrySpawnArgs, {
+    return pty.spawn(ctx.resolvedCommand, retryArgs, {
       name: 'xterm-256color',
       cols: ctx.cols,
       rows: ctx.rows,
       cwd: ctx.cwd,
-      env: ctx.useTmux
-        ? ctx.tmuxEnv
-        : buildRelayPtySessionEnv({
-            id: ctx.id,
-            env: ctx.env,
-            ...(ctx.workContextId ? { workContextId: ctx.workContextId } : {}),
-          }),
+      env: buildRelayPtySessionEnv({
+        id: ctx.id,
+        env: ctx.env,
+        ...(ctx.workContextId ? { workContextId: ctx.workContextId } : {}),
+      }),
     });
   } catch {
-    try {
-      fs.rmSync(tmuxEnvWrapperPath(ctx.id), { force: true });
-    } catch {
-      /* best effort */
-    }
     if (ctx.timers.restoredClear) clearTimeout(ctx.timers.restoredClear);
     if (ctx.timers.idle) clearTimeout(ctx.timers.idle);
     if (ctx.timers.metaFlush) clearTimeout(ctx.timers.metaFlush);

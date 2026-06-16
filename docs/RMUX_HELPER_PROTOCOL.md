@@ -507,7 +507,7 @@ Success data:
 
 Rules:
 
-- Relay calls `kill` only for explicit session termination, matching `SESSION_ATTACHMENT_KILL_REASON` semantics.
+- Relay calls `kill` only for explicit session termination. Relay-owned PTYs do not preserve a live child process across Relay/node restart.
 - The helper closes all attach streams, emits `closed` events, and releases rmux handles.
 - Cleanup failures return `CLEANUP_FAILED` with `retryable: true` when another kill attempt might succeed.
 

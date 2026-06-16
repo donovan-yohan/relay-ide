@@ -154,18 +154,18 @@ Use a safe remote terminal/session through the hub UI or CLI path that targets `
 
 ## Process hygiene
 
-Stale local processes can make a devbox test look local-only. Identify before killing. Kill only a specific PID or tmux session after confirming its command, cwd, port, and role.
+Stale local processes can make a devbox test look local-only. Identify before killing. Kill only a specific PID after confirming its command, cwd, port, and role.
 
 ### Roles to distinguish
 
-| Role                    | Typical signal                                                                                                                             | Safe action                                                                              |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| Production/global hub   | `relay-ide hub` or `node dist/server/index.js` on `0.0.0.0:3456`, config under `~/.config/relay-ide/config.json`, tmux prefix `relay-ide-` | Do not kill unless you intend to stop the hosted Relay service                           |
-| Ordinary source dev hub | backend `127.0.0.1:3457`, Vite `127.0.0.1:5173`, config `./config.dev.json`, tmux prefix `relay-dev-`                                      | Stop the owning dev terminal, or kill the verified stale PID                             |
-| Self-host source hub    | allocator ports usually `10000-11999`, config under `~/.config/relay-ide/self-host/`, tmux prefix `relay-self-`                            | Stop the owning self-host terminal, or kill only the verified stale PID/session          |
-| Vite frontend           | `vite --config frontend/vite.config.ts` on the printed frontend port                                                                       | Kill only if it belongs to the stale self-host/dev run                                   |
-| Node link               | `relay-ide node link --hub ...`                                                                                                            | Do not kill during federated proof unless you are intentionally restarting the node link |
-| Test/fixture server     | Playwright/Vitest or sandbox command, often temporary port                                                                                 | Let the test own it unless it is orphaned and verified stale                             |
+| Role                    | Typical signal                                                                                                   | Safe action                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Production/global hub   | `relay-ide hub` or `node dist/server/index.js` on `0.0.0.0:3456`, config under `~/.config/relay-ide/config.json` | Do not kill unless you intend to stop the hosted Relay service                           |
+| Ordinary source dev hub | backend `127.0.0.1:3457`, Vite `127.0.0.1:5173`, config under `~/.config/relay-ide/dev/`                         | Stop the owning dev terminal, or kill the verified stale PID                             |
+| Self-host source hub    | allocator ports usually `10000-11999`, config under `~/.config/relay-ide/self-host/`                             | Stop the owning self-host terminal, or kill only the verified stale PID                  |
+| Vite frontend           | `vite --config frontend/vite.config.ts` on the printed frontend port                                             | Kill only if it belongs to the stale self-host/dev run                                   |
+| Node link               | `relay-ide node link --hub ...`                                                                                  | Do not kill during federated proof unless you are intentionally restarting the node link |
+| Test/fixture server     | Playwright/Vitest or sandbox command, often temporary port                                                       | Let the test own it unless it is orphaned and verified stale                             |
 
 ### Inspect listeners and commands
 
@@ -178,21 +178,6 @@ lsof -p <pid> | grep cwd
 ```
 
 For self-host ports, use the startup output or `.env` managed block to identify the assigned ports, then inspect those ports with `lsof`.
-
-### Inspect Relay tmux sessions
-
-```bash
-tmux ls | grep '^relay-ide-\|^relay-dev-\|^relay-self-'
-tmux display-message -p -t <session-name> '#S #{session_created_string}'
-```
-
-Kill only the session you have identified:
-
-```bash
-tmux kill-session -t <session-name>
-```
-
-Never use `tmux kill-server` as a cleanup shortcut. It can kill production Relay sessions and active agent work.
 
 ### Kill a stale PID safely
 
@@ -224,7 +209,7 @@ Devbox deploy evidence for <PR/issue>:
 - Node version: <Mac `relay-ide --version` output, including source SHA if available>
 - Node registry: `macbook-relay-node` <online/stale/offline>, protocol <compatible/skew/incompatible>
 - Routed session proof: <safe command + where it ran; no secrets>
-- Process hygiene: <listeners/tmux checked; stale PID/session killed or none found>
+- Process hygiene: <listeners checked; stale PID killed or none found>
 - Redaction: no pair tokens, bearer tokens, cookies, node credentials, or auth-bearing URLs included
 ```
 

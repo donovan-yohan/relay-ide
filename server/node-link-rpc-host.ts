@@ -1,7 +1,14 @@
 import * as crypto from 'node:crypto';
 import * as os from 'node:os';
-import { isFileRpcOperation, type FileRpcTailResponse } from '../shared/file-rpc.js';
-import { createFileRpcFollower, executeLocalFileRpc, type FileRpcFollower } from './file-rpc.js';
+import {
+  isFileRpcOperation,
+  type FileRpcTailResponse,
+} from '../shared/file-rpc.js';
+import {
+  createFileRpcFollower,
+  executeLocalFileRpc,
+  type FileRpcFollower,
+} from './file-rpc.js';
 import type { LocalRelayNode } from './local-node.js';
 import {
   createNodeLogFollower,
@@ -71,7 +78,9 @@ function parseCredentialRotatePayload(
   const record = asRecord(raw);
   const credentialRecord = asRecord(record?.['credential']);
   if (!credentialRecord) {
-    return invalidRequest('credential.rotate payload.credential must be an object');
+    return invalidRequest(
+      'credential.rotate payload.credential must be an object'
+    );
   }
   const protocol = asString(credentialRecord['protocol']);
   const protocolVersion = asString(credentialRecord['protocolVersion']);
@@ -79,12 +88,26 @@ function parseCredentialRotatePayload(
   const credentialId = asString(credentialRecord['credentialId']);
   const token = asString(credentialRecord['token']);
   const issuedAt = asString(credentialRecord['issuedAt']);
-  if (!protocol || !protocolVersion || !nodeId || !credentialId || !token || !issuedAt) {
+  if (
+    !protocol ||
+    !protocolVersion ||
+    !nodeId ||
+    !credentialId ||
+    !token ||
+    !issuedAt
+  ) {
     return invalidRequest(
       'credential.rotate payload.credential requires protocol, protocolVersion, nodeId, credentialId, token, and issuedAt'
     );
   }
-  return { protocol, protocolVersion, nodeId, credentialId, token, issuedAt } as RelayNodeCredential;
+  return {
+    protocol,
+    protocolVersion,
+    nodeId,
+    credentialId,
+    token,
+    issuedAt,
+  } as RelayNodeCredential;
 }
 
 function asStringArray(value: unknown): string[] | undefined {
@@ -98,7 +121,7 @@ function asBoolean(value: unknown): boolean | undefined {
 }
 
 function parseTerminalBackend(value: unknown): TerminalBackend | undefined {
-  if (value === 'relay-pty' || value === 'tmux-compat') return value;
+  if (value === 'relay-pty') return value;
   return undefined;
 }
 
@@ -114,7 +137,7 @@ function parseTerminalBackendOverride(
     const terminalBackend = parseTerminalBackend(record['terminalBackend']);
     if (terminalBackend === undefined) {
       return invalidRequest(
-        'sessions.create payload.terminalBackend must be "relay-pty" or "tmux-compat"'
+        'sessions.create payload.terminalBackend must be "relay-pty"'
       );
     }
     return { terminalBackend };
@@ -214,7 +237,8 @@ function parseSessionsCreateInput(
   if (modeRaw === 'pty' || modeRaw === 'web') input.mode = modeRaw;
   const initialControl = parseInitialControlMode(record, typeRaw);
   if ('code' in initialControl) return initialControl;
-  if (initialControl.controlMode) input.controlMode = initialControl.controlMode;
+  if (initialControl.controlMode)
+    input.controlMode = initialControl.controlMode;
   const agent = asString(record['agent']);
   if (agent !== undefined) input.agent = agent;
   const repoPath = asString(record['repoPath']);
@@ -357,8 +381,10 @@ export function createNodeLinkRpcHost(
   }
 
   function closeAllLogFollowers(): void {
-    for (const streamId of Array.from(logFollowers.keys())) closeLogFollower(streamId);
-    for (const streamId of Array.from(fileFollowers.keys())) closeFileFollower(streamId);
+    for (const streamId of Array.from(logFollowers.keys()))
+      closeLogFollower(streamId);
+    for (const streamId of Array.from(fileFollowers.keys()))
+      closeFileFollower(streamId);
   }
 
   async function handleSessionsCreate(
@@ -383,18 +409,25 @@ export function createNodeLinkRpcHost(
       const sessionId = createInput.id ?? crypto.randomBytes(8).toString('hex');
       createInput.id = sessionId;
       const effectiveControlMode =
-        controlMode ?? (createInput.type === 'agent' ? 'agent-driven' : 'human-driven');
+        controlMode ??
+        (createInput.type === 'agent' ? 'agent-driven' : 'human-driven');
       (createInput as CreateParams).controlState =
         effectiveControlMode === 'agent-driven'
           ? createAgentDrivenInitialControlState({
               workerId: sessionId,
-              ...(createInput.displayName ? { displayName: createInput.displayName } : {}),
+              ...(createInput.displayName
+                ? { displayName: createInput.displayName }
+                : {}),
             })
           : createHumanDrivenInitialControlState({
               sessionId,
-              ...(createInput.displayName ? { displayName: createInput.displayName } : {}),
+              ...(createInput.displayName
+                ? { displayName: createInput.displayName }
+                : {}),
             });
-      const result = localRelayNode.sessions.create(createInput as CreateParams);
+      const result = localRelayNode.sessions.create(
+        createInput as CreateParams
+      );
       sendResultEnvelope(ctx, envelope, {
         session: sessionSummaryFromCreateResult(result),
       });
@@ -484,7 +517,10 @@ export function createNodeLinkRpcHost(
       return;
     }
     try {
-      const updated = localRelayNode.sessions.updateDisplayName(id, displayName);
+      const updated = localRelayNode.sessions.updateDisplayName(
+        id,
+        displayName
+      );
       sendResultEnvelope(ctx, envelope, {
         ok: true,
         ...(typeof updated === 'object' && updated !== null
@@ -538,7 +574,13 @@ export function createNodeLinkRpcHost(
             maxFollowChunkBytes: tailResult.maxFollowChunkBytes,
           },
           startOffset: tailResult.endOffset,
-          write: (chunk) => sendStreamEnvelopeWithBackpressure(ctx, envelope, 'fs.tail.chunk', chunk),
+          write: (chunk) =>
+            sendStreamEnvelopeWithBackpressure(
+              ctx,
+              envelope,
+              'fs.tail.chunk',
+              chunk
+            ),
           onError: (error) => {
             logger.warn(`fs.tail follow failed: ${error.message}`);
             sendStreamEnvelope(ctx, envelope, 'fs.tail.error', {
@@ -621,7 +663,9 @@ export function createNodeLinkRpcHost(
     const filter: LogEventFilter | undefined = hasFilter
       ? {
           ...(parsed.level !== undefined ? { level: parsed.level } : {}),
-          ...(parsed.subsystem !== undefined ? { subsystem: parsed.subsystem } : {}),
+          ...(parsed.subsystem !== undefined
+            ? { subsystem: parsed.subsystem }
+            : {}),
           ...(parsed.sinceTs !== undefined ? { sinceTs: parsed.sinceTs } : {}),
         }
       : undefined;
@@ -651,7 +695,8 @@ export function createNodeLinkRpcHost(
     const follower = createNodeLogFollower({
       configPath: logConfigPath,
       serviceLogDir: logDir,
-      write: (chunk) => sendStreamEnvelope(ctx, envelope, 'logs.tail.chunk', { chunk }),
+      write: (chunk) =>
+        sendStreamEnvelope(ctx, envelope, 'logs.tail.chunk', { chunk }),
       onError: (error) => {
         logger.warn(`logs.tail follow failed: ${error.message}`);
         sendStreamEnvelope(ctx, envelope, 'logs.tail.error', {
@@ -691,7 +736,8 @@ export function createNodeLinkRpcHost(
         credentialId: credential.credentialId,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error ?? 'unknown');
+      const message =
+        error instanceof Error ? error.message : String(error ?? 'unknown');
       logger.error(`credential.rotate failed: ${message}`);
       sendErrorEnvelope(ctx, envelope, internalError(message));
     }

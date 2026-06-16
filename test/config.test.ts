@@ -85,7 +85,9 @@ test('DEFAULTS has expected keys and values', () => {
   expect(DEFAULTS.defaultFramework).toBe('claude');
   expect(DEFAULTS.defaultContinue).toBe(true);
   expect(DEFAULTS.defaultYolo).toBe(false);
-  expect(Object.prototype.hasOwnProperty.call(DEFAULTS, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
+  expect(
+    Object.prototype.hasOwnProperty.call(DEFAULTS, LEGACY_TMUX_LAUNCH_KEY)
+  ).toBe(false);
   expect(DEFAULTS.terminalBackend).toBe('relay-pty');
 });
 
@@ -96,7 +98,9 @@ test('loadConfig returns correct defaults for defaultContinue, defaultYolo, and 
   const config = loadConfig(configPath);
   expect(config.defaultContinue).toBe(true);
   expect(config.defaultYolo).toBe(false);
-  expect(Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
+  expect(
+    Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)
+  ).toBe(false);
   expect(config.terminalBackend).toBe('relay-pty');
 });
 
@@ -110,7 +114,9 @@ test('loadConfig ignores the legacy tmux launch flag when terminalBackend is abs
 
   const config = loadConfig(configPath);
   expect(config.terminalBackend).toBe('relay-pty');
-  expect(Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
+  expect(
+    Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)
+  ).toBe(false);
 });
 
 test('loadConfig keeps relay-pty default for absent or false legacy tmux launch flag', () => {
@@ -118,7 +124,12 @@ test('loadConfig keeps relay-pty default for absent or false legacy tmux launch 
   fs.writeFileSync(missingLegacyPath, JSON.stringify({}), 'utf8');
   const missingLegacyConfig = loadConfig(missingLegacyPath);
   expect(missingLegacyConfig.terminalBackend).toBe('relay-pty');
-  expect(Object.prototype.hasOwnProperty.call(missingLegacyConfig, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
+  expect(
+    Object.prototype.hasOwnProperty.call(
+      missingLegacyConfig,
+      LEGACY_TMUX_LAUNCH_KEY
+    )
+  ).toBe(false);
 
   const falseLegacyPath = path.join(tmpDir, 'false-legacy.json');
   fs.writeFileSync(
@@ -128,20 +139,30 @@ test('loadConfig keeps relay-pty default for absent or false legacy tmux launch 
   );
   const falseLegacyConfig = loadConfig(falseLegacyPath);
   expect(falseLegacyConfig.terminalBackend).toBe('relay-pty');
-  expect(Object.prototype.hasOwnProperty.call(falseLegacyConfig, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
+  expect(
+    Object.prototype.hasOwnProperty.call(
+      falseLegacyConfig,
+      LEGACY_TMUX_LAUNCH_KEY
+    )
+  ).toBe(false);
 });
 
 test('loadConfig keeps explicit terminalBackend when legacy tmux launch flag is present', () => {
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(
     configPath,
-    JSON.stringify({ terminalBackend: 'relay-pty', [LEGACY_TMUX_LAUNCH_KEY]: true }),
+    JSON.stringify({
+      terminalBackend: 'relay-pty',
+      [LEGACY_TMUX_LAUNCH_KEY]: true,
+    }),
     'utf8'
   );
 
   const config = loadConfig(configPath);
   expect(config.terminalBackend).toBe('relay-pty');
-  expect(Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)).toBe(false);
+  expect(
+    Object.prototype.hasOwnProperty.call(config, LEGACY_TMUX_LAUNCH_KEY)
+  ).toBe(false);
 });
 
 test('ensureMetaDir creates worktree-meta directory', () => {
@@ -221,7 +242,6 @@ test('resolveSessionSettings returns global defaults when no workspace or overri
   expect(result.yolo).toBe(false);
   expect(result.continuePolicy).toBe('always');
   expect(result.terminalBackend).toBe('relay-pty');
-  expect(result.useTmux).toBe(false);
   expect(result.claudeArgs).toEqual([]);
 });
 
@@ -247,9 +267,9 @@ test('resolveSessionSettings applies workspace overrides over globals', () => {
   expect(result.continuePolicy).toBe('always');
 });
 
-test('resolveSessionSettings can opt into relay-pty through legacy useTmux:false', () => {
+test('resolveSessionSettings keeps relay-pty when legacy tmux fields are absent', () => {
   const configPath = path.join(tmpDir, 'config.json');
-  const wsId = 'ws-tmux-required';
+  const wsId = 'ws-relay-pty-only';
   fs.writeFileSync(
     configPath,
     JSON.stringify({
@@ -275,15 +295,9 @@ test('resolveSessionSettings can opt into relay-pty through legacy useTmux:false
   );
 
   const config = loadConfig(configPath);
-  const result = resolveSessionSettings(
-    config,
-    '/my/repo',
-    { useTmux: false },
-    wsId
-  );
+  const result = resolveSessionSettings(config, '/my/repo', {}, wsId);
 
   expect(result.terminalBackend).toBe('relay-pty');
-  expect(result.useTmux).toBe(false);
 });
 
 test('resolveSessionSettings can opt into relay-pty through terminalBackend', () => {
@@ -302,10 +316,9 @@ test('resolveSessionSettings can opt into relay-pty through terminalBackend', ()
   const config = loadConfig(configPath);
   const result = resolveSessionSettings(config, '/some/repo', {});
   expect(result.terminalBackend).toBe('relay-pty');
-  expect(result.useTmux).toBe(false);
 });
 
-test('resolveSessionSettings lets repo terminalBackend override env global default', () => {
+test('resolveSessionSettings ignores removed repo terminalBackend values', () => {
   const configPath = path.join(tmpDir, 'config.json');
   const previousBackend = process.env.RELAY_IDE_TERMINAL_BACKEND;
   process.env.RELAY_IDE_TERMINAL_BACKEND = 'relay-pty';
@@ -326,8 +339,7 @@ test('resolveSessionSettings lets repo terminalBackend override env global defau
     );
     const config = loadConfig(configPath);
     const result = resolveSessionSettings(config, '/my/repo', {});
-    expect(result.terminalBackend).toBe('tmux-compat');
-    expect(result.useTmux).toBe(true);
+    expect(result.terminalBackend).toBe('relay-pty');
   } finally {
     if (previousBackend === undefined) {
       delete process.env.RELAY_IDE_TERMINAL_BACKEND;
@@ -394,8 +406,7 @@ test('resolveSessionSettings falls through to globals when no workspace exists',
   expect(result.agent).toBe('codex');
   expect(result.yolo).toBe(true);
   expect(result.continuePolicy).toBe('never');
-  expect(result.terminalBackend).toBe('tmux-compat');
-  expect(result.useTmux).toBe(true);
+  expect(result.terminalBackend).toBe('relay-pty');
   expect(result.claudeArgs).toEqual(['--verbose']);
 });
 
@@ -477,7 +488,7 @@ test('resolveSessionSettings with workspaceId applies workspace settings between
   // Workspace settings should override global; the legacy tmux launch flag no longer changes the backend.
   expect(result.yolo).toBe(true);
   expect(result.agent).toBe('codex');
-  expect(result.useTmux).toBe(false);
+  expect(result.terminalBackend).toBe('relay-pty');
 });
 
 test('resolveSessionSettings: repo settings override workspace settings', () => {

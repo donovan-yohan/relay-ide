@@ -414,7 +414,8 @@ export function createWorkspaceGroupsRouter(
         }
         if (Object.prototype.hasOwnProperty.call(body, 'useTmux')) {
           res.status(400).json({
-            error: 'legacy useTmux request flag is no longer supported; use terminalBackend',
+            error:
+              'legacy useTmux request flag is no longer supported; use terminalBackend',
           });
           return;
         }
@@ -422,20 +423,22 @@ export function createWorkspaceGroupsRouter(
           const normalized = normalizeTerminalBackend(body['terminalBackend']);
           if (normalized === undefined) {
             res.status(400).json({
-              error: 'terminalBackend must be "relay-pty" or "tmux-compat"',
+              error: 'terminalBackend must be "relay-pty"',
             });
             return;
           }
         }
-        const { agent, yolo, terminalBackend, claudeArgs, cols, rows } = body as {
-          agent?: string;
-          yolo?: boolean;
-          terminalBackend?: TerminalBackend;
-          claudeArgs?: string[];
-          cols?: number;
-          rows?: number;
-        };
-        const requestedTerminalBackend = normalizeTerminalBackend(terminalBackend);
+        const { agent, yolo, terminalBackend, claudeArgs, cols, rows } =
+          body as {
+            agent?: string;
+            yolo?: boolean;
+            terminalBackend?: TerminalBackend;
+            claudeArgs?: string[];
+            cols?: number;
+            rows?: number;
+          };
+        const requestedTerminalBackend =
+          normalizeTerminalBackend(terminalBackend);
 
         let config: Config;
         try {
@@ -496,7 +499,12 @@ export function createWorkspaceGroupsRouter(
           config,
           primary,
           additionalDirs,
-          { agent, yolo, terminalBackend: requestedTerminalBackend, claudeArgs },
+          {
+            agent,
+            yolo,
+            terminalBackend: requestedTerminalBackend,
+            claudeArgs,
+          },
           workspace.id
         );
 
@@ -524,7 +532,6 @@ export function createWorkspaceGroupsRouter(
             args: finalArgs,
             configPath: sessionDeps.configPath,
             terminalBackend: resolved.terminalBackend,
-            useTmux: resolved.useTmux,
             yolo: resolved.yolo,
             claudeArgs: combinedClaudeArgs,
             continuePolicy: resolved.continuePolicy,

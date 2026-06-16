@@ -1,6 +1,6 @@
 # Self-hosting Relay IDE
 
-Use this runbook when developing Relay IDE from inside an already-running Relay IDE instance. The goal is to run the source checkout with isolated config, ports, and tmux sessions so it does not collide with the installed/global daemon that is hosting your work.
+Use this runbook when developing Relay IDE from inside an already-running Relay IDE instance. The goal is to run the source checkout with isolated config, ports, and process identity so it does not collide with the installed/global daemon that is hosting your work.
 
 Self-host mode proves local source behavior only. When a change needs proof on
 the shared devbox hub or the `macbook-relay-node` link, use the
@@ -31,22 +31,21 @@ The `dev` command starts the real Express/WebSocket backend under a supervisor a
 
 ## Dev modes
 
-| Mode                 | Command                         | Backend                   | Frontend                  | Config                                                             | Tmux prefix   | Use when                                          |
-| -------------------- | ------------------------------- | ------------------------- | ------------------------- | ------------------------------------------------------------------ | ------------- | ------------------------------------------------- |
-| Production/global    | `relay-ide` or `relay-ide --bg` | `0.0.0.0:3456` by default | compiled `dist/frontend/` | `~/.config/relay-ide/config.json`                                  | `relay-ide-`  | Daily hosted Relay instance                       |
-| Ordinary source dev  | `npm run dev`                   | `127.0.0.1:3457`          | `127.0.0.1:5173`          | `~/.config/relay-ide/dev/<slug>-<hash>/config.dev.json`            | `relay-dev-`  | Local source development outside production Relay |
-| Self-host source dev | `npm run dev:self`              | allocator-chosen          | allocator-chosen          | `~/.config/relay-ide/self-host/<worktree-slug>-<hash>/config.json` | `relay-self-` | Building Relay from inside Relay                  |
+| Mode                 | Command                         | Backend                   | Frontend                  | Config                                                             | Use when                                          |
+| -------------------- | ------------------------------- | ------------------------- | ------------------------- | ------------------------------------------------------------------ | ------------------------------------------------- |
+| Production/global    | `relay-ide` or `relay-ide --bg` | `0.0.0.0:3456` by default | compiled `dist/frontend/` | `~/.config/relay-ide/config.json`                                  | Daily hosted Relay instance                       |
+| Ordinary source dev  | `npm run dev`                   | `127.0.0.1:3457`          | `127.0.0.1:5173`          | `~/.config/relay-ide/dev/<slug>-<hash>/config.dev.json`            | Local source development outside production Relay |
+| Self-host source dev | `npm run dev:self`              | allocator-chosen          | allocator-chosen          | `~/.config/relay-ide/self-host/<worktree-slug>-<hash>/config.json` | Building Relay from inside Relay                  |
 
-Both dev modes set `RELAY_IDE_DEV_INSTANCE=1` and a mode-specific `RELAY_IDE_TMUX_PREFIX` for process isolation. They do not disable auth; use the normal first-run PIN setup or browser-session login. Self-host mode can also be selected by running the CLI entrypoint directly with `relay-ide dev --self-host` from a source checkout, or by setting `RELAY_IDE_SELF_HOST=1` for the dev command.
+Both dev modes set `RELAY_IDE_DEV_INSTANCE=1` for process/logging isolation. They do not disable auth; use the normal first-run PIN setup or browser-session login. Self-host mode can also be selected by running the CLI entrypoint directly with `relay-ide dev --self-host` from a source checkout, or by setting `RELAY_IDE_SELF_HOST=1` for the dev command.
 
 ## What self-host mode isolates
 
-Self-host mode separates the child Relay instance from the installed/global daemon in four places:
+Self-host mode separates the child Relay instance from the installed/global daemon in three places:
 
 - Config: per-worktree config under `~/.config/relay-ide/self-host/`, or `$XDG_CONFIG_HOME/relay-ide/self-host/` when `XDG_CONFIG_HOME` is set.
 - Ports: backend and frontend ports are allocated per worktree through `server/port-allocator.ts`.
 - `.env`: only the Relay-managed port block in the current worktree is written.
-- Tmux: sessions use the `relay-self-` prefix instead of production `relay-ide-` or ordinary dev `relay-dev-`.
 
 The allocator persists assignments under user config state:
 
@@ -79,24 +78,23 @@ npm run dev:self
 
 Supported dev override variables:
 
-| Variable                      | Default in ordinary dev           | Self-host behavior                                                                                                                       |
-| ----------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `RELAY_IDE_DEV_BACKEND_PORT`  | `3457`                            | Overrides allocator backend port                                                                                                         |
-| `RELAY_IDE_PORT`              | unset                             | Ignored to avoid inherited production daemon collisions; use `--port` or `RELAY_IDE_DEV_BACKEND_PORT` for an explicit self-host override |
-| `RELAY_IDE_DEV_FRONTEND_PORT` | `5173`                            | Overrides allocator frontend port                                                                                                        |
-| `RELAY_IDE_DEV_BACKEND_HOST`  | `127.0.0.1`                       | Backend bind host                                                                                                                        |
-| `RELAY_IDE_DEV_FRONTEND_HOST` | `127.0.0.1`                       | Vite bind host                                                                                                                           |
-| `RELAY_IDE_DEV_BACKEND_URL`   | `http://127.0.0.1:<backend-port>` | Vite proxy target                                                                                                                        |
-| `RELAY_IDE_CONFIG`            | `~/.config/relay-ide/dev/<slug>-<hash>/config.dev.json` | Ignored to avoid inherited production config; pass `--config <path>` for an explicit self-host config override         |
-| `RELAY_IDE_DEV_INSTANCE`      | `1`                               | Marks a dev server for non-security behavior such as restart reason and cleanup isolation; does not bypass auth                           |
-| `RELAY_IDE_TMUX_PREFIX`       | mode-specific                     | Overrides the tmux prefix after normalization                                                                                            |
+| Variable                      | Default in ordinary dev                                 | Self-host behavior                                                                                                                       |
+| ----------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `RELAY_IDE_DEV_BACKEND_PORT`  | `3457`                                                  | Overrides allocator backend port                                                                                                         |
+| `RELAY_IDE_PORT`              | unset                                                   | Ignored to avoid inherited production daemon collisions; use `--port` or `RELAY_IDE_DEV_BACKEND_PORT` for an explicit self-host override |
+| `RELAY_IDE_DEV_FRONTEND_PORT` | `5173`                                                  | Overrides allocator frontend port                                                                                                        |
+| `RELAY_IDE_DEV_BACKEND_HOST`  | `127.0.0.1`                                             | Backend bind host                                                                                                                        |
+| `RELAY_IDE_DEV_FRONTEND_HOST` | `127.0.0.1`                                             | Vite bind host                                                                                                                           |
+| `RELAY_IDE_DEV_BACKEND_URL`   | `http://127.0.0.1:<backend-port>`                       | Vite proxy target                                                                                                                        |
+| `RELAY_IDE_CONFIG`            | `~/.config/relay-ide/dev/<slug>-<hash>/config.dev.json` | Ignored to avoid inherited production config; pass `--config <path>` for an explicit self-host config override                           |
+| `RELAY_IDE_DEV_INSTANCE`      | `1`                                                     | Marks a dev server for non-security behavior such as restart reason and cleanup isolation; does not bypass auth                          |
 
 Invalid self-host port overrides are treated as unset, so the allocator remains the fallback instead of fixed ordinary-dev ports. If you override ports, the effective backend/frontend ports are still written to the worktree `.env` managed block. Generic parent-process `RELAY_IDE_CONFIG` and `RELAY_IDE_PORT` values are intentionally ignored in self-host mode; this prevents a child Relay launched from production Relay from reusing the production config or port by accident.
 
 ## Runtime state directory and cleanup
 
 Relay keeps **all** runtime state — the config file plus every SQLite store
-beside it — in the *config directory*, i.e. `dirname(<the config path above>)`.
+beside it — in the _config directory_, i.e. `dirname(<the config path above>)`.
 The stores include `work-contexts.db`, `context-packets.db`, `workflow-runs.db`,
 `work-context-artifacts.db`, `work-context-messages.db`, `automation-runs.db`,
 `agent-presence.db`, `analytics.db`, `relay-state.db`, `ia.db`,
@@ -106,14 +104,14 @@ plus `logs/`, `telemetry/`, and `worktree-meta/`.
 Because the config directory drives where these land, **no launch mode writes
 runtime DBs into a repo checkout by default** (#961):
 
-| Launch mode                              | Runtime-state directory                          |
-| ---------------------------------------- | ------------------------------------------------ |
-| `relay-ide` / `relay-ide hub` (prod)     | `~/.config/relay-ide/`                            |
-| `npm run dev`                            | `~/.config/relay-ide/dev/<slug>-<hash>/`         |
-| `npm run dev:backend` (split dev)        | `~/.config/relay-ide/dev/<slug>-<hash>/` (shares `npm run dev`) |
-| `npm run dev:self`                       | `~/.config/relay-ide/self-host/<slug>-<hash>/`   |
-| `npm start` / `node dist/server/index.js` (raw) | `~/.config/relay-ide/source/<slug>-<hash>/` |
-| explicit `RELAY_IDE_CONFIG` / `--config` | `dirname(<that path>)`                            |
+| Launch mode                                     | Runtime-state directory                                         |
+| ----------------------------------------------- | --------------------------------------------------------------- |
+| `relay-ide` / `relay-ide hub` (prod)            | `~/.config/relay-ide/`                                          |
+| `npm run dev`                                   | `~/.config/relay-ide/dev/<slug>-<hash>/`                        |
+| `npm run dev:backend` (split dev)               | `~/.config/relay-ide/dev/<slug>-<hash>/` (shares `npm run dev`) |
+| `npm run dev:self`                              | `~/.config/relay-ide/self-host/<slug>-<hash>/`                  |
+| `npm start` / `node dist/server/index.js` (raw) | `~/.config/relay-ide/source/<slug>-<hash>/`                     |
+| explicit `RELAY_IDE_CONFIG` / `--config`        | `dirname(<that path>)`                                          |
 
 `<slug>-<hash>` is derived from the absolute checkout path, so each
 worktree gets its own isolated state and two same-named worktrees never collide.
@@ -160,15 +158,14 @@ WorkContext / context-packet / workflow-run history.
 5. Use the self-host UI to create sessions against the same or another worktree.
 6. Keep the production tab open as the recovery path if the self-host instance breaks.
 
-Do not start self-hosting with `npm start`; that serves the compiled production bundle and uses production-style defaults. Do not use the production/global URL when testing self-host behavior. The signal that you are in the child instance is the startup output showing `self-host mode: on`, `config: .../self-host/.../config.json`, and `tmux prefix: relay-self-`.
+Do not start self-hosting with `npm start`; that serves the compiled production bundle and uses production-style defaults. Do not use the production/global URL when testing self-host behavior. The signal that you are in the child instance is the startup output showing `self-host mode: on` and `config: .../self-host/.../config.json`.
 
 ## Avoiding daemon collisions
 
-The installed/global daemon can stay running during normal self-host development because config, ports, and tmux prefixes are separate. Avoid these collision patterns:
+The installed/global daemon can stay running during normal self-host development because config, ports, and process identity are separate. Avoid these collision patterns:
 
 - Do not bind the self-host backend to `3456` unless the global daemon is stopped.
 - Do not reuse `~/.config/relay-ide/config.json` as `RELAY_IDE_CONFIG` for self-host mode.
-- Do not kill tmux sessions by broad patterns like `tmux kill-server`; inspect prefixes first.
 - Do not run Playwright e2e against fixed production ports while the global daemon owns them.
 
 Useful checks:
@@ -177,7 +174,6 @@ Useful checks:
 relay-ide status
 lsof -nP -iTCP:3456 -sTCP:LISTEN
 lsof -nP -iTCP:<self-host-backend-port> -sTCP:LISTEN
-tmux ls | grep '^relay-'
 ```
 
 ## macOS e2e / global daemon caveats
@@ -212,7 +208,6 @@ npm run dev:self
 # relay dev backend:  http://127.0.0.1:<port>
 # relay dev frontend: http://127.0.0.1:<port>
 # config:              .../relay-ide/self-host/<worktree-slug>-<hash>/config.json
-# tmux prefix:         relay-self-
 # self-host mode:      on
 ```
 
@@ -238,22 +233,6 @@ npm run dev:self
 ```
 
 If `XDG_CONFIG_HOME` is set, remove `$XDG_CONFIG_HOME/relay-ide/self-host/<worktree-slug>-<hash>` instead.
-
-### Tmux session looks orphaned
-
-List Relay-owned sessions by prefix:
-
-```bash
-tmux ls | grep '^relay-ide-\|^relay-dev-\|^relay-self-'
-```
-
-Kill only the self-host session you intend to remove:
-
-```bash
-tmux kill-session -t relay-self-<slug>-<id8>
-```
-
-Never use `tmux kill-server` as a cleanup shortcut; it kills production Relay sessions too.
 
 ### Backend keeps restarting
 

@@ -39,7 +39,14 @@ function manifest(): NodeManifest {
       caveats: [],
     },
     capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
+      terminalBackends: {
+        'relay-pty': {
+          id: 'relay-pty',
+          label: 'Relay PTY',
+          status: 'available',
+          message: 'ok',
+        },
+      },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
       clipboard: {
         id: 'clipboard',
@@ -177,8 +184,6 @@ function remoteSession(nodeId: string): SessionSummary {
     globalSessionId: `${nodeId}:cold-reopen-session-1`,
     repoInstanceId: `${nodeId}:%2Fsrv%2Frelay-ide`,
     worktreeInstanceId: `${nodeId}:%2Fsrv%2Frelay-ide%2F.worktrees%2Ffeature-a`,
-    useTmux: true,
-    tmuxSessionName: 'relay-ide-cold-reopen-session-1',
     status: 'active',
     needsBranchRename: false,
     agentState: 'idle',

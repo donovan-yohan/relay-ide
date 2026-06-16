@@ -24,7 +24,6 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       totals: { available: 11, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         worktrees: 'available',
         browserAutomation: 'available',
@@ -34,12 +33,11 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       },
       terminalBackends: {
         'relay-pty': 'available',
-        'tmux-compat': 'available',
       },
       agents: { claude: 'available' },
       serviceManager: 'launchd',
       wsl: false,
-      sessionResume: 'tmux',
+      sessionResume: 'canonical-emulator',
     },
     createdAt: '2026-01-02T03:00:00.000Z',
     pairedAt: '2026-01-02T03:00:00.000Z',
@@ -175,9 +173,9 @@ describe('TerminalNodePicker buildChoices', () => {
     expect(choices[2]?.disabled).toBe(false);
   });
 
-  it('marks nodes with sessionResume = tmux as resumable', () => {
+  it('marks nodes with canonical emulator session resume as resumable', () => {
     const choices = buildChoices([
-      node({ nodeId: 'tmux', displayName: 'tmux', status: 'online' }),
+      node({ nodeId: 'canonical', displayName: 'canonical', status: 'online' }),
     ]);
     expect(choices[1]?.resumable).toBe(true);
     expect(choices[0]?.resumable).toBe(false);
@@ -215,17 +213,15 @@ describe('TerminalNodePicker buildChoices', () => {
     expect(choices[1]?.resumable).toBe(false);
   });
 
-  it('keeps nodes without tmux enabled when relay-pty is available', () => {
+  it('keeps nodes enabled when relay-pty is available', () => {
     const choices = buildChoices([
       node({
         nodeId: 'thin',
         displayName: 'thin',
         capabilities: {
           ...node().capabilities,
-          core: { ...node().capabilities.core, tmux: 'unavailable' },
           terminalBackends: {
             'relay-pty': 'available',
-            'tmux-compat': 'unavailable',
           },
         },
       }),
@@ -242,10 +238,8 @@ describe('TerminalNodePicker buildChoices', () => {
         displayName: 'thin',
         capabilities: {
           ...node().capabilities,
-          core: { ...node().capabilities.core, tmux: 'unavailable' },
           terminalBackends: {
             'relay-pty': 'unavailable',
-            'tmux-compat': 'unavailable',
           },
         },
       }),
@@ -253,7 +247,7 @@ describe('TerminalNodePicker buildChoices', () => {
     expect(choices[1]).toMatchObject({
       disabled: true,
       disabledReason:
-        'terminal backend unavailable on thin (relay-pty unavailable, tmux-compat unavailable)',
+        'terminal backend unavailable on thin (relay-pty unavailable)',
     });
   });
 

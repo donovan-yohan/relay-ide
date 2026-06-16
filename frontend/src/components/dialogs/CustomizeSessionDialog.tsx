@@ -205,10 +205,9 @@ function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
       hubProtocolVersion: '1.0',
     },
     capabilities: {
-      totals: { available: 8, degraded: 0, unavailable: 0, unknown: 0 },
+      totals: { available: 7, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
@@ -217,7 +216,6 @@ function syntheticLocalNode(selectedAgent: AgentType): HubNodeSummary {
       },
       terminalBackends: {
         'relay-pty': 'available',
-        'tmux-compat': 'available',
       },
       worktrees: 'available',
       agents: { [selectedAgent]: 'available' },
@@ -316,8 +314,8 @@ function capabilityProblem(
 
 function terminalBackendProblem(node: HubNodeSummary): string | null {
   const backends = nodeTerminalBackends(node);
-  if (backends['relay-pty'] === 'available' || backends['tmux-compat'] === 'available') return null;
-  return `terminal backend unavailable on ${node.displayName ?? node.nodeId} (relay-pty ${backends['relay-pty']}, tmux-compat ${backends['tmux-compat']})`;
+  if (backends['relay-pty'] === 'available') return null;
+  return `terminal backend unavailable on ${node.displayName ?? node.nodeId} (relay-pty ${backends['relay-pty']})`;
 }
 
 export function nodeShellBlockReason(

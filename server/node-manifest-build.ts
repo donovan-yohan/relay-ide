@@ -249,7 +249,6 @@ export function deriveDegradedReasons(
 
   // Core capability degraded states
   const coreProbeKeys: Array<keyof typeof caps> = [
-    'tmux',
     'git',
     'clipboard',
     'browserAutomation',
@@ -267,7 +266,7 @@ export function deriveDegradedReasons(
       reasons.push({
         code: `CAPABILITY_UNAVAILABLE_${String(key).toUpperCase()}`,
         description: probe.message,
-        severity: key === 'tmux' || key === 'git' ? 'warn' : 'info',
+        severity: key === 'git' ? 'warn' : 'info',
       });
     } else if (status === 'degraded') {
       reasons.push({

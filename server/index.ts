@@ -29,12 +29,11 @@ import * as sessions from './sessions.js';
 import {
   serializeAll,
   restoreFromDisk,
-  activeTmuxSessionNames,
   populateMetaCache,
 } from './sessions.js';
 import type { CreateResult } from './sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
-import { getTmuxPrefix } from './pty-handler.js';
+
 import { setupWebSocket } from './ws.js';
 import { createLocalRelayNode } from './local-node.js';
 import {
@@ -197,10 +196,7 @@ import {
   resolveAutomationRunTargetLiveness,
   type AutomationRunLivenessResolver,
 } from '../shared/automation-run.js';
-import {
-  initPrOverseerStore,
-  type PrOverseerStore,
-} from './pr-overseer.js';
+import { initPrOverseerStore, type PrOverseerStore } from './pr-overseer.js';
 import { createGhPrObserver } from './pr-overseer-github.js';
 import {
   createAnchorFileFetcher,
@@ -306,7 +302,6 @@ const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
 const logger = createLogger('index');
 const TERMINAL_BACKEND_RELAY_PTY: TerminalBackend = 'relay-pty';
-const TERMINAL_BACKEND_TMUX_COMPAT: TerminalBackend = 'tmux-compat';
 const localRelayNode = createLocalRelayNode();
 const cliGatewayActorRegistry = createCliGatewayActorRegistry();
 const cliGatewayHandshakeGrantRegistry =
@@ -342,7 +337,12 @@ const versionCache: Map<string, { latest: string; fetchedAt: number }> =
   new Map();
 
 function getCurrentVersion(): string {
-  const pkgPath = path.join(__dirname, '..', '..', 'package.json');
+  const candidates = [
+    path.join(__dirname, '..', 'package.json'),
+    path.join(__dirname, '..', '..', 'package.json'),
+  ];
+  const pkgPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!pkgPath) return '0.0.0';
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as {
     version: string;
   };
@@ -368,11 +368,6 @@ async function getLatestVersion(
   } catch (_) {
     return null;
   }
-}
-
-function execErrorMessage(err: unknown, fallback: string): string {
-  const e = err as { stderr?: string; message?: string };
-  return (e.stderr || e.message || fallback).trim();
 }
 
 const GIT_WORKTREE_LIST_ARGS = ['worktree', 'list', '--porcelain'] as const;
@@ -512,45 +507,6 @@ function runStartupRetentionCleanup(): void {
     runRetentionCleanup();
   } catch (err) {
     logger.warn('[analytics] Retention/recovery error:', err);
-  }
-}
-
-async function cleanupOrphanedTmuxSessions(
-  adoptedNames: Set<string>
-): Promise<void> {
-  try {
-    const { stdout } = await execFileAsync('tmux', [
-      'list-sessions',
-      '-F',
-      '#{session_name}',
-    ]);
-    const tmuxPrefix = getTmuxPrefix();
-    const orphanedSessions = stdout
-      .trim()
-      .split('\n')
-      .filter((name) => name.startsWith(tmuxPrefix) && !adoptedNames.has(name));
-    for (const name of orphanedSessions) {
-      execFileAsync('tmux', ['kill-session', '-t', name]).catch(() => {});
-    }
-    if (orphanedSessions.length > 0) {
-      logger.info(
-        `Cleaned up ${orphanedSessions.length} orphaned tmux session(s).`
-      );
-    }
-  } catch {
-    // tmux not installed or no sessions — ignore
-  }
-}
-
-async function ensureTmuxAvailable(): Promise<void> {
-  try {
-    await execFileAsync('tmux', ['-V']);
-  } catch (err) {
-    const detail = execErrorMessage(err, 'tmux is not available');
-    throw new Error(
-      `tmux is required for tmux-compat sessions: ${detail}. Install tmux and restart relay-ide if you need legacy tmux compatibility (macOS: brew install tmux; Debian/Ubuntu: sudo apt install tmux).`,
-      { cause: err }
-    );
   }
 }
 
@@ -758,11 +714,9 @@ type AgentSessionParams = {
   cwd: string;
   requestBranchName: string | undefined;
   displayName: string;
-  tmuxDisplayName: string;
   args: string[];
   resolvedAgent: AgentType;
   resolvedTerminalBackend: TerminalBackend;
-  resolvedUseTmux: boolean;
   resolvedYolo: boolean;
   resolvedClaudeArgs: string[];
   resolvedContinuePolicy: ContinuePolicy | undefined;
@@ -791,7 +745,6 @@ type TerminalSessionParams = {
   safeCols: number | undefined;
   safeRows: number | undefined;
   resolvedTerminalBackend: TerminalBackend;
-  resolvedUseTmux: boolean;
   sessionLane: SessionLane | undefined;
   workContextId?: string | undefined;
   portVariables?: string[] | undefined;
@@ -816,7 +769,6 @@ function createTerminalSessionRecord(
     command: shell,
     args: [],
     terminalBackend: params.resolvedTerminalBackend,
-    useTmux: params.resolvedUseTmux,
     ...(params.safeCols != null && { cols: params.safeCols }),
     ...(params.safeRows != null && { rows: params.safeRows }),
     ...(params.sessionLane ? { sessionLane: params.sessionLane } : {}),
@@ -839,11 +791,9 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     cwd: params.cwd,
     branchName: params.requestBranchName ?? '',
     displayName: params.displayName,
-    tmuxDisplayName: params.tmuxDisplayName,
     args: params.args,
     configPath: CONFIG_PATH,
     terminalBackend: params.resolvedTerminalBackend,
-    useTmux: params.resolvedUseTmux,
     yolo: params.resolvedYolo,
     claudeArgs: params.resolvedClaudeArgs,
     continuePolicy: params.resolvedContinuePolicy,
@@ -1129,7 +1079,6 @@ function createHandoffDestinationLauncher(params: {
           safeCols: undefined,
           safeRows: undefined,
           resolvedTerminalBackend: resolvedTerminal.terminalBackend,
-          resolvedUseTmux: resolvedTerminal.useTmux,
           sessionLane: undefined,
           workContextId: undefined,
           portVariables,
@@ -1179,11 +1128,9 @@ function createHandoffDestinationLauncher(params: {
         cwd,
         requestBranchName: branchName,
         displayName,
-        tmuxDisplayName: branchName ? `${repoName}-${branchName}` : repoName,
         args,
         resolvedAgent: resolved.agent,
         resolvedTerminalBackend: resolved.terminalBackend,
-        resolvedUseTmux: resolved.useTmux,
         resolvedYolo: resolved.yolo,
         resolvedClaudeArgs: resolved.claudeArgs,
         resolvedContinuePolicy: resolved.continuePolicy,
@@ -1457,9 +1404,7 @@ function initAgentPresenceStoreBestEffort(
  * the authenticated CLI-gateway actor credential. Module-scoped so `main()`
  * stays under the complexity gate.
  */
-function presenceActorIdFromRequest(
-  req: express.Request
-): string | undefined {
+function presenceActorIdFromRequest(req: express.Request): string | undefined {
   return authenticatedCliGatewayActorCredential(req)?.actor?.id;
 }
 
@@ -1491,7 +1436,9 @@ function initAutomationRunStoreBestEffort(
   }
 }
 
-function initPrOverseerStoreBestEffort(configDir: string): PrOverseerStore | null {
+function initPrOverseerStoreBestEffort(
+  configDir: string
+): PrOverseerStore | null {
   try {
     return initPrOverseerStore(configDir);
   } catch (err) {
@@ -1518,12 +1465,8 @@ function initWorkContextMessageStoreBestEffort(
 }
 
 async function ensureStartupTerminalBackendAvailable(
-  startupConfig: Config
-): Promise<void> {
-  if (defaultTerminalBackend(startupConfig) === TERMINAL_BACKEND_TMUX_COMPAT) {
-    await ensureTmuxAvailable();
-  }
-}
+  _startupConfig: Config
+): Promise<void> {}
 
 async function main(): Promise<void> {
   // Ignore SIGPIPE: node-pty can propagate pipe breaks causing unexpected session exits.
@@ -1882,7 +1825,7 @@ async function main(): Promise<void> {
         normalizeTerminalBackend(directBody['terminalBackend']) === undefined
       ) {
         res.status(400).json({
-          error: 'terminalBackend must be "relay-pty" or "tmux-compat"',
+          error: 'terminalBackend must be "relay-pty"',
         });
         return null;
       }
@@ -2042,19 +1985,37 @@ async function main(): Promise<void> {
     res.status(401).json(auth.cliGatewayOrBrowserAuthRequiredChallenge());
   };
 
-  const requireCliGatewayEventsAuth: express.RequestHandler = (req, res, next) => {
+  const requireCliGatewayEventsAuth: express.RequestHandler = (
+    req,
+    res,
+    next
+  ) => {
     if (!isCliGatewayActorTokenRequest(req)) {
       requireCliGatewayAuth(req, res, next);
       return;
     }
-    const topic = typeof req.query['topic'] === 'string' ? req.query['topic'] : undefined;
+    const topic =
+      typeof req.query['topic'] === 'string' ? req.query['topic'] : undefined;
     const capabilities =
-      topic && Object.prototype.hasOwnProperty.call(EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES, topic)
+      topic &&
+      Object.prototype.hasOwnProperty.call(
+        EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
+        topic
+      )
         ? EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES[topic as EventsSubscribeTopic]
         : (['session:read'] as const);
-    const workContextId = typeof req.query['workContextId'] === 'string' ? req.query['workContextId'].trim() : '';
-    const sessionId = typeof req.query['sessionId'] === 'string' ? req.query['sessionId'].trim() : '';
-    const globalSessionId = typeof req.query['globalSessionId'] === 'string' ? req.query['globalSessionId'].trim() : '';
+    const workContextId =
+      typeof req.query['workContextId'] === 'string'
+        ? req.query['workContextId'].trim()
+        : '';
+    const sessionId =
+      typeof req.query['sessionId'] === 'string'
+        ? req.query['sessionId'].trim()
+        : '';
+    const globalSessionId =
+      typeof req.query['globalSessionId'] === 'string'
+        ? req.query['globalSessionId'].trim()
+        : '';
     requireCliGatewayActorAuth(
       capabilities,
       {
@@ -2478,7 +2439,9 @@ async function main(): Promise<void> {
   // a `gone` target → `cleanup-needed` status, a finished session derives
   // `ended`, and a remote-node-scoped target derives `unknown` (cross-node
   // target liveness is a documented follow-up).
-  const automationRunLivenessResolver: AutomationRunLivenessResolver = (target) =>
+  const automationRunLivenessResolver: AutomationRunLivenessResolver = (
+    target
+  ) =>
     resolveAutomationRunTargetLiveness(
       target,
       localRelayNode.sessions.list(),
@@ -2524,7 +2487,9 @@ async function main(): Promise<void> {
   ): { workContextIds?: string[] } | undefined => {
     const id = typeof req.params['id'] === 'string' ? req.params['id'] : '';
     const run = id && prOverseerStore ? prOverseerStore.get(id) : null;
-    return run?.workContextId ? { workContextIds: [run.workContextId] } : undefined;
+    return run?.workContextId
+      ? { workContextIds: [run.workContextId] }
+      : undefined;
   };
   app.use(
     createPrOverseerRouter({
@@ -2746,7 +2711,7 @@ async function main(): Promise<void> {
     const c = getConfig();
     res.json({
       terminalBackend: defaultTerminalBackend(c),
-      allowed: [TERMINAL_BACKEND_TMUX_COMPAT, TERMINAL_BACKEND_RELAY_PTY],
+      allowed: [TERMINAL_BACKEND_RELAY_PTY],
     });
   });
   app.patch('/config/terminalBackend', requireAuth, async (req, res) => {
@@ -2755,19 +2720,9 @@ async function main(): Promise<void> {
     );
     if (!value) {
       res.status(400).json({
-        error: 'terminalBackend must be tmux-compat or relay-pty',
+        error: 'terminalBackend must be relay-pty',
       });
       return;
-    }
-    if (value === TERMINAL_BACKEND_TMUX_COMPAT) {
-      try {
-        await ensureTmuxAvailable();
-      } catch (err) {
-        res.status(400).json({
-          error: err instanceof Error ? err.message : 'tmux is not available',
-        });
-        return;
-      }
     }
     const c = getConfig();
     c.terminalBackend = value;
@@ -3304,7 +3259,6 @@ async function main(): Promise<void> {
             ...(resolved.yolo ? (AGENT_YOLO_ARGS[resolved.agent] ?? []) : []),
           ],
           configPath: CONFIG_PATH,
-          useTmux: resolved.useTmux,
           yolo: resolved.yolo,
           claudeArgs: resolved.claudeArgs,
           claudeFullscreen: freshCfg.claudeFullscreen,
@@ -3440,7 +3394,10 @@ async function main(): Promise<void> {
   const openInboxCountForGlobalId = (globalSessionId?: string): number => {
     if (!globalSessionId || !contextInboxStore) return 0;
     return contextInboxStore
-      .listInboxMessages({ targetSessionId: globalSessionId }, { markDelivered: false })
+      .listInboxMessages(
+        { targetSessionId: globalSessionId },
+        { markDelivered: false }
+      )
       .filter(
         (message) => message.state === 'queued' || message.state === 'delivered'
       ).length;
@@ -4641,7 +4598,6 @@ async function main(): Promise<void> {
           safeCols,
           safeRows,
           resolvedTerminalBackend: terminalSettings.terminalBackend,
-          resolvedUseTmux: terminalSettings.useTmux,
           sessionLane,
           workContextId,
           portVariables,
@@ -4752,11 +4708,6 @@ async function main(): Promise<void> {
     }
 
     const displayName = sessions.nextAgentName();
-    // Compute tmux-specific display name from repo + branch for identifiable tmux ls output
-    // UI displayName stays as "Agent N" — tmux name and UI name are independent
-    const tmuxDisplayName = requestBranchName
-      ? `${name}-${requestBranchName}`
-      : name;
 
     let session: CreateResult;
     try {
@@ -4767,11 +4718,9 @@ async function main(): Promise<void> {
         cwd,
         requestBranchName,
         displayName,
-        tmuxDisplayName,
         args,
         resolvedAgent,
         resolvedTerminalBackend: resolved.terminalBackend,
-        resolvedUseTmux: resolved.useTmux,
         resolvedYolo: resolved.yolo,
         resolvedClaudeArgs: resolved.claudeArgs,
         resolvedContinuePolicy: resolved.continuePolicy,
@@ -5024,14 +4973,6 @@ async function main(): Promise<void> {
   const devInstance =
     process.env.RELAY_IDE_DEV_INSTANCE === '1' ||
     process.env.RELAY_IDE_SELF_HOST === '1';
-  // Clean up orphaned tmux sessions from previous runs (skip any adopted by restore)
-  // Skip in dev mode — another server instance owns these sessions
-  if (devInstance) {
-    logger.info('Dev mode: skipping orphaned tmux session cleanup.');
-  } else {
-    await cleanupOrphanedTmuxSessions(activeTmuxSessionNames());
-  }
-
   async function gracefulShutdown() {
     const restartReason = devInstance ? 'dev-restart' : 'signal-shutdown';
     broadcastEvent('server-restarting', { reason: restartReason });
@@ -5045,8 +4986,8 @@ async function main(): Promise<void> {
     server.close();
     credentialRotationScheduler?.stop();
     await flushHubNodeHeartbeatsBestEffort('graceful shutdown');
-    // Serialize sessions before detaching the node-pty tmux clients. The tmux
-    // sessions themselves must survive so startup can reattach to them.
+    // Serialize relay-pty session metadata only. relay-pty/libghostty-vt is not
+    // a process supervisor, so server restart is cold/resume until a future daemon.
     serializeAll(configDir, { reason: restartReason });
     flushRelayStateWrites();
     closeRelayStateDb();

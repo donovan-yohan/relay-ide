@@ -139,9 +139,10 @@ interface UtilityRailDisabledStateProps {
   displayWorkspacePath: string;
 }
 
-function disabledStateCopy(
-  reason: UtilityRailDisabledReason
-): { title: string; detail: string } {
+function disabledStateCopy(reason: UtilityRailDisabledReason): {
+  title: string;
+  detail: string;
+} {
   switch (reason) {
     case 'remote-files-unavailable':
       return {
@@ -151,7 +152,8 @@ function disabledStateCopy(
     case 'remote-git-unavailable':
       return {
         title: 'remote git unavailable',
-        detail: 'git panels are disabled for remote tabs until remote file rpc lands.',
+        detail:
+          'git panels are disabled for remote tabs until remote file rpc lands.',
       };
     case 'no-git-context':
       return {
@@ -188,7 +190,9 @@ interface UtilityRailTerminalPanelProps {
   sessions: SessionSummary[];
   onCreateUtilityTerminal?: (() => void | Promise<void>) | undefined;
   onSelectUtilityTerminal?: ((sessionId: string) => void) | undefined;
-  onCloseUtilityTerminal?: ((sessionId: string) => void | Promise<void>) | undefined;
+  onCloseUtilityTerminal?:
+    | ((sessionId: string) => void | Promise<void>)
+    | undefined;
   onPromoteUtilityTerminal?: ((sessionId: string) => void) | undefined;
   onImageUpload?:
     | ((text: string, showInsert: boolean, path?: string) => void)
@@ -321,7 +325,6 @@ function UtilityRailTerminalPanel({
             <Terminal
               sessionId={selectedSession.id}
               sessionKey={scopedSessionKey(selectedSession)}
-              useTmux={selectedSession.useTmux !== false}
               {...(onImageUpload ? { onImageUpload } : {})}
               {...(onCopyModeChange ? { onCopyModeChange } : {})}
               {...(onFilePathClick ? { onFilePathClick } : {})}
@@ -437,7 +440,10 @@ function UtilityRailGitPaneContent({
       );
     case 'branch':
       return (
-        <UtilityRailBranchPanel workspacePath={workspacePath} stateKey={stateKey} />
+        <UtilityRailBranchPanel
+          workspacePath={workspacePath}
+          stateKey={stateKey}
+        />
       );
     case 'review':
       return (
@@ -518,9 +524,15 @@ function UtilityRailPaneBody({
           disabledReason={fileDisabledReason}
           gitDisabledReason={gitDisabledReason}
           fileTreeSidebarRef={fileTreeSidebarRef}
-          {...(fileNodeId !== undefined && fileNodeId !== null ? { nodeId: fileNodeId } : {})}
-          {...(fileSessionId !== undefined && fileSessionId !== null ? { sessionId: fileSessionId } : {})}
-          {...(fileRoot !== undefined && fileRoot !== null ? { root: fileRoot } : {})}
+          {...(fileNodeId !== undefined && fileNodeId !== null
+            ? { nodeId: fileNodeId }
+            : {})}
+          {...(fileSessionId !== undefined && fileSessionId !== null
+            ? { sessionId: fileSessionId }
+            : {})}
+          {...(fileRoot !== undefined && fileRoot !== null
+            ? { root: fileRoot }
+            : {})}
         />
       ),
     },
@@ -643,7 +655,8 @@ export function WorkspaceUtilityRail({
   const displayWorkspacePath =
     resourceContext?.displayWorkspacePath ?? workspacePath;
   const anchorLabel = resourceContext?.anchorLabel ?? displayWorkspacePath;
-  const fileWorkspacePath = resourceContext?.files.workspacePath ?? workspacePath;
+  const fileWorkspacePath =
+    resourceContext?.files.workspacePath ?? workspacePath;
   const fileDisabledReason = resourceContext?.files.disabledReason ?? null;
   const fileNodeId = resourceContext?.files.nodeId ?? null;
   const fileSessionId = resourceContext?.files.sessionId ?? null;

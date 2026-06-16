@@ -69,14 +69,16 @@ function makeMinimalManifest(
       caveats: [],
     },
     capabilities: {
-      tmux: makeProbe('tmux', 'available'),
+      terminalBackends: {
+        'relay-pty': makeProbe('relay-pty', 'available'),
+      },
       git: makeProbe('git', 'available'),
       clipboard: makeProbe('clipboard', 'available'),
       browserAutomation: makeProbe('browserAutomation', 'available'),
       githubCli: makeProbe('githubCli', 'available'),
       tailscale: makeProbe('tailscale', 'available'),
       ssh: makeProbe('ssh', 'available'),
-      sessionResume: 'tmux',
+      sessionResume: 'none',
       agents: {},
     },
     ...overrides,
@@ -284,21 +286,17 @@ describe('deriveDegradedReasons', () => {
     expect(reasons).toEqual([]);
   });
 
-  it('emits a warn reason when tmux is unavailable', () => {
+  it('does not require tmux as a degraded core capability', () => {
     const manifest = makeMinimalManifest({
       capabilities: {
         ...makeMinimalManifest().capabilities,
-        tmux: makeProbe('tmux', 'unavailable', 'tmux was not found on PATH.'),
         sessionResume: 'none',
       },
     });
     const reasons = deriveDegradedReasons(manifest);
-    const tmuxReason = reasons.find(
-      (r) => r.code === 'CAPABILITY_UNAVAILABLE_TMUX'
-    );
-    expect(tmuxReason).toBeDefined();
-    expect(tmuxReason?.severity).toBe('warn');
-    expect(tmuxReason?.description).toContain('tmux');
+    expect(
+      reasons.find((r) => r.code === 'CAPABILITY_UNAVAILABLE_TMUX')
+    ).toBeUndefined();
   });
 
   it('emits an info reason for each unavailable agent CLI', () => {
@@ -514,21 +512,24 @@ describe('getNodeManifest (full pipeline with enrichment)', () => {
     }
   });
 
-  it('missing tmux → appears in degradedReasons as warn', async () => {
+  it('empty PATH still advertises bundled relay-pty and no tmux degraded reason', async () => {
     const manifest = await getNodeManifest({
-      env: { PATH: '' }, // empty PATH — tmux not found
+      env: { PATH: '' },
       platform: 'darwin',
-      hostname: 'no-tmux-node',
+      hostname: 'relay-pty-node',
       relayVersion: '0.0.1-test',
       homeDir: os.tmpdir(),
     });
 
-    expect(manifest.capabilities.tmux.status).toBe('unavailable');
-    const tmuxReason = manifest.degradedReasons.find(
-      (r) => r.code === 'CAPABILITY_UNAVAILABLE_TMUX'
+    expect(manifest.capabilities.terminalBackends?.['relay-pty'].status).toBe(
+      'available'
     );
-    expect(tmuxReason).toBeDefined();
-    expect(tmuxReason?.severity).toBe('warn');
+    expect(manifest.capabilities.sessionResume).toBe('none');
+    expect(
+      manifest.degradedReasons.find(
+        (r) => r.code === 'CAPABILITY_UNAVAILABLE_TMUX'
+      )
+    ).toBeUndefined();
   });
 
   it('all agents missing → one degraded reason per unavailable agent', async () => {

@@ -31,20 +31,52 @@ function manifest(): NodeManifest {
       caveats: [],
     },
     capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
+      terminalBackends: {
+        'relay-pty': {
+          id: 'relay-pty',
+          label: 'Relay PTY',
+          status: 'available',
+          message: 'ok',
+        },
+      },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
-      clipboard: { id: 'clipboard', label: 'Clipboard', status: 'unknown', message: 'unknown' },
+      clipboard: {
+        id: 'clipboard',
+        label: 'Clipboard',
+        status: 'unknown',
+        message: 'unknown',
+      },
       browserAutomation: {
         id: 'browserAutomation',
         label: 'Browser automation',
         status: 'degraded',
         message: 'missing deps',
       },
-      githubCli: { id: 'githubCli', label: 'GitHub CLI', status: 'available', message: 'ok' },
-      tailscale: { id: 'tailscale', label: 'Tailscale CLI', status: 'unavailable', message: 'missing' },
-      ssh: { id: 'ssh', label: 'SSH client', status: 'available', message: 'ok' },
+      githubCli: {
+        id: 'githubCli',
+        label: 'GitHub CLI',
+        status: 'available',
+        message: 'ok',
+      },
+      tailscale: {
+        id: 'tailscale',
+        label: 'Tailscale CLI',
+        status: 'unavailable',
+        message: 'missing',
+      },
+      ssh: {
+        id: 'ssh',
+        label: 'SSH client',
+        status: 'available',
+        message: 'ok',
+      },
       agents: {
-        claude: { id: 'claude', label: 'Claude', status: 'available', message: 'ok' },
+        claude: {
+          id: 'claude',
+          label: 'Claude',
+          status: 'available',
+          message: 'ok',
+        },
       },
     },
   };
@@ -69,8 +101,6 @@ function remoteSession(nodeId: string): SessionSummary {
     nodeId,
     globalSessionId: `${nodeId}:remote-session-1`,
     repoInstanceId: `${nodeId}:%2Fsrv%2Frelay-ide`,
-    useTmux: true,
-    tmuxSessionName: 'relay-ide-remote-session-1',
     status: 'active',
     needsBranchRename: false,
     agentState: 'idle',
@@ -114,7 +144,9 @@ async function waitForOpen(ws: WebSocket): Promise<void> {
 
 async function nextJson(ws: WebSocket): Promise<RelayNodeEnvelope> {
   return await new Promise<RelayNodeEnvelope>((resolve) => {
-    ws.once('message', (data) => resolve(JSON.parse(data.toString()) as RelayNodeEnvelope));
+    ws.once('message', (data) =>
+      resolve(JSON.parse(data.toString()) as RelayNodeEnvelope)
+    );
   });
 }
 
@@ -126,16 +158,28 @@ describe('production hub node link wiring', () => {
   });
 
   it('uses one HubNodeLinkManager for production hub routes and routed PTY websocket upgrades', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-production-node-links-'));
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-production-node-links-')
+    );
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
     const configPath = path.join(tmpDir, 'config.json');
     const pin = '123456';
     fs.writeFileSync(
       configPath,
-      JSON.stringify({ port: 0, host: '127.0.0.1', pinHash: await hashPin(pin) })
+      JSON.stringify({
+        port: 0,
+        host: '127.0.0.1',
+        pinHash: await hashPin(pin),
+      })
     );
 
-    const serverScript = path.resolve(import.meta.dirname, '..', 'dist', 'server', 'index.js');
+    const serverScript = path.resolve(
+      import.meta.dirname,
+      '..',
+      'dist',
+      'server',
+      'index.js'
+    );
     const child = spawn(process.execPath, [serverScript], {
       env: {
         ...process.env,
@@ -184,7 +228,10 @@ describe('production hub node link wiring', () => {
 
     const heartbeatRes = await fetch(`${base}/hub/node-heartbeat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({
         nodeId,
         protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
@@ -199,11 +246,14 @@ describe('production hub node link wiring', () => {
     cleanup.push(() => nodeWs.close());
     await waitForOpen(nodeWs);
 
-    const createPromise = fetch(`${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', Cookie: authCookie },
-      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
-    });
+    const createPromise = fetch(
+      `${base}/hub/nodes/${encodeURIComponent(nodeId)}/sessions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Cookie: authCookie },
+        body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal' }),
+      }
+    );
 
     const request = await nextJson(nodeWs);
     expect(request).toMatchObject({
@@ -221,7 +271,11 @@ describe('production hub node link wiring', () => {
         requestId: request.requestId,
         timestamp: new Date().toISOString(),
         payload: {
-          session: { ...remoteSession(nodeId), nodeId: undefined, globalSessionId: undefined },
+          session: {
+            ...remoteSession(nodeId),
+            nodeId: undefined,
+            globalSessionId: undefined,
+          },
         },
       })
     );

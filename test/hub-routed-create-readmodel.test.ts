@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createHubNodeRouter, scopedNodeSession } from '../server/hub-node-router.js';
+import {
+  createHubNodeRouter,
+  scopedNodeSession,
+} from '../server/hub-node-router.js';
 import type { HubNodeLinkManager } from '../server/hub-node-link.js';
 import type { HubNodeRegistry } from '../server/hub-node-registry.js';
 import { createSessionEnvelopeRegistry } from '../server/session-envelope-registry.js';
@@ -12,13 +15,19 @@ import {
   aggregateRemoteSessions,
   createRemoteSessionReadModelCache,
 } from '../server/hub-session-aggregator.js';
-import { createWorkContextStore, type WorkContextStore } from '../server/work-contexts.js';
+import {
+  createWorkContextStore,
+  type WorkContextStore,
+} from '../server/work-contexts.js';
 import {
   createLegacyDefaultNodeAcl,
   summarizeAcl,
   type RelayCapabilityBit,
 } from '../shared/security-policy.js';
-import type { HubNodeSummary, RelayNodeError } from '../shared/relay-node-protocol.js';
+import type {
+  HubNodeSummary,
+  RelayNodeError,
+} from '../shared/relay-node-protocol.js';
 import type { SessionSummary } from '../server/types.js';
 
 const NOW = new Date('2026-01-02T03:04:05.000Z');
@@ -43,20 +52,29 @@ function nodeSummary(
     protocolVersion: '1.0',
     status: 'online',
     connection: { route: 'reverse-link', status: 'connected' },
-    trust: { state: 'active', level: 'prod', tier: 'prod', policy: summarizeAcl(acl) },
+    trust: {
+      state: 'active',
+      level: 'prod',
+      tier: 'prod',
+      policy: summarizeAcl(acl),
+    },
     credentialState: 'active',
-    version: { state: 'compatible', nodeProtocolVersion: '1.0', hubProtocolVersion: '1.0' },
+    version: {
+      state: 'compatible',
+      nodeProtocolVersion: '1.0',
+      hubProtocolVersion: '1.0',
+    },
     capabilities: {
       totals: { available: 2, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'unavailable',
         clipboardImage: 'unavailable',
         ssh: 'unavailable',
         tailscale: 'unavailable',
       },
+      terminalBackends: { 'relay-pty': 'available' },
       agents: {},
       serviceManager: 'launchd',
       wsl: false,
@@ -109,7 +127,9 @@ describe('routed create remote session read model', () => {
   });
 
   it('merges a just-created WorkContext session into cached remote sessions through an immediate transient sessions.list failure', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-routed-create-readmodel-'));
+    const tmp = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-routed-create-readmodel-')
+    );
     const workContextStore: WorkContextStore = createWorkContextStore(
       path.join(tmp, 'work-contexts.db')
     );
@@ -118,7 +138,11 @@ describe('routed create remote session read model', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     });
     const workContextId = 'github-issue-574-active-work-live-state';
-    workContextStore.create({ id: workContextId, title: 'Issue #574', source: 'test' });
+    workContextStore.create({
+      id: workContextId,
+      title: 'Issue #574',
+      source: 'test',
+    });
 
     const node = nodeSummary();
     const registry = {
@@ -126,8 +150,16 @@ describe('routed create remote session read model', () => {
       errorBody: (error: unknown) => ({
         error:
           error instanceof Error
-            ? ({ code: 'INTERNAL', message: error.message, retryable: false } satisfies RelayNodeError)
-            : ({ code: 'INTERNAL', message: 'unknown error', retryable: false } satisfies RelayNodeError),
+            ? ({
+                code: 'INTERNAL',
+                message: error.message,
+                retryable: false,
+              } satisfies RelayNodeError)
+            : ({
+                code: 'INTERNAL',
+                message: 'unknown error',
+                retryable: false,
+              } satisfies RelayNodeError),
       }),
       revokeNode: () => node,
     } as unknown as HubNodeRegistry;
@@ -142,7 +174,9 @@ describe('routed create remote session read model', () => {
           };
         }
         if (type === 'sessions.list') {
-          throw new Error('transient sessions.list failure immediately after create');
+          throw new Error(
+            'transient sessions.list failure immediately after create'
+          );
         }
         throw new Error(`unexpected ${type}`);
       }),
@@ -176,14 +210,21 @@ describe('routed create remote session read model', () => {
     );
     const server = http.createServer(app);
     cleanup.push(
-      () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())))
+      () =>
+        new Promise<void>((resolve, reject) =>
+          server.close((err) => (err ? reject(err) : resolve()))
+        )
     );
     const base = `http://127.0.0.1:${await listen(server)}`;
 
     const created = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal', workContextId }),
+      body: JSON.stringify({
+        repoPath: '/srv/relay-ide',
+        type: 'terminal',
+        workContextId,
+      }),
     });
     expect(created.status).toBe(201);
     const createdSession = (await created.json()) as SessionSummary;
@@ -225,7 +266,9 @@ describe('routed create remote session read model', () => {
   });
 
   it('keeps a freshly routed WorkContext session live through an immediate empty sessions.list read model', async () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-routed-create-empty-list-'));
+    const tmp = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-routed-create-empty-list-')
+    );
     const workContextStore: WorkContextStore = createWorkContextStore(
       path.join(tmp, 'work-contexts.db')
     );
@@ -234,7 +277,11 @@ describe('routed create remote session read model', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     });
     const workContextId = 'github-issue-580-active-work-routed-session';
-    workContextStore.create({ id: workContextId, title: 'Issue #580', source: 'test' });
+    workContextStore.create({
+      id: workContextId,
+      title: 'Issue #580',
+      source: 'test',
+    });
 
     const node = nodeSummary();
     const registry = {
@@ -242,8 +289,16 @@ describe('routed create remote session read model', () => {
       errorBody: (error: unknown) => ({
         error:
           error instanceof Error
-            ? ({ code: 'INTERNAL', message: error.message, retryable: false } satisfies RelayNodeError)
-            : ({ code: 'INTERNAL', message: 'unknown error', retryable: false } satisfies RelayNodeError),
+            ? ({
+                code: 'INTERNAL',
+                message: error.message,
+                retryable: false,
+              } satisfies RelayNodeError)
+            : ({
+                code: 'INTERNAL',
+                message: 'unknown error',
+                retryable: false,
+              } satisfies RelayNodeError),
       }),
       revokeNode: () => node,
     } as unknown as HubNodeRegistry;
@@ -276,14 +331,21 @@ describe('routed create remote session read model', () => {
     );
     const server = http.createServer(app);
     cleanup.push(
-      () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())))
+      () =>
+        new Promise<void>((resolve, reject) =>
+          server.close((err) => (err ? reject(err) : resolve()))
+        )
     );
     const base = `http://127.0.0.1:${await listen(server)}`;
 
     const created = await fetch(`${base}/hub/nodes/node_prod/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ repoPath: '/srv/relay-ide', type: 'terminal', workContextId }),
+      body: JSON.stringify({
+        repoPath: '/srv/relay-ide',
+        type: 'terminal',
+        workContextId,
+      }),
     });
     expect(created.status).toBe(201);
     expect(await created.json()).toMatchObject({

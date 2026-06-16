@@ -16,6 +16,7 @@ import {
   deleteRepoSettingKeys,
   writeMeta,
   readMeta,
+  normalizeTerminalBackend,
 } from './config.js';
 import {
   getDefaultAllocator,
@@ -238,10 +239,7 @@ interface DashboardPrCacheEntry {
 }
 
 const dashboardPrCache = new Map<string, DashboardPrCacheEntry>();
-const dashboardPrInFlight = new Map<
-  string,
-  Promise<PullRequestsResponse>
->();
+const dashboardPrInFlight = new Map<string, Promise<PullRequestsResponse>>();
 let dashboardPrCacheVersion = 0;
 
 export function clearDashboardPrCache(repoPath?: string): void {
@@ -279,8 +277,7 @@ function mapRawDashboardPr(
         | 'REVIEW_REQUIRED'
         | null) ?? null,
     mergeable:
-      (raw.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ??
-      null,
+      (raw.mergeable as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | null) ?? null,
     isDraft: (raw.isDraft as boolean) ?? false,
     ciStatus: null,
   };
@@ -461,7 +458,8 @@ export async function detectGitRepo(
     if (e.code === 'EACCES') {
       throw new PathInaccessibleError(dirPath);
     }
-    const message = statErr instanceof Error ? statErr.message : String(statErr);
+    const message =
+      statErr instanceof Error ? statErr.message : String(statErr);
     logger.warn('detectGitRepo: stat failed for', dirPath, message);
     throw new GitInfraError(message);
   }
@@ -469,7 +467,10 @@ export async function detectGitRepo(
   try {
     await execAsync('git', ['rev-parse', '--git-dir'], { cwd: dirPath });
   } catch (err: unknown) {
-    const e = err as NodeJS.ErrnoException & { stderr?: string; code?: string | number };
+    const e = err as NodeJS.ErrnoException & {
+      stderr?: string;
+      code?: string | number;
+    };
 
     // ENOENT after the stat check above means the git binary itself is missing
     // (the cwd was verified to exist as a directory).
@@ -525,16 +526,18 @@ export async function resolveRepoIdentityFields(
   repoPath: string,
   isGitRepo: boolean,
   execAsync: typeof execFileAsync
-): Promise<Pick<
-  Repo,
-  | 'localPath'
-  | 'nodeId'
-  | 'repoIdentity'
-  | 'repoInstanceId'
-  | 'selectedRemote'
-  | 'remotes'
-  | 'repoIdentityWarnings'
->> {
+): Promise<
+  Pick<
+    Repo,
+    | 'localPath'
+    | 'nodeId'
+    | 'repoIdentity'
+    | 'repoInstanceId'
+    | 'selectedRemote'
+    | 'remotes'
+    | 'repoIdentityWarnings'
+  >
+> {
   const nodeId = DEFAULT_LOCAL_NODE_ID;
   const base = {
     localPath: repoPath,
@@ -553,8 +556,12 @@ export async function resolveRepoIdentityFields(
   }
 
   try {
-    const { stdout } = await execAsync('git', ['remote', '-v'], { cwd: repoPath });
-    const resolution = resolveCanonicalRepoIdentity(parseGitRemoteVerbose(stdout));
+    const { stdout } = await execAsync('git', ['remote', '-v'], {
+      cwd: repoPath,
+    });
+    const resolution = resolveCanonicalRepoIdentity(
+      parseGitRemoteVerbose(stdout)
+    );
     return {
       ...base,
       repoIdentity: resolution.identity,
@@ -604,7 +611,11 @@ export async function requireGitRepo(
   execAsync: typeof execFileAsync = execFileAsync
 ): Promise<
   | { ok: true }
-  | { ok: false; status: 400 | 403 | 500; body: { error: string; code: string; message?: string } }
+  | {
+      ok: false;
+      status: 400 | 403 | 500;
+      body: { error: string; code: string; message?: string };
+    }
 > {
   let isGitRepo: boolean;
   try {
@@ -717,7 +728,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
           }
         }
 
-        const identityFields = await resolveRepoIdentityFields(p, isGitRepo, exec);
+        const identityFields = await resolveRepoIdentityFields(
+          p,
+          isGitRepo,
+          exec
+        );
 
         return {
           path: p,
@@ -950,7 +965,11 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
             /* detached HEAD */
           }
         }
-        const identityFields = await resolveRepoIdentityFields(p, isGitRepo, exec);
+        const identityFields = await resolveRepoIdentityFields(
+          p,
+          isGitRepo,
+          exec
+        );
         return {
           path: p,
           name,
@@ -1199,9 +1218,22 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     const config = getConfig();
     if (Object.prototype.hasOwnProperty.call(updates, LEGACY_TMUX_LAUNCH_KEY)) {
       res.status(400).json({
-        error: 'legacy tmux launch flag is no longer supported; use terminalBackend',
+        error:
+          'legacy tmux launch flag is no longer supported; use terminalBackend',
       });
       return;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'terminalBackend')) {
+      const terminalBackend = updates['terminalBackend'];
+      if (
+        terminalBackend !== null &&
+        normalizeTerminalBackend(terminalBackend) === undefined
+      ) {
+        res.status(400).json({
+          error: 'terminalBackend must be "relay-pty"',
+        });
+        return;
+      }
     }
 
     // Separate null values (deletions) from actual updates
@@ -1778,7 +1810,6 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
       ? realResolved
       : null;
   }
-
 
   // GET /workspaces/divergence — display-ready branch divergence summary
   router.get('/divergence', async (req: Request, res: Response) => {

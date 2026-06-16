@@ -107,7 +107,7 @@ export interface StartWorkSessionInput {
   mode?: 'pty' | 'web' | undefined;
   agent?: string | undefined;
   yolo?: boolean | undefined;
-  terminalBackend?: 'relay-pty' | 'tmux-compat' | undefined;
+  terminalBackend?: 'relay-pty' | undefined;
   cols?: number | undefined;
   rows?: number | undefined;
   workContextId?: string | undefined;
@@ -247,10 +247,13 @@ export function ticketStartWorkActionDescriptor(
     TICKETS_START_WORK_COMMAND
   )
 ): RelayActionDescriptor {
-  return relayActionDescriptorFromCommandDefinition(TICKETS_START_WORK_COMMAND, {
-    availability,
-    surfaces: LIFECYCLE_SURFACES,
-  });
+  return relayActionDescriptorFromCommandDefinition(
+    TICKETS_START_WORK_COMMAND,
+    {
+      availability,
+      surfaces: LIFECYCLE_SURFACES,
+    }
+  );
 }
 
 export function branchOpenSessionActionDescriptor(
@@ -649,7 +652,9 @@ function repoOutput(repo: StartWorkRepoInput): Record<string, unknown> {
   return {
     repoPath: repo.repoPath,
     ...(repo.nodeId !== undefined ? { nodeId: repo.nodeId } : {}),
-    ...(repo.workspaceId !== undefined ? { workspaceId: repo.workspaceId } : {}),
+    ...(repo.workspaceId !== undefined
+      ? { workspaceId: repo.workspaceId }
+      : {}),
     ...(repo.repoIdentity !== undefined
       ? { repoIdentity: repo.repoIdentity }
       : {}),

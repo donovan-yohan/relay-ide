@@ -34,7 +34,14 @@ function defaultCapabilities(
   agents: AgentInput[]
 ): NodeManifest['capabilities'] {
   return {
-    tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
+    terminalBackends: {
+      'relay-pty': {
+        id: 'relay-pty',
+        label: 'Relay PTY',
+        status: 'available',
+        message: 'ok',
+      },
+    },
     git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
     clipboard: {
       id: 'clipboard',

@@ -50,7 +50,14 @@ function manifest(overrides: Partial<NodeManifest> = {}): NodeManifest {
       caveats: [],
     },
     capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
+      terminalBackends: {
+        'relay-pty': {
+          id: 'relay-pty',
+          label: 'Relay PTY',
+          status: 'available',
+          message: 'ok',
+        },
+      },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
       clipboard: {
         id: 'clipboard',
@@ -322,7 +329,10 @@ describe('hub node routes and link', () => {
     const pairRes = await fetch(`${base}/hub/pair-tokens`, {
       method: 'POST',
       headers: pairMintHeaders(),
-      body: JSON.stringify({ displayName: 'Route Node', taskRef: 'route-node' }),
+      body: JSON.stringify({
+        displayName: 'Route Node',
+        taskRef: 'route-node',
+      }),
     });
     expect(pairRes.status).toBe(201);
     const pair = (await pairRes.json()) as {
@@ -392,7 +402,10 @@ describe('hub node routes and link', () => {
         'x-forwarded-proto': 'https',
         'x-forwarded-host': 'relay.example.com',
       },
-      body: JSON.stringify({ displayName: 'Proxy Node', taskRef: 'route-node' }),
+      body: JSON.stringify({
+        displayName: 'Proxy Node',
+        taskRef: 'route-node',
+      }),
     });
     expect(forwardedHostRes.status).toBe(201);
     const forwardedHost = (await forwardedHostRes.json()) as { hubUrl: string };
@@ -608,7 +621,6 @@ describe('hub node routes and link', () => {
     expect(revokedHeartbeatBody).not.toContain(exchange.credential.token);
   });
 
-
   it('mints pair tokens from scoped one-time operator handshake grants only', async () => {
     const { tmpDir, registry } = tmpRegistry();
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
@@ -777,12 +789,14 @@ describe('hub node routes and link', () => {
       NODE_PAIR_TOKEN_CREATE_CAPABILITY
     );
 
-    const approveGrant = (input: {
-      audience?: string;
-      capabilities?: string[];
-      scope?: { taskRefs?: string[] };
-      ttlMs?: number;
-    } = {}): string => {
+    const approveGrant = (
+      input: {
+        audience?: string;
+        capabilities?: string[];
+        scope?: { taskRefs?: string[] };
+        ttlMs?: number;
+      } = {}
+    ): string => {
       const grant = operatorHandshakeGrants.request({
         actor: { type: 'cli', id: 'ebi-cli' },
         issuer: { id: 'operator-browser' },
@@ -795,7 +809,10 @@ describe('hub node routes and link', () => {
         approvedBy: { id: 'operator-browser' },
       }).handle;
     };
-    const mintWithGrant = async (handle: string, body: Record<string, unknown>) =>
+    const mintWithGrant = async (
+      handle: string,
+      body: Record<string, unknown>
+    ) =>
       await fetch(`${base}/hub/pair-tokens`, {
         method: 'POST',
         headers: {
@@ -865,7 +882,9 @@ describe('hub node routes and link', () => {
       trustTier: 'prod',
     });
     expect(prodOnlyPairRes.status).toBe(201);
-    const prodOnlyPair = (await prodOnlyPairRes.json()) as { pairToken: string };
+    const prodOnlyPair = (await prodOnlyPairRes.json()) as {
+      pairToken: string;
+    };
     const prodOnlyExchangeRes = await fetch(`${base}/hub/pairing/exchange`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -943,7 +962,8 @@ describe('hub node routes and link', () => {
     const base = `http://127.0.0.1:${port}`;
 
     const exchanged = registry.exchangePairToken({
-      pairToken: registry.createPairToken({ displayName: 'Strict Node' }).pairToken,
+      pairToken: registry.createPairToken({ displayName: 'Strict Node' })
+        .pairToken,
       manifest: manifest(),
       source: { tailnetIp: '100.90.12.34' },
     });
@@ -973,7 +993,9 @@ describe('hub node routes and link', () => {
     });
     expect(nodesRes.status).toBe(200);
     const nodes = (await nodesRes.json()) as {
-      nodes: Array<{ sourceDiagnostics?: { state?: string; reasonCode?: string } }>;
+      nodes: Array<{
+        sourceDiagnostics?: { state?: string; reasonCode?: string };
+      }>;
     };
     expect(nodes.nodes[0]?.sourceDiagnostics).toMatchObject({
       state: 'strict-deny',

@@ -52,7 +52,6 @@ export const TerminalBlock: WorkbenchBlockRenderer<'terminal'> = ({
       <Terminal
         sessionId={sessionRef.sessionId}
         sessionKey={sessionKey}
-        useTmux={true}
         isActive={true}
       />
     </div>

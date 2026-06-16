@@ -11,7 +11,10 @@ import {
   type RelayCliGatewayErrorCode,
 } from '../../../../shared/cli-gateway-contract.js';
 import { normalizeGatewayErrorCode } from '../../../../shared/cli-gateway-runtime.js';
-import type { RepoInstanceId, WorktreeInstanceId } from '../../../../shared/identity.js';
+import type {
+  RepoInstanceId,
+  WorktreeInstanceId,
+} from '../../../../shared/identity.js';
 import {
   relayCommandDefinition,
   type RelayCommandDefinition,
@@ -69,7 +72,7 @@ export interface WorkspaceLaunchActionInput {
   workspaceId: string;
   agent?: string | undefined;
   yolo?: boolean | undefined;
-  terminalBackend?: 'relay-pty' | 'tmux-compat' | undefined;
+  terminalBackend?: 'relay-pty' | undefined;
   claudeArgs?: string[] | undefined;
   cols?: number | undefined;
   rows?: number | undefined;
@@ -264,9 +267,11 @@ export function workspaceLaunchActionAvailability(
   input: WorkspaceLifecycleAvailabilityInput
 ): RelayActionAvailability {
   let reason: string | undefined;
-  if (input.workspaceMissing) reason = 'launching a workspace requires a workspace';
+  if (input.workspaceMissing)
+    reason = 'launching a workspace requires a workspace';
   else if (input.nodeUnavailableReason) reason = input.nodeUnavailableReason;
-  else if (input.unsupportedRemoteReason) reason = input.unsupportedRemoteReason;
+  else if (input.unsupportedRemoteReason)
+    reason = input.unsupportedRemoteReason;
   return commandCapabilityAvailability(WORKSPACES_LAUNCH_COMMAND, reason);
 }
 
@@ -295,7 +300,9 @@ function reasonCodeFromError(error: HttpError): string | undefined {
 
 function gatewayCodeForHttpError(error: HttpError): RelayCliGatewayErrorCode {
   const reasonCode = reasonCodeFromError(error);
-  const mapped = reasonCode ? REASON_CODE_TO_GATEWAY_CODE[reasonCode] : undefined;
+  const mapped = reasonCode
+    ? REASON_CODE_TO_GATEWAY_CODE[reasonCode]
+    : undefined;
   if (mapped) return mapped;
   return normalizeGatewayErrorCode(error.status, {
     code: error.code,

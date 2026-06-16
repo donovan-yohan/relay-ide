@@ -261,7 +261,6 @@ function SessionContentMount({
       <Terminal
         sessionId={session.id}
         sessionKey={scopedSessionKey(session)}
-        useTmux={session.useTmux !== false}
         isActive={isActive}
         onImageUpload={onImageUpload}
         onCopyModeChange={onCopyModeChange}

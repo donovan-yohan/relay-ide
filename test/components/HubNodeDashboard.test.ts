@@ -45,13 +45,13 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       totals: { available: 11, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
         ssh: 'available',
         tailscale: 'available',
       },
+      terminalBackends: { 'relay-pty': 'available' },
       agents: { claude: 'available', codex: 'available' },
       serviceManager: 'launchd',
       wsl: false,
@@ -167,9 +167,9 @@ describe('HubNodeDashboard', () => {
               totals: { available: 8, degraded: 1, unavailable: 2, unknown: 0 },
               core: {
                 ...node().capabilities.core,
-                tmux: 'degraded',
                 git: 'unavailable',
               },
+              terminalBackends: { 'relay-pty': 'degraded' },
             },
           }),
         ],
@@ -186,11 +186,11 @@ describe('HubNodeDashboard', () => {
     expect(html).toContain('not attachable: node is offline');
     expect(html).toContain('thin client');
     expect(html).toContain(
-      'work disabled: tmux degraded; git unavailable; worktrees unavailable'
+      'work disabled: terminal backend degraded; git unavailable; worktrees unavailable'
     );
     expect(html).toContain('protocol 2.0 != hub 1.0');
     expect(html).toContain('shell');
-    expect(html).toContain('tmux');
+    expect(html).toContain('terminal backend');
     expect(html).toContain('git');
     expect(html).toContain('worktrees');
     expect(html).toContain('agents');

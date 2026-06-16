@@ -69,7 +69,7 @@ interface TerminalStreamEnvelopeBase<K extends TerminalStreamPayloadKind> {
 }
 
 export interface TerminalStreamMetadataPayload {
-  runtime: 'node-pty/tmux';
+  runtime: 'relay-pty/libghostty-vt';
   capacityBytes: number;
   bytesDropped: number;
   oldestCursor: number;
@@ -296,7 +296,7 @@ function terminalStreamMetadataPayload(
   state: TerminalStreamState
 ): TerminalStreamMetadataPayload {
   return {
-    runtime: 'node-pty/tmux',
+    runtime: 'relay-pty/libghostty-vt',
     capacityBytes: state.capacityBytes,
     bytesDropped: state.bytesDropped,
     oldestCursor: state.oldestCursor,

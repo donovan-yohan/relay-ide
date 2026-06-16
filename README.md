@@ -1,6 +1,6 @@
 # relay-ide
 
-Relay IDE is an agentic development environment for running AI coding agents and terminals from a browser or CLI. A Relay hub hosts the web UI and stable JSON gateway; local or remote nodes provide shells, agent CLIs, repo inventory, and terminal-backend session execution. New sessions default to the direct `relay-pty` backend, while `tmux-compat` remains the legacy/import/resume fallback. Repos and worktrees are first-class development context, but they are optional bindings on sessions/tabs rather than the definition of a workspace.
+Relay IDE is an agentic development environment for running AI coding agents and terminals from a browser or CLI. A Relay hub hosts the web UI and stable JSON gateway; local or remote nodes provide shells, agent CLIs, repo inventory, and `relay-pty`/libghostty-vt terminal session execution. `relay-pty` is the only supported terminal backend; legacy `tmux-compat` state is unsupported and not restored. Repos and worktrees are first-class development context, but they are optional bindings on sessions/tabs rather than the definition of a workspace.
 
 ## Current model
 
@@ -17,13 +17,12 @@ The shipped app is mid-migration toward that vocabulary. Existing repo/worktree 
 
 ## Prerequisites
 
-| Dependency                                             | Why                                                                 |
-| ------------------------------------------------------ | ------------------------------------------------------------------- |
-| [Node.js 24+](https://nodejs.org/)                     | Runtime and build target                                            |
-| [tmux](https://github.com/tmux/tmux/wiki)              | Required only for the `tmux-compat` backend; new sessions default to `relay-pty` |
-| Agent CLI such as Claude Code, Codex, OpenCode, Hermes | Relay launches configured agent frameworks from the node `PATH`     |
-| [GitHub CLI (`gh`)](https://cli.github.com/)           | Optional; used by PR/CI surfaces when available                     |
-| [Tailscale](https://tailscale.com/)                    | Optional but recommended for private phone/tablet access            |
+| Dependency                                             | Why                                                             |
+| ------------------------------------------------------ | --------------------------------------------------------------- |
+| [Node.js 24+](https://nodejs.org/)                     | Runtime and build target                                        |
+| Agent CLI such as Claude Code, Codex, OpenCode, Hermes | Relay launches configured agent frameworks from the node `PATH` |
+| [GitHub CLI (`gh`)](https://cli.github.com/)           | Optional; used by PR/CI surfaces when available                 |
+| [Tailscale](https://tailscale.com/)                    | Optional but recommended for private phone/tablet access        |
 
 ## Install and run
 
@@ -64,7 +63,7 @@ npm install
 npm run dev
 ```
 
-`npm run dev` builds the TypeScript backend once, starts the backend as an isolated dev instance on `127.0.0.1:3457`, and starts the Vite frontend on `127.0.0.1:5173`. Open the Vite URL for frontend HMR; Vite proxies REST and WebSocket traffic to the real backend. Dev instances use separate config/tmux identity but still require the normal PIN/browser-session auth flow.
+`npm run dev` builds the TypeScript backend once, starts the backend as an isolated dev instance on `127.0.0.1:3457`, and starts the Vite frontend on `127.0.0.1:5173`. Open the Vite URL for frontend HMR; Vite proxies REST and WebSocket traffic to the real backend. Dev instances use separate config/process identity but still require the normal PIN/browser-session auth flow.
 
 Useful split commands:
 
@@ -73,7 +72,7 @@ npm run dev:backend
 npm run dev:vite
 ```
 
-When developing Relay from inside an already-running Relay instance, use the self-hosting wrapper so the child instance gets isolated config, ports, and tmux names:
+When developing Relay from inside an already-running Relay instance, use the self-hosting wrapper so the child instance gets isolated config, ports, and process identity:
 
 ```bash
 npm run dev:self
@@ -187,7 +186,7 @@ relay-ide node link --hub http://hub.example:3456
 
 - Launch agent or terminal sessions from the browser or stable JSON gateway.
 - Built-in framework definitions exist for Claude Code, Codex, OpenCode, and Hermes; config can override or add frameworks.
-- Session rows carry agent type, node/cwd/repo/worktree context when available, state, scrollback, and reconnect behavior.
+- Session rows carry agent type, node/cwd/repo/worktree context when available, state, scrollback, and reconnect behavior. Browser reconnect can reattach to a live Relay process; Relay server restart is cold resume from saved metadata/scrollback, not live child-process continuity.
 - Scriptable gateway commands let adapters list/create/attach/detach/kill/rename sessions, stream raw PTY output, send bounded input, publish artifacts, and call typed supervisor actions without private browser or node-link APIs.
 - `worktree add` remains a repo helper and currently launches Claude for the legacy fast path.
 
@@ -206,7 +205,7 @@ relay-ide node link --hub http://hub.example:3456
 
 ### UI surfaces
 
-- Browser terminal rendering uses xterm.js. Process ownership is handled by the selected terminal backend: `relay-pty` for new direct PTY sessions, `tmux-compat` for legacy/import/resume sessions that need tmux behavior.
+- Browser terminal rendering uses xterm.js. Process ownership is handled by `relay-pty`/libghostty-vt, the only supported terminal backend.
 - Active Work and workbench/control surfaces organize WorkContexts, nodes, actors, artifacts, approvals, and capability-gated actions; terminal attach is one surface, not the whole product.
 - The frontend is React 19 with Zustand and TanStack Query.
 - Vite HMR is available in source dev. Non-dev runtime serves `dist/frontend`: `npm start` rebuilds before starting, but package/global runs (`relay-ide`) or direct `node dist/server/index.js` use the already-built bundle, so run `npm run build` after frontend source edits when you are not using Vite HMR.

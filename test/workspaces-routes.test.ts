@@ -5,7 +5,10 @@ import path from 'node:path';
 import express from 'express';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { createWorkspaceRouter, type WorkspaceDeps } from '../server/workspaces.js';
+import {
+  createWorkspaceRouter,
+  type WorkspaceDeps,
+} from '../server/workspaces.js';
 import { DEFAULTS, loadConfig, saveConfig } from '../server/config.js';
 import { createTestServer } from './helpers/test-server.js';
 
@@ -36,9 +39,13 @@ afterAll(() => {
 
 /** Simulate a git exit-128 "not a git repository" error, as node's execFile produces. */
 function makeGitExit128Error(): Error & { code: number; stderr: string } {
-  const err = new Error('not a git repository') as Error & { code: number; stderr: string };
+  const err = new Error('not a git repository') as Error & {
+    code: number;
+    stderr: string;
+  };
   err.code = 128;
-  err.stderr = 'fatal: not a git repository (or any of the parent directories): .git';
+  err.stderr =
+    'fatal: not a git repository (or any of the parent directories): .git';
   return err;
 }
 
@@ -70,7 +77,10 @@ function makeExec(gitDir: string): ExecFn {
 async function makeApp(exec: ExecFn) {
   const app = express();
   app.use(express.json());
-  app.use('/workspaces', createWorkspaceRouter({ configPath, execAsync: exec }));
+  app.use(
+    '/workspaces',
+    createWorkspaceRouter({ configPath, execAsync: exec })
+  );
   return app;
 }
 
@@ -88,13 +98,15 @@ describe('PATCH /workspaces/settings — terminal backend selection', () => {
       });
 
       expect(res.status).toBe(400);
-      expect(loadConfig(configPath).repoSettings?.[path.resolve(gitRepoPath)]).toBeUndefined();
+      expect(
+        loadConfig(configPath).repoSettings?.[path.resolve(gitRepoPath)]
+      ).toBeUndefined();
     } finally {
       await server.close();
     }
   });
 
-  it('uses terminalBackend as the only tmux-compat config path', async () => {
+  it('rejects tmux-compat terminalBackend settings', async () => {
     const exec = makeExec(gitRepoPath);
     const app = await makeApp(exec);
     const server = await createTestServer(app);
@@ -106,12 +118,12 @@ describe('PATCH /workspaces/settings — terminal backend selection', () => {
         body: JSON.stringify({ terminalBackend: 'tmux-compat' }),
       });
 
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { terminalBackend?: string };
-      expect(body.terminalBackend).toBe('tmux-compat');
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toBe('terminalBackend must be "relay-pty"');
 
       const saved = loadConfig(configPath);
-      expect(saved.repoSettings?.[path.resolve(gitRepoPath)]?.terminalBackend).toBe('tmux-compat');
+      expect(saved.repoSettings?.[path.resolve(gitRepoPath)]).toBeUndefined();
     } finally {
       await server.close();
     }
@@ -126,7 +138,9 @@ describe('GET /workspaces — kind field', () => {
     try {
       const res = await fetch(`${server.url}/workspaces`);
       expect(res.status).toBe(200);
-      const data = (await res.json()) as { workspaces: Array<{ path: string; kind?: string; isGitRepo: boolean }> };
+      const data = (await res.json()) as {
+        workspaces: Array<{ path: string; kind?: string; isGitRepo: boolean }>;
+      };
       const git = data.workspaces.find((w) => w.path === gitRepoPath);
       const dir = data.workspaces.find((w) => w.path === nonGitPath);
 
@@ -225,7 +239,9 @@ describe('GET /workspaces/current-branch — NOT_GIT guard', () => {
     const server = await createTestServer(app);
     try {
       const params = new URLSearchParams({ path: nonGitPath });
-      const res = await fetch(`${server.url}/workspaces/current-branch?${params}`);
+      const res = await fetch(
+        `${server.url}/workspaces/current-branch?${params}`
+      );
       expect(res.status).toBe(400);
       const body = (await res.json()) as { code: string };
       expect(body.code).toBe('NOT_GIT');
@@ -259,7 +275,9 @@ describe('GET /workspaces/changed-files — NOT_GIT guard', () => {
     const server = await createTestServer(app);
     try {
       const params = new URLSearchParams({ path: nonGitPath });
-      const res = await fetch(`${server.url}/workspaces/changed-files?${params}`);
+      const res = await fetch(
+        `${server.url}/workspaces/changed-files?${params}`
+      );
       expect(res.status).toBe(400);
       const body = (await res.json()) as { code: string };
       expect(body.code).toBe('NOT_GIT');
@@ -275,7 +293,10 @@ describe('GET /workspaces/file-diff — NOT_GIT guard', () => {
     const app = await makeApp(exec);
     const server = await createTestServer(app);
     try {
-      const params = new URLSearchParams({ path: nonGitPath, file: 'README.md' });
+      const params = new URLSearchParams({
+        path: nonGitPath,
+        file: 'README.md',
+      });
       const res = await fetch(`${server.url}/workspaces/file-diff?${params}`);
       expect(res.status).toBe(400);
       const body = (await res.json()) as { code: string };

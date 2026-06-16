@@ -41,7 +41,7 @@ export interface SessionCreateActionTarget {
   type?: 'agent' | 'terminal';
   mode?: 'pty' | 'web';
   agent?: string;
-  terminalBackend?: 'relay-pty' | 'tmux-compat';
+  terminalBackend?: 'relay-pty';
 }
 
 export type SessionCreateActionResult = RelayCliGatewayEnvelope<SessionSummary>;
@@ -54,9 +54,7 @@ export type SessionCreateExecutor = (
   input: CreateSessionBody
 ) => Promise<SessionSummary>;
 
-function capabilityAvailability(
-  reason?: string
-): RelayActionAvailability {
+function capabilityAvailability(reason?: string): RelayActionAvailability {
   return {
     state: reason ? 'unavailable' : 'available',
     ...(reason ? { reason } : {}),
@@ -161,7 +159,12 @@ function errorFromUnknown(error: unknown): RelayCliGatewayError {
       message: error.message,
       retryable: error.retryable ?? error.status >= 500,
       ...(error.details
-        ? { details: { reasonCode: error.code ?? 'HTTP_ERROR', ...error.details } }
+        ? {
+            details: {
+              reasonCode: error.code ?? 'HTTP_ERROR',
+              ...error.details,
+            },
+          }
         : { details: { reasonCode: error.code ?? 'HTTP_ERROR' } }),
     };
   }

@@ -2,7 +2,7 @@
 
 Use this when Relay is used to develop Relay through the shared dogfood topology: devbox hub on `dev` / `100.77.36.51:3456`, a paired Mac node such as `macbook-relay-node`, and browser/mobile Active Work proof.
 
-This runbook is deliberately narrow. Relay is the federated workbench and control plane: identity, routing, `WorkContext` handoff, bounded inspection/control, and audit/evidence. It is not a replacement for Hermes Agent, Hermes dashboard, hermes-workspace, GitHub, Kanban, tmux, or native Claude/Codex/OpenCode/Hermes CLIs.
+This runbook is deliberately narrow. Relay is the federated workbench and control plane: identity, routing, `WorkContext` handoff, bounded inspection/control, and audit/evidence. It is not a replacement for Hermes Agent, Hermes dashboard, hermes-workspace, GitHub, Kanban, terminal/process supervisors, or native Claude/Codex/OpenCode/Hermes CLIs.
 
 Do not paste pair tokens, bearer tokens, cookies, node credentials, private auth URLs, raw env, or unbounded terminal/transcript output into issues, PRs, logs, or screenshots.
 
@@ -52,7 +52,7 @@ Also capture the UI/API state that proves the symptom:
 
 | Symptom                        | Diagnose                                                                                                                                                                                                                                                                        | Recover                                                                                                                                                                                                                  | Do not                                                                                                                                                       |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Stuck routed session           | Confirm `globalSessionId`, `nodeId`, cwd, `status`, `controlMode`, `controlFreshness`, and whether the node is online. Try a harmless attach/send only if the card is live/fresh and policy allows input.                                                                       | If live and controllable, use the UI or scoped API to send a minimal command such as `pwd` or to stop the exact session. If only local cleanup is needed, inspect the exact PID/tmux session first.                      | Do not use `tmux kill-server`, `killall node`, broad `pkill -f relay-ide`, or kill a session whose node/cwd/task identity you have not verified.             |
+| Stuck routed session           | Confirm `globalSessionId`, `nodeId`, cwd, `status`, `controlMode`, `controlFreshness`, and whether the node is online. Try a harmless attach/send only if the card is live/fresh and policy allows input.                                                                       | If live and controllable, use the UI or scoped API to send a minimal command such as `pwd` or to stop the exact session. If only local cleanup is needed, inspect the exact PID first.                                   | Do not use `killall node`, broad `pkill -f relay-ide`, or kill a session whose node/cwd/task identity you have not verified.                                 |
 | Node offline/stale             | Check hub registry, node logs, `node status`, `node doctor`, package versions, and protocol compatibility. The expected routed-create failure for an offline node is typed, retryable `NODE_OFFLINE`.                                                                           | Restart the exact node-link supervisor only after confirming the label/service. On macOS, inspect the actual launchd label first; the #562 dogfood node used `com.relay-ide-node-link`. Then recheck registry freshness. | Do not treat a successful local `relay-ide node status` as proof that the hub has a live reverse link. Do not route work to a different local node silently. |
 | Bad `WorkContext` metadata     | Compare the create payload, session descriptor, `/sessions/:globalSessionId`, and `/work-contexts/active`. Look for null/absent `workContextId`, wrong task refs, stale `nodeId`, wrong cwd, or stale-read-model downgrades.                                                    | File a focused blocker with the create payload shape, sanitized API summaries, screenshots, and exact version/SHA. Re-run QA only after the fix is merged, published/deployed, and the hub/node versions are refreshed.  | Do not call the dogfood loop live on API-only control if browser/mobile Active Work cannot attach/send. Do not patch evidence by hand in comments.           |
 | Plugin/event ingestion failure | First confirm the integration is actually in scope for the build under test. Relay should ingest bounded metadata events, not scrape Hermes profile DBs or raw transcripts. Capture event schema version, source, task/session refs, validator error code, and redaction class. | Retry only with a bounded sanitized payload. If the plugin or ingestion endpoint is not shipped in the target build, mark the plugin proof as not applicable or blocked rather than inventing behavior.                  | Do not sync raw Hermes SQLite DBs, provider auth, env, or full transcript/log payloads into Relay to make a test pass.                                       |
@@ -63,9 +63,9 @@ Also capture the UI/API state that proves the symptom:
 
 Process cleanup is part of recovery, but only after identity is clear. Distinguish these before stopping anything:
 
-- production/global hub: `relay-ide hub` or compiled server on the configured production port, production config, `relay-ide-` tmux prefix;
-- ordinary source dev: `npm run dev`, local dev config, `relay-dev-` prefix;
-- self-host source dev: allocator ports, self-host config, `relay-self-` prefix;
+- production/global hub: `relay-ide hub` or compiled server on the configured production port, production config;
+- ordinary source dev: `npm run dev`, local dev config;
+- self-host source dev: allocator ports, self-host config;
 - node link: `relay-ide node link --hub ...`, usually supervised by launchd/systemd/manual shell;
 - test/fixture server: Playwright/Vitest-owned temporary process.
 
@@ -75,11 +75,9 @@ Prefer exact inspection and exact termination:
 lsof -nP -iTCP:<port> -sTCP:LISTEN
 ps -p <pid> -o pid,ppid,lstart,command
 lsof -p <pid> | grep cwd
-tmux ls | grep '^relay-ide-\|^relay-dev-\|^relay-self-'
-tmux display-message -p -t <session-name> '#S #{session_created_string}'
 ```
 
-Then kill only the intended PID or session. Escalate from `kill` to `kill -KILL` only after rechecking the PID was not reused.
+Then kill only the intended PID. Escalate from `kill` to `kill -KILL` only after rechecking the PID was not reused.
 
 ## Evidence comment template
 

@@ -61,14 +61,14 @@ function makeMinimalManifest(
       caveats: [],
     },
     capabilities: {
-      tmux: makeProbe('tmux', 'available'),
+      terminalBackends: { 'relay-pty': makeProbe('relay-pty', 'available') },
       git: makeProbe('git', 'available'),
       clipboard: makeProbe('clipboard', 'available'),
       browserAutomation: makeProbe('browserAutomation', 'available'),
       githubCli: makeProbe('githubCli', 'available'),
       tailscale: makeProbe('tailscale', 'available'),
       ssh: makeProbe('ssh', 'available'),
-      sessionResume: 'tmux',
+      sessionResume: 'none',
       agents: {},
     },
     ...overrides,
@@ -86,21 +86,17 @@ describe('node doctor degraded reason surfacing', () => {
     expect(reasons).toHaveLength(0);
   });
 
-  it('surfaces CAPABILITY_UNAVAILABLE_TMUX with warn severity when tmux is missing', () => {
+  it('does not report tmux as a required degraded capability', () => {
     const manifest = makeMinimalManifest({
       capabilities: {
         ...makeMinimalManifest().capabilities,
-        tmux: makeProbe('tmux', 'unavailable', 'tmux was not found on PATH.'),
         sessionResume: 'none',
       },
     });
     const reasons = deriveDegradedReasons(manifest);
-    const tmuxReason = reasons.find(
-      (r) => r.code === 'CAPABILITY_UNAVAILABLE_TMUX'
-    );
-    expect(tmuxReason).toBeDefined();
-    expect(tmuxReason?.severity).toBe('warn');
-    expect(tmuxReason?.description).toContain('tmux');
+    expect(
+      reasons.find((r) => r.code === 'CAPABILITY_UNAVAILABLE_TMUX')
+    ).toBeUndefined();
   });
 
   it('surfaces CAPABILITY_DEGRADED_CLIPBOARD with warn severity', () => {
@@ -181,15 +177,13 @@ describe('node doctor degraded reason surfacing', () => {
       fileRpc: { available: false, capabilities: [] },
       capabilities: {
         ...makeMinimalManifest().capabilities,
-        tmux: makeProbe('tmux', 'unavailable', 'tmux not found.'),
         git: makeProbe('git', 'unavailable', 'git not found.'),
         sessionResume: 'none',
       },
     });
     const reasons = deriveDegradedReasons(manifest);
-    expect(reasons.length).toBeGreaterThanOrEqual(3);
+    expect(reasons.length).toBeGreaterThanOrEqual(2);
     const codes = reasons.map((r) => r.code);
-    expect(codes).toContain('CAPABILITY_UNAVAILABLE_TMUX');
     expect(codes).toContain('CAPABILITY_UNAVAILABLE_GIT');
     expect(codes).toContain('FILE_RPC_UNAVAILABLE');
   });

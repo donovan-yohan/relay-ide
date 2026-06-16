@@ -134,13 +134,13 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       totals: { available: 10, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
         ssh: 'available',
         tailscale: 'available',
       },
+      terminalBackends: { 'relay-pty': 'available' },
       agents: { claude: 'available' },
       serviceManager: 'launchd',
       wsl: false,
@@ -344,7 +344,11 @@ describe('CustomizeSessionDialog open races', () => {
     );
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+      (
+        el.querySelector(
+          '[data-track="dialog.customize-session.create"]'
+        ) as HTMLButtonElement
+      ).click();
     });
     await flush();
 
@@ -363,7 +367,11 @@ describe('CustomizeSessionDialog open races', () => {
       remoteLaneInventory(),
       [
         node(),
-        node({ nodeId: 'remote', displayName: 'remote box', homeDir: '/home/relay' }),
+        node({
+          nodeId: 'remote',
+          displayName: 'remote box',
+          homeDir: '/home/relay',
+        }),
       ]
     );
 
@@ -375,7 +383,11 @@ describe('CustomizeSessionDialog open races', () => {
     await flush();
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+      (
+        el.querySelector(
+          '[data-track="dialog.customize-session.create"]'
+        ) as HTMLButtonElement
+      ).click();
     });
     await flush();
 
@@ -394,7 +406,11 @@ describe('CustomizeSessionDialog open races', () => {
       remoteLaneInventory(),
       [
         node(),
-        node({ nodeId: 'remote', displayName: 'remote box', homeDir: '/home/relay' }),
+        node({
+          nodeId: 'remote',
+          displayName: 'remote box',
+          homeDir: '/home/relay',
+        }),
       ]
     );
 
@@ -406,7 +422,11 @@ describe('CustomizeSessionDialog open races', () => {
     await flush();
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.start-in-home"]') as HTMLButtonElement).click();
+      (
+        el.querySelector(
+          '[data-track="dialog.customize-session.start-in-home"]'
+        ) as HTMLButtonElement
+      ).click();
     });
     await flush();
 
@@ -437,7 +457,11 @@ describe('CustomizeSessionDialog open races', () => {
     expect(cwdInput.value).toBe('/home/relay');
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+      (
+        el.querySelector(
+          '[data-track="dialog.customize-session.create"]'
+        ) as HTMLButtonElement
+      ).click();
     });
     await flush();
 
@@ -477,7 +501,11 @@ describe('CustomizeSessionDialog open races', () => {
     expect(cwdInput.value).toBe('/home/relay');
 
     await act(async () => {
-      (el.querySelector('[data-track="dialog.customize-session.create"]') as HTMLButtonElement).click();
+      (
+        el.querySelector(
+          '[data-track="dialog.customize-session.create"]'
+        ) as HTMLButtonElement
+      ).click();
     });
     await flush();
 
@@ -541,7 +569,10 @@ describe('CustomizeSessionDialog open races', () => {
     root = createRoot(container);
     const ref = createRef<CustomizeSessionDialogHandle>();
     const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
     });
 
     await act(async () => {

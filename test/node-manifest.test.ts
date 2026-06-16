@@ -11,7 +11,7 @@ describe('node manifest', () => {
       path.join(os.tmpdir(), 'relay-node-manifest-')
     );
     try {
-      for (const command of ['tmux', 'git']) {
+      for (const command of ['git']) {
         const bin = path.join(tmpDir, command);
         fs.writeFileSync(bin, '#!/bin/sh\necho fake-version\n', {
           mode: 0o755,
@@ -39,7 +39,7 @@ describe('node manifest', () => {
         wsl: { detected: false, version: null, systemd: false },
         serviceManager: { kind: 'launchd', supported: true, installable: true },
         capabilities: {
-          tmux: { status: 'available' },
+          terminalBackends: { 'relay-pty': { status: 'available' } },
           git: { status: 'available' },
           githubCli: { status: 'unavailable' },
           rmux: {

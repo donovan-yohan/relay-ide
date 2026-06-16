@@ -293,12 +293,12 @@ describe('node link pty host (unit)', () => {
     expect(err).toBeDefined();
   });
 
-  it('selects tmux factory when sessionResume = tmux', () => {
+  it('uses raw relay-pty factory for canonical emulator resume nodes', () => {
     const host = createNodeLinkPtyHost({
       nodeId: 'node-1',
-      sessionResume: 'tmux',
+      sessionResume: 'canonical-emulator',
     });
-    expect(host.mode).toBe('tmux');
+    expect(host.mode).toBe('raw');
   });
 
   it('falls back to raw factory when sessionResume = none', () => {
@@ -330,7 +330,14 @@ function fakeManifest(): NodeManifest {
       caveats: [],
     },
     capabilities: {
-      tmux: { id: 'tmux', label: 'tmux', status: 'available', message: 'ok' },
+      terminalBackends: {
+        'relay-pty': {
+          id: 'relay-pty',
+          label: 'Relay PTY',
+          status: 'available',
+          message: 'ok',
+        },
+      },
       git: { id: 'git', label: 'Git', status: 'available', message: 'ok' },
       clipboard: {
         id: 'clipboard',
@@ -362,7 +369,7 @@ function fakeManifest(): NodeManifest {
         status: 'available',
         message: 'ok',
       },
-      sessionResume: 'tmux',
+      sessionResume: 'canonical-emulator',
       agents: {},
     },
   };
@@ -406,7 +413,11 @@ describe('node link pty host (integration)', () => {
       manifest: fakeManifest(),
     });
 
-    const remoteInputRecords: Array<{ nodeId: string; sessionId: string; data: string }> = [];
+    const remoteInputRecords: Array<{
+      nodeId: string;
+      sessionId: string;
+      data: string;
+    }> = [];
     const linkManager = createHubNodeLinkManager({
       ptyInputRecorder: (input) => remoteInputRecords.push(input),
     });
@@ -521,7 +532,11 @@ describe('node link pty host (integration)', () => {
       factory.records[0]!.written.map((b) => b.toString('utf8')).join('')
     ).toContain('echo hi');
     expect(remoteInputRecords).toEqual([
-      { nodeId: exchanged.credential.nodeId, sessionId: 'session-int', data: 'echo hi' },
+      {
+        nodeId: exchanged.credential.nodeId,
+        sessionId: 'session-int',
+        data: 'echo hi',
+      },
     ]);
   });
 });
