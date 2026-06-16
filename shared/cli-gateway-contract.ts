@@ -83,6 +83,7 @@ export type RelayCliGatewayCommand =
   | 'roster.list'
   | 'roster.register'
   | 'roster.updateSelf'
+  | 'cockpit.list'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -3031,6 +3032,37 @@ const presenceWriteOutputDataSchema: RelayJsonSchema = {
   required: ['presence'],
 };
 
+const cockpitListInputSchema: RelayJsonSchema = {
+  title: 'CockpitListInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    limit: { type: 'number', minimum: 1, maximum: 200 },
+  },
+};
+
+const cockpitListOutputDataSchema: RelayJsonSchema = {
+  title: 'CockpitListOutputData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    generatedAt: { type: 'string', format: 'date-time' },
+    count: { type: 'number', minimum: 0 },
+    readFirst: { const: true },
+    next: {
+      oneOf: [
+        { type: 'null' },
+        { type: 'object', additionalProperties: true },
+      ],
+    },
+    items: {
+      type: 'array',
+      items: { type: 'object', additionalProperties: true },
+    },
+  },
+  required: ['generatedAt', 'count', 'next', 'items', 'readFirst'],
+};
+
 const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
   title,
   type: 'object',
@@ -5624,6 +5656,26 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'RosterUpdateSelfOutput',
       presenceWriteOutputDataSchema
     ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'cockpit.list',
+    cli: ['relay-ide', 'v1', 'cockpit', 'list', '--json'],
+    summary:
+      'Read-first terminal cockpit projection over Active Work: ordered WorkContext/session attention, node freshness, durability, control state, TaskRefs, artifacts, and safe action availability.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'context:read'],
+    inputSchema: cockpitListInputSchema,
+    outputSchema: okOutput('CockpitListOutput', cockpitListOutputDataSchema),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
