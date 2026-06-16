@@ -84,6 +84,7 @@ export type RelayCliGatewayCommand =
   | 'roster.register'
   | 'roster.updateSelf'
   | 'cockpit.list'
+  | 'cockpit.get'
   | 'inbox.send'
   | 'inbox.list'
   | 'inbox.get'
@@ -3041,6 +3042,30 @@ const cockpitListInputSchema: RelayJsonSchema = {
   },
 };
 
+const cockpitGetInputSchema: RelayJsonSchema = {
+  title: 'CockpitGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workContextId: stringSchema,
+  },
+  required: ['workContextId'],
+};
+
+const cockpitCommandHintSchema: RelayJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    label: stringSchema,
+    command: stringSchema,
+    enabled: booleanSchema,
+    disabledReason: nullableStringSchema,
+    safety: { type: 'string', enum: ['read', 'attach'] },
+  },
+  required: ['id', 'label', 'enabled', 'disabledReason', 'safety'],
+};
+
 const cockpitListOutputDataSchema: RelayJsonSchema = {
   title: 'CockpitListOutputData',
   type: 'object',
@@ -3061,6 +3086,36 @@ const cockpitListOutputDataSchema: RelayJsonSchema = {
     },
   },
   required: ['generatedAt', 'count', 'next', 'items', 'readFirst'],
+};
+
+const cockpitGetOutputDataSchema: RelayJsonSchema = {
+  title: 'CockpitGetOutputData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    generatedAt: { type: 'string', format: 'date-time' },
+    readFirst: { const: true },
+    selector: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { workContextId: stringSchema },
+      required: ['workContextId'],
+    },
+    item: { type: 'object', additionalProperties: true },
+    actionHints: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        attach: cockpitCommandHintSchema,
+        status: { type: 'array', items: cockpitCommandHintSchema },
+        evidence: { type: 'array', items: cockpitCommandHintSchema },
+        inbox: { type: 'array', items: cockpitCommandHintSchema },
+        liveControls: { type: 'array', items: cockpitCommandHintSchema },
+      },
+      required: ['attach', 'status', 'evidence', 'inbox', 'liveControls'],
+    },
+  },
+  required: ['generatedAt', 'selector', 'item', 'actionHints', 'readFirst'],
 };
 
 const okOutput = (title: string, data: RelayJsonSchema): RelayJsonSchema => ({
@@ -5676,6 +5731,34 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     capabilityHints: ['session:read', 'context:read'],
     inputSchema: cockpitListInputSchema,
     outputSchema: okOutput('CockpitListOutput', cockpitListOutputDataSchema),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'cockpit.get',
+    cli: [
+      'relay-ide',
+      'v1',
+      'cockpit',
+      'get',
+      '--work-context-id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Read-first terminal cockpit detail for one active WorkContext/session, including bounded status/evidence and attach command hints with disabled reasons.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read', 'context:read'],
+    inputSchema: cockpitGetInputSchema,
+    outputSchema: okOutput('CockpitGetOutput', cockpitGetOutputDataSchema),
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',

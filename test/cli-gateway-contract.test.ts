@@ -220,6 +220,7 @@ describe('CLI gateway contract', () => {
       'roster.register',
       'roster.updateSelf',
       'cockpit.list',
+      'cockpit.get',
       'events.subscribe',
       'settings.get',
       'settings.update',
@@ -243,6 +244,16 @@ describe('CLI gateway contract', () => {
     expect(schemaAcceptsCommandInput('cockpit.list', { limit: 0 })).toBe(false);
     expect(schemaAcceptsCommandInput('cockpit.list', { limit: 201 })).toBe(false);
     expect(schemaAcceptsCommandInput('cockpit.list', { limit: '5' })).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('cockpit.get', { workContextId: 'wc-1' })
+    ).toBe(true);
+    expect(schemaAcceptsCommandInput('cockpit.get', {})).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('cockpit.get', { workContextId: 1 })
+    ).toBe(false);
+    expect(
+      schemaAcceptsCommandInput('cockpit.get', { workContextId: 'wc-1', limit: 1 })
+    ).toBe(false);
 
     const cliSource = readFileSync(
       new URL('../bin/relay-ide.ts', import.meta.url),
@@ -250,9 +261,12 @@ describe('CLI gateway contract', () => {
     );
     const cockpitReader = cliSource.slice(
       cliSource.indexOf('async function readGatewayCockpitView'),
-      cliSource.indexOf('async function runGatewayCockpit')
+      cliSource.indexOf('function eventsSubscribeCapabilities')
     );
     expect(cockpitReader).toContain("gatewayOptionalPositiveInt(\n    'cockpit.list'");
+    expect(cockpitReader).toContain('function validateGatewayCockpitGetArgs');
+    expect(cockpitReader).toContain("allowed: ['--work-context-id', '--json']");
+    expect(cockpitReader).toContain("gatewayArg(cockpitArgs, '--work-context-id')");
     expect(cockpitReader).not.toContain('Number.parseInt');
   });
 
