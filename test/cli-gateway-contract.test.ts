@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 import {
   RELAY_CLI_GATEWAY_CONTRACT,
@@ -217,6 +219,7 @@ describe('CLI gateway contract', () => {
       'roster.list',
       'roster.register',
       'roster.updateSelf',
+      'cockpit.list',
       'events.subscribe',
       'settings.get',
       'settings.update',
@@ -231,6 +234,26 @@ describe('CLI gateway contract', () => {
       expect(spec.outputSchema).toBeDefined();
       expect(spec.errorCodes.length).toBeGreaterThan(0);
     }
+  });
+
+  it('keeps cockpit limit validation aligned with its schema', () => {
+    expect(schemaAcceptsCommandInput('cockpit.list', {})).toBe(true);
+    expect(schemaAcceptsCommandInput('cockpit.list', { limit: 1 })).toBe(true);
+    expect(schemaAcceptsCommandInput('cockpit.list', { limit: 200 })).toBe(true);
+    expect(schemaAcceptsCommandInput('cockpit.list', { limit: 0 })).toBe(false);
+    expect(schemaAcceptsCommandInput('cockpit.list', { limit: 201 })).toBe(false);
+    expect(schemaAcceptsCommandInput('cockpit.list', { limit: '5' })).toBe(false);
+
+    const cliSource = readFileSync(
+      new URL('../bin/relay-ide.ts', import.meta.url),
+      'utf8'
+    );
+    const cockpitReader = cliSource.slice(
+      cliSource.indexOf('async function readGatewayCockpitView'),
+      cliSource.indexOf('async function runGatewayCockpit')
+    );
+    expect(cockpitReader).toContain("gatewayOptionalPositiveInt(\n    'cockpit.list'");
+    expect(cockpitReader).not.toContain('Number.parseInt');
   });
 
   it('projects every stable gateway command into shared Relay command metadata', () => {

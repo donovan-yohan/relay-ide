@@ -82,6 +82,12 @@ import {
   FILE_RPC_MAX_WRITE_BYTES,
   type FileRpcOperation,
 } from '../shared/file-rpc.js';
+import {
+  buildTerminalCockpitView,
+  renderTerminalCockpit,
+  type TerminalCockpitActiveGroupInput,
+  type TerminalCockpitView,
+} from '../shared/terminal-cockpit.js';
 import { WebSocket, type RawData } from 'ws';
 
 const execFileAsync = promisify(execFile);
@@ -126,6 +132,7 @@ Commands:
   install            Back-compat alias for relay-ide hub install
   uninstall          Back-compat alias for relay-ide hub uninstall
   status             Back-compat alias for relay-ide hub status
+  cockpit [--json]   Read-first terminal cockpit: what needs operator attention
   manifest           Print local node capability manifest as JSON
   v1 ... --json      Versioned CLI gateway JSON contract for nodes/sessions/files
   diag               Collect local diagnostics
@@ -1509,6 +1516,7 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'pr-overseer.list',
   'pr-overseer.get',
   'roster.list',
+  'cockpit.list',
 ]);
 
 function gatewayActorToken(): string {
@@ -1627,7 +1635,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|roster list|roster register|roster update-self|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|roster list|roster register|roster update-self|cockpit list|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -4868,6 +4876,38 @@ async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {
   });
 }
 
+async function readGatewayCockpitView(
+  gatewayArgs: string[]
+): Promise<TerminalCockpitView> {
+  const cockpitArgs = gatewayArgs.slice(2);
+  const limit = gatewayOptionalPositiveInt(
+    'cockpit.list',
+    cockpitArgs,
+    '--limit',
+    200
+  );
+  const active = (await gatewayHttpJson({
+    commandName: 'cockpit.list',
+    pathName: '/work-contexts/active',
+    capabilities: ['session:read', 'context:read'],
+  })) as { groups?: TerminalCockpitActiveGroupInput[] };
+  return buildTerminalCockpitView({
+    groups: Array.isArray(active.groups) ? active.groups : [],
+    ...(limit !== undefined ? { limit } : {}),
+  });
+}
+
+async function runGatewayCockpit(gatewayArgs: string[]): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  if (subcommand === 'list') {
+    const view = await readGatewayCockpitView(gatewayArgs);
+    printGatewayEnvelope(gatewayOk('cockpit.list', view), 0);
+  }
+  gatewayInvalid('cockpit.list', 'unknown cockpit command', {
+    args: gatewayArgs,
+  });
+}
+
 function eventsSubscribeCapabilities(topic: EventsSubscribeTopic): string {
   return EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES[topic].join(',');
 }
@@ -5020,6 +5060,7 @@ async function runGatewayV1(): Promise<never> {
       'automation-runs': runGatewayAutomationRuns,
       'pr-overseer': runGatewayPrOverseer,
       roster: runGatewayRoster,
+      cockpit: runGatewayCockpit,
       artifacts: runGatewayArtifacts,
       supervisor: runGatewaySupervisor,
       events: runGatewayEvents,
@@ -5035,6 +5076,17 @@ async function runGatewayV1(): Promise<never> {
 
 if (command === 'v1') {
   await runGatewayV1();
+}
+
+if (command === 'cockpit') {
+  const cockpitArgs = args.slice(1);
+  const view = await readGatewayCockpitView(['cockpit', 'list', ...cockpitArgs]);
+  if (cockpitArgs.includes('--json')) {
+    console.log(JSON.stringify(view, null, 2));
+  } else {
+    console.log(renderTerminalCockpit(view));
+  }
+  process.exit(0);
 }
 
 if (command === 'dev') {

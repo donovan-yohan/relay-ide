@@ -235,6 +235,7 @@ export interface WorkContextSessionSummary {
   branchName?: string;
   displayName?: string;
   status?: SessionSummary['status'];
+  durability?: SessionSummary['durability'];
   agentState?: SessionSummary['agentState'];
   currentActivity?: SessionSummary['currentActivity'];
   controlMode?: SessionSummary['controlMode'];
@@ -1601,6 +1602,7 @@ function summarizeLiveSession(
     ...(session.branchName ? { branchName: session.branchName } : {}),
     displayName: session.displayName,
     status: session.status,
+    ...(session.durability ? { durability: session.durability } : {}),
     agentState: session.agentState,
     ...(session.currentActivity
       ? { currentActivity: session.currentActivity }

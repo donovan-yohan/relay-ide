@@ -148,6 +148,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'roster.list': 'list active agent roster',
   'roster.register': 'register self-declared agent presence',
   'roster.updateSelf': 'update self-declared agent presence',
+  'cockpit.list': 'terminal attention cockpit',
   'inbox.send': 'send inbox message',
   'inbox.list': 'list inbox messages',
   'inbox.get': 'inbox message details',
@@ -258,6 +259,7 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('pr-overseer.'))
     return ['work-context', 'repo', 'session'];
   if (name.startsWith('roster.')) return ['repo', 'work-context', 'session'];
+  if (name.startsWith('cockpit.')) return ['work-context', 'session'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];
   if (name.startsWith('handoffs.'))
