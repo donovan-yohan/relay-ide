@@ -7,10 +7,7 @@ import type {
   SessionAttachmentFactory,
   SessionAttachmentMode,
 } from './session-attachment.js';
-import {
-  createRawAttachmentFactory,
-  createTmuxAttachmentFactory,
-} from './session-attachment.js';
+import { createRawAttachmentFactory } from './session-attachment.js';
 import type { NodeSessionResumeKind } from '../shared/node-manifest.js';
 import type { LocalRelayNode } from './local-node.js';
 import type { PtySession } from './types.js';
@@ -30,10 +27,8 @@ export interface NodeLinkPtyAttachInput {
 
 export interface NodeLinkPtyHostDeps {
   /**
-   * #467: pluggable attachment backend. Defaults derived from
-   * `sessionResume`: 'tmux' -> TmuxAttachment, anything else -> raw.
-   * Tests inject `MockAttachmentFactory` directly to avoid spawning
-   * processes or tmux.
+   * Pluggable attachment backend. Defaults to raw relay-pty.
+   * Tests inject `MockAttachmentFactory` directly to avoid spawning processes.
    */
   attachmentFactory?: SessionAttachmentFactory;
   defaultShell?: string;
@@ -43,11 +38,9 @@ export interface NodeLinkPtyHostDeps {
   logger?: Logger;
   inputRecorder?: (input: { sessionId: string; data: string }) => void;
   /**
-   * Resume capability the manifest advertises. Determines which
-   * factory is constructed when `attachmentFactory` is not supplied.
-   * Hosts without tmux (or with `sessionResume: 'none'`) fall back to
-   * a raw shell that dies on detach. 'canonical-emulator' is treated
-   * as 'raw' in phase 1; #469 will replace this dispatch.
+   * Resume capability the manifest advertises. relay-pty/libghostty-vt is not
+   * a process supervisor, so current nodes use raw attachments and advertise
+   * `none` until a future daemon/canonical-emulator exists.
    */
   sessionResume?: NodeSessionResumeKind;
 }
@@ -133,7 +126,6 @@ export interface NodeLinkPtyHostOptions extends NodeLinkPtyHostDeps {
 
 function resolveFactory(opts: NodeLinkPtyHostDeps): SessionAttachmentFactory {
   if (opts.attachmentFactory) return opts.attachmentFactory;
-  if (opts.sessionResume === 'tmux') return createTmuxAttachmentFactory();
   return createRawAttachmentFactory();
 }
 
@@ -141,7 +133,9 @@ function createLiveSessionAttachment(session: PtySession): SessionAttachment {
   let state: 'attached' | 'closed' = 'attached';
   let exitEmitted = false;
   const disposables: Array<{ dispose(): void }> = [];
-  const exitHandlers = new Set<(event: { exitCode: number; signal?: number }) => void>();
+  const exitHandlers = new Set<
+    (event: { exitCode: number; signal?: number }) => void
+  >();
 
   function emitExit(event: { exitCode: number; signal?: number }): void {
     if (exitEmitted) return;

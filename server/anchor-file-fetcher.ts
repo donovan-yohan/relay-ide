@@ -147,7 +147,6 @@ function localCompatibilityNode(): HubNodeSummary {
       totals: { available: 0, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'unknown',
-        tmux: 'unknown',
         git: 'unknown',
         browserAutomation: 'unknown',
         clipboardImage: 'unknown',

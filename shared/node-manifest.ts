@@ -4,7 +4,7 @@ export type NodeCapabilityStatus =
   | 'unavailable'
   | 'unknown';
 
-export type NodeTerminalBackendCapability = 'relay-pty' | 'tmux-compat';
+export type NodeTerminalBackendCapability = 'relay-pty';
 
 export type NodeAgentAuthStatus = 'authed' | 'unauthed' | 'unknown';
 
@@ -150,23 +150,17 @@ export interface NodeServiceManager {
 }
 
 /**
- * How the node persists a PTY across detach. Browsers reload, links
- * flap; tmux-backed hosts can reattach to the same shell. Hosts without
- * tmux advertise 'none' and the frontend hides the resumable badge.
- *
- * 'canonical-emulator' is reserved for #469 (server-side canonical
- * terminal). Phase 1 (#467) emits only 'tmux' or 'none'.
+ * How the node persists a PTY across detach. relay-pty/libghostty-vt is not
+ * a process supervisor, so current nodes advertise 'none' until a future
+ * supervised daemon/canonical-emulator exists.
  */
-export type NodeSessionResumeKind = 'tmux' | 'canonical-emulator' | 'none';
+export type NodeSessionResumeKind = 'canonical-emulator' | 'none';
 
 export interface NodeCapabilities {
   /**
-   * Terminal runtime backends this node can create new PTY sessions with.
-   * `relay-pty` is Relay's default direct PTY/runtime path; `tmux-compat`
-   * is the explicit import/fallback path for old tmux-backed sessions.
+   * Terminal runtime backend this node can create new PTY sessions with.
    */
   terminalBackends?: Record<NodeTerminalBackendCapability, NodeCapabilityProbe>;
-  tmux: NodeCapabilityProbe;
   git: NodeCapabilityProbe;
   clipboard: NodeCapabilityProbe;
   browserAutomation: NodeCapabilityProbe;
@@ -269,7 +263,6 @@ function isServiceManagerKind(value: unknown): value is ServiceManagerKind {
 }
 
 const requiredCapabilityKeys = [
-  'tmux',
   'git',
   'clipboard',
   'browserAutomation',
@@ -336,7 +329,7 @@ function isNodeServiceManager(value: unknown): value is NodeServiceManager {
 }
 
 function isSessionResumeKind(value: unknown): value is NodeSessionResumeKind {
-  return value === 'tmux' || value === 'canonical-emulator' || value === 'none';
+  return value === 'canonical-emulator' || value === 'none';
 }
 
 function isRmuxProbeStatus(value: unknown): value is RmuxProbeStatus {
@@ -349,7 +342,9 @@ function isRmuxProbeStatus(value: unknown): value is RmuxProbeStatus {
 }
 
 function isRmuxIpcKind(value: unknown): value is RmuxIpcKind {
-  return value === 'unix-socket' || value === 'windows-pipe' || value === 'unknown';
+  return (
+    value === 'unix-socket' || value === 'windows-pipe' || value === 'unknown'
+  );
 }
 
 function isRmuxIpcShape(value: unknown): value is RmuxIpcShape {
@@ -374,8 +369,15 @@ function isRmuxR0ChecklistId(value: unknown): value is RmuxR0ChecklistId {
   );
 }
 
-function isRmuxR0ChecklistStatus(value: unknown): value is RmuxR0ChecklistStatus {
-  return value === 'pass' || value === 'warn' || value === 'fail' || value === 'unknown';
+function isRmuxR0ChecklistStatus(
+  value: unknown
+): value is RmuxR0ChecklistStatus {
+  return (
+    value === 'pass' ||
+    value === 'warn' ||
+    value === 'fail' ||
+    value === 'unknown'
+  );
 }
 
 function isRmuxR0ChecklistItem(value: unknown): value is RmuxR0ChecklistItem {
@@ -416,7 +418,6 @@ function isNodeCapabilities(value: unknown): value is NodeCapabilities {
     const terminalBackends = value['terminalBackends'];
     if (!isRecord(terminalBackends)) return false;
     if (!isNodeCapabilityProbe(terminalBackends['relay-pty'])) return false;
-    if (!isNodeCapabilityProbe(terminalBackends['tmux-compat'])) return false;
   }
   // sessionResume was added in #467. Pre-#467 nodes did not publish it;
   // accept the field's absence and treat as 'none' at the call site.

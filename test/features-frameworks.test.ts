@@ -48,7 +48,7 @@ describe('frameworks feature', () => {
     });
     expect(Object.keys(manifest.capabilities.agents).length).toBeGreaterThan(0);
     // Other capability fields still present.
-    expect(manifest.capabilities.tmux).toBeDefined();
+    expect(manifest.capabilities.terminalBackends?.['relay-pty']).toBeDefined();
     expect(manifest.capabilities.git).toBeDefined();
   });
 

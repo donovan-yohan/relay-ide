@@ -75,10 +75,17 @@ describe('hub node registry', () => {
       },
       capabilities: {
         ...manifest().capabilities,
-        tmux: {
-          ...manifest().capabilities.tmux,
-          path: '/usr/bin/tmux',
-          version: 'tmux 3.4',
+        terminalBackends: {
+          ...manifest().capabilities.terminalBackends,
+          'relay-pty': {
+            ...manifest().capabilities.terminalBackends?.['relay-pty'],
+            id: 'relay-pty',
+            label: 'Relay PTY',
+            status: 'available',
+            message: 'ok',
+            path: '/usr/bin/relay-pty',
+            version: 'relay-pty 1.0',
+          },
         },
         rmux: {
           id: 'rmux',
@@ -117,8 +124,15 @@ describe('hub node registry', () => {
             string,
             unknown
           >;
-          const tmux = capabilities['tmux'] as Record<string, unknown>;
-          tmux['path'] = 42;
+          const terminalBackends = capabilities['terminalBackends'] as Record<
+            string,
+            unknown
+          >;
+          const relayPty = terminalBackends['relay-pty'] as Record<
+            string,
+            unknown
+          >;
+          relayPty['path'] = 42;
         }),
       ],
       [
@@ -223,7 +237,9 @@ describe('hub node registry', () => {
               shape: 'owner-only Unix socket',
             },
             message: 'bad checklist',
-            r0Checklist: [{ id: 'root-shell', status: 'pass', message: 'nope' }],
+            r0Checklist: [
+              { id: 'root-shell', status: 'pass', message: 'nope' },
+            ],
           };
         }),
       ],
@@ -328,7 +344,7 @@ describe('hub node registry', () => {
           hubProtocolVersion: '1.0',
         },
         capabilities: {
-          totals: { available: 6, degraded: 1, unavailable: 2, unknown: 0 },
+          totals: { available: 5, degraded: 1, unavailable: 2, unknown: 0 },
           agents: { claude: 'available', codex: 'unavailable' },
         },
       });
@@ -348,7 +364,11 @@ describe('hub node registry', () => {
       );
       const parsed = JSON.parse(persisted) as {
         nodes: Array<{
-          identity?: { nodeId?: string; displayName?: string; pairedAt?: string };
+          identity?: {
+            nodeId?: string;
+            displayName?: string;
+            pairedAt?: string;
+          };
           activeCredential?: {
             credentialId?: string;
             tokenHash?: string;
@@ -487,9 +507,7 @@ describe('hub node registry', () => {
       expect(auditJson).toContain('sourceDiagnostics');
       expect(auditJson).not.toContain(exchanged.credential.token);
       expect(auditJson).not.toContain('100.90.12.34');
-      expect(auditJson).not.toContain(
-        'donovans-secret-macbook.tailnet.ts.net'
-      );
+      expect(auditJson).not.toContain('donovans-secret-macbook.tailnet.ts.net');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -500,10 +518,12 @@ describe('hub node registry', () => {
       const reachable = registry.authenticateCredentialDetailed('not-a-token', {
         source: { tailnetIp: '100.80.1.2' },
       });
-      const unavailable = registry.authenticateCredentialDetailed('not-a-token');
+      const unavailable =
+        registry.authenticateCredentialDetailed('not-a-token');
 
       const reachableError = 'error' in reachable ? reachable.error : undefined;
-      const unavailableError = 'error' in unavailable ? unavailable.error : undefined;
+      const unavailableError =
+        'error' in unavailable ? unavailable.error : undefined;
       expect(reachableError?.details?.['sourceDiagnostics']).toMatchObject({
         state: 'source-mismatch',
         reasonCode: 'TAILSCALE_REACHABLE_RELAY_AUTH_DENIED',
@@ -1070,7 +1090,9 @@ describe('hub node registry', () => {
         },
       });
       expect(
-        registry.authenticateCredentialDetailed(`${exchanged.node.nodeId}.wrong-secret`)
+        registry.authenticateCredentialDetailed(
+          `${exchanged.node.nodeId}.wrong-secret`
+        )
       ).toMatchObject({
         ok: false,
         error: {
@@ -1096,7 +1118,9 @@ describe('hub node registry', () => {
       expect(serializedAudit).toContain('NODE_CREDENTIAL_MISMATCH');
       expect(serializedAudit).toContain('NODE_REVOKED');
       expect(serializedAudit).not.toContain(exchanged.credential.token);
-      expect(serializedAudit).not.toContain(exchanged.credential.token.split('.')[1]!);
+      expect(serializedAudit).not.toContain(
+        exchanged.credential.token.split('.')[1]!
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

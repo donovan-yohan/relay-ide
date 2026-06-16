@@ -20,7 +20,7 @@ Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagno
 | -------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | Install relay-ide binary on node | `relay-ide node install --hub <url> [--service <mode>]`                                                  |
 | Pair node with hub (pair-only)   | `relay-ide node pair --hub <url> --pair-token <token>`                                                   |
-| Mint pair token from grant       | `relay-ide node mint-pair-token --hub <url> --operator-grant <relay-ohg-v1...> --display-name <name>`     |
+| Mint pair token from grant       | `relay-ide node mint-pair-token --hub <url> --operator-grant <relay-ohg-v1...> --display-name <name>`    |
 | Pair node (back-compat alias)    | `relay-ide node connect --hub <url> --pair-token <token>`                                                |
 | Generate SSH bootstrap script    | `relay-ide node ssh-bootstrap --target <host> --hub <url>`                                               |
 | Hold reverse node link           | `relay-ide node link --hub <url>`                                                                        |
@@ -200,13 +200,13 @@ They must not expose raw credentials, pair tokens, bearer headers, browser cooki
 
 Diagnostic states:
 
-| State | Operational meaning | Default behavior |
-| --- | --- | --- |
-| `signal-unavailable` | The request did not include a usable socket/Tailscale source signal. Caller-provided source headers are not trusted as authoritative source evidence. | Allowed and audited in default mode. With strict-deny enabled, this is denied when the credential already has a Tailscale/MagicDNS source binding, because an untrusted or missing signal cannot prove the credential is still on the expected source. |
-| `source-match` | The observed source matches the source bound to the node credential from pairing or a prior valid reconnect. | Allowed and audited. |
-| `source-mismatch` | A usable source signal was observed, but it does not match the credential's expected source. | If the credential otherwise validates, default audit mode allows it and surfaces the mismatch for investigation. With strict-deny mode enabled, this becomes `strict-deny`. |
-| `same-credential-multiple-sources` | The same node credential has been observed from more than one redacted source fingerprint. | If the credential otherwise validates, default audit mode allows it as a high-suspicion warning that usually means a credential was copied or replayed. With strict-deny mode enabled, this becomes `strict-deny`. |
-| `strict-deny` | Strict source enforcement is enabled and the request either mismatched the expected source or lacked trusted source evidence for an already source-bound credential. | The node credential auth attempt is rejected with a typed `FORBIDDEN` response carrying redacted `sourceDiagnostics`. |
+| State                              | Operational meaning                                                                                                                                                  | Default behavior                                                                                                                                                                                                                                       |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `signal-unavailable`               | The request did not include a usable socket/Tailscale source signal. Caller-provided source headers are not trusted as authoritative source evidence.                | Allowed and audited in default mode. With strict-deny enabled, this is denied when the credential already has a Tailscale/MagicDNS source binding, because an untrusted or missing signal cannot prove the credential is still on the expected source. |
+| `source-match`                     | The observed source matches the source bound to the node credential from pairing or a prior valid reconnect.                                                         | Allowed and audited.                                                                                                                                                                                                                                   |
+| `source-mismatch`                  | A usable source signal was observed, but it does not match the credential's expected source.                                                                         | If the credential otherwise validates, default audit mode allows it and surfaces the mismatch for investigation. With strict-deny mode enabled, this becomes `strict-deny`.                                                                            |
+| `same-credential-multiple-sources` | The same node credential has been observed from more than one redacted source fingerprint.                                                                           | If the credential otherwise validates, default audit mode allows it as a high-suspicion warning that usually means a credential was copied or replayed. With strict-deny mode enabled, this becomes `strict-deny`.                                     |
+| `strict-deny`                      | Strict source enforcement is enabled and the request either mismatched the expected source or lacked trusted source evidence for an already source-bound credential. | The node credential auth attempt is rejected with a typed `FORBIDDEN` response carrying redacted `sourceDiagnostics`.                                                                                                                                  |
 
 By default Relay runs source diagnostics in warn/audit mode. To opt in to enforcement for node credential traffic, start the hub with:
 
@@ -476,7 +476,7 @@ relay-ide hub doctor
 relay-ide hub doctor --json
 ```
 
-Hub doctor is intentionally cheap and read-only. It checks local config readability, scoped CLI auth token presence, hub `/version` reachability, paired node registry shape, node availability, protocol/version compatibility, at least one available terminal backend (`relay-pty` or `tmux-compat`), and hub-mediated node-log snapshot support. It reports typed reasons such as `CONFIG_MISSING`, `AUTH_TOKEN_MISSING`, `HUB_UNREACHABLE`, `NODE_OFFLINE`, `NODE_STALE`, `NODE_REVOKED`, `VERSION_SKEW`, `PROTOCOL_INCOMPATIBLE`, `UNSUPPORTED_CAPABILITY`, `MISSING_LOG_SUPPORT`, and `CHECK_SKIPPED`. It does not remediate nodes, mutate files, run arbitrary commands, or prove multi-machine topology.
+Hub doctor is intentionally cheap and read-only. It checks local config readability, scoped CLI auth token presence, hub `/version` reachability, paired node registry shape, node availability, protocol/version compatibility, `relay-pty` terminal backend availability, and hub-mediated node-log snapshot support. It reports typed reasons such as `CONFIG_MISSING`, `AUTH_TOKEN_MISSING`, `HUB_UNREACHABLE`, `NODE_OFFLINE`, `NODE_STALE`, `NODE_REVOKED`, `VERSION_SKEW`, `PROTOCOL_INCOMPATIBLE`, `UNSUPPORTED_CAPABILITY`, `MISSING_LOG_SUPPORT`, and `CHECK_SKIPPED`. It does not remediate nodes, mutate files, run arbitrary commands, or prove multi-machine topology.
 
 ### Diagnose from the node
 
@@ -531,18 +531,18 @@ If `RMUX_SDK_DAEMON_BINARY` is set, the probe executes that explicit helper over
 
 ### Common bootstrap diagnostics
 
-| Code                          | Meaning                                      | Recovery                                                            |
-| ----------------------------- | -------------------------------------------- | ------------------------------------------------------------------- |
-| `PAIR_TOKEN_INVALID`          | Token malformed, consumed, or unknown        | Generate a new token from the hub                                   |
-| `PAIR_TOKEN_EXPIRED`          | Token lifetime exceeded (default 10 min)     | Generate a new token and retry quickly                              |
-| `SERVICE_MANAGER_UNSUPPORTED` | No launchd/systemd found                     | Use `--service manual` or fix the service manager                   |
-| `NODE_CONNECT_FAILED`         | Node cannot reach hub URL                    | Check DNS, firewall, proxy, TLS                                     |
-| `PROTOCOL_INCOMPATIBLE`       | Hub/node protocol version mismatch           | Update both hub and node to the same Relay version                  |
-| `NODE_STARTED_NO_HEARTBEAT`   | Bootstrap finished but hub sees no heartbeat | Run `relay-ide node status` and `relay-ide node doctor` on the node |
-| `NODE_SOURCE_SIGNAL_UNAVAILABLE` | No usable Tailscale/MagicDNS source signal was available for node credential diagnostics | Check proxy/Tailscale topology if you expected a signal; authentication still proceeds |
-| `NODE_SOURCE_MISMATCH`        | Node credential was presented from a different source fingerprint than expected | Investigate copied credentials or topology changes; strict mode denies this path |
-| `NODE_SOURCE_MULTIPLE_SOURCES` | Same node credential has appeared from multiple source fingerprints | Treat as suspicious credential reuse; rotate/revoke/re-pair if unexpected |
-| `NODE_SOURCE_STRICT_DENY`     | `RELAY_NODE_SOURCE_STRICT_DENY=1` rejected a mismatched reachable source | Re-pair from the intended source or disable strict mode if topology legitimately changed |
+| Code                             | Meaning                                                                                  | Recovery                                                                                 |
+| -------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `PAIR_TOKEN_INVALID`             | Token malformed, consumed, or unknown                                                    | Generate a new token from the hub                                                        |
+| `PAIR_TOKEN_EXPIRED`             | Token lifetime exceeded (default 10 min)                                                 | Generate a new token and retry quickly                                                   |
+| `SERVICE_MANAGER_UNSUPPORTED`    | No launchd/systemd found                                                                 | Use `--service manual` or fix the service manager                                        |
+| `NODE_CONNECT_FAILED`            | Node cannot reach hub URL                                                                | Check DNS, firewall, proxy, TLS                                                          |
+| `PROTOCOL_INCOMPATIBLE`          | Hub/node protocol version mismatch                                                       | Update both hub and node to the same Relay version                                       |
+| `NODE_STARTED_NO_HEARTBEAT`      | Bootstrap finished but hub sees no heartbeat                                             | Run `relay-ide node status` and `relay-ide node doctor` on the node                      |
+| `NODE_SOURCE_SIGNAL_UNAVAILABLE` | No usable Tailscale/MagicDNS source signal was available for node credential diagnostics | Check proxy/Tailscale topology if you expected a signal; authentication still proceeds   |
+| `NODE_SOURCE_MISMATCH`           | Node credential was presented from a different source fingerprint than expected          | Investigate copied credentials or topology changes; strict mode denies this path         |
+| `NODE_SOURCE_MULTIPLE_SOURCES`   | Same node credential has appeared from multiple source fingerprints                      | Treat as suspicious credential reuse; rotate/revoke/re-pair if unexpected                |
+| `NODE_SOURCE_STRICT_DENY`        | `RELAY_NODE_SOURCE_STRICT_DENY=1` rejected a mismatched reachable source                 | Re-pair from the intended source or disable strict mode if topology legitimately changed |
 
 All diagnostic output redacts secrets and source material before display. See Token Redaction and Tailscale/MagicDNS source diagnostics above.
 

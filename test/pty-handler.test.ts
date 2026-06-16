@@ -7,7 +7,6 @@ import type { PtySession, EventSourceType } from '../server/types.js';
 
 import {
   buildStatusLineRelayScript,
-  getTmuxPrefix,
   handleTerminalAttentionUpdate,
 } from '../server/pty-handler.js';
 
@@ -45,32 +44,6 @@ describe('status-line relay script', () => {
     expect(script).toMatch(/tee "\$tmp_file"/);
     expect(script).toMatch(/mv "\$tmp_file"/);
     expect(script).not.toMatch(/input=\$\(cat\)/);
-  });
-});
-
-describe('tmux prefix resolution', () => {
-  it('uses explicit relay tmux prefix for self-hosted dev servers', () => {
-    process.env.NO_PIN = '1';
-    process.env.RELAY_IDE_TMUX_PREFIX = 'relay-self-';
-
-    expect(getTmuxPrefix()).toBe('relay-self-');
-  });
-
-  it('uses the explicit dev-instance flag for dev fallback prefixes', () => {
-    delete process.env.RELAY_IDE_TMUX_PREFIX;
-    process.env.RELAY_IDE_DEV_INSTANCE = '1';
-    process.env.NO_PIN = '1';
-    expect(getTmuxPrefix()).toBe('relay-dev-');
-  });
-
-  it('ignores NO_PIN for tmux prefix fallback because auth bypass is not dev identity', () => {
-    delete process.env.RELAY_IDE_TMUX_PREFIX;
-    delete process.env.RELAY_IDE_DEV_INSTANCE;
-    process.env.NO_PIN = '1';
-    expect(getTmuxPrefix()).toBe('relay-ide-');
-
-    delete process.env.NO_PIN;
-    expect(getTmuxPrefix()).toBe('relay-ide-');
   });
 });
 
@@ -244,7 +217,6 @@ describe('framework-driven PTY handler', () => {
       command: '/bin/cat',
       args: [],
       terminalBackend: 'relay-pty',
-      useTmux: false,
       cols: 80,
       rows: 24,
     });
@@ -252,17 +224,15 @@ describe('framework-driven PTY handler', () => {
     const session = sessions.get(result.id) as PtySession;
     expect(session).toBeTruthy();
     expect(session.terminalBackend).toBe('relay-pty');
-    expect(session.useTmux).toBe(false);
-    expect(session.tmuxSessionName).toBe('');
     expect(session.terminalModel).toBeTruthy();
 
     await sessions.sendTerminalText(result.id, 'relay-pty-ok');
     await sessions.sendTerminalKeys(result.id, ['Enter']);
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    await expect(sessions.captureTerminalVisibleText(result.id)).resolves.toContain(
-      'relay-pty-ok'
-    );
+    await expect(
+      sessions.captureTerminalVisibleText(result.id)
+    ).resolves.toContain('relay-pty-ok');
   });
 
   it('preserves workContextId when relay-pty retries without --continue', async () => {
@@ -292,7 +262,6 @@ sleep 60
         command: scriptPath,
         args: ['--continue'],
         terminalBackend: 'relay-pty',
-        useTmux: false,
         workContextId: 'wc:retry-preserve',
       });
       createdIds.push(result.id);

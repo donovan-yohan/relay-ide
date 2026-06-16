@@ -178,7 +178,6 @@ export interface SessionSummary {
   repoInstanceId?: RepoInstanceId;
   /** Node-scoped worktree/cwd instance id when this session runs in a worktree. */
   worktreeInstanceId?: WorktreeInstanceId;
-  useTmux?: boolean | undefined;
   status?: 'active' | 'disconnected' | undefined;
   /** #614: derived durability state. Optional for legacy summaries. */
   durability?: SessionDurabilityState | undefined;
@@ -278,7 +277,7 @@ export interface OpenSessionOptions {
   branchName?: string;
   agent?: AgentType;
   claudeArgs?: string;
-  terminalBackend?: 'relay-pty' | 'tmux-compat';
+  terminalBackend?: 'relay-pty';
 }
 
 export interface SessionMeta {
@@ -440,7 +439,7 @@ export interface WorkspaceSettings {
   defaultAgent?: AgentType;
   defaultContinue?: boolean;
   defaultYolo?: boolean;
-  terminalBackend?: 'relay-pty' | 'tmux-compat';
+  terminalBackend?: 'relay-pty';
   claudeArgs?: string[];
   defaultBranch?: string;
   remote?: string;

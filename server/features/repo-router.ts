@@ -83,14 +83,21 @@ export interface RepoFeatureRouterOptions {
   now?: () => Date;
 }
 
-function sessionCreateTypeFromBody(body: Record<string, unknown>): SessionCreateType | RelayNodeError {
+function sessionCreateTypeFromBody(
+  body: Record<string, unknown>
+): SessionCreateType | RelayNodeError {
   const rawSessionType = body['type'];
   if (rawSessionType === undefined) return 'agent';
   if (isSessionCreateType(rawSessionType)) return rawSessionType;
-  return relayError('INVALID_REQUEST', 'type must be agent or terminal', false, {
-    reasonCode: 'INVALID_SESSION_TYPE',
-    field: 'type',
-  });
+  return relayError(
+    'INVALID_REQUEST',
+    'type must be agent or terminal',
+    false,
+    {
+      reasonCode: 'INVALID_SESSION_TYPE',
+      field: 'type',
+    }
+  );
 }
 
 // ── Bench overlay validation (#735) ─────────────────────────────────────────
@@ -129,27 +136,42 @@ function validateBenchCwd(value: unknown): RelayNodeError | null {
   // reach SQLite or a downstream node shell.
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f\x7f]/.test(value)) {
-    return relayError('INVALID_REQUEST', 'cwd contains control characters', false, {
-      reasonCode: 'INVALID_CWD',
-      field: 'cwd',
-    });
+    return relayError(
+      'INVALID_REQUEST',
+      'cwd contains control characters',
+      false,
+      {
+        reasonCode: 'INVALID_CWD',
+        field: 'cwd',
+      }
+    );
   }
   // Absolute path only (POSIX or Windows). A relative cwd is meaningless once
   // it leaves the requesting context, and `..` traversal is never trusted.
   const isPosixAbs = value.startsWith('/');
   const isWindowsAbs = /^[a-zA-Z]:[\\/]/.test(value);
   if (!isPosixAbs && !isWindowsAbs) {
-    return relayError('INVALID_REQUEST', 'cwd must be an absolute path', false, {
-      reasonCode: 'CWD_NOT_ABSOLUTE',
-      field: 'cwd',
-    });
+    return relayError(
+      'INVALID_REQUEST',
+      'cwd must be an absolute path',
+      false,
+      {
+        reasonCode: 'CWD_NOT_ABSOLUTE',
+        field: 'cwd',
+      }
+    );
   }
   const segments = value.split(/[\\/]+/);
   if (segments.includes('..')) {
-    return relayError('INVALID_REQUEST', 'cwd must not contain ".." traversal', false, {
-      reasonCode: 'CWD_TRAVERSAL',
-      field: 'cwd',
-    });
+    return relayError(
+      'INVALID_REQUEST',
+      'cwd must not contain ".." traversal',
+      false,
+      {
+        reasonCode: 'CWD_TRAVERSAL',
+        field: 'cwd',
+      }
+    );
   }
   return null;
 }
@@ -161,10 +183,7 @@ type ParseResult<T> = { value: T } | { error: RelayNodeError };
 // keeps the contract honest for FE #740). `undefined` → `{}`.
 function readEnvOverrides(value: unknown): ParseResult<Record<string, string>> {
   if (value === undefined || value === null) return { value: {} };
-  if (
-    typeof value !== 'object' ||
-    Array.isArray(value)
-  ) {
+  if (typeof value !== 'object' || Array.isArray(value)) {
     return {
       error: relayError(
         'INVALID_REQUEST',
@@ -183,7 +202,10 @@ function readEnvOverrides(value: unknown): ParseResult<Record<string, string>> {
           'INVALID_REQUEST',
           `envOverrides.${key} must be a string`,
           false,
-          { reasonCode: 'INVALID_ENV_OVERRIDE_VALUE', field: `envOverrides.${key}` }
+          {
+            reasonCode: 'INVALID_ENV_OVERRIDE_VALUE',
+            field: `envOverrides.${key}`,
+          }
         ),
       };
     }
@@ -199,10 +221,15 @@ function readLabel(value: unknown): ParseResult<string | null | undefined> {
   if (value === null) return { value: null };
   if (typeof value !== 'string') {
     return {
-      error: relayError('INVALID_REQUEST', 'label must be a string or null', false, {
-        reasonCode: 'INVALID_LABEL',
-        field: 'label',
-      }),
+      error: relayError(
+        'INVALID_REQUEST',
+        'label must be a string or null',
+        false,
+        {
+          reasonCode: 'INVALID_LABEL',
+          field: 'label',
+        }
+      ),
     };
   }
   return { value };
@@ -214,7 +241,9 @@ function sendIaStoreError(res: express.Response, error: unknown): void {
   if (error instanceof IaStoreError) {
     sendRelayError(
       res,
-      relayError('INVALID_REQUEST', error.code, false, { reasonCode: error.code })
+      relayError('INVALID_REQUEST', error.code, false, {
+        reasonCode: error.code,
+      })
     );
     return;
   }
@@ -243,7 +272,6 @@ function sendNodeTerminalBackendUnavailable(
         reasonCode: 'NODE_TERMINAL_BACKEND_UNAVAILABLE',
         capability: 'terminalBackend',
         terminalBackends,
-        tmuxStatus: node.capabilities.core.tmux,
       }
     )
   );
@@ -326,7 +354,8 @@ export function createRepoFeatureRouter(
   const router = express.Router();
   const { registry, requireAuth, repoInventoryFeature } = options;
   const sessionEnvelopes = options.sessionEnvelopes ?? sessionEnvelopeRegistry;
-  const confirmations = options.confirmations ?? createConfirmationChallengeStore();
+  const confirmations =
+    options.confirmations ?? createConfirmationChallengeStore();
   const now = () => options.now?.() ?? new Date();
 
   router.get('/hub/repo-inventory', requireAuth, async (_req, res) => {
@@ -412,12 +441,9 @@ export function createRepoFeatureRouter(
   function requireIaStore(res: express.Response): IaStore | null {
     if (!iaStore) {
       res.status(503).json({
-        error: relayError(
-          'INTERNAL',
-          'IA persistence is unavailable',
-          true,
-          { reasonCode: 'IA_STORE_UNAVAILABLE' }
-        ),
+        error: relayError('INTERNAL', 'IA persistence is unavailable', true, {
+          reasonCode: 'IA_STORE_UNAVAILABLE',
+        }),
       });
       return null;
     }
@@ -507,7 +533,9 @@ export function createRepoFeatureRouter(
       const overlay = store.upsertBenchOverlay({
         id,
         envOverrides: envResult.value,
-        ...(labelResult.value !== undefined ? { label: labelResult.value } : {}),
+        ...(labelResult.value !== undefined
+          ? { label: labelResult.value }
+          : {}),
       });
       res.status(201).json({ bench: overlay });
     } catch (error) {
@@ -678,7 +706,9 @@ export function createRepoFeatureRouter(
             nodeId,
             cwd: target.worktree?.localPath ?? target.repo.localPath,
             repoPath: target.repo.localPath,
-            ...(target.worktree ? { worktreePath: target.worktree.localPath } : {}),
+            ...(target.worktree
+              ? { worktreePath: target.worktree.localPath }
+              : {}),
           },
           requiredCapabilities: sessionCreateCapabilities({
             sessionType,
@@ -689,13 +719,20 @@ export function createRepoFeatureRouter(
           now: reopenNow,
         });
         if (
-          sendPolicyDecision(options.auditSink, res, policyDecision, routedBody, {
-            confirmations,
-            req,
-            canonicalParams: routedBody,
-            now: reopenNow,
-          })
-        ) return;
+          sendPolicyDecision(
+            options.auditSink,
+            res,
+            policyDecision,
+            routedBody,
+            {
+              confirmations,
+              req,
+              canonicalParams: routedBody,
+              now: reopenNow,
+            }
+          )
+        )
+          return;
 
         const sessionPayload = coldReopenSessionPayload(routedBody, target);
         const payload = await options.nodeLinks!.request(
@@ -706,7 +743,8 @@ export function createRepoFeatureRouter(
         const session = scopedNodeSession(nodeId, sessionFromPayload(payload), {
           ...(expiresAt !== undefined ? { expiresAt } : {}),
         });
-        if (session.sessionEnvelope) sessionEnvelopes.upsert(session.sessionEnvelope);
+        if (session.sessionEnvelope)
+          sessionEnvelopes.upsert(session.sessionEnvelope);
         res.status(201).json({
           session,
           transfer: {

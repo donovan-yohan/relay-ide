@@ -638,11 +638,15 @@ function authenticatedScopedRequesterIdentity(
     actorType: credential.actor.type,
     actorId: credential.actor.id,
     credentialId: credential.id,
-    ...(credential.scope.sessionIds?.[0] ? { sessionId: credential.scope.sessionIds[0] } : {}),
+    ...(credential.scope.sessionIds?.[0]
+      ? { sessionId: credential.scope.sessionIds[0] }
+      : {}),
     ...(credential.scope.workContextIds?.[0]
       ? { workContextId: credential.scope.workContextIds[0] }
       : {}),
-    ...(credential.actor.displayName ? { displayName: credential.actor.displayName } : {}),
+    ...(credential.actor.displayName
+      ? { displayName: credential.actor.displayName }
+      : {}),
   };
 }
 
@@ -650,7 +654,10 @@ function routedRequesterIdentity(
   req: Request,
   requesterAuthSessionHash: string
 ): HighRiskApprovalRequesterIdentity {
-  const scopedRequester = authenticatedScopedRequesterIdentity(req, requesterAuthSessionHash);
+  const scopedRequester = authenticatedScopedRequesterIdentity(
+    req,
+    requesterAuthSessionHash
+  );
   if (scopedRequester) return scopedRequester;
   const displayName = authSessionLabel(req);
   return {
@@ -671,11 +678,15 @@ function routedApproverIdentity(
       actorType: credential.actor.type,
       actorId: credential.actor.id,
       credentialId: credential.id,
-      ...(credential.scope.sessionIds?.[0] ? { sessionId: credential.scope.sessionIds[0] } : {}),
+      ...(credential.scope.sessionIds?.[0]
+        ? { sessionId: credential.scope.sessionIds[0] }
+        : {}),
       ...(credential.scope.workContextIds?.[0]
         ? { workContextId: credential.scope.workContextIds[0] }
         : {}),
-      ...(credential.actor.displayName ? { displayName: credential.actor.displayName } : {}),
+      ...(credential.actor.displayName
+        ? { displayName: credential.actor.displayName }
+        : {}),
     };
   }
   const displayName = authSessionLabel(req);
@@ -687,7 +698,9 @@ function routedApproverIdentity(
   };
 }
 
-function routedApprovalTarget(requester: HighRiskApprovalRequesterIdentity): HighRiskApprovalTarget | undefined {
+function routedApprovalTarget(
+  requester: HighRiskApprovalRequesterIdentity
+): HighRiskApprovalTarget | undefined {
   return requester.kind === 'scoped-actor' ? { kind: 'human' } : undefined;
 }
 
@@ -1719,7 +1732,6 @@ function nodeTerminalUnsupportedError(
         reasonCode: 'NODE_TERMINAL_BACKEND_UNAVAILABLE',
         capability: 'terminalBackend',
         terminalBackends: backends,
-        tmuxStatus: node.capabilities.core.tmux,
       }
     );
   }
@@ -1963,7 +1975,10 @@ function pairTokenMintActor(
   const actor = body['actor'];
   if (typeof actor === 'object' && actor !== null && !Array.isArray(actor)) {
     const candidate = actor as Record<string, unknown>;
-    if (typeof candidate['type'] === 'string' && typeof candidate['id'] === 'string') {
+    if (
+      typeof candidate['type'] === 'string' &&
+      typeof candidate['id'] === 'string'
+    ) {
       return {
         type: candidate['type'],
         id: candidate['id'],
@@ -1973,8 +1988,11 @@ function pairTokenMintActor(
       };
     }
   }
-  const actorType = stringFromBody(body, 'actorType') ?? req.header('x-relay-actor-type')?.trim();
-  const actorId = stringFromBody(body, 'actorId') ?? req.header('x-relay-actor-id')?.trim();
+  const actorType =
+    stringFromBody(body, 'actorType') ??
+    req.header('x-relay-actor-type')?.trim();
+  const actorId =
+    stringFromBody(body, 'actorId') ?? req.header('x-relay-actor-id')?.trim();
   if (!actorType || !actorId) return undefined;
   const actorDisplayName =
     stringFromBody(body, 'actorDisplayName') ??
@@ -2020,7 +2038,9 @@ function pairTokenMintScope(
       ? (scope as Record<string, unknown>)
       : body;
   const normalized: HandshakeGrantValidationScope = {
-    ...(typeof record['nodeId'] === 'string' ? { nodeId: record['nodeId'] } : {}),
+    ...(typeof record['nodeId'] === 'string'
+      ? { nodeId: record['nodeId'] }
+      : {}),
     ...(typeof record['sessionId'] === 'string'
       ? { sessionId: record['sessionId'] }
       : {}),
@@ -2030,9 +2050,13 @@ function pairTokenMintScope(
     ...(typeof record['workContextId'] === 'string'
       ? { workContextId: record['workContextId'] }
       : {}),
-    ...(typeof record['repoId'] === 'string' ? { repoId: record['repoId'] } : {}),
+    ...(typeof record['repoId'] === 'string'
+      ? { repoId: record['repoId'] }
+      : {}),
     ...(typeof record['path'] === 'string' ? { path: record['path'] } : {}),
-    ...(typeof record['taskRef'] === 'string' ? { taskRef: record['taskRef'] } : {}),
+    ...(typeof record['taskRef'] === 'string'
+      ? { taskRef: record['taskRef'] }
+      : {}),
   };
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
@@ -2075,17 +2099,25 @@ function parseCapabilityList(value: unknown): CapabilityListParseResult {
   return { ok: true, capabilities };
 }
 
-function pairTokenCapabilityEnvelopeFromBody(
-  body: Record<string, unknown>
-):
+function pairTokenCapabilityEnvelopeFromBody(body: Record<string, unknown>):
   | {
       ok: true;
-      envelope?: { allowed?: RelayCapabilityBit[]; requiresConfirmation?: RelayCapabilityBit[] };
+      envelope?: {
+        allowed?: RelayCapabilityBit[];
+        requiresConfirmation?: RelayCapabilityBit[];
+      };
     }
-  | { ok: false; reasonCode: string; message: string; invalidCapability?: string } {
+  | {
+      ok: false;
+      reasonCode: string;
+      message: string;
+      invalidCapability?: string;
+    } {
   const rawEnvelope = body['capabilityEnvelope'];
   const envelope =
-    typeof rawEnvelope === 'object' && rawEnvelope !== null && !Array.isArray(rawEnvelope)
+    typeof rawEnvelope === 'object' &&
+    rawEnvelope !== null &&
+    !Array.isArray(rawEnvelope)
       ? (rawEnvelope as Record<string, unknown>)
       : {};
   const allowed = parseCapabilityList(
@@ -2096,13 +2128,18 @@ function pairTokenCapabilityEnvelopeFromBody(
     envelope['requiresConfirmation'] ?? body['requiresConfirmationCapabilities']
   );
   if (!requiresConfirmation.ok) return requiresConfirmation;
-  if (allowed.capabilities.length === 0 && requiresConfirmation.capabilities.length === 0) {
+  if (
+    allowed.capabilities.length === 0 &&
+    requiresConfirmation.capabilities.length === 0
+  ) {
     return { ok: true };
   }
   return {
     ok: true,
     envelope: {
-      ...(allowed.capabilities.length > 0 ? { allowed: allowed.capabilities } : {}),
+      ...(allowed.capabilities.length > 0
+        ? { allowed: allowed.capabilities }
+        : {}),
       ...(requiresConfirmation.capabilities.length > 0
         ? { requiresConfirmation: requiresConfirmation.capabilities }
         : {}),
@@ -2114,7 +2151,8 @@ function pairTokenCapabilityEnvelopeCapabilities(
   envelope: PairTokenCapabilityEnvelope | undefined
 ): RelayCapabilityBit[] {
   const capabilities = new Set<RelayCapabilityBit>();
-  for (const capability of envelope?.allowed ?? []) capabilities.add(capability);
+  for (const capability of envelope?.allowed ?? [])
+    capabilities.add(capability);
   for (const capability of envelope?.requiresConfirmation ?? []) {
     capabilities.add(capability);
   }
@@ -2159,9 +2197,19 @@ function relayErrorForPairTokenGrantFailure(input: {
   };
   switch (input.reason) {
     case 'expired':
-      return relayError('TOKEN_EXPIRED', 'operator handshake grant expired', false, details);
+      return relayError(
+        'TOKEN_EXPIRED',
+        'operator handshake grant expired',
+        false,
+        details
+      );
     case 'replayed':
-      return relayError('TOKEN_ALREADY_USED', 'operator handshake grant was already consumed', false, details);
+      return relayError(
+        'TOKEN_ALREADY_USED',
+        'operator handshake grant was already consumed',
+        false,
+        details
+      );
     case 'wrong_audience':
     case 'insufficient_capability':
     case 'missing_scope':
@@ -2172,9 +2220,19 @@ function relayErrorForPairTokenGrantFailure(input: {
     case 'wrong_repo_scope':
     case 'wrong_path_scope':
     case 'wrong_task_scope':
-      return relayError('FORBIDDEN', 'operator handshake grant cannot mint pair tokens for this request', false, details);
+      return relayError(
+        'FORBIDDEN',
+        'operator handshake grant cannot mint pair tokens for this request',
+        false,
+        details
+      );
     default:
-      return relayError('UNAUTHORIZED', 'valid operator handshake grant is required to mint a pair token', false, details);
+      return relayError(
+        'UNAUTHORIZED',
+        'valid operator handshake grant is required to mint a pair token',
+        false,
+        details
+      );
   }
 }
 
@@ -2192,10 +2250,18 @@ function appendPairTokenGrantAudit(
   const deniedBits = normalizeCapabilityBits(input.deniedBits);
   try {
     auditSink.append({
-      eventType: input.reason === 'replayed' ? 'failed_redemption' : input.reason === 'expired' ? 'expiry' : 'denial',
+      eventType:
+        input.reason === 'replayed'
+          ? 'failed_redemption'
+          : input.reason === 'expired'
+            ? 'expiry'
+            : 'denial',
       decision: input.decision,
       reasonCode: pairTokenGrantReasonCode(input.reason),
-      peer: { kind: 'system', ...(input.grantId ? { credentialId: input.grantId } : {}) },
+      peer: {
+        kind: 'system',
+        ...(input.grantId ? { credentialId: input.grantId } : {}),
+      },
       intent: { action: 'nodes.pair-token.create' },
       material: {
         params: { reason: input.reason, grantId: input.grantId ?? null },
@@ -2438,25 +2504,41 @@ export function createHubNodeRouter(
     if (deviceRecord && !deviceId) {
       sendRelayError(
         res,
-        relayError('INVALID_REQUEST', 'device.id is required when device is supplied', false, {
-          reasonCode: 'HANDSHAKE_GRANT_DEVICE_INVALID',
-        })
+        relayError(
+          'INVALID_REQUEST',
+          'device.id is required when device is supplied',
+          false,
+          {
+            reasonCode: 'HANDSHAKE_GRANT_DEVICE_INVALID',
+          }
+        )
       );
       return;
     }
-    const deviceDisplayName = requiredStringFromRecord(deviceRecord, 'displayName');
+    const deviceDisplayName = requiredStringFromRecord(
+      deviceRecord,
+      'displayName'
+    );
     const device = deviceId
-      ? { id: deviceId, ...(deviceDisplayName ? { displayName: deviceDisplayName } : {}) }
+      ? {
+          id: deviceId,
+          ...(deviceDisplayName ? { displayName: deviceDisplayName } : {}),
+        }
       : undefined;
     const sessionBinding = pairTokenMintSessionBinding(body);
     const metadata = recordFromBody(body, 'metadata');
-    const expiresAt = typeof body['expiresAt'] === 'string' ? body['expiresAt'] : undefined;
+    const expiresAt =
+      typeof body['expiresAt'] === 'string' ? body['expiresAt'] : undefined;
     const ttlMs = typeof body['ttlMs'] === 'number' ? body['ttlMs'] : undefined;
     const correlationId = pairTokenMintCorrelationId(req, body);
     try {
       const grant = operatorHandshakeGrants.request({
         actor,
-        issuer: handshakeGrantIssuerFromBody(body, 'issuer', 'browser-operator'),
+        issuer: handshakeGrantIssuerFromBody(
+          body,
+          'issuer',
+          'browser-operator'
+        ),
         audience,
         capabilities,
         scope,
@@ -2477,66 +2559,85 @@ export function createHubNodeRouter(
     }
   });
 
-  router.post('/hub/operator-handshake-grants/:grantId/approve', requireAuth, (req, res) => {
-    const body = bodyRecord(req);
-    const grantId = req.params.grantId;
-    if (!grantId) {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', 'grant id is required', false, {
-          reasonCode: 'HANDSHAKE_GRANT_ID_REQUIRED',
-        })
-      );
-      return;
-    }
-    const highRiskApproval = recordFromBody(body, 'highRiskApproval');
-    const correlationId = pairTokenMintCorrelationId(req, body);
-    try {
-      const approved = operatorHandshakeGrants.approve(grantId, {
-        approvedBy: handshakeGrantIssuerFromBody(body, 'approvedBy', 'browser-operator'),
-        ...(highRiskApproval ? { highRiskApproval: highRiskApproval as never } : {}),
-        ...(correlationId ? { correlationId } : {}),
-      });
-      res.json(approved);
-    } catch (error) {
-      if (error instanceof HandshakeGrantRegistryError) {
-        sendRelayError(res, relayErrorForHandshakeGrantRegistryError(error));
+  router.post(
+    '/hub/operator-handshake-grants/:grantId/approve',
+    requireAuth,
+    (req, res) => {
+      const body = bodyRecord(req);
+      const grantId = req.params.grantId;
+      if (!grantId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'grant id is required', false, {
+            reasonCode: 'HANDSHAKE_GRANT_ID_REQUIRED',
+          })
+        );
         return;
       }
-      throw error;
+      const highRiskApproval = recordFromBody(body, 'highRiskApproval');
+      const correlationId = pairTokenMintCorrelationId(req, body);
+      try {
+        const approved = operatorHandshakeGrants.approve(grantId, {
+          approvedBy: handshakeGrantIssuerFromBody(
+            body,
+            'approvedBy',
+            'browser-operator'
+          ),
+          ...(highRiskApproval
+            ? { highRiskApproval: highRiskApproval as never }
+            : {}),
+          ...(correlationId ? { correlationId } : {}),
+        });
+        res.json(approved);
+      } catch (error) {
+        if (error instanceof HandshakeGrantRegistryError) {
+          sendRelayError(res, relayErrorForHandshakeGrantRegistryError(error));
+          return;
+        }
+        throw error;
+      }
     }
-  });
+  );
 
-  router.post('/hub/operator-handshake-grants/:grantId/revoke', requireAuth, (req, res) => {
-    const body = bodyRecord(req);
-    const grantId = req.params.grantId;
-    if (!grantId) {
-      sendRelayError(
-        res,
-        relayError('INVALID_REQUEST', 'grant id is required', false, {
-          reasonCode: 'HANDSHAKE_GRANT_ID_REQUIRED',
-        })
-      );
-      return;
+  router.post(
+    '/hub/operator-handshake-grants/:grantId/revoke',
+    requireAuth,
+    (req, res) => {
+      const body = bodyRecord(req);
+      const grantId = req.params.grantId;
+      if (!grantId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'grant id is required', false, {
+            reasonCode: 'HANDSHAKE_GRANT_ID_REQUIRED',
+          })
+        );
+        return;
+      }
+      const reason =
+        typeof body['reason'] === 'string' ? body['reason'] : undefined;
+      const correlationId = pairTokenMintCorrelationId(req, body);
+      const grant = operatorHandshakeGrants.revoke(grantId, {
+        revokedBy: handshakeGrantIssuerFromBody(
+          body,
+          'revokedBy',
+          'browser-operator'
+        ),
+        ...(reason ? { reason } : {}),
+        ...(correlationId ? { correlationId } : {}),
+      });
+      if (!grant) {
+        sendRelayError(
+          res,
+          relayError('NOT_FOUND', 'operator handshake grant not found', false, {
+            reasonCode: 'HANDSHAKE_GRANT_NOT_FOUND',
+          })
+        );
+        return;
+      }
+      res.json({ grant });
     }
-    const reason = typeof body['reason'] === 'string' ? body['reason'] : undefined;
-    const correlationId = pairTokenMintCorrelationId(req, body);
-    const grant = operatorHandshakeGrants.revoke(grantId, {
-      revokedBy: handshakeGrantIssuerFromBody(body, 'revokedBy', 'browser-operator'),
-      ...(reason ? { reason } : {}),
-      ...(correlationId ? { correlationId } : {}),
-    });
-    if (!grant) {
-      sendRelayError(
-        res,
-        relayError('NOT_FOUND', 'operator handshake grant not found', false, {
-          reasonCode: 'HANDSHAKE_GRANT_NOT_FOUND',
-        })
-      );
-      return;
-    }
-    res.json({ grant });
-  });
+  );
 
   function sendMintedPairToken(input: {
     req: Request;
@@ -2549,7 +2650,11 @@ export function createHubNodeRouter(
     const { req, res, body, grant } = input;
     const displayName = stringFromBody(body, 'displayName');
     const ttlMs = pairTtlMs(body);
-    const correlationId = pairTokenMintCorrelationId(req, body, grant?.correlationId);
+    const correlationId = pairTokenMintCorrelationId(
+      req,
+      body,
+      grant?.correlationId
+    );
     const source = sourceTupleFromRequest(req);
     const platform = stringFromBody(body, 'platform');
     const pairToken = registry.createPairToken({
@@ -2557,7 +2662,9 @@ export function createHubNodeRouter(
       ...(ttlMs !== undefined ? { ttlMs } : {}),
       ...(platform ? { platform } : {}),
       ...(input.trustTier ? { trustTier: input.trustTier } : {}),
-      ...(input.capabilityEnvelope ? { capabilityEnvelope: input.capabilityEnvelope } : {}),
+      ...(input.capabilityEnvelope
+        ? { capabilityEnvelope: input.capabilityEnvelope }
+        : {}),
       ...(grant
         ? {
             issuer: {
@@ -2620,10 +2727,15 @@ export function createHubNodeRouter(
     if (trustTier.ok === false) {
       sendRelayError(
         res,
-        relayError('INVALID_REQUEST', 'trustTier must be sandbox, dev, or prod', false, {
-          reasonCode: 'PAIR_TOKEN_TRUST_TIER_INVALID',
-          trustTier: trustTier.value,
-        })
+        relayError(
+          'INVALID_REQUEST',
+          'trustTier must be sandbox, dev, or prod',
+          false,
+          {
+            reasonCode: 'PAIR_TOKEN_TRUST_TIER_INVALID',
+            trustTier: trustTier.value,
+          }
+        )
       );
       return;
     }
@@ -2665,7 +2777,9 @@ export function createHubNodeRouter(
       sendRelayError(res, relayErrorForPairTokenGrantFailure(failure));
       return;
     }
-    const boundedTrustTier = boundedGrantBackedPairTokenTrustTier(trustTier.trustTier);
+    const boundedTrustTier = boundedGrantBackedPairTokenTrustTier(
+      trustTier.trustTier
+    );
     sendMintedPairToken({
       req,
       res,
@@ -2771,9 +2885,13 @@ export function createHubNodeRouter(
     }
   });
 
-  router.get('/nodes', cliGatewayAuthForActorCommand('nodes.list'), (_req, res) => {
-    res.json({ nodes: registry.listNodes() });
-  });
+  router.get(
+    '/nodes',
+    cliGatewayAuthForActorCommand('nodes.list'),
+    (_req, res) => {
+      res.json({ nodes: registry.listNodes() });
+    }
+  );
 
   router.get('/hub/audit/entries', cliGatewayAuth, async (req, res) => {
     if (!options.auditSink?.listBefore || !options.auditSink.head) {
@@ -3897,7 +4015,10 @@ export function createHubNodeRouter(
       const { nodeId, sessionId } = req.params;
       const displayName = bodyRecord(req)['displayName'];
       if (!nodeId) {
-        sendRelayError(res, relayError('INVALID_REQUEST', 'nodeId is required'));
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'nodeId is required')
+        );
         return;
       }
       if (!sessionId) {

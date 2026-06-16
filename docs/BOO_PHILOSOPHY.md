@@ -16,15 +16,15 @@ The durable rules are:
 
 ## Boo primitive comparison
 
-| Boo-style primitive | Relay current state | Source of truth / caveat |
-| --- | --- | --- |
-| `new` / detached session | **Partial.** `sessions.create` creates local or routed sessions and returns a descriptor; `sessions.detach` releases the CLI handle without killing the process. There is no explicit `--detached` terminal-multiplexer-style create flag because Relay sessions are already hub-owned handles once created. | `docs/CLI_GATEWAY.md`, `shared/cli-gateway-contract.ts` |
-| `ls --json` | **Implemented.** `sessions.list` / `sessions.get` expose stable JSON descriptors. | `docs/CLI_GATEWAY.md` |
-| `send --text` / `send --key` | **Partial.** Raw `sessions.input` can write bytes; typed `supervisor.sendText`, `supervisor.sendKey`, and `supervisor.submit` are auditable. Enter is covered by `supervisor.submit`; named keys cover Escape, Tab, arrows, Ctrl-C/Ctrl-D, Home/End, and Page Up/Down. Function keys and arbitrary keymaps remain out of scope. | `docs/CLI_GATEWAY.md` |
-| `wait --text` / `wait --idle` | **Partial.** `sessions.input --wait-for` does bounded raw output substring waiting; `sessions.stream --idle-timeout-ms` detaches a stream after quiet. Missing: standalone wait command and rendered-screen/cursor/title/mode predicates. | `docs/CLI_GATEWAY.md` |
-| `peek --json` / rendered screen | **Missing as stable API.** `relay-pty` maintains a libghostty-backed model internally for relay-pty sessions, and internal helpers can read visible text, but no stable gateway command exposes rendered screen JSON/scrollback. | `docs/TERMINAL_BACKENDS.md`, `server/terminal-model-backend.ts` |
-| `attach` / optional UI | **Partial.** Browser attach and CLI descriptor attach exist; `sessions.stream` attaches to the PTY stream. Missing: power-user CLI/TUI cockpit comparable to `boo ui`; current cockpit is web-first. | `docs/CLI_GATEWAY.md`, `docs/WORKBENCH_BOUNDARY.md` |
-| Session manager cockpit | **Partial.** Active Work, sidebar attention states, command palette, and Workbench blocks exist, but default desktop chrome is still repo/worktree/session heavy and Workbench canvas is not primary. | `docs/FRONTEND.md`, `docs/WORKBENCH_BOUNDARY.md` |
+| Boo-style primitive             | Relay current state                                                                                                                                                                                                                                                                                                             | Source of truth / caveat                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `new` / detached session        | **Partial.** `sessions.create` creates local or routed sessions and returns a descriptor; `sessions.detach` releases the CLI handle without killing the process. There is no explicit `--detached` terminal-multiplexer-style create flag because Relay sessions are already hub-owned handles once created.                    | `docs/CLI_GATEWAY.md`, `shared/cli-gateway-contract.ts`         |
+| `ls --json`                     | **Implemented.** `sessions.list` / `sessions.get` expose stable JSON descriptors.                                                                                                                                                                                                                                               | `docs/CLI_GATEWAY.md`                                           |
+| `send --text` / `send --key`    | **Partial.** Raw `sessions.input` can write bytes; typed `supervisor.sendText`, `supervisor.sendKey`, and `supervisor.submit` are auditable. Enter is covered by `supervisor.submit`; named keys cover Escape, Tab, arrows, Ctrl-C/Ctrl-D, Home/End, and Page Up/Down. Function keys and arbitrary keymaps remain out of scope. | `docs/CLI_GATEWAY.md`                                           |
+| `wait --text` / `wait --idle`   | **Partial.** `sessions wait --output-text` and `sessions input --wait-for` do bounded raw output substring waiting; `sessions stream --idle-timeout-ms` detaches a stream after quiet. Missing: rendered-screen/cursor/title/mode wait predicates.                                                                              | `docs/CLI_GATEWAY.md`                                           |
+| `peek --json` / rendered screen | **Partial.** `sessions screen` exposes bounded rendered-screen snapshots for live `relay-pty` sessions. Missing: richer screen wait predicates and direct terminal-model APIs.                                                                                                                                                  | `docs/TERMINAL_BACKENDS.md`, `server/terminal-model-backend.ts` |
+| `attach` / optional UI          | **Partial.** Browser attach and CLI descriptor attach exist; `sessions.stream` attaches to the PTY stream. Missing: power-user CLI/TUI cockpit comparable to `boo ui`; current cockpit is web-first.                                                                                                                            | `docs/CLI_GATEWAY.md`, `docs/WORKBENCH_BOUNDARY.md`             |
+| Session manager cockpit         | **Partial.** Active Work, sidebar attention states, command palette, and Workbench blocks exist, but default desktop chrome is still repo/worktree/session heavy and Workbench canvas is not primary.                                                                                                                           | `docs/FRONTEND.md`, `docs/WORKBENCH_BOUNDARY.md`                |
 
 ## What is actually built
 
@@ -34,25 +34,24 @@ The durable rules are:
 - Stable session descriptor/lifecycle commands: `sessions.list`, `sessions.get`, `sessions.create`, `sessions.attach`, `sessions.detach`, `sessions.kill`, `sessions.rename`.
 - Raw PTY stream/input primitives: `sessions.stream --mode ndjson`, `sessions.input --data|--data-base64|--stdin` with `--wait-for`, `--timeout-ms`, and `--max-bytes`.
 - Typed supervisor actions: `supervisor.sessions`, `supervisor.snapshot`, `supervisor.sendText`, `supervisor.sendKey`, and `supervisor.submit` with capability/error metadata.
-- `relay-pty` as the default non-tmux PTY backend, with `tmux-compat` retained for legacy/import/resume cases.
-- Internal libghostty-vt terminal model for relay-pty sessions, used by backend helpers and attention detection.
+- `relay-pty` as the only supported PTY backend; `tmux-compat` is unsupported legacy state and not restored.
+- libghostty-vt terminal model for relay-pty sessions, used by backend helpers, attention detection, and bounded `sessions.screen` snapshots.
 - Active Work / workbench/control-plane nouns: `WorkContext`, `Actor`, `Session`, `Node`, `Artifact`, `AuditEvent`, `CapabilityGrant`.
 - Frontend attention state, unread tracking, sidebar metadata, Active Work grouping, and command-palette session navigation.
 
 ### Built, but not yet the public Boo-style contract
 
-- The libghostty-backed terminal model is internal. It is not yet exposed through a stable `sessions.screen`, `sessions.peek`, or `sessions.wait` command.
+- Direct libghostty terminal-model access is internal. Stable access goes through `sessions.screen`; richer `sessions.peek`/rendered-screen wait commands remain future work.
 - `sessions.input --wait-for` watches raw observed output. It is not a proof that a particular rendered screen/viewport/cursor state exists.
-- Backend-neutral session helpers still carry tmux-shaped names internally (`sendTmuxText`, `sendTmuxKeys`, `captureTmuxPane`) even when they branch correctly for `relay-pty`.
+- Some internal cleanup debt may still carry tmux-shaped names; new contracts and code paths should use backend-neutral terminal naming over `relay-pty`.
 - `RelayPtySession` exists as a class, but production session creation currently uses the `pty-handler` path with direct `node-pty` spawn plus terminal model. Docs should say `relay-pty` is the default direct PTY/libghostty-backed backend, not that the `RelayPtySession` class owns production sessions.
 - Active Work is strong, but not the default/primary desktop cockpit; the default sidebar still exposes a repo/worktree-first organization.
 
 ### Not built / do not document as shipped
 
-- Stable rendered-screen snapshot API with rows/cols/cursor/title/modes/viewport/scrollback JSON.
 - Stable rendered-screen wait API (`wait --screen-text`, `wait --idle`, `wait --title`, etc.).
 - Stable function-key/keymap API beyond the closed `supervisor.sendKey` MVP enum.
-- Durable relay-pty live process reattach across server restart. Browser disconnect is fine; server restart durability is still where `tmux-compat` has the stronger story.
+- Durable relay-pty live child-process reattach across server restart. Browser disconnect/live Relay process reattach is fine; server restart is cold resume from saved metadata/scrollback until future daemon/supervisor work lands.
 - A terminal-multiplexer-style power-user CLI/TUI session manager. Relay's richer cockpit is currently web/dashboard oriented.
 - Workbench canvas as the primary integrated cockpit surface.
 
@@ -60,7 +59,7 @@ The durable rules are:
 
 Use these rules when updating docs, issues, or UI copy:
 
-- Say **terminal backend** unless the behavior is specifically `tmux-compat`.
+- Say **terminal backend** for `relay-pty`; mention `tmux-compat` only when explicitly describing unsupported legacy state.
 - Say **raw PTY stream/input** for `sessions.stream` and `sessions.input`.
 - Say **typed supervisor action** for `supervisor.sendText` / `supervisor.sendKey` / `supervisor.submit` command IDs, or `relay-ide v1 supervisor send-text` / `relay-ide v1 supervisor send-key` / `relay-ide v1 supervisor submit` CLI argv.
 - Do not call raw stream/input a rendered-screen API.

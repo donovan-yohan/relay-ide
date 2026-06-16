@@ -50,9 +50,8 @@ export interface TerminalProps {
   /** Local session id used by legacy REST endpoints such as image upload. */
   sessionId: string | null;
   /** Scoped node/global key used for terminal handles and PTY routing. */
-  sessionKey?: string | null;
+  sessionKey?: string;
   onImageUpload?: (text: string, showInsert: boolean, path?: string) => void;
-  useTmux?: boolean;
   onCopyModeChange?: (active: boolean) => void;
   onFilePathClick?: (path: string) => void;
   companionMode?: boolean;
@@ -266,7 +265,6 @@ function useTouchScroll(
   containerRef: React.RefObject<HTMLDivElement | null>,
   scrollbarRef: React.RefObject<HTMLDivElement | null>,
   thumbTop: number,
-  useTmux: boolean,
   sendData: (data: string) => void,
   onCopyModeChange?: (active: boolean) => void
 ) {
@@ -299,14 +297,8 @@ function useTouchScroll(
     }
     s.contentScrolling = false;
     if (navigator.vibrate) navigator.vibrate(50);
-    if (useTmux) {
-      setInCopyMode(true);
-      onCopyModeChange?.(true);
-      sendData('\x02[');
-      return;
-    }
     doEnterSelectionMode(containerRef.current, setSelectionMode);
-  }, [containerRef, useTmux, onCopyModeChange, sendData]);
+  }, [containerRef]);
 
   const exitCopyMode = useCallback(() => {
     if (inCopyMode) {
@@ -1119,7 +1111,6 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       sessionId,
       sessionKey,
       onImageUpload,
-      useTmux = true,
       onCopyModeChange,
       onFilePathClick,
       companionMode = false,
@@ -1148,8 +1139,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
         ? s.reconnectingPtySessionIds[ptySessionKey] === true
         : false
     );
-    const isFullscreenTerminal =
-      (claudeFullscreen && activeAgent === 'claude') || useTmux;
+    const isFullscreenTerminal = claudeFullscreen && activeAgent === 'claude';
 
     const { termRef, fit } = useTerminalSetup(
       containerRef,
@@ -1174,7 +1164,6 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       containerRef,
       scrollbarRef,
       sbState.thumbTop,
-      useTmux,
       sendData,
       onCopyModeChange
     );
@@ -1239,10 +1228,10 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
       fit,
     ]);
 
-    // Enforce xterm viewport overflow for fullscreen/tmux sessions.
+    // Enforce xterm viewport overflow for fullscreen sessions.
     // xterm.js defaults .xterm-viewport to overflow-y:scroll; for sessions
-    // that should fill the viewport without scrolling (Claude NO_FLICKER,
-    // tmux) we lock it to hidden and re-fit to avoid stale sizing.
+    // that should fill the viewport without scrolling (Claude NO_FLICKER),
+    // we lock it to hidden and re-fit to avoid stale sizing.
     useEffect(() => {
       const container = containerRef.current;
       if (!container) return;

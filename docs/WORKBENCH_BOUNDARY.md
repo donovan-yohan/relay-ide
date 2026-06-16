@@ -2,7 +2,7 @@
 
 Relay is a federated workbench and control plane for agentic development across online devices. It connects existing tools, sessions, tasks, repos, worktrees, artifacts, and operators into one shared work surface.
 
-Relay is not the runtime, task tracker, source host, or memory system of record. Native agent CLIs, Hermes Agent, GitHub, Kanban, shells, tmux, and node-local filesystems keep owning their domains. Relay's job is shared identity, routing, context handoff, bounded inspection/control, and audit trails.
+Relay is not the runtime supervisor, task tracker, source host, or memory system of record. Native agent CLIs, Hermes Agent, GitHub, Kanban, shells, and node-local filesystems keep owning their domains. Relay's job is shared identity, routing, context handoff, bounded inspection/control, and audit trails.
 
 Status: this document is the product/docs contract for #552/#553. It defines vocabulary and acceptance boundaries for follow-up schema, API, UI, mobile, and dogfood work; it does not claim those follow-up implementations have landed.
 
@@ -20,7 +20,7 @@ The target Relay operator surface is a cockpit, not a raw terminal clone: operat
 
 Relay must not:
 
-- replace Hermes Agent, Hermes dashboard, hermes-workspace, GitHub, Kanban, tmux, or native Claude/Codex/OpenCode/Hermes CLIs;
+- replace Hermes Agent, Hermes dashboard, hermes-workspace, GitHub, Kanban, process supervisors, or native Claude/Codex/OpenCode/Hermes CLIs;
 - scrape, sync, or become a source of truth for raw Hermes profile SQLite DBs, memory stores, provider auth, env, or unbounded transcript/log history;
 - clone GitHub Issues, Kanban, or any future task system as owned storage; those remain external `TaskRef`s linked into `WorkContext`;
 - turn mobile into a worse phone IDE; mobile v1 is status/control/artifact/approval oriented, not bulk editing, broad file navigation, or high-risk write workflows;

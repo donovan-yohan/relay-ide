@@ -4,41 +4,41 @@ This index separates current source-of-truth docs from historical plans and spik
 
 ## Current source of truth
 
-| Area                  | File                              | Use it for                                                                                   |
-| --------------------- | --------------------------------- | -------------------------------------------------------------------------------------------- |
-| Top-level agent map   | `../AGENTS.md`                    | Repo conventions, command quick reference, compact docs map                                  |
-| User onboarding       | `../README.md`                    | Install, run, CLI, config, hub/node overview                                                 |
-| Product/design system | `../DESIGN.md`                    | Product positioning, visual language, spacing/color/button rules                             |
-| Architecture          | `ARCHITECTURE.md`                 | Module boundaries, API routes, data flow, ADR index                                          |
-| Boo/session substrate | `BOO_PHILOSOPHY.md`               | Scriptable session substrate audit, rendered-screen gaps, operator-cockpit roadmap           |
-| Workbench boundary    | `WORKBENCH_BOUNDARY.md`           | Relay-as-control-plane scope, canonical nouns, mobile/dogfood journeys                       |
-| Backend design notes  | `DESIGN.md`                       | Backend patterns, auth/session/PTY behavior                                                  |
-| Frontend              | `FRONTEND.md`                     | React components, frontend state, UI entrypoints                                             |
-| Quality               | `QUALITY.md`                      | Test strategy, isolation rules, known gate behavior                                          |
-| Handoff artifacts     | `pipeline-handoff-artifact-template.md` | Live worker publication pattern and public-safe PipelineHandoffArtifact templates      |
-| CLI gateway           | `CLI_GATEWAY.md`                        | Versioned `relay-ide v1 ... --json` adapter contract, auth lanes, command taxonomy     |
-| Agent view artifacts  | `AGENT_VIEW_ARTIFACTS.md`               | Static HTML/CSS WorkContext view artifact contract, package route, security model       |
-| Security policy       | `SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, exact-operation approvals, handshake grants |
+| Area                  | File                                    | Use it for                                                                                   |
+| --------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Top-level agent map   | `../AGENTS.md`                          | Repo conventions, command quick reference, compact docs map                                  |
+| User onboarding       | `../README.md`                          | Install, run, CLI, config, hub/node overview                                                 |
+| Product/design system | `../DESIGN.md`                          | Product positioning, visual language, spacing/color/button rules                             |
+| Architecture          | `ARCHITECTURE.md`                       | Module boundaries, API routes, data flow, ADR index                                          |
+| Boo/session substrate | `BOO_PHILOSOPHY.md`                     | Scriptable session substrate audit, rendered-screen gaps, operator-cockpit roadmap           |
+| Workbench boundary    | `WORKBENCH_BOUNDARY.md`                 | Relay-as-control-plane scope, canonical nouns, mobile/dogfood journeys                       |
+| Backend design notes  | `DESIGN.md`                             | Backend patterns, auth/session/PTY behavior                                                  |
+| Frontend              | `FRONTEND.md`                           | React components, frontend state, UI entrypoints                                             |
+| Quality               | `QUALITY.md`                            | Test strategy, isolation rules, known gate behavior                                          |
+| Handoff artifacts     | `pipeline-handoff-artifact-template.md` | Live worker publication pattern and public-safe PipelineHandoffArtifact templates            |
+| CLI gateway           | `CLI_GATEWAY.md`                        | Versioned `relay-ide v1 ... --json` adapter contract, auth lanes, command taxonomy           |
+| Agent view artifacts  | `AGENT_VIEW_ARTIFACTS.md`               | Static HTML/CSS WorkContext view artifact contract, package route, security model            |
+| Security policy       | `SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, exact-operation approvals, handshake grants  |
 | Handshake grants      | `OPERATOR_HANDSHAKE_GRANTS.md`          | One-time operator grant ceremony copy, lane separation, validation, audit/redaction contract |
-| rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`               | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                |
-| Session durability    | `SESSION_DURABILITY.md`                 | Process-owner vs attach-handle, derived durability state machine, transition emission  |
-| WSL2 nodes            | `WSL2_RELAY_NODE_SUPPORT.md`            | Windows/WSL2 node bootstrap, service mode, known limits                                |
-| Web chat              | `WEB_CHAT.md`                           | Experimental adapter-shaped web chat surface for agent CLIs (status, scope, limits)    |
-| Provider guide        | `provider-guide.md`                     | Authoring/configuring agent framework providers (Claude/Codex/OpenCode/Hermes/custom)  |
-| Terminal backends     | `TERMINAL_BACKENDS.md`            | `relay-pty` rollout, `tmux-compat` fallback, migration/import behavior                       |
-| Review                | `REVIEW_GUIDANCE.md`              | Reviewer prompts, risk areas, escape log                                                     |
-| Deployment            | `references/deployment.md`        | Branching, npm channels, publishing flow                                                     |
-| Devbox deploy         | `references/devbox-hub-deploy.md` | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene      |
-| Dogfood recovery      | `references/dogfood-recovery.md`  | Relay-develops-Relay proof loop, recovery matrix, diagnostics, no-force-merge gate           |
-| Self-hosting          | `SELF_HOSTING.md`                 | Running Relay from inside Relay with isolated config/ports                                   |
-| Security policy       | `SECURITY_POLICY.md`              | Trust tiers, capability bits, hub ACL defaults, exact-operation approvals, handshake grants  |
-| Handshake grants      | `OPERATOR_HANDSHAKE_GRANTS.md`    | One-time operator grant ceremony copy, lane separation, validation, audit/redaction contract |
-| rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`         | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                      |
-| Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md`     | Hub/node command shape and npm packaging decisions                                           |
-| Node bootstrap        | `RELAY_NODE_BOOTSTRAP.md`         | Pair/install/update/unpair flows and diagnostics                                             |
-| Federated dev         | `FEDERATED_DEV.md`                | Multi-machine dev workflow and version-skew handling                                         |
-| Federated Relay       | `federated-relay.md`              | Hub/node architecture, pairing, routing, ADR history                                         |
-| Learnings             | `LEARNINGS.md`                    | Durable repo learnings gathered across sessions                                              |
+| rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`               | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                      |
+| Session durability    | `SESSION_DURABILITY.md`                 | Process-owner vs attach-handle, derived durability state machine, transition emission        |
+| WSL2 nodes            | `WSL2_RELAY_NODE_SUPPORT.md`            | Windows/WSL2 node bootstrap, service mode, known limits                                      |
+| Web chat              | `WEB_CHAT.md`                           | Experimental adapter-shaped web chat surface for agent CLIs (status, scope, limits)          |
+| Provider guide        | `provider-guide.md`                     | Authoring/configuring agent framework providers (Claude/Codex/OpenCode/Hermes/custom)        |
+| Terminal backend      | `TERMINAL_BACKENDS.md`                  | `relay-pty`-only backend, rejected legacy `tmux-compat` state, cold-resume semantics         |
+| Review                | `REVIEW_GUIDANCE.md`                    | Reviewer prompts, risk areas, escape log                                                     |
+| Deployment            | `references/deployment.md`              | Branching, npm channels, publishing flow                                                     |
+| Devbox deploy         | `references/devbox-hub-deploy.md`       | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene      |
+| Dogfood recovery      | `references/dogfood-recovery.md`        | Relay-develops-Relay proof loop, recovery matrix, diagnostics, no-force-merge gate           |
+| Self-hosting          | `SELF_HOSTING.md`                       | Running Relay from inside Relay with isolated config/ports                                   |
+| Security policy       | `SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, exact-operation approvals, handshake grants  |
+| Handshake grants      | `OPERATOR_HANDSHAKE_GRANTS.md`          | One-time operator grant ceremony copy, lane separation, validation, audit/redaction contract |
+| rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`               | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                      |
+| Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md`           | Hub/node command shape and npm packaging decisions                                           |
+| Node bootstrap        | `RELAY_NODE_BOOTSTRAP.md`               | Pair/install/update/unpair flows and diagnostics                                             |
+| Federated dev         | `FEDERATED_DEV.md`                      | Multi-machine dev workflow and version-skew handling                                         |
+| Federated Relay       | `federated-relay.md`                    | Hub/node architecture, pairing, routing, ADR history                                         |
+| Learnings             | `LEARNINGS.md`                          | Durable repo learnings gathered across sessions                                              |
 
 ## Vocabulary baseline
 
@@ -75,6 +75,6 @@ These directories are useful evidence, but they are not current product docs by 
 
 - Evidence first: source files, tests, package scripts, and CLI help beat old plans.
 - Do not overclaim planned work as shipped: especially File RPC beyond the listed v1 commands, `logs.tail`/node-log proxying, high-risk approval UX/auth strength beyond the exact-operation #807 contract, and the complete six-layer UI/data migration.
-- Do not overclaim Boo-style primitives as shipped: stable rendered-screen snapshots, rendered-screen wait, named key commands, a primary WorkContext cockpit, and tmux-free live process reattach across server restart remain follow-up work unless the current docs/code prove otherwise.
+- Do not overclaim Boo-style primitives as shipped: rendered-screen wait, a primary WorkContext cockpit, and live child-process continuity across Relay server restart remain follow-up work unless the current docs/code prove otherwise. `relay-pty` can cold-resume from saved metadata/scrollback after restart; it is not a supervisor.
 - Keep `AGENTS.md` compact; add details here or in focused docs instead.
 - When a historical plan is still linked from a current doc, label it as historical/proposed unless implementation has been verified.

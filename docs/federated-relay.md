@@ -2,7 +2,7 @@
 
 Relay IDE can run as a **hub** that tracks multiple **relay-nodes** — personal machines running Relay as execution hosts. From any browser connected to the hub, a user sees which nodes are online, what repositories each node has checked out, and can start terminal/agent sessions on the chosen node. This document describes the architecture, pairing lifecycle, steady-state reverse WebSocket model, session routing, security model, operator runbook, and explicitly out-of-scope items.
 
-Relay's product boundary is broader than terminal routing but narrower than an IDE/runtime clone: Relay is the federated workbench/control plane for shared identity, routing, context handoff, bounded inspection/control, and audit trails. It connects existing agent CLIs, Hermes/Kanban/GitHub refs, tmux sessions, node-local repos/worktrees, and artifacts without replacing those source systems or scraping raw profile/transcript state. See `docs/WORKBENCH_BOUNDARY.md` for the canonical #552 nouns and mobile/pair/dogfood acceptance criteria.
+Relay's product boundary is broader than terminal routing but narrower than an IDE/runtime clone: Relay is the federated workbench/control plane for shared identity, routing, context handoff, bounded inspection/control, and audit trails. It connects existing agent CLIs, Hermes/Kanban/GitHub refs, `relay-pty` terminal sessions, node-local repos/worktrees, and artifacts without replacing those source systems or scraping raw profile/transcript state. See `docs/WORKBENCH_BOUNDARY.md` for the canonical #552 nouns and mobile/pair/dogfood acceptance criteria.
 
 > Terminology is deliberate: `hub` (control plane + UI), `node` (execution host), `client` (browser). A hub is just a `relay-ide` server that has accepted node registrations; a node is just a `relay-ide` install on another host.
 
@@ -12,7 +12,7 @@ Relay's product boundary is broader than terminal routing but narrower than an I
 ┌─────────────┐          ┌──────────┐          ┌──────────────────────────────┐
 │  Browser    │◄─HTTPS──►│   Hub    │◄─WS────►│  Node (macOS/Linux/WSL)      │
 │  (React UI) │          │relay-ide │  reverse │  relay-ide install           │
-└─────────────┘          └──────────┘  link    │  relay-pty / tmux-compat / git / fs │
+└─────────────┘          └──────────┘  link    │  relay-pty / git / fs        │
                                                └──────────────────────────────┘
 ```
 
@@ -28,7 +28,7 @@ Implemented/current:
 - Credential rotation: `POST /hub/nodes/:nodeId/credential-rotation` supports authenticated operator manual delivery and online reverse-link delivery; heartbeat proof swaps the active credential and writes a redacted rotation audit event. Failed/delivered rotations remain provable with the next credential until `POST /hub/nodes/:nodeId/credential-rotation/clear-failure` explicitly clears them without accepting the unproved next credential.
 - Reverse link: `/hub/node-link` is implemented by `server/hub-node-link.ts` (hub) and `server/node-link-client.ts` (node). Nodes dial out with `relay-ide node link --hub <url>`.
 - Routed sessions: the hub creates sessions with `POST /hub/nodes/:nodeId/sessions`, kills them with `DELETE /hub/nodes/:nodeId/sessions/:sessionId`, and proxies browser PTY traffic through `/nodes/:nodeId/ws/sessions/:sessionId`.
-- Node-local execution: `server/node-link-pty-host.ts` hosts PTY streams through the `SessionAttachment` boundary. Routed sessions can use node-advertised terminal backends; `relay-pty` is preferred when available, while `tmux-compat` remains the legacy resume/import backend.
+- Node-local execution: `server/node-link-pty-host.ts` hosts PTY streams through the `SessionAttachment` boundary. Routed sessions require node-advertised `relay-pty`; `tmux-compat` is unsupported legacy state and is not restored.
 - Multi-node routed PTY smoke: `test/hub-cross-node-pty.test.ts` is the canonical integration harness for hub + two simulated nodes, concurrent browser PTY streams, sustained byte flow, and one-node reverse-link failure isolation. Run it with `npm run test:smoke:multi-node`.
 - Repo inventory: `server/repo-inventory.ts` reports configured repos/worktrees, dirty/divergence summaries, and canonical repo identity; the hub aggregates it through `GET /hub/repo-inventory`.
 - Local hub-as-node: `server/local-node.ts` scopes existing hub-local sessions and file events as the default local node.
@@ -269,14 +269,14 @@ relay-ide node link --hub https://hub.example.com
 
 The node registry separates node identity from credentials. `HubNodeSummary.identity` carries the stable `nodeId`, creation/pairing timestamps, and operator-facing name/host metadata that can be refreshed by later heartbeats. `HubNodeSummary.credential` carries the active credential record (`credentialId`, `issuedAt`, state, and optional `rotationId`). Token material is never returned in summaries.
 
-| Lifecycle state | Protocol behavior | Public state |
-| --- | --- | --- |
-| Pair | `POST /hub/pairing/exchange` consumes a one-time pair token and creates a node identity plus the first active credential. | `identity.nodeId` is new; `credential.state` is `active`; status is based on heartbeat freshness. |
-| Reconnect | Heartbeat or `/hub/node-link` presents the node credential. The hub hashes the presented token, checks it with timing-safe comparison against the active credential or a provable rotation credential, and rejects missing/malformed/mismatch/expired/revoked credentials with typed errors. | Same node identity; status moves `online` while the link/heartbeat is fresh. Audit rows use `NODE_CREDENTIAL_RECONNECT_ALLOWED` or a redacted recovery reason. |
-| Rotate | `POST /hub/nodes/:nodeId/credential-rotation` issues a next credential through manual operator delivery or online `credential.rotate`. The previous credential remains valid until the next credential proves possession. | `credential.state` is `rotating` with `credential.rotationId`; `credentialRotation.state` is `issuing`, `delivered`, or `failed`. |
-| Prove/stabilize | A heartbeat carrying the next `credentialId` proves rotation. The hub swaps active credential hashes, updates the ACL peer credential id, deletes the unproved next-token hash, and marks the rotation stable. | Same `identity.nodeId`; `credential.state` returns to `active`; audit emits a redacted `CREDENTIAL_ROTATION_PROVED` rotation event. |
-| Revoke | `DELETE /nodes/:nodeId` marks the registry record revoked, closes active links with `NODE_REVOKED`, and rejects later credential auth. | Same node identity remains visible as `revoked`; `credential.state` is `revoked`; no grace period. |
-| Re-pair | A missing/malformed/mismatched/expired/revoked/protocol-incompatible credential yields a recovery error such as `NODE_CREDENTIAL_MISSING`, `NODE_CREDENTIAL_MALFORMED`, `NODE_CREDENTIAL_MISMATCH`, `NODE_CREDENTIAL_EXPIRED`, `NODE_REVOKED`, or `REPAIR_REQUIRED`. The recovery path is a fresh pair token exchange. | Re-pairing creates a new node identity; it does not re-enable the revoked or mismatched `nodeId`. |
+| Lifecycle state | Protocol behavior                                                                                                                                                                                                                                                                                                      | Public state                                                                                                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pair            | `POST /hub/pairing/exchange` consumes a one-time pair token and creates a node identity plus the first active credential.                                                                                                                                                                                              | `identity.nodeId` is new; `credential.state` is `active`; status is based on heartbeat freshness.                                                              |
+| Reconnect       | Heartbeat or `/hub/node-link` presents the node credential. The hub hashes the presented token, checks it with timing-safe comparison against the active credential or a provable rotation credential, and rejects missing/malformed/mismatch/expired/revoked credentials with typed errors.                           | Same node identity; status moves `online` while the link/heartbeat is fresh. Audit rows use `NODE_CREDENTIAL_RECONNECT_ALLOWED` or a redacted recovery reason. |
+| Rotate          | `POST /hub/nodes/:nodeId/credential-rotation` issues a next credential through manual operator delivery or online `credential.rotate`. The previous credential remains valid until the next credential proves possession.                                                                                              | `credential.state` is `rotating` with `credential.rotationId`; `credentialRotation.state` is `issuing`, `delivered`, or `failed`.                              |
+| Prove/stabilize | A heartbeat carrying the next `credentialId` proves rotation. The hub swaps active credential hashes, updates the ACL peer credential id, deletes the unproved next-token hash, and marks the rotation stable.                                                                                                         | Same `identity.nodeId`; `credential.state` returns to `active`; audit emits a redacted `CREDENTIAL_ROTATION_PROVED` rotation event.                            |
+| Revoke          | `DELETE /nodes/:nodeId` marks the registry record revoked, closes active links with `NODE_REVOKED`, and rejects later credential auth.                                                                                                                                                                                 | Same node identity remains visible as `revoked`; `credential.state` is `revoked`; no grace period.                                                             |
+| Re-pair         | A missing/malformed/mismatched/expired/revoked/protocol-incompatible credential yields a recovery error such as `NODE_CREDENTIAL_MISSING`, `NODE_CREDENTIAL_MALFORMED`, `NODE_CREDENTIAL_MISMATCH`, `NODE_CREDENTIAL_EXPIRED`, `NODE_REVOKED`, or `REPAIR_REQUIRED`. The recovery path is a fresh pair token exchange. | Re-pairing creates a new node identity; it does not re-enable the revoked or mismatched `nodeId`.                                                              |
 
 Browser sessions are outside this lifecycle. A browser cookie can authorize an operator route that creates a pair token or starts rotation/revocation, but node heartbeat and `/hub/node-link` only accept node credentials. Node credentials are not accepted by browser-only UI routes or scoped actor/CLI routes.
 
@@ -301,13 +301,13 @@ The public `HubNodeSummary.sourceDiagnostics` shape is deliberately redacted:
 
 Operational states:
 
-| State | Meaning | Enforcement behavior |
-| --- | --- | --- |
-| `signal-unavailable` | No usable socket/Tailscale source signal was observed. Caller-provided source headers are not trusted as authoritative source evidence. | Allowed and audited in default mode. In strict mode, denied when the credential already has a Tailscale/MagicDNS source binding. |
-| `source-match` | Observed source matches the credential's expected source. | Allowed and audited. |
-| `source-mismatch` | Observed source differs from the expected source. | If the credential otherwise validates, default mode allows and audits; strict mode rewrites the result to `strict-deny`. |
-| `same-credential-multiple-sources` | The same credential has appeared from more than one redacted source fingerprint. | If the credential otherwise validates, default mode allows and audits as suspicious; strict mode rewrites the result to `strict-deny`. |
-| `strict-deny` | Strict enforcement is enabled and the credential was presented from a mismatched source or without trusted source evidence for an already source-bound credential. | Authentication fails with `FORBIDDEN` and redacted `sourceDiagnostics` details. |
+| State                              | Meaning                                                                                                                                                            | Enforcement behavior                                                                                                                   |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `signal-unavailable`               | No usable socket/Tailscale source signal was observed. Caller-provided source headers are not trusted as authoritative source evidence.                            | Allowed and audited in default mode. In strict mode, denied when the credential already has a Tailscale/MagicDNS source binding.       |
+| `source-match`                     | Observed source matches the credential's expected source.                                                                                                          | Allowed and audited.                                                                                                                   |
+| `source-mismatch`                  | Observed source differs from the expected source.                                                                                                                  | If the credential otherwise validates, default mode allows and audits; strict mode rewrites the result to `strict-deny`.               |
+| `same-credential-multiple-sources` | The same credential has appeared from more than one redacted source fingerprint.                                                                                   | If the credential otherwise validates, default mode allows and audits as suspicious; strict mode rewrites the result to `strict-deny`. |
+| `strict-deny`                      | Strict enforcement is enabled and the credential was presented from a mismatched source or without trusted source evidence for an already source-bound credential. | Authentication fails with `FORBIDDEN` and redacted `sourceDiagnostics` details.                                                        |
 
 Default policy is warn/audit. Operators opt in to enforcement by running the hub with `RELAY_NODE_SOURCE_STRICT_DENY=1`. Strict-deny affects node credential authentication only. For credentials with an existing Tailscale/MagicDNS binding, missing trusted source evidence is denied rather than letting spoofable header-only evidence stand in for the socket source.
 
@@ -393,25 +393,24 @@ Nodes report a capability manifest during pairing and on every heartbeat. The ma
 
 | Capability          | Meaning                                                       |
 | ------------------- | ------------------------------------------------------------- |
-| `tmux`              | Tmux is installed and available for session substrate         |
+| `relay-pty`         | Direct PTY/libghostty-vt terminal backend is available        |
 | `git`               | Git CLI is available                                          |
 | `clipboard`         | Clipboard image set is available (`osascript` / `xclip`)      |
 | `browserAutomation` | Playwright Chromium automation is available                   |
 | `githubCli`         | `gh` CLI is available                                         |
 | `tailscale`         | `tailscale` CLI is available                                  |
 | `ssh`               | `ssh` client is available                                     |
-| `sessionResume`     | How the node persists PTYs across detach (#467)               |
+| `sessionResume`     | How the node handles browser/node-link reconnect (#467)       |
 | `agents`            | Map of agent CLI IDs (e.g. `claude`, `codex`) to availability |
 
 `sessionResume` is one of:
 
-| Value                | Meaning                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------ |
-| `tmux`               | Node owns a tmux session per relay session; browser reload reattaches the same shell |
-| `canonical-emulator` | Reserved for #469 (server-side canonical terminal)                                   |
-| `none`               | Raw shell only — browser reload kills the shell                                      |
+| Value       | Meaning                                                                                                                            |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `relay-pty` | Node owns a live `relay-pty` child process while the Relay node process stays alive; browser reload/node-link reconnect reattaches |
+| `none`      | No live reconnect support                                                                                                          |
 
-The frontend reads `sessionResume` from `HubNodeSummary.capabilities.sessionResume` and renders a `resumable` badge on the terminal-node picker when the value is non-`none`. Hubs and clients **never** reference tmux verbs directly — the capability flag is the sole interface, so phase 2 can drop in `canonical-emulator` without touching browser code.
+The frontend reads `sessionResume` from `HubNodeSummary.capabilities.sessionResume` and renders a `resumable` badge on the terminal-node picker when the value is non-`none`. Hubs and clients do not reference backend-private process handles directly. Relay server restart remains cold resume from saved metadata/scrollback; live child-process continuity requires future daemon/supervisor work.
 
 ### Service Manager
 
@@ -464,18 +463,18 @@ Preconditions checked by the hub:
 
 1. Node is paired and not revoked
 2. Node protocol version exactly matches hub (`RELAY_NODE_LINK_PROTOCOL_VERSION` = `1.0`)
-3. Node advertises at least one supported terminal backend (`capabilities.terminalBackends.relay-pty` or `capabilities.terminalBackends.tmux-compat` is `available`). Older manifests that do not include `terminalBackends` fall back to the legacy `capabilities.core.tmux` value for `tmux-compat` only.
+3. Node advertises the supported terminal backend (`capabilities.terminalBackends.relay-pty` is `available`). `tmux-compat` and older tmux-only manifests are unsupported for new routed sessions.
 4. Node is `online` and has an active reverse link
 
 If any precondition fails, the hub returns a typed error with `retryable` guidance:
 
-| Error Code              | Meaning                               | Retryable |
-| ----------------------- | ------------------------------------- | --------- |
-| `NOT_FOUND`             | Node is not paired                    | No        |
-| `PROTOCOL_INCOMPATIBLE` | Major version mismatch                | No        |
-| `VERSION_SKEW`          | Exact version mismatch (same major)   | No        |
+| Error Code              | Meaning                                         | Retryable |
+| ----------------------- | ----------------------------------------------- | --------- |
+| `NOT_FOUND`             | Node is not paired                              | No        |
+| `PROTOCOL_INCOMPATIBLE` | Major version mismatch                          | No        |
+| `VERSION_SKEW`          | Exact version mismatch (same major)             | No        |
 | `NODE_UNSUPPORTED`      | Node cannot host any supported terminal backend | No        |
-| `NODE_OFFLINE`          | Node has no live reverse link         | Yes       |
+| `NODE_OFFLINE`          | Node has no live reverse link                   | Yes       |
 
 On success, the hub forwards the request as an RPC (`sessions.create`) over the node's reverse WebSocket, receives the node-local `SessionSummary`, and returns a **node-scoped** session that backs a user-visible Tab with:
 
@@ -517,18 +516,18 @@ A single hub UI can host terminal tabs attached to multiple paired nodes:
 - The PTY socket (`frontend/src/lib/ws.ts`) reads `nodeId` from the session (or parses it from a global session id) and opens `/nodes/{nodeId}/ws/sessions/{localSessionId}` instead of the local `/ws/{sessionId}` route.
 - Tab chrome (`WorkspaceTabBar` + `workspace-summary.ts`) shows a node label + heartbeat dot for cross-node tabs, sourced from `SummaryContext.findNode` which `WorkspaceArea` populates from the `useQuery(['hub-nodes'], fetchHubNodes)` cache (15 s refetch interval).
 
-Reload-resume is implemented as of #467: see [SessionAttachment Boundary](#sessionattachment-boundary). The two-node routed PTY smoke harness is now the canonical integration coverage for concurrent cross-node streams and node-link failure isolation; run it with `npm run test:smoke:multi-node`.
+Browser/node-link reconnect is implemented as of #467 for live `relay-pty` node processes: see [SessionAttachment Boundary](#sessionattachment-boundary). The two-node routed PTY smoke harness is now the canonical integration coverage for concurrent cross-node streams and node-link failure isolation; run it with `npm run test:smoke:multi-node`.
 
 Remote files are also browsable for online remote tabs (#428). The right-sidebar files panel detects `nodeId` on the active session and calls `POST /hub/nodes/:nodeId/sessions/:sessionId/files/list` instead of the local file-list route, rendering the live remote filesystem in the same file browser component.
 
 ### SessionAttachment Boundary
 
-`server/session-attachment.ts` exports a stable `SessionAttachment` interface between `node-link-pty-host.ts` and the concrete backend that owns the PTY. The interface intentionally hides every implementation detail (tmux verbs, node-pty handles, socket paths) so phase 2 (#469, server-side canonical terminal state) can slot in beside, not under, the tmux feature.
+`server/session-attachment.ts` exports a stable `SessionAttachment` interface between `node-link-pty-host.ts` and the concrete backend that owns the PTY. The interface intentionally hides implementation details (node-pty handles, terminal-model state, socket paths) behind Relay-owned attach/read/write/resize semantics.
 
 ```ts
 interface SessionAttachment {
   readonly sessionId: string;
-  readonly mode: 'tmux' | 'raw';
+  readonly mode: 'relay-pty';
   onData(handler: (bytes: Buffer) => void): Disposable;
   onExit(
     handler: (event: { exitCode: number; signal?: number }) => void
@@ -540,30 +539,24 @@ interface SessionAttachment {
 }
 ```
 
-Backends ship with the package:
+Backend shipped with the package:
 
-| Factory                         | Mode   | When used                                                   |
-| ------------------------------- | ------ | ----------------------------------------------------------- |
-| `createTmuxAttachmentFactory()` | `tmux` | `sessionResume: 'tmux'`; reload reattaches to same shell    |
-| `createRawAttachmentFactory()`  | `raw`  | `sessionResume: 'none'` or `'canonical-emulator'` (phase 1) |
-| `createMockAttachmentFactory()` | `tmux` | Tests — replays scripted bytes, captures writes             |
+| Factory                             | Mode        | When used                                       |
+| ----------------------------------- | ----------- | ----------------------------------------------- |
+| `createRelayPtyAttachmentFactory()` | `relay-pty` | Normal routed PTY sessions                      |
+| `createMockAttachmentFactory()`     | `relay-pty` | Tests — replays scripted bytes, captures writes |
 
-**Non-blocking constraints (#467, must hold for phase 2):**
+**Non-blocking constraints (#467/#973):**
 
-1. No tmux strings leak past `server/node-link-pty-host.ts`. Hub registry stores `relaySessionId` only; the node maps `relaySessionId → tmux target` internally.
-2. Frontend never references tmux verbs. The resumable badge reads `node.capabilities.sessionResume`.
-3. Wire format unchanged — opaque bytes over WS. No frontend assumes "this looks like tmux-wrapped VT100."
-4. Tests use `MockAttachment`. Pre-push CI does **not** spawn real tmux.
-5. `SessionAttachment` is exported from `server/`, not `features/tmux/`. Phase 2 lives beside, not under, tmux.
-6. Detach handling: on hub disconnect, tmux sessions are **not** killed. On node-link reconnect, hub re-issues `pty.attach` and the node reattaches to the same tmux session.
+1. No tmux strings leak into hub/client contracts. Hub registry stores Relay session ids only; the node maps those ids to live `relay-pty` session records internally.
+2. Frontend never references backend-private process handles. The resumable badge reads `node.capabilities.sessionResume`.
+3. Wire format remains opaque terminal bytes plus Relay envelopes over WS. No frontend assumes a tmux-wrapped terminal.
+4. Tests use `MockAttachment`. Pre-push CI does not spawn real tmux.
+5. Detach handling: on hub disconnect, live `relay-pty` sessions are not killed. On node-link reconnect, hub re-issues `pty.attach` and the node reattaches to the live `relay-pty` session if the owning node process stayed alive.
 
-The tmux config is baked in (`set -g status off`, `unbind-key -a`, `set -g mouse off`, `set -g escape-time 0`). Operators never see tmux UI — tmux is an attach-by-name primitive, not a multiplexer.
+**Session lifecycle:** closing an attachment terminates the Relay-owned PTY child process. The `relay-pty` child process keeps running only while the owning Relay node process stays alive. Browser reconnect to a live node can resume the in-memory session; Relay node/server process restart is cold resume from saved metadata/scrollback, not live child-process continuity.
 
-The tmux config file lives under `$XDG_CONFIG_HOME/relay-ide/tmux/relay.tmux.conf` (defaults to `~/.config/relay-ide/tmux/...`) with mode `0700` on the directory and `0600` on the file — `os.tmpdir()` is shared between local UIDs and tmux configs can `run-shell` arbitrary commands, so it is not used.
-
-**Session lifecycle:** `attachment.close()` with no reason — or any reason other than `SESSION_ATTACHMENT_KILL_REASON` — terminates only the local attach client. The tmux session keeps running and is the resume target for the next attach. Explicitly destroying a session (kill-session) requires passing the `SESSION_ATTACHMENT_KILL_REASON` sentinel; the hub uses this when the operator explicitly closes a tab, distinct from a transient browser reload.
-
-**Raw fallback / backend scope:** `relay-pty` is now a supported terminal backend for new routed sessions when the node advertises `capabilities.terminalBackends['relay-pty'] === 'available'`. `tmux-compat` remains the resume/import backend for existing tmux-backed sessions, and only that backend requires `tmux` to be available. Nodes with neither backend available are disabled by the terminal picker with a terminal-backend unavailable reason.
+**Backend scope:** `relay-pty` is the only supported terminal backend for routed sessions when the node advertises `capabilities.terminalBackends['relay-pty'] === 'available'`. `tmux-compat` is unsupported legacy state. Nodes without `relay-pty` available are disabled by the terminal picker with a terminal-backend unavailable reason.
 
 ## Repo Identity and Inventory
 
@@ -667,23 +660,23 @@ Slice 4 ships `mode: 'overwrite'` only. `'create'` and `'append'` affordances, a
 
 The hub returns a diagnostics taxonomy covering the full bootstrap lifecycle:
 
-| Code                            | Stage             | Meaning                                         |
-| ------------------------------- | ----------------- | ----------------------------------------------- |
-| `BOOTSTRAP_UNREACHABLE`         | reachability      | Cannot SSH/Tailscale to target                  |
-| `BOOTSTRAP_REMOTE_SHELL_FAILED` | remote-shell      | SSH connected but shell could not run bootstrap |
-| `BOOTSTRAP_INSTALL_FAILED`      | install           | `relay-ide` install failed on target            |
-| `SERVICE_MANAGER_UNSUPPORTED`   | service-detection | No supported service manager found              |
-| `SERVICE_START_FAILED`          | service-start     | Service installed but did not stay running      |
-| `PAIR_TOKEN_INVALID`            | pair-token        | Malformed, unknown, or already consumed         |
-| `PAIR_TOKEN_EXPIRED`            | pair-token        | Token expired before exchange                   |
-| `NODE_CREDENTIAL_REJECTED`      | node-auth         | Credential was revoked or rejected              |
-| `NODE_SOURCE_SIGNAL_UNAVAILABLE` | node-auth        | No usable Tailscale/MagicDNS source signal      |
-| `NODE_SOURCE_MISMATCH`          | node-auth         | Credential source differs from expected binding |
-| `NODE_SOURCE_MULTIPLE_SOURCES`  | node-auth         | Credential appeared from multiple source fingerprints |
-| `NODE_SOURCE_STRICT_DENY`       | node-auth         | Strict source policy denied a mismatch          |
-| `NODE_CONNECT_FAILED`           | connect-back      | Node cannot reach hub for heartbeat             |
-| `PROTOCOL_INCOMPATIBLE`         | protocol          | Hub/node protocol versions incompatible         |
-| `NODE_STARTED_NO_HEARTBEAT`     | heartbeat         | Bootstrap exited but no heartbeat observed      |
+| Code                             | Stage             | Meaning                                               |
+| -------------------------------- | ----------------- | ----------------------------------------------------- |
+| `BOOTSTRAP_UNREACHABLE`          | reachability      | Cannot SSH/Tailscale to target                        |
+| `BOOTSTRAP_REMOTE_SHELL_FAILED`  | remote-shell      | SSH connected but shell could not run bootstrap       |
+| `BOOTSTRAP_INSTALL_FAILED`       | install           | `relay-ide` install failed on target                  |
+| `SERVICE_MANAGER_UNSUPPORTED`    | service-detection | No supported service manager found                    |
+| `SERVICE_START_FAILED`           | service-start     | Service installed but did not stay running            |
+| `PAIR_TOKEN_INVALID`             | pair-token        | Malformed, unknown, or already consumed               |
+| `PAIR_TOKEN_EXPIRED`             | pair-token        | Token expired before exchange                         |
+| `NODE_CREDENTIAL_REJECTED`       | node-auth         | Credential was revoked or rejected                    |
+| `NODE_SOURCE_SIGNAL_UNAVAILABLE` | node-auth         | No usable Tailscale/MagicDNS source signal            |
+| `NODE_SOURCE_MISMATCH`           | node-auth         | Credential source differs from expected binding       |
+| `NODE_SOURCE_MULTIPLE_SOURCES`   | node-auth         | Credential appeared from multiple source fingerprints |
+| `NODE_SOURCE_STRICT_DENY`        | node-auth         | Strict source policy denied a mismatch                |
+| `NODE_CONNECT_FAILED`            | connect-back      | Node cannot reach hub for heartbeat                   |
+| `PROTOCOL_INCOMPATIBLE`          | protocol          | Hub/node protocol versions incompatible               |
+| `NODE_STARTED_NO_HEARTBEAT`      | heartbeat         | Bootstrap exited but no heartbeat observed            |
 
 ### Diagnostics Commands
 
@@ -698,7 +691,7 @@ All diagnostics redact secrets (pair tokens, bearer headers, credentials) and so
 ## WSL Caveats
 
 - WSL is supported as a **Linux-like node**, not as a native Windows node.
-- `node-pty → tmux → shell/agent` behave normally inside WSL2 when systemd is enabled.
+- `relay-pty`/node-pty shell and agent sessions behave normally inside WSL2 when systemd is enabled.
 - `wsl-systemd` mode requires WSL systemd and the user bus to be enabled. Set `/etc/wsl.conf` to `[boot] systemd=true`, then run `wsl.exe --shutdown` to apply. A WSL distro shutdown stops the service.
 - `wsl-manual` is a pair-only fallback; no background service is installed.
 - Native Windows node support is explicitly **out of scope**.
@@ -760,10 +753,10 @@ Use `relay-ide node status`, `relay-ide node logs`, and `relay-ide node doctor -
 
 | ADR     | Topic                           | Decision                                                                                                                              |
 | ------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| ADR-009 | Hub/Node Federation             | Relay hub accepts node registrations via reverse WebSocket; nodes own the PTY/tmux/data plane; hub owns routing and aggregation.      |
+| ADR-009 | Hub/Node Federation             | Relay hub accepts node registrations via reverse WebSocket; nodes own the `relay-pty`/data plane; hub owns routing and aggregation.   |
 | ADR-010 | Node-Initiated Outbound Links   | Nodes open outbound WebSocket to the hub to avoid NAT/firewall inbound issues.                                                        |
 | ADR-012 | Pair-Token/Credential Lifecycle | One-time short-lived pair token → persistent revocable node credential. SHA256 storage, timing-safe comparison, immediate revocation. |
-| ADR-013 | Capability Manifest             | Nodes self-report capability probes (tmux, git, agents, etc.). Hub gates session routing on capability state.                         |
+| ADR-013 | Capability Manifest             | Nodes self-report capability probes (`relay-pty`, git, agents, etc.). Hub gates session routing on capability state.                  |
 | ADR-014 | Repo Identity Aggregation       | Repos are grouped by canonical git/GitHub remote identity across nodes; local paths remain node-specific.                             |
 
 ## Non-Goals (Explicitly Out of Scope)
@@ -775,7 +768,7 @@ These were considered during design but are **not implemented** and should not b
 - **Native Windows node** — WSL2 is the supported Windows path.
 - **Hosted multi-tenant cloud** — Designed for private infrastructure, not a SaaS product.
 - **Anonymous worker pools** — Every node requires explicit pairing and trust.
-- **Cross-host tmux session transfer** — Sessions are node-local; re-creating on another node is a cold start.
+- **Cross-host live process transfer** — Sessions are node-local; re-creating on another node is a cold start.
 - **Real-time workspace state sync** — No conflict-free replicated worktree state.
 - **Full #444 IA migration** — This document maps federation terms to the six-layer vocabulary, but it does not implement Workspace/Project/Instance/Bench CRUD, #473 right-rail migration, #428 file RPC, or a Worker tree node.
 - **Raw Hermes state sync** — Relay should receive bounded Hermes plugin/integration metadata; it must not scrape or sync raw Hermes profile DBs, memory stores, provider auth, env, or unbounded transcripts/logs.

@@ -120,8 +120,6 @@ function remoteSession(nodeId: string, hostname: string): SessionSummary {
     nodeId,
     globalSessionId: `${nodeId}:${LOCAL_SESSION_ID}`,
     repoInstanceId: `${encodeURIComponent(nodeId)}:${encodeURIComponent(repoPath)}`,
-    useTmux: true,
-    tmuxSessionName: `relay-ide-${LOCAL_SESSION_ID}`,
     status: 'active',
     needsBranchRename: false,
     agentState: 'idle',
@@ -397,8 +395,10 @@ describe('multi-node smoke harness', () => {
           status: 'online',
           capabilities: expect.objectContaining({
             core: expect.objectContaining({
-              tmux: 'available',
               git: 'available',
+            }),
+            terminalBackends: expect.objectContaining({
+              'relay-pty': 'available',
             }),
             agents: expect.objectContaining({
               claude: 'available',

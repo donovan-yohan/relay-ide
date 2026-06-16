@@ -62,6 +62,7 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
         tailscale: 'available',
       },
       agents: { claude: 'available', codex: 'available' },
+      terminalBackends: { 'relay-pty': 'available' },
       serviceManager: 'launchd',
       wsl: false,
     },
@@ -481,7 +482,9 @@ describe('CustomizeSessionDialog environment picker model', () => {
 
     const model = buildEnvironmentPickerModel({
       inventory: repoInventory,
-      nodes: [node({ nodeId: 'linux', displayName: 'linux lab', status: 'offline' })],
+      nodes: [
+        node({ nodeId: 'linux', displayName: 'linux lab', status: 'offline' }),
+      ],
       selectedAgent: 'claude',
       selectedGroupId: 'github.com/donovan-yohan/relay-ide',
       selectedNodeId: 'linux',
@@ -551,7 +554,7 @@ describe('CustomizeSessionDialog environment picker model', () => {
   });
 
   it.each(['degraded', 'unavailable', 'unknown'] as const)(
-    'disables pre-backend-reporting nodes when tmux compatibility is %s',
+    'disables nodes when relay-pty backend status is %s',
     (tmuxStatus) => {
       const model = buildEnvironmentPickerModel({
         inventory: inventory(),
@@ -562,10 +565,7 @@ describe('CustomizeSessionDialog environment picker model', () => {
             displayName: 'linux lab',
             capabilities: {
               ...node().capabilities,
-              core: {
-                ...node().capabilities.core,
-                tmux: tmuxStatus,
-              },
+              terminalBackends: { 'relay-pty': tmuxStatus },
             },
           }),
         ],
@@ -581,7 +581,7 @@ describe('CustomizeSessionDialog environment picker model', () => {
         model.nodeChoices.find((choice) => choice.value === 'linux')
       ).toMatchObject({
         disabled: true,
-        reason: `terminal backend unavailable on linux lab (relay-pty unknown, tmux-compat ${tmuxStatus})`,
+        reason: `terminal backend unavailable on linux lab (relay-pty ${tmuxStatus})`,
       });
       expect(model.resolved.nodeId).toBe('local');
     }
@@ -668,7 +668,10 @@ describe('terminal vs agent node eligibility', () => {
 
     expect(
       agentModel.nodeChoices.find((c) => c.value === 'remote')
-    ).toMatchObject({ disabled: true, reason: 'hermes capability unknown on remote server' });
+    ).toMatchObject({
+      disabled: true,
+      reason: 'hermes capability unknown on remote server',
+    });
 
     const terminalRemoteChoice = terminalModel.nodeChoices.find(
       (c) => c.value === 'remote'
@@ -677,17 +680,12 @@ describe('terminal vs agent node eligibility', () => {
     expect(terminalRemoteChoice?.reason).toBeUndefined();
   });
 
-  it('keeps node enabled when tmux is degraded but relay-pty is available', () => {
+  it('keeps node enabled when relay-pty is available', () => {
     const tmuxDegradedNode = remoteNode({
       capabilities: {
         ...remoteNode().capabilities,
-        core: {
-          ...remoteNode().capabilities.core,
-          tmux: 'degraded',
-        },
         terminalBackends: {
           'relay-pty': 'available',
-          'tmux-compat': 'degraded',
         },
       },
     });
@@ -702,22 +700,17 @@ describe('terminal vs agent node eligibility', () => {
     const noBackendNode = remoteNode({
       capabilities: {
         ...remoteNode().capabilities,
-        core: {
-          ...remoteNode().capabilities.core,
-          tmux: 'unavailable',
-        },
         terminalBackends: {
           'relay-pty': 'unavailable',
-          'tmux-compat': 'unavailable',
         },
       },
     });
 
     expect(nodeShellBlockReason(noBackendNode)).toBe(
-      'terminal backend unavailable on remote server (relay-pty unavailable, tmux-compat unavailable)'
+      'terminal backend unavailable on remote server (relay-pty unavailable)'
     );
     expect(nodeAgentBlockReason(noBackendNode, 'hermes')).toBe(
-      'terminal backend unavailable on remote server (relay-pty unavailable, tmux-compat unavailable)'
+      'terminal backend unavailable on remote server (relay-pty unavailable)'
     );
   });
 
@@ -738,7 +731,9 @@ describe('terminal vs agent node eligibility', () => {
     });
 
     expect(nodeShellBlockReason(skewNode)).toBe('node has version skew');
-    expect(nodeAgentBlockReason(skewNode, 'hermes')).toBe('node has version skew');
+    expect(nodeAgentBlockReason(skewNode, 'hermes')).toBe(
+      'node has version skew'
+    );
   });
 
   it('blocks incompatible node in both terminal and agent mode', () => {
@@ -750,8 +745,12 @@ describe('terminal vs agent node eligibility', () => {
       },
     });
 
-    expect(nodeShellBlockReason(incompatNode)).toBe('node protocol is incompatible');
-    expect(nodeAgentBlockReason(incompatNode, 'hermes')).toBe('node protocol is incompatible');
+    expect(nodeShellBlockReason(incompatNode)).toBe(
+      'node protocol is incompatible'
+    );
+    expect(nodeAgentBlockReason(incompatNode, 'hermes')).toBe(
+      'node protocol is incompatible'
+    );
   });
 });
 
@@ -764,7 +763,11 @@ describe('directory-kind workspace support', () => {
       selectedGroupId: null,
       selectedNodeId: null,
       selectedCheckoutId: null,
-      fallbackWorkspace: { name: 'my-project', path: '/home/user/my-project', isGitRepo: false },
+      fallbackWorkspace: {
+        name: 'my-project',
+        path: '/home/user/my-project',
+        isGitRepo: false,
+      },
       fallbackWorktreePath: null,
     });
 
@@ -783,7 +786,11 @@ describe('directory-kind workspace support', () => {
       selectedGroupId: null,
       selectedNodeId: null,
       selectedCheckoutId: null,
-      fallbackWorkspace: { name: 'scripts', path: '/home/user/scripts', isGitRepo: false },
+      fallbackWorkspace: {
+        name: 'scripts',
+        path: '/home/user/scripts',
+        isGitRepo: false,
+      },
       fallbackWorktreePath: null,
     });
 
@@ -798,7 +805,11 @@ describe('directory-kind workspace support', () => {
       selectedGroupId: null,
       selectedNodeId: null,
       selectedCheckoutId: null,
-      fallbackWorkspace: { name: 'relay-ide', path: '/Users/kyle/relay-ide', isGitRepo: true },
+      fallbackWorkspace: {
+        name: 'relay-ide',
+        path: '/Users/kyle/relay-ide',
+        isGitRepo: true,
+      },
       fallbackWorktreePath: null,
     });
 
@@ -825,7 +836,11 @@ describe('directory-kind workspace support', () => {
 describe('agent/terminal mode toggle', () => {
   it('terminal mode forces session mode to pty/shell only', () => {
     const hermesFrameworks = [framework('hermes')];
-    const options = getSessionModeOptionsForType(hermesFrameworks, 'hermes', 'terminal');
+    const options = getSessionModeOptionsForType(
+      hermesFrameworks,
+      'hermes',
+      'terminal'
+    );
 
     expect(options).toHaveLength(1);
     expect(options[0]).toMatchObject({ value: 'pty', label: 'shell' });
@@ -833,7 +848,11 @@ describe('agent/terminal mode toggle', () => {
 
   it('agent mode returns normal session mode options', () => {
     const hermesFrameworks = [framework('hermes')];
-    const options = getSessionModeOptionsForType(hermesFrameworks, 'hermes', 'agent');
+    const options = getSessionModeOptionsForType(
+      hermesFrameworks,
+      'hermes',
+      'agent'
+    );
 
     expect(options.length).toBeGreaterThan(1);
     expect(options.some((o) => o.value === 'web')).toBe(true);
@@ -890,7 +909,9 @@ describe('agent/terminal mode toggle', () => {
       sessionType: 'terminal',
     });
 
-    const noAgentChoice = terminalModel.nodeChoices.find((c) => c.value === 'no-agent');
+    const noAgentChoice = terminalModel.nodeChoices.find(
+      (c) => c.value === 'no-agent'
+    );
     expect(noAgentChoice).toBeDefined();
     expect(noAgentChoice?.disabled).toBeUndefined();
     expect(noAgentChoice?.reason).toBeUndefined();

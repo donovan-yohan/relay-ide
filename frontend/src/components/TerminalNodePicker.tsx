@@ -37,17 +37,16 @@ export interface NodeChoice {
   disabled: boolean;
   disabledReason?: string;
   /**
-   * #467: `true` when the node advertises a session-resume backend
-   * (tmux today, server-side canonical terminal in phase 2). Drives
-   * the "resumable" badge on the menu item.
+   * #467: `true` when the node advertises a resumable terminal backend.
+   * Drives the "resumable" badge on the menu item.
    */
   resumable: boolean;
 }
 
 /**
  * Determines whether a node can accept terminal sessions.
- * Delegates to nodeShellBlockReason from CustomizeSessionDialog — shell + tmux
- * availability is the sole gate. Agent availability is NOT checked here
+ * Delegates to nodeShellBlockReason from CustomizeSessionDialog — shell +
+ * relay-pty availability is the sole gate. Agent availability is NOT checked here
  * because this picker is terminal-only.
  */
 function nodeBlockReasonForTerminal(node: HubNodeSummary): string | null {
@@ -56,9 +55,7 @@ function nodeBlockReasonForTerminal(node: HubNodeSummary): string | null {
 
 function isResumable(node: HubNodeSummary): boolean {
   // Pre-#467 nodes do not publish `sessionResume`. Treat missing as
-  // 'none' (no resume) rather than guessing from tmux availability —
-  // the capability flag is the sole source of truth so frontend code
-  // never references tmux verbs.
+  // 'none' (no resume); the capability flag is the sole source of truth.
   const resume = node.capabilities.sessionResume ?? 'none';
   return resume !== 'none';
 }

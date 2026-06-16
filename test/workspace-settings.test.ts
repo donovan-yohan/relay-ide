@@ -54,7 +54,7 @@ describe('PATCH /workspaces/settings', () => {
     expect(loadConfig(configPath).repoSettings?.[repoPath]).toBeUndefined();
   });
 
-  test('accepts terminalBackend as the only tmux-compat opt-in', async () => {
+  test('rejects tmux-compat terminalBackend settings', async () => {
     const res = await fetch(
       `${baseUrl}/workspaces/settings?path=${encodeURIComponent(repoPath)}`,
       {
@@ -64,10 +64,10 @@ describe('PATCH /workspaces/settings', () => {
       }
     );
 
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ terminalBackend: 'tmux-compat' });
-    expect(loadConfig(configPath).repoSettings?.[repoPath]).toEqual({
-      terminalBackend: 'tmux-compat',
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'terminalBackend must be "relay-pty"',
     });
+    expect(loadConfig(configPath).repoSettings?.[repoPath]).toBeUndefined();
   });
 });

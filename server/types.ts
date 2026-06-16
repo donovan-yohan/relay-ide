@@ -59,7 +59,7 @@ export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
 export type SessionMode = 'pty' | 'web';
-export type TerminalBackend = 'tmux-compat' | 'relay-pty';
+export type TerminalBackend = 'relay-pty';
 
 // ── Agent Framework Registry ──
 
@@ -389,8 +389,6 @@ export interface PtySession extends BaseSession {
   terminalBackend: TerminalBackend;
   /** Relay-owned terminal screen model used by the relay-pty backend. */
   terminalModel?: TerminalModelBackend;
-  useTmux: boolean;
-  tmuxSessionName: string;
   onPtyReplacedCallbacks: Array<(newPty: IPty) => void>;
   restored: boolean;
   branchRenamePrompt?: string;
@@ -493,10 +491,6 @@ export interface SessionSummary {
   worktreeInstanceId?: WorktreeInstanceId;
   /** PTY sessions only */
   terminalBackend?: TerminalBackend;
-  /** PTY sessions only */
-  useTmux?: boolean;
-  /** PTY sessions only */
-  tmuxSessionName?: string;
   status: SessionStatus;
   /**
    * Derived durability state (#614). Coarse `status` stays for backward

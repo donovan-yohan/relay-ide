@@ -21,7 +21,7 @@ export interface CreateAgentSessionOptions {
   claudeArgs?: string[] | undefined;
   yolo?: boolean | undefined;
   agent?: string | undefined;
-  terminalBackend?: 'relay-pty' | 'tmux-compat' | undefined;
+  terminalBackend?: 'relay-pty' | undefined;
   cols?: number | undefined;
   rows?: number | undefined;
   needsBranchRename?: boolean | undefined;

@@ -52,13 +52,13 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       totals: { available: 11, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'available',
         clipboardImage: 'available',
         ssh: 'available',
         tailscale: 'available',
       },
+      terminalBackends: { 'relay-pty': 'available' },
       agents: { claude: 'available', codex: 'available' },
       serviceManager: 'launchd',
       wsl: false,
@@ -106,7 +106,7 @@ function confirmationChallenge(
 }
 
 describe('hub node dashboard state', () => {
-  it('marks online nodes with shell, tmux, git, and agent CLIs as ready to work', () => {
+  it('marks online nodes with shell, relay-pty, git, and agent CLIs as ready to work', () => {
     const [row] = deriveHubNodeDashboardRows([node()], { now });
 
     expect(row).toMatchObject({
@@ -124,7 +124,7 @@ describe('hub node dashboard state', () => {
       row.capabilityHints.map((hint) => `${hint.label}:${hint.status}`)
     ).toEqual([
       'shell:available',
-      'tmux:available',
+      'terminal backend:available',
       'git:available',
       'worktrees:available',
       'agents:available',
@@ -170,9 +170,9 @@ describe('hub node dashboard state', () => {
             totals: { available: 8, degraded: 1, unavailable: 2, unknown: 0 },
             core: {
               ...node().capabilities.core,
-              tmux: 'degraded',
               git: 'unavailable',
             },
+            terminalBackends: { 'relay-pty': 'degraded' },
           },
         }),
       ],
@@ -181,11 +181,14 @@ describe('hub node dashboard state', () => {
 
     expect(row.attachable).toBe(false);
     expect(row.disabledReason).toBe(
-      'work disabled: tmux degraded; git unavailable; worktrees unavailable'
+      'work disabled: terminal backend degraded; git unavailable; worktrees unavailable'
     );
     expect(row.capabilityHints).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: 'tmux', status: 'degraded' }),
+        expect.objectContaining({
+          label: 'terminal backend',
+          status: 'degraded',
+        }),
         expect.objectContaining({ label: 'git', status: 'unavailable' }),
         expect.objectContaining({ label: 'worktrees', status: 'unavailable' }),
       ])
@@ -432,7 +435,12 @@ describe('selectProdTierNodes', () => {
 
   it('returns empty array when the only node is dev-tier', () => {
     const devNode = node({
-      trust: { state: 'trusted', level: 'dev', tier: 'dev', policy: policy('node-1', 'dev') },
+      trust: {
+        state: 'trusted',
+        level: 'dev',
+        tier: 'dev',
+        policy: policy('node-1', 'dev'),
+      },
     });
     expect(selectProdTierNodes([devNode])).toEqual([]);
   });
@@ -441,7 +449,12 @@ describe('selectProdTierNodes', () => {
     const prodNode = node({
       nodeId: 'prod-1',
       status: 'online',
-      trust: { state: 'trusted', level: 'prod', tier: 'prod', policy: policy('prod-1', 'prod') },
+      trust: {
+        state: 'trusted',
+        level: 'prod',
+        tier: 'prod',
+        policy: policy('prod-1', 'prod'),
+      },
     });
     expect(selectProdTierNodes([prodNode])).toEqual([prodNode]);
   });
@@ -450,7 +463,12 @@ describe('selectProdTierNodes', () => {
     const revokedProd = node({
       nodeId: 'prod-revoked',
       status: 'revoked',
-      trust: { state: 'trusted', level: 'prod', tier: 'prod', policy: policy('prod-revoked', 'prod') },
+      trust: {
+        state: 'trusted',
+        level: 'prod',
+        tier: 'prod',
+        policy: policy('prod-revoked', 'prod'),
+      },
     });
     expect(selectProdTierNodes([revokedProd])).toEqual([]);
   });
@@ -459,17 +477,32 @@ describe('selectProdTierNodes', () => {
     const devNode = node({
       nodeId: 'dev-1',
       status: 'online',
-      trust: { state: 'trusted', level: 'dev', tier: 'dev', policy: policy('dev-1', 'dev') },
+      trust: {
+        state: 'trusted',
+        level: 'dev',
+        tier: 'dev',
+        policy: policy('dev-1', 'dev'),
+      },
     });
     const prodNode = node({
       nodeId: 'prod-1',
       status: 'online',
-      trust: { state: 'trusted', level: 'prod', tier: 'prod', policy: policy('prod-1', 'prod') },
+      trust: {
+        state: 'trusted',
+        level: 'prod',
+        tier: 'prod',
+        policy: policy('prod-1', 'prod'),
+      },
     });
     const revokedProd = node({
       nodeId: 'prod-revoked',
       status: 'revoked',
-      trust: { state: 'trusted', level: 'prod', tier: 'prod', policy: policy('prod-revoked', 'prod') },
+      trust: {
+        state: 'trusted',
+        level: 'prod',
+        tier: 'prod',
+        policy: policy('prod-revoked', 'prod'),
+      },
     });
     const result = selectProdTierNodes([devNode, prodNode, revokedProd]);
     expect(result).toHaveLength(1);
@@ -500,7 +533,10 @@ describe('selectProdTierNodes', () => {
         state: 'trusted',
         level: 'prod',
         tier: 'prod',
-        policy: { ...policy('prod-revoked-policy', 'prod'), revokedAt: createdAt },
+        policy: {
+          ...policy('prod-revoked-policy', 'prod'),
+          revokedAt: createdAt,
+        },
       },
     });
     expect(selectProdTierNodes([revokedPolicyNode])).toEqual([]);
@@ -514,7 +550,10 @@ describe('selectProdTierNodes', () => {
         state: 'trusted',
         level: 'prod',
         tier: 'prod',
-        policy: { ...policy('prod-superseded', 'prod'), supersededBy: 'acl:replacement:1.0' },
+        policy: {
+          ...policy('prod-superseded', 'prod'),
+          supersededBy: 'acl:replacement:1.0',
+        },
       },
     });
     expect(selectProdTierNodes([supersededNode])).toEqual([]);

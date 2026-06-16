@@ -1,27 +1,17 @@
 import pty from 'node-pty';
 import type { IPty, IPtyForkOptions } from 'node-pty';
 import { Buffer } from 'node:buffer';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import type { Logger } from './logger.js';
-import { createLogger } from './logger.js';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * Stable wire interface between `node-link-pty-host.ts` and concrete
- * session-attach implementations. Phase 1 (#467) ships `TmuxAttachment`
- * and a raw fallback; phase 2 (#469) will plug a server-side canonical
- * terminal in beside, not under, the tmux feature. No implementation
- * details (tmux verbs, node-pty handles, socket names) leak past this
+ * session-attach implementations. Relay-owned PTYs are the only live
+ * attachment backend; this abstraction keeps node-pty handles behind one
  * boundary.
  */
 export type SessionAttachmentStatus = 'attached' | 'detached' | 'closed';
 
-export type SessionAttachmentMode = 'tmux' | 'raw';
+export type SessionAttachmentMode = 'raw';
 
 export interface SessionAttachmentSpawnOptions {
   sessionId: string;
@@ -37,16 +27,6 @@ export interface SessionAttachmentDisposable {
   dispose(): void;
 }
 
-/**
- * Magic `close()` reason that tells the tmux backend to destroy the
- * persistent session, not just the local attach client. `node-link-pty-
- * host` passes this on `closeAll('host shutting down')`-style paths
- * where the caller has decided the session is no longer wanted; normal
- * detach uses any other reason (or `undefined`) to keep the tmux
- * session alive for the next attach.
- */
-export const SESSION_ATTACHMENT_KILL_REASON = '__relay_kill_session__';
-
 export interface SessionAttachment {
   readonly sessionId: string;
   readonly mode: SessionAttachmentMode;
@@ -57,12 +37,8 @@ export interface SessionAttachment {
   write(bytes: Buffer): void;
   resize(cols: number, rows: number): void;
   /**
-   * Default: detach the local client only (tmux backend keeps the
-   * persistent session alive for the next attach).
-   *
-   * Pass `SESSION_ATTACHMENT_KILL_REASON` to fully destroy the
-   * persistent session — used when the caller has explicit intent to
-   * end the session, not just disconnect a browser.
+   * Close the Relay-owned PTY attachment. Relay-pty is not a process
+   * supervisor; closing an attachment ends the local child process.
    */
   close(reason?: string): Promise<void>;
   status(): SessionAttachmentStatus;
@@ -171,243 +147,6 @@ export function createRawAttachmentFactory(
   };
 }
 
-// Tmux config is invisible: no status bar, no prefix key, no mouse, zero
-// escape-time. Operators never see the tmux UI; tmux is an
-// attach-by-name primitive only.
-const TMUX_CONF_BODY = [
-  'set-option -g status off',
-  'unbind-key -a',
-  'set-option -g mouse off',
-  'set-option -g escape-time 0',
-  `set-option -g default-terminal "${DEFAULT_TERM}"`,
-  'set-option -g history-limit 5000',
-  'set-option -g destroy-unattached off',
-].join('\n');
-
-function defaultUserConfigDir(): string {
-  // XDG-style location under the user's HOME, never world-readable.
-  // os.tmpdir() is shared by every uid on the box (Copilot review,
-  // #472) — a malicious local user could pre-create the directory
-  // with permissive perms and race the conf write, and tmux configs
-  // can shell out via `run-shell`.
-  const xdg = process.env['XDG_CONFIG_HOME'];
-  const base =
-    xdg && xdg.startsWith('/') ? xdg : path.join(os.homedir(), '.config');
-  return path.join(base, 'relay-ide', 'tmux');
-}
-
-function writeTmuxConfig(dir: string): string {
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // Tighten perms even if the directory pre-existed with a wider mode.
-  try {
-    fs.chmodSync(dir, 0o700);
-  } catch {
-    // Best-effort: chmod may fail on weird filesystems (e.g. SMB).
-  }
-  const file = path.join(dir, 'relay.tmux.conf');
-  fs.writeFileSync(file, `${TMUX_CONF_BODY}\n`, { mode: 0o600 });
-  return file;
-}
-
-function sanitizeTmuxName(sessionId: string): string {
-  // Whitelist alphanumeric + underscore + hyphen. Tmux session names
-  // also reject ':' and '.' but other characters ([, ], whitespace,
-  // shell metacharacters) cause downstream parsing/quoting bugs that
-  // are not worth defending against case-by-case.
-  return `relay-${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-}
-
-export interface TmuxAttachmentFactoryDeps {
-  spawn?: PtySpawn;
-  tmuxPath?: string;
-  socketName?: string;
-  /**
-   * Directory for the baked-in tmux.conf. Defaults to
-   * `$XDG_CONFIG_HOME/relay-ide/tmux` (or `~/.config/relay-ide/tmux`).
-   * Tests can override to a scratch dir.
-   */
-  configDir?: string;
-  logger?: Logger;
-  /**
-   * Hook to ensure the tmux session exists. Defaults to async execFile
-   * against `tmux`. Tests can stub this without invoking real tmux.
-   */
-  ensureSession?: (params: {
-    tmuxPath: string;
-    socketName: string;
-    configPath: string;
-    target: string;
-    options: SessionAttachmentSpawnOptions;
-  }) => Promise<void> | void;
-  /**
-   * Hook to kill a tmux session when `close()` is invoked with
-   * `SESSION_ATTACHMENT_KILL_REASON`. Defaults to async execFile of
-   * `tmux kill-session -t <target>`. Tests can stub this.
-   */
-  killSession?: (params: {
-    tmuxPath: string;
-    socketName: string;
-    configPath: string;
-    target: string;
-    env: NodeJS.ProcessEnv;
-  }) => Promise<void> | void;
-}
-
-/**
- * tmux-backed attachment. Browser reload reattaches to the same shell:
- *
- *   first attach  -> ensure session via `tmux new-session -d -s <target>`
- *                    then `attach-session -t <target>` over node-pty
- *   second attach -> session already exists, just `attach-session`
- *
- * `close()` kills the local attach client; the tmux session persists
- * for the next attach. To fully destroy the persistent session pass
- * `SESSION_ATTACHMENT_KILL_REASON` as the reason.
- */
-export function createTmuxAttachmentFactory(
-  deps: TmuxAttachmentFactoryDeps = {}
-): SessionAttachmentFactory {
-  const logger = deps.logger ?? createLogger('session-attachment-tmux');
-  const spawn = deps.spawn ?? (pty.spawn as unknown as PtySpawn);
-  const tmuxPath = deps.tmuxPath ?? 'tmux';
-  const socketName = deps.socketName ?? 'relay';
-  const configDir = deps.configDir ?? defaultUserConfigDir();
-  let configPath: string | undefined;
-
-  function ensureConfig(): string {
-    if (!configPath) configPath = writeTmuxConfig(configDir);
-    return configPath;
-  }
-
-  const ensureSession =
-    deps.ensureSession ??
-    (async ({
-      tmuxPath: bin,
-      socketName: socket,
-      configPath: cfg,
-      target,
-      options,
-    }) => {
-      const env = options.env;
-      try {
-        await execFileAsync(
-          bin,
-          ['-L', socket, '-f', cfg, 'has-session', '-t', target],
-          { env, timeout: 2_000 }
-        );
-        return;
-      } catch {
-        // not present — fall through to new-session
-      }
-
-      try {
-        await execFileAsync(
-          bin,
-          [
-            '-L',
-            socket,
-            '-f',
-            cfg,
-            'new-session',
-            '-d',
-            '-s',
-            target,
-            '-x',
-            String(options.cols),
-            '-y',
-            String(options.rows),
-            options.command,
-            ...options.args,
-          ],
-          { cwd: options.cwd, env, timeout: 5_000 }
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        // Race: another caller may have created the session between
-        // has-session and new-session.
-        if (message.includes('duplicate session')) return;
-        try {
-          await execFileAsync(
-            bin,
-            ['-L', socket, '-f', cfg, 'has-session', '-t', target],
-            { env, timeout: 2_000 }
-          );
-          return;
-        } catch {
-          throw new Error(`tmux new-session failed: ${message}`);
-        }
-      }
-    });
-
-  const killSession =
-    deps.killSession ??
-    (async ({
-      tmuxPath: bin,
-      socketName: socket,
-      configPath: cfg,
-      target,
-      env,
-    }) => {
-      try {
-        await execFileAsync(
-          bin,
-          ['-L', socket, '-f', cfg, 'kill-session', '-t', target],
-          { env, timeout: 2_000 }
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.warn?.(`tmux kill-session failed for ${target}: ${message}`);
-      }
-    });
-
-  return {
-    mode: 'tmux',
-    async open(options) {
-      const cfg = ensureConfig();
-      const target = sanitizeTmuxName(options.sessionId);
-      logger.debug?.(
-        `tmux attach for session ${options.sessionId} -> ${target}`
-      );
-      await ensureSession({
-        tmuxPath,
-        socketName,
-        configPath: cfg,
-        target,
-        options,
-      });
-      const attachArgs = [
-        '-u',
-        '-L',
-        socketName,
-        '-f',
-        cfg,
-        'attach-session',
-        '-t',
-        target,
-      ];
-      const proc = spawn(tmuxPath, attachArgs, {
-        name: DEFAULT_TERM,
-        cols: options.cols,
-        rows: options.rows,
-        cwd: options.cwd,
-        env: options.env,
-      });
-      return wrapPty(options.sessionId, 'tmux', proc, {
-        onClose: async (reason) => {
-          if (reason !== SESSION_ATTACHMENT_KILL_REASON) return;
-          await killSession({
-            tmuxPath,
-            socketName,
-            configPath: cfg,
-            target,
-            env: options.env,
-          });
-        },
-      });
-    },
-  };
-}
-
 export interface MockAttachmentRecord {
   written: Buffer[];
   resizes: Array<{ cols: number; rows: number }>;
@@ -427,7 +166,7 @@ export interface MockAttachmentFactory
 
 /**
  * Test attachment factory. Replays scripted bytes, captures every
- * write/resize/close. Never spawns a real process or tmux. Scripted
+ * write/resize/close. Never spawns a real process. Scripted
  * data is buffered until the first onData listener registers so the
  * common "await open() then attachment.onData(...)" pattern observes
  * the replay (Copilot review, #472).
@@ -475,7 +214,7 @@ export function createMockAttachmentFactory(
   }
 
   return {
-    mode: 'tmux',
+    mode: 'raw',
     attachments,
     records,
     emit,
@@ -497,7 +236,7 @@ export function createMockAttachmentFactory(
       let state: SessionAttachmentStatus = 'attached';
       const attachment: SessionAttachment = {
         sessionId: spawnOpts.sessionId,
-        mode: 'tmux',
+        mode: 'raw',
         onData(handler) {
           data.push(handler);
           const buffered = pendingData[idx] ?? [];

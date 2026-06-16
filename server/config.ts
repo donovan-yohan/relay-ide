@@ -81,7 +81,10 @@ export function loadConfig(configPath: string): Config {
   }
   const raw = fs.readFileSync(configPath, 'utf8');
   const parsed = JSON.parse(raw) as Partial<Config> & Record<string, unknown>;
-  const config: Config = { ...DEFAULTS, ...omitLegacyTmuxLaunchSetting(parsed) };
+  const config: Config = {
+    ...DEFAULTS,
+    ...omitLegacyTmuxLaunchSetting(parsed),
+  };
   if (config.repoSettings) {
     config.repoSettings = Object.fromEntries(
       Object.entries(config.repoSettings).map(([repoPath, settings]) => [
@@ -193,7 +196,6 @@ export interface ResolvedSessionSettings {
   agent: AgentType;
   yolo: boolean;
   continuePolicy: ContinuePolicy;
-  useTmux: boolean;
   terminalBackend: TerminalBackend;
   claudeArgs: string[];
   /** #614 slice 4: effective per-session scrollback cap, undefined = use pty-handler default. */
@@ -250,7 +252,6 @@ export interface SessionSettingsOverrides {
   agent?: AgentType | undefined;
   yolo?: boolean | undefined;
   continuePolicy?: ContinuePolicy | undefined;
-  useTmux?: boolean | undefined;
   terminalBackend?: TerminalBackend | undefined;
   claudeArgs?: string[] | undefined;
 }
@@ -258,7 +259,7 @@ export interface SessionSettingsOverrides {
 export function normalizeTerminalBackend(
   value: unknown
 ): TerminalBackend | undefined {
-  return value === 'relay-pty' || value === 'tmux-compat' ? value : undefined;
+  return value === 'relay-pty' ? value : undefined;
 }
 
 export function defaultTerminalBackend(config: Config): TerminalBackend {
@@ -294,12 +295,7 @@ export function resolveSessionSettings(
   // Merge: repo overrides workspace overrides global
   const merged = { ...globalDefaults, ...wsDefaults, ...repoSpecific };
   const terminalBackend =
-    overrides.terminalBackend ??
-    (overrides.useTmux === false
-      ? 'relay-pty'
-      : overrides.useTmux === true
-        ? 'tmux-compat'
-        : undefined) ??
+    normalizeTerminalBackend(overrides.terminalBackend) ??
     normalizeTerminalBackend(merged.terminalBackend) ??
     'relay-pty';
 
@@ -331,7 +327,6 @@ export function resolveSessionSettings(
     yolo: overrides.yolo ?? merged.defaultYolo ?? false,
     continuePolicy: overrides.continuePolicy ?? configPolicy,
     terminalBackend,
-    useTmux: terminalBackend === 'tmux-compat',
     ...(scrollbackBytes !== undefined ? { scrollbackBytes } : {}),
     claudeArgs: overrides.claudeArgs ?? merged.claudeArgs ?? [],
   };

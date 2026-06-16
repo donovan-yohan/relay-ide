@@ -32,7 +32,6 @@ function TerminalHarness() {
         <Terminal
           ref={terminalRef}
           sessionId={null}
-          useTmux={true}
           onCopyModeChange={() => undefined}
           onFilePathClick={() => undefined}
         />

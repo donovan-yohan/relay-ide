@@ -461,11 +461,10 @@ function validateCreateEnums(
   }
   if (
     input['terminalBackend'] !== undefined &&
-    input['terminalBackend'] !== 'tmux-compat' &&
     input['terminalBackend'] !== 'relay-pty'
   ) {
     return invalidCreateInput(
-      'sessions.create terminalBackend must be tmux-compat or relay-pty',
+      'sessions.create terminalBackend must be relay-pty',
       {
         field: 'terminalBackend',
       }

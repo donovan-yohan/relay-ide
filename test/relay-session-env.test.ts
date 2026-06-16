@@ -90,10 +90,9 @@ afterEach(() => {
 // ── Unit-level: env/shim construction via exported test helper ──────────────
 
 describe('injectRelaySessionEnvForTest — env var injection', () => {
-  it('injects RELAY_NODE_ID and RELAY_SESSION_ID into env and tmuxEnv', () => {
+  it('injects RELAY_NODE_ID and RELAY_SESSION_ID into env', () => {
     const env: Record<string, string> = { PATH: '/usr/bin:/bin' };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin:/bin' };
-    injectRelaySessionEnvForTest(env, tmuxEnv, {
+    injectRelaySessionEnvForTest(env, {
       sessionId: 'ses-abc',
       nodeId: 'local',
       port: 3456,
@@ -101,64 +100,52 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
     });
     expect(env.RELAY_NODE_ID).toBe('local');
     expect(env.RELAY_SESSION_ID).toBe('ses-abc');
-    expect(tmuxEnv.RELAY_NODE_ID).toBe('local');
-    expect(tmuxEnv.RELAY_SESSION_ID).toBe('ses-abc');
   });
 
   it('injects RELAY_HUB_URL when port is set', () => {
     const env: Record<string, string> = { PATH: '/usr/bin' };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
-    injectRelaySessionEnvForTest(env, tmuxEnv, {
+    injectRelaySessionEnvForTest(env, {
       sessionId: 'ses-hub',
       nodeId: 'local',
       port: 9876,
       workContextId: undefined,
     });
     expect(env.RELAY_HUB_URL).toBe('http://127.0.0.1:9876');
-    expect(tmuxEnv.RELAY_HUB_URL).toBe('http://127.0.0.1:9876');
     expect(env.RELAY_SOCKET).toBe('http://127.0.0.1:9876');
-    expect(tmuxEnv.RELAY_SOCKET).toBe('http://127.0.0.1:9876');
   });
 
   it('omits RELAY_HUB_URL when port is undefined', () => {
     const env: Record<string, string> = { PATH: '/usr/bin' };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
-    injectRelaySessionEnvForTest(env, tmuxEnv, {
+    injectRelaySessionEnvForTest(env, {
       sessionId: 'ses-noport',
       nodeId: 'local',
       port: undefined,
       workContextId: undefined,
     });
     expect(env.RELAY_HUB_URL).toBeUndefined();
-    expect(tmuxEnv.RELAY_HUB_URL).toBeUndefined();
     expect(env.RELAY_SOCKET).toBeUndefined();
-    expect(tmuxEnv.RELAY_SOCKET).toBeUndefined();
   });
 
   it('injects RELAY_WORK_CONTEXT_ID when provided', () => {
     const env: Record<string, string> = { PATH: '/usr/bin' };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
-    injectRelaySessionEnvForTest(env, tmuxEnv, {
+    injectRelaySessionEnvForTest(env, {
       sessionId: 'ses-ctx',
       nodeId: 'local',
       port: 3456,
       workContextId: 'wc-xyz-123',
     });
     expect(env.RELAY_WORK_CONTEXT_ID).toBe('wc-xyz-123');
-    expect(tmuxEnv.RELAY_WORK_CONTEXT_ID).toBe('wc-xyz-123');
   });
 
   it('omits RELAY_WORK_CONTEXT_ID when not provided', () => {
     const env: Record<string, string> = { PATH: '/usr/bin' };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
-    injectRelaySessionEnvForTest(env, tmuxEnv, {
+    injectRelaySessionEnvForTest(env, {
       sessionId: 'ses-noctx',
       nodeId: 'local',
       port: 3456,
       workContextId: undefined,
     });
     expect(env.RELAY_WORK_CONTEXT_ID).toBeUndefined();
-    expect(tmuxEnv.RELAY_WORK_CONTEXT_ID).toBeUndefined();
   });
 
   it('prepends a per-session bin dir to PATH when relayctl binary exists', () => {
@@ -166,8 +153,7 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
     // is only written when the binary is locatable. Both outcomes are valid.
     const originalPath = '/usr/local/bin:/usr/bin:/bin';
     const env: Record<string, string> = { PATH: originalPath };
-    const tmuxEnv: Record<string, string> = { PATH: originalPath };
-    injectRelaySessionEnvForTest(env, tmuxEnv, {
+    injectRelaySessionEnvForTest(env, {
       sessionId: 'ses-path',
       nodeId: 'local',
       port: 3456,
@@ -180,7 +166,6 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
       expect(shimDir).toContain('ses-path');
       expect(shimDir).toMatch(/bin$/);
       expect(env.PATH).toContain(originalPath);
-      expect(tmuxEnv.PATH).toContain(originalPath);
       // Verify relayctl and relay files were written in the shim dir
       const { existsSync } = fs;
       expect(existsSync(path.join(shimDir, 'relayctl'))).toBe(true);
@@ -192,8 +177,7 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
 
   it('writes an executable relayctl shim in the per-session bin dir when binary is resolvable', () => {
     const env: Record<string, string> = { PATH: '/usr/bin' };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
-    injectRelaySessionEnvForTest(env, tmuxEnv, {
+    injectRelaySessionEnvForTest(env, {
       sessionId: 'ses-shim',
       nodeId: 'local',
       port: 3456,
@@ -209,33 +193,26 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
 // ── #740: Bench env-override application + precedence ──────────────────────
 
 describe('injectBenchEnvOverridesForTest — bench env inheritance (#740)', () => {
-  it('applies non-reserved overrides to both env and tmuxEnv', () => {
+  it('applies non-reserved overrides to env', () => {
     const env: Record<string, string> = { PATH: '/usr/bin' };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
-    injectBenchEnvOverridesForTest(env, tmuxEnv, {
+    injectBenchEnvOverridesForTest(env, {
       MY_VAR: 'hello',
       ANOTHER: '42',
     });
     expect(env.MY_VAR).toBe('hello');
     expect(env.ANOTHER).toBe('42');
-    expect(tmuxEnv.MY_VAR).toBe('hello');
-    expect(tmuxEnv.ANOTHER).toBe('42');
   });
 
   it('an empty override record is a no-op (unchanged behavior)', () => {
     const env: Record<string, string> = { PATH: '/usr/bin', EXISTING: 'x' };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
-    injectBenchEnvOverridesForTest(env, tmuxEnv, {});
+    injectBenchEnvOverridesForTest(env, {});
     expect(env).toEqual({ PATH: '/usr/bin', EXISTING: 'x' });
-    expect(tmuxEnv).toEqual({ PATH: '/usr/bin' });
   });
 
   it('refuses to clobber PATH (relayctl shim is Relay-owned)', () => {
     const env: Record<string, string> = { PATH: '/usr/bin' };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
-    injectBenchEnvOverridesForTest(env, tmuxEnv, { PATH: '/evil/bin' });
+    injectBenchEnvOverridesForTest(env, { PATH: '/evil/bin' });
     expect(env.PATH).toBe('/usr/bin');
-    expect(tmuxEnv.PATH).toBe('/usr/bin');
   });
 
   it('refuses to clobber any RELAY_* var (session identity is Relay-owned)', () => {
@@ -243,8 +220,7 @@ describe('injectBenchEnvOverridesForTest — bench env inheritance (#740)', () =
       PATH: '/usr/bin',
       RELAY_NODE_ID: 'local',
     };
-    const tmuxEnv: Record<string, string> = { PATH: '/usr/bin' };
-    injectBenchEnvOverridesForTest(env, tmuxEnv, {
+    injectBenchEnvOverridesForTest(env, {
       RELAY_NODE_ID: 'spoofed',
       RELAY_SESSION_ID: 'spoofed',
       RELAY_HUB_URL: 'http://evil',
@@ -252,13 +228,11 @@ describe('injectBenchEnvOverridesForTest — bench env inheritance (#740)', () =
     expect(env.RELAY_NODE_ID).toBe('local');
     expect(env.RELAY_SESSION_ID).toBeUndefined();
     expect(env.RELAY_HUB_URL).toBeUndefined();
-    expect(tmuxEnv.RELAY_NODE_ID).toBeUndefined();
   });
 
   it('drops non-string values and blank keys (paranoid sanitize)', () => {
     const env: Record<string, string> = { PATH: '/usr/bin' };
-    const tmuxEnv: Record<string, string> = {};
-    injectBenchEnvOverridesForTest(env, tmuxEnv, {
+    injectBenchEnvOverridesForTest(env, {
       GOOD: 'ok',
       '': 'no-key',
       // @ts-expect-error intentionally non-string to prove it is dropped

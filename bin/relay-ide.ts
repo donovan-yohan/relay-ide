@@ -3559,7 +3559,10 @@ function parseGatewaySupervisorActionBody(
   }
   // Submit-only boolean flags (#958).
   if (commandName === 'supervisor.submit') {
-    if (supervisorArgs.includes('--clear-input') && body['clearInput'] === undefined) {
+    if (
+      supervisorArgs.includes('--clear-input') &&
+      body['clearInput'] === undefined
+    ) {
       body['clearInput'] = true;
     }
     if (supervisorArgs.includes('--paste') && body['paste'] === undefined) {
@@ -4478,7 +4481,9 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
     // passes back via `--cursor` to resume; `replay` marks backfilled frames
     // and `replayDropped` marks a gap where the cursor aged out of the buffer.
     const cursor =
-      typeof frame['cursor'] === 'string' ? (frame['cursor'] as string) : undefined;
+      typeof frame['cursor'] === 'string'
+        ? (frame['cursor'] as string)
+        : undefined;
     const replay = frame['replay'] === true ? true : undefined;
     const replayDropped = frame['replayDropped'] === true ? true : undefined;
 
@@ -4638,7 +4643,8 @@ function automationRunListSearch(runArgs: string[]): string {
     const value = gatewayArg(runArgs, flag);
     if (value) query.set(key, value);
   }
-  if (runArgs.includes('--include-retired')) query.set('includeRetired', 'true');
+  if (runArgs.includes('--include-retired'))
+    query.set('includeRetired', 'true');
   return query.toString();
 }
 
@@ -4726,7 +4732,8 @@ function prOverseerListSearch(runArgs: string[]): string {
     const value = gatewayArg(runArgs, flag);
     if (value) query.set(key, value);
   }
-  if (runArgs.includes('--include-retired')) query.set('includeRetired', 'true');
+  if (runArgs.includes('--include-retired'))
+    query.set('includeRetired', 'true');
   return query.toString();
 }
 
@@ -4746,7 +4753,8 @@ async function runGatewayPrOverseer(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'observe') {
     const id = gatewayArg(runArgs, '--id') ?? runArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid('pr-overseer.observe', '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('pr-overseer.observe', '--id is required');
     const input = parseGatewayInputObject('pr-overseer.observe', runArgs);
     const result = await gatewayHttpJson({
       commandName: 'pr-overseer.observe',
@@ -4759,7 +4767,8 @@ async function runGatewayPrOverseer(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'retire') {
     const id = gatewayArg(runArgs, '--id') ?? runArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid('pr-overseer.retire', '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('pr-overseer.retire', '--id is required');
     const reason = gatewayArg(runArgs, '--reason');
     const retiredBy = gatewayArg(runArgs, '--retired-by');
     const body: Record<string, unknown> = {};
@@ -4785,7 +4794,8 @@ async function runGatewayPrOverseer(gatewayArgs: string[]): Promise<never> {
   }
   if (subcommand === 'get') {
     const id = gatewayArg(runArgs, '--id') ?? runArgs[0];
-    if (!id || id.startsWith('--')) gatewayInvalid('pr-overseer.get', '--id is required');
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('pr-overseer.get', '--id is required');
     const currentHeadSha = gatewayArg(runArgs, '--current-head-sha');
     const query = currentHeadSha
       ? `?currentHeadSha=${encodeURIComponent(currentHeadSha)}`
@@ -4989,32 +4999,33 @@ async function runGatewayV1(): Promise<never> {
   // Top-level group → handler. All handlers take the full gateway argv and never
   // return (each prints an envelope and exits). A table keeps this dispatch flat
   // instead of an ever-growing if-chain.
-  const gatewayGroupHandlers: Record<string, (a: string[]) => Promise<never>> = {
-    nodes: runGatewayNodes,
-    repos: runGatewayRepos,
-    workspaces: runGatewayWorkspaces,
-    worktrees: runGatewayWorktrees,
-    sessions: runGatewaySessions,
-    tickets: runGatewayTickets,
-    branches: runGatewayBranches,
-    files: runGatewayFiles,
-    'work-contexts': runGatewayWorkContexts,
-    context: runGatewayContext,
-    inbox: runGatewayInbox,
-    handoffs: runGatewayHandoffs,
-    'work-context-messages': runGatewayWorkContextMessages,
-    'work-context-artifacts': runGatewayWorkContextArtifacts,
-    'handoff-artifacts': runGatewayHandoffArtifacts,
-    'workflow-runs': runGatewayWorkflowRuns,
-    'automation-runs': runGatewayAutomationRuns,
-    'pr-overseer': runGatewayPrOverseer,
-    roster: runGatewayRoster,
-    artifacts: runGatewayArtifacts,
-    supervisor: runGatewaySupervisor,
-    events: runGatewayEvents,
-    settings: runGatewaySettings,
-    webhooks: runGatewayWebhooks,
-  };
+  const gatewayGroupHandlers: Record<string, (a: string[]) => Promise<never>> =
+    {
+      nodes: runGatewayNodes,
+      repos: runGatewayRepos,
+      workspaces: runGatewayWorkspaces,
+      worktrees: runGatewayWorktrees,
+      sessions: runGatewaySessions,
+      tickets: runGatewayTickets,
+      branches: runGatewayBranches,
+      files: runGatewayFiles,
+      'work-contexts': runGatewayWorkContexts,
+      context: runGatewayContext,
+      inbox: runGatewayInbox,
+      handoffs: runGatewayHandoffs,
+      'work-context-messages': runGatewayWorkContextMessages,
+      'work-context-artifacts': runGatewayWorkContextArtifacts,
+      'handoff-artifacts': runGatewayHandoffArtifacts,
+      'workflow-runs': runGatewayWorkflowRuns,
+      'automation-runs': runGatewayAutomationRuns,
+      'pr-overseer': runGatewayPrOverseer,
+      roster: runGatewayRoster,
+      artifacts: runGatewayArtifacts,
+      supervisor: runGatewaySupervisor,
+      events: runGatewayEvents,
+      settings: runGatewaySettings,
+      webhooks: runGatewayWebhooks,
+    };
   const groupHandler = top ? gatewayGroupHandlers[top] : undefined;
   if (groupHandler) return groupHandler(gatewayArgs);
   gatewayInvalid('contract.list', 'unknown v1 gateway command', {
@@ -5503,7 +5514,6 @@ function nodeCapabilityChecks(node: HubNodeSummary): HubDoctorCheck[] {
         nodeId: node.nodeId,
         capability: 'terminalBackend',
         terminalBackends,
-        tmuxStatus: node.capabilities.core.tmux,
       },
     });
   }
@@ -5641,7 +5651,7 @@ function formatNodeTable(nodes: HubNodeSummary[]): string[] {
 
 function terminalBackendCell(node: HubNodeSummary): string {
   const backends = nodeTerminalBackends(node);
-  return `pty:${backends['relay-pty']} tmux:${backends['tmux-compat']}`;
+  return `pty:${backends['relay-pty']}`;
 }
 
 async function printHubNodes(commandArgs: string[]): Promise<void> {

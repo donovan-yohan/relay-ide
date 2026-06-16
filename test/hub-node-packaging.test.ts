@@ -100,13 +100,17 @@ function resetCliLogDir(): void {
   fs.rmSync('/tmp/relay-ide-test-config', { recursive: true, force: true });
 }
 
-function writeHubConfig(pathName = '/tmp/relay-ide-test-config/config.json'): string {
+function writeHubConfig(
+  pathName = '/tmp/relay-ide-test-config/config.json'
+): string {
   fs.mkdirSync(path.dirname(pathName), { recursive: true });
   fs.writeFileSync(pathName, JSON.stringify({ port: 3456 }));
   return pathName;
 }
 
-function sampleHubNode(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function sampleHubNode(
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
   return {
     nodeId: 'node_alpha',
     displayName: 'Alpha MacBook',
@@ -128,17 +132,17 @@ function sampleHubNode(overrides: Record<string, unknown> = {}): Record<string, 
       totals: { available: 3, degraded: 0, unavailable: 0, unknown: 0 },
       core: {
         shell: 'available',
-        tmux: 'available',
         git: 'available',
         browserAutomation: 'unknown',
         clipboardImage: 'unknown',
         ssh: 'unknown',
         tailscale: 'unknown',
       },
+      terminalBackends: { 'relay-pty': 'available' },
       agents: { claude: 'available' },
       serviceManager: 'launchd',
       wsl: false,
-      sessionResume: 'tmux',
+      sessionResume: 'canonical-emulator',
     },
     createdAt: '2026-01-01T00:00:00.000Z',
     pairedAt: '2026-01-01T00:00:00.000Z',
@@ -160,14 +164,21 @@ function stubHubFetch(fixtures: FetchFixture[]): string[] {
     'fetch',
     vi.fn(async (input: URL | RequestInfo) => {
       const url = new URL(String(input));
-      const fixture = fixtures.find((candidate) => candidate.pathName === `${url.pathname}${url.search}`)
-        ?? fixtures.find((candidate) => candidate.pathName === url.pathname);
+      const fixture =
+        fixtures.find(
+          (candidate) => candidate.pathName === `${url.pathname}${url.search}`
+        ) ?? fixtures.find((candidate) => candidate.pathName === url.pathname);
       paths.push(`${url.pathname}${url.search}`);
       if (!fixture) {
-        return new Response(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'missing fixture' } }), {
-          status: 404,
-          headers: { 'content-type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify({
+            error: { code: 'NOT_FOUND', message: 'missing fixture' },
+          }),
+          {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          }
+        );
       }
       return new Response(JSON.stringify(fixture.body), {
         status: fixture.status ?? 200,
@@ -314,7 +325,9 @@ describe('hub/node packaging decision', () => {
         secret: 'secret_should-not-log',
       },
     });
-    const requests = stubHubFetch([{ pathName: '/nodes', body: { nodes: [node] } }]);
+    const requests = stubHubFetch([
+      { pathName: '/nodes', body: { nodes: [node] } },
+    ]);
     let stdout = '';
     const stdoutSpy = vi
       .spyOn(globalThis.console, 'log')
@@ -323,17 +336,39 @@ describe('hub/node packaging decision', () => {
       });
 
     try {
-      const tableResult = await runCli(['hub', 'nodes', '--config', configPath]);
+      const tableResult = await runCli([
+        'hub',
+        'nodes',
+        '--config',
+        configPath,
+      ]);
       expect(tableResult.exitCode).toBe(0);
-      expect(loggerMocks.info).toHaveBeenCalledWith(expect.stringContaining('STATUS'));
-      expect(loggerMocks.info).toHaveBeenCalledWith(expect.stringContaining('node_alpha'));
-      expect(loggerMocks.info).toHaveBeenCalledWith(expect.stringContaining('tmux:available'));
+      expect(loggerMocks.info).toHaveBeenCalledWith(
+        expect.stringContaining('STATUS')
+      );
+      expect(loggerMocks.info).toHaveBeenCalledWith(
+        expect.stringContaining('node_alpha')
+      );
+      expect(loggerMocks.info).toHaveBeenCalledWith(
+        expect.stringContaining('pty:available')
+      );
 
       loggerMocks.info.mockClear();
-      const jsonResult = await runCli(['hub', 'nodes', '--json', '--config', configPath]);
+      const jsonResult = await runCli([
+        'hub',
+        'nodes',
+        '--json',
+        '--config',
+        configPath,
+      ]);
       expect(jsonResult.exitCode).toBe(0);
-      const payload = JSON.parse(stdout) as { count: number; nodes: Array<Record<string, unknown>> };
-      const parsedNode = payload.nodes[0] as { debug?: Record<string, unknown> };
+      const payload = JSON.parse(stdout) as {
+        count: number;
+        nodes: Array<Record<string, unknown>>;
+      };
+      const parsedNode = payload.nodes[0] as {
+        debug?: Record<string, unknown>;
+      };
       expect(payload.count).toBe(1);
       expect(payload.nodes[0]?.['nodeId']).toBe('node_alpha');
       expect(parsedNode.debug).toMatchObject({
@@ -380,10 +415,18 @@ describe('hub/node packaging decision', () => {
     try {
       const result = await runCli(['hub', 'doctor', '--json']);
       expect(result.exitCode).toBe(1);
-      const payload = JSON.parse(stdout) as { ok: boolean; checks: Array<{ reason?: string }> };
+      const payload = JSON.parse(stdout) as {
+        ok: boolean;
+        checks: Array<{ reason?: string }>;
+      };
       expect(payload.ok).toBe(false);
       expect(payload.checks.map((check) => check.reason)).toEqual(
-        expect.arrayContaining(['CONFIG_MISSING', 'AUTH_TOKEN_MISSING', 'HUB_UNREACHABLE', 'CHECK_SKIPPED'])
+        expect.arrayContaining([
+          'CONFIG_MISSING',
+          'AUTH_TOKEN_MISSING',
+          'HUB_UNREACHABLE',
+          'CHECK_SKIPPED',
+        ])
       );
       expect(stdout).not.toContain('super-secret');
     } finally {
@@ -408,7 +451,9 @@ describe('hub/node packaging decision', () => {
         signal?.addEventListener(
           'abort',
           () => {
-            const error = new Error('abort should not leak token=timeout-secret');
+            const error = new Error(
+              'abort should not leak token=timeout-secret'
+            );
             error.name = 'AbortError';
             reject(error);
           },
@@ -425,7 +470,13 @@ describe('hub/node packaging decision', () => {
       });
 
     try {
-      const resultPromise = runCli(['hub', 'doctor', '--json', '--config', configPath]);
+      const resultPromise = runCli([
+        'hub',
+        'doctor',
+        '--json',
+        '--config',
+        configPath,
+      ]);
       await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
       await vi.advanceTimersByTimeAsync(2500);
       const result = await resultPromise;
@@ -434,7 +485,9 @@ describe('hub/node packaging decision', () => {
         ok: boolean;
         checks: Array<{ name: string; reason?: string; message: string }>;
       };
-      const reachability = payload.checks.find((check) => check.name === 'hub.reachable');
+      const reachability = payload.checks.find(
+        (check) => check.name === 'hub.reachable'
+      );
       expect(payload.ok).toBe(false);
       expect(reachability).toMatchObject({
         reason: 'HUB_UNREACHABLE',
@@ -460,7 +513,11 @@ describe('hub/node packaging decision', () => {
       core: Record<string, string>;
     };
     const nodes = [
-      sampleHubNode({ nodeId: 'node_stale', displayName: 'Stale Node', status: 'stale' }),
+      sampleHubNode({
+        nodeId: 'node_stale',
+        displayName: 'Stale Node',
+        status: 'stale',
+      }),
       sampleHubNode({
         nodeId: 'node_skew',
         displayName: 'Skew Node',
@@ -471,11 +528,11 @@ describe('hub/node packaging decision', () => {
         },
       }),
       sampleHubNode({
-        nodeId: 'node_no_tmux',
-        displayName: 'No Tmux Node',
+        nodeId: 'node_no_relay_pty',
+        displayName: 'No Relay PTY Node',
         capabilities: {
           ...baseCapabilities,
-          core: { ...baseCapabilities.core, tmux: 'unavailable' },
+          terminalBackends: { 'relay-pty': 'unavailable' },
         },
       }),
       sampleHubNode({ nodeId: 'node_no_logs', displayName: 'No Logs Node' }),
@@ -483,7 +540,10 @@ describe('hub/node packaging decision', () => {
     stubHubFetch([
       { pathName: '/version', body: { version: '0.1.0' } },
       { pathName: '/nodes', body: { nodes } },
-      { pathName: '/hub/nodes/node_no_tmux/logs?lines=0', body: { log: { message: 'ok' } } },
+      {
+        pathName: '/hub/nodes/node_no_relay_pty/logs?lines=0',
+        body: { log: { message: 'ok' } },
+      },
       {
         pathName: '/hub/nodes/node_no_logs/logs?lines=0',
         status: 404,
@@ -509,7 +569,13 @@ describe('hub/node packaging decision', () => {
       });
 
     try {
-      const result = await runCli(['hub', 'doctor', '--json', '--config', configPath]);
+      const result = await runCli([
+        'hub',
+        'doctor',
+        '--json',
+        '--config',
+        configPath,
+      ]);
       expect(result.exitCode).toBe(1);
       const payload = JSON.parse(stdout) as {
         checks: Array<{
@@ -522,7 +588,12 @@ describe('hub/node packaging decision', () => {
         (check) => check.reason === 'MISSING_LOG_SUPPORT'
       )?.details?.body?.error;
       expect(reasons).toEqual(
-        expect.arrayContaining(['NODE_STALE', 'VERSION_SKEW', 'UNSUPPORTED_CAPABILITY', 'MISSING_LOG_SUPPORT'])
+        expect.arrayContaining([
+          'NODE_STALE',
+          'VERSION_SKEW',
+          'UNSUPPORTED_CAPABILITY',
+          'MISSING_LOG_SUPPORT',
+        ])
       );
       expect(missingLogError).toMatchObject({
         authHeader: 'Bearer …redacted',
@@ -643,7 +714,10 @@ describe('hub/node packaging decision', () => {
       'const body: Record<string, unknown> = {};',
       actorFallbackStart
     );
-    const actorFallbackSource = cliSource.slice(actorFallbackStart, actorFallbackEnd);
+    const actorFallbackSource = cliSource.slice(
+      actorFallbackStart,
+      actorFallbackEnd
+    );
 
     expect(actorFallbackStart).toBeGreaterThanOrEqual(0);
     expect(actorFallbackEnd).toBeGreaterThan(actorFallbackStart);

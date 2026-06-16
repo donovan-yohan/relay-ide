@@ -321,7 +321,6 @@ function summarizeCapabilities(
   manifest: NodeManifest
 ): NodeCapabilityManifestSummary {
   const totals = { available: 0, degraded: 0, unavailable: 0, unknown: 0 };
-  countProbe(totals, manifest.capabilities.tmux);
   countProbe(totals, manifest.capabilities.git);
   countProbe(totals, manifest.capabilities.clipboard);
   countProbe(totals, manifest.capabilities.browserAutomation);
@@ -348,13 +347,11 @@ function summarizeCapabilities(
       status: 'unknown' as const,
       message: 'pre-#837 node did not report relay-pty availability.',
     },
-    'tmux-compat': manifest.capabilities.tmux,
   };
   return {
     totals,
     core: {
       shell: 'available',
-      tmux: manifest.capabilities.tmux.status,
       git: manifest.capabilities.git.status,
       browserAutomation: manifest.capabilities.browserAutomation.status,
       clipboardImage: manifest.capabilities.clipboard.status,
@@ -363,13 +360,12 @@ function summarizeCapabilities(
     },
     terminalBackends: {
       'relay-pty': terminalBackends['relay-pty'].status,
-      'tmux-compat': terminalBackends['tmux-compat'].status,
     },
     agents,
     serviceManager: manifest.serviceManager.kind,
     wsl: manifest.wsl.detected,
     // #467: pass through the resume kind so the frontend can show a
-    // resumable badge without re-deriving from tmux availability.
+    // resumable badge without re-deriving from backend availability.
     // Pre-#467 manifests omit this field; treat as 'none' on the read
     // side via `?? 'none'`.
     sessionResume: manifest.capabilities.sessionResume ?? 'none',
@@ -446,7 +442,9 @@ function registryNeedsAclMigration(registry: RegistryFile): boolean {
 }
 
 function registryNeedsIdentityMigration(registry: RegistryFile): boolean {
-  return registry.nodes.some((node) => !node.identity || !node.activeCredential);
+  return registry.nodes.some(
+    (node) => !node.identity || !node.activeCredential
+  );
 }
 
 function readRegistryFile(storagePath: string): RegistryFile {
@@ -528,7 +526,6 @@ function normalizeCapabilitySummary(
       ...capabilities,
       terminalBackends: capabilities.terminalBackends ?? {
         'relay-pty': UNKNOWN_CAPABILITY_STATUS,
-        'tmux-compat': capabilities.core.tmux ?? UNKNOWN_CAPABILITY_STATUS,
       },
     };
   }
@@ -536,7 +533,6 @@ function normalizeCapabilitySummary(
     ...capabilities,
     core: {
       shell: UNKNOWN_CAPABILITY_STATUS,
-      tmux: UNKNOWN_CAPABILITY_STATUS,
       git: UNKNOWN_CAPABILITY_STATUS,
       browserAutomation: UNKNOWN_CAPABILITY_STATUS,
       clipboardImage: UNKNOWN_CAPABILITY_STATUS,
@@ -545,7 +541,6 @@ function normalizeCapabilitySummary(
     },
     terminalBackends: {
       'relay-pty': UNKNOWN_CAPABILITY_STATUS,
-      'tmux-compat': UNKNOWN_CAPABILITY_STATUS,
     },
   };
 }
@@ -597,7 +592,9 @@ function ensureSeparatedIdentity(node: StoredNodeRecord): StoredNodeIdentity {
   return node.identity;
 }
 
-function ensureSeparatedCredential(node: StoredNodeRecord): StoredActiveCredential {
+function ensureSeparatedCredential(
+  node: StoredNodeRecord
+): StoredActiveCredential {
   node.activeCredential ??= {
     credentialId: node.credentialId,
     tokenHash: node.credentialHash,
@@ -625,7 +622,9 @@ function publicSourceDiagnostics(
     ...(diagnostics.sourceFingerprint
       ? { sourceFingerprint: diagnostics.sourceFingerprint }
       : {}),
-    ...(diagnostics.displayHint ? { displayHint: diagnostics.displayHint } : {}),
+    ...(diagnostics.displayHint
+      ? { displayHint: diagnostics.displayHint }
+      : {}),
   };
 }
 
@@ -652,7 +651,9 @@ function sourceDiagnosticsForAuthDenied(input: {
   };
 }
 
-function credentialSummary(node: StoredNodeRecord): RelayNodeCredentialRecordSummary {
+function credentialSummary(
+  node: StoredNodeRecord
+): RelayNodeCredentialRecordSummary {
   const credential = ensureSeparatedCredential(node);
   const state = credentialState(node);
   return {
@@ -711,7 +712,6 @@ function updateAclCredential(
     },
   };
 }
-
 
 function createNodeAclForPairToken(input: {
   pairToken: StoredPairToken;
@@ -782,7 +782,9 @@ function publicNode(
   const rotationSummary = node.credentialRotation
     ? publicRotation(node.credentialRotation)
     : undefined;
-  const sourceDiagnostics = publicSourceDiagnostics(node.sourceBinding?.diagnostics);
+  const sourceDiagnostics = publicSourceDiagnostics(
+    node.sourceBinding?.diagnostics
+  );
 
   let helperSkew: HubNodeHelperSkewSummary | undefined;
   if (hubVersion && (node.helperVersion || node.relayVersion)) {
@@ -974,7 +976,9 @@ export class HubNodeRegistry {
       ...(options.issuer
         ? {
             issuer: {
-              ...(options.issuer.grantId ? { grantId: options.issuer.grantId } : {}),
+              ...(options.issuer.grantId
+                ? { grantId: options.issuer.grantId }
+                : {}),
               ...(options.issuer.actorType
                 ? { actorType: options.issuer.actorType }
                 : {}),
@@ -987,7 +991,9 @@ export class HubNodeRegistry {
             },
           }
         : {}),
-      ...(options.correlationId ? { correlationId: options.correlationId } : {}),
+      ...(options.correlationId
+        ? { correlationId: options.correlationId }
+        : {}),
       ...(mintSourceFingerprint ? { mintSourceFingerprint } : {}),
       ...(mintSourceDiagnostics ? { mintSourceDiagnostics } : {}),
       createdAt: createdAt.toISOString(),
@@ -1062,9 +1068,14 @@ export class HubNodeRegistry {
         reasonCode: 'PAIR_TOKEN_EXPIRED',
         action: 'nodes.pair-token.redeem',
       });
-      throw new HubNodeRegistryError('TOKEN_EXPIRED', 'pair token expired', false, {
-        reasonCode: 'PAIR_TOKEN_EXPIRED',
-      });
+      throw new HubNodeRegistryError(
+        'TOKEN_EXPIRED',
+        'pair token expired',
+        false,
+        {
+          reasonCode: 'PAIR_TOKEN_EXPIRED',
+        }
+      );
     }
 
     const nodeId = randomToken('node');
@@ -1101,7 +1112,10 @@ export class HubNodeRegistry {
           reasonCode: 'PAIR_TOKEN_SOURCE_MISMATCH',
           observedAt: timestamp,
           sourceFingerprint: pairTokenRedeemSourceFingerprint,
-          displayHint: sourceDisplayHint(pairedSource, pairTokenRedeemSourceFingerprint),
+          displayHint: sourceDisplayHint(
+            pairedSource,
+            pairTokenRedeemSourceFingerprint
+          ),
         },
       });
     }
@@ -1164,7 +1178,10 @@ export class HubNodeRegistry {
                 ...(pairedSourceFingerprint
                   ? { sourceFingerprint: pairedSourceFingerprint }
                   : {}),
-                displayHint: sourceDisplayHint(pairedSource, pairedSourceFingerprint),
+                displayHint: sourceDisplayHint(
+                  pairedSource,
+                  pairedSourceFingerprint
+                ),
               },
             },
           }
@@ -1209,7 +1226,10 @@ export class HubNodeRegistry {
     };
   }
 
-  authenticateCredential(token: string, context: CredentialAuthContext = {}): HubNodeSummary | null {
+  authenticateCredential(
+    token: string,
+    context: CredentialAuthContext = {}
+  ): HubNodeSummary | null {
     const result = this.authenticateCredentialDetailed(token, context);
     return result.ok ? result.node : null;
   }
@@ -1223,7 +1243,12 @@ export class HubNodeRegistry {
     if (token.length === 0) {
       return {
         ok: false,
-        result: this.credentialDenied('NODE_CREDENTIAL_MISSING', undefined, undefined, context),
+        result: this.credentialDenied(
+          'NODE_CREDENTIAL_MISSING',
+          undefined,
+          undefined,
+          context
+        ),
       };
     }
     const firstSeparator = token.indexOf('.');
@@ -1234,14 +1259,24 @@ export class HubNodeRegistry {
     ) {
       return {
         ok: false,
-        result: this.credentialDenied('NODE_CREDENTIAL_MALFORMED', undefined, undefined, context),
+        result: this.credentialDenied(
+          'NODE_CREDENTIAL_MALFORMED',
+          undefined,
+          undefined,
+          context
+        ),
       };
     }
     const nodeId = token.slice(0, firstSeparator);
     if (!nodeId.startsWith('node_')) {
       return {
         ok: false,
-        result: this.credentialDenied('NODE_CREDENTIAL_MALFORMED', undefined, undefined, context),
+        result: this.credentialDenied(
+          'NODE_CREDENTIAL_MALFORMED',
+          undefined,
+          undefined,
+          context
+        ),
       };
     }
     return { ok: true, nodeId };
@@ -1257,7 +1292,9 @@ export class HubNodeRegistry {
       source: context.source,
       now: this.now().toISOString(),
       strictDeny: context.strictSourceDeny,
-      ...(node ? { fingerprintKey: ensureSeparatedCredential(node).tokenHash } : {}),
+      ...(node
+        ? { fingerprintKey: ensureSeparatedCredential(node).tokenHash }
+        : {}),
     });
     const error = this.credentialError(code, sourceDiagnostics);
     this.auditNodeCredentialLifecycle({
@@ -1283,7 +1320,8 @@ export class HubNodeRegistry {
         'node credential does not match the stable node identity',
       NODE_CREDENTIAL_EXPIRED: 'node credential expired; rotate or re-pair',
       NODE_REVOKED: 'node credential was revoked',
-      REPAIR_REQUIRED: 'node credential no longer matches hub state; re-pair required',
+      REPAIR_REQUIRED:
+        'node credential no longer matches hub state; re-pair required',
     };
     return {
       code,
@@ -1415,7 +1453,10 @@ export class HubNodeRegistry {
     now: string
   ): RelayNodeSourceDiagnostics {
     const binding = sourceBindingForNode(node);
-    const observed = sourceTupleWithHostname(context.source, node.identity?.hostname ?? node.hostname);
+    const observed = sourceTupleWithHostname(
+      context.source,
+      node.identity?.hostname ?? node.hostname
+    );
     if (!binding.expected && observed && hasTailscaleSourceSignal(observed)) {
       binding.expected = observed;
     }
@@ -1471,7 +1512,12 @@ export class HubNodeRegistry {
     if (activeCredential?.expiresAt) {
       const expiresAt = Date.parse(activeCredential.expiresAt);
       if (Number.isFinite(expiresAt) && expiresAt <= this.now().getTime()) {
-        return this.credentialDenied('NODE_CREDENTIAL_EXPIRED', node, nodeId, context);
+        return this.credentialDenied(
+          'NODE_CREDENTIAL_EXPIRED',
+          node,
+          nodeId,
+          context
+        );
       }
     }
     if (node.revokedAt) {
@@ -1483,7 +1529,9 @@ export class HubNodeRegistry {
     const sourceDiagnostics = this.recordSourceObservation(
       node,
       context,
-      matchesRotation ? rotation!.nextCredentialHash! : activeCredential!.tokenHash,
+      matchesRotation
+        ? rotation!.nextCredentialHash!
+        : activeCredential!.tokenHash,
       this.now().toISOString()
     );
     if (sourceDiagnostics.state === 'strict-deny') {

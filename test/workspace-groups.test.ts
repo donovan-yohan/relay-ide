@@ -23,7 +23,10 @@ function startServer(cp: string, sessionDeps?: any): Promise<void> {
   return new Promise((resolve) => {
     const app = express();
     app.use(express.json());
-    app.use('/workspace-groups', createWorkspaceGroupsRouter(cp, noAuth, sessionDeps));
+    app.use(
+      '/workspace-groups',
+      createWorkspaceGroupsRouter(cp, noAuth, sessionDeps)
+    );
     server = app.listen(0, '127.0.0.1', () => {
       const addr = server.address() as { port: number };
       baseUrl = `http://127.0.0.1:${addr.port}`;
@@ -485,12 +488,12 @@ test('workspace session rejects malformed body and invalid terminal backend', as
   });
   expect(invalidBackend.status).toBe(400);
   expect(invalidBackend.body).toEqual({
-    error: 'terminalBackend must be "relay-pty" or "tmux-compat"',
+    error: 'terminalBackend must be "relay-pty"',
   });
   expect(sessionDeps.sessions.create).not.toHaveBeenCalled();
 });
 
-test('workspace session passes valid terminalBackend to session create', async () => {
+test('workspace session rejects removed terminalBackend', async () => {
   const repoPath = path.join(tmpDir, 'repo-valid');
   fs.mkdirSync(repoPath, { recursive: true });
   writeConfig({
@@ -504,10 +507,7 @@ test('workspace session passes valid terminalBackend to session create', async (
   const result = await req('POST', '/workspace-groups/ws-1/session', {
     terminalBackend: 'tmux-compat',
   });
-  expect(result.status).toBe(201);
-  expect(sessionDeps.sessions.create).toHaveBeenCalledTimes(1);
-  expect(sessionDeps.sessions.create.mock.calls[0]?.[0]).toMatchObject({
-    terminalBackend: 'tmux-compat',
-    useTmux: true,
-  });
+  expect(result.status).toBe(400);
+  expect(result.body).toEqual({ error: 'terminalBackend must be "relay-pty"' });
+  expect(sessionDeps.sessions.create).not.toHaveBeenCalled();
 });
