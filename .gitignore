@@ -16,6 +16,30 @@ relay-state.db-wal
 ia.db
 ia.db-shm
 ia.db-wal
+context-packets.db
+context-packets.db-shm
+context-packets.db-wal
+interventions.db
+interventions.db-shm
+interventions.db-wal
+security-audit.db
+security-audit.db-shm
+security-audit.db-wal
+work-context-artifacts.db
+work-context-artifacts.db-shm
+work-context-artifacts.db-wal
+work-context-messages.db
+work-context-messages.db-shm
+work-context-messages.db-wal
+work-contexts.db
+work-contexts.db-shm
+work-contexts.db-wal
+workflow-runs.db
+workflow-runs.db-shm
+workflow-runs.db-wal
+agent-presence.db
+agent-presence.db-shm
+agent-presence.db-wal
 
 # Runtime port allocator state
 port-assignments.json
