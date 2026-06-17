@@ -17,6 +17,14 @@ import {
   WorkContextMessageStoreError,
   type WorkContextMessageStore,
 } from '../work-context-messages.js';
+import {
+  applyWorkContextMessageTemplateToAppendInput,
+  findWorkContextMessageTemplate,
+  listWorkContextMessageTemplates,
+  renderWorkContextMessageTemplate,
+  WorkContextMessageTemplateError,
+  type WorkContextMessageTemplateRenderInput,
+} from '../work-context-message-templates.js';
 
 const CONTEXT_READ = 'context:read';
 const CONTEXT_WRITE = 'context:write';
@@ -30,6 +38,9 @@ export interface WorkContextMessageRouterDeps {
     list?: RequestHandler;
     show?: RequestHandler;
     query?: RequestHandler;
+    templateList?: RequestHandler;
+    templateShow?: RequestHandler;
+    templateRender?: RequestHandler;
   };
   requireWriteActorAuth?: (
     expectedCommand: CliGatewayActorWriteCommand,
@@ -131,6 +142,21 @@ function ensureWorkContext(
 }
 
 function mapStoreError(res: Response, error: unknown): void {
+  if (error instanceof WorkContextMessageTemplateError) {
+    const code: RelayCliGatewayErrorCode =
+      error.status === 404
+        ? 'NOT_FOUND'
+        : error.status === 409
+          ? 'SESSION_CONFLICT'
+          : error.status >= 500
+            ? 'INTERNAL'
+            : 'INVALID_ARGUMENT';
+    sendGatewayError(res, code, error.message, false, {
+      reasonCode: error.code.toUpperCase(),
+      ...(error.details ?? {}),
+    });
+    return;
+  }
   if (error instanceof WorkContextMessageStoreError) {
     const code: RelayCliGatewayErrorCode =
       error.status === 404
@@ -308,6 +334,91 @@ function appendInput(req: Request): Record<string, unknown> {
   return { ...body, sender };
 }
 
+function templateSelectorFromQuery(query: Request['query']) {
+  const repoPath = readString(query['repoPath']);
+  const cwd = readString(query['cwd']);
+  const workContextId = readString(query['workContextId']);
+  return {
+    ...(repoPath ? { repoPath } : {}),
+    ...(cwd ? { cwd } : {}),
+    ...(workContextId ? { workContextId } : {}),
+  };
+}
+
+function templateSelectorFromBody(body: Record<string, unknown>) {
+  const repoPath = readString(body['repoPath']);
+  const cwd = readString(body['cwd']);
+  const workContextId = readString(body['workContextId']);
+  return {
+    ...(repoPath ? { repoPath } : {}),
+    ...(cwd ? { cwd } : {}),
+    ...(workContextId ? { workContextId } : {}),
+  };
+}
+
+function renderMessageFromBody(body: Record<string, unknown>): Record<string, unknown> {
+  if (isRecord(body['message'])) return body['message'];
+  const message = { ...body };
+  delete message['template'];
+  delete message['templateData'];
+  delete message['repoPath'];
+  delete message['cwd'];
+  return message;
+}
+
+function templateOptions(deps: WorkContextMessageRouterDeps): { workContextStore?: WorkContextStore } {
+  const workContextStore = deps.workContextStore;
+  return workContextStore ? { workContextStore } : {};
+}
+
+function denyInvalidScopedTemplateSelector(
+  req: Request,
+  res: Response,
+  deps: WorkContextMessageRouterDeps,
+  selector: { repoPath?: string; cwd?: string; workContextId?: string },
+  operation: string
+): boolean {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  const scopedWorkContextIds = credential?.scope.workContextIds;
+  if (!credential || !scopedWorkContextIds?.length) return false;
+  if (selector.repoPath || selector.cwd) {
+    sendGatewayError(
+      res,
+      'FORBIDDEN',
+      'scoped CLI actor credential must select WorkContext message templates by workContextId',
+      false,
+      {
+        reasonCode: 'CLI_ACTOR_REPO_PATH_SELECTOR_FORBIDDEN',
+        operation,
+        credentialId: credential.id,
+      }
+    );
+    return true;
+  }
+  if (!selector.workContextId) {
+    sendGatewayError(
+      res,
+      'FORBIDDEN',
+      'scoped CLI actor credential requires workContextId for WorkContext message template access',
+      false,
+      {
+        reasonCode: 'CLI_ACTOR_WORK_CONTEXT_SCOPE_REQUIRED',
+        operation,
+        credentialId: credential.id,
+      }
+    );
+    return true;
+  }
+  if (denyUnauthorizedActorWorkContextScope(req, res, selector.workContextId, operation)) return true;
+  if (!deps.workContextStore) {
+    sendGatewayError(res, 'SERVER_UNAVAILABLE', 'WorkContext store unavailable for scoped template access', true, {
+      reasonCode: 'WORK_CONTEXT_STORE_UNAVAILABLE',
+    });
+    return true;
+  }
+  return !ensureWorkContext(res, deps.workContextStore, selector.workContextId);
+}
+
 function emitMessageEvent(
   events: Pick<CliGatewayEventBus, 'publish'> | undefined,
   message: WorkContextMessageEnvelope
@@ -346,17 +457,88 @@ export function createWorkContextMessageRouter(deps: WorkContextMessageRouterDep
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const store = storeOr503(res, deps.store);
     if (!store) return;
-    const input = appendInput(req);
+    const rawInput = appendInput(req);
+    if (
+      typeof rawInput['template'] === 'string' &&
+      denyInvalidScopedTemplateSelector(req, res, deps, templateSelectorFromBody(rawInput), 'work-context-messages.append')
+    ) {
+      return;
+    }
+    let input: Record<string, unknown>;
+    try {
+      input = applyWorkContextMessageTemplateToAppendInput(
+        rawInput,
+        templateOptions(deps)
+      ).input as Record<string, unknown>;
+    } catch (error) {
+      mapStoreError(res, error);
+      return;
+    }
     const workContextId = readString(input['workContextId']);
     if (!workContextId) {
       sendGatewayError(res, 'INVALID_ARGUMENT', 'workContextId is required', false, { field: 'workContextId' });
       return;
     }
+    if (denyUnauthorizedActorWorkContextScope(req, res, workContextId, 'work-context-messages.append')) return;
     if (!ensureWorkContext(res, deps.workContextStore, workContextId)) return;
     try {
       const message = store.append(input);
       emitMessageEvent(deps.events, message);
       res.status(201).json({ message });
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
+  router.get('/work-context-message-templates', readAuth.templateList ?? auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    try {
+      const selector = templateSelectorFromQuery(req.query);
+      if (denyInvalidScopedTemplateSelector(req, res, deps, selector, 'work-context-messages.templates.list')) return;
+      const result = listWorkContextMessageTemplates(selector, {
+        ...templateOptions(deps),
+        includeInvalid: readString(req.query['includeInvalid']) === 'true',
+      });
+      res.json(result);
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
+  router.get('/work-context-message-templates/:template', readAuth.templateShow ?? auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    try {
+      const selector = templateSelectorFromQuery(req.query);
+      if (denyInvalidScopedTemplateSelector(req, res, deps, selector, 'work-context-messages.templates.show')) return;
+      const result = findWorkContextMessageTemplate(
+        selector,
+        req.params['template'] ?? '',
+        templateOptions(deps)
+      );
+      res.json(result);
+    } catch (error) {
+      mapStoreError(res, error);
+    }
+  });
+
+  router.post('/work-context-message-templates/render', readAuth.templateRender ?? auth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    try {
+      const body = bodyRecord(req);
+      const template = readString(body['template']);
+      const selector = templateSelectorFromBody(body);
+      if (denyInvalidScopedTemplateSelector(req, res, deps, selector, 'work-context-messages.templates.render')) return;
+      const renderInput: WorkContextMessageTemplateRenderInput = {
+        ...selector,
+        templateData: body['templateData'],
+        message: renderMessageFromBody(body),
+      };
+      if (template) renderInput.template = template;
+      const result = renderWorkContextMessageTemplate(
+        renderInput,
+        templateOptions(deps)
+      );
+      res.json(result);
     } catch (error) {
       mapStoreError(res, error);
     }

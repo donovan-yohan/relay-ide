@@ -115,6 +115,9 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'work-context-messages.list': 'list work context messages',
   'work-context-messages.show': 'show work context message',
   'work-context-messages.query': 'query work context messages',
+  'work-context-messages.templates.list': 'list message templates',
+  'work-context-messages.templates.show': 'show message template',
+  'work-context-messages.templates.render': 'render message template',
   'context.create': 'create context packet',
   'context.get': 'context packet details',
   'context.list': 'list context packets',
@@ -251,6 +254,7 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('worktrees.')) return ['repo', 'worktree'];
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
+  if (name.startsWith('work-context-messages.templates.')) return ['work-context'];
   if (name.startsWith('work-context-messages.')) return ['work-context'];
   if (name.startsWith('work-context-artifacts.')) return ['work-context'];
   if (name.startsWith('handoff-artifacts.')) return ['work-context'];

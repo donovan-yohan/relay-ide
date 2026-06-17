@@ -242,6 +242,9 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'work-context-messages.list',
     'work-context-messages.show',
     'work-context-messages.query',
+    'work-context-messages.templates.list',
+    'work-context-messages.templates.show',
+    'work-context-messages.templates.render',
     'roster.list',
   ]);
   expect(
@@ -338,6 +341,37 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
         command: 'work-context-messages.query',
       }),
       'work-context-messages.query'
+    )
+  ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'work-context-messages.templates.list',
+      }),
+      'work-context-messages.templates.list'
+    )
+  ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'work-context-messages.templates.show',
+      }),
+      'work-context-messages.templates.show'
+    )
+  ).toBe('scoped-actor-credential');
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'POST',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'work-context-messages.templates.render',
+      }),
+      'work-context-messages.templates.render'
     )
   ).toBe('scoped-actor-credential');
   expect(

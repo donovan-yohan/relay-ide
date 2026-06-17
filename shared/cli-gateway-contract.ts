@@ -50,6 +50,9 @@ export type RelayCliGatewayCommand =
   | 'work-context-messages.list'
   | 'work-context-messages.show'
   | 'work-context-messages.query'
+  | 'work-context-messages.templates.list'
+  | 'work-context-messages.templates.show'
+  | 'work-context-messages.templates.render'
   | 'context.create'
   | 'context.get'
   | 'context.list'
@@ -1650,9 +1653,13 @@ const workContextMessageAppendInputSchema: RelayJsonSchema = {
     replyToMessageId: stringSchema,
     payloadSchema: stringSchema,
     payload: { type: 'object', additionalProperties: true },
+    template: stringSchema,
+    repoPath: stringSchema,
+    cwd: stringSchema,
+    templateData: { type: 'object', additionalProperties: true },
     visibility: { type: 'string', enum: ['private', 'internal', 'public'] },
   },
-  required: ['workContextId', 'kind', 'summary'],
+  required: ['workContextId', 'summary'],
 };
 
 const workContextMessageQueryInputSchema: RelayJsonSchema = {
@@ -1673,6 +1680,69 @@ const workContextMessageQueryInputSchema: RelayJsonSchema = {
     limit: { type: 'integer', minimum: 1, maximum: 200 },
     filter: { type: 'object', additionalProperties: true },
   },
+};
+
+const workContextMessageTemplateSelectorSchema: RelayJsonSchema = {
+  title: 'WorkContextMessageTemplateSelector',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    repoPath: stringSchema,
+    cwd: stringSchema,
+    workContextId: stringSchema,
+    includeInvalid: booleanSchema,
+  },
+};
+
+const workContextMessageTemplateSchema: RelayJsonSchema = {
+  title: 'WorkContextMessageTemplate',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    schemaVersion: { const: 1 },
+    id: stringSchema,
+    stem: stringSchema,
+    name: stringSchema,
+    description: stringSchema,
+    kind: stringSchema,
+    payloadSchema: stringSchema,
+    mediaType: stringSchema,
+    encoding: { type: 'string', enum: ['json', 'markdown', 'text', 'artifact-ref'] },
+    bodyGuide: { type: 'object', additionalProperties: true },
+    example: { type: 'object', additionalProperties: true },
+    fallback: { type: 'object', additionalProperties: true },
+    tags: { type: 'array', items: stringSchema },
+    sourcePath: stringSchema,
+  },
+  required: ['schemaVersion', 'id', 'stem', 'name', 'kind', 'payloadSchema', 'mediaType', 'encoding', 'sourcePath'],
+};
+
+const workContextMessageTemplateDiagnosticSchema: RelayJsonSchema = {
+  title: 'WorkContextMessageTemplateDiagnostic',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    code: stringSchema,
+    message: stringSchema,
+    template: stringSchema,
+    sourcePath: stringSchema,
+  },
+  required: ['code', 'message'],
+};
+
+const workContextMessageTemplateRenderInputSchema: RelayJsonSchema = {
+  title: 'WorkContextMessageTemplateRenderInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    template: stringSchema,
+    repoPath: stringSchema,
+    cwd: stringSchema,
+    workContextId: stringSchema,
+    templateData: { type: 'object', additionalProperties: true },
+    message: { type: 'object', additionalProperties: true },
+  },
+  required: ['template'],
 };
 
 // ---------------------------------------------------------------------------
@@ -4464,6 +4534,107 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'NOT_FOUND',
       'SERVER_UNAVAILABLE',
     ],
+  },
+  {
+    name: 'work-context-messages.templates.list',
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-messages',
+      'templates',
+      'list',
+      '--repo-path',
+      '<path>',
+      '--json',
+    ],
+    summary:
+      'List repo-local WorkContext message templates from .relay/messages/*.json.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextMessageTemplateSelectorSchema,
+    outputSchema: okOutput('WorkContextMessageTemplatesListOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        repoRoot: stringSchema,
+        templateDir: stringSchema,
+        templates: { type: 'array', items: workContextMessageTemplateSchema },
+        diagnostics: { type: 'array', items: workContextMessageTemplateDiagnosticSchema },
+      },
+      required: ['templates', 'diagnostics'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'SERVER_UNAVAILABLE'],
+  },
+  {
+    name: 'work-context-messages.templates.show',
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-messages',
+      'templates',
+      'show',
+      '--template',
+      '<id-or-stem>',
+      '--json',
+    ],
+    summary:
+      'Show one repo-local WorkContext message template by id or filename stem.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: {
+      ...workContextMessageTemplateSelectorSchema,
+      required: ['template'],
+      properties: { ...workContextMessageTemplateSelectorSchema.properties, template: stringSchema },
+    },
+    outputSchema: okOutput('WorkContextMessageTemplatesShowOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        template: workContextMessageTemplateSchema,
+        repoRoot: stringSchema,
+        templateDir: stringSchema,
+        diagnostics: { type: 'array', items: workContextMessageTemplateDiagnosticSchema },
+      },
+      required: ['template', 'diagnostics'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'],
+  },
+  {
+    name: 'work-context-messages.templates.render',
+    cli: [
+      'relay-ide',
+      'v1',
+      'work-context-messages',
+      'templates',
+      'render',
+      '--template',
+      '<id-or-stem>',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Render a repo-local message template into a WorkContext message append input.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workContextMessageTemplateRenderInputSchema,
+    outputSchema: okOutput('WorkContextMessageTemplatesRenderOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        template: workContextMessageTemplateSchema,
+        messageInput: { type: 'object', additionalProperties: true },
+        diagnostics: { type: 'array', items: workContextMessageTemplateDiagnosticSchema },
+      },
+      required: ['template', 'messageInput', 'diagnostics'],
+    }),
+    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'],
   },
   {
     name: 'context.create',

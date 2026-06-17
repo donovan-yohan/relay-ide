@@ -1507,6 +1507,9 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'work-context-messages.list',
   'work-context-messages.show',
   'work-context-messages.query',
+  'work-context-messages.templates.list',
+  'work-context-messages.templates.show',
+  'work-context-messages.templates.render',
   'work-context-artifacts.list',
   'work-context-artifacts.show',
   'work-context-artifacts.export',
@@ -4028,6 +4031,9 @@ function addWorkContextMessageBodyFlags(
     ['--kind', 'kind'],
     ['--summary', 'summary'],
     ['--payload-schema', 'payloadSchema'],
+    ['--template', 'template'],
+    ['--repo-path', 'repoPath'],
+    ['--cwd', 'cwd'],
     ['--visibility', 'visibility'],
     ['--parent-message-id', 'parentMessageId'],
     ['--reply-to-message-id', 'replyToMessageId'],
@@ -4064,11 +4070,112 @@ function addWorkContextMessageBodyFlags(
   return body;
 }
 
+function addWorkContextMessageTemplateQueryFlags(
+  query: URLSearchParams,
+  args: string[]
+): void {
+  for (const [flag, key] of [
+    ['--repo-path', 'repoPath'],
+    ['--cwd', 'cwd'],
+    ['--work-context-id', 'workContextId'],
+  ] as const) {
+    addWorkContextMessageQueryParam(query, args, flag, key);
+  }
+  if (args.includes('--include-invalid')) query.set('includeInvalid', 'true');
+}
+
+async function runGatewayWorkContextMessageTemplates(
+  gatewayArgs: string[],
+  messageArgs: string[]
+): Promise<never> {
+  const templateSubcommand = messageArgs[0];
+  const templateArgs = messageArgs.slice(1);
+  if (templateSubcommand === 'list') {
+    const commandName: RelayCliGatewayCommand =
+      'work-context-messages.templates.list';
+    const query = new URLSearchParams();
+    addWorkContextMessageTemplateQueryFlags(query, templateArgs);
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/work-context-message-templates?${query.toString()}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  if (templateSubcommand === 'show') {
+    const commandName: RelayCliGatewayCommand =
+      'work-context-messages.templates.show';
+    const template =
+      gatewayArg(templateArgs, '--template') ??
+      gatewayArg(templateArgs, '--id') ??
+      templateArgs[0];
+    if (!template || template.startsWith('--')) {
+      gatewayInvalid(commandName, '--template is required');
+    }
+    const query = new URLSearchParams();
+    addWorkContextMessageTemplateQueryFlags(query, templateArgs);
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: `/work-context-message-templates/${encodeURIComponent(template)}${suffix}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  if (templateSubcommand === 'render') {
+    const commandName: RelayCliGatewayCommand =
+      'work-context-messages.templates.render';
+    const input = parseGatewayInputObject(commandName, templateArgs);
+    const template =
+      gatewayArg(templateArgs, '--template') ?? gatewayArg(templateArgs, '--id');
+    if (template) input['template'] = template;
+    for (const [flag, key] of [
+      ['--repo-path', 'repoPath'],
+      ['--cwd', 'cwd'],
+      ['--work-context-id', 'workContextId'],
+    ] as const) {
+      const value = gatewayArg(templateArgs, flag);
+      if (value !== undefined) input[key] = value;
+    }
+    const templateDataJson = gatewayArg(templateArgs, '--template-data-json');
+    const payloadJson = gatewayArg(templateArgs, '--payload-json');
+    if (templateDataJson && payloadJson) {
+      gatewayInvalid(
+        commandName,
+        '--template-data-json and --payload-json are mutually exclusive'
+      );
+    }
+    if (templateDataJson)
+      input['templateData'] = parseGatewayJson(commandName, templateDataJson);
+    if (payloadJson)
+      input['templateData'] = parseGatewayJson(commandName, payloadJson);
+    if (typeof input['template'] !== 'string') {
+      gatewayInvalid(commandName, '--template is required');
+    }
+    const result = await gatewayHttpJson({
+      commandName,
+      pathName: '/work-context-message-templates/render',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  }
+  gatewayInvalid(
+    'work-context-messages.templates.show',
+    'unknown work-context-messages templates command',
+    { args: gatewayArgs }
+  );
+}
+
 async function runGatewayWorkContextMessages(
   gatewayArgs: string[]
 ): Promise<never> {
   const subcommand = gatewayArgs[1];
   const messageArgs = gatewayArgs.slice(2);
+  if (subcommand === 'templates') {
+    return runGatewayWorkContextMessageTemplates(gatewayArgs, messageArgs);
+  }
   if (subcommand === 'append') {
     const commandName: RelayCliGatewayCommand = 'work-context-messages.append';
     const input = addWorkContextMessageBodyFlags(
@@ -4080,8 +4187,8 @@ async function runGatewayWorkContextMessages(
         field: 'workContextId',
       });
     }
-    if (typeof input['kind'] !== 'string') {
-      gatewayInvalid(commandName, '--kind is required', { field: 'kind' });
+    if (typeof input['kind'] !== 'string' && typeof input['template'] !== 'string') {
+      gatewayInvalid(commandName, '--kind is required unless --template is set', { field: 'kind' });
     }
     if (typeof input['summary'] !== 'string') {
       gatewayInvalid(commandName, '--summary is required', {

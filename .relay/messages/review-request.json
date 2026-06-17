@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "relay.review.request",
+  "name": "Review request",
+  "description": "Repo-local WorkContext message guide for requesting implementation review.",
+  "kind": "review-request",
+  "payloadSchema": "relay.review.request.v1",
+  "mediaType": "application/json",
+  "encoding": "json",
+  "bodyGuide": {
+    "required": ["scope", "exactHead", "reviewFocus", "verification"],
+    "fields": {
+      "scope": "What the reviewer should inspect.",
+      "exactHead": "Branch and commit SHA being reviewed.",
+      "reviewFocus": "Specific architecture, safety, contract, or UX concerns.",
+      "verification": "Commands and smoke tests already run."
+    }
+  },
+  "example": {
+    "summary": "Review requested for template discovery implementation",
+    "payload": {
+      "body": {
+        "scope": "Review repo-local WorkContext message template discovery and CLI contract.",
+        "exactHead": { "branch": "issue-950-repo-message-templates", "sha": "abc1234" },
+        "reviewFocus": ["path containment", "actor-token auth", "contract schema drift"],
+        "verification": ["npm run check", "npm test -- work-context-messages"]
+      }
+    }
+  },
+  "tags": ["review", "handoff"]
+}

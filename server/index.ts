@@ -2600,6 +2600,27 @@ async function main(): Promise<void> {
             deferWorkContextScope: true,
           }
         ),
+        templateList: requireCliGatewayAuthForActorCommand(
+          'work-context-messages.templates.list',
+          {
+            scopeForRequest: workContextScopeFromQuery,
+            deferWorkContextScope: true,
+          }
+        ),
+        templateShow: requireCliGatewayAuthForActorCommand(
+          'work-context-messages.templates.show',
+          {
+            scopeForRequest: workContextScopeFromQuery,
+            deferWorkContextScope: true,
+          }
+        ),
+        templateRender: requireCliGatewayAuthForActorCommand(
+          'work-context-messages.templates.render',
+          {
+            scopeForRequest: workContextMessageScopeFromBody,
+            deferWorkContextScope: true,
+          }
+        ),
       },
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
       store: workContextMessageStore,

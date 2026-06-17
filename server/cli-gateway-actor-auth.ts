@@ -58,6 +58,9 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'work-context-messages.list',
   'work-context-messages.show',
   'work-context-messages.query',
+  'work-context-messages.templates.list',
+  'work-context-messages.templates.show',
+  'work-context-messages.templates.render',
   'roster.list',
 ] as const;
 export type CliGatewayActorReadCommand =
@@ -104,6 +107,7 @@ const cliGatewayActorGrantCapabilitySet = new Set<string>(
 );
 const cliGatewayActorReadPostCommandSet = new Set<string>([
   'work-context-messages.query',
+  'work-context-messages.templates.render',
 ]);
 
 export interface CliGatewayActorIssueInput {
