@@ -33,15 +33,15 @@ Out of scope (for this spec and the first shippable slice):
 
 This spec is the planning baseline for the #979 child ladder. Each downstream slice owns the sections below:
 
-| Ticket | Slice                                                    | Cites                                                                                                                                                          |
-| ------ | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #981   | Key-bound node identity + credential handshake           | [Security model and auth lanes](#security-model-and-auth-lanes), [Node lifecycle states](#node-lifecycle-states)                                               |
-| #982   | Hub API pending pairing request lifecycle                | [Pending-request approval card](#pending-request-approval-card), [Node lifecycle states](#node-lifecycle-states), [Redaction rules](#redaction-rules)          |
-| #983   | Node-side `relay-ide node pair <hub>` device-code client | [Device code is a locator, not a credential](#the-device-code-is-a-locator-not-a-credential), [Node-side CLI copy](#node-side-cli-copy)                        |
-| #984   | Settings → Nodes management surface                      | [Add Node wizard flow](#add-node-wizard-flow), [Node cards by state](#node-cards-by-state), [Mobile / narrow-screen behavior](#mobile--narrow-screen-behavior) |
-| #985   | Command Center node command projection                   | [Command Center parity](#command-center-parity)                                                                                                                |
-| #986   | Command-surface drift guard                              | [Command Center parity](#command-center-parity), [Redaction rules](#redaction-rules)                                                                           |
-| #987   | Dogfood lane pairing `work-mac`                          | [QA screenshot / mock evidence](#qa-screenshot--mock-evidence)                                                                                                 |
+| Ticket | Slice                                                    | Cites                                                                                                                                                         |
+| ------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #981   | Key-bound node identity + credential handshake           | [Security model and auth lanes](#security-model-and-auth-lanes), [Node lifecycle states](#node-lifecycle-states)                                              |
+| #982   | Hub API pending pairing request lifecycle                | [Pending-request approval card](#pending-request-approval-card), [Node lifecycle states](#node-lifecycle-states), [Redaction rules](#redaction-rules)         |
+| #983   | Node-side `relay-ide node pair <hub>` device-code client | [Device code is a locator, not a credential](#the-device-code-is-a-locator-not-a-credential), [Node-side CLI copy](#node-side-cli-copy)                       |
+| #984   | Settings → Nodes management surface                      | [Add Node wizard flow](#add-node-wizard-flow), [Node cards by state](#node-cards-by-state), [Mobile / narrow-screen behavior](#mobile-narrow-screen-behavior) |
+| #985   | Command Center node command projection                   | [Command Center parity](#command-center-parity)                                                                                                               |
+| #986   | Command-surface drift guard                              | [Command Center parity](#command-center-parity), [Redaction rules](#redaction-rules)                                                                          |
+| #987   | Dogfood lane pairing `work-mac`                          | [QA screenshot / mock evidence](#qa-screenshot-mock-evidence)                                                                                                 |
 
 ## Mental model
 
@@ -138,18 +138,20 @@ The wizard must be resumable: if the operator closes it while a request is pendi
 
 The approval card is the operator's trust decision surface. It must show enough **redaction-safe** evidence to make an informed approve/deny/edit decision, and nothing secret. Field set:
 
-| Field                      | Example                                                                                                                       | Notes                                                                                                                   |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| display name               | `work-mac`                                                                                                                    | Operator-facing name; editable on approval. Display metadata, not identity.                                             |
-| device / hostname          | `Donovan-Yohans-MacBook-Pro.local`                                                                                            | Display metadata only; never treated as identity or authorization. May be shown truncated.                              |
-| platform                   | `macOS arm64`                                                                                                                 | From the node manifest.                                                                                                 |
-| Relay version              | `Relay 0.1.0-nightly.x`                                                                                                       | From the node manifest; drives version-skew display later.                                                              |
-| source / provenance signal | `same tailnet · unverified · proxy-provenance signal`                                                                         | Redacted source diagnostic (`displayHint`/state), evidence only. Never raw tailnet IP, full MagicDNS, or full hostname. |
-| requested profile          | `dev workstation`                                                                                                             | The product-language trust profile the node asked for.                                                                  |
-| requested capabilities     | "launch terminal sessions · attach/detach sessions · read/write approved repo roots · run git · launch configured agent CLIs" | Product language, not raw capability bits.                                                                              |
-| requested roots            | "~/code, ~/work"                                                                                                              | Only when the profile uses the filesystem. Display metadata for the decision.                                           |
-| expiry                     | `expires in 9:42`                                                                                                             | The pending request's countdown; expired requests cannot be approved.                                                   |
-| audit-safe fingerprint     | `key fp: a1b2…c3d4` (truncated)                                                                                               | A stable, redacted public-key fingerprint handle the operator can compare. Never the raw key, token, or credential.     |
+| Field                      | Example                                                                                                                       | Notes                                                                                                                               |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| display name               | `work-mac`                                                                                                                    | Operator-facing name; editable on approval. Display metadata, not identity.                                                         |
+| device / hostname          | `work-mac · host: …book-pro.local`                                                                                            | Display metadata only; never treated as identity or authorization. Truncate/redact before UI, CLI, or screenshot output.            |
+| platform                   | `macOS arm64`                                                                                                                 | From the node manifest.                                                                                                             |
+| Relay version              | `Relay 0.1.0-nightly.x`                                                                                                       | From the node manifest; drives version-skew display later.                                                                          |
+| source / provenance signal | `same tailnet · src_a1b2…c3d4 · displayHint: magicdns:ts.net:…tail`                                                           | Redacted source diagnostic (`displayHint`/state/fingerprint), evidence only. Never raw tailnet IP, full MagicDNS, or full hostname. |
+| requested profile          | `dev workstation`                                                                                                             | The product-language trust profile the node asked for.                                                                              |
+| requested capabilities     | "launch terminal sessions · attach/detach sessions · read/write approved repo roots · run git · launch configured agent CLIs" | Product language, not raw capability bits.                                                                                          |
+| requested roots            | "~/code, ~/work"                                                                                                              | Only when the profile uses the filesystem. Display metadata for the decision.                                                       |
+| expiry                     | `expires in 9:42`                                                                                                             | The pending request's countdown; expired requests cannot be approved.                                                               |
+| audit-safe fingerprint     | `key fp: a1b2…c3d4` (truncated)                                                                                               | A stable, redacted public-key fingerprint handle the operator can compare. Never the raw key, token, or credential.                 |
+
+Hostname and source fields are display metadata for recognition only. Every emitted surface must redact/truncate them before UI, CLI, screenshot, diagnostic, or issue-comment output: prefer the editable display name, a stable `sourceFingerprint`, a lossy suffix-only `displayHint`, or a truncated public-key fingerprint over raw hostnames, MagicDNS names, or IPs.
 
 Required copy on the card (product-language, blunt, safe):
 
@@ -223,7 +225,8 @@ The node side is the host running `relay-ide node pair <hub>`. Copy is plain ter
 ```text
 relay node pairing
 
-device: Donovan-Yohans-MacBook-Pro.local
+device: work-mac
+host hint: …book-pro.local
 platform: macOS arm64
 relay: 0.1.0-nightly.x
 
@@ -235,6 +238,8 @@ or enter code:
 
 waiting for approval... expires in 10:00
 ```
+
+If `node pair` prints hostname or source-recognition hints, they follow the same display-metadata rule as the approval card: display names, truncated suffix hints, `sourceFingerprint`, and lossy `displayHint` are allowed; full hostnames, full MagicDNS names, and raw IPs are not.
 
 **Approval (success):**
 
@@ -287,7 +292,8 @@ Hub-side revoke confirmation copy (Settings → Nodes):
 to keep this node linked across reboots, install it as a service:
   macOS:        relay-ide node install --hub <hub> --service launchd
   linux:        relay-ide node install --hub <hub> --service systemd-user
-  wsl2:         relay-ide node install --hub <hub> --service wsl-systemd   (systemd) | --service wsl-manual
+  wsl2 systemd: relay-ide node install --hub <hub> --service wsl-systemd
+  wsl2 manual:  relay-ide node install --hub <hub> --service wsl-manual
   any platform: relay-ide node install --hub <hub> --service manual
 
 then hold the link:
