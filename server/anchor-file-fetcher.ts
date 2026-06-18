@@ -137,6 +137,7 @@ function localCompatibilityNode(): HubNodeSummary {
       credentialId: 'local-compatibility',
       issuedAt: now,
       state: 'active',
+      keyBound: false,
     },
     version: {
       state: 'compatible',

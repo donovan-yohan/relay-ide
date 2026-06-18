@@ -17,6 +17,9 @@ export type RelayNodeErrorCode =
   | 'NODE_CREDENTIAL_MALFORMED'
   | 'NODE_CREDENTIAL_MISMATCH'
   | 'NODE_CREDENTIAL_EXPIRED'
+  // #981 key-bound proof-of-possession failures on /hub/node-link + heartbeat.
+  | 'NODE_PROOF_REQUIRED'
+  | 'NODE_PROOF_INVALID'
   | 'REPAIR_REQUIRED'
   | 'TOKEN_EXPIRED'
   | 'TOKEN_ALREADY_USED'
@@ -63,6 +66,13 @@ export interface RelayNodeCredential {
   credentialId: string;
   token: string;
   issuedAt: string;
+  /**
+   * #981: when the node paired with a local key pair, the hub echoes back the
+   * public-key fingerprint it bound to this credential so the node can confirm
+   * the binding and which key to prove possession of. Absent for legacy
+   * token-only (bearer) credentials. Never carries private/secret material.
+   */
+  publicKeyFingerprint?: string;
 }
 
 export type RelayNodeCredentialRecoveryReason =
@@ -88,6 +98,16 @@ export interface RelayNodeCredentialRecordSummary {
   issuedAt: string;
   state: HubNodeCredentialState;
   rotationId?: string;
+  /**
+   * #981: whether this credential is bound to a node public key and therefore
+   * requires challenge proof-of-possession (not bearer-only) on node-link.
+   */
+  keyBound: boolean;
+  /**
+   * #981: stable, public `nkey_…` fingerprint of the bound node public key.
+   * Safe to expose like `sourceFingerprint`; present only when `keyBound`.
+   */
+  publicKeyFingerprint?: string;
 }
 
 export type HubNodeStatus =

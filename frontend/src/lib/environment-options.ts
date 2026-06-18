@@ -246,6 +246,7 @@ function syntheticLocalNode(): HubNodeSummary {
       credentialId: 'local',
       issuedAt: '',
       state: 'active',
+      keyBound: false,
     },
     version: {
       state: 'compatible',

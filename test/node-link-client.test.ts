@@ -174,6 +174,59 @@ describe('node link client (unit)', () => {
     );
   });
 
+  it('sends a fresh node-link proof header on each connect when provided', async () => {
+    const headerLog: Array<Record<string, string>> = [];
+    const sockets: FakeSocket[] = [];
+    const factory: NodeLinkWebSocketFactory = (_url, options) => {
+      headerLog.push(options.headers);
+      const s = new FakeSocket();
+      sockets.push(s);
+      return s;
+    };
+    const timers = fakeTimerEnv();
+    let proofCount = 0;
+    const client = createNodeLinkClient({
+      hubUrl: 'http://hub.test',
+      credential: { nodeId: 'node-1', token: 't' },
+      getManifest: () => fakeManifest(),
+      webSocketFactory: factory,
+      initialReconnectDelayMs: 100,
+      reconnectJitterMs: 0,
+      random: () => 0,
+      buildNodeLinkProof: () => `proof-${++proofCount}`,
+      ...timers,
+    });
+    client.start();
+    expect(headerLog[0]).toMatchObject({
+      Authorization: 'Bearer t',
+      'X-Relay-Node-Proof': 'proof-1',
+    });
+    // Reconnect re-signs: a new, distinct proof header is sent.
+    sockets[0]!.close(1006, 'lost');
+    timers.run();
+    expect(headerLog[1]?.['X-Relay-Node-Proof']).toBe('proof-2');
+    void client.stop();
+  });
+
+  it('omits the proof header for legacy bearer-only credentials', async () => {
+    const headerLog: Array<Record<string, string>> = [];
+    const factory: NodeLinkWebSocketFactory = (_url, options) => {
+      headerLog.push(options.headers);
+      return new FakeSocket();
+    };
+    const timers = fakeTimerEnv();
+    const client = createNodeLinkClient({
+      hubUrl: 'http://hub.test',
+      credential: { nodeId: 'node-1', token: 't' },
+      getManifest: () => fakeManifest(),
+      webSocketFactory: factory,
+      ...timers,
+    });
+    client.start();
+    expect(headerLog[0]).toEqual({ Authorization: 'Bearer t' });
+    void client.stop();
+  });
+
   it('schedules exponential backoff with jitter on close', async () => {
     const sockets: FakeSocket[] = [];
     const factory: NodeLinkWebSocketFactory = () => {

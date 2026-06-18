@@ -45,6 +45,14 @@ import { parseCliNodeLogLineCount } from '../server/node-logs.js';
 import { createDiagnosticsBundle } from '../server/diagnostics-bundle.js';
 import { writeNodeCredentialFile } from './node-credential-file.js';
 import {
+  createNodeLinkProof,
+  generateNodeIdentityKeyPair,
+  parseStoredNodeIdentityKey,
+  redactNodeIdentityMaterial,
+  type NodeIdentityKeyPair,
+  type NodeLinkProofAudience,
+} from '../shared/node-identity-keys.js';
+import {
   EVENTS_SUBSCRIBE_TOPICS,
   EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
   RELAY_CLI_GATEWAY_CONTRACT,
@@ -6841,12 +6849,74 @@ async function runNodeSshBootstrap(nodeArgs: string[]): Promise<void> {
   console.log(scriptWithVar);
 }
 
+// #981: node pairing/link diagnostics run next to identity key material, so
+// layer the identity-key redactor (PEM key blocks, secret_ fragments) over the
+// bootstrap-secret redactor. Defense-in-depth: today no path formats a private
+// key or proof into an error, and this keeps it that way if one ever does.
+function redactNodeDiagnostics(text: string): string {
+  return redactNodeIdentityMaterial(redactBootstrapSecrets(text));
+}
+
 function nodeCredentialPath(): string {
   return path.join(service.CONFIG_DIR, 'node-credential.json');
 }
 
 function writeNodeCredential(credential: unknown): void {
   writeNodeCredentialFile(nodeCredentialPath(), credential);
+}
+
+// #981: stable node identity key. The private key never leaves the node; only
+// the public key is sent to the hub at pairing. Persisted separately from the
+// (replaceable) credential so the identity key is REUSED across re-pairs and
+// rotations. Stored 0600 via the same atomic writer as the credential file.
+function nodeIdentityKeyPath(): string {
+  return path.join(service.CONFIG_DIR, 'node-identity-key.json');
+}
+
+function loadNodeIdentityKey(): NodeIdentityKeyPair | undefined {
+  const keyPath = nodeIdentityKeyPath();
+  if (!fs.existsSync(keyPath)) return undefined;
+  try {
+    const raw = JSON.parse(fs.readFileSync(keyPath, 'utf8')) as unknown;
+    // parseStoredNodeIdentityKey rejects corrupt/mismatched/non-ed25519 keys
+    // (it derives the public key from the private key and compares), so a bad
+    // file is treated as absent and regenerated before the next pair instead
+    // of binding a public key the node could never prove possession of.
+    return parseStoredNodeIdentityKey(raw) ?? undefined;
+  } catch {
+    // Malformed JSON is regenerated on the next pair.
+    return undefined;
+  }
+}
+
+function loadOrCreateNodeIdentityKey(): NodeIdentityKeyPair {
+  const existing = loadNodeIdentityKey();
+  if (existing) return existing;
+  const keys = generateNodeIdentityKeyPair();
+  // Atomic temp+rename overwrites any corrupt prior file at the destination.
+  writeNodeCredentialFile(nodeIdentityKeyPath(), keys);
+  return keys;
+}
+
+// Build a fresh-per-call proof of private-key possession for the node lane.
+// Returns undefined (legacy bearer-only) when no identity key or credentialId
+// is available, so unpaired/legacy nodes keep working.
+function nodeLinkProofFactory(
+  nodeId: string,
+  credentialId: string | undefined,
+  audience: NodeLinkProofAudience
+): () => string | undefined {
+  const identity = loadNodeIdentityKey();
+  if (!identity || !credentialId) return () => undefined;
+  return () =>
+    createNodeLinkProof({
+      privateKeyPem: identity.privateKeyPem,
+      publicKeyFingerprint: identity.publicKeyFingerprint,
+      nodeId,
+      credentialId,
+      audience,
+      nowMs: Date.now(),
+    });
 }
 
 function loadNodeCredential(): {
@@ -6894,7 +6964,7 @@ function loadNodeCredential(): {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.error(redactBootstrapSecrets(`NODE_LINK_FAILED: ${message}`));
+    logger.error(redactNodeDiagnostics(`NODE_LINK_FAILED: ${message}`));
     process.exit(1);
   }
 }
@@ -6947,6 +7017,13 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
   const client = createNodeLinkClient({
     hubUrl,
     credential,
+    // #981: sign a fresh node-link proof on each (re)connect when this node has
+    // a bound identity key. Legacy nodes return undefined and stay bearer-only.
+    buildNodeLinkProof: nodeLinkProofFactory(
+      credential.nodeId,
+      credential.credentialId,
+      'relay:node-link:v1'
+    ),
     getManifest: () => getNodeManifest(),
     getRepoInventory: async () => {
       if (!config) return undefined;
@@ -7017,6 +7094,8 @@ async function pairNode(
 
   try {
     const manifest = await getNodeManifest();
+    // #981: create/reuse the local identity key and send only its public half.
+    const identityKey = loadOrCreateNodeIdentityKey();
     const exchangeRes = await fetch(
       nodeEndpoint(hubUrl, '/hub/pairing/exchange'),
       {
@@ -7026,11 +7105,17 @@ async function pairNode(
           pairToken,
           manifest,
           protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+          publicKey: identityKey.publicKeyPem,
         }),
       }
     );
     const exchange = (await exchangeRes.json()) as {
-      credential?: { token: string; nodeId: string };
+      credential?: {
+        token: string;
+        nodeId: string;
+        credentialId?: string;
+        publicKeyFingerprint?: string;
+      };
       node?: { displayName: string };
       error?: { code: string; message: string };
     };
@@ -7040,7 +7125,7 @@ async function pairNode(
           ? 'PAIR_TOKEN_EXPIRED'
           : 'PAIR_TOKEN_INVALID';
       logger.error(
-        redactBootstrapSecrets(
+        redactNodeDiagnostics(
           `${code}: ${exchange.error?.message ?? 'pairing failed'}`
         )
       );
@@ -7049,6 +7134,15 @@ async function pairNode(
 
     writeNodeCredential(exchange.credential);
 
+    // #981: prove possession on the bootstrap heartbeat when the hub bound our
+    // key. Omitted for legacy hubs that return no fingerprint (bearer-only).
+    const bootstrapProof = exchange.credential.publicKeyFingerprint
+      ? nodeLinkProofFactory(
+          exchange.credential.nodeId,
+          exchange.credential.credentialId,
+          'relay:node-heartbeat:v1'
+        )()
+      : undefined;
     const heartbeatRes = await fetch(
       nodeEndpoint(hubUrl, '/hub/node-heartbeat'),
       {
@@ -7056,6 +7150,7 @@ async function pairNode(
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${exchange.credential.token}`,
+          ...(bootstrapProof ? { 'x-relay-node-proof': bootstrapProof } : {}),
         },
         body: JSON.stringify({
           nodeId: exchange.credential.nodeId,
@@ -7067,7 +7162,7 @@ async function pairNode(
     if (!heartbeatRes.ok) {
       const body = await heartbeatRes.text();
       logger.error(
-        redactBootstrapSecrets(
+        redactNodeDiagnostics(
           `NODE_CONNECT_FAILED: heartbeat rejected: ${body}`
         )
       );
@@ -7089,7 +7184,7 @@ async function pairNode(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger.error(redactBootstrapSecrets(`NODE_CONNECT_FAILED: ${message}`));
+    logger.error(redactNodeDiagnostics(`NODE_CONNECT_FAILED: ${message}`));
     process.exit(1);
   }
 }

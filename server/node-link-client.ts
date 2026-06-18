@@ -14,6 +14,12 @@ export interface NodeLinkCredential {
   token: string;
 }
 
+/**
+ * #981: outgoing proof header name. HTTP headers are case-insensitive; the hub
+ * reads the lowercased `x-relay-node-proof`.
+ */
+export const NODE_LINK_PROOF_HEADER_NAME = 'X-Relay-Node-Proof';
+
 export interface NodeLinkEnvelopeHandlerContext {
   send: (envelope: RelayNodeEnvelope) => void;
   sendWithBackpressure?: (envelope: RelayNodeEnvelope) => Promise<void>;
@@ -48,6 +54,14 @@ export interface NodeLinkClientDeps {
   logger?: Logger;
   onPtyEnvelope?: NodeLinkChannelHandler;
   onRpcEnvelope?: NodeLinkChannelHandler;
+  /**
+   * #981: produce a fresh proof of private-key possession for each (re)connect.
+   * Called once per dial; a returned string is sent in the `X-Relay-Node-Proof`
+   * header alongside the bearer token. Omit (or return undefined) for legacy
+   * bearer-only credentials. Re-invoked on every reconnect so the proof stays
+   * inside the hub's freshness window.
+   */
+  buildNodeLinkProof?: () => string | undefined;
 }
 
 export interface NodeLinkWebSocketLike {
@@ -132,7 +146,16 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
   const clearTimer = deps.clearTimeoutFn ?? clearTimeout;
   const random = deps.random ?? Math.random;
   const linkUrl = toLinkUrl(deps.hubUrl);
-  const headers = { Authorization: `Bearer ${deps.credential.token}` };
+
+  function connectHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${deps.credential.token}`,
+    };
+    // #981: re-sign per dial so the proof is fresh on every reconnect.
+    const proof = deps.buildNodeLinkProof?.();
+    if (proof) headers[NODE_LINK_PROOF_HEADER_NAME] = proof;
+    return headers;
+  }
 
   let state: NodeLinkState = 'idle';
   let ws: NodeLinkWebSocketLike | undefined;
@@ -397,7 +420,7 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
     setState('connecting');
     let socket: NodeLinkWebSocketLike;
     try {
-      socket = webSocketFactory(linkUrl, { headers });
+      socket = webSocketFactory(linkUrl, { headers: connectHeaders() });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       scheduleReconnect(`dial threw: ${message}`);

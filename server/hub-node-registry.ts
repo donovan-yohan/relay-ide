@@ -33,6 +33,12 @@ import {
 } from './node-source-diagnostics.js';
 import { classifyHelperSkew } from './node-version-skew.js';
 import {
+  DEFAULT_NODE_LINK_PROOF_FRESHNESS_MS,
+  safeNodePublicKeyFingerprint,
+  verifyNodeLinkProof,
+  type NodeLinkProofAudience,
+} from '../shared/node-identity-keys.js';
+import {
   RELAY_SECURITY_POLICY_VERSION,
   applyTrustTierOverlay,
   createLegacyDefaultNodeAcl,
@@ -84,6 +90,12 @@ interface StoredCredentialRotation {
   previousCredentialId: string;
   nextCredentialId: string;
   nextCredentialHash?: string;
+  // #981: key binding for the next credential. Carried forward from the active
+  // credential by default so the node keeps proving with the same identity key
+  // across a secret-only rotation; an explicit value rebinds to a new key.
+  nextPublicKey?: string;
+  nextPublicKeyFingerprint?: string;
+  nextPublicKeyAlgorithm?: string;
   state: HubNodeCredentialRotationState;
   issuedAt: string;
   deliveredAt?: string;
@@ -107,6 +119,13 @@ interface StoredActiveCredential {
   issuedAt: string;
   expiresAt?: string;
   revokedAt?: string;
+  // #981: key-bound identity. When the node paired with a local key pair, the
+  // hub binds the SPKI public key (PEM) + its stable `nkey_…` fingerprint to
+  // the credential. Public material only — no private key ever reaches the hub.
+  // Absent for legacy bearer-only credentials, which stay on the token path.
+  publicKey?: string;
+  publicKeyFingerprint?: string;
+  publicKeyAlgorithm?: string;
 }
 
 interface StoredNodeSourceBinding {
@@ -184,6 +203,12 @@ export interface PairExchangeInput {
   displayName?: string;
   protocolVersion?: string;
   source?: RelayNodeSourceTuple;
+  /**
+   * #981: node-generated SPKI public key (PEM). When present and valid, the hub
+   * binds its fingerprint to the issued credential and the node must thereafter
+   * prove private-key possession on node-link. Public material only.
+   */
+  publicKey?: string;
 }
 
 export interface HeartbeatInput {
@@ -234,6 +259,11 @@ export const DEFAULT_NODE_HEARTBEAT_TIMEOUTS = {
   offlineMs: 90 * 1000,
 } as const;
 export const DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS = 5 * 1000;
+// #981: start pruning the node-link proof replay cache only once it grows past
+// this size. Pruning is also time-gated below so high-QPS heartbeat traffic does
+// not full-scan the cache on every accepted proof once it crosses the threshold.
+const NODE_LINK_PROOF_REPLAY_PRUNE_THRESHOLD = 1024;
+const NODE_LINK_PROOF_REPLAY_PRUNE_INTERVAL_MS = 30 * 1000;
 const PRIVILEGED_NODE_WARNING =
   "A paired Relay node runs with that machine's local OS-user blast radius; hub ACL policy grants individual capability bits.";
 
@@ -243,12 +273,42 @@ export type CredentialAuthResult =
       node: HubNodeSummary;
       credentialId: string;
       rotationId?: string;
+      /** #981: true when the matched credential is bound to a node public key. */
+      keyBound?: boolean;
     }
   | { ok: false; error: RelayNodeError };
 
 export interface CredentialAuthContext {
   source?: RelayNodeSourceTuple;
   strictSourceDeny?: boolean;
+}
+
+/**
+ * #981: proof-of-possession context for `/hub/node-link` + heartbeat. The
+ * bearer token still locates the credential; for key-bound credentials a
+ * fresh, replay-protected `proof` of the node private key is additionally
+ * required, bound to the connection `audience`.
+ */
+export interface NodeLinkProofContext extends CredentialAuthContext {
+  proof?: string;
+  audience: NodeLinkProofAudience;
+  proofFreshnessMs?: number;
+}
+
+/**
+ * #981: a validated-but-not-yet-committed credential. Produced by
+ * `resolveCredentialForAuth` with NO allow side-effects so the key-bound lane
+ * can gate the allow effects behind proof-of-possession.
+ */
+interface ResolvedCredential {
+  ok: true;
+  node: StoredNodeRecord;
+  credentialId: string;
+  matchesRotation: boolean;
+  /** Token/rotation hash used to key the source-observation fingerprint. */
+  fingerprintKey: string;
+  keyBound: boolean;
+  rotationId?: string;
 }
 
 export interface HubNodeStatusEvent {
@@ -656,10 +716,15 @@ function credentialSummary(
 ): RelayNodeCredentialRecordSummary {
   const credential = ensureSeparatedCredential(node);
   const state = credentialState(node);
+  const keyBound = Boolean(credential.publicKeyFingerprint);
   return {
     credentialId: credential.credentialId,
     issuedAt: credential.issuedAt,
     state,
+    keyBound,
+    ...(keyBound
+      ? { publicKeyFingerprint: credential.publicKeyFingerprint }
+      : {}),
     ...(node.credentialRotation && state === 'rotating'
       ? { rotationId: node.credentialRotation.rotationId }
       : {}),
@@ -878,6 +943,15 @@ export class HubNodeRegistry {
   private readonly lastNotifiedStatuses = new Map<string, HubNodeStatus>();
   /** Hub's own package version, forwarded to helperSkew computation. */
   private readonly hubVersion: string | undefined;
+  /**
+   * #981: single-use jti replay guard for node-link proofs. Key is
+   * `${credentialId}:${jti}`, value is the proof expiry (ms). Bounded by the
+   * proof freshness window; entries are pruned lazily on each verify. Process
+   * local — the proof freshness window is short enough that a hub restart does
+   * not meaningfully widen the replay surface.
+   */
+  private readonly nodeLinkProofReplay = new Map<string, number>();
+  private nextNodeLinkProofReplayPruneAtMs = 0;
 
   constructor(options: HubNodeRegistryOptions) {
     this.storagePath = options.storagePath;
@@ -1080,6 +1154,11 @@ export class HubNodeRegistry {
 
     const nodeId = randomToken('node');
     const credential = credentialToken(nodeId);
+    // #981: bind the node public key to this credential when the node supplied
+    // usable public material. A malformed key fails closed to a bearer-only
+    // (legacy) credential rather than throwing — the boundary is "key-bound
+    // credentials REQUIRE proof", not "pairing without a key is forbidden".
+    const boundFingerprint = safeNodePublicKeyFingerprint(input.publicKey);
     const timestamp = now.toISOString();
     const displayName = nodeDisplayName(
       input.displayName ?? pairToken.displayName,
@@ -1139,6 +1218,13 @@ export class HubNodeRegistry {
         credentialId: credential.credentialId,
         tokenHash: credential.hash,
         issuedAt: timestamp,
+        ...(boundFingerprint && input.publicKey
+          ? {
+              publicKey: input.publicKey,
+              publicKeyFingerprint: boundFingerprint,
+              publicKeyAlgorithm: 'ed25519',
+            }
+          : {}),
       },
       credentialId: credential.credentialId,
       credentialHash: credential.hash,
@@ -1209,7 +1295,9 @@ export class HubNodeRegistry {
       credentialId: credential.credentialId,
       decision: 'allow',
       eventType: 'grant',
-      reasonCode: 'NODE_PAIR_ALLOWED',
+      reasonCode: boundFingerprint
+        ? 'NODE_PAIR_ALLOWED_KEY_BOUND'
+        : 'NODE_PAIR_ALLOWED',
       action: 'nodes.pair',
     });
     this.notifyNodeStatusIfChanged(node, 'online', input.manifest);
@@ -1221,6 +1309,7 @@ export class HubNodeRegistry {
         credentialId: credential.credentialId,
         token: credential.token,
         issuedAt: timestamp,
+        ...(boundFingerprint ? { publicKeyFingerprint: boundFingerprint } : {}),
       },
       node: publicNode(node, 'online', this.hubVersion),
     };
@@ -1484,9 +1573,27 @@ export class HubNodeRegistry {
     token: string,
     context: CredentialAuthContext = {}
   ): CredentialAuthResult {
+    const resolved = this.resolveCredentialForAuth(token, context);
+    if (resolved.ok === false) return resolved.result;
+    return this.commitCredentialAllow(resolved, context);
+  }
+
+  /**
+   * #981: validate a presented bearer token WITHOUT any allow side-effects.
+   * Performs only read-and-compare checks (parse, locate, match active/rotation
+   * hash, expiry, revocation) and audits denials, but never records a source
+   * observation, persists registry state, or emits an allow audit. This lets
+   * the key-bound lane reject an unproven (stolen) bearer before any
+   * allow-shaped effect happens; `commitCredentialAllow` runs those effects
+   * only once the request has actually earned authentication.
+   */
+  private resolveCredentialForAuth(
+    token: string,
+    context: CredentialAuthContext
+  ): ResolvedCredential | { ok: false; result: CredentialAuthResult } {
     const trimmedToken = token.trim();
     const parsed = this.parseCredentialToken(trimmedToken, context);
-    if (parsed.ok === false) return parsed.result;
+    if (parsed.ok === false) return { ok: false, result: parsed.result };
     const { nodeId } = parsed;
     const tokenHash = sha256(trimmedToken);
     const node = this.state.nodes.find(
@@ -1497,41 +1604,77 @@ export class HubNodeRegistry {
     const matchesActive = activeCredential
       ? timingSafeEqualHex(activeCredential.tokenHash, tokenHash)
       : false;
-    const matchesRotation =
+    const matchesRotation = Boolean(
       node &&
-      rotation?.nextCredentialHash &&
-      timingSafeEqualHex(rotation.nextCredentialHash, tokenHash);
+        rotation?.nextCredentialHash &&
+        timingSafeEqualHex(rotation.nextCredentialHash, tokenHash)
+    );
     if (!node || (!matchesActive && !matchesRotation)) {
       const code: RelayNodeErrorCode = !node
         ? 'REPAIR_REQUIRED'
         : node.credentialRotation?.state === 'stable'
           ? 'REPAIR_REQUIRED'
           : 'NODE_CREDENTIAL_MISMATCH';
-      return this.credentialDenied(code, node, nodeId, context);
+      return {
+        ok: false,
+        result: this.credentialDenied(code, node, nodeId, context),
+      };
     }
     if (activeCredential?.expiresAt) {
       const expiresAt = Date.parse(activeCredential.expiresAt);
       if (Number.isFinite(expiresAt) && expiresAt <= this.now().getTime()) {
-        return this.credentialDenied(
-          'NODE_CREDENTIAL_EXPIRED',
-          node,
-          nodeId,
-          context
-        );
+        return {
+          ok: false,
+          result: this.credentialDenied(
+            'NODE_CREDENTIAL_EXPIRED',
+            node,
+            nodeId,
+            context
+          ),
+        };
       }
     }
     if (node.revokedAt) {
-      return this.credentialDenied('NODE_REVOKED', node, nodeId, context);
+      return {
+        ok: false,
+        result: this.credentialDenied('NODE_REVOKED', node, nodeId, context),
+      };
     }
-    const credentialId = matchesRotation
-      ? rotation!.nextCredentialId
-      : node.credentialId;
+    return {
+      ok: true,
+      node,
+      credentialId: matchesRotation
+        ? rotation!.nextCredentialId
+        : node.credentialId,
+      matchesRotation,
+      fingerprintKey: matchesRotation
+        ? rotation!.nextCredentialHash!
+        : activeCredential!.tokenHash,
+      keyBound: Boolean(
+        matchesRotation
+          ? rotation!.nextPublicKeyFingerprint
+          : activeCredential!.publicKeyFingerprint
+      ),
+      ...(matchesRotation ? { rotationId: rotation!.rotationId } : {}),
+    };
+  }
+
+  /**
+   * #981: apply the allow-shaped side-effects (source observation, persist,
+   * allow audit) for a resolved credential and return the success result.
+   * A strict-deny source binding still denies here (it is a denial, not an
+   * allow). Called by the bearer-only path immediately, and by the key-bound
+   * path only AFTER proof-of-possession has been verified.
+   */
+  private commitCredentialAllow(
+    resolved: ResolvedCredential,
+    context: CredentialAuthContext
+  ): CredentialAuthResult {
+    const { node, credentialId, matchesRotation } = resolved;
     const sourceDiagnostics = this.recordSourceObservation(
       node,
       context,
-      matchesRotation
-        ? rotation!.nextCredentialHash!
-        : activeCredential!.tokenHash,
+      resolved.fingerprintKey,
       this.now().toISOString()
     );
     if (sourceDiagnostics.state === 'strict-deny') {
@@ -1577,7 +1720,181 @@ export class HubNodeRegistry {
         this.hubVersion
       ),
       credentialId,
-      ...(matchesRotation ? { rotationId: rotation!.rotationId } : {}),
+      keyBound: resolved.keyBound,
+      ...(resolved.rotationId ? { rotationId: resolved.rotationId } : {}),
+    };
+  }
+
+  /**
+   * #981: key-bound node-link authentication. The bearer `token` LOCATES and
+   * validates the credential via `resolveCredentialForAuth`, which has NO allow
+   * side-effects. For a key-bound credential the caller MUST additionally supply
+   * a fresh, audience-bound proof of node private-key possession; bearer-alone
+   * fails closed with `NODE_PROOF_REQUIRED`. Crucially, source observation,
+   * registry persistence, and the allow audit (`commitCredentialAllow`) run ONLY
+   * after proof verification, so a stolen bearer token cannot drive allow-shaped
+   * effects without the node private key. Legacy bearer-only credentials (no
+   * bound key) commit immediately, exactly as before.
+   */
+  authenticateNodeLinkWithProof(
+    token: string,
+    context: NodeLinkProofContext
+  ): CredentialAuthResult {
+    const resolved = this.resolveCredentialForAuth(token, context);
+    if (resolved.ok === false) return resolved.result;
+    if (!resolved.keyBound) {
+      // Legacy/bearer-only credential: no key bound, so no proof is possible or
+      // required. Commit the allow effects immediately, as before.
+      return this.commitCredentialAllow(resolved, context);
+    }
+    const { node, credentialId } = resolved;
+    const boundKey = this.boundKeyForCredential(node, credentialId);
+    if (!boundKey) {
+      // keyBound said true but the bound key is unreadable — fail closed.
+      return this.proofDenied(
+        node,
+        credentialId,
+        'NODE_PROOF_INVALID',
+        'NODE_LINK_PROOF_BINDING_UNAVAILABLE'
+      );
+    }
+    if (!context.proof) {
+      return this.proofDenied(
+        node,
+        credentialId,
+        'NODE_PROOF_REQUIRED',
+        'NODE_LINK_PROOF_MISSING'
+      );
+    }
+    const nowMs = this.now().getTime();
+    const freshnessMs =
+      context.proofFreshnessMs ?? DEFAULT_NODE_LINK_PROOF_FRESHNESS_MS;
+    const verified = verifyNodeLinkProof({
+      proof: context.proof,
+      publicKeyPem: boundKey.publicKey,
+      expected: {
+        nodeId: node.nodeId,
+        credentialId,
+        audience: context.audience,
+        publicKeyFingerprint: boundKey.publicKeyFingerprint,
+      },
+      nowMs,
+      freshnessMs,
+    });
+    if (verified.ok === false) {
+      return this.proofDenied(
+        node,
+        credentialId,
+        'NODE_PROOF_INVALID',
+        verified.reason
+      );
+    }
+    // Single-use replay guard, scoped to the matched credential.
+    const replayKey = `${credentialId}:${verified.jti}`;
+    this.pruneNodeLinkProofReplay(nowMs);
+    if (this.nodeLinkProofReplay.has(replayKey)) {
+      return this.proofDenied(
+        node,
+        credentialId,
+        'NODE_PROOF_INVALID',
+        'NODE_LINK_PROOF_REPLAYED'
+      );
+    }
+    // `+ 1` so the replay entry strictly outlives the inclusive ±freshness
+    // acceptance window (verifyNodeLinkProof accepts at exactly issuedAt+window,
+    // and prune drops entries at `expiresAt <= now`): the replay record must
+    // still be present for that final accepted millisecond.
+    this.nodeLinkProofReplay.set(
+      replayKey,
+      verified.issuedAtMs + freshnessMs + 1
+    );
+    // Proof passed: NOW apply the allow-shaped effects (source/persist/audit).
+    const allow = this.commitCredentialAllow(resolved, context);
+    if (allow.ok) {
+      this.auditNodeCredentialLifecycle({
+        node,
+        credentialId,
+        decision: 'allow',
+        eventType: 'grant',
+        reasonCode: 'NODE_LINK_PROOF_VERIFIED',
+      });
+    }
+    return allow;
+  }
+
+  private boundKeyForCredential(
+    node: StoredNodeRecord,
+    credentialId: string
+  ): { publicKey: string; publicKeyFingerprint: string } | undefined {
+    const rotation = node.credentialRotation;
+    if (
+      rotation &&
+      rotation.nextCredentialId === credentialId &&
+      rotation.nextPublicKey &&
+      rotation.nextPublicKeyFingerprint
+    ) {
+      return {
+        publicKey: rotation.nextPublicKey,
+        publicKeyFingerprint: rotation.nextPublicKeyFingerprint,
+      };
+    }
+    const active = ensureSeparatedCredential(node);
+    if (
+      active.credentialId === credentialId &&
+      active.publicKey &&
+      active.publicKeyFingerprint
+    ) {
+      return {
+        publicKey: active.publicKey,
+        publicKeyFingerprint: active.publicKeyFingerprint,
+      };
+    }
+    return undefined;
+  }
+
+  private pruneNodeLinkProofReplay(nowMs: number): void {
+    // Amortized: the per-accept cost is O(1) until the cache grows past the
+    // threshold, then sweeps are rate-limited. Correctness does not depend on
+    // pruning — a fresh proof carries a random jti, and stale proofs are already
+    // rejected by the freshness gate before the replay check — so delaying a
+    // sweep only affects bounded memory, never the guard.
+    if (this.nodeLinkProofReplay.size <= NODE_LINK_PROOF_REPLAY_PRUNE_THRESHOLD) {
+      return;
+    }
+    if (nowMs < this.nextNodeLinkProofReplayPruneAtMs) {
+      return;
+    }
+    this.nextNodeLinkProofReplayPruneAtMs =
+      nowMs + NODE_LINK_PROOF_REPLAY_PRUNE_INTERVAL_MS;
+    for (const [key, expiresAt] of this.nodeLinkProofReplay) {
+      if (expiresAt <= nowMs) this.nodeLinkProofReplay.delete(key);
+    }
+  }
+
+  private proofDenied(
+    node: StoredNodeRecord | undefined,
+    credentialId: string,
+    code: 'NODE_PROOF_REQUIRED' | 'NODE_PROOF_INVALID',
+    reasonCode: string
+  ): CredentialAuthResult {
+    this.auditNodeCredentialLifecycle({
+      ...(node ? { node } : {}),
+      credentialId,
+      decision: 'deny',
+      eventType: 'denial',
+      reasonCode,
+    });
+    return {
+      ok: false,
+      error: {
+        code,
+        message:
+          code === 'NODE_PROOF_REQUIRED'
+            ? 'node-link requires proof of private-key possession'
+            : 'node-link proof of private-key possession was rejected',
+        retryable: false,
+        details: { reasonCode },
+      },
     };
   }
 
@@ -1655,7 +1972,10 @@ export class HubNodeRegistry {
     return publicNode(node, 'offline', this.hubVersion);
   }
 
-  beginCredentialRotation(nodeId: string): CredentialRotationResult {
+  beginCredentialRotation(
+    nodeId: string,
+    options: { publicKey?: string } = {}
+  ): CredentialRotationResult {
     const node = this.state.nodes.find(
       (candidate) => candidate.nodeId === nodeId
     );
@@ -1666,11 +1986,33 @@ export class HubNodeRegistry {
     assertNoActiveRotation(node);
     const issuedAt = this.now().toISOString();
     const next = credentialToken(nodeId);
+    // #981: rotation replaces credential material while preserving the stable
+    // node identity. The key binding carries forward from the active credential
+    // by default (secret-only rotation); an explicit, valid `publicKey` rebinds
+    // to a new node key. A malformed override fails closed to carry-forward
+    // rather than silently dropping the existing binding.
+    const active = ensureSeparatedCredential(node);
+    const overrideFingerprint = safeNodePublicKeyFingerprint(options.publicKey);
+    const nextPublicKey =
+      overrideFingerprint && options.publicKey
+        ? options.publicKey
+        : active.publicKey;
+    const nextPublicKeyFingerprint =
+      overrideFingerprint && options.publicKey
+        ? overrideFingerprint
+        : active.publicKeyFingerprint;
     node.credentialRotation = {
       rotationId: randomToken('rot'),
       previousCredentialId: node.credentialId,
       nextCredentialId: next.credentialId,
       nextCredentialHash: next.hash,
+      ...(nextPublicKey && nextPublicKeyFingerprint
+        ? {
+            nextPublicKey,
+            nextPublicKeyFingerprint,
+            nextPublicKeyAlgorithm: 'ed25519',
+          }
+        : {}),
       state: 'issuing',
       issuedAt,
     };
@@ -1688,6 +2030,9 @@ export class HubNodeRegistry {
         credentialId: next.credentialId,
         token: next.token,
         issuedAt,
+        ...(nextPublicKeyFingerprint
+          ? { publicKeyFingerprint: nextPublicKeyFingerprint }
+          : {}),
       },
       rotation: publicRotation(node.credentialRotation)!,
     };
@@ -1808,8 +2153,20 @@ export class HubNodeRegistry {
       credentialId: rotation.nextCredentialId,
       tokenHash: rotation.nextCredentialHash,
       issuedAt: now,
+      // #981: preserve the key binding across rotation so the node keeps
+      // proving possession with the same (or rebound) identity key.
+      ...(rotation.nextPublicKey && rotation.nextPublicKeyFingerprint
+        ? {
+            publicKey: rotation.nextPublicKey,
+            publicKeyFingerprint: rotation.nextPublicKeyFingerprint,
+            publicKeyAlgorithm: rotation.nextPublicKeyAlgorithm ?? 'ed25519',
+          }
+        : {}),
     };
     delete rotation.nextCredentialHash;
+    delete rotation.nextPublicKey;
+    delete rotation.nextPublicKeyFingerprint;
+    delete rotation.nextPublicKeyAlgorithm;
     rotation.state = 'stable';
     rotation.stableAt = now;
     this.auditCredentialRotationProved(node, rotation, now);

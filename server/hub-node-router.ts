@@ -34,7 +34,7 @@ import {
   generateBootstrapCommands,
   type BootstrapServiceMode,
 } from '../shared/bootstrap-diagnostics.js';
-import { HubNodeLinkError } from './hub-node-link.js';
+import { HubNodeLinkError, NODE_LINK_PROOF_HEADER } from './hub-node-link.js';
 import {
   createRepoInventoryFeature,
   type RepoInventoryFeature,
@@ -248,12 +248,17 @@ function controlSummaryFieldsOk(session: Partial<SessionSummary>): boolean {
 // consistently). Pure functions — no router or registry state.
 export function errorStatus(error: RelayNodeError): number {
   switch (error.code) {
+    // #981: NODE_PROOF_REQUIRED → bearer located the credential but possession
+    // was not proven (401). NODE_PROOF_INVALID → proof present but rejected
+    // (wrong key / stale / replayed / mismatch) (403).
     case 'UNAUTHORIZED':
     case 'NODE_CREDENTIAL_MISSING':
     case 'NODE_CREDENTIAL_MALFORMED':
     case 'NODE_CREDENTIAL_MISMATCH':
+    case 'NODE_PROOF_REQUIRED':
       return 401;
     case 'FORBIDDEN':
+    case 'NODE_PROOF_INVALID':
       return 403;
     case 'ROTATION_IN_PROGRESS':
     case 'CONFIRMATION_REQUIRED':
@@ -2815,6 +2820,10 @@ export function createHubNodeRouter(
         typeof body['displayName'] === 'string'
           ? body['displayName']
           : undefined;
+      // #981: node-supplied public key (PEM). Public material only; the hub
+      // binds its fingerprint to the issued credential.
+      const publicKey =
+        typeof body['publicKey'] === 'string' ? body['publicKey'] : undefined;
       const source = sourceTupleFromRequest(req);
       res.status(201).json(
         registry.exchangePairToken({
@@ -2823,6 +2832,7 @@ export function createHubNodeRouter(
           ...(displayName ? { displayName } : {}),
           ...(protocolVersion ? { protocolVersion } : {}),
           ...(source ? { source } : {}),
+          ...(publicKey ? { publicKey } : {}),
         })
       );
     } catch (error) {
@@ -2833,15 +2843,24 @@ export function createHubNodeRouter(
   router.post('/hub/node-heartbeat', (req, res) => {
     const token = bearerToken(req);
     const source = sourceTupleFromRequest(req);
+    // #981: HTTP heartbeat is a node-credential lane too. Key-bound credentials
+    // must prove possession here (audience-bound to heartbeat) so a captured
+    // bearer token cannot keep a key-bound node alive without its private key.
+    const proofHeader = req.header(NODE_LINK_PROOF_HEADER);
     const authContext = {
       ...(source ? { source } : {}),
       ...(options.sourceDiagnostics?.strictDeny
         ? { strictSourceDeny: true }
         : {}),
+      audience: 'relay:node-heartbeat:v1' as const,
+      ...(typeof proofHeader === 'string' && proofHeader.length > 0
+        ? { proof: proofHeader }
+        : {}),
     };
-    const authenticated = token
-      ? registry.authenticateCredentialDetailed(token, authContext)
-      : registry.authenticateCredentialDetailed('', authContext);
+    const authenticated = registry.authenticateNodeLinkWithProof(
+      token ?? '',
+      authContext
+    );
     if (authenticated.ok === false) {
       const { error } = authenticated;
       res.status(errorStatus(error)).json({ error });
