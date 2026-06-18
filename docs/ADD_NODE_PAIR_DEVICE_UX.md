@@ -33,15 +33,15 @@ Out of scope (for this spec and the first shippable slice):
 
 This spec is the planning baseline for the #979 child ladder. Each downstream slice owns the sections below:
 
-| Ticket | Slice                                                    | Cites                                                                                                                                                         |
-| ------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #981   | Key-bound node identity + credential handshake           | [Security model and auth lanes](#security-model-and-auth-lanes), [Node lifecycle states](#node-lifecycle-states)                                              |
-| #982   | Hub API pending pairing request lifecycle                | [Pending-request approval card](#pending-request-approval-card), [Node lifecycle states](#node-lifecycle-states), [Redaction rules](#redaction-rules)         |
-| #983   | Node-side `relay-ide node pair <hub>` device-code client | [Device code is a locator, not a credential](#the-device-code-is-a-locator-not-a-credential), [Node-side CLI copy](#node-side-cli-copy)                       |
-| #984   | Settings → Nodes management surface                      | [Add Node wizard flow](#add-node-wizard-flow), [Node cards by state](#node-cards-by-state), [Mobile / narrow-screen behavior](#mobile-narrow-screen-behavior) |
-| #985   | Command Center node command projection                   | [Command Center parity](#command-center-parity)                                                                                                               |
-| #986   | Command-surface drift guard                              | [Command Center parity](#command-center-parity), [Redaction rules](#redaction-rules)                                                                          |
-| #987   | Dogfood lane pairing `work-mac`                          | [QA screenshot / mock evidence](#qa-screenshot-mock-evidence)                                                                                                 |
+| Ticket | Slice                                                    | Cites                                                                                                                                                          |
+| ------ | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #981   | Key-bound node identity + credential handshake           | [Security model and auth lanes](#security-model-and-auth-lanes), [Node lifecycle states](#node-lifecycle-states)                                               |
+| #982   | Hub API pending pairing request lifecycle                | [Pending-request approval card](#pending-request-approval-card), [Node lifecycle states](#node-lifecycle-states), [Redaction rules](#redaction-rules)          |
+| #983   | Node-side `relay-ide node pair <hub>` device-code client | [Device code is a locator, not a credential](#the-device-code-is-a-locator-not-a-credential), [Node-side CLI copy](#node-side-cli-copy)                        |
+| #984   | Settings → Nodes management surface                      | [Add Node wizard flow](#add-node-wizard-flow), [Node cards by state](#node-cards-by-state), [Mobile / narrow-screen behavior](#mobile--narrow-screen-behavior) |
+| #985   | Command Center node command projection                   | [Command Center parity](#command-center-parity)                                                                                                                |
+| #986   | Command-surface drift guard                              | [Command Center parity](#command-center-parity), [Redaction rules](#redaction-rules)                                                                           |
+| #987   | Dogfood lane pairing `work-mac`                          | [QA screenshot / mock evidence](#qa-screenshot--mock-evidence)                                                                                                 |
 
 ## Mental model
 
