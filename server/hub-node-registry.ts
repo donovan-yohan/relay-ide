@@ -259,9 +259,11 @@ export const DEFAULT_NODE_HEARTBEAT_TIMEOUTS = {
   offlineMs: 90 * 1000,
 } as const;
 export const DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS = 5 * 1000;
-// #981: sweep the node-link proof replay cache only once it grows past this
-// size, so the per-accept cost stays O(1) under normal load.
+// #981: start pruning the node-link proof replay cache only once it grows past
+// this size. Pruning is also time-gated below so high-QPS heartbeat traffic does
+// not full-scan the cache on every accepted proof once it crosses the threshold.
 const NODE_LINK_PROOF_REPLAY_PRUNE_THRESHOLD = 1024;
+const NODE_LINK_PROOF_REPLAY_PRUNE_INTERVAL_MS = 30 * 1000;
 const PRIVILEGED_NODE_WARNING =
   "A paired Relay node runs with that machine's local OS-user blast radius; hub ACL policy grants individual capability bits.";
 
@@ -949,6 +951,7 @@ export class HubNodeRegistry {
    * not meaningfully widen the replay surface.
    */
   private readonly nodeLinkProofReplay = new Map<string, number>();
+  private nextNodeLinkProofReplayPruneAtMs = 0;
 
   constructor(options: HubNodeRegistryOptions) {
     this.storagePath = options.storagePath;
@@ -1851,14 +1854,18 @@ export class HubNodeRegistry {
 
   private pruneNodeLinkProofReplay(nowMs: number): void {
     // Amortized: the per-accept cost is O(1) until the cache grows past the
-    // threshold, then a single sweep drops everything past its freshness window
-    // (under normal load that is nearly the whole map). Correctness does not
-    // depend on pruning — a fresh proof carries a random jti, and stale proofs
-    // are already rejected by the freshness gate before the replay check — so
-    // skipping the sweep while small only affects memory, never the guard.
+    // threshold, then sweeps are rate-limited. Correctness does not depend on
+    // pruning — a fresh proof carries a random jti, and stale proofs are already
+    // rejected by the freshness gate before the replay check — so delaying a
+    // sweep only affects bounded memory, never the guard.
     if (this.nodeLinkProofReplay.size <= NODE_LINK_PROOF_REPLAY_PRUNE_THRESHOLD) {
       return;
     }
+    if (nowMs < this.nextNodeLinkProofReplayPruneAtMs) {
+      return;
+    }
+    this.nextNodeLinkProofReplayPruneAtMs =
+      nowMs + NODE_LINK_PROOF_REPLAY_PRUNE_INTERVAL_MS;
     for (const [key, expiresAt] of this.nodeLinkProofReplay) {
       if (expiresAt <= nowMs) this.nodeLinkProofReplay.delete(key);
     }

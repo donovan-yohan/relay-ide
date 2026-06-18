@@ -304,6 +304,62 @@ describe('key-bound node-link proof', () => {
     });
   });
 
+  it('rate-limits replay-cache sweeps after crossing the size threshold', () => {
+    withHarness(({ registry, now }) => {
+      const keys = generateNodeIdentityKeyPair();
+      const { credential } = pair(registry, keys);
+      const internals = registry as unknown as {
+        nodeLinkProofReplay: Map<string, number>;
+        nextNodeLinkProofReplayPruneAtMs: number;
+      };
+      // Force the cache over the production threshold with mostly-fresh entries
+      // plus one expired marker. The first accepted proof may sweep; the next
+      // accepted proof at the same timestamp must NOT full-scan/sweep again.
+      for (let i = 0; i < 1100; i += 1) {
+        internals.nodeLinkProofReplay.set(`fresh-${i}`, NOW_MS + 60_000);
+      }
+      internals.nodeLinkProofReplay.set('expired-first', NOW_MS - 1);
+
+      const first = registry.authenticateNodeLinkWithProof(
+        credential.token,
+        proofCtx(
+          freshProof(keys, credential.nodeId, credential.credentialId, {
+            jti: 'prune-1',
+          })
+        )
+      );
+      expect(first.ok).toBe(true);
+      expect(internals.nodeLinkProofReplay.has('expired-first')).toBe(false);
+      const nextPruneAt = internals.nextNodeLinkProofReplayPruneAtMs;
+      expect(nextPruneAt).toBeGreaterThan(NOW_MS);
+
+      internals.nodeLinkProofReplay.set('expired-second', NOW_MS - 1);
+      const second = registry.authenticateNodeLinkWithProof(
+        credential.token,
+        proofCtx(
+          freshProof(keys, credential.nodeId, credential.credentialId, {
+            jti: 'prune-2',
+          })
+        )
+      );
+      expect(second.ok).toBe(true);
+      expect(internals.nextNodeLinkProofReplayPruneAtMs).toBe(nextPruneAt);
+      expect(internals.nodeLinkProofReplay.has('expired-second')).toBe(true);
+
+      now.ms = nextPruneAt;
+      const third = registry.authenticateNodeLinkWithProof(
+        credential.token,
+        proofCtx(
+          freshProof(keys, credential.nodeId, credential.credentialId, {
+            jti: 'prune-3',
+          })
+        )
+      );
+      expect(third.ok).toBe(true);
+      expect(internals.nodeLinkProofReplay.has('expired-second')).toBe(false);
+    });
+  });
+
   it('rejects proof + heartbeat once the node is revoked', () => {
     withHarness(({ registry }) => {
       const keys = generateNodeIdentityKeyPair();
