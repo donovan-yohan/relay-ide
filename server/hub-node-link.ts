@@ -74,14 +74,30 @@ function bearerToken(request: http.IncomingMessage): string | null {
   return match?.[1]?.trim() || null;
 }
 
+/**
+ * #981: header carrying the node's proof of private-key possession. Read at the
+ * WebSocket upgrade alongside the bearer token. A single string header value is
+ * required; arrays (duplicate headers) are rejected as malformed by the
+ * registry's proof verification rather than concatenated.
+ */
+export const NODE_LINK_PROOF_HEADER = 'x-relay-node-proof';
+
+function nodeProofHeader(request: http.IncomingMessage): string | undefined {
+  const value = request.headers[NODE_LINK_PROOF_HEADER];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 function hubNodeLinkAuthStatus(error: RelayNodeError): number {
   switch (error.code) {
     case 'FORBIDDEN':
     case 'NODE_REVOKED':
     case 'NODE_CREDENTIAL_EXPIRED':
+    case 'NODE_PROOF_INVALID':
     case 'REPAIR_REQUIRED':
       return 403;
     default:
+      // NODE_PROOF_REQUIRED + other credential failures present as 401: the
+      // bearer located a credential but possession was not (yet) proven.
       return 401;
   }
 }
@@ -94,7 +110,14 @@ export function authenticateHubNodeLink(
   if (!registry) return { ok: false, status: 401 };
   const token = bearerToken(request);
   if (!token) return { ok: false, status: 401 };
-  const auth = registry.authenticateCredentialDetailed(token, context);
+  const proof = nodeProofHeader(request);
+  // The bearer locates the credential; key-bound credentials must additionally
+  // prove private-key possession bound to the node-link audience.
+  const auth = registry.authenticateNodeLinkWithProof(token, {
+    ...context,
+    audience: 'relay:node-link:v1',
+    ...(proof ? { proof } : {}),
+  });
   if (auth.ok) {
     return {
       ok: true,

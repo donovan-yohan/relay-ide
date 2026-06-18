@@ -67,6 +67,7 @@ function node(overrides: Partial<HubNodeSummary> = {}): HubNodeSummary {
       credentialId: 'cred-local',
       issuedAt: '2026-05-12T00:00:00.000Z',
       state: 'active',
+      keyBound: false,
     },
     version: {
       state: 'compatible',

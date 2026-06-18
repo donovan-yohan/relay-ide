@@ -166,6 +166,16 @@ Format:
 
 This file is required for the node to authenticate heartbeats and the reverse WebSocket. Do not copy it between machines.
 
+#### Key-bound node identity (#981)
+
+When pairing, the node also creates or reuses a local ed25519 identity key at:
+
+```text
+~/.config/relay-ide/node-identity-key.json   (mode 0600)
+```
+
+Only the **public** key is sent to the hub at pairing (`POST /hub/pairing/exchange`, `publicKey` field); the private key never leaves the node and is reused across re-pairs and rotations. The hub binds the public-key fingerprint (`nkey_…`) to the issued credential. For a key-bound credential, the node must prove private-key possession on `/hub/node-link` and the HTTP heartbeat: it signs a fresh, audience-bound, single-use assertion sent in the `X-Relay-Node-Proof` header on every (re)connect. A captured bearer token alone cannot keep a key-bound node online without its private key. Delete `node-identity-key.json` only if you intend to abandon the node identity; re-pairing then mints a new key and a new node identity. Legacy nodes paired before #981 (no identity key) continue on the bearer-only path.
+
 ### 4. Node identity lifecycle
 
 The hub now separates stable node identity from credential records. The stable identity anchor is the `nodeId` and pairing timestamps; operator-facing identity metadata such as `displayName` and `hostname` describes that identity and may be refreshed by later heartbeats. The active credential is replaceable bearer material tied to that identity. `GET /nodes` returns both the identity summary and a redacted credential summary (`credentialId`, `issuedAt`, and state), never the live token or token hash.
@@ -181,7 +191,7 @@ The hub now separates stable node identity from credential records. The stable i
 
 Browser auth is deliberately not part of node reconnect. A browser PIN/cookie can authorize an operator to create a pair token or initiate rotation/revocation through browser routes, but it is never accepted as a node credential. Conversely, `node-credential.json` cannot log in to browser-only routes.
 
-Redaction rule: logs, diagnostics, node summaries, registry snapshots, audit entries, and issue comments may include `nodeId`, `credentialId`, `rotationId`, lifecycle state, node source diagnostics, and hashed/redacted scope metadata. They must not include pair tokens, raw node credential tokens, token hashes, browser cookies, raw forwarded headers, raw environment values, raw terminal bytes, full path inventories, or secret-bearing command output.
+Redaction rule: logs, diagnostics, node summaries, registry snapshots, audit entries, and issue comments may include `nodeId`, `credentialId`, `rotationId`, lifecycle state, node source diagnostics, the stable public-key fingerprint (`nkey_…`), and hashed/redacted scope metadata. They must not include pair tokens, raw node credential tokens, token hashes, node private keys or any PEM key block, raw proof signatures, browser cookies, raw forwarded headers, raw environment values, raw terminal bytes, full path inventories, or secret-bearing command output.
 
 ### 5. Tailscale/MagicDNS source diagnostics
 
