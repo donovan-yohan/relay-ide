@@ -176,6 +176,22 @@ When pairing, the node also creates or reuses a local ed25519 identity key at:
 
 Only the **public** key is sent to the hub at pairing (`POST /hub/pairing/exchange`, `publicKey` field); the private key never leaves the node and is reused across re-pairs and rotations. The hub binds the public-key fingerprint (`nkey_…`) to the issued credential. For a key-bound credential, the node must prove private-key possession on `/hub/node-link` and the HTTP heartbeat: it signs a fresh, audience-bound, single-use assertion sent in the `X-Relay-Node-Proof` header on every (re)connect. A captured bearer token alone cannot keep a key-bound node online without its private key. Delete `node-identity-key.json` only if you intend to abandon the node identity; re-pairing then mints a new key and a new node identity. Legacy nodes paired before #981 (no identity key) continue on the bearer-only path.
 
+#### Node-initiated pending pairing requests (#982)
+
+The operator-mints-a-pair-token flow above stays the canonical pre-authorized path. As an alternative, a node can submit a **pending pairing request** that an authenticated operator approves, denies, or edits before any credential exists. The hub API for this lifecycle:
+
+| Lane | Endpoint | Notes |
+| --- | --- | --- |
+| Node (unauthenticated) | `POST /hub/pairing/requests` | Submit `manifest`, optional `publicKey`, `displayName`, `requestedProfile`, `requestedCapabilities`, `requestedRoots`. Returns the redaction-safe request summary, a short **device code**, and a one-time `statusToken`. |
+| Node (status token) | `POST /hub/pairing/requests/:requestId/status` | Poll status with `statusToken`. Returns the current state; on the first poll after approval it returns the issued key-bound credential **exactly once**. |
+| Operator (browser session) | `GET /hub/pairing/requests` | List pending/approved requests. `?deviceCode=<code>` locates one (case-insensitive, dash-tolerant); `?state=` / `?includeResolved=true` filter. |
+| Operator | `GET /hub/pairing/requests/:requestId` | Inspect one request. |
+| Operator | `PATCH /hub/pairing/requests/:requestId/access` | Edit display name / profile / capabilities / roots before approval. Not a re-approval — no credential exists yet. |
+| Operator | `POST /hub/pairing/requests/:requestId/approve` | Approve. Higher-risk (prod profile or elevated capabilities) returns `409 CONFIRMATION_REQUIRED` and must be re-submitted with an exact-operation `confirmationToken`. |
+| Operator | `POST /hub/pairing/requests/:requestId/deny` | Deny. |
+
+Rules: the **device code only locates** a request — it never authorizes a node. `pending` is the only approvable state; `denied` and `expired` are terminal and can never be replayed into an approval or credential. Approval authorizes a key-bound node credential, but the raw credential is minted and delivered only to the waiting node on its authenticated status poll, so it never appears in operator responses, lists, logs, or audit. Requests expire after ten minutes. Public summaries carry only safe handles (`nkey_…` fingerprint, `sourceFingerprint`, lossy `displayHint`, lifecycle state, product-language posture) — never the status token, raw credential, raw hostname, or raw capability bits.
+
 ### 4. Node identity lifecycle
 
 The hub now separates stable node identity from credential records. The stable identity anchor is the `nodeId` and pairing timestamps; operator-facing identity metadata such as `displayName` and `hostname` describes that identity and may be refreshed by later heartbeats. The active credential is replaceable bearer material tied to that identity. `GET /nodes` returns both the identity summary and a redacted credential summary (`credentialId`, `issuedAt`, and state), never the live token or token hash.
