@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createHubNodeRegistry,
   DEFAULT_PENDING_PAIRING_TTL_MS,
+  MAX_PENDING_PAIRING_TTL_MS,
 } from '../server/hub-node-registry.js';
 import {
   createNodeLinkProof,
@@ -239,6 +240,24 @@ describe('hub node pending pairing request lifecycle (#982)', () => {
     });
   });
 
+  it('redacts secret-shaped material from a denial reason before storing or auditing', () => {
+    withHarness((h) => {
+      const { request } = submit(h);
+      h.registry.denyPendingPairingRequest(request.requestId, {
+        reason: 'rejected; saw leaked pair_ABC123secret and secret_XYZ789tok',
+      });
+
+      const persisted = fs.readFileSync(h.storagePath, 'utf8');
+      const auditJson = JSON.stringify(h.audit);
+      for (const blob of [persisted, auditJson]) {
+        expect(blob).not.toContain('pair_ABC123secret');
+        expect(blob).not.toContain('secret_XYZ789tok');
+        expect(blob).not.toContain('ABC123');
+        expect(blob).not.toContain('XYZ789');
+      }
+    });
+  });
+
   it('expires a request and refuses approval/issuance after expiry', () => {
     withHarness((h) => {
       const { request, statusToken } = submit(h, { ttlMs: 1000 });
@@ -305,6 +324,52 @@ describe('hub node pending pairing request lifecycle (#982)', () => {
           displayName: 'too late',
         })
       ).toThrow(/INVALID_REQUEST/);
+    });
+  });
+
+  it('clamps or rejects invalid ttlMs values to a valid expiry window', () => {
+    withHarness((h) => {
+      const min = NOW_MS + 1;
+      const maxBound = NOW_MS + MAX_PENDING_PAIRING_TTL_MS;
+      for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0]) {
+        const { request } = submit(h, { ttlMs: bad });
+        // Invalid → default window; expiresAt is always a valid ISO instant.
+        expect(request.expiresAt).toBe(
+          new Date(NOW_MS + DEFAULT_PENDING_PAIRING_TTL_MS).toISOString()
+        );
+        expect(Number.isNaN(Date.parse(request.expiresAt))).toBe(false);
+      }
+      // Absurdly large finite ttl clamps to the hard maximum, never overflows.
+      const huge = submit(h, { ttlMs: 1e15 });
+      const hugeMs = Date.parse(huge.request.expiresAt);
+      expect(Number.isNaN(hugeMs)).toBe(false);
+      expect(hugeMs).toBe(maxBound);
+      expect(hugeMs).toBeGreaterThanOrEqual(min);
+    });
+  });
+
+  it('keeps an approved-but-unclaimed request locatable by its device code and claimable', () => {
+    withHarness((h) => {
+      const keys = generateNodeIdentityKeyPair();
+      const { request, statusToken } = submit(h, {}, keys);
+      h.registry.approvePendingPairingRequest(request.requestId);
+
+      // Approved-but-unclaimed: still the active match for its device code.
+      const located = h.registry.findPendingPairingRequestByDeviceCode(
+        request.deviceCode
+      );
+      expect(located?.requestId).toBe(request.requestId);
+      expect(located?.state).toBe('approved');
+
+      // The original status token still claims the credential — not displaced.
+      const claim = h.registry.pollPendingPairingRequest(
+        request.requestId,
+        statusToken
+      );
+      expect(claim.credential).toBeDefined();
+      expect(claim.credential!.publicKeyFingerprint).toBe(
+        keys.publicKeyFingerprint
+      );
     });
   });
 

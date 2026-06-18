@@ -357,6 +357,55 @@ describe('hub node pending pairing routes (#982)', () => {
     expect((await stillPending.json()).request.state).toBe('pending');
   });
 
+  it('binds the confirmation token to the roots set; a widened roots edit invalidates it', async () => {
+    const { base } = await setup();
+    const { json } = await submitRequest(base, {
+      requestedProfile: 'infra-prod-host',
+      requestedRoots: ['~/code'],
+    });
+    const requestId = json.request.requestId;
+
+    const challenge = (
+      await fetch(`${base}/hub/pairing/requests/${requestId}/approve`, {
+        method: 'POST',
+        headers: operatorHeaders('operator-a'),
+      }).then((r) => r.json())
+    ).error.details.challenge;
+
+    const confirmationToken = (
+      await fetch(`${base}/hub/confirmations/${challenge.challengeId}/approve`, {
+        method: 'POST',
+        headers: operatorHeaders('operator-b'),
+        body: JSON.stringify({ decision: 'approve' }),
+      }).then((r) => r.json())
+    ).confirmationToken as string;
+
+    // Widen the approved roots after the token was minted.
+    await fetch(`${base}/hub/pairing/requests/${requestId}/access`, {
+      method: 'PATCH',
+      headers: operatorHeaders('operator-a'),
+      body: JSON.stringify({ requestedRoots: ['~/code', '/'] }),
+    });
+
+    const replay = await fetch(
+      `${base}/hub/pairing/requests/${requestId}/approve`,
+      {
+        method: 'POST',
+        headers: operatorHeaders('operator-a'),
+        body: JSON.stringify({
+          requestedRoots: ['~/code', '/'],
+          confirmationToken,
+        }),
+      }
+    );
+    expect(replay.status).not.toBe(200);
+    const stillPending = await fetch(
+      `${base}/hub/pairing/requests/${requestId}`,
+      { headers: operatorHeaders() }
+    );
+    expect((await stillPending.json()).request.state).toBe('pending');
+  });
+
   it('refuses to approve an expired request', async () => {
     const { base, clock } = await setup();
     // The node does not control its own request TTL; advance past the default

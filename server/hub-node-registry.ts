@@ -32,6 +32,7 @@ import {
   type RelayNodeSourceTuple,
 } from './node-source-diagnostics.js';
 import { classifyHelperSkew } from './node-version-skew.js';
+import { redactBootstrapSecrets } from '../shared/bootstrap-diagnostics.js';
 import {
   DEFAULT_NODE_LINK_PROOF_FRESHNESS_MS,
   safeNodePublicKeyFingerprint,
@@ -57,7 +58,6 @@ import {
   NODE_PAIRING_REASON_CODES,
   isHighRiskNodePairingRequest,
   nodePairingCapabilityPosture,
-  nodePairingDeviceHint,
   nodePairingProfileTrustTier,
   normalizeNodePairingDeviceCode,
   type NodePairingRequestState,
@@ -362,6 +362,11 @@ export const DEFAULT_PAIR_TOKEN_TTL_MS = 10 * 60 * 1000;
 // lapses to `expired` (cannot be approved). Matches the pair-token/device-code
 // 10-minute window so the operator countdown and node wait agree.
 export const DEFAULT_PENDING_PAIRING_TTL_MS = 10 * 60 * 1000;
+// Hard upper bound on a request TTL. A non-finite, non-positive, or absurd ttl
+// (NaN/Infinity/huge) is rejected to the default; anything above the max clamps
+// down — so a bad/hostile value can never produce an Invalid Date or a
+// never-expiring request.
+export const MAX_PENDING_PAIRING_TTL_MS = 60 * 60 * 1000;
 // #982: cap concurrent pending requests so the unauthenticated submit lane
 // cannot grow the registry file unbounded. Expired/decided records do not count.
 export const MAX_PENDING_PAIRING_REQUESTS = 256;
@@ -968,6 +973,18 @@ function resolvePendingPairingCapabilityBits(
  * list of folder labels and never becomes a full path inventory. Trims, caps
  * length, de-duplicates, and limits the count.
  */
+/**
+ * #982: a request TTL must be a finite positive number; anything else (NaN,
+ * Infinity, <=0, non-number) falls back to the default, and a too-large value
+ * clamps to the hard maximum. Guarantees `now + ttl` is always a valid Date.
+ */
+function clampPendingPairingTtlMs(ttlMs: unknown): number {
+  if (typeof ttlMs !== 'number' || !Number.isFinite(ttlMs) || ttlMs <= 0) {
+    return DEFAULT_PENDING_PAIRING_TTL_MS;
+  }
+  return Math.min(ttlMs, MAX_PENDING_PAIRING_TTL_MS);
+}
+
 function sanitizeRequestedRoots(roots: unknown): string[] {
   if (!Array.isArray(roots)) return [];
   const cleaned: string[] = [];
@@ -1010,6 +1027,19 @@ function createNodeAclForPendingPairing(input: {
 }
 
 /**
+ * #982: a request is "active/claimable" while a node could still turn it into a
+ * credential — `pending`, or `approved` but not yet claimed. The device code of
+ * an active request is never reused, and a code lookup prefers the active match,
+ * so an approved-but-unclaimed request is never silently displaced.
+ */
+function isActiveClaimablePairing(record: StoredPendingPairingRequest): boolean {
+  return (
+    record.state === 'pending' ||
+    (record.state === 'approved' && !record.credentialDeliveredAt)
+  );
+}
+
+/**
  * #982: redaction-safe public summary of a pending pairing request. Emits only
  * safe correlation handles and product-language posture — never the raw
  * hostname, the status token, raw capability bits, or any secret material.
@@ -1017,7 +1047,10 @@ function createNodeAclForPendingPairing(input: {
 function publicPendingPairing(
   record: StoredPendingPairingRequest
 ): NodePairingRequestSummary {
-  const deviceHint = nodePairingDeviceHint(record.hostname);
+  // No hostname-derived hint: even a suffix of a hostname/MagicDNS name leaks
+  // the tailnet domain (`…ts.net`). Recognition is the editable displayName plus
+  // the already-lossy source `displayHint`/`sourceFingerprint`; the raw hostname
+  // is internal-only (stored like StoredNodeRecord.hostname, never surfaced).
   const sourceDiagnostics = publicSourceDiagnostics(
     record.sourceBinding?.diagnostics
   );
@@ -1030,7 +1063,6 @@ function publicPendingPairing(
     displayName: record.displayName,
     platform: record.platform,
     relayVersion: record.relayVersion,
-    ...(deviceHint ? { deviceHint } : {}),
     requestedProfile: record.requestedProfile,
     requestedTrustTier: record.requestedTrustTier,
     requestedCapabilities: nodePairingCapabilityPosture(record.capabilityBits),
@@ -2617,8 +2649,7 @@ export class HubNodeRegistry {
       );
     }
     const timestamp = now.toISOString();
-    const ttlMs =
-      input.ttlMs && input.ttlMs > 0 ? input.ttlMs : DEFAULT_PENDING_PAIRING_TTL_MS;
+    const ttlMs = clampPendingPairingTtlMs(input.ttlMs);
     const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
     const requestedProfile =
       input.requestedProfile ?? DEFAULT_NODE_PAIRING_TRUST_PROFILE;
@@ -2723,15 +2754,15 @@ export class HubNodeRegistry {
     this.expirePendingPairingNow(this.now().getTime());
     const normalized = normalizeNodePairingDeviceCode(deviceCode);
     if (!normalized) return null;
-    // Most-recent pending match wins; a re-run reuses the code namespace only
-    // among non-pending records, so an operator who pastes a fresh code lands
-    // on the live request.
+    // The active (still-claimable) match wins — there is at most one, since
+    // device codes are never reused while a request is active. Only after every
+    // matching request is terminal does the most-recent historical record show.
     const matches = this.state.pendingPairings.filter(
       (record) =>
         normalizeNodePairingDeviceCode(record.deviceCode) === normalized
     );
-    const pending = matches.find((record) => record.state === 'pending');
-    const record = pending ?? matches[matches.length - 1];
+    const active = matches.find((record) => isActiveClaimablePairing(record));
+    const record = active ?? matches[matches.length - 1];
     return record ? publicPendingPairing(record) : null;
   }
 
@@ -2755,6 +2786,26 @@ export class HubNodeRegistry {
       return resolvePendingPairingCapabilityBits(edit.requestedCapabilities);
     }
     return [...record.capabilityBits];
+  }
+
+  /**
+   * #982: the approved repo roots approval WOULD grant given an optional edit.
+   * Used (as a hash) to bind the exact-operation confirmation token to the roots
+   * set, so a token minted for one roots set cannot authorize a widened edit.
+   * Returns null for an unknown request.
+   */
+  pendingPairingEffectiveRoots(
+    requestId: string,
+    edit?: PendingPairingAccessEdit
+  ): string[] | null {
+    const record = this.state.pendingPairings.find(
+      (candidate) => candidate.requestId === requestId
+    );
+    if (!record) return null;
+    if (edit?.requestedRoots) {
+      return sanitizeRequestedRoots(edit.requestedRoots);
+    }
+    return [...record.requestedRoots];
   }
 
   editPendingPairingAccess(
@@ -2808,7 +2859,15 @@ export class HubNodeRegistry {
     record.state = 'denied';
     record.reasonCode = NODE_PAIRING_REASON_CODES.denied;
     record.decidedAt = this.now().toISOString();
-    if (options.reason) record.decisionReason = options.reason.slice(0, 256);
+    // The denial reason is operator free text; scrub secret-shaped material
+    // (pair/node/Bearer/secret_ tokens) and cap length before storing so it can
+    // never leak through the stored record, audit, or any future surface.
+    if (options.reason) {
+      record.decisionReason = redactBootstrapSecrets(options.reason).slice(
+        0,
+        256
+      );
+    }
     this.persist();
     this.auditPendingPairingLifecycle({
       record,
@@ -3083,9 +3142,12 @@ export class HubNodeRegistry {
     for (let attempt = 0; attempt < 64; attempt += 1) {
       const code = randomDeviceCode();
       const normalized = normalizeNodePairingDeviceCode(code);
+      // Never collide with a still-claimable request (pending OR approved but
+      // unclaimed) so an active request's code — and therefore who can locate
+      // and claim it — is never silently reused.
       const collision = this.state.pendingPairings.some(
         (record) =>
-          record.state === 'pending' &&
+          isActiveClaimablePairing(record) &&
           normalizeNodePairingDeviceCode(record.deviceCode) === normalized
       );
       if (!collision) return code;

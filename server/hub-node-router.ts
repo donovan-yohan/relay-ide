@@ -1,3 +1,4 @@
+import * as crypto from 'node:crypto';
 import * as express from 'express';
 import { isFileRpcOperation } from '../shared/file-rpc.js';
 import { normalizeHubFileRpcRequest } from './file-rpc.js';
@@ -2362,6 +2363,13 @@ function relayErrorForHandshakeGrantRegistryError(
 }
 
 const PAIRING_HIGH_RISK_BIT_SET = new Set<string>(HIGH_RISK_CAPABILITIES);
+
+// #982: stable sha256 of a value, for binding capability/roots sets into the
+// exact-operation confirmation params WITHOUT exposing raw bits or paths in the
+// public challenge surface. Inputs are pre-sorted arrays so the hash is stable.
+function pairingBindingHash(value: unknown): string {
+  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
 const PAIRING_REQUEST_STATES = new Set([
   'pending',
   'approved',
@@ -3154,6 +3162,8 @@ export function createHubNodeRouter(
             requestId,
             parsed.edit
           ) ?? [];
+        const effectiveRoots =
+          registry.pendingPairingEffectiveRoots(requestId, parsed.edit) ?? [];
         const requiresApproval =
           summary.requiresExactOperationApproval ||
           isHighRiskNodePairingRequest({
@@ -3187,14 +3197,19 @@ export function createHubNodeRouter(
             req,
             decision,
             // Bind every dimension of the grant into the canonical params so the
-            // approved token cannot be replayed against a divergent capability
-            // set (e.g. one widened by a PATCH /access between mint and redeem).
+            // approved token cannot be replayed against a divergent grant (e.g.
+            // capabilities OR roots widened by a PATCH /access between mint and
+            // redeem). Capabilities and roots are bound as hashes so raw bits /
+            // paths never appear in the public challenge surface.
             params: {
               requestId,
               requestedProfile: effectiveProfile,
               requestedTrustTier: effectiveTrustTier,
               publicKeyFingerprint: summary.publicKeyFingerprint ?? null,
-              capabilityBits: [...effectiveCapabilityBits].sort(),
+              capabilityBitsHash: pairingBindingHash(
+                [...effectiveCapabilityBits].sort()
+              ),
+              rootsHash: pairingBindingHash([...effectiveRoots].sort()),
             },
             now: now(),
           });

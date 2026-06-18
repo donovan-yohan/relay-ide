@@ -166,18 +166,6 @@ export function isNodePairingDeviceCode(value: unknown): value is string {
 }
 
 /**
- * Lossy, suffix-only hostname hint for operator recognition. Never returns the
- * full hostname/MagicDNS name — only a leading-ellipsis suffix. The editable
- * display name is the primary recognition handle; this is supplementary.
- */
-export function nodePairingDeviceHint(hostname: string): string | undefined {
-  const trimmed = hostname.trim();
-  if (!trimmed) return undefined;
-  if (trimmed.length <= 8) return `…${trimmed.slice(-4)}`;
-  return `…${trimmed.slice(-8)}`;
-}
-
-/**
  * The public, redaction-safe summary of a pending pairing request. Both the
  * authenticated operator surface and the waiting node read this shape; it
  * carries only safe correlation handles and product-language posture.
@@ -193,8 +181,6 @@ export interface NodePairingRequestSummary {
   displayName: string;
   platform: string;
   relayVersion: string;
-  /** Lossy, suffix-only device/hostname hint — never the full hostname. */
-  deviceHint?: string;
   requestedProfile: NodePairingTrustProfile;
   requestedTrustTier: RelayTrustTier;
   /** Product-language posture, never raw capability bits. */
