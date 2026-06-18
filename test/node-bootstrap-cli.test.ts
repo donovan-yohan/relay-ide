@@ -471,6 +471,24 @@ describe('secret redaction in node bootstrap CLI output', () => {
     expect(redacted).not.toContain('secret_abcdefg');
   });
 
+  it('redacts free-text privacy and credential leak classes', () => {
+    const raw = [
+      'status pstat_STATUS123',
+      'clone https://token-only-value@hub.example.com/repo.git',
+      'Cookie: sid=cookie-secret; prefs=abc',
+      'FAKE_TOKEN_FIELD=fake-token-value',
+      'path /Users/donovan/private/project /home/donovan/.ssh/id_ed25519',
+    ].join(' ');
+    const redacted = redactBootstrapSecrets(raw);
+
+    expect(redacted).not.toContain('pstat_STATUS123');
+    expect(redacted).not.toContain('token-only-value');
+    expect(redacted).not.toContain('cookie-secret');
+    expect(redacted).not.toContain('fake-token-value');
+    expect(redacted).not.toContain('/Users/donovan/private/project');
+    expect(redacted).not.toContain('/home/donovan/.ssh/id_ed25519');
+  });
+
   it('keeps non-sensitive content intact', () => {
     const raw = 'relay-ide node doctor --hub https://hub.example.com';
     const redacted = redactBootstrapSecrets(raw);

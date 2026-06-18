@@ -113,6 +113,17 @@ describe('hub node pending pairing request lifecycle (#982)', () => {
     });
   });
 
+  it('does not fall back to raw hostname when displayName is omitted', () => {
+    withHarness((h) => {
+      const { request } = submit(h, { displayName: undefined });
+
+      expect(request.displayName).toBe('darwin Relay node');
+      const summaryJson = JSON.stringify(request);
+      expect(summaryJson).not.toContain(SECRET_HOSTNAME);
+      expect(summaryJson).not.toContain('tailnet.ts.net');
+    });
+  });
+
   it('locates a request by device code case-insensitively and dash-tolerantly', () => {
     withHarness((h) => {
       const { request } = submit(h);
@@ -240,19 +251,29 @@ describe('hub node pending pairing request lifecycle (#982)', () => {
     });
   });
 
-  it('redacts secret-shaped material from a denial reason before storing or auditing', () => {
+  it('redacts secret/privacy-shaped material from a denial reason before storing or auditing', () => {
     withHarness((h) => {
       const { request } = submit(h);
       h.registry.denyPendingPairingRequest(request.requestId, {
-        reason: 'rejected; saw leaked pair_ABC123secret and secret_XYZ789tok',
+        reason:
+          'rejected; saw leaked pair_ABC123secret pstat_STATUS123 secret_XYZ789tok ' +
+          'https://token-only-value@hub.example.com Cookie: sid=cookie-secret FAKE_TOKEN_FIELD=token-value ' +
+          '/Users/donovan/private/project /home/donovan/.ssh/id_ed25519',
       });
 
       const persisted = fs.readFileSync(h.storagePath, 'utf8');
       const auditJson = JSON.stringify(h.audit);
       for (const blob of [persisted, auditJson]) {
         expect(blob).not.toContain('pair_ABC123secret');
+        expect(blob).not.toContain('pstat_STATUS123');
         expect(blob).not.toContain('secret_XYZ789tok');
+        expect(blob).not.toContain('token-only-value');
+        expect(blob).not.toContain('cookie-secret');
+        expect(blob).not.toContain('token-value');
+        expect(blob).not.toContain('/Users/donovan/private/project');
+        expect(blob).not.toContain('/home/donovan/.ssh/id_ed25519');
         expect(blob).not.toContain('ABC123');
+        expect(blob).not.toContain('STATUS123');
         expect(blob).not.toContain('XYZ789');
       }
     });

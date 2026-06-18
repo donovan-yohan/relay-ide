@@ -570,7 +570,12 @@ function nodeDisplayName(
   manifest: NodeManifest
 ): string {
   const trimmed = displayName?.trim();
-  return trimmed || manifest.hostname;
+  if (trimmed) return trimmed;
+  // #982: pending pairing summaries surface displayName before trust exists.
+  // Never fall back to raw hostname/MagicDNS/IP here; use only coarse manifest
+  // posture so an omitted display name cannot leak private machine identity.
+  const platform = manifest.platform?.trim();
+  return platform ? `${platform} Relay node` : 'Relay node';
 }
 
 function fallbackAclInput(node: StoredNodeRecord): {
@@ -2859,9 +2864,9 @@ export class HubNodeRegistry {
     record.state = 'denied';
     record.reasonCode = NODE_PAIRING_REASON_CODES.denied;
     record.decidedAt = this.now().toISOString();
-    // The denial reason is operator free text; scrub secret-shaped material
-    // (pair/node/Bearer/secret_ tokens) and cap length before storing so it can
-    // never leak through the stored record, audit, or any future surface.
+    // The denial reason is operator free text; scrub secret/privacy-shaped
+    // material and cap length before storing so it can never leak through the
+    // stored record, audit, or any future surface.
     if (options.reason) {
       record.decisionReason = redactBootstrapSecrets(options.reason).slice(
         0,
