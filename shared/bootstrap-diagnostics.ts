@@ -277,7 +277,7 @@ export function redactBootstrapSecrets(value: string): string {
     .replace(/("(?:token|pairToken|operatorGrant|handshakeGrant|grantHandle|actorToken|pin|password|secret)"\s*:\s*)"[^"]*"/gi, '$1"…redacted"')
     .replace(/\b(token|pin|password|secret|cookie)=([^\s&"',}]+)/gi, '$1=…redacted')
     .replace(/\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|COOKIE|KEY)[A-Z0-9_]*)=([^\s&"',}]+)/g, '$1=…redacted')
-    .replace(/\b(?:~|\/Users|\/home|\/var|\/tmp|\/etc)\/[^\s"',;}]+/g, '…path-redacted')
+    .replace(/(^|[\s("'=])(?:~|\/Users|\/home|\/var|\/tmp|\/etc)\/[^\s"',;}]+/g, '$1…path-redacted')
     .replace(/\b[A-Za-z]:\\(?:Users|ProgramData|Windows|Temp)\\[^\s"',;}]+/g, '…path-redacted')
     // URL-embedded credentials, any scheme — keeps bootstrap log lines
     // (which can quote `--hub-url https://user:pass@…` or `wss://…`) in

@@ -257,8 +257,8 @@ describe('hub node pending pairing request lifecycle (#982)', () => {
       h.registry.denyPendingPairingRequest(request.requestId, {
         reason:
           'rejected; saw leaked pair_ABC123secret pstat_STATUS123 secret_XYZ789tok ' +
-          'https://token-only-value@hub.example.com Cookie: sid=cookie-secret FAKE_TOKEN_FIELD=token-value ' +
-          '/Users/donovan/private/project /home/donovan/.ssh/id_ed25519',
+          'https://token-only-value@hub.example.com FAKE_TOKEN_FIELD=token-value ' +
+          '/Users/donovan/private/project /home/donovan/.ssh/id_ed25519 Cookie: sid=cookie-secret',
       });
 
       const persisted = fs.readFileSync(h.storagePath, 'utf8');

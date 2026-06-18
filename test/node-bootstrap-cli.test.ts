@@ -475,9 +475,9 @@ describe('secret redaction in node bootstrap CLI output', () => {
     const raw = [
       'status pstat_STATUS123',
       'clone https://token-only-value@hub.example.com/repo.git',
-      'Cookie: sid=cookie-secret; prefs=abc',
       'FAKE_TOKEN_FIELD=fake-token-value',
       'path /Users/donovan/private/project /home/donovan/.ssh/id_ed25519',
+      'Cookie: sid=cookie-secret; prefs=abc',
     ].join(' ');
     const redacted = redactBootstrapSecrets(raw);
 
