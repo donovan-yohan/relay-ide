@@ -188,6 +188,62 @@ export function generateNodeIdentityKeyPair(): NodeIdentityKeyPair {
   };
 }
 
+/**
+ * #981: confirm a private key parses as ed25519 AND corresponds to the given
+ * public key, by deriving the public key from the private key and comparing the
+ * canonical SPKI DER. Returns false on any error (corrupt key, wrong type,
+ * mismatched pair). Used before reusing a persisted identity key so a
+ * corrupt/mismatched key regenerates instead of binding a public key the node
+ * cannot prove possession of.
+ */
+export function nodeIdentityKeyPairMatches(
+  privateKeyPem: string,
+  publicKeyPem: string
+): boolean {
+  try {
+    const privateKey = crypto.createPrivateKey(privateKeyPem);
+    if (privateKey.asymmetricKeyType !== NODE_IDENTITY_KEY_ALGORITHM) {
+      return false;
+    }
+    const derived = crypto
+      .createPublicKey(privateKey)
+      .export({ type: 'spki', format: 'der' });
+    const declared = spkiDerFromPem(publicKeyPem);
+    return (
+      derived.length === declared.length &&
+      crypto.timingSafeEqual(derived, declared)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #981: validate persisted node identity key material into a usable key pair, or
+ * null if anything is wrong (missing/typed fields, non-ed25519, unusable public
+ * key, or a private key that does not match the public key). Pure — the disk
+ * read lives in the caller so this is unit-testable.
+ */
+export function parseStoredNodeIdentityKey(
+  raw: unknown
+): NodeIdentityKeyPair | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const record = raw as Record<string, unknown>;
+  const { privateKeyPem, publicKeyPem } = record;
+  if (typeof privateKeyPem !== 'string' || typeof publicKeyPem !== 'string') {
+    return null;
+  }
+  const fingerprint = safeNodePublicKeyFingerprint(publicKeyPem);
+  if (!fingerprint) return null;
+  if (!nodeIdentityKeyPairMatches(privateKeyPem, publicKeyPem)) return null;
+  return {
+    algorithm: NODE_IDENTITY_KEY_ALGORITHM,
+    privateKeyPem,
+    publicKeyPem,
+    publicKeyFingerprint: fingerprint,
+  };
+}
+
 function isNodeLinkProofAudience(value: unknown): value is NodeLinkProofAudience {
   return (
     typeof value === 'string' &&

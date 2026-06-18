@@ -389,6 +389,85 @@ describe('key-bound node-link proof', () => {
     });
   });
 
+  it('does not persist / source-observe / allow-audit a stolen bearer without proof', () => {
+    withHarness(({ registry, storagePath, audit }) => {
+      const keys = generateNodeIdentityKeyPair();
+      const { credential } = pair(registry, keys);
+      const before = fs.readFileSync(storagePath, 'utf8');
+      const auditBefore = audit.length;
+
+      // Stolen bearer presented with no proof.
+      const missing = registry.authenticateNodeLinkWithProof(
+        credential.token,
+        proofCtx(undefined)
+      );
+      expect(missing.ok).toBe(false);
+
+      // Wrong-key proof (attacker cannot sign for the bound key).
+      const attacker = generateNodeIdentityKeyPair();
+      const forged = createNodeLinkProof({
+        privateKeyPem: attacker.privateKeyPem,
+        publicKeyFingerprint: keys.publicKeyFingerprint,
+        nodeId: credential.nodeId,
+        credentialId: credential.credentialId,
+        audience: 'relay:node-link:v1',
+        nowMs: NOW_MS,
+        jti: 'forged-ordering',
+      });
+      const wrong = registry.authenticateNodeLinkWithProof(
+        credential.token,
+        proofCtx(forged)
+      );
+      expect(wrong.ok).toBe(false);
+
+      // No allow-shaped side-effects ran: registry file is byte-identical (no
+      // persist / source observation) and every new audit row is a denial.
+      expect(fs.readFileSync(storagePath, 'utf8')).toBe(before);
+      const newAudit = audit.slice(auditBefore);
+      expect(newAudit.length).toBeGreaterThan(0);
+      expect(newAudit.every((e) => e.decision === 'deny')).toBe(true);
+    });
+  });
+
+  it('applies allow effects (persist + allow audit) only after proof passes', () => {
+    withHarness(({ registry, storagePath, audit }) => {
+      const keys = generateNodeIdentityKeyPair();
+      const { credential } = pair(registry, keys);
+      const before = fs.readFileSync(storagePath, 'utf8');
+      const auditBefore = audit.length;
+
+      const proof = freshProof(
+        keys,
+        credential.nodeId,
+        credential.credentialId
+      );
+      const result = registry.authenticateNodeLinkWithProof(
+        credential.token,
+        proofCtx(proof)
+      );
+      expect(result.ok).toBe(true);
+
+      // Allow effects now ran: registry persisted and both the reconnect-allow
+      // and the proof-verified audits were emitted.
+      expect(fs.readFileSync(storagePath, 'utf8')).not.toBe(before);
+      const newAudit = audit.slice(auditBefore);
+      expect(
+        newAudit.some(
+          (e) =>
+            e.decision === 'allow' &&
+            e.reasonCode === 'NODE_CREDENTIAL_RECONNECT_ALLOWED'
+        )
+      ).toBe(true);
+      expect(
+        newAudit.some(
+          (e) =>
+            e.decision === 'allow' &&
+            e.reasonCode === 'NODE_LINK_PROOF_VERIFIED'
+        )
+      ).toBe(true);
+    });
+  });
+
   it('enforces the proof at the /hub/node-link upgrade seam with typed status', () => {
     withHarness(({ registry }) => {
       const keys = generateNodeIdentityKeyPair();

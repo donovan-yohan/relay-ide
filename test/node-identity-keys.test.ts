@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   createNodeLinkProof,
   generateNodeIdentityKeyPair,
+  nodeIdentityKeyPairMatches,
   nodePublicKeyFingerprint,
   NODE_PUBLIC_KEY_FINGERPRINT_PREFIX,
+  parseStoredNodeIdentityKey,
   redactNodeIdentityMaterial,
   safeNodePublicKeyFingerprint,
   verifyNodeLinkProof,
@@ -288,6 +290,51 @@ describe('node identity keys', () => {
         nowMs: NOW,
       })
     ).toEqual({ ok: false, reason: 'NODE_LINK_PROOF_UNSUPPORTED_ALG' });
+  });
+
+  it('matches a private key to its own public key and rejects mismatches', () => {
+    const a = generateNodeIdentityKeyPair();
+    const b = generateNodeIdentityKeyPair();
+    expect(nodeIdentityKeyPairMatches(a.privateKeyPem, a.publicKeyPem)).toBe(true);
+    // Mismatched pair: a's private key, b's public key.
+    expect(nodeIdentityKeyPairMatches(a.privateKeyPem, b.publicKeyPem)).toBe(false);
+    // Corrupt / non-key inputs fail closed.
+    expect(nodeIdentityKeyPairMatches('garbage', a.publicKeyPem)).toBe(false);
+    expect(nodeIdentityKeyPairMatches(a.privateKeyPem, 'garbage')).toBe(false);
+    // Non-ed25519 private key fails closed.
+    const rsa = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const rsaPriv = rsa.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const rsaPub = rsa.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    expect(nodeIdentityKeyPairMatches(rsaPriv, rsaPub)).toBe(false);
+  });
+
+  it('parseStoredNodeIdentityKey accepts only a valid matched ed25519 pair', () => {
+    const keys = generateNodeIdentityKeyPair();
+    const parsed = parseStoredNodeIdentityKey({
+      privateKeyPem: keys.privateKeyPem,
+      publicKeyPem: keys.publicKeyPem,
+    });
+    expect(parsed?.publicKeyFingerprint).toBe(keys.publicKeyFingerprint);
+
+    const other = generateNodeIdentityKeyPair();
+    // Mismatched stored pair → rejected (would otherwise bind an unprovable key).
+    expect(
+      parseStoredNodeIdentityKey({
+        privateKeyPem: keys.privateKeyPem,
+        publicKeyPem: other.publicKeyPem,
+      })
+    ).toBeNull();
+    // Corrupt private key → rejected.
+    expect(
+      parseStoredNodeIdentityKey({
+        privateKeyPem: 'not-a-key',
+        publicKeyPem: keys.publicKeyPem,
+      })
+    ).toBeNull();
+    // Missing / wrong-typed fields → rejected.
+    expect(parseStoredNodeIdentityKey({ publicKeyPem: keys.publicKeyPem })).toBeNull();
+    expect(parseStoredNodeIdentityKey(null)).toBeNull();
+    expect(parseStoredNodeIdentityKey('x')).toBeNull();
   });
 
   it('redacts private-key and secret material but keeps public fingerprints', () => {

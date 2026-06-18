@@ -47,8 +47,8 @@ import { writeNodeCredentialFile } from './node-credential-file.js';
 import {
   createNodeLinkProof,
   generateNodeIdentityKeyPair,
+  parseStoredNodeIdentityKey,
   redactNodeIdentityMaterial,
-  safeNodePublicKeyFingerprint,
   type NodeIdentityKeyPair,
   type NodeLinkProofAudience,
 } from '../shared/node-identity-keys.js';
@@ -6877,24 +6877,16 @@ function loadNodeIdentityKey(): NodeIdentityKeyPair | undefined {
   const keyPath = nodeIdentityKeyPath();
   if (!fs.existsSync(keyPath)) return undefined;
   try {
-    const raw = JSON.parse(fs.readFileSync(keyPath, 'utf8')) as Partial<NodeIdentityKeyPair>;
-    const fingerprint = safeNodePublicKeyFingerprint(raw.publicKeyPem);
-    if (
-      typeof raw.privateKeyPem === 'string' &&
-      typeof raw.publicKeyPem === 'string' &&
-      fingerprint
-    ) {
-      return {
-        algorithm: 'ed25519',
-        privateKeyPem: raw.privateKeyPem,
-        publicKeyPem: raw.publicKeyPem,
-        publicKeyFingerprint: fingerprint,
-      };
-    }
+    const raw = JSON.parse(fs.readFileSync(keyPath, 'utf8')) as unknown;
+    // parseStoredNodeIdentityKey rejects corrupt/mismatched/non-ed25519 keys
+    // (it derives the public key from the private key and compares), so a bad
+    // file is treated as absent and regenerated before the next pair instead
+    // of binding a public key the node could never prove possession of.
+    return parseStoredNodeIdentityKey(raw) ?? undefined;
   } catch {
-    // Fall through: a corrupt key file is regenerated on the next pair.
+    // Malformed JSON is regenerated on the next pair.
+    return undefined;
   }
-  return undefined;
 }
 
 function loadOrCreateNodeIdentityKey(): NodeIdentityKeyPair {
