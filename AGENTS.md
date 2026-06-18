@@ -46,6 +46,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Session durability   | `docs/SESSION_DURABILITY.md`                 | Process-owner vs attach-handle, derived durability state machine, transition emission                                    |
 | Hub/node pkg         | `docs/RELAY_HUB_NODE_PACKAGING.md`           | Hub vs node command shape, npm package decision, install/update commands                                                 |
 | Node bootstrap       | `docs/RELAY_NODE_BOOTSTRAP.md`               | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics                                              |
+| Add Node / Pair UX   | `docs/ADD_NODE_PAIR_DEVICE_UX.md`            | Add Node wizard, device-code pairing UX, trust profiles, node lifecycle states, redaction-safe copy                      |
 | WSL2 nodes           | `docs/WSL2_RELAY_NODE_SUPPORT.md`            | Windows/WSL2 node bootstrap, service mode, known limits                                                                  |
 | Federated dev        | `docs/FEDERATED_DEV.md`                      | Cross-machine dev workflow: synced git checkouts, `dev:node`, version skew                                               |
 | Federated Relay      | `docs/federated-relay.md`                    | Hub/node architecture, pairing, routing, ADRs                                                                            |
