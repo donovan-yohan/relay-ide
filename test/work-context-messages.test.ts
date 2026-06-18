@@ -1,4 +1,6 @@
 import express from 'express';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -53,6 +55,14 @@ function withStore(name: string): WorkContextMessageStore {
   return store;
 }
 
+function tempRepo(name: string): string {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), `relay-message-template-${process.pid}-${name}-`));
+  fs.mkdirSync(path.join(repo, '.relay', 'messages'), { recursive: true });
+  execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' });
+  cleanup.push(() => fs.rmSync(repo, { recursive: true, force: true }));
+  return repo;
+}
+
 function scopedCredential(workContextIds: string[]): ScopedActorCredentialRecord {
   return {
     id: 'credential:test',
@@ -81,7 +91,12 @@ async function startRouter(
         if (credential) attachAuthenticatedCliGatewayActorCredential(req, credential);
         next();
       },
-      events: { publish: (event) => events.push(event as unknown as Record<string, unknown>) },
+      events: {
+        publish: (event) => {
+          events.push(event as unknown as Record<string, unknown>);
+          return event as never;
+        },
+      },
     })
   );
   const server = http.createServer(app);
@@ -217,6 +232,155 @@ describe('WorkContext message router', () => {
     });
     expect(queried.status).toBe(200);
     expect(queried.body.messages).toHaveLength(1);
+  });
+
+  it('applies repo-local templates to append inputs and exposes template discovery routes', async () => {
+    const repo = tempRepo('router');
+    fs.mkdirSync(path.join(repo, 'packages', 'nested'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'packages', '.relay', 'messages'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, '.relay', 'messages', 'qa-handoff.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'relay.qa.handoff',
+        name: 'QA handoff',
+        kind: 'qa-handoff',
+        payloadSchema: 'relay.qa.handoff.v1',
+        mediaType: 'application/json',
+        encoding: 'json',
+        bodyGuide: { required: ['exactHead'] },
+      })
+    );
+    fs.writeFileSync(
+      path.join(repo, 'packages', '.relay', 'messages', 'qa-handoff-override.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'relay.qa.handoff',
+        name: 'Package QA handoff',
+        kind: 'package-qa-handoff',
+        payloadSchema: 'relay.package.qa.handoff.v1',
+        mediaType: 'application/json',
+        encoding: 'json',
+      })
+    );
+    const store = withStore('template-router');
+    const { baseUrl } = await startRouter(store);
+
+    const listed = await jsonFetch(
+      `${baseUrl}/work-context-message-templates?repoPath=${encodeURIComponent(path.join(repo, 'packages', 'nested'))}`
+    );
+    expect(listed.status).toBe(200);
+    expect(listed.body.templates).toMatchObject([
+      { id: 'relay.qa.handoff', kind: 'package-qa-handoff', payloadSchema: 'relay.package.qa.handoff.v1' },
+    ]);
+
+    const shown = await jsonFetch(
+      `${baseUrl}/work-context-message-templates/${encodeURIComponent('relay.qa.handoff')}?repoPath=${encodeURIComponent(path.join(repo, 'packages', 'nested'))}`
+    );
+    expect(shown.status).toBe(200);
+    expect(shown.body.template).toMatchObject({
+      id: 'relay.qa.handoff',
+      kind: 'package-qa-handoff',
+      payloadSchema: 'relay.package.qa.handoff.v1',
+    });
+
+    const rendered = await jsonFetch(`${baseUrl}/work-context-message-templates/render`, {
+      method: 'POST',
+      body: JSON.stringify({
+        repoPath: repo,
+        template: 'relay.qa.handoff',
+        templateData: { exactHead: 'abc1234' },
+        message: { workContextId: 'wc:949', summary: 'qa handoff requested' },
+      }),
+    });
+    expect(rendered.status).toBe(200);
+    expect(rendered.body.messageInput).toMatchObject({
+      kind: 'qa-handoff',
+      payloadSchema: 'relay.qa.handoff.v1',
+      payload: {
+        mediaType: 'application/json',
+        encoding: 'json',
+        body: { exactHead: 'abc1234' },
+      },
+    });
+
+    const renderedFromEnvelopeBody = await jsonFetch(`${baseUrl}/work-context-message-templates/render`, {
+      method: 'POST',
+      body: JSON.stringify({
+        repoPath: repo,
+        template: 'relay.qa.handoff',
+        templateData: { exactHead: 'def5678' },
+        workContextId: 'wc:949',
+        summary: 'qa handoff requested',
+      }),
+    });
+    expect(renderedFromEnvelopeBody.status).toBe(200);
+    expect(renderedFromEnvelopeBody.body.messageInput).toMatchObject({
+      workContextId: 'wc:949',
+      summary: 'qa handoff requested',
+      kind: 'qa-handoff',
+      payload: { body: { exactHead: 'def5678' } },
+    });
+    expect(renderedFromEnvelopeBody.body.messageInput).not.toHaveProperty('repoPath');
+    expect(renderedFromEnvelopeBody.body.messageInput).not.toHaveProperty('template');
+    expect(renderedFromEnvelopeBody.body.messageInput).not.toHaveProperty('templateData');
+
+    const appended = await jsonFetch(`${baseUrl}/work-context-messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        repoPath: repo,
+        template: 'qa-handoff',
+        workContextId: 'wc:949',
+        summary: 'qa handoff requested',
+        payload: { body: { exactHead: 'abc1234' } },
+      }),
+    });
+    expect(appended.status).toBe(201);
+    expect(appended.body.message).toMatchObject({
+      kind: 'qa-handoff',
+      payloadSchema: 'relay.qa.handoff.v1',
+      payload: {
+        mediaType: 'application/json',
+        encoding: 'json',
+        body: { exactHead: 'abc1234' },
+      },
+    });
+  });
+
+  it('rejects caller-selected template repo paths for WorkContext-scoped actor credentials', async () => {
+    const repo = tempRepo('scoped-template-router');
+    fs.writeFileSync(
+      path.join(repo, '.relay', 'messages', 'qa-handoff.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'relay.qa.handoff',
+        name: 'QA handoff',
+        kind: 'qa-handoff',
+        payloadSchema: 'relay.qa.handoff.v1',
+        mediaType: 'application/json',
+        encoding: 'json',
+      })
+    );
+    const store = withStore('scoped-template-router');
+    const { baseUrl } = await startRouter(store, scopedCredential(['wc:949']));
+
+    const listed = await jsonFetch(
+      `${baseUrl}/work-context-message-templates?repoPath=${encodeURIComponent(repo)}`
+    );
+    expect(listed.status).toBe(403);
+    expect(listed.body.error.details.reasonCode).toBe('CLI_ACTOR_REPO_PATH_SELECTOR_FORBIDDEN');
+
+    const appended = await jsonFetch(`${baseUrl}/work-context-messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        repoPath: repo,
+        template: 'qa-handoff',
+        workContextId: 'wc:949',
+        summary: 'qa handoff requested',
+      }),
+    });
+    expect(appended.status).toBe(403);
+    expect(appended.body.error.details.reasonCode).toBe('CLI_ACTOR_REPO_PATH_SELECTOR_FORBIDDEN');
   });
 
   it('fails closed when queries are unbounded or the store is unavailable', async () => {
