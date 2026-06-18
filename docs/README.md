@@ -36,6 +36,7 @@ This index separates current source-of-truth docs from historical plans and spik
 | rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`               | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                      |
 | Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md`           | Hub/node command shape and npm packaging decisions                                           |
 | Node bootstrap        | `RELAY_NODE_BOOTSTRAP.md`               | Pair/install/update/unpair flows and diagnostics                                             |
+| Add Node / Pair UX    | `ADD_NODE_PAIR_DEVICE_UX.md`            | Add Node wizard, device-code pairing, trust profiles, node lifecycle states, CLI/UI copy     |
 | Federated dev         | `FEDERATED_DEV.md`                      | Multi-machine dev workflow and version-skew handling                                         |
 | Federated Relay       | `federated-relay.md`                    | Hub/node architecture, pairing, routing, ADR history                                         |
 | Learnings             | `LEARNINGS.md`                          | Durable repo learnings gathered across sessions                                              |
