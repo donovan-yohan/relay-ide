@@ -39,6 +39,7 @@ import {
   type NodeLinkProofAudience,
 } from '../shared/node-identity-keys.js';
 import {
+  LEGACY_DEFAULT_ALLOWED_CAPABILITIES,
   RELAY_SECURITY_POLICY_VERSION,
   applyTrustTierOverlay,
   createLegacyDefaultNodeAcl,
@@ -51,6 +52,18 @@ import {
   type RelayNodeAcl,
   type RelayTrustTier,
 } from '../shared/security-policy.js';
+import {
+  DEFAULT_NODE_PAIRING_TRUST_PROFILE,
+  NODE_PAIRING_REASON_CODES,
+  isHighRiskNodePairingRequest,
+  nodePairingCapabilityPosture,
+  nodePairingDeviceHint,
+  nodePairingProfileTrustTier,
+  normalizeNodePairingDeviceCode,
+  type NodePairingRequestState,
+  type NodePairingRequestSummary,
+  type NodePairingTrustProfile,
+} from '../shared/node-pairing-requests.js';
 import type {
   SecurityAuditDecision,
   SecurityAuditEntryInput,
@@ -173,10 +186,60 @@ interface StoredNodeRecord {
   updatingAt?: string;
 }
 
+/**
+ * #982: a node-initiated pending pairing request. Lives here until an operator
+ * approves/denies it or it expires. Stores only the manifest-derived fields the
+ * approval decision and node-record creation need — never the raw manifest, a
+ * repo/path inventory, the node credential, or the node's poll secret (only the
+ * sha256 of the status token is persisted).
+ */
+interface StoredPendingPairingRequest {
+  requestId: string;
+  correlationId: string;
+  deviceCode: string;
+  /** sha256 of the one-time node-held status/poll token. Raw token never stored. */
+  statusTokenHash: string;
+  state: NodePairingRequestState;
+  reasonCode: string;
+  // #981 key binding (public material only). Bound to the issued credential on claim.
+  publicKey?: string;
+  publicKeyFingerprint?: string;
+  // Manifest-derived display/decision metadata (no raw manifest, no path inventory).
+  displayName: string;
+  hostname: string;
+  homeDir?: string;
+  platform: string;
+  arch: string;
+  relayVersion: string;
+  helperVersion?: string;
+  protocolVersion: string;
+  capabilities: NodeCapabilityManifestSummary;
+  fileRpcAvailable?: boolean;
+  degradedReasons?: import('../shared/node-manifest.js').NodeManifestDegradedReason[];
+  // Requested access posture.
+  requestedProfile: NodePairingTrustProfile;
+  requestedTrustTier: RelayTrustTier;
+  /** Resolved allowed capability bits (profile defaults ∪ requested extras). */
+  capabilityBits: RelayCapabilityBit[];
+  requestedRoots: string[];
+  requiresExactOperationApproval: boolean;
+  sourceBinding?: StoredNodeSourceBinding;
+  // Lifecycle.
+  createdAt: string;
+  expiresAt: string;
+  decidedAt?: string;
+  decisionReason?: string;
+  // Outputs once the node has claimed its credential.
+  nodeId?: string;
+  credentialId?: string;
+  credentialDeliveredAt?: string;
+}
+
 interface RegistryFile {
   schemaVersion: 1;
   pairTokens: StoredPairToken[];
   nodes: StoredNodeRecord[];
+  pendingPairings: StoredPendingPairingRequest[];
 }
 
 export interface PairTokenMintIssuer {
@@ -219,6 +282,47 @@ export interface HeartbeatInput {
   repoInventory?: unknown;
 }
 
+/** #982: node-facing submission of a pending pairing request. */
+export interface PendingPairingRequestInput {
+  manifest: NodeManifest;
+  /** #981 SPKI public key (PEM). Public material only; bound on credential issuance. */
+  publicKey?: string;
+  displayName?: string;
+  requestedProfile?: NodePairingTrustProfile;
+  /** Optional extra capability bits beyond the profile defaults. */
+  requestedCapabilities?: RelayCapabilityBit[];
+  requestedRoots?: string[];
+  protocolVersion?: string;
+  correlationId?: string;
+  source?: RelayNodeSourceTuple;
+  ttlMs?: number;
+}
+
+export interface PendingPairingRequestResult {
+  request: NodePairingRequestSummary;
+  /**
+   * One-time poll secret returned to the waiting node. The node presents it to
+   * poll status and claim its issued credential. Hashed at rest; never
+   * re-emitted, logged, or placed in a summary/audit.
+   */
+  statusToken: string;
+}
+
+/** #982: operator edit of requested access before approval (not a re-approval). */
+export interface PendingPairingAccessEdit {
+  displayName?: string;
+  requestedProfile?: NodePairingTrustProfile;
+  requestedCapabilities?: RelayCapabilityBit[];
+  requestedRoots?: string[];
+}
+
+/** #982: result of a node status poll. `credential`/`node` present only on the one-time claim. */
+export interface PendingPairingPollResult {
+  request: NodePairingRequestSummary;
+  credential?: RelayNodeCredential;
+  node?: HubNodeSummary;
+}
+
 export interface CredentialRotationResult {
   node: HubNodeSummary;
   credential: RelayNodeCredential;
@@ -254,6 +358,18 @@ export interface HubNodeRegistryOptions {
 }
 
 export const DEFAULT_PAIR_TOKEN_TTL_MS = 10 * 60 * 1000;
+// #982: a node-initiated pending pairing request lives for this long before it
+// lapses to `expired` (cannot be approved). Matches the pair-token/device-code
+// 10-minute window so the operator countdown and node wait agree.
+export const DEFAULT_PENDING_PAIRING_TTL_MS = 10 * 60 * 1000;
+// #982: cap concurrent pending requests so the unauthenticated submit lane
+// cannot grow the registry file unbounded. Expired/decided records do not count.
+export const MAX_PENDING_PAIRING_REQUESTS = 256;
+// #982: bound retained resolved (denied/expired/claimed) request records so the
+// registry file does not grow without limit across many pair attempts. Recent
+// resolved records are kept briefly for operator visibility, then pruned.
+export const PENDING_PAIRING_RESOLVED_RETENTION_MS = 60 * 60 * 1000;
+export const MAX_RETAINED_RESOLVED_PAIRINGS = 256;
 export const DEFAULT_NODE_HEARTBEAT_TIMEOUTS = {
   staleMs: 45 * 1000,
   offlineMs: 90 * 1000,
@@ -341,7 +457,7 @@ class HubNodeRegistryError extends Error {
 }
 
 function emptyRegistryFile(): RegistryFile {
-  return { schemaVersion: 1, pairTokens: [], nodes: [] };
+  return { schemaVersion: 1, pairTokens: [], nodes: [], pendingPairings: [] };
 }
 
 function sha256(value: string): string {
@@ -350,6 +466,18 @@ function sha256(value: string): string {
 
 function randomToken(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(24).toString('base64url')}`;
+}
+
+// #982: device-code alphabet excludes visually ambiguous characters (0/O, 1/I)
+// so an operator can transcribe a code reliably across devices.
+const DEVICE_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function randomDeviceCode(): string {
+  let body = '';
+  for (let i = 0; i < 6; i += 1) {
+    body += DEVICE_CODE_ALPHABET[crypto.randomInt(DEVICE_CODE_ALPHABET.length)];
+  }
+  return `${body.slice(0, 3)}-${body.slice(3)}`;
 }
 
 function timingSafeEqualHex(a: string, b: string): boolean {
@@ -517,6 +645,12 @@ function readRegistryFile(storagePath: string): RegistryFile {
       schemaVersion: 1,
       pairTokens: Array.isArray(parsed.pairTokens) ? parsed.pairTokens : [],
       nodes: Array.isArray(parsed.nodes) ? parsed.nodes : [],
+      // #982: default to [] for registry files written before pending pairings
+      // existed. This array-default is the only migration mechanism (schema
+      // stays version 1, mirroring the pairTokens/nodes pattern).
+      pendingPairings: Array.isArray(parsed.pendingPairings)
+        ? parsed.pendingPairings
+        : [],
     };
   } catch (error) {
     const maybeNodeError = error as NodeJS.ErrnoException;
@@ -811,6 +945,107 @@ function createNodeAclForPairToken(input: {
       requiresConfirmation: nodeRequiresConfirmation,
     },
   });
+}
+
+/**
+ * #982: resolve the allowed capability bit set for a pending pairing request —
+ * the legacy default posture plus any node-requested extras, normalized and
+ * de-duplicated. `node:pair-token:create` is never a node ACL bit, so it is
+ * dropped if requested.
+ */
+function resolvePendingPairingCapabilityBits(
+  requestedCapabilities: RelayCapabilityBit[] | undefined
+): RelayCapabilityBit[] {
+  const merged = normalizeCapabilityBits([
+    ...LEGACY_DEFAULT_ALLOWED_CAPABILITIES,
+    ...normalizeCapabilityBits(requestedCapabilities),
+  ]);
+  return merged.filter((capability) => capability !== 'node:pair-token:create');
+}
+
+/**
+ * #982: bound the requested roots so an operator's decision card stays a short
+ * list of folder labels and never becomes a full path inventory. Trims, caps
+ * length, de-duplicates, and limits the count.
+ */
+function sanitizeRequestedRoots(roots: unknown): string[] {
+  if (!Array.isArray(roots)) return [];
+  const cleaned: string[] = [];
+  const seen = new Set<string>();
+  for (const root of roots) {
+    if (typeof root !== 'string') continue;
+    const trimmed = root.trim().slice(0, 256);
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    cleaned.push(trimmed);
+    if (cleaned.length >= 16) break;
+  }
+  return cleaned;
+}
+
+function createNodeAclForPendingPairing(input: {
+  record: StoredPendingPairingRequest;
+  nodeId: string;
+  credentialId: string;
+  displayName: string;
+  createdAt: string;
+}): RelayNodeAcl {
+  const base = createLegacyDefaultNodeAcl({
+    nodeId: input.nodeId,
+    credentialId: input.credentialId,
+    displayName: input.displayName,
+    trustTier: input.record.requestedTrustTier,
+    createdAt: input.createdAt,
+  });
+  // The trust-tier overlay promotes any high-risk allowed bit to
+  // requires-confirmation on the prod tier; dev/sandbox leave them silent-allow
+  // once granted, exactly as documented in SECURITY_POLICY.md.
+  return applyTrustTierOverlay({
+    ...base,
+    grants: {
+      allowed: input.record.capabilityBits,
+      requiresConfirmation: [],
+    },
+  });
+}
+
+/**
+ * #982: redaction-safe public summary of a pending pairing request. Emits only
+ * safe correlation handles and product-language posture — never the raw
+ * hostname, the status token, raw capability bits, or any secret material.
+ */
+function publicPendingPairing(
+  record: StoredPendingPairingRequest
+): NodePairingRequestSummary {
+  const deviceHint = nodePairingDeviceHint(record.hostname);
+  const sourceDiagnostics = publicSourceDiagnostics(
+    record.sourceBinding?.diagnostics
+  );
+  return {
+    requestId: record.requestId,
+    correlationId: record.correlationId,
+    deviceCode: record.deviceCode,
+    state: record.state,
+    reasonCode: record.reasonCode,
+    displayName: record.displayName,
+    platform: record.platform,
+    relayVersion: record.relayVersion,
+    ...(deviceHint ? { deviceHint } : {}),
+    requestedProfile: record.requestedProfile,
+    requestedTrustTier: record.requestedTrustTier,
+    requestedCapabilities: nodePairingCapabilityPosture(record.capabilityBits),
+    requestedRoots: record.requestedRoots,
+    requiresExactOperationApproval: record.requiresExactOperationApproval,
+    ...(record.publicKeyFingerprint
+      ? { publicKeyFingerprint: record.publicKeyFingerprint }
+      : {}),
+    ...(sourceDiagnostics ? { sourceDiagnostics } : {}),
+    createdAt: record.createdAt,
+    expiresAt: record.expiresAt,
+    ...(record.decidedAt ? { decidedAt: record.decidedAt } : {}),
+    ...(record.nodeId ? { nodeId: record.nodeId } : {}),
+    ...(record.credentialId ? { credentialId: record.credentialId } : {}),
+  };
 }
 
 function credentialToken(nodeId: string): {
@@ -2350,6 +2585,628 @@ export class HubNodeRegistry {
     );
     this.notifyNodeStatusIfChanged(node, status);
     return publicNode(node, status, this.hubVersion);
+  }
+
+  // ===========================================================================
+  // #982: pending node pairing request lifecycle.
+  //
+  // Node-initiated request -> operator approve/deny/edit -> node claims its
+  // key-bound credential on an authenticated status poll. The device code only
+  // LOCATES a request; only the node's one-time status token (hashed at rest)
+  // authorizes the credential claim, and only `pending` is approvable so a
+  // denied/expired request can never be replayed into an issued credential.
+  // ===========================================================================
+
+  submitPendingPairingRequest(
+    input: PendingPairingRequestInput
+  ): PendingPairingRequestResult {
+    const protocolVersion =
+      input.protocolVersion ?? RELAY_NODE_LINK_PROTOCOL_VERSION;
+    assertCompatibleProtocol(protocolVersion);
+    const now = this.now();
+    this.expirePendingPairingNow(now.getTime());
+    const pendingCount = this.state.pendingPairings.filter(
+      (record) => record.state === 'pending'
+    ).length;
+    if (pendingCount >= MAX_PENDING_PAIRING_REQUESTS) {
+      throw new HubNodeRegistryError(
+        'NODE_BUSY',
+        'too many pending pairing requests; retry after existing requests are resolved or expire',
+        true,
+        { reasonCode: 'PENDING_PAIRING_CAPACITY_EXHAUSTED' }
+      );
+    }
+    const timestamp = now.toISOString();
+    const ttlMs =
+      input.ttlMs && input.ttlMs > 0 ? input.ttlMs : DEFAULT_PENDING_PAIRING_TTL_MS;
+    const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
+    const requestedProfile =
+      input.requestedProfile ?? DEFAULT_NODE_PAIRING_TRUST_PROFILE;
+    const requestedTrustTier = nodePairingProfileTrustTier(requestedProfile);
+    const capabilityBits = resolvePendingPairingCapabilityBits(
+      input.requestedCapabilities
+    );
+    const requestId = randomToken('ppreq');
+    const statusToken = randomToken('pstat');
+    const statusTokenHash = sha256(statusToken);
+    // #981: bind only valid public material. A malformed key fails closed to a
+    // bearer-only request rather than throwing — the boundary is "key-bound
+    // credentials REQUIRE proof", not "pairing without a key is forbidden".
+    const submittedFingerprint = safeNodePublicKeyFingerprint(input.publicKey);
+    const record: StoredPendingPairingRequest = {
+      requestId,
+      correlationId: input.correlationId ?? randomToken('ppcorr'),
+      deviceCode: this.generateUniqueDeviceCode(),
+      statusTokenHash,
+      state: 'pending',
+      reasonCode: NODE_PAIRING_REASON_CODES.requested,
+      ...(submittedFingerprint && input.publicKey
+        ? {
+            publicKey: input.publicKey,
+            publicKeyFingerprint: submittedFingerprint,
+          }
+        : {}),
+      displayName: nodeDisplayName(input.displayName, input.manifest),
+      hostname: input.manifest.hostname,
+      ...(input.manifest.homeDir ? { homeDir: input.manifest.homeDir } : {}),
+      platform: input.manifest.platform,
+      arch: input.manifest.arch,
+      // A validator-passing manifest may carry only the canonical helperVersion
+      // (isNodeManifest accepts either field); mirror the helperVersion fallback
+      // so the stored record's relayVersion is never undefined.
+      relayVersion: input.manifest.relayVersion ?? input.manifest.helperVersion,
+      helperVersion:
+        input.manifest.helperVersion ?? input.manifest.relayVersion,
+      protocolVersion,
+      capabilities: summarizeCapabilities(input.manifest),
+      ...(input.manifest.fileRpc
+        ? { fileRpcAvailable: input.manifest.fileRpc.available }
+        : {}),
+      degradedReasons: input.manifest.degradedReasons ?? [],
+      requestedProfile,
+      requestedTrustTier,
+      capabilityBits,
+      requestedRoots: sanitizeRequestedRoots(input.requestedRoots),
+      requiresExactOperationApproval: isHighRiskNodePairingRequest({
+        profile: requestedProfile,
+        requestedCapabilities: capabilityBits,
+      }),
+      createdAt: timestamp,
+      expiresAt,
+    };
+    const sourceBinding = this.pendingPairingSourceBinding(
+      input.source,
+      input.manifest.hostname,
+      statusTokenHash,
+      timestamp
+    );
+    if (sourceBinding) record.sourceBinding = sourceBinding;
+    this.state.pendingPairings.push(record);
+    this.persist();
+    this.auditPendingPairingLifecycle({
+      record,
+      eventType: 'bridge_event',
+      decision: 'recorded',
+      reasonCode: NODE_PAIRING_REASON_CODES.requested,
+      action: 'nodes.pair.request',
+      grantedBits: capabilityBits,
+    });
+    return { request: publicPendingPairing(record), statusToken };
+  }
+
+  listPendingPairingRequests(
+    options: { state?: NodePairingRequestState; includeResolved?: boolean } = {}
+  ): NodePairingRequestSummary[] {
+    this.expirePendingPairingNow(this.now().getTime());
+    return this.state.pendingPairings
+      .filter((record) => {
+        if (options.state) return record.state === options.state;
+        if (options.includeResolved) return true;
+        return record.state === 'pending' || record.state === 'approved';
+      })
+      .map((record) => publicPendingPairing(record));
+  }
+
+  getPendingPairingRequest(
+    requestId: string
+  ): NodePairingRequestSummary | null {
+    this.expirePendingPairingNow(this.now().getTime());
+    const record = this.state.pendingPairings.find(
+      (candidate) => candidate.requestId === requestId
+    );
+    return record ? publicPendingPairing(record) : null;
+  }
+
+  findPendingPairingRequestByDeviceCode(
+    deviceCode: string
+  ): NodePairingRequestSummary | null {
+    this.expirePendingPairingNow(this.now().getTime());
+    const normalized = normalizeNodePairingDeviceCode(deviceCode);
+    if (!normalized) return null;
+    // Most-recent pending match wins; a re-run reuses the code namespace only
+    // among non-pending records, so an operator who pastes a fresh code lands
+    // on the live request.
+    const matches = this.state.pendingPairings.filter(
+      (record) =>
+        normalizeNodePairingDeviceCode(record.deviceCode) === normalized
+    );
+    const pending = matches.find((record) => record.state === 'pending');
+    const record = pending ?? matches[matches.length - 1];
+    return record ? publicPendingPairing(record) : null;
+  }
+
+  /**
+   * #982: the capability bit set approval WOULD grant given an optional edit —
+   * raw bits, for binding the high-risk exact-operation confirmation challenge.
+   * Read-only and intentionally NOT part of the redaction-safe summary (raw bits
+   * never cross a public surface); the router uses it only to bind the
+   * confirmation token to the exact capabilities being authorized. Returns null
+   * for an unknown request.
+   */
+  pendingPairingEffectiveCapabilityBits(
+    requestId: string,
+    edit?: PendingPairingAccessEdit
+  ): RelayCapabilityBit[] | null {
+    const record = this.state.pendingPairings.find(
+      (candidate) => candidate.requestId === requestId
+    );
+    if (!record) return null;
+    if (edit?.requestedCapabilities) {
+      return resolvePendingPairingCapabilityBits(edit.requestedCapabilities);
+    }
+    return [...record.capabilityBits];
+  }
+
+  editPendingPairingAccess(
+    requestId: string,
+    edit: PendingPairingAccessEdit
+  ): NodePairingRequestSummary {
+    const record = this.requirePendingPairingRecord(requestId);
+    this.assertPendingState(record, 'edit access for');
+    this.applyPendingPairingAccessEdit(record, edit);
+    record.reasonCode = NODE_PAIRING_REASON_CODES.edited;
+    this.persist();
+    this.auditPendingPairingLifecycle({
+      record,
+      eventType: 'bridge_event',
+      decision: 'recorded',
+      reasonCode: NODE_PAIRING_REASON_CODES.edited,
+      action: 'nodes.pair.edit-access',
+      grantedBits: record.capabilityBits,
+    });
+    return publicPendingPairing(record);
+  }
+
+  approvePendingPairingRequest(
+    requestId: string,
+    options: { edit?: PendingPairingAccessEdit } = {}
+  ): NodePairingRequestSummary {
+    const record = this.requirePendingPairingRecord(requestId);
+    this.assertPendingState(record, 'approve');
+    if (options.edit) this.applyPendingPairingAccessEdit(record, options.edit);
+    record.state = 'approved';
+    record.reasonCode = NODE_PAIRING_REASON_CODES.approved;
+    record.decidedAt = this.now().toISOString();
+    this.persist();
+    this.auditPendingPairingLifecycle({
+      record,
+      eventType: 'approval',
+      decision: 'approved',
+      reasonCode: NODE_PAIRING_REASON_CODES.approved,
+      action: 'nodes.pair.approve',
+      grantedBits: record.capabilityBits,
+    });
+    return publicPendingPairing(record);
+  }
+
+  denyPendingPairingRequest(
+    requestId: string,
+    options: { reason?: string } = {}
+  ): NodePairingRequestSummary {
+    const record = this.requirePendingPairingRecord(requestId);
+    this.assertPendingState(record, 'deny');
+    record.state = 'denied';
+    record.reasonCode = NODE_PAIRING_REASON_CODES.denied;
+    record.decidedAt = this.now().toISOString();
+    if (options.reason) record.decisionReason = options.reason.slice(0, 256);
+    this.persist();
+    this.auditPendingPairingLifecycle({
+      record,
+      eventType: 'denial',
+      decision: 'deny',
+      reasonCode: NODE_PAIRING_REASON_CODES.denied,
+      action: 'nodes.pair.deny',
+    });
+    return publicPendingPairing(record);
+  }
+
+  /**
+   * Node-facing status poll + one-time credential claim. The status token
+   * authenticates the waiting node. A `pending`/`denied`/`expired` request
+   * returns status only. Only an `approved`, not-yet-claimed request mints the
+   * key-bound credential, creates the node record, and returns the raw
+   * credential exactly once — it is never stored raw, returned to the operator,
+   * or placed in any list/audit.
+   */
+  pollPendingPairingRequest(
+    requestId: string,
+    statusToken: string,
+    context: CredentialAuthContext = {}
+  ): PendingPairingPollResult {
+    this.expirePendingPairingNow(this.now().getTime());
+    const record = this.requirePendingPairingRecord(requestId);
+    const presentedHash = sha256(statusToken.trim());
+    if (!timingSafeEqualHex(presentedHash, record.statusTokenHash)) {
+      throw new HubNodeRegistryError(
+        'UNAUTHORIZED',
+        'pending pairing status token is invalid',
+        false,
+        { reasonCode: 'PENDING_PAIRING_STATUS_TOKEN_INVALID' }
+      );
+    }
+    if (record.state !== 'approved' || record.credentialDeliveredAt) {
+      return { request: publicPendingPairing(record) };
+    }
+    const now = this.now();
+    const { node, credential, boundFingerprint } =
+      this.buildPairedNodeFromPendingPairing(record, now, context);
+    this.state.nodes.push(node);
+    record.nodeId = node.nodeId;
+    record.credentialId = credential.credentialId;
+    record.credentialDeliveredAt = now.toISOString();
+    record.reasonCode = NODE_PAIRING_REASON_CODES.credentialIssued;
+    this.persist();
+    this.auditPendingPairingLifecycle({
+      record,
+      eventType: 'grant',
+      decision: 'allow',
+      reasonCode: NODE_PAIRING_REASON_CODES.credentialIssued,
+      action: 'nodes.pair.issue-credential',
+      grantedBits: node.acl?.grants.allowed ?? [],
+    });
+    this.notifyNodeStatusIfChanged(node, 'online');
+    return {
+      request: publicPendingPairing(record),
+      credential: {
+        protocol: RELAY_NODE_LINK_PROTOCOL,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        nodeId: node.nodeId,
+        credentialId: credential.credentialId,
+        token: credential.token,
+        issuedAt: record.credentialDeliveredAt,
+        ...(boundFingerprint ? { publicKeyFingerprint: boundFingerprint } : {}),
+      },
+      node: publicNode(node, 'online', this.hubVersion),
+    };
+  }
+
+  private requirePendingPairingRecord(
+    requestId: string
+  ): StoredPendingPairingRequest {
+    this.expirePendingPairingNow(this.now().getTime());
+    const record = this.state.pendingPairings.find(
+      (candidate) => candidate.requestId === requestId
+    );
+    if (!record) {
+      throw new HubNodeRegistryError(
+        'NOT_FOUND',
+        'pending pairing request was not found',
+        false,
+        { reasonCode: 'PENDING_PAIRING_NOT_FOUND' }
+      );
+    }
+    return record;
+  }
+
+  private assertPendingState(
+    record: StoredPendingPairingRequest,
+    verb: string
+  ): void {
+    if (record.state === 'pending') return;
+    // A denied/expired/already-approved request can never be replayed into a new
+    // approval or edit. `expired` maps to TOKEN_EXPIRED so callers can present
+    // the "request expired, re-run pair" path.
+    if (record.state === 'expired') {
+      throw new HubNodeRegistryError(
+        'TOKEN_EXPIRED',
+        `cannot ${verb} an expired pairing request`,
+        false,
+        { reasonCode: NODE_PAIRING_REASON_CODES.expired, state: record.state }
+      );
+    }
+    throw new HubNodeRegistryError(
+      'INVALID_REQUEST',
+      `cannot ${verb} a ${record.state} pairing request`,
+      false,
+      {
+        reasonCode: NODE_PAIRING_REASON_CODES.replayDenied,
+        state: record.state,
+      }
+    );
+  }
+
+  private applyPendingPairingAccessEdit(
+    record: StoredPendingPairingRequest,
+    edit: PendingPairingAccessEdit
+  ): void {
+    if (typeof edit.displayName === 'string' && edit.displayName.trim()) {
+      record.displayName = edit.displayName.trim();
+    }
+    if (edit.requestedProfile) {
+      record.requestedProfile = edit.requestedProfile;
+      record.requestedTrustTier = nodePairingProfileTrustTier(
+        edit.requestedProfile
+      );
+    }
+    if (edit.requestedCapabilities) {
+      record.capabilityBits = resolvePendingPairingCapabilityBits(
+        edit.requestedCapabilities
+      );
+    }
+    if (edit.requestedRoots) {
+      record.requestedRoots = sanitizeRequestedRoots(edit.requestedRoots);
+    }
+    record.requiresExactOperationApproval = isHighRiskNodePairingRequest({
+      profile: record.requestedProfile,
+      requestedCapabilities: record.capabilityBits,
+    });
+  }
+
+  private buildPairedNodeFromPendingPairing(
+    record: StoredPendingPairingRequest,
+    now: Date,
+    context: CredentialAuthContext
+  ): {
+    node: StoredNodeRecord;
+    credential: ReturnType<typeof credentialToken>;
+    boundFingerprint?: string;
+  } {
+    const timestamp = now.toISOString();
+    const nodeId = randomToken('node');
+    const credential = credentialToken(nodeId);
+    const boundFingerprint = safeNodePublicKeyFingerprint(record.publicKey);
+    const acl = createNodeAclForPendingPairing({
+      record,
+      nodeId,
+      credentialId: credential.credentialId,
+      displayName: record.displayName,
+      createdAt: timestamp,
+    });
+    const sourceBinding = this.pairedSourceBindingForClaim(
+      context.source,
+      record.hostname,
+      credential.hash,
+      timestamp
+    );
+    const node: StoredNodeRecord = {
+      nodeId,
+      identity: {
+        nodeId,
+        displayName: record.displayName,
+        hostname: record.hostname,
+        createdAt: timestamp,
+        pairedAt: timestamp,
+      },
+      activeCredential: {
+        credentialId: credential.credentialId,
+        tokenHash: credential.hash,
+        issuedAt: timestamp,
+        ...(boundFingerprint && record.publicKey
+          ? {
+              publicKey: record.publicKey,
+              publicKeyFingerprint: boundFingerprint,
+              publicKeyAlgorithm: 'ed25519',
+            }
+          : {}),
+      },
+      credentialId: credential.credentialId,
+      credentialHash: credential.hash,
+      credentialIssuedAt: timestamp,
+      displayName: record.displayName,
+      hostname: record.hostname,
+      ...(record.homeDir ? { homeDir: record.homeDir } : {}),
+      platform: record.platform,
+      arch: record.arch,
+      relayVersion: record.relayVersion,
+      ...(record.helperVersion ? { helperVersion: record.helperVersion } : {}),
+      protocolVersion: record.protocolVersion,
+      capabilities: record.capabilities,
+      ...(record.fileRpcAvailable !== undefined
+        ? { fileRpcAvailable: record.fileRpcAvailable }
+        : {}),
+      degradedReasons: record.degradedReasons ?? [],
+      acl,
+      ...(sourceBinding ? { sourceBinding } : {}),
+      createdAt: timestamp,
+      pairedAt: timestamp,
+      lastSeenAt: timestamp,
+    };
+    return {
+      node,
+      credential,
+      ...(boundFingerprint ? { boundFingerprint } : {}),
+    };
+  }
+
+  private pendingPairingSourceBinding(
+    source: RelayNodeSourceTuple | undefined,
+    hostname: string,
+    fingerprintKey: string,
+    now: string
+  ): StoredNodeSourceBinding | undefined {
+    const observed = sourceTupleWithHostname(source, hostname);
+    if (!observed) return undefined;
+    const observedFingerprint = sourceFingerprint(observed, fingerprintKey);
+    const hasSignal = hasTailscaleSourceSignal(observed);
+    return {
+      diagnostics: {
+        state: hasSignal ? 'source-match' : 'signal-unavailable',
+        policy: 'audit',
+        reasonCode: hasSignal
+          ? 'PENDING_PAIRING_SOURCE_RECORDED'
+          : 'PENDING_PAIRING_SOURCE_SIGNAL_UNAVAILABLE',
+        observedAt: now,
+        ...(observedFingerprint ? { sourceFingerprint: observedFingerprint } : {}),
+        displayHint: sourceDisplayHint(observed, observedFingerprint),
+      },
+    };
+  }
+
+  private pairedSourceBindingForClaim(
+    source: RelayNodeSourceTuple | undefined,
+    hostname: string,
+    fingerprintKey: string,
+    now: string
+  ): StoredNodeSourceBinding | undefined {
+    const observed = sourceTupleWithHostname(source, hostname);
+    if (!observed) return undefined;
+    const observedFingerprint = sourceFingerprint(observed, fingerprintKey);
+    const hasSignal = hasTailscaleSourceSignal(observed);
+    return {
+      expected: observed,
+      lastObserved: observed,
+      observedFingerprints: observedFingerprint ? [observedFingerprint] : [],
+      diagnostics: {
+        state: hasSignal ? 'source-match' : 'signal-unavailable',
+        policy: 'audit',
+        reasonCode: hasSignal
+          ? 'NODE_SOURCE_MATCH'
+          : 'NODE_SOURCE_SIGNAL_UNAVAILABLE',
+        observedAt: now,
+        ...(observedFingerprint ? { sourceFingerprint: observedFingerprint } : {}),
+        displayHint: sourceDisplayHint(observed, observedFingerprint),
+      },
+    };
+  }
+
+  private generateUniqueDeviceCode(): string {
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+      const code = randomDeviceCode();
+      const normalized = normalizeNodePairingDeviceCode(code);
+      const collision = this.state.pendingPairings.some(
+        (record) =>
+          record.state === 'pending' &&
+          normalizeNodePairingDeviceCode(record.deviceCode) === normalized
+      );
+      if (!collision) return code;
+    }
+    throw new HubNodeRegistryError(
+      'INTERNAL',
+      'could not allocate a unique pairing device code'
+    );
+  }
+
+  private expirePendingPairingNow(nowMs: number): boolean {
+    let changed = false;
+    for (const record of this.state.pendingPairings) {
+      if (record.state !== 'pending') continue;
+      if (Date.parse(record.expiresAt) > nowMs) continue;
+      record.state = 'expired';
+      record.reasonCode = NODE_PAIRING_REASON_CODES.expired;
+      record.decidedAt = new Date(nowMs).toISOString();
+      changed = true;
+      this.auditPendingPairingLifecycle({
+        record,
+        eventType: 'expiry',
+        decision: 'expired',
+        reasonCode: NODE_PAIRING_REASON_CODES.expired,
+        action: 'nodes.pair.expire',
+      });
+    }
+    if (this.prunePendingPairings(nowMs)) changed = true;
+    if (changed) this.persist();
+    return changed;
+  }
+
+  /**
+   * Bound retained resolved records (denied/expired, or approved + already
+   * claimed) so the registry file does not grow without limit across many pair
+   * attempts. Pending and approved-but-unclaimed records are never pruned. Drops
+   * records past the retention window, then caps the most-recent retained set.
+   * Returns true if anything was removed.
+   */
+  private prunePendingPairings(nowMs: number): boolean {
+    const isResolved = (record: StoredPendingPairingRequest): boolean =>
+      record.state === 'denied' ||
+      record.state === 'expired' ||
+      (record.state === 'approved' && Boolean(record.credentialDeliveredAt));
+    const decisionMs = (record: StoredPendingPairingRequest): number =>
+      Date.parse(record.decidedAt ?? record.createdAt);
+    const before = this.state.pendingPairings.length;
+    let kept = this.state.pendingPairings.filter(
+      (record) =>
+        !(
+          isResolved(record) &&
+          decisionMs(record) + PENDING_PAIRING_RESOLVED_RETENTION_MS <= nowMs
+        )
+    );
+    const resolved = kept
+      .filter(isResolved)
+      .sort((a, b) => decisionMs(a) - decisionMs(b));
+    if (resolved.length > MAX_RETAINED_RESOLVED_PAIRINGS) {
+      const drop = new Set(
+        resolved
+          .slice(0, resolved.length - MAX_RETAINED_RESOLVED_PAIRINGS)
+          .map((record) => record.requestId)
+      );
+      kept = kept.filter((record) => !drop.has(record.requestId));
+    }
+    if (kept.length === before) return false;
+    this.state.pendingPairings = kept;
+    return true;
+  }
+
+  private auditPendingPairingLifecycle(input: {
+    record: StoredPendingPairingRequest;
+    decision: SecurityAuditDecision;
+    eventType: SecurityAuditEventType;
+    reasonCode: string;
+    action: string;
+    grantedBits?: RelayCapabilityBit[];
+  }): void {
+    if (!this.auditSink) return;
+    const record = input.record;
+    try {
+      this.auditSink.append({
+        eventType: input.eventType,
+        decision: input.decision,
+        reasonCode: input.reasonCode,
+        peer: {
+          kind: 'node',
+          ...(record.nodeId ? { nodeId: record.nodeId } : {}),
+          // requestId/credentialId are safe correlation handles, never secrets.
+          credentialId: record.credentialId ?? record.requestId,
+        },
+        node: { ...(record.nodeId ? { nodeId: record.nodeId } : {}) },
+        intent: { action: input.action, target: record.requestId },
+        material: {
+          params: {
+            requestId: record.requestId,
+            state: record.state,
+            requestedProfile: record.requestedProfile,
+            requestedTrustTier: record.requestedTrustTier,
+            requiresExactOperationApproval:
+              record.requiresExactOperationApproval,
+            rootCount: record.requestedRoots.length,
+            capabilityBitCount: record.capabilityBits.length,
+            publicKeyFingerprint: record.publicKeyFingerprint ?? null,
+            sourceState: record.sourceBinding?.diagnostics?.state ?? null,
+            ...(record.decisionReason
+              ? { decisionReason: record.decisionReason }
+              : {}),
+          },
+        },
+        grantedBits: input.grantedBits ?? [],
+        refs: { policyVersion: RELAY_SECURITY_POLICY_VERSION },
+        ...(record.sourceBinding?.diagnostics
+          ? { sourceDiagnostics: record.sourceBinding.diagnostics }
+          : {}),
+        correlationId: record.correlationId,
+      });
+    } catch {
+      // Best-effort lifecycle visibility only. Never log/retry raw status
+      // tokens or credential material if the audit sink fails.
+    }
   }
 
   errorBody(error: unknown): { error: RelayNodeError } {

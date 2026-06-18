@@ -108,12 +108,20 @@ import {
   type HandshakeGrantValidationScope,
 } from '../shared/operator-handshake-grants.js';
 import {
+  HIGH_RISK_CAPABILITIES,
   isRelayCapabilityBit,
   isRelayTrustTier,
   normalizeCapabilityBits,
   type RelayCapabilityBit,
   type RelayTrustTier,
 } from '../shared/security-policy.js';
+import {
+  isHighRiskNodePairingRequest,
+  isNodePairingTrustProfile,
+  nodePairingProfileTrustTier,
+  type NodePairingTrustProfile,
+} from '../shared/node-pairing-requests.js';
+import type { PendingPairingAccessEdit } from './hub-node-registry.js';
 
 const FILE_RPC_FOLLOW_STREAM_BUFFER_BYTES = 256 * 1024;
 
@@ -2353,6 +2361,94 @@ function relayErrorForHandshakeGrantRegistryError(
   });
 }
 
+const PAIRING_HIGH_RISK_BIT_SET = new Set<string>(HIGH_RISK_CAPABILITIES);
+const PAIRING_REQUEST_STATES = new Set([
+  'pending',
+  'approved',
+  'denied',
+  'expired',
+]);
+
+function pairingStateFromQuery(
+  value: unknown
+): 'pending' | 'approved' | 'denied' | 'expired' | undefined {
+  return typeof value === 'string' && PAIRING_REQUEST_STATES.has(value)
+    ? (value as 'pending' | 'approved' | 'denied' | 'expired')
+    : undefined;
+}
+
+function pairingProfileFromBody(
+  body: Record<string, unknown>
+): { ok: true; profile?: NodePairingTrustProfile } | { ok: false } {
+  const value = body['requestedProfile'] ?? body['profile'];
+  if (value === undefined || value === null) return { ok: true };
+  if (isNodePairingTrustProfile(value)) return { ok: true, profile: value };
+  return { ok: false };
+}
+
+/**
+ * Parse the editable-access fields shared by the request, edit-access, and
+ * approve routes. Capabilities reuse {@link parseCapabilityList} so unknown bits
+ * fail closed; `node:pair-token:create` is dropped (never a node ACL default).
+ */
+function pairingAccessEditFromBody(body: Record<string, unknown>):
+  | {
+      ok: true;
+      edit: PendingPairingAccessEdit;
+      requestedCapabilityBits?: RelayCapabilityBit[];
+    }
+  | { ok: false; error: RelayNodeError } {
+  const profile = pairingProfileFromBody(body);
+  if (!profile.ok) {
+    return {
+      ok: false,
+      error: relayError(
+        'INVALID_REQUEST',
+        'requestedProfile must be a known node pairing trust profile',
+        false,
+        { reasonCode: 'PENDING_PAIRING_PROFILE_INVALID' }
+      ),
+    };
+  }
+  const capabilitiesProvided =
+    body['requestedCapabilities'] !== undefined ||
+    body['capabilities'] !== undefined;
+  const capabilities = parseCapabilityList(
+    body['requestedCapabilities'] ?? body['capabilities']
+  );
+  if (!capabilities.ok) {
+    return {
+      ok: false,
+      error: relayError('INVALID_REQUEST', capabilities.message, false, {
+        reasonCode: capabilities.reasonCode,
+        ...(capabilities.invalidCapability
+          ? { capability: capabilities.invalidCapability }
+          : {}),
+      }),
+    };
+  }
+  const displayName = stringFromBody(body, 'displayName');
+  const rootsValue = body['requestedRoots'] ?? body['roots'];
+  const roots = Array.isArray(rootsValue)
+    ? rootsValue.filter((root): root is string => typeof root === 'string')
+    : undefined;
+  const edit: PendingPairingAccessEdit = {
+    ...(displayName ? { displayName } : {}),
+    ...(profile.profile ? { requestedProfile: profile.profile } : {}),
+    ...(capabilitiesProvided
+      ? { requestedCapabilities: capabilities.capabilities }
+      : {}),
+    ...(roots ? { requestedRoots: roots } : {}),
+  };
+  return {
+    ok: true,
+    edit,
+    ...(capabilitiesProvided
+      ? { requestedCapabilityBits: capabilities.capabilities }
+      : {}),
+  };
+}
+
 export function createHubNodeRouter(
   options: HubNodeRouterOptions
 ): express.Router {
@@ -2839,6 +2935,311 @@ export function createHubNodeRouter(
       sendRegistryError(registry, res, error);
     }
   });
+
+  // ===========================================================================
+  // #982: pending node pairing request lifecycle.
+  //
+  // Node-facing (unauthenticated, like /hub/pairing/exchange):
+  //   POST /hub/pairing/requests             submit a pending request
+  //   POST /hub/pairing/requests/:id/status  poll status / one-time credential claim
+  // Operator (requireAuth):
+  //   GET   /hub/pairing/requests            list (?state=, ?deviceCode=)
+  //   GET   /hub/pairing/requests/:id        inspect
+  //   PATCH /hub/pairing/requests/:id/access edit requested access before approval
+  //   POST  /hub/pairing/requests/:id/approve approve (high-risk → exact-op confirmation)
+  //   POST  /hub/pairing/requests/:id/deny    deny
+  // ===========================================================================
+
+  router.post('/hub/pairing/requests', (req, res) => {
+    const body = bodyRecord(req);
+    let manifest: NodeManifest;
+    try {
+      manifest = manifestFromBody(body, true)!;
+    } catch (error) {
+      sendRegistryError(registry, res, error);
+      return;
+    }
+    const parsed = pairingAccessEditFromBody(body);
+    if (!parsed.ok) {
+      sendRelayError(res, parsed.error);
+      return;
+    }
+    const publicKey =
+      typeof body['publicKey'] === 'string' ? body['publicKey'] : undefined;
+    const protocolVersion =
+      typeof body['protocolVersion'] === 'string'
+        ? body['protocolVersion']
+        : undefined;
+    const correlationId = pairTokenMintCorrelationId(req, body);
+    const source = sourceTupleFromRequest(req);
+    try {
+      const result = registry.submitPendingPairingRequest({
+        manifest,
+        ...(publicKey ? { publicKey } : {}),
+        ...(parsed.edit.displayName
+          ? { displayName: parsed.edit.displayName }
+          : {}),
+        ...(parsed.edit.requestedProfile
+          ? { requestedProfile: parsed.edit.requestedProfile }
+          : {}),
+        ...(parsed.requestedCapabilityBits
+          ? { requestedCapabilities: parsed.requestedCapabilityBits }
+          : {}),
+        ...(parsed.edit.requestedRoots
+          ? { requestedRoots: parsed.edit.requestedRoots }
+          : {}),
+        ...(protocolVersion ? { protocolVersion } : {}),
+        ...(correlationId ? { correlationId } : {}),
+        ...(source ? { source } : {}),
+      });
+      res.status(201).json(result);
+    } catch (error) {
+      sendRegistryError(registry, res, error);
+    }
+  });
+
+  router.post('/hub/pairing/requests/:requestId/status', (req, res) => {
+    const { requestId } = req.params;
+    const body = bodyRecord(req);
+    const statusToken =
+      req.header('x-relay-pairing-status-token')?.trim() ||
+      (typeof body['statusToken'] === 'string' ? body['statusToken'].trim() : '');
+    if (!requestId || !statusToken) {
+      sendRelayError(
+        res,
+        relayError(
+          'INVALID_REQUEST',
+          'requestId and pairing status token are required',
+          false,
+          { reasonCode: 'PENDING_PAIRING_STATUS_TOKEN_REQUIRED' }
+        )
+      );
+      return;
+    }
+    const source = sourceTupleFromRequest(req);
+    try {
+      const result = registry.pollPendingPairingRequest(requestId, statusToken, {
+        ...(source ? { source } : {}),
+      });
+      res.json(result);
+    } catch (error) {
+      sendRegistryError(registry, res, error);
+    }
+  });
+
+  router.get('/hub/pairing/requests', requireAuth, (req, res) => {
+    const deviceCode =
+      typeof req.query['deviceCode'] === 'string'
+        ? req.query['deviceCode']
+        : undefined;
+    if (deviceCode) {
+      const match = registry.findPendingPairingRequestByDeviceCode(deviceCode);
+      if (!match) {
+        sendRelayError(
+          res,
+          relayError(
+            'NOT_FOUND',
+            'no pairing request matches that device code',
+            false,
+            { reasonCode: 'PENDING_PAIRING_NOT_FOUND' }
+          )
+        );
+        return;
+      }
+      res.json({ requests: [match], request: match });
+      return;
+    }
+    const state = pairingStateFromQuery(req.query['state']);
+    const includeResolved =
+      req.query['includeResolved'] === 'true' || req.query['all'] === 'true';
+    res.json({
+      requests: registry.listPendingPairingRequests({
+        ...(state ? { state } : {}),
+        ...(includeResolved ? { includeResolved } : {}),
+      }),
+    });
+  });
+
+  router.get('/hub/pairing/requests/:requestId', requireAuth, (req, res) => {
+    const { requestId } = req.params;
+    const request = requestId
+      ? registry.getPendingPairingRequest(requestId)
+      : null;
+    if (!request) {
+      sendRelayError(
+        res,
+        relayError('NOT_FOUND', 'pending pairing request not found', false, {
+          reasonCode: 'PENDING_PAIRING_NOT_FOUND',
+        })
+      );
+      return;
+    }
+    res.json({ request });
+  });
+
+  router.patch(
+    '/hub/pairing/requests/:requestId/access',
+    requireAuth,
+    (req, res) => {
+      const { requestId } = req.params;
+      if (!requestId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'requestId is required', false, {
+            reasonCode: 'PENDING_PAIRING_REQUEST_ID_REQUIRED',
+          })
+        );
+        return;
+      }
+      const parsed = pairingAccessEditFromBody(bodyRecord(req));
+      if (!parsed.ok) {
+        sendRelayError(res, parsed.error);
+        return;
+      }
+      try {
+        const request = registry.editPendingPairingAccess(
+          requestId,
+          parsed.edit
+        );
+        res.json({ request });
+      } catch (error) {
+        sendRegistryError(registry, res, error);
+      }
+    }
+  );
+
+  router.post(
+    '/hub/pairing/requests/:requestId/approve',
+    requireAuth,
+    (req, res) => {
+      const { requestId } = req.params;
+      if (!requestId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'requestId is required', false, {
+            reasonCode: 'PENDING_PAIRING_REQUEST_ID_REQUIRED',
+          })
+        );
+        return;
+      }
+      const body = bodyRecord(req);
+      const parsed = pairingAccessEditFromBody(body);
+      if (!parsed.ok) {
+        sendRelayError(res, parsed.error);
+        return;
+      }
+      const summary = registry.getPendingPairingRequest(requestId);
+      if (!summary) {
+        sendRelayError(
+          res,
+          relayError('NOT_FOUND', 'pending pairing request not found', false, {
+            reasonCode: 'PENDING_PAIRING_NOT_FOUND',
+          })
+        );
+        return;
+      }
+      // Higher-risk profile/capability choices route through the existing
+      // exact-operation/high-risk confirmation contract before approval. Only a
+      // still-`pending` request is gated; other states fall through to the
+      // registry's typed state-machine error below.
+      if (summary.state === 'pending') {
+        const effectiveProfile =
+          parsed.edit.requestedProfile ?? summary.requestedProfile;
+        // Derive the capability set approval would actually grant (stored bits,
+        // overlaid with any body edit) — NOT just the bits re-sent on this call.
+        // This makes the challenge name the real high-risk bits and binds the
+        // confirmation token to the exact capability grant.
+        const effectiveCapabilityBits =
+          registry.pendingPairingEffectiveCapabilityBits(
+            requestId,
+            parsed.edit
+          ) ?? [];
+        const requiresApproval =
+          summary.requiresExactOperationApproval ||
+          isHighRiskNodePairingRequest({
+            profile: effectiveProfile,
+            requestedCapabilities: effectiveCapabilityBits,
+          });
+        if (requiresApproval) {
+          const effectiveTrustTier =
+            nodePairingProfileTrustTier(effectiveProfile);
+          const challengeBits = effectiveCapabilityBits.filter((bit) =>
+            PAIRING_HIGH_RISK_BIT_SET.has(bit)
+          );
+          const decision: HubPolicyDecision = {
+            decision: 'challenge',
+            reasonCode: 'POLICY_CHALLENGE_REQUIRED',
+            message: `approving this ${effectiveProfile} pairing request requires exact-operation confirmation`,
+            nodeId: requestId,
+            peer: { kind: 'hub' },
+            intent: { action: 'nodes.pair.approve', target: requestId },
+            scope: { kind: 'node', nodeId: requestId },
+            trustTier: effectiveTrustTier,
+            requiredBits: challengeBits,
+            grantedBits: [],
+            deniedBits: [],
+            challengeBits,
+            unknownBits: [],
+          };
+          const gate = resolveConfirmationForDecision({
+            confirmations,
+            auditSink: options.auditSink,
+            req,
+            decision,
+            // Bind every dimension of the grant into the canonical params so the
+            // approved token cannot be replayed against a divergent capability
+            // set (e.g. one widened by a PATCH /access between mint and redeem).
+            params: {
+              requestId,
+              requestedProfile: effectiveProfile,
+              requestedTrustTier: effectiveTrustTier,
+              publicKeyFingerprint: summary.publicKeyFingerprint ?? null,
+              capabilityBits: [...effectiveCapabilityBits].sort(),
+            },
+            now: now(),
+          });
+          if (!gate.ok) {
+            sendRelayError(res, gate.error);
+            return;
+          }
+        }
+      }
+      try {
+        const request = registry.approvePendingPairingRequest(requestId, {
+          edit: parsed.edit,
+        });
+        res.json({ request });
+      } catch (error) {
+        sendRegistryError(registry, res, error);
+      }
+    }
+  );
+
+  router.post(
+    '/hub/pairing/requests/:requestId/deny',
+    requireAuth,
+    (req, res) => {
+      const { requestId } = req.params;
+      if (!requestId) {
+        sendRelayError(
+          res,
+          relayError('INVALID_REQUEST', 'requestId is required', false, {
+            reasonCode: 'PENDING_PAIRING_REQUEST_ID_REQUIRED',
+          })
+        );
+        return;
+      }
+      const reason = stringFromBody(bodyRecord(req), 'reason');
+      try {
+        const request = registry.denyPendingPairingRequest(requestId, {
+          ...(reason ? { reason } : {}),
+        });
+        res.json({ request });
+      } catch (error) {
+        sendRegistryError(registry, res, error);
+      }
+    }
+  );
 
   router.post('/hub/node-heartbeat', (req, res) => {
     const token = bearerToken(req);
