@@ -21,7 +21,10 @@
     "payload": {
       "body": {
         "scope": "Verify the new WorkContext message template CLI flow.",
-        "exactHead": { "branch": "issue-950-repo-message-templates", "sha": "abc1234" },
+        "exactHead": {
+          "branch": "issue-950-repo-message-templates",
+          "sha": "abc1234"
+        },
         "checks": ["npm run check", "targeted vitest"],
         "risks": ["CLI actor-token auth", "template discovery edge cases"]
       }

@@ -21,8 +21,15 @@
     "payload": {
       "body": {
         "scope": "Review repo-local WorkContext message template discovery and CLI contract.",
-        "exactHead": { "branch": "issue-950-repo-message-templates", "sha": "abc1234" },
-        "reviewFocus": ["path containment", "actor-token auth", "contract schema drift"],
+        "exactHead": {
+          "branch": "issue-950-repo-message-templates",
+          "sha": "abc1234"
+        },
+        "reviewFocus": [
+          "path containment",
+          "actor-token auth",
+          "contract schema drift"
+        ],
         "verification": ["npm run check", "npm test -- work-context-messages"]
       }
     }
