@@ -83,6 +83,12 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'contract.schema': 'gateway schema',
   'nodes.manifest': 'local node manifest',
   'nodes.list': 'relay nodes list',
+  'nodes.pair.requests': 'pending node requests',
+  'nodes.pair.approve': 'approve node request',
+  'nodes.pair.deny': 'deny node request',
+  'nodes.pair.editAccess': 'edit node access',
+  'nodes.rotateCredential': 'rotate node credential',
+  'nodes.revoke': 'revoke node',
   'repos.add': 'add repo workspace',
   'workspaces.launch': 'launch workspace',
   'worktrees.create': 'create worktree',
@@ -187,12 +193,17 @@ const STREAM_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
 const DESTRUCTIVE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'handoffs.create',
   'handoffs.launch',
+  'nodes.revoke',
   'sessions.kill',
   'worktrees.delete',
   'worktrees.archive',
 ]);
 
 const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
+  'nodes.pair.approve',
+  'nodes.pair.deny',
+  'nodes.pair.editAccess',
+  'nodes.rotateCredential',
   'sessions.create',
   'tickets.startWork',
   'branches.openSession',
@@ -285,6 +296,9 @@ function requiresConfirmationForGatewayCommand(
 ): boolean {
   return (
     spec.name === 'files.write' ||
+    spec.name === 'nodes.pair.approve' ||
+    spec.name === 'nodes.rotateCredential' ||
+    spec.name === 'nodes.revoke' ||
     spec.name === 'sessions.kill' ||
     spec.name === 'settings.update' ||
     spec.name === 'worktrees.delete' ||

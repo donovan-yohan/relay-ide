@@ -1514,6 +1514,7 @@ async function assertGitRepoIfRequested(
 
 const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'nodes.list',
+  'nodes.pair.requests',
   'sessions.list',
   'sessions.get',
   'sessions.screen',
@@ -1674,6 +1675,7 @@ function loadGatewayManifestConfig(): Pick<Config, 'frameworks'> | undefined {
   }
 }
 
+// eslint-disable-next-line complexity, sonarjs/cognitive-complexity
 async function runGatewayNodes(gatewayArgs: string[]): Promise<never> {
   const nodeSubcommand = gatewayArgs[1];
   if (nodeSubcommand === 'manifest') {
@@ -1688,6 +1690,141 @@ async function runGatewayNodes(gatewayArgs: string[]): Promise<never> {
       capabilities: ['session:read'],
     });
     printGatewayEnvelope(gatewayOk('nodes.list', data), 0);
+  }
+  if (nodeSubcommand === 'pair') {
+    const pairSubcommand = gatewayArgs[2];
+    if (pairSubcommand === 'requests') {
+      const input = parseGatewayInputObject(
+        'nodes.pair.requests',
+        gatewayArgs.slice(3)
+      );
+      const params = new URLSearchParams();
+      if (typeof input['state'] === 'string' && input['state'].trim())
+        params.set('state', input['state'].trim());
+      if (typeof input['deviceCode'] === 'string' && input['deviceCode'].trim())
+        params.set('deviceCode', input['deviceCode'].trim());
+      if (input['includeResolved'] === true) params.set('includeResolved', 'true');
+      const query = params.toString();
+      const data = await gatewayHttpJson({
+        commandName: 'nodes.pair.requests',
+        pathName: `/hub/pairing/requests${query ? `?${query}` : ''}`,
+        capabilities: ['session:read'],
+      });
+      printGatewayEnvelope(gatewayOk('nodes.pair.requests', data), 0);
+    }
+    if (pairSubcommand === 'approve') {
+      const input = parseGatewayInputObject(
+        'nodes.pair.approve',
+        gatewayArgs.slice(3)
+      );
+      const requestId = input['requestId'];
+      if (typeof requestId !== 'string' || !requestId.trim())
+        gatewayInvalid('nodes.pair.approve', 'requestId is required', {
+          field: 'requestId',
+        });
+      const body = { ...input };
+      delete body['requestId'];
+      delete body['confirmationToken'];
+      const confirmationToken =
+        typeof input['confirmationToken'] === 'string'
+          ? input['confirmationToken']
+          : undefined;
+      const data = await gatewayHttpJson({
+        commandName: 'nodes.pair.approve',
+        pathName: `/hub/pairing/requests/${encodeURIComponent(requestId)}/approve`,
+        method: 'POST',
+        body,
+        capabilities: ['session:create:terminal'],
+        ...(confirmationToken ? { confirmationToken } : {}),
+      });
+      printGatewayEnvelope(gatewayOk('nodes.pair.approve', data), 0);
+    }
+    if (pairSubcommand === 'deny') {
+      const input = parseGatewayInputObject(
+        'nodes.pair.deny',
+        gatewayArgs.slice(3)
+      );
+      const requestId = input['requestId'];
+      if (typeof requestId !== 'string' || !requestId.trim())
+        gatewayInvalid('nodes.pair.deny', 'requestId is required', {
+          field: 'requestId',
+        });
+      const body =
+        typeof input['reason'] === 'string' && input['reason'].trim()
+          ? { reason: input['reason'].trim() }
+          : {};
+      const data = await gatewayHttpJson({
+        commandName: 'nodes.pair.deny',
+        pathName: `/hub/pairing/requests/${encodeURIComponent(requestId)}/deny`,
+        method: 'POST',
+        body,
+        capabilities: ['session:read'],
+      });
+      printGatewayEnvelope(gatewayOk('nodes.pair.deny', data), 0);
+    }
+    if (pairSubcommand === 'edit-access') {
+      const input = parseGatewayInputObject(
+        'nodes.pair.editAccess',
+        gatewayArgs.slice(3)
+      );
+      const requestId = input['requestId'];
+      if (typeof requestId !== 'string' || !requestId.trim())
+        gatewayInvalid('nodes.pair.editAccess', 'requestId is required', {
+          field: 'requestId',
+        });
+      const body = { ...input };
+      delete body['requestId'];
+      const data = await gatewayHttpJson({
+        commandName: 'nodes.pair.editAccess',
+        pathName: `/hub/pairing/requests/${encodeURIComponent(requestId)}/access`,
+        method: 'PATCH',
+        body,
+        capabilities: ['session:read'],
+      });
+      printGatewayEnvelope(gatewayOk('nodes.pair.editAccess', data), 0);
+    }
+  }
+  if (nodeSubcommand === 'rotate-credential') {
+    const input = parseGatewayInputObject(
+      'nodes.rotateCredential',
+      gatewayArgs.slice(2)
+    );
+    const nodeId = input['nodeId'];
+    if (typeof nodeId !== 'string' || !nodeId.trim())
+      gatewayInvalid('nodes.rotateCredential', 'nodeId is required', {
+        field: 'nodeId',
+      });
+    const confirmationToken =
+      typeof input['confirmationToken'] === 'string'
+        ? input['confirmationToken']
+        : undefined;
+    const data = await gatewayHttpJson({
+      commandName: 'nodes.rotateCredential',
+      pathName: `/hub/nodes/${encodeURIComponent(nodeId)}/credential-rotation`,
+      method: 'POST',
+      body: { delivery: input['delivery'] === 'manual' ? 'manual' : 'online' },
+      capabilities: ['session:read'],
+      ...(confirmationToken ? { confirmationToken } : {}),
+    });
+    printGatewayEnvelope(gatewayOk('nodes.rotateCredential', data), 0);
+  }
+  if (nodeSubcommand === 'revoke') {
+    const input = parseGatewayInputObject('nodes.revoke', gatewayArgs.slice(2));
+    const nodeId = input['nodeId'];
+    if (typeof nodeId !== 'string' || !nodeId.trim())
+      gatewayInvalid('nodes.revoke', 'nodeId is required', { field: 'nodeId' });
+    const confirmationToken =
+      typeof input['confirmationToken'] === 'string'
+        ? input['confirmationToken']
+        : undefined;
+    const data = await gatewayHttpJson({
+      commandName: 'nodes.revoke',
+      pathName: `/nodes/${encodeURIComponent(nodeId)}`,
+      method: 'DELETE',
+      capabilities: ['session:read'],
+      ...(confirmationToken ? { confirmationToken } : {}),
+    });
+    printGatewayEnvelope(gatewayOk('nodes.revoke', data), 0);
   }
   gatewayInvalid('nodes.list', 'unknown nodes command', { args: gatewayArgs });
 }
