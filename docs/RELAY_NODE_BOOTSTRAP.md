@@ -19,9 +19,9 @@ Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagno
 | Task                             | Command                                                                                                  |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | Install relay-ide binary on node | `relay-ide node install --hub <url> [--service <mode>]`                                                  |
-| Pair node with hub (pair-only)   | `relay-ide node pair --hub <url> --pair-token <token>`                                                   |
+| Pair node with hub (pair-only)   | `relay-ide node pair <url>`                                                                              |
 | Mint pair token from grant       | `relay-ide node mint-pair-token --hub <url> --operator-grant <relay-ohg-v1...> --display-name <name>`    |
-| Pair node (back-compat alias)    | `relay-ide node connect --hub <url> --pair-token <token>`                                                |
+| Pair node (automation/legacy)    | `relay-ide node pair --hub <url> --pair-token <token>` or `relay-ide node connect --hub <url> --pair-token <token>` |
 | Generate SSH bootstrap script    | `relay-ide node ssh-bootstrap --target <host> --hub <url>`                                               |
 | Hold reverse node link           | `relay-ide node link --hub <url>`                                                                        |
 | Check node status                | `relay-ide node status`                                                                                  |
@@ -57,7 +57,19 @@ Supported `--service` values:
 | `manual`       | Any                  | Binary only; no background service                                |
 | `auto`         | Any                  | Detects platform and chooses the best supported mode              |
 
-### Step 2: Mint a pair token from the hub
+### Step 2: Pair the node with a device code
+
+For a human/operator pairing flow, run this on the node machine:
+
+```bash
+relay-ide node pair https://hub.example.com
+```
+
+The command creates or reuses the local node identity key, submits a pending pairing request, prints a short device code plus `/pair/<code>` URL, waits for an authenticated operator to approve or deny it, stores the approved credential, sends one bootstrap heartbeat, and exits. It does **not** hold the persistent `/hub/node-link`; start that separately with `relay-ide node link --hub <url>` or a service manager.
+
+The device code is only a locator for the pending request. It is not a credential, not a browser login, and not authorization to issue a node credential.
+
+### Automation alternative: Mint a pair token from the hub
 
 Automation should mint a short-lived, one-time token through a previously approved operator handshake grant. The grant must use audience `relay:node-pair-token:v1`, include capability `node:pair-token:create`, and match the safe scope fields supplied with the mint request (for example `taskRef`, session/work-context binding, device id, or actor id). Browser cookies/PIN state, scoped actor tokens, node credentials, and existing pair tokens are not accepted on this automation lane.
 
@@ -88,16 +100,16 @@ Human fallback: an authenticated browser/PIN session may still create a pair tok
 
 Auth lane boundary: the operator grant only authorizes minting this one pair token. The pair token is accepted only by `POST /hub/pairing/exchange`, and the resulting `node-credential.json` is accepted only by node heartbeat and `/hub/node-link`. A browser PIN/cookie is not a node credential, and a node credential does not log in to browser-only routes. Processes already running as the same OS user may still read local Relay state or run local CLIs, so the PIN should be described as browser/UI auth, not as a same-user process boundary.
 
-### Step 3: Pair the node
+### Automation alternative: Pair with a pair token
 
 On the node machine, exchange the pair token:
 
 ```bash
-# Pair-only: stores credential, sends one heartbeat, then exits
+# Automation/legacy pair-only path: stores credential, sends one heartbeat, then exits
 relay-ide node pair --hub https://hub.example.com --pair-token <token>
 
-# If --pair-token is omitted, the CLI prints instructions for getting one
-relay-ide node pair --hub https://hub.example.com
+# Back-compat alias for the same pair-token exchange
+relay-ide node connect --hub https://hub.example.com --pair-token <token>
 ```
 
 `relay-ide node connect` is a back-compat alias for `pair`. Both sub-commands call the same pairing flow.

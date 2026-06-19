@@ -253,25 +253,22 @@ describe('node install argument validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('node pair argument validation', () => {
-  it('requires --hub flag', () => {
-    const args: string[] = ['pair', '--pair-token', 'pair_abc123'];
-    const idx = args.indexOf('--hub');
-    const hubUrl =
-      idx !== -1 && idx + 1 < args.length ? args[idx + 1] : undefined;
-    expect(hubUrl).toBeUndefined();
+  it('accepts a positional hub URL for device-code pairing', () => {
+    const args: string[] = ['pair', 'https://hub.example.com'];
+    const pairIndex = args.indexOf('pair');
+    const positional = args[pairIndex + 1];
+    expect(positional).toBe('https://hub.example.com');
   });
 
-  it('requires --pair-token flag (not just --hub)', () => {
+  it('treats --hub without --pair-token as the device-code pairing path', () => {
     const args: string[] = ['pair', '--hub', 'https://hub.example.com'];
+    const hubIdx = args.indexOf('--hub');
     const tokenIdx = args.indexOf('--pair-token');
-    const token =
-      tokenIdx !== -1 && tokenIdx + 1 < args.length
-        ? args[tokenIdx + 1]
-        : undefined;
-    expect(token).toBeUndefined();
+    expect(args[hubIdx + 1]).toBe('https://hub.example.com');
+    expect(tokenIdx).toBe(-1);
   });
 
-  it('accepts both --hub and --pair-token', () => {
+  it('keeps --hub and --pair-token as the legacy automation path', () => {
     const args: string[] = [
       'pair',
       '--hub',

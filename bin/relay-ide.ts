@@ -53,6 +53,12 @@ import {
   type NodeLinkProofAudience,
 } from '../shared/node-identity-keys.js';
 import {
+  DEFAULT_NODE_PAIRING_TRUST_PROFILE,
+  isNodePairingTrustProfile,
+  type NodePairingRequestSummary,
+  type NodePairingTrustProfile,
+} from '../shared/node-pairing-requests.js';
+import {
   EVENTS_SUBSCRIBE_TOPICS,
   EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
   RELAY_CLI_GATEWAY_CONTRACT,
@@ -158,8 +164,9 @@ Commands:
     status                             Show local node/service status
     logs [--lines <n>] [--follow]      Print or follow local node log files
     doctor [--hub <url>] [--json]      Diagnose local node health and hub reachability; surfaces all degraded reasons
+    pair <hub> [--json]                 Create a device-code pairing request and wait for approval (pair-only)
     pair --hub <url> --pair-token <token>
-                                       Exchange a pair token with a hub and send one heartbeat (pair-only, no service)
+                                       Legacy/automation pair-token exchange; sends one heartbeat (pair-only)
     mint-pair-token --hub <url> --operator-grant <handle> [--display-name <name>] [--platform <name>] [--task-ref <ref>] [--json]
                                        Mint a short-lived node pair token through the scoped operator-grant lane
     install --hub <url> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
@@ -7079,6 +7086,380 @@ async function runNodeLink(nodeArgs: string[]): Promise<void> {
 
 type NodePairLifecycle = 'connect' | 'install';
 
+type NodeCredentialForPairing = {
+  token: string;
+  nodeId: string;
+  credentialId?: string;
+  publicKeyFingerprint?: string;
+};
+
+type PendingPairingSubmitResponse = {
+  request?: NodePairingRequestSummary;
+  statusToken?: string;
+  error?: { code?: string; message?: string };
+};
+
+type PendingPairingPollResponse = {
+  request?: NodePairingRequestSummary;
+  credential?: NodeCredentialForPairing;
+  node?: { displayName?: string };
+  error?: { code?: string; message?: string; reasonCode?: string };
+};
+
+function nodePairHubUrl(nodeArgs: string[]): string | undefined {
+  const explicit = getNodeArg(nodeArgs, '--hub');
+  if (explicit) return explicit;
+  const pairIndex = nodeArgs.indexOf('pair');
+  const candidate = pairIndex >= 0 ? nodeArgs[pairIndex + 1] : undefined;
+  return candidate && !candidate.startsWith('-') ? candidate : undefined;
+}
+
+function nodePairDisplayName(nodeArgs: string[], manifest: NodeManifest): string {
+  return (
+    getNodeArg(nodeArgs, '--display-name') ??
+    process.env['RELAY_IDE_NODE_DISPLAY_NAME'] ??
+    manifest.hostname ??
+    'relay-node'
+  ).trim();
+}
+
+function nodePairRequestedProfile(nodeArgs: string[]): NodePairingTrustProfile {
+  const raw = getNodeArg(nodeArgs, '--profile') ?? getNodeArg(nodeArgs, '--trust-profile');
+  if (!raw) return DEFAULT_NODE_PAIRING_TRUST_PROFILE;
+  if (isNodePairingTrustProfile(raw)) return raw;
+  logger.error(
+    `Invalid --profile ${raw}. Expected one of: dev-workstation, sandbox-runner, automation-runner, infra-prod-host`
+  );
+  process.exit(1);
+}
+
+function repeatedNodeArg(nodeArgs: string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < nodeArgs.length; i += 1) {
+    if (nodeArgs[i] !== flag) continue;
+    const value = nodeArgs[i + 1];
+    if (value && !value.startsWith('-')) values.push(value);
+  }
+  return values;
+}
+
+function nodePairRequestedRoots(nodeArgs: string[]): string[] | undefined {
+  const raw = [
+    ...repeatedNodeArg(nodeArgs, '--root'),
+    ...repeatedNodeArg(nodeArgs, '--requested-root'),
+  ];
+  const roots = raw
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return roots.length ? roots : undefined;
+}
+
+function nodePairPollIntervalMs(nodeArgs: string[]): number {
+  const raw =
+    getNodeArg(nodeArgs, '--poll-interval-ms') ??
+    process.env['RELAY_IDE_NODE_PAIR_POLL_INTERVAL_MS'];
+  if (!raw) return 2_000;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 100) return 2_000;
+  return Math.min(parsed, 30_000);
+}
+
+function redactHostHint(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const suffix = trimmed.slice(-16);
+  return suffix.length < trimmed.length ? `…${suffix}` : suffix;
+}
+
+function secondsUntil(iso: string, now = Date.now()): number {
+  const ms = Date.parse(iso) - now;
+  return Number.isFinite(ms) ? Math.max(0, Math.ceil(ms / 1000)) : 0;
+}
+
+function formatCountdown(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function safeJsonLine(value: unknown): void {
+  console.log(redactNodeDiagnostics(JSON.stringify(value)));
+}
+
+async function readJsonResponse<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  if (!text) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return { error: { code: 'MALFORMED_RESPONSE', message: text } } as T;
+  }
+}
+
+function validateNodeCredentialForPairing(
+  credential: unknown
+): NodeCredentialForPairing | null {
+  if (typeof credential !== 'object' || credential === null) return null;
+  const record = credential as Record<string, unknown>;
+  if (typeof record['token'] !== 'string' || !record['token']) return null;
+  if (typeof record['nodeId'] !== 'string' || !record['nodeId']) return null;
+  return {
+    token: record['token'],
+    nodeId: record['nodeId'],
+    ...(typeof record['credentialId'] === 'string' && record['credentialId']
+      ? { credentialId: record['credentialId'] }
+      : {}),
+    ...(typeof record['publicKeyFingerprint'] === 'string' &&
+    record['publicKeyFingerprint']
+      ? { publicKeyFingerprint: record['publicKeyFingerprint'] }
+      : {}),
+  };
+}
+
+async function sendInitialNodeHeartbeat(
+  hubUrl: string,
+  credential: NodeCredentialForPairing,
+  manifest: NodeManifest
+): Promise<void> {
+  const bootstrapProof = credential.publicKeyFingerprint
+    ? nodeLinkProofFactory(
+        credential.nodeId,
+        credential.credentialId,
+        'relay:node-heartbeat:v1'
+      )()
+    : undefined;
+  const heartbeatRes = await fetch(nodeEndpoint(hubUrl, '/hub/node-heartbeat'), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${credential.token}`,
+      ...(bootstrapProof ? { 'x-relay-node-proof': bootstrapProof } : {}),
+    },
+    body: JSON.stringify({
+      nodeId: credential.nodeId,
+      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+      manifest,
+    }),
+  });
+  if (!heartbeatRes.ok) {
+    const body = await heartbeatRes.text();
+    throw new Error(`heartbeat rejected: ${body}`);
+  }
+}
+
+function renderNodePairRequest(input: {
+  request: NodePairingRequestSummary;
+  hubUrl: string;
+  manifest: NodeManifest;
+  outputJson: boolean;
+}): void {
+  const { request, hubUrl, manifest, outputJson } = input;
+  const pairUrl = new URL(
+    `/pair/${encodeURIComponent(request.deviceCode)}`,
+    hubUrl
+  ).toString();
+  const expiresSeconds = secondsUntil(request.expiresAt);
+  if (outputJson) {
+    safeJsonLine({
+      ok: true,
+      event: 'pairing-requested',
+      requestId: request.requestId,
+      deviceCode: request.deviceCode,
+      pairUrl,
+      expiresAt: request.expiresAt,
+      requestedProfile: request.requestedProfile,
+      publicKeyFingerprint: request.publicKeyFingerprint,
+    });
+    return;
+  }
+  logger.info('relay node pairing');
+  logger.info('');
+  logger.info(`device: ${request.displayName}`);
+  const hostHint = redactHostHint(manifest.hostname);
+  if (hostHint) logger.info(`host hint: ${hostHint}`);
+  logger.info(`platform: ${manifest.platform} ${manifest.arch}`);
+  logger.info(`relay: ${manifest.relayVersion ?? manifest.helperVersion}`);
+  logger.info('');
+  logger.info('open this URL on a signed-in device:');
+  logger.info(pairUrl);
+  logger.info('');
+  logger.info('or enter code:');
+  logger.info(request.deviceCode);
+  logger.info('');
+  logger.info(`waiting for approval... expires in ${formatCountdown(expiresSeconds)}`);
+}
+
+function exitNodePairError(input: {
+  code: string;
+  message: string;
+  outputJson: boolean;
+  retryable?: boolean;
+}): never {
+  const { code, message, outputJson, retryable } = input;
+  if (outputJson) safeJsonLine({ ok: false, code, message, retryable });
+  else logger.error(redactNodeDiagnostics(`${code}: ${message}`));
+  process.exit(1);
+}
+
+function exitNodePairDenied(hubUrl: string, outputJson: boolean): never {
+  if (outputJson) safeJsonLine({ ok: false, code: 'PAIRING_DENIED' });
+  else {
+    logger.error('pairing denied by operator');
+    logger.error('no credential was issued');
+    logger.error(`run \`relay-ide node pair ${hubUrl}\` again to request a new code`);
+  }
+  process.exit(1);
+}
+
+function exitNodePairExpired(outputJson: boolean): never {
+  if (outputJson) safeJsonLine({ ok: false, code: 'PAIRING_EXPIRED' });
+  else {
+    logger.error('pairing request expired (no approval within 10:00)');
+    logger.error('run `relay-ide node pair <hub>` again to get a fresh code');
+  }
+  process.exit(1);
+}
+
+async function finishApprovedDevicePairing(input: {
+  hubUrl: string;
+  manifest: NodeManifest;
+  poll: PendingPairingPollResponse;
+  outputJson: boolean;
+}): Promise<boolean> {
+  const { hubUrl, manifest, poll, outputJson } = input;
+  const credential = validateNodeCredentialForPairing(poll.credential);
+  if (!credential || !poll.request) return false;
+  writeNodeCredential(credential);
+  await sendInitialNodeHeartbeat(hubUrl, credential, manifest);
+  const approvedName = poll.node?.displayName ?? poll.request.displayName;
+  if (outputJson) {
+    safeJsonLine({
+      ok: true,
+      event: 'paired',
+      nodeId: credential.nodeId,
+      credentialId: credential.credentialId,
+      displayName: approvedName,
+      linkCommand: `relay-ide node link --hub ${hubUrl}`,
+    });
+    return true;
+  }
+  logger.info(`approved as ${approvedName}`);
+  logger.info('credential stored');
+  logger.info('node is paired but the link is not running');
+  logger.info(`start it with: relay-ide node link --hub ${hubUrl}`);
+  return true;
+}
+
+async function runNodeDeviceCodePair(nodeArgs: string[]): Promise<void> {
+  const hubUrl = nodePairHubUrl(nodeArgs);
+  const outputJson = nodeArgs.includes('--json');
+  if (!hubUrl) {
+    logger.error('Usage: relay-ide node pair <hub> [--json]');
+    logger.error(
+      'Legacy automation path: relay-ide node pair --hub <url> --pair-token <token>'
+    );
+    process.exit(1);
+  }
+  try {
+    new URL(hubUrl);
+  } catch {
+    logger.error(`invalid hub url: ${hubUrl}`);
+    process.exit(1);
+  }
+
+  const manifest = await getNodeManifest();
+  const identityKey = loadOrCreateNodeIdentityKey();
+  const displayName = nodePairDisplayName(nodeArgs, manifest);
+  const requestedProfile = nodePairRequestedProfile(nodeArgs);
+  const requestedRoots = nodePairRequestedRoots(nodeArgs);
+  const submitRes = await fetch(nodeEndpoint(hubUrl, '/hub/pairing/requests'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      manifest,
+      publicKey: identityKey.publicKeyPem,
+      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+      displayName,
+      requestedProfile,
+      ...(requestedRoots ? { requestedRoots } : {}),
+    }),
+  });
+  const submit = await readJsonResponse<PendingPairingSubmitResponse>(submitRes);
+  if (!submitRes.ok || !submit.request || !submit.statusToken) {
+    exitNodePairError({
+      code: submit.error?.code ?? 'PAIRING_REQUEST_FAILED',
+      message: submit.error?.message ?? 'hub did not accept pairing request',
+      outputJson,
+      retryable: true,
+    });
+  }
+
+  const request = submit.request;
+  renderNodePairRequest({ request, hubUrl, manifest, outputJson });
+
+  let interrupted = false;
+  const markInterrupted = (): void => {
+    interrupted = true;
+  };
+  process.once('SIGINT', markInterrupted);
+  process.once('SIGTERM', markInterrupted);
+  const pollIntervalMs = nodePairPollIntervalMs(nodeArgs);
+  try {
+    while (true) {
+      if (interrupted) {
+        if (outputJson) safeJsonLine({ ok: false, code: 'INTERRUPTED' });
+        else logger.error('pairing interrupted; no credential was issued');
+        process.exit(130);
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      const pollRes = await fetch(
+        nodeEndpoint(hubUrl, `/hub/pairing/requests/${request.requestId}/status`),
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-relay-pairing-status-token': submit.statusToken,
+          },
+          body: JSON.stringify({}),
+        }
+      );
+      const poll = await readJsonResponse<PendingPairingPollResponse>(pollRes);
+      if (!pollRes.ok || !poll.request) {
+        exitNodePairError({
+          code: poll.error?.code ?? 'PAIRING_STATUS_FAILED',
+          message: poll.error?.message ?? 'hub status poll failed',
+          outputJson,
+          retryable: true,
+        });
+      }
+      if (poll.request.state === 'pending') continue;
+      if (poll.request.state === 'denied') exitNodePairDenied(hubUrl, outputJson);
+      if (poll.request.state === 'expired') exitNodePairExpired(outputJson);
+      if (
+        poll.request.state === 'approved' &&
+        (await finishApprovedDevicePairing({
+          hubUrl,
+          manifest,
+          poll,
+          outputJson,
+        }))
+      ) {
+        return;
+      }
+      if (poll.request.state === 'approved') continue;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (outputJson) safeJsonLine({ ok: false, code: 'NODE_PAIR_FAILED', message });
+    else logger.error(redactNodeDiagnostics(`NODE_PAIR_FAILED: ${message}`));
+    process.exit(1);
+  } finally {
+    process.off('SIGINT', markInterrupted);
+    process.off('SIGTERM', markInterrupted);
+  }
+}
+
 async function pairNode(
   nodeArgs: string[],
   lifecycle: NodePairLifecycle = 'connect'
@@ -7273,27 +7654,11 @@ if (command === 'node') {
   }
   if (subCommand === 'pair') {
     const pairToken = getNodeArg(nodeArgs, '--pair-token');
-    const hubUrl = getNodeArg(nodeArgs, '--hub');
-    if (!hubUrl) {
-      logger.error(
-        'Usage: relay-ide node pair --hub <url> --pair-token <token>'
-      );
-      logger.error(
-        'Get a pair token from your hub with an approved operator grant: relay-ide node mint-pair-token --hub <url> --operator-grant <relay-ohg-v1...>'
-      );
-      process.exit(1);
+    if (pairToken) {
+      await pairNode(nodeArgs, 'connect');
+    } else {
+      await runNodeDeviceCodePair(nodeArgs);
     }
-    if (!pairToken) {
-      logger.info(`to get a pair token from your hub, run:`);
-      logger.info(
-        `  relay-ide node mint-pair-token --hub ${hubUrl} --operator-grant <relay-ohg-v1...> --display-name <name> --ttl-seconds 600`
-      );
-      logger.info(
-        `then re-run: relay-ide node pair --hub ${hubUrl} --pair-token <token>`
-      );
-      process.exit(1);
-    }
-    await pairNode(nodeArgs, 'connect');
     process.exit(0);
   }
   // relay-ide node ssh-bootstrap --target <host> --hub <url>
