@@ -152,9 +152,7 @@ describe('SettingsNodesSection cards', () => {
     expect(html).toContain('deny');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>approve<\/button>/);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>deny<\/button>/);
-    expect(html).toMatch(
-      /<button[^>]*disabled=""[^>]*>edit access<\/button>/
-    );
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>edit access<\/button>/);
   });
 
   it('hides pairing actions for resolved request history cards', () => {
@@ -172,7 +170,27 @@ describe('SettingsNodesSection cards', () => {
     expect(html).not.toMatch(/<button[^>]*>edit access<\/button>/);
   });
 
-  it('disables stale terminal requests and exposes safe revoke copy for paired nodes', () => {
+  it('enables active node revoke when a handler is present and keeps safety copy', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(PairedNodeCard, {
+        node: node(),
+        onRevoke: () => {},
+      })
+    );
+
+    expect(html).toContain('revoke');
+    expect(html).toMatch(/<button[^>]*>revoke<\/button>/);
+    expect(html).toContain('active links close immediately');
+    expect(html).toContain('reconnect is blocked');
+    expect(html).toContain('local files on that machine are not deleted');
+    expect(html).toContain('operator approval');
+    expect(html).not.toContain('revoke unavailable');
+    expect(html).not.toContain(SECRET_HOST);
+    expect(html).not.toContain('tailnet.ts.net');
+    expect(html).not.toContain(SECRET_TOKEN);
+  });
+
+  it('disables stale terminal requests and disables revoke when the handler is omitted', () => {
     const html = renderToStaticMarkup(
       React.createElement(PairedNodeCard, {
         node: node({ status: 'offline' }),
@@ -181,11 +199,24 @@ describe('SettingsNodesSection cards', () => {
 
     expect(html).toContain('offline');
     expect(html).toContain('routed sessions unavailable');
-    expect(html).toContain('revoke unavailable');
+    expect(html).toContain('revoke');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>revoke<\/button>/);
     expect(html).toContain('local files on that machine are not deleted');
     expect(html).not.toContain(SECRET_HOST);
     expect(html).not.toContain('tailnet.ts.net');
     expect(html).not.toContain(SECRET_TOKEN);
+  });
+
+  it('disables revoke for already revoked nodes even when a handler is present', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(PairedNodeCard, {
+        node: node({ status: 'revoked', credentialState: 'revoked' }),
+        onRevoke: () => {},
+      })
+    );
+
+    expect(html).toContain('revoked');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>revoke<\/button>/);
   });
 
   it('orders node attention groups for rotation, degraded, offline, online, revoked', () => {

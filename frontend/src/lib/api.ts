@@ -767,6 +767,34 @@ export async function fetchHubNodes(): Promise<HubNodeSummary[]> {
   return Array.isArray(data.nodes) ? data.nodes : [];
 }
 
+function isHubNodeSummary(value: unknown): value is HubNodeSummary {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value['nodeId'] === 'string' &&
+    typeof value['displayName'] === 'string' &&
+    typeof value['status'] === 'string' &&
+    typeof value['credentialState'] === 'string' &&
+    isRecord(value['identity']) &&
+    isRecord(value['credential']) &&
+    isRecord(value['trust']) &&
+    isRecord(value['connection']) &&
+    isRecord(value['version']) &&
+    isRecord(value['capabilities'])
+  );
+}
+
+export async function revokeHubNode(nodeId: string): Promise<HubNodeSummary> {
+  const res = await fetch(`/nodes/${encodeURIComponent(nodeId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to revoke node');
+  const data = await jsonEither<{ node?: unknown }>(res);
+  if (!isHubNodeSummary(data.node)) {
+    throw new Error('node revoke response was malformed');
+  }
+  return data.node;
+}
+
 export interface FetchNodePairingRequestsOptions {
   state?: NodePairingRequestSummary['state'];
   deviceCode?: string;

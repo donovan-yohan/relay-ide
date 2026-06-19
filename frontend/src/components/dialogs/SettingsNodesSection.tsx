@@ -26,6 +26,7 @@ import {
   fetchHubNodes,
   fetchNodePairingRequests,
   HttpError,
+  revokeHubNode,
   rotateHubNodeCredential,
   type NodePairingAccessEditRequest,
 } from '../../lib/api.js';
@@ -502,6 +503,7 @@ interface PairedNodeCardProps {
   onOpenTerminal?: (node: HubNodeSummary) => void;
   onRotate?: (node: HubNodeSummary) => void;
   onClearRotation?: (node: HubNodeSummary) => void;
+  onRevoke?: (node: HubNodeSummary) => void;
 }
 
 export function PairedNodeCard({
@@ -510,6 +512,7 @@ export function PairedNodeCard({
   onOpenTerminal,
   onRotate,
   onClearRotation,
+  onRevoke,
 }: PairedNodeCardProps): ReactElement {
   const lifecycle = nodeLifecycle(node);
   const shellBlock = nodeShellBlockReason(node);
@@ -518,6 +521,9 @@ export function PairedNodeCard({
     !shellBlock &&
     node.credentialState !== 'revoked';
   const busy = mutationStatus?.busyId === node.nodeId;
+  const revoked =
+    node.status === 'revoked' || node.credentialState === 'revoked';
+  const canRevoke = !busy && !revoked && Boolean(onRevoke);
   const posture = nodeCapabilityPosture(node);
   return (
     <article
@@ -591,7 +597,7 @@ export function PairedNodeCard({
         <TuiButton
           size="sm"
           variant="info"
-          disabled={busy || node.credentialState === 'revoked'}
+          disabled={busy || revoked}
           onClick={() => onRotate?.(node)}
         >
           rotate credential
@@ -609,16 +615,23 @@ export function PairedNodeCard({
         <TuiButton
           size="sm"
           variant="danger"
-          disabled
-          tooltip="node revoke route is not exposed yet; #985/#986 should project the shared action when available"
+          disabled={!canRevoke}
+          tooltip={
+            revoked
+              ? 'node credential already revoked'
+              : onRevoke
+                ? 'revoke this node credential'
+                : 'revoke handler unavailable'
+          }
+          onClick={() => onRevoke?.(node)}
         >
-          revoke unavailable
+          revoke
         </TuiButton>
       </div>
       <p className="settings-nodes-notice">
-        revoke hook: revoking this node closes active links and blocks
-        reconnect. local files on that machine are not deleted. re-pairing
-        requires a new operator approval and creates a new node identity.
+        revoke: active links close immediately and reconnect is blocked. local
+        files on that machine are not deleted. re-pairing requires operator
+        approval before this node can connect again.
       </p>
     </article>
   );
@@ -831,7 +844,14 @@ export function SettingsNodesSection({
       return { runId: mutationRunRef.current };
     },
     mutationFn: async (action: {
-      kind: 'approve' | 'deny' | 'edit' | 'rotate' | 'clear' | 'open';
+      kind:
+        | 'approve'
+        | 'deny'
+        | 'edit'
+        | 'rotate'
+        | 'clear'
+        | 'open'
+        | 'revoke';
       request?: NodePairingRequestSummary;
       node?: HubNodeSummary;
       edit?: NodePairingAccessEditRequest;
@@ -858,6 +878,8 @@ export function SettingsNodesSection({
         );
       if (action.kind === 'rotate' && action.node)
         return rotateHubNodeCredential(action.node.nodeId, 'online');
+      if (action.kind === 'revoke' && action.node)
+        return revokeHubNode(action.node.nodeId);
       if (action.kind === 'clear' && action.node)
         return clearHubNodeRotationFailure(action.node.nodeId);
       if (action.kind === 'open' && action.node)
@@ -988,6 +1010,14 @@ export function SettingsNodesSection({
                   onClearRotation={(n) =>
                     mutation.mutate({ kind: 'clear', node: n })
                   }
+                  onRevoke={(n) => {
+                    if (
+                      window.confirm(
+                        'Revoke this node credential? Active links close immediately and reconnect is blocked. Local files on that machine are not deleted. Re-pairing requires operator approval before this node can connect again.'
+                      )
+                    )
+                      mutation.mutate({ kind: 'revoke', node: n });
+                  }}
                 />
               ))}
             </div>
