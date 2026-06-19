@@ -1,4 +1,11 @@
-import { useMemo, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { HubNodeSummary } from '../../../../shared/relay-node-protocol.js';
 import type {
@@ -255,13 +262,6 @@ function nodeLifecycle(node: HubNodeSummary): {
         'protocol incompatible; run the pair command again after updating.',
     };
   }
-  if (nodeHasDegradedSignal(node)) {
-    return {
-      group: 'degraded',
-      label: 'degraded',
-      reason: degradedReason(node),
-    };
-  }
   if (node.status === 'offline') {
     return {
       group: 'offline-stale',
@@ -274,6 +274,13 @@ function nodeLifecycle(node: HubNodeSummary): {
       group: 'offline-stale',
       label: 'stale',
       reason: 'heartbeat is stale; the node may have lost its link.',
+    };
+  }
+  if (nodeHasDegradedSignal(node)) {
+    return {
+      group: 'degraded',
+      label: 'degraded',
+      reason: degradedReason(node),
     };
   }
   return { group: 'online', label: 'online', reason: 'ready for routed work' };
@@ -344,7 +351,7 @@ export function PendingNodeRequestCard({
   onApprove,
   onDeny,
   onEdit,
-}: PendingNodeRequestCardProps) {
+}: PendingNodeRequestCardProps): ReactElement {
   const [editing, setEditing] = useState(false);
   const [displayName, setDisplayName] = useState(request.displayName);
   const [profile, setProfile] = useState<NodePairingTrustProfile>(
@@ -353,6 +360,9 @@ export function PendingNodeRequestCard({
   const [rootsText, setRootsText] = useState(request.requestedRoots.join('\n'));
   const isPending = request.state === 'pending';
   const busy = mutationStatus?.busyId === request.requestId;
+  const canApprove = isPending && !busy && Boolean(onApprove);
+  const canDeny = isPending && !busy && Boolean(onDeny);
+  const canEdit = isPending && !busy && Boolean(onEdit);
   const edit: NodePairingAccessEditRequest = {
     displayName: displayName.trim(),
     requestedProfile: profile,
@@ -443,41 +453,45 @@ export function PendingNodeRequestCard({
       {mutationStatus?.error && busy && (
         <p className="settings-nodes-error-msg">{mutationStatus.error}</p>
       )}
-      <div className="settings-nodes-actions">
-        <TuiButton
-          size="sm"
-          variant="success"
-          disabled={!isPending || busy}
-          onClick={() => onApprove?.(request, editing ? edit : undefined)}
-        >
-          approve
-        </TuiButton>
-        <TuiButton
-          size="sm"
-          variant="danger"
-          disabled={!isPending || busy}
-          onClick={() => onDeny?.(request)}
-        >
-          deny
-        </TuiButton>
-        <TuiButton
-          size="sm"
-          variant="ghost"
-          disabled={!isPending || busy}
-          onClick={() => (editing ? onEdit?.(request, edit) : setEditing(true))}
-        >
-          {editing ? 'save access' : 'edit access'}
-        </TuiButton>
-        {editing && (
+      {isPending && (
+        <div className="settings-nodes-actions">
+          <TuiButton
+            size="sm"
+            variant="success"
+            disabled={!canApprove}
+            onClick={() => onApprove?.(request, editing ? edit : undefined)}
+          >
+            approve
+          </TuiButton>
+          <TuiButton
+            size="sm"
+            variant="danger"
+            disabled={!canDeny}
+            onClick={() => onDeny?.(request)}
+          >
+            deny
+          </TuiButton>
           <TuiButton
             size="sm"
             variant="ghost"
-            onClick={() => setEditing(false)}
+            disabled={!canEdit}
+            onClick={() =>
+              editing ? onEdit?.(request, edit) : setEditing(true)
+            }
           >
-            cancel
+            {editing ? 'save access' : 'edit access'}
           </TuiButton>
-        )}
-      </div>
+          {editing && (
+            <TuiButton
+              size="sm"
+              variant="ghost"
+              onClick={() => setEditing(false)}
+            >
+              cancel
+            </TuiButton>
+          )}
+        </div>
+      )}
     </article>
   );
 }
@@ -496,7 +510,7 @@ export function PairedNodeCard({
   onOpenTerminal,
   onRotate,
   onClearRotation,
-}: PairedNodeCardProps) {
+}: PairedNodeCardProps): ReactElement {
   const lifecycle = nodeLifecycle(node);
   const shellBlock = nodeShellBlockReason(node);
   const canOpen =
@@ -614,17 +628,16 @@ function AddNodeWizard({
   requests,
 }: {
   requests: NodePairingRequestSummary[];
-}) {
+}): ReactElement {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
   const [profile, setProfile] =
     useState<NodePairingTrustProfile>('dev-workstation');
-  const [roots, setRoots] = useState('~/code');
   const pending = requests.find((request) => request.state === 'pending');
   const command = 'relay-ide node pair <hub-url>';
   const steps = [
     'choose node type',
-    'choose trust profile & allowed roots',
+    'choose trust profile',
     'copy pair command',
     'incoming pairing request',
     'post-approval next action',
@@ -690,13 +703,10 @@ function AddNodeWizard({
               confirmation before they run.
             </p>
           )}
-          <label>
-            allowed roots
-            <textarea
-              value={roots}
-              onChange={(e) => setRoots(e.currentTarget.value)}
-            />
-          </label>
+          <p>
+            allowed roots are set when the incoming request is approved, so the
+            pair command stays copy-safe.
+          </p>
         </div>
       )}
       {step === 2 && (
@@ -762,8 +772,8 @@ function SettingsNodesState({
   children,
 }: {
   kind?: 'error';
-  children: React.ReactNode;
-}) {
+  children: ReactNode;
+}): ReactElement {
   return (
     <div
       className={`settings-nodes-state-panel${kind === 'error' ? ' is-error' : ''}`}
@@ -773,13 +783,27 @@ function SettingsNodesState({
   );
 }
 
-export function SettingsNodesSection({ searchQuery }: { searchQuery: string }) {
+export function SettingsNodesSection({
+  searchQuery,
+}: {
+  searchQuery: string;
+}): ReactElement {
   const queryClient = useQueryClient();
+  const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mutationRunRef = useRef(0);
   const [status, setStatus] = useState<MutationStatus>({
     busyId: null,
     message: '',
     error: '',
   });
+  useEffect(() => {
+    return () => {
+      if (clearTimerRef.current !== null) {
+        clearTimeout(clearTimerRef.current);
+        clearTimerRef.current = null;
+      }
+    };
+  }, []);
   const nodesQuery = useQuery({
     queryKey: QUERY_NODES,
     queryFn: fetchHubNodes,
@@ -798,6 +822,14 @@ export function SettingsNodesSection({ searchQuery }: { searchQuery: string }) {
       queryClient.invalidateQueries({ queryKey: QUERY_PAIRING }),
     ]);
   const mutation = useMutation({
+    onMutate: () => {
+      if (clearTimerRef.current !== null) {
+        clearTimeout(clearTimerRef.current);
+        clearTimerRef.current = null;
+      }
+      mutationRunRef.current += 1;
+      return { runId: mutationRunRef.current };
+    },
     mutationFn: async (action: {
       kind: 'approve' | 'deny' | 'edit' | 'rotate' | 'clear' | 'open';
       request?: NodePairingRequestSummary;
@@ -841,11 +873,14 @@ export function SettingsNodesSection({ searchQuery }: { searchQuery: string }) {
         ...s,
         error: errorMessage(error, 'node action failed'),
       })),
-    onSettled: () =>
-      setTimeout(
-        () => setStatus({ busyId: null, message: '', error: '' }),
-        2500
-      ),
+    onSettled: (_data, _error, _variables, context) => {
+      if (context?.runId !== mutationRunRef.current) return;
+      if (clearTimerRef.current !== null) clearTimeout(clearTimerRef.current);
+      clearTimerRef.current = setTimeout(() => {
+        setStatus({ busyId: null, message: '', error: '' });
+        clearTimerRef.current = null;
+      }, 2500);
+    },
   });
   const pendingRequests = (requestsQuery.data ?? []).filter(
     (request) => request.state === 'pending'

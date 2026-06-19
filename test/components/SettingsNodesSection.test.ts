@@ -141,6 +141,37 @@ describe('SettingsNodesSection cards', () => {
     expect(html).not.toContain('rpc:git:read');
   });
 
+  it('renders pending request action controls disabled when handlers are omitted', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(PendingNodeRequestCard, {
+        request: request(),
+      })
+    );
+
+    expect(html).toContain('approve');
+    expect(html).toContain('deny');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>approve<\/button>/);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>deny<\/button>/);
+    expect(html).toMatch(
+      /<button[^>]*disabled=""[^>]*>edit access<\/button>/
+    );
+  });
+
+  it('hides pairing actions for resolved request history cards', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(PendingNodeRequestCard, {
+        request: request({ state: 'approved', credentialId: 'cred_safe' }),
+        onApprove: () => {},
+        onDeny: () => {},
+        onEdit: () => {},
+      })
+    );
+
+    expect(html).not.toMatch(/<button[^>]*>approve<\/button>/);
+    expect(html).not.toMatch(/<button[^>]*>deny<\/button>/);
+    expect(html).not.toMatch(/<button[^>]*>edit access<\/button>/);
+  });
+
   it('disables stale terminal requests and exposes safe revoke copy for paired nodes', () => {
     const html = renderToStaticMarkup(
       React.createElement(PairedNodeCard, {
@@ -185,6 +216,41 @@ describe('SettingsNodesSection cards', () => {
       'offline-stale',
       'online',
       'revoked',
+    ]);
+  });
+
+  it('prioritizes offline and stale lifecycle before degraded metadata', () => {
+    const groups = groupSettingsNodes([
+      node({
+        nodeId: 'offline-with-skew',
+        displayName: 'offline with skew',
+        status: 'offline',
+        helperSkew: {
+          category: 'minor-skew-warn',
+          helperVersion: '0.1.0',
+          hubVersion: '0.2.0',
+          message: 'update recommended',
+        },
+      }),
+      node({
+        nodeId: 'stale-with-degraded-reason',
+        displayName: 'stale with degraded reason',
+        status: 'stale',
+        degradedReasons: [
+          {
+            code: 'SHELL_DEGRADED',
+            description: 'shell degraded',
+            severity: 'warn',
+          },
+        ],
+      }),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.key).toBe('offline-stale');
+    expect(groups[0]?.nodes.map((item) => item.nodeId)).toEqual([
+      'offline-with-skew',
+      'stale-with-degraded-reason',
     ]);
   });
 });

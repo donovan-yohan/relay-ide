@@ -884,10 +884,14 @@ export async function rotateHubNodeCredential(
   );
   if (!res.ok)
     throw await httpErrorFromResponse(res, 'Failed to rotate node credential');
-  return jsonEither<{
+  const data = await jsonEither<{
     node: HubNodeSummary;
     rotation?: HubNodeCredentialRotationSummary;
   }>(res);
+  if (!data.node || typeof data.node.nodeId !== 'string') {
+    throw new Error('node rotation response was malformed');
+  }
+  return data;
 }
 
 export async function clearHubNodeRotationFailure(
