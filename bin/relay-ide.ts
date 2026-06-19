@@ -6348,6 +6348,83 @@ function nodeEndpoint(hubUrl: string, pathname: string): string {
   return new URL(pathname, hubUrl).toString();
 }
 
+const NODE_PAIR_FETCH_TIMEOUT_MS = 15_000;
+
+const SENSITIVE_URL_QUERY_KEY =
+  /(?:token|secret|credential|password|passwd|auth|authorization|key|code|grant|cookie|session|pin)/i;
+
+function sanitizeHubUrlForDisplay(rawHubUrl: string): string {
+  try {
+    const url = new URL(rawHubUrl);
+    url.username = '';
+    url.password = '';
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (SENSITIVE_URL_QUERY_KEY.test(key)) {
+        url.searchParams.set(key, '…redacted');
+      }
+    }
+    return url.toString();
+  } catch {
+    return '<invalid hub url>';
+  }
+}
+
+function parseNodePairHubUrl(rawHubUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(rawHubUrl);
+  } catch {
+    logger.error('INVALID_HUB_URL: hub URL must be an absolute http(s) URL');
+    process.exit(1);
+  }
+  if (url.username || url.password) {
+    logger.error(
+      `INVALID_HUB_URL: hub URL must not contain embedded credentials (${sanitizeHubUrlForDisplay(rawHubUrl)})`
+    );
+    process.exit(1);
+  }
+  return url.toString();
+}
+
+function sanitizeNodePairTextForDisplay(text: string): string {
+  return redactNodeDiagnostics(text).replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, (url) =>
+    sanitizeHubUrlForDisplay(url)
+  );
+}
+
+function abortError(): Error {
+  return new Error('operation aborted');
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const timerRef: { current?: ReturnType<typeof setTimeout> } = {};
+    const cleanup = (): void => signal.removeEventListener('abort', abort);
+    const finish = (): void => {
+      cleanup();
+      resolve();
+    };
+    const abort = (): void => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      cleanup();
+      reject(abortError());
+    };
+    timerRef.current = setTimeout(finish, ms);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+async function nodePairFetch(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal
+): Promise<Response> {
+  const timeout = AbortSignal.timeout(NODE_PAIR_FETCH_TIMEOUT_MS);
+  const combinedSignal = AbortSignal.any([signal, timeout]);
+  return fetch(url, { ...init, signal: combinedSignal });
+}
+
 type RequestedNodeServiceMode =
   | 'auto'
   | 'manual'
@@ -7297,8 +7374,9 @@ function exitNodePairError(input: {
   retryable?: boolean;
 }): never {
   const { code, message, outputJson, retryable } = input;
-  if (outputJson) safeJsonLine({ ok: false, code, message, retryable });
-  else logger.error(redactNodeDiagnostics(`${code}: ${message}`));
+  const safeMessage = sanitizeNodePairTextForDisplay(message);
+  if (outputJson) safeJsonLine({ ok: false, code, message: safeMessage, retryable });
+  else logger.error(sanitizeNodePairTextForDisplay(`${code}: ${message}`));
   process.exit(1);
 }
 
@@ -7307,7 +7385,9 @@ function exitNodePairDenied(hubUrl: string, outputJson: boolean): never {
   else {
     logger.error('pairing denied by operator');
     logger.error('no credential was issued');
-    logger.error(`run \`relay-ide node pair ${hubUrl}\` again to request a new code`);
+    logger.error(
+      `run \`relay-ide node pair ${sanitizeHubUrlForDisplay(hubUrl)}\` again to request a new code`
+    );
   }
   process.exit(1);
 }
@@ -7323,13 +7403,21 @@ function exitNodePairExpired(outputJson: boolean): never {
 
 async function finishApprovedDevicePairing(input: {
   hubUrl: string;
+  displayHubUrl: string;
   manifest: NodeManifest;
   poll: PendingPairingPollResponse;
   outputJson: boolean;
-}): Promise<boolean> {
-  const { hubUrl, manifest, poll, outputJson } = input;
+}): Promise<void> {
+  const { hubUrl, displayHubUrl, manifest, poll, outputJson } = input;
   const credential = validateNodeCredentialForPairing(poll.credential);
-  if (!credential || !poll.request) return false;
+  if (!credential || !poll.request) {
+    exitNodePairError({
+      code: 'PAIRING_PROTOCOL_ERROR',
+      message: 'hub approved pairing without a valid node credential',
+      outputJson,
+      retryable: false,
+    });
+  }
   writeNodeCredential(credential);
   await sendInitialNodeHeartbeat(hubUrl, credential, manifest);
   const approvedName = poll.node?.displayName ?? poll.request.displayName;
@@ -7340,119 +7428,170 @@ async function finishApprovedDevicePairing(input: {
       nodeId: credential.nodeId,
       credentialId: credential.credentialId,
       displayName: approvedName,
-      linkCommand: `relay-ide node link --hub ${hubUrl}`,
+      linkCommand: `relay-ide node link --hub ${displayHubUrl}`,
     });
-    return true;
+    return;
   }
   logger.info(`approved as ${approvedName}`);
   logger.info('credential stored');
   logger.info('node is paired but the link is not running');
-  logger.info(`start it with: relay-ide node link --hub ${hubUrl}`);
-  return true;
+  logger.info(`start it with: relay-ide node link --hub ${displayHubUrl}`);
+}
+
+function isRetryableNodePairStatusResponse(response: Response): boolean {
+  return response.status === 408 || response.status === 429 || response.status >= 500;
+}
+
+async function requestNodeDevicePairingStatus(input: {
+  hubUrl: string;
+  requestId: string;
+  statusToken: string;
+  signal: AbortSignal;
+}): Promise<{ response: Response; poll: PendingPairingPollResponse } | null> {
+  const { hubUrl, requestId, statusToken, signal } = input;
+  try {
+    const response = await nodePairFetch(
+      nodeEndpoint(hubUrl, `/hub/pairing/requests/${requestId}/status`),
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-relay-pairing-status-token': statusToken,
+        },
+        body: JSON.stringify({}),
+      },
+      signal
+    );
+    return { response, poll: await readJsonResponse<PendingPairingPollResponse>(response) };
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return null;
+  }
+}
+
+async function handleNodeDevicePairingStatus(input: {
+  hubUrl: string;
+  displayHubUrl: string;
+  manifest: NodeManifest;
+  response: Response;
+  poll: PendingPairingPollResponse;
+  outputJson: boolean;
+}): Promise<'pending' | 'done'> {
+  const { hubUrl, displayHubUrl, manifest, response, poll, outputJson } = input;
+  if (!response.ok) {
+    if (isRetryableNodePairStatusResponse(response)) return 'pending';
+    exitNodePairError({
+      code: poll.error?.code ?? 'PAIRING_STATUS_FAILED',
+      message: poll.error?.message ?? 'hub status poll failed',
+      outputJson,
+      retryable: true,
+    });
+  }
+  if (!poll.request) {
+    exitNodePairError({
+      code: poll.error?.code ?? 'PAIRING_PROTOCOL_ERROR',
+      message: poll.error?.message ?? 'hub returned malformed pairing status',
+      outputJson,
+      retryable: false,
+    });
+  }
+  if (poll.request.state === 'pending') return 'pending';
+  if (poll.request.state === 'denied') exitNodePairDenied(displayHubUrl, outputJson);
+  if (poll.request.state === 'expired') exitNodePairExpired(outputJson);
+  if (poll.request.state === 'approved') {
+    await finishApprovedDevicePairing({ hubUrl, displayHubUrl, manifest, poll, outputJson });
+    return 'done';
+  }
+  exitNodePairError({
+    code: 'PAIRING_PROTOCOL_ERROR',
+    message: 'hub returned unknown pairing status state',
+    outputJson,
+    retryable: false,
+  });
 }
 
 async function runNodeDeviceCodePair(nodeArgs: string[]): Promise<void> {
-  const hubUrl = nodePairHubUrl(nodeArgs);
+  const rawHubUrl = nodePairHubUrl(nodeArgs);
   const outputJson = nodeArgs.includes('--json');
-  if (!hubUrl) {
+  if (!rawHubUrl) {
     logger.error('Usage: relay-ide node pair <hub> [--json]');
     logger.error(
       'Legacy automation path: relay-ide node pair --hub <url> --pair-token <token>'
     );
     process.exit(1);
   }
-  try {
-    new URL(hubUrl);
-  } catch {
-    logger.error(`invalid hub url: ${hubUrl}`);
-    process.exit(1);
-  }
-
-  const manifest = await getNodeManifest();
-  const identityKey = loadOrCreateNodeIdentityKey();
-  const displayName = nodePairDisplayName(nodeArgs, manifest);
-  const requestedProfile = nodePairRequestedProfile(nodeArgs);
-  const requestedRoots = nodePairRequestedRoots(nodeArgs);
-  const submitRes = await fetch(nodeEndpoint(hubUrl, '/hub/pairing/requests'), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      manifest,
-      publicKey: identityKey.publicKeyPem,
-      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
-      displayName,
-      requestedProfile,
-      ...(requestedRoots ? { requestedRoots } : {}),
-    }),
-  });
-  const submit = await readJsonResponse<PendingPairingSubmitResponse>(submitRes);
-  if (!submitRes.ok || !submit.request || !submit.statusToken) {
-    exitNodePairError({
-      code: submit.error?.code ?? 'PAIRING_REQUEST_FAILED',
-      message: submit.error?.message ?? 'hub did not accept pairing request',
-      outputJson,
-      retryable: true,
-    });
-  }
-
-  const request = submit.request;
-  renderNodePairRequest({ request, hubUrl, manifest, outputJson });
-
-  let interrupted = false;
-  const markInterrupted = (): void => {
-    interrupted = true;
-  };
+  const hubUrl = parseNodePairHubUrl(rawHubUrl);
+  const displayHubUrl = sanitizeHubUrlForDisplay(hubUrl);
+  const abortController = new AbortController();
+  const markInterrupted = (): void => abortController.abort();
   process.once('SIGINT', markInterrupted);
   process.once('SIGTERM', markInterrupted);
-  const pollIntervalMs = nodePairPollIntervalMs(nodeArgs);
+
   try {
-    while (true) {
-      if (interrupted) {
-        if (outputJson) safeJsonLine({ ok: false, code: 'INTERRUPTED' });
-        else logger.error('pairing interrupted; no credential was issued');
-        process.exit(130);
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-      const pollRes = await fetch(
-        nodeEndpoint(hubUrl, `/hub/pairing/requests/${request.requestId}/status`),
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-relay-pairing-status-token': submit.statusToken,
-          },
-          body: JSON.stringify({}),
-        }
-      );
-      const poll = await readJsonResponse<PendingPairingPollResponse>(pollRes);
-      if (!pollRes.ok || !poll.request) {
-        exitNodePairError({
-          code: poll.error?.code ?? 'PAIRING_STATUS_FAILED',
-          message: poll.error?.message ?? 'hub status poll failed',
-          outputJson,
-          retryable: true,
-        });
-      }
-      if (poll.request.state === 'pending') continue;
-      if (poll.request.state === 'denied') exitNodePairDenied(hubUrl, outputJson);
-      if (poll.request.state === 'expired') exitNodePairExpired(outputJson);
-      if (
-        poll.request.state === 'approved' &&
-        (await finishApprovedDevicePairing({
-          hubUrl,
+    const manifest = await getNodeManifest();
+    const identityKey = loadOrCreateNodeIdentityKey();
+    const displayName = nodePairDisplayName(nodeArgs, manifest);
+    const requestedProfile = nodePairRequestedProfile(nodeArgs);
+    const requestedRoots = nodePairRequestedRoots(nodeArgs);
+    const submitRes = await nodePairFetch(
+      nodeEndpoint(hubUrl, '/hub/pairing/requests'),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
           manifest,
-          poll,
-          outputJson,
-        }))
-      ) {
-        return;
-      }
-      if (poll.request.state === 'approved') continue;
+          publicKey: identityKey.publicKeyPem,
+          protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+          displayName,
+          requestedProfile,
+          ...(requestedRoots ? { requestedRoots } : {}),
+        }),
+      },
+      abortController.signal
+    );
+    const submit = await readJsonResponse<PendingPairingSubmitResponse>(submitRes);
+    if (!submitRes.ok || !submit.request || !submit.statusToken) {
+      exitNodePairError({
+        code: submit.error?.code ?? 'PAIRING_REQUEST_FAILED',
+        message: submit.error?.message ?? 'hub did not accept pairing request',
+        outputJson,
+        retryable: true,
+      });
+    }
+
+    const request = submit.request;
+    renderNodePairRequest({ request, hubUrl: displayHubUrl, manifest, outputJson });
+
+    const pollIntervalMs = nodePairPollIntervalMs(nodeArgs);
+    while (true) {
+      await abortableDelay(pollIntervalMs, abortController.signal);
+      const status = await requestNodeDevicePairingStatus({
+        hubUrl,
+        requestId: request.requestId,
+        statusToken: submit.statusToken,
+        signal: abortController.signal,
+      });
+      if (!status) continue;
+      const result = await handleNodeDevicePairingStatus({
+        hubUrl,
+        displayHubUrl,
+        manifest,
+        response: status.response,
+        poll: status.poll,
+        outputJson,
+      });
+      if (result === 'done') return;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (outputJson) safeJsonLine({ ok: false, code: 'NODE_PAIR_FAILED', message });
-    else logger.error(redactNodeDiagnostics(`NODE_PAIR_FAILED: ${message}`));
+    if (abortController.signal.aborted) {
+      if (outputJson) safeJsonLine({ ok: false, code: 'INTERRUPTED' });
+      else logger.error('pairing interrupted; no credential was issued');
+      process.exit(130);
+    }
+    const safeMessage = sanitizeNodePairTextForDisplay(message);
+    if (outputJson) safeJsonLine({ ok: false, code: 'NODE_PAIR_FAILED', message: safeMessage });
+    else logger.error(sanitizeNodePairTextForDisplay(`NODE_PAIR_FAILED: ${message}`));
     process.exit(1);
   } finally {
     process.off('SIGINT', markInterrupted);
@@ -7464,14 +7603,15 @@ async function pairNode(
   nodeArgs: string[],
   lifecycle: NodePairLifecycle = 'connect'
 ): Promise<void> {
-  const hubUrl = getNodeArg(nodeArgs, '--hub');
+  const rawHubUrl = getNodeArg(nodeArgs, '--hub');
   const pairToken = getNodeArg(nodeArgs, '--pair-token');
-  if (!hubUrl || !pairToken) {
+  if (!rawHubUrl || !pairToken) {
     logger.error(
       'Usage: relay-ide node connect --hub <url> --pair-token <token>'
     );
     process.exit(1);
   }
+  const hubUrl = parseNodePairHubUrl(rawHubUrl);
 
   try {
     const manifest = await getNodeManifest();

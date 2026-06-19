@@ -115,8 +115,9 @@ Commands:
     status                             Show local node/service status
     logs [--lines <n>] [--follow]      Print or follow local node log files
     doctor [--hub <url>] [--json]      Diagnose local node health and hub reachability; surfaces all degraded reasons
+    pair <hub> [--json]               Request a device code, wait for operator approval, store the credential, and send one heartbeat
     pair --hub <url> --pair-token <token>
-                                       Exchange a pair token with a hub and send one heartbeat (pair-only, no service)
+                                       Legacy automation path: exchange a pair token with a hub and send one heartbeat
     mint-pair-token --hub <url> --operator-grant <handle> [--display-name <name>] [--platform <name>] [--task-ref <ref>] [--json]
                                        Mint a short-lived node pair token through the scoped operator-grant lane
     install --hub <url> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
@@ -174,11 +175,11 @@ Bare `relay-ide` and `relay-ide hub` run the hub web server. A node can pair wit
 ```bash
 relay-ide manifest
 relay-ide node doctor --hub http://hub.example:3456
-relay-ide node pair --hub http://hub.example:3456 --pair-token <token>
+relay-ide node pair http://hub.example:3456
 relay-ide node link --hub http://hub.example:3456
 ```
 
-`relay-ide node pair` exchanges a pair token and sends one heartbeat (pair-only, no service); `relay-ide node connect` is a back-compat alias for `pair`. `relay-ide node install` installs relay-ide globally and optionally sets up the local service (no pairing). Bootstrap diagnostics exist for pairing and local capability checks; do not assume every planned remote file/log capability is shipped unless the relevant doc and tests say so.
+`relay-ide node pair <hub>` is the interactive device-code flow and sends one heartbeat after approval (pair-only, no service). `relay-ide node pair --hub <url> --pair-token <token>` and `relay-ide node connect` remain legacy/automation paths. `relay-ide node install` installs relay-ide globally and optionally sets up the local service (no pairing). Bootstrap diagnostics exist for pairing and local capability checks; do not assume every planned remote file/log capability is shipped unless the relevant doc and tests say so.
 
 ## Features
 
