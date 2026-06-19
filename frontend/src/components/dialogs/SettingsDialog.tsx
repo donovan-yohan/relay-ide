@@ -14,6 +14,7 @@ import SettingsToc from './SettingsToc.js';
 import GitHubIntegration from './integrations/GitHubIntegration.js';
 import WebhookIntegration from './integrations/WebhookIntegration.js';
 import JiraIntegration from './integrations/JiraIntegration.js';
+import SettingsNodesSection from './SettingsNodesSection.js';
 import {
   setDefaultAgent,
   setDefaultContinue,
@@ -86,6 +87,7 @@ const TOC_SECTIONS = [
       { id: 'integration-jira', label: 'Jira' },
     ],
   },
+  { id: 'section-nodes', label: 'nodes' },
   { id: 'section-advanced', label: 'advanced' },
   { id: 'section-about', label: 'about' },
 ];
@@ -110,6 +112,18 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
     'ci',
     'pr',
     'tickets',
+  ],
+  nodes: [
+    'node',
+    'nodes',
+    'pair device',
+    'add node',
+    'pending request',
+    'device code',
+    'rotate credential',
+    'revoke',
+    'offline',
+    'stale',
   ],
   advanced: [
     'developer tools',
@@ -466,6 +480,7 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
               webhookCount={webhookCount}
               onGitHubDisconnect={() => setGithubConnected(false)}
             />
+            <SettingsNodesSection searchQuery={searchQuery} />
             <AdvancedSection
               searchQuery={searchQuery}
               analyticsSize={analyticsSize}

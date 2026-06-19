@@ -74,7 +74,14 @@ import type {
   AggregatedRepoInventoryResponse,
   WorkContextActiveGroup,
 } from './types.js';
-import type { HubNodeSummary } from '../../../shared/relay-node-protocol.js';
+import type {
+  HubNodeCredentialRotationSummary,
+  HubNodeSummary,
+} from '../../../shared/relay-node-protocol.js';
+import type {
+  NodePairingRequestSummary,
+  NodePairingTrustProfile,
+} from '../../../shared/node-pairing-requests.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
   parseGlobalSessionId,
@@ -758,6 +765,178 @@ export async function sendSessionInput(
 export async function fetchHubNodes(): Promise<HubNodeSummary[]> {
   const data = await json<{ nodes?: HubNodeSummary[] }>(await fetch('/nodes'));
   return Array.isArray(data.nodes) ? data.nodes : [];
+}
+
+function isHubNodeSummary(value: unknown): value is HubNodeSummary {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value['nodeId'] === 'string' &&
+    typeof value['displayName'] === 'string' &&
+    typeof value['status'] === 'string' &&
+    typeof value['credentialState'] === 'string' &&
+    isRecord(value['identity']) &&
+    isRecord(value['credential']) &&
+    isRecord(value['trust']) &&
+    isRecord(value['connection']) &&
+    isRecord(value['version']) &&
+    isRecord(value['capabilities'])
+  );
+}
+
+export async function revokeHubNode(nodeId: string): Promise<HubNodeSummary> {
+  const res = await fetch(`/nodes/${encodeURIComponent(nodeId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw await httpErrorFromResponse(res, 'Failed to revoke node');
+  const data = await jsonEither<{ node?: unknown }>(res);
+  if (!isHubNodeSummary(data.node)) {
+    throw new Error('node revoke response was malformed');
+  }
+  return data.node;
+}
+
+export interface FetchNodePairingRequestsOptions {
+  state?: NodePairingRequestSummary['state'];
+  deviceCode?: string;
+  includeResolved?: boolean;
+}
+
+export interface NodePairingAccessEditRequest {
+  displayName?: string;
+  requestedProfile?: NodePairingTrustProfile;
+  requestedRoots?: string[];
+}
+
+function nodePairingQuery(
+  options: FetchNodePairingRequestsOptions = {}
+): string {
+  const params = new URLSearchParams();
+  if (options.state) params.set('state', options.state);
+  if (options.deviceCode?.trim())
+    params.set('deviceCode', options.deviceCode.trim());
+  if (options.includeResolved) params.set('includeResolved', 'true');
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+export async function fetchNodePairingRequests(
+  options: FetchNodePairingRequestsOptions = {}
+): Promise<NodePairingRequestSummary[]> {
+  const data = await json<{ requests?: NodePairingRequestSummary[] }>(
+    await fetch(`/hub/pairing/requests${nodePairingQuery(options)}`)
+  );
+  return Array.isArray(data.requests) ? data.requests : [];
+}
+
+export async function fetchNodePairingRequest(
+  requestId: string
+): Promise<NodePairingRequestSummary> {
+  const data = await json<{ request?: NodePairingRequestSummary }>(
+    await fetch(`/hub/pairing/requests/${encodeURIComponent(requestId)}`)
+  );
+  if (!data.request) throw new Error('pairing request response was malformed');
+  return data.request;
+}
+
+export async function editNodePairingRequestAccess(
+  requestId: string,
+  input: NodePairingAccessEditRequest
+): Promise<NodePairingRequestSummary> {
+  const res = await fetch(
+    `/hub/pairing/requests/${encodeURIComponent(requestId)}/access`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }
+  );
+  if (!res.ok)
+    throw await httpErrorFromResponse(res, 'Failed to edit pairing access');
+  const data = await jsonEither<{ request?: NodePairingRequestSummary }>(res);
+  if (!data.request) throw new Error('pairing access response was malformed');
+  return data.request;
+}
+
+export async function approveNodePairingRequest(
+  requestId: string,
+  input: NodePairingAccessEditRequest = {}
+): Promise<NodePairingRequestSummary> {
+  const res = await fetch(
+    `/hub/pairing/requests/${encodeURIComponent(requestId)}/approve`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }
+  );
+  if (!res.ok)
+    throw await httpErrorFromResponse(res, 'Failed to approve pairing request');
+  const data = await jsonEither<{ request?: NodePairingRequestSummary }>(res);
+  if (!data.request) throw new Error('pairing approval response was malformed');
+  return data.request;
+}
+
+export async function denyNodePairingRequest(
+  requestId: string,
+  reason?: string
+): Promise<NodePairingRequestSummary> {
+  const res = await fetch(
+    `/hub/pairing/requests/${encodeURIComponent(requestId)}/deny`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reason?.trim() ? { reason: reason.trim() } : {}),
+    }
+  );
+  if (!res.ok)
+    throw await httpErrorFromResponse(res, 'Failed to deny pairing request');
+  const data = await jsonEither<{ request?: NodePairingRequestSummary }>(res);
+  if (!data.request) throw new Error('pairing denial response was malformed');
+  return data.request;
+}
+
+export async function rotateHubNodeCredential(
+  nodeId: string,
+  delivery: 'online' | 'manual' = 'online'
+): Promise<{
+  node: HubNodeSummary;
+  rotation?: HubNodeCredentialRotationSummary;
+}> {
+  const res = await fetch(
+    `/hub/nodes/${encodeURIComponent(nodeId)}/credential-rotation`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delivery }),
+    }
+  );
+  if (!res.ok)
+    throw await httpErrorFromResponse(res, 'Failed to rotate node credential');
+  const data = await jsonEither<{
+    node: HubNodeSummary;
+    rotation?: HubNodeCredentialRotationSummary;
+  }>(res);
+  if (!data.node || typeof data.node.nodeId !== 'string') {
+    throw new Error('node rotation response was malformed');
+  }
+  return data;
+}
+
+export async function clearHubNodeRotationFailure(
+  nodeId: string
+): Promise<HubNodeSummary> {
+  const res = await fetch(
+    `/hub/nodes/${encodeURIComponent(nodeId)}/credential-rotation/clear-failure`,
+    { method: 'POST' }
+  );
+  if (!res.ok)
+    throw await httpErrorFromResponse(
+      res,
+      'Failed to clear node rotation failure'
+    );
+  const data = await jsonEither<{ node?: HubNodeSummary }>(res);
+  if (!data.node) throw new Error('node rotation response was malformed');
+  return data.node;
 }
 
 export async function fetchActiveWork(): Promise<WorkContextActiveGroup[]> {
