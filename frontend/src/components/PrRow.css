@@ -3,6 +3,7 @@
   align-items: center;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
+  min-width: 0;
   transition: background 0.1s;
 }
 
@@ -78,6 +79,9 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
   font-size: var(--font-size-xs);
   font-family: var(--font-mono);
   color: var(--text-muted);
@@ -102,6 +106,7 @@
 }
 
 .pr-row__branch-ref {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

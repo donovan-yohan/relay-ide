@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from 'node:fs';
 import React, { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
@@ -89,6 +90,35 @@ describe('PrRow', () => {
     ]);
     expect(refs.every((ref) => ref.className === 'pr-row__branch-ref')).toBe(
       true
+    );
+
+    const meta = container!.querySelector<HTMLElement>('.pr-row__meta');
+    expect(meta).toBeTruthy();
+
+    const css = readFileSync(
+      `${process.cwd()}/frontend/src/components/PrRow.css`,
+      'utf8'
+    );
+    expect(css).toMatch(/\.pr-row__meta\s*{[^}]*min-width:\s*0;/s);
+    expect(css).toMatch(/\.pr-row__meta\s*{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.pr-row__branch-ref\s*{[^}]*text-overflow:\s*ellipsis;/s);
+  });
+
+  it('renders trimmed branch refs consistently with the branch title', async () => {
+    await renderPrRow({
+      ...basePr,
+      headRefName: '  feature/trim-head  ',
+      baseRefName: '  release/trim-base  ',
+    });
+
+    const branch = container!.querySelector('.pr-row__branch');
+    expect(branch).toBeTruthy();
+    expect(branch!.textContent).toBe('feature/trim-head→release/trim-base');
+    expect(branch!.getAttribute('title')).toBe(
+      'branch feature/trim-head → release/trim-base'
+    );
+    expect(branch!.getAttribute('aria-label')).toBe(
+      'branch feature/trim-head → release/trim-base'
     );
   });
 });

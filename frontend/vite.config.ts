@@ -44,6 +44,10 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-env-picker-dialog.html'
   );
+  buildInputs['test-pr-row-long'] = resolve(
+    import.meta.dirname,
+    'test-pr-row-long.html'
+  );
 }
 
 export default defineConfig({
