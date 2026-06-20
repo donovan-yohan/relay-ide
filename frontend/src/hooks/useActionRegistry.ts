@@ -85,6 +85,18 @@ import {
   workbenchAddFileBlock,
 } from '../lib/actions/definitions/workspace-file-rpc.js';
 import {
+  firstManageableNode,
+  firstPendingNodeRequest,
+  firstTerminalNode,
+  NODE_INSTALL_INSTRUCTIONS,
+  NODE_PAIR_COMMAND,
+  nodeCommandCenterActions,
+  nodeCredentialActionUnavailableReason,
+  nodeTerminalUnavailableReason,
+  pendingNodeRequestReason,
+  type NodeCommandCenterActionKind,
+} from '../lib/actions/definitions/node-actions.js';
+import {
   navPreviousTab,
   navNextTab,
   navSwitchToTab,
@@ -96,7 +108,18 @@ import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { useToastStore } from '../lib/stores/toasts.js';
-import { ConflictError, fetchActiveWork, setDefaultYolo } from '../lib/api.js';
+import {
+  approveNodePairingRequest,
+  ConflictError,
+  createSession,
+  denyNodePairingRequest,
+  fetchActiveWork,
+  fetchHubNodes,
+  fetchNodePairingRequests,
+  rotateHubNodeCredential,
+  revokeHubNode,
+  setDefaultYolo,
+} from '../lib/api.js';
 import { executeSessionKillAction } from '../lib/actions/session-lifecycle.js';
 import { createLogger } from '../lib/logger.js';
 import type { Action, ActionContext } from '../lib/actions/types.js';
@@ -119,6 +142,7 @@ const SECTION_INTEGRATIONS = 'section-integrations' as const;
 const SECTION_GENERAL = 'section-general' as const;
 const SECTION_ADVANCED = 'section-advanced' as const;
 const SECTION_ABOUT = 'section-about' as const;
+const SECTION_NODES = 'section-nodes' as const;
 
 export interface UseActionRegistryParams {
   handleQuickAgent: () => void;
@@ -135,6 +159,176 @@ export interface UseActionRegistryParams {
   deleteWorktreeDialogRef: React.RefObject<DeleteWorktreeDialogHandle | null>;
   workspaceSettingsDialogRef: React.RefObject<WorkspaceSettingsDialogHandle | null>;
   setFilePickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
+}
+
+function openSettingsNodes(): void {
+  useUiStore
+    .getState()
+    .setActiveModal({ modal: 'settings', scrollToId: SECTION_NODES });
+}
+
+async function copyText(text: string): Promise<void> {
+  await navigator.clipboard.writeText(text);
+}
+
+function notifyNodeActionBlocked(message: string): void {
+  useToastStore.getState().showToast(message, 'info');
+  openSettingsNodes();
+}
+
+function notifyNodeActionFailed(actionLabel: string, error?: unknown): void {
+  if (error === undefined) {
+    logger.error(`${actionLabel} failed`);
+  } else {
+    logger.error(`${actionLabel} failed`, error);
+  }
+  notifyNodeActionBlocked(`${actionLabel} failed`);
+}
+
+async function executeNodeActionMutation(
+  actionLabel: string,
+  operation: () => Promise<unknown>,
+  successMessage: string
+): Promise<void> {
+  try {
+    await operation();
+  } catch {
+    notifyNodeActionFailed(actionLabel);
+    return;
+  }
+  useToastStore.getState().showToast(successMessage, 'info');
+  openSettingsNodes();
+}
+
+async function executeNodeCommandCenterAction(
+  kind: NodeCommandCenterActionKind
+): Promise<void> {
+  if (kind === 'add-node' || kind === 'show-pending-requests') {
+    openSettingsNodes();
+    return;
+  }
+  if (kind === 'copy-pair-command') {
+    await copyText(NODE_PAIR_COMMAND);
+    useToastStore.getState().showToast('copied redaction-safe pair command', 'info');
+    openSettingsNodes();
+    return;
+  }
+  if (kind === 'show-install-instructions') {
+    await copyText(NODE_INSTALL_INSTRUCTIONS);
+    useToastStore.getState().showToast('copied redaction-safe install instructions', 'info');
+    openSettingsNodes();
+    return;
+  }
+
+  if (
+    kind === 'approve-request' ||
+    kind === 'deny-request' ||
+    kind === 'edit-access'
+  ) {
+    let requests;
+    try {
+      requests = await fetchNodePairingRequests({ includeResolved: true });
+    } catch (error) {
+      logger.error('Failed to load pending node requests', error);
+      notifyNodeActionBlocked('node pairing API unavailable');
+      return;
+    }
+    const reason = pendingNodeRequestReason(requests);
+    const request = firstPendingNodeRequest(requests);
+    if (reason || !request) {
+      notifyNodeActionBlocked(reason ?? 'no pending request');
+      return;
+    }
+    if (kind === 'edit-access') {
+      openSettingsNodes();
+      return;
+    }
+    if (kind === 'approve-request') {
+      if (
+        !window.confirm(
+          `Approve node pairing request for ${request.displayName}? Approve only if you recognize this device.`
+        )
+      )
+        return;
+      await executeNodeActionMutation(
+        'node request approval',
+        () => approveNodePairingRequest(request.requestId, {}),
+        'node request approved'
+      );
+      return;
+    }
+    if (
+      !window.confirm(
+        `Deny node pairing request for ${request.displayName}? No credential will be issued.`
+      )
+    )
+      return;
+    await executeNodeActionMutation(
+      'node request denial',
+      () => denyNodePairingRequest(request.requestId, 'denied from command center'),
+      'node request denied'
+    );
+    return;
+  }
+
+  let nodes;
+  try {
+    nodes = await fetchHubNodes();
+  } catch (error) {
+    logger.error('Failed to load nodes for Command Center action', error);
+    notifyNodeActionBlocked('nodes API unavailable');
+    return;
+  }
+
+  if (kind === 'open-terminal') {
+    const reason = nodeTerminalUnavailableReason(nodes);
+    const node = firstTerminalNode(nodes);
+    if (reason || !node) {
+      notifyNodeActionBlocked(reason ?? 'unsupported capability');
+      return;
+    }
+    try {
+      await createSession({ type: 'terminal', nodeId: node.nodeId });
+      await useSessionsStore.getState().refreshAll();
+    } catch (error) {
+      notifyNodeActionFailed('node terminal creation', error);
+    }
+    return;
+  }
+
+  const reason = nodeCredentialActionUnavailableReason(nodes);
+  const node = firstManageableNode(nodes);
+  if (reason || !node) {
+    notifyNodeActionBlocked(reason ?? 'missing approval');
+    return;
+  }
+  if (kind === 'rotate-credential') {
+    if (
+      !window.confirm(
+        'Rotate this node credential? The old credential remains valid until the node confirms the new one.'
+      )
+    )
+      return;
+    await executeNodeActionMutation(
+      'node credential rotation',
+      () => rotateHubNodeCredential(node.nodeId, 'online'),
+      'node credential rotation started'
+    );
+    return;
+  }
+  if (kind === 'revoke-node') {
+    if (
+      !window.confirm(
+        'Revoke this node credential? Active links close immediately and reconnect is blocked. Local files on that machine are not deleted. Re-pairing requires operator approval before this node can connect again.'
+      )
+    )
+      return;
+    await executeNodeActionMutation(
+      'node revoke',
+      () => revokeHubNode(node.nodeId),
+      'node revoked'
+    );
+  }
 }
 
 export function useActionRegistry(params: UseActionRegistryParams): void {
@@ -628,6 +822,12 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           // For now a noop — same reasoning as workspaceOpenFileBrowser above.
         },
       },
+
+      // ── Node pairing / management ───────────────────────────────────────────
+      ...nodeCommandCenterActions.map((def) => ({
+        ...def,
+        handler: () => executeNodeCommandCenterAction(def.nodeActionKind),
+      })),
 
       // ── Stable CLI gateway projection (#716) ────────────────────────────────
       // These are searchable Command Center descriptions for the public

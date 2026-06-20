@@ -18,6 +18,12 @@ export type RelayCliGatewayCommand =
   | 'contract.schema'
   | 'nodes.manifest'
   | 'nodes.list'
+  | 'nodes.pair.requests'
+  | 'nodes.pair.approve'
+  | 'nodes.pair.deny'
+  | 'nodes.pair.editAccess'
+  | 'nodes.rotateCredential'
+  | 'nodes.revoke'
   | 'repos.add'
   | 'workspaces.launch'
   | 'worktrees.create'
@@ -3453,6 +3459,205 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     errorCodes: [
       'UNAUTHORIZED',
       'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'nodes.pair.requests',
+    cli: ['relay-ide', 'v1', 'nodes', 'pair', 'requests', '--json'],
+    summary: 'List hub pending node pairing requests without exposing credentials.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      title: 'NodesPairRequestsInput',
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        state: { type: 'string', enum: ['pending', 'approved', 'denied', 'expired'] },
+        deviceCode: stringSchema,
+        includeResolved: booleanSchema,
+      },
+    },
+    outputSchema: okOutput('NodesPairRequestsOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        requests: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+        },
+      },
+      required: ['requests'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'nodes.pair.approve',
+    cli: ['relay-ide', 'v1', 'nodes', 'pair', 'approve', '--input-json', '<json>', '--json'],
+    summary:
+      'Approve a pending node pairing request using the existing hub pairing flow.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:create:terminal'],
+    inputSchema: {
+      title: 'NodesPairApproveInput',
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        requestId: stringSchema,
+        displayName: stringSchema,
+        requestedProfile: stringSchema,
+        requestedRoots: { type: 'array', items: stringSchema },
+        confirmationToken: stringSchema,
+      },
+      required: ['requestId'],
+    },
+    outputSchema: okOutput('NodesPairApproveOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { request: { type: 'object', additionalProperties: true } },
+      required: ['request'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'CONFIRMATION_REQUIRED',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'nodes.pair.deny',
+    cli: ['relay-ide', 'v1', 'nodes', 'pair', 'deny', '--input-json', '<json>', '--json'],
+    summary: 'Deny a pending node pairing request through the hub pairing flow.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      title: 'NodesPairDenyInput',
+      type: 'object',
+      additionalProperties: false,
+      properties: { requestId: stringSchema, reason: stringSchema },
+      required: ['requestId'],
+    },
+    outputSchema: okOutput('NodesPairDenyOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { request: { type: 'object', additionalProperties: true } },
+      required: ['request'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'nodes.pair.editAccess',
+    cli: ['relay-ide', 'v1', 'nodes', 'pair', 'edit-access', '--input-json', '<json>', '--json'],
+    summary:
+      'Edit display name, trust profile, or approved roots for a pending pairing request.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      title: 'NodesPairEditAccessInput',
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        requestId: stringSchema,
+        displayName: stringSchema,
+        requestedProfile: stringSchema,
+        requestedRoots: { type: 'array', items: stringSchema },
+      },
+      required: ['requestId'],
+    },
+    outputSchema: okOutput('NodesPairEditAccessOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { request: { type: 'object', additionalProperties: true } },
+      required: ['request'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'nodes.rotateCredential',
+    cli: ['relay-ide', 'v1', 'nodes', 'rotate-credential', '--input-json', '<json>', '--json'],
+    summary: 'Rotate a paired node credential without exposing credential material.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      title: 'NodesRotateCredentialInput',
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        nodeId: stringSchema,
+        delivery: { type: 'string', enum: ['online', 'manual'], default: 'online' },
+        confirmationToken: stringSchema,
+      },
+      required: ['nodeId'],
+    },
+    outputSchema: okOutput('NodesRotateCredentialOutput', {
+      type: 'object',
+      additionalProperties: true,
+      properties: { node: { type: 'object', additionalProperties: true } },
+      required: ['node'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'CONFIRMATION_REQUIRED',
+      'NODE_OFFLINE',
+      'SESSION_REVOKED',
+      'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'nodes.revoke',
+    cli: ['relay-ide', 'v1', 'nodes', 'revoke', '--input-json', '<json>', '--json'],
+    summary: 'Revoke a paired node credential and block future reconnects.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['session:read'],
+    inputSchema: {
+      title: 'NodesRevokeInput',
+      type: 'object',
+      additionalProperties: false,
+      properties: { nodeId: stringSchema, confirmationToken: stringSchema },
+      required: ['nodeId'],
+    },
+    outputSchema: okOutput('NodesRevokeOutput', {
+      type: 'object',
+      additionalProperties: false,
+      properties: { node: { type: 'object', additionalProperties: true } },
+      required: ['node'],
+    }),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'CONFIRMATION_REQUIRED',
+      'SESSION_REVOKED',
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
     ],
