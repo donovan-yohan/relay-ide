@@ -108,6 +108,7 @@ export function nodeTerminalUnavailableReason(
   nodes: readonly HubNodeSummary[] | undefined
 ): string | undefined {
   if (!nodes) return 'nodes API unavailable';
+  if (nodes.length === 0) return 'missing approval';
   const usable = nodes.find((node) => node.status !== 'revoked' && node.credentialState !== 'revoked');
   if (!usable) return 'credential revoked';
   const online = nodes.filter((node) => node.status === 'online' && node.credentialState !== 'revoked');

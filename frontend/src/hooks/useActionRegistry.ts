@@ -176,8 +176,12 @@ function notifyNodeActionBlocked(message: string): void {
   openSettingsNodes();
 }
 
-function notifyNodeActionFailed(actionLabel: string): void {
-  logger.error(`${actionLabel} failed`);
+function notifyNodeActionFailed(actionLabel: string, error?: unknown): void {
+  if (error === undefined) {
+    logger.error(`${actionLabel} failed`);
+  } else {
+    logger.error(`${actionLabel} failed`, error);
+  }
   notifyNodeActionBlocked(`${actionLabel} failed`);
 }
 
@@ -283,8 +287,12 @@ async function executeNodeCommandCenterAction(
       notifyNodeActionBlocked(reason ?? 'unsupported capability');
       return;
     }
-    await createSession({ type: 'terminal', nodeId: node.nodeId });
-    await useSessionsStore.getState().refreshAll();
+    try {
+      await createSession({ type: 'terminal', nodeId: node.nodeId });
+      await useSessionsStore.getState().refreshAll();
+    } catch (error) {
+      notifyNodeActionFailed('node terminal creation', error);
+    }
     return;
   }
 

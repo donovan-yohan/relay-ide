@@ -184,6 +184,7 @@ describe('node Command Center action projection', () => {
     );
 
     expect(nodeTerminalUnavailableReason(undefined)).toBe('nodes API unavailable');
+    expect(nodeTerminalUnavailableReason([])).toBe('missing approval');
     expect(nodeTerminalUnavailableReason([node({ status: 'offline' })])).toBe('offline');
     expect(
       nodeTerminalUnavailableReason([
