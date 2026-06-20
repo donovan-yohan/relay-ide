@@ -176,6 +176,26 @@ function notifyNodeActionBlocked(message: string): void {
   openSettingsNodes();
 }
 
+function notifyNodeActionFailed(actionLabel: string): void {
+  logger.error(`${actionLabel} failed`);
+  notifyNodeActionBlocked(`${actionLabel} failed`);
+}
+
+async function executeNodeActionMutation(
+  actionLabel: string,
+  operation: () => Promise<unknown>,
+  successMessage: string
+): Promise<void> {
+  try {
+    await operation();
+  } catch {
+    notifyNodeActionFailed(actionLabel);
+    return;
+  }
+  useToastStore.getState().showToast(successMessage, 'info');
+  openSettingsNodes();
+}
+
 async function executeNodeCommandCenterAction(
   kind: NodeCommandCenterActionKind
 ): Promise<void> {
@@ -226,9 +246,11 @@ async function executeNodeCommandCenterAction(
         )
       )
         return;
-      await approveNodePairingRequest(request.requestId, {});
-      useToastStore.getState().showToast('node request approved', 'info');
-      openSettingsNodes();
+      await executeNodeActionMutation(
+        'node request approval',
+        () => approveNodePairingRequest(request.requestId, {}),
+        'node request approved'
+      );
       return;
     }
     if (
@@ -237,9 +259,11 @@ async function executeNodeCommandCenterAction(
       )
     )
       return;
-    await denyNodePairingRequest(request.requestId, 'denied from command center');
-    useToastStore.getState().showToast('node request denied', 'info');
-    openSettingsNodes();
+    await executeNodeActionMutation(
+      'node request denial',
+      () => denyNodePairingRequest(request.requestId, 'denied from command center'),
+      'node request denied'
+    );
     return;
   }
 
@@ -277,9 +301,11 @@ async function executeNodeCommandCenterAction(
       )
     )
       return;
-    await rotateHubNodeCredential(node.nodeId, 'online');
-    useToastStore.getState().showToast('node credential rotation started', 'info');
-    openSettingsNodes();
+    await executeNodeActionMutation(
+      'node credential rotation',
+      () => rotateHubNodeCredential(node.nodeId, 'online'),
+      'node credential rotation started'
+    );
     return;
   }
   if (kind === 'revoke-node') {
@@ -289,9 +315,11 @@ async function executeNodeCommandCenterAction(
       )
     )
       return;
-    await revokeHubNode(node.nodeId);
-    useToastStore.getState().showToast('node revoked', 'info');
-    openSettingsNodes();
+    await executeNodeActionMutation(
+      'node revoke',
+      () => revokeHubNode(node.nodeId),
+      'node revoked'
+    );
   }
 }
 

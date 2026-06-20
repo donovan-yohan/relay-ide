@@ -110,9 +110,9 @@ export function nodeTerminalUnavailableReason(
   if (!nodes) return 'nodes API unavailable';
   const usable = nodes.find((node) => node.status !== 'revoked' && node.credentialState !== 'revoked');
   if (!usable) return 'credential revoked';
-  const online = nodes.find((node) => node.status === 'online' && node.credentialState !== 'revoked');
-  if (!online) return 'offline';
-  if (!nodeHasTerminalBackend(online)) return 'unsupported capability';
+  const online = nodes.filter((node) => node.status === 'online' && node.credentialState !== 'revoked');
+  if (online.length === 0) return 'offline';
+  if (!online.some((node) => nodeHasTerminalBackend(node))) return 'unsupported capability';
   return undefined;
 }
 

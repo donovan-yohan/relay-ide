@@ -195,6 +195,18 @@ describe('node Command Center action projection', () => {
         }),
       ])
     ).toBe('unsupported capability');
+    expect(
+      nodeTerminalUnavailableReason([
+        node({
+          nodeId: 'node-no-terminal',
+          capabilities: {
+            ...node().capabilities,
+            terminalBackends: { 'relay-pty': 'unavailable' },
+          },
+        }),
+        node({ nodeId: 'node-terminal' }),
+      ])
+    ).toBeUndefined();
     expect(firstTerminalNode([node({ status: 'offline' }), node({ nodeId: 'node-2' })])?.nodeId).toBe(
       'node-2'
     );
