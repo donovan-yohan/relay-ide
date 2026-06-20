@@ -91,6 +91,28 @@
   white-space: nowrap;
 }
 
+.pr-row__branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: min(100%, 28rem);
+  min-width: 0;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pr-row__branch-ref {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pr-row__branch-arrow {
+  flex: none;
+  color: var(--border);
+}
+
 .pr-row__sep {
   opacity: 0.4;
 }
@@ -215,6 +237,10 @@
   .pr-row__ci,
   .pr-row__age {
     display: none;
+  }
+
+  .pr-row__branch {
+    max-width: 100%;
   }
 
   .pr-row__actions {

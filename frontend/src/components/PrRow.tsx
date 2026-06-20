@@ -75,6 +75,13 @@ function ChevronIcon() {
   );
 }
 
+function branchIdentityLabel(pr: PullRequest): string {
+  const head = pr.headRefName.trim();
+  const base = pr.baseRefName.trim();
+  if (head && base) return `${head} → ${base}`;
+  return head || base;
+}
+
 export function PrRow({
   pr,
   onOpen,
@@ -87,6 +94,7 @@ export function PrRow({
   const repoName = pr.repoName ?? '';
   const chipColor = showRepo ? deriveColor(repoName) : undefined;
   const updatedAgo = formatRelativeTime(pr.updatedAt);
+  const branchLabel = branchIdentityLabel(pr);
 
   const handleRowClick = useCallback(
     (e: React.MouseEvent) => {
@@ -148,6 +156,22 @@ export function PrRow({
             </>
           )}
           <span className="pr-row__sep">&middot;</span>
+          {branchLabel && (
+            <>
+              <span
+                className="pr-row__branch"
+                title={`branch ${branchLabel}`}
+                aria-label={`branch ${branchLabel}`}
+              >
+                <span className="pr-row__branch-ref">{pr.headRefName}</span>
+                {pr.headRefName && pr.baseRefName && (
+                  <span className="pr-row__branch-arrow">→</span>
+                )}
+                <span className="pr-row__branch-ref">{pr.baseRefName}</span>
+              </span>
+              <span className="pr-row__sep">&middot;</span>
+            </>
+          )}
           <span className="pr-row__meta-text">{prRoleLabel(pr)}</span>
           <span className="pr-row__sep">&middot;</span>
           <span className="pr-row__meta-text">{updatedAgo}</span>
