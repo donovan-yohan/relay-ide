@@ -685,9 +685,13 @@ export function WorkspaceArea({
     const sessionUiIds = new Set(sessions.map(sessionTabId));
     const liveUiIds = new Set([...fileUiIds, ...sessionUiIds]);
 
+    const panes = listPanes(layout);
+    const validActivePaneId =
+      activePaneId && panes.some((pane) => pane.id === activePaneId)
+        ? activePaneId
+        : null;
     const targetPane =
-      activePaneId ??
-      (layout.type === 'pane' ? layout.id : listPanes(layout)[0]?.id);
+      validActivePaneId ?? (layout.type === 'pane' ? layout.id : panes[0]?.id);
 
     // Add ui items missing from layout — but skip anything we just removed
     // this cycle (otherwise a workspace × close immediately re-adds).
