@@ -83,6 +83,8 @@ relay-ide v1 pr-overseer observe --id <pr-overseer-id> --input-json '{"summary":
 relay-ide v1 pr-overseer retire --id <pr-overseer-id> [--reason '<why>'] [--retired-by '<who>'] --json
 relay-ide v1 pr-overseer list [--work-context-id <id>] [--repo-path <path>] [--owner-repo <owner/repo>] [--status <pending|observing|blocked|ready|merged|closed|stale|retired>] [--orchestrator <name>] [--include-retired] [--limit <n>] --json
 relay-ide v1 pr-overseer get --id <pr-overseer-id> [--current-head-sha <sha>] --json
+relay-ide v1 workspace-surfaces list [--root-id <id>] [--workspace-id <id>] [--repo-path <path>] --json
+relay-ide v1 workspace-surfaces publish --input-json '{"kind":"preview","label":"agent preview","url":"http://localhost:4173"}' --json
 relay-ide v1 handoffs plan --input-json '{...}' --json
 relay-ide v1 handoffs create --input-json '{...}' --json
 relay-ide v1 handoffs status --run-id <run-id> --json

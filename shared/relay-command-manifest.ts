@@ -154,6 +154,8 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'pr-overseer.retire': 'retire pr overseer',
   'pr-overseer.list': 'list pr overseers',
   'pr-overseer.get': 'pr overseer details + handoff readiness',
+  'workspace-surfaces.list': 'list workspace surfaces',
+  'workspace-surfaces.publish': 'publish workspace surface',
   'roster.list': 'list active agent roster',
   'roster.register': 'register self-declared agent presence',
   'roster.updateSelf': 'update self-declared agent presence',
@@ -233,6 +235,7 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'pr-overseer.register',
   'pr-overseer.observe',
   'pr-overseer.retire',
+  'workspace-surfaces.publish',
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
@@ -274,6 +277,8 @@ function scopeKindsForGatewayCommand(
     return ['work-context', 'repo', 'session'];
   if (name.startsWith('pr-overseer.'))
     return ['work-context', 'repo', 'session'];
+  if (name.startsWith('workspace-surfaces.'))
+    return ['work-context', 'repo', 'worktree', 'node'];
   if (name.startsWith('roster.')) return ['repo', 'work-context', 'session'];
   if (name.startsWith('cockpit.')) return ['work-context', 'session'];
   if (name.startsWith('context.')) return ['work-context', 'session'];

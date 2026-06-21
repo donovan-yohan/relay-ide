@@ -62,6 +62,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'work-context-messages.templates.show',
   'work-context-messages.templates.render',
   'roster.list',
+  'workspace-surfaces.list',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
@@ -89,6 +90,7 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'pr-overseer.observe',
   'pr-overseer.retire',
   'work-context-messages.append',
+  'workspace-surfaces.publish',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -317,9 +319,11 @@ export function cliGatewayActorCommandCapabilities(
     command === 'automation-runs.get' ||
     command === 'pr-overseer.list' ||
     command === 'pr-overseer.get' ||
+    command === 'workspace-surfaces.list' ||
     command.startsWith('work-context-messages.')
   )
     return ['context:read'];
+  if (command === 'workspace-surfaces.publish') return ['context:write'];
   if (cliGatewayActorReadCommandSet.has(command)) return ['session:read'];
   if (command.startsWith('workflow-runs.')) return ['context:write'];
   if (command.startsWith('automation-runs.')) return ['context:write'];

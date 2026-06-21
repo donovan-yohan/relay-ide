@@ -4,6 +4,7 @@ import React, { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import type { WorkspaceEvidenceRoot } from '../shared/workspace-evidence.js';
+import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -12,6 +13,7 @@ import type { WorkspaceEvidenceRoot } from '../shared/workspace-evidence.js';
 const mocks = vi.hoisted(() => ({
   roots: [] as WorkspaceEvidenceRoot[],
   listEntries: [] as unknown[],
+  surfaces: [] as WorkspaceSurface[],
   activeWork: [] as unknown[],
   backendConnectionStatus: 'connected' as string,
   // keyed by workContextId → { data?, isLoading?, isError? }
@@ -41,6 +43,9 @@ vi.mock('@tanstack/react-query', () => ({
     if (key === 'workspace-evidence-preview') {
       return { data: undefined, isLoading: false, isError: false };
     }
+    if (key === 'workspace-surfaces') {
+      return { data: mocks.surfaces, isLoading: false, isError: false };
+    }
     return { data: undefined, isLoading: false, isError: false };
   },
   useQueries: (opts: { queries: { queryKey: unknown[] }[] }) =>
@@ -60,6 +65,7 @@ vi.mock('../frontend/src/lib/api.js', () => ({
   fetchWorkspaceEvidenceRoots: vi.fn(),
   fetchWorkspaceEvidenceList: vi.fn(),
   fetchWorkspaceEvidencePreview: vi.fn(),
+  fetchWorkspaceSurfaces: vi.fn(),
   fetchActiveWork: vi.fn(),
   fetchPipelineHandoffArtifacts: vi.fn(),
   copyPipelineHandoffArtifact: vi.fn(),
@@ -156,6 +162,7 @@ afterEach(async () => {
   container = null;
   mocks.roots = [];
   mocks.listEntries = [];
+  mocks.surfaces = [];
   mocks.activeWork = [];
   mocks.backendConnectionStatus = 'connected';
   mocks.artifactsByContext = {};
@@ -217,6 +224,26 @@ function viewArtifactPackage() {
     files: {
       'index.html': '<main>workspace static view</main>',
     },
+  };
+}
+
+function workspaceSurface(
+  overrides: Partial<WorkspaceSurface> = {}
+): WorkspaceSurface {
+  return {
+    id: 'wsurf-local-dev',
+    kind: 'web',
+    label: 'npm run dev',
+    description: 'vite --host 127.0.0.1 --port 5173',
+    url: 'http://localhost:5173',
+    nodeId: 'local',
+    rootId: 'wer:local:/repo',
+    repoPath: '/repo',
+    status: 'discovered',
+    health: 'configured',
+    provenance: { source: 'package-script', detail: 'dev' },
+    openMode: 'direct',
+    ...overrides,
   };
 }
 
@@ -288,6 +315,34 @@ describe('WorkspaceEvidenceDashboard', () => {
     expect(
       container!.querySelector('[data-track="evidence.surfaces"]')
     ).toBeTruthy();
+  });
+
+  it('renders discovered and published workspace surfaces with bounded actions', async () => {
+    mocks.roots = [repoRoot()];
+    mocks.surfaces = [
+      workspaceSurface(),
+      workspaceSurface({
+        id: 'wsurf-remote-preview',
+        kind: 'preview',
+        label: 'remote preview',
+        url: 'http://localhost:4173',
+        nodeId: 'remote-node',
+        provenance: { source: 'agent-published', actor: 'agent:kani' },
+        openMode: 'node-scoped',
+      }),
+    ];
+    await renderDashboard('/repo');
+    const cards = container!.querySelectorAll(
+      '[data-track="evidence.surface-card"]'
+    );
+    expect(cards.length).toBe(2);
+    expect(cards[0]!.textContent).toContain('npm run dev');
+    expect(cards[0]!.querySelector('a')?.getAttribute('href')).toBe(
+      'http://localhost:5173'
+    );
+    expect(cards[1]!.textContent).toContain('remote preview');
+    expect(cards[1]!.textContent).toContain('copy only · node-local');
+    expect(cards[1]!.querySelector('a')).toBeNull();
   });
 
   it('renders artifact cards preserving kind/visibility/headSha from a matched context', async () => {
