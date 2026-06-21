@@ -598,6 +598,13 @@ export interface UiState {
   ) => void;
   openFileTabs: OpenFileTab[];
   activeFileTabKey: string | null;
+  /**
+   * #338: editor unsaved-changes flag per code file tab, keyed by
+   * `fileTabKey(filePath, tabType)`. Drives the close-tab discard confirmation
+   * and the "unsaved" tab pill. Separate from `OpenFileTab.isChanged`, which is
+   * the git working-tree status, not editor dirtiness.
+   */
+  codeTabDirty: Record<string, boolean>;
   sendToTargetSessionId: string | null;
   lastChangedFiles: string[];
   analyticsView: AnalyticsView;
@@ -632,6 +639,12 @@ export interface UiState {
   ) => void;
   closeFileTab: (filePath: string, tabType?: FileTabType) => void;
   closeAllFileTabs: () => void;
+  /** #338: mark/clear a code tab's editor unsaved state. */
+  setCodeTabDirty: (
+    filePath: string,
+    tabType: FileTabType | undefined,
+    dirty: boolean
+  ) => void;
   openHtmlTab: (filePath: string, token: string) => void;
   refreshHtmlTab: (filePath: string) => void;
   setRightSidebarTab: (tab: RightSidebarTab) => void;
@@ -680,6 +693,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   utilityRailByWorkspace: {},
   openFileTabs: [],
   activeFileTabKey: null,
+  codeTabDirty: {},
   sendToTargetSessionId: null,
   analyticsView: null,
   orgDashboardTab: 'active-work',
@@ -1153,7 +1167,24 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
 
   closeFileTab: (filePath, tabType) => {
-    const { openFileTabs, activeFileTabKey } = get();
+    const { openFileTabs, activeFileTabKey, codeTabDirty } = get();
+    const removed = tabType
+      ? openFileTabs.filter(
+          (t) => t.filePath === filePath && t.tabType === tabType
+        )
+      : openFileTabs.filter((t) => t.filePath === filePath);
+    // #338: confirm before discarding a code tab with unsaved editor changes.
+    // Bail without mutating so the layout reconciler re-adds the survivor tab.
+    const removedKeys = removed.map((t) => fileTabKey(t.filePath, t.tabType));
+    const hasDirty = removedKeys.some((k) => codeTabDirty[k]);
+    if (
+      hasDirty &&
+      typeof window !== 'undefined' &&
+      typeof window.confirm === 'function' &&
+      !window.confirm('discard unsaved changes to this file?')
+    ) {
+      return;
+    }
     const next = tabType
       ? openFileTabs.filter(
           (t) => !(t.filePath === filePath && t.tabType === tabType)
@@ -1171,10 +1202,41 @@ export const useUiStore = create<UiState>()((set, get) => ({
           )
         : null
       : activeFileTabKey;
-    set({ openFileTabs: next, activeFileTabKey: newActiveKey });
+    let nextDirty = codeTabDirty;
+    if (removedKeys.some((k) => k in codeTabDirty)) {
+      nextDirty = { ...codeTabDirty };
+      for (const k of removedKeys) delete nextDirty[k];
+    }
+    set({
+      openFileTabs: next,
+      activeFileTabKey: newActiveKey,
+      codeTabDirty: nextDirty,
+    });
   },
 
-  closeAllFileTabs: () => set({ openFileTabs: [], activeFileTabKey: null }),
+  setCodeTabDirty: (filePath, tabType, dirty) => {
+    const { codeTabDirty } = get();
+    const key = fileTabKey(filePath, tabType);
+    if (Boolean(codeTabDirty[key]) === dirty) return;
+    const next = { ...codeTabDirty };
+    if (dirty) next[key] = true;
+    else delete next[key];
+    set({ codeTabDirty: next });
+  },
+
+  closeAllFileTabs: () => {
+    const { codeTabDirty } = get();
+    const hasDirty = Object.values(codeTabDirty).some(Boolean);
+    if (
+      hasDirty &&
+      typeof window !== 'undefined' &&
+      typeof window.confirm === 'function' &&
+      !window.confirm('discard unsaved changes to all open files?')
+    ) {
+      return;
+    }
+    set({ openFileTabs: [], activeFileTabKey: null, codeTabDirty: {} });
+  },
 
   openHtmlTab: (filePath, token) =>
     get().openFileTab(filePath, false, 'html', token),

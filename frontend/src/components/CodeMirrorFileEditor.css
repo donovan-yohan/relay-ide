@@ -1,0 +1,112 @@
+.cm-file-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg, #000);
+  color: var(--text, #e0e0e0);
+  font-family: var(--font-mono, 'SF Mono', 'Cascadia Code', monospace);
+}
+
+.cm-file-editor__toolbar,
+.cm-file-editor__conflict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border, #333);
+  background: var(--bg, #000);
+  font-size: var(--font-size-xs, 0.75rem);
+}
+
+.cm-file-editor__status,
+.cm-file-editor__language,
+.cm-file-editor__error {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border, #333);
+  color: var(--text-muted, #888);
+}
+
+.cm-file-editor__status--unsaved {
+  color: var(--status-warning, #fbbf24);
+  border-color: currentColor;
+}
+
+.cm-file-editor__status--saving {
+  color: var(--status-info, #60a5fa);
+  border-color: currentColor;
+}
+
+.cm-file-editor__status--saved {
+  color: var(--status-success, #4ade80);
+  border-color: color-mix(in srgb, currentColor 65%, transparent);
+}
+
+.cm-file-editor__language {
+  color: var(--text-muted, #888);
+}
+
+.cm-file-editor__error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--status-error, #f87171);
+  border-color: color-mix(
+    in srgb,
+    var(--status-error, #f87171) 55%,
+    transparent
+  );
+}
+
+.cm-file-editor__save,
+.cm-file-editor__conflict button {
+  margin-left: auto;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent, #d97757);
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent, #d97757);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cm-file-editor__conflict button {
+  margin-left: 0;
+}
+
+.cm-file-editor__save:hover:not(:disabled),
+.cm-file-editor__conflict button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #d97757) 10%, transparent);
+}
+
+.cm-file-editor__save:disabled,
+.cm-file-editor__conflict button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cm-file-editor__conflict {
+  border-bottom-color: color-mix(
+    in srgb,
+    var(--status-warning, #fbbf24) 50%,
+    transparent
+  );
+  color: var(--status-warning, #fbbf24);
+}
+
+.cm-file-editor__mount {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cm-file-editor__mount .cm-editor {
+  height: 100%;
+}

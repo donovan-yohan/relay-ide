@@ -2644,6 +2644,85 @@ export async function fetchFileContent(
   return jsonEither<import('./types.js').FileContentResponse>(res);
 }
 
+export interface SaveFileContentResult {
+  mtimeMs: number;
+  sizeBytes: number;
+}
+
+/** Thrown when the on-disk mtime no longer matches the caller's baseline (412). */
+export class FileContentConflictError extends Error {
+  mtimeMs: number;
+  sizeBytes: number;
+  contentHash: string;
+  constructor(conflict: {
+    mtimeMs: number;
+    sizeBytes: number;
+    contentHash: string;
+  }) {
+    super('file modified on disk');
+    this.name = 'FileContentConflictError';
+    this.mtimeMs = conflict.mtimeMs;
+    this.sizeBytes = conflict.sizeBytes;
+    this.contentHash = conflict.contentHash;
+  }
+}
+
+/** Thrown when the proposed content exceeds the server write cap (413). */
+export class FileContentOversizeError extends Error {
+  sizeBytes: number;
+  maxBytes: number;
+  constructor(sizeBytes: number, maxBytes: number) {
+    super('file too large to save');
+    this.name = 'FileContentOversizeError';
+    this.sizeBytes = sizeBytes;
+    this.maxBytes = maxBytes;
+  }
+}
+
+/**
+ * Save UTF-8 file content via `PUT /workspaces/file-content`. Pass
+ * `expectedMtimeMs` for optimistic concurrency — omit it to force an overwrite
+ * ("keep mine"). Throws `FileContentConflictError` on 412 and
+ * `FileContentOversizeError` on 413; other failures throw `HttpError`.
+ */
+export async function saveFileContent(
+  repoPath: string,
+  filePath: string,
+  content: string,
+  expectedMtimeMs?: number
+): Promise<SaveFileContentResult> {
+  const params = new URLSearchParams({ path: repoPath, file: filePath });
+  const res = await fetch('/workspaces/file-content?' + params.toString(), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(
+      expectedMtimeMs !== undefined ? { content, expectedMtimeMs } : { content }
+    ),
+  });
+  if (res.status === 412) {
+    const data = await jsonEither<{
+      mtimeMs?: number;
+      sizeBytes?: number;
+      contentHash?: string;
+    }>(res);
+    throw new FileContentConflictError({
+      mtimeMs: data.mtimeMs ?? 0,
+      sizeBytes: data.sizeBytes ?? 0,
+      contentHash: data.contentHash ?? '',
+    });
+  }
+  if (res.status === 413) {
+    const data = await jsonEither<{ sizeBytes?: number; maxBytes?: number }>(
+      res
+    );
+    throw new FileContentOversizeError(data.sizeBytes ?? 0, data.maxBytes ?? 0);
+  }
+  if (!res.ok) {
+    throw await httpErrorFromResponse(res, 'Failed to save file');
+  }
+  return jsonEither<SaveFileContentResult>(res);
+}
+
 /** Swallows HTTP errors and returns `'main'` on failure or when the branch is empty. */
 export async function fetchDefaultBranch(repoPath: string): Promise<string> {
   const params = new URLSearchParams({ path: repoPath });

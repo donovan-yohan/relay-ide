@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, expect } from 'vitest';
+import { describe, it, beforeEach, expect, vi } from 'vitest';
 
 // Mock localStorage before importing the store
 const storage: Record<string, string> = {};
@@ -61,10 +61,32 @@ function resetStore() {
     utilityRailByWorkspace: {},
     openFileTabs: [],
     activeFileTabKey: null,
+    codeTabDirty: {},
     sendToTargetSessionId: null,
     lastChangedFiles: [],
     collapsedWorkspaces: new Set(),
   });
+}
+
+function withMockWindowConfirm(
+  value: boolean,
+  run: (confirmSpy: ReturnType<typeof vi.fn>) => void
+) {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const confirmSpy = vi.fn(() => value);
+  Object.defineProperty(globalThis, 'window', {
+    value: { confirm: confirmSpy },
+    configurable: true,
+  });
+  try {
+    run(confirmSpy);
+  } finally {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, 'window', originalWindow);
+    } else {
+      Reflect.deleteProperty(globalThis, 'window');
+    }
+  }
 }
 
 describe('ui Zustand store', () => {
@@ -153,7 +175,9 @@ describe('ui Zustand store', () => {
         selectedRailTab: 'review',
         width: MAX_UTILITY_RAIL_WIDTH,
       });
-      expect(useUiStore.getState().getUtilityRailState('/repo/b')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/b')
+      ).toMatchObject({
         visible: true,
         selectedRailTab: null,
         width: DEFAULT_UTILITY_RAIL_WIDTH,
@@ -285,7 +309,9 @@ describe('ui Zustand store', () => {
         base: 'cached',
       });
 
-      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
         selectedRailTab: 'review',
         review: {
           activeFilePath: 'src/a2.ts',
@@ -294,7 +320,9 @@ describe('ui Zustand store', () => {
           currentHunkIndex: 2,
         },
       });
-      expect(useUiStore.getState().getUtilityRailState('/repo/b')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/b')
+      ).toMatchObject({
         selectedRailTab: 'review',
         review: {
           activeFilePath: 'src/b.ts',
@@ -311,7 +339,9 @@ describe('ui Zustand store', () => {
       });
 
       expect(useUiStore.getState().openFileTabs).toEqual([]);
-      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
         visible: true,
         selectedRailTab: 'review',
         review: {
@@ -335,7 +365,9 @@ describe('ui Zustand store', () => {
         workspacePath: '/repo/a',
         file: 'src/changed.ts',
       });
-      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
         selectedRailTab: 'review',
         review: { activeFilePath: 'src/changed.ts' },
       });
@@ -352,7 +384,9 @@ describe('ui Zustand store', () => {
         preserveSelectedTab: true,
       });
 
-      expect(useUiStore.getState().getUtilityRailState('/repo/a').review).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a').review
+      ).toMatchObject({
         activeFilePath: 'src/changed.ts',
         diffSource: 'branch',
         defaultBranch: 'develop',
@@ -366,12 +400,16 @@ describe('ui Zustand store', () => {
       useUiStore.getState().addUtilityTerminal('/repo/a', 'term-1');
       useUiStore.getState().addUtilityTerminal('/repo/b', 'term-b');
 
-      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
         selectedRailTab: 'terminal',
         utilityTerminalIds: ['term-1', 'term-2'],
         selectedUtilityTerminalId: 'term-1',
       });
-      expect(useUiStore.getState().getUtilityRailState('/repo/b')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/b')
+      ).toMatchObject({
         utilityTerminalIds: ['term-b'],
         selectedUtilityTerminalId: 'term-b',
       });
@@ -386,26 +424,33 @@ describe('ui Zustand store', () => {
       useUiStore.getState().selectUtilityTerminal('/repo/a', 'term-2');
 
       expect(
-        useUiStore.getState().getUtilityRailState('/repo/a').selectedUtilityTerminalId
+        useUiStore.getState().getUtilityRailState('/repo/a')
+          .selectedUtilityTerminalId
       ).toBe('term-2');
 
       useUiStore.getState().removeUtilityTerminal('/repo/a', 'term-2');
-      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
         utilityTerminalIds: ['term-1'],
         selectedUtilityTerminalId: 'term-1',
       });
 
       useUiStore.getState().addUtilityTerminal('/repo/a', 'term-3');
       useUiStore.getState().promoteUtilityTerminal('/repo/a', 'term-1');
-      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
         utilityTerminalIds: ['term-3'],
         selectedUtilityTerminalId: 'term-3',
       });
 
-      useUiStore.getState().reconcileUtilityTerminals('/repo/a', new Set(['term-9']));
-      expect(useUiStore.getState().getUtilityRailState('/repo/a')).not.toHaveProperty(
-        'utilityTerminalIds'
-      );
+      useUiStore
+        .getState()
+        .reconcileUtilityTerminals('/repo/a', new Set(['term-9']));
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).not.toHaveProperty('utilityTerminalIds');
       expect(
         useUiStore.getState().getUtilityRailState('/repo/a')
       ).not.toHaveProperty('selectedUtilityTerminalId');
@@ -421,13 +466,19 @@ describe('ui Zustand store', () => {
       });
 
       useUiStore.getState().hydrateUtilityRailState('/repo/a');
-      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
         utilityTerminalIds: ['stale-1', 'live-1', 'stale-2'],
         selectedUtilityTerminalId: 'stale-1',
       });
 
-      useUiStore.getState().reconcileUtilityTerminals('/repo/a', new Set(['live-1']));
-      expect(useUiStore.getState().getUtilityRailState('/repo/a')).toMatchObject({
+      useUiStore
+        .getState()
+        .reconcileUtilityTerminals('/repo/a', new Set(['live-1']));
+      expect(
+        useUiStore.getState().getUtilityRailState('/repo/a')
+      ).toMatchObject({
         utilityTerminalIds: ['live-1'],
         selectedUtilityTerminalId: 'live-1',
       });
@@ -504,9 +555,62 @@ describe('ui Zustand store', () => {
     it('closeAllFileTabs clears everything', () => {
       useUiStore.getState().openFileTab('src/a.ts', false);
       useUiStore.getState().openFileTab('src/b.ts', true);
+      useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
       useUiStore.getState().closeAllFileTabs();
       expect(useUiStore.getState().openFileTabs.length).toBe(0);
       expect(useUiStore.getState().activeFileTabKey).toBe(null);
+      expect(useUiStore.getState().codeTabDirty).toEqual({});
+    });
+
+    it('setCodeTabDirty marks and clears editor dirty state by tab key', () => {
+      useUiStore.getState().openFileTab('src/a.ts', false);
+      useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
+      expect(useUiStore.getState().codeTabDirty).toEqual({
+        [fileTabKey('src/a.ts', 'code')]: true,
+      });
+      useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', false);
+      expect(useUiStore.getState().codeTabDirty).toEqual({});
+    });
+
+    it('closeFileTab confirms before discarding dirty editor changes', () => {
+      withMockWindowConfirm(false, (confirmSpy) => {
+        useUiStore.getState().openFileTab('src/a.ts', false);
+        useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
+        useUiStore.getState().closeFileTab('src/a.ts', 'code');
+        expect(confirmSpy).toHaveBeenCalledWith(
+          'discard unsaved changes to this file?'
+        );
+        expect(useUiStore.getState().openFileTabs.length).toBe(1);
+        expect(useUiStore.getState().codeTabDirty).toEqual({
+          [fileTabKey('src/a.ts', 'code')]: true,
+        });
+      });
+    });
+
+    it('closeFileTab clears dirty editor state when discard is confirmed', () => {
+      withMockWindowConfirm(true, () => {
+        useUiStore.getState().openFileTab('src/a.ts', false);
+        useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
+        useUiStore.getState().closeFileTab('src/a.ts', 'code');
+        expect(useUiStore.getState().openFileTabs.length).toBe(0);
+        expect(useUiStore.getState().codeTabDirty).toEqual({});
+      });
+    });
+
+    it('closeAllFileTabs confirms before discarding dirty editor changes', () => {
+      withMockWindowConfirm(false, (confirmSpy) => {
+        useUiStore.getState().openFileTab('src/a.ts', false);
+        useUiStore.getState().openFileTab('src/b.ts', false);
+        useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
+        useUiStore.getState().closeAllFileTabs();
+        expect(confirmSpy).toHaveBeenCalledWith(
+          'discard unsaved changes to all open files?'
+        );
+        expect(useUiStore.getState().openFileTabs.length).toBe(2);
+        expect(useUiStore.getState().codeTabDirty).toEqual({
+          [fileTabKey('src/a.ts', 'code')]: true,
+        });
+      });
     });
 
     it('openHtmlTab creates an html-type tab', () => {
