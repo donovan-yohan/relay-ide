@@ -132,6 +132,9 @@ export class SecurityAuditLog {
       this.closeOnDispose = false;
     }
     this.db.pragma('journal_mode = WAL');
+    // Keep audit writes durable enough for dogfood while avoiding SQLite FULL
+    // synchronous WAL/fsync amplification on every denied node credential event.
+    this.db.pragma('synchronous = NORMAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA_SQL);
     ensureSecurityAuditCheckpoint(this.db);
@@ -140,12 +143,17 @@ export class SecurityAuditLog {
   listBefore(
     beforeSequence: number | null,
     limit: number
-  ): { rows: NormalizedSecurityAuditEntry[]; nextBeforeSequence: number | null } {
+  ): {
+    rows: NormalizedSecurityAuditEntry[];
+    nextBeforeSequence: number | null;
+  } {
     const cappedLimit = Math.max(1, Math.min(!limit ? 50 : limit, 200));
     let rawRows: AuditRow[];
     if (beforeSequence === null || beforeSequence === 0) {
       rawRows = this.db
-        .prepare('SELECT * FROM security_audit_log ORDER BY sequence DESC LIMIT ?')
+        .prepare(
+          'SELECT * FROM security_audit_log ORDER BY sequence DESC LIMIT ?'
+        )
         .all(cappedLimit) as AuditRow[];
     } else {
       if (!Number.isFinite(beforeSequence) || beforeSequence < 0) {

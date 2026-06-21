@@ -125,6 +125,23 @@ describe('security audit primitives', () => {
     log.close();
   });
 
+  it('opens the audit database with WAL and NORMAL synchronous mode', () => {
+    const dbPath = tmpDbPath();
+    const log = new SecurityAuditLog(dbPath);
+    log.append(sampleEvent({ eventId: 'evt-sync' }));
+    log.close();
+
+    const db = new Database(dbPath);
+    try {
+      const journalMode = db.pragma('journal_mode', { simple: true });
+      const synchronous = db.pragma('synchronous', { simple: true });
+      expect(journalMode).toBe('wal');
+      expect(synchronous).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it('redacts tokens, env values, file bytes, and terminal streams before hashing', () => {
     const payload = {
       authorization: 'Bearer relay-secret-token-1234567890',
@@ -273,7 +290,11 @@ describe('security audit primitives', () => {
     expect(entry.grantedBits).toEqual(['tab:mode:set-agent']);
     expect(entry.deniedBits).toEqual([]);
     expect(entry.requiredBits).not.toEqual(
-      expect.arrayContaining(['rpc:fs:write', 'rpc:git:write', 'pty:exec:arbitrary'])
+      expect.arrayContaining([
+        'rpc:fs:write',
+        'rpc:git:write',
+        'pty:exec:arbitrary',
+      ])
     );
   });
 
@@ -386,9 +407,9 @@ describe('security audit primitives', () => {
     db.close();
 
     const reopened = new SecurityAuditLog(dbPath);
-    expect(() =>
-      reopened.append(sampleEvent({ eventId: 'evt-4' }))
-    ).toThrow(/checkpoint mismatch/);
+    expect(() => reopened.append(sampleEvent({ eventId: 'evt-4' }))).toThrow(
+      /checkpoint mismatch/
+    );
     reopened.close();
 
     expect(verifySecurityAuditLog(dbPath)).toMatchObject({
@@ -426,7 +447,9 @@ describe('security audit primitives', () => {
     it('returns newest N rows first when called with null (from head)', () => {
       const log = new SecurityAuditLog(tmpDbPath());
       for (let i = 1; i <= 5; i++) {
-        log.append(sampleEvent({ eventId: `evt-${i}`, correlationId: `corr-${i}` }));
+        log.append(
+          sampleEvent({ eventId: `evt-${i}`, correlationId: `corr-${i}` })
+        );
       }
       const result = log.listBefore(null, 3);
       expect(result.rows).toHaveLength(3);
@@ -440,7 +463,9 @@ describe('security audit primitives', () => {
     it('paginates correctly: listBefore(3, 100) returns rows 2,1 with nextBeforeSequence:1; listBefore(1,100) returns empty+null', () => {
       const log = new SecurityAuditLog(tmpDbPath());
       for (let i = 1; i <= 5; i++) {
-        log.append(sampleEvent({ eventId: `evt-${i}`, correlationId: `corr-${i}` }));
+        log.append(
+          sampleEvent({ eventId: `evt-${i}`, correlationId: `corr-${i}` })
+        );
       }
       const result = log.listBefore(3, 100);
       expect(result.rows).toHaveLength(2);
@@ -459,7 +484,9 @@ describe('security audit primitives', () => {
     it('caps limit at 200 when limit > 200 is requested', () => {
       const log = new SecurityAuditLog(tmpDbPath());
       for (let i = 1; i <= 5; i++) {
-        log.append(sampleEvent({ eventId: `evt-${i}`, correlationId: `corr-${i}` }));
+        log.append(
+          sampleEvent({ eventId: `evt-${i}`, correlationId: `corr-${i}` })
+        );
       }
       // Should not throw; limit capped at 200 internally
       const result = log.listBefore(null, 9999);
@@ -495,7 +522,9 @@ describe('security audit primitives', () => {
     it('returns the checkpoint values matching verify().lastHash after appends', () => {
       const log = new SecurityAuditLog(tmpDbPath());
       log.append(sampleEvent({ eventId: 'evt-1' }));
-      const second = log.append(sampleEvent({ eventId: 'evt-2', correlationId: 'corr-2' }));
+      const second = log.append(
+        sampleEvent({ eventId: 'evt-2', correlationId: 'corr-2' })
+      );
       const h = log.head();
       const v = log.verify();
       expect(h.latestSequence).toBe(2);
