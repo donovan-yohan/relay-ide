@@ -141,6 +141,7 @@ function FileTabContentBridge({
   const openFileTabs = useUiStore((s) => s.openFileTabs);
   const sendToTargetSessionId = useUiStore((s) => s.sendToTargetSessionId);
   const codeTabDirty = useUiStore((s) => s.codeTabDirty);
+  const codeTabPendingContent = useUiStore((s) => s.codeTabPendingContent);
   const setCodeTabDirty = useUiStore((s) => s.setCodeTabDirty);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const sessions = useSessionsStore((s) => s.sessions);
@@ -158,6 +159,7 @@ function FileTabContentBridge({
   const isCodeMode = tab.tabType !== 'html' && tab.tabType !== 'diff';
   const currentFileTabKey = fileTabKey(tab.filePath, tab.tabType);
   const isEditorDirty = Boolean(codeTabDirty[currentFileTabKey]);
+  const pendingEditorValue = codeTabPendingContent[currentFileTabKey];
 
   const {
     diff,
@@ -193,6 +195,7 @@ function FileTabContentBridge({
   const [editorValue, setEditorValue] = useState('');
   const [baselineContent, setBaselineContent] = useState('');
   const [baselineMtimeMs, setBaselineMtimeMs] = useState<number | null>(null);
+  const [baselineHydrated, setBaselineHydrated] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [diskConflict, setDiskConflict] = useState(false);
 
@@ -201,28 +204,52 @@ function FileTabContentBridge({
       return;
     }
     if (isEditorDirty) {
-      if (content !== baselineContent || mtimeMs !== baselineMtimeMs) {
+      const diskContent = content ?? '';
+      if (!baselineHydrated) {
+        setBaselineContent(diskContent);
+        setBaselineMtimeMs(mtimeMs);
+        setBaselineHydrated(true);
+        if (pendingEditorValue !== undefined) {
+          setEditorValue(pendingEditorValue);
+        }
+        setSaveError(null);
+        setDiskConflict(false);
+        return;
+      }
+      if (
+        pendingEditorValue !== undefined &&
+        editorValue !== pendingEditorValue
+      ) {
+        setEditorValue(pendingEditorValue);
+      }
+      if (diskContent !== baselineContent || mtimeMs !== baselineMtimeMs) {
         setDiskConflict(true);
         setSaveError('file changed on disk');
+      } else {
+        setDiskConflict(false);
       }
       return;
     }
     setEditorValue(content ?? '');
     setBaselineContent(content ?? '');
     setBaselineMtimeMs(mtimeMs);
+    setBaselineHydrated(true);
     setSaveError(null);
     setDiskConflict(false);
     setCodeTabDirty(tab.filePath, tab.tabType, false);
   }, [
     binary,
     baselineContent,
+    baselineHydrated,
     baselineMtimeMs,
     content,
     contentError,
     contentLoading,
+    editorValue,
     isEditorDirty,
     isCodeMode,
     mtimeMs,
+    pendingEditorValue,
     setCodeTabDirty,
     tab.filePath,
     tab.tabType,
@@ -240,8 +267,21 @@ function FileTabContentBridge({
   const refreshVersion = uiMatch?.refreshVersion;
 
   const handleRetry = useCallback(() => {
-    invalidateFileDiff({ workspacePath, filePath: tab.filePath, base });
-  }, [invalidateFileDiff, workspacePath, tab.filePath, base]);
+    if (isDiffMode) {
+      invalidateFileDiff({ workspacePath, filePath: tab.filePath, base });
+    }
+    if (isCodeMode) {
+      invalidateFileContent({ workspacePath, filePath: tab.filePath });
+    }
+  }, [
+    base,
+    invalidateFileContent,
+    invalidateFileDiff,
+    isCodeMode,
+    isDiffMode,
+    tab.filePath,
+    workspacePath,
+  ]);
 
   const handleCloseTab = useCallback(() => {
     closeFileTab(tab.filePath, tab.tabType);
@@ -252,7 +292,12 @@ function FileTabContentBridge({
       setEditorValue(next);
       setSaveError(null);
       setDiskConflict(false);
-      setCodeTabDirty(tab.filePath, tab.tabType, next !== baselineContent);
+      setCodeTabDirty(
+        tab.filePath,
+        tab.tabType,
+        next !== baselineContent,
+        next
+      );
     },
     [baselineContent, setCodeTabDirty, tab.filePath, tab.tabType]
   );
@@ -273,6 +318,7 @@ function FileTabContentBridge({
         );
         setBaselineContent(editorValue);
         setBaselineMtimeMs(result.mtimeMs);
+        setBaselineHydrated(true);
         setCodeTabDirty(tab.filePath, tab.tabType, false);
         invalidateFileDiff({ workspacePath, filePath: tab.filePath, base });
       } catch (err) {

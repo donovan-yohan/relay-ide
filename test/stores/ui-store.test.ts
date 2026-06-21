@@ -62,6 +62,7 @@ function resetStore() {
     openFileTabs: [],
     activeFileTabKey: null,
     codeTabDirty: {},
+    codeTabPendingContent: {},
     sendToTargetSessionId: null,
     lastChangedFiles: [],
     collapsedWorkspaces: new Set(),
@@ -555,27 +556,68 @@ describe('ui Zustand store', () => {
     it('closeAllFileTabs clears everything', () => {
       useUiStore.getState().openFileTab('src/a.ts', false);
       useUiStore.getState().openFileTab('src/b.ts', true);
-      useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
+      useUiStore
+        .getState()
+        .setCodeTabDirty('src/a.ts', 'code', true, 'unsaved a');
       useUiStore.getState().closeAllFileTabs();
       expect(useUiStore.getState().openFileTabs.length).toBe(0);
       expect(useUiStore.getState().activeFileTabKey).toBe(null);
       expect(useUiStore.getState().codeTabDirty).toEqual({});
+      expect(useUiStore.getState().codeTabPendingContent).toEqual({});
     });
 
-    it('setCodeTabDirty marks and clears editor dirty state by tab key', () => {
+    it('setCodeTabDirty stores and clears editor dirty state and pending text by tab key', () => {
       useUiStore.getState().openFileTab('src/a.ts', false);
-      useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
+      useUiStore
+        .getState()
+        .setCodeTabDirty('src/a.ts', 'code', true, 'unsaved text');
       expect(useUiStore.getState().codeTabDirty).toEqual({
         [fileTabKey('src/a.ts', 'code')]: true,
       });
+      expect(useUiStore.getState().codeTabPendingContent).toEqual({
+        [fileTabKey('src/a.ts', 'code')]: 'unsaved text',
+      });
+
+      useUiStore
+        .getState()
+        .setCodeTabDirty('src/a.ts', 'code', true, 'unsaved text v2');
+      expect(
+        useUiStore.getState().codeTabPendingContent[
+          fileTabKey('src/a.ts', 'code')
+        ]
+      ).toBe('unsaved text v2');
+
       useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', false);
       expect(useUiStore.getState().codeTabDirty).toEqual({});
+      expect(useUiStore.getState().codeTabPendingContent).toEqual({});
+    });
+
+    it('keeps pending editor text in the store for dirty tab remount hydration', () => {
+      useUiStore.getState().openFileTab('src/remount.ts', false);
+      useUiStore
+        .getState()
+        .setCodeTabDirty(
+          'src/remount.ts',
+          'code',
+          true,
+          'disk text\nunsaved edit\n'
+        );
+
+      const key = fileTabKey('src/remount.ts', 'code');
+      const remountedBridgeState = useUiStore.getState();
+
+      expect(remountedBridgeState.codeTabDirty[key]).toBe(true);
+      expect(remountedBridgeState.codeTabPendingContent[key]).toBe(
+        'disk text\nunsaved edit\n'
+      );
     });
 
     it('closeFileTab confirms before discarding dirty editor changes', () => {
       withMockWindowConfirm(false, (confirmSpy) => {
         useUiStore.getState().openFileTab('src/a.ts', false);
-        useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
+        useUiStore
+          .getState()
+          .setCodeTabDirty('src/a.ts', 'code', true, 'unsaved text');
         useUiStore.getState().closeFileTab('src/a.ts', 'code');
         expect(confirmSpy).toHaveBeenCalledWith(
           'discard unsaved changes to this file?'
@@ -584,16 +626,22 @@ describe('ui Zustand store', () => {
         expect(useUiStore.getState().codeTabDirty).toEqual({
           [fileTabKey('src/a.ts', 'code')]: true,
         });
+        expect(useUiStore.getState().codeTabPendingContent).toEqual({
+          [fileTabKey('src/a.ts', 'code')]: 'unsaved text',
+        });
       });
     });
 
     it('closeFileTab clears dirty editor state when discard is confirmed', () => {
       withMockWindowConfirm(true, () => {
         useUiStore.getState().openFileTab('src/a.ts', false);
-        useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
+        useUiStore
+          .getState()
+          .setCodeTabDirty('src/a.ts', 'code', true, 'unsaved text');
         useUiStore.getState().closeFileTab('src/a.ts', 'code');
         expect(useUiStore.getState().openFileTabs.length).toBe(0);
         expect(useUiStore.getState().codeTabDirty).toEqual({});
+        expect(useUiStore.getState().codeTabPendingContent).toEqual({});
       });
     });
 
@@ -601,7 +649,9 @@ describe('ui Zustand store', () => {
       withMockWindowConfirm(false, (confirmSpy) => {
         useUiStore.getState().openFileTab('src/a.ts', false);
         useUiStore.getState().openFileTab('src/b.ts', false);
-        useUiStore.getState().setCodeTabDirty('src/a.ts', 'code', true);
+        useUiStore
+          .getState()
+          .setCodeTabDirty('src/a.ts', 'code', true, 'unsaved text');
         useUiStore.getState().closeAllFileTabs();
         expect(confirmSpy).toHaveBeenCalledWith(
           'discard unsaved changes to all open files?'
@@ -609,6 +659,9 @@ describe('ui Zustand store', () => {
         expect(useUiStore.getState().openFileTabs.length).toBe(2);
         expect(useUiStore.getState().codeTabDirty).toEqual({
           [fileTabKey('src/a.ts', 'code')]: true,
+        });
+        expect(useUiStore.getState().codeTabPendingContent).toEqual({
+          [fileTabKey('src/a.ts', 'code')]: 'unsaved text',
         });
       });
     });

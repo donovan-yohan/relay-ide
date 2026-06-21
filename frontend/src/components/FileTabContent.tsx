@@ -22,6 +22,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   json: 'json',
   yaml: 'yaml',
   yml: 'yaml',
+  toml: 'toml',
   md: 'markdown',
   sh: 'bash',
   bash: 'bash',

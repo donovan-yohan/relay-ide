@@ -605,6 +605,12 @@ export interface UiState {
    * the git working-tree status, not editor dirtiness.
    */
   codeTabDirty: Record<string, boolean>;
+  /**
+   * #338: pending editor text per dirty code file tab, keyed by
+   * `fileTabKey(filePath, tabType)`, so unsaved CodeMirror buffers survive tab
+   * component remounts until save, reload-disk, or confirmed close.
+   */
+  codeTabPendingContent: Record<string, string>;
   sendToTargetSessionId: string | null;
   lastChangedFiles: string[];
   analyticsView: AnalyticsView;
@@ -643,7 +649,8 @@ export interface UiState {
   setCodeTabDirty: (
     filePath: string,
     tabType: FileTabType | undefined,
-    dirty: boolean
+    dirty: boolean,
+    pendingContent?: string
   ) => void;
   openHtmlTab: (filePath: string, token: string) => void;
   refreshHtmlTab: (filePath: string) => void;
@@ -694,6 +701,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   openFileTabs: [],
   activeFileTabKey: null,
   codeTabDirty: {},
+  codeTabPendingContent: {},
   sendToTargetSessionId: null,
   analyticsView: null,
   orgDashboardTab: 'active-work',
@@ -1167,7 +1175,12 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
 
   closeFileTab: (filePath, tabType) => {
-    const { openFileTabs, activeFileTabKey, codeTabDirty } = get();
+    const {
+      openFileTabs,
+      activeFileTabKey,
+      codeTabDirty,
+      codeTabPendingContent,
+    } = get();
     const removed = tabType
       ? openFileTabs.filter(
           (t) => t.filePath === filePath && t.tabType === tabType
@@ -1207,21 +1220,42 @@ export const useUiStore = create<UiState>()((set, get) => ({
       nextDirty = { ...codeTabDirty };
       for (const k of removedKeys) delete nextDirty[k];
     }
+    let nextPendingContent = codeTabPendingContent;
+    if (removedKeys.some((k) => k in codeTabPendingContent)) {
+      nextPendingContent = { ...codeTabPendingContent };
+      for (const k of removedKeys) delete nextPendingContent[k];
+    }
     set({
       openFileTabs: next,
       activeFileTabKey: newActiveKey,
       codeTabDirty: nextDirty,
+      codeTabPendingContent: nextPendingContent,
     });
   },
 
-  setCodeTabDirty: (filePath, tabType, dirty) => {
-    const { codeTabDirty } = get();
+  setCodeTabDirty: (filePath, tabType, dirty, pendingContent) => {
+    const { codeTabDirty, codeTabPendingContent } = get();
     const key = fileTabKey(filePath, tabType);
-    if (Boolean(codeTabDirty[key]) === dirty) return;
+    const hasPendingContent = key in codeTabPendingContent;
+    const pendingChanged =
+      pendingContent !== undefined &&
+      codeTabPendingContent[key] !== pendingContent;
+    if (
+      Boolean(codeTabDirty[key]) === dirty &&
+      !pendingChanged &&
+      (dirty || !hasPendingContent)
+    )
+      return;
     const next = { ...codeTabDirty };
+    const nextPendingContent = { ...codeTabPendingContent };
     if (dirty) next[key] = true;
     else delete next[key];
-    set({ codeTabDirty: next });
+    if (dirty && pendingContent !== undefined) {
+      nextPendingContent[key] = pendingContent;
+    } else if (!dirty) {
+      delete nextPendingContent[key];
+    }
+    set({ codeTabDirty: next, codeTabPendingContent: nextPendingContent });
   },
 
   closeAllFileTabs: () => {
@@ -1235,7 +1269,12 @@ export const useUiStore = create<UiState>()((set, get) => ({
     ) {
       return;
     }
-    set({ openFileTabs: [], activeFileTabKey: null, codeTabDirty: {} });
+    set({
+      openFileTabs: [],
+      activeFileTabKey: null,
+      codeTabDirty: {},
+      codeTabPendingContent: {},
+    });
   },
 
   openHtmlTab: (filePath, token) =>
