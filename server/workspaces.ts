@@ -2177,6 +2177,168 @@ export function createWorkspaceRouter(deps: WorkspaceDeps): Router {
     }
   });
 
+  // PUT /workspaces/file-content — write raw UTF-8 file content under a
+  // workspace. Mirrors the GET validation (path/symlink/escape guards + 2MiB
+  // cap), adds mtime-based optimistic concurrency, and writes atomically via a
+  // same-dir temp file + rename so a partial write never clobbers the original.
+  router.put('/file-content', async (req: Request, res: Response) => {
+    if (
+      typeof req.query.path !== 'string' ||
+      typeof req.query.file !== 'string'
+    ) {
+      res.status(400).json({ error: 'path and file parameters required' });
+      return;
+    }
+    const filePath = req.query.file;
+
+    const body = (req.body ?? {}) as {
+      content?: unknown;
+      expectedMtimeMs?: unknown;
+    };
+    if (typeof body.content !== 'string') {
+      res.status(400).json({ error: 'content must be a string' });
+      return;
+    }
+    const content = body.content;
+    const expectedMtimeMs =
+      typeof body.expectedMtimeMs === 'number'
+        ? body.expectedMtimeMs
+        : undefined;
+
+    const resolvedRepo = validateWorkspaceAccess(req.query.path);
+    if (!resolvedRepo) {
+      res.status(403).json({ error: ERR_PATH_NOT_IN_WORKSPACES });
+      return;
+    }
+
+    const expandedFile = expandTilde(filePath);
+    if (
+      expandedFile.includes('..') ||
+      (path.isAbsolute(filePath) && !filePath.startsWith('~'))
+    ) {
+      res.status(400).json({ error: 'invalid file path' });
+      return;
+    }
+
+    const MAX_BYTES = 2 * 1024 * 1024;
+    const sizeBytes = Buffer.byteLength(content, 'utf-8');
+    if (sizeBytes > MAX_BYTES) {
+      res
+        .status(413)
+        .json({ error: 'file too large', sizeBytes, maxBytes: MAX_BYTES });
+      return;
+    }
+
+    try {
+      const repoRoot = await fs.promises.realpath(resolvedRepo);
+      const absFile = path.resolve(repoRoot, expandedFile);
+      if (absFile !== repoRoot && !absFile.startsWith(repoRoot + path.sep)) {
+        res.status(400).json({ error: 'file path escapes repo' });
+        return;
+      }
+
+      // Lexical path checks are not enough: a symlinked parent directory inside
+      // the workspace could redirect a valid-looking relative path outside the
+      // repo. Walk parents from target dir back to repo root and reject any
+      // symlink before touching the target.
+      for (
+        let parent = path.dirname(absFile);
+        parent !== repoRoot;
+        parent = path.dirname(parent)
+      ) {
+        const parentStat = await fs.promises.lstat(parent);
+        if (parentStat.isSymbolicLink()) {
+          res.status(400).json({ error: 'invalid file path' });
+          return;
+        }
+      }
+
+      // The target must already exist as a regular file. Reject symlinks so a
+      // write can never be redirected out of the workspace.
+      let currentStat: fs.Stats;
+      try {
+        currentStat = await fs.promises.lstat(absFile);
+      } catch (statErr) {
+        if ((statErr as NodeJS.ErrnoException).code === 'ENOENT') {
+          res.status(404).json({ error: 'file not found' });
+          return;
+        }
+        throw statErr;
+      }
+      if (currentStat.isSymbolicLink()) {
+        res.status(400).json({ error: 'invalid file path' });
+        return;
+      }
+      if (!currentStat.isFile()) {
+        res.status(400).json({ error: 'not a regular file' });
+        return;
+      }
+
+      // Optimistic concurrency: when the caller pins the mtime it last read,
+      // refuse the write if the on-disk file changed underneath it and return
+      // the current mtime + content hash so the UI can offer reload/overwrite.
+      if (
+        expectedMtimeMs !== undefined &&
+        currentStat.mtimeMs !== expectedMtimeMs
+      ) {
+        const currentBuf = await fs.promises.readFile(absFile);
+        const contentHash = crypto
+          .createHash('sha256')
+          .update(currentBuf)
+          .digest('hex');
+        res.status(412).json({
+          error: 'file modified on disk',
+          code: 'mtime_mismatch',
+          mtimeMs: currentStat.mtimeMs,
+          sizeBytes: currentStat.size,
+          contentHash,
+        });
+        return;
+      }
+
+      // Atomic write: temp file in the same directory, then rename over the
+      // target. Same-dir keeps the rename on one filesystem (atomic); the temp
+      // is cleaned up if the rename fails.
+      const dir = path.dirname(absFile);
+      const tmpPath = path.join(
+        dir,
+        `.${path.basename(absFile)}.${crypto
+          .randomBytes(6)
+          .toString('hex')}.tmp`
+      );
+      try {
+        await fs.promises.writeFile(tmpPath, content, {
+          encoding: 'utf-8',
+          mode: currentStat.mode,
+        });
+        await fs.promises.rename(tmpPath, absFile);
+      } catch (writeErr) {
+        await fs.promises.rm(tmpPath, { force: true }).catch(() => {});
+        throw writeErr;
+      }
+
+      const newStat = await fs.promises.stat(absFile);
+      res.json({ mtimeMs: newStat.mtimeMs, sizeBytes: newStat.size });
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        res.status(404).json({ error: 'file not found' });
+        return;
+      }
+      if (code === 'EACCES') {
+        res.status(403).json({ error: 'permission denied' });
+        return;
+      }
+      logger.warn(
+        'PUT /file-content failed for',
+        resolvedRepo,
+        filePath,
+        err instanceof Error ? err.message : String(err)
+      );
+      res.status(500).json({ error: 'failed to write file' });
+    }
+  });
+
   // GET /workspaces/default-branch — detect the default branch for a repo
   router.get('/default-branch', async (req: Request, res: Response) => {
     if (typeof req.query.path !== 'string') {

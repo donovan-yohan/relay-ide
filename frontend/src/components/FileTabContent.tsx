@@ -22,6 +22,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   json: 'json',
   yaml: 'yaml',
   yml: 'yaml',
+  toml: 'toml',
   md: 'markdown',
   sh: 'bash',
   bash: 'bash',
@@ -253,7 +254,7 @@ export function FileTabContent({
     if (error) {
       return (
         <div className="error-viewer">
-          <div className="error-text">failed to load diff: {error}</div>
+          <div className="error-text">failed to load file: {error}</div>
           <div className="error-actions">
             <button className="retry-btn" onClick={onRetry}>
               retry
