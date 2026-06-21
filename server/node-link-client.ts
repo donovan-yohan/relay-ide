@@ -108,8 +108,13 @@ const DEFAULTS = {
 const TERMINAL_ERROR_CODES = new Set<RelayNodeError['code']>([
   'NODE_REVOKED',
   'PROTOCOL_INCOMPATIBLE',
+  'REPAIR_REQUIRED',
   'UNAUTHORIZED',
 ]);
+
+function isTerminalHandshakeError(error: Error): boolean {
+  return /Unexpected server response: (401|403)\b/.test(error.message);
+}
 
 function toLinkUrl(hubUrl: string): string {
   const url = new URL('/hub/node-link', hubUrl);
@@ -486,6 +491,11 @@ export function createNodeLinkClient(deps: NodeLinkClientDeps): NodeLinkClient {
 
     socket.on('error', (err) => {
       if (stopped || ws !== socket) return;
+      if (isTerminalHandshakeError(err)) {
+        logger.error(`terminal handshake error from hub: ${err.message}`);
+        void stop(err.message);
+        return;
+      }
       logger.warn(`socket error: ${err.message}`);
     });
   }

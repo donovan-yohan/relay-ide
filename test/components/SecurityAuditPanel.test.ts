@@ -91,6 +91,20 @@ describe('SecurityAuditPanel', () => {
     expect(html).toContain('2 entries');
   });
 
+  it('does not auto-verify the hash chain on render', () => {
+    const html = render([
+      {
+        entries: [makeEntry(1)],
+        nextBeforeSequence: null,
+        head: { latestSequence: 1, latestHash: 'd'.repeat(64) },
+      },
+    ]);
+    expect(html).toContain('[not checked]');
+    expect(html).toContain('verify chain');
+    expect(html).not.toContain('[ok]');
+    expect(html).not.toContain('[break]');
+  });
+
   it('shows [ok] when verify returns ok:true', () => {
     const html = render(
       [
