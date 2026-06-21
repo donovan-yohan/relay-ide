@@ -418,6 +418,24 @@ function getAllocatorOrNull(): ReturnType<typeof getDefaultAllocator> | null {
   }
 }
 
+const portReconciliationWarningKeys = new Set<string>();
+
+function logPortReconciliationOnce(
+  key: string,
+  message: string,
+  ...args: unknown[]
+): void {
+  if (portReconciliationWarningKeys.has(key)) {
+    logger.debug(message, ...args);
+    return;
+  }
+  if (portReconciliationWarningKeys.size > 512) {
+    portReconciliationWarningKeys.clear();
+  }
+  portReconciliationWarningKeys.add(key);
+  logger.warn(message, ...args);
+}
+
 function logPortReconciliationFailure(err: unknown): void {
   logger.warn(
     'Port reconciliation failed:',
@@ -1488,7 +1506,8 @@ async function main(): Promise<void> {
     try {
       worktrees = await listNonMainWorktrees(repoPath);
     } catch (err) {
-      logger.debug(
+      logPortReconciliationOnce(
+        `list:${repoPath}`,
         'Failed to list worktrees for port reconciliation:',
         repoPath,
         err instanceof Error ? err.message : err
@@ -1496,8 +1515,17 @@ async function main(): Promise<void> {
       return;
     }
 
-    const activeWorktreePaths = new Set(worktrees.map((wt) => wt.path));
-    for (const worktree of worktrees) {
+    const existingWorktrees = worktrees.filter((worktree) => {
+      if (fs.existsSync(worktree.path)) return true;
+      logPortReconciliationOnce(
+        `missing-worktree:${repoPath}:${worktree.path}`,
+        'Skipping port reconciliation for missing worktree:',
+        worktree.path
+      );
+      return false;
+    });
+    const activeWorktreePaths = new Set(existingWorktrees.map((wt) => wt.path));
+    for (const worktree of existingWorktrees) {
       try {
         const ports = await allocator.reconcilePortsForWorktree(
           repoPath,
@@ -1527,11 +1555,20 @@ async function main(): Promise<void> {
           assignment.worktreeId,
           assignment.variableName
         );
-        removePortsFromEnvFile(assignment.worktreeId, [
-          assignment.variableName,
-        ]);
+        if (fs.existsSync(assignment.worktreeId)) {
+          removePortsFromEnvFile(assignment.worktreeId, [
+            assignment.variableName,
+          ]);
+        } else {
+          logPortReconciliationOnce(
+            `cleanup-missing:${repoPath}:${assignment.worktreeId}`,
+            'Released stale port assignment for missing worktree:',
+            assignment.worktreeId
+          );
+        }
       } catch (err) {
-        logger.warn(
+        logPortReconciliationOnce(
+          `cleanup-failed:${repoPath}:${assignment.worktreeId}`,
           'Failed to clean up stale port assignment:',
           assignment.worktreeId,
           err instanceof Error ? err.message : err

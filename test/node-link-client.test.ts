@@ -284,6 +284,56 @@ describe('node link client (unit)', () => {
     expect(client.getState()).toBe('stopped');
     expect(timers.scheduled()).toEqual([]);
   });
+
+  it('stops permanently on REPAIR_REQUIRED control.error', async () => {
+    const fake = new FakeSocket();
+    const factory: NodeLinkWebSocketFactory = () => fake;
+    const timers = fakeTimerEnv();
+    const client = createNodeLinkClient({
+      hubUrl: 'http://hub.test',
+      credential: { nodeId: 'node-1', token: 't' },
+      getManifest: () => fakeManifest(),
+      webSocketFactory: factory,
+      ...timers,
+    });
+    client.start();
+    fake.open();
+    await new Promise((r) => setImmediate(r));
+    fake.push({
+      protocol: RELAY_NODE_LINK_PROTOCOL,
+      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+      nodeId: 'node-1',
+      channel: 'control',
+      type: 'control.error',
+      timestamp: new Date().toISOString(),
+      error: {
+        code: 'REPAIR_REQUIRED',
+        message: 're-pair required',
+        retryable: false,
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(client.getState()).toBe('stopped');
+    expect(timers.scheduled()).toEqual([]);
+  });
+
+  it('stops permanently on terminal 403 websocket handshake failure', async () => {
+    const fake = new FakeSocket();
+    const factory: NodeLinkWebSocketFactory = () => fake;
+    const timers = fakeTimerEnv();
+    const client = createNodeLinkClient({
+      hubUrl: 'http://hub.test',
+      credential: { nodeId: 'node-1', token: 'stale' },
+      getManifest: () => fakeManifest(),
+      webSocketFactory: factory,
+      ...timers,
+    });
+    client.start();
+    fake.emit('error', new Error('Unexpected server response: 403'));
+    await new Promise((r) => setImmediate(r));
+    expect(client.getState()).toBe('stopped');
+    expect(timers.scheduled()).toEqual([]);
+  });
 });
 
 function tmpRegistry(now = () => new Date('2026-01-02T03:04:05.000Z')) {

@@ -2556,6 +2556,50 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     expect(body.entriesVerified).toBe(2);
   });
 
+  it('GET /hub/audit/verify serves cheap head checks unless forced', async () => {
+    const { tmpDir, registry } = tmpRegistry();
+    cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    let verifyCalls = 0;
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createHubNodeRouter({
+        registry,
+        auditSink: {
+          append: () => undefined,
+          head: () => ({ latestSequence: 7, latestHash: 'h7' }),
+          verify: () => {
+            verifyCalls += 1;
+            return { ok: true, entriesVerified: 7, lastHash: 'h7' };
+          },
+        },
+        requireAuth: (req, res, next) => {
+          if (req.header('x-test-auth') === 'yes') next();
+          else res.status(401).json(auth.browserSessionRequiredChallenge());
+        },
+      })
+    );
+    const server = http.createServer(app);
+    const port = await listen(server);
+    cleanup.push(() => close(server));
+    const base = `http://127.0.0.1:${port}`;
+
+    for (let i = 0; i < 3; i++) {
+      const res = await fetch(`${base}/hub/audit/verify`, {
+        headers: { 'x-test-auth': 'yes' },
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: true });
+    }
+    expect(verifyCalls).toBe(0);
+
+    const forced = await fetch(`${base}/hub/audit/verify?force=1`, {
+      headers: { 'x-test-auth': 'yes' },
+    });
+    expect(forced.status).toBe(200);
+    expect(verifyCalls).toBe(1);
+  });
+
   it('returns 503 when auditSink has no listBefore/head', async () => {
     const { tmpDir, registry } = tmpRegistry();
     cleanup.push(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
@@ -2671,7 +2715,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     cleanup.push(() => close(server));
     const base = `http://127.0.0.1:${port}`;
 
-    const res = await fetch(`${base}/hub/audit/verify`, {
+    const res = await fetch(`${base}/hub/audit/verify?force=1`, {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(res.status).toBe(500);
@@ -2777,7 +2821,7 @@ describe('GET /hub/audit/entries and /hub/audit/verify', () => {
     cleanup.push(() => tamperedLog.close());
     const { base } = await startServer(tamperedLog);
 
-    const res = await fetch(`${base}/hub/audit/verify`, {
+    const res = await fetch(`${base}/hub/audit/verify?force=1`, {
       headers: { 'x-test-auth': 'yes' },
     });
     expect(res.status).toBe(200);

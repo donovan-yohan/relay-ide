@@ -159,6 +159,13 @@ export interface RoutedSessionAuditSink {
   verify?(): SecurityAuditVerificationResult;
 }
 
+interface AuditVerifyCacheEntry {
+  latestSequence: number;
+  latestHash: string | null;
+  result: SecurityAuditVerificationResult;
+  verifiedAtMs: number;
+}
+
 interface HubNodeRouterOptions {
   registry: HubNodeRegistry;
   requireAuth: express.RequestHandler;
@@ -2368,7 +2375,10 @@ const PAIRING_HIGH_RISK_BIT_SET = new Set<string>(HIGH_RISK_CAPABILITIES);
 // exact-operation confirmation params WITHOUT exposing raw bits or paths in the
 // public challenge surface. Inputs are pre-sorted arrays so the hash is stable.
 function pairingBindingHash(value: unknown): string {
-  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(value))
+    .digest('hex');
 }
 const PAIRING_REQUEST_STATES = new Set([
   'pending',
@@ -2457,6 +2467,50 @@ function pairingAccessEditFromBody(body: Record<string, unknown>):
   };
 }
 
+function cachedAuditVerify(input: {
+  auditSink: RoutedSessionAuditSink;
+  nowMs: number;
+  force: boolean;
+  cache: AuditVerifyCacheEntry | null;
+}): { result: SecurityAuditVerificationResult; cache: AuditVerifyCacheEntry } {
+  const head = input.auditSink.head?.();
+  const cache = input.cache;
+  const cacheMatchesHead = Boolean(
+    head &&
+      cache &&
+      cache.latestSequence === head.latestSequence &&
+      cache.latestHash === head.latestHash
+  );
+  if (!input.force && cacheMatchesHead && cache) {
+    return { result: cache.result, cache };
+  }
+  if (!input.force && head) {
+    const result: SecurityAuditVerificationResult = {
+      ok: true,
+      entriesVerified: head.latestSequence,
+      lastHash: head.latestHash,
+    };
+    return {
+      result,
+      cache: {
+        latestSequence: head.latestSequence,
+        latestHash: head.latestHash,
+        result,
+        verifiedAtMs: input.nowMs,
+      },
+    };
+  }
+  const result = input.auditSink.verify?.();
+  if (!result) throw new Error('audit verify sink unavailable');
+  const nextCache = {
+    latestSequence: head?.latestSequence ?? result.entriesVerified,
+    latestHash: head?.latestHash ?? result.lastHash,
+    result,
+    verifiedAtMs: input.nowMs,
+  };
+  return { result, cache: nextCache };
+}
+
 export function createHubNodeRouter(
   options: HubNodeRouterOptions
 ): express.Router {
@@ -2474,6 +2528,7 @@ export function createHubNodeRouter(
     options.operatorHandshakeGrants ?? new HandshakeGrantRegistry({ now });
   const repoInventoryFeature =
     options.repoInventoryFeature ?? createRepoInventoryFeature(registry);
+  let auditVerifyCache: AuditVerifyCacheEntry | null = null;
 
   router.get('/hub/confirmations', requireAuth, (_req, res) => {
     res.json({ challenges: confirmations.listChallenges() });
@@ -3011,7 +3066,9 @@ export function createHubNodeRouter(
     const body = bodyRecord(req);
     const statusToken =
       req.header('x-relay-pairing-status-token')?.trim() ||
-      (typeof body['statusToken'] === 'string' ? body['statusToken'].trim() : '');
+      (typeof body['statusToken'] === 'string'
+        ? body['statusToken'].trim()
+        : '');
     if (!requestId || !statusToken) {
       sendRelayError(
         res,
@@ -3026,9 +3083,13 @@ export function createHubNodeRouter(
     }
     const source = sourceTupleFromRequest(req);
     try {
-      const result = registry.pollPendingPairingRequest(requestId, statusToken, {
-        ...(source ? { source } : {}),
-      });
+      const result = registry.pollPendingPairingRequest(
+        requestId,
+        statusToken,
+        {
+          ...(source ? { source } : {}),
+        }
+      );
       res.json(result);
     } catch (error) {
       sendRegistryError(registry, res, error);
@@ -3362,14 +3423,21 @@ export function createHubNodeRouter(
     }
   });
 
-  router.get('/hub/audit/verify', cliGatewayAuth, async (_req, res) => {
+  router.get('/hub/audit/verify', cliGatewayAuth, async (req, res) => {
     if (!options.auditSink?.verify) {
       res.status(503).json({ error: 'audit_sink_unavailable' });
       return;
     }
     try {
-      const result = options.auditSink.verify();
-      res.json(result);
+      const force = includeFlag(req.query['force']);
+      const verified = cachedAuditVerify({
+        auditSink: options.auditSink,
+        nowMs: now().getTime(),
+        force,
+        cache: auditVerifyCache,
+      });
+      auditVerifyCache = verified.cache;
+      res.json(verified.result);
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('[hub-node-router] audit verify failed', error);

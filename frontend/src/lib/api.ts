@@ -2865,8 +2865,13 @@ export async function fetchSecurityAuditEntries(params?: {
   );
 }
 
-export async function fetchSecurityAuditVerify(): Promise<SecurityAuditVerifyResponse> {
-  return json<SecurityAuditVerifyResponse>(await fetch('/hub/audit/verify'));
+export async function fetchSecurityAuditVerify(options?: {
+  force?: boolean;
+}): Promise<SecurityAuditVerifyResponse> {
+  const query = options?.force ? '?force=1' : '';
+  return json<SecurityAuditVerifyResponse>(
+    await fetch(`/hub/audit/verify${query}`)
+  );
 }
 
 // ---------------------------------------------------------------------------

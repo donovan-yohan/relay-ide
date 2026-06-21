@@ -29,7 +29,11 @@ function shortIso(ts: string): string {
 }
 
 function decisionClass(decision: string): string {
-  if (decision === 'allow' || decision === 'approved' || decision === 'recorded') {
+  if (
+    decision === 'allow' ||
+    decision === 'approved' ||
+    decision === 'recorded'
+  ) {
     return 'audit-decision-allow';
   }
   if (decision === 'requires_confirmation') {
@@ -53,17 +57,28 @@ function AuditTableRow({ row }: AuditRowProps) {
         title="click to expand"
       >
         <td className="audit-cell audit-cell-seq">{row.sequence}</td>
-        <td className="audit-cell audit-cell-time">{shortIso(row.timestamp)}</td>
+        <td className="audit-cell audit-cell-time">
+          {shortIso(row.timestamp)}
+        </td>
         <td className="audit-cell audit-cell-event">{row.eventType}</td>
-        <td className={`audit-cell audit-cell-decision ${decisionClass(row.decision)}`}>
+        <td
+          className={`audit-cell audit-cell-decision ${decisionClass(row.decision)}`}
+        >
           {row.decision}
         </td>
-        <td className="audit-cell audit-cell-node">{row.node.nodeId?.slice(0, 12) ?? '—'}</td>
+        <td className="audit-cell audit-cell-node">
+          {row.node.nodeId?.slice(0, 12) ?? '—'}
+        </td>
         <td className="audit-cell audit-cell-intent">{row.intent.action}</td>
         <td className="audit-cell audit-cell-bits">
-          <span className="audit-bits-granted">{row.grantedBits.join(' ')}</span>
+          <span className="audit-bits-granted">
+            {row.grantedBits.join(' ')}
+          </span>
           {row.deniedBits.length > 0 && (
-            <span className="audit-bits-denied"> /{row.deniedBits.join(' ')}</span>
+            <span className="audit-bits-denied">
+              {' '}
+              /{row.deniedBits.join(' ')}
+            </span>
           )}
         </td>
         <td className="audit-cell audit-cell-corr" title={row.correlationId}>
@@ -101,7 +116,8 @@ function AuditTableRow({ row }: AuditRowProps) {
 function auditEntriesErrorMessage(error: unknown): string {
   if (error instanceof HttpError) {
     if (error.status === 503) return 'audit sink not available on this hub';
-    if (error.status === 401) return 'authentication expired · refresh and re-enter pin';
+    if (error.status === 401)
+      return 'authentication expired · refresh and re-enter pin';
     if (error.status === 403) return 'not authorized to view audit log';
     return `could not load audit log (http ${error.status})`;
   }
@@ -121,7 +137,10 @@ export function SecurityAuditPanel() {
     queryKey: ['security-audit'],
     initialPageParam: null as number | null,
     queryFn: ({ pageParam }) =>
-      fetchSecurityAuditEntries({ beforeSequence: pageParam as number | null, limit: 50 }),
+      fetchSecurityAuditEntries({
+        beforeSequence: pageParam as number | null,
+        limit: 50,
+      }),
     getNextPageParam: (last) => last.nextBeforeSequence ?? undefined,
     staleTime: 30_000,
     refetchOnWindowFocus: 'always',
@@ -129,15 +148,17 @@ export function SecurityAuditPanel() {
   });
 
   const head = data?.pages[0]?.head;
+  const [verifyRequested, setVerifyRequested] = useState(false);
 
   const {
     data: verifyData,
-    isLoading: verifyLoading,
+    isFetching: verifyLoading,
     isError: verifyError,
+    refetch: refetchVerify,
   } = useQuery({
     queryKey: ['security-audit-verify', head?.latestSequence ?? 0],
-    queryFn: fetchSecurityAuditVerify,
-    enabled: head !== undefined,
+    queryFn: () => fetchSecurityAuditVerify({ force: verifyRequested }),
+    enabled: false,
     staleTime: Infinity,
   });
 
@@ -152,7 +173,9 @@ export function SecurityAuditPanel() {
     );
   } else if (verifyError) {
     chainStatusNode = (
-      <span className="audit-chain-status audit-chain-break">[verify failed]</span>
+      <span className="audit-chain-status audit-chain-break">
+        [verify failed]
+      </span>
     );
   } else if (verifyData !== undefined) {
     const chainOk = verifyData.ok;
@@ -163,7 +186,18 @@ export function SecurityAuditPanel() {
         [{chainOk ? 'ok' : 'break'}]
       </span>
     );
+  } else if (head || verifyRequested) {
+    chainStatusNode = (
+      <span className="audit-chain-status audit-chain-pending">
+        [not checked]
+      </span>
+    );
   }
+
+  const handleVerifyClick = () => {
+    setVerifyRequested(true);
+    void refetchVerify();
+  };
 
   return (
     <div className="security-audit-panel">
@@ -178,6 +212,15 @@ export function SecurityAuditPanel() {
           </span>
         )}
         {chainStatusNode}
+        <button
+          type="button"
+          className="audit-verify-chain"
+          onClick={handleVerifyClick}
+          disabled={!head || verifyLoading}
+          title="full hash-chain verification can scan the whole audit log"
+        >
+          {verifyLoading ? 'verifying…' : 'verify chain'}
+        </button>
       </header>
 
       {isLoading && <p className="audit-state-msg">loading…</p>}
