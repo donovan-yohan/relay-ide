@@ -81,7 +81,7 @@ const CLI_AGENT_WEB_SURFACES = ['cli', 'agent', 'web'] as const;
 const UI_ACTION_BY_GATEWAY_COMMAND: Partial<
   Record<RelayCliGatewayCommand, string>
 > = {
-  'sessions.list': 'session.start-work-in-env',
+  'settings.get': 'settings.open',
 };
 
 const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
