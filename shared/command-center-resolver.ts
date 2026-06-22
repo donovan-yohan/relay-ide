@@ -12,8 +12,15 @@ import {
 import {
   relayActionDescriptorFromCommandDefinition,
   type RelayActionDescriptor,
+  type RelayActionAvailabilityState,
   type RelayActionSurface,
 } from './action-descriptor.js';
+import {
+  commandCenterExplainCoverageForCommand,
+  commandCenterExplainRelatedActionIds,
+  commandCenterExplainRelatedCommandIds,
+  isCommandCenterExplainCitationId,
+} from './command-center-resolver-corpus.js';
 import type { RelayCapabilityBit } from './security-policy.js';
 
 export interface CommandCenterResolverCatalogEntry {
@@ -27,6 +34,10 @@ export interface CommandCenterResolverCatalogEntry {
   scopeKinds: readonly RelayCommandScopeKind[];
   capabilityHints: readonly RelayCapabilityBit[];
   surfaces: readonly RelayActionSurface[];
+  availability: {
+    state: RelayActionAvailabilityState;
+    reason?: string;
+  };
   ui?: {
     actionId?: string;
     category?: string;
@@ -81,6 +92,9 @@ export interface CommandCenterProviderIntent {
   scopeKinds?: readonly string[];
   capabilityHints?: readonly string[];
   surfaces?: readonly string[];
+  citations?: readonly string[];
+  relatedCommandIds?: readonly string[];
+  relatedActionIds?: readonly string[];
   ui?: {
     actionId?: string;
     category?: string;
@@ -132,6 +146,7 @@ export type CommandCenterResolution =
     }
   | {
       kind: 'ask_followup';
+      commandId?: RelayCliGatewayCommand;
       question: string;
       confidence: number;
       rationale?: string;
@@ -142,6 +157,9 @@ export type CommandCenterResolution =
       message: string;
       confidence: number;
       rationale?: string;
+      citations: readonly string[];
+      relatedCommandIds: readonly RelayCliGatewayCommand[];
+      relatedActionIds: readonly string[];
       suggestions: readonly CommandCenterResolverSearchHit[];
     }
   | {
@@ -217,6 +235,12 @@ export function catalogEntryFromActionDescriptor(
       descriptor.availability.capabilityHints ??
       ([] as readonly RelayCapabilityBit[]),
     surfaces: descriptor.surfaces,
+    availability: {
+      state: descriptor.availability.state,
+      ...(descriptor.availability.reason
+        ? { reason: descriptor.availability.reason }
+        : {}),
+    },
     ...(descriptor.ui
       ? {
           ui: {
@@ -513,6 +537,153 @@ function isCommandCenterIntentKind(
   );
 }
 
+function isStringArray(value: unknown): value is readonly string[] {
+  return (
+    Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+  );
+}
+
+function knownRelatedActionIdsForCommands(
+  commandIds: readonly RelayCliGatewayCommand[],
+  catalog: CommandCenterResolverCatalog
+): string[] {
+  return commandIds
+    .map((commandId) => catalog.byCommandId.get(commandId)?.ui?.actionId)
+    .filter((actionId): actionId is string => typeof actionId === 'string');
+}
+
+function validateRelatedCommandIds(
+  commandIds: readonly string[] | undefined,
+  catalog: CommandCenterResolverCatalog,
+  citations: readonly string[],
+  suggestions: readonly CommandCenterResolverSearchHit[],
+  claim: Pick<CommandCenterProviderIntent, 'confidence' | 'rationale'>
+): RelayCliGatewayCommand[] | CommandCenterResolution {
+  if (commandIds === undefined) {
+    return commandCenterExplainRelatedCommandIds(citations).filter(
+      (commandId) => catalog.byCommandId.has(commandId)
+    );
+  }
+  if (!isStringArray(commandIds)) {
+    return noMatch(
+      'malformed-output',
+      suggestions,
+      'relatedCommandIds must be strings',
+      claim
+    );
+  }
+  const out: RelayCliGatewayCommand[] = [];
+  for (const commandId of commandIds) {
+    const relayCommandId = commandId as RelayCliGatewayCommand;
+    if (!catalog.byCommandId.has(relayCommandId)) {
+      return noMatch(
+        'metadata-mismatch',
+        suggestions,
+        `unknown related command ${commandId}`,
+        claim
+      );
+    }
+    if (
+      !commandCenterExplainCoverageForCommand(relayCommandId).some((entry) =>
+        citations.includes(entry.id)
+      )
+    ) {
+      return noMatch(
+        'metadata-mismatch',
+        suggestions,
+        `related command ${commandId} is not covered by cited explain corpus`,
+        claim
+      );
+    }
+    out.push(relayCommandId);
+  }
+  return uniqueStrings(out) as RelayCliGatewayCommand[];
+}
+
+function validateRelatedActionIds(
+  actionIds: readonly string[] | undefined,
+  commandIds: readonly RelayCliGatewayCommand[],
+  catalog: CommandCenterResolverCatalog,
+  citations: readonly string[],
+  suggestions: readonly CommandCenterResolverSearchHit[],
+  claim: Pick<CommandCenterProviderIntent, 'confidence' | 'rationale'>
+): string[] | CommandCenterResolution {
+  const known = new Set([
+    ...commandCenterExplainRelatedActionIds(citations),
+    ...knownRelatedActionIdsForCommands(commandIds, catalog),
+  ]);
+  if (actionIds === undefined) return Array.from(known).sort();
+  if (!isStringArray(actionIds)) {
+    return noMatch(
+      'malformed-output',
+      suggestions,
+      'relatedActionIds must be strings',
+      claim
+    );
+  }
+  for (const actionId of actionIds) {
+    if (!known.has(actionId)) {
+      return noMatch(
+        'metadata-mismatch',
+        suggestions,
+        `unknown related action ${actionId}`,
+        claim
+      );
+    }
+  }
+  return uniqueStrings(actionIds);
+}
+
+function validateExplainGrounding(
+  claim: CommandCenterProviderIntent,
+  catalog: CommandCenterResolverCatalog,
+  suggestions: readonly CommandCenterResolverSearchHit[]
+):
+  | {
+      citations: readonly string[];
+      relatedCommandIds: readonly RelayCliGatewayCommand[];
+      relatedActionIds: readonly string[];
+    }
+  | CommandCenterResolution {
+  if (!isStringArray(claim.citations) || claim.citations.length === 0) {
+    return noMatch(
+      'metadata-mismatch',
+      suggestions,
+      'explain output must cite the resolver explain corpus',
+      claim
+    );
+  }
+  for (const citation of claim.citations) {
+    if (!isCommandCenterExplainCitationId(citation)) {
+      return noMatch(
+        'metadata-mismatch',
+        suggestions,
+        `unknown explain citation ${citation}`,
+        claim
+      );
+    }
+  }
+  const citations = uniqueStrings(claim.citations);
+  const relatedCommandIds = validateRelatedCommandIds(
+    claim.relatedCommandIds,
+    catalog,
+    citations,
+    suggestions,
+    claim
+  );
+  if (!Array.isArray(relatedCommandIds)) return relatedCommandIds;
+  const relatedActionIds = validateRelatedActionIds(
+    claim.relatedActionIds,
+    relatedCommandIds,
+    catalog,
+    citations,
+    suggestions,
+    claim
+  );
+  if (!Array.isArray(relatedActionIds)) return relatedActionIds;
+  return { citations, relatedCommandIds, relatedActionIds };
+}
+
 function confidenceForClaim(
   claim: CommandCenterProviderIntent,
   suggestions: readonly CommandCenterResolverSearchHit[]
@@ -581,6 +752,63 @@ function resolvedIntentForEntry(
   };
 }
 
+function validateAskFollowupClaim(
+  claim: CommandCenterProviderIntent,
+  catalog: CommandCenterResolverCatalog,
+  suggestions: readonly CommandCenterResolverSearchHit[],
+  confidence: number
+): CommandCenterResolution {
+  if (
+    typeof claim.question !== 'string' ||
+    claim.question.trim().length === 0
+  ) {
+    return noMatch('malformed-output', suggestions, 'missing question', claim);
+  }
+  if (
+    claim.commandId !== undefined &&
+    !catalog.byCommandId.has(claim.commandId as RelayCliGatewayCommand)
+  ) {
+    return noMatch('unknown-command', suggestions, undefined, claim);
+  }
+  return {
+    kind: 'ask_followup',
+    ...(typeof claim.commandId === 'string'
+      ? { commandId: claim.commandId as RelayCliGatewayCommand }
+      : {}),
+    question: claim.question,
+    confidence,
+    ...(typeof claim.rationale === 'string'
+      ? { rationale: claim.rationale }
+      : {}),
+    suggestions,
+  };
+}
+
+function validateExplainClaim(
+  claim: CommandCenterProviderIntent,
+  catalog: CommandCenterResolverCatalog,
+  suggestions: readonly CommandCenterResolverSearchHit[],
+  confidence: number
+): CommandCenterResolution {
+  if (typeof claim.message !== 'string' || claim.message.trim().length === 0) {
+    return noMatch('malformed-output', suggestions, 'missing message', claim);
+  }
+  const grounding = validateExplainGrounding(claim, catalog, suggestions);
+  if ('kind' in grounding) return grounding;
+  return {
+    kind: 'explain',
+    message: claim.message,
+    confidence,
+    ...(typeof claim.rationale === 'string'
+      ? { rationale: claim.rationale }
+      : {}),
+    citations: grounding.citations,
+    relatedCommandIds: grounding.relatedCommandIds,
+    relatedActionIds: grounding.relatedActionIds,
+    suggestions,
+  };
+}
+
 export function validateCommandCenterProviderIntent(
   raw: unknown,
   options: ValidateProviderIntentOptions = {}
@@ -620,44 +848,11 @@ export function validateCommandCenterProviderIntent(
   }
 
   if (claim.kind === 'ask_followup') {
-    if (
-      typeof claim.question !== 'string' ||
-      claim.question.trim().length === 0
-    ) {
-      return noMatch(
-        'malformed-output',
-        suggestions,
-        'missing question',
-        claim
-      );
-    }
-    return {
-      kind: 'ask_followup',
-      question: claim.question,
-      confidence,
-      ...(typeof claim.rationale === 'string'
-        ? { rationale: claim.rationale }
-        : {}),
-      suggestions,
-    };
+    return validateAskFollowupClaim(claim, catalog, suggestions, confidence);
   }
 
   if (claim.kind === 'explain') {
-    if (
-      typeof claim.message !== 'string' ||
-      claim.message.trim().length === 0
-    ) {
-      return noMatch('malformed-output', suggestions, 'missing message', claim);
-    }
-    return {
-      kind: 'explain',
-      message: claim.message,
-      confidence,
-      ...(typeof claim.rationale === 'string'
-        ? { rationale: claim.rationale }
-        : {}),
-      suggestions,
-    };
+    return validateExplainClaim(claim, catalog, suggestions, confidence);
   }
 
   if (confidence < minConfidence)
@@ -718,6 +913,10 @@ export function summarizeCommandCenterCatalogForResolver(
   summary: string;
   sideEffect: RelayCommandSideEffect;
   requiresConfirmation: boolean;
+  scopeKinds: readonly RelayCommandScopeKind[];
+  capabilityHints: readonly RelayCapabilityBit[];
+  surfaces: readonly RelayActionSurface[];
+  availability: CommandCenterResolverCatalogEntry['availability'];
   inputSchema: RelayJsonSchema;
 }> {
   return catalog.entries.map((entry) => ({
@@ -726,6 +925,10 @@ export function summarizeCommandCenterCatalogForResolver(
     summary: entry.summary,
     sideEffect: entry.sideEffect,
     requiresConfirmation: entry.requiresConfirmation,
+    scopeKinds: entry.scopeKinds,
+    capabilityHints: entry.capabilityHints,
+    surfaces: entry.surfaces,
+    availability: entry.availability,
     inputSchema: entry.inputSchema,
   }));
 }

@@ -258,6 +258,7 @@ function sideEffectForGatewayCommand(
 function scopeKindsForGatewayCommand(
   name: RelayCliGatewayCommand
 ): readonly RelayCommandScopeKind[] {
+  if (name.startsWith('contract.')) return ['node'];
   if (name.startsWith('nodes.')) return ['node'];
   if (name.startsWith('repos.')) return ['repo'];
   if (name.startsWith('workspaces.'))
@@ -265,7 +266,8 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('worktrees.')) return ['repo', 'worktree'];
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
-  if (name.startsWith('work-context-messages.templates.')) return ['work-context'];
+  if (name.startsWith('work-context-messages.templates.'))
+    return ['work-context'];
   if (name.startsWith('work-context-messages.')) return ['work-context'];
   if (name.startsWith('work-context-artifacts.')) return ['work-context'];
   if (name.startsWith('handoff-artifacts.')) return ['work-context'];
