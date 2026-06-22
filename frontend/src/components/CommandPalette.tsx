@@ -18,12 +18,19 @@ import type {
 } from '../lib/types.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import StatusDot from './StatusDot.js';
-import { getAllActions } from '../lib/actions/registry.js';
+import { getAction, getAllActions } from '../lib/actions/registry.js';
 import { formatShortcut } from '../lib/actions/shortcuts.js';
 import type { ActionContext, Action } from '../lib/actions/types.js';
 import { isMobileDevice, isMac } from '../lib/utils.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
 import { buildSessionPaletteResults } from '../lib/command-palette-session-results.js';
+import { resolveCommandCenterAssistantIntent } from '../lib/api.js';
+import {
+  commandCenterAssistantCopy,
+  commandCenterSuggestionLabels,
+  decideOpenUiAction,
+  type CommandCenterAssistantResult,
+} from '../lib/command-center-assistant.js';
 import './CommandPalette.css';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -164,7 +171,16 @@ export interface CommandPaletteProps {
   onSelectSession: (id: string) => void;
   onSelectPr: (pr: PullRequest) => void;
   onOpenSettings?: (sectionId: string) => void;
+  resolveAssistantIntent?: (
+    query: string
+  ) => Promise<CommandCenterAssistantResult>;
 }
+
+type AssistantState =
+  | { status: 'idle' }
+  | { status: 'loading'; query: string }
+  | { status: 'result'; query: string; result: CommandCenterAssistantResult }
+  | { status: 'error'; query: string; message: string };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -617,6 +633,75 @@ function usePaletteHandlers(
   };
 }
 
+interface CommandCenterAssistantPanelProps {
+  state: AssistantState;
+  copy: ReturnType<typeof commandCenterAssistantCopy> | undefined;
+  isOpenUi: boolean;
+  openUiDecision: ReturnType<typeof decideOpenUiAction> | undefined;
+  suggestions: string[];
+  onOpenUi: () => void;
+}
+
+function CommandCenterAssistantPanel({
+  state,
+  copy,
+  isOpenUi,
+  openUiDecision,
+  suggestions,
+  onOpenUi,
+}: CommandCenterAssistantPanelProps) {
+  if (state.status === 'idle') return null;
+  return (
+    <div className="palette-assistant-panel" role="status">
+      <div className="assistant-kicker">assistant shell</div>
+      {state.status === 'loading' && (
+        <div className="assistant-copy">
+          resolving &quot;{state.query}&quot;...
+        </div>
+      )}
+      {state.status === 'error' && (
+        <div className="assistant-copy assistant-copy-error">
+          resolver request failed: {state.message}
+        </div>
+      )}
+      {copy && (
+        <>
+          <div
+            className={['assistant-title', `assistant-title-${copy.tone}`].join(
+              ' '
+            )}
+          >
+            {copy.title}
+          </div>
+          <div className="assistant-copy">{copy.detail}</div>
+          {isOpenUi && (
+            <div className="assistant-actions">
+              {openUiDecision?.canOpen ? (
+                <button
+                  type="button"
+                  className="palette-assistant-action"
+                  onClick={onOpenUi}
+                >
+                  {copy.cta ?? 'open ui'}
+                </button>
+              ) : (
+                <span className="assistant-blocked">
+                  {openUiDecision?.reason ?? 'ui target unavailable'}
+                </span>
+              )}
+            </div>
+          )}
+          {suggestions.length > 0 && (
+            <div className="assistant-suggestions">
+              suggestions: {suggestions.join(' · ')}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function CommandPalette({
@@ -629,9 +714,13 @@ export function CommandPalette({
   onSelectSession,
   onSelectPr,
   onOpenSettings,
+  resolveAssistantIntent = resolveCommandCenterAssistantIntent,
 }: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const [assistantState, setAssistantState] = useState<AssistantState>({
+    status: 'idle',
+  });
 
   const {
     query,
@@ -747,11 +836,62 @@ export function CommandPalette({
     onOpenSettings
   );
 
+  const runAssistant = useCallback(async () => {
+    const assistantQuery = query.trim();
+    if (!assistantQuery || assistantState.status === 'loading') return;
+    setAssistantState({ status: 'loading', query: assistantQuery });
+    try {
+      const result = await resolveAssistantIntent(assistantQuery);
+      setAssistantState({ status: 'result', query: assistantQuery, result });
+    } catch (error) {
+      setAssistantState({
+        status: 'error',
+        query: assistantQuery,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [assistantState.status, query, resolveAssistantIntent]);
+
+  const openAssistantUi = useCallback(async () => {
+    if (assistantState.status !== 'result') return;
+    const resolution = assistantState.result.resolution;
+    if (resolution.kind !== 'open_ui') return;
+    const action = getAction(resolution.ui.actionId as Action['id']);
+    const decision = decideOpenUiAction(action, actionContext);
+    if (!decision.canOpen || !action) return;
+    await action.handler(actionContext);
+    onClose();
+  }, [actionContext, assistantState, onClose]);
+
+  useEffect(() => {
+    if (!open) setAssistantState({ status: 'idle' });
+  }, [open]);
+
   if (!open) return null;
   const paletteStyle =
     isMobileDevice && dragOffset > 0
       ? { transform: `translateY(${dragOffset}px)` }
       : undefined;
+  const assistantResolution =
+    assistantState.status === 'result'
+      ? assistantState.result.resolution
+      : undefined;
+  const assistantCopy = assistantResolution
+    ? commandCenterAssistantCopy(assistantResolution, {
+        mobile: isMobileDevice,
+      })
+    : undefined;
+  const openUiAction =
+    assistantResolution?.kind === 'open_ui'
+      ? getAction(assistantResolution.ui.actionId as Action['id'])
+      : undefined;
+  const openUiDecision =
+    assistantResolution?.kind === 'open_ui'
+      ? decideOpenUiAction(openUiAction, actionContext)
+      : undefined;
+  const assistantSuggestions = assistantResolution
+    ? commandCenterSuggestionLabels(assistantResolution)
+    : [];
 
   return (
     <div
@@ -786,8 +926,19 @@ export function CommandPalette({
             className="palette-search-input"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeydown}
-            placeholder="search commands, workspaces, sessions..."
+            onKeyDown={(e) => {
+              if (
+                e.key === 'Enter' &&
+                query.trim() &&
+                (e.metaKey || e.ctrlKey || e.shiftKey || flatItems.length === 0)
+              ) {
+                e.preventDefault();
+                void runAssistant();
+                return;
+              }
+              handleKeydown(e);
+            }}
+            placeholder="search or ask natural language..."
             autoComplete="off"
             spellCheck={false}
             role="combobox"
@@ -799,7 +950,23 @@ export function CommandPalette({
                 : undefined
             }
           />
+          <button
+            type="button"
+            className="palette-assistant-button"
+            disabled={!query.trim() || assistantState.status === 'loading'}
+            onClick={() => void runAssistant()}
+          >
+            {assistantState.status === 'loading' ? 'asking' : 'ask'}
+          </button>
         </div>
+        <CommandCenterAssistantPanel
+          state={assistantState}
+          copy={assistantCopy}
+          isOpenUi={assistantResolution?.kind === 'open_ui'}
+          openUiDecision={openUiDecision}
+          suggestions={assistantSuggestions}
+          onOpenUi={() => void openAssistantUi()}
+        />
         <div className="palette-tabs" role="tablist">
           {TABS.map((tab) => (
             <button

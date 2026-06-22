@@ -92,6 +92,7 @@ import type {
   ControlActor,
   InterventionRecord,
 } from '../../../shared/control-state.js';
+import type { CommandCenterAssistantResult } from './command-center-assistant.js';
 import { registerConfirmationRetry } from './confirmation-retries.js';
 
 export class ConflictError extends Error {
@@ -277,6 +278,18 @@ export interface BrowseResponse {
   entries: BrowseEntry[];
   truncated: boolean;
   total: number;
+}
+
+export async function resolveCommandCenterAssistantIntent(
+  query: string
+): Promise<CommandCenterAssistantResult> {
+  return json<CommandCenterAssistantResult>(
+    await fetch('/api/command-center/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    })
+  );
 }
 
 async function json<T>(res: Response): Promise<T> {
