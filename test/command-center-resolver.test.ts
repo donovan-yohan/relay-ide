@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  COMMAND_CENTER_RESOLVER_CATALOG,
   buildCommandCenterResolverCatalog,
   searchCommandCenterCatalog,
   summarizeCommandCenterCatalogForResolver,
@@ -8,9 +9,14 @@ import {
   validateCommandCenterProviderIntent,
   type CommandCenterProviderIntent,
 } from '../shared/command-center-resolver.js';
+import { commandCenterExplainCoverageForCommand } from '../shared/command-center-resolver-corpus.js';
 import type { RelayActionDescriptor } from '../shared/action-descriptor.js';
-import type { RelayCliGatewayCommand } from '../shared/cli-gateway-contract.js';
+import type {
+  RelayCliGatewayCommand,
+  RelayJsonSchema,
+} from '../shared/cli-gateway-contract.js';
 import type { RelayCommandSideEffect } from '../shared/relay-command-manifest.js';
+import { COMMAND_CENTER_RESOLVER_GOLDEN_CASES } from './fixtures/command-center-resolver/golden-cases.js';
 
 function descriptorFor(
   commandId: RelayCliGatewayCommand,
@@ -50,7 +56,26 @@ function descriptorFor(
   };
 }
 
+function inputSchemaFor(descriptor: RelayActionDescriptor): RelayJsonSchema {
+  if (descriptor.input.kind !== 'json-schema') {
+    throw new Error(`expected json-schema input for ${descriptor.id}`);
+  }
+  return descriptor.input.schema;
+}
+
 const sessionsListDescriptor = descriptorFor('sessions.list');
+const sessionsGetDescriptor = descriptorFor('sessions.get', 'read', {
+  input: {
+    kind: 'json-schema',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+    },
+  },
+});
+const writeDescriptor = descriptorFor('sessions.rename', 'write');
 const destructiveDescriptor = descriptorFor('sessions.kill', 'destructive', {
   confirmation: {
     required: true,
@@ -62,6 +87,8 @@ const streamDescriptor = descriptorFor('sessions.stream', 'stream');
 const catalog = buildCommandCenterResolverCatalog([sessionsListDescriptor]);
 const unsafeCatalog = buildCommandCenterResolverCatalog([
   sessionsListDescriptor,
+  sessionsGetDescriptor,
+  writeDescriptor,
   destructiveDescriptor,
   streamDescriptor,
 ]);
@@ -92,6 +119,7 @@ describe('Command Center resolver catalog', () => {
       scopeKinds: ['session'],
       capabilityHints: ['session:read'],
       surfaces: ['web', 'command-center'],
+      availability: { state: 'available' },
       ui: { actionId: 'gateway.sessions.list', category: 'gateway' },
     });
     expect(entry?.keywords).toEqual(
@@ -107,7 +135,11 @@ describe('Command Center resolver catalog', () => {
         summary: 'Command sessions.list',
         sideEffect: 'read',
         requiresConfirmation: false,
-        inputSchema: sessionsListDescriptor.input.schema,
+        scopeKinds: ['session'],
+        capabilityHints: ['session:read'],
+        surfaces: ['web', 'command-center'],
+        availability: { state: 'available' },
+        inputSchema: inputSchemaFor(sessionsListDescriptor),
       },
     ]);
   });
@@ -122,7 +154,7 @@ describe('Command Center resolver catalog', () => {
 
 describe('Command Center args validation', () => {
   it('accepts valid json-schema args and rejects unknown/malformed args', () => {
-    const schema = sessionsListDescriptor.input.schema;
+    const schema = inputSchemaFor(sessionsListDescriptor);
     expect(validateCommandCenterArgs({ repoId: 'repo-1' }, schema)).toEqual([]);
     expect(
       validateCommandCenterArgs({ repoId: 42 }, schema).join('\n')
@@ -198,10 +230,22 @@ describe('Command Center provider intent validation', () => {
     ).toMatchObject({ kind: 'ask_followup', question: 'Which session?' });
     expect(
       validateCommandCenterProviderIntent(
-        { kind: 'explain', message: 'I can list sessions.', confidence: 0.8 },
+        {
+          kind: 'explain',
+          message: 'I can list sessions through the shared gateway manifest.',
+          confidence: 0.8,
+          citations: ['cli-gateway-command-taxonomy'],
+          relatedCommandIds: ['sessions.list'],
+          relatedActionIds: ['gateway.sessions.list'],
+        },
         { catalog }
       )
-    ).toMatchObject({ kind: 'explain', message: 'I can list sessions.' });
+    ).toMatchObject({
+      kind: 'explain',
+      citations: ['cli-gateway-command-taxonomy'],
+      relatedCommandIds: ['sessions.list'],
+      relatedActionIds: ['gateway.sessions.list'],
+    });
     expect(
       validateCommandCenterProviderIntent(
         { kind: 'no_match', reason: 'not a Relay command', confidence: 0.2 },
@@ -295,5 +339,125 @@ describe('Command Center provider intent validation', () => {
         { catalog: unsafeCatalog }
       )
     ).toMatchObject({ kind: 'no_match', reason: 'unsafe-command' });
+  });
+
+  it('rejects explain answers that invent unsupported commands, actions, or citations', () => {
+    expect(
+      validateCommandCenterProviderIntent(
+        {
+          kind: 'explain',
+          message: 'Relay can launch any provider from Command Center.',
+          confidence: 0.88,
+          citations: ['made-up-doc'],
+        },
+        { catalog }
+      )
+    ).toMatchObject({ kind: 'no_match', reason: 'metadata-mismatch' });
+    expect(
+      validateCommandCenterProviderIntent(
+        {
+          kind: 'explain',
+          message: 'Relay can launch any provider from Command Center.',
+          confidence: 0.88,
+          citations: ['cli-gateway-command-taxonomy'],
+          relatedCommandIds: ['provider.launch'],
+        },
+        { catalog }
+      )
+    ).toMatchObject({ kind: 'no_match', reason: 'metadata-mismatch' });
+    expect(
+      validateCommandCenterProviderIntent(
+        {
+          kind: 'explain',
+          message: 'Relay can launch any provider from Command Center.',
+          confidence: 0.88,
+          citations: ['cli-gateway-command-taxonomy'],
+          relatedCommandIds: ['sessions.list'],
+          relatedActionIds: ['settings.nodes.revoke'],
+        },
+        { catalog }
+      )
+    ).toMatchObject({ kind: 'no_match', reason: 'metadata-mismatch' });
+  });
+});
+
+describe('Command Center resolver golden corpus', () => {
+  it.each(COMMAND_CENTER_RESOLVER_GOLDEN_CASES)(
+    'keeps $id tied to catalog contracts',
+    (golden) => {
+      const resolution = validateCommandCenterProviderIntent(
+        golden.providerOutput,
+        {
+          catalog: unsafeCatalog,
+          query: golden.utterance,
+        }
+      );
+
+      if (golden.expected.kind === 'execute_command') {
+        expect(resolution.kind).toBe('execute_command');
+        if (resolution.kind !== 'execute_command') return;
+        expect(resolution.intent.commandId).toBe(golden.expected.commandId);
+      } else if (golden.expected.kind === 'open_ui') {
+        expect(resolution.kind).toBe('open_ui');
+        if (resolution.kind !== 'open_ui') return;
+        expect(resolution.intent.commandId).toBe(golden.expected.commandId);
+        expect(resolution.ui.actionId).toBe(golden.expected.actionId);
+      } else if (golden.expected.kind === 'ask_followup') {
+        expect(resolution.kind).toBe('ask_followup');
+        if (resolution.kind !== 'ask_followup') return;
+        expect(resolution.question.toLowerCase()).toContain(
+          golden.expected.questionIncludes
+        );
+        if (golden.expected.commandId) {
+          expect(resolution.commandId).toBe(golden.expected.commandId);
+        }
+      } else if (golden.expected.kind === 'explain') {
+        expect(resolution.kind).toBe('explain');
+        if (resolution.kind !== 'explain') return;
+        expect(resolution.citations).toEqual(golden.expected.citations);
+        expect(resolution.relatedCommandIds).toEqual(
+          golden.expected.relatedCommandIds
+        );
+      } else {
+        expect(resolution).toMatchObject({
+          kind: 'no_match',
+          reason: golden.expected.reason,
+        });
+      }
+    }
+  );
+});
+
+describe('Command Center resolver descriptor drift guards', () => {
+  it('requires resolver-capable commands to carry descriptor metadata and explain coverage', () => {
+    for (const entry of COMMAND_CENTER_RESOLVER_CATALOG.entries) {
+      expect(entry.label, entry.commandId).toBeTruthy();
+      expect(entry.summary, entry.commandId).toBeTruthy();
+      expect(['read', 'write', 'destructive', 'stream']).toContain(
+        entry.sideEffect
+      );
+      expect(typeof entry.requiresConfirmation, entry.commandId).toBe(
+        'boolean'
+      );
+      expect(Array.isArray(entry.controlRequirements), entry.commandId).toBe(
+        true
+      );
+      expect(entry.scopeKinds.length, entry.commandId).toBeGreaterThan(0);
+      expect(entry.surfaces, entry.commandId).toEqual(
+        expect.arrayContaining(['web', 'command-center'])
+      );
+      expect(entry.inputSchema, entry.commandId).toMatchObject({
+        type: 'object',
+      });
+      expect(['available', 'unavailable', 'unknown']).toContain(
+        entry.availability.state
+      );
+      if (entry.availability.state !== 'available') {
+        expect(entry.availability.reason, entry.commandId).toBeTruthy();
+      }
+      expect(
+        commandCenterExplainCoverageForCommand(entry.commandId).length
+      ).toBeGreaterThan(0);
+    }
   });
 });

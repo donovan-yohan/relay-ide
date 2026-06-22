@@ -8,6 +8,7 @@ import {
   type CommandCenterResolution,
   type CommandCenterResolverCatalog,
 } from '../shared/command-center-resolver.js';
+import { COMMAND_CENTER_RESOLVER_EXPLAIN_CORPUS } from '../shared/command-center-resolver-corpus.js';
 
 export interface CommandCenterIntentResolverConfig {
   baseUrl: string;
@@ -88,6 +89,7 @@ const SYSTEM_PROMPT =
   'Map the operator request to exactly one strict Relay Command Center resolver result. ' +
   'Return only JSON with kind open_ui, ask_followup, explain, execute_command, or no_match. ' +
   'For execute_command/open_ui include commandId,args,confidence and use only commandIds from the catalog. ' +
+  'For explain include message,confidence,citations,relatedCommandIds,relatedActionIds using only cited resolver corpus entries. ' +
   'execute_command is read-only only. Never invent commands, arguments, shell strings, execution plans, or provider escalations.';
 
 export function readCommandCenterIntentResolverConfig(
@@ -223,6 +225,10 @@ export function createOpenAiCompatibleCommandCenterIntentProvider(
                 content: JSON.stringify(
                   summarizeCommandCenterCatalogForResolver(catalog)
                 ),
+              },
+              {
+                role: 'system',
+                content: JSON.stringify(COMMAND_CENTER_RESOLVER_EXPLAIN_CORPUS),
               },
               { role: 'user', content: request.query },
             ],
