@@ -125,5 +125,8 @@ export function toAbsoluteFilePath(
   filePath: string
 ): string {
   if (filePath.startsWith('/')) return filePath;
+  // No workspace root (e.g. an evidence root with a null path) — return the
+  // relative path as-is rather than fabricating a bogus "/file" absolute path.
+  if (!workspacePath) return filePath;
   return `${workspacePath.replace(/\/+$/u, '')}/${filePath.replace(/^\/+/u, '')}`;
 }

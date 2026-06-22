@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  fetchWorkspaceEvidencePreview,
-  type WorkspaceEvidenceApiError,
-} from '../lib/api.js';
+import { fetchWorkspaceEvidencePreview } from '../lib/api.js';
 import type { WorkspaceEvidenceRoot } from '../../../shared/workspace-evidence.js';
-import { mapPreviewToRenderKind } from '../lib/workspace-evidence-view.js';
+import {
+  mapPreviewToRenderKind,
+  workspaceEvidenceErrorReason,
+} from '../lib/workspace-evidence-view.js';
 import { toAbsoluteFilePath } from '../lib/editor-affordances.js';
 import CodeBlock from './CodeBlock.js';
 import DiffViewer from './DiffViewer.js';
@@ -68,8 +68,7 @@ export function WorkspaceEvidencePreview({
 
   let body: ReactNode;
   if (query.isError) {
-    const err = query.error as WorkspaceEvidenceApiError | Error;
-    const reason = 'error' in err && err.error ? err.error.reason : undefined;
+    const reason = workspaceEvidenceErrorReason(query.error);
     if (reason === 'WORKSPACE_EVIDENCE_NOT_FOUND') {
       body = <div className="evidence-preview__notice">file not found</div>;
     } else if (reason === 'WORKSPACE_EVIDENCE_PERMISSION_DENIED') {

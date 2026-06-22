@@ -101,6 +101,49 @@ describe('FileActionMenu', () => {
     items.forEach((el) => expect(el.getAttribute('tabindex')).toBe('0'));
   });
 
+  it('keyboard activation (Enter / Space) on a focused item fires its action', () => {
+    const onSave = vi.fn();
+    act(() => {
+      root.render(
+        React.createElement(FileActionMenu, {
+          filePath: 'src/app.ts',
+          absolutePath: '/repo/src/app.ts',
+          sessionId: 'sess-1',
+          editable: true,
+          dirty: true,
+          saving: false,
+          onSave,
+        })
+      );
+    });
+
+    const saveItem = (): HTMLElement =>
+      Array.from(container.querySelectorAll('.tui-menu-item')).find((el) =>
+        (el.textContent ?? '').includes('save')
+      ) as HTMLElement;
+
+    openMenu(container);
+    const first = saveItem();
+    first.focus();
+    act(() => {
+      first.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+      );
+    });
+    expect(onSave).toHaveBeenCalledTimes(1);
+
+    // Selecting closes the menu; reopen and confirm Space activates too.
+    openMenu(container);
+    const second = saveItem();
+    second.focus();
+    act(() => {
+      second.dispatchEvent(
+        new KeyboardEvent('keydown', { key: ' ', bubbles: true })
+      );
+    });
+    expect(onSave).toHaveBeenCalledTimes(2);
+  });
+
   it('read-only surface only exposes copy affordances, no save/reload/write', () => {
     act(() => {
       root.render(

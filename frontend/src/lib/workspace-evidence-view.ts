@@ -1,9 +1,26 @@
 import type {
   WorkspaceEvidencePreview,
   WorkspaceEvidenceRoot,
+  WorkspaceEvidenceUnavailableReason,
 } from '../../../shared/workspace-evidence.js';
 import type { WorkContextId } from '../../../shared/work-context.js';
 import type { WorkContextActiveGroup } from './types.js';
+
+/**
+ * Safely read the typed `error.reason` off a query error. `query.error` is
+ * `unknown`, so casting and using `'error' in err` directly throws a TypeError
+ * when the rejection value is a primitive (string/number/null). Guard the shape
+ * before reaching in.
+ */
+export function workspaceEvidenceErrorReason(
+  err: unknown
+): WorkspaceEvidenceUnavailableReason | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const maybe = err as {
+    error?: { reason?: WorkspaceEvidenceUnavailableReason };
+  };
+  return maybe.error?.reason;
+}
 
 export type EvidenceSectionState =
   | 'no-workspace'
@@ -31,7 +48,10 @@ const BACKING_SPECIFICITY: Record<WorkspaceEvidenceRoot['backing'], number> = {
   'artifact-only': 0,
 };
 
-function matchesRepoPath(root: WorkspaceEvidenceRoot, repoPath: string): boolean {
+function matchesRepoPath(
+  root: WorkspaceEvidenceRoot,
+  repoPath: string
+): boolean {
   if (!repoPath) return false;
   if (root.path === repoPath) return true;
   if (root.repo?.repoPath === repoPath) return true;
@@ -88,7 +108,8 @@ export function workspaceEvidenceSectionState(
   ) {
     return 'missing-root';
   }
-  if (root.status === 'offline' || root.status === 'unavailable') return 'offline';
+  if (root.status === 'offline' || root.status === 'unavailable')
+    return 'offline';
   if (root.status === 'permission-denied') return 'permission-denied';
   if (root.status === 'unsupported' || !root.capabilities.list) {
     return 'unsupported';

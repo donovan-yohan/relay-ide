@@ -1,13 +1,11 @@
 import { useCallback, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  fetchWorkspaceEvidenceList,
-  type WorkspaceEvidenceApiError,
-} from '../lib/api.js';
+import { fetchWorkspaceEvidenceList } from '../lib/api.js';
 import type {
   WorkspaceEvidenceEntry,
   WorkspaceEvidenceRoot,
 } from '../../../shared/workspace-evidence.js';
+import { workspaceEvidenceErrorReason } from '../lib/workspace-evidence-view.js';
 import AllFilesTree from './AllFilesTree.js';
 import WorkspaceEvidencePreview from './WorkspaceEvidencePreview.js';
 import './WorkspaceEvidenceFilesSection.css';
@@ -63,9 +61,7 @@ export function WorkspaceEvidenceFilesSection({
           staleTime: 60_000,
         })
         .then((res) => {
-          setChildrenByPath(
-            (prev) => new Map([...prev, [path, res.entries]])
-          );
+          setChildrenByPath((prev) => new Map([...prev, [path, res.entries]]));
         })
         .catch(() => {
           // best-effort expansion; root-level errors surface in the tree body
@@ -79,8 +75,7 @@ export function WorkspaceEvidenceFilesSection({
       return <div className="evidence-files__notice">loading…</div>;
     }
     if (rootListQuery.isError) {
-      const err = rootListQuery.error as WorkspaceEvidenceApiError | Error;
-      const reason = 'error' in err && err.error ? err.error.reason : undefined;
+      const reason = workspaceEvidenceErrorReason(rootListQuery.error);
       if (reason === 'WORKSPACE_EVIDENCE_PERMISSION_DENIED') {
         return (
           <div className="evidence-files__notice">
@@ -89,7 +84,9 @@ export function WorkspaceEvidenceFilesSection({
         );
       }
       if (reason === 'WORKSPACE_EVIDENCE_ROOT_NOT_FOUND') {
-        return <div className="evidence-files__notice">root path not found</div>;
+        return (
+          <div className="evidence-files__notice">root path not found</div>
+        );
       }
       return (
         <div className="evidence-files__error">

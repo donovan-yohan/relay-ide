@@ -93,6 +93,11 @@ describe('editor-affordances: toAbsoluteFilePath', () => {
     expect(toAbsoluteFilePath('/repo', '/etc/hosts')).toBe('/etc/hosts');
   });
 
+  it('returns the relative path unchanged when the workspace root is empty', () => {
+    // An evidence root with a null path passes '' — must not fabricate "/AGENTS.md".
+    expect(toAbsoluteFilePath('', 'AGENTS.md')).toBe('AGENTS.md');
+  });
+
   it('normalises a trailing workspace slash against a relative path', () => {
     expect(toAbsoluteFilePath('/repo/', 'src/app.ts')).toBe('/repo/src/app.ts');
   });
