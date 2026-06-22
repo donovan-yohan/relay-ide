@@ -35,7 +35,10 @@ import {
   decideOpenUiAction,
   type CommandCenterAssistantResult,
 } from '../lib/command-center-assistant.js';
-import type { CommandCenterExecutionResult } from '../../../shared/command-center-execution.js';
+import type {
+  CommandCenterExecutionConfirmationInput,
+  CommandCenterExecutionResult,
+} from '../../../shared/command-center-execution.js';
 import './CommandPalette.css';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -181,7 +184,10 @@ export interface CommandPaletteProps {
   ) => Promise<CommandCenterAssistantResult>;
   executeAssistantCommand?: (
     commandId: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    options?: {
+      confirmation?: CommandCenterExecutionConfirmationInput;
+    }
   ) => Promise<CommandCenterExecutionResult>;
 }
 

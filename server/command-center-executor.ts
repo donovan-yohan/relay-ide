@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   COMMAND_CENTER_RESOLVER_CATALOG,
@@ -10,7 +10,10 @@ import type { RelayCliGatewayCommand } from '../shared/cli-gateway-contract.js';
 import type { RelayCapabilityBit } from '../shared/security-policy.js';
 import type {
   CommandCenterExecutionAudit,
+  CommandCenterExecutionConfirmationInput,
+  CommandCenterExecutionConfirmationPreview,
   CommandCenterExecutionConfirmationOutcome,
+  CommandCenterExecutionProviderAudit,
   CommandCenterExecutionPolicyOutcome,
   CommandCenterExecutionResult,
   CommandCenterExecutionResultKind,
@@ -19,6 +22,8 @@ import type {
 export interface CommandCenterExecutionRequest {
   commandId: string;
   args?: unknown;
+  confirmation?: CommandCenterExecutionConfirmationInput;
+  providerMetadata?: Record<string, unknown>;
 }
 
 export type CommandCenterReadOnlyHandlerResult =
@@ -37,25 +42,93 @@ export type CommandCenterReadOnlyHandler = (
   | Promise<CommandCenterReadOnlyHandlerResult>
   | CommandCenterReadOnlyHandlerResult;
 
+export type CommandCenterCommandHandler = CommandCenterReadOnlyHandler;
+
+export interface CommandCenterConfirmationChallengeRecord {
+  challengeId: string;
+  commandId: RelayCliGatewayCommand;
+  argsSha256: string;
+  expiresAtMs: number;
+}
+
+export interface CommandCenterConfirmationStore {
+  create(
+    record: Omit<CommandCenterConfirmationChallengeRecord, 'challengeId'>
+  ): CommandCenterConfirmationChallengeRecord;
+  consume(input: {
+    challengeId: string;
+    commandId: RelayCliGatewayCommand;
+    argsSha256: string;
+    nowMs: number;
+  }):
+    | { ok: true; record: CommandCenterConfirmationChallengeRecord }
+    | { ok: false; reason: 'missing' | 'mismatch' | 'expired' };
+}
+
 export interface CommandCenterExecutionDeps {
   catalog?: CommandCenterResolverCatalog;
   handlers: Partial<
-    Record<RelayCliGatewayCommand, CommandCenterReadOnlyHandler>
+    Record<RelayCliGatewayCommand, CommandCenterCommandHandler>
   >;
   trustedCapabilities?:
     | {
         source: 'browser-session' | 'actor-grant';
         capabilities: readonly RelayCapabilityBit[];
+        actorId?: string;
       }
     | undefined;
   now?: () => number;
   auditSink?: (audit: CommandCenterExecutionAudit) => void;
+  confirmationStore?: CommandCenterConfirmationStore;
 }
 
 const EMPTY_ARGS_HASH = sha256(canonicalJson({}));
 const MAX_COMMAND_CENTER_ARG_DEPTH = 12;
 const MAX_COMMAND_CENTER_ARG_KEYS = 100;
 const MAX_COMMAND_CENTER_ARG_CHARS = 16_384;
+const COMMAND_CENTER_CONFIRMATION_TTL_MS = 2 * 60 * 1000;
+const MAX_COMMAND_CENTER_CONFIRMATIONS = 512;
+const PROVIDER_AUDIT_FIELDS = ['source', 'model', 'requestId'] as const;
+const MAX_PROVIDER_AUDIT_VALUE_CHARS = 256;
+
+export function createCommandCenterConfirmationStore(): CommandCenterConfirmationStore {
+  const records = new Map<string, CommandCenterConfirmationChallengeRecord>();
+  const sweepExpired = (nowMs: number) => {
+    for (const [challengeId, record] of Array.from(records.entries())) {
+      if (record.expiresAtMs < nowMs) records.delete(challengeId);
+    }
+  };
+  return {
+    create(record) {
+      sweepExpired(Date.now());
+      while (records.size >= MAX_COMMAND_CENTER_CONFIRMATIONS) {
+        const oldestChallengeId = records.keys().next().value;
+        if (typeof oldestChallengeId !== 'string') break;
+        records.delete(oldestChallengeId);
+      }
+      const challenge = { ...record, challengeId: randomUUID() };
+      records.set(challenge.challengeId, challenge);
+      return challenge;
+    },
+    consume(input) {
+      const record = records.get(input.challengeId);
+      if (!record) return { ok: false, reason: 'missing' };
+      records.delete(input.challengeId);
+      sweepExpired(input.nowMs);
+      if (record.expiresAtMs < input.nowMs)
+        return { ok: false, reason: 'expired' };
+      if (
+        record.commandId !== input.commandId ||
+        record.argsSha256 !== input.argsSha256
+      ) {
+        return { ok: false, reason: 'mismatch' };
+      }
+      return { ok: true, record };
+    },
+  };
+}
+
+const DEFAULT_CONFIRMATION_STORE = createCommandCenterConfirmationStore();
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -91,6 +164,90 @@ function argKeys(args: unknown): string[] {
   return Object.keys(args).sort();
 }
 
+function argsRedaction(args: unknown) {
+  const safeArgs = isPlainObject(args) ? args : {};
+  return {
+    rawArgsReturned: false as const,
+    argKeys: argKeys(safeArgs),
+    argsSha256: sha256(canonicalJson(safeArgs)),
+  };
+}
+
+function actorAudit(
+  trusted: CommandCenterExecutionDeps['trustedCapabilities']
+): CommandCenterExecutionAudit['actor'] {
+  if (!trusted) return { kind: 'unknown' };
+  return {
+    kind: trusted.source,
+    ...(trusted.actorId ? { id: trusted.actorId } : {}),
+    capabilities: trusted.capabilities,
+  };
+}
+
+function providerAudit(
+  metadata: Record<string, unknown> | undefined
+): CommandCenterExecutionProviderAudit | undefined {
+  if (!metadata) return undefined;
+  const safeMetadata: Partial<
+    Record<(typeof PROVIDER_AUDIT_FIELDS)[number], string>
+  > = {};
+  for (const key of PROVIDER_AUDIT_FIELDS) {
+    const value = metadata[key];
+    if (typeof value !== 'string') continue;
+    safeMetadata[key] = value.slice(0, MAX_PROVIDER_AUDIT_VALUE_CHARS);
+  }
+  const metadataKeys = Object.keys(safeMetadata).sort();
+  return {
+    rawProviderPayloadReturned: false,
+    ...(typeof safeMetadata['source'] === 'string'
+      ? { source: safeMetadata['source'] }
+      : {}),
+    ...(typeof safeMetadata['model'] === 'string'
+      ? { model: safeMetadata['model'] }
+      : {}),
+    ...(typeof safeMetadata['requestId'] === 'string'
+      ? { requestId: safeMetadata['requestId'] }
+      : {}),
+    metadataKeys,
+    ...(metadataKeys.length > 0
+      ? { metadataSha256: sha256(canonicalJson(safeMetadata)) }
+      : {}),
+  };
+}
+
+function expectedResultShape(
+  entry: CommandCenterResolverCatalogEntry
+): CommandCenterExecutionConfirmationPreview['expectedResultShape'] {
+  return {
+    kind: 'json-schema',
+    ...(entry.outputSchema.title ? { title: entry.outputSchema.title } : {}),
+    ...(entry.outputSchema.type ? { schemaType: entry.outputSchema.type } : {}),
+  };
+}
+
+function scopedTarget(
+  entry: CommandCenterResolverCatalogEntry,
+  args: Record<string, unknown>
+): string {
+  for (const key of [
+    'sessionId',
+    'globalSessionId',
+    'nodeId',
+    'repoPath',
+    'worktreePath',
+    'workContextId',
+    'id',
+  ]) {
+    const value = args[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return `${key}:${sha256(value).slice(0, 12)}`;
+    }
+  }
+  return entry.scopeKinds.length > 0
+    ? `${entry.scopeKinds.join('+')}:unspecified`
+    : 'global:unspecified';
+}
+
 function capabilityOutcome(
   required: readonly RelayCapabilityBit[],
   trusted: CommandCenterExecutionDeps['trustedCapabilities']
@@ -102,6 +259,14 @@ function capabilityOutcome(
   return required.every((capability) => granted.has(capability))
     ? 'allowed-explicit'
     : 'blocked';
+}
+
+function unsupportedControlRequirements(
+  entry: CommandCenterResolverCatalogEntry
+): string[] {
+  return entry.controlRequirements.filter(
+    (requirement) => requirement !== 'confirmation-challenge'
+  );
 }
 
 function argsBudgetOk(value: unknown): boolean {
@@ -148,21 +313,20 @@ function auditFor(input: {
   policyOutcome: CommandCenterExecutionPolicyOutcome;
   confirmationOutcome: CommandCenterExecutionConfirmationOutcome;
   capabilityOutcome: CommandCenterExecutionAudit['capabilityOutcome'];
+  actor?: CommandCenterExecutionAudit['actor'];
+  provider?: CommandCenterExecutionProviderAudit;
+  confirmationChallengeId?: string;
   reason?: string;
 }): CommandCenterExecutionAudit {
-  const args = isPlainObject(input.args) ? input.args : {};
+  const redactedArgs = isPlainObject(input.args)
+    ? argsRedaction(input.args)
+    : { ...argsRedaction({}), argsSha256: EMPTY_ARGS_HASH };
   return {
     commandId: input.commandId,
     resultKind: input.resultKind,
     ...(input.entry ? { sideEffectClass: input.entry.sideEffect } : {}),
     durationMs: input.durationMs,
-    args: {
-      rawArgsReturned: false,
-      argKeys: argKeys(args),
-      argsSha256: isPlainObject(input.args)
-        ? sha256(canonicalJson(args))
-        : EMPTY_ARGS_HASH,
-    },
+    args: redactedArgs,
     policyOutcome: input.policyOutcome,
     confirmationOutcome: input.confirmationOutcome,
     scopeKinds: input.entry?.scopeKinds ?? [],
@@ -170,7 +334,38 @@ function auditFor(input: {
       ? { availabilityState: input.entry.availability.state }
       : {}),
     capabilityOutcome: input.capabilityOutcome,
+    actor: input.actor ?? { kind: 'unknown' },
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.confirmationChallengeId
+      ? { confirmationChallengeId: input.confirmationChallengeId }
+      : {}),
     ...(input.reason ? { reason: input.reason } : {}),
+  };
+}
+
+function confirmationPreview(input: {
+  store: CommandCenterConfirmationStore;
+  entry: CommandCenterResolverCatalogEntry;
+  args: Record<string, unknown>;
+  nowMs: number;
+}): CommandCenterExecutionConfirmationPreview {
+  const redaction = argsRedaction(input.args);
+  const challenge = input.store.create({
+    commandId: input.entry.commandId,
+    argsSha256: redaction.argsSha256,
+    expiresAtMs: input.nowMs + COMMAND_CENTER_CONFIRMATION_TTL_MS,
+  });
+  return {
+    challengeId: challenge.challengeId,
+    expiresAtMs: challenge.expiresAtMs,
+    commandId: input.entry.commandId,
+    label: input.entry.label,
+    scopedTarget: scopedTarget(input.entry, input.args),
+    sideEffectClass: input.entry.sideEffect,
+    capabilityHints: input.entry.capabilityHints,
+    controlRequirements: input.entry.controlRequirements,
+    args: redaction,
+    expectedResultShape: expectedResultShape(input.entry),
   };
 }
 
@@ -196,9 +391,21 @@ export async function executeCommandCenterCommand(
   const rawArgs = request.args ?? {};
   const baseCommandId =
     typeof request.commandId === 'string' ? request.commandId : 'unknown';
+  const auditActor = actorAudit(deps.trustedCapabilities);
+  const auditProvider = providerAudit(request.providerMetadata);
+  const confirmationStore =
+    deps.confirmationStore ?? DEFAULT_CONFIRMATION_STORE;
+  const makeAudit = (
+    input: Omit<Parameters<typeof auditFor>[0], 'actor' | 'provider'>
+  ) =>
+    auditFor({
+      ...input,
+      actor: auditActor,
+      ...(auditProvider ? { provider: auditProvider } : {}),
+    });
 
   if (!argsBudgetOk(rawArgs)) {
-    const audit = auditFor({
+    const audit = makeAudit({
       commandId: baseCommandId,
       resultKind: 'blocked',
       args: {},
@@ -225,7 +432,7 @@ export async function executeCommandCenterCommand(
     baseCommandId as RelayCliGatewayCommand
   );
   if (!entry) {
-    const audit = auditFor({
+    const audit = makeAudit({
       commandId: baseCommandId,
       resultKind: 'blocked',
       args: rawArgs,
@@ -256,9 +463,10 @@ export async function executeCommandCenterCommand(
     resultKind: CommandCenterExecutionResultKind,
     policyOutcome: CommandCenterExecutionPolicyOutcome,
     confirmationOutcome: CommandCenterExecutionConfirmationOutcome,
-    reason: string
+    reason: string,
+    confirmationChallengeId?: string
   ) =>
-    auditFor({
+    makeAudit({
       commandId: entry.commandId,
       resultKind,
       entry,
@@ -267,6 +475,7 @@ export async function executeCommandCenterCommand(
       policyOutcome,
       confirmationOutcome,
       capabilityOutcome: caps,
+      ...(confirmationChallengeId ? { confirmationChallengeId } : {}),
       reason,
     });
 
@@ -293,66 +502,6 @@ export async function executeCommandCenterCommand(
         commandId: entry.commandId,
         reason: 'invalid-args',
         message: argErrors.slice(0, 3).join('; '),
-        audit,
-      },
-      deps.auditSink
-    );
-  }
-
-  if (entry.requiresConfirmation) {
-    const audit = blockedAudit(
-      'confirmation_required',
-      'confirmation-required',
-      'required',
-      'confirmation-required'
-    );
-    return finish(
-      {
-        kind: 'confirmation_required',
-        commandId: entry.commandId,
-        reason: 'confirmation-required',
-        message:
-          'Natural-language execution cannot satisfy confirmation-gated commands in this slice.',
-        audit,
-      },
-      deps.auditSink
-    );
-  }
-
-  if (entry.controlRequirements.length > 0) {
-    const audit = blockedAudit(
-      'confirmation_required',
-      'confirmation-required',
-      'required',
-      'control-requirement'
-    );
-    return finish(
-      {
-        kind: 'confirmation_required',
-        commandId: entry.commandId,
-        reason: 'control-requirement',
-        message:
-          'This command requires fresh control/intervention state and is preview-only in this slice.',
-        audit,
-      },
-      deps.auditSink
-    );
-  }
-
-  if (entry.sideEffect !== 'read') {
-    const audit = blockedAudit(
-      'blocked',
-      'blocked',
-      'blocked',
-      'unsafe-command'
-    );
-    return finish(
-      {
-        kind: 'blocked',
-        commandId: entry.commandId,
-        reason: 'unsafe-command',
-        message:
-          'Natural-language execution is limited to read-only Relay commands.',
         audit,
       },
       deps.auditSink
@@ -397,6 +546,112 @@ export async function executeCommandCenterCommand(
     );
   }
 
+  const unsupportedControls = unsupportedControlRequirements(entry);
+  if (unsupportedControls.length > 0) {
+    const audit = blockedAudit(
+      'blocked',
+      'blocked',
+      'blocked',
+      'control-requirement-unsatisfied'
+    );
+    return finish(
+      {
+        kind: 'blocked',
+        commandId: entry.commandId,
+        reason: 'control-requirement-unsatisfied',
+        message: `Command Center cannot execute ${entry.commandId} until these control requirements are validated: ${unsupportedControls.join(', ')}`,
+        audit,
+      },
+      deps.auditSink
+    );
+  }
+  const confirmationRequired =
+    entry.requiresConfirmation ||
+    entry.controlRequirements.includes('confirmation-challenge') ||
+    entry.sideEffect !== 'read';
+  let executionConfirmationOutcome: CommandCenterExecutionConfirmationOutcome =
+    'not-required';
+
+  if (confirmationRequired) {
+    const reason =
+      entry.controlRequirements.length > 0
+        ? 'control-requirement'
+        : 'confirmation-required';
+    if (!request.confirmation) {
+      const preview = confirmationPreview({
+        store: confirmationStore,
+        entry,
+        args: rawArgs,
+        nowMs: now(),
+      });
+      const audit = blockedAudit(
+        'confirmation_required',
+        'confirmation-required',
+        'required',
+        reason,
+        preview.challengeId
+      );
+      return finish(
+        {
+          kind: 'confirmation_required',
+          commandId: entry.commandId,
+          reason,
+          message: `${entry.label} requires explicit confirmation. Review the redacted preview and confirm or deny before execution.`,
+          preview,
+          audit,
+        },
+        deps.auditSink
+      );
+    }
+
+    const consumed = confirmationStore.consume({
+      challengeId: request.confirmation.challengeId,
+      commandId: entry.commandId,
+      argsSha256: argsRedaction(rawArgs).argsSha256,
+      nowMs: now(),
+    });
+    if (consumed.ok === false) {
+      const audit = blockedAudit(
+        'blocked',
+        'blocked',
+        'stale',
+        `confirmation-${consumed.reason}`,
+        request.confirmation.challengeId
+      );
+      return finish(
+        {
+          kind: 'blocked',
+          commandId: entry.commandId,
+          reason: 'confirmation-stale',
+          message:
+            'The Command Center confirmation was stale, missing, or did not match the original redacted args.',
+          audit,
+        },
+        deps.auditSink
+      );
+    }
+    if (request.confirmation.decision === 'deny') {
+      const audit = blockedAudit(
+        'blocked',
+        'blocked',
+        'denied',
+        'confirmation-denied',
+        request.confirmation.challengeId
+      );
+      return finish(
+        {
+          kind: 'blocked',
+          commandId: entry.commandId,
+          reason: 'confirmation-denied',
+          message: 'The operator denied the Command Center confirmation.',
+          audit,
+        },
+        deps.auditSink
+      );
+    }
+    executionConfirmationOutcome = 'confirmed';
+  }
+
   const handler = deps.handlers[entry.commandId];
   if (!handler) {
     const audit = blockedAudit(
@@ -411,7 +666,7 @@ export async function executeCommandCenterCommand(
         commandId: entry.commandId,
         reason: 'unsupported-command',
         message:
-          'This read-only command is typed, but Command Center execution is not wired for it yet.',
+          'This typed command passed policy checks, but Command Center execution is not wired for it yet.',
         audit,
       },
       deps.auditSink
@@ -422,14 +677,14 @@ export async function executeCommandCenterCommand(
     const handlerResult = await handler(rawArgs);
     if (handlerResult.ok === false) {
       const resultKind = handlerResult.kind;
-      const audit = auditFor({
+      const audit = makeAudit({
         commandId: entry.commandId,
         resultKind,
         entry,
         args: rawArgs,
         durationMs: duration(start, now),
         policyOutcome: 'allowed',
-        confirmationOutcome: 'not-required',
+        confirmationOutcome: executionConfirmationOutcome,
         capabilityOutcome: caps,
         reason: handlerResult.reason,
       });
@@ -460,14 +715,14 @@ export async function executeCommandCenterCommand(
       );
     }
 
-    const audit = auditFor({
+    const audit = makeAudit({
       commandId: entry.commandId,
       resultKind: 'success',
       entry,
       args: rawArgs,
       durationMs: duration(start, now),
       policyOutcome: 'allowed',
-      confirmationOutcome: 'not-required',
+      confirmationOutcome: executionConfirmationOutcome,
       capabilityOutcome: caps,
     });
     return finish(
@@ -480,14 +735,14 @@ export async function executeCommandCenterCommand(
       deps.auditSink
     );
   } catch {
-    const audit = auditFor({
+    const audit = makeAudit({
       commandId: entry.commandId,
       resultKind: 'error',
       entry,
       args: rawArgs,
       durationMs: duration(start, now),
       policyOutcome: 'allowed',
-      confirmationOutcome: 'not-required',
+      confirmationOutcome: executionConfirmationOutcome,
       capabilityOutcome: caps,
       reason: 'internal-error',
     });

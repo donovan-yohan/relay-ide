@@ -140,8 +140,10 @@ import {
 } from './command-center-intent-resolver.js';
 import {
   executeCommandCenterCommand,
+  type CommandCenterExecutionRequest,
   type CommandCenterReadOnlyHandler,
 } from './command-center-executor.js';
+import type { CommandCenterExecutionConfirmationInput } from '../shared/command-center-execution.js';
 import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
 import {
@@ -3288,11 +3290,25 @@ async function main(): Promise<void> {
       const args = Object.prototype.hasOwnProperty.call(body, 'args')
         ? body.args
         : {};
+      const confirmationBody = isRecord(body.confirmation)
+        ? body.confirmation
+        : null;
+      const confirmation: CommandCenterExecutionConfirmationInput | undefined =
+        confirmationBody &&
+        typeof confirmationBody.challengeId === 'string' &&
+        (confirmationBody.decision === 'confirm' ||
+          confirmationBody.decision === 'deny')
+          ? {
+              challengeId: confirmationBody.challengeId,
+              decision: confirmationBody.decision,
+            }
+          : undefined;
       const actorCredential = authenticatedCliGatewayActorCredential(req);
       const trustedCapabilities = actorCredential
         ? {
             source: 'actor-grant' as const,
             capabilities: actorCredential.capabilities,
+            actorId: actorCredential.actor.id,
           }
         : authenticatedBrowserSession(req)
           ? {
@@ -3393,15 +3409,18 @@ async function main(): Promise<void> {
         }),
       };
 
-      const result = await executeCommandCenterCommand(
-        { commandId, args },
-        {
-          handlers,
-          trustedCapabilities,
-          auditSink: (audit) =>
-            logger.info('Command Center execution audit', audit),
-        }
-      );
+      const executionRequest: CommandCenterExecutionRequest = {
+        commandId,
+        args,
+        ...(confirmation ? { confirmation } : {}),
+      };
+
+      const result = await executeCommandCenterCommand(executionRequest, {
+        handlers,
+        trustedCapabilities,
+        auditSink: (audit) =>
+          logger.info('Command Center execution audit', audit),
+      });
       res.json(result);
     }
   );

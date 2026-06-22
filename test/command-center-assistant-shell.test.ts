@@ -58,6 +58,7 @@ const sessionsListEntry = {
   availability: { state: 'available' },
   ui: { actionId: 'session.start-work-in-env', category: 'session' },
   inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  outputSchema: { type: 'object' },
 } as const;
 
 function openUiResult(): CommandCenterAssistantResult {
@@ -130,6 +131,7 @@ function executionSuccess(): CommandCenterExecutionResult {
       scopeKinds: ['session'],
       availabilityState: 'available',
       capabilityOutcome: 'allowed-browser-session',
+      actor: { kind: 'browser-session' },
     },
   };
 }

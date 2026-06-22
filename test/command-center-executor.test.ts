@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createCommandCenterConfirmationStore,
   executeCommandCenterCommand,
   type CommandCenterReadOnlyHandler,
 } from '../server/command-center-executor.js';
@@ -58,12 +59,23 @@ const confirmationDescriptor = descriptorFor('sessions.kill', 'destructive', {
     controlRequirements: ['confirmation-challenge'],
   },
 });
+const controlRequirementDescriptor = descriptorFor(
+  'supervisor.sendText',
+  'write',
+  {
+    confirmation: {
+      required: false,
+      controlRequirements: ['fresh-control-state'],
+    },
+  }
+);
 
 const catalog = buildCommandCenterResolverCatalog([
   sessionsListDescriptor,
   nodesListDescriptor,
   writeDescriptor,
   confirmationDescriptor,
+  controlRequirementDescriptor,
 ]);
 
 const handlers: Partial<
@@ -72,6 +84,14 @@ const handlers: Partial<
   'sessions.list': (args) => ({
     ok: true,
     data: { sessions: [{ id: 's1', repoId: args['repoId'] }] },
+  }),
+  'sessions.rename': () => ({
+    ok: true,
+    data: { renamed: true },
+  }),
+  'supervisor.sendText': () => ({
+    ok: true,
+    data: { sent: true },
   }),
 };
 
@@ -136,26 +156,96 @@ describe('Command Center read-only executor', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it('blocks write/destructive command ids instead of executing', async () => {
-    await expect(
-      executeCommandCenterCommand(
-        { commandId: 'sessions.rename', args: { repoId: 'repo-1' } },
-        { catalog, handlers }
-      )
-    ).resolves.toMatchObject({
-      kind: 'blocked',
-      reason: 'unsafe-command',
-      audit: { sideEffectClass: 'write', policyOutcome: 'blocked' },
+  it('requires redacted confirmation preview before write/destructive commands', async () => {
+    const store = createCommandCenterConfirmationStore();
+    const handler = vi.fn(handlers['sessions.rename']);
+    const first = await executeCommandCenterCommand(
+      { commandId: 'sessions.rename', args: { repoId: 'secret-repo-name' } },
+      {
+        catalog,
+        handlers: { ...handlers, 'sessions.rename': handler },
+        confirmationStore: store,
+        trustedCapabilities: {
+          source: 'actor-grant',
+          actorId: 'actor-1',
+          capabilities: ['session:read'],
+        },
+        now: () => 100,
+      }
+    );
+    expect(first.kind).toBe('confirmation_required');
+    if (first.kind !== 'confirmation_required')
+      throw new Error('expected preview');
+    expect(first.preview).toMatchObject({
+      commandId: 'sessions.rename',
+      label: 'sessions.rename',
+      scopedTarget: 'session:unspecified',
+      sideEffectClass: 'write',
+      args: { rawArgsReturned: false, argKeys: ['repoId'] },
+      expectedResultShape: { kind: 'json-schema' },
     });
+    expect(JSON.stringify(first)).not.toContain('secret-repo-name');
+    expect(handler).not.toHaveBeenCalled();
+
+    const confirmed = await executeCommandCenterCommand(
+      {
+        commandId: 'sessions.rename',
+        args: { repoId: 'secret-repo-name' },
+        confirmation: {
+          challengeId: first.preview.challengeId,
+          decision: 'confirm',
+        },
+        providerMetadata: {
+          source: 'resolver',
+          model: 'resolver-small',
+          rawPayload: { prompt: 'do not store me' },
+        },
+      },
+      {
+        catalog,
+        handlers: { ...handlers, 'sessions.rename': handler },
+        confirmationStore: store,
+        trustedCapabilities: {
+          source: 'actor-grant',
+          actorId: 'actor-1',
+          capabilities: ['session:read'],
+        },
+        now: () => 101,
+      }
+    );
+    expect(confirmed).toMatchObject({
+      kind: 'success',
+      commandId: 'sessions.rename',
+      audit: {
+        policyOutcome: 'allowed',
+        confirmationOutcome: 'confirmed',
+        actor: { kind: 'actor-grant', id: 'actor-1' },
+        provider: {
+          rawProviderPayloadReturned: false,
+          source: 'resolver',
+          model: 'resolver-small',
+          metadataKeys: ['model', 'source'],
+        },
+      },
+    });
+    expect(JSON.stringify(confirmed)).not.toContain('do not store me');
+    expect(handler).toHaveBeenCalledTimes(1);
 
     await expect(
       executeCommandCenterCommand(
         { commandId: 'sessions.kill', args: { repoId: 'repo-1' } },
-        { catalog, handlers }
+        {
+          catalog,
+          handlers,
+          trustedCapabilities: {
+            source: 'actor-grant',
+            capabilities: ['session:read'],
+          },
+        }
       )
     ).resolves.toMatchObject({
       kind: 'confirmation_required',
-      reason: 'confirmation-required',
+      reason: 'control-requirement',
       audit: {
         sideEffectClass: 'destructive',
         policyOutcome: 'confirmation-required',
@@ -179,6 +269,153 @@ describe('Command Center read-only executor', () => {
         availabilityState: 'unavailable',
       },
     });
+  });
+
+  it('caps retained confirmation challenges and evicts the oldest preview', () => {
+    const store = createCommandCenterConfirmationStore();
+    const nowMs = Date.now();
+    const records = Array.from({ length: 513 }, (_, index) =>
+      store.create({
+        commandId: 'sessions.rename',
+        argsSha256: `args-${index}`,
+        expiresAtMs: nowMs + 60_000,
+      })
+    );
+
+    expect(
+      store.consume({
+        challengeId: records[0]!.challengeId,
+        commandId: 'sessions.rename',
+        argsSha256: 'args-0',
+        nowMs,
+      })
+    ).toEqual({ ok: false, reason: 'missing' });
+    expect(
+      store.consume({
+        challengeId: records[512]!.challengeId,
+        commandId: 'sessions.rename',
+        argsSha256: 'args-512',
+        nowMs,
+      })
+    ).toMatchObject({ ok: true });
+  });
+
+  it('records confirmation deny and stale decisions without executing handlers', async () => {
+    const deniedStore = createCommandCenterConfirmationStore();
+    const deniedHandler = vi.fn(handlers['sessions.rename']);
+    const deniedPreview = await executeCommandCenterCommand(
+      { commandId: 'sessions.rename', args: { repoId: 'repo-1' } },
+      {
+        catalog,
+        handlers: { ...handlers, 'sessions.rename': deniedHandler },
+        confirmationStore: deniedStore,
+        trustedCapabilities: {
+          source: 'actor-grant',
+          capabilities: ['session:read'],
+        },
+        now: () => 1,
+      }
+    );
+    if (deniedPreview.kind !== 'confirmation_required')
+      throw new Error('expected preview');
+    await expect(
+      executeCommandCenterCommand(
+        {
+          commandId: 'sessions.rename',
+          args: { repoId: 'repo-1' },
+          confirmation: {
+            challengeId: deniedPreview.preview.challengeId,
+            decision: 'deny',
+          },
+        },
+        {
+          catalog,
+          handlers: { ...handlers, 'sessions.rename': deniedHandler },
+          confirmationStore: deniedStore,
+          trustedCapabilities: {
+            source: 'actor-grant',
+            capabilities: ['session:read'],
+          },
+          now: () => 2,
+        }
+      )
+    ).resolves.toMatchObject({
+      kind: 'blocked',
+      reason: 'confirmation-denied',
+      audit: { confirmationOutcome: 'denied' },
+    });
+    expect(deniedHandler).not.toHaveBeenCalled();
+
+    const staleStore = createCommandCenterConfirmationStore();
+    const stalePreview = await executeCommandCenterCommand(
+      { commandId: 'sessions.rename', args: { repoId: 'repo-1' } },
+      {
+        catalog,
+        handlers,
+        confirmationStore: staleStore,
+        trustedCapabilities: {
+          source: 'actor-grant',
+          capabilities: ['session:read'],
+        },
+        now: () => 1,
+      }
+    );
+    if (stalePreview.kind !== 'confirmation_required')
+      throw new Error('expected preview');
+    await expect(
+      executeCommandCenterCommand(
+        {
+          commandId: 'sessions.rename',
+          args: { repoId: 'repo-1' },
+          confirmation: {
+            challengeId: stalePreview.preview.challengeId,
+            decision: 'confirm',
+          },
+        },
+        {
+          catalog,
+          handlers,
+          confirmationStore: staleStore,
+          trustedCapabilities: {
+            source: 'actor-grant',
+            capabilities: ['session:read'],
+          },
+          now: () => 120_002,
+        }
+      )
+    ).resolves.toMatchObject({
+      kind: 'blocked',
+      reason: 'confirmation-stale',
+      audit: { confirmationOutcome: 'stale' },
+    });
+  });
+
+  it('blocks non-confirmation control requirements before creating a confirmation challenge', async () => {
+    const handler = vi.fn(handlers['supervisor.sendText']);
+    const result = await executeCommandCenterCommand(
+      { commandId: 'supervisor.sendText', args: { repoId: 'repo-1' } },
+      {
+        catalog,
+        handlers: { ...handlers, 'supervisor.sendText': handler },
+        confirmationStore: createCommandCenterConfirmationStore(),
+        trustedCapabilities: {
+          source: 'actor-grant',
+          capabilities: ['session:read'],
+        },
+      }
+    );
+
+    expect(result).toMatchObject({
+      kind: 'blocked',
+      reason: 'control-requirement-unsatisfied',
+      message: expect.stringContaining('fresh-control-state'),
+      audit: {
+        policyOutcome: 'blocked',
+        confirmationOutcome: 'blocked',
+        reason: 'control-requirement-unsatisfied',
+      },
+    });
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it('fails closed for unknown ids and missing explicit capabilities', async () => {
