@@ -89,6 +89,29 @@ export {
 } from './safe-defaults.js';
 
 export {
+  COMMAND_CENTER_INTENT_KINDS,
+  COMMAND_CENTER_RESOLVER_CATALOG,
+  buildCommandCenterResolverCatalog,
+  catalogEntryFromActionDescriptor,
+  commandCenterDescriptorFromCommandDefinition,
+  searchCommandCenterCatalog,
+  summarizeCommandCenterCatalogForResolver,
+  validateCommandCenterArgs,
+  validateCommandCenterProviderIntent,
+  type CommandCenterFallbackReason,
+  type CommandCenterIntentKind,
+  type CommandCenterNoMatchReason,
+  type CommandCenterProviderIntent,
+  type CommandCenterResolution,
+  type CommandCenterResolvedIntent,
+  type CommandCenterResolverCatalog,
+  type CommandCenterResolverCatalogEntry,
+  type CommandCenterResolverSearchHit,
+  type CommandCenterUiTarget,
+  type ValidateProviderIntentOptions,
+} from './command-center-resolver.js';
+
+export {
   WORKSPACE_EVIDENCE_DEFAULT_LIST_ENTRIES,
   WORKSPACE_EVIDENCE_DEFAULT_PREVIEW_BYTES,
   WORKSPACE_EVIDENCE_HASH_BYTE_LIMIT,
