@@ -107,6 +107,33 @@ const validIntent: CommandCenterProviderIntent = {
 };
 
 describe('Command Center resolver catalog', () => {
+  it('wires a real shared catalog entry to a guided open_ui action', () => {
+    const uiEntry = COMMAND_CENTER_RESOLVER_CATALOG.entries.find(
+      (entry) => entry.ui?.actionId === 'settings.open'
+    );
+
+    expect(uiEntry).toMatchObject({
+      commandId: 'settings.get',
+      ui: { actionId: 'settings.open', category: 'settings' },
+    });
+
+    expect(
+      validateCommandCenterProviderIntent(
+        {
+          kind: 'open_ui',
+          commandId: 'settings.get',
+          args: {},
+          confidence: 0.92,
+          ui: { actionId: 'settings.open', category: 'settings' },
+        },
+        { catalog: COMMAND_CENTER_RESOLVER_CATALOG }
+      )
+    ).toMatchObject({
+      kind: 'open_ui',
+      ui: { actionId: 'settings.open', category: 'settings' },
+    });
+  });
+
   it('projects compact command metadata from shared action descriptors', () => {
     expect(catalog.entries).toHaveLength(1);
     const entry = catalog.byCommandId.get('sessions.list');

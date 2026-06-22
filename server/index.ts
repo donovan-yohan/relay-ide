@@ -133,6 +133,11 @@ import {
   getFrameworkClientInfoWithRuntime,
   getFrameworkWebAvailability,
 } from './frameworks.js';
+import {
+  createOpenAiCompatibleCommandCenterIntentProvider,
+  readCommandCenterIntentResolverConfig,
+  resolveCommandCenterIntent,
+} from './command-center-intent-resolver.js';
 import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
 import {
@@ -3219,6 +3224,42 @@ async function main(): Promise<void> {
   app.get('/api/node/manifest', requireAuth, async (_req, res) => {
     const manifest = await getNodeManifest({ config: getConfig() });
     res.json({ manifest });
+  });
+
+  // POST /api/command-center/resolve — natural-language Command Center resolver.
+  // The response is the shared resolver contract plus redacted audit metadata;
+  // raw prompts, provider payloads, and inferred args stay out of durable logs.
+  app.post('/api/command-center/resolve', requireAuth, async (req, res) => {
+    try {
+      const body = isRecord(req.body) ? req.body : {};
+      const query = typeof body.query === 'string' ? body.query.trim() : '';
+      if (query.length === 0) {
+        res.status(400).json({ error: 'query is required' });
+        return;
+      }
+      if (query.length > 2_000) {
+        res.status(400).json({ error: 'query is too long' });
+        return;
+      }
+
+      const config = readCommandCenterIntentResolverConfig();
+      const provider = config
+        ? createOpenAiCompatibleCommandCenterIntentProvider(config, {
+            fetch: globalThis.fetch,
+          })
+        : null;
+      const result = await resolveCommandCenterIntent(
+        { query },
+        {
+          provider,
+          ...(config ? { minConfidence: config.minConfidence } : {}),
+        }
+      );
+      res.json(result);
+    } catch (error) {
+      logger.error('Command Center resolver failed unexpectedly', error);
+      res.status(500).json({ error: 'command-center-resolver-failed' });
+    }
   });
 
   // Restore sessions from a previous update restart

@@ -78,6 +78,12 @@ export interface RelayCommandManifest {
 
 const CLI_AGENT_WEB_SURFACES = ['cli', 'agent', 'web'] as const;
 
+const UI_ACTION_BY_GATEWAY_COMMAND: Partial<
+  Record<RelayCliGatewayCommand, string>
+> = {
+  'settings.get': 'settings.open',
+};
+
 const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'contract.list': 'gateway commands list',
   'contract.schema': 'gateway schema',
@@ -370,6 +376,7 @@ function auditRedactionForGatewayCommand(
 export function relayCommandDefinitionFromCliGatewaySpec(
   spec: RelayCliGatewayCommandSpec
 ): RelayCommandDefinition {
+  const uiAction = UI_ACTION_BY_GATEWAY_COMMAND[spec.name];
   return {
     id: spec.name,
     name: spec.name,
@@ -386,7 +393,7 @@ export function relayCommandDefinitionFromCliGatewaySpec(
     auditRedaction: auditRedactionForGatewayCommand(spec),
     errorCodes: spec.errorCodes,
     scopeKinds: scopeKindsForGatewayCommand(spec.name),
-    handler: { cli: spec.cli },
+    handler: { cli: spec.cli, ...(uiAction ? { uiAction } : {}) },
     stable: spec.stable,
     source: 'cli-gateway-v1',
   };
