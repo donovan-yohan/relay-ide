@@ -1,13 +1,15 @@
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  fetchWorkspaceEvidencePreview,
-  type WorkspaceEvidenceApiError,
-} from '../lib/api.js';
+import { fetchWorkspaceEvidencePreview } from '../lib/api.js';
 import type { WorkspaceEvidenceRoot } from '../../../shared/workspace-evidence.js';
-import { mapPreviewToRenderKind } from '../lib/workspace-evidence-view.js';
+import {
+  mapPreviewToRenderKind,
+  workspaceEvidenceErrorReason,
+} from '../lib/workspace-evidence-view.js';
+import { toAbsoluteFilePath } from '../lib/editor-affordances.js';
 import CodeBlock from './CodeBlock.js';
 import DiffViewer from './DiffViewer.js';
+import FileActionMenu from './FileActionMenu.js';
 import './WorkspaceEvidencePreview.css';
 
 export interface WorkspaceEvidencePreviewProps {
@@ -66,9 +68,7 @@ export function WorkspaceEvidencePreview({
 
   let body: ReactNode;
   if (query.isError) {
-    const err = query.error as WorkspaceEvidenceApiError | Error;
-    const reason =
-      'error' in err && err.error ? err.error.reason : undefined;
+    const reason = workspaceEvidenceErrorReason(query.error);
     if (reason === 'WORKSPACE_EVIDENCE_NOT_FOUND') {
       body = <div className="evidence-preview__notice">file not found</div>;
     } else if (reason === 'WORKSPACE_EVIDENCE_PERMISSION_DENIED') {
@@ -78,7 +78,9 @@ export function WorkspaceEvidencePreview({
         </div>
       );
     } else {
-      body = <div className="evidence-preview__notice">failed to load preview</div>;
+      body = (
+        <div className="evidence-preview__notice">failed to load preview</div>
+      );
     }
   } else if (query.isPending || !query.data) {
     body = <div className="evidence-preview__notice">loading…</div>;
@@ -140,11 +142,18 @@ export function WorkspaceEvidencePreview({
     <div className="evidence-preview" data-track="evidence.preview">
       <div className="evidence-preview__header">
         <span className="evidence-preview__name">{fileName(selectedPath)}</span>
-        {query.data?.preview.kind && (
-          <span className="evidence-preview__kind">
-            {query.data.preview.kind}
-          </span>
-        )}
+        <div className="evidence-preview__header-right">
+          {query.data?.preview.kind && (
+            <span className="evidence-preview__kind">
+              {query.data.preview.kind}
+            </span>
+          )}
+          <FileActionMenu
+            filePath={selectedPath}
+            absolutePath={toAbsoluteFilePath(root.path ?? '', selectedPath)}
+            sessionId={null}
+          />
+        </div>
       </div>
       <div className="evidence-preview__body">{body}</div>
     </div>

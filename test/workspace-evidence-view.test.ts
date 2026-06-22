@@ -3,6 +3,7 @@ import {
   mapPreviewToRenderKind,
   resolveWorkContextIdsForRepo,
   resolveWorkspaceEvidenceRoot,
+  workspaceEvidenceErrorReason,
   workspaceEvidenceSectionState,
 } from '../frontend/src/lib/workspace-evidence-view.js';
 import type {
@@ -19,10 +20,33 @@ import type {
   WorkContextAnchors,
 } from '../shared/work-context.js';
 
+describe('workspaceEvidenceErrorReason', () => {
+  it('reads the typed reason off a structured error response', () => {
+    expect(
+      workspaceEvidenceErrorReason({
+        operation: 'list',
+        error: { reason: 'WORKSPACE_EVIDENCE_PERMISSION_DENIED' },
+      })
+    ).toBe('WORKSPACE_EVIDENCE_PERMISSION_DENIED');
+  });
+
+  it('returns undefined for primitive / null rejection values without throwing', () => {
+    // `'error' in err` would throw a TypeError on these before the guard.
+    expect(workspaceEvidenceErrorReason('boom')).toBeUndefined();
+    expect(workspaceEvidenceErrorReason(null)).toBeUndefined();
+    expect(workspaceEvidenceErrorReason(undefined)).toBeUndefined();
+    expect(workspaceEvidenceErrorReason(42)).toBeUndefined();
+    expect(
+      workspaceEvidenceErrorReason(new Error('plain error'))
+    ).toBeUndefined();
+  });
+});
+
 function makeRoot(
   overrides: Partial<WorkspaceEvidenceRoot> & { path?: string | null } = {}
 ): WorkspaceEvidenceRoot {
-  const backing: WorkspaceEvidenceBackingKind = overrides.backing ?? 'directory';
+  const backing: WorkspaceEvidenceBackingKind =
+    overrides.backing ?? 'directory';
   return {
     ref: {
       id: overrides.ref?.id ?? `wer:local:${overrides.path ?? 'x'}`,
@@ -230,9 +254,11 @@ describe('mapPreviewToRenderKind', () => {
   });
 
   it('maps oversized state', () => {
-    expect(mapPreviewToRenderKind(makePreview({ state: 'oversized' }))).toEqual({
-      mode: 'oversized',
-    });
+    expect(mapPreviewToRenderKind(makePreview({ state: 'oversized' }))).toEqual(
+      {
+        mode: 'oversized',
+      }
+    );
   });
 
   it('maps binary state', () => {
@@ -270,9 +296,11 @@ describe('mapPreviewToRenderKind', () => {
   });
 
   it('maps not-found state to error', () => {
-    expect(mapPreviewToRenderKind(makePreview({ state: 'not-found' }))).toEqual({
-      mode: 'error',
-    });
+    expect(mapPreviewToRenderKind(makePreview({ state: 'not-found' }))).toEqual(
+      {
+        mode: 'error',
+      }
+    );
   });
 });
 
@@ -312,9 +340,7 @@ describe('resolveWorkContextIdsForRepo (#898)', () => {
     const group = makeGroup('g1', 'wc-1', {
       anchors: { worktree: { localPath: '/repo/wt' } },
     });
-    expect(resolveWorkContextIdsForRepo([group], '/repo/wt')).toEqual([
-      'wc-1',
-    ]);
+    expect(resolveWorkContextIdsForRepo([group], '/repo/wt')).toEqual(['wc-1']);
   });
 
   it('matches via a session repoPath', () => {
@@ -328,9 +354,7 @@ describe('resolveWorkContextIdsForRepo (#898)', () => {
     const group = makeGroup('g1', 'wc-1', {
       sessions: [{ worktreePath: '/repo/wt' }],
     });
-    expect(resolveWorkContextIdsForRepo([group], '/repo/wt')).toEqual([
-      'wc-1',
-    ]);
+    expect(resolveWorkContextIdsForRepo([group], '/repo/wt')).toEqual(['wc-1']);
   });
 
   it('matches via a session cwd', () => {

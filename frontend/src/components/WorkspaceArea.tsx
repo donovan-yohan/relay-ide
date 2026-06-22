@@ -138,6 +138,7 @@ function FileTabContentBridge({
   const fileDiffViewMode = useUiStore((s) => s.fileDiffViewMode);
   const fileWordWrap = useUiStore((s) => s.fileWordWrap);
   const closeFileTab = useUiStore((s) => s.closeFileTab);
+  const openFileTab = useUiStore((s) => s.openFileTab);
   const openFileTabs = useUiStore((s) => s.openFileTabs);
   const sendToTargetSessionId = useUiStore((s) => s.sendToTargetSessionId);
   const codeTabDirty = useUiStore((s) => s.codeTabDirty);
@@ -287,6 +288,22 @@ function FileTabContentBridge({
     closeFileTab(tab.filePath, tab.tabType);
   }, [closeFileTab, tab.filePath, tab.tabType]);
 
+  // Scoped session that the `relay-ide v1 files read/write` affordance targets.
+  // Prefer a session rooted at this workspace; fall back to any live session.
+  const commandSessionId = useMemo(() => {
+    const inWorkspace = sessions.filter(
+      (s) =>
+        s.cwd === workspacePath ||
+        s.worktreePath === workspacePath ||
+        s.repoPath === workspacePath
+    );
+    return (inWorkspace[0] ?? sessions[0])?.id ?? null;
+  }, [sessions, workspacePath]);
+
+  const handleShowChanges = useCallback(() => {
+    openFileTab(tab.filePath, true, 'diff');
+  }, [openFileTab, tab.filePath]);
+
   const handleEditorChange = useCallback(
     (next: string) => {
       setEditorValue(next);
@@ -382,16 +399,21 @@ function FileTabContentBridge({
           saveError={saveError}
           diskConflict={diskConflict}
           resetKey={`${tab.filePath}:${baselineMtimeMs ?? 'none'}`}
+          workspacePath={workspacePath}
+          sessionId={commandSessionId}
+          isChanged={isChanged}
           onChange={handleEditorChange}
           onSave={() => void handleSave()}
           onReloadDisk={handleReloadDisk}
           onOverwrite={() => void handleSave({ overwrite: true })}
+          onShowChanges={handleShowChanges}
         />
       );
     },
     [
       baselineMtimeMs,
       codeTabDirty,
+      commandSessionId,
       currentFileTabKey,
       diskConflict,
       editorValue,
@@ -399,10 +421,13 @@ function FileTabContentBridge({
       handleEditorChange,
       handleReloadDisk,
       handleSave,
+      handleShowChanges,
+      isChanged,
       renderCode,
       saveError,
       saveFileContent.isPending,
       tab.filePath,
+      workspacePath,
     ]
   );
 
