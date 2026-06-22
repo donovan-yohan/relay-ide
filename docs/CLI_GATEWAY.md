@@ -316,7 +316,7 @@ The scoped actor credential slice supports the read-only hub-backed set plus the
 | `relay-ide v1 nodes list --json`                                         | `nodes.list`                    | `session:read`      | Reads summarized hub/node inventory.                                                                                                             |
 | `relay-ide v1 sessions list --json`                                      | `sessions.list`                 | `session:read`      | Reads session descriptors and control summaries.                                                                                                 |
 | `relay-ide v1 roster list --json`                                        | `roster.list`                   | `session:read`      | Reads the redacted active-agent roster; validates WorkContext scope when `--work-context-id` is present.                                         |
-| `relay-ide v1 cockpit get --work-context-id <id> --json`                 | `cockpit.get`                   | `session:read`      | Reads one Active Work cockpit item and safe follow-up command hints; requires `context:read` and does not execute live controls.                  |
+| `relay-ide v1 cockpit get --work-context-id <id> --json`                 | `cockpit.get`                   | `session:read`      | Reads one Active Work cockpit item and safe follow-up command hints; requires `context:read` and does not execute live controls.                 |
 | `relay-ide v1 sessions get --id <id> --json`                             | `sessions.get`                  | `session:read`      | Validates the credential against the requested session/global session id when scoped that narrowly.                                              |
 | `relay-ide v1 sessions screen --id <id> --json`                          | `sessions.screen`               | `session:read`      | Returns a bounded relay-pty/libghostty rendered screen snapshot; tmux-compat and remote-unavailable sessions fail closed with typed errors.      |
 | `relay-ide v1 work-contexts get --id <id> --json`                        | `work-contexts.get`             | `session:read`      | Validates work-context scope when the credential is scoped to a work context.                                                                    |
@@ -818,6 +818,15 @@ Only these file operations are stable in v1:
 - `files.stat` maps to `fs.stat` and requires `session:read` + `rpc:fs:read`.
 - `files.read` maps to `fs.read` and requires `session:read` + `rpc:fs:read`.
 - `files.write` maps to `fs.write` and requires `session:read` + `rpc:fs:write`. Capability is off by default; operators must grant `rpc:fs:write` per node. Uses atomic-rename on the node executor. Prod-tier nodes gate writes behind a confirmation challenge.
+
+### Browser editor parity and the two write paths (#1004)
+
+The web file editor and these CLI commands operate on the **same files through two intentionally distinct, scoped abstractions** — there is no third write path:
+
+- **Browser editor** (`CodeMirrorFileEditor`) reads via `GET /workspaces/file-content` and writes via `PUT /workspaces/file-content`, a workspace-scoped HTTP route with mtime/SHA optimistic concurrency, atomic write, and a size cap. This is what the save button, `Cmd/Ctrl+S`, and the stale-disk conflict bar drive.
+- **CLI / agents** use `files.read` / `files.write`, the session-scoped File RPC above. `files.write` stays capability-gated (`rpc:fs:write`, off by default) and confirmation-gated on prod-tier nodes.
+
+To keep the two discoverable from the UI, every file surface renders a shared `FileActionMenu` whose copy affordances emit the contract-derived command for the open file — e.g. `relay-ide v1 files read --session-id <session-id> --path <abs-path> --json` (editable surfaces also offer the `files write … --mode overwrite --file -` form). The command strings are rendered from this contract's own `cli` template (`commandSpec('files.read' | 'files.write')`), so the in-product affordance cannot drift from the shipped flags. `<session-id>` falls back to a literal placeholder when no scoped session is bound to the surface (e.g. the read-only evidence preview). The browser write path and the read/write contract shapes are covered by `test/file-write-api.test.ts`, `test/cli-gateway-contract.test.ts`, and `test/editor-affordances.test.ts`; a live scoped-session round-trip remains a manual smoke (`relay-ide v1 files read --session-id <id> --path <path> --json`).
 
 Caps are enforced by the existing File RPC layer and reflected in the contract:
 

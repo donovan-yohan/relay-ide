@@ -23,6 +23,9 @@ import {
   keymap,
   lineNumbers,
 } from '@codemirror/view';
+import { toAbsoluteFilePath } from '../lib/editor-affordances.js';
+import EditorShortcutHelp from './EditorShortcutHelp.js';
+import FileActionMenu from './FileActionMenu.js';
 import './CodeMirrorFileEditor.css';
 
 interface CodeMirrorFileEditorProps {
@@ -35,10 +38,17 @@ interface CodeMirrorFileEditorProps {
   saveError: string | null;
   diskConflict: boolean;
   resetKey: string;
+  /** Workspace root used to resolve an absolute path for copy/CLI affordances. */
+  workspacePath: string;
+  /** Scoped session id for the `files read/write` command affordance. */
+  sessionId: string | null;
+  /** Whether the file has git changes (gates the "show changes" action). */
+  isChanged: boolean;
   onChange: (value: string) => void;
   onSave: () => void;
   onReloadDisk: () => void;
   onOverwrite: () => void;
+  onShowChanges: () => void;
 }
 
 async function loadLanguage(
@@ -156,10 +166,14 @@ export function CodeMirrorFileEditor({
   saveError,
   diskConflict,
   resetKey,
+  workspacePath,
+  sessionId,
+  isChanged,
   onChange,
   onSave,
   onReloadDisk,
   onOverwrite,
+  onShowChanges,
 }: CodeMirrorFileEditorProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -240,6 +254,7 @@ export function CodeMirrorFileEditor({
   }, [filePath, languageExtension, resetKey, wordWrap]);
 
   const status = saving ? 'saving' : dirty ? 'unsaved' : 'saved';
+  const absolutePath = toAbsoluteFilePath(workspacePath, filePath);
 
   return (
     <div className="cm-file-editor" data-file-path={filePath}>
@@ -253,14 +268,29 @@ export function CodeMirrorFileEditor({
         {saveError && !diskConflict && (
           <span className="cm-file-editor__error">{saveError}</span>
         )}
-        <button
-          type="button"
-          className="cm-file-editor__save"
-          onClick={onSave}
-          disabled={saving || !dirty}
-        >
-          save
-        </button>
+        <div className="cm-file-editor__actions">
+          <EditorShortcutHelp />
+          <button
+            type="button"
+            className="cm-file-editor__save"
+            onClick={onSave}
+            disabled={saving || !dirty}
+          >
+            save
+          </button>
+          <FileActionMenu
+            filePath={filePath}
+            absolutePath={absolutePath}
+            sessionId={sessionId}
+            editable
+            dirty={dirty}
+            saving={saving}
+            onSave={onSave}
+            onReload={onReloadDisk}
+            onShowChanges={onShowChanges}
+            canShowChanges={isChanged}
+          />
+        </div>
       </div>
       {diskConflict && (
         <div className="cm-file-editor__conflict" role="alert">
