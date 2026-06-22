@@ -379,6 +379,41 @@ describe('Command Center provider intent validation', () => {
       )
     ).toMatchObject({ kind: 'no_match', reason: 'metadata-mismatch' });
   });
+
+  it('rejects explain related commands not covered by cited corpus entries', () => {
+    const nodeCatalog = buildCommandCenterResolverCatalog([
+      sessionsListDescriptor,
+      descriptorFor('nodes.revoke', 'destructive'),
+    ]);
+
+    expect(
+      validateCommandCenterProviderIntent(
+        {
+          kind: 'explain',
+          message:
+            'Scoped read commands can list sessions without exposing private state.',
+          confidence: 0.88,
+          citations: ['cli-gateway-scoped-read-commands'],
+          relatedCommandIds: ['nodes.revoke'],
+        },
+        { catalog: nodeCatalog }
+      )
+    ).toMatchObject({ kind: 'no_match', reason: 'metadata-mismatch' });
+
+    expect(
+      validateCommandCenterProviderIntent(
+        {
+          kind: 'explain',
+          message:
+            'The command manifest can describe all resolver commands, including node revocation.',
+          confidence: 0.88,
+          citations: ['cli-gateway-command-taxonomy'],
+          relatedCommandIds: ['nodes.revoke'],
+        },
+        { catalog: nodeCatalog }
+      )
+    ).toMatchObject({ kind: 'explain', relatedCommandIds: ['nodes.revoke'] });
+  });
 });
 
 describe('Command Center resolver golden corpus', () => {

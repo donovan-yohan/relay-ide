@@ -16,6 +16,7 @@ import {
   type RelayActionSurface,
 } from './action-descriptor.js';
 import {
+  commandCenterExplainCoverageForCommand,
   commandCenterExplainRelatedActionIds,
   commandCenterExplainRelatedCommandIds,
   isCommandCenterExplainCitationId,
@@ -573,7 +574,8 @@ function validateRelatedCommandIds(
   }
   const out: RelayCliGatewayCommand[] = [];
   for (const commandId of commandIds) {
-    if (!catalog.byCommandId.has(commandId as RelayCliGatewayCommand)) {
+    const relayCommandId = commandId as RelayCliGatewayCommand;
+    if (!catalog.byCommandId.has(relayCommandId)) {
       return noMatch(
         'metadata-mismatch',
         suggestions,
@@ -581,7 +583,19 @@ function validateRelatedCommandIds(
         claim
       );
     }
-    out.push(commandId as RelayCliGatewayCommand);
+    if (
+      !commandCenterExplainCoverageForCommand(relayCommandId).some((entry) =>
+        citations.includes(entry.id)
+      )
+    ) {
+      return noMatch(
+        'metadata-mismatch',
+        suggestions,
+        `related command ${commandId} is not covered by cited explain corpus`,
+        claim
+      );
+    }
+    out.push(relayCommandId);
   }
   return uniqueStrings(out) as RelayCliGatewayCommand[];
 }
