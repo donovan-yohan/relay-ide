@@ -138,6 +138,10 @@ import {
   readCommandCenterIntentResolverConfig,
   resolveCommandCenterIntent,
 } from './command-center-intent-resolver.js';
+import {
+  executeCommandCenterCommand,
+  type CommandCenterReadOnlyHandler,
+} from './command-center-executor.js';
 import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
 import {
@@ -147,7 +151,11 @@ import {
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
 import { createCliGatewayEventBus } from './cli-gateway-event-bus.js';
-import { createCliGatewaySettingsRouter } from './cli-gateway-settings.js';
+import {
+  createCliGatewaySettingsRouter,
+  safeSettingsFromConfig,
+  webhookStatusFromConfig,
+} from './cli-gateway-settings.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import {
   createHandoffRouter,
@@ -231,6 +239,7 @@ import type { SessionLane } from '../shared/session-lane.js';
 import {
   EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
   type EventsSubscribeTopic,
+  type RelayCliGatewayCommand,
   type RelayCliGatewayError,
 } from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeLocalGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
@@ -300,7 +309,10 @@ import {
   type CliGatewayActorIssueInput,
   type CliGatewayActorReadCommand,
 } from './cli-gateway-actor-auth.js';
-import type { RelayCapabilityBit } from '../shared/security-policy.js';
+import {
+  RELAY_CAPABILITY_BITS,
+  type RelayCapabilityBit,
+} from '../shared/security-policy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3261,6 +3273,138 @@ async function main(): Promise<void> {
       res.status(500).json({ error: 'command-center-resolver-failed' });
     }
   });
+
+  // POST /api/command-center/execute — execute one already-resolved typed
+  // read-only Relay command through the same manifest/catalog policy boundary.
+  // This route never accepts shell strings or prompt payloads; audit metadata
+  // logs command/result/latency plus hashed args only.
+  app.post(
+    '/api/command-center/execute',
+    requireCliGatewayAuth,
+    async (req, res) => {
+      const body = isRecord(req.body) ? req.body : {};
+      const commandId =
+        typeof body.commandId === 'string' ? body.commandId : '';
+      const args = Object.prototype.hasOwnProperty.call(body, 'args')
+        ? body.args
+        : {};
+      const actorCredential = authenticatedCliGatewayActorCredential(req);
+      const trustedCapabilities = actorCredential
+        ? {
+            source: 'actor-grant' as const,
+            capabilities: actorCredential.capabilities,
+          }
+        : authenticatedBrowserSession(req)
+          ? {
+              source: 'browser-session' as const,
+              capabilities: RELAY_CAPABILITY_BITS,
+            }
+          : undefined;
+
+      const listSessions = async () => {
+        const [localSessions, remoteSessions] = await Promise.all([
+          Promise.resolve(
+            localRelayNode.sessions
+              .list()
+              .map((session) =>
+                withWorkContextMetadata(workContextStore, session)
+              )
+          ),
+          aggregateRemoteSessions({
+            registry: hubNodeRegistry,
+            nodeLinks: hubNodeLinks,
+            logger,
+            sessionEnvelopes: sessionEnvelopeRegistry,
+            workContextStore,
+            readModelCache: remoteSessionReadModelCache,
+          }),
+        ]);
+        return [...localSessions, ...remoteSessions];
+      };
+
+      const findSession = async (id: string) => {
+        const local = localRelayNode.sessions
+          .list()
+          .map((session) => withWorkContextMetadata(workContextStore, session))
+          .find(
+            (session) => session.id === id || session.globalSessionId === id
+          );
+        if (local) return local;
+        const remoteSessions = await aggregateRemoteSessions({
+          registry: hubNodeRegistry,
+          nodeLinks: hubNodeLinks,
+          logger,
+          sessionEnvelopes: sessionEnvelopeRegistry,
+          workContextStore,
+          readModelCache: remoteSessionReadModelCache,
+        });
+        return remoteSessions.find(
+          (session) => session.id === id || session.globalSessionId === id
+        );
+      };
+
+      const handlers: Partial<
+        Record<RelayCliGatewayCommand, CommandCenterReadOnlyHandler>
+      > = {
+        'nodes.list': () => ({
+          ok: true,
+          data: { nodes: hubNodeRegistry.listNodes() },
+        }),
+        'sessions.list': async () => ({
+          ok: true,
+          data: { sessions: await listSessions() },
+        }),
+        'sessions.get': async (commandArgs) => {
+          const id = commandArgs['id'];
+          if (typeof id !== 'string' || !id.trim()) {
+            return {
+              ok: false,
+              kind: 'unavailable',
+              reason: 'not-found',
+              message: 'session id is required',
+            };
+          }
+          const found = await findSession(id.trim());
+          if (!found) {
+            return {
+              ok: false,
+              kind: 'unavailable',
+              reason: 'not-found',
+              message: 'session was not found',
+              details: { sessionId: id },
+            };
+          }
+          return { ok: true, data: found };
+        },
+        'settings.get': () => ({
+          ok: true,
+          data: {
+            settings: safeSettingsFromConfig(getConfig()),
+            redaction: {
+              rawConfigReturned: false,
+              secretsReturned: false,
+              tokenMaterialReturned: false,
+            },
+          },
+        }),
+        'webhooks.status': () => ({
+          ok: true,
+          data: webhookStatusFromConfig(getConfig()),
+        }),
+      };
+
+      const result = await executeCommandCenterCommand(
+        { commandId, args },
+        {
+          handlers,
+          trustedCapabilities,
+          auditSink: (audit) =>
+            logger.info('Command Center execution audit', audit),
+        }
+      );
+      res.json(result);
+    }
+  );
 
   // Restore sessions from a previous update restart
   const restoredCount = await restoreFromDisk(

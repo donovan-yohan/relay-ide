@@ -2,6 +2,7 @@ import type {
   CommandCenterNoMatchReason,
   CommandCenterResolution,
 } from '../../../shared/command-center-resolver.js';
+import type { CommandCenterExecutionResult } from '../../../shared/command-center-execution.js';
 import type { Action, ActionContext } from './actions/types.js';
 
 export interface CommandCenterIntentAuditView {
@@ -23,6 +24,12 @@ export interface CommandCenterAssistantCopy {
   detail: string;
   tone: 'info' | 'success' | 'warning' | 'error';
   cta?: string;
+}
+
+export interface CommandCenterExecutionCopy {
+  title: string;
+  detail: string;
+  tone: 'success' | 'warning' | 'error';
 }
 
 const REASON_COPY: Record<CommandCenterNoMatchReason, string> = {
@@ -67,9 +74,10 @@ export function commandCenterAssistantCopy(
   }
   if (resolution.kind === 'execute_command') {
     return {
-      title: 'preview only',
-      detail: `${resolution.entry.label} is read-only, but natural-language execution is deferred to a later slice. Use the deterministic command entry below instead.`,
+      title: 'ready to run read-only command',
+      detail: `${resolution.entry.label} is read-only and will run through Relay's typed command policy with schema-valid args only.`,
       tone: 'info',
+      cta: 'run read-only command',
     };
   }
 
@@ -86,6 +94,44 @@ export function commandCenterAssistantCopy(
         : resolution.reason === 'unsafe-command'
           ? 'error'
           : 'info',
+  };
+}
+
+export function commandCenterExecutionCopy(
+  result: CommandCenterExecutionResult
+): CommandCenterExecutionCopy {
+  if (result.kind === 'success') {
+    return {
+      title: 'command executed',
+      detail: `${result.commandId} returned read-only data. Audit recorded ${result.audit.sideEffectClass ?? 'read'} result ${result.audit.resultKind} without raw args.`,
+      tone: 'success',
+    };
+  }
+  if (result.kind === 'unavailable') {
+    return {
+      title: `${result.reason.replace(/-/g, ' ')} unavailable`,
+      detail: result.message,
+      tone: 'warning',
+    };
+  }
+  if (result.kind === 'confirmation_required') {
+    return {
+      title: 'confirmation required',
+      detail: result.message,
+      tone: 'warning',
+    };
+  }
+  if (result.kind === 'blocked') {
+    return {
+      title: `blocked: ${result.reason.replace(/-/g, ' ')}`,
+      detail: result.message,
+      tone: 'error',
+    };
+  }
+  return {
+    title: 'command failed',
+    detail: result.message,
+    tone: 'error',
   };
 }
 
