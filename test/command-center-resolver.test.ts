@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  COMMAND_CENTER_RESOLVER_CATALOG,
   buildCommandCenterResolverCatalog,
   searchCommandCenterCatalog,
   summarizeCommandCenterCatalogForResolver,
@@ -80,6 +81,33 @@ const validIntent: CommandCenterProviderIntent = {
 };
 
 describe('Command Center resolver catalog', () => {
+  it('wires a real shared catalog entry to a guided open_ui action', () => {
+    const uiEntry = COMMAND_CENTER_RESOLVER_CATALOG.entries.find(
+      (entry) => entry.ui?.actionId === 'session.start-work-in-env'
+    );
+
+    expect(uiEntry).toMatchObject({
+      commandId: 'sessions.list',
+      ui: { actionId: 'session.start-work-in-env', category: 'session' },
+    });
+
+    expect(
+      validateCommandCenterProviderIntent(
+        {
+          kind: 'open_ui',
+          commandId: 'sessions.list',
+          args: {},
+          confidence: 0.92,
+          ui: { actionId: 'session.start-work-in-env', category: 'session' },
+        },
+        { catalog: COMMAND_CENTER_RESOLVER_CATALOG }
+      )
+    ).toMatchObject({
+      kind: 'open_ui',
+      ui: { actionId: 'session.start-work-in-env', category: 'session' },
+    });
+  });
+
   it('projects compact command metadata from shared action descriptors', () => {
     expect(catalog.entries).toHaveLength(1);
     const entry = catalog.byCommandId.get('sessions.list');

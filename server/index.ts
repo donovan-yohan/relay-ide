@@ -3230,31 +3230,36 @@ async function main(): Promise<void> {
   // The response is the shared resolver contract plus redacted audit metadata;
   // raw prompts, provider payloads, and inferred args stay out of durable logs.
   app.post('/api/command-center/resolve', requireAuth, async (req, res) => {
-    const body = isRecord(req.body) ? req.body : {};
-    const query = typeof body.query === 'string' ? body.query.trim() : '';
-    if (query.length === 0) {
-      res.status(400).json({ error: 'query is required' });
-      return;
-    }
-    if (query.length > 2_000) {
-      res.status(400).json({ error: 'query is too long' });
-      return;
-    }
-
-    const config = readCommandCenterIntentResolverConfig();
-    const provider = config
-      ? createOpenAiCompatibleCommandCenterIntentProvider(config, {
-          fetch: globalThis.fetch,
-        })
-      : null;
-    const result = await resolveCommandCenterIntent(
-      { query },
-      {
-        provider,
-        ...(config ? { minConfidence: config.minConfidence } : {}),
+    try {
+      const body = isRecord(req.body) ? req.body : {};
+      const query = typeof body.query === 'string' ? body.query.trim() : '';
+      if (query.length === 0) {
+        res.status(400).json({ error: 'query is required' });
+        return;
       }
-    );
-    res.json(result);
+      if (query.length > 2_000) {
+        res.status(400).json({ error: 'query is too long' });
+        return;
+      }
+
+      const config = readCommandCenterIntentResolverConfig();
+      const provider = config
+        ? createOpenAiCompatibleCommandCenterIntentProvider(config, {
+            fetch: globalThis.fetch,
+          })
+        : null;
+      const result = await resolveCommandCenterIntent(
+        { query },
+        {
+          provider,
+          ...(config ? { minConfidence: config.minConfidence } : {}),
+        }
+      );
+      res.json(result);
+    } catch (error) {
+      logger.error('Command Center resolver failed unexpectedly', error);
+      res.status(500).json({ error: 'command-center-resolver-failed' });
+    }
   });
 
   // Restore sessions from a previous update restart

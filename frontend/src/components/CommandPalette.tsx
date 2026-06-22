@@ -721,6 +721,8 @@ export function CommandPalette({
   const [assistantState, setAssistantState] = useState<AssistantState>({
     status: 'idle',
   });
+  const assistantOpenRef = useRef(open);
+  const assistantRequestIdRef = useRef(0);
 
   const {
     query,
@@ -839,11 +841,23 @@ export function CommandPalette({
   const runAssistant = useCallback(async () => {
     const assistantQuery = query.trim();
     if (!assistantQuery || assistantState.status === 'loading') return;
+    const requestId = assistantRequestIdRef.current + 1;
+    assistantRequestIdRef.current = requestId;
     setAssistantState({ status: 'loading', query: assistantQuery });
     try {
       const result = await resolveAssistantIntent(assistantQuery);
+      if (
+        !assistantOpenRef.current ||
+        assistantRequestIdRef.current !== requestId
+      )
+        return;
       setAssistantState({ status: 'result', query: assistantQuery, result });
     } catch (error) {
+      if (
+        !assistantOpenRef.current ||
+        assistantRequestIdRef.current !== requestId
+      )
+        return;
       setAssistantState({
         status: 'error',
         query: assistantQuery,
@@ -864,7 +878,15 @@ export function CommandPalette({
   }, [actionContext, assistantState, onClose]);
 
   useEffect(() => {
-    if (!open) setAssistantState({ status: 'idle' });
+    assistantOpenRef.current = open;
+    if (!open) {
+      assistantRequestIdRef.current += 1;
+      setAssistantState({ status: 'idle' });
+    }
+    return () => {
+      assistantOpenRef.current = false;
+      assistantRequestIdRef.current += 1;
+    };
   }, [open]);
 
   if (!open) return null;

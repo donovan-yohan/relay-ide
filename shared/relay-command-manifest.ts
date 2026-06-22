@@ -78,6 +78,12 @@ export interface RelayCommandManifest {
 
 const CLI_AGENT_WEB_SURFACES = ['cli', 'agent', 'web'] as const;
 
+const UI_ACTION_BY_GATEWAY_COMMAND: Partial<
+  Record<RelayCliGatewayCommand, string>
+> = {
+  'sessions.list': 'session.start-work-in-env',
+};
+
 const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'contract.list': 'gateway commands list',
   'contract.schema': 'gateway schema',
@@ -265,7 +271,8 @@ function scopeKindsForGatewayCommand(
   if (name.startsWith('worktrees.')) return ['repo', 'worktree'];
   if (name.startsWith('files.')) return ['session'];
   if (name.startsWith('work-contexts.')) return ['work-context'];
-  if (name.startsWith('work-context-messages.templates.')) return ['work-context'];
+  if (name.startsWith('work-context-messages.templates.'))
+    return ['work-context'];
   if (name.startsWith('work-context-messages.')) return ['work-context'];
   if (name.startsWith('work-context-artifacts.')) return ['work-context'];
   if (name.startsWith('handoff-artifacts.')) return ['work-context'];
@@ -368,6 +375,7 @@ function auditRedactionForGatewayCommand(
 export function relayCommandDefinitionFromCliGatewaySpec(
   spec: RelayCliGatewayCommandSpec
 ): RelayCommandDefinition {
+  const uiAction = UI_ACTION_BY_GATEWAY_COMMAND[spec.name];
   return {
     id: spec.name,
     name: spec.name,
@@ -384,7 +392,7 @@ export function relayCommandDefinitionFromCliGatewaySpec(
     auditRedaction: auditRedactionForGatewayCommand(spec),
     errorCodes: spec.errorCodes,
     scopeKinds: scopeKindsForGatewayCommand(spec.name),
-    handler: { cli: spec.cli },
+    handler: { cli: spec.cli, ...(uiAction ? { uiAction } : {}) },
     stable: spec.stable,
     source: 'cli-gateway-v1',
   };

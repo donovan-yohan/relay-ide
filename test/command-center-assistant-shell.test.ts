@@ -177,7 +177,8 @@ describe('<CommandPalette /> assistant shell', () => {
   async function render(
     resolveAssistantIntent: (
       query: string
-    ) => Promise<CommandCenterAssistantResult>
+    ) => Promise<CommandCenterAssistantResult>,
+    options: { open?: boolean } = {}
   ) {
     await act(async () => {
       root.render(
@@ -185,7 +186,7 @@ describe('<CommandPalette /> assistant shell', () => {
           QueryClientProvider,
           { client: queryClient },
           React.createElement(CommandPalette, {
-            open: true,
+            open: options.open ?? true,
             workspaces: [],
             sessions: [],
             actionContext,
@@ -199,6 +200,44 @@ describe('<CommandPalette /> assistant shell', () => {
       );
     });
   }
+
+  it('drops in-flight assistant results when the palette closes', async () => {
+    let resolveRequest:
+      | ((result: CommandCenterAssistantResult) => void)
+      | null = null;
+    const resolveAssistantIntent = vi.fn(
+      () =>
+        new Promise<CommandCenterAssistantResult>((resolve) => {
+          resolveRequest = resolve;
+        })
+    );
+    await render(resolveAssistantIntent);
+    const input = container.querySelector(
+      '.palette-search-input'
+    ) as HTMLInputElement;
+    const ask = container.querySelector(
+      '.palette-assistant-button'
+    ) as HTMLButtonElement;
+
+    await act(async () => {
+      setInputValue(input, 'show sessions');
+    });
+    await act(async () => {
+      ask.click();
+    });
+    await render(resolveAssistantIntent, { open: false });
+    await act(async () => {
+      resolveRequest?.(providerMissingResult());
+      await Promise.resolve();
+    });
+    await render(resolveAssistantIntent);
+
+    expect(resolveAssistantIntent).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain(
+      'assistant resolver is not configured'
+    );
+    expect(container.textContent).not.toContain('sessions list');
+  });
 
   it('keeps deterministic search visible when provider is unconfigured', async () => {
     await render(async () => providerMissingResult());

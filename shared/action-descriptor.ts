@@ -104,6 +104,10 @@ export const relayUnknownErrorSchema: RelayJsonSchema = {
   additionalProperties: true,
 };
 
+function uiActionCategory(actionId: string): string {
+  return actionId.split('.', 1)[0] || 'ui';
+}
+
 export function relayActionDescriptorFromCommandDefinition(
   command: RelayCommandDefinition,
   options: {
@@ -135,6 +139,14 @@ export function relayActionDescriptorFromCommandDefinition(
     },
     stable: command.stable,
     source: 'cli-gateway-v1',
+    ...(command.handler.uiAction
+      ? {
+          ui: {
+            actionId: command.handler.uiAction,
+            category: uiActionCategory(command.handler.uiAction),
+          },
+        }
+      : {}),
     contract: {
       relayCommandName: command.name,
       stable: command.stable,
