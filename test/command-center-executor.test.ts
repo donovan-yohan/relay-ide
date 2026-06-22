@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  commandCenterActorCredentialScopeFor,
   createCommandCenterConfirmationStore,
   executeCommandCenterCommand,
   type CommandCenterReadOnlyHandler,
@@ -25,7 +26,12 @@ function descriptorFor(
       schema: {
         type: 'object',
         additionalProperties: false,
-        properties: { repoId: { type: 'string' } },
+        properties: {
+          repoId: { type: 'string' },
+          id: { type: 'string' },
+          displayName: { type: 'string' },
+          workContextId: { type: 'string' },
+        },
       },
     },
     availability: { state: 'available', capabilityHints: ['session:read'] },
@@ -69,6 +75,9 @@ const controlRequirementDescriptor = descriptorFor(
     },
   }
 );
+const repoScopedDescriptor = descriptorFor('pr-overseer.register', 'write', {
+  availability: { state: 'available', capabilityHints: ['context:write'] },
+});
 
 const catalog = buildCommandCenterResolverCatalog([
   sessionsListDescriptor,
@@ -76,6 +85,7 @@ const catalog = buildCommandCenterResolverCatalog([
   writeDescriptor,
   confirmationDescriptor,
   controlRequirementDescriptor,
+  repoScopedDescriptor,
 ]);
 
 const handlers: Partial<
@@ -154,6 +164,167 @@ describe('Command Center read-only executor', () => {
       },
     });
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('derives actor credential scope from session and repo command args', () => {
+    const sessionEntry = catalog.byCommandId.get('sessions.rename');
+    const repoEntry = catalog.byCommandId.get('pr-overseer.register');
+    if (!sessionEntry || !repoEntry)
+      throw new Error('expected catalog entries');
+
+    expect(
+      commandCenterActorCredentialScopeFor(sessionEntry, {
+        id: 'session-1',
+        globalSessionId: 'global-session-1',
+      })
+    ).toEqual({
+      sessionIds: ['session-1'],
+      globalSessionIds: ['global-session-1'],
+    });
+    expect(
+      commandCenterActorCredentialScopeFor(repoEntry, { repoId: 'repo-1' })
+    ).toEqual({ repoIds: ['repo-1'] });
+  });
+
+  it('validates actor credential scope before minting confirmation previews', async () => {
+    const handler = vi.fn(handlers['sessions.rename']);
+    const store = {
+      create: vi.fn(() => {
+        throw new Error('challenge should not be minted');
+      }),
+      consume: vi.fn(),
+    };
+    const validateActorScope = vi.fn(() => ({
+      ok: false as const,
+      reason: 'wrong_session_scope' as const,
+      credentialId: 'cred-wrong-session',
+    }));
+
+    const result = await executeCommandCenterCommand(
+      {
+        commandId: 'sessions.rename',
+        args: { id: 'session-2', displayName: 'new name' },
+      },
+      {
+        catalog,
+        handlers: { ...handlers, 'sessions.rename': handler },
+        confirmationStore: store,
+        trustedCapabilities: {
+          source: 'actor-grant',
+          actorId: 'actor-1',
+          capabilities: ['session:read'],
+        },
+        validateActorScope,
+      }
+    );
+
+    expect(result).toMatchObject({
+      kind: 'blocked',
+      reason: 'actor-scope-denied',
+      audit: {
+        policyOutcome: 'blocked',
+        confirmationOutcome: 'blocked',
+        reason: 'actor-scope-wrong_session_scope',
+      },
+    });
+    expect(validateActorScope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requiredCapabilities: ['session:read'],
+        requestedScope: { sessionIds: ['session-2'] },
+      })
+    );
+    expect(store.create).not.toHaveBeenCalled();
+    expect(store.consume).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('validates actor credential scope before redeeming confirmations', async () => {
+    const handler = vi.fn(handlers['sessions.rename']);
+    const store = createCommandCenterConfirmationStore();
+    const first = await executeCommandCenterCommand(
+      {
+        commandId: 'sessions.rename',
+        args: { id: 'session-1', displayName: 'new name' },
+      },
+      {
+        catalog,
+        handlers: { ...handlers, 'sessions.rename': handler },
+        confirmationStore: store,
+        trustedCapabilities: {
+          source: 'actor-grant',
+          actorId: 'actor-1',
+          capabilities: ['session:read'],
+        },
+        validateActorScope: () => ({ ok: true }),
+        now: () => 10,
+      }
+    );
+    if (first.kind !== 'confirmation_required')
+      throw new Error('expected preview');
+
+    const consume = vi.spyOn(store, 'consume');
+    const second = await executeCommandCenterCommand(
+      {
+        commandId: 'sessions.rename',
+        args: { id: 'session-1', displayName: 'new name' },
+        confirmation: {
+          challengeId: first.preview.challengeId,
+          decision: 'confirm',
+        },
+      },
+      {
+        catalog,
+        handlers: { ...handlers, 'sessions.rename': handler },
+        confirmationStore: store,
+        trustedCapabilities: {
+          source: 'actor-grant',
+          actorId: 'actor-2',
+          capabilities: ['session:read'],
+        },
+        validateActorScope: () => ({
+          ok: false,
+          reason: 'wrong_session_scope',
+        }),
+        now: () => 11,
+      }
+    );
+
+    expect(second).toMatchObject({
+      kind: 'blocked',
+      reason: 'actor-scope-denied',
+      audit: { reason: 'actor-scope-wrong_session_scope' },
+    });
+    expect(consume).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('validates repo-style actor credential scope before confirmation minting', async () => {
+    const result = await executeCommandCenterCommand(
+      {
+        commandId: 'pr-overseer.register',
+        args: { repoId: 'repo-denied' },
+      },
+      {
+        catalog,
+        handlers,
+        trustedCapabilities: {
+          source: 'actor-grant',
+          actorId: 'actor-1',
+          capabilities: ['context:write'],
+        },
+        validateActorScope: vi.fn((input) =>
+          input.requestedScope?.repoIds?.includes('repo-allowed')
+            ? ({ ok: true } as const)
+            : ({ ok: false, reason: 'wrong_repo_scope' } as const)
+        ),
+      }
+    );
+
+    expect(result).toMatchObject({
+      kind: 'blocked',
+      reason: 'actor-scope-denied',
+      audit: { reason: 'actor-scope-wrong_repo_scope' },
+    });
   });
 
   it('requires redacted confirmation preview before write/destructive commands', async () => {

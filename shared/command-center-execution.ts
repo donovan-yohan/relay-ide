@@ -109,6 +109,7 @@ export interface CommandCenterExecutionBlocked {
     | 'unsafe-command'
     | 'missing-capability'
     | 'unsupported-command'
+    | 'actor-scope-denied'
     | 'control-requirement-unsatisfied'
     | 'confirmation-denied'
     | 'confirmation-stale'

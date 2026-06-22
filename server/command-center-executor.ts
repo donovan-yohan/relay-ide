@@ -18,6 +18,10 @@ import type {
   CommandCenterExecutionResult,
   CommandCenterExecutionResultKind,
 } from '../shared/command-center-execution.js';
+import type {
+  ScopedActorCredentialScope,
+  ScopedActorCredentialValidationFailureReason,
+} from '../shared/scoped-actor-credentials.js';
 
 export interface CommandCenterExecutionRequest {
   commandId: string;
@@ -65,6 +69,22 @@ export interface CommandCenterConfirmationStore {
     | { ok: false; reason: 'missing' | 'mismatch' | 'expired' };
 }
 
+export type CommandCenterActorScopeValidationResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: ScopedActorCredentialValidationFailureReason;
+      credentialId?: string;
+      deniedBits?: readonly string[];
+    };
+
+export interface CommandCenterActorScopeValidationInput {
+  entry: CommandCenterResolverCatalogEntry;
+  args: Record<string, unknown>;
+  requiredCapabilities: readonly RelayCapabilityBit[];
+  requestedScope?: ScopedActorCredentialScope;
+}
+
 export interface CommandCenterExecutionDeps {
   catalog?: CommandCenterResolverCatalog;
   handlers: Partial<
@@ -80,6 +100,9 @@ export interface CommandCenterExecutionDeps {
   now?: () => number;
   auditSink?: (audit: CommandCenterExecutionAudit) => void;
   confirmationStore?: CommandCenterConfirmationStore;
+  validateActorScope?: (
+    input: CommandCenterActorScopeValidationInput
+  ) => CommandCenterActorScopeValidationResult;
 }
 
 const EMPTY_ARGS_HASH = sha256(canonicalJson({}));
@@ -246,6 +269,71 @@ function scopedTarget(
   return entry.scopeKinds.length > 0
     ? `${entry.scopeKinds.join('+')}:unspecified`
     : 'global:unspecified';
+}
+
+function stringArg(
+  args: Record<string, unknown>,
+  keys: readonly string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+export function commandCenterActorCredentialScopeFor(
+  entry: CommandCenterResolverCatalogEntry,
+  args: Record<string, unknown>
+): ScopedActorCredentialScope | undefined {
+  const scope: ScopedActorCredentialScope = {};
+  const commandId = entry.commandId;
+
+  if (entry.scopeKinds.includes('node')) {
+    const nodeId = stringArg(args, [
+      'nodeId',
+      ...(commandId.startsWith('nodes.') ? ['id'] : []),
+    ]);
+    if (nodeId) scope.nodeIds = [nodeId];
+  }
+
+  if (entry.scopeKinds.includes('session')) {
+    const sessionId = stringArg(args, ['sessionId', 'id']);
+    const globalSessionId = stringArg(args, ['globalSessionId']);
+    if (sessionId) scope.sessionIds = [sessionId];
+    if (globalSessionId) scope.globalSessionIds = [globalSessionId];
+  }
+
+  if (entry.scopeKinds.includes('work-context')) {
+    const workContextId = stringArg(args, [
+      'workContextId',
+      ...(commandId.startsWith('work-contexts.') ? ['id'] : []),
+    ]);
+    if (workContextId) scope.workContextIds = [workContextId];
+  }
+
+  if (entry.scopeKinds.includes('repo')) {
+    const repoId = stringArg(args, ['repoId']);
+    const repoPath = stringArg(args, ['repoPath']);
+    if (repoId) scope.repoIds = [repoId];
+    if (repoPath) scope.pathPrefixes = [repoPath];
+  }
+
+  if (entry.scopeKinds.includes('worktree')) {
+    const worktreePath = stringArg(args, ['worktreePath']);
+    if (worktreePath) {
+      scope.pathPrefixes = Array.from(
+        new Set([...(scope.pathPrefixes ?? []), worktreePath])
+      );
+    }
+  }
+
+  const taskRef = stringArg(args, ['taskRef']);
+  if (taskRef) scope.taskRefs = [taskRef];
+
+  return Object.keys(scope).length > 0 ? scope : undefined;
 }
 
 function capabilityOutcome(
@@ -544,6 +632,35 @@ export async function executeCommandCenterCommand(
       },
       deps.auditSink
     );
+  }
+
+  if (deps.validateActorScope) {
+    const requestedScope = commandCenterActorCredentialScopeFor(entry, rawArgs);
+    const actorScope = deps.validateActorScope({
+      entry,
+      args: rawArgs,
+      requiredCapabilities: entry.capabilityHints,
+      ...(requestedScope ? { requestedScope } : {}),
+    });
+    if (actorScope.ok === false) {
+      const audit = blockedAudit(
+        'blocked',
+        'blocked',
+        'blocked',
+        `actor-scope-${actorScope.reason}`
+      );
+      return finish(
+        {
+          kind: 'blocked',
+          commandId: entry.commandId,
+          reason: 'actor-scope-denied',
+          message:
+            'The scoped actor credential does not authorize this Command Center target.',
+          audit,
+        },
+        deps.auditSink
+      );
+    }
   }
 
   const unsupportedControls = unsupportedControlRequirements(entry);
