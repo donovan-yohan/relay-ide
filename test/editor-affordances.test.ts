@@ -82,6 +82,33 @@ describe('editor-affordances: CLI command parity with the gateway contract', () 
     });
     expect(cmd).toContain("--path '/repo/my dir/app.ts'");
   });
+
+  it('quotes a real path that looks like a placeholder (not shell redirection)', () => {
+    // A substituted value is always quoted, even if it has the `<...>` shape, so
+    // the shell never treats it as input redirection.
+    const cmd = buildFilesReadCommand({
+      sessionId: 'sess-1',
+      path: '<literal-file>',
+    });
+    expect(cmd).toContain("--path '<literal-file>'");
+    expect(cmd).not.toContain('--path <literal-file>');
+  });
+
+  it('quotes a supplied session id that looks like a placeholder', () => {
+    const cmd = buildFilesReadCommand({
+      sessionId: '<weird-session>',
+      path: '/repo/x.ts',
+    });
+    expect(cmd).toContain("--session-id '<weird-session>'");
+  });
+
+  it('keeps the literal <path> placeholder unquoted only when never substituted', () => {
+    // Sanity: the unsubstituted session placeholder stays bare, while a path
+    // value equal to the literal placeholder string is still quoted.
+    const cmd = buildFilesReadCommand({ sessionId: null, path: '<path>' });
+    expect(cmd).toContain('--session-id <session-id>');
+    expect(cmd).toContain("--path '<path>'");
+  });
 });
 
 describe('editor-affordances: toAbsoluteFilePath', () => {

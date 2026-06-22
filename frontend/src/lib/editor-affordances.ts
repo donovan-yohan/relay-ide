@@ -74,49 +74,62 @@ const SESSION_ID_PLACEHOLDER = '<session-id>';
 /** Quote a token for a copy-pasteable POSIX shell command line. */
 function shellQuote(token: string): string {
   if (token === '') return "''";
-  // Leave `<placeholder>` tokens unquoted to match the contract/docs convention
-  // (`--session-id <session-id>`); real substituted values never contain `<>`.
-  if (/^<[^<>]+>$/u.test(token)) return token;
   if (/^[A-Za-z0-9_\-./:@=,]+$/u.test(token)) return token;
   return `'${token.replace(/'/gu, `'\\''`)}'`;
 }
 
+/**
+ * Render a contract `cli` token array into a command line. A token is treated as
+ * a *placeholder* (left verbatim, e.g. `--session-id <session-id>` matching the
+ * docs) only when no substitution is supplied for it. Any *substituted* value is
+ * always shell-quoted — so a real path that happens to look like `<literal>`
+ * renders as `'<literal>'`, never as an unquoted shell redirection.
+ */
 function renderCli(
   tokens: readonly string[],
   substitutions: Record<string, string>
 ): string {
   return tokens
-    .map((token) => substitutions[token] ?? token)
-    .map(shellQuote)
+    .map((token) =>
+      Object.prototype.hasOwnProperty.call(substitutions, token)
+        ? shellQuote(substitutions[token] as string)
+        : token
+    )
     .join(' ');
 }
 
 /**
  * `relay-ide v1 files read --json` for the open file, rendered from the
- * `files.read` contract `cli` template.
+ * `files.read` contract `cli` template. A null session id is left as the
+ * `<session-id>` placeholder.
  */
 export function buildFilesReadCommand(target: FilesCommandTarget): string {
-  return renderCli(commandSpec('files.read').cli, {
-    [SESSION_ID_PLACEHOLDER]: target.sessionId ?? SESSION_ID_PLACEHOLDER,
-    '<path>': target.path,
-  });
+  const substitutions: Record<string, string> = { '<path>': target.path };
+  if (target.sessionId !== null) {
+    substitutions[SESSION_ID_PLACEHOLDER] = target.sessionId;
+  }
+  return renderCli(commandSpec('files.read').cli, substitutions);
 }
 
 /**
  * `relay-ide v1 files write --json` for the open file, rendered from the
  * `files.write` contract `cli` template. Defaults to `overwrite` mode reading
  * the new contents from stdin (`--file -`), matching the browser save semantics.
+ * A null session id is left as the `<session-id>` placeholder.
  */
 export function buildFilesWriteCommand(
   target: FilesCommandTarget,
   mode: 'create' | 'overwrite' | 'append' = 'overwrite'
 ): string {
-  return renderCli(commandSpec('files.write').cli, {
-    [SESSION_ID_PLACEHOLDER]: target.sessionId ?? SESSION_ID_PLACEHOLDER,
+  const substitutions: Record<string, string> = {
     '<path>': target.path,
     '<create|overwrite|append>': mode,
     '<local-path|->': '-',
-  });
+  };
+  if (target.sessionId !== null) {
+    substitutions[SESSION_ID_PLACEHOLDER] = target.sessionId;
+  }
+  return renderCli(commandSpec('files.write').cli, substitutions);
 }
 
 /** Resolve a workspace-relative file path to an absolute path for copy/CLI. */
