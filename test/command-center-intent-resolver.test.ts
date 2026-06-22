@@ -42,6 +42,12 @@ const descriptor: RelayActionDescriptor = {
 
 const catalog = buildCommandCenterResolverCatalog([descriptor]);
 const request = { query: 'show relay sessions' };
+const providerIntent = {
+  kind: 'execute_command',
+  commandId: 'sessions.list',
+  args: { repoId: 'repo-1' },
+  confidence: 0.95,
+};
 
 function provider(raw: unknown): CommandCenterIntentProvider {
   return {
@@ -55,14 +61,14 @@ describe('Command Center intent resolver wrapper', () => {
     const result = await resolveCommandCenterIntent(request, { catalog });
 
     expect(result.resolution).toMatchObject({
-      kind: 'fallback',
+      kind: 'no_match',
       reason: 'provider-missing',
     });
     expect(result.resolution.suggestions[0]?.entry.commandId).toBe(
       'sessions.list'
     );
     expect(result.audit).toEqual({
-      outcome: 'fallback',
+      outcome: 'no_match',
       reason: 'provider-missing',
       suggestionCount: 1,
     });
@@ -73,42 +79,54 @@ describe('Command Center intent resolver wrapper', () => {
     const result = await resolveCommandCenterIntent(request, {
       catalog,
       provider: provider({
-        commandId: 'sessions.list',
+        ...providerIntent,
         args: { repoId: privateArg },
-        confidence: 0.91,
-        sideEffect: 'read',
-        requiresConfirmation: false,
-        capabilityHints: ['session:read'],
-        scopeKinds: ['session'],
-        surfaces: ['web', 'command-center'],
-        ui: { actionId: 'gateway.sessions.list', category: 'gateway' },
       }),
       now: vi.fn().mockReturnValueOnce(10).mockReturnValueOnce(25),
     });
 
-    expect(result.resolution.kind).toBe('resolved');
+    expect(result.resolution.kind).toBe('execute_command');
     expect(JSON.stringify(result.audit)).not.toContain(privateArg);
     expect(JSON.stringify(result.audit)).not.toContain(request.query);
     expect(result.audit).toEqual({
-      outcome: 'resolved',
+      outcome: 'execute_command',
       commandId: 'sessions.list',
-      confidence: 0.91,
+      confidence: 0.95,
       durationMs: 15,
       suggestionCount: 1,
     });
   });
 
-  it('falls back for unhealthy provider, timeout, malformed output, and invalid args', async () => {
-    const unhealthy: CommandCenterIntentProvider = {
-      health: async () => ({ state: 'unreachable', detail: 'network-error' }),
-      propose: async () => ({ commandId: 'sessions.list', confidence: 1 }),
+  it('does not run provider health on the hot path unless preflight is requested', async () => {
+    const health = vi.fn(async () => ({ state: 'unreachable' as const }));
+    const hotPathProvider: CommandCenterIntentProvider = {
+      health,
+      propose: async () => providerIntent,
     };
-    await expect(
-      resolveCommandCenterIntent(request, { catalog, provider: unhealthy })
-    ).resolves.toMatchObject({
-      resolution: { kind: 'fallback', reason: 'provider-unhealthy' },
-    });
 
+    await expect(
+      resolveCommandCenterIntent(request, {
+        catalog,
+        provider: hotPathProvider,
+      })
+    ).resolves.toMatchObject({
+      resolution: { kind: 'execute_command' },
+    });
+    expect(health).not.toHaveBeenCalled();
+
+    await expect(
+      resolveCommandCenterIntent(request, {
+        catalog,
+        provider: hotPathProvider,
+        preflightHealthCheck: true,
+      })
+    ).resolves.toMatchObject({
+      resolution: { kind: 'no_match', reason: 'provider-unhealthy' },
+    });
+    expect(health).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back for timeout, malformed output, and invalid args', async () => {
     const timeout = new Error('provider timed out');
     timeout.name = 'AbortError';
     await expect(
@@ -120,7 +138,7 @@ describe('Command Center intent resolver wrapper', () => {
         },
       })
     ).resolves.toMatchObject({
-      resolution: { kind: 'fallback', reason: 'timeout' },
+      resolution: { kind: 'no_match', reason: 'timeout' },
     });
 
     await expect(
@@ -129,19 +147,18 @@ describe('Command Center intent resolver wrapper', () => {
         provider: provider('nope'),
       })
     ).resolves.toMatchObject({
-      resolution: { kind: 'fallback', reason: 'malformed-output' },
+      resolution: { kind: 'no_match', reason: 'malformed-output' },
     });
     await expect(
       resolveCommandCenterIntent(request, {
         catalog,
         provider: provider({
-          commandId: 'sessions.list',
+          ...providerIntent,
           args: { rawShell: 'relay-ide v1 sessions list' },
-          confidence: 0.9,
         }),
       })
     ).resolves.toMatchObject({
-      resolution: { kind: 'fallback', reason: 'invalid-args' },
+      resolution: { kind: 'no_match', reason: 'invalid-args' },
     });
   });
 });
@@ -155,13 +172,23 @@ describe('OpenAI-compatible Command Center provider', () => {
         RELAY_COMMAND_CENTER_RESOLVER_MODEL: 'resolver-small',
         RELAY_COMMAND_CENTER_RESOLVER_TIMEOUT_MS: '42',
         RELAY_COMMAND_CENTER_RESOLVER_MIN_CONFIDENCE: '0.7',
+        RELAY_COMMAND_CENTER_RESOLVER_MAX_OUTPUT_TOKENS: '123',
+        RELAY_COMMAND_CENTER_RESOLVER_TEMPERATURE: '0.2',
       })
     ).toEqual({
       baseUrl: 'https://resolver.example/v1',
       model: 'resolver-small',
       timeoutMs: 42,
       minConfidence: 0.7,
+      maxOutputTokens: 123,
+      temperature: 0.2,
     });
+    expect(
+      readCommandCenterIntentResolverConfig({
+        RELAY_COMMAND_CENTER_RESOLVER_BASE_URL: 'https://resolver.example/v1/',
+        RELAY_COMMAND_CENTER_RESOLVER_MODEL: 'resolver-small',
+      })
+    ).toMatchObject({ maxOutputTokens: 512, temperature: 0 });
   });
 
   it('health omits prompt payloads and proposal parses chat completions JSON', async () => {
@@ -174,8 +201,12 @@ describe('OpenAI-compatible Command Center provider', () => {
       }
       expect(url).toBe('https://resolver.example/v1/chat/completions');
       const body = JSON.parse(String(init.body)) as {
+        max_tokens: number;
+        temperature: number;
         messages: Array<{ content: string }>;
       };
+      expect(body.max_tokens).toBe(77);
+      expect(body.temperature).toBe(0.1);
       expect(JSON.stringify(body.messages)).toContain('sessions.list');
       expect(JSON.stringify(body.messages)).toContain(request.query);
       return {
@@ -185,11 +216,7 @@ describe('OpenAI-compatible Command Center provider', () => {
           choices: [
             {
               message: {
-                content: JSON.stringify({
-                  commandId: 'sessions.list',
-                  args: { repoId: 'repo-1' },
-                  confidence: 0.95,
-                }),
+                content: JSON.stringify(providerIntent),
               },
             },
           ],
@@ -203,6 +230,8 @@ describe('OpenAI-compatible Command Center provider', () => {
         model: 'resolver-small',
         timeoutMs: 1000,
         minConfidence: 0.6,
+        maxOutputTokens: 77,
+        temperature: 0.1,
       },
       { fetch, catalog }
     );
@@ -212,11 +241,9 @@ describe('OpenAI-compatible Command Center provider', () => {
       model: 'resolver-small',
       baseUrl: 'https://resolver.example/v1',
     });
-    await expect(openAiProvider.propose(request)).resolves.toEqual({
-      commandId: 'sessions.list',
-      args: { repoId: 'repo-1' },
-      confidence: 0.95,
-    });
+    await expect(openAiProvider.propose(request)).resolves.toEqual(
+      providerIntent
+    );
     expect(JSON.stringify(await openAiProvider.health())).not.toContain(
       request.query
     );

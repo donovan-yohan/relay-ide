@@ -47,11 +47,35 @@ export interface CommandCenterResolverSearchHit {
   score: number;
 }
 
+export type CommandCenterIntentKind =
+  | 'open_ui'
+  | 'ask_followup'
+  | 'explain'
+  | 'execute_command'
+  | 'no_match';
+
+export const COMMAND_CENTER_INTENT_KINDS: readonly CommandCenterIntentKind[] = [
+  'open_ui',
+  'ask_followup',
+  'explain',
+  'execute_command',
+  'no_match',
+];
+
+export interface CommandCenterUiTarget {
+  actionId: string;
+  category?: string;
+}
+
 export interface CommandCenterProviderIntent {
-  commandId: string;
+  kind: CommandCenterIntentKind;
+  commandId?: string;
   args?: unknown;
-  confidence: number;
+  confidence?: number;
   rationale?: string;
+  question?: string;
+  message?: string;
+  reason?: string;
   sideEffect?: string;
   requiresConfirmation?: boolean;
   scopeKinds?: readonly string[];
@@ -74,34 +98,58 @@ export interface CommandCenterResolvedIntent {
   scopeKinds: readonly RelayCommandScopeKind[];
   capabilityHints: readonly RelayCapabilityBit[];
   surfaces: readonly RelayActionSurface[];
-  ui?: {
-    actionId?: string;
-    category?: string;
-  };
+  ui?: CommandCenterUiTarget;
 }
 
-export type CommandCenterFallbackReason =
+export type CommandCenterNoMatchReason =
   | 'provider-missing'
   | 'provider-unhealthy'
+  | 'provider-no-match'
   | 'timeout'
   | 'provider-error'
   | 'malformed-output'
   | 'low-confidence'
   | 'unknown-command'
   | 'invalid-args'
-  | 'metadata-mismatch';
+  | 'metadata-mismatch'
+  | 'unsafe-command';
+
+export type CommandCenterFallbackReason = CommandCenterNoMatchReason;
 
 export type CommandCenterResolution =
   | {
-      kind: 'resolved';
+      kind: 'execute_command';
       intent: CommandCenterResolvedIntent;
       entry: CommandCenterResolverCatalogEntry;
       suggestions: readonly CommandCenterResolverSearchHit[];
     }
   | {
-      kind: 'fallback';
-      reason: CommandCenterFallbackReason;
+      kind: 'open_ui';
+      intent: CommandCenterResolvedIntent;
+      entry: CommandCenterResolverCatalogEntry;
+      ui: CommandCenterUiTarget;
+      suggestions: readonly CommandCenterResolverSearchHit[];
+    }
+  | {
+      kind: 'ask_followup';
+      question: string;
+      confidence: number;
+      rationale?: string;
+      suggestions: readonly CommandCenterResolverSearchHit[];
+    }
+  | {
+      kind: 'explain';
+      message: string;
+      confidence: number;
+      rationale?: string;
+      suggestions: readonly CommandCenterResolverSearchHit[];
+    }
+  | {
+      kind: 'no_match';
+      reason: CommandCenterNoMatchReason;
       detail?: string;
+      confidence?: number;
+      rationale?: string;
       suggestions: readonly CommandCenterResolverSearchHit[];
     };
 
@@ -341,7 +389,7 @@ function validateSchemaObject(
   const errors: string[] = [];
   const properties = schema.properties ?? {};
   for (const requiredKey of schema.required ?? []) {
-    if (!(requiredKey in value))
+    if (!Object.prototype.hasOwnProperty.call(value, requiredKey))
       errors.push(`${path}.${requiredKey}: required`);
   }
   for (const [key, child] of Object.entries(value)) {
@@ -435,16 +483,101 @@ function metadataMatches(
   );
 }
 
-function fallback(
-  reason: CommandCenterFallbackReason,
+function noMatch(
+  reason: CommandCenterNoMatchReason,
   suggestions: readonly CommandCenterResolverSearchHit[],
-  detail?: string
+  detail?: string,
+  claim?: Pick<CommandCenterProviderIntent, 'confidence' | 'rationale'>
 ): CommandCenterResolution {
   return {
-    kind: 'fallback',
+    kind: 'no_match',
     reason,
     ...(detail ? { detail } : {}),
+    ...(typeof claim?.confidence === 'number' &&
+    Number.isFinite(claim.confidence)
+      ? { confidence: claim.confidence }
+      : {}),
+    ...(typeof claim?.rationale === 'string'
+      ? { rationale: claim.rationale }
+      : {}),
     suggestions,
+  };
+}
+
+function isCommandCenterIntentKind(
+  value: unknown
+): value is CommandCenterIntentKind {
+  return (
+    typeof value === 'string' &&
+    (COMMAND_CENTER_INTENT_KINDS as readonly string[]).includes(value)
+  );
+}
+
+function confidenceForClaim(
+  claim: CommandCenterProviderIntent,
+  suggestions: readonly CommandCenterResolverSearchHit[]
+): number | CommandCenterResolution {
+  if (
+    typeof claim.confidence !== 'number' ||
+    !Number.isFinite(claim.confidence)
+  ) {
+    return noMatch('malformed-output', suggestions, 'missing confidence');
+  }
+  return claim.confidence;
+}
+
+function uiTargetForEntry(
+  entry: CommandCenterResolverCatalogEntry,
+  claim: CommandCenterProviderIntent
+): CommandCenterUiTarget | null {
+  if (!entry.ui?.actionId) return null;
+  if (
+    claim.ui?.actionId !== undefined &&
+    claim.ui.actionId !== entry.ui.actionId
+  )
+    return null;
+  if (
+    claim.ui?.category !== undefined &&
+    claim.ui.category !== entry.ui.category
+  )
+    return null;
+  return {
+    actionId: entry.ui.actionId,
+    ...(entry.ui.category ? { category: entry.ui.category } : {}),
+  };
+}
+
+function isReadOnlyResolverTarget(
+  entry: CommandCenterResolverCatalogEntry
+): boolean {
+  return (
+    entry.sideEffect === 'read' &&
+    entry.requiresConfirmation === false &&
+    entry.controlRequirements.length === 0
+  );
+}
+
+function resolvedIntentForEntry(
+  claim: CommandCenterProviderIntent,
+  entry: CommandCenterResolverCatalogEntry,
+  args: Record<string, unknown>,
+  confidence: number
+): CommandCenterResolvedIntent {
+  const uiTarget = uiTargetForEntry(entry, claim);
+  return {
+    commandId: entry.commandId,
+    args,
+    confidence,
+    ...(typeof claim.rationale === 'string'
+      ? { rationale: claim.rationale }
+      : {}),
+    sideEffect: entry.sideEffect,
+    requiresConfirmation: entry.requiresConfirmation,
+    controlRequirements: entry.controlRequirements,
+    scopeKinds: entry.scopeKinds,
+    capabilityHints: entry.capabilityHints,
+    surfaces: entry.surfaces,
+    ...(uiTarget ? { ui: uiTarget } : {}),
   };
 }
 
@@ -463,63 +596,118 @@ export function validateCommandCenterProviderIntent(
   const minConfidence = options.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
 
   if (!isPlainObject(raw)) {
-    return fallback(
+    return noMatch(
       'malformed-output',
       suggestions,
       'provider output is not an object'
     );
   }
   const claim = raw as unknown as CommandCenterProviderIntent;
-  if (typeof claim.commandId !== 'string') {
-    return fallback('malformed-output', suggestions, 'missing commandId');
-  }
-  if (
-    typeof claim.confidence !== 'number' ||
-    !Number.isFinite(claim.confidence)
-  ) {
-    return fallback('malformed-output', suggestions, 'missing confidence');
+  if (!isCommandCenterIntentKind(claim.kind)) {
+    return noMatch('malformed-output', suggestions, 'missing or invalid kind');
   }
 
-  const entry = catalog.byCommandId.get(
-    claim.commandId as RelayCliGatewayCommand
-  );
-  if (!entry) return fallback('unknown-command', suggestions);
-  if (claim.confidence < minConfidence)
-    return fallback('low-confidence', suggestions);
+  const confidence = confidenceForClaim(claim, suggestions);
+  if (typeof confidence !== 'number') return confidence;
 
-  const args = claim.args ?? {};
-  if (!isPlainObject(args)) return fallback('invalid-args', suggestions);
-  const argErrors = validateCommandCenterArgs(args, entry.inputSchema);
-  if (argErrors.length > 0) {
-    return fallback(
-      'invalid-args',
+  if (claim.kind === 'no_match') {
+    return noMatch(
+      'provider-no-match',
       suggestions,
-      argErrors.slice(0, 3).join('; ')
+      typeof claim.reason === 'string' ? claim.reason : undefined,
+      claim
     );
   }
-  if (!metadataMatches(claim, entry))
-    return fallback('metadata-mismatch', suggestions);
 
-  return {
-    kind: 'resolved',
-    entry,
-    suggestions,
-    intent: {
-      commandId: entry.commandId,
-      args,
-      confidence: claim.confidence,
+  if (claim.kind === 'ask_followup') {
+    if (
+      typeof claim.question !== 'string' ||
+      claim.question.trim().length === 0
+    ) {
+      return noMatch(
+        'malformed-output',
+        suggestions,
+        'missing question',
+        claim
+      );
+    }
+    return {
+      kind: 'ask_followup',
+      question: claim.question,
+      confidence,
       ...(typeof claim.rationale === 'string'
         ? { rationale: claim.rationale }
         : {}),
-      sideEffect: entry.sideEffect,
-      requiresConfirmation: entry.requiresConfirmation,
-      controlRequirements: entry.controlRequirements,
-      scopeKinds: entry.scopeKinds,
-      capabilityHints: entry.capabilityHints,
-      surfaces: entry.surfaces,
-      ...(entry.ui ? { ui: entry.ui } : {}),
-    },
-  };
+      suggestions,
+    };
+  }
+
+  if (claim.kind === 'explain') {
+    if (
+      typeof claim.message !== 'string' ||
+      claim.message.trim().length === 0
+    ) {
+      return noMatch('malformed-output', suggestions, 'missing message', claim);
+    }
+    return {
+      kind: 'explain',
+      message: claim.message,
+      confidence,
+      ...(typeof claim.rationale === 'string'
+        ? { rationale: claim.rationale }
+        : {}),
+      suggestions,
+    };
+  }
+
+  if (confidence < minConfidence)
+    return noMatch('low-confidence', suggestions, undefined, claim);
+
+  if (typeof claim.commandId !== 'string') {
+    return noMatch('malformed-output', suggestions, 'missing commandId', claim);
+  }
+  const entry = catalog.byCommandId.get(
+    claim.commandId as RelayCliGatewayCommand
+  );
+  if (!entry) return noMatch('unknown-command', suggestions, undefined, claim);
+
+  const args = claim.args ?? {};
+  if (!isPlainObject(args))
+    return noMatch('invalid-args', suggestions, undefined, claim);
+  const argErrors = validateCommandCenterArgs(args, entry.inputSchema);
+  if (argErrors.length > 0) {
+    return noMatch(
+      'invalid-args',
+      suggestions,
+      argErrors.slice(0, 3).join('; '),
+      claim
+    );
+  }
+  if (!metadataMatches(claim, entry))
+    return noMatch('metadata-mismatch', suggestions, undefined, claim);
+  if (!isReadOnlyResolverTarget(entry)) {
+    return noMatch(
+      'unsafe-command',
+      suggestions,
+      `command ${entry.commandId} is not a read-only resolver target in this resolver slice`,
+      claim
+    );
+  }
+
+  const intent = resolvedIntentForEntry(claim, entry, args, confidence);
+  if (claim.kind === 'open_ui') {
+    const ui = uiTargetForEntry(entry, claim);
+    if (!ui)
+      return noMatch(
+        'metadata-mismatch',
+        suggestions,
+        'missing ui target',
+        claim
+      );
+    return { kind: 'open_ui', entry, suggestions, intent, ui };
+  }
+
+  return { kind: 'execute_command', entry, suggestions, intent };
 }
 
 export function summarizeCommandCenterCatalogForResolver(

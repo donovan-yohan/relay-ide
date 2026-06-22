@@ -4,6 +4,7 @@ import {
   summarizeCommandCenterCatalogForResolver,
   validateCommandCenterProviderIntent,
   type CommandCenterFallbackReason,
+  type CommandCenterIntentKind,
   type CommandCenterResolution,
   type CommandCenterResolverCatalog,
 } from '../shared/command-center-resolver.js';
@@ -15,6 +16,8 @@ export interface CommandCenterIntentResolverConfig {
   organization?: string;
   timeoutMs: number;
   minConfidence: number;
+  maxOutputTokens: number;
+  temperature: number;
 }
 
 export interface CommandCenterIntentResolverHealth {
@@ -38,12 +41,15 @@ export interface ResolveCommandCenterIntentOptions {
   provider?: CommandCenterIntentProvider | null;
   catalog?: CommandCenterResolverCatalog;
   minConfidence?: number;
+  /** Opt into provider health preflight. Default avoids hot-path /models calls. */
+  preflightHealthCheck?: boolean;
+  /** @deprecated use preflightHealthCheck; false still opts into preflight for compatibility. */
   skipHealthCheck?: boolean;
   now?: () => number;
 }
 
 export interface CommandCenterIntentAudit {
-  outcome: 'resolved' | 'fallback';
+  outcome: CommandCenterIntentKind;
   reason?: CommandCenterFallbackReason;
   commandId?: string;
   confidence?: number;
@@ -67,18 +73,22 @@ export type CommandCenterFetchLike = (
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_MIN_CONFIDENCE = 0.6;
+const DEFAULT_MAX_OUTPUT_TOKENS = 512;
+const DEFAULT_TEMPERATURE = 0;
 const ENV_BASE_URL = 'RELAY_COMMAND_CENTER_RESOLVER_BASE_URL';
 const ENV_MODEL = 'RELAY_COMMAND_CENTER_RESOLVER_MODEL';
 const ENV_API_KEY = 'RELAY_COMMAND_CENTER_RESOLVER_API_KEY';
 const ENV_ORGANIZATION = 'RELAY_COMMAND_CENTER_RESOLVER_ORG';
 const ENV_TIMEOUT_MS = 'RELAY_COMMAND_CENTER_RESOLVER_TIMEOUT_MS';
 const ENV_MIN_CONFIDENCE = 'RELAY_COMMAND_CENTER_RESOLVER_MIN_CONFIDENCE';
+const ENV_MAX_OUTPUT_TOKENS = 'RELAY_COMMAND_CENTER_RESOLVER_MAX_OUTPUT_TOKENS';
+const ENV_TEMPERATURE = 'RELAY_COMMAND_CENTER_RESOLVER_TEMPERATURE';
 
 const SYSTEM_PROMPT =
-  'Map the operator request to exactly one Relay command from the catalog. ' +
-  'Return only JSON: {"commandId":string,"args":object,"confidence":number}. ' +
-  'Use only commandIds from the catalog. If unsure, return low confidence. ' +
-  'Never invent commands, arguments, shell strings, or execution plans.';
+  'Map the operator request to exactly one strict Relay Command Center resolver result. ' +
+  'Return only JSON with kind open_ui, ask_followup, explain, execute_command, or no_match. ' +
+  'For execute_command/open_ui include commandId,args,confidence and use only commandIds from the catalog. ' +
+  'execute_command is read-only only. Never invent commands, arguments, shell strings, execution plans, or provider escalations.';
 
 export function readCommandCenterIntentResolverConfig(
   env: Record<string, string | undefined> = process.env
@@ -96,6 +106,8 @@ export function readCommandCenterIntentResolverConfig(
     ...(organization ? { organization } : {}),
     timeoutMs: parseTimeoutMs(env[ENV_TIMEOUT_MS]),
     minConfidence: parseMinConfidence(env[ENV_MIN_CONFIDENCE]),
+    maxOutputTokens: parseMaxOutputTokens(env[ENV_MAX_OUTPUT_TOKENS]),
+    temperature: parseTemperature(env[ENV_TEMPERATURE]),
   };
 }
 
@@ -109,6 +121,18 @@ function parseMinConfidence(value: string | undefined): number {
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1
     ? parsed
     : DEFAULT_MIN_CONFIDENCE;
+}
+
+function parseMaxOutputTokens(value: string | undefined): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_MAX_OUTPUT_TOKENS;
+}
+
+function parseTemperature(value: string | undefined): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_TEMPERATURE;
 }
 
 function headersForConfig(
@@ -189,7 +213,8 @@ export function createOpenAiCompatibleCommandCenterIntentProvider(
           signal,
           body: JSON.stringify({
             model: config.model,
-            temperature: 0,
+            temperature: config.temperature,
+            max_tokens: config.maxOutputTokens,
             response_format: { type: 'json_object' },
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
@@ -232,7 +257,7 @@ function fallbackResolution(
   detail?: string
 ): CommandCenterResolution {
   return {
-    kind: 'fallback',
+    kind: 'no_match',
     reason,
     ...(detail ? { detail } : {}),
     suggestions: searchCommandCenterCatalog(request.query, catalog),
@@ -243,18 +268,29 @@ function auditFromResolution(
   resolution: CommandCenterResolution,
   durationMs: number | undefined
 ): CommandCenterIntentAudit {
-  if (resolution.kind === 'resolved') {
+  if (resolution.kind === 'execute_command' || resolution.kind === 'open_ui') {
     return {
-      outcome: 'resolved',
+      outcome: resolution.kind,
       commandId: resolution.intent.commandId,
       confidence: Math.round(resolution.intent.confidence * 100) / 100,
       ...(durationMs !== undefined ? { durationMs } : {}),
       suggestionCount: resolution.suggestions.length,
     };
   }
+  if (resolution.kind === 'ask_followup' || resolution.kind === 'explain') {
+    return {
+      outcome: resolution.kind,
+      confidence: Math.round(resolution.confidence * 100) / 100,
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      suggestionCount: resolution.suggestions.length,
+    };
+  }
   return {
-    outcome: 'fallback',
+    outcome: 'no_match',
     reason: resolution.reason,
+    ...(resolution.confidence !== undefined
+      ? { confidence: Math.round(resolution.confidence * 100) / 100 }
+      : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     suggestionCount: resolution.suggestions.length,
   };
@@ -271,7 +307,9 @@ export async function resolveCommandCenterIntent(
   }
 
   const start = options.now?.();
-  if (!options.skipHealthCheck) {
+  const shouldPreflightHealth =
+    options.preflightHealthCheck === true || options.skipHealthCheck === false;
+  if (shouldPreflightHealth) {
     const health = await safeHealth(options.provider);
     if (health.state !== 'healthy') {
       const resolution = fallbackResolution(
