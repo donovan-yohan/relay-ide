@@ -92,6 +92,7 @@ import type {
   ControlActor,
   InterventionRecord,
 } from '../../../shared/control-state.js';
+import type { CommandCenterExecutionResult } from '../../../shared/command-center-execution.js';
 import type { CommandCenterAssistantResult } from './command-center-assistant.js';
 import { registerConfirmationRetry } from './confirmation-retries.js';
 
@@ -288,6 +289,19 @@ export async function resolveCommandCenterAssistantIntent(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query }),
+    })
+  );
+}
+
+export async function executeCommandCenterAssistantCommand(
+  commandId: string,
+  args: Record<string, unknown>
+): Promise<CommandCenterExecutionResult> {
+  return json<CommandCenterExecutionResult>(
+    await fetch('/api/command-center/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, args }),
     })
   );
 }

@@ -19,6 +19,7 @@ import type {
   Action,
   ActionContext,
 } from '../frontend/src/lib/actions/types.js';
+import type { CommandCenterExecutionResult } from '../shared/command-center-execution.js';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -54,6 +55,7 @@ const sessionsListEntry = {
   scopeKinds: ['session'],
   capabilityHints: ['session:read'],
   surfaces: ['web', 'command-center'],
+  availability: { state: 'available' },
   ui: { actionId: 'session.start-work-in-env', category: 'session' },
   inputSchema: { type: 'object', additionalProperties: false, properties: {} },
 } as const;
@@ -85,6 +87,51 @@ function providerMissingResult(): CommandCenterAssistantResult {
     reason: 'provider-missing',
     suggestions: [{ entry: sessionsListEntry, score: 4 }],
   });
+}
+
+function executeCommandResult(): CommandCenterAssistantResult {
+  return resultFor({
+    kind: 'execute_command',
+    entry: sessionsListEntry,
+    intent: {
+      commandId: 'sessions.list',
+      args: {},
+      confidence: 0.92,
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      controlRequirements: [],
+      scopeKinds: ['session'],
+      capabilityHints: ['session:read'],
+      surfaces: ['web', 'command-center'],
+      ui: { actionId: 'gateway.sessions.list', category: 'gateway' },
+    },
+    suggestions: [],
+  });
+}
+
+function executionSuccess(): CommandCenterExecutionResult {
+  return {
+    kind: 'success',
+    commandId: 'sessions.list',
+    data: { sessions: [] },
+    audit: {
+      commandId: 'sessions.list',
+      resultKind: 'success',
+      sideEffectClass: 'read',
+      durationMs: 4,
+      args: {
+        rawArgsReturned: false,
+        argKeys: [],
+        argsSha256:
+          '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+      },
+      policyOutcome: 'allowed',
+      confirmationOutcome: 'not-required',
+      scopeKinds: ['session'],
+      availabilityState: 'available',
+      capabilityOutcome: 'allowed-browser-session',
+    },
+  };
 }
 
 function setInputValue(input: HTMLInputElement, value: string): void {
@@ -178,7 +225,13 @@ describe('<CommandPalette /> assistant shell', () => {
     resolveAssistantIntent: (
       query: string
     ) => Promise<CommandCenterAssistantResult>,
-    options: { open?: boolean } = {}
+    options: {
+      open?: boolean;
+      executeAssistantCommand?: (
+        commandId: string,
+        args: Record<string, unknown>
+      ) => Promise<CommandCenterExecutionResult>;
+    } = {}
   ) {
     await act(async () => {
       root.render(
@@ -195,6 +248,7 @@ describe('<CommandPalette /> assistant shell', () => {
             onSelectSession: vi.fn(),
             onSelectPr: vi.fn(),
             resolveAssistantIntent,
+            executeAssistantCommand: options.executeAssistantCommand,
           })
         )
       );
@@ -296,5 +350,38 @@ describe('<CommandPalette /> assistant shell', () => {
     });
 
     expect(handler).toHaveBeenCalledWith(actionContext);
+  });
+
+  it('executes a typed read-only resolver result and renders success state', async () => {
+    const executeAssistantCommand = vi.fn(async () => executionSuccess());
+    await render(async () => executeCommandResult(), {
+      executeAssistantCommand,
+    });
+    const input = container.querySelector(
+      '.palette-search-input'
+    ) as HTMLInputElement;
+    const ask = container.querySelector(
+      '.palette-assistant-button'
+    ) as HTMLButtonElement;
+
+    await act(async () => {
+      setInputValue(input, 'show sessions');
+    });
+    await act(async () => {
+      ask.click();
+    });
+
+    expect(container.textContent).toContain('ready to run read-only command');
+    const runButton = container.querySelector(
+      '.palette-assistant-action'
+    ) as HTMLButtonElement;
+    await act(async () => {
+      runButton.click();
+      await Promise.resolve();
+    });
+
+    expect(executeAssistantCommand).toHaveBeenCalledWith('sessions.list', {});
+    expect(container.textContent).toContain('command executed');
+    expect(container.textContent).toContain('without raw args');
   });
 });
