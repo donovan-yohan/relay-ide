@@ -10,9 +10,10 @@ import {
   type WorkspaceSurfaceStore,
 } from '../server/workspace-surfaces.js';
 import type { Config } from '../server/types.js';
-import type {
-  WorkspaceSurface,
-  WorkspaceSurfaceListResponse,
+import {
+  WORKSPACE_SURFACES_MAX_LIST_ENTRIES,
+  type WorkspaceSurface,
+  type WorkspaceSurfaceListResponse,
 } from '../shared/workspace-surfaces.js';
 
 const cleanup: Array<() => void> = [];
@@ -154,6 +155,13 @@ describe('workspace surfaces router', () => {
     });
     expect(bad.status).toBe(400);
 
+    const protocolRelative = await postJson(port, '/workspace-surfaces', {
+      kind: 'web',
+      label: 'protocol relative',
+      url: '//example.com/app',
+    });
+    expect(protocolRelative.status).toBe(400);
+
     const good = await postJson<{ surface: WorkspaceSurface }>(
       port,
       '/workspace-surfaces',
@@ -182,6 +190,51 @@ describe('workspace surfaces router', () => {
     );
     expect(list.body.surfaces).toHaveLength(1);
     expect(list.body.surfaces[0]?.label).toBe('agent preview');
+  });
+
+  it('prioritizes published and configured surfaces before truncating discoveries', async () => {
+    const repo = tmpRoot();
+    const scripts: Record<string, string> = {};
+    for (let i = 0; i < WORKSPACE_SURFACES_MAX_LIST_ENTRIES + 10; i += 1) {
+      scripts[`dev:${i}`] = `vite --host 127.0.0.1 --port ${3000 + i}`;
+    }
+    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ scripts }));
+    const store = surfaceStore();
+    store.upsert({
+      id: 'agent-preview',
+      kind: 'preview',
+      label: 'agent preview',
+      url: 'https://preview.example.test',
+      repoPath: repo,
+    });
+    const { port } = await listen({
+      store,
+      getConfig: () =>
+        asConfig([repo], [
+          {
+            kind: 'dashboard',
+            label: 'configured ops dashboard',
+            url: 'https://ops.example.test/relay',
+            repoPath: repo,
+          },
+        ]),
+    });
+
+    const res = await getJson<WorkspaceSurfaceListResponse>(
+      port,
+      `/workspace-surfaces?repoPath=${encodeURIComponent(repo)}`
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.surfaces).toHaveLength(WORKSPACE_SURFACES_MAX_LIST_ENTRIES);
+    expect(res.body.surfaces.slice(0, 2).map((surface) => surface.label)).toEqual([
+      'agent preview',
+      'configured ops dashboard',
+    ]);
+    expect(res.body.surfaces.map((surface) => surface.label)).toContain(
+      'npm run dev:0'
+    );
   });
 
   it('enforces capability headers for list and publish', async () => {

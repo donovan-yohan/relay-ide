@@ -34,7 +34,11 @@ function SurfaceCard({ surface }: { surface: WorkspaceSurface }) {
   async function copyTarget() {
     if (!target) return;
     try {
-      await globalThis.navigator?.clipboard?.writeText?.(target);
+      const writeText = globalThis.navigator?.clipboard?.writeText;
+      if (!writeText) {
+        throw new Error('Clipboard API not available');
+      }
+      await writeText.call(globalThis.navigator.clipboard, target);
       setCopyState('copied');
     } catch {
       setCopyState('error');

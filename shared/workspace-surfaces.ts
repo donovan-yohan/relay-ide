@@ -235,7 +235,7 @@ export function parseWorkspaceSurfacePublishInput(
 }
 
 function isRelativePath(url: string): boolean {
-  return url.startsWith('/') || url.startsWith('./') || url.startsWith('../');
+  return (url.startsWith('/') && !url.startsWith('//')) || url.startsWith('./') || url.startsWith('../');
 }
 
 function assertSafeUrl(url: string): void {

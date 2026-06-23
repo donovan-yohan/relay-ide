@@ -25,6 +25,12 @@ import type { WorkspaceEvidenceRoot } from '../shared/workspace-evidence.js';
 const CONTEXT_READ = 'context:read';
 const CONTEXT_WRITE = 'context:write';
 
+function workspaceSurfacePriority(surface: WorkspaceSurface): number {
+  if (surface.status === 'published') return 2;
+  if (surface.provenance.source === 'configured') return 1;
+  return 0;
+}
+
 // ─── Static discovery (no process/network scanning) ──────────────────────────
 
 // package.json script names that conventionally start a long-running web/dev
@@ -542,10 +548,21 @@ export function createWorkspaceSurfacesRouter(
       if (repoPath) discovered = discovered.filter((s) => s.repoPath === repoPath);
     }
     const published = options.store ? options.store.list(filter) : [];
-    // Agent-published surfaces win on id collision (richer, intentional).
+    const configured = discovered.filter(
+      (surface) => surface.provenance.source === 'configured'
+    );
+    const staticDiscovered = discovered.filter(
+      (surface) => surface.provenance.source !== 'configured'
+    );
+    // Agent-published/configured surfaces win on id collision and list priority
+    // so a flood of inferred scripts cannot truncate intentional surfaces.
     const byId = new Map<string, WorkspaceSurface>();
-    for (const surface of [...discovered, ...published]) byId.set(surface.id, surface);
-    const surfaces = Array.from(byId.values()).slice(0, WORKSPACE_SURFACES_MAX_LIST_ENTRIES);
+    for (const surface of [...staticDiscovered, ...configured, ...published]) {
+      byId.set(surface.id, surface);
+    }
+    const surfaces = Array.from(byId.values())
+      .sort((a, b) => workspaceSurfacePriority(b) - workspaceSurfacePriority(a))
+      .slice(0, WORKSPACE_SURFACES_MAX_LIST_ENTRIES);
     res.json({ surfaces, truncated: byId.size > surfaces.length });
   });
 

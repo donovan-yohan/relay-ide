@@ -345,6 +345,51 @@ describe('WorkspaceEvidenceDashboard', () => {
     expect(cards[1]!.querySelector('a')).toBeNull();
   });
 
+  it('reports copy failure when the Clipboard API is unavailable', async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis.navigator,
+      'clipboard'
+    );
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    try {
+      mocks.roots = [repoRoot()];
+      mocks.surfaces = [
+        workspaceSurface({
+          id: 'wsurf-remote-preview',
+          label: 'remote preview',
+          url: 'http://localhost:4173',
+          nodeId: 'remote-node',
+          openMode: 'node-scoped',
+        }),
+      ];
+      await renderDashboard('/repo');
+      const card = container!.querySelector('[data-track="evidence.surface-card"]');
+      const copyButton = Array.from(card!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'copy'
+      ) as HTMLButtonElement | undefined;
+
+      expect(copyButton).toBeTruthy();
+      await act(async () => {
+        copyButton!.click();
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(card!.textContent).toContain('copy failed');
+      expect(card!.textContent).not.toContain('copied');
+    } finally {
+      if (clipboardDescriptor) {
+        Object.defineProperty(globalThis.navigator, 'clipboard', clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis.navigator, 'clipboard');
+      }
+    }
+  });
+
   it('renders artifact cards preserving kind/visibility/headSha from a matched context', async () => {
     mocks.roots = [repoRoot()];
     mocks.activeWork = [activeGroupForRepo('g1', 'wc-1', '/repo')];
