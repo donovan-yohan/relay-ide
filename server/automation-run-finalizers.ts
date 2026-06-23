@@ -57,7 +57,7 @@ export class RelayAutomationRunFinalizerAdapter {
     const automationRunId = automationRunIdFromContext(contextRecord);
     if (!automationRunId) {
       return failed(
-        'Relay automation-run finalizer requires resource.handle.automationRunId',
+        'Relay automation-run finalizer requires an automation run id in resource.handle.{automationRunId|automation_run_id|id} or finalizer.args.{automationRunId|automation_run_id}',
         RELAY_AUTOMATION_RUN_RETIRE_ACTION
       );
     }
@@ -183,7 +183,7 @@ function success(
         cleanupStateAfter: after.cleanup.state,
         versionBefore: before.version,
         versionAfter: after.version,
-        workContextId: after.workContextId,
+        ...(after.workContextId ? { workContextId: after.workContextId } : {}),
         targetCount: after.targets.length,
       },
     ],
