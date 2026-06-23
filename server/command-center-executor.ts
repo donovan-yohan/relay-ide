@@ -57,7 +57,8 @@ export interface CommandCenterConfirmationChallengeRecord {
 
 export interface CommandCenterConfirmationStore {
   create(
-    record: Omit<CommandCenterConfirmationChallengeRecord, 'challengeId'>
+    record: Omit<CommandCenterConfirmationChallengeRecord, 'challengeId'>,
+    nowMs?: number
   ): CommandCenterConfirmationChallengeRecord;
   consume(input: {
     challengeId: string;
@@ -122,8 +123,8 @@ export function createCommandCenterConfirmationStore(): CommandCenterConfirmatio
     }
   };
   return {
-    create(record) {
-      sweepExpired(Date.now());
+    create(record, nowMs) {
+      sweepExpired(nowMs ?? Date.now());
       while (records.size >= MAX_COMMAND_CENTER_CONFIRMATIONS) {
         const oldestChallengeId = records.keys().next().value;
         if (typeof oldestChallengeId !== 'string') break;
@@ -438,11 +439,14 @@ function confirmationPreview(input: {
   nowMs: number;
 }): CommandCenterExecutionConfirmationPreview {
   const redaction = argsRedaction(input.args);
-  const challenge = input.store.create({
-    commandId: input.entry.commandId,
-    argsSha256: redaction.argsSha256,
-    expiresAtMs: input.nowMs + COMMAND_CENTER_CONFIRMATION_TTL_MS,
-  });
+  const challenge = input.store.create(
+    {
+      commandId: input.entry.commandId,
+      argsSha256: redaction.argsSha256,
+      expiresAtMs: input.nowMs + COMMAND_CENTER_CONFIRMATION_TTL_MS,
+    },
+    input.nowMs
+  );
   return {
     challengeId: challenge.challengeId,
     expiresAtMs: challenge.expiresAtMs,

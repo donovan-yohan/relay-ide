@@ -243,9 +243,13 @@ export function catalogEntryFromActionDescriptor(
         : {}),
     },
     outputSchema:
-      descriptor.result.kind === 'json-schema'
+      descriptor.result?.kind === 'json-schema'
         ? descriptor.result.schema
-        : (descriptor.result.schema ?? { title: descriptor.result.type }),
+        : (descriptor.result?.schema ?? {
+            ...(descriptor.result?.type
+              ? { title: descriptor.result.type }
+              : {}),
+          }),
     ...(descriptor.ui
       ? {
           ui: {

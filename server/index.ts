@@ -3305,6 +3305,21 @@ async function main(): Promise<void> {
     );
   };
 
+  const sendCommandCenterInvalidRequest = (
+    res: express.Response,
+    reasonCode: string,
+    message: string
+  ) => {
+    res.status(400).json({
+      error: {
+        code: 'INVALID_ARGUMENT',
+        message,
+        retryable: false,
+        reasonCode,
+      },
+    });
+  };
+
   const validateCommandCenterActorCredentialFor = (
     req: express.Request,
     commandId: string,
@@ -3340,7 +3355,14 @@ async function main(): Promise<void> {
         args,
         correlationId
       );
-      if (!validation) return { actorCredential: undefined, correlationId };
+      if (!validation) {
+        sendCommandCenterInvalidRequest(
+          res,
+          'COMMAND_CENTER_ACTOR_SCOPE_UNRESOLVED',
+          'Command Center actor requests require a known command and valid args before execution.'
+        );
+        return null;
+      }
       if ('reason' in validation) {
         sendCommandCenterActorValidationFailure(res, validation, correlationId);
         return null;
@@ -3397,19 +3419,27 @@ async function main(): Promise<void> {
     const args = Object.prototype.hasOwnProperty.call(body, 'args')
       ? body.args
       : {};
-    const confirmationBody = isRecord(body.confirmation)
-      ? body.confirmation
-      : null;
-    const confirmation: CommandCenterExecutionConfirmationInput | undefined =
-      confirmationBody &&
-      typeof confirmationBody.challengeId === 'string' &&
-      (confirmationBody.decision === 'confirm' ||
-        confirmationBody.decision === 'deny')
-        ? {
-            challengeId: confirmationBody.challengeId,
-            decision: confirmationBody.decision,
-          }
-        : undefined;
+    let confirmation: CommandCenterExecutionConfirmationInput | undefined;
+    if (Object.prototype.hasOwnProperty.call(body, 'confirmation')) {
+      const confirmationBody = body.confirmation;
+      if (
+        !isRecord(confirmationBody) ||
+        typeof confirmationBody['challengeId'] !== 'string' ||
+        (confirmationBody['decision'] !== 'confirm' &&
+          confirmationBody['decision'] !== 'deny')
+      ) {
+        sendCommandCenterInvalidRequest(
+          res,
+          'COMMAND_CENTER_CONFIRMATION_INVALID',
+          'Command Center confirmation must include a challengeId and confirm/deny decision.'
+        );
+        return;
+      }
+      confirmation = {
+        challengeId: confirmationBody['challengeId'],
+        decision: confirmationBody['decision'],
+      };
+    }
 
     const authContext = authenticateCommandCenterExecutionRequest(
       req,

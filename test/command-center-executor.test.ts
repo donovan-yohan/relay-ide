@@ -58,7 +58,12 @@ const sessionsListDescriptor = descriptorFor('sessions.list');
 const nodesListDescriptor = descriptorFor('nodes.list', 'read', {
   availability: { state: 'unavailable', reason: 'node offline' },
 });
-const writeDescriptor = descriptorFor('sessions.rename', 'write');
+const writeDescriptor = descriptorFor('sessions.rename', 'write', {
+  availability: {
+    state: 'available',
+    capabilityHints: ['session:control:rename'],
+  },
+});
 const confirmationDescriptor = descriptorFor('sessions.kill', 'destructive', {
   confirmation: {
     required: true,
@@ -212,7 +217,7 @@ describe('Command Center read-only executor', () => {
         trustedCapabilities: {
           source: 'actor-grant',
           actorId: 'actor-1',
-          capabilities: ['session:read'],
+          capabilities: ['session:control:rename'],
         },
         validateActorScope,
       }
@@ -229,7 +234,7 @@ describe('Command Center read-only executor', () => {
     });
     expect(validateActorScope).toHaveBeenCalledWith(
       expect.objectContaining({
-        requiredCapabilities: ['session:read'],
+        requiredCapabilities: ['session:control:rename'],
         requestedScope: { sessionIds: ['session-2'] },
       })
     );
@@ -253,7 +258,7 @@ describe('Command Center read-only executor', () => {
         trustedCapabilities: {
           source: 'actor-grant',
           actorId: 'actor-1',
-          capabilities: ['session:read'],
+          capabilities: ['session:control:rename'],
         },
         validateActorScope: () => ({ ok: true }),
         now: () => 10,
@@ -279,7 +284,7 @@ describe('Command Center read-only executor', () => {
         trustedCapabilities: {
           source: 'actor-grant',
           actorId: 'actor-2',
-          capabilities: ['session:read'],
+          capabilities: ['session:control:rename'],
         },
         validateActorScope: () => ({
           ok: false,
@@ -339,7 +344,7 @@ describe('Command Center read-only executor', () => {
         trustedCapabilities: {
           source: 'actor-grant',
           actorId: 'actor-1',
-          capabilities: ['session:read'],
+          capabilities: ['session:control:rename'],
         },
         now: () => 100,
       }
@@ -379,7 +384,7 @@ describe('Command Center read-only executor', () => {
         trustedCapabilities: {
           source: 'actor-grant',
           actorId: 'actor-1',
-          capabilities: ['session:read'],
+          capabilities: ['session:control:rename'],
         },
         now: () => 101,
       }
@@ -482,7 +487,7 @@ describe('Command Center read-only executor', () => {
         confirmationStore: deniedStore,
         trustedCapabilities: {
           source: 'actor-grant',
-          capabilities: ['session:read'],
+          capabilities: ['session:control:rename'],
         },
         now: () => 1,
       }
@@ -505,7 +510,7 @@ describe('Command Center read-only executor', () => {
           confirmationStore: deniedStore,
           trustedCapabilities: {
             source: 'actor-grant',
-            capabilities: ['session:read'],
+            capabilities: ['session:control:rename'],
           },
           now: () => 2,
         }
@@ -526,7 +531,7 @@ describe('Command Center read-only executor', () => {
         confirmationStore: staleStore,
         trustedCapabilities: {
           source: 'actor-grant',
-          capabilities: ['session:read'],
+          capabilities: ['session:control:rename'],
         },
         now: () => 1,
       }
@@ -549,7 +554,7 @@ describe('Command Center read-only executor', () => {
           confirmationStore: staleStore,
           trustedCapabilities: {
             source: 'actor-grant',
-            capabilities: ['session:read'],
+            capabilities: ['session:control:rename'],
           },
           now: () => 120_002,
         }
