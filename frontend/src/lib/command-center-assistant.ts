@@ -115,9 +115,10 @@ export function commandCenterExecutionCopy(
     };
   }
   if (result.kind === 'confirmation_required') {
+    const preview = result.preview;
     return {
       title: 'confirmation required',
-      detail: result.message,
+      detail: `${result.message} command ${preview.commandId} (${preview.label}) targets ${preview.scopedTarget}; side effect ${preview.sideEffectClass}; args sha256 ${preview.args.argsSha256}; result ${preview.expectedResultShape.title ?? preview.expectedResultShape.kind}.`,
       tone: 'warning',
     };
   }

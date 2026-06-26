@@ -136,7 +136,11 @@ export const COMMAND_CENTER_RESOLVER_GOLDEN_CASES: readonly CommandCenterResolve
         sideEffect: 'write',
         requiresConfirmation: false,
       },
-      expected: { kind: 'no_match', reason: 'unsafe-command' },
+      expected: {
+        kind: 'ask_followup',
+        commandId: 'sessions.rename',
+        questionIncludes: 'confirmation preview',
+      },
     },
     {
       id: 'policy-blocked-destructive-proposal',
@@ -149,7 +153,11 @@ export const COMMAND_CENTER_RESOLVER_GOLDEN_CASES: readonly CommandCenterResolve
         sideEffect: 'destructive',
         requiresConfirmation: true,
       },
-      expected: { kind: 'no_match', reason: 'unsafe-command' },
+      expected: {
+        kind: 'ask_followup',
+        commandId: 'sessions.kill',
+        questionIncludes: 'confirmation preview',
+      },
     },
     {
       id: 'policy-blocked-provider-escalation',

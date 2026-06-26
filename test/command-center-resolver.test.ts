@@ -167,6 +167,7 @@ describe('Command Center resolver catalog', () => {
         surfaces: ['web', 'command-center'],
         availability: { state: 'available' },
         inputSchema: inputSchemaFor(sessionsListDescriptor),
+        outputSchema: { type: 'object' },
       },
     ]);
   });
@@ -343,7 +344,7 @@ describe('Command Center provider intent validation', () => {
         },
         { catalog: unsafeCatalog }
       )
-    ).toMatchObject({ kind: 'no_match', reason: 'unsafe-command' });
+    ).toMatchObject({ kind: 'ask_followup' });
     expect(
       validateCommandCenterProviderIntent(
         {
@@ -354,7 +355,7 @@ describe('Command Center provider intent validation', () => {
         },
         { catalog: unsafeCatalog }
       )
-    ).toMatchObject({ kind: 'no_match', reason: 'unsafe-command' });
+    ).toMatchObject({ kind: 'ask_followup' });
     expect(
       validateCommandCenterProviderIntent(
         {
@@ -365,7 +366,7 @@ describe('Command Center provider intent validation', () => {
         },
         { catalog: unsafeCatalog }
       )
-    ).toMatchObject({ kind: 'no_match', reason: 'unsafe-command' });
+    ).toMatchObject({ kind: 'ask_followup' });
   });
 
   it('rejects explain answers that invent unsupported commands, actions, or citations', () => {

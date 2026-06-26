@@ -38,6 +38,7 @@ export interface CommandCenterResolverCatalogEntry {
     state: RelayActionAvailabilityState;
     reason?: string;
   };
+  outputSchema: RelayJsonSchema;
   ui?: {
     actionId?: string;
     category?: string;
@@ -241,6 +242,14 @@ export function catalogEntryFromActionDescriptor(
         ? { reason: descriptor.availability.reason }
         : {}),
     },
+    outputSchema:
+      descriptor.result?.kind === 'json-schema'
+        ? descriptor.result.schema
+        : (descriptor.result?.schema ?? {
+            ...(descriptor.result?.type
+              ? { title: descriptor.result.type }
+              : {}),
+          }),
     ...(descriptor.ui
       ? {
           ui: {
@@ -855,9 +864,6 @@ export function validateCommandCenterProviderIntent(
     return validateExplainClaim(claim, catalog, suggestions, confidence);
   }
 
-  if (confidence < minConfidence)
-    return noMatch('low-confidence', suggestions, undefined, claim);
-
   if (typeof claim.commandId !== 'string') {
     return noMatch('malformed-output', suggestions, 'missing commandId', claim);
   }
@@ -880,13 +886,34 @@ export function validateCommandCenterProviderIntent(
   }
   if (!metadataMatches(claim, entry))
     return noMatch('metadata-mismatch', suggestions, undefined, claim);
+
+  if (confidence < minConfidence) {
+    if (!isReadOnlyResolverTarget(entry)) {
+      return {
+        kind: 'ask_followup',
+        commandId: entry.commandId,
+        question: `${entry.label} is ${entry.sideEffect}-class and needs an explicit Command Center confirmation preview before Relay can execute it. Review the suggested action instead of running it from natural language.`,
+        confidence,
+        ...(typeof claim.rationale === 'string'
+          ? { rationale: claim.rationale }
+          : {}),
+        suggestions,
+      };
+    }
+    return noMatch('low-confidence', suggestions, undefined, claim);
+  }
+
   if (!isReadOnlyResolverTarget(entry)) {
-    return noMatch(
-      'unsafe-command',
+    return {
+      kind: 'ask_followup',
+      commandId: entry.commandId,
+      question: `${entry.label} is ${entry.sideEffect}-class and requires an explicit Command Center confirmation preview. Choose the typed action and confirm the redacted preview before execution.`,
+      confidence,
+      ...(typeof claim.rationale === 'string'
+        ? { rationale: claim.rationale }
+        : {}),
       suggestions,
-      `command ${entry.commandId} is not a read-only resolver target in this resolver slice`,
-      claim
-    );
+    };
   }
 
   const intent = resolvedIntentForEntry(claim, entry, args, confidence);
@@ -918,6 +945,7 @@ export function summarizeCommandCenterCatalogForResolver(
   surfaces: readonly RelayActionSurface[];
   availability: CommandCenterResolverCatalogEntry['availability'];
   inputSchema: RelayJsonSchema;
+  outputSchema: RelayJsonSchema;
 }> {
   return catalog.entries.map((entry) => ({
     commandId: entry.commandId,
@@ -930,5 +958,6 @@ export function summarizeCommandCenterCatalogForResolver(
     surfaces: entry.surfaces,
     availability: entry.availability,
     inputSchema: entry.inputSchema,
+    outputSchema: entry.outputSchema,
   }));
 }

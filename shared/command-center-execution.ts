@@ -3,6 +3,7 @@ import type {
   RelayCommandScopeKind,
   RelayCommandSideEffect,
 } from './relay-command-manifest.js';
+import type { RelayCapabilityBit } from './security-policy.js';
 
 export type CommandCenterExecutionResultKind =
   | 'success'
@@ -19,12 +20,56 @@ export type CommandCenterExecutionPolicyOutcome =
 export type CommandCenterExecutionConfirmationOutcome =
   | 'not-required'
   | 'required'
+  | 'confirmed'
+  | 'denied'
+  | 'stale'
   | 'blocked';
+
+export type CommandCenterConfirmationDecision = 'confirm' | 'deny';
+
+export interface CommandCenterExecutionConfirmationInput {
+  challengeId: string;
+  decision: CommandCenterConfirmationDecision;
+}
 
 export interface CommandCenterExecutionArgsRedaction {
   rawArgsReturned: false;
   argKeys: readonly string[];
   argsSha256: string;
+}
+
+export interface CommandCenterExecutionActorAudit {
+  kind: 'browser-session' | 'actor-grant' | 'unknown';
+  id?: string;
+  capabilities?: readonly RelayCapabilityBit[];
+}
+
+export interface CommandCenterExecutionProviderAudit {
+  rawProviderPayloadReturned: false;
+  source?: string;
+  model?: string;
+  requestId?: string;
+  metadataKeys: readonly string[];
+  metadataSha256?: string;
+}
+
+export interface CommandCenterExecutionExpectedResultShape {
+  kind: string;
+  title?: string;
+  schemaType?: string | readonly string[];
+}
+
+export interface CommandCenterExecutionConfirmationPreview {
+  challengeId: string;
+  expiresAtMs: number;
+  commandId: RelayCliGatewayCommand;
+  label: string;
+  scopedTarget: string;
+  sideEffectClass: RelayCommandSideEffect;
+  capabilityHints: readonly RelayCapabilityBit[];
+  controlRequirements: readonly string[];
+  args: CommandCenterExecutionArgsRedaction;
+  expectedResultShape: CommandCenterExecutionExpectedResultShape;
 }
 
 export interface CommandCenterExecutionAudit {
@@ -42,6 +87,9 @@ export interface CommandCenterExecutionAudit {
     | 'allowed-browser-session'
     | 'allowed-explicit'
     | 'blocked';
+  actor: CommandCenterExecutionActorAudit;
+  provider?: CommandCenterExecutionProviderAudit;
+  confirmationChallengeId?: string;
   reason?: string;
 }
 
@@ -61,6 +109,10 @@ export interface CommandCenterExecutionBlocked {
     | 'unsafe-command'
     | 'missing-capability'
     | 'unsupported-command'
+    | 'actor-scope-denied'
+    | 'control-requirement-unsatisfied'
+    | 'confirmation-denied'
+    | 'confirmation-stale'
     | 'metadata-mismatch';
   message: string;
   audit: CommandCenterExecutionAudit;
@@ -71,6 +123,7 @@ export interface CommandCenterExecutionConfirmationRequired {
   commandId: RelayCliGatewayCommand;
   reason: 'confirmation-required' | 'control-requirement';
   message: string;
+  preview: CommandCenterExecutionConfirmationPreview;
   audit: CommandCenterExecutionAudit;
 }
 
