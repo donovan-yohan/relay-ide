@@ -181,6 +181,11 @@ import { createRepoFeatureRouter } from './features/repo-router.js';
 import { createIaWorkspaceRouter } from './features/ia-workspace-router.js';
 import { createWorkspaceEvidenceRouter } from './workspace-evidence.js';
 import {
+  createWorkspaceSurfacesRouter,
+  initWorkspaceSurfaceStore,
+  type WorkspaceSurfaceStore,
+} from './workspace-surfaces.js';
+import {
   createContextInboxRouter,
   type ContextInboxStore,
 } from './features/context-inbox-router.js';
@@ -1479,6 +1484,20 @@ function initAutomationRunStoreBestEffort(
   }
 }
 
+function initWorkspaceSurfaceStoreBestEffort(
+  configDir: string
+): WorkspaceSurfaceStore | null {
+  try {
+    return initWorkspaceSurfaceStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Workspace surface store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 function initPrOverseerStoreBestEffort(
   configDir: string
 ): PrOverseerStore | null {
@@ -1772,6 +1791,7 @@ async function main(): Promise<void> {
     initWorkContextArtifactStoreBestEffort(configDir);
   const workflowRunStore = initWorkflowRunStoreBestEffort(configDir);
   const automationRunStore = initAutomationRunStoreBestEffort(configDir);
+  const workspaceSurfaceStore = initWorkspaceSurfaceStoreBestEffort(configDir);
   const prOverseerStore = initPrOverseerStoreBestEffort(configDir);
   const workContextMessageStore =
     initWorkContextMessageStoreBestEffort(configDir);
@@ -2364,6 +2384,21 @@ async function main(): Promise<void> {
       getConfig,
       registry: hubNodeRegistry,
       nodeLinks: hubNodeLinks,
+    })
+  );
+  // workspace-surfaces (#784): read-mostly catalogue of dev servers / previews /
+  // docs / dashboards / logs / commands for a workspace evidence root. List
+  // merges safe static discovery (package.json scripts, docker-compose ports)
+  // with persisted agent-published surfaces; publish is an actor-auth write.
+  app.use(
+    createWorkspaceSurfacesRouter({
+      store: workspaceSurfaceStore,
+      getConfig,
+      requireAuth: requireCliGatewayAuth,
+      requireReadAuth: requireCliGatewayAuthForActorCommand(
+        'workspace-surfaces.list'
+      ),
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
     })
   );
   // #765 / ADR-019: context.* / inbox.* gateway verbs. #759 wires the router
@@ -5329,6 +5364,7 @@ async function main(): Promise<void> {
         workContextArtifactStore?.close();
         workflowRunStore?.close();
         automationRunStore?.close();
+        workspaceSurfaceStore?.close();
         prOverseerStore?.close();
         workContextMessageStore?.close();
         closeInterventionLog();
@@ -5411,6 +5447,7 @@ async function main(): Promise<void> {
     workContextArtifactStore?.close();
     workflowRunStore?.close();
     automationRunStore?.close();
+    workspaceSurfaceStore?.close();
     prOverseerStore?.close();
     workContextMessageStore?.close();
     closeInterventionLog();

@@ -3,6 +3,7 @@ import type {
   TerminalStreamEnvelope,
   TerminalStreamState,
 } from '../shared/session-replay.js';
+import type { WorkspaceSurfaceConfiguredInput } from '../shared/workspace-surfaces.js';
 import type {
   GlobalSessionId,
   LocalSessionId,
@@ -663,6 +664,11 @@ export interface Config {
   port: number;
   cookieTTL: string;
   repos: string[];
+  /**
+   * Operator-configured workspace surfaces (#784). These are static metadata
+   * only; Relay never launches commands or scans ports from this list.
+   */
+  workspaceSurfaces?: WorkspaceSurfaceConfiguredInput[] | undefined;
   claudeArgs: string[];
   defaultFramework: string; // canonical agent framework, defaults to 'claude'
   frameworks?: Record<string, Partial<AgentFramework>>; // user-customized frameworks

@@ -89,6 +89,8 @@ export type RelayCliGatewayCommand =
   | 'pr-overseer.retire'
   | 'pr-overseer.list'
   | 'pr-overseer.get'
+  | 'workspace-surfaces.list'
+  | 'workspace-surfaces.publish'
   | 'roster.list'
   | 'roster.register'
   | 'roster.updateSelf'
@@ -217,6 +219,126 @@ export interface RelayCliGatewayContractManifest {
 const stringSchema = { type: 'string' } as const;
 const nullableStringSchema = { type: ['string', 'null'] } as const;
 const booleanSchema = { type: 'boolean' } as const;
+
+const workspaceSurfaceSchema: RelayJsonSchema = {
+  title: 'WorkspaceSurface',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    kind: {
+      type: 'string',
+      enum: ['web', 'docs', 'preview', 'dashboard', 'logs', 'command'],
+    },
+    label: stringSchema,
+    description: stringSchema,
+    url: stringSchema,
+    command: stringSchema,
+    logRef: stringSchema,
+    nodeId: stringSchema,
+    workspaceId: stringSchema,
+    rootId: stringSchema,
+    repoPath: stringSchema,
+    status: { type: 'string', enum: ['discovered', 'published', 'retired'] },
+    health: {
+      type: 'string',
+      enum: ['unknown', 'reachable', 'unreachable', 'configured'],
+    },
+    provenance: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        source: {
+          type: 'string',
+          enum: [
+            'configured',
+            'package-script',
+            'compose',
+            'agent-published',
+            'process-scan',
+          ],
+        },
+        detail: stringSchema,
+        actor: stringSchema,
+        sessionId: stringSchema,
+        workContextId: stringSchema,
+      },
+      required: ['source'],
+    },
+    openMode: {
+      type: 'string',
+      enum: ['direct', 'node-scoped', 'copy', 'unavailable'],
+    },
+    createdAt: stringSchema,
+    updatedAt: stringSchema,
+  },
+  required: [
+    'id',
+    'kind',
+    'label',
+    'nodeId',
+    'status',
+    'health',
+    'provenance',
+    'openMode',
+  ],
+};
+
+const workspaceSurfacesListOutputDataSchema: RelayJsonSchema = {
+  title: 'WorkspaceSurfacesListData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    surfaces: { type: 'array', items: workspaceSurfaceSchema },
+    truncated: booleanSchema,
+  },
+  required: ['surfaces', 'truncated'],
+};
+
+const workspaceSurfacesPublishInputSchema: RelayJsonSchema = {
+  title: 'WorkspaceSurfacesPublishInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    kind: {
+      type: 'string',
+      enum: ['web', 'docs', 'preview', 'dashboard', 'logs', 'command'],
+    },
+    label: stringSchema,
+    description: stringSchema,
+    url: stringSchema,
+    command: stringSchema,
+    logRef: stringSchema,
+    nodeId: stringSchema,
+    workspaceId: stringSchema,
+    rootId: stringSchema,
+    repoPath: stringSchema,
+    health: {
+      type: 'string',
+      enum: ['unknown', 'reachable', 'unreachable', 'configured'],
+    },
+    actor: stringSchema,
+    sessionId: stringSchema,
+    workContextId: stringSchema,
+  },
+  required: ['kind', 'label'],
+  anyOf: [
+    { required: ['url'] },
+    { required: ['command'] },
+    { required: ['logRef'] },
+  ],
+};
+
+const workspaceSurfacesPublishOutputDataSchema: RelayJsonSchema = {
+  title: 'WorkspaceSurfacesPublishData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    surface: workspaceSurfaceSchema,
+  },
+  required: ['surface'],
+};
 
 const controlActorSchema: RelayJsonSchema = {
   title: 'ControlActor',
@@ -6013,6 +6135,58 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'NOT_FOUND',
       'SERVER_UNAVAILABLE',
       'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'workspace-surfaces.list',
+    cli: ['relay-ide', 'v1', 'workspace-surfaces', 'list', '--json'],
+    summary:
+      'List bounded workspace surfaces discovered from safe static workspace metadata and agent-published records.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        rootId: stringSchema,
+        workspaceId: stringSchema,
+        repoPath: stringSchema,
+      },
+    },
+    outputSchema: okOutput(
+      'WorkspaceSurfacesListOutput',
+      workspaceSurfacesListOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'INTERNAL',
+    ],
+  },
+  {
+    name: 'workspace-surfaces.publish',
+    cli: ['relay-ide', 'v1', 'workspace-surfaces', 'publish', '--json'],
+    summary:
+      'Publish or update bounded agent-authored workspace surface metadata for display in Relay.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workspaceSurfacesPublishInputSchema,
+    outputSchema: okOutput(
+      'WorkspaceSurfacesPublishOutput',
+      workspaceSurfacesPublishOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'INTERNAL',
     ],
   },
   {

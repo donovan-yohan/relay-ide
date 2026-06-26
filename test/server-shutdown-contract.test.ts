@@ -22,17 +22,24 @@ describe('server shutdown store closing contract', () => {
 
     expect(gracefulShutdownStart).toBeGreaterThanOrEqual(0);
     expect(signalHandlerStart).toBeGreaterThan(gracefulShutdownStart);
-    expect(gracefulShutdownSource).toContain('workContextArtifactStore?.close();');
-    expect(gracefulShutdownSource).toContain('workContextMessageStore?.close();');
+    expect(gracefulShutdownSource).toContain(
+      'workContextArtifactStore?.close();'
+    );
+    expect(gracefulShutdownSource).toContain(
+      'workContextMessageStore?.close();'
+    );
     expect(gracefulShutdownSource).toContain('agentPresenceStore?.close();');
+    expect(gracefulShutdownSource).toContain('workspaceSurfaceStore?.close();');
     expect(gracefulShutdownSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+closeInterventionLog\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+closeInterventionLog\(\);/
     );
   });
 
   it('keeps the existing update-restart artifact store close path', () => {
     const updateRestartStart = serverSource.indexOf('if (restarting) {');
-    const updateResponseStart = serverSource.indexOf('res.json({ ok: true, restarting });');
+    const updateResponseStart = serverSource.indexOf(
+      'res.json({ ok: true, restarting });'
+    );
     const updateRestartSource = serverSource.slice(
       updateRestartStart,
       updateResponseStart
@@ -43,8 +50,9 @@ describe('server shutdown store closing contract', () => {
     expect(updateRestartSource).toContain('agentPresenceStore?.close();');
     expect(updateRestartSource).toContain('workContextArtifactStore?.close();');
     expect(updateRestartSource).toContain('workContextMessageStore?.close();');
+    expect(updateRestartSource).toContain('workspaceSurfaceStore?.close();');
     expect(updateRestartSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);/
     );
   });
 });

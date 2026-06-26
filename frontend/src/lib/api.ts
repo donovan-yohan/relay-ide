@@ -31,6 +31,10 @@ import type {
   WorkspaceEvidenceStatResponse,
 } from '../../../shared/workspace-evidence.js';
 import type {
+  WorkspaceSurface,
+  WorkspaceSurfaceListResponse,
+} from '../../../shared/workspace-surfaces.js';
+import type {
   PipelineHandoffArtifact,
   PipelineHandoffStageName,
 } from '../../../shared/pipeline-handoff-artifact.js';
@@ -1586,6 +1590,28 @@ export async function fetchWorkspaceEvidencePreview(
     'preview',
     request
   );
+}
+
+export interface FetchWorkspaceSurfacesArgs {
+  rootId?: string;
+  workspaceId?: string;
+  repoPath?: string;
+}
+
+export async function fetchWorkspaceSurfaces(
+  args: FetchWorkspaceSurfacesArgs = {}
+): Promise<WorkspaceSurface[]> {
+  const params = new URLSearchParams();
+  if (args.rootId) params.set('rootId', args.rootId);
+  if (args.workspaceId) params.set('workspaceId', args.workspaceId);
+  if (args.repoPath) params.set('repoPath', args.repoPath);
+  const query = params.toString();
+  const data = await json<WorkspaceSurfaceListResponse>(
+    await fetch(`/workspace-surfaces${query ? `?${query}` : ''}`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return Array.isArray(data.surfaces) ? data.surfaces : [];
 }
 
 export interface NodeFsWriteArgs {

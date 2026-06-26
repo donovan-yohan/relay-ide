@@ -1539,6 +1539,8 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'automation-runs.get',
   'pr-overseer.list',
   'pr-overseer.get',
+  'workspace-surfaces.list',
+  'workspace-surfaces.publish',
   'roster.list',
   'cockpit.list',
   'cockpit.get',
@@ -1564,7 +1566,7 @@ async function gatewayHttpJson(input: {
   if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(input.commandName)) {
     gatewayInvalid(
       input.commandName,
-      '--actor-token is only supported for read-only CLI gateway commands in this slice',
+      '--actor-token is only supported for scoped CLI gateway actor commands in this slice',
       {
         allowedCommands: Array.from(CLI_GATEWAY_ACTOR_TOKEN_COMMANDS),
       }
@@ -5085,6 +5087,48 @@ async function runGatewayPrOverseer(gatewayArgs: string[]): Promise<never> {
   });
 }
 
+async function runGatewayWorkspaceSurfaces(
+  gatewayArgs: string[]
+): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const surfaceArgs = gatewayArgs.slice(2);
+  if (subcommand === 'list') {
+    const query = new URLSearchParams();
+    for (const [flag, key] of [
+      ['--root-id', 'rootId'],
+      ['--workspace-id', 'workspaceId'],
+      ['--repo-path', 'repoPath'],
+    ] as const) {
+      const value = gatewayArg(surfaceArgs, flag);
+      if (value) query.set(key, value);
+    }
+    const search = query.toString();
+    const result = await gatewayHttpJson({
+      commandName: 'workspace-surfaces.list',
+      pathName: `/workspace-surfaces${search ? `?${search}` : ''}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('workspace-surfaces.list', result), 0);
+  }
+  if (subcommand === 'publish') {
+    const input = parseGatewayInputObject(
+      'workspace-surfaces.publish',
+      surfaceArgs
+    );
+    const result = await gatewayHttpJson({
+      commandName: 'workspace-surfaces.publish',
+      pathName: '/workspace-surfaces',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('workspace-surfaces.publish', result), 0);
+  }
+  gatewayInvalid('workspace-surfaces.list', 'unknown workspace-surfaces command', {
+    args: gatewayArgs,
+  });
+}
+
 async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {
   const subcommand = gatewayArgs[1];
   const rosterArgs = gatewayArgs.slice(2);
@@ -5389,6 +5433,7 @@ async function runGatewayV1(): Promise<never> {
       'workflow-runs': runGatewayWorkflowRuns,
       'automation-runs': runGatewayAutomationRuns,
       'pr-overseer': runGatewayPrOverseer,
+      'workspace-surfaces': runGatewayWorkspaceSurfaces,
       roster: runGatewayRoster,
       cockpit: runGatewayCockpit,
       artifacts: runGatewayArtifacts,

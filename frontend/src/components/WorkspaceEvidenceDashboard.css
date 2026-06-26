@@ -78,3 +78,74 @@
   text-transform: lowercase;
   letter-spacing: 0.04em;
 }
+
+.evidence-surfaces {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidence-surface {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.evidence-surface__head,
+.evidence-surface__meta,
+.evidence-surface__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.evidence-surface__title {
+  color: var(--text);
+}
+
+.evidence-surface__kind {
+  color: var(--accent);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}
+
+.evidence-surface__description,
+.evidence-surface__meta,
+.evidence-surface__target {
+  color: var(--text-muted);
+}
+
+.evidence-surface__target {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.evidence-surface__action {
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: transparent;
+  padding: 2px 6px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.evidence-surface__action:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.evidence-surface__copy-state {
+  color: var(--accent);
+}
+
+.evidence-surface__copy-error {
+  color: var(--status-error);
+}

@@ -8,6 +8,7 @@ import {
 import WorkspaceEvidenceArtifactsSection from './WorkspaceEvidenceArtifactsSection.js';
 import WorkspaceEvidenceFilesSection from './WorkspaceEvidenceFilesSection.js';
 import WorkspaceEvidenceSessionsSection from './WorkspaceEvidenceSessionsSection.js';
+import WorkspaceEvidenceSurfacesSection from './WorkspaceEvidenceSurfacesSection.js';
 import './WorkspaceEvidenceDashboard.css';
 
 export interface WorkspaceEvidenceDashboardProps {
@@ -121,10 +122,11 @@ export function WorkspaceEvidenceDashboard({
 
       <WorkspaceEvidenceSessionsSection repoPath={repoPath} />
 
-      <section className="dashboard-section" data-track="evidence.surfaces">
-        <div className="section-heading">surfaces</div>
-        <div className="section-message">surfaces — coming soon</div>
-      </section>
+      <WorkspaceEvidenceSurfacesSection
+        repoPath={repoPath}
+        {...(root ? { root } : {})}
+        {...(workspaceId ? { workspaceId } : {})}
+      />
     </div>
   );
 }
