@@ -22,7 +22,10 @@ import {
   createWorkspaceTopicsRouter,
   type WorkspaceTopicStore,
 } from '../server/workspace-topics.js';
-import type { WorkContextStore } from '../server/work-contexts.js';
+import type {
+  WorkContextListOptions,
+  WorkContextStore,
+} from '../server/work-contexts.js';
 import type { WorkContext } from '../shared/work-context.js';
 import {
   WORKSPACE_TOPICS_MAX_LIST_ENTRIES,
@@ -553,9 +556,11 @@ describe('workspace topics foundation', () => {
 
   it('derives starter topics from WorkContexts when no persisted topic exists', async () => {
     let requestedLimit: number | undefined;
+    let requestedWorkspaceId: string | undefined;
     const workContextStore = {
-      list: (options?: { limit?: number }) => {
+      list: (options?: WorkContextListOptions) => {
         requestedLimit = options?.limit;
+        requestedWorkspaceId = options?.workspaceId;
         return [workContext()];
       },
     } as unknown as WorkContextStore;
@@ -567,7 +572,8 @@ describe('workspace topics foundation', () => {
     );
 
     expect(list.status).toBe(200);
-    expect(requestedLimit).toBeUndefined();
+    expect(requestedLimit).toBe(WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1);
+    expect(requestedWorkspaceId).toBe('ws-derived');
     expect(list.body.derived).toBe(true);
     expect(list.body.topics).toHaveLength(1);
     expect(list.body.topics[0]).toMatchObject({
@@ -590,9 +596,11 @@ describe('workspace topics foundation', () => {
 
   it('marks derived topic lists truncated when the sentinel entry exists', async () => {
     let requestedLimit: number | undefined;
+    let requestedWorkspaceId: string | undefined;
     const workContextStore = {
-      list: (options?: { limit?: number }) => {
+      list: (options?: WorkContextListOptions) => {
         requestedLimit = options?.limit;
+        requestedWorkspaceId = options?.workspaceId;
         return Array.from(
           { length: WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1 },
           (_entry, index) => workContext(`wc-topic-${index}`)
@@ -607,7 +615,8 @@ describe('workspace topics foundation', () => {
     );
 
     expect(list.status).toBe(200);
-    expect(requestedLimit).toBeUndefined();
+    expect(requestedLimit).toBe(WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1);
+    expect(requestedWorkspaceId).toBe('ws-derived');
     expect(list.body.derived).toBe(true);
     expect(list.body.topics).toHaveLength(WORKSPACE_TOPICS_MAX_LIST_ENTRIES);
     expect(list.body.truncated).toBe(true);
@@ -615,6 +624,7 @@ describe('workspace topics foundation', () => {
 
   it('filters derived fallback workspaces before applying the sentinel limit', async () => {
     let requestedLimit: number | undefined;
+    let requestedWorkspaceId: string | undefined;
     const otherWorkspaceContexts = Array.from(
       { length: WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1 },
       (_entry, index) => {
@@ -630,9 +640,16 @@ describe('workspace topics foundation', () => {
     );
     const target = workContext('wc-target');
     const workContextStore = {
-      list: (options?: { limit?: number }) => {
+      list: (options?: WorkContextListOptions) => {
         requestedLimit = options?.limit;
-        return [...otherWorkspaceContexts, target];
+        requestedWorkspaceId = options?.workspaceId;
+        return [...otherWorkspaceContexts, target]
+          .filter(
+            (context) =>
+              (context.anchors.project?.workspaceId ?? 'ws:derived') ===
+              options?.workspaceId
+          )
+          .slice(0, options?.limit);
       },
     } as unknown as WorkContextStore;
     const { port } = await listen({ store: topicStore(), workContextStore });
@@ -643,7 +660,8 @@ describe('workspace topics foundation', () => {
     );
 
     expect(list.status).toBe(200);
-    expect(requestedLimit).toBeUndefined();
+    expect(requestedLimit).toBe(WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1);
+    expect(requestedWorkspaceId).toBe('ws-derived');
     expect(list.body.derived).toBe(true);
     expect(list.body.truncated).toBe(false);
     expect(

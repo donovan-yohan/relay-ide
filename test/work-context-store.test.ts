@@ -62,10 +62,18 @@ function replacePersistedContextJson(
   id: string,
   context: Record<string, unknown>
 ): void {
+  replacePersistedContextJsonRaw(dbPath, id, JSON.stringify(context));
+}
+
+function replacePersistedContextJsonRaw(
+  dbPath: string,
+  id: string,
+  contextJson: string
+): void {
   const db = new Database(dbPath);
   try {
     db.prepare('UPDATE work_contexts SET context_json = ? WHERE id = ?').run(
-      JSON.stringify(context),
+      contextJson,
       id
     );
   } finally {
@@ -213,6 +221,52 @@ function fullContext(overrides: Partial<WorkContext> = {}): WorkContext {
 }
 
 describe('WorkContext store', () => {
+  it('filters list by workspace before applying limit', () => {
+    const { store, dbPath } = makeStoreHandle();
+    try {
+      store.create({
+        context: fullContext({
+          id: 'wc:target',
+          updatedAt: '2026-05-17T08:00:00.000Z',
+          anchors: { project: { workspaceId: 'ws-target' } },
+        }),
+      });
+      store.create({
+        context: fullContext({
+          id: 'wc:derived-default',
+          updatedAt: '2026-05-17T08:01:00.000Z',
+          anchors: {},
+        }),
+      });
+      for (let i = 0; i < 5; i += 1) {
+        store.create({
+          context: fullContext({
+            id: `wc:other-${i}`,
+            updatedAt: `2026-05-17T08:1${i}:00.000Z`,
+            anchors: { project: { workspaceId: 'ws-other' } },
+          }),
+        });
+      }
+      store.create({
+        context: fullContext({
+          id: 'wc:corrupt',
+          updatedAt: '2026-05-17T08:20:00.000Z',
+          anchors: { project: { workspaceId: 'ws-target' } },
+        }),
+      });
+      replacePersistedContextJsonRaw(dbPath, 'wc:corrupt', '{');
+
+      expect(
+        store.list({ workspaceId: 'ws-target', limit: 1 }).map((ctx) => ctx.id)
+      ).toEqual(['wc:target']);
+      expect(
+        store.list({ workspaceId: 'ws:derived', limit: 1 }).map((ctx) => ctx.id)
+      ).toEqual(['wc:derived-default']);
+    } finally {
+      store.close();
+    }
+  });
+
   it('exposes create/read/list/update/link/session association through API routes', async () => {
     const store = makeStore();
     const live = session({

@@ -502,15 +502,11 @@ function fallbackTopics(input: {
   workContextStore?: WorkContextStore | undefined;
   workspaceId?: string | undefined;
 }): WorkspaceTopic[] {
-  const contexts = input.workspaceId
-    ? (input.workContextStore?.list() ?? []).filter(
-        (context) =>
-          (context.anchors.project?.workspaceId ?? 'ws:derived') ===
-          input.workspaceId
-      )
-    : (input.workContextStore?.list({
-        limit: WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT,
-      }) ?? []);
+  const contexts =
+    input.workContextStore?.list({
+      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      limit: WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT,
+    }) ?? [];
   return deriveWorkspaceTopicsFromWorkContexts(
     contexts.slice(0, WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT)
   );
