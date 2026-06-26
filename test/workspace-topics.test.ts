@@ -66,6 +66,9 @@ async function listen(input: {
   surfaceStore?: WorkspaceSurfaceStore | null;
   workContextStore?: WorkContextStore;
   getConfig?: () => Config;
+  requireReadActorAuth?: (
+    expectedCommand: 'workspace-topics.list' | 'workspace-topics.get'
+  ) => RequestHandler;
   requireWriteActorAuth?: (
     expectedCommand:
       | 'workspace-topics.create'
@@ -86,6 +89,7 @@ async function listen(input: {
       surfaceStore: input.surfaceStore,
       workContextStore: input.workContextStore,
       getConfig: input.getConfig,
+      requireReadActorAuth: input.requireReadActorAuth,
       requireWriteActorAuth: input.requireWriteActorAuth,
     })
   );
@@ -209,11 +213,18 @@ describe('workspace topics foundation', () => {
       repoPath: '/repo',
     });
     let requestedCommand: string | undefined;
+    let requestedReadCommand: string | undefined;
     let requestedScope: { workContextIds?: string[] } | undefined;
     const { port } = await listen({
       store,
       surfaceStore: surfaces,
       getConfig: () => asConfig(['/repo']),
+      requireReadActorAuth: (expectedCommand) => {
+        return ((_req, _res, next) => {
+          requestedReadCommand = expectedCommand;
+          next();
+        }) as RequestHandler;
+      },
       requireWriteActorAuth: (expectedCommand, options) => {
         return ((req, _res, next) => {
           requestedCommand = expectedCommand;
@@ -251,6 +262,11 @@ describe('workspace topics foundation', () => {
           workContextIds: ['wc-1'],
           workspaceSurfaceIds: ['surface:preview'],
         },
+        privacy: {
+          classification: 'sensitive',
+          retention: 'audit',
+          redaction: 'hash',
+        },
       },
     });
     expect(create.status).toBe(201);
@@ -261,7 +277,12 @@ describe('workspace topics foundation', () => {
       workspaceId: 'ws-1',
       source: 'persisted',
       linkedRefs: { workspaceSurfaceIds: ['surface:preview'] },
-      privacy: { rawDefaultsStored: false },
+      privacy: {
+        classification: 'sensitive',
+        retention: 'audit',
+        redaction: 'hash',
+        rawDefaultsStored: false,
+      },
     });
     expect(create.body.mutationPolicy).toMatchObject({
       kind: 'create',
@@ -293,10 +314,19 @@ describe('workspace topics foundation', () => {
       '/workspace-topics?workspaceId=ws-1'
     );
     expect(list.status).toBe(200);
+    expect(requestedReadCommand).toBe('workspace-topics.list');
     expect(list.body).toMatchObject({ derived: false, truncated: false });
     expect(list.body.topics.map((topic) => topic.id)).toEqual([
       'topic:build-lane',
     ]);
+
+    const get = await getJson<{ topic: WorkspaceTopic }>(
+      port,
+      '/workspace-topics/topic%3Abuild-lane'
+    );
+    expect(get.status).toBe(200);
+    expect(requestedReadCommand).toBe('workspace-topics.get');
+    expect(get.body.topic.id).toBe('topic:build-lane');
 
     const update = await writeJson<{
       topic: WorkspaceTopic;
@@ -305,11 +335,21 @@ describe('workspace topics foundation', () => {
       port,
       method: 'PATCH',
       url: '/workspace-topics/topic%3Abuild-lane',
-      body: { title: 'Build lane renamed', pinned: true },
+      body: {
+        title: 'Build lane renamed',
+        pinned: true,
+        privacy: { retention: 'session' },
+      },
     });
     expect(update.status).toBe(200);
     expect(update.body.topic.display.title).toBe('Build lane renamed');
     expect(update.body.topic.state.pinned).toBe(true);
+    expect(update.body.topic.privacy).toMatchObject({
+      classification: 'sensitive',
+      retention: 'session',
+      redaction: 'hash',
+      rawDefaultsStored: false,
+    });
     expect(update.body.mutationPolicy).toMatchObject({
       kind: 'update',
       sideEffectClass: 'write',
@@ -382,6 +422,31 @@ describe('workspace topics foundation', () => {
         cwd: '/repo',
       },
     });
+  });
+
+  it('marks derived topic lists truncated when the sentinel entry exists', async () => {
+    let requestedLimit: number | undefined;
+    const workContextStore = {
+      list: (options?: { limit?: number }) => {
+        requestedLimit = options?.limit;
+        return Array.from(
+          { length: WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1 },
+          (_entry, index) => workContext(`wc-topic-${index}`)
+        );
+      },
+    } as unknown as WorkContextStore;
+    const { port } = await listen({ store: topicStore(), workContextStore });
+
+    const list = await getJson<WorkspaceTopicListResponse>(
+      port,
+      '/workspace-topics?workspaceId=ws-derived'
+    );
+
+    expect(list.status).toBe(200);
+    expect(requestedLimit).toBe(WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1);
+    expect(list.body.derived).toBe(true);
+    expect(list.body.topics).toHaveLength(WORKSPACE_TOPICS_MAX_LIST_ENTRIES);
+    expect(list.body.truncated).toBe(true);
   });
 
   it('enforces capability headers and list caps', async () => {

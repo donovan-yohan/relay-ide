@@ -2430,9 +2430,7 @@ async function main(): Promise<void> {
       workContextStore,
       getConfig,
       requireAuth: requireCliGatewayAuth,
-      requireReadAuth: requireCliGatewayAuthForActorCommand(
-        'workspace-topics.list'
-      ),
+      requireReadActorAuth: requireCliGatewayAuthForActorCommand,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
     })
   );

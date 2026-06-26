@@ -701,6 +701,40 @@ function parsePrivacy(raw: unknown): WorkspaceTopicPrivacyMetadata {
   };
 }
 
+function parsePrivacyPatch(
+  raw: unknown
+): Partial<WorkspaceTopicPrivacyMetadata> | undefined {
+  const record = asRecord(raw);
+  const patch: Partial<WorkspaceTopicPrivacyMetadata> = {};
+  if (record['classification'] !== undefined) {
+    patch.classification = readEnum<WorkspaceTopicPrivacyClass>(
+      record['classification'],
+      'privacy.classification',
+      PRIVACY_CLASSES,
+      'internal'
+    );
+  }
+  if (record['retention'] !== undefined) {
+    patch.retention = readEnum<WorkspaceTopicRetentionClass>(
+      record['retention'],
+      'privacy.retention',
+      RETENTION_CLASSES,
+      'project'
+    );
+  }
+  if (record['redaction'] !== undefined) {
+    patch.redaction = readEnum<WorkspaceTopicRedactionStrategy>(
+      record['redaction'],
+      'privacy.redaction',
+      REDACTION_STRATEGIES,
+      'summary'
+    );
+  }
+  if (Object.keys(patch).length === 0) return undefined;
+  patch.rawDefaultsStored = false;
+  return patch;
+}
+
 export function parseWorkspaceTopicCreateInput(
   raw: unknown,
   options: WorkspaceTopicValidationOptions = {}
@@ -785,8 +819,10 @@ export function parseWorkspaceTopicUpdateInput(
     out.pinned = readBoolean(record['pinned'], 'pinned', false);
   if (record['muted'] !== undefined)
     out.muted = readBoolean(record['muted'], 'muted', false);
-  if (record['privacy'] !== undefined)
-    out.privacy = parsePrivacy(record['privacy']);
+  if (record['privacy'] !== undefined) {
+    const privacy = parsePrivacyPatch(record['privacy']);
+    if (privacy) out.privacy = privacy;
+  }
   if (Object.keys(out).length === 0) {
     throw new WorkspaceTopicValidationError(
       'workspace topic update has no changes',
@@ -932,7 +968,13 @@ export function applyWorkspaceTopicUpdate(input: {
       ...(patch.muted !== undefined ? { muted: patch.muted } : {}),
     },
     ...(patch.privacy !== undefined
-      ? { privacy: parsePrivacy(patch.privacy) }
+      ? {
+          privacy: {
+            ...topic.privacy,
+            ...patch.privacy,
+            rawDefaultsStored: false,
+          },
+        }
       : {}),
     updatedAt: input.now,
   };

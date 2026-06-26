@@ -32,7 +32,10 @@ import {
   discoverWorkspaceSurfaces,
   type WorkspaceSurfaceStore,
 } from './workspace-surfaces.js';
-import type { CliGatewayActorWriteCommand } from './cli-gateway-actor-auth.js';
+import type {
+  CliGatewayActorReadCommand,
+  CliGatewayActorWriteCommand,
+} from './cli-gateway-actor-auth.js';
 
 const CONTEXT_READ = 'context:read';
 const CONTEXT_WRITE = 'context:write';
@@ -232,7 +235,7 @@ export function deriveWorkspaceTopicsFromWorkContexts(
   now = defaultClock()
 ): WorkspaceTopic[] {
   return contexts
-    .slice(0, WORKSPACE_TOPICS_MAX_LIST_ENTRIES)
+    .slice(0, WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT)
     .map((context, index) => {
       const workspaceId = context.anchors.project?.workspaceId ?? 'ws:derived';
       const session = context.anchors.session;
@@ -441,6 +444,9 @@ export interface WorkspaceTopicsRouterOptions {
   getConfig?: () => Config;
   requireAuth?: RequestHandler;
   requireReadAuth?: RequestHandler;
+  requireReadActorAuth?: (
+    expectedCommand: CliGatewayActorReadCommand
+  ) => RequestHandler;
   requireWriteActorAuth?: (
     expectedCommand: CliGatewayActorWriteCommand,
     options?: {
@@ -456,68 +462,77 @@ export function createWorkspaceTopicsRouter(
 ): express.Router {
   const router = express.Router();
   const auth = options.requireAuth ?? ((_req, _res, next) => next());
-  const readAuth = options.requireReadAuth ?? auth;
+  const readAuth = (command: CliGatewayActorReadCommand): RequestHandler =>
+    options.requireReadActorAuth?.(command) ?? options.requireReadAuth ?? auth;
   const writeAuth = (command: CliGatewayActorWriteCommand): RequestHandler =>
     options.requireWriteActorAuth?.(command, {
       scopeForRequest: topicWorkContextScopeFromBody,
     }) ?? auth;
 
-  router.get('/workspace-topics', readAuth, (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
-    const workspaceId = readString(req.query['workspaceId']);
-    const includeArchived = readBooleanQuery(req.query['includeArchived']);
-    const persisted = options.store
-      ? options.store.list({
-          ...(workspaceId ? { workspaceId } : {}),
-          includeArchived,
-          limit: WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT,
-        })
-      : [];
-    const derived = persisted.length === 0;
-    const allTopics = derived
-      ? fallbackTopics({
-          workContextStore: options.workContextStore,
-          workspaceId,
-        })
-      : persisted;
-    const topics = allTopics.slice(0, WORKSPACE_TOPICS_MAX_LIST_ENTRIES);
-    const body: WorkspaceTopicListResponse = {
-      topics,
-      truncated:
-        allTopics.length > topics.length ||
-        persisted.length > WORKSPACE_TOPICS_MAX_LIST_ENTRIES,
-      derived,
-    };
-    res.json(body);
-  });
+  router.get(
+    '/workspace-topics',
+    readAuth('workspace-topics.list'),
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+      const workspaceId = readString(req.query['workspaceId']);
+      const includeArchived = readBooleanQuery(req.query['includeArchived']);
+      const persisted = options.store
+        ? options.store.list({
+            ...(workspaceId ? { workspaceId } : {}),
+            includeArchived,
+            limit: WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT,
+          })
+        : [];
+      const derived = persisted.length === 0;
+      const allTopics = derived
+        ? fallbackTopics({
+            workContextStore: options.workContextStore,
+            workspaceId,
+          })
+        : persisted;
+      const topics = allTopics.slice(0, WORKSPACE_TOPICS_MAX_LIST_ENTRIES);
+      const body: WorkspaceTopicListResponse = {
+        topics,
+        truncated:
+          allTopics.length > topics.length ||
+          persisted.length > WORKSPACE_TOPICS_MAX_LIST_ENTRIES,
+        derived,
+      };
+      res.json(body);
+    }
+  );
 
-  router.get('/workspace-topics/:id', readAuth, (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
-    const id = req.params['id'] ?? '';
-    try {
-      assertWorkspaceTopicId(id);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'invalid workspace topic id';
-      sendGatewayError(res, 'INVALID_ARGUMENT', message, false, {
-        field: 'id',
-      });
-      return;
+  router.get(
+    '/workspace-topics/:id',
+    readAuth('workspace-topics.get'),
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+      const id = req.params['id'] ?? '';
+      try {
+        assertWorkspaceTopicId(id);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'invalid workspace topic id';
+        sendGatewayError(res, 'INVALID_ARGUMENT', message, false, {
+          field: 'id',
+        });
+        return;
+      }
+      const topic =
+        options.store?.get(id) ??
+        fallbackTopics({ workContextStore: options.workContextStore }).find(
+          (candidate) => candidate.id === id
+        ) ??
+        null;
+      if (!topic) {
+        sendGatewayError(res, 'NOT_FOUND', 'workspace topic not found', false, {
+          id,
+        });
+        return;
+      }
+      res.json({ topic });
     }
-    const topic =
-      options.store?.get(id) ??
-      fallbackTopics({ workContextStore: options.workContextStore }).find(
-        (candidate) => candidate.id === id
-      ) ??
-      null;
-    if (!topic) {
-      sendGatewayError(res, 'NOT_FOUND', 'workspace topic not found', false, {
-        id,
-      });
-      return;
-    }
-    res.json({ topic });
-  });
+  );
 
   router.post(
     '/workspace-topics',
