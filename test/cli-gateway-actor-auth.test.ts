@@ -247,6 +247,8 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'work-context-messages.templates.render',
     'roster.list',
     'workspace-surfaces.list',
+    'workspace-topics.list',
+    'workspace-topics.get',
   ]);
   expect(
     classifyCliGatewayCredentialLane(
@@ -422,6 +424,9 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'pr-overseer.retire',
     'work-context-messages.append',
     'workspace-surfaces.publish',
+    'workspace-topics.create',
+    'workspace-topics.update',
+    'workspace-topics.archive',
   ]);
 
   for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {
