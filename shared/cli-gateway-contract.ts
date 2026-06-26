@@ -91,6 +91,11 @@ export type RelayCliGatewayCommand =
   | 'pr-overseer.get'
   | 'workspace-surfaces.list'
   | 'workspace-surfaces.publish'
+  | 'workspace-topics.list'
+  | 'workspace-topics.get'
+  | 'workspace-topics.create'
+  | 'workspace-topics.update'
+  | 'workspace-topics.archive'
   | 'roster.list'
   | 'roster.register'
   | 'roster.updateSelf'
@@ -338,6 +343,147 @@ const workspaceSurfacesPublishOutputDataSchema: RelayJsonSchema = {
     surface: workspaceSurfaceSchema,
   },
   required: ['surface'],
+};
+
+const workspaceTopicMutationPolicySchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicMutationPolicy',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    kind: { type: 'string', enum: ['create', 'update', 'archive'] },
+    sideEffectClass: { type: 'string', enum: ['write', 'destructive'] },
+    requiresConfirmation: booleanSchema,
+    scopeKind: { const: 'work-context' },
+  },
+  required: ['kind', 'sideEffectClass', 'requiresConfirmation', 'scopeKind'],
+};
+
+const workspaceTopicSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopic',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    schemaVersion: { const: 1 },
+    id: stringSchema,
+    workspaceId: stringSchema,
+    source: { type: 'string', enum: ['persisted', 'derived'] },
+    status: { type: 'string', enum: ['active', 'archived'] },
+    visibility: { type: 'string', enum: ['default', 'private', 'shared'] },
+    display: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        title: stringSchema,
+        description: stringSchema,
+      },
+      required: ['title'],
+    },
+    grouping: { type: 'object', additionalProperties: true },
+    promptDefaults: { type: 'object', additionalProperties: true },
+    routingDefaults: { type: 'object', additionalProperties: true },
+    linkedRefs: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        workContextIds: { type: 'array', items: stringSchema },
+        sessionIds: { type: 'array', items: stringSchema },
+        taskRefs: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+        },
+        artifactIds: { type: 'array', items: stringSchema },
+        workspaceSurfaceIds: { type: 'array', items: stringSchema },
+      },
+    },
+    state: { type: 'object', additionalProperties: true },
+    privacy: { type: 'object', additionalProperties: true },
+    createdAt: stringSchema,
+    updatedAt: stringSchema,
+  },
+  required: [
+    'schemaVersion',
+    'id',
+    'workspaceId',
+    'source',
+    'status',
+    'visibility',
+    'display',
+    'linkedRefs',
+    'state',
+    'privacy',
+    'createdAt',
+    'updatedAt',
+  ],
+};
+
+const workspaceTopicsListOutputDataSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicsListData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    topics: { type: 'array', items: workspaceTopicSchema },
+    truncated: booleanSchema,
+    derived: booleanSchema,
+  },
+  required: ['topics', 'truncated', 'derived'],
+};
+
+const workspaceTopicGetInputSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicsGetInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema },
+  required: ['id'],
+};
+
+const workspaceTopicArchiveInputSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicsArchiveInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema, confirmationToken: stringSchema },
+  required: ['id'],
+};
+
+const workspaceTopicWriteInputSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicWriteInput',
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    id: stringSchema,
+    workspaceId: stringSchema,
+    title: stringSchema,
+    description: stringSchema,
+    visibility: { type: 'string', enum: ['default', 'private', 'shared'] },
+    grouping: { type: 'object', additionalProperties: true },
+    promptDefaults: { type: 'object', additionalProperties: true },
+    routingDefaults: { type: 'object', additionalProperties: true },
+    linkedRefs: { type: 'object', additionalProperties: true },
+    pinned: booleanSchema,
+    muted: booleanSchema,
+    privacy: { type: 'object', additionalProperties: true },
+  },
+};
+
+const workspaceTopicCreateInputSchema: RelayJsonSchema = {
+  ...workspaceTopicWriteInputSchema,
+  title: 'WorkspaceTopicsCreateInput',
+  required: ['workspaceId', 'title'],
+};
+
+const workspaceTopicUpdateInputSchema: RelayJsonSchema = {
+  ...workspaceTopicWriteInputSchema,
+  title: 'WorkspaceTopicsUpdateInput',
+};
+
+const workspaceTopicOutputDataSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    topic: workspaceTopicSchema,
+    mutationPolicy: workspaceTopicMutationPolicySchema,
+  },
+  required: ['topic'],
 };
 
 const controlActorSchema: RelayJsonSchema = {
@@ -1835,14 +1981,27 @@ const workContextMessageTemplateSchema: RelayJsonSchema = {
     kind: stringSchema,
     payloadSchema: stringSchema,
     mediaType: stringSchema,
-    encoding: { type: 'string', enum: ['json', 'markdown', 'text', 'artifact-ref'] },
+    encoding: {
+      type: 'string',
+      enum: ['json', 'markdown', 'text', 'artifact-ref'],
+    },
     bodyGuide: { type: 'object', additionalProperties: true },
     example: { type: 'object', additionalProperties: true },
     fallback: { type: 'object', additionalProperties: true },
     tags: { type: 'array', items: stringSchema },
     sourcePath: stringSchema,
   },
-  required: ['schemaVersion', 'id', 'stem', 'name', 'kind', 'payloadSchema', 'mediaType', 'encoding', 'sourcePath'],
+  required: [
+    'schemaVersion',
+    'id',
+    'stem',
+    'name',
+    'kind',
+    'payloadSchema',
+    'mediaType',
+    'encoding',
+    'sourcePath',
+  ],
 };
 
 const workContextMessageTemplateDiagnosticSchema: RelayJsonSchema = {
@@ -3273,10 +3432,7 @@ const cockpitListOutputDataSchema: RelayJsonSchema = {
     count: { type: 'number', minimum: 0 },
     readFirst: { const: true },
     next: {
-      oneOf: [
-        { type: 'null' },
-        { type: 'object', additionalProperties: true },
-      ],
+      oneOf: [{ type: 'null' }, { type: 'object', additionalProperties: true }],
     },
     items: {
       type: 'array',
@@ -3588,7 +3744,8 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   {
     name: 'nodes.pair.requests',
     cli: ['relay-ide', 'v1', 'nodes', 'pair', 'requests', '--json'],
-    summary: 'List hub pending node pairing requests without exposing credentials.',
+    summary:
+      'List hub pending node pairing requests without exposing credentials.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -3598,7 +3755,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        state: { type: 'string', enum: ['pending', 'approved', 'denied', 'expired'] },
+        state: {
+          type: 'string',
+          enum: ['pending', 'approved', 'denied', 'expired'],
+        },
         deviceCode: stringSchema,
         includeResolved: booleanSchema,
       },
@@ -3623,7 +3783,16 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'nodes.pair.approve',
-    cli: ['relay-ide', 'v1', 'nodes', 'pair', 'approve', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'nodes',
+      'pair',
+      'approve',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Approve a pending node pairing request using the existing hub pairing flow.',
     stable: true,
@@ -3659,8 +3828,18 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'nodes.pair.deny',
-    cli: ['relay-ide', 'v1', 'nodes', 'pair', 'deny', '--input-json', '<json>', '--json'],
-    summary: 'Deny a pending node pairing request through the hub pairing flow.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'nodes',
+      'pair',
+      'deny',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Deny a pending node pairing request through the hub pairing flow.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -3687,7 +3866,16 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'nodes.pair.editAccess',
-    cli: ['relay-ide', 'v1', 'nodes', 'pair', 'edit-access', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'nodes',
+      'pair',
+      'edit-access',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary:
       'Edit display name, trust profile, or approved roots for a pending pairing request.',
     stable: true,
@@ -3721,8 +3909,17 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'nodes.rotateCredential',
-    cli: ['relay-ide', 'v1', 'nodes', 'rotate-credential', '--input-json', '<json>', '--json'],
-    summary: 'Rotate a paired node credential without exposing credential material.',
+    cli: [
+      'relay-ide',
+      'v1',
+      'nodes',
+      'rotate-credential',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Rotate a paired node credential without exposing credential material.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -3733,7 +3930,11 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       additionalProperties: false,
       properties: {
         nodeId: stringSchema,
-        delivery: { type: 'string', enum: ['online', 'manual'], default: 'online' },
+        delivery: {
+          type: 'string',
+          enum: ['online', 'manual'],
+          default: 'online',
+        },
         confirmationToken: stringSchema,
       },
       required: ['nodeId'],
@@ -3756,7 +3957,15 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
   },
   {
     name: 'nodes.revoke',
-    cli: ['relay-ide', 'v1', 'nodes', 'revoke', '--input-json', '<json>', '--json'],
+    cli: [
+      'relay-ide',
+      'v1',
+      'nodes',
+      'revoke',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
     summary: 'Revoke a paired node credential and block future reconnects.',
     stable: true,
     transport: 'hub-http',
@@ -4888,11 +5097,19 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
         repoRoot: stringSchema,
         templateDir: stringSchema,
         templates: { type: 'array', items: workContextMessageTemplateSchema },
-        diagnostics: { type: 'array', items: workContextMessageTemplateDiagnosticSchema },
+        diagnostics: {
+          type: 'array',
+          items: workContextMessageTemplateDiagnosticSchema,
+        },
       },
       required: ['templates', 'diagnostics'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'SERVER_UNAVAILABLE'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'SERVER_UNAVAILABLE',
+    ],
   },
   {
     name: 'work-context-messages.templates.show',
@@ -4915,7 +5132,10 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     inputSchema: {
       ...workContextMessageTemplateSelectorSchema,
       required: ['template'],
-      properties: { ...workContextMessageTemplateSelectorSchema.properties, template: stringSchema },
+      properties: {
+        ...workContextMessageTemplateSelectorSchema.properties,
+        template: stringSchema,
+      },
     },
     outputSchema: okOutput('WorkContextMessageTemplatesShowOutput', {
       type: 'object',
@@ -4924,11 +5144,21 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
         template: workContextMessageTemplateSchema,
         repoRoot: stringSchema,
         templateDir: stringSchema,
-        diagnostics: { type: 'array', items: workContextMessageTemplateDiagnosticSchema },
+        diagnostics: {
+          type: 'array',
+          items: workContextMessageTemplateDiagnosticSchema,
+        },
       },
       required: ['template', 'diagnostics'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+    ],
   },
   {
     name: 'work-context-messages.templates.render',
@@ -4957,11 +5187,21 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       properties: {
         template: workContextMessageTemplateSchema,
         messageInput: { type: 'object', additionalProperties: true },
-        diagnostics: { type: 'array', items: workContextMessageTemplateDiagnosticSchema },
+        diagnostics: {
+          type: 'array',
+          items: workContextMessageTemplateDiagnosticSchema,
+        },
       },
       required: ['template', 'messageInput', 'diagnostics'],
     }),
-    errorCodes: ['UNAUTHORIZED', 'INVALID_ARGUMENT', 'FORBIDDEN', 'NOT_FOUND', 'SESSION_CONFLICT', 'SERVER_UNAVAILABLE'],
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+    ],
   },
   {
     name: 'context.create',
@@ -6185,6 +6425,163 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'UNAUTHORIZED',
       'FORBIDDEN',
       'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'INTERNAL',
+    ],
+  },
+  {
+    name: 'workspace-topics.list',
+    cli: ['relay-ide', 'v1', 'workspace-topics', 'list', '--json'],
+    summary:
+      'List bounded WorkspaceTopic rows, or derive starter topics from existing WorkContexts when no persisted topic metadata exists.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        workspaceId: stringSchema,
+        includeArchived: booleanSchema,
+      },
+    },
+    outputSchema: okOutput(
+      'WorkspaceTopicsListOutput',
+      workspaceTopicsListOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'INTERNAL',
+    ],
+  },
+  {
+    name: 'workspace-topics.get',
+    cli: [
+      'relay-ide',
+      'v1',
+      'workspace-topics',
+      'get',
+      '--id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Get one WorkspaceTopic by id, including linked WorkContext/session/task/artifact/surface refs.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workspaceTopicGetInputSchema,
+    outputSchema: okOutput(
+      'WorkspaceTopicsGetOutput',
+      workspaceTopicOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'INTERNAL',
+    ],
+  },
+  {
+    name: 'workspace-topics.create',
+    cli: [
+      'relay-ide',
+      'v1',
+      'workspace-topics',
+      'create',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Create bounded WorkspaceTopic metadata with prompt/routing defaults and refs to existing WorkspaceSurface ids.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workspaceTopicCreateInputSchema,
+    outputSchema: okOutput(
+      'WorkspaceTopicsCreateOutput',
+      workspaceTopicOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+      'INTERNAL',
+    ],
+  },
+  {
+    name: 'workspace-topics.update',
+    cli: [
+      'relay-ide',
+      'v1',
+      'workspace-topics',
+      'update',
+      '--id',
+      '<id>',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Patch WorkspaceTopic metadata/defaults without duplicating WorkspaceSurface fields or storing raw secrets.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workspaceTopicUpdateInputSchema,
+    outputSchema: okOutput(
+      'WorkspaceTopicsUpdateOutput',
+      workspaceTopicOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'SERVER_UNAVAILABLE',
+      'INTERNAL',
+    ],
+  },
+  {
+    name: 'workspace-topics.archive',
+    cli: [
+      'relay-ide',
+      'v1',
+      'workspace-topics',
+      'archive',
+      '--id',
+      '<id>',
+      '--json',
+    ],
+    summary:
+      'Archive a WorkspaceTopic. This destructive topic mutation advertises the Command Center confirmation-challenge policy and supports confirmation-token replay.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:write'],
+    inputSchema: workspaceTopicArchiveInputSchema,
+    outputSchema: okOutput(
+      'WorkspaceTopicsArchiveOutput',
+      workspaceTopicOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'NOT_FOUND',
+      'CONFIRMATION_REQUIRED',
+      'SESSION_CONFLICT',
       'SERVER_UNAVAILABLE',
       'INTERNAL',
     ],

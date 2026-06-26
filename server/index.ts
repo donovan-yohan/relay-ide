@@ -186,6 +186,11 @@ import {
   type WorkspaceSurfaceStore,
 } from './workspace-surfaces.js';
 import {
+  createWorkspaceTopicsRouter,
+  initWorkspaceTopicStore,
+  type WorkspaceTopicStore,
+} from './workspace-topics.js';
+import {
   createContextInboxRouter,
   type ContextInboxStore,
 } from './features/context-inbox-router.js';
@@ -1498,6 +1503,20 @@ function initWorkspaceSurfaceStoreBestEffort(
   }
 }
 
+function initWorkspaceTopicStoreBestEffort(
+  configDir: string
+): WorkspaceTopicStore | null {
+  try {
+    return initWorkspaceTopicStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Workspace topic store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 function initPrOverseerStoreBestEffort(
   configDir: string
 ): PrOverseerStore | null {
@@ -1792,6 +1811,7 @@ async function main(): Promise<void> {
   const workflowRunStore = initWorkflowRunStoreBestEffort(configDir);
   const automationRunStore = initAutomationRunStoreBestEffort(configDir);
   const workspaceSurfaceStore = initWorkspaceSurfaceStoreBestEffort(configDir);
+  const workspaceTopicStore = initWorkspaceTopicStoreBestEffort(configDir);
   const prOverseerStore = initPrOverseerStoreBestEffort(configDir);
   const workContextMessageStore =
     initWorkContextMessageStoreBestEffort(configDir);
@@ -2398,6 +2418,19 @@ async function main(): Promise<void> {
       requireReadAuth: requireCliGatewayAuthForActorCommand(
         'workspace-surfaces.list'
       ),
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
+    })
+  );
+  // workspace-topics (#1022): typed topic/workspace ladder foundation. Topics
+  // reference WorkspaceSurface ids instead of duplicating surface metadata.
+  app.use(
+    createWorkspaceTopicsRouter({
+      store: workspaceTopicStore,
+      surfaceStore: workspaceSurfaceStore,
+      workContextStore,
+      getConfig,
+      requireAuth: requireCliGatewayAuth,
+      requireReadActorAuth: requireCliGatewayAuthForActorCommand,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
     })
   );
@@ -5365,6 +5398,7 @@ async function main(): Promise<void> {
         workflowRunStore?.close();
         automationRunStore?.close();
         workspaceSurfaceStore?.close();
+        workspaceTopicStore?.close();
         prOverseerStore?.close();
         workContextMessageStore?.close();
         closeInterventionLog();
@@ -5448,6 +5482,7 @@ async function main(): Promise<void> {
     workflowRunStore?.close();
     automationRunStore?.close();
     workspaceSurfaceStore?.close();
+    workspaceTopicStore?.close();
     prOverseerStore?.close();
     workContextMessageStore?.close();
     closeInterventionLog();

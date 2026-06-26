@@ -227,6 +227,11 @@ describe('CLI gateway contract', () => {
       'pr-overseer.get',
       'workspace-surfaces.list',
       'workspace-surfaces.publish',
+      'workspace-topics.list',
+      'workspace-topics.get',
+      'workspace-topics.create',
+      'workspace-topics.update',
+      'workspace-topics.archive',
       'roster.list',
       'roster.register',
       'roster.updateSelf',
@@ -251,19 +256,28 @@ describe('CLI gateway contract', () => {
   it('keeps cockpit limit validation aligned with its schema', () => {
     expect(schemaAcceptsCommandInput('cockpit.list', {})).toBe(true);
     expect(schemaAcceptsCommandInput('cockpit.list', { limit: 1 })).toBe(true);
-    expect(schemaAcceptsCommandInput('cockpit.list', { limit: 200 })).toBe(true);
+    expect(schemaAcceptsCommandInput('cockpit.list', { limit: 200 })).toBe(
+      true
+    );
     expect(schemaAcceptsCommandInput('cockpit.list', { limit: 0 })).toBe(false);
-    expect(schemaAcceptsCommandInput('cockpit.list', { limit: 201 })).toBe(false);
-    expect(schemaAcceptsCommandInput('cockpit.list', { limit: '5' })).toBe(false);
+    expect(schemaAcceptsCommandInput('cockpit.list', { limit: 201 })).toBe(
+      false
+    );
+    expect(schemaAcceptsCommandInput('cockpit.list', { limit: '5' })).toBe(
+      false
+    );
     expect(
       schemaAcceptsCommandInput('cockpit.get', { workContextId: 'wc-1' })
     ).toBe(true);
     expect(schemaAcceptsCommandInput('cockpit.get', {})).toBe(false);
+    expect(schemaAcceptsCommandInput('cockpit.get', { workContextId: 1 })).toBe(
+      false
+    );
     expect(
-      schemaAcceptsCommandInput('cockpit.get', { workContextId: 1 })
-    ).toBe(false);
-    expect(
-      schemaAcceptsCommandInput('cockpit.get', { workContextId: 'wc-1', limit: 1 })
+      schemaAcceptsCommandInput('cockpit.get', {
+        workContextId: 'wc-1',
+        limit: 1,
+      })
     ).toBe(false);
 
     const cliSource = readFileSync(
@@ -274,10 +288,14 @@ describe('CLI gateway contract', () => {
       cliSource.indexOf('async function readGatewayCockpitView'),
       cliSource.indexOf('function eventsSubscribeCapabilities')
     );
-    expect(cockpitReader).toContain("gatewayOptionalPositiveInt(\n    'cockpit.list'");
+    expect(cockpitReader).toContain(
+      "gatewayOptionalPositiveInt(\n    'cockpit.list'"
+    );
     expect(cockpitReader).toContain('function validateGatewayCockpitGetArgs');
     expect(cockpitReader).toContain("allowed: ['--work-context-id', '--json']");
-    expect(cockpitReader).toContain("gatewayArg(cockpitArgs, '--work-context-id')");
+    expect(cockpitReader).toContain(
+      "gatewayArg(cockpitArgs, '--work-context-id')"
+    );
     expect(cockpitReader).not.toContain('Number.parseInt');
   });
 
@@ -393,11 +411,19 @@ describe('CLI gateway contract', () => {
     // (potentially secret-shaped) fields.
     expect(commandSpec('roster.register')).toMatchObject({
       capabilityHints: ['context:write'],
-      cli: ['relay-ide', 'v1', 'roster', 'register', '--input-json', '<json>', '--json'],
+      cli: [
+        'relay-ide',
+        'v1',
+        'roster',
+        'register',
+        '--input-json',
+        '<json>',
+        '--json',
+      ],
     });
-    expect(commandSpec('roster.register').inputSchema.additionalProperties).toBe(
-      false
-    );
+    expect(
+      commandSpec('roster.register').inputSchema.additionalProperties
+    ).toBe(false);
     expect(
       commandSpec('roster.updateSelf').inputSchema.additionalProperties
     ).toBe(false);
@@ -430,6 +456,37 @@ describe('CLI gateway contract', () => {
       controlRequirements: ['confirmation-challenge'],
       auditRedaction: { expectation: 'action-summary' },
       scopeKinds: ['repo', 'worktree'],
+    });
+    expect(commandSpec('workspace-topics.create')).toMatchObject({
+      capabilityHints: ['context:write'],
+      cli: [
+        'relay-ide',
+        'v1',
+        'workspace-topics',
+        'create',
+        '--input-json',
+        '<json>',
+        '--json',
+      ],
+    });
+    expect(relayCommandDefinition('workspace-topics.list')).toMatchObject({
+      sideEffect: 'read',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'bounded-redacted' },
+      scopeKinds: ['work-context'],
+    });
+    expect(relayCommandDefinition('workspace-topics.create')).toMatchObject({
+      sideEffect: 'write',
+      requiresConfirmation: false,
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context'],
+    });
+    expect(relayCommandDefinition('workspace-topics.archive')).toMatchObject({
+      sideEffect: 'destructive',
+      requiresConfirmation: true,
+      controlRequirements: ['confirmation-challenge'],
+      auditRedaction: { expectation: 'action-summary' },
+      scopeKinds: ['work-context'],
     });
     expect(schemaAcceptsCommandInput('worktrees.create', {})).toBe(false);
     expect(
@@ -1118,6 +1175,11 @@ describe('CLI gateway contract', () => {
       'pr-overseer.get',
       'workspace-surfaces.list',
       'workspace-surfaces.publish',
+      'workspace-topics.list',
+      'workspace-topics.get',
+      'workspace-topics.create',
+      'workspace-topics.update',
+      'workspace-topics.archive',
       'roster.list',
       'roster.register',
       'roster.updateSelf',

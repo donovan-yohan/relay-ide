@@ -13,6 +13,7 @@ import {
   type ScopedActorCredentialScope,
   type ScopedActorCredentialValidationFailureReason,
   type ScopedActorCredentialValidationResult,
+  type ScopedActorCredentialValidationScope,
 } from '../shared/scoped-actor-credentials.js';
 import {
   isRelayCapabilityBit,
@@ -63,6 +64,8 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'work-context-messages.templates.render',
   'roster.list',
   'workspace-surfaces.list',
+  'workspace-topics.list',
+  'workspace-topics.get',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
@@ -91,6 +94,9 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'pr-overseer.retire',
   'work-context-messages.append',
   'workspace-surfaces.publish',
+  'workspace-topics.create',
+  'workspace-topics.update',
+  'workspace-topics.archive',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -320,10 +326,16 @@ export function cliGatewayActorCommandCapabilities(
     command === 'pr-overseer.list' ||
     command === 'pr-overseer.get' ||
     command === 'workspace-surfaces.list' ||
+    command === 'workspace-topics.list' ||
+    command === 'workspace-topics.get' ||
     command.startsWith('work-context-messages.')
   )
     return ['context:read'];
-  if (command === 'workspace-surfaces.publish') return ['context:write'];
+  if (
+    command === 'workspace-surfaces.publish' ||
+    command.startsWith('workspace-topics.')
+  )
+    return ['context:write'];
   if (cliGatewayActorReadCommandSet.has(command)) return ['session:read'];
   if (command.startsWith('workflow-runs.')) return ['context:write'];
   if (command.startsWith('automation-runs.')) return ['context:write'];
@@ -358,10 +370,10 @@ export function validateCliGatewayActorCredential(
   registry: ScopedActorCredentialRegistry,
   input: CliGatewayActorValidationInput
 ): ScopedActorCredentialValidationResult {
-  const validationScope = scopeForValidation(
-    input.scope,
-    input.deferWorkContextScope ? { deferWorkContextScope: true } : {}
-  );
+  const validationScope = scopeForValidation(input.scope, {
+    ...(input.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
+    multiWorkContext: true,
+  });
   return registry.validate(input.token, {
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     requiredCapabilities: [...input.capabilities],
@@ -575,8 +587,8 @@ export function rotateCliGatewayActorCredentialWithGrant(
 
 function scopeForValidation(
   scope: ScopedActorCredentialScope | undefined,
-  options: { deferWorkContextScope?: boolean } = {}
-): HandshakeGrantValidationScope {
+  options: { deferWorkContextScope?: boolean; multiWorkContext?: boolean } = {}
+): ScopedActorCredentialValidationScope & HandshakeGrantValidationScope {
   const taskRef = taskRefForGrantValidation(scope?.taskRefs);
   return {
     ...(scope?.nodeIds?.[0] ? { nodeId: scope.nodeIds[0] } : {}),
@@ -584,9 +596,11 @@ function scopeForValidation(
     ...(scope?.globalSessionIds?.[0]
       ? { globalSessionId: scope.globalSessionIds[0] }
       : {}),
-    ...(scope?.workContextIds?.[0]
-      ? { workContextId: scope.workContextIds[0] }
-      : {}),
+    ...(options.multiWorkContext && scope?.workContextIds?.length
+      ? { workContextIds: scope.workContextIds }
+      : scope?.workContextIds?.[0]
+        ? { workContextId: scope.workContextIds[0] }
+        : {}),
     ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
     ...(scope?.repoIds?.[0] ? { repoId: scope.repoIds[0] } : {}),
     ...(scope?.pathPrefixes?.[0] ? { path: scope.pathPrefixes[0] } : {}),

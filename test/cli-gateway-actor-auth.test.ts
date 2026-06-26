@@ -171,6 +171,29 @@ test('validates WorkContext-scoped actor credentials against exact artifact read
   ).toMatchObject({ ok: true, grantedBits: ['session:read'] });
 });
 
+test('requires scoped actor credentials to cover every requested WorkContext id', () => {
+  const scopedRegistry = registry();
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['context:write'],
+    scope: { workContextIds: ['wc:allowed'] },
+  });
+
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:write'],
+      scope: { workContextIds: ['wc:allowed', 'wc:denied'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_work_context_scope' });
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: ['context:write'],
+      scope: { workContextIds: ['wc:denied', 'wc:allowed'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_work_context_scope' });
+});
+
 test('validates scoped actor write credentials without forcing the read task sentinel', () => {
   const scopedRegistry = registry();
   const issued = issueCliGatewayActorCredential(scopedRegistry, {
@@ -247,6 +270,8 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'work-context-messages.templates.render',
     'roster.list',
     'workspace-surfaces.list',
+    'workspace-topics.list',
+    'workspace-topics.get',
   ]);
   expect(
     classifyCliGatewayCredentialLane(
@@ -422,6 +447,9 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'pr-overseer.retire',
     'work-context-messages.append',
     'workspace-surfaces.publish',
+    'workspace-topics.create',
+    'workspace-topics.update',
+    'workspace-topics.archive',
   ]);
 
   for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {

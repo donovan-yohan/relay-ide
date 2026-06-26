@@ -1541,6 +1541,11 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'pr-overseer.get',
   'workspace-surfaces.list',
   'workspace-surfaces.publish',
+  'workspace-topics.list',
+  'workspace-topics.get',
+  'workspace-topics.create',
+  'workspace-topics.update',
+  'workspace-topics.archive',
   'roster.list',
   'cockpit.list',
   'cockpit.get',
@@ -1705,7 +1710,8 @@ async function runGatewayNodes(gatewayArgs: string[]): Promise<never> {
         params.set('state', input['state'].trim());
       if (typeof input['deviceCode'] === 'string' && input['deviceCode'].trim())
         params.set('deviceCode', input['deviceCode'].trim());
-      if (input['includeResolved'] === true) params.set('includeResolved', 'true');
+      if (input['includeResolved'] === true)
+        params.set('includeResolved', 'true');
       const query = params.toString();
       const data = await gatewayHttpJson({
         commandName: 'nodes.pair.requests',
@@ -4281,7 +4287,8 @@ async function runGatewayWorkContextMessageTemplates(
       'work-context-messages.templates.render';
     const input = parseGatewayInputObject(commandName, templateArgs);
     const template =
-      gatewayArg(templateArgs, '--template') ?? gatewayArg(templateArgs, '--id');
+      gatewayArg(templateArgs, '--template') ??
+      gatewayArg(templateArgs, '--id');
     if (template) input['template'] = template;
     for (const [flag, key] of [
       ['--repo-path', 'repoPath'],
@@ -4341,8 +4348,15 @@ async function runGatewayWorkContextMessages(
         field: 'workContextId',
       });
     }
-    if (typeof input['kind'] !== 'string' && typeof input['template'] !== 'string') {
-      gatewayInvalid(commandName, '--kind is required unless --template is set', { field: 'kind' });
+    if (
+      typeof input['kind'] !== 'string' &&
+      typeof input['template'] !== 'string'
+    ) {
+      gatewayInvalid(
+        commandName,
+        '--kind is required unless --template is set',
+        { field: 'kind' }
+      );
     }
     if (typeof input['summary'] !== 'string') {
       gatewayInvalid(commandName, '--summary is required', {
@@ -5124,7 +5138,97 @@ async function runGatewayWorkspaceSurfaces(
     });
     printGatewayEnvelope(gatewayOk('workspace-surfaces.publish', result), 0);
   }
-  gatewayInvalid('workspace-surfaces.list', 'unknown workspace-surfaces command', {
+  gatewayInvalid(
+    'workspace-surfaces.list',
+    'unknown workspace-surfaces command',
+    {
+      args: gatewayArgs,
+    }
+  );
+}
+
+async function runGatewayWorkspaceTopics(
+  gatewayArgs: string[]
+): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const topicArgs = gatewayArgs.slice(2);
+  if (subcommand === 'list') {
+    const query = new URLSearchParams();
+    const workspaceId = gatewayArg(topicArgs, '--workspace-id');
+    if (workspaceId) query.set('workspaceId', workspaceId);
+    if (topicArgs.includes('--include-archived'))
+      query.set('includeArchived', 'true');
+    const search = query.toString();
+    const result = await gatewayHttpJson({
+      commandName: 'workspace-topics.list',
+      pathName: `/workspace-topics${search ? `?${search}` : ''}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('workspace-topics.list', result), 0);
+  }
+  if (subcommand === 'get') {
+    const id = gatewayArg(topicArgs, '--id') ?? topicArgs[0];
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('workspace-topics.get', '--id is required');
+    const result = await gatewayHttpJson({
+      commandName: 'workspace-topics.get',
+      pathName: `/workspace-topics/${encodeURIComponent(id)}`,
+      capabilities: ['context:read'],
+    });
+    printGatewayEnvelope(gatewayOk('workspace-topics.get', result), 0);
+  }
+  if (subcommand === 'create') {
+    const input = parseGatewayInputObject('workspace-topics.create', topicArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'workspace-topics.create',
+      pathName: '/workspace-topics',
+      method: 'POST',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('workspace-topics.create', result), 0);
+  }
+  if (subcommand === 'update') {
+    const id = gatewayArg(topicArgs, '--id') ?? topicArgs[0];
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('workspace-topics.update', '--id is required');
+    const input = parseGatewayInputObject('workspace-topics.update', topicArgs);
+    const result = await gatewayHttpJson({
+      commandName: 'workspace-topics.update',
+      pathName: `/workspace-topics/${encodeURIComponent(id)}`,
+      method: 'PATCH',
+      body: input,
+      capabilities: ['context:write'],
+    });
+    printGatewayEnvelope(gatewayOk('workspace-topics.update', result), 0);
+  }
+  if (subcommand === 'archive') {
+    const input = parseGatewayInputObject(
+      'workspace-topics.archive',
+      topicArgs
+    );
+    const id =
+      typeof input['id'] === 'string'
+        ? input['id']
+        : (gatewayArg(topicArgs, '--id') ?? topicArgs[0]);
+    if (!id || id.startsWith('--'))
+      gatewayInvalid('workspace-topics.archive', '--id is required');
+    const rawConfirmationToken =
+      typeof input['confirmationToken'] === 'string'
+        ? input['confirmationToken']
+        : gatewayArg(topicArgs, '--confirmation-token');
+    const confirmationToken = rawConfirmationToken?.trim();
+    const result = await gatewayHttpJson({
+      commandName: 'workspace-topics.archive',
+      pathName: `/workspace-topics/${encodeURIComponent(id)}/archive`,
+      method: 'POST',
+      body: {},
+      capabilities: ['context:write'],
+      ...(confirmationToken ? { confirmationToken } : {}),
+    });
+    printGatewayEnvelope(gatewayOk('workspace-topics.archive', result), 0);
+  }
+  gatewayInvalid('workspace-topics.list', 'unknown workspace-topics command', {
     args: gatewayArgs,
   });
 }
@@ -5232,10 +5336,14 @@ function validateGatewayCockpitGetArgs(cockpitArgs: string[]): void {
         allowed: ['--work-context-id', '--json'],
       });
     }
-    gatewayInvalid('cockpit.get', 'unexpected cockpit.get positional argument', {
-      argument: arg,
-      expected: '--work-context-id',
-    });
+    gatewayInvalid(
+      'cockpit.get',
+      'unexpected cockpit.get positional argument',
+      {
+        argument: arg,
+        expected: '--work-context-id',
+      }
+    );
   }
 }
 
@@ -5434,6 +5542,7 @@ async function runGatewayV1(): Promise<never> {
       'automation-runs': runGatewayAutomationRuns,
       'pr-overseer': runGatewayPrOverseer,
       'workspace-surfaces': runGatewayWorkspaceSurfaces,
+      'workspace-topics': runGatewayWorkspaceTopics,
       roster: runGatewayRoster,
       cockpit: runGatewayCockpit,
       artifacts: runGatewayArtifacts,
@@ -5463,7 +5572,13 @@ if (command === 'cockpit') {
       const getArgs = cockpitArgs.slice(1);
       const first = getArgs[0];
       if (first && !first.startsWith('--')) {
-        return ['cockpit', 'get', '--work-context-id', first, ...getArgs.slice(1)];
+        return [
+          'cockpit',
+          'get',
+          '--work-context-id',
+          first,
+          ...getArgs.slice(1),
+        ];
       }
       return ['cockpit', 'get', ...getArgs];
     })();
@@ -5474,7 +5589,11 @@ if (command === 'cockpit') {
       console.log(renderTerminalCockpitDetail(detail));
     }
   } else {
-    const view = await readGatewayCockpitView(['cockpit', 'list', ...cockpitArgs]);
+    const view = await readGatewayCockpitView([
+      'cockpit',
+      'list',
+      ...cockpitArgs,
+    ]);
     if (cockpitArgs.includes('--json')) {
       console.log(JSON.stringify(view, null, 2));
     } else {
@@ -6569,8 +6688,9 @@ function parseNodePairHubUrl(rawHubUrl: string): string {
 }
 
 function sanitizeNodePairTextForDisplay(text: string): string {
-  return redactNodeDiagnostics(text).replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, (url) =>
-    sanitizeHubUrlForDisplay(url)
+  return redactNodeDiagnostics(text).replace(
+    /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi,
+    (url) => sanitizeHubUrlForDisplay(url)
   );
 }
 
@@ -7373,7 +7493,10 @@ function nodePairHubUrl(nodeArgs: string[]): string | undefined {
   return candidate && !candidate.startsWith('-') ? candidate : undefined;
 }
 
-function nodePairDisplayName(nodeArgs: string[], manifest: NodeManifest): string {
+function nodePairDisplayName(
+  nodeArgs: string[],
+  manifest: NodeManifest
+): string {
   return (
     getNodeArg(nodeArgs, '--display-name') ??
     process.env['RELAY_IDE_NODE_DISPLAY_NAME'] ??
@@ -7383,7 +7506,9 @@ function nodePairDisplayName(nodeArgs: string[], manifest: NodeManifest): string
 }
 
 function nodePairRequestedProfile(nodeArgs: string[]): NodePairingTrustProfile {
-  const raw = getNodeArg(nodeArgs, '--profile') ?? getNodeArg(nodeArgs, '--trust-profile');
+  const raw =
+    getNodeArg(nodeArgs, '--profile') ??
+    getNodeArg(nodeArgs, '--trust-profile');
   if (!raw) return DEFAULT_NODE_PAIRING_TRUST_PROFILE;
   if (isNodePairingTrustProfile(raw)) return raw;
   logger.error(
@@ -7488,19 +7613,22 @@ async function sendInitialNodeHeartbeat(
         'relay:node-heartbeat:v1'
       )()
     : undefined;
-  const heartbeatRes = await fetch(nodeEndpoint(hubUrl, '/hub/node-heartbeat'), {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${credential.token}`,
-      ...(bootstrapProof ? { 'x-relay-node-proof': bootstrapProof } : {}),
-    },
-    body: JSON.stringify({
-      nodeId: credential.nodeId,
-      protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
-      manifest,
-    }),
-  });
+  const heartbeatRes = await fetch(
+    nodeEndpoint(hubUrl, '/hub/node-heartbeat'),
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${credential.token}`,
+        ...(bootstrapProof ? { 'x-relay-node-proof': bootstrapProof } : {}),
+      },
+      body: JSON.stringify({
+        nodeId: credential.nodeId,
+        protocolVersion: RELAY_NODE_LINK_PROTOCOL_VERSION,
+        manifest,
+      }),
+    }
+  );
   if (!heartbeatRes.ok) {
     const body = await heartbeatRes.text();
     throw new Error(`heartbeat rejected: ${body}`);
@@ -7546,7 +7674,9 @@ function renderNodePairRequest(input: {
   logger.info('or enter code:');
   logger.info(request.deviceCode);
   logger.info('');
-  logger.info(`waiting for approval... expires in ${formatCountdown(expiresSeconds)}`);
+  logger.info(
+    `waiting for approval... expires in ${formatCountdown(expiresSeconds)}`
+  );
 }
 
 function exitNodePairError(input: {
@@ -7557,7 +7687,8 @@ function exitNodePairError(input: {
 }): never {
   const { code, message, outputJson, retryable } = input;
   const safeMessage = sanitizeNodePairTextForDisplay(message);
-  if (outputJson) safeJsonLine({ ok: false, code, message: safeMessage, retryable });
+  if (outputJson)
+    safeJsonLine({ ok: false, code, message: safeMessage, retryable });
   else logger.error(sanitizeNodePairTextForDisplay(`${code}: ${message}`));
   process.exit(1);
 }
@@ -7621,7 +7752,9 @@ async function finishApprovedDevicePairing(input: {
 }
 
 function isRetryableNodePairStatusResponse(response: Response): boolean {
-  return response.status === 408 || response.status === 429 || response.status >= 500;
+  return (
+    response.status === 408 || response.status === 429 || response.status >= 500
+  );
 }
 
 async function requestNodeDevicePairingStatus(input: {
@@ -7644,7 +7777,10 @@ async function requestNodeDevicePairingStatus(input: {
       },
       signal
     );
-    return { response, poll: await readJsonResponse<PendingPairingPollResponse>(response) };
+    return {
+      response,
+      poll: await readJsonResponse<PendingPairingPollResponse>(response),
+    };
   } catch (error) {
     if (signal.aborted) throw error;
     return null;
@@ -7678,10 +7814,17 @@ async function handleNodeDevicePairingStatus(input: {
     });
   }
   if (poll.request.state === 'pending') return 'pending';
-  if (poll.request.state === 'denied') exitNodePairDenied(displayHubUrl, outputJson);
+  if (poll.request.state === 'denied')
+    exitNodePairDenied(displayHubUrl, outputJson);
   if (poll.request.state === 'expired') exitNodePairExpired(outputJson);
   if (poll.request.state === 'approved') {
-    await finishApprovedDevicePairing({ hubUrl, displayHubUrl, manifest, poll, outputJson });
+    await finishApprovedDevicePairing({
+      hubUrl,
+      displayHubUrl,
+      manifest,
+      poll,
+      outputJson,
+    });
     return 'done';
   }
   exitNodePairError({
@@ -7731,7 +7874,8 @@ async function runNodeDeviceCodePair(nodeArgs: string[]): Promise<void> {
       },
       abortController.signal
     );
-    const submit = await readJsonResponse<PendingPairingSubmitResponse>(submitRes);
+    const submit =
+      await readJsonResponse<PendingPairingSubmitResponse>(submitRes);
     if (!submitRes.ok || !submit.request || !submit.statusToken) {
       exitNodePairError({
         code: submit.error?.code ?? 'PAIRING_REQUEST_FAILED',
@@ -7742,7 +7886,12 @@ async function runNodeDeviceCodePair(nodeArgs: string[]): Promise<void> {
     }
 
     const request = submit.request;
-    renderNodePairRequest({ request, hubUrl: displayHubUrl, manifest, outputJson });
+    renderNodePairRequest({
+      request,
+      hubUrl: displayHubUrl,
+      manifest,
+      outputJson,
+    });
 
     const pollIntervalMs = nodePairPollIntervalMs(nodeArgs);
     while (true) {
@@ -7772,8 +7921,16 @@ async function runNodeDeviceCodePair(nodeArgs: string[]): Promise<void> {
       process.exit(130);
     }
     const safeMessage = sanitizeNodePairTextForDisplay(message);
-    if (outputJson) safeJsonLine({ ok: false, code: 'NODE_PAIR_FAILED', message: safeMessage });
-    else logger.error(sanitizeNodePairTextForDisplay(`NODE_PAIR_FAILED: ${message}`));
+    if (outputJson)
+      safeJsonLine({
+        ok: false,
+        code: 'NODE_PAIR_FAILED',
+        message: safeMessage,
+      });
+    else
+      logger.error(
+        sanitizeNodePairTextForDisplay(`NODE_PAIR_FAILED: ${message}`)
+      );
     process.exit(1);
   } finally {
     process.off('SIGINT', markInterrupted);

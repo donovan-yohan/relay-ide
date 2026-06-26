@@ -31,7 +31,7 @@ describe('server shutdown store closing contract', () => {
     expect(gracefulShutdownSource).toContain('agentPresenceStore?.close();');
     expect(gracefulShutdownSource).toContain('workspaceSurfaceStore?.close();');
     expect(gracefulShutdownSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+closeInterventionLog\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+closeInterventionLog\(\);/
     );
   });
 
@@ -52,7 +52,7 @@ describe('server shutdown store closing contract', () => {
     expect(updateRestartSource).toContain('workContextMessageStore?.close();');
     expect(updateRestartSource).toContain('workspaceSurfaceStore?.close();');
     expect(updateRestartSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);/
     );
   });
 });

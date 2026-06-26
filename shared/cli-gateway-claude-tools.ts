@@ -14,7 +14,8 @@ export const CLI_GATEWAY_CLAUDE_SMOKE_COMMANDS = [
   'sessions.detach',
 ] as const satisfies readonly RelayCliGatewayCommand[];
 
-export type RelayClaudeGatewaySmokeCommand = (typeof CLI_GATEWAY_CLAUDE_SMOKE_COMMANDS)[number];
+export type RelayClaudeGatewaySmokeCommand =
+  (typeof CLI_GATEWAY_CLAUDE_SMOKE_COMMANDS)[number];
 
 export interface RelayClaudeGatewayToolDefinition {
   name: string;
@@ -44,7 +45,9 @@ type ResolvedRelayClaudeGatewayRunnerOptions = Required<
 > &
   Omit<RelayClaudeGatewayRunnerOptions, 'command' | 'timeoutMs'>;
 
-export function relayClaudeGatewayToolName(command: RelayCliGatewayCommand): string {
+export function relayClaudeGatewayToolName(
+  command: RelayCliGatewayCommand
+): string {
   return `relay_${command.split('.').join('_')}`;
 }
 
@@ -53,7 +56,9 @@ export function generateRelayClaudeGatewayTools(
   commands: readonly RelayCliGatewayCommand[] = CLI_GATEWAY_CLAUDE_SMOKE_COMMANDS
 ): RelayClaudeGatewayToolDefinition[] {
   return commands.map((command) => {
-    const spec = manifest.commandSchemas.find((entry) => entry.name === command);
+    const spec = manifest.commandSchemas.find(
+      (entry) => entry.name === command
+    );
     if (!spec) throw new Error(`CLI gateway manifest is missing ${command}`);
     return {
       name: relayClaudeGatewayToolName(spec.name),
@@ -96,7 +101,8 @@ export class RelayClaudeGatewayToolRunner {
     input: Record<string, unknown> = {}
   ): Promise<RelayCliGatewayEnvelope> {
     const tool = this.toolsByName.get(name);
-    if (!tool) throw new Error(`unknown generated Relay Claude gateway tool: ${name}`);
+    if (!tool)
+      throw new Error(`unknown generated Relay Claude gateway tool: ${name}`);
     const gatewayArgs = gatewayArgsForGeneratedTool(tool, input);
     return await execRelayGatewayTool(this.options, gatewayArgs);
   }
@@ -111,18 +117,31 @@ function gatewayArgsForGeneratedTool(
     return replaceCliPlaceholder(cliArgs, '<json>', JSON.stringify(input));
   }
   if (tool.relay.command === 'files.read') {
-    return appendOptionalFlags(replaceGatewayInputPlaceholders(cliArgs, input), input, [
-      ['nodeId', '--node-id'],
-      ['cwd', '--cwd'],
-      ['maxBytes', '--max-bytes'],
-      ['maxLines', '--max-lines'],
-      ['confirmationToken', '--confirmation-token'],
-    ]);
+    return appendOptionalFlags(
+      replaceGatewayInputPlaceholders(cliArgs, input),
+      input,
+      [
+        ['nodeId', '--node-id'],
+        ['cwd', '--cwd'],
+        ['maxBytes', '--max-bytes'],
+        ['maxLines', '--max-lines'],
+        ['confirmationToken', '--confirmation-token'],
+      ]
+    );
   }
   if (tool.relay.command === 'sessions.kill') {
-    return appendOptionalFlags(replaceGatewayInputPlaceholders(cliArgs, input), input, [
-      ['confirmationToken', '--confirmation-token'],
-    ]);
+    return appendOptionalFlags(
+      replaceGatewayInputPlaceholders(cliArgs, input),
+      input,
+      [['confirmationToken', '--confirmation-token']]
+    );
+  }
+  if (tool.relay.command === 'workspace-topics.archive') {
+    return appendOptionalFlags(
+      replaceGatewayInputPlaceholders(cliArgs, input),
+      input,
+      [['confirmationToken', '--confirmation-token']]
+    );
   }
   return replaceGatewayInputPlaceholders(cliArgs, input);
 }
@@ -132,9 +151,14 @@ function replaceGatewayInputPlaceholders(
   input: Record<string, unknown>
 ): string[] {
   return cliArgs.map((arg) => {
-    if (arg === '<session-id>') return requiredStringInput(input, ['id', 'sessionId'], arg);
-    if (arg === '<display-name>') return requiredStringInput(input, ['displayName'], arg);
+    if (arg === '<id>') return requiredStringInput(input, ['id'], arg);
+    if (arg === '<session-id>')
+      return requiredStringInput(input, ['id', 'sessionId'], arg);
+    if (arg === '<display-name>')
+      return requiredStringInput(input, ['displayName'], arg);
     if (arg === '<path>') return requiredStringInput(input, ['path'], arg);
+    if (arg === '<token>')
+      return requiredStringInput(input, ['confirmationToken'], arg);
     return arg;
   });
 }
@@ -156,7 +180,9 @@ function requiredStringInput(
     const value = input[key];
     if (typeof value === 'string' && value.length > 0) return value;
   }
-  throw new Error(`generated Relay CLI tool input must include ${keys.join(' or ')} for ${placeholder}`);
+  throw new Error(
+    `generated Relay CLI tool input must include ${keys.join(' or ')} for ${placeholder}`
+  );
 }
 
 function appendOptionalFlags(
@@ -171,7 +197,9 @@ function appendOptionalFlags(
     const value = input[field];
     if (value === undefined) continue;
     if (typeof value !== 'string' && typeof value !== 'number') {
-      throw new Error(`generated Relay CLI tool input ${field} must be a string or number`);
+      throw new Error(
+        `generated Relay CLI tool input ${field} must be a string or number`
+      );
     }
     flags.push(flag, String(value));
   }
@@ -196,7 +224,11 @@ async function execRelayGatewayTool(
       try {
         resolve(JSON.parse(stdout) as RelayCliGatewayEnvelope);
       } catch (parseError) {
-        reject(error ?? parseError ?? new Error(stderr || 'Relay CLI gateway tool failed'));
+        reject(
+          error ??
+            parseError ??
+            new Error(stderr || 'Relay CLI gateway tool failed')
+        );
       }
     });
   });

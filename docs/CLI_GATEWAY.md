@@ -85,6 +85,11 @@ relay-ide v1 pr-overseer list [--work-context-id <id>] [--repo-path <path>] [--o
 relay-ide v1 pr-overseer get --id <pr-overseer-id> [--current-head-sha <sha>] --json
 relay-ide v1 workspace-surfaces list [--root-id <id>] [--workspace-id <id>] [--repo-path <path>] --json
 relay-ide v1 workspace-surfaces publish --input-json '{"kind":"preview","label":"agent preview","url":"http://localhost:4173"}' --json
+relay-ide v1 workspace-topics list [--workspace-id <id>] [--include-archived] --json
+relay-ide v1 workspace-topics get --id <topic:id> --json
+relay-ide v1 workspace-topics create --input-json '{"workspaceId":"...","title":"...","linkedRefs":{"workspaceSurfaceIds":["..."]}}' --json
+relay-ide v1 workspace-topics update --id <topic:id> --input-json '{...}' --json
+relay-ide v1 workspace-topics archive --id <topic:id> --json
 relay-ide v1 handoffs plan --input-json '{...}' --json
 relay-ide v1 handoffs create --input-json '{...}' --json
 relay-ide v1 handoffs status --run-id <run-id> --json

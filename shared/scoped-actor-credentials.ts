@@ -81,6 +81,7 @@ export interface ScopedActorCredentialValidationScope {
   sessionId?: string;
   globalSessionId?: string;
   workContextId?: string;
+  workContextIds?: string[];
   deferWorkContextScope?: boolean;
   repoId?: string;
   path?: string;
@@ -696,7 +697,7 @@ function normalizeCredentialScope(
 
 type ScopeValidationRule = {
   values: string[] | undefined;
-  requested: string | undefined;
+  requested: string[] | undefined;
   wrongReason: ScopedActorCredentialValidationFailureReason;
   deferred?: boolean;
   matches?: (values: string[], requested: string) => boolean;
@@ -709,48 +710,55 @@ function validateCredentialScope(
   const rules: ScopeValidationRule[] = [
     {
       values: credentialScope.nodeIds,
-      requested: expectedScope?.nodeId,
+      requested: singletonScopeValue(expectedScope?.nodeId),
       wrongReason: 'wrong_node_scope',
     },
     {
       values: credentialScope.sessionIds,
-      requested: expectedScope?.sessionId,
+      requested: singletonScopeValue(expectedScope?.sessionId),
       wrongReason: 'wrong_session_scope',
     },
     {
       values: credentialScope.globalSessionIds,
-      requested: expectedScope?.globalSessionId,
+      requested: singletonScopeValue(expectedScope?.globalSessionId),
       wrongReason: 'wrong_global_session_scope',
     },
     {
       values: credentialScope.workContextIds,
-      requested: expectedScope?.workContextId,
+      requested: normalizedRequestedScopeValues(
+        expectedScope?.workContextIds ??
+          singletonScopeValue(expectedScope?.workContextId)
+      ),
       deferred: expectedScope?.deferWorkContextScope === true,
       wrongReason: 'wrong_work_context_scope',
     },
     {
       values: credentialScope.repoIds,
-      requested: expectedScope?.repoId,
+      requested: singletonScopeValue(expectedScope?.repoId),
       wrongReason: 'wrong_repo_scope',
     },
     {
       values: credentialScope.pathPrefixes,
-      requested: expectedScope?.path,
+      requested: singletonScopeValue(expectedScope?.path),
       wrongReason: 'wrong_path_scope',
       matches: (prefixes, path) =>
         prefixes.some((prefix) => pathMatchesCredentialPrefix(path, prefix)),
     },
     {
       values: credentialScope.taskRefs,
-      requested: expectedScope?.taskRef,
+      requested: singletonScopeValue(expectedScope?.taskRef),
       wrongReason: 'wrong_task_scope',
     },
   ];
 
   for (const rule of rules) {
-    if (!rule.values || !rule.requested) continue;
+    if (!rule.values || !rule.requested?.length) continue;
     const matches = rule.matches ?? listIncludesRequestedValue;
-    if (!matches(rule.values, rule.requested)) return rule.wrongReason;
+    if (
+      !rule.requested.every((requested) => matches(rule.values!, requested))
+    ) {
+      return rule.wrongReason;
+    }
   }
 
   return rules.some((rule) => rule.values && !rule.requested && !rule.deferred)
@@ -763,6 +771,17 @@ function listIncludesRequestedValue(
   requested: string
 ): boolean {
   return values.includes(requested);
+}
+
+function singletonScopeValue(value: string | undefined): string[] | undefined {
+  return value ? [value] : undefined;
+}
+
+function normalizedRequestedScopeValues(
+  values: string[] | undefined
+): string[] | undefined {
+  const normalized = values?.filter((value) => value.trim().length > 0) ?? [];
+  return normalized.length ? normalized : undefined;
 }
 
 function pathMatchesCredentialPrefix(path: string, prefix: string): boolean {

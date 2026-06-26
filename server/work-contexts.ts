@@ -273,11 +273,16 @@ export interface ListActiveWorkInput {
   nodes?: HubNodeSummary[];
 }
 
+export interface WorkContextListOptions {
+  limit?: number;
+  workspaceId?: string;
+}
+
 export interface WorkContextStore {
   close(): void;
   create(input?: WorkContextCreateInput): WorkContext;
   get(id: WorkContextId): WorkContext | null;
-  list(): WorkContext[];
+  list(options?: WorkContextListOptions): WorkContext[];
   update(id: WorkContextId, patch: WorkContextPatchInput): WorkContext;
   linkContexts(
     sourceId: WorkContextId,
@@ -318,7 +323,9 @@ export function initWorkContextStore(configDir: string): WorkContextStore {
   return createWorkContextStore(path.join(configDir, 'work-contexts.db'));
 }
 
-export type WorkContextStoreInitializer = (configDir: string) => WorkContextStore;
+export type WorkContextStoreInitializer = (
+  configDir: string
+) => WorkContextStore;
 
 export function initWorkContextStoreBestEffort(
   configDir: string,
@@ -335,7 +342,9 @@ export function initWorkContextStoreBestEffort(
   }
 }
 
-export function createUnavailableWorkContextStore(reason: unknown): WorkContextStore {
+export function createUnavailableWorkContextStore(
+  reason: unknown
+): WorkContextStore {
   const unavailable = (): never => {
     throw new WorkContextStoreError(
       503,
@@ -399,6 +408,28 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
   const selectAllContexts = db.prepare(
     `SELECT id, title, source, context_json, created_at, updated_at
      FROM work_contexts ORDER BY updated_at DESC, created_at DESC`
+  );
+  const selectLimitedContexts = db.prepare(
+    `SELECT id, title, source, context_json, created_at, updated_at
+     FROM work_contexts ORDER BY updated_at DESC, created_at DESC LIMIT @limit`
+  );
+  const selectWorkspaceContexts = db.prepare(
+    `SELECT id, title, source, context_json, created_at, updated_at
+     FROM work_contexts
+     WHERE CASE
+       WHEN json_valid(context_json) THEN COALESCE(json_extract(context_json, '$.anchors.project.workspaceId'), 'ws:derived')
+       ELSE NULL
+     END = @workspaceId
+     ORDER BY updated_at DESC, created_at DESC`
+  );
+  const selectLimitedWorkspaceContexts = db.prepare(
+    `SELECT id, title, source, context_json, created_at, updated_at
+     FROM work_contexts
+     WHERE CASE
+       WHEN json_valid(context_json) THEN COALESCE(json_extract(context_json, '$.anchors.project.workspaceId'), 'ws:derived')
+       ELSE NULL
+     END = @workspaceId
+     ORDER BY updated_at DESC, created_at DESC LIMIT @limit`
   );
   const upsertContext = db.prepare(
     `INSERT INTO work_contexts (id, title, source, context_json, created_at, updated_at)
@@ -492,8 +523,24 @@ export function createWorkContextStore(dbPath: string): WorkContextStore {
 
     get: getById,
 
-    list() {
-      return (selectAllContexts.all() as WorkContextRow[])
+    list(options = {}) {
+      const limit =
+        options.limit && options.limit > 0
+          ? Math.floor(options.limit)
+          : undefined;
+      const rows = options.workspaceId
+        ? limit
+          ? (selectLimitedWorkspaceContexts.all({
+              workspaceId: options.workspaceId,
+              limit,
+            }) as WorkContextRow[])
+          : (selectWorkspaceContexts.all({
+              workspaceId: options.workspaceId,
+            }) as WorkContextRow[])
+        : limit
+          ? (selectLimitedContexts.all({ limit }) as WorkContextRow[])
+          : (selectAllContexts.all() as WorkContextRow[]);
+      return rows
         .map(rowToContext)
         .filter((context): context is WorkContext => context !== null);
     },
@@ -841,7 +888,8 @@ function resolveWorkContextReadAuth(
   fallback: RequestHandler
 ): Required<WorkContextReadAuthHandlers> {
   if (!readAuth) return { get: fallback, resume: fallback };
-  if (typeof readAuth === 'function') return { get: readAuth, resume: readAuth };
+  if (typeof readAuth === 'function')
+    return { get: readAuth, resume: readAuth };
   return {
     get: readAuth.get ?? fallback,
     resume: readAuth.resume ?? readAuth.get ?? fallback,
@@ -863,7 +911,11 @@ function resumeOptionsFromQuery(
   query: Record<string, unknown>
 ): WorkContextResumePacketOptions {
   const options: WorkContextResumePacketOptions = {};
-  const currentHeadSha = queryString(query, 'currentHeadSha', 'current-head-sha');
+  const currentHeadSha = queryString(
+    query,
+    'currentHeadSha',
+    'current-head-sha'
+  );
   if (currentHeadSha) options.currentHeadSha = currentHeadSha;
   const publicSafe = queryBoolean(query, 'public', 'publicSafe', 'public-safe');
   if (publicSafe !== undefined) options.publicSafe = publicSafe;
