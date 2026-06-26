@@ -135,6 +135,8 @@ export interface WorkspaceTopicListResponse {
   derived: boolean;
 }
 
+export type WorkspaceTopicLaunchOverrides = Record<string, unknown>;
+
 export interface WorkspaceTopicCreateInput {
   id?: WorkspaceTopicId;
   workspaceId: WorkspaceId;
@@ -909,6 +911,144 @@ export function resolveWorkspaceTopicRoutingDefaults(
     ...(input.sessionOverride ?? {}),
     ...(input.explicitSpawnInput ?? {}),
   };
+}
+
+function readLaunchString(
+  overrides: WorkspaceTopicLaunchOverrides,
+  key: string
+): string | undefined {
+  const value = overrides[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function readLaunchBoolean(
+  overrides: WorkspaceTopicLaunchOverrides,
+  key: string
+): boolean | undefined {
+  const value = overrides[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function readLaunchNumber(
+  overrides: WorkspaceTopicLaunchOverrides,
+  key: string
+): number | undefined {
+  const value = overrides[key];
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function topicPromptForSession(topic: WorkspaceTopic): string | undefined {
+  const parts = [
+    topic.promptDefaults.starterPrompt,
+    topic.promptDefaults.instructions,
+  ].filter(
+    (value): value is string =>
+      typeof value === 'string' && value.trim().length > 0
+  );
+  return parts.length ? parts.join('\n\n') : undefined;
+}
+
+/**
+ * Build the existing `sessions.create` body for a WorkspaceTopic launch.
+ *
+ * This deliberately projects Topic defaults into Relay's provider/session
+ * primitives instead of creating a Hermes-only launch fork. In the v1 local
+ * sessions API `cwd` is represented by `worktreePath`, so a topic-level cwd
+ * that differs from repoPath becomes the session worktree/cwd field unless an
+ * explicit worktreePath override is supplied.
+ */
+export function buildWorkspaceTopicSessionCreateBody(input: {
+  topic: WorkspaceTopic;
+  overrides?: WorkspaceTopicLaunchOverrides;
+}): Record<string, unknown> {
+  const overrides = input.overrides ?? {};
+  const explicitWorktreePath = Object.prototype.hasOwnProperty.call(
+    overrides,
+    'worktreePath'
+  )
+    ? overrides['worktreePath']
+    : undefined;
+  const explicitSpawnInput: WorkspaceTopicRoutingDefaults = {};
+  const explicitProvider = readLaunchString(overrides, 'agent');
+  if (explicitProvider) explicitSpawnInput.providerId = explicitProvider;
+  const explicitRepoPath = readLaunchString(overrides, 'repoPath');
+  if (explicitRepoPath) explicitSpawnInput.repoPath = explicitRepoPath;
+  if (typeof explicitWorktreePath === 'string' && explicitWorktreePath.trim()) {
+    explicitSpawnInput.worktreePath = explicitWorktreePath.trim();
+  }
+  const explicitCwd = readLaunchString(overrides, 'cwd');
+  if (explicitCwd) explicitSpawnInput.cwd = explicitCwd;
+
+  const routing = resolveWorkspaceTopicRoutingDefaults({
+    topicDefaults: input.topic.routingDefaults,
+    explicitSpawnInput,
+  });
+  const body: Record<string, unknown> = { workspaceTopicId: input.topic.id };
+  const repoPath = routing.repoPath ?? routing.cwd;
+  if (repoPath) body['repoPath'] = repoPath;
+  if (explicitWorktreePath === null) {
+    body['worktreePath'] = null;
+  } else {
+    const worktreePath =
+      routing.worktreePath ??
+      (routing.cwd && routing.cwd !== repoPath ? routing.cwd : undefined);
+    if (worktreePath) body['worktreePath'] = worktreePath;
+  }
+  const agent = routing.providerId;
+  if (agent) body['agent'] = agent;
+  for (const key of [
+    'type',
+    'mode',
+    'terminalBackend',
+    'branchName',
+    'continuePolicy',
+    'controlMode',
+  ]) {
+    const value = readLaunchString(overrides, key);
+    if (value) body[key] = value;
+  }
+  const yolo = readLaunchBoolean(overrides, 'yolo');
+  if (yolo !== undefined) body['yolo'] = yolo;
+  for (const key of ['cols', 'rows']) {
+    const value = readLaunchNumber(overrides, key);
+    if (value !== undefined) body[key] = value;
+  }
+  const workContextId =
+    readLaunchString(overrides, 'workContextId') ??
+    input.topic.linkedRefs.workContextIds?.[0];
+  if (workContextId) body['workContextId'] = workContextId;
+  const initialPrompt =
+    readLaunchString(overrides, 'initialPrompt') ??
+    topicPromptForSession(input.topic);
+  if (initialPrompt) body['initialPrompt'] = initialPrompt;
+  return body;
+}
+
+export function workspaceTopicSessionLinkPatch(input: {
+  topic: WorkspaceTopic;
+  sessionId: string;
+  workContextId?: string | undefined;
+}): WorkspaceTopicUpdateInput | undefined {
+  const linkedRefs: WorkspaceTopicLinkedRefs = { ...input.topic.linkedRefs };
+  const sessionIds = Array.from(
+    new Set([...(linkedRefs.sessionIds ?? []), input.sessionId])
+  );
+  linkedRefs.sessionIds = sessionIds;
+  if (input.workContextId) {
+    linkedRefs.workContextIds = Array.from(
+      new Set([...(linkedRefs.workContextIds ?? []), input.workContextId])
+    );
+  }
+  if (
+    sessionIds.length === (input.topic.linkedRefs.sessionIds ?? []).length &&
+    (!input.workContextId ||
+      input.topic.linkedRefs.workContextIds?.includes(input.workContextId))
+  ) {
+    return undefined;
+  }
+  return { linkedRefs };
 }
 
 export function buildWorkspaceTopicRecord(input: {

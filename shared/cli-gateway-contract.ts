@@ -1290,6 +1290,11 @@ const createSessionInputSchema: RelayJsonSchema = {
     initialPrompt: stringSchema,
     continuePolicy: { type: 'string', enum: ['always', 'never'] },
     workContextId: stringSchema,
+    workspaceTopicId: {
+      ...stringSchema,
+      description:
+        'WorkspaceTopic id whose routing/prompt defaults seed this session create and whose linked session refs are updated after launch.',
+    },
     controlMode: {
       type: 'string',
       enum: ['agent-driven', 'human-driven'],

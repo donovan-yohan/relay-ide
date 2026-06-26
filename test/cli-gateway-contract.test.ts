@@ -1086,6 +1086,21 @@ describe('CLI gateway contract', () => {
       },
       sessionType: 'terminal',
     });
+
+    const topicLaunch = validateAndSanitizeLocalGatewayCreateInput({
+      workspaceTopicId: 'topic:ws-launch-hermes',
+      type: 'agent',
+      agent: 'hermes',
+    });
+    expect(topicLaunch).toMatchObject({
+      ok: true,
+      input: {
+        workspaceTopicId: 'topic:ws-launch-hermes',
+        type: 'agent',
+        agent: 'hermes',
+      },
+      sessionType: 'agent',
+    });
   });
 
   it('advertises CLI argument and JSON parse errors emitted by gateway commands', () => {

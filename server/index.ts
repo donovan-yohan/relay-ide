@@ -41,6 +41,11 @@ import {
   parseGlobalSessionId,
 } from '../shared/identity.js';
 import {
+  buildWorkspaceTopicSessionCreateBody,
+  workspaceTopicSessionLinkPatch,
+  type WorkspaceTopic,
+} from '../shared/workspace-topics.js';
+import {
   WorktreeWatcher,
   BranchWatcher,
   RefWatcher,
@@ -1947,6 +1952,88 @@ async function main(): Promise<void> {
       return null;
     }
     return validated.input;
+  }
+
+  function resolveWorkspaceTopicSessionCreate(
+    createBody: Record<string, unknown>,
+    res: express.Response
+  ): { body: Record<string, unknown>; topic?: WorkspaceTopic } | null {
+    if (!Object.prototype.hasOwnProperty.call(createBody, 'workspaceTopicId')) {
+      return { body: createBody };
+    }
+    const workspaceTopicId = createBody['workspaceTopicId'];
+    if (
+      typeof workspaceTopicId !== 'string' ||
+      workspaceTopicId.trim() === ''
+    ) {
+      res.status(400).json({
+        error: 'workspaceTopicId must be a non-empty string',
+      });
+      return null;
+    }
+    if (!workspaceTopicStore) {
+      res.status(503).json({
+        error: {
+          code: 'WORKSPACE_TOPICS_UNAVAILABLE',
+          message: 'WorkspaceTopic store is unavailable',
+        },
+      });
+      return null;
+    }
+    const topic = workspaceTopicStore.get(workspaceTopicId.trim());
+    if (!topic) {
+      res.status(404).json({
+        error: {
+          code: 'WORKSPACE_TOPIC_NOT_FOUND',
+          message: `WorkspaceTopic not found: ${workspaceTopicId}`,
+        },
+      });
+      return null;
+    }
+    if (topic.status === 'archived') {
+      res.status(400).json({
+        error: {
+          code: 'WORKSPACE_TOPIC_ARCHIVED',
+          message: `WorkspaceTopic is archived: ${workspaceTopicId}`,
+        },
+      });
+      return null;
+    }
+    return {
+      body: {
+        ...buildWorkspaceTopicSessionCreateBody({
+          topic,
+          overrides: createBody,
+        }),
+        ...createBody,
+        workspaceTopicId: topic.id,
+      },
+      topic,
+    };
+  }
+
+  function linkWorkspaceTopicSession(
+    topic: WorkspaceTopic | undefined,
+    session: { id: string },
+    workContextId: string | undefined
+  ): void {
+    if (!topic || !workspaceTopicStore) return;
+    const patch = workspaceTopicSessionLinkPatch({
+      topic,
+      sessionId: session.id,
+      workContextId,
+    });
+    if (!patch) return;
+    try {
+      workspaceTopicStore.update(topic.id, patch);
+    } catch (err) {
+      logger.warn(
+        '[index] failed to link session %s to WorkspaceTopic %s: %s',
+        session.id,
+        topic.id,
+        err instanceof Error ? err.message : String(err)
+      );
+    }
   }
 
   const requireAuth: express.RequestHandler = (req, res, next) => {
@@ -4959,8 +5046,15 @@ async function main(): Promise<void> {
 
   // POST /sessions — unified endpoint for agent and terminal sessions
   app.post('/sessions', requireCliGatewayAuth, async (req, res) => {
-    const createBody = sessionCreateBodyFromRequest(req, res);
-    if (!createBody) return;
+    const requestedCreateBody = sessionCreateBodyFromRequest(req, res);
+    if (!requestedCreateBody) return;
+    const topicCreate = resolveWorkspaceTopicSessionCreate(
+      requestedCreateBody,
+      res
+    );
+    if (!topicCreate) return;
+    const createBody = topicCreate.body;
+    const workspaceTopic = topicCreate.topic;
     const {
       repoPath,
       worktreePath,
@@ -5094,6 +5188,7 @@ async function main(): Promise<void> {
         workContextId,
         session
       );
+      linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
       sendSessionCreateSuccess(res, session, associationError, workContextId);
       return;
     }
@@ -5156,6 +5251,7 @@ async function main(): Promise<void> {
           workContextId,
           session
         );
+        linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
         sendSessionCreateSuccess(res, session, associationError, workContextId);
       } catch (err) {
         sendSessionCreateError(res, err, freshConfig.maxPtySessions);
@@ -5235,6 +5331,8 @@ async function main(): Promise<void> {
       workContextId,
       session
     );
+
+    linkWorkspaceTopicSession(workspaceTopic, session, workContextId);
 
     sendSessionCreateSuccess(res, session, associationError, workContextId);
   });
