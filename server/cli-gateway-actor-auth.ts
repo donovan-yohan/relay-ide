@@ -13,6 +13,7 @@ import {
   type ScopedActorCredentialScope,
   type ScopedActorCredentialValidationFailureReason,
   type ScopedActorCredentialValidationResult,
+  type ScopedActorCredentialValidationScope,
 } from '../shared/scoped-actor-credentials.js';
 import {
   isRelayCapabilityBit,
@@ -369,10 +370,10 @@ export function validateCliGatewayActorCredential(
   registry: ScopedActorCredentialRegistry,
   input: CliGatewayActorValidationInput
 ): ScopedActorCredentialValidationResult {
-  const validationScope = scopeForValidation(
-    input.scope,
-    input.deferWorkContextScope ? { deferWorkContextScope: true } : {}
-  );
+  const validationScope = scopeForValidation(input.scope, {
+    ...(input.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
+    multiWorkContext: true,
+  });
   return registry.validate(input.token, {
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     requiredCapabilities: [...input.capabilities],
@@ -586,8 +587,8 @@ export function rotateCliGatewayActorCredentialWithGrant(
 
 function scopeForValidation(
   scope: ScopedActorCredentialScope | undefined,
-  options: { deferWorkContextScope?: boolean } = {}
-): HandshakeGrantValidationScope {
+  options: { deferWorkContextScope?: boolean; multiWorkContext?: boolean } = {}
+): ScopedActorCredentialValidationScope & HandshakeGrantValidationScope {
   const taskRef = taskRefForGrantValidation(scope?.taskRefs);
   return {
     ...(scope?.nodeIds?.[0] ? { nodeId: scope.nodeIds[0] } : {}),
@@ -595,9 +596,11 @@ function scopeForValidation(
     ...(scope?.globalSessionIds?.[0]
       ? { globalSessionId: scope.globalSessionIds[0] }
       : {}),
-    ...(scope?.workContextIds?.[0]
-      ? { workContextId: scope.workContextIds[0] }
-      : {}),
+    ...(options.multiWorkContext && scope?.workContextIds?.length
+      ? { workContextIds: scope.workContextIds }
+      : scope?.workContextIds?.[0]
+        ? { workContextId: scope.workContextIds[0] }
+        : {}),
     ...(options.deferWorkContextScope ? { deferWorkContextScope: true } : {}),
     ...(scope?.repoIds?.[0] ? { repoId: scope.repoIds[0] } : {}),
     ...(scope?.pathPrefixes?.[0] ? { path: scope.pathPrefixes[0] } : {}),

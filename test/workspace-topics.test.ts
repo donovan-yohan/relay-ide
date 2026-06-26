@@ -5,6 +5,12 @@ import * as path from 'node:path';
 import express, { type RequestHandler } from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import {
+  bearerActorToken,
+  createCliGatewayActorRegistry,
+  issueCliGatewayActorCredential,
+  validateCliGatewayActorCredential,
+} from '../server/cli-gateway-actor-auth.js';
 import type { Config } from '../server/types.js';
 import {
   createWorkspaceSurfaceStore,
@@ -121,12 +127,14 @@ async function writeJson<T>(input: {
   url: string;
   body: unknown;
   capabilities?: string;
+  headers?: Record<string, string>;
 }): Promise<{ status: number; body: T }> {
   const res = await fetch(`http://127.0.0.1:${input.port}${input.url}`, {
     method: input.method,
     headers: {
       'Content-Type': 'application/json',
       'x-relay-capabilities': input.capabilities ?? 'context:write',
+      ...(input.headers ?? {}),
     },
     body: JSON.stringify(input.body),
   });
@@ -470,6 +478,76 @@ describe('workspace topics foundation', () => {
         command: 'workspace-topics.archive',
         scope: { workContextIds: ['wc-allowed'] },
       },
+    ]);
+  });
+
+  it('rejects scoped actor topic updates that add unauthorized WorkContext refs', async () => {
+    const store = topicStore();
+    const registry = createCliGatewayActorRegistry();
+    store.create({
+      id: 'topic:auth-hole',
+      workspaceId: 'ws-1',
+      title: 'Scoped topic',
+      linkedRefs: { workContextIds: ['wc:allowed'] },
+    });
+    const issued = issueCliGatewayActorCredential(registry, {
+      capabilities: ['context:write'],
+      scope: { workContextIds: ['wc:allowed'] },
+    });
+    const actorHeaders = {
+      authorization: 'Bearer ' + issued.token,
+      'x-relay-cli-actor-token': 'v1',
+      'x-relay-cli-command': 'workspace-topics.update',
+    };
+    const { port } = await listen({
+      store,
+      requireWriteActorAuth: (expectedCommand, options) => {
+        return ((req, res, next) => {
+          if (req.header('x-relay-cli-command') !== expectedCommand) {
+            res.status(401).json({ error: { code: 'UNAUTHORIZED' } });
+            return;
+          }
+          const validation = validateCliGatewayActorCredential(registry, {
+            token: bearerActorToken(req),
+            capabilities: ['context:write'],
+            ...(options?.scopeForRequest
+              ? { scope: options.scopeForRequest(req) }
+              : {}),
+          });
+          if ('reason' in validation) {
+            res.status(403).json({ error: { reason: validation.reason } });
+            return;
+          }
+          next();
+        }) as RequestHandler;
+      },
+    });
+
+    const allowedUpdate = await writeJson<{ topic: WorkspaceTopic }>({
+      port,
+      method: 'PATCH',
+      url: '/workspace-topics/topic%3Aauth-hole',
+      headers: actorHeaders,
+      body: { title: 'Allowed rename' },
+    });
+    expect(allowedUpdate.status).toBe(200);
+    expect(allowedUpdate.body.topic.display.title).toBe('Allowed rename');
+
+    const forgedUpdate = await writeJson<{
+      error: { reason?: string };
+    }>({
+      port,
+      method: 'PATCH',
+      url: '/workspace-topics/topic%3Aauth-hole',
+      headers: actorHeaders,
+      body: {
+        linkedRefs: { workContextIds: ['wc:denied'] },
+      },
+    });
+    expect(forgedUpdate.status).toBe(403);
+    expect(forgedUpdate.body.error.reason).toBe('wrong_work_context_scope');
+    expect(store.get('topic:auth-hole')?.linkedRefs.workContextIds).toEqual([
+      'wc:allowed',
     ]);
   });
 
