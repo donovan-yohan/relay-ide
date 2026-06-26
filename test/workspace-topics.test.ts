@@ -11,6 +11,7 @@ import {
   type WorkspaceSurfaceStore,
 } from '../server/workspace-surfaces.js';
 import {
+  WORKSPACE_TOPICS_MAX_STORED_ENTRIES,
   createWorkspaceTopicStore,
   createWorkspaceTopicsRouter,
   type WorkspaceTopicStore,
@@ -19,6 +20,7 @@ import type { WorkContextStore } from '../server/work-contexts.js';
 import type { WorkContext } from '../shared/work-context.js';
 import {
   WORKSPACE_TOPICS_MAX_LIST_ENTRIES,
+  buildWorkspaceTopicRecord,
   parseWorkspaceTopicCreateInput,
   resolveWorkspaceTopicRoutingDefaults,
   type WorkspaceTopic,
@@ -200,6 +202,22 @@ describe('workspace topics foundation', () => {
       repoPath: '/repo',
       agentId: 'agent:kani',
     });
+  });
+
+  it('namespaces generated topic ids by workspace', () => {
+    const now = '2026-06-26T00:00:00.000Z';
+    const first = buildWorkspaceTopicRecord({
+      create: { workspaceId: 'ws-alpha', title: 'Same lane' },
+      now,
+    });
+    const second = buildWorkspaceTopicRecord({
+      create: { workspaceId: 'ws-beta', title: 'Same lane' },
+      now,
+    });
+
+    expect(first.id).toBe('topic:ws-alpha-same-lane');
+    expect(second.id).toBe('topic:ws-beta-same-lane');
+    expect(first.id).not.toBe(second.id);
   });
 
   it('creates, lists, updates, and archives topics with scoped refs and policies', async () => {
@@ -387,6 +405,74 @@ describe('workspace topics foundation', () => {
     ]);
   });
 
+  it('authorizes update and archive against persisted topic workContext refs', async () => {
+    const store = topicStore();
+    store.create({
+      id: 'topic:allowed',
+      workspaceId: 'ws-1',
+      title: 'Allowed topic',
+      linkedRefs: { workContextIds: ['wc-allowed'] },
+    });
+    store.create({
+      id: 'topic:denied',
+      workspaceId: 'ws-1',
+      title: 'Denied topic',
+      linkedRefs: { workContextIds: ['wc-denied'] },
+    });
+    const requested: Array<{
+      command: string;
+      scope?: { workContextIds?: string[] };
+    }> = [];
+    const { port } = await listen({
+      store,
+      requireWriteActorAuth: (expectedCommand, options) => {
+        return ((req, res, next) => {
+          const scope = options?.scopeForRequest?.(req);
+          requested.push({ command: expectedCommand, scope });
+          if (
+            scope?.workContextIds?.includes('wc-allowed') &&
+            !scope.workContextIds.includes('wc-denied')
+          ) {
+            next();
+            return;
+          }
+          res.status(403).json({ error: { code: 'FORBIDDEN' } });
+        }) as RequestHandler;
+      },
+    });
+
+    const forgedUpdate = await writeJson({
+      port,
+      method: 'PATCH',
+      url: '/workspace-topics/topic%3Adenied',
+      body: {
+        title: 'Forged update',
+        linkedRefs: { workContextIds: ['wc-allowed'] },
+      },
+    });
+    expect(forgedUpdate.status).toBe(403);
+    expect(store.get('topic:denied')?.display.title).toBe('Denied topic');
+
+    const scopedArchive = await writeJson<{ topic: WorkspaceTopic }>({
+      port,
+      method: 'POST',
+      url: '/workspace-topics/topic%3Aallowed/archive',
+      body: {},
+    });
+    expect(scopedArchive.status).toBe(200);
+    expect(scopedArchive.body.topic.status).toBe('archived');
+    expect(requested).toEqual([
+      {
+        command: 'workspace-topics.update',
+        scope: { workContextIds: ['wc-denied', 'wc-allowed'] },
+      },
+      {
+        command: 'workspace-topics.archive',
+        scope: { workContextIds: ['wc-allowed'] },
+      },
+    ]);
+  });
+
   it('derives starter topics from WorkContexts when no persisted topic exists', async () => {
     let requestedLimit: number | undefined;
     const workContextStore = {
@@ -403,7 +489,7 @@ describe('workspace topics foundation', () => {
     );
 
     expect(list.status).toBe(200);
-    expect(requestedLimit).toBe(WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1);
+    expect(requestedLimit).toBeUndefined();
     expect(list.body.derived).toBe(true);
     expect(list.body.topics).toHaveLength(1);
     expect(list.body.topics[0]).toMatchObject({
@@ -443,10 +529,48 @@ describe('workspace topics foundation', () => {
     );
 
     expect(list.status).toBe(200);
-    expect(requestedLimit).toBe(WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1);
+    expect(requestedLimit).toBeUndefined();
     expect(list.body.derived).toBe(true);
     expect(list.body.topics).toHaveLength(WORKSPACE_TOPICS_MAX_LIST_ENTRIES);
     expect(list.body.truncated).toBe(true);
+  });
+
+  it('filters derived fallback workspaces before applying the sentinel limit', async () => {
+    let requestedLimit: number | undefined;
+    const otherWorkspaceContexts = Array.from(
+      { length: WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1 },
+      (_entry, index) => {
+        const context = workContext(`wc-other-${index}`);
+        return {
+          ...context,
+          anchors: {
+            ...context.anchors,
+            project: { workspaceId: 'ws-other' },
+          },
+        };
+      }
+    );
+    const target = workContext('wc-target');
+    const workContextStore = {
+      list: (options?: { limit?: number }) => {
+        requestedLimit = options?.limit;
+        return [...otherWorkspaceContexts, target];
+      },
+    } as unknown as WorkContextStore;
+    const { port } = await listen({ store: topicStore(), workContextStore });
+
+    const list = await getJson<WorkspaceTopicListResponse>(
+      port,
+      '/workspace-topics?workspaceId=ws-derived'
+    );
+
+    expect(list.status).toBe(200);
+    expect(requestedLimit).toBeUndefined();
+    expect(list.body.derived).toBe(true);
+    expect(list.body.truncated).toBe(false);
+    expect(
+      list.body.topics.map((topic) => topic.linkedRefs.workContextIds)
+    ).toEqual([['wc-target']]);
   });
 
   it('enforces capability headers and list caps', async () => {
@@ -478,5 +602,53 @@ describe('workspace topics foundation', () => {
     expect(list.status).toBe(200);
     expect(list.body.topics).toHaveLength(WORKSPACE_TOPICS_MAX_LIST_ENTRIES);
     expect(list.body.truncated).toBe(true);
+  });
+
+  it('rejects over-capacity active topic creates instead of evicting active rows', () => {
+    const store = topicStore();
+    for (let i = 0; i < WORKSPACE_TOPICS_MAX_STORED_ENTRIES; i += 1) {
+      store.create({
+        id: `topic:active-${i}`,
+        workspaceId: 'ws-cap',
+        title: `Active ${i}`,
+      });
+    }
+
+    expect(() =>
+      store.create({
+        id: 'topic:overflow',
+        workspaceId: 'ws-cap',
+        title: 'Overflow',
+      })
+    ).toThrow(/workspace topic store is full/);
+    expect(store.get('topic:active-0')).not.toBeNull();
+  });
+
+  it('trims only archived rows when creating beyond the stored topic cap', () => {
+    const store = topicStore();
+    store.create({
+      id: 'topic:old-archived',
+      workspaceId: 'ws-cap',
+      title: 'Old archived',
+    });
+    store.archive('topic:old-archived');
+    for (let i = 0; i < WORKSPACE_TOPICS_MAX_STORED_ENTRIES - 1; i += 1) {
+      store.create({
+        id: `topic:active-${i}`,
+        workspaceId: 'ws-cap',
+        title: `Active ${i}`,
+      });
+    }
+
+    expect(() =>
+      store.create({
+        id: 'topic:new-active',
+        workspaceId: 'ws-cap',
+        title: 'New active',
+      })
+    ).not.toThrow();
+    expect(store.get('topic:old-archived')).toBeNull();
+    expect(store.get('topic:active-0')).not.toBeNull();
+    expect(store.get('topic:new-active')).not.toBeNull();
   });
 });

@@ -5,7 +5,10 @@ import {
   RelayClaudeGatewayToolRunner,
   generateRelayClaudeGatewayTools,
 } from '../shared/cli-gateway-claude-tools.js';
-import { RELAY_CLI_GATEWAY_CONTRACT, commandSpec } from '../shared/cli-gateway-contract.js';
+import {
+  RELAY_CLI_GATEWAY_CONTRACT,
+  commandSpec,
+} from '../shared/cli-gateway-contract.js';
 
 type CapturedGatewayRequest = {
   method: string | undefined;
@@ -23,7 +26,8 @@ type CapturedGatewayRequest = {
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('missing server address');
+  if (!address || typeof address === 'string')
+    throw new Error('missing server address');
   return address.port;
 }
 
@@ -36,16 +40,18 @@ async function close(server: http.Server): Promise<void> {
 
 test('generated Claude-style CLI gateway tools run the first adapter smoke path', async () => {
   const tools = generateRelayClaudeGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
-  expect(tools.map((tool) => tool.relay.command)).toEqual([...CLI_GATEWAY_CLAUDE_SMOKE_COMMANDS]);
+  expect(tools.map((tool) => tool.relay.command)).toEqual([
+    ...CLI_GATEWAY_CLAUDE_SMOKE_COMMANDS,
+  ]);
   expect(tools.map((tool) => tool.name)).toEqual([
     'relay_nodes_list',
     'relay_sessions_create',
     'relay_files_read',
     'relay_sessions_detach',
   ]);
-  expect(tools.find((tool) => tool.relay.command === 'files.read')?.input_schema).toBe(
-    commandSpec('files.read').inputSchema
-  );
+  expect(
+    tools.find((tool) => tool.relay.command === 'files.read')?.input_schema
+  ).toBe(commandSpec('files.read').inputSchema);
 
   const captured: CapturedGatewayRequest[] = [];
   let sessionAlive = false;
@@ -84,7 +90,9 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
       if (req.method === 'GET' && req.url === '/nodes') {
         res.end(
           JSON.stringify({
-            nodes: [{ nodeId: 'node-a', status: 'online', availability: 'available' }],
+            nodes: [
+              { nodeId: 'node-a', status: 'online', availability: 'available' },
+            ],
           })
         );
         return;
@@ -95,7 +103,11 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
         res.end(JSON.stringify(session));
         return;
       }
-      if (req.method === 'GET' && req.url === '/sessions/remote-session-1' && sessionAlive) {
+      if (
+        req.method === 'GET' &&
+        req.url === '/sessions/remote-session-1' &&
+        sessionAlive
+      ) {
         res.end(JSON.stringify(session));
         return;
       }
@@ -122,7 +134,9 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
       }
       if (req.method === 'DELETE') sessionAlive = false;
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
 
@@ -150,7 +164,10 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
     });
     expect(created).toMatchObject({ ok: true, command: 'sessions.create' });
     if (!created.ok) throw new Error('expected sessions.create to succeed');
-    expect(created.data).toMatchObject({ id: 'remote-session-1', nodeId: 'node-a' });
+    expect(created.data).toMatchObject({
+      id: 'remote-session-1',
+      nodeId: 'node-a',
+    });
 
     const read = await runner.callTool('relay_files_read', {
       sessionId: 'remote-session-1',
@@ -160,9 +177,15 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
     });
     expect(read).toMatchObject({ ok: true, command: 'files.read' });
     if (!read.ok) throw new Error('expected files.read to succeed');
-    expect(read.data).toMatchObject({ content: 'hello gateway\n', maxBytes: 64, maxLines: 2 });
+    expect(read.data).toMatchObject({
+      content: 'hello gateway\n',
+      maxBytes: 64,
+      maxLines: 2,
+    });
 
-    const detached = await runner.callTool('relay_sessions_detach', { id: 'remote-session-1' });
+    const detached = await runner.callTool('relay_sessions_detach', {
+      id: 'remote-session-1',
+    });
     expect(detached).toMatchObject({ ok: true, command: 'sessions.detach' });
     if (!detached.ok) throw new Error('expected sessions.detach to succeed');
     expect(detached.data).toMatchObject({ detached: true, killed: false });
@@ -184,7 +207,9 @@ test('generated Claude-style CLI gateway tools run the first adapter smoke path'
     marker: 'v1',
     capabilities: 'session:read',
   });
-  expect(captured.find((entry) => entry.url?.endsWith('/files/read'))?.body).toMatchObject({
+  expect(
+    captured.find((entry) => entry.url?.endsWith('/files/read'))?.body
+  ).toMatchObject({
     path: 'hello.txt',
     maxBytes: 64,
     maxLines: 2,
@@ -235,7 +260,9 @@ test('generated session kill tool forwards confirmation retry token as a header'
       return;
     }
     res.statusCode = 404;
-    res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+    res.end(
+      JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+    );
   });
 
   const port = await listen(server);
@@ -266,6 +293,76 @@ test('generated session kill tool forwards confirmation retry token as a header'
   expect(captured[1]).toMatchObject({
     capabilities: 'session:read,session:control:kill',
     confirmationToken: 'confirm-token-1',
+  });
+});
+
+test('generated workspace topic archive tool forwards confirmation retry token as a header', async () => {
+  const tools = generateRelayClaudeGatewayTools(RELAY_CLI_GATEWAY_CONTRACT, [
+    'workspace-topics.archive',
+  ]);
+  const captured: CapturedGatewayRequest[] = [];
+  const server = http.createServer((req, res) => {
+    const entry: CapturedGatewayRequest = {
+      method: req.method,
+      url: req.url,
+      authorization: req.headers.authorization,
+      marker: req.headers['x-relay-cli-gateway'],
+      actorMarker: req.headers['x-relay-cli-actor-token'],
+      command: req.headers['x-relay-cli-command'],
+      correlationId: req.headers['x-relay-correlation-id'],
+      capabilities: req.headers['x-relay-capabilities'],
+      confirmationToken: req.headers['x-confirmation-token'],
+    };
+    captured.push(entry);
+    res.setHeader('content-type', 'application/json');
+    if (
+      req.method === 'POST' &&
+      req.url === '/workspace-topics/topic%3Afixture/archive'
+    ) {
+      res.end(
+        JSON.stringify({
+          topic: { id: 'topic:fixture', status: 'archived' },
+          mutationPolicy: { kind: 'archive', requiresConfirmation: true },
+        })
+      );
+      return;
+    }
+    res.statusCode = 404;
+    res.end(
+      JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+    );
+  });
+
+  const port = await listen(server);
+  try {
+    const runner = new RelayClaudeGatewayToolRunner(tools, {
+      command: process.execPath,
+      commandArgsPrefix: ['dist/bin/relay-ide.js'],
+      env: {
+        ...process.env,
+        RELAY_IDE_PORT: String(port),
+        RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      },
+    });
+
+    const archived = await runner.callTool(tools[0]!.name, {
+      id: 'topic:fixture',
+      confirmationToken: 'confirm-topic-1',
+    });
+    expect(archived).toMatchObject({
+      ok: true,
+      command: 'workspace-topics.archive',
+    });
+  } finally {
+    await close(server);
+  }
+
+  expect(captured.map((entry) => `${entry.method} ${entry.url}`)).toEqual([
+    'POST /workspace-topics/topic%3Afixture/archive',
+  ]);
+  expect(captured[0]).toMatchObject({
+    capabilities: 'context:write',
+    confirmationToken: 'confirm-topic-1',
   });
 });
 
@@ -323,7 +420,9 @@ test('generated Claude session rename tool forwards displayName to the PATCH bod
         return;
       }
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
 
@@ -362,7 +461,6 @@ test('generated Claude session rename tool forwards displayName to the PATCH bod
   });
 });
 
-
 test('read-only CLI gateway calls can use explicit scoped actor token input', async () => {
   const tools = generateRelayClaudeGatewayTools(RELAY_CLI_GATEWAY_CONTRACT);
   const captured: CapturedGatewayRequest[] = [];
@@ -378,7 +476,9 @@ test('read-only CLI gateway calls can use explicit scoped actor token input', as
       capabilities: req.headers['x-relay-capabilities'],
     });
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ nodes: [{ nodeId: 'node-a', status: 'online' }] }));
+    res.end(
+      JSON.stringify({ nodes: [{ nodeId: 'node-a', status: 'online' }] })
+    );
   });
 
   const port = await listen(server);

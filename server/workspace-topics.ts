@@ -41,7 +41,7 @@ const CONTEXT_READ = 'context:read';
 const CONTEXT_WRITE = 'context:write';
 const WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT =
   WORKSPACE_TOPICS_MAX_LIST_ENTRIES + 1;
-const WORKSPACE_TOPICS_MAX_STORED_ENTRIES = 500;
+export const WORKSPACE_TOPICS_MAX_STORED_ENTRIES = 500;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS workspace_topics (
@@ -105,10 +105,11 @@ export function createWorkspaceTopicStore(input: {
     'SELECT record_json FROM workspace_topics WHERE id = ?'
   );
   const countStmt = db.prepare('SELECT COUNT(*) AS n FROM workspace_topics');
-  const trimStmt = db.prepare(`
+  const trimArchivedStmt = db.prepare(`
     DELETE FROM workspace_topics
     WHERE id IN (
       SELECT id FROM workspace_topics
+      WHERE status = 'archived'
       ORDER BY updated_at ASC, created_at ASC
       LIMIT @over
     )
@@ -135,6 +136,36 @@ export function createWorkspaceTopicStore(input: {
     }
   }
 
+  function storedCount(): number {
+    return (countStmt.get() as { n: number }).n;
+  }
+
+  function trimArchivedOverCap(): number {
+    const count = storedCount();
+    if (count <= WORKSPACE_TOPICS_MAX_STORED_ENTRIES) return count;
+    trimArchivedStmt.run({ over: count - WORKSPACE_TOPICS_MAX_STORED_ENTRIES });
+    return storedCount();
+  }
+
+  function trimArchivedForNewTopic(): number {
+    const count = storedCount();
+    if (count < WORKSPACE_TOPICS_MAX_STORED_ENTRIES) return count;
+    trimArchivedStmt.run({
+      over: count - WORKSPACE_TOPICS_MAX_STORED_ENTRIES + 1,
+    });
+    return storedCount();
+  }
+
+  function assertCapacityForNewTopic(): void {
+    if (storedCount() < WORKSPACE_TOPICS_MAX_STORED_ENTRIES) return;
+    if (trimArchivedForNewTopic() < WORKSPACE_TOPICS_MAX_STORED_ENTRIES) return;
+    throw new WorkspaceTopicStoreError(
+      'workspace topic store is full',
+      'WORKSPACE_TOPIC_STORE_FULL',
+      { max: WORKSPACE_TOPICS_MAX_STORED_ENTRIES }
+    );
+  }
+
   function persist(topic: WorkspaceTopic): WorkspaceTopic {
     upsertStmt.run({
       id: topic.id,
@@ -144,10 +175,7 @@ export function createWorkspaceTopicStore(input: {
       createdAt: topic.createdAt,
       updatedAt: topic.updatedAt,
     });
-    const count = (countStmt.get() as { n: number }).n;
-    if (count > WORKSPACE_TOPICS_MAX_STORED_ENTRIES) {
-      trimStmt.run({ over: count - WORKSPACE_TOPICS_MAX_STORED_ENTRIES });
-    }
+    trimArchivedOverCap();
     return topic;
   }
 
@@ -168,6 +196,7 @@ export function createWorkspaceTopicStore(input: {
           { id: topic.id }
         );
       }
+      assertCapacityForNewTopic();
       return persist(topic);
     },
 
@@ -244,7 +273,7 @@ export function deriveWorkspaceTopicsFromWorkContexts(
       const artifactIds = context.artifacts.map((artifact) => artifact.id);
       const topic: WorkspaceTopic = {
         schemaVersion: 1,
-        id: createWorkspaceTopicId(`derived-${context.id}`),
+        id: createWorkspaceTopicId(`derived-${context.id}`, workspaceId),
         workspaceId,
         source: 'derived',
         status: 'active',
@@ -367,6 +396,56 @@ function topicWorkContextScopeFromBody(
   return ids.length ? { workContextIds: ids } : undefined;
 }
 
+function topicWorkContextScopeFromTopic(
+  topic: WorkspaceTopic | null | undefined
+): { workContextIds?: string[] } | undefined {
+  const ids = topic?.linkedRefs.workContextIds?.filter(
+    (value): value is string =>
+      typeof value === 'string' && value.trim().length > 0
+  );
+  return ids?.length ? { workContextIds: ids } : undefined;
+}
+
+function mergeTopicWorkContextScopes(
+  ...scopes: Array<{ workContextIds?: string[] } | undefined>
+): { workContextIds?: string[] } | undefined {
+  const ids = Array.from(
+    new Set(
+      scopes.flatMap(
+        (scope) =>
+          scope?.workContextIds?.filter(
+            (value): value is string =>
+              typeof value === 'string' && value.trim().length > 0
+          ) ?? []
+      )
+    )
+  );
+  return ids.length ? { workContextIds: ids } : undefined;
+}
+
+function topicWorkContextScopeFromPersistedTopic(input: {
+  store: WorkspaceTopicStore | null;
+  req: Request;
+}): { workContextIds?: string[] } | undefined {
+  const id = input.req.params['id'] ?? '';
+  try {
+    assertWorkspaceTopicId(id);
+  } catch {
+    return undefined;
+  }
+  return topicWorkContextScopeFromTopic(input.store?.get(id));
+}
+
+function topicWorkContextScopeFromUpdate(input: {
+  store: WorkspaceTopicStore | null;
+  req: Request;
+}): { workContextIds?: string[] } | undefined {
+  return mergeTopicWorkContextScopes(
+    topicWorkContextScopeFromPersistedTopic(input),
+    topicWorkContextScopeFromBody(input.req)
+  );
+}
+
 function workspaceSurfaceIdsFromBody(req: Request): string[] {
   const body = bodyRecord(req);
   const linkedRefs =
@@ -423,14 +502,18 @@ function fallbackTopics(input: {
   workContextStore?: WorkContextStore | undefined;
   workspaceId?: string | undefined;
 }): WorkspaceTopic[] {
-  const topics = deriveWorkspaceTopicsFromWorkContexts(
-    input.workContextStore?.list({
-      limit: WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT,
-    }) ?? []
+  const contexts = input.workspaceId
+    ? (input.workContextStore?.list() ?? []).filter(
+        (context) =>
+          (context.anchors.project?.workspaceId ?? 'ws:derived') ===
+          input.workspaceId
+      )
+    : (input.workContextStore?.list({
+        limit: WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT,
+      }) ?? []);
+  return deriveWorkspaceTopicsFromWorkContexts(
+    contexts.slice(0, WORKSPACE_TOPICS_LIST_SENTINEL_LIMIT)
   );
-  return input.workspaceId
-    ? topics.filter((topic) => topic.workspaceId === input.workspaceId)
-    : topics;
 }
 
 function mutationPolicy(kind: WorkspaceTopicMutationKind) {
@@ -464,10 +547,11 @@ export function createWorkspaceTopicsRouter(
   const auth = options.requireAuth ?? ((_req, _res, next) => next());
   const readAuth = (command: CliGatewayActorReadCommand): RequestHandler =>
     options.requireReadActorAuth?.(command) ?? options.requireReadAuth ?? auth;
-  const writeAuth = (command: CliGatewayActorWriteCommand): RequestHandler =>
-    options.requireWriteActorAuth?.(command, {
-      scopeForRequest: topicWorkContextScopeFromBody,
-    }) ?? auth;
+  const writeAuth = (
+    command: CliGatewayActorWriteCommand,
+    scopeForRequest: (req: Request) => { workContextIds?: string[] } | undefined
+  ): RequestHandler =>
+    options.requireWriteActorAuth?.(command, { scopeForRequest }) ?? auth;
 
   router.get(
     '/workspace-topics',
@@ -536,7 +620,7 @@ export function createWorkspaceTopicsRouter(
 
   router.post(
     '/workspace-topics',
-    writeAuth('workspace-topics.create'),
+    writeAuth('workspace-topics.create', topicWorkContextScopeFromBody),
     async (req, res) => {
       if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
       if (!options.store) {
@@ -591,7 +675,9 @@ export function createWorkspaceTopicsRouter(
 
   router.patch(
     '/workspace-topics/:id',
-    writeAuth('workspace-topics.update'),
+    writeAuth('workspace-topics.update', (req) =>
+      topicWorkContextScopeFromUpdate({ store: options.store, req })
+    ),
     async (req, res) => {
       if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
       if (!options.store) {
@@ -649,7 +735,9 @@ export function createWorkspaceTopicsRouter(
 
   router.post(
     '/workspace-topics/:id/archive',
-    writeAuth('workspace-topics.archive'),
+    writeAuth('workspace-topics.archive', (req) =>
+      topicWorkContextScopeFromPersistedTopic({ store: options.store, req })
+    ),
     (req, res) => {
       if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
       if (!options.store) {

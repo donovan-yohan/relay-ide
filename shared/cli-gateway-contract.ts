@@ -436,6 +436,14 @@ const workspaceTopicGetInputSchema: RelayJsonSchema = {
   required: ['id'],
 };
 
+const workspaceTopicArchiveInputSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicsArchiveInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: stringSchema, confirmationToken: stringSchema },
+  required: ['id'],
+};
+
 const workspaceTopicWriteInputSchema: RelayJsonSchema = {
   title: 'WorkspaceTopicWriteInput',
   type: 'object',
@@ -6507,6 +6515,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'UNAUTHORIZED',
       'FORBIDDEN',
       'INVALID_ARGUMENT',
+      'SESSION_CONFLICT',
       'SERVER_UNAVAILABLE',
       'INTERNAL',
     ],
@@ -6556,12 +6565,12 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--json',
     ],
     summary:
-      'Archive a WorkspaceTopic. This destructive topic mutation advertises the Command Center confirmation-challenge policy.',
+      'Archive a WorkspaceTopic. This destructive topic mutation advertises the Command Center confirmation-challenge policy and supports confirmation-token replay.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
     capabilityHints: ['context:write'],
-    inputSchema: workspaceTopicGetInputSchema,
+    inputSchema: workspaceTopicArchiveInputSchema,
     outputSchema: okOutput(
       'WorkspaceTopicsArchiveOutput',
       workspaceTopicOutputDataSchema
@@ -6571,6 +6580,8 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'FORBIDDEN',
       'INVALID_ARGUMENT',
       'NOT_FOUND',
+      'CONFIRMATION_REQUIRED',
+      'SESSION_CONFLICT',
       'SERVER_UNAVAILABLE',
       'INTERNAL',
     ],

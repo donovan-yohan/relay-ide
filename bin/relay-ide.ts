@@ -5203,15 +5203,28 @@ async function runGatewayWorkspaceTopics(
     printGatewayEnvelope(gatewayOk('workspace-topics.update', result), 0);
   }
   if (subcommand === 'archive') {
-    const id = gatewayArg(topicArgs, '--id') ?? topicArgs[0];
+    const input = parseGatewayInputObject(
+      'workspace-topics.archive',
+      topicArgs
+    );
+    const id =
+      typeof input['id'] === 'string'
+        ? input['id']
+        : (gatewayArg(topicArgs, '--id') ?? topicArgs[0]);
     if (!id || id.startsWith('--'))
       gatewayInvalid('workspace-topics.archive', '--id is required');
+    const rawConfirmationToken =
+      typeof input['confirmationToken'] === 'string'
+        ? input['confirmationToken']
+        : gatewayArg(topicArgs, '--confirmation-token');
+    const confirmationToken = rawConfirmationToken?.trim();
     const result = await gatewayHttpJson({
       commandName: 'workspace-topics.archive',
       pathName: `/workspace-topics/${encodeURIComponent(id)}/archive`,
       method: 'POST',
       body: {},
       capabilities: ['context:write'],
+      ...(confirmationToken ? { confirmationToken } : {}),
     });
     printGatewayEnvelope(gatewayOk('workspace-topics.archive', result), 0);
   }

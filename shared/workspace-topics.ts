@@ -322,8 +322,13 @@ function readStringList(value: unknown, field: string): string[] | undefined {
   return out.length ? out : undefined;
 }
 
-export function createWorkspaceTopicId(localId: string): WorkspaceTopicId {
-  const slug = localId
+export function createWorkspaceTopicId(
+  localId: string,
+  namespace?: string
+): WorkspaceTopicId {
+  const slug = [namespace, localId]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join('-')
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, '-')
@@ -910,7 +915,9 @@ export function buildWorkspaceTopicRecord(input: {
   create: WorkspaceTopicCreateInput;
   now: string;
 }): WorkspaceTopic {
-  const id = input.create.id ?? createWorkspaceTopicId(input.create.title);
+  const id =
+    input.create.id ??
+    createWorkspaceTopicId(input.create.title, input.create.workspaceId);
   return {
     schemaVersion: WORKSPACE_TOPIC_SCHEMA_VERSION,
     id,
