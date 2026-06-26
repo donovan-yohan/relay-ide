@@ -162,6 +162,11 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'pr-overseer.get': 'pr overseer details + handoff readiness',
   'workspace-surfaces.list': 'list workspace surfaces',
   'workspace-surfaces.publish': 'publish workspace surface',
+  'workspace-topics.list': 'list workspace topics',
+  'workspace-topics.get': 'workspace topic details',
+  'workspace-topics.create': 'create workspace topic',
+  'workspace-topics.update': 'update workspace topic',
+  'workspace-topics.archive': 'archive workspace topic',
   'roster.list': 'list active agent roster',
   'roster.register': 'register self-declared agent presence',
   'roster.updateSelf': 'update self-declared agent presence',
@@ -205,6 +210,7 @@ const DESTRUCTIVE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.kill',
   'worktrees.delete',
   'worktrees.archive',
+  'workspace-topics.archive',
 ]);
 
 const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
@@ -242,6 +248,8 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'pr-overseer.observe',
   'pr-overseer.retire',
   'workspace-surfaces.publish',
+  'workspace-topics.create',
+  'workspace-topics.update',
   'repos.add',
   'workspaces.launch',
   'worktrees.create',
@@ -287,6 +295,7 @@ function scopeKindsForGatewayCommand(
     return ['work-context', 'repo', 'session'];
   if (name.startsWith('workspace-surfaces.'))
     return ['work-context', 'repo', 'worktree', 'node'];
+  if (name.startsWith('workspace-topics.')) return ['work-context'];
   if (name.startsWith('roster.')) return ['repo', 'work-context', 'session'];
   if (name.startsWith('cockpit.')) return ['work-context', 'session'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
@@ -316,6 +325,7 @@ function requiresConfirmationForGatewayCommand(
     spec.name === 'settings.update' ||
     spec.name === 'worktrees.delete' ||
     spec.name === 'worktrees.archive' ||
+    spec.name === 'workspace-topics.archive' ||
     spec.name === 'handoffs.create' ||
     spec.name === 'handoffs.launch' ||
     spec.capabilityHints.includes('pty:exec:arbitrary') ||

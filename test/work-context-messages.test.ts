@@ -18,10 +18,15 @@ import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credent
 const cleanup: Array<() => void> = [];
 
 function tempDb(name: string): string {
-  return path.join(os.tmpdir(), `relay-work-context-messages-${process.pid}-${Date.now()}-${name}.db`);
+  return path.join(
+    os.tmpdir(),
+    `relay-work-context-messages-${process.pid}-${Date.now()}-${name}.db`
+  );
 }
 
-function messageInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function messageInput(
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
   return {
     workContextId: 'wc:949',
     kind: 'handoff',
@@ -30,9 +35,20 @@ function messageInput(overrides: Record<string, unknown> = {}): Record<string, u
     summary: 'implementation handoff for #949',
     payloadSchema: 'relay.pipeline.handoff.v1',
     refs: {
-      taskRefs: [{ kind: 'github-issue', id: '949', title: 'WorkContext messages' }],
-      repo: { ownerRepo: 'donovan-yohan/relay-ide', branchName: 'ebi/949-workcontext-messages' },
-      external: [{ kind: 'github-pr', id: '951', url: 'https://github.com/donovan-yohan/relay-ide/pull/951' }],
+      taskRefs: [
+        { kind: 'github-issue', id: '949', title: 'WorkContext messages' },
+      ],
+      repo: {
+        ownerRepo: 'donovan-yohan/relay-ide',
+        branchName: 'ebi/949-workcontext-messages',
+      },
+      external: [
+        {
+          kind: 'github-pr',
+          id: '951',
+          url: 'https://github.com/donovan-yohan/relay-ide/pull/951',
+        },
+      ],
     },
     payload: {
       mediaType: 'application/json',
@@ -56,14 +72,27 @@ function withStore(name: string): WorkContextMessageStore {
 }
 
 function tempRepo(name: string): string {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), `relay-message-template-${process.pid}-${name}-`));
+  const repo = fs.mkdtempSync(
+    path.join(os.tmpdir(), `relay-message-template-${process.pid}-${name}-`)
+  );
   fs.mkdirSync(path.join(repo, '.relay', 'messages'), { recursive: true });
-  execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['init'], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      GIT_DIR: undefined,
+      GIT_WORK_TREE: undefined,
+      GIT_COMMON_DIR: undefined,
+    },
+    stdio: 'ignore',
+  });
   cleanup.push(() => fs.rmSync(repo, { recursive: true, force: true }));
   return repo;
 }
 
-function scopedCredential(workContextIds: string[]): ScopedActorCredentialRecord {
+function scopedCredential(
+  workContextIds: string[]
+): ScopedActorCredentialRecord {
   return {
     id: 'credential:test',
     actor: { type: 'agent', id: 'agent:scoped', displayName: 'Scoped Agent' },
@@ -88,7 +117,8 @@ async function startRouter(
     createWorkContextMessageRouter({
       store,
       requireAuth: (req, _res, next) => {
-        if (credential) attachAuthenticatedCliGatewayActorCredential(req, credential);
+        if (credential)
+          attachAuthenticatedCliGatewayActorCredential(req, credential);
         next();
       },
       events: {
@@ -103,11 +133,15 @@ async function startRouter(
   await new Promise<void>((resolve) => server.listen(0, resolve));
   cleanup.push(() => server.close());
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('server did not bind a TCP port');
+  if (!address || typeof address === 'string')
+    throw new Error('server did not bind a TCP port');
   return { baseUrl: `http://127.0.0.1:${address.port}`, events };
 }
 
-async function jsonFetch(url: string, init: RequestInit = {}): Promise<{ status: number; body: any }> {
+async function jsonFetch(
+  url: string,
+  init: RequestInit = {}
+): Promise<{ status: number; body: any }> {
   const response = await fetch(url, {
     ...init,
     headers: {
@@ -139,7 +173,9 @@ describe('WorkContext message store', () => {
       'payload.body.raw_transcript',
       'payload.body.nested.password',
     ]);
-    expect(first.payload.byteCount).toBe(Buffer.byteLength(JSON.stringify(first.payload), 'utf8'));
+    expect(first.payload.byteCount).toBe(
+      Buffer.byteLength(JSON.stringify(first.payload), 'utf8')
+    );
 
     const reply = store.append(
       messageInput({
@@ -152,15 +188,25 @@ describe('WorkContext message store', () => {
     );
     expect(reply.refs.parentMessageId).toBe(first.id);
     expect(reply.refs.threadId).toBe(first.id);
-    expect(store.list({ threadId: first.id }).map((msg) => msg.id)).toEqual([reply.id, first.id]);
-    expect(store.list({ refKind: 'task.github-issue', refValue: '949' })).toHaveLength(2);
-    expect(store.list({ payloadSchema: 'relay.pipeline.handoff.v1' })[0]?.id).toBe(first.id);
+    expect(store.list({ threadId: first.id }).map((msg) => msg.id)).toEqual([
+      reply.id,
+      first.id,
+    ]);
+    expect(
+      store.list({ refKind: 'task.github-issue', refValue: '949' })
+    ).toHaveLength(2);
+    expect(
+      store.list({ payloadSchema: 'relay.pipeline.handoff.v1' })[0]?.id
+    ).toBe(first.id);
   });
 
   it('owns ids and timestamps even when append input supplies provenance fields', () => {
     const store = withStore('provenance');
     const message = store.append(
-      messageInput({ id: 'wcm:caller-controlled', createdAt: '2000-01-01T00:00:00.000Z' })
+      messageInput({
+        id: 'wcm:caller-controlled',
+        createdAt: '2000-01-01T00:00:00.000Z',
+      })
     );
 
     expect(message.id).toMatch(/^wcm:/);
@@ -176,10 +222,18 @@ describe('WorkContext message store', () => {
     for (let index = 0; index < 55; index += 1) body = { child: body };
 
     expect(() =>
-      store.append(messageInput({ payload: { mediaType: 'application/json', encoding: 'json', body } }))
+      store.append(
+        messageInput({
+          payload: { mediaType: 'application/json', encoding: 'json', body },
+        })
+      )
     ).toThrow(/deeply nested/);
-    expect(() => store.list({ workContextId: 'wc:949', refKind: 'task.github-issue' })).toThrow(/refKind/);
-    expect(() => store.list({ workContextId: 'wc:949', audienceId: 'qa' })).toThrow(/audienceKind/);
+    expect(() =>
+      store.list({ workContextId: 'wc:949', refKind: 'task.github-issue' })
+    ).toThrow(/refKind/);
+    expect(() =>
+      store.list({ workContextId: 'wc:949', audienceId: 'qa' })
+    ).toThrow(/audienceKind/);
   });
 
   it('derives thread roots server-side instead of trusting caller-provided threadId', () => {
@@ -188,12 +242,17 @@ describe('WorkContext message store', () => {
     const second = store.append(
       messageInput({
         workContextId: 'wc:second',
-        refs: { threadId: first.id, taskRefs: [{ kind: 'github-issue', id: '949' }] },
+        refs: {
+          threadId: first.id,
+          taskRefs: [{ kind: 'github-issue', id: '949' }],
+        },
       })
     );
 
     expect(second.refs.threadId).toBe(second.id);
-    expect(store.list({ threadId: first.id }).map((msg) => msg.id)).toEqual([first.id]);
+    expect(store.list({ threadId: first.id }).map((msg) => msg.id)).toEqual([
+      first.id,
+    ]);
   });
 });
 
@@ -218,11 +277,17 @@ describe('WorkContext message router', () => {
       },
     ]);
 
-    const listed = await jsonFetch(`${baseUrl}/work-context-messages?workContextId=wc%3A949`);
+    const listed = await jsonFetch(
+      `${baseUrl}/work-context-messages?workContextId=wc%3A949`
+    );
     expect(listed.status).toBe(200);
-    expect(listed.body.messages.map((msg: { id: string }) => msg.id)).toEqual([messageId]);
+    expect(listed.body.messages.map((msg: { id: string }) => msg.id)).toEqual([
+      messageId,
+    ]);
 
-    const shown = await jsonFetch(`${baseUrl}/work-context-messages/${encodeURIComponent(messageId)}`);
+    const shown = await jsonFetch(
+      `${baseUrl}/work-context-messages/${encodeURIComponent(messageId)}`
+    );
     expect(shown.status).toBe(200);
     expect(shown.body.message.id).toBe(messageId);
 
@@ -237,7 +302,9 @@ describe('WorkContext message router', () => {
   it('applies repo-local templates to append inputs and exposes template discovery routes', async () => {
     const repo = tempRepo('router');
     fs.mkdirSync(path.join(repo, 'packages', 'nested'), { recursive: true });
-    fs.mkdirSync(path.join(repo, 'packages', '.relay', 'messages'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'packages', '.relay', 'messages'), {
+      recursive: true,
+    });
     fs.writeFileSync(
       path.join(repo, '.relay', 'messages', 'qa-handoff.json'),
       JSON.stringify({
@@ -252,7 +319,13 @@ describe('WorkContext message router', () => {
       })
     );
     fs.writeFileSync(
-      path.join(repo, 'packages', '.relay', 'messages', 'qa-handoff-override.json'),
+      path.join(
+        repo,
+        'packages',
+        '.relay',
+        'messages',
+        'qa-handoff-override.json'
+      ),
       JSON.stringify({
         schemaVersion: 1,
         id: 'relay.qa.handoff',
@@ -271,7 +344,11 @@ describe('WorkContext message router', () => {
     );
     expect(listed.status).toBe(200);
     expect(listed.body.templates).toMatchObject([
-      { id: 'relay.qa.handoff', kind: 'package-qa-handoff', payloadSchema: 'relay.package.qa.handoff.v1' },
+      {
+        id: 'relay.qa.handoff',
+        kind: 'package-qa-handoff',
+        payloadSchema: 'relay.package.qa.handoff.v1',
+      },
     ]);
 
     const shown = await jsonFetch(
@@ -284,15 +361,18 @@ describe('WorkContext message router', () => {
       payloadSchema: 'relay.package.qa.handoff.v1',
     });
 
-    const rendered = await jsonFetch(`${baseUrl}/work-context-message-templates/render`, {
-      method: 'POST',
-      body: JSON.stringify({
-        repoPath: repo,
-        template: 'relay.qa.handoff',
-        templateData: { exactHead: 'abc1234' },
-        message: { workContextId: 'wc:949', summary: 'qa handoff requested' },
-      }),
-    });
+    const rendered = await jsonFetch(
+      `${baseUrl}/work-context-message-templates/render`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          repoPath: repo,
+          template: 'relay.qa.handoff',
+          templateData: { exactHead: 'abc1234' },
+          message: { workContextId: 'wc:949', summary: 'qa handoff requested' },
+        }),
+      }
+    );
     expect(rendered.status).toBe(200);
     expect(rendered.body.messageInput).toMatchObject({
       kind: 'qa-handoff',
@@ -304,16 +384,19 @@ describe('WorkContext message router', () => {
       },
     });
 
-    const renderedFromEnvelopeBody = await jsonFetch(`${baseUrl}/work-context-message-templates/render`, {
-      method: 'POST',
-      body: JSON.stringify({
-        repoPath: repo,
-        template: 'relay.qa.handoff',
-        templateData: { exactHead: 'def5678' },
-        workContextId: 'wc:949',
-        summary: 'qa handoff requested',
-      }),
-    });
+    const renderedFromEnvelopeBody = await jsonFetch(
+      `${baseUrl}/work-context-message-templates/render`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          repoPath: repo,
+          template: 'relay.qa.handoff',
+          templateData: { exactHead: 'def5678' },
+          workContextId: 'wc:949',
+          summary: 'qa handoff requested',
+        }),
+      }
+    );
     expect(renderedFromEnvelopeBody.status).toBe(200);
     expect(renderedFromEnvelopeBody.body.messageInput).toMatchObject({
       workContextId: 'wc:949',
@@ -321,9 +404,15 @@ describe('WorkContext message router', () => {
       kind: 'qa-handoff',
       payload: { body: { exactHead: 'def5678' } },
     });
-    expect(renderedFromEnvelopeBody.body.messageInput).not.toHaveProperty('repoPath');
-    expect(renderedFromEnvelopeBody.body.messageInput).not.toHaveProperty('template');
-    expect(renderedFromEnvelopeBody.body.messageInput).not.toHaveProperty('templateData');
+    expect(renderedFromEnvelopeBody.body.messageInput).not.toHaveProperty(
+      'repoPath'
+    );
+    expect(renderedFromEnvelopeBody.body.messageInput).not.toHaveProperty(
+      'template'
+    );
+    expect(renderedFromEnvelopeBody.body.messageInput).not.toHaveProperty(
+      'templateData'
+    );
 
     const appended = await jsonFetch(`${baseUrl}/work-context-messages`, {
       method: 'POST',
@@ -368,7 +457,9 @@ describe('WorkContext message router', () => {
       `${baseUrl}/work-context-message-templates?repoPath=${encodeURIComponent(repo)}`
     );
     expect(listed.status).toBe(403);
-    expect(listed.body.error.details.reasonCode).toBe('CLI_ACTOR_REPO_PATH_SELECTOR_FORBIDDEN');
+    expect(listed.body.error.details.reasonCode).toBe(
+      'CLI_ACTOR_REPO_PATH_SELECTOR_FORBIDDEN'
+    );
 
     const appended = await jsonFetch(`${baseUrl}/work-context-messages`, {
       method: 'POST',
@@ -380,7 +471,9 @@ describe('WorkContext message router', () => {
       }),
     });
     expect(appended.status).toBe(403);
-    expect(appended.body.error.details.reasonCode).toBe('CLI_ACTOR_REPO_PATH_SELECTOR_FORBIDDEN');
+    expect(appended.body.error.details.reasonCode).toBe(
+      'CLI_ACTOR_REPO_PATH_SELECTOR_FORBIDDEN'
+    );
   });
 
   it('fails closed when queries are unbounded or the store is unavailable', async () => {
@@ -390,16 +483,22 @@ describe('WorkContext message router', () => {
     expect(unbounded.status).toBe(400);
     expect(unbounded.body.error.code).toBe('INVALID_ARGUMENT');
 
-    const partialRef = await jsonFetch(`${baseUrl}/work-context-messages?workContextId=wc%3A949&refKind=task.github-issue`);
+    const partialRef = await jsonFetch(
+      `${baseUrl}/work-context-messages?workContextId=wc%3A949&refKind=task.github-issue`
+    );
     expect(partialRef.status).toBe(400);
     expect(partialRef.body.error.message).toMatch(/refKind and refValue/);
 
-    const partialAudience = await jsonFetch(`${baseUrl}/work-context-messages?workContextId=wc%3A949&audienceId=qa`);
+    const partialAudience = await jsonFetch(
+      `${baseUrl}/work-context-messages?workContextId=wc%3A949&audienceId=qa`
+    );
     expect(partialAudience.status).toBe(400);
     expect(partialAudience.body.error.message).toMatch(/audienceKind/);
 
     const unavailable = await startRouter(null);
-    const response = await jsonFetch(`${unavailable.baseUrl}/work-context-messages?workContextId=wc%3A949`);
+    const response = await jsonFetch(
+      `${unavailable.baseUrl}/work-context-messages?workContextId=wc%3A949`
+    );
     expect(response.status).toBe(503);
     expect(response.body.error.code).toBe('SERVER_UNAVAILABLE');
   });
@@ -426,18 +525,26 @@ describe('WorkContext message router', () => {
 
     const allowed = await jsonFetch(`${baseUrl}/work-context-messages/query`, {
       method: 'POST',
-      body: JSON.stringify({ refKind: 'task.github-issue', refValue: '949', workContextId: 'wc:949' }),
+      body: JSON.stringify({
+        refKind: 'task.github-issue',
+        refValue: '949',
+        workContextId: 'wc:949',
+      }),
     });
     expect(allowed.status).toBe(200);
-    expect(allowed.body.messages.map((msg: { workContextId: string }) => msg.workContextId)).toEqual([
-      'wc:949',
-    ]);
+    expect(
+      allowed.body.messages.map(
+        (msg: { workContextId: string }) => msg.workContextId
+      )
+    ).toEqual(['wc:949']);
 
     const denied = await jsonFetch(`${baseUrl}/work-context-messages/query`, {
       method: 'POST',
       body: JSON.stringify({ refKind: 'task.github-issue', refValue: '949' }),
     });
     expect(denied.status).toBe(403);
-    expect(denied.body.error.details.reasonCode).toBe('CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE');
+    expect(denied.body.error.details.reasonCode).toBe(
+      'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE'
+    );
   });
 });

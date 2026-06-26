@@ -11,7 +11,18 @@ const MAX_STRING_CHARS = 4000;
 const MAX_GUIDE_DEPTH = 20;
 const TEMPLATE_DIR = path.join('.relay', 'messages');
 
-export type WorkContextMessageTemplateEncoding = 'json' | 'markdown' | 'text' | 'artifact-ref';
+const gitChildEnv: NodeJS.ProcessEnv = {
+  ...process.env,
+  GIT_DIR: undefined,
+  GIT_WORK_TREE: undefined,
+  GIT_COMMON_DIR: undefined,
+};
+
+export type WorkContextMessageTemplateEncoding =
+  | 'json'
+  | 'markdown'
+  | 'text'
+  | 'artifact-ref';
 export type WorkContextMessageTemplateDiagnosticCode =
   | 'no-repo'
   | 'missing-dir'
@@ -51,7 +62,12 @@ export interface WorkContextMessageTemplate {
     summary?: string;
     payload?: {
       body?: unknown;
-      artifactRefs?: Array<{ id: string; kind?: string; uri?: string; title?: string }>;
+      artifactRefs?: Array<{
+        id: string;
+        kind?: string;
+        uri?: string;
+        title?: string;
+      }>;
     };
     refs?: unknown;
   };
@@ -112,7 +128,10 @@ function cleanBoundedString(value: unknown, field: string): string {
   return text;
 }
 
-function cleanOptionalString(value: unknown, field: string): string | undefined {
+function cleanOptionalString(
+  value: unknown,
+  field: string
+): string | undefined {
   const text = readString(value);
   if (!text) return undefined;
   if (text.length > MAX_STRING_CHARS) throw new Error(`${field} is too long`);
@@ -126,7 +145,8 @@ function assertJsonDepth(value: unknown, field: string, depth = 0): void {
     return;
   }
   if (isRecord(value)) {
-    for (const item of Object.values(value)) assertJsonDepth(item, field, depth + 1);
+    for (const item of Object.values(value))
+      assertJsonDepth(item, field, depth + 1);
   }
 }
 
@@ -148,23 +168,35 @@ function cleanTags(value: unknown): string[] | undefined {
   return tags.length ? tags.slice(0, 20) : undefined;
 }
 
-function cleanFallback(value: unknown): WorkContextMessageTemplateFallback | undefined {
+function cleanFallback(
+  value: unknown
+): WorkContextMessageTemplateFallback | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error('fallback must be an object');
-  if (value['bodyGuide'] !== undefined) assertJsonDepth(value['bodyGuide'], 'fallback.bodyGuide');
+  if (value['bodyGuide'] !== undefined)
+    assertJsonDepth(value['bodyGuide'], 'fallback.bodyGuide');
   const fallback: WorkContextMessageTemplateFallback = {};
   const kind = cleanOptionalString(value['kind'], 'fallback.kind');
   if (kind) fallback.kind = kind;
-  const payloadSchema = cleanOptionalString(value['payloadSchema'], 'fallback.payloadSchema');
+  const payloadSchema = cleanOptionalString(
+    value['payloadSchema'],
+    'fallback.payloadSchema'
+  );
   if (payloadSchema) fallback.payloadSchema = payloadSchema;
-  const mediaType = cleanOptionalString(value['mediaType'], 'fallback.mediaType');
+  const mediaType = cleanOptionalString(
+    value['mediaType'],
+    'fallback.mediaType'
+  );
   if (mediaType) fallback.mediaType = mediaType;
-  if (value['encoding'] !== undefined) fallback.encoding = cleanEncoding(value['encoding']);
+  if (value['encoding'] !== undefined)
+    fallback.encoding = cleanEncoding(value['encoding']);
   if (value['bodyGuide'] !== undefined) fallback.bodyGuide = value['bodyGuide'];
   return fallback;
 }
 
-function cleanExample(value: unknown): WorkContextMessageTemplate['example'] | undefined {
+function cleanExample(
+  value: unknown
+): WorkContextMessageTemplate['example'] | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error('example must be an object');
   assertJsonDepth(value, 'example');
@@ -173,14 +205,17 @@ function cleanExample(value: unknown): WorkContextMessageTemplate['example'] | u
   if (summary) example.summary = summary;
   const payload = isRecord(value['payload']) ? value['payload'] : undefined;
   if (payload) {
-    const payloadOut: NonNullable<NonNullable<WorkContextMessageTemplate['example']>['payload']> = {};
+    const payloadOut: NonNullable<
+      NonNullable<WorkContextMessageTemplate['example']>['payload']
+    > = {};
     if (payload['body'] !== undefined) payloadOut.body = payload['body'];
     if (Array.isArray(payload['artifactRefs'])) {
       const artifactRefs = payload['artifactRefs'].flatMap((item) => {
         if (!isRecord(item)) return [];
         const id = readString(item['id']);
         if (!id) return [];
-        const ref: { id: string; kind?: string; uri?: string; title?: string } = { id };
+        const ref: { id: string; kind?: string; uri?: string; title?: string } =
+          { id };
         const kind = readString(item['kind']);
         if (kind) ref.kind = kind;
         const uri = readString(item['uri']);
@@ -197,10 +232,15 @@ function cleanExample(value: unknown): WorkContextMessageTemplate['example'] | u
   return example;
 }
 
-function parseTemplate(raw: unknown, sourcePath: string, stem: string): WorkContextMessageTemplate {
+function parseTemplate(
+  raw: unknown,
+  sourcePath: string,
+  stem: string
+): WorkContextMessageTemplate {
   if (!isRecord(raw)) throw new Error('template must be a JSON object');
   if (raw['schemaVersion'] !== 1) throw new Error('schemaVersion must be 1');
-  if (raw['bodyGuide'] !== undefined) assertJsonDepth(raw['bodyGuide'], 'bodyGuide');
+  if (raw['bodyGuide'] !== undefined)
+    assertJsonDepth(raw['bodyGuide'], 'bodyGuide');
   const template: WorkContextMessageTemplate = {
     schemaVersion: 1,
     id: cleanBoundedString(raw['id'], 'id'),
@@ -232,34 +272,78 @@ function diagnostic(
   return { code, message, ...extra };
 }
 
-function repoPathFromWorkContext(workContextStore: WorkContextStore | undefined, workContextId: string | undefined): string | undefined {
+function repoPathFromWorkContext(
+  workContextStore: WorkContextStore | undefined,
+  workContextId: string | undefined
+): string | undefined {
   if (!workContextId || !workContextStore) return undefined;
   const context = workContextStore.get(workContextId);
-  return context?.anchors.worktree?.localPath ?? context?.anchors.repo?.localPath;
+  return (
+    context?.anchors.worktree?.localPath ?? context?.anchors.repo?.localPath
+  );
 }
 
-function selectorPath(selector: WorkContextMessageTemplateSelector, workContextStore?: WorkContextStore): string | undefined {
-  return selector.repoPath ?? selector.cwd ?? repoPathFromWorkContext(workContextStore, selector.workContextId) ?? process.cwd();
+function selectorPath(
+  selector: WorkContextMessageTemplateSelector,
+  workContextStore?: WorkContextStore
+): string | undefined {
+  return (
+    selector.repoPath ??
+    selector.cwd ??
+    repoPathFromWorkContext(workContextStore, selector.workContextId) ??
+    process.cwd()
+  );
 }
 
-function resolveRepoRoot(selector: WorkContextMessageTemplateSelector, workContextStore?: WorkContextStore): { repoRoot?: string; selectedDir?: string; diagnostics: WorkContextMessageTemplateDiagnostic[] } {
+function resolveRepoRoot(
+  selector: WorkContextMessageTemplateSelector,
+  workContextStore?: WorkContextStore
+): {
+  repoRoot?: string;
+  selectedDir?: string;
+  diagnostics: WorkContextMessageTemplateDiagnostic[];
+} {
   const selectedPath = selectorPath(selector, workContextStore);
-  if (!selectedPath) return { diagnostics: [diagnostic('no-repo', 'no repo selector provided')] };
+  if (!selectedPath)
+    return {
+      diagnostics: [diagnostic('no-repo', 'no repo selector provided')],
+    };
   try {
     const realSelected = fs.realpathSync(path.resolve(selectedPath));
     const stat = fs.lstatSync(realSelected);
     if (!stat.isDirectory()) {
-      return { diagnostics: [diagnostic('invalid-selector', 'template selector must resolve to a directory', { sourcePath: realSelected })] };
+      return {
+        diagnostics: [
+          diagnostic(
+            'invalid-selector',
+            'template selector must resolve to a directory',
+            { sourcePath: realSelected }
+          ),
+        ],
+      };
     }
     const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd: realSelected,
+      env: gitChildEnv,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 2000,
     }).trim();
-    return { repoRoot: fs.realpathSync(repoRoot), selectedDir: realSelected, diagnostics: [] };
+    return {
+      repoRoot: fs.realpathSync(repoRoot),
+      selectedDir: realSelected,
+      diagnostics: [],
+    };
   } catch {
-    return { diagnostics: [diagnostic('no-repo', 'no git repository found for template discovery', { sourcePath: path.resolve(selectedPath) })] };
+    return {
+      diagnostics: [
+        diagnostic(
+          'no-repo',
+          'no git repository found for template discovery',
+          { sourcePath: path.resolve(selectedPath) }
+        ),
+      ],
+    };
   }
 }
 
@@ -267,9 +351,13 @@ function templateDirForRepo(repoRoot: string): string {
   return path.join(repoRoot, TEMPLATE_DIR);
 }
 
-function templateDirsForSelection(repoRoot: string, selectedDir: string | undefined): string[] {
+function templateDirsForSelection(
+  repoRoot: string,
+  selectedDir: string | undefined
+): string[] {
   const dirs: string[] = [];
-  let current = selectedDir && selectedDir.startsWith(repoRoot) ? selectedDir : repoRoot;
+  let current =
+    selectedDir && selectedDir.startsWith(repoRoot) ? selectedDir : repoRoot;
   while (current.startsWith(repoRoot)) {
     dirs.push(path.join(current, TEMPLATE_DIR));
     if (current === repoRoot) break;
@@ -295,14 +383,26 @@ function readTemplatesFromDir(
   if (!fs.existsSync(candidateDir)) return [];
   const realDir = fs.realpathSync(candidateDir);
   if (realDir !== repoRoot && !realDir.startsWith(`${repoRoot}${path.sep}`)) {
-    diagnostics.push(diagnostic('invalid-selector', 'template directory escapes repo root', { sourcePath: realDir }));
+    diagnostics.push(
+      diagnostic('invalid-selector', 'template directory escapes repo root', {
+        sourcePath: realDir,
+      })
+    );
     return [];
   }
   const idsInDir = new Set<string>();
   return fs
     .readdirSync(realDir)
     .sort((left, right) => left.localeCompare(right))
-    .flatMap((filename) => readTemplateFromDirEntry(realDir, filename, includeInvalid, diagnostics, idsInDir));
+    .flatMap((filename) =>
+      readTemplateFromDirEntry(
+        realDir,
+        filename,
+        includeInvalid,
+        diagnostics,
+        idsInDir
+      )
+    );
 }
 
 function readTemplateFromDirEntry(
@@ -316,35 +416,61 @@ function readTemplateFromDirEntry(
   const sourcePath = path.join(realDir, filename);
   if (!stem) {
     if (filename.endsWith('.json') || includeInvalid) {
-      diagnostics.push(diagnostic('invalid-template-name', 'template filename is invalid', { template: filename, sourcePath }));
+      diagnostics.push(
+        diagnostic('invalid-template-name', 'template filename is invalid', {
+          template: filename,
+          sourcePath,
+        })
+      );
     }
     return [];
   }
   try {
     const stat = fs.lstatSync(sourcePath);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('template must be a regular file');
-    if (stat.size > MAX_TEMPLATE_BYTES) throw new Error('template file is too large');
+    if (!stat.isFile() || stat.isSymbolicLink())
+      throw new Error('template must be a regular file');
+    if (stat.size > MAX_TEMPLATE_BYTES)
+      throw new Error('template file is too large');
     const realFile = fs.realpathSync(sourcePath);
-    if (!realFile.startsWith(`${realDir}${path.sep}`)) throw new Error('template path escapes template directory');
-    const template = parseTemplate(JSON.parse(fs.readFileSync(realFile, 'utf8')), realFile, stem);
+    if (!realFile.startsWith(`${realDir}${path.sep}`))
+      throw new Error('template path escapes template directory');
+    const template = parseTemplate(
+      JSON.parse(fs.readFileSync(realFile, 'utf8')),
+      realFile,
+      stem
+    );
     if (idsInDir.has(template.id)) {
-      diagnostics.push(diagnostic('duplicate-template-id', 'duplicate template id in one directory; first lexicographic file wins for that directory', { template: template.id, sourcePath: realFile }));
+      diagnostics.push(
+        diagnostic(
+          'duplicate-template-id',
+          'duplicate template id in one directory; first lexicographic file wins for that directory',
+          { template: template.id, sourcePath: realFile }
+        )
+      );
       return [];
     }
     idsInDir.add(template.id);
     return [template];
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    diagnostics.push(diagnostic('template-invalid', message, { template: stem, sourcePath }));
+    diagnostics.push(
+      diagnostic('template-invalid', message, { template: stem, sourcePath })
+    );
     return [];
   }
 }
 
 export function listWorkContextMessageTemplates(
   selector: WorkContextMessageTemplateSelector,
-  options: { workContextStore?: WorkContextStore; includeInvalid?: boolean } = {}
+  options: {
+    workContextStore?: WorkContextStore;
+    includeInvalid?: boolean;
+  } = {}
 ): WorkContextMessageTemplateListResult {
-  const { repoRoot, selectedDir, diagnostics } = resolveRepoRoot(selector, options.workContextStore);
+  const { repoRoot, selectedDir, diagnostics } = resolveRepoRoot(
+    selector,
+    options.workContextStore
+  );
   if (!repoRoot) return { templates: [], diagnostics };
   const templateDir = templateDirForRepo(repoRoot);
   const templateDirs = templateDirsForSelection(repoRoot, selectedDir);
@@ -353,38 +479,87 @@ export function listWorkContextMessageTemplates(
       repoRoot,
       templateDir,
       templates: [],
-      diagnostics: [diagnostic('missing-dir', 'repo has no .relay/messages template directory', { sourcePath: templateDir })],
+      diagnostics: [
+        diagnostic(
+          'missing-dir',
+          'repo has no .relay/messages template directory',
+          { sourcePath: templateDir }
+        ),
+      ],
     };
   }
   const templatesById = new Map<string, WorkContextMessageTemplate>();
   for (const candidateDir of templateDirs) {
-    for (const template of readTemplatesFromDir(repoRoot, candidateDir, options.includeInvalid, diagnostics)) {
+    for (const template of readTemplatesFromDir(
+      repoRoot,
+      candidateDir,
+      options.includeInvalid,
+      diagnostics
+    )) {
       templatesById.set(template.id, template);
     }
   }
-  const templates = Array.from(templatesById.values()).sort((left, right) => left.id.localeCompare(right.id));
-  return { repoRoot, templateDir, templates, diagnostics: options.includeInvalid ? diagnostics : diagnostics.filter((entry) => entry.code !== 'template-invalid') };
+  const templates = Array.from(templatesById.values()).sort((left, right) =>
+    left.id.localeCompare(right.id)
+  );
+  return {
+    repoRoot,
+    templateDir,
+    templates,
+    diagnostics: options.includeInvalid
+      ? diagnostics
+      : diagnostics.filter((entry) => entry.code !== 'template-invalid'),
+  };
 }
 
 export function findWorkContextMessageTemplate(
   selector: WorkContextMessageTemplateSelector,
   templateIdOrStem: string,
   options: { workContextStore?: WorkContextStore } = {}
-): { template: WorkContextMessageTemplate; diagnostics: WorkContextMessageTemplateDiagnostic[]; repoRoot?: string; templateDir?: string } {
-  if (!TEMPLATE_NAME_RE.test(templateIdOrStem) && templateIdOrStem.includes('/')) {
-    throw new WorkContextMessageTemplateError(400, 'invalid-template-name', 'template id or stem is invalid', { template: templateIdOrStem });
+): {
+  template: WorkContextMessageTemplate;
+  diagnostics: WorkContextMessageTemplateDiagnostic[];
+  repoRoot?: string;
+  templateDir?: string;
+} {
+  if (
+    !TEMPLATE_NAME_RE.test(templateIdOrStem) &&
+    templateIdOrStem.includes('/')
+  ) {
+    throw new WorkContextMessageTemplateError(
+      400,
+      'invalid-template-name',
+      'template id or stem is invalid',
+      { template: templateIdOrStem }
+    );
   }
   const listed = listWorkContextMessageTemplates(selector, {
-    ...(options.workContextStore ? { workContextStore: options.workContextStore } : {}),
+    ...(options.workContextStore
+      ? { workContextStore: options.workContextStore }
+      : {}),
     includeInvalid: true,
   });
-  const byId = listed.templates.filter((entry) => entry.id === templateIdOrStem);
+  const byId = listed.templates.filter(
+    (entry) => entry.id === templateIdOrStem
+  );
   if (byId.length > 1) {
-    throw new WorkContextMessageTemplateError(409, 'duplicate-template-id', 'duplicate template id requires filename-stem lookup', { template: templateIdOrStem });
+    throw new WorkContextMessageTemplateError(
+      409,
+      'duplicate-template-id',
+      'duplicate template id requires filename-stem lookup',
+      { template: templateIdOrStem }
+    );
   }
-  const template = byId[0] ?? listed.templates.find((entry) => entry.stem === templateIdOrStem);
+  const template =
+    byId[0] ??
+    listed.templates.find((entry) => entry.stem === templateIdOrStem);
   if (!template) {
-    throw new WorkContextMessageTemplateError(404, 'template-not-found', 'WorkContext message template not found', { template: templateIdOrStem });
+    throw new WorkContextMessageTemplateError(
+      404,
+      'template-not-found',
+      'WorkContext message template not found',
+      { template: templateIdOrStem }
+    );
   }
   const result: {
     template: WorkContextMessageTemplate;
@@ -403,16 +578,30 @@ export function renderWorkContextMessageTemplate(
 ): WorkContextMessageTemplateRenderResult {
   const templateId = input.template;
   if (!templateId) {
-    throw new WorkContextMessageTemplateError(400, 'template-not-found', 'template is required');
+    throw new WorkContextMessageTemplateError(
+      400,
+      'template-not-found',
+      'template is required'
+    );
   }
-  const { template, diagnostics } = findWorkContextMessageTemplate(input, templateId, options);
+  const { template, diagnostics } = findWorkContextMessageTemplate(
+    input,
+    templateId,
+    options
+  );
   const messageInput: Record<string, unknown> = { ...(input.message ?? {}) };
   if (messageInput['kind'] === undefined) messageInput['kind'] = template.kind;
-  if (messageInput['payloadSchema'] === undefined) messageInput['payloadSchema'] = template.payloadSchema;
-  const payload = isRecord(messageInput['payload']) ? { ...messageInput['payload'] } : {};
-  if (payload['mediaType'] === undefined) payload['mediaType'] = template.mediaType;
-  if (payload['encoding'] === undefined) payload['encoding'] = template.encoding;
-  if (payload['body'] === undefined && input.templateData !== undefined) payload['body'] = input.templateData;
+  if (messageInput['payloadSchema'] === undefined)
+    messageInput['payloadSchema'] = template.payloadSchema;
+  const payload = isRecord(messageInput['payload'])
+    ? { ...messageInput['payload'] }
+    : {};
+  if (payload['mediaType'] === undefined)
+    payload['mediaType'] = template.mediaType;
+  if (payload['encoding'] === undefined)
+    payload['encoding'] = template.encoding;
+  if (payload['body'] === undefined && input.templateData !== undefined)
+    payload['body'] = input.templateData;
   if (Object.keys(payload).length > 0) messageInput['payload'] = payload;
   return { template, messageInput, diagnostics };
 }
@@ -420,23 +609,34 @@ export function renderWorkContextMessageTemplate(
 export function applyWorkContextMessageTemplateToAppendInput(
   rawInput: Record<string, unknown>,
   options: { workContextStore?: WorkContextStore } = {}
-): { input: WorkContextMessageCreateInput | Record<string, unknown>; template?: WorkContextMessageTemplate; diagnostics: WorkContextMessageTemplateDiagnostic[] } {
+): {
+  input: WorkContextMessageCreateInput | Record<string, unknown>;
+  template?: WorkContextMessageTemplate;
+  diagnostics: WorkContextMessageTemplateDiagnostic[];
+} {
   const template = readString(rawInput['template']);
   if (!template) return { input: rawInput, diagnostics: [] };
   const repoPath = readString(rawInput['repoPath']);
   const cwd = readString(rawInput['cwd']);
   const workContextId = readString(rawInput['workContextId']);
-  const render = renderWorkContextMessageTemplate({
-    ...(repoPath ? { repoPath } : {}),
-    ...(cwd ? { cwd } : {}),
-    ...(workContextId ? { workContextId } : {}),
-    template,
-    templateData: rawInput['templateData'],
-    message: rawInput,
-  }, options);
+  const render = renderWorkContextMessageTemplate(
+    {
+      ...(repoPath ? { repoPath } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(workContextId ? { workContextId } : {}),
+      template,
+      templateData: rawInput['templateData'],
+      message: rawInput,
+    },
+    options
+  );
   delete render.messageInput['template'];
   delete render.messageInput['templateData'];
   delete render.messageInput['repoPath'];
   delete render.messageInput['cwd'];
-  return { input: render.messageInput, template: render.template, diagnostics: render.diagnostics };
+  return {
+    input: render.messageInput,
+    template: render.template,
+    diagnostics: render.diagnostics,
+  };
 }
