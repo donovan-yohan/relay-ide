@@ -34,6 +34,7 @@ import type {
   WorkspaceSurface,
   WorkspaceSurfaceListResponse,
 } from '../../../shared/workspace-surfaces.js';
+import type { WorkspaceTopicListResponse } from '../../../shared/workspace-topics.js';
 import type {
   PipelineHandoffArtifact,
   PipelineHandoffStageName,
@@ -1612,6 +1613,25 @@ export async function fetchWorkspaceSurfaces(
     })
   );
   return Array.isArray(data.surfaces) ? data.surfaces : [];
+}
+
+export async function fetchWorkspaceTopics(
+  args: { workspaceId?: string; includeArchived?: boolean } = {}
+): Promise<WorkspaceTopicListResponse> {
+  const params = new URLSearchParams();
+  if (args.workspaceId) params.set('workspaceId', args.workspaceId);
+  if (args.includeArchived) params.set('includeArchived', '1');
+  const query = params.toString();
+  const data = await json<WorkspaceTopicListResponse>(
+    await fetch(`/workspace-topics${query ? `?${query}` : ''}`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return {
+    topics: Array.isArray(data.topics) ? data.topics : [],
+    truncated: Boolean(data.truncated),
+    derived: Boolean(data.derived),
+  };
 }
 
 export interface NodeFsWriteArgs {

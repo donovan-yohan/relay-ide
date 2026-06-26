@@ -23,6 +23,7 @@ import {
 import WorkspaceGroup from './WorkspaceGroup.js';
 import RepoItem from './RepoItem.js';
 import { SessionHistoryPanel } from './SessionHistoryPanel.js';
+import { TopicSidebarShell } from './TopicSidebarShell.js';
 import { ViewSpineTree } from './ViewSpineTree.js';
 import type { BenchCreatePayload } from '../lib/state/view-tree.js';
 import { TuiButton } from './TuiButton.js';
@@ -490,6 +491,7 @@ export function Sidebar({
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const analyticsView = useUiStore((s) => s.analyticsView);
   const viewSpineEnabled = useUiStore((s) => s.viewSpineEnabled);
+  const topicShellEnabled = useUiStore((s) => s.topicShellEnabled);
   const closeSidebar = useUiStore((s) => s.closeSidebar);
   const toggleSidebarCollapsed = useUiStore((s) => s.toggleSidebarCollapsed);
   const repos = useSessionsStore((s) => s.repos);
@@ -628,6 +630,12 @@ export function Sidebar({
               repoName={historyRepo.name}
               onBack={handleCloseHistory}
             />
+          ) : topicShellEnabled ? (
+            // #1023: flag-gated thin-line WorkspaceTopic shell. Default OFF so
+            // the legacy sidebar and #732 view-spine rollout remain untouched.
+            <div className="sidebar-workspace-list">
+              <TopicSidebarShell onSelectSession={onSelectSession} />
+            </div>
           ) : viewSpineEnabled ? (
             // #732/#729: flag-gated, read-only, client-derived view-spine tree.
             // OFF path below is byte-identical to today.

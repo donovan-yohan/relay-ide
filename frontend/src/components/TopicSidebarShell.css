@@ -1,0 +1,302 @@
+.topic-shell {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  font-family: var(--font-mono);
+}
+
+.topic-shell__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.topic-shell__derived {
+  color: var(--status-info);
+}
+
+.topic-tree,
+.topic-child-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.topic-node {
+  margin: 0;
+  padding: 0;
+}
+
+.topic-row {
+  display: grid;
+  grid-template-columns: 14px 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.topic-row:hover,
+.topic-row:focus-visible,
+.topic-row.selected {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.topic-row.selected {
+  border-left-color: var(--accent);
+}
+
+.topic-row--active:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-success) 60%, transparent);
+}
+
+.topic-row--attention:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-warning) 70%, transparent);
+}
+
+.topic-row--error:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-error) 70%, transparent);
+}
+
+.topic-row.muted {
+  opacity: 0.65;
+}
+
+.topic-row__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+.topic-row__chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.topic-row__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  border-radius: 2px;
+  color: #000;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.topic-row__title {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.topic-row__trail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  max-width: 112px;
+}
+
+.topic-status {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border: 1px solid var(--text-muted);
+  border-radius: 50%;
+}
+
+.topic-status--active {
+  border-color: var(--status-success);
+  background: var(--status-success);
+}
+
+.topic-status--attention {
+  border-color: var(--status-warning);
+  background: var(--status-warning);
+}
+
+.topic-status--error {
+  border-color: var(--status-error);
+  background: var(--status-error);
+}
+
+.topic-status--idle {
+  border-color: var(--status-info);
+}
+
+.topic-status--empty {
+  opacity: 0.5;
+}
+
+.topic-chip,
+.topic-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  max-width: 42px;
+  height: 18px;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.58rem;
+  line-height: 1;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-action:not(:disabled) {
+  cursor: pointer;
+}
+
+.topic-action:not(:disabled):hover,
+.topic-action:not(:disabled):focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+  outline: none;
+}
+
+.topic-action--reachable,
+.topic-action--configured {
+  border-color: color-mix(in srgb, var(--status-success) 45%, transparent);
+}
+
+.topic-action--unreachable {
+  border-color: color-mix(in srgb, var(--status-error) 55%, transparent);
+  color: var(--status-error);
+}
+
+.topic-detail {
+  margin: 0 8px 4px 44px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+}
+
+.topic-detail__title {
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+}
+
+.topic-detail__description {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.topic-detail__description.muted {
+  opacity: 0.65;
+}
+
+.topic-detail__meta,
+.topic-detail__surfaces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 0.58rem;
+}
+
+.topic-detail__meta > span {
+  border: 1px solid var(--border);
+  padding: 2px 4px;
+}
+
+.topic-child-row__button {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 3px 8px 3px 52px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.topic-child-row__button:hover,
+.topic-child-row__button:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: none;
+}
+
+.topic-child-row--active .topic-child-row__button {
+  border-left-color: color-mix(in srgb, var(--status-success) 55%, transparent);
+}
+
+.topic-child-row--attention .topic-child-row__button {
+  border-left-color: color-mix(in srgb, var(--status-warning) 65%, transparent);
+}
+
+.topic-child-row--error .topic-child-row__button {
+  border-left-color: color-mix(in srgb, var(--status-error) 65%, transparent);
+}
+
+.topic-child-row__label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.topic-child-row__meta {
+  max-width: 72px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-shell-state {
+  padding: 16px 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+.topic-shell-state.error {
+  color: var(--status-error);
+}
