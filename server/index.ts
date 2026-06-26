@@ -133,6 +133,23 @@ import {
   getFrameworkClientInfoWithRuntime,
   getFrameworkWebAvailability,
 } from './frameworks.js';
+import {
+  createOpenAiCompatibleCommandCenterIntentProvider,
+  readCommandCenterIntentResolverConfig,
+  resolveCommandCenterIntent,
+} from './command-center-intent-resolver.js';
+import {
+  executeCommandCenterCommand,
+  commandCenterActorCredentialScopeFor,
+  type CommandCenterActorScopeValidationInput,
+  type CommandCenterExecutionRequest,
+  type CommandCenterReadOnlyHandler,
+} from './command-center-executor.js';
+import {
+  COMMAND_CENTER_RESOLVER_CATALOG,
+  validateCommandCenterArgs,
+} from '../shared/command-center-resolver.js';
+import type { CommandCenterExecutionConfirmationInput } from '../shared/command-center-execution.js';
 import { getNodeManifest } from './node-manifest.js';
 import { createHubNodeRegistry } from './hub-node-registry.js';
 import {
@@ -142,7 +159,11 @@ import {
 import { createHubNodeRouter } from './hub-node-router.js';
 import { createCliGatewayEventsRouter } from './cli-gateway-events.js';
 import { createCliGatewayEventBus } from './cli-gateway-event-bus.js';
-import { createCliGatewaySettingsRouter } from './cli-gateway-settings.js';
+import {
+  createCliGatewaySettingsRouter,
+  safeSettingsFromConfig,
+  webhookStatusFromConfig,
+} from './cli-gateway-settings.js';
 import { createConfirmationChallengeStore } from './confirmation-challenges.js';
 import {
   createHandoffRouter,
@@ -231,6 +252,7 @@ import type { SessionLane } from '../shared/session-lane.js';
 import {
   EVENTS_SUBSCRIBE_TOPIC_CAPABILITIES,
   type EventsSubscribeTopic,
+  type RelayCliGatewayCommand,
   type RelayCliGatewayError,
 } from '../shared/cli-gateway-contract.js';
 import { validateAndSanitizeLocalGatewayCreateInput } from '../shared/cli-gateway-runtime.js';
@@ -300,7 +322,10 @@ import {
   type CliGatewayActorIssueInput,
   type CliGatewayActorReadCommand,
 } from './cli-gateway-actor-auth.js';
-import type { RelayCapabilityBit } from '../shared/security-policy.js';
+import {
+  RELAY_CAPABILITY_BITS,
+  type RelayCapabilityBit,
+} from '../shared/security-policy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -421,6 +446,24 @@ function getAllocatorOrNull(): ReturnType<typeof getDefaultAllocator> | null {
   } catch {
     return null;
   }
+}
+
+const portReconciliationWarningKeys = new Set<string>();
+
+function logPortReconciliationOnce(
+  key: string,
+  message: string,
+  ...args: unknown[]
+): void {
+  if (portReconciliationWarningKeys.has(key)) {
+    logger.debug(message, ...args);
+    return;
+  }
+  if (portReconciliationWarningKeys.size > 512) {
+    portReconciliationWarningKeys.clear();
+  }
+  portReconciliationWarningKeys.add(key);
+  logger.warn(message, ...args);
 }
 
 function logPortReconciliationFailure(err: unknown): void {
@@ -1507,7 +1550,8 @@ async function main(): Promise<void> {
     try {
       worktrees = await listNonMainWorktrees(repoPath);
     } catch (err) {
-      logger.debug(
+      logPortReconciliationOnce(
+        `list:${repoPath}`,
         'Failed to list worktrees for port reconciliation:',
         repoPath,
         err instanceof Error ? err.message : err
@@ -1515,8 +1559,17 @@ async function main(): Promise<void> {
       return;
     }
 
-    const activeWorktreePaths = new Set(worktrees.map((wt) => wt.path));
-    for (const worktree of worktrees) {
+    const existingWorktrees = worktrees.filter((worktree) => {
+      if (fs.existsSync(worktree.path)) return true;
+      logPortReconciliationOnce(
+        `missing-worktree:${repoPath}:${worktree.path}`,
+        'Skipping port reconciliation for missing worktree:',
+        worktree.path
+      );
+      return false;
+    });
+    const activeWorktreePaths = new Set(existingWorktrees.map((wt) => wt.path));
+    for (const worktree of existingWorktrees) {
       try {
         const ports = await allocator.reconcilePortsForWorktree(
           repoPath,
@@ -1546,11 +1599,20 @@ async function main(): Promise<void> {
           assignment.worktreeId,
           assignment.variableName
         );
-        removePortsFromEnvFile(assignment.worktreeId, [
-          assignment.variableName,
-        ]);
+        if (fs.existsSync(assignment.worktreeId)) {
+          removePortsFromEnvFile(assignment.worktreeId, [
+            assignment.variableName,
+          ]);
+        } else {
+          logPortReconciliationOnce(
+            `cleanup-missing:${repoPath}:${assignment.worktreeId}`,
+            'Released stale port assignment for missing worktree:',
+            assignment.worktreeId
+          );
+        }
       } catch (err) {
-        logger.warn(
+        logPortReconciliationOnce(
+          `cleanup-failed:${repoPath}:${assignment.worktreeId}`,
           'Failed to clean up stale port assignment:',
           assignment.worktreeId,
           err instanceof Error ? err.message : err
@@ -3217,6 +3279,336 @@ async function main(): Promise<void> {
   app.get('/api/node/manifest', requireAuth, async (_req, res) => {
     const manifest = await getNodeManifest({ config: getConfig() });
     res.json({ manifest });
+  });
+
+  // POST /api/command-center/resolve — natural-language Command Center resolver.
+  // The response is the shared resolver contract plus redacted audit metadata;
+  // raw prompts, provider payloads, and inferred args stay out of durable logs.
+  app.post('/api/command-center/resolve', requireAuth, async (req, res) => {
+    try {
+      const body = isRecord(req.body) ? req.body : {};
+      const query = typeof body.query === 'string' ? body.query.trim() : '';
+      if (query.length === 0) {
+        res.status(400).json({ error: 'query is required' });
+        return;
+      }
+      if (query.length > 2_000) {
+        res.status(400).json({ error: 'query is too long' });
+        return;
+      }
+
+      const config = readCommandCenterIntentResolverConfig();
+      const provider = config
+        ? createOpenAiCompatibleCommandCenterIntentProvider(config, {
+            fetch: globalThis.fetch,
+          })
+        : null;
+      const result = await resolveCommandCenterIntent(
+        { query },
+        {
+          provider,
+          ...(config ? { minConfidence: config.minConfidence } : {}),
+        }
+      );
+      res.json(result);
+    } catch (error) {
+      logger.error('Command Center resolver failed unexpectedly', error);
+      res.status(500).json({ error: 'command-center-resolver-failed' });
+    }
+  });
+
+  type CommandCenterActorValidationFailure = Extract<
+    ReturnType<typeof validateCliGatewayActorCredential>,
+    { reason: unknown }
+  >;
+
+  const sendCommandCenterActorValidationFailure = (
+    res: express.Response,
+    validation: CommandCenterActorValidationFailure,
+    correlationId: string | undefined
+  ) => {
+    sendCliGatewayActorFailure(
+      res,
+      cliGatewayActorFailure({
+        reason: validation.reason,
+        ...(validation.credentialId
+          ? { credentialId: validation.credentialId }
+          : {}),
+        deniedBits: validation.deniedBits,
+        ...(correlationId ? { correlationId } : {}),
+      })
+    );
+  };
+
+  const sendCommandCenterInvalidRequest = (
+    res: express.Response,
+    reasonCode: string,
+    message: string
+  ) => {
+    res.status(400).json({
+      error: {
+        code: 'INVALID_ARGUMENT',
+        message,
+        retryable: false,
+        reasonCode,
+      },
+    });
+  };
+
+  const validateCommandCenterActorCredentialFor = (
+    req: express.Request,
+    commandId: string,
+    args: unknown,
+    correlationId: string | undefined
+  ) => {
+    const entry = COMMAND_CENTER_RESOLVER_CATALOG.byCommandId.get(
+      commandId as RelayCliGatewayCommand
+    );
+    if (!entry || !isRecord(args)) return undefined;
+    const argErrors = validateCommandCenterArgs(args, entry.inputSchema);
+    if (argErrors.length > 0) return undefined;
+    const requestedScope = commandCenterActorCredentialScopeFor(entry, args);
+    return validateCliGatewayActorCredential(cliGatewayActorRegistry, {
+      token: bearerActorToken(req),
+      capabilities: entry.capabilityHints,
+      ...(requestedScope ? { scope: requestedScope } : {}),
+      ...(correlationId ? { correlationId } : {}),
+    });
+  };
+
+  const authenticateCommandCenterExecutionRequest = (
+    req: express.Request,
+    res: express.Response,
+    commandId: string,
+    args: unknown
+  ) => {
+    const correlationId = cliGatewayCorrelationId(req);
+    if (isCliGatewayActorTokenRequest(req)) {
+      const validation = validateCommandCenterActorCredentialFor(
+        req,
+        commandId,
+        args,
+        correlationId
+      );
+      if (!validation) {
+        sendCommandCenterInvalidRequest(
+          res,
+          'COMMAND_CENTER_ACTOR_SCOPE_UNRESOLVED',
+          'Command Center actor requests require a known command and valid args before execution.'
+        );
+        return null;
+      }
+      if ('reason' in validation) {
+        sendCommandCenterActorValidationFailure(res, validation, correlationId);
+        return null;
+      }
+      attachAuthenticatedCliGatewayActorCredential(req, validation.credential);
+      return { actorCredential: validation.credential, correlationId };
+    }
+
+    let authorized = false;
+    requireCliGatewayAuth(req, res, () => {
+      authorized = true;
+    });
+    if (!authorized) return null;
+    return {
+      actorCredential: authenticatedCliGatewayActorCredential(req),
+      correlationId,
+    };
+  };
+
+  const createCommandCenterActorScopeValidator =
+    (req: express.Request, correlationId: string | undefined) =>
+    ({
+      requestedScope,
+      requiredCapabilities,
+    }: CommandCenterActorScopeValidationInput) => {
+      const validation = validateCliGatewayActorCredential(
+        cliGatewayActorRegistry,
+        {
+          token: bearerActorToken(req),
+          capabilities: requiredCapabilities,
+          ...(requestedScope ? { scope: requestedScope } : {}),
+          ...(correlationId ? { correlationId } : {}),
+        }
+      );
+      return 'reason' in validation
+        ? {
+            ok: false as const,
+            reason: validation.reason,
+            ...(validation.credentialId
+              ? { credentialId: validation.credentialId }
+              : {}),
+            deniedBits: validation.deniedBits,
+          }
+        : { ok: true as const };
+    };
+
+  // POST /api/command-center/execute — execute one already-resolved typed
+  // read-only Relay command through the same manifest/catalog policy boundary.
+  // This route never accepts shell strings or prompt payloads; audit metadata
+  // logs command/result/latency plus hashed args only.
+  app.post('/api/command-center/execute', async (req, res) => {
+    const body = isRecord(req.body) ? req.body : {};
+    const commandId = typeof body.commandId === 'string' ? body.commandId : '';
+    const args = Object.prototype.hasOwnProperty.call(body, 'args')
+      ? body.args
+      : {};
+    let confirmation: CommandCenterExecutionConfirmationInput | undefined;
+    if (Object.prototype.hasOwnProperty.call(body, 'confirmation')) {
+      const confirmationBody = body.confirmation;
+      if (
+        !isRecord(confirmationBody) ||
+        typeof confirmationBody['challengeId'] !== 'string' ||
+        (confirmationBody['decision'] !== 'confirm' &&
+          confirmationBody['decision'] !== 'deny')
+      ) {
+        sendCommandCenterInvalidRequest(
+          res,
+          'COMMAND_CENTER_CONFIRMATION_INVALID',
+          'Command Center confirmation must include a challengeId and confirm/deny decision.'
+        );
+        return;
+      }
+      confirmation = {
+        challengeId: confirmationBody['challengeId'],
+        decision: confirmationBody['decision'],
+      };
+    }
+
+    const authContext = authenticateCommandCenterExecutionRequest(
+      req,
+      res,
+      commandId,
+      args
+    );
+    if (!authContext) return;
+    const { actorCredential, correlationId } = authContext;
+
+    const trustedCapabilities = actorCredential
+      ? {
+          source: 'actor-grant' as const,
+          capabilities: actorCredential.capabilities,
+          actorId: actorCredential.actor.id,
+        }
+      : authenticatedBrowserSession(req)
+        ? {
+            source: 'browser-session' as const,
+            capabilities: RELAY_CAPABILITY_BITS,
+          }
+        : undefined;
+
+    const listSessions = async () => {
+      const [localSessions, remoteSessions] = await Promise.all([
+        Promise.resolve(
+          localRelayNode.sessions
+            .list()
+            .map((session) =>
+              withWorkContextMetadata(workContextStore, session)
+            )
+        ),
+        aggregateRemoteSessions({
+          registry: hubNodeRegistry,
+          nodeLinks: hubNodeLinks,
+          logger,
+          sessionEnvelopes: sessionEnvelopeRegistry,
+          workContextStore,
+          readModelCache: remoteSessionReadModelCache,
+        }),
+      ]);
+      return [...localSessions, ...remoteSessions];
+    };
+
+    const findSession = async (id: string) => {
+      const local = localRelayNode.sessions
+        .list()
+        .map((session) => withWorkContextMetadata(workContextStore, session))
+        .find((session) => session.id === id || session.globalSessionId === id);
+      if (local) return local;
+      const remoteSessions = await aggregateRemoteSessions({
+        registry: hubNodeRegistry,
+        nodeLinks: hubNodeLinks,
+        logger,
+        sessionEnvelopes: sessionEnvelopeRegistry,
+        workContextStore,
+        readModelCache: remoteSessionReadModelCache,
+      });
+      return remoteSessions.find(
+        (session) => session.id === id || session.globalSessionId === id
+      );
+    };
+
+    const handlers: Partial<
+      Record<RelayCliGatewayCommand, CommandCenterReadOnlyHandler>
+    > = {
+      'nodes.list': () => ({
+        ok: true,
+        data: { nodes: hubNodeRegistry.listNodes() },
+      }),
+      'sessions.list': async () => ({
+        ok: true,
+        data: { sessions: await listSessions() },
+      }),
+      'sessions.get': async (commandArgs) => {
+        const id = commandArgs['id'];
+        if (typeof id !== 'string' || !id.trim()) {
+          return {
+            ok: false,
+            kind: 'unavailable',
+            reason: 'not-found',
+            message: 'session id is required',
+          };
+        }
+        const found = await findSession(id.trim());
+        if (!found) {
+          return {
+            ok: false,
+            kind: 'unavailable',
+            reason: 'not-found',
+            message: 'session was not found',
+            details: { sessionId: id },
+          };
+        }
+        return { ok: true, data: found };
+      },
+      'settings.get': () => ({
+        ok: true,
+        data: {
+          settings: safeSettingsFromConfig(getConfig()),
+          redaction: {
+            rawConfigReturned: false,
+            secretsReturned: false,
+            tokenMaterialReturned: false,
+          },
+        },
+      }),
+      'webhooks.status': () => ({
+        ok: true,
+        data: webhookStatusFromConfig(getConfig()),
+      }),
+    };
+
+    const executionRequest: CommandCenterExecutionRequest = {
+      commandId,
+      args,
+      ...(confirmation ? { confirmation } : {}),
+    };
+
+    const result = await executeCommandCenterCommand(executionRequest, {
+      handlers,
+      trustedCapabilities,
+      ...(actorCredential
+        ? {
+            validateActorScope: createCommandCenterActorScopeValidator(
+              req,
+              correlationId
+            ),
+          }
+        : {}),
+      auditSink: (audit) =>
+        logger.info('Command Center execution audit', audit),
+    });
+    res.json(result);
   });
 
   // Restore sessions from a previous update restart

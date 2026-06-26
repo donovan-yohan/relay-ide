@@ -24,6 +24,13 @@ type ChangeHandler = <K extends keyof WorkspaceEditorValues>(
   value: WorkspaceEditorValues[K]
 ) => void;
 
+export const WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS = {
+  remote: 'default: origin',
+  branchPrefix: 'default: none',
+  prompt: 'default: none',
+  portVariable: 'additional var (default: PORT)',
+} as const;
+
 interface Props {
   values: WorkspaceEditorValues;
   onChange: ChangeHandler;
@@ -118,7 +125,7 @@ function GitSettingsSection({ values, branches, onChange }: GitSectionProps) {
           id="ws-remote"
           type="text"
           className="workspace-editor__field-input"
-          placeholder="origin"
+          placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.remote}
           value={values.remote}
           onChange={(e) => onChange('remote', e.currentTarget.value)}
         />
@@ -134,7 +141,7 @@ function GitSettingsSection({ values, branches, onChange }: GitSectionProps) {
           id="ws-branch-prefix"
           type="text"
           className="workspace-editor__field-input"
-          placeholder="e.g. dy/"
+          placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.branchPrefix}
           value={values.branchPrefix}
           onChange={(e) => onChange('branchPrefix', e.currentTarget.value)}
         />
@@ -236,25 +243,25 @@ function PromptsSection({ values, onChange }: PromptsSectionProps) {
       <PromptGroup
         label="Code review preferences"
         value={values.promptCodeReview}
-        placeholder="e.g. focus on security, error handling"
+        placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.prompt}
         onChange={(v) => onChange('promptCodeReview', v)}
       />
       <PromptGroup
         label="Create PR preferences"
         value={values.promptCreatePr}
-        placeholder="e.g. include test plan section"
+        placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.prompt}
         onChange={(v) => onChange('promptCreatePr', v)}
       />
       <PromptGroup
         label="Branch rename preferences"
         value={values.promptBranchRename}
-        placeholder="e.g. prefix with dy/, use conventional commits style"
+        placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.prompt}
         onChange={(v) => onChange('promptBranchRename', v)}
       />
       <PromptGroup
         label="General preferences"
         value={values.promptGeneral}
-        placeholder="e.g. use TypeScript, follow CLAUDE.md"
+        placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.prompt}
         onChange={(v) => onChange('promptGeneral', v)}
       />
     </section>
@@ -385,7 +392,7 @@ function EnvironmentPortsSection({
         <input
           type="text"
           className={`workspace-editor__field-input workspace-editor__add-input${newNameError ? ' workspace-editor__field-input--error' : ''}`}
-          placeholder="e.g. SERVER_PORT"
+          placeholder={WORKSPACE_EDITOR_DEFAULT_PLACEHOLDERS.portVariable}
           value={newName}
           onChange={(e) => {
             setNewName(e.currentTarget.value);

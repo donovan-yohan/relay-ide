@@ -18,12 +18,27 @@ import type {
 } from '../lib/types.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import StatusDot from './StatusDot.js';
-import { getAllActions } from '../lib/actions/registry.js';
+import { getAction, getAllActions } from '../lib/actions/registry.js';
 import { formatShortcut } from '../lib/actions/shortcuts.js';
 import type { ActionContext, Action } from '../lib/actions/types.js';
 import { isMobileDevice, isMac } from '../lib/utils.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
 import { buildSessionPaletteResults } from '../lib/command-palette-session-results.js';
+import {
+  executeCommandCenterAssistantCommand,
+  resolveCommandCenterAssistantIntent,
+} from '../lib/api.js';
+import {
+  commandCenterAssistantCopy,
+  commandCenterExecutionCopy,
+  commandCenterSuggestionLabels,
+  decideOpenUiAction,
+  type CommandCenterAssistantResult,
+} from '../lib/command-center-assistant.js';
+import type {
+  CommandCenterExecutionConfirmationInput,
+  CommandCenterExecutionResult,
+} from '../../../shared/command-center-execution.js';
 import './CommandPalette.css';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -164,7 +179,29 @@ export interface CommandPaletteProps {
   onSelectSession: (id: string) => void;
   onSelectPr: (pr: PullRequest) => void;
   onOpenSettings?: (sectionId: string) => void;
+  resolveAssistantIntent?: (
+    query: string
+  ) => Promise<CommandCenterAssistantResult>;
+  executeAssistantCommand?: (
+    commandId: string,
+    args: Record<string, unknown>,
+    options?: {
+      confirmation?: CommandCenterExecutionConfirmationInput;
+    }
+  ) => Promise<CommandCenterExecutionResult>;
 }
+
+type AssistantExecutionState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'done'; result: CommandCenterExecutionResult }
+  | { status: 'error'; message: string };
+
+type AssistantState =
+  | { status: 'idle' }
+  | { status: 'loading'; query: string }
+  | { status: 'result'; query: string; result: CommandCenterAssistantResult }
+  | { status: 'error'; query: string; message: string };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -195,6 +232,10 @@ function matchesTab(type: PaletteResult['type'], activeTab: Tab): boolean {
   if (activeTab === 'prs') return type === 'pr' || type === 'attention';
   if (activeTab === 'settings') return type === 'setting' || type === 'command';
   return true;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
@@ -617,6 +658,123 @@ function usePaletteHandlers(
   };
 }
 
+interface CommandCenterAssistantPanelProps {
+  state: AssistantState;
+  copy: ReturnType<typeof commandCenterAssistantCopy> | undefined;
+  isOpenUi: boolean;
+  isExecuteCommand: boolean;
+  openUiDecision: ReturnType<typeof decideOpenUiAction> | undefined;
+  execution: AssistantExecutionState;
+  suggestions: string[];
+  onOpenUi: () => void;
+  onExecuteCommand: () => void;
+}
+
+function CommandCenterAssistantPanel({
+  state,
+  copy,
+  isOpenUi,
+  isExecuteCommand,
+  openUiDecision,
+  execution,
+  suggestions,
+  onOpenUi,
+  onExecuteCommand,
+}: CommandCenterAssistantPanelProps) {
+  if (state.status === 'idle') return null;
+  return (
+    <div className="palette-assistant-panel" role="status">
+      <div className="assistant-kicker">assistant shell</div>
+      {state.status === 'loading' && (
+        <div className="assistant-copy">
+          resolving &quot;{state.query}&quot;...
+        </div>
+      )}
+      {state.status === 'error' && (
+        <div className="assistant-copy assistant-copy-error">
+          resolver request failed: {state.message}
+        </div>
+      )}
+      {copy && (
+        <>
+          <div
+            className={['assistant-title', `assistant-title-${copy.tone}`].join(
+              ' '
+            )}
+          >
+            {copy.title}
+          </div>
+          <div className="assistant-copy">{copy.detail}</div>
+          {isOpenUi && (
+            <div className="assistant-actions">
+              {openUiDecision?.canOpen ? (
+                <button
+                  type="button"
+                  className="palette-assistant-action"
+                  onClick={onOpenUi}
+                >
+                  {copy.cta ?? 'open ui'}
+                </button>
+              ) : (
+                <span className="assistant-blocked">
+                  {openUiDecision?.reason ?? 'ui target unavailable'}
+                </span>
+              )}
+            </div>
+          )}
+          {isExecuteCommand && (
+            <div className="assistant-actions">
+              <button
+                type="button"
+                className="palette-assistant-action"
+                disabled={execution.status === 'loading'}
+                onClick={onExecuteCommand}
+              >
+                {execution.status === 'loading'
+                  ? 'running read-only command...'
+                  : (copy.cta ?? 'run command')}
+              </button>
+            </div>
+          )}
+          {execution.status === 'error' && (
+            <div className="assistant-copy assistant-copy-error">
+              command request failed: {execution.message}
+            </div>
+          )}
+          {execution.status === 'done' && (
+            <CommandCenterExecutionSummary result={execution.result} />
+          )}
+          {suggestions.length > 0 && (
+            <div className="assistant-suggestions">
+              suggestions: {suggestions.join(' · ')}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function CommandCenterExecutionSummary({
+  result,
+}: {
+  result: CommandCenterExecutionResult;
+}) {
+  const copy = commandCenterExecutionCopy(result);
+  return (
+    <>
+      <div
+        className={['assistant-title', `assistant-title-${copy.tone}`].join(
+          ' '
+        )}
+      >
+        {copy.title}
+      </div>
+      <div className="assistant-copy">{copy.detail}</div>
+    </>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function CommandPalette({
@@ -629,9 +787,19 @@ export function CommandPalette({
   onSelectSession,
   onSelectPr,
   onOpenSettings,
+  resolveAssistantIntent = resolveCommandCenterAssistantIntent,
+  executeAssistantCommand = executeCommandCenterAssistantCommand,
 }: CommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const [assistantState, setAssistantState] = useState<AssistantState>({
+    status: 'idle',
+  });
+  const [assistantExecution, setAssistantExecution] =
+    useState<AssistantExecutionState>({ status: 'idle' });
+  const assistantOpenRef = useRef(open);
+  const assistantRequestIdRef = useRef(0);
+  const assistantExecutionRequestIdRef = useRef(0);
 
   const {
     query,
@@ -747,11 +915,120 @@ export function CommandPalette({
     onOpenSettings
   );
 
+  const runAssistant = useCallback(async () => {
+    const assistantQuery = query.trim();
+    if (!assistantQuery || assistantState.status === 'loading') return;
+    const requestId = assistantRequestIdRef.current + 1;
+    assistantRequestIdRef.current = requestId;
+    setAssistantExecution({ status: 'idle' });
+    setAssistantState({ status: 'loading', query: assistantQuery });
+    try {
+      const result = await resolveAssistantIntent(assistantQuery);
+      if (
+        !assistantOpenRef.current ||
+        assistantRequestIdRef.current !== requestId
+      )
+        return;
+      setAssistantState({ status: 'result', query: assistantQuery, result });
+    } catch (error) {
+      if (
+        !assistantOpenRef.current ||
+        assistantRequestIdRef.current !== requestId
+      )
+        return;
+      setAssistantState({
+        status: 'error',
+        query: assistantQuery,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [assistantState.status, query, resolveAssistantIntent]);
+
+  const openAssistantUi = useCallback(async () => {
+    if (assistantState.status !== 'result') return;
+    const resolution = assistantState.result.resolution;
+    if (resolution.kind !== 'open_ui') return;
+    const action = getAction(resolution.ui.actionId as Action['id']);
+    const decision = decideOpenUiAction(action, actionContext);
+    if (!decision.canOpen || !action) return;
+    await action.handler(actionContext);
+    onClose();
+  }, [actionContext, assistantState, onClose]);
+
+  const runAssistantCommand = useCallback(async () => {
+    if (assistantState.status !== 'result') return;
+    const resolution = assistantState.result.resolution;
+    if (resolution.kind !== 'execute_command') return;
+    const requestId = assistantRequestIdRef.current;
+    const executionRequestId = assistantExecutionRequestIdRef.current + 1;
+    assistantExecutionRequestIdRef.current = executionRequestId;
+    setAssistantExecution({ status: 'loading' });
+    try {
+      const result = await executeAssistantCommand(
+        resolution.intent.commandId,
+        isPlainRecord(resolution.intent.args) ? resolution.intent.args : {}
+      );
+      if (
+        !assistantOpenRef.current ||
+        assistantRequestIdRef.current !== requestId ||
+        assistantExecutionRequestIdRef.current !== executionRequestId
+      )
+        return;
+      setAssistantExecution({ status: 'done', result });
+    } catch (error) {
+      if (
+        !assistantOpenRef.current ||
+        assistantRequestIdRef.current !== requestId ||
+        assistantExecutionRequestIdRef.current !== executionRequestId
+      )
+        return;
+      setAssistantExecution({
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [assistantState, executeAssistantCommand]);
+
+  useEffect(() => {
+    assistantOpenRef.current = open;
+    if (!open) {
+      assistantRequestIdRef.current += 1;
+      assistantExecutionRequestIdRef.current += 1;
+      setAssistantState({ status: 'idle' });
+      setAssistantExecution({ status: 'idle' });
+    }
+    return () => {
+      assistantOpenRef.current = false;
+      assistantRequestIdRef.current += 1;
+      assistantExecutionRequestIdRef.current += 1;
+    };
+  }, [open]);
+
   if (!open) return null;
   const paletteStyle =
     isMobileDevice && dragOffset > 0
       ? { transform: `translateY(${dragOffset}px)` }
       : undefined;
+  const assistantResolution =
+    assistantState.status === 'result'
+      ? assistantState.result.resolution
+      : undefined;
+  const assistantCopy = assistantResolution
+    ? commandCenterAssistantCopy(assistantResolution, {
+        mobile: isMobileDevice,
+      })
+    : undefined;
+  const openUiAction =
+    assistantResolution?.kind === 'open_ui'
+      ? getAction(assistantResolution.ui.actionId as Action['id'])
+      : undefined;
+  const openUiDecision =
+    assistantResolution?.kind === 'open_ui'
+      ? decideOpenUiAction(openUiAction, actionContext)
+      : undefined;
+  const assistantSuggestions = assistantResolution
+    ? commandCenterSuggestionLabels(assistantResolution)
+    : [];
 
   return (
     <div
@@ -786,8 +1063,19 @@ export function CommandPalette({
             className="palette-search-input"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeydown}
-            placeholder="search commands, workspaces, sessions..."
+            onKeyDown={(e) => {
+              if (
+                e.key === 'Enter' &&
+                query.trim() &&
+                (e.metaKey || e.ctrlKey || e.shiftKey || flatItems.length === 0)
+              ) {
+                e.preventDefault();
+                void runAssistant();
+                return;
+              }
+              handleKeydown(e);
+            }}
+            placeholder="search or ask natural language..."
             autoComplete="off"
             spellCheck={false}
             role="combobox"
@@ -799,7 +1087,26 @@ export function CommandPalette({
                 : undefined
             }
           />
+          <button
+            type="button"
+            className="palette-assistant-button"
+            disabled={!query.trim() || assistantState.status === 'loading'}
+            onClick={() => void runAssistant()}
+          >
+            {assistantState.status === 'loading' ? 'asking' : 'ask'}
+          </button>
         </div>
+        <CommandCenterAssistantPanel
+          state={assistantState}
+          copy={assistantCopy}
+          isOpenUi={assistantResolution?.kind === 'open_ui'}
+          isExecuteCommand={assistantResolution?.kind === 'execute_command'}
+          openUiDecision={openUiDecision}
+          execution={assistantExecution}
+          suggestions={assistantSuggestions}
+          onOpenUi={() => void openAssistantUi()}
+          onExecuteCommand={() => void runAssistantCommand()}
+        />
         <div className="palette-tabs" role="tablist">
           {TABS.map((tab) => (
             <button

@@ -30,7 +30,12 @@ export function TuiMenuItem({
   const handleMouseDown = onMouseDown ?? onmousedown;
   const handleClick = onClick ?? onclick;
 
-  const classes = ['tui-menu-item', danger && 'tui-menu-item--danger', disabled && 'tui-menu-item--disabled', className]
+  const classes = [
+    'tui-menu-item',
+    danger && 'tui-menu-item--danger',
+    disabled && 'tui-menu-item--disabled',
+    className,
+  ]
     .filter(Boolean)
     .join(' ');
 
@@ -39,7 +44,11 @@ export function TuiMenuItem({
 
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      handleMouseDown?.(e as unknown as React.MouseEvent<HTMLDivElement>);
+      // Fall back to the click handler when no mousedown handler is wired
+      // (e.g. ContextMenu passes only onClick) so keyboard activation actually
+      // fires the item's action instead of silently no-op'ing.
+      const activate = handleMouseDown ?? handleClick;
+      activate?.(e as unknown as React.MouseEvent<HTMLDivElement>);
     }
   };
 
@@ -58,11 +67,7 @@ export function TuiMenuItem({
         &gt;
       </span>
 
-      {icon ? (
-        <span className="tui-menu-item__icon">
-          {icon}
-        </span>
-      ) : null}
+      {icon ? <span className="tui-menu-item__icon">{icon}</span> : null}
 
       <span className="tui-menu-item__content">{children}</span>
     </div>

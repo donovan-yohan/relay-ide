@@ -1,6 +1,11 @@
 import { useCallback } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchFileContent } from '../lib/api.js';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  fetchFileContent,
+  saveFileContent,
+  type SaveFileContentResult,
+} from '../lib/api.js';
+import type { FileContentResponse } from '../lib/types.js';
 
 export interface FileContentKey {
   workspacePath: string;
@@ -49,6 +54,42 @@ export function useFileContent(
     loading: query.isPending && enabled,
     error: query.error ? (query.error as Error).message : null,
   };
+}
+
+export interface SaveFileContentVars {
+  content: string;
+  /** Pin the last-read mtime for optimistic concurrency; omit to force overwrite. */
+  expectedMtimeMs?: number;
+}
+
+/**
+ * Mutation that writes file content. On success it primes the read query cache
+ * with the saved text + new mtime/size so the editor's baseline stays in sync
+ * without a refetch.
+ */
+export function useSaveFileContent(key: FileContentKey) {
+  const queryClient = useQueryClient();
+  return useMutation<SaveFileContentResult, Error, SaveFileContentVars>({
+    mutationFn: (vars) =>
+      saveFileContent(
+        key.workspacePath,
+        key.filePath,
+        vars.content,
+        vars.expectedMtimeMs
+      ),
+    onSuccess: (result, vars) => {
+      queryClient.setQueryData<FileContentResponse>(
+        fileContentQueryKey(key),
+        (_prev) => ({
+          content: vars.content,
+          binary: false,
+          truncated: false,
+          mtimeMs: result.mtimeMs,
+          sizeBytes: result.sizeBytes,
+        })
+      );
+    },
+  });
 }
 
 export function useInvalidateFileContent() {

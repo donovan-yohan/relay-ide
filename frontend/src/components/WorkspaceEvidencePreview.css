@@ -24,8 +24,15 @@
   text-overflow: ellipsis;
 }
 
-.evidence-preview__kind {
+.evidence-preview__header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.evidence-preview__kind {
   color: var(--text-muted);
   text-transform: lowercase;
   letter-spacing: 0.04em;

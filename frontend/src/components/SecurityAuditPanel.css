@@ -150,7 +150,8 @@
   margin-top: 8px;
 }
 
-.audit-load-older {
+.audit-load-older,
+.audit-verify-chain {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--text-muted);
@@ -162,12 +163,14 @@
   text-transform: lowercase;
 }
 
-.audit-load-older:disabled {
+.audit-load-older:disabled,
+.audit-verify-chain:disabled {
   opacity: 0.45;
   cursor: default;
 }
 
-.audit-load-older:not(:disabled):hover {
+.audit-load-older:not(:disabled):hover,
+.audit-verify-chain:not(:disabled):hover {
   color: var(--text);
   border-color: var(--text-muted);
 }

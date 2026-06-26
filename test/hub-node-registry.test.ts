@@ -1126,6 +1126,60 @@ describe('hub node registry', () => {
     }
   });
 
+  it('coalesces repeated credential auth denial audit rows', () => {
+    const auditEntries: SecurityAuditEntryInput[] = [];
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-hub-node-registry-')
+    );
+    let now = new Date('2026-01-02T03:04:05.000Z');
+    try {
+      const registry = createHubNodeRegistry({
+        storagePath: path.join(tmpDir, 'nodes.json'),
+        now: () => now,
+        credentialDenialAuditCoalesceMs: 60_000,
+        auditSink: { append: (entry) => auditEntries.push(entry) },
+      });
+      const exchanged = registry.exchangePairToken({
+        pairToken: registry.createPairToken({}).pairToken,
+        manifest: manifest(),
+      });
+      const rotation = registry.beginCredentialRotation(exchanged.node.nodeId);
+      registry.recordHeartbeat({
+        nodeId: exchanged.node.nodeId,
+        protocolVersion: '1.0',
+        credentialId: rotation.credential.credentialId,
+        manifest: manifest(),
+      });
+      auditEntries.length = 0;
+
+      registry.authenticateCredentialDetailed(exchanged.credential.token);
+      registry.authenticateCredentialDetailed(exchanged.credential.token);
+      registry.authenticateCredentialDetailed(exchanged.credential.token);
+
+      const denials = auditEntries.filter(
+        (entry) => entry.reasonCode === 'REPAIR_REQUIRED'
+      );
+      expect(denials).toHaveLength(1);
+      expect(denials[0]?.intent).toMatchObject({
+        action: 'nodes.credential.authenticate',
+        target: exchanged.node.nodeId,
+      });
+
+      now = new Date('2026-01-02T03:05:06.000Z');
+      registry.authenticateCredentialDetailed(exchanged.credential.token);
+      const updatedDenials = auditEntries.filter(
+        (entry) => entry.reasonCode === 'REPAIR_REQUIRED'
+      );
+      expect(updatedDenials).toHaveLength(2);
+      expect(updatedDenials[1]?.material?.params).toMatchObject({
+        suppressedSinceLast: 2,
+      });
+      expect(JSON.stringify(auditEntries)).not.toContain(exchanged.credential.token);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps stable node identity while rotating credential records', () => {
     withTmpRegistry((registry) => {
       const exchanged = registry.exchangePairToken({

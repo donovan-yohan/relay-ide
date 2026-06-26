@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { DEFAULT_LOCAL_NODE_ID } from '../../../shared/identity.js';
-import { ConflictError, fetchHubNodes } from '../lib/api.js';
+import {
+  ConflictError,
+  fetchHubNodes,
+  FileContentConflictError,
+  FileContentOversizeError,
+} from '../lib/api.js';
 import {
   cleanCwd,
   defaultRemoteCwd,
@@ -38,11 +43,16 @@ import {
 } from './FileTabContent.js';
 import FileFeedbackPanel from './FileFeedbackPanel.js';
 import { useFileDiff, useInvalidateFileDiff } from '../hooks/useFileDiff.js';
-import { useFileContent } from '../hooks/useFileContent.js';
+import {
+  useFileContent,
+  useInvalidateFileContent,
+  useSaveFileContent,
+} from '../hooks/useFileContent.js';
 import { WorkspaceLayout } from './WorkspaceLayout.js';
 import { WorkspaceContentLayer } from './WorkspaceContentLayer.js';
 import { Terminal } from './Terminal.js';
 import { ChatView } from './chat/ChatView.js';
+import CodeMirrorFileEditor from './CodeMirrorFileEditor.js';
 import './WorkspaceArea.css';
 
 const workspaceLogger = createLogger('workspace-area');
@@ -128,8 +138,12 @@ function FileTabContentBridge({
   const fileDiffViewMode = useUiStore((s) => s.fileDiffViewMode);
   const fileWordWrap = useUiStore((s) => s.fileWordWrap);
   const closeFileTab = useUiStore((s) => s.closeFileTab);
+  const openFileTab = useUiStore((s) => s.openFileTab);
   const openFileTabs = useUiStore((s) => s.openFileTabs);
   const sendToTargetSessionId = useUiStore((s) => s.sendToTargetSessionId);
+  const codeTabDirty = useUiStore((s) => s.codeTabDirty);
+  const codeTabPendingContent = useUiStore((s) => s.codeTabPendingContent);
+  const setCodeTabDirty = useUiStore((s) => s.setCodeTabDirty);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const sessions = useSessionsStore((s) => s.sessions);
   const [selectedFeedbackLine, setSelectedFeedbackLine] = useState<
@@ -144,6 +158,9 @@ function FileTabContentBridge({
 
   const isDiffMode = tab.tabType === 'diff';
   const isCodeMode = tab.tabType !== 'html' && tab.tabType !== 'diff';
+  const currentFileTabKey = fileTabKey(tab.filePath, tab.tabType);
+  const isEditorDirty = Boolean(codeTabDirty[currentFileTabKey]);
+  const pendingEditorValue = codeTabPendingContent[currentFileTabKey];
 
   const {
     diff,
@@ -155,6 +172,7 @@ function FileTabContentBridge({
   );
   const {
     content,
+    mtimeMs,
     binary,
     truncated,
     loading: contentLoading,
@@ -170,6 +188,74 @@ function FileTabContentBridge({
       : false;
   const error = isDiffMode ? diffError : isCodeMode ? contentError : null;
   const invalidateFileDiff = useInvalidateFileDiff();
+  const invalidateFileContent = useInvalidateFileContent();
+  const saveFileContent = useSaveFileContent({
+    workspacePath,
+    filePath: tab.filePath,
+  });
+  const [editorValue, setEditorValue] = useState('');
+  const [baselineContent, setBaselineContent] = useState('');
+  const [baselineMtimeMs, setBaselineMtimeMs] = useState<number | null>(null);
+  const [baselineHydrated, setBaselineHydrated] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [diskConflict, setDiskConflict] = useState(false);
+
+  useEffect(() => {
+    if (!isCodeMode || contentLoading || contentError || binary || truncated) {
+      return;
+    }
+    if (isEditorDirty) {
+      const diskContent = content ?? '';
+      if (!baselineHydrated) {
+        setBaselineContent(diskContent);
+        setBaselineMtimeMs(mtimeMs);
+        setBaselineHydrated(true);
+        if (pendingEditorValue !== undefined) {
+          setEditorValue(pendingEditorValue);
+        }
+        setSaveError(null);
+        setDiskConflict(false);
+        return;
+      }
+      if (
+        pendingEditorValue !== undefined &&
+        editorValue !== pendingEditorValue
+      ) {
+        setEditorValue(pendingEditorValue);
+      }
+      if (diskContent !== baselineContent || mtimeMs !== baselineMtimeMs) {
+        setDiskConflict(true);
+        setSaveError('file changed on disk');
+      } else {
+        setDiskConflict(false);
+      }
+      return;
+    }
+    setEditorValue(content ?? '');
+    setBaselineContent(content ?? '');
+    setBaselineMtimeMs(mtimeMs);
+    setBaselineHydrated(true);
+    setSaveError(null);
+    setDiskConflict(false);
+    setCodeTabDirty(tab.filePath, tab.tabType, false);
+  }, [
+    binary,
+    baselineContent,
+    baselineHydrated,
+    baselineMtimeMs,
+    content,
+    contentError,
+    contentLoading,
+    editorValue,
+    isEditorDirty,
+    isCodeMode,
+    mtimeMs,
+    pendingEditorValue,
+    setCodeTabDirty,
+    tab.filePath,
+    tab.tabType,
+    truncated,
+  ]);
 
   const uiMatch = openFileTabs.find(
     (t) =>
@@ -182,12 +268,168 @@ function FileTabContentBridge({
   const refreshVersion = uiMatch?.refreshVersion;
 
   const handleRetry = useCallback(() => {
-    invalidateFileDiff({ workspacePath, filePath: tab.filePath, base });
-  }, [invalidateFileDiff, workspacePath, tab.filePath, base]);
+    if (isDiffMode) {
+      invalidateFileDiff({ workspacePath, filePath: tab.filePath, base });
+    }
+    if (isCodeMode) {
+      invalidateFileContent({ workspacePath, filePath: tab.filePath });
+    }
+  }, [
+    base,
+    invalidateFileContent,
+    invalidateFileDiff,
+    isCodeMode,
+    isDiffMode,
+    tab.filePath,
+    workspacePath,
+  ]);
 
   const handleCloseTab = useCallback(() => {
     closeFileTab(tab.filePath, tab.tabType);
   }, [closeFileTab, tab.filePath, tab.tabType]);
+
+  // Scoped session that the `relay-ide v1 files read/write` affordance targets.
+  // Prefer a session rooted at this workspace; fall back to any live session.
+  const commandSessionId = useMemo(() => {
+    const inWorkspace = sessions.filter(
+      (s) =>
+        s.cwd === workspacePath ||
+        s.worktreePath === workspacePath ||
+        s.repoPath === workspacePath
+    );
+    return (inWorkspace[0] ?? sessions[0])?.id ?? null;
+  }, [sessions, workspacePath]);
+
+  const handleShowChanges = useCallback(() => {
+    openFileTab(tab.filePath, true, 'diff');
+  }, [openFileTab, tab.filePath]);
+
+  const handleEditorChange = useCallback(
+    (next: string) => {
+      setEditorValue(next);
+      setSaveError(null);
+      setDiskConflict(false);
+      setCodeTabDirty(
+        tab.filePath,
+        tab.tabType,
+        next !== baselineContent,
+        next
+      );
+    },
+    [baselineContent, setCodeTabDirty, tab.filePath, tab.tabType]
+  );
+
+  const handleSave = useCallback(
+    async (options?: { overwrite?: boolean }) => {
+      if (!isCodeMode || saveFileContent.isPending) return;
+      setSaveError(null);
+      setDiskConflict(false);
+      try {
+        const expectedMtimeMs = options?.overwrite
+          ? undefined
+          : (baselineMtimeMs ?? undefined);
+        const result = await saveFileContent.mutateAsync(
+          expectedMtimeMs === undefined
+            ? { content: editorValue }
+            : { content: editorValue, expectedMtimeMs }
+        );
+        setBaselineContent(editorValue);
+        setBaselineMtimeMs(result.mtimeMs);
+        setBaselineHydrated(true);
+        setCodeTabDirty(tab.filePath, tab.tabType, false);
+        invalidateFileDiff({ workspacePath, filePath: tab.filePath, base });
+      } catch (err) {
+        if (err instanceof FileContentConflictError) {
+          setDiskConflict(true);
+          setSaveError('file changed on disk');
+          return;
+        }
+        if (err instanceof FileContentOversizeError) {
+          const mb = err.maxBytes
+            ? `${(err.maxBytes / (1024 * 1024)).toFixed(0)}mb`
+            : 'server cap';
+          setSaveError(`file too large to save (${mb} max)`);
+          return;
+        }
+        setSaveError(
+          err instanceof Error ? err.message : 'failed to save file'
+        );
+      }
+    },
+    [
+      baselineMtimeMs,
+      editorValue,
+      isCodeMode,
+      saveFileContent,
+      setCodeTabDirty,
+      invalidateFileDiff,
+      workspacePath,
+      base,
+      tab.filePath,
+      tab.tabType,
+    ]
+  );
+
+  const handleReloadDisk = useCallback(() => {
+    setDiskConflict(false);
+    setSaveError(null);
+    setCodeTabDirty(tab.filePath, tab.tabType, false);
+    invalidateFileContent({ workspacePath, filePath: tab.filePath });
+  }, [
+    invalidateFileContent,
+    setCodeTabDirty,
+    tab.filePath,
+    tab.tabType,
+    workspacePath,
+  ]);
+
+  const editorRenderer = useCallback<
+    NonNullable<FileTabContentProps['renderCode']>
+  >(
+    ({ code, language }) => {
+      if (renderCode) return renderCode({ code, language });
+      return (
+        <CodeMirrorFileEditor
+          filePath={tab.filePath}
+          value={editorValue}
+          language={language}
+          wordWrap={fileWordWrap}
+          dirty={Boolean(codeTabDirty[currentFileTabKey])}
+          saving={saveFileContent.isPending}
+          saveError={saveError}
+          diskConflict={diskConflict}
+          resetKey={`${tab.filePath}:${baselineMtimeMs ?? 'none'}`}
+          workspacePath={workspacePath}
+          sessionId={commandSessionId}
+          isChanged={isChanged}
+          onChange={handleEditorChange}
+          onSave={() => void handleSave()}
+          onReloadDisk={handleReloadDisk}
+          onOverwrite={() => void handleSave({ overwrite: true })}
+          onShowChanges={handleShowChanges}
+        />
+      );
+    },
+    [
+      baselineMtimeMs,
+      codeTabDirty,
+      commandSessionId,
+      currentFileTabKey,
+      diskConflict,
+      editorValue,
+      fileWordWrap,
+      handleEditorChange,
+      handleReloadDisk,
+      handleSave,
+      handleShowChanges,
+      isChanged,
+      renderCode,
+      saveError,
+      saveFileContent.isPending,
+      tab.filePath,
+      workspacePath,
+    ]
+  );
 
   const feedbackPanel =
     isCodeMode && !contentLoading && !contentError && !binary && !truncated ? (
@@ -225,7 +467,7 @@ function FileTabContentBridge({
       onRetry={handleRetry}
       onCloseTab={handleCloseTab}
       renderDiff={renderDiff}
-      renderCode={renderCode}
+      renderCode={editorRenderer}
       feedbackPanel={feedbackPanel}
       showSummary={false}
     />
@@ -400,6 +642,7 @@ export function WorkspaceArea({
 }: WorkspaceAreaProps) {
   const openFileTabs = useUiStore((s) => s.openFileTabs);
   const activeFileTabKey = useUiStore((s) => s.activeFileTabKey);
+  const codeTabDirty = useUiStore((s) => s.codeTabDirty);
   const setUiState = useUiStore.setState;
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
@@ -467,9 +710,13 @@ export function WorkspaceArea({
     const sessionUiIds = new Set(sessions.map(sessionTabId));
     const liveUiIds = new Set([...fileUiIds, ...sessionUiIds]);
 
+    const panes = listPanes(layout);
+    const validActivePaneId =
+      activePaneId && panes.some((pane) => pane.id === activePaneId)
+        ? activePaneId
+        : null;
     const targetPane =
-      activePaneId ??
-      (layout.type === 'pane' ? layout.id : listPanes(layout)[0]?.id);
+      validActivePaneId ?? (layout.type === 'pane' ? layout.id : panes[0]?.id);
 
     // Add ui items missing from layout — but skip anything we just removed
     // this cycle (otherwise a workspace × close immediately re-adds).
@@ -580,7 +827,11 @@ export function WorkspaceArea({
 
   const summaryContext = useMemo<SummaryContext>(() => {
     const changed = new Set(
-      openFileTabs.filter((t) => t.isChanged).map((t) => t.filePath)
+      openFileTabs
+        .filter(
+          (t) => t.isChanged || codeTabDirty[fileTabKey(t.filePath, t.tabType)]
+        )
+        .map((t) => t.filePath)
     );
     const findSession = (id: string) => resolveSessionByKey(sessions, id);
     return {
@@ -588,7 +839,7 @@ export function WorkspaceArea({
       findSession,
       findNode: (id) => nodeIndex.get(id),
     };
-  }, [openFileTabs, sessions, nodeIndex]);
+  }, [codeTabDirty, openFileTabs, sessions, nodeIndex]);
 
   const setActivePane = useWorkspaceLayoutStore((s) => s.setActivePane);
   const [pendingRemoteTerminal, setPendingRemoteTerminal] =

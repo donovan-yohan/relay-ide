@@ -89,9 +89,16 @@ export function setupShortcutListener(
     const modPressed = isMac ? e.metaKey : e.ctrlKey;
     if (!modPressed) return; // all registry shortcuts require mod
 
-    // Don't intercept from text inputs unless the shortcut is global
-    const tag = (document.activeElement as HTMLElement | null)?.tagName;
-    const inInput = tag === 'INPUT' || tag === 'TEXTAREA';
+    // Don't intercept from text inputs unless the shortcut is global. The
+    // CodeMirror file editor (#1004) focuses a contenteditable host rather than
+    // a <textarea>, so include isContentEditable — matching the sibling guard in
+    // useAppShortcuts — to keep registry shortcuts (mod+w, mod+shift+[ ]) from
+    // leaking into the focused editor while editing.
+    const active = document.activeElement as HTMLElement | null;
+    const inInput =
+      active?.tagName === 'INPUT' ||
+      active?.tagName === 'TEXTAREA' ||
+      active?.isContentEditable === true;
 
     const actions = getActions();
     for (const action of actions) {
@@ -106,7 +113,9 @@ export function setupShortcutListener(
       e.preventDefault();
       const result = action.handler(ctx);
       if (result instanceof Promise) {
-        result.catch((err) => logger.error(`Shortcut action "${action.id}" failed`, err));
+        result.catch((err) =>
+          logger.error(`Shortcut action "${action.id}" failed`, err)
+        );
       }
       return;
     }

@@ -112,7 +112,10 @@ function validateSettingValue(
   switch (key) {
     case 'defaultAgent': {
       if (typeof value !== 'string' || !value.trim()) {
-        return { ok: false, message: 'defaultAgent must be a non-empty string' };
+        return {
+          ok: false,
+          message: 'defaultAgent must be a non-empty string',
+        };
       }
       const trimmed = value.trim();
       if (!/^[a-zA-Z0-9._-]+$/.test(trimmed)) {
@@ -132,10 +135,14 @@ function validateSettingValue(
       }
       return { ok: true, value };
     case 'renamerTool':
-      if (typeof value !== 'string' || !RENAMER_TOOLS.includes(value as RenamerTool)) {
+      if (
+        typeof value !== 'string' ||
+        !RENAMER_TOOLS.includes(value as RenamerTool)
+      ) {
         return {
           ok: false,
-          message: 'renamerTool must be one of: claude, codex, none, custom-script',
+          message:
+            'renamerTool must be one of: claude, codex, none, custom-script',
         };
       }
       return { ok: true, value };
@@ -144,7 +151,10 @@ function validateSettingValue(
         typeof value !== 'string' ||
         !UPDATE_CHANNELS.includes(value as 'stable' | 'nightly')
       ) {
-        return { ok: false, message: 'updateChannel must be stable or nightly' };
+        return {
+          ok: false,
+          message: 'updateChannel must be stable or nightly',
+        };
       }
       return { ok: true, value };
   }
@@ -155,7 +165,8 @@ function riskySettingWriteRequiresConfirmation(
   value: string | boolean,
   previousValue: string | boolean
 ): boolean {
-  if (key === 'defaultYolo' && value === true && previousValue !== true) return true;
+  if (key === 'defaultYolo' && value === true && previousValue !== true)
+    return true;
   if (key === 'updateChannel' && value !== previousValue) return true;
   return false;
 }
@@ -184,7 +195,11 @@ export function updateSafeSetting(
 
   const nextValue = validation.value;
   if (
-    riskySettingWriteRequiresConfirmation(input.key, nextValue, previousValue) &&
+    riskySettingWriteRequiresConfirmation(
+      input.key,
+      nextValue,
+      previousValue
+    ) &&
     input.confirmRiskyWrite !== true
   ) {
     return {
@@ -240,11 +255,16 @@ export function updateSafeSetting(
   };
 }
 
-function parseSettingsUpdateInput(body: unknown):
+function parseSettingsUpdateInput(
+  body: unknown
+):
   | { ok: true; input: CliGatewaySettingsUpdateInput }
   | { ok: false; message: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return { ok: false, message: 'settings.update input JSON must be an object' };
+    return {
+      ok: false,
+      message: 'settings.update input JSON must be an object',
+    };
   }
   const record = body as Record<string, unknown>;
   if (!isSafeSettingKey(record['key'])) {
@@ -273,7 +293,9 @@ function parseSettingsUpdateInput(body: unknown):
   };
 }
 
-function webhookStatusFromConfig(config: Config): CliGatewayWebhookStatusResult {
+export function webhookStatusFromConfig(
+  config: Config
+): CliGatewayWebhookStatusResult {
   const { smeeConnected, lastEventAt } = getSmeeStatus();
   const repoStatuses = Object.entries(config.repoSettings ?? {}).map(
     ([repoPath, settings]) => ({

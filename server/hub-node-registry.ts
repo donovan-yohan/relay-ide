@@ -352,6 +352,7 @@ export interface HubNodeRegistryOptions {
   staleMs?: number;
   offlineMs?: number;
   heartbeatPersistDebounceMs?: number;
+  credentialDenialAuditCoalesceMs?: number;
   auditSink?: { append(input: SecurityAuditEntryInput): unknown };
   /** Hub's own package version, used for helper-version skew detection (#655). */
   hubVersion?: string;
@@ -380,11 +381,13 @@ export const DEFAULT_NODE_HEARTBEAT_TIMEOUTS = {
   offlineMs: 90 * 1000,
 } as const;
 export const DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS = 5 * 1000;
+export const DEFAULT_CREDENTIAL_DENIAL_AUDIT_COALESCE_MS = 60 * 1000;
 // #981: start pruning the node-link proof replay cache only once it grows past
 // this size. Pruning is also time-gated below so high-QPS heartbeat traffic does
 // not full-scan the cache on every accepted proof once it crosses the threshold.
 const NODE_LINK_PROOF_REPLAY_PRUNE_THRESHOLD = 1024;
 const NODE_LINK_PROOF_REPLAY_PRUNE_INTERVAL_MS = 30 * 1000;
+const MAX_CREDENTIAL_DENIAL_AUDIT_BUCKETS = 512;
 const PRIVILEGED_NODE_WARNING =
   "A paired Relay node runs with that machine's local OS-user blast radius; hub ACL policy grants individual capability bits.";
 
@@ -431,6 +434,15 @@ interface ResolvedCredential {
   keyBound: boolean;
   rotationId?: string;
 }
+
+interface CredentialDenialAuditBucket {
+  lastAuditMs: number;
+  suppressedSinceLast: number;
+}
+
+type CredentialDenialAuditDecision =
+  | { audit: true; suppressedSinceLast: number }
+  | { audit: false };
 
 export interface HubNodeStatusEvent {
   nodeId: string;
@@ -1204,10 +1216,15 @@ export class HubNodeRegistry {
   private readonly staleMs: number;
   private readonly offlineMs: number;
   private readonly heartbeatPersistDebounceMs: number;
+  private readonly credentialDenialAuditCoalesceMs: number;
   private state: RegistryFile;
   private heartbeatPersistTimer: NodeJS.Timeout | null = null;
   private heartbeatPersistDirty = false;
   private heartbeatPersistError: unknown = null;
+  private readonly credentialDenialAuditBuckets = new Map<
+    string,
+    CredentialDenialAuditBucket
+  >();
   private readonly auditSink:
     | { append(input: SecurityAuditEntryInput): unknown }
     | undefined;
@@ -1234,6 +1251,9 @@ export class HubNodeRegistry {
     this.heartbeatPersistDebounceMs =
       options.heartbeatPersistDebounceMs ??
       DEFAULT_HEARTBEAT_PERSIST_DEBOUNCE_MS;
+    this.credentialDenialAuditCoalesceMs =
+      options.credentialDenialAuditCoalesceMs ??
+      DEFAULT_CREDENTIAL_DENIAL_AUDIT_COALESCE_MS;
     this.auditSink = options.auditSink;
     this.hubVersion = options.hubVersion;
     this.state = readRegistryFile(options.storagePath);
@@ -1772,6 +1792,9 @@ export class HubNodeRegistry {
   }): void {
     if (!this.auditSink) return;
     const nodeId = input.node?.nodeId ?? input.nodeId;
+    const action = input.action ?? 'nodes.credential.authenticate';
+    const coalesce = this.credentialDenialAuditDecision(input, nodeId, action);
+    if (!coalesce.audit) return;
     try {
       this.auditSink.append({
         eventType: input.eventType,
@@ -1784,13 +1807,16 @@ export class HubNodeRegistry {
         },
         node: { ...(nodeId ? { nodeId } : {}) },
         intent: {
-          action: input.action ?? 'nodes.credential.authenticate',
+          action,
           ...(nodeId ? { target: nodeId } : {}),
         },
         material: {
           params: {
             recoveryReason: input.reasonCode,
             hasCredentialId: Boolean(input.credentialId),
+            ...(coalesce.suppressedSinceLast > 0
+              ? { suppressedSinceLast: coalesce.suppressedSinceLast }
+              : {}),
             ...(input.sourceDiagnostics
               ? { sourceState: input.sourceDiagnostics.state }
               : {}),
@@ -1805,6 +1831,54 @@ export class HubNodeRegistry {
       // fail-closed/allow-closed on the credential decision itself; audit
       // failures must not cause raw bearer material to be retried or logged.
     }
+  }
+
+  private credentialDenialAuditDecision(
+    input: {
+      decision: SecurityAuditDecision;
+      eventType: SecurityAuditEventType;
+      reasonCode: string;
+      credentialId?: string;
+      sourceDiagnostics?: RelayNodeSourceDiagnostics;
+    },
+    nodeId: string | undefined,
+    action: string
+  ): CredentialDenialAuditDecision {
+    if (
+      this.credentialDenialAuditCoalesceMs <= 0 ||
+      input.decision !== 'deny' ||
+      input.eventType !== 'denial' ||
+      action !== 'nodes.credential.authenticate'
+    ) {
+      return { audit: true, suppressedSinceLast: 0 };
+    }
+    const nowMs = this.now().getTime();
+    const key = JSON.stringify([
+      input.reasonCode,
+      nodeId ?? null,
+      Boolean(input.credentialId),
+      input.sourceDiagnostics?.state ?? null,
+    ]);
+    const bucket = this.credentialDenialAuditBuckets.get(key);
+    if (
+      !bucket ||
+      nowMs < bucket.lastAuditMs ||
+      nowMs - bucket.lastAuditMs >= this.credentialDenialAuditCoalesceMs
+    ) {
+      if (!bucket && this.credentialDenialAuditBuckets.size >= MAX_CREDENTIAL_DENIAL_AUDIT_BUCKETS) {
+        const oldestKey = this.credentialDenialAuditBuckets.keys().next().value as
+          | string
+          | undefined;
+        if (oldestKey) this.credentialDenialAuditBuckets.delete(oldestKey);
+      }
+      this.credentialDenialAuditBuckets.set(key, {
+        lastAuditMs: nowMs,
+        suppressedSinceLast: 0,
+      });
+      return { audit: true, suppressedSinceLast: bucket?.suppressedSinceLast ?? 0 };
+    }
+    bucket.suppressedSinceLast += 1;
+    return { audit: false };
   }
 
   private recordSourceObservation(
