@@ -323,6 +323,11 @@ const workspaceSurfacesPublishInputSchema: RelayJsonSchema = {
     workContextId: stringSchema,
   },
   required: ['kind', 'label'],
+  anyOf: [
+    { required: ['url'] },
+    { required: ['command'] },
+    { required: ['logRef'] },
+  ],
 };
 
 const workspaceSurfacesPublishOutputDataSchema: RelayJsonSchema = {

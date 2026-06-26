@@ -4972,6 +4972,7 @@ async function main(): Promise<void> {
         workContextArtifactStore?.close();
         workflowRunStore?.close();
         automationRunStore?.close();
+        workspaceSurfaceStore?.close();
         prOverseerStore?.close();
         workContextMessageStore?.close();
         closeInterventionLog();
@@ -5054,6 +5055,7 @@ async function main(): Promise<void> {
     workContextArtifactStore?.close();
     workflowRunStore?.close();
     automationRunStore?.close();
+    workspaceSurfaceStore?.close();
     prOverseerStore?.close();
     workContextMessageStore?.close();
     closeInterventionLog();

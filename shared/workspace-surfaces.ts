@@ -257,14 +257,16 @@ function assertSafeUrl(url: string): void {
   }
 }
 
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
+const LOOPBACK_HOSTS = new Set(['localhost', '0.0.0.0', '::1', '[::1]']);
+const IPV4_LOOPBACK_HOST = /^127(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
 /** True for an http(s) URL whose host is a loopback / unspecified address. */
 export function isLoopbackUrl(url: string | undefined): boolean {
   if (!url || isRelativePath(url)) return false;
   try {
     const parsed = new URL(url);
-    return LOOPBACK_HOSTS.has(parsed.hostname);
+    const hostname = parsed.hostname.toLowerCase();
+    return LOOPBACK_HOSTS.has(hostname) || IPV4_LOOPBACK_HOST.test(hostname);
   } catch {
     return false;
   }

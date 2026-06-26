@@ -5,7 +5,10 @@ import express, { type Request, type RequestHandler, type Response } from 'expre
 
 import type { RelayCliGatewayErrorCode } from '../shared/cli-gateway-contract.js';
 import { DEFAULT_LOCAL_NODE_ID } from '../shared/identity.js';
-import type { CliGatewayActorWriteCommand } from './cli-gateway-actor-auth.js';
+import {
+  authenticatedCliGatewayActorCredential,
+  type CliGatewayActorWriteCommand,
+} from './cli-gateway-actor-auth.js';
 import {
   WORKSPACE_SURFACES_DEFAULT_LIST_ENTRIES,
   WORKSPACE_SURFACES_MAX_LIST_ENTRIES,
@@ -24,6 +27,8 @@ import type { WorkspaceEvidenceRoot } from '../shared/workspace-evidence.js';
 
 const CONTEXT_READ = 'context:read';
 const CONTEXT_WRITE = 'context:write';
+const WORKSPACE_SURFACES_LIST_SENTINEL_LIMIT =
+  WORKSPACE_SURFACES_MAX_LIST_ENTRIES + 1;
 
 function workspaceSurfacePriority(surface: WorkspaceSurface): number {
   if (surface.status === 'published') return 2;
@@ -423,7 +428,7 @@ export function createWorkspaceSurfaceStore(input: {
       const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
       const limit =
         filter.limit && filter.limit > 0
-          ? Math.min(filter.limit, WORKSPACE_SURFACES_MAX_LIST_ENTRIES)
+          ? Math.min(filter.limit, WORKSPACE_SURFACES_LIST_SENTINEL_LIMIT)
           : WORKSPACE_SURFACES_DEFAULT_LIST_ENTRIES;
       const rows = db
         .prepare(
@@ -502,6 +507,58 @@ function readQueryString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function bodyRecord(req: Request): Record<string, unknown> {
+  return typeof req.body === 'object' && req.body !== null && !Array.isArray(req.body)
+    ? (req.body as Record<string, unknown>)
+    : {};
+}
+
+function readBodyString(req: Request, key: string): string | undefined {
+  const value = bodyRecord(req)[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function workspaceSurfacePublishScopeFromRequest(
+  req: Request
+): { nodeIds?: string[]; workContextIds?: string[] } | undefined {
+  const nodeId = readBodyString(req, 'nodeId');
+  const workContextId = readBodyString(req, 'workContextId');
+  if (!nodeId && !workContextId) return undefined;
+  return {
+    ...(nodeId ? { nodeIds: [nodeId] } : {}),
+    ...(workContextId ? { workContextIds: [workContextId] } : {}),
+  };
+}
+
+function bindPublishedSurfaceToActor(
+  req: Request,
+  res: Response,
+  input: WorkspaceSurfacePublishInput
+): WorkspaceSurfacePublishInput | null {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  if (!credential) return input;
+
+  const allowedNodeIds = credential.scope.nodeIds ?? [];
+  const nodeId =
+    input.nodeId ?? (allowedNodeIds.length === 1 ? allowedNodeIds[0] : undefined);
+  if (!nodeId || !allowedNodeIds.includes(nodeId)) {
+    sendGatewayError(
+      res,
+      'FORBIDDEN',
+      'workspace surface actor publishes require a matching node-scoped credential',
+      false,
+      { reasonCode: 'WORKSPACE_SURFACE_NODE_SCOPE_REQUIRED' }
+    );
+    return null;
+  }
+
+  return {
+    ...input,
+    nodeId,
+    actor: credential.actor.id,
+  };
+}
+
 export interface WorkspaceSurfacesRouterOptions {
   store: WorkspaceSurfaceStore | null;
   getConfig?: () => Config;
@@ -510,7 +567,9 @@ export interface WorkspaceSurfacesRouterOptions {
   requireWriteActorAuth?: (
     expectedCommand: CliGatewayActorWriteCommand,
     options?: {
-      scopeForRequest?: (req: Request) => { workContextIds?: string[] } | undefined;
+      scopeForRequest?: (req: Request) =>
+        | { nodeIds?: string[]; workContextIds?: string[] }
+        | undefined;
     }
   ) => RequestHandler;
 }
@@ -522,7 +581,9 @@ export function createWorkspaceSurfacesRouter(
   const auth = options.requireAuth ?? ((_req, _res, next) => next());
   const readAuth = options.requireReadAuth ?? auth;
   const writeAuth =
-    options.requireWriteActorAuth?.('workspace-surfaces.publish') ?? auth;
+    options.requireWriteActorAuth?.('workspace-surfaces.publish', {
+      scopeForRequest: workspaceSurfacePublishScopeFromRequest,
+    }) ?? auth;
 
   // List = static discovery (best-effort) merged with persisted agent-published
   // surfaces. Discovery never throws; a broken package.json yields no surfaces.
@@ -547,7 +608,12 @@ export function createWorkspaceSurfacesRouter(
       if (workspaceId) discovered = discovered.filter((s) => s.workspaceId === workspaceId);
       if (repoPath) discovered = discovered.filter((s) => s.repoPath === repoPath);
     }
-    const published = options.store ? options.store.list(filter) : [];
+    const published = options.store
+      ? options.store.list({
+          ...filter,
+          limit: WORKSPACE_SURFACES_LIST_SENTINEL_LIMIT,
+        })
+      : [];
     const configured = discovered.filter(
       (surface) => surface.provenance.source === 'configured'
     );
@@ -563,7 +629,12 @@ export function createWorkspaceSurfacesRouter(
     const surfaces = Array.from(byId.values())
       .sort((a, b) => workspaceSurfacePriority(b) - workspaceSurfacePriority(a))
       .slice(0, WORKSPACE_SURFACES_MAX_LIST_ENTRIES);
-    res.json({ surfaces, truncated: byId.size > surfaces.length });
+    res.json({
+      surfaces,
+      truncated:
+        byId.size > surfaces.length ||
+        published.length > WORKSPACE_SURFACES_MAX_LIST_ENTRIES,
+    });
   });
 
   router.post('/workspace-surfaces', writeAuth, (req, res) => {
@@ -576,7 +647,9 @@ export function createWorkspaceSurfacesRouter(
     }
     try {
       const input = parseWorkspaceSurfacePublishInput(req.body);
-      const surface = options.store.upsert(input);
+      const actorBoundInput = bindPublishedSurfaceToActor(req, res, input);
+      if (!actorBoundInput) return;
+      const surface = options.store.upsert(actorBoundInput);
       res.status(201).json({ surface });
     } catch (error) {
       if (error instanceof WorkspaceSurfaceValidationError) {

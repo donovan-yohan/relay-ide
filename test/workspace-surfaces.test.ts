@@ -2,8 +2,9 @@ import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import express from 'express';
+import express, { type RequestHandler } from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
+import { attachAuthenticatedCliGatewayActorCredential } from '../server/cli-gateway-actor-auth.js';
 import {
   createWorkspaceSurfaceStore,
   createWorkspaceSurfacesRouter,
@@ -12,9 +13,12 @@ import {
 import type { Config } from '../server/types.js';
 import {
   WORKSPACE_SURFACES_MAX_LIST_ENTRIES,
+  classifyOpenMode,
+  isLoopbackUrl,
   type WorkspaceSurface,
   type WorkspaceSurfaceListResponse,
 } from '../shared/workspace-surfaces.js';
+import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
 
 const cleanup: Array<() => void> = [];
 
@@ -38,6 +42,14 @@ function asConfig(
 async function listen(input: {
   store?: WorkspaceSurfaceStore | null;
   getConfig?: () => Config;
+  requireWriteActorAuth?: (
+    expectedCommand: 'workspace-surfaces.publish',
+    options?: {
+      scopeForRequest?: (req: express.Request) =>
+        | { nodeIds?: string[]; workContextIds?: string[] }
+        | undefined;
+    }
+  ) => RequestHandler;
 }): Promise<{ port: number }> {
   const app = express();
   app.use(express.json());
@@ -45,6 +57,7 @@ async function listen(input: {
     createWorkspaceSurfacesRouter({
       store: input.store ?? null,
       getConfig: input.getConfig,
+      requireWriteActorAuth: input.requireWriteActorAuth,
     })
   );
   const server = http.createServer(app);
@@ -93,7 +106,30 @@ function surfaceStore(): WorkspaceSurfaceStore {
   return store;
 }
 
+function scopedActorCredential(nodeIds: string[]): ScopedActorCredentialRecord {
+  return {
+    id: 'credential:workspace-surfaces',
+    actor: { type: 'agent', id: 'agent:kani', displayName: 'Kani' },
+    issuer: { id: 'operator:test' },
+    audience: 'relay:cli-gateway:v1',
+    capabilities: ['context:write'],
+    scope: { nodeIds },
+    issuedAt: '2026-06-21T00:00:00.000Z',
+    expiresAt: '2026-06-21T00:05:00.000Z',
+  };
+}
+
 describe('workspace surfaces router', () => {
+  it('treats the full IPv4 loopback range as node-scoped', () => {
+    expect(isLoopbackUrl('http://127.0.1.1:3000')).toBe(true);
+    expect(
+      classifyOpenMode(
+        { url: 'http://127.0.1.1:3000', nodeId: 'node_remote' },
+        'local'
+      )
+    ).toBe('node-scoped');
+  });
+
   it('discovers package scripts and compose ports using static metadata only', async () => {
     const repo = tmpRoot();
     fs.writeFileSync(
@@ -235,6 +271,74 @@ describe('workspace surfaces router', () => {
     expect(res.body.surfaces.map((surface) => surface.label)).toContain(
       'npm run dev:0'
     );
+  });
+
+  it('fetches the full response cap of published surfaces and reports sentinel truncation', async () => {
+    const store = surfaceStore();
+    for (let i = 0; i < WORKSPACE_SURFACES_MAX_LIST_ENTRIES + 1; i += 1) {
+      store.upsert({
+        id: `agent-preview-${i}`,
+        kind: 'preview',
+        label: `agent preview ${i}`,
+        url: `https://preview-${i}.example.test`,
+      });
+    }
+    const { port } = await listen({ store });
+
+    const res = await getJson<WorkspaceSurfaceListResponse>(
+      port,
+      '/workspace-surfaces'
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.surfaces).toHaveLength(WORKSPACE_SURFACES_MAX_LIST_ENTRIES);
+    expect(res.body.truncated).toBe(true);
+  });
+
+  it('binds actor-published node and actor metadata to the authenticated credential', async () => {
+    const store = surfaceStore();
+    let requestedScope: { nodeIds?: string[]; workContextIds?: string[] } | undefined;
+    const { port } = await listen({
+      store,
+      requireWriteActorAuth: (_expectedCommand, options) => {
+        return ((req, _res, next) => {
+          requestedScope = options?.scopeForRequest?.(req);
+          attachAuthenticatedCliGatewayActorCredential(
+            req,
+            scopedActorCredential(['node_remote'])
+          );
+          next();
+        }) as RequestHandler;
+      },
+    });
+
+    const denied = await postJson(port, '/workspace-surfaces', {
+      kind: 'preview',
+      label: 'spoofed local preview',
+      url: 'http://localhost:4173',
+      nodeId: 'local',
+      actor: 'agent:spoof',
+    });
+    expect(denied.status).toBe(403);
+    expect(requestedScope).toEqual({ nodeIds: ['local'] });
+
+    const allowed = await postJson<{ surface: WorkspaceSurface }>(
+      port,
+      '/workspace-surfaces',
+      {
+        kind: 'preview',
+        label: 'actor preview',
+        url: 'http://localhost:4173',
+        actor: 'agent:spoof',
+      }
+    );
+
+    expect(allowed.status).toBe(201);
+    expect(allowed.body.surface).toMatchObject({
+      nodeId: 'node_remote',
+      openMode: 'node-scoped',
+      provenance: { source: 'agent-published', actor: 'agent:kani' },
+    });
   });
 
   it('enforces capability headers for list and publish', async () => {
