@@ -569,9 +569,10 @@ function matchScore(value: string, query: string): number {
   const qNoHash = q.startsWith('#') ? q.slice(1) : q;
   const normalizedQuery = normalizedText(qNoHash || q);
   if (!q) return 0;
-  if (raw === q || raw === qNoHash) return 100;
+  if (!normalizedQuery) return 0;
+  if (raw === q || (qNoHash && raw === qNoHash)) return 100;
   if (normalized === normalizedQuery) return 95;
-  if (raw.startsWith(q) || raw.startsWith(qNoHash)) return 80;
+  if (raw.startsWith(q) || (qNoHash && raw.startsWith(qNoHash))) return 80;
   if (normalized.startsWith(normalizedQuery)) return 75;
   if (raw.includes(q) || (qNoHash && raw.includes(qNoHash))) return 60;
   if (normalized.includes(normalizedQuery)) return 55;
@@ -1215,9 +1216,9 @@ export function createWorkspaceTopicsRouter(
       if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
       const rawQuery = readString(req.query['q'] ?? req.query['query']) ?? '';
       const query = rawQuery.slice(0, WORKSPACE_TOPICS_SEARCH_QUERY_MAX).trim();
-      if (!query) {
+      if (!query || !normalizedText(query)) {
         const empty: WorkspaceTopicSearchResponse = {
-          query: '',
+          query,
           results: [],
           truncated: false,
           derived: false,

@@ -890,6 +890,22 @@ describe('workspace topics foundation', () => {
     expect(bounded.status).toBe(200);
     expect(bounded.body.results).toHaveLength(2);
     expect(bounded.body.truncated).toBe(true);
+
+    const hashOnly = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=%23&workspaceId=ws-search'
+    );
+    expect(hashOnly.status).toBe(200);
+    expect(hashOnly.body.unavailableReason).toBe('empty_query');
+    expect(hashOnly.body.results).toHaveLength(0);
+
+    const punctuationOnly = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=---&workspaceId=ws-search'
+    );
+    expect(punctuationOnly.status).toBe(200);
+    expect(punctuationOnly.body.unavailableReason).toBe('empty_query');
+    expect(punctuationOnly.body.results).toHaveLength(0);
   });
 
   it('does not leak unrequested scoped contexts or same-repo surfaces through search', async () => {
