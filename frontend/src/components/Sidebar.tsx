@@ -641,8 +641,9 @@ export function Sidebar({
               />
             </div>
           ) : topicShellEnabled ? (
-            // Thin-line WorkspaceTopic shell remains opt-in until #1032 parity
-            // and #1027 QA make it safe to retire the repo sidebar fallback.
+            // Default thin-line WorkspaceTopic shell. The repo sidebar below is
+            // kept only as an explicit localStorage fallback until #1032 deletes
+            // the duplicate implementation.
             <div className="sidebar-workspace-list">
               <TopicSidebarShell onSelectSession={onSelectSession} />
             </div>

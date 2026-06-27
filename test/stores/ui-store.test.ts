@@ -27,6 +27,7 @@ if (typeof globalThis.localStorage === 'undefined') {
 import {
   useUiStore,
   fileTabKey,
+  loadTopicShellEnabled,
   DEFAULT_SIDEBAR_WIDTH,
   DEFAULT_RIGHT_SIDEBAR_WIDTH,
   DEFAULT_TERMINAL_FONT_SIZE,
@@ -66,6 +67,8 @@ function resetStore() {
     sendToTargetSessionId: null,
     lastChangedFiles: [],
     collapsedWorkspaces: new Set(),
+    viewSpineEnabled: false,
+    topicShellEnabled: true,
   });
 }
 
@@ -120,6 +123,31 @@ describe('ui Zustand store', () => {
       expect(storage['claude-remote-sidebar-collapsed']).toBe('true');
       useUiStore.getState().toggleSidebarCollapsed();
       expect(storage['claude-remote-sidebar-collapsed']).toBe('false');
+    });
+  });
+
+  describe('topic shell flag', () => {
+    it('defaults to enabled when no explicit sidebar fallback opt-out exists', () => {
+      delete storage['relay-topic-shell'];
+      expect(loadTopicShellEnabled()).toBe(true);
+    });
+
+    it('honors explicit legacy sidebar fallback opt-out values', () => {
+      storage['relay-topic-shell'] = '0';
+      expect(loadTopicShellEnabled()).toBe(false);
+
+      storage['relay-topic-shell'] = 'false';
+      expect(loadTopicShellEnabled()).toBe(false);
+    });
+
+    it('persists disabling the topic shell as an explicit opt-out', () => {
+      useUiStore.getState().setTopicShellEnabled(false);
+      expect(storage['relay-topic-shell']).toBe('0');
+      expect(useUiStore.getState().topicShellEnabled).toBe(false);
+
+      useUiStore.getState().setTopicShellEnabled(true);
+      expect(storage['relay-topic-shell']).toBe('1');
+      expect(useUiStore.getState().topicShellEnabled).toBe(true);
     });
   });
 
