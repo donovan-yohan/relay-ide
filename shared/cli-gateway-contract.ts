@@ -92,6 +92,7 @@ export type RelayCliGatewayCommand =
   | 'workspace-surfaces.list'
   | 'workspace-surfaces.publish'
   | 'workspace-topics.list'
+  | 'workspace-topics.search'
   | 'workspace-topics.get'
   | 'workspace-topics.create'
   | 'workspace-topics.update'
@@ -426,6 +427,86 @@ const workspaceTopicsListOutputDataSchema: RelayJsonSchema = {
     derived: booleanSchema,
   },
   required: ['topics', 'truncated', 'derived'],
+};
+
+const workspaceTopicSearchInputSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicsSearchInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    q: stringSchema,
+    workspaceId: stringSchema,
+    workContextId: stringSchema,
+    workContextIds: { type: 'array', items: stringSchema },
+    includeArchived: booleanSchema,
+    limit: { type: 'number', minimum: 1, maximum: 50, default: 20 },
+  },
+  required: ['q'],
+};
+
+const workspaceTopicSearchMatchSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicSearchMatch',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    kind: {
+      type: 'string',
+      enum: [
+        'topic',
+        'workspace',
+        'task',
+        'repo',
+        'worktree',
+        'artifact',
+        'surface',
+        'agent',
+        'session',
+        'phrase',
+      ],
+    },
+    field: stringSchema,
+    label: stringSchema,
+    value: stringSchema,
+  },
+  required: ['kind', 'field', 'label', 'value'],
+};
+
+const workspaceTopicSearchResultSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicSearchResult',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    topic: workspaceTopicSchema,
+    score: { type: 'number' },
+    freshness: { type: 'string', enum: ['fresh', 'stale', 'unknown'] },
+    matches: { type: 'array', items: workspaceTopicSearchMatchSchema },
+    action: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { const: 'open-topic' },
+        topicId: stringSchema,
+        primarySessionId: stringSchema,
+        disabledReason: stringSchema,
+      },
+      required: ['kind', 'topicId'],
+    },
+  },
+  required: ['topic', 'score', 'freshness', 'matches', 'action'],
+};
+
+const workspaceTopicsSearchOutputDataSchema: RelayJsonSchema = {
+  title: 'WorkspaceTopicsSearchData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    query: stringSchema,
+    results: { type: 'array', items: workspaceTopicSearchResultSchema },
+    truncated: booleanSchema,
+    derived: booleanSchema,
+    unavailableReason: stringSchema,
+  },
+  required: ['query', 'results', 'truncated', 'derived'],
 };
 
 const workspaceTopicGetInputSchema: RelayJsonSchema = {
@@ -6454,6 +6535,36 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
     outputSchema: okOutput(
       'WorkspaceTopicsListOutput',
       workspaceTopicsListOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'FORBIDDEN',
+      'INVALID_ARGUMENT',
+      'SERVER_UNAVAILABLE',
+      'INTERNAL',
+    ],
+  },
+  {
+    name: 'workspace-topics.search',
+    cli: [
+      'relay-ide',
+      'v1',
+      'workspace-topics',
+      'search',
+      '--q',
+      '<query>',
+      '--json',
+    ],
+    summary:
+      'Search bounded WorkspaceTopic history across topic metadata, linked tasks, artifacts, surfaces, repos, agents, and sessions without exposing raw transcripts.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: ['context:read'],
+    inputSchema: workspaceTopicSearchInputSchema,
+    outputSchema: okOutput(
+      'WorkspaceTopicsSearchOutput',
+      workspaceTopicsSearchOutputDataSchema
     ),
     errorCodes: [
       'UNAUTHORIZED',

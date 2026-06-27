@@ -5149,90 +5149,161 @@ async function runGatewayWorkspaceSurfaces(
   );
 }
 
+function workspaceTopicsQueryString(
+  topicArgs: string[],
+  keys: readonly (readonly [string, string])[]
+): string {
+  const query = new URLSearchParams();
+  for (const [flag, key] of keys) {
+    const value = gatewayArg(topicArgs, flag);
+    if (value) query.set(key, value);
+  }
+  if (topicArgs.includes('--include-archived'))
+    query.set('includeArchived', 'true');
+  return query.toString();
+}
+
+async function runGatewayWorkspaceTopicsList(
+  topicArgs: string[]
+): Promise<never> {
+  const search = workspaceTopicsQueryString(topicArgs, [
+    ['--workspace-id', 'workspaceId'],
+  ]);
+  const result = await gatewayHttpJson({
+    commandName: 'workspace-topics.list',
+    pathName: `/workspace-topics${search ? `?${search}` : ''}`,
+    capabilities: ['context:read'],
+  });
+  printGatewayEnvelope(gatewayOk('workspace-topics.list', result), 0);
+}
+
+async function runGatewayWorkspaceTopicsSearch(
+  topicArgs: string[]
+): Promise<never> {
+  const q = gatewayArg(topicArgs, '--q') ?? topicArgs[0];
+  if (!q || q.startsWith('--'))
+    gatewayInvalid('workspace-topics.search', '--q is required');
+  const query = new URLSearchParams(
+    workspaceTopicsQueryString(topicArgs, [
+      ['--workspace-id', 'workspaceId'],
+      ['--work-context-id', 'workContextId'],
+      ['--work-context-ids', 'workContextIds'],
+      ['--limit', 'limit'],
+    ])
+  );
+  query.set('q', q);
+  const result = await gatewayHttpJson({
+    commandName: 'workspace-topics.search',
+    pathName: `/workspace-topics/search?${query.toString()}`,
+    capabilities: ['context:read'],
+  });
+  printGatewayEnvelope(gatewayOk('workspace-topics.search', result), 0);
+}
+
+function gatewayWorkspaceTopicId(
+  commandName: RelayCliGatewayCommand,
+  topicArgs: string[],
+  input?: Record<string, unknown>
+): string {
+  const id =
+    typeof input?.['id'] === 'string'
+      ? input['id']
+      : (gatewayArg(topicArgs, '--id') ?? topicArgs[0]);
+  if (!id || id.startsWith('--'))
+    gatewayInvalid(commandName, '--id is required');
+  return id;
+}
+
+async function runGatewayWorkspaceTopicsGet(
+  topicArgs: string[]
+): Promise<never> {
+  const id = gatewayWorkspaceTopicId('workspace-topics.get', topicArgs);
+  const result = await gatewayHttpJson({
+    commandName: 'workspace-topics.get',
+    pathName: `/workspace-topics/${encodeURIComponent(id)}`,
+    capabilities: ['context:read'],
+  });
+  printGatewayEnvelope(gatewayOk('workspace-topics.get', result), 0);
+}
+
+async function runGatewayWorkspaceTopicsCreate(
+  topicArgs: string[]
+): Promise<never> {
+  const result = await gatewayHttpJson({
+    commandName: 'workspace-topics.create',
+    pathName: '/workspace-topics',
+    method: 'POST',
+    body: parseGatewayInputObject('workspace-topics.create', topicArgs),
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(gatewayOk('workspace-topics.create', result), 0);
+}
+
+async function runGatewayWorkspaceTopicsUpdate(
+  topicArgs: string[]
+): Promise<never> {
+  const id = gatewayWorkspaceTopicId('workspace-topics.update', topicArgs);
+  const result = await gatewayHttpJson({
+    commandName: 'workspace-topics.update',
+    pathName: `/workspace-topics/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body: parseGatewayInputObject('workspace-topics.update', topicArgs),
+    capabilities: ['context:write'],
+  });
+  printGatewayEnvelope(gatewayOk('workspace-topics.update', result), 0);
+}
+
+async function runGatewayWorkspaceTopicsArchive(
+  topicArgs: string[]
+): Promise<never> {
+  const input = parseGatewayInputObject('workspace-topics.archive', topicArgs);
+  const id = gatewayWorkspaceTopicId(
+    'workspace-topics.archive',
+    topicArgs,
+    input
+  );
+  const rawConfirmationToken =
+    typeof input['confirmationToken'] === 'string'
+      ? input['confirmationToken']
+      : gatewayArg(topicArgs, '--confirmation-token');
+  const confirmationToken = rawConfirmationToken?.trim();
+  const result = await gatewayHttpJson({
+    commandName: 'workspace-topics.archive',
+    pathName: `/workspace-topics/${encodeURIComponent(id)}/archive`,
+    method: 'POST',
+    body: {},
+    capabilities: ['context:write'],
+    ...(confirmationToken ? { confirmationToken } : {}),
+  });
+  printGatewayEnvelope(gatewayOk('workspace-topics.archive', result), 0);
+}
+
 async function runGatewayWorkspaceTopics(
   gatewayArgs: string[]
 ): Promise<never> {
-  const subcommand = gatewayArgs[1];
   const topicArgs = gatewayArgs.slice(2);
-  if (subcommand === 'list') {
-    const query = new URLSearchParams();
-    const workspaceId = gatewayArg(topicArgs, '--workspace-id');
-    if (workspaceId) query.set('workspaceId', workspaceId);
-    if (topicArgs.includes('--include-archived'))
-      query.set('includeArchived', 'true');
-    const search = query.toString();
-    const result = await gatewayHttpJson({
-      commandName: 'workspace-topics.list',
-      pathName: `/workspace-topics${search ? `?${search}` : ''}`,
-      capabilities: ['context:read'],
-    });
-    printGatewayEnvelope(gatewayOk('workspace-topics.list', result), 0);
+  switch (gatewayArgs[1]) {
+    case 'list':
+      return runGatewayWorkspaceTopicsList(topicArgs);
+    case 'search':
+      return runGatewayWorkspaceTopicsSearch(topicArgs);
+    case 'get':
+      return runGatewayWorkspaceTopicsGet(topicArgs);
+    case 'create':
+      return runGatewayWorkspaceTopicsCreate(topicArgs);
+    case 'update':
+      return runGatewayWorkspaceTopicsUpdate(topicArgs);
+    case 'archive':
+      return runGatewayWorkspaceTopicsArchive(topicArgs);
+    default:
+      gatewayInvalid(
+        'workspace-topics.list',
+        'unknown workspace-topics command',
+        {
+          args: gatewayArgs,
+        }
+      );
   }
-  if (subcommand === 'get') {
-    const id = gatewayArg(topicArgs, '--id') ?? topicArgs[0];
-    if (!id || id.startsWith('--'))
-      gatewayInvalid('workspace-topics.get', '--id is required');
-    const result = await gatewayHttpJson({
-      commandName: 'workspace-topics.get',
-      pathName: `/workspace-topics/${encodeURIComponent(id)}`,
-      capabilities: ['context:read'],
-    });
-    printGatewayEnvelope(gatewayOk('workspace-topics.get', result), 0);
-  }
-  if (subcommand === 'create') {
-    const input = parseGatewayInputObject('workspace-topics.create', topicArgs);
-    const result = await gatewayHttpJson({
-      commandName: 'workspace-topics.create',
-      pathName: '/workspace-topics',
-      method: 'POST',
-      body: input,
-      capabilities: ['context:write'],
-    });
-    printGatewayEnvelope(gatewayOk('workspace-topics.create', result), 0);
-  }
-  if (subcommand === 'update') {
-    const id = gatewayArg(topicArgs, '--id') ?? topicArgs[0];
-    if (!id || id.startsWith('--'))
-      gatewayInvalid('workspace-topics.update', '--id is required');
-    const input = parseGatewayInputObject('workspace-topics.update', topicArgs);
-    const result = await gatewayHttpJson({
-      commandName: 'workspace-topics.update',
-      pathName: `/workspace-topics/${encodeURIComponent(id)}`,
-      method: 'PATCH',
-      body: input,
-      capabilities: ['context:write'],
-    });
-    printGatewayEnvelope(gatewayOk('workspace-topics.update', result), 0);
-  }
-  if (subcommand === 'archive') {
-    const input = parseGatewayInputObject(
-      'workspace-topics.archive',
-      topicArgs
-    );
-    const id =
-      typeof input['id'] === 'string'
-        ? input['id']
-        : (gatewayArg(topicArgs, '--id') ?? topicArgs[0]);
-    if (!id || id.startsWith('--'))
-      gatewayInvalid('workspace-topics.archive', '--id is required');
-    const rawConfirmationToken =
-      typeof input['confirmationToken'] === 'string'
-        ? input['confirmationToken']
-        : gatewayArg(topicArgs, '--confirmation-token');
-    const confirmationToken = rawConfirmationToken?.trim();
-    const result = await gatewayHttpJson({
-      commandName: 'workspace-topics.archive',
-      pathName: `/workspace-topics/${encodeURIComponent(id)}/archive`,
-      method: 'POST',
-      body: {},
-      capabilities: ['context:write'],
-      ...(confirmationToken ? { confirmationToken } : {}),
-    });
-    printGatewayEnvelope(gatewayOk('workspace-topics.archive', result), 0);
-  }
-  gatewayInvalid('workspace-topics.list', 'unknown workspace-topics command', {
-    args: gatewayArgs,
-  });
 }
 
 async function runGatewayRoster(gatewayArgs: string[]): Promise<never> {

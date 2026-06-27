@@ -36,6 +36,7 @@ import {
   workspaceTopicSessionLinkPatch,
   type WorkspaceTopic,
   type WorkspaceTopicListResponse,
+  type WorkspaceTopicSearchResponse,
 } from '../shared/workspace-topics.js';
 
 const cleanup: Array<() => void> = [];
@@ -80,7 +81,15 @@ async function listen(input: {
   workContextStore?: WorkContextStore;
   getConfig?: () => Config;
   requireReadActorAuth?: (
-    expectedCommand: 'workspace-topics.list' | 'workspace-topics.get'
+    expectedCommand:
+      | 'workspace-topics.list'
+      | 'workspace-topics.search'
+      | 'workspace-topics.get',
+    options?: {
+      scopeForRequest?: (
+        req: express.Request
+      ) => { workContextIds?: string[] } | undefined;
+    }
   ) => RequestHandler;
   requireWriteActorAuth?: (
     expectedCommand:
@@ -738,6 +747,207 @@ describe('workspace topics foundation', () => {
     expect(
       list.body.topics.map((topic) => topic.linkedRefs.workContextIds)
     ).toEqual([['wc-target']]);
+  });
+
+  it('searches bounded topic history without indexing raw secret artifacts', async () => {
+    const store = topicStore();
+    const surfaces = surfaceStore();
+    surfaces.upsert({
+      id: 'surface:apollo-preview',
+      kind: 'preview',
+      label: 'Apollo preview',
+      workspaceId: 'ws-derived',
+      repoPath: '/repo',
+      health: 'reachable',
+    });
+    const context = workContext('wc-search');
+    context.title = 'Apollo release lane';
+    context.actors = [
+      { kind: 'agent', id: 'agent:kani', providerId: 'hermes' },
+    ];
+    context.tasks = [
+      { kind: 'github-issue', id: '1026', title: 'Topic search history' },
+    ];
+    context.artifacts = [
+      {
+        id: 'artifact-safe',
+        kind: 'file',
+        title: 'Apollo handoff note',
+        summary: 'bounded topic recall for thin-line navigation',
+        uri: 'file:///tmp/apollo.md',
+        privacy: {
+          classification: 'internal',
+          retention: 'project',
+          rawPayloadStored: false,
+          redaction: { redacted: false, strategy: 'none', classes: [] },
+        },
+      },
+      {
+        id: 'artifact-secret',
+        kind: 'file',
+        title: 'credential dump',
+        summary: 'never index this credential phrase',
+        privacy: {
+          classification: 'secret',
+          retention: 'audit',
+          rawPayloadStored: true,
+          redaction: {
+            redacted: true,
+            strategy: 'hash',
+            classes: ['credential'],
+          },
+        },
+      },
+    ];
+    const workContextStore = {
+      list: (options?: WorkContextListOptions) =>
+        [context]
+          .filter(
+            (entry) =>
+              !options?.workspaceId ||
+              entry.anchors.project?.workspaceId === options.workspaceId
+          )
+          .slice(0, options?.limit),
+    } as unknown as WorkContextStore;
+    const { port } = await listen({
+      store,
+      surfaceStore: surfaces,
+      workContextStore,
+    });
+
+    const search = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=apollo&workspaceId=ws-derived&limit=1'
+    );
+
+    expect(search.status).toBe(200);
+    expect(search.body).toMatchObject({
+      query: 'apollo',
+      truncated: false,
+      derived: true,
+    });
+    expect(search.body.results).toHaveLength(1);
+    expect(search.body.results[0]?.topic.linkedRefs.workContextIds).toEqual([
+      'wc-search',
+    ]);
+    expect(
+      search.body.results[0]?.matches.map((match) => match.kind)
+    ).toContain('artifact');
+    expect(
+      search.body.results[0]?.matches.map((match) => match.kind)
+    ).toContain('surface');
+    expect(search.body.results[0]?.action).toMatchObject({
+      kind: 'open-topic',
+      primarySessionId: 'session-1',
+    });
+
+    const secret = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=credential&workspaceId=ws-derived'
+    );
+    expect(secret.status).toBe(200);
+    expect(secret.body.results).toHaveLength(0);
+  });
+
+  it('bounds search results and scopes actor reads by requested WorkContext', async () => {
+    const store = topicStore();
+    for (let i = 0; i < 3; i += 1) {
+      store.create({
+        id: `topic:bounded-${i}`,
+        workspaceId: 'ws-search',
+        title: `Bounded search ${i}`,
+        linkedRefs: { workContextIds: [`wc-${i}`] },
+      });
+    }
+    let requestedReadCommand: string | undefined;
+    let requestedScope: { workContextIds?: string[] } | undefined;
+    const { port } = await listen({
+      store,
+      requireReadActorAuth: (expectedCommand, options) => (req, _res, next) => {
+        requestedReadCommand = expectedCommand;
+        requestedScope = options?.scopeForRequest?.(req);
+        next();
+      },
+    });
+
+    const scoped = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=bounded&workContextId=wc-1&limit=1'
+    );
+
+    expect(scoped.status).toBe(200);
+    expect(requestedReadCommand).toBe('workspace-topics.search');
+    expect(requestedScope).toEqual({ workContextIds: ['wc-1'] });
+    expect(scoped.body.truncated).toBe(false);
+    expect(scoped.body.results.map((result) => result.topic.id)).toEqual([
+      'topic:bounded-1',
+    ]);
+
+    const bounded = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=bounded&limit=2'
+    );
+    expect(bounded.status).toBe(200);
+    expect(bounded.body.results).toHaveLength(2);
+    expect(bounded.body.truncated).toBe(true);
+  });
+
+  it('does not leak unrequested scoped contexts or same-repo surfaces through search', async () => {
+    const store = topicStore();
+    const surfaces = surfaceStore();
+    store.create({
+      id: 'topic:shared-scope',
+      workspaceId: 'ws-search',
+      title: 'Shared scope topic',
+      routingDefaults: { repoPath: '/repo' },
+      linkedRefs: { workContextIds: ['wc-allowed', 'wc-denied'] },
+    });
+    surfaces.upsert({
+      id: 'surface:denied-secret',
+      kind: 'dashboard',
+      label: 'hidden-denied surface',
+      workspaceId: 'ws-search',
+      repoPath: '/repo',
+      health: 'unreachable',
+      workContextId: 'wc-denied',
+    });
+    const allowedContext = workContext('wc-allowed');
+    allowedContext.title = 'allowed recall lane';
+    const deniedContext = workContext('wc-denied');
+    deniedContext.title = 'hidden-denied context';
+    const workContextStore = {
+      list: (options?: WorkContextListOptions) =>
+        [allowedContext, deniedContext]
+          .filter(
+            (entry) =>
+              !options?.workspaceId ||
+              entry.anchors.project?.workspaceId === options.workspaceId
+          )
+          .slice(0, options?.limit),
+    } as unknown as WorkContextStore;
+    const { port } = await listen({
+      store,
+      surfaceStore: surfaces,
+      workContextStore,
+    });
+
+    const deniedTerm = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=hidden-denied&workContextId=wc-allowed'
+    );
+
+    expect(deniedTerm.status).toBe(200);
+    expect(deniedTerm.body.results).toHaveLength(0);
+
+    const allowedTerm = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=allowed&workContextId=wc-allowed'
+    );
+    expect(allowedTerm.status).toBe(200);
+    expect(allowedTerm.body.results.length).toBeGreaterThan(0);
+    expect(
+      allowedTerm.body.results.every((result) => result.freshness !== 'stale')
+    ).toBe(true);
   });
 
   it('enforces capability headers and list caps', async () => {

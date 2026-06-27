@@ -16,7 +16,11 @@ import {
 } from 'lucide-react';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
-import { fetchWorkspaceSurfaces, fetchWorkspaceTopics } from '../lib/api.js';
+import {
+  fetchWorkspaceSurfaces,
+  fetchWorkspaceTopics,
+  searchWorkspaceTopics,
+} from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
 import type { SessionSummary } from '../lib/types.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
@@ -295,6 +299,10 @@ export function TopicSidebarView({
   loading = false,
   error = false,
   derived = false,
+  searchQuery = '',
+  searchLoading = false,
+  searchUnavailableReason,
+  onSearchQueryChange,
   onSelectSession,
 }: {
   topics: WorkspaceTopic[];
@@ -303,6 +311,10 @@ export function TopicSidebarView({
   loading?: boolean;
   error?: boolean;
   derived?: boolean;
+  searchQuery?: string;
+  searchLoading?: boolean;
+  searchUnavailableReason?: string | undefined;
+  onSearchQueryChange?: ((query: string) => void) | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
   const model = useMemo(
@@ -346,18 +358,37 @@ export function TopicSidebarView({
       <div className="topic-shell-state error">topic shell unavailable</div>
     );
   }
-  if (model.items.length === 0) {
-    return <div className="topic-shell-state">no workspace topics yet</div>;
-  }
 
   return (
     <div className="topic-shell" data-track="topic-shell">
       <div className="topic-shell__header">
         <span>topics</span>
-        {model.derived ? (
+        {searchQuery.trim() ? (
+          <span className="topic-shell__derived">search</span>
+        ) : model.derived ? (
           <span className="topic-shell__derived">derived</span>
         ) : null}
       </div>
+      <label className="topic-search" aria-label="search topic history">
+        <span className="topic-search__prompt">/</span>
+        <input
+          className="topic-search__input"
+          value={searchQuery}
+          onChange={(event) => onSearchQueryChange?.(event.target.value)}
+          placeholder="search topics, tasks, artifacts..."
+          spellCheck={false}
+        />
+        {searchLoading ? <span className="topic-search__state">…</span> : null}
+      </label>
+      {model.items.length === 0 ? (
+        <div className="topic-shell-state">
+          {searchQuery.trim()
+            ? searchUnavailableReason === 'empty_query'
+              ? 'type to search bounded topic history'
+              : `no topic matches for “${searchQuery.trim()}”`
+            : 'no workspace topics yet'}
+        </div>
+      ) : null}
       <ul className="topic-tree" aria-label="workspace topics">
         {model.rootIds.map((id) => {
           const item = model.byId.get(id);
@@ -387,31 +418,56 @@ export function TopicSidebarShell({
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
   const sessions = useSessionsStore((s) => s.sessions);
+  const [searchQuery, setSearchQuery] = useState('');
+  const normalizedSearchQuery = searchQuery.trim();
   const topicsQuery = useQuery({
     queryKey: ['workspace-topics'],
     queryFn: () => fetchWorkspaceTopics(),
     staleTime: 30_000,
+  });
+  const topicSearchQuery = useQuery({
+    queryKey: ['workspace-topics', 'search', normalizedSearchQuery],
+    queryFn: () =>
+      searchWorkspaceTopics({ q: normalizedSearchQuery, limit: 20 }),
+    enabled: normalizedSearchQuery.length > 0,
+    staleTime: 10_000,
   });
   const surfacesQuery = useQuery<WorkspaceSurface[]>({
     queryKey: ['workspace-surfaces', 'topic-shell'],
     queryFn: () => fetchWorkspaceSurfaces(),
     staleTime: 30_000,
   });
+  const searchActive = normalizedSearchQuery.length > 0;
+  const searchData = topicSearchQuery.data;
 
   return (
     <TopicSidebarView
-      topics={topicsQuery.data?.topics ?? []}
+      topics={
+        searchActive
+          ? (searchData?.results.map((result) => result.topic) ?? [])
+          : (topicsQuery.data?.topics ?? [])
+      }
       sessions={sessions}
       surfaces={surfacesQuery.data ?? []}
       loading={
-        (topicsQuery.isLoading && !topicsQuery.data) ||
+        (topicsQuery.isLoading && !topicsQuery.data && !searchActive) ||
+        (topicSearchQuery.isLoading && searchActive && !searchData) ||
         (surfacesQuery.isLoading && !surfacesQuery.data)
       }
       error={
-        (topicsQuery.isError && !topicsQuery.data) ||
+        (topicsQuery.isError && !topicsQuery.data && !searchActive) ||
+        (topicSearchQuery.isError && searchActive && !searchData) ||
         (surfacesQuery.isError && !surfacesQuery.data)
       }
-      derived={topicsQuery.data?.derived ?? false}
+      derived={
+        searchActive
+          ? (searchData?.derived ?? false)
+          : (topicsQuery.data?.derived ?? false)
+      }
+      searchQuery={searchQuery}
+      searchLoading={topicSearchQuery.isFetching && searchActive}
+      searchUnavailableReason={searchData?.unavailableReason}
+      onSearchQueryChange={setSearchQuery}
       onSelectSession={onSelectSession}
     />
   );

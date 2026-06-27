@@ -271,6 +271,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'roster.list',
     'workspace-surfaces.list',
     'workspace-topics.list',
+    'workspace-topics.search',
     'workspace-topics.get',
   ]);
   expect(

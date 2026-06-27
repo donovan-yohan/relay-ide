@@ -161,4 +161,24 @@ describe('TopicSidebarView', () => {
     await renderView({ loading: false, error: false, topics: [] });
     expect(container.textContent).toContain('no workspace topics yet');
   });
+
+  it('renders bounded topic history search without changing the thin-line layout', async () => {
+    const onSearchQueryChange = vi.fn();
+    await renderView({
+      topics: [],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'apollo',
+      searchLoading: true,
+      onSearchQueryChange,
+    });
+
+    expect(container.querySelector('.topic-search')).not.toBeNull();
+    expect(container.textContent).toContain('search');
+    expect(container.textContent).toContain('no topic matches for “apollo”');
+    const input = container.querySelector(
+      '.topic-search__input'
+    ) as HTMLInputElement;
+    expect(input.value).toBe('apollo');
+  });
 });

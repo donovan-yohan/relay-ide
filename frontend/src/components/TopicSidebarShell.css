@@ -29,6 +29,38 @@
   color: var(--status-info);
 }
 
+.topic-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.topic-search__prompt,
+.topic-search__state {
+  color: var(--status-info);
+}
+
+.topic-search__input {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+}
+
+.topic-search__input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.72;
+}
+
 .topic-tree,
 .topic-child-list {
   list-style: none;
