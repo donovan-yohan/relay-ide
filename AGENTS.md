@@ -42,7 +42,6 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Self-hosting         | `docs/SELF_HOSTING.md`                       | Build Relay with Relay using isolated dev config/ports/process identity                                                  |
 | Security policy      | `docs/SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary, exact-operation approvals, handshake grants |
 | Handshake grants     | `docs/OPERATOR_HANDSHAKE_GRANTS.md`          | One-time `relay-ohg-v1` operator handshake grant lane: ceremony, bounded scope, fail-closed validation                   |
-| rmux helper          | `docs/RMUX_HELPER_PROTOCOL.md`               | Experimental #707/#745 JSON/stdin-stdout boundary spec for a throwaway `relay-rmux-helper` prototype                     |
 | Session durability   | `docs/SESSION_DURABILITY.md`                 | Process-owner vs attach-handle, derived durability state machine, transition emission                                    |
 | Hub/node pkg         | `docs/RELAY_HUB_NODE_PACKAGING.md`           | Hub vs node command shape, npm package decision, install/update commands                                                 |
 | Node bootstrap       | `docs/RELAY_NODE_BOOTSTRAP.md`               | Pair/install/update/unpair nodes for federated Relay, bootstrap diagnostics                                              |
