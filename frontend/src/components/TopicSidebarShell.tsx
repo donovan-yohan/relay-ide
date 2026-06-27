@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
@@ -16,8 +22,63 @@ import {
 import { MarqueeText } from './MarqueeText.js';
 import './TopicSidebarShell.css';
 
+function RepoKindIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden>
+      <path d="M5 3v4M11 3v4M5 7a2 2 0 1 0 0 4M11 7a2 2 0 1 0 0 4M7 9h2" />
+    </svg>
+  );
+}
+
+function FolderKindIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden>
+      <path d="M2 5h5l1 2h6v6H2zM2 5V3h4l1 2" />
+    </svg>
+  );
+}
+
+function ThreadKindIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden>
+      <path d="M3 3h10v8H7l-4 3z" />
+    </svg>
+  );
+}
+
+function WorkspaceKindIcon({ kind }: { kind: TopicNavItem['kind'] }) {
+  if (kind === 'repo') return <RepoKindIcon />;
+  if (kind === 'folder') return <FolderKindIcon />;
+  return <ThreadKindIcon />;
+}
+
+function AttentionIcon({ tone }: { tone: TopicNavItem['tone'] }) {
+  if (tone === 'active')
+    return <span className="topic-status__spinner" aria-hidden />;
+  if (tone === 'attention') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden>
+        <path d="M8 3v6M8 12v1" />
+      </svg>
+    );
+  }
+  if (tone === 'error') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden>
+        <path d="M8 2l6 12H2zM8 6v4M8 12v1" />
+      </svg>
+    );
+  }
+  return null;
+}
+
 function StatusGlyph({ tone }: { tone: TopicNavItem['tone'] }) {
-  return <span className={`topic-status topic-status--${tone}`} aria-hidden />;
+  const attention = AttentionIcon({ tone });
+  return (
+    <span className={`topic-status topic-status--${tone}`} aria-hidden>
+      {attention}
+    </span>
+  );
 }
 
 function TopicBadge({ item }: { item: TopicNavItem }) {
@@ -25,9 +86,9 @@ function TopicBadge({ item }: { item: TopicNavItem }) {
     <span
       className="topic-row__badge"
       style={{ background: deriveColor(item.badgeSeed) }}
-      title={`workspace ${item.badgeText}`}
+      title={`${item.kindLabel} workspace`}
     >
-      {item.badgeText}
+      <WorkspaceKindIcon kind={item.kind} />
     </span>
   );
 }
@@ -78,7 +139,6 @@ function SessionChildRow({
         className="topic-child-row__button"
         onClick={() => onSelectSession?.(session.selectKey)}
       >
-        <StatusGlyph tone={session.tone} />
         <span className="topic-child-row__label">
           <MarqueeText>{session.label}</MarqueeText>
         </span>
@@ -88,6 +148,7 @@ function SessionChildRow({
         {session.nodeId ? (
           <span className="topic-child-row__meta">{session.nodeId}</span>
         ) : null}
+        <StatusGlyph tone={session.tone} />
       </button>
     </li>
   );
@@ -153,8 +214,15 @@ function TopicRow({
     if (hasNested) onToggle(item.id);
   };
 
+  const rowStyle = { '--topic-depth': depth } as CSSProperties;
+
   return (
-    <li className="topic-node">
+    <li
+      className={['topic-node', expanded && hasNested && 'expanded']
+        .filter(Boolean)
+        .join(' ')}
+      style={rowStyle}
+    >
       <button
         type="button"
         className={[
@@ -165,7 +233,6 @@ function TopicRow({
         ]
           .filter(Boolean)
           .join(' ')}
-        style={{ paddingLeft: `${8 + depth * 18}px` }}
         aria-expanded={hasNested ? expanded : undefined}
         aria-current={selected ? 'page' : undefined}
         onClick={activate}
@@ -179,13 +246,6 @@ function TopicRow({
           }
         }}
       >
-        <span
-          className={['topic-row__chevron', !expanded && 'collapsed']
-            .filter(Boolean)
-            .join(' ')}
-        >
-          {hasNested ? '⌄' : '·'}
-        </span>
         <TopicBadge item={item} />
         <span className="topic-row__title">
           <MarqueeText>{item.title}</MarqueeText>
@@ -194,19 +254,20 @@ function TopicRow({
           className="topic-row__trail"
           aria-label={`${item.statusLabel}, ${affordanceCount} linked items`}
         >
+          <span className="topic-row__hover-actions" aria-hidden="true">
+            {item.sessions.length > 0 ? (
+              <span className="topic-chip">s{item.sessions.length}</span>
+            ) : null}
+            {item.surfaces.slice(0, 2).map((surface) => (
+              <SurfaceButton key={surface.id} surface={surface} />
+            ))}
+            {item.taskRefs.length > 0 ? (
+              <span className="topic-chip">t{item.taskRefs.length}</span>
+            ) : null}
+          </span>
           <StatusGlyph tone={item.tone} />
-          {item.sessions.length > 0 ? (
-            <span className="topic-chip">s{item.sessions.length}</span>
-          ) : null}
-          {item.surfaces.slice(0, 2).map((surface) => (
-            <SurfaceButton key={surface.id} surface={surface} />
-          ))}
-          {item.taskRefs.length > 0 ? (
-            <span className="topic-chip">t{item.taskRefs.length}</span>
-          ) : null}
         </span>
       </button>
-      {selected ? <TopicDetail item={item} /> : null}
       {expanded ? (
         <>
           {item.sessions.length > 0 ? (
@@ -294,6 +355,7 @@ export function TopicSidebarView({
   }, []);
 
   const select = useCallback((id: string) => setSelectedId(id), []);
+  const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
 
   if (loading) {
     return <div className="topic-shell-state">loading topic shell…</div>;
@@ -333,6 +395,7 @@ export function TopicSidebarView({
           ) : null;
         })}
       </ul>
+      {selectedItem ? <TopicDetail item={selectedItem} /> : null}
     </div>
   );
 }

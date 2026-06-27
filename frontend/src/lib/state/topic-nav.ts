@@ -8,6 +8,7 @@ import { isAttentionState } from './display-state.js';
 import { highestPriorityState } from './attention.js';
 
 export type TopicNavTone = 'active' | 'attention' | 'idle' | 'empty' | 'error';
+export type TopicNavKind = 'repo' | 'folder' | 'thread';
 
 export interface TopicNavSessionRef {
   id: string;
@@ -32,8 +33,9 @@ export interface TopicNavItem {
   parentId: WorkspaceTopicId | null;
   title: string;
   description: string | null;
-  badgeText: string;
   badgeSeed: string;
+  kind: TopicNavKind;
+  kindLabel: string;
   pinned: boolean;
   muted: boolean;
   order: number;
@@ -134,6 +136,20 @@ function surfaceTarget(surface: WorkspaceSurface): string | null {
   return surface.url ?? surface.command ?? surface.logRef ?? null;
 }
 
+function topicKind(topic: WorkspaceTopic): {
+  kind: TopicNavKind;
+  label: string;
+} {
+  const routing = topic.routingDefaults;
+  if (routing.repoPath || routing.worktreePath) {
+    return { kind: 'repo', label: 'git repo' };
+  }
+  if (routing.cwd) {
+    return { kind: 'folder', label: 'folder' };
+  }
+  return { kind: 'thread', label: 'topic' };
+}
+
 function routingLabel(topic: WorkspaceTopic): string | null {
   const routing = topic.routingDefaults;
   const parts = [
@@ -181,13 +197,6 @@ export function buildTopicNavModel(input: {
   surfaces: WorkspaceSurface[];
   derived?: boolean;
 }): TopicNavModel {
-  const workspaceNumbers = new Map<string, number>();
-  for (const topic of input.topics) {
-    if (!workspaceNumbers.has(topic.workspaceId)) {
-      workspaceNumbers.set(topic.workspaceId, workspaceNumbers.size + 1);
-    }
-  }
-
   const items: TopicNavItem[] = input.topics.map((topic) => {
     const sessions = input.sessions
       .filter((session) => sessionMatchesTopic(topic, session))
@@ -218,15 +227,16 @@ export function buildTopicNavModel(input: {
       .sort((a, b) => a.label.localeCompare(b.label));
 
     const tone = topicTone(sessions, surfaces, topic);
-    const number = workspaceNumbers.get(topic.workspaceId) ?? 0;
+    const kind = topicKind(topic);
     const order = topic.grouping.order ?? Number.MAX_SAFE_INTEGER;
     return {
       id: topic.id,
       parentId: topic.grouping.parentTopicId ?? null,
       title: topic.display.title,
       description: topic.display.description ?? null,
-      badgeText: number > 0 ? String(number).padStart(2, '0') : 'ws',
       badgeSeed: topic.workspaceId || topic.display.title,
+      kind: kind.kind,
+      kindLabel: kind.label,
       pinned: topic.state.pinned,
       muted: topic.state.muted,
       order,

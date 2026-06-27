@@ -123,4 +123,39 @@ describe('buildTopicNavModel', () => {
       { id: 'surface:preview', label: 'Preview server', kind: 'preview' },
     ]);
   });
+
+  it('classifies topic workspace kind from routing defaults', () => {
+    const repo = makeTopic({
+      id: 'topic:repo',
+      routingDefaults: { repoPath: '/repo/relay' },
+    });
+    const folder = makeTopic({
+      id: 'topic:folder',
+      workspaceId: 'workspace:folder',
+      routingDefaults: { cwd: '/tmp/scratch' },
+    });
+    const thread = makeTopic({
+      id: 'topic:thread',
+      workspaceId: 'workspace:thread',
+    });
+
+    const model = buildTopicNavModel({
+      topics: [repo, folder, thread],
+      sessions: [],
+      surfaces: [],
+    });
+
+    expect(model.byId.get('topic:repo')).toMatchObject({
+      kind: 'repo',
+      kindLabel: 'git repo',
+    });
+    expect(model.byId.get('topic:folder')).toMatchObject({
+      kind: 'folder',
+      kindLabel: 'folder',
+    });
+    expect(model.byId.get('topic:thread')).toMatchObject({
+      kind: 'thread',
+      kindLabel: 'topic',
+    });
+  });
 });
