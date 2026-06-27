@@ -1,10 +1,14 @@
 // @vitest-environment happy-dom
 
+import * as fs from 'node:fs';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
-import type { WorkspaceTopic } from '../shared/workspace-topics.js';
+import type {
+  WorkspaceTopic,
+  WorkspaceTopicSearchResult,
+} from '../shared/workspace-topics.js';
 import { TopicSidebarView } from '../frontend/src/components/TopicSidebarShell.js';
 import { makeSession } from './helpers/frontend-factories.js';
 
@@ -160,5 +164,139 @@ describe('TopicSidebarView', () => {
 
     await renderView({ loading: false, error: false, topics: [] });
     expect(container.textContent).toContain('no workspace topics yet');
+  });
+
+  it('renders bounded topic history search without changing the thin-line layout', async () => {
+    const onSearchQueryChange = vi.fn();
+    await renderView({
+      topics: [],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'apollo',
+      searchLoading: true,
+      onSearchQueryChange,
+    });
+
+    expect(container.querySelector('.topic-search')).not.toBeNull();
+    expect(container.textContent).toContain('search');
+    expect(container.textContent).not.toContain(
+      'no topic matches for “apollo”'
+    );
+    const input = container.querySelector(
+      '.topic-search__input'
+    ) as HTMLInputElement;
+    expect(input.value).toBe('apollo');
+  });
+
+  it('keeps keyboard-visible focus styling for the search input', () => {
+    const css = fs.readFileSync(
+      'frontend/src/components/TopicSidebarShell.css',
+      'utf8'
+    );
+
+    expect(css).toContain('.topic-search__input:focus-visible');
+    expect(css).toMatch(
+      /\.topic-search__input:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)/
+    );
+  });
+
+  it('keeps active search input mounted instead of showing global loading', async () => {
+    const onSearchQueryChange = vi.fn();
+    await renderView({
+      loading: true,
+      topics: [],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'apollo',
+      searchLoading: true,
+      onSearchQueryChange,
+    });
+
+    expect(container.textContent).not.toContain('loading topic shell');
+    expect(container.querySelector('.topic-search__input')).not.toBeNull();
+    expect(container.textContent).not.toContain(
+      'no topic matches for “apollo”'
+    );
+  });
+
+  it('keeps search controls mounted for inline search errors with retry and clear actions', async () => {
+    const onSearchRetry = vi.fn();
+    const onSearchClear = vi.fn();
+    await renderView({
+      topics: [],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'apollo',
+      searchError: true,
+      onSearchRetry,
+      onSearchClear,
+    });
+
+    expect(container.querySelector('.topic-shell')).not.toBeNull();
+    expect(container.querySelector('.topic-search__input')).not.toBeNull();
+    expect(container.textContent).toContain('topic search unavailable');
+    const retryButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'retry'
+    ) as HTMLButtonElement;
+    const clearButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'clear'
+    ) as HTMLButtonElement;
+    await act(async () => retryButton.click());
+    await act(async () => clearButton.click());
+    expect(onSearchRetry).toHaveBeenCalledTimes(1);
+    expect(onSearchClear).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders search result explanation, freshness, disabled action, and truncation metadata', async () => {
+    const staleTopic = makeTopic({
+      id: 'topic:stale',
+      display: {
+        title: 'Stale result topic',
+        description: 'Search metadata detail',
+      },
+    });
+    const searchResults: WorkspaceTopicSearchResult[] = [
+      {
+        topic: staleTopic,
+        score: 120,
+        freshness: 'stale',
+        matches: [
+          {
+            kind: 'task',
+            field: 'linkedRefs.taskRefs.title',
+            label: 'task title',
+            value: 'apollo search acceptance',
+          },
+        ],
+        action: {
+          kind: 'open-topic',
+          topicId: 'topic:stale',
+          primarySessionId: 's-stale',
+          disabledReason: 'some linked surfaces are stale or unreachable',
+        },
+      },
+    ];
+
+    await renderView({
+      topics: [staleTopic],
+      sessions: [],
+      surfaces: [],
+      searchQuery: 'apollo',
+      searchResults,
+      searchTruncated: true,
+    });
+
+    expect(container.textContent).toContain(
+      'task title: apollo search acceptance'
+    );
+    expect(container.textContent).toContain('stale');
+    expect(container.textContent).toContain(
+      'some linked surfaces are stale or unreachable'
+    );
+    expect(container.textContent).toContain('results truncated');
+    const action = container.querySelector(
+      '.topic-search-result__action'
+    ) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
   });
 });

@@ -34,7 +34,10 @@ import type {
   WorkspaceSurface,
   WorkspaceSurfaceListResponse,
 } from '../../../shared/workspace-surfaces.js';
-import type { WorkspaceTopicListResponse } from '../../../shared/workspace-topics.js';
+import type {
+  WorkspaceTopicListResponse,
+  WorkspaceTopicSearchResponse,
+} from '../../../shared/workspace-topics.js';
 import type {
   PipelineHandoffArtifact,
   PipelineHandoffStageName,
@@ -1631,6 +1634,38 @@ export async function fetchWorkspaceTopics(
     topics: Array.isArray(data.topics) ? data.topics : [],
     truncated: Boolean(data.truncated),
     derived: Boolean(data.derived),
+  };
+}
+
+export async function searchWorkspaceTopics(args: {
+  q: string;
+  workspaceId?: string;
+  workContextId?: string;
+  workContextIds?: string[];
+  includeArchived?: boolean;
+  limit?: number;
+}): Promise<WorkspaceTopicSearchResponse> {
+  const params = new URLSearchParams();
+  params.set('q', args.q);
+  if (args.workspaceId) params.set('workspaceId', args.workspaceId);
+  if (args.workContextId) params.set('workContextId', args.workContextId);
+  if (args.workContextIds?.length)
+    params.set('workContextIds', args.workContextIds.join(','));
+  if (args.includeArchived) params.set('includeArchived', '1');
+  if (args.limit) params.set('limit', String(args.limit));
+  const data = await json<WorkspaceTopicSearchResponse>(
+    await fetch(`/workspace-topics/search?${params.toString()}`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return {
+    query: typeof data.query === 'string' ? data.query : args.q,
+    results: Array.isArray(data.results) ? data.results : [],
+    truncated: Boolean(data.truncated),
+    derived: Boolean(data.derived),
+    ...(typeof data.unavailableReason === 'string'
+      ? { unavailableReason: data.unavailableReason }
+      : {}),
   };
 }
 

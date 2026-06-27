@@ -29,6 +29,98 @@
   color: var(--status-info);
 }
 
+.topic-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.topic-search__prompt,
+.topic-search__state {
+  color: var(--status-info);
+}
+
+.topic-search__input {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+}
+
+.topic-search__input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.topic-search__input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.72;
+}
+
+.topic-search-results {
+  display: grid;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.topic-search-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.58rem;
+}
+
+.topic-search-result--fresh .topic-search-result__freshness {
+  color: var(--status-info);
+}
+
+.topic-search-result--stale .topic-search-result__freshness,
+.topic-search-result__disabled {
+  color: var(--status-warning);
+}
+
+.topic-search-result__main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.topic-search-result__title {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-search-result__meta,
+.topic-search-result__truncated,
+.topic-search-result__disabled {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-search-result__disabled,
+.topic-search-result__truncated {
+  grid-column: 1 / -1;
+}
+
+.topic-search-result__action:disabled {
+  opacity: 0.58;
+}
+
 .topic-tree,
 .topic-child-list {
   list-style: none;
@@ -405,4 +497,23 @@
 
 .topic-shell-state.error {
   color: var(--status-error);
+}
+
+.topic-search-state {
+  display: grid;
+  gap: 6px;
+  padding: 8px 12px;
+}
+
+.topic-search-state__actions {
+  display: inline-flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.topic-search-state__actions button {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
 }

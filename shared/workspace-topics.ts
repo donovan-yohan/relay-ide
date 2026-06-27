@@ -10,6 +10,9 @@ import type { ArtifactId, TaskRef, WorkContextId } from './work-context.js';
 
 export const WORKSPACE_TOPIC_SCHEMA_VERSION = 1 as const;
 export const WORKSPACE_TOPICS_MAX_LIST_ENTRIES = 200;
+export const WORKSPACE_TOPICS_SEARCH_DEFAULT_LIMIT = 20;
+export const WORKSPACE_TOPICS_SEARCH_MAX_RESULTS = 50;
+export const WORKSPACE_TOPICS_SEARCH_QUERY_MAX = 160;
 export const WORKSPACE_TOPIC_TITLE_MAX = 160;
 export const WORKSPACE_TOPIC_DESCRIPTION_MAX = 2000;
 export const WORKSPACE_TOPIC_PROMPT_MAX = 4000;
@@ -133,6 +136,50 @@ export interface WorkspaceTopicListResponse {
   topics: WorkspaceTopic[];
   truncated: boolean;
   derived: boolean;
+}
+
+export type WorkspaceTopicSearchMatchKind =
+  | 'topic'
+  | 'workspace'
+  | 'task'
+  | 'repo'
+  | 'worktree'
+  | 'artifact'
+  | 'surface'
+  | 'agent'
+  | 'session'
+  | 'phrase';
+
+export type WorkspaceTopicSearchFreshness = 'fresh' | 'stale' | 'unknown';
+
+export interface WorkspaceTopicSearchMatch {
+  kind: WorkspaceTopicSearchMatchKind;
+  field: string;
+  label: string;
+  value: string;
+}
+
+export interface WorkspaceTopicSearchAction {
+  kind: 'open-topic';
+  topicId: WorkspaceTopicId;
+  primarySessionId?: string;
+  disabledReason?: string;
+}
+
+export interface WorkspaceTopicSearchResult {
+  topic: WorkspaceTopic;
+  score: number;
+  freshness: WorkspaceTopicSearchFreshness;
+  matches: WorkspaceTopicSearchMatch[];
+  action: WorkspaceTopicSearchAction;
+}
+
+export interface WorkspaceTopicSearchResponse {
+  query: string;
+  results: WorkspaceTopicSearchResult[];
+  truncated: boolean;
+  derived: boolean;
+  unavailableReason?: string;
 }
 
 export type WorkspaceTopicLaunchOverrides = Record<string, unknown>;
