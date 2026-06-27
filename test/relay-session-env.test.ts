@@ -166,10 +166,10 @@ describe('injectRelaySessionEnvForTest — env var injection', () => {
       expect(shimDir).toContain('ses-path');
       expect(shimDir).toMatch(/bin$/);
       expect(env.PATH).toContain(originalPath);
-      // Verify relayctl and relay files were written in the shim dir
+      // Verify only the documented relayctl shim was written.
       const { existsSync } = fs;
       expect(existsSync(path.join(shimDir, 'relayctl'))).toBe(true);
-      expect(existsSync(path.join(shimDir, 'relay'))).toBe(true);
+      expect(existsSync(path.join(shimDir, 'relay'))).toBe(false);
     }
     // Either way PATH is a valid string
     expect(typeof env.PATH).toBe('string');

@@ -311,9 +311,8 @@ export function createNodeLinkPtyHost(
       attachment.onData((chunk) => {
         const live = streams.get(streamId);
         if (!live || live.attachment !== attachment || live.closing) return;
-        // tmux owns scrollback for resumable sessions; raw sessions
-        // have no resume so any local buffer would be discarded
-        // anyway. Forward bytes straight through.
+        // The node session registry owns replay/scrollback. This stream only
+        // forwards live PTY bytes for the attached browser.
         sendData(live, chunk.toString('utf8'));
       });
       attachment.onExit(({ exitCode, signal }) => {

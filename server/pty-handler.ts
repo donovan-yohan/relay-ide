@@ -484,12 +484,10 @@ function writeRelayctlShim(sessionId: string): string | null {
   try {
     const binDir = path.join(os.tmpdir(), 'relay-ide', sessionId, 'bin');
     fs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
+    const shimPath = path.join(binDir, 'relayctl');
     const shim = `#!/bin/sh\nexec node ${shellQuote(binaryPath)} "$@"\n`;
-    for (const name of ['relayctl', 'relay']) {
-      const shimPath = path.join(binDir, name);
-      fs.writeFileSync(shimPath, shim, { encoding: 'utf-8', mode: 0o755 });
-      fs.chmodSync(shimPath, 0o755);
-    }
+    fs.writeFileSync(shimPath, shim, { encoding: 'utf-8', mode: 0o755 });
+    fs.chmodSync(shimPath, 0o755);
     return binDir;
   } catch (err) {
     logger.warn(`Failed to write relayctl shim for session ${sessionId}:`, err);

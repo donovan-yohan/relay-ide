@@ -12,7 +12,11 @@ import {
   type TerminalModelSnapshot,
 } from './terminal-model-backend.js';
 
-export type RelayPtySessionStatus = 'starting' | 'running' | 'exited' | 'closed';
+export type RelayPtySessionStatus =
+  | 'starting'
+  | 'running'
+  | 'exited'
+  | 'closed';
 
 export interface RelayPtySessionOptions {
   id: string;
@@ -87,19 +91,21 @@ export function buildRelayPtySessionEnv(
   base.RELAY_IDE_SESSION_ID = options.id;
   base.RELAY_IDE_SESSION_RUNTIME = 'relay-pty/libghostty-vt';
   base.RELAY_IDE_CLI_PATH = options.relayCliPath ?? defaultRelayCliPath();
-  if (options.workContextId) base.RELAY_IDE_WORK_CONTEXT_ID = options.workContextId;
+  if (options.workContextId)
+    base.RELAY_IDE_WORK_CONTEXT_ID = options.workContextId;
   if (options.taskRef) base.RELAY_IDE_TASK_REF = options.taskRef;
   return base;
 }
 
-export function createRelayPtySession(options: RelayPtySessionOptions): RelayPtySession {
+export function createRelayPtySession(
+  options: RelayPtySessionOptions
+): RelayPtySession {
   return new RelayPtySession(options);
 }
 
 /**
- * Prototype PTY owner that bypasses tmux. It is intentionally not wired into the
- * production session registry yet: the point of #834 is to prove the terminal
- * model and input contract while keeping the existing tmux runtime untouched.
+ * Relay-owned PTY session backed by node-pty plus the selected terminal model.
+ * This is the production terminal execution path for new sessions.
  */
 export class RelayPtySession {
   readonly id: string;
@@ -153,7 +159,9 @@ export class RelayPtySession {
     });
     this.proc.onExit(({ exitCode, signal }) => {
       this.statusValue = 'exited';
-      const event: { exitCode: number; signal?: number } = { exitCode: exitCode ?? 0 };
+      const event: { exitCode: number; signal?: number } = {
+        exitCode: exitCode ?? 0,
+      };
       if (signal !== undefined && signal !== null) event.signal = signal;
       this.exitValue = event;
       for (const handler of Array.from(this.exitHandlers)) handler(event);
@@ -206,7 +214,9 @@ export class RelayPtySession {
     this.backend.resize(cols, rows);
   }
 
-  snapshot(options: { includeCells?: boolean; includeScrollback?: boolean } = {}): RelayPtySessionSnapshot {
+  snapshot(
+    options: { includeCells?: boolean; includeScrollback?: boolean } = {}
+  ): RelayPtySessionSnapshot {
     const at = Date.now();
     return {
       id: this.id,
@@ -219,9 +229,18 @@ export class RelayPtySession {
       timing: {
         startedAt: new Date(this.startedAt).toISOString(),
         lastActivityAt: new Date(this.lastActivityAt).toISOString(),
-        lastOutputAt: this.lastOutputAt === null ? null : new Date(this.lastOutputAt).toISOString(),
-        lastInputAt: this.lastInputAt === null ? null : new Date(this.lastInputAt).toISOString(),
-        lastResizeAt: this.lastResizeAt === null ? null : new Date(this.lastResizeAt).toISOString(),
+        lastOutputAt:
+          this.lastOutputAt === null
+            ? null
+            : new Date(this.lastOutputAt).toISOString(),
+        lastInputAt:
+          this.lastInputAt === null
+            ? null
+            : new Date(this.lastInputAt).toISOString(),
+        lastResizeAt:
+          this.lastResizeAt === null
+            ? null
+            : new Date(this.lastResizeAt).toISOString(),
         idleMs: at - this.lastActivityAt,
       },
       terminal: this.backend.snapshot(options),

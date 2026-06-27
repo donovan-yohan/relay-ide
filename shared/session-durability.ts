@@ -1,5 +1,5 @@
 // Session durability state for #614. The Relay session is process-owned by a
-// node (PTY/tmux); browser/hub sockets are attach handles, not process owners.
+// node-side PTY/session registry; browser/hub sockets are attach handles, not process owners.
 // `SessionDurabilityState` is a derived, closed enum surfaced on session
 // summaries so consumers can reason about reattach safety without poking at
 // internal handles.
