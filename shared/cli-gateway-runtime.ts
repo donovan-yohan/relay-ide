@@ -37,6 +37,7 @@ const createSessionAllowedFields = new Set([
   'initialPrompt',
   'continuePolicy',
   'workContextId',
+  'workspaceTopicId',
   'controlMode',
   'sessionEnvelope',
   'ttlSeconds',
@@ -78,6 +79,7 @@ const stringFields = [
   'branchName',
   'initialPrompt',
   'workContextId',
+  'workspaceTopicId',
   'expiresAt',
   'confirmationToken',
 ] as const;
@@ -103,6 +105,7 @@ const localCreateSupportedFields = [
   'initialPrompt',
   'continuePolicy',
   'workContextId',
+  'workspaceTopicId',
   'controlMode',
 ] as const;
 
@@ -534,7 +537,10 @@ function validateLocalCreateSupport(
       { field: 'controlMode', supported: ['human-driven', undefined] }
     );
   }
-  if (typeof input['repoPath'] !== 'string') {
+  if (
+    typeof input['repoPath'] !== 'string' &&
+    typeof input['workspaceTopicId'] !== 'string'
+  ) {
     return invalidCreateInput('local session creation requires repoPath', {
       field: 'repoPath',
     });

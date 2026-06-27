@@ -412,6 +412,7 @@ function parseGatewayCreateInput(
     ['--initial-prompt', 'initialPrompt'],
     ['--continue-policy', 'continuePolicy'],
     ['--work-context-id', 'workContextId'],
+    ['--workspace-topic-id', 'workspaceTopicId'],
     ['--control-mode', 'controlMode'],
     ['--confirmation-token', 'confirmationToken'],
     ['--expires-at', 'expiresAt'],
@@ -2399,6 +2400,7 @@ async function runGatewaySessionCreate(sessionArgs: string[]): Promise<never> {
       validated.sessionType === 'terminal'
         ? 'session:create:terminal'
         : 'session:create:agent',
+      ...(validated.input['workspaceTopicId'] ? ['context:write'] : []),
       ...(validated.input['controlMode'] === 'agent-driven'
         ? ['tab:mode:set-agent']
         : []),

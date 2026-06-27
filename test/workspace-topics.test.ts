@@ -29,9 +29,11 @@ import type {
 import type { WorkContext } from '../shared/work-context.js';
 import {
   WORKSPACE_TOPICS_MAX_LIST_ENTRIES,
+  buildWorkspaceTopicSessionCreateBody,
   buildWorkspaceTopicRecord,
   parseWorkspaceTopicCreateInput,
   resolveWorkspaceTopicRoutingDefaults,
+  workspaceTopicSessionLinkPatch,
   type WorkspaceTopic,
   type WorkspaceTopicListResponse,
 } from '../shared/workspace-topics.js';
@@ -212,6 +214,75 @@ describe('workspace topics foundation', () => {
       cwd: '/repo/task',
       repoPath: '/repo',
       agentId: 'agent:kani',
+    });
+  });
+
+  it('projects topic defaults into session create bodies and link patches', () => {
+    const topic = buildWorkspaceTopicRecord({
+      create: {
+        workspaceId: 'ws-launch',
+        title: 'Hermes topic launch',
+        promptDefaults: {
+          starterPrompt: 'resume this topic',
+          instructions: 'keep the workspace context attached',
+        },
+        routingDefaults: {
+          providerId: 'hermes',
+          repoPath: '/repo',
+          cwd: '/repo/.worktrees/topic',
+        },
+        linkedRefs: { workContextIds: ['wc-topic'] },
+      },
+      now: '2026-06-26T00:00:00.000Z',
+    });
+
+    expect(
+      buildWorkspaceTopicSessionCreateBody({
+        topic,
+        overrides: { initialPrompt: 'explicit prompt', yolo: true },
+      })
+    ).toMatchObject({
+      workspaceTopicId: topic.id,
+      repoPath: '/repo',
+      worktreePath: '/repo/.worktrees/topic',
+      agent: 'hermes',
+      workContextId: 'wc-topic',
+      initialPrompt: 'explicit prompt',
+      yolo: true,
+    });
+
+    expect(
+      buildWorkspaceTopicSessionCreateBody({
+        topic,
+        overrides: { initialPrompt: '', workContextId: '' },
+      })
+    ).toMatchObject({
+      workContextId: 'wc-topic',
+      initialPrompt: 'resume this topic\n\nkeep the workspace context attached',
+    });
+
+    expect(
+      buildWorkspaceTopicSessionCreateBody({
+        topic,
+        overrides: { worktreePath: null },
+      })
+    ).toMatchObject({
+      repoPath: '/repo',
+      worktreePath: null,
+      agent: 'hermes',
+    });
+
+    expect(
+      workspaceTopicSessionLinkPatch({
+        topic,
+        sessionId: 'session-topic',
+        workContextId: 'wc-topic',
+      })
+    ).toEqual({
+      linkedRefs: {
+        workContextIds: ['wc-topic'],
+        sessionIds: ['session-topic'],
+      },
     });
   });
 
