@@ -174,9 +174,12 @@ function loadViewSpineEnabled(): boolean {
   return ls(VIEW_SPINE_KEY) === '1';
 }
 
-function loadTopicShellEnabled(): boolean {
-  // Separate opt-in while topic-shell parity remains tracked by #1032/#1027.
-  return ls(TOPIC_SHELL_KEY) === '1';
+export function loadTopicShellEnabled(): boolean {
+  // The thin-line WorkspaceTopic shell is the default desktop sidebar. Keep an
+  // explicit localStorage opt-out so operators can recover the legacy fallback
+  // while #1032 tracks deleting the duplicate implementation.
+  const stored = ls(TOPIC_SHELL_KEY);
+  return stored !== '0' && stored !== 'false';
 }
 
 // ── #738: View-layer persistence (lens / pins / saved Views) ─────────────────
@@ -624,7 +627,7 @@ export interface UiState {
   collapsedWorkspaces: Set<string>;
   /** Six-layer navigation surface flag. Default false; backed by localStorage. */
   viewSpineEnabled: boolean;
-  /** Thin-line WorkspaceTopic sidebar/detail shell flag. Default false. */
+  /** Thin-line WorkspaceTopic sidebar/detail shell flag. Default true. */
   topicShellEnabled: boolean;
   /** #738: active Views lens, persisted across reload (default `recent`). */
   viewSpineLens: ViewLens;
@@ -1335,7 +1338,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
   setTopicShellEnabled: (enabled) => {
     if (enabled) lsSave(TOPIC_SHELL_KEY, '1');
-    else lsRemove(TOPIC_SHELL_KEY);
+    else lsSave(TOPIC_SHELL_KEY, '0');
     set({ topicShellEnabled: enabled });
   },
   toggleTopicShellEnabled: () =>
