@@ -1,24 +1,8 @@
-import {
-  describe,
-  it,
-  afterAll,
-  afterEach,
-  beforeAll,
-  expect,
-  vi,
-} from 'vitest';
+import { describe, it, afterEach, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import * as sessions from '../server/sessions.js';
-import {
-  resolveTmuxSpawn,
-  resolveTmuxWrappedSpawn,
-  generateTmuxSessionName,
-  getTmuxPrefix,
-} from '../server/pty-handler.js';
 import { serializeAll, restoreFromDisk } from '../server/sessions.js';
 import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from '../server/types.js';
 import type { PtySession } from '../server/types.js';
@@ -27,59 +11,8 @@ import { DEFAULT_SESSION_REPLAY_CAPACITY_BYTES } from '../shared/session-replay.
 
 // Track created session IDs so we can clean up after each test
 const createdIds: string[] = [];
-const execFileAsync = promisify(execFile);
-const originalTmuxTmpdir = process.env.TMUX_TMPDIR;
-let tmuxTmpdir: string;
-
-// Tmux tests run in a full-suite worker pool while other files also mutate
-// process.env.TMUX_TMPDIR. Pin every tmux CLI assertion/cleanup to this file's
-// socket dir so another test file cannot accidentally kill or query our server.
-function tmuxCommandEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, TMUX_TMPDIR: tmuxTmpdir };
-}
-
-function execTmux(args: string[]) {
-  return execFileAsync('tmux', args, { env: tmuxCommandEnv() });
-}
-
-beforeAll(() => {
-  tmuxTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ide-tmux-'));
-  process.env.TMUX_TMPDIR = tmuxTmpdir;
-});
-
-afterAll(async () => {
-  await execTmux(['kill-server']).catch(() => {});
-  if (originalTmuxTmpdir === undefined) {
-    delete process.env.TMUX_TMPDIR;
-  } else {
-    process.env.TMUX_TMPDIR = originalTmuxTmpdir;
-  }
-  fs.rmSync(tmuxTmpdir, { recursive: true, force: true });
-});
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForTmuxSession(name: string): Promise<void> {
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) {
-    try {
-      await execTmux(['has-session', '-t', name]);
-      return;
-    } catch {
-      await delay(50);
-    }
-  }
-  await execTmux(['has-session', '-t', name]);
-}
-
-async function waitForSessionRemoval(id: string): Promise<void> {
-  for (let i = 0; i < 20; i++) {
-    if (!sessions.get(id)) return;
-    await delay(50);
-  }
-  expect(sessions.get(id)).toBeUndefined();
 }
 
 afterEach(async () => {
@@ -89,25 +22,15 @@ afterEach(async () => {
     ...createdIds,
     ...sessions.list().map((session) => session.id),
   ]);
-  const tmuxSessionNames: string[] = [];
   for (const id of ids) {
     try {
-      const session = sessions.get(id);
-      if (session) {
-        if (session.mode === 'pty' && session.tmuxSessionName) {
-          tmuxSessionNames.push(session.tmuxSessionName);
-        }
+      if (sessions.get(id)) {
         sessions.kill(id);
       }
     } catch {
       // Already killed or exited, ignore
     }
   }
-  await Promise.all(
-    tmuxSessionNames.map((name) =>
-      execTmux(['kill-session', '-t', name]).catch(() => {})
-    )
-  );
   createdIds.length = 0;
 });
 
@@ -645,182 +568,11 @@ describe('sessions', () => {
     });
   });
 
-  it.skip('resolveTmuxSpawn returns correct tmux command and args', () => {
-    const result = resolveTmuxSpawn('claude', ['--continue'], 'test-session');
-    expect(result).toEqual({
-      command: 'tmux',
-      args: [
-        '-u',
-        'new-session',
-        '-s',
-        'test-session',
-        '--',
-        'claude',
-        '--continue',
-        ';',
-        'set',
-        'set-clipboard',
-        'on',
-        ';',
-        'set',
-        'allow-passthrough',
-        'on',
-        ';',
-        'set',
-        'mode-keys',
-        'vi',
-      ],
-    });
-  });
-
-  it.skip('resolveTmuxSpawn propagates valid environment variables into tmux', () => {
-    const result = resolveTmuxSpawn(
-      'node',
-      ['-e', 'console.log(process.env.RELAY_IDE_TOKEN)'],
-      'test-session',
-      {
-        RELAY_IDE_TOKEN: 'abc123',
-        OPENCODE_CONFIG_CONTENT: '{"permission":{"read":"allow"}}',
-        GITHUB_TOKEN: 'must-not-cross-tmux-argv',
-        'bad-env-name': 'ignored',
-        EMPTY_VALUE: undefined,
-      }
-    );
-
-    expect(result.args).toContain('-e');
-    expect(result.args).toContain('RELAY_IDE_TOKEN=abc123');
-    expect(result.args).toContain(
-      'OPENCODE_CONFIG_CONTENT={"permission":{"read":"allow"}}'
-    );
-    expect(result.args).not.toContain('bad-env-name=ignored');
-    expect(result.args).not.toContain('EMPTY_VALUE=undefined');
-    expect(result.args).not.toContain('GITHUB_TOKEN=must-not-cross-tmux-argv');
-    expect(result.args.indexOf('RELAY_IDE_TOKEN=abc123')).toBeLessThan(
-      result.args.indexOf('-s')
-    );
-  });
-
-  it.skip('resolveTmuxWrappedSpawn keeps inherited secrets in the child wrapper, not tmux argv', () => {
-    const secret = 'relay-secret-token-for-tmux-test';
-    const result = resolveTmuxWrappedSpawn(
-      'tmux-wrapper-env-test',
-      'node',
-      ['-e', 'console.log(process.env.GITHUB_TOKEN)'],
-      'test-session',
-      {
-        GITHUB_TOKEN: secret,
-        RELAY_IDE_TOKEN: 'relay-token',
-        SAFE_ENV: 'safe-value',
-        'bad-env-name': 'ignored',
-        EMPTY_VALUE: undefined,
-      }
-    );
-
-    try {
-      const argv = result.args.join('\0');
-      expect(argv).not.toContain(secret);
-      expect(argv).not.toContain('GITHUB_TOKEN=');
-      expect(argv).not.toContain('RELAY_IDE_TOKEN=relay-token');
-      expect(argv).toContain(result.wrapperPath);
-
-      const wrapper = fs.readFileSync(result.wrapperPath, 'utf8');
-      expect(wrapper).toContain(`export GITHUB_TOKEN='${secret}'`);
-      expect(wrapper).toContain("export RELAY_IDE_TOKEN='relay-token'");
-      expect(wrapper).toContain("export SAFE_ENV='safe-value'");
-      expect(wrapper).not.toContain('bad-env-name');
-      expect(wrapper).not.toContain('EMPTY_VALUE');
-      expect(fs.statSync(result.wrapperPath).mode & 0o777).toBe(0o700);
-    } finally {
-      fs.rmSync(path.dirname(result.wrapperPath), {
-        recursive: true,
-        force: true,
-      });
-    }
-  });
-
-  it.skip('generateTmuxSessionName has correct prefix', () => {
-    const original = process.env.RELAY_IDE_DEV_INSTANCE;
-    delete process.env.RELAY_IDE_DEV_INSTANCE;
-    try {
-      const name = generateTmuxSessionName('my-session', 'abcdef1234567890');
-      expect(name.startsWith('relay-ide-')).toBe(true);
-    } finally {
-      if (original !== undefined) process.env.RELAY_IDE_DEV_INSTANCE = original;
-    }
-  });
-
-  it.skip('generateTmuxSessionName sanitizes special characters', () => {
-    const original = process.env.RELAY_IDE_DEV_INSTANCE;
-    delete process.env.RELAY_IDE_DEV_INSTANCE;
-    try {
-      const name = generateTmuxSessionName(
-        'feat/auth-flow',
-        'abcdef1234567890'
-      );
-      expect(name.startsWith('relay-ide-feat-auth-flow-')).toBe(true);
-    } finally {
-      if (original !== undefined) process.env.RELAY_IDE_DEV_INSTANCE = original;
-    }
-  });
-
-  it.skip('generateTmuxSessionName limits display name to 30 chars', () => {
-    const original = process.env.RELAY_IDE_DEV_INSTANCE;
-    delete process.env.RELAY_IDE_DEV_INSTANCE;
-    try {
-      const longName =
-        'a-very-long-display-name-that-exceeds-thirty-characters';
-      const id = 'abcdef1234567890';
-      const name = generateTmuxSessionName(longName, id);
-      // Format is relay-ide-<sanitized up to 30>-<8 char id>
-      // The sanitized portion should be at most 30 chars
-      const withoutPrefix = name.slice('relay-ide-'.length);
-      const parts = withoutPrefix.split('-');
-      const idPart = parts[parts.length - 1];
-      const displayPart = withoutPrefix.slice(
-        0,
-        withoutPrefix.length - idPart!.length - 1
-      );
-      expect(displayPart.length).toBeLessThanOrEqual(30);
-    } finally {
-      if (original !== undefined) process.env.RELAY_IDE_DEV_INSTANCE = original;
-    }
-  });
-
-  it.skip('generateTmuxSessionName uses 8 chars from the provided id', () => {
-    const id = 'abcdef1234567890';
-    const name = generateTmuxSessionName('my-session', id);
-    expect(name.endsWith(id.slice(0, 8))).toBe(true);
-  });
-
   it('prod prefix (relay-ide-) does not match dev prefix (relay-dev-)', () => {
     const prodPrefix = 'relay-ide-';
     const devPrefix = 'relay-dev-';
     expect(devPrefix.startsWith(prodPrefix)).toBe(false);
     expect(prodPrefix.startsWith(devPrefix)).toBe(false);
-  });
-
-  it.skip('getTmuxPrefix returns relay-ide- when RELAY_IDE_DEV_INSTANCE is not set', () => {
-    const original = process.env.RELAY_IDE_DEV_INSTANCE;
-    delete process.env.RELAY_IDE_DEV_INSTANCE;
-    try {
-      expect(getTmuxPrefix()).toBe('relay-ide-');
-    } finally {
-      if (original !== undefined) process.env.RELAY_IDE_DEV_INSTANCE = original;
-    }
-  });
-
-  it.skip('getTmuxPrefix returns relay-dev- when RELAY_IDE_DEV_INSTANCE is 1', () => {
-    const originalDevInstance = process.env.RELAY_IDE_DEV_INSTANCE;
-    process.env.RELAY_IDE_DEV_INSTANCE = '1';
-    try {
-      expect(getTmuxPrefix()).toBe('relay-dev-');
-    } finally {
-      if (originalDevInstance !== undefined) {
-        process.env.RELAY_IDE_DEV_INSTANCE = originalDevInstance;
-      } else {
-        delete process.env.RELAY_IDE_DEV_INSTANCE;
-      }
-    }
   });
 
   it('agent defaults to claude when not specified', () => {
@@ -990,46 +742,6 @@ describe('sessions', () => {
     });
   });
 
-  it.skip('fails closed for rendered screen snapshots on tmux-compat sessions', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/sh',
-      args: ['-i'],
-      terminalBackend: 'tmux-compat',
-    });
-    createdIds.push(result.id);
-
-    const snapshot = sessions.getRenderedScreenSnapshot(result.id);
-    expect(snapshot).toMatchObject({
-      ok: false,
-      error: {
-        code: 'UNSUPPORTED',
-        reasonCode: 'SESSION_SCREEN_UNSUPPORTED_BACKEND',
-      },
-    });
-  });
-
-  it.skip('list includes useTmux and tmuxSessionName fields', () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/cat',
-      args: [],
-    });
-    createdIds.push(result.id);
-    const list = sessions.list();
-    const session = list.find((s) => s.id === result.id);
-    expect(session).toBeTruthy();
-    expect(session!.terminalBackend).toBe('relay-pty');
-    expect(session!.useTmux).toBe(false);
-    expect(session!.tmuxSessionName).toBe('');
-  });
-
   it('rejects Object prototype terminal keys for relay-pty sessions', async () => {
     const result = sessions.create({
       repoName: 'test-repo',
@@ -1057,64 +769,6 @@ describe('sessions', () => {
       await expect(
         sessions.sendTerminalKeys(result.id, [inheritedKey])
       ).rejects.toThrow(`Unsupported relay-pty input key: ${inheritedKey}`);
-    }
-  });
-
-  it.skip('exposes backend-neutral terminal send and visible text helpers for tmux-compat sessions', async () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/sh',
-      args: ['-i'],
-      terminalBackend: 'tmux-compat',
-    });
-    createdIds.push(result.id);
-    await waitForTmuxSession(result.tmuxSessionName!);
-
-    await sessions.sendTerminalText(result.id, 'printf TMUX_TARGET_READY');
-    await sessions.sendTerminalKeys(result.id, ['Enter']);
-
-    let captured = '';
-    for (let i = 0; i < 20; i++) {
-      captured = await sessions.captureTerminalVisibleText(result.id);
-      if (captured.includes('TMUX_TARGET_READY')) break;
-      await delay(50);
-    }
-    expect(captured).toContain('TMUX_TARGET_READY');
-  });
-
-  it.skip('detachForRestart leaves the tmux-compat session alive for restore adoption', async () => {
-    const result = sessions.create({
-      repoName: 'test-repo',
-      repoPath: '/tmp',
-      worktreePath: null,
-      cwd: '/tmp',
-      command: '/bin/sh',
-      args: ['-i'],
-      terminalBackend: 'tmux-compat',
-    });
-    const tmuxSessionName = result.tmuxSessionName!;
-    const runtimeDir = path.join(os.tmpdir(), 'relay-ide', result.id);
-    const sentinelPath = path.join(runtimeDir, 'restart-detach-sentinel');
-    createdIds.push(result.id);
-    fs.mkdirSync(runtimeDir, { recursive: true });
-    fs.writeFileSync(sentinelPath, 'keep');
-
-    try {
-      await waitForTmuxSession(tmuxSessionName);
-
-      sessions.detachForRestart(result.id);
-      await waitForSessionRemoval(result.id);
-
-      await expect(
-        execTmux(['has-session', '-t', tmuxSessionName])
-      ).resolves.toBeTruthy();
-      expect(fs.existsSync(sentinelPath)).toBe(true);
-    } finally {
-      await execTmux(['kill-session', '-t', tmuxSessionName]).catch(() => {});
-      fs.rmSync(runtimeDir, { recursive: true, force: true });
     }
   });
 
@@ -1767,103 +1421,6 @@ describe('session persistence', () => {
     const configDir = createTmpDir();
     const restored = await restoreFromDisk(configDir);
     expect(restored).toBe(0);
-  });
-
-  it.skip('restoreFromDisk preserves tmuxSessionName for tmux sessions', async () => {
-    const configDir = createTmpDir();
-
-    // Write a pending file with a tmux session
-    const pending = {
-      version: 3,
-      timestamp: new Date().toISOString(),
-      sessions: [
-        {
-          id: 'tmux-test-id',
-          type: 'agent' as const,
-          agent: 'claude' as const,
-          workspacePath: '/tmp',
-          worktreePath: null,
-          cwd: '/tmp',
-          repoName: 'test-repo',
-          branchName: 'my-branch',
-          displayName: 'my-session',
-          createdAt: new Date().toISOString(),
-          lastActivity: new Date().toISOString(),
-          useTmux: true,
-          tmuxSessionName: 'relay-ide-my-session-tmux-tes',
-          customCommand: '/bin/cat', // Use /bin/cat to avoid spawning real claude binary in test
-        },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(configDir, 'pending-sessions.json'),
-      JSON.stringify(pending)
-    );
-
-    const restored = await restoreFromDisk(configDir);
-    expect(restored).toBe(1);
-
-    const session = sessions.get('tmux-test-id');
-    expect(session).toBeTruthy();
-    expect(session!.mode).toBe('pty');
-    expect((session as PtySession).useTmux).toBe(true);
-    expect((session as PtySession).tmuxSessionName).toBe(
-      'relay-ide-my-session-tmux-tes'
-    );
-  });
-
-  it.skip('restoreFromDisk attaches to an alive tmux session and keeps tmux compatibility fields', async () => {
-    const configDir = createTmpDir();
-    const tmuxName = `relay-ide-restore-alive-${Date.now()}`;
-    await new Promise<void>((resolve, reject) => {
-      execFile(
-        'tmux',
-        ['new-session', '-d', '-s', tmuxName, '--', '/bin/sh'],
-        (err) => (err ? reject(err) : resolve())
-      );
-    });
-
-    const pending = {
-      version: 5,
-      timestamp: new Date().toISOString(),
-      sessions: [
-        {
-          id: 'tmux-alive-restore-id',
-          type: 'agent' as const,
-          agent: 'claude' as const,
-          repoPath: '/tmp',
-          worktreePath: null,
-          cwd: '/tmp',
-          repoName: 'test-repo',
-          branchName: 'my-branch',
-          displayName: 'alive-session',
-          createdAt: new Date().toISOString(),
-          lastActivity: new Date().toISOString(),
-          useTmux: true,
-          tmuxSessionName: tmuxName,
-          customCommand: null,
-          yolo: true,
-          claudeArgs: ['--model', 'opus'],
-          hookToken: 'restore-token',
-          hooksActive: true,
-        },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(configDir, 'pending-sessions.json'),
-      JSON.stringify(pending)
-    );
-
-    const restored = await restoreFromDisk(configDir);
-    expect(restored).toBe(1);
-
-    const session = sessions.get('tmux-alive-restore-id');
-    expect(session).toBeTruthy();
-    expect((session as PtySession).useTmux).toBe(true);
-    expect((session as PtySession).tmuxSessionName).toBe(tmuxName);
-    expect((session as PtySession).hookToken).toBe('restore-token');
-    expect((session as PtySession).yolo).toBe(true);
-    expect((session as PtySession).claudeArgs).toEqual(['--model', 'opus']);
   });
 
   it.skip('restored session remains in list after PTY exits (disconnected status)', async () => {
