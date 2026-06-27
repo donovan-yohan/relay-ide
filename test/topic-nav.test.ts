@@ -158,4 +158,68 @@ describe('buildTopicNavModel', () => {
       kindLabel: 'topic',
     });
   });
+
+  it('keeps attention topics ahead of idle pinned topics', () => {
+    const pinned = makeTopic({
+      id: 'topic:pinned',
+      display: { title: 'Pinned idle' },
+      linkedRefs: { sessionIds: ['idle-session'] },
+      state: { pinned: true, muted: false },
+      grouping: { order: 1 },
+    });
+    const attention = makeTopic({
+      id: 'topic:attention',
+      display: { title: 'Needs input' },
+      linkedRefs: { sessionIds: ['attention-session'] },
+      grouping: { order: 99 },
+    });
+
+    const model = buildTopicNavModel({
+      topics: [pinned, attention],
+      sessions: [
+        makeSession({ id: 'idle-session', idle: true, agentState: 'idle' }),
+        makeSession({
+          id: 'attention-session',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    expect(model.rootIds).toEqual(['topic:attention', 'topic:pinned']);
+    expect(model.byId.get('topic:attention')).toMatchObject({
+      tone: 'attention',
+      statusLabel: 'needs input',
+    });
+  });
+
+  it('breaks cyclic parent links into roots instead of recursive children', () => {
+    const a = makeTopic({
+      id: 'topic:a',
+      display: { title: 'A' },
+      grouping: { parentTopicId: 'topic:b' },
+    });
+    const b = makeTopic({
+      id: 'topic:b',
+      display: { title: 'B' },
+      grouping: { parentTopicId: 'topic:a' },
+    });
+    const self = makeTopic({
+      id: 'topic:self',
+      display: { title: 'Self' },
+      grouping: { parentTopicId: 'topic:self' },
+    });
+
+    const model = buildTopicNavModel({
+      topics: [a, b, self],
+      sessions: [],
+      surfaces: [],
+    });
+
+    expect(model.rootIds.sort()).toEqual(['topic:a', 'topic:b', 'topic:self']);
+    expect(model.byId.get('topic:a')?.childIds).toEqual([]);
+    expect(model.byId.get('topic:b')?.childIds).toEqual([]);
+    expect(model.byId.get('topic:self')?.childIds).toEqual([]);
+  });
 });

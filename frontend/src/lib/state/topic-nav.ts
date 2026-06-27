@@ -4,17 +4,29 @@ import type {
   WorkspaceTopicId,
 } from '../../../../shared/workspace-topics.js';
 import type { SessionSummary } from '../types.js';
-import { isAttentionState } from './display-state.js';
+import { isAttentionState, type DisplayState } from './display-state.js';
 import { highestPriorityState } from './attention.js';
 
 export type TopicNavTone = 'active' | 'attention' | 'idle' | 'empty' | 'error';
 export type TopicNavKind = 'repo' | 'folder' | 'thread';
+
+const DISPLAY_PRIORITY: Record<DisplayState, number> = {
+  permission: 1000,
+  'needs-answer': 900,
+  error: 800,
+  'unseen-idle': 500,
+  running: 100,
+  initializing: 50,
+  'seen-idle': 10,
+  inactive: 1,
+};
 
 export interface TopicNavSessionRef {
   id: string;
   selectKey: string;
   label: string;
   tone: TopicNavTone;
+  displayState: DisplayState;
   branch: string | null;
   nodeId: string | null;
 }
@@ -41,6 +53,7 @@ export interface TopicNavItem {
   order: number;
   tone: TopicNavTone;
   statusLabel: string;
+  attentionPriority: number;
   sessions: TopicNavSessionRef[];
   surfaces: TopicNavSurfaceRef[];
   taskRefs: NonNullable<WorkspaceTopic['linkedRefs']['taskRefs']>;
@@ -78,7 +91,7 @@ function sessionTone(session: SessionSummary): TopicNavTone {
   return session.idle ? 'idle' : 'active';
 }
 
-function sessionDisplayState(session: SessionSummary) {
+function sessionDisplayState(session: SessionSummary): DisplayState {
   if (session.agentState === 'permission-prompt') {
     return session.permissionType === 'question'
       ? 'needs-answer'
@@ -166,29 +179,89 @@ function topicTone(
   sessions: TopicNavSessionRef[],
   surfaces: TopicNavSurfaceRef[],
   topic: WorkspaceTopic
-): { tone: TopicNavTone; label: string } {
-  if (topic.status === 'archived') return { tone: 'empty', label: 'archived' };
-  if (sessions.some((session) => session.tone === 'error')) {
-    return { tone: 'error', label: 'error' };
+): { tone: TopicNavTone; label: string; priority: number } {
+  if (topic.status === 'archived') {
+    return { tone: 'empty', label: 'archived', priority: 0 };
   }
+
+  const displayStates = sessions.map((session) => session.displayState);
   if (surfaces.some((surface) => surface.health === 'unreachable')) {
-    return { tone: 'error', label: 'surface down' };
+    displayStates.push('error');
   }
-  if (sessions.some((session) => session.tone === 'attention')) {
-    return { tone: 'attention', label: 'needs input' };
+
+  const attentionState = highestPriorityState(
+    displayStates.filter(isAttentionState)
+  );
+  if (attentionState === 'permission' || attentionState === 'needs-answer') {
+    return {
+      tone: 'attention',
+      label: 'needs input',
+      priority: DISPLAY_PRIORITY[attentionState],
+    };
   }
-  if (sessions.some((session) => session.tone === 'active')) {
-    return { tone: 'active', label: 'active' };
+  if (attentionState === 'error') {
+    return { tone: 'error', label: 'error', priority: DISPLAY_PRIORITY.error };
   }
-  if (sessions.length > 0) return { tone: 'idle', label: 'idle' };
-  if (surfaces.length > 0) return { tone: 'idle', label: 'surfaces' };
-  return { tone: 'empty', label: 'empty' };
+  if (attentionState === 'unseen-idle') {
+    return {
+      tone: 'attention',
+      label: 'unread',
+      priority: DISPLAY_PRIORITY['unseen-idle'],
+    };
+  }
+  if (displayStates.includes('running')) {
+    return {
+      tone: 'active',
+      label: 'active',
+      priority: DISPLAY_PRIORITY.running,
+    };
+  }
+  if (displayStates.includes('initializing')) {
+    return {
+      tone: 'active',
+      label: 'starting',
+      priority: DISPLAY_PRIORITY.initializing,
+    };
+  }
+  if (sessions.length > 0) {
+    return {
+      tone: 'idle',
+      label: 'idle',
+      priority: DISPLAY_PRIORITY['seen-idle'],
+    };
+  }
+  if (surfaces.length > 0) {
+    return {
+      tone: 'idle',
+      label: 'surfaces',
+      priority: DISPLAY_PRIORITY.inactive,
+    };
+  }
+  return { tone: 'empty', label: 'empty', priority: 0 };
 }
 
 function compareItems(a: TopicNavItem, b: TopicNavItem): number {
+  if (a.attentionPriority !== b.attentionPriority) {
+    return b.attentionPriority - a.attentionPriority;
+  }
   if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
   if (a.order !== b.order) return a.order - b.order;
   return a.title.localeCompare(b.title);
+}
+
+function wouldCreateCycle(
+  childId: WorkspaceTopicId,
+  parentId: WorkspaceTopicId,
+  byId: Map<WorkspaceTopicId, TopicNavItem>
+): boolean {
+  const seen = new Set<WorkspaceTopicId>();
+  let currentId: WorkspaceTopicId | null = parentId;
+  while (currentId) {
+    if (currentId === childId || seen.has(currentId)) return true;
+    seen.add(currentId);
+    currentId = byId.get(currentId)?.parentId ?? null;
+  }
+  return false;
 }
 
 export function buildTopicNavModel(input: {
@@ -206,6 +279,7 @@ export function buildTopicNavModel(input: {
           selectKey: sessionSelectKey(session),
           label: session.displayName || basename(session.cwd) || session.id,
           tone: sessionTone(session),
+          displayState: sessionDisplayState(session),
           branch: session.branchName ?? null,
           nodeId: session.nodeId ?? null,
         })
@@ -242,6 +316,7 @@ export function buildTopicNavModel(input: {
       order,
       tone: tone.tone,
       statusLabel: tone.label,
+      attentionPriority: tone.priority,
       sessions,
       surfaces,
       taskRefs: topic.linkedRefs.taskRefs ?? [],
@@ -254,7 +329,12 @@ export function buildTopicNavModel(input: {
   for (const item of items) byId.set(item.id, item);
   const rootIds: WorkspaceTopicId[] = [];
   for (const item of items) {
-    if (item.parentId && byId.has(item.parentId)) {
+    if (
+      item.parentId &&
+      item.parentId !== item.id &&
+      byId.has(item.parentId) &&
+      !wouldCreateCycle(item.id, item.parentId, byId)
+    ) {
       byId.get(item.parentId)!.childIds.push(item.id);
     } else {
       rootIds.push(item.id);
@@ -263,12 +343,6 @@ export function buildTopicNavModel(input: {
   for (const item of items)
     item.childIds.sort((a, b) => compareItems(byId.get(a)!, byId.get(b)!));
   rootIds.sort((a, b) => compareItems(byId.get(a)!, byId.get(b)!));
-
-  // Touch the same attention priority helper the rest of the sidebar uses, so a
-  // future tone expansion does not drift into a second status model.
-  void highestPriorityState(
-    input.sessions.map(sessionDisplayState).filter(isAttentionState)
-  );
 
   return { items, rootIds, byId, derived: input.derived ?? false };
 }

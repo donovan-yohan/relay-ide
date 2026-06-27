@@ -6,6 +6,14 @@ import {
   type CSSProperties,
 } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import {
+  CircleAlert,
+  Folder,
+  GitBranch,
+  LoaderCircle,
+  MessageSquare,
+  TriangleAlert,
+} from 'lucide-react';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
 import { fetchWorkspaceSurfaces, fetchWorkspaceTopics } from '../lib/api.js';
@@ -22,53 +30,21 @@ import {
 import { MarqueeText } from './MarqueeText.js';
 import './TopicSidebarShell.css';
 
-function RepoKindIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden>
-      <path d="M5 3v4M11 3v4M5 7a2 2 0 1 0 0 4M11 7a2 2 0 1 0 0 4M7 9h2" />
-    </svg>
-  );
-}
-
-function FolderKindIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden>
-      <path d="M2 5h5l1 2h6v6H2zM2 5V3h4l1 2" />
-    </svg>
-  );
-}
-
-function ThreadKindIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden>
-      <path d="M3 3h10v8H7l-4 3z" />
-    </svg>
-  );
-}
-
 function WorkspaceKindIcon({ kind }: { kind: TopicNavItem['kind'] }) {
-  if (kind === 'repo') return <RepoKindIcon />;
-  if (kind === 'folder') return <FolderKindIcon />;
-  return <ThreadKindIcon />;
+  const props = { 'aria-hidden': true, size: 16, strokeWidth: 1.8 } as const;
+  if (kind === 'repo') return <GitBranch {...props} />;
+  if (kind === 'folder') return <Folder {...props} />;
+  return <MessageSquare {...props} />;
 }
 
 function AttentionIcon({ tone }: { tone: TopicNavItem['tone'] }) {
-  if (tone === 'active')
-    return <span className="topic-status__spinner" aria-hidden />;
-  if (tone === 'attention') {
+  if (tone === 'active') {
     return (
-      <svg viewBox="0 0 16 16" aria-hidden>
-        <path d="M8 3v6M8 12v1" />
-      </svg>
+      <LoaderCircle className="topic-status__spinner" aria-hidden size={13} />
     );
   }
-  if (tone === 'error') {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden>
-        <path d="M8 2l6 12H2zM8 6v4M8 12v1" />
-      </svg>
-    );
-  }
+  if (tone === 'attention') return <CircleAlert aria-hidden size={13} />;
+  if (tone === 'error') return <TriangleAlert aria-hidden size={13} />;
   return null;
 }
 
@@ -137,7 +113,9 @@ function SessionChildRow({
       <button
         type="button"
         className="topic-child-row__button"
-        onClick={() => onSelectSession?.(session.selectKey)}
+        {...(onSelectSession
+          ? { onClick: () => onSelectSession(session.selectKey) }
+          : {})}
       >
         <span className="topic-child-row__label">
           <MarqueeText>{session.label}</MarqueeText>
@@ -215,6 +193,14 @@ function TopicRow({
   };
 
   const rowStyle = { '--topic-depth': depth } as CSSProperties;
+  const rowClassName = [
+    'topic-row',
+    `topic-row--${item.tone}`,
+    selected && 'selected',
+    item.muted && 'muted',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <li
@@ -223,33 +209,28 @@ function TopicRow({
         .join(' ')}
       style={rowStyle}
     >
-      <button
-        type="button"
-        className={[
-          'topic-row',
-          `topic-row--${item.tone}`,
-          selected && 'selected',
-          item.muted && 'muted',
-        ]
-          .filter(Boolean)
-          .join(' ')}
-        aria-expanded={hasNested ? expanded : undefined}
-        aria-current={selected ? 'page' : undefined}
-        onClick={activate}
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowRight' && hasNested && !expanded) {
-            event.preventDefault();
-            onToggle(item.id);
-          } else if (event.key === 'ArrowLeft' && hasNested && expanded) {
-            event.preventDefault();
-            onToggle(item.id);
-          }
-        }}
-      >
-        <TopicBadge item={item} />
-        <span className="topic-row__title">
-          <MarqueeText>{item.title}</MarqueeText>
-        </span>
+      <div className={rowClassName}>
+        <button
+          type="button"
+          className="topic-row__main"
+          aria-expanded={hasNested ? expanded : undefined}
+          aria-current={selected ? 'page' : undefined}
+          onClick={activate}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowRight' && hasNested && !expanded) {
+              event.preventDefault();
+              onToggle(item.id);
+            } else if (event.key === 'ArrowLeft' && hasNested && expanded) {
+              event.preventDefault();
+              onToggle(item.id);
+            }
+          }}
+        >
+          <TopicBadge item={item} />
+          <span className="topic-row__title">
+            <MarqueeText>{item.title}</MarqueeText>
+          </span>
+        </button>
         <span
           className="topic-row__trail"
           aria-label={`${item.statusLabel}, ${affordanceCount} linked items`}
@@ -267,7 +248,7 @@ function TopicRow({
           </span>
           <StatusGlyph tone={item.tone} />
         </span>
-      </button>
+      </div>
       {expanded ? (
         <>
           {item.sessions.length > 0 ? (
@@ -422,8 +403,14 @@ export function TopicSidebarShell({
       topics={topicsQuery.data?.topics ?? []}
       sessions={sessions}
       surfaces={surfacesQuery.data ?? []}
-      loading={topicsQuery.isLoading && !topicsQuery.data}
-      error={topicsQuery.isError}
+      loading={
+        (topicsQuery.isLoading && !topicsQuery.data) ||
+        (surfacesQuery.isLoading && !surfacesQuery.data)
+      }
+      error={
+        (topicsQuery.isError && !topicsQuery.data) ||
+        (surfacesQuery.isError && !surfacesQuery.data)
+      }
       derived={topicsQuery.data?.derived ?? false}
       onSelectSession={onSelectSession}
     />

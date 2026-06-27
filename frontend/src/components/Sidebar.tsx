@@ -630,20 +630,20 @@ export function Sidebar({
               repoName={historyRepo.name}
               onBack={handleCloseHistory}
             />
-          ) : topicShellEnabled ? (
-            // #1023: flag-gated thin-line WorkspaceTopic shell. Default OFF so
-            // the legacy sidebar and #732 view-spine rollout remain untouched.
-            <div className="sidebar-workspace-list">
-              <TopicSidebarShell onSelectSession={onSelectSession} />
-            </div>
           ) : viewSpineEnabled ? (
             // #732/#729: flag-gated, read-only, client-derived view-spine tree.
-            // OFF path below is byte-identical to today.
+            // Keep this rollout reachable even when the topic shell experiment is on.
             <div className="sidebar-workspace-list">
               <ViewSpineTree
                 onCreateTab={onViewSpineCreateTab}
                 onSelectTab={onSelectSession}
               />
+            </div>
+          ) : topicShellEnabled ? (
+            // #1023: flag-gated thin-line WorkspaceTopic shell. Default OFF so
+            // the legacy sidebar remains untouched until topic parity lands.
+            <div className="sidebar-workspace-list">
+              <TopicSidebarShell onSelectSession={onSelectSession} />
             </div>
           ) : (
             <div className="sidebar-workspace-list">

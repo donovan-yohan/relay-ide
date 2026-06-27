@@ -118,6 +118,19 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
+  it('keeps surface actions outside the clickable row button', async () => {
+    await renderView();
+
+    const rowMain = container.querySelector('.topic-row__main');
+    const surfaceAction = container.querySelector(
+      '.topic-row__trail .topic-action'
+    );
+
+    expect(rowMain).not.toBeNull();
+    expect(surfaceAction).not.toBeNull();
+    expect(rowMain?.contains(surfaceAction)).toBe(false);
+  });
+
   it('shows detail for a selected topic even when it has no nested sessions', async () => {
     await renderView({
       topics: [
