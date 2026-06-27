@@ -883,6 +883,17 @@ describe('workspace topics foundation', () => {
       'topic:bounded-1',
     ]);
 
+    const mergedScope = await getJson<WorkspaceTopicSearchResponse>(
+      port,
+      '/workspace-topics/search?q=bounded&workContextId=wc-1&workContextIds=wc-2&limit=3'
+    );
+
+    expect(mergedScope.status).toBe(200);
+    expect(requestedScope).toEqual({ workContextIds: ['wc-1', 'wc-2'] });
+    expect(
+      mergedScope.body.results.map((result) => result.topic.id).sort()
+    ).toEqual(['topic:bounded-1', 'topic:bounded-2']);
+
     const bounded = await getJson<WorkspaceTopicSearchResponse>(
       port,
       '/workspace-topics/search?q=bounded&limit=2'

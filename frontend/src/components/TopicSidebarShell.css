@@ -56,6 +56,11 @@
   outline: none;
 }
 
+.topic-search__input:focus-visible {
+  outline: 1px solid var(--status-info);
+  outline-offset: 2px;
+}
+
 .topic-search__input::placeholder {
   color: var(--text-muted);
   opacity: 0.72;

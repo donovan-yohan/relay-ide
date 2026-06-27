@@ -247,6 +247,114 @@ test('v1 gateway commands use scoped bearer auth and the v1 marker header', asyn
   );
 });
 
+test('v1 workspace-topics search preserves array scope and update accepts body id', async () => {
+  const captured: CapturedGatewayRequest[] = [];
+  const server = http.createServer((req, res) => {
+    const entry: CapturedGatewayRequest = {
+      method: req.method,
+      url: req.url,
+      authorization: req.headers['authorization'],
+      marker: req.headers['x-relay-cli-gateway'],
+    };
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const rawBody = Buffer.concat(chunks).toString('utf8');
+      if (rawBody) entry.body = JSON.parse(rawBody) as Record<string, unknown>;
+      captured.push(entry);
+      res.setHeader('content-type', 'application/json');
+      if (
+        req.method === 'GET' &&
+        req.url?.startsWith('/workspace-topics/search?')
+      ) {
+        res.end(
+          JSON.stringify({
+            query: 'bounded',
+            results: [],
+            truncated: false,
+            derived: false,
+          })
+        );
+        return;
+      }
+      if (req.method === 'PATCH' && req.url === '/workspace-topics/topic-body') {
+        res.end(
+          JSON.stringify({
+            topic: { id: 'topic-body', display: { title: 'Updated' } },
+            mutationPolicy: {},
+          })
+        );
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+  });
+  const port = await listen(server);
+  try {
+    const env = {
+      ...process.env,
+      RELAY_IDE_PORT: String(port),
+      RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
+      PATH: process.env.PATH,
+    };
+    await execNode(
+      [
+        'dist/bin/relay-ide.js',
+        'v1',
+        'workspace-topics',
+        'search',
+        '--q',
+        'bounded',
+        '--work-context-id',
+        'wc-singular',
+        '--work-context-ids',
+        'wc-plural,wc-extra',
+        '--work-context-ids',
+        'wc-second',
+        '--json',
+      ],
+      env
+    );
+    await execNode(
+      [
+        'dist/bin/relay-ide.js',
+        'v1',
+        'workspace-topics',
+        'update',
+        '--input-json',
+        '{"id":"topic-body","title":"Updated"}',
+        '--json',
+      ],
+      env
+    );
+  } finally {
+    await close(server);
+  }
+
+  const searchRequest = captured.find((entry) => entry.method === 'GET');
+  expect(searchRequest?.url).toBeDefined();
+  const searchParams = new URL(
+    searchRequest?.url ?? '/',
+    'http://127.0.0.1'
+  ).searchParams;
+  expect(searchParams.get('workContextId')).toBe('wc-singular');
+  expect(searchParams.getAll('workContextIds')).toEqual([
+    'wc-plural',
+    'wc-extra',
+    'wc-second',
+  ]);
+  expect(captured).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        method: 'PATCH',
+        url: '/workspace-topics/topic-body',
+        body: expect.objectContaining({ id: 'topic-body', title: 'Updated' }),
+      }),
+    ])
+  );
+});
+
 test('v1 files.read preserves its command envelope when session lookup fails', async () => {
   const captured: CapturedGatewayRequest[] = [];
   const server = http.createServer((req, res) => {

@@ -352,6 +352,30 @@ function gatewayArg(commandArgs: string[], flag: string): string | undefined {
   return value && !value.startsWith('--') ? value : undefined;
 }
 
+function gatewayArgs(commandArgs: string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let idx = 0; idx < commandArgs.length - 1; idx += 1) {
+    if (commandArgs[idx] !== flag) continue;
+    const value = commandArgs[idx + 1];
+    if (value && !value.startsWith('--')) values.push(value);
+  }
+  return values;
+}
+
+function appendGatewayListQuery(
+  query: URLSearchParams,
+  commandArgs: string[],
+  flag: string,
+  key: string
+): void {
+  for (const value of gatewayArgs(commandArgs, flag)) {
+    for (const entry of value.split(/[\s,]+/)) {
+      const trimmed = entry.trim();
+      if (trimmed) query.append(key, trimmed);
+    }
+  }
+}
+
 function parseGatewayJson(
   commandName: RelayCliGatewayCommand,
   raw: string
@@ -5187,9 +5211,14 @@ async function runGatewayWorkspaceTopicsSearch(
     workspaceTopicsQueryString(topicArgs, [
       ['--workspace-id', 'workspaceId'],
       ['--work-context-id', 'workContextId'],
-      ['--work-context-ids', 'workContextIds'],
       ['--limit', 'limit'],
     ])
+  );
+  appendGatewayListQuery(
+    query,
+    topicArgs,
+    '--work-context-ids',
+    'workContextIds'
   );
   query.set('q', q);
   const result = await gatewayHttpJson({
@@ -5242,12 +5271,17 @@ async function runGatewayWorkspaceTopicsCreate(
 async function runGatewayWorkspaceTopicsUpdate(
   topicArgs: string[]
 ): Promise<never> {
-  const id = gatewayWorkspaceTopicId('workspace-topics.update', topicArgs);
+  const input = parseGatewayInputObject('workspace-topics.update', topicArgs);
+  const id = gatewayWorkspaceTopicId(
+    'workspace-topics.update',
+    topicArgs,
+    input
+  );
   const result = await gatewayHttpJson({
     commandName: 'workspace-topics.update',
     pathName: `/workspace-topics/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: parseGatewayInputObject('workspace-topics.update', topicArgs),
+    body: input,
     capabilities: ['context:write'],
   });
   printGatewayEnvelope(gatewayOk('workspace-topics.update', result), 0);

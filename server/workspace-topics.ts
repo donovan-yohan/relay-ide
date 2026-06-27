@@ -531,14 +531,15 @@ function readPositiveIntQuery(
   return Math.min(Math.floor(parsed), max);
 }
 
+function readQueryStringEntries(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(readQueryStringEntries);
+  return typeof value === 'string' ? value.split(/[\s,]+/) : [];
+}
+
 function readStringListQuery(value: unknown): string[] {
-  const raw = Array.isArray(value) ? value : value === undefined ? [] : [value];
   return Array.from(
     new Set(
-      raw
-        .flatMap((entry) =>
-          typeof entry === 'string' ? entry.split(/[\s,]+/) : []
-        )
+      readQueryStringEntries(value)
         .map((entry) => entry.trim())
         .filter(Boolean)
     )
@@ -548,9 +549,10 @@ function readStringListQuery(value: unknown): string[] {
 function topicSearchScopeFromQuery(
   req: Request
 ): { workContextIds?: string[] } | undefined {
-  const ids = readStringListQuery(
-    req.query['workContextId'] ?? req.query['workContextIds']
-  );
+  const ids = readStringListQuery([
+    req.query['workContextId'],
+    req.query['workContextIds'],
+  ]);
   return ids.length ? { workContextIds: ids } : undefined;
 }
 

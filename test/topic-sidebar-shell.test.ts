@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import * as fs from 'node:fs';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -185,6 +186,18 @@ describe('TopicSidebarView', () => {
       '.topic-search__input'
     ) as HTMLInputElement;
     expect(input.value).toBe('apollo');
+  });
+
+  it('keeps keyboard-visible focus styling for the search input', () => {
+    const css = fs.readFileSync(
+      'frontend/src/components/TopicSidebarShell.css',
+      'utf8'
+    );
+
+    expect(css).toContain('.topic-search__input:focus-visible');
+    expect(css).toMatch(
+      /\.topic-search__input:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--status-info\)/
+    );
   });
 
   it('keeps active search input mounted instead of showing global loading', async () => {
