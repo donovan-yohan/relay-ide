@@ -243,6 +243,16 @@ describe('TopicSidebarView', () => {
     expect(mobileRows[1]?.textContent).toContain('Routine lane');
   });
 
+  it('uses the bounded topic search as the only mobile search surface', async () => {
+    await renderView();
+
+    expect(container.querySelector('.topic-search__input')).not.toBeNull();
+    expect(
+      container.querySelector('.topic-mobile-cockpit__bar input')
+    ).toBeNull();
+    expect(container.textContent).toContain('use / search for topic history');
+  });
+
   it('uses a two-step audited mobile reply preview before sending input', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
     await renderView({

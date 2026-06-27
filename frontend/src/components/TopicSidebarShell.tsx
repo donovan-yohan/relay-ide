@@ -691,29 +691,23 @@ function topicEmptyStateText(input: {
 }
 
 function TopicMobileCockpit({
-  mobileSearch,
   mobileItems,
   selectedId,
-  onMobileSearchChange,
   onSelect,
 }: {
-  mobileSearch: string;
   mobileItems: TopicNavItem[];
   selectedId: string | null;
-  onMobileSearchChange: (value: string) => void;
   onSelect: (id: string) => void;
 }) {
   return (
     <section className="topic-mobile-cockpit" aria-label="mobile topic cockpit">
-      <div className="topic-mobile-cockpit__bar">
-        <label>
-          <span>search topics</span>
-          <input
-            value={mobileSearch}
-            onChange={(event) => onMobileSearchChange(event.target.value)}
-            placeholder="search / command"
-          />
-        </label>
+      <div
+        className="topic-mobile-cockpit__bar"
+        aria-label="mobile topic actions"
+      >
+        <span className="topic-mobile-cockpit__hint">
+          use / search for topic history
+        </span>
         <button
           type="button"
           disabled
@@ -886,25 +880,16 @@ export function TopicSidebarView({
 
   const select = useCallback((id: string) => setSelectedId(id), []);
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
-  const [mobileSearch, setMobileSearch] = useState('');
-  const mobileItems = useMemo(() => {
-    const normalized = mobileSearch.trim().toLowerCase();
-    return [...model.items]
-      .filter((item) =>
-        normalized
-          ? [item.title, item.description ?? '', item.routingLabel ?? '']
-              .join(' ')
-              .toLowerCase()
-              .includes(normalized)
-          : true
-      )
-      .sort((a, b) => {
+  const mobileItems = useMemo(
+    () =>
+      [...model.items].sort((a, b) => {
         if (a.attentionPriority !== b.attentionPriority) {
           return b.attentionPriority - a.attentionPriority;
         }
         return a.title.localeCompare(b.title);
-      });
-  }, [mobileSearch, model.items]);
+      }),
+    [model.items]
+  );
   const activeSearchLoading = Boolean(searchQuery.trim() && searchLoading);
 
   if (loading && !activeSearchLoading) {
@@ -927,10 +912,8 @@ export function TopicSidebarView({
         ) : null}
       </div>
       <TopicMobileCockpit
-        mobileSearch={mobileSearch}
         mobileItems={mobileItems}
         selectedId={selectedId}
-        onMobileSearchChange={setMobileSearch}
         onSelect={select}
       />
       <TopicSearchPanel

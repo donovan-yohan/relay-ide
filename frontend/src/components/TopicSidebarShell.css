@@ -552,22 +552,23 @@
     z-index: 2;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     gap: 8px;
     padding: 8px;
     background: var(--bg);
     border-bottom: 1px solid var(--border);
   }
 
-  .topic-mobile-cockpit__bar label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+  .topic-mobile-cockpit__hint {
     min-width: 0;
+    overflow: hidden;
     color: var(--text-muted);
     font-size: var(--font-size-xs);
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .topic-mobile-cockpit__bar input,
   .topic-mobile-control input {
     min-width: 0;
     min-height: 44px;
@@ -580,7 +581,6 @@
     padding: 0 10px;
   }
 
-  .topic-mobile-cockpit__bar input:focus,
   .topic-mobile-control input:focus {
     outline: 1px solid var(--accent);
     outline-offset: 0;
