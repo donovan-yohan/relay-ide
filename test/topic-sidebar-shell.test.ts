@@ -118,6 +118,42 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
+  it('renders kind-icon badges without numeric ordering text', async () => {
+    await renderView({
+      topics: [
+        makeTopic({ id: 'topic:repo', grouping: { order: 3 } }),
+        makeTopic({
+          id: 'topic:folder',
+          workspaceId: 'workspace:folder',
+          grouping: { order: 2 },
+          routingDefaults: { cwd: '/tmp/scratch' },
+        }),
+        makeTopic({
+          id: 'topic:thread',
+          workspaceId: 'workspace:thread',
+          grouping: { order: 1 },
+          routingDefaults: {},
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+    });
+
+    const badges = Array.from(
+      container.querySelectorAll('.topic-tree .topic-row__badge')
+    );
+    expect(badges.map((badge) => badge.getAttribute('data-kind'))).toEqual([
+      'thread',
+      'folder',
+      'repo',
+    ]);
+    for (const badge of badges) {
+      expect(badge.querySelector('svg')).not.toBeNull();
+      expect(badge.textContent).toBe('');
+    }
+  });
+
   it('keeps surface actions outside the clickable row button', async () => {
     await renderView();
 
@@ -246,19 +282,20 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('sent · audit/intervention trail');
   });
 
-  it('keeps resume and terminal fallback as visible mobile controls', async () => {
+  it('makes the resume and terminal-tab mobile controls explicit', async () => {
     await renderView();
 
     const quickActions = container.querySelector('.topic-mobile-actions');
-    expect(quickActions?.textContent).toContain('resume');
-    expect(quickActions?.textContent).toContain('terminal fallback');
+    expect(quickActions?.textContent).toContain('resume topic');
+    expect(quickActions?.textContent).toContain('open terminal tab');
 
-    const terminalFallback = Array.from(
+    const terminalTab = Array.from(
       quickActions?.querySelectorAll('button') ?? []
     ).find(
-      (button) => button.textContent === 'terminal fallback'
+      (button) => button.textContent === 'open terminal tab'
     ) as HTMLButtonElement;
-    await act(async () => terminalFallback.click());
+    expect(terminalTab.title).toContain('same linked Relay tab as resume');
+    await act(async () => terminalTab.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 });

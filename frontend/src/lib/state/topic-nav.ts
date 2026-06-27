@@ -56,7 +56,6 @@ export interface TopicNavItem {
   title: string;
   description: string | null;
   badgeSeed: string;
-  badgeText: string;
   kind: TopicNavKind;
   kindLabel: string;
   pinned: boolean;
@@ -281,7 +280,7 @@ export function buildTopicNavModel(input: {
   surfaces: WorkspaceSurface[];
   derived?: boolean;
 }): TopicNavModel {
-  const items: TopicNavItem[] = input.topics.map((topic, index) => {
+  const items: TopicNavItem[] = input.topics.map((topic) => {
     const sessions = input.sessions
       .filter((session) => sessionMatchesTopic(topic, session))
       .map(
@@ -324,18 +323,12 @@ export function buildTopicNavModel(input: {
     const tone = topicTone(sessions, surfaces, topic);
     const kind = topicKind(topic);
     const order = topic.grouping.order ?? Number.MAX_SAFE_INTEGER;
-    const badgeText = String(
-      Number.isSafeInteger(topic.grouping.order)
-        ? topic.grouping.order! + 1
-        : index + 1
-    );
     return {
       id: topic.id,
       parentId: topic.grouping.parentTopicId ?? null,
       title: topic.display.title,
       description: topic.display.description ?? null,
       badgeSeed: topic.workspaceId || topic.display.title,
-      badgeText,
       kind: kind.kind,
       kindLabel: kind.label,
       pinned: topic.state.pinned,

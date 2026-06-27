@@ -7,7 +7,14 @@ import {
   type CSSProperties,
 } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { CircleAlert, LoaderCircle, TriangleAlert } from 'lucide-react';
+import {
+  CircleAlert,
+  Folder,
+  GitBranch,
+  LoaderCircle,
+  MessageSquare,
+  TriangleAlert,
+} from 'lucide-react';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
 import {
@@ -47,6 +54,12 @@ function StatusGlyph({ tone }: { tone: TopicNavItem['tone'] }) {
       {attention}
     </span>
   );
+}
+
+function TopicKindIcon({ kind }: { kind: TopicNavItem['kind'] }) {
+  if (kind === 'repo') return <GitBranch aria-hidden size={13} />;
+  if (kind === 'folder') return <Folder aria-hidden size={13} />;
+  return <MessageSquare aria-hidden size={13} />;
 }
 
 type TopicSendInput = typeof sendSessionInput;
@@ -153,10 +166,12 @@ function TopicBadge({ item }: { item: TopicNavItem }) {
   return (
     <span
       className="topic-row__badge"
+      data-kind={item.kind}
       style={{ background: deriveColor(item.badgeSeed) }}
+      aria-label={`${item.kindLabel} workspace`}
       title={`${item.kindLabel} workspace`}
     >
-      {item.badgeText}
+      <TopicKindIcon kind={item.kind} />
     </span>
   );
 }
@@ -425,10 +440,15 @@ function TopicMobileControlPanel({
 
       <div className="topic-mobile-actions" aria-label="topic quick actions">
         <button type="button" disabled={!session} onClick={handleResume}>
-          resume
+          resume topic
         </button>
-        <button type="button" disabled={!session} onClick={handleResume}>
-          terminal fallback
+        <button
+          type="button"
+          disabled={!session}
+          onClick={handleResume}
+          title="same linked Relay tab as resume; raw PTY is the fallback once open"
+        >
+          open terminal tab
         </button>
         <button
           type="button"
