@@ -21,6 +21,7 @@ const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
 // is byte-identical to today; ON swaps in the client-derived read-only tree.
 // Dev-only affordance: set `localStorage.relay-view-spine = '1'` and reload.
 const VIEW_SPINE_KEY = 'relay-view-spine';
+const TOPIC_SHELL_KEY = 'relay-topic-shell';
 // #738: persistent View layer (FE-only, localStorage). All three ride the same
 // `ls`/`lsSave`/`lsRemove` helpers + fail-soft pattern as the flag above.
 //   - active lens, restored across reload (the #727 lens was ephemeral).
@@ -172,6 +173,12 @@ function loadDiffViewMode(): DiffViewMode {
 function loadViewSpineEnabled(): boolean {
   // Truthy only for the explicit opt-in value so a stale '0'/'false' reads OFF.
   return ls(VIEW_SPINE_KEY) === '1';
+}
+
+function loadTopicShellEnabled(): boolean {
+  // #1023: desktop topic shell is a separate default-OFF feature flag while the
+  // legacy sidebar and the view-spine remain available during rollout.
+  return ls(TOPIC_SHELL_KEY) === '1';
 }
 
 // ── #738: View-layer persistence (lens / pins / saved Views) ─────────────────
@@ -619,6 +626,8 @@ export interface UiState {
   collapsedWorkspaces: Set<string>;
   /** #732: view-spine MVP flag. Default false; backed by localStorage. */
   viewSpineEnabled: boolean;
+  /** #1023: thin-line WorkspaceTopic sidebar/detail shell flag. Default false. */
+  topicShellEnabled: boolean;
   /** #738: active Views lens, persisted across reload (default `recent`). */
   viewSpineLens: ViewLens;
   /** #738: pinned Project/Bench/Workspace stable ids (pinned-to-top). */
@@ -665,6 +674,8 @@ export interface UiState {
   isWorkspaceCollapsed: (path: string) => boolean;
   setViewSpineEnabled: (enabled: boolean) => void;
   toggleViewSpineEnabled: () => void;
+  setTopicShellEnabled: (enabled: boolean) => void;
+  toggleTopicShellEnabled: () => void;
   /** #738: persist + set the active lens. */
   setViewSpineLens: (lens: ViewLens) => void;
   /** #738: toggle a pin by stable id (Project/Bench/Workspace); persists. */
@@ -709,6 +720,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
   viewSpineEnabled: loadViewSpineEnabled(),
+  topicShellEnabled: loadTopicShellEnabled(),
   viewSpineLens: loadViewSpineLens(),
   viewSpinePins: loadViewSpinePins(),
   viewSpineSavedViews: loadViewSpineSavedViews(),
@@ -1320,10 +1332,16 @@ export const useUiStore = create<UiState>()((set, get) => ({
     else lsRemove(VIEW_SPINE_KEY);
     set({ viewSpineEnabled: enabled });
   },
-
   toggleViewSpineEnabled: () => {
     get().setViewSpineEnabled(!get().viewSpineEnabled);
   },
+  setTopicShellEnabled: (enabled) => {
+    if (enabled) lsSave(TOPIC_SHELL_KEY, '1');
+    else lsRemove(TOPIC_SHELL_KEY);
+    set({ topicShellEnabled: enabled });
+  },
+  toggleTopicShellEnabled: () =>
+    get().setTopicShellEnabled(!get().topicShellEnabled),
 
   setViewSpineLens: (lens) => {
     lsSave(VIEW_SPINE_LENS_KEY, lens);
