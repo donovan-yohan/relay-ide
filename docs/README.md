@@ -31,9 +31,6 @@ This index separates current source-of-truth docs from historical plans and spik
 | Devbox deploy         | `references/devbox-hub-deploy.md`       | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene      |
 | Dogfood recovery      | `references/dogfood-recovery.md`        | Relay-develops-Relay proof loop, recovery matrix, diagnostics, no-force-merge gate           |
 | Self-hosting          | `SELF_HOSTING.md`                       | Running Relay from inside Relay with isolated config/ports                                   |
-| Security policy       | `SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, exact-operation approvals, handshake grants  |
-| Handshake grants      | `OPERATOR_HANDSHAKE_GRANTS.md`          | One-time operator grant ceremony copy, lane separation, validation, audit/redaction contract |
-| rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`               | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                      |
 | Hub/node packaging    | `RELAY_HUB_NODE_PACKAGING.md`           | Hub/node command shape and npm packaging decisions                                           |
 | Node bootstrap        | `RELAY_NODE_BOOTSTRAP.md`               | Pair/install/update/unpair flows and diagnostics                                             |
 | Add Node / Pair UX    | `ADD_NODE_PAIR_DEVICE_UX.md`            | Add Node wizard, device-code pairing, trust profiles, node lifecycle states, CLI/UI copy     |
@@ -52,7 +49,7 @@ This index separates current source-of-truth docs from historical plans and spik
 5. Bench — arrangement of working surfaces.
 6. Tab — leaf surface carrying active context such as node id, cwd, kind, and optional repo/worktree binding.
 
-Current implementation is incremental. Do not claim the full six-layer persistence/UI migration is complete unless the implementing PR and tests have landed.
+The six-layer vocabulary is the current product language. Treat repo/worktree/session identifiers as git/process compatibility fields unless a current contract explicitly makes them the user-facing IA label.
 
 ## Boo-style session substrate baseline
 
@@ -75,7 +72,7 @@ These directories are useful evidence, but they are not current product docs by 
 ## Guardrails for future doc edits
 
 - Evidence first: source files, tests, package scripts, and CLI help beat old plans.
-- Do not overclaim planned work as shipped: especially File RPC beyond the listed v1 commands, `logs.tail`/node-log proxying, high-risk approval UX/auth strength beyond the exact-operation #807 contract, and the complete six-layer UI/data migration.
+- Keep shipped claims tied to current source files, tests, and CLI help: remote file/log RPCs, approval UX/auth strength, and IA persistence should be described only at the level implemented today.
 - Do not overclaim Boo-style primitives as shipped: rendered-screen wait, a primary WorkContext cockpit, and live child-process continuity across Relay server restart remain follow-up work unless the current docs/code prove otherwise. `relay-pty` can cold-resume from saved metadata/scrollback after restart; it is not a supervisor.
 - Keep `AGENTS.md` compact; add details here or in focused docs instead.
 - When a historical plan is still linked from a current doc, label it as historical/proposed unless implementation has been verified.

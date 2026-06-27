@@ -15,7 +15,7 @@ relay-ide node install --hub https://hub.example.com --pair-token <token> --serv
 relay-ide update
 ```
 
-Bare `relay-ide`, `relay-ide install`, `relay-ide status`, and `relay-ide uninstall` remain back-compat aliases for the hub/server lifecycle. New docs should prefer `relay-ide hub ...` when the operator is intentionally running the web hub, and `relay-ide node ...` when pairing a remote/local node.
+Bare `relay-ide`, `relay-ide install`, `relay-ide status`, and `relay-ide uninstall` are short aliases for the hub/server lifecycle. New docs should prefer `relay-ide hub ...` when the operator is intentionally running the web hub, and `relay-ide node ...` when pairing a remote/local node.
 
 No `relay-ide-hub`, `relay-ide-node`, `@relay-ide/hub`, or `@relay-ide/node` package split is planned for v1.
 
@@ -25,7 +25,7 @@ No `relay-ide-hub`, `relay-ide-node`, `@relay-ide/hub`, or `@relay-ide/node` pac
 - One global install keeps bootstrap commands short and reduces the chance that a target host installs a hub/node version skew by accident.
 - npm publishing already has the two channels Relay needs: pushes to `nightly` publish `relay-ide@nightly`; stable releases publish `relay-ide@latest` from tagged `master` releases.
 - The node CLI currently performs pairing, stores credentials, sends one heartbeat, exposes a foreground `node link` reverse-WebSocket client for routed sessions, and delegates generic service setup. It does not yet ship a separate node-only daemon/service unit that would justify separate lifecycle or dependency boundaries.
-- Back-compat is simple: existing users can keep running `relay-ide` and `relay-ide install`, while docs can name the explicit hub role for federated setups.
+- Short aliases keep existing operator commands small while docs can name the explicit hub role for federated setups.
 
 ## The case against
 

@@ -13,7 +13,7 @@ Relay's current direction uses this IA vocabulary:
 - Bench — an arrangement of working surfaces.
 - Tab — the leaf working surface: terminal, agent session, file/diff/html surface, PR view, or other active context.
 
-The shipped app is mid-migration toward that vocabulary. Existing repo/worktree flows still matter; new docs and UI copy should describe them as optional context carried by a tab/session.
+Current docs and UI copy should use these nouns for product IA. Repo/worktree flows remain supported as git-specific context carried by sessions and tabs.
 
 ## Prerequisites
 
@@ -100,9 +100,9 @@ Commands:
     doctor [--json]                   Run bounded hub/node diagnostics
     node-logs <nodeId> [--lines <n>] [--follow]
                                        Print or follow logs from a paired remote node
-  install            Back-compat alias for relay-ide hub install
-  uninstall          Back-compat alias for relay-ide hub uninstall
-  status             Back-compat alias for relay-ide hub status
+  install            Alias for relay-ide hub install
+  uninstall          Alias for relay-ide hub uninstall
+  status             Alias for relay-ide hub status
   manifest           Print local node capability manifest as JSON
   v1 ... --json      Versioned CLI gateway JSON contract for nodes/sessions/files
   diag               Collect local diagnostics
@@ -117,13 +117,13 @@ Commands:
     doctor [--hub <url>] [--json]      Diagnose local node health and hub reachability; surfaces all degraded reasons
     pair <hub> [--json]               Request a device code, wait for operator approval, store the credential, and send one heartbeat
     pair --hub <url> --pair-token <token>
-                                       Legacy automation path: exchange a pair token with a hub and send one heartbeat
+                                       Exchange an operator-minted pair token with a hub and send one heartbeat
     mint-pair-token --hub <url> --operator-grant <handle> [--display-name <name>] [--platform <name>] [--task-ref <ref>] [--json]
                                        Mint a short-lived node pair token through the scoped operator-grant lane
     install --hub <url> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
                                        Install relay-ide globally via npm and optionally set up the local service (no pairing)
     connect --hub <url> --pair-token <token>
-                                       Exchange a pair token and send one heartbeat (back-compat alias for 'pair')
+                                       Alias for token-based node pairing
     ssh-bootstrap --target <host> --hub <url>
                                        Print a paste-able bash script to install and pair on a remote host via SSH
     link --hub <url>                   Open and hold the persistent /hub/node-link reverse WebSocket (foreground)
@@ -179,7 +179,7 @@ relay-ide node pair http://hub.example:3456
 relay-ide node link --hub http://hub.example:3456
 ```
 
-`relay-ide node pair <hub>` is the interactive device-code flow and sends one heartbeat after approval (pair-only, no service). `relay-ide node pair --hub <url> --pair-token <token>` and `relay-ide node connect` remain legacy/automation paths. `relay-ide node install` installs relay-ide globally and optionally sets up the local service (no pairing). Bootstrap diagnostics exist for pairing and local capability checks; do not assume every planned remote file/log capability is shipped unless the relevant doc and tests say so.
+`relay-ide node pair <hub>` is the interactive device-code flow and sends one heartbeat after approval (pair-only, no service). `relay-ide node pair --hub <url> --pair-token <token>` is the token-based pairing flow for automation/operator grants; `relay-ide node connect` is an alias for that flow. `relay-ide node install` installs relay-ide globally and optionally sets up the local service (no pairing). Hub commands can inspect paired nodes and retrieve node logs through the documented CLI surfaces above.
 
 ## Features
 
@@ -189,7 +189,7 @@ relay-ide node link --hub http://hub.example:3456
 - Built-in framework definitions exist for Claude Code, Codex, OpenCode, and Hermes; config can override or add frameworks.
 - Session rows carry agent type, node/cwd/repo/worktree context when available, state, scrollback, and reconnect behavior. Browser reconnect can reattach to a live Relay process; Relay server restart is cold resume from saved metadata/scrollback, not live child-process continuity.
 - Scriptable gateway commands let adapters list/create/attach/detach/kill/rename sessions, stream raw PTY output, send bounded input, publish artifacts, and call typed supervisor actions without private browser or node-link APIs.
-- `worktree add` remains a repo helper and currently launches Claude for the legacy fast path.
+- `worktree add` is a git helper that creates a worktree and launches the configured agent command for that repo context.
 
 ### Repo and worktree context
 
@@ -229,7 +229,7 @@ relay-ide hub logs
 relay-ide hub uninstall
 ```
 
-Back-compat aliases still work:
+Short aliases:
 
 ```bash
 relay-ide status
