@@ -163,6 +163,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'workspace-surfaces.list': 'list workspace surfaces',
   'workspace-surfaces.publish': 'publish workspace surface',
   'workspace-topics.list': 'list workspace topics',
+  'workspace-topics.search': 'search bounded workspace topic history',
   'workspace-topics.get': 'workspace topic details',
   'workspace-topics.create': 'create workspace topic',
   'workspace-topics.update': 'update workspace topic',

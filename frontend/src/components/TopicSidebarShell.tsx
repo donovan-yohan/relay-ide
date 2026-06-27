@@ -16,10 +16,14 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
-import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
+import type {
+  WorkspaceTopic,
+  WorkspaceTopicSearchResult,
+} from '../../../shared/workspace-topics.js';
 import {
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
+  searchWorkspaceTopics,
   sendSessionInput,
 } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
@@ -598,6 +602,221 @@ function TopicRow({
   );
 }
 
+function searchMatchSummary(result: WorkspaceTopicSearchResult): string {
+  const primary = result.matches[0];
+  if (!primary) return 'matched topic metadata';
+  return `${primary.label}: ${primary.value}`;
+}
+
+function TopicSearchResults({
+  results,
+  truncated,
+  onSelectSession,
+}: {
+  results: WorkspaceTopicSearchResult[];
+  truncated: boolean;
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  if (results.length === 0 && !truncated) return null;
+  return (
+    <div
+      className="topic-search-results"
+      aria-label="topic search result details"
+    >
+      {results.map((result) => {
+        const disabledReason = result.action.disabledReason;
+        const primarySessionId = result.action.primarySessionId;
+        const actionDisabled = Boolean(disabledReason) || !primarySessionId;
+        const actionTitle =
+          disabledReason ??
+          (primarySessionId
+            ? `open session ${primarySessionId}`
+            : 'no linked session');
+        return (
+          <div
+            key={result.topic.id}
+            className={`topic-search-result topic-search-result--${result.freshness}`}
+          >
+            <div className="topic-search-result__main">
+              <span className="topic-search-result__title">
+                {result.topic.display.title}
+              </span>
+              <span className="topic-search-result__meta">
+                {searchMatchSummary(result)}
+              </span>
+            </div>
+            <span className="topic-search-result__freshness">
+              {result.freshness}
+            </span>
+            <button
+              type="button"
+              className="topic-action topic-search-result__action"
+              disabled={actionDisabled}
+              title={actionTitle}
+              onClick={() => {
+                if (primarySessionId && !actionDisabled) {
+                  onSelectSession?.(primarySessionId);
+                }
+              }}
+            >
+              open
+            </button>
+            {disabledReason ? (
+              <span className="topic-search-result__disabled">
+                {disabledReason}
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
+      {truncated ? (
+        <div className="topic-search-result__truncated">
+          results truncated; refine search
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function topicEmptyStateText(input: {
+  searchActive: boolean;
+  searchUnavailableReason?: string | undefined;
+  searchQuery: string;
+}): string {
+  if (!input.searchActive) return 'no workspace topics yet';
+  if (input.searchUnavailableReason === 'empty_query') {
+    return 'type to search bounded topic history';
+  }
+  return `no topic matches for “${input.searchQuery.trim()}”`;
+}
+
+function TopicMobileCockpit({
+  mobileSearch,
+  mobileItems,
+  selectedId,
+  onMobileSearchChange,
+  onSelect,
+}: {
+  mobileSearch: string;
+  mobileItems: TopicNavItem[];
+  selectedId: string | null;
+  onMobileSearchChange: (value: string) => void;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <section className="topic-mobile-cockpit" aria-label="mobile topic cockpit">
+      <div className="topic-mobile-cockpit__bar">
+        <label>
+          <span>search topics</span>
+          <input
+            value={mobileSearch}
+            onChange={(event) => onMobileSearchChange(event.target.value)}
+            placeholder="search / command"
+          />
+        </label>
+        <button
+          type="button"
+          disabled
+          title="topic creation flow is routed through workspace-topics.create next"
+        >
+          + topic
+        </button>
+      </div>
+      <div className="topic-mobile-list" aria-label="attention-sorted topics">
+        {mobileItems.map((item) => (
+          <TopicMobileAttentionRow
+            key={item.id}
+            item={item}
+            selected={selectedId === item.id}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function TopicSearchPanel({
+  model,
+  searchQuery,
+  searchLoading,
+  searchError,
+  searchResults,
+  searchTruncated,
+  searchUnavailableReason,
+  onSearchQueryChange,
+  onSearchRetry,
+  onSearchClear,
+  onSelectSession,
+}: {
+  model: TopicNavModel;
+  searchQuery: string;
+  searchLoading: boolean;
+  searchError: boolean;
+  searchResults: WorkspaceTopicSearchResult[];
+  searchTruncated: boolean;
+  searchUnavailableReason?: string | undefined;
+  onSearchQueryChange?: ((query: string) => void) | undefined;
+  onSearchRetry?: (() => void) | undefined;
+  onSearchClear?: (() => void) | undefined;
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  const searchActive = searchQuery.trim().length > 0;
+  return (
+    <>
+      <label className="topic-search" aria-label="search topic history">
+        <span className="topic-search__prompt">/</span>
+        <input
+          className="topic-search__input"
+          value={searchQuery}
+          onChange={(event) => onSearchQueryChange?.(event.target.value)}
+          placeholder="search topics, tasks, artifacts..."
+          spellCheck={false}
+        />
+        {searchLoading ? <span className="topic-search__state">…</span> : null}
+      </label>
+      {searchError ? (
+        <div className="topic-shell-state topic-search-state error">
+          <span>topic search unavailable</span>
+          <span className="topic-search-state__actions">
+            {onSearchRetry ? (
+              <button type="button" onClick={onSearchRetry}>
+                retry
+              </button>
+            ) : null}
+            {onSearchClear ? (
+              <button type="button" onClick={onSearchClear}>
+                clear
+              </button>
+            ) : null}
+          </span>
+        </div>
+      ) : null}
+      {searchLoading && model.items.length === 0 ? (
+        <div className="topic-shell-state topic-search-state">
+          searching topic history…
+        </div>
+      ) : null}
+      {model.items.length === 0 && !searchLoading && !searchError ? (
+        <div className="topic-shell-state">
+          {topicEmptyStateText({
+            searchActive,
+            searchUnavailableReason,
+            searchQuery,
+          })}
+        </div>
+      ) : null}
+      {searchActive ? (
+        <TopicSearchResults
+          results={searchResults}
+          truncated={searchTruncated}
+          onSelectSession={onSelectSession}
+        />
+      ) : null}
+    </>
+  );
+}
+
 export function TopicSidebarView({
   topics,
   sessions,
@@ -605,6 +824,15 @@ export function TopicSidebarView({
   loading = false,
   error = false,
   derived = false,
+  searchQuery = '',
+  searchLoading = false,
+  searchError = false,
+  searchResults = [],
+  searchTruncated = false,
+  searchUnavailableReason,
+  onSearchQueryChange,
+  onSearchRetry,
+  onSearchClear,
   onSelectSession,
   onSendInput = sendSessionInput,
 }: {
@@ -614,6 +842,15 @@ export function TopicSidebarView({
   loading?: boolean;
   error?: boolean;
   derived?: boolean;
+  searchQuery?: string;
+  searchLoading?: boolean;
+  searchError?: boolean;
+  searchResults?: WorkspaceTopicSearchResult[];
+  searchTruncated?: boolean;
+  searchUnavailableReason?: string | undefined;
+  onSearchQueryChange?: ((query: string) => void) | undefined;
+  onSearchRetry?: (() => void) | undefined;
+  onSearchClear?: (() => void) | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
   onSendInput?: TopicSendInput | undefined;
 }) {
@@ -668,8 +905,9 @@ export function TopicSidebarView({
         return a.title.localeCompare(b.title);
       });
   }, [mobileSearch, model.items]);
+  const activeSearchLoading = Boolean(searchQuery.trim() && searchLoading);
 
-  if (loading) {
+  if (loading && !activeSearchLoading) {
     return <div className="topic-shell-state">loading topic shell…</div>;
   }
   if (error) {
@@ -677,50 +915,37 @@ export function TopicSidebarView({
       <div className="topic-shell-state error">topic shell unavailable</div>
     );
   }
-  if (model.items.length === 0) {
-    return <div className="topic-shell-state">no workspace topics yet</div>;
-  }
 
   return (
     <div className="topic-shell" data-track="topic-shell">
       <div className="topic-shell__header">
         <span>topics</span>
-        {model.derived ? (
+        {searchQuery.trim() ? (
+          <span className="topic-shell__derived">search</span>
+        ) : model.derived ? (
           <span className="topic-shell__derived">derived</span>
         ) : null}
       </div>
-      <section
-        className="topic-mobile-cockpit"
-        aria-label="mobile topic cockpit"
-      >
-        <div className="topic-mobile-cockpit__bar">
-          <label>
-            <span>search topics</span>
-            <input
-              value={mobileSearch}
-              onChange={(event) => setMobileSearch(event.target.value)}
-              placeholder="search / command"
-            />
-          </label>
-          <button
-            type="button"
-            disabled
-            title="topic creation flow is routed through workspace-topics.create next"
-          >
-            + topic
-          </button>
-        </div>
-        <div className="topic-mobile-list" aria-label="attention-sorted topics">
-          {mobileItems.map((item) => (
-            <TopicMobileAttentionRow
-              key={item.id}
-              item={item}
-              selected={selectedId === item.id}
-              onSelect={select}
-            />
-          ))}
-        </div>
-      </section>
+      <TopicMobileCockpit
+        mobileSearch={mobileSearch}
+        mobileItems={mobileItems}
+        selectedId={selectedId}
+        onMobileSearchChange={setMobileSearch}
+        onSelect={select}
+      />
+      <TopicSearchPanel
+        model={model}
+        searchQuery={searchQuery}
+        searchLoading={searchLoading}
+        searchError={searchError}
+        searchResults={searchResults}
+        searchTruncated={searchTruncated}
+        searchUnavailableReason={searchUnavailableReason}
+        onSearchQueryChange={onSearchQueryChange}
+        onSearchRetry={onSearchRetry}
+        onSearchClear={onSearchClear}
+        onSelectSession={onSelectSession}
+      />
       <ul className="topic-tree" aria-label="workspace topics">
         {model.rootIds.map((id) => {
           const item = model.byId.get(id);
@@ -759,31 +984,61 @@ export function TopicSidebarShell({
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
   const sessions = useSessionsStore((s) => s.sessions);
+  const [searchQuery, setSearchQuery] = useState('');
+  const normalizedSearchQuery = searchQuery.trim();
   const topicsQuery = useQuery({
     queryKey: ['workspace-topics'],
     queryFn: () => fetchWorkspaceTopics(),
     staleTime: 30_000,
+  });
+  const topicSearchQuery = useQuery({
+    queryKey: ['workspace-topics', 'search', normalizedSearchQuery],
+    queryFn: () =>
+      searchWorkspaceTopics({ q: normalizedSearchQuery, limit: 20 }),
+    enabled: normalizedSearchQuery.length > 0,
+    staleTime: 10_000,
   });
   const surfacesQuery = useQuery<WorkspaceSurface[]>({
     queryKey: ['workspace-surfaces', 'topic-shell'],
     queryFn: () => fetchWorkspaceSurfaces(),
     staleTime: 30_000,
   });
+  const searchActive = normalizedSearchQuery.length > 0;
+  const searchData = topicSearchQuery.data;
+  const searchResults = searchData?.results ?? [];
 
   return (
     <TopicSidebarView
-      topics={topicsQuery.data?.topics ?? []}
+      topics={
+        searchActive
+          ? searchResults.map((result) => result.topic)
+          : (topicsQuery.data?.topics ?? [])
+      }
       sessions={sessions}
       surfaces={surfacesQuery.data ?? []}
       loading={
-        (topicsQuery.isLoading && !topicsQuery.data) ||
-        (surfacesQuery.isLoading && !surfacesQuery.data)
+        !searchActive &&
+        ((topicsQuery.isLoading && !topicsQuery.data) ||
+          (surfacesQuery.isLoading && !surfacesQuery.data))
       }
       error={
-        (topicsQuery.isError && !topicsQuery.data) ||
+        (topicsQuery.isError && !topicsQuery.data && !searchActive) ||
         (surfacesQuery.isError && !surfacesQuery.data)
       }
-      derived={topicsQuery.data?.derived ?? false}
+      derived={
+        searchActive
+          ? (searchData?.derived ?? false)
+          : (topicsQuery.data?.derived ?? false)
+      }
+      searchQuery={searchQuery}
+      searchLoading={topicSearchQuery.isFetching && searchActive}
+      searchError={topicSearchQuery.isError && searchActive}
+      searchResults={searchResults}
+      searchTruncated={searchData?.truncated ?? false}
+      searchUnavailableReason={searchData?.unavailableReason}
+      onSearchQueryChange={setSearchQuery}
+      onSearchRetry={() => void topicSearchQuery.refetch()}
+      onSearchClear={() => setSearchQuery('')}
       onSelectSession={onSelectSession}
     />
   );

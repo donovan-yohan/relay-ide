@@ -65,6 +65,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'roster.list',
   'workspace-surfaces.list',
   'workspace-topics.list',
+  'workspace-topics.search',
   'workspace-topics.get',
 ] as const;
 export type CliGatewayActorReadCommand =
@@ -327,6 +328,7 @@ export function cliGatewayActorCommandCapabilities(
     command === 'pr-overseer.get' ||
     command === 'workspace-surfaces.list' ||
     command === 'workspace-topics.list' ||
+    command === 'workspace-topics.search' ||
     command === 'workspace-topics.get' ||
     command.startsWith('work-context-messages.')
   )
