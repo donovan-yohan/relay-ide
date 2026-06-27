@@ -17,9 +17,8 @@ const UTILITY_RAIL_STATE_KEY_PREFIX = 'relay-utility-rail::';
 const DIFF_VIEW_MODE_KEY = 'claude-remote-diff-view-mode';
 const WORD_WRAP_KEY = 'claude-remote-word-wrap';
 const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
-// #732: view-spine MVP feature flag. Default OFF. When OFF the sidebar render
-// is byte-identical to today; ON swaps in the client-derived read-only tree.
-// Dev-only affordance: set `localStorage.relay-view-spine = '1'` and reload.
+// Flag-gated six-layer navigation surface. Set
+// `localStorage.relay-view-spine = '1'` and reload to opt into the tree.
 const VIEW_SPINE_KEY = 'relay-view-spine';
 const TOPIC_SHELL_KEY = 'relay-topic-shell';
 // #738: persistent View layer (FE-only, localStorage). All three ride the same
@@ -176,8 +175,7 @@ function loadViewSpineEnabled(): boolean {
 }
 
 function loadTopicShellEnabled(): boolean {
-  // #1023: desktop topic shell is a separate default-OFF feature flag while the
-  // legacy sidebar and the view-spine remain available during rollout.
+  // Separate opt-in while topic-shell parity remains tracked by #1032/#1027.
   return ls(TOPIC_SHELL_KEY) === '1';
 }
 
@@ -624,9 +622,9 @@ export interface UiState {
   orgDashboardTab: OrgDashboardTab;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
-  /** #732: view-spine MVP flag. Default false; backed by localStorage. */
+  /** Six-layer navigation surface flag. Default false; backed by localStorage. */
   viewSpineEnabled: boolean;
-  /** #1023: thin-line WorkspaceTopic sidebar/detail shell flag. Default false. */
+  /** Thin-line WorkspaceTopic sidebar/detail shell flag. Default false. */
   topicShellEnabled: boolean;
   /** #738: active Views lens, persisted across reload (default `recent`). */
   viewSpineLens: ViewLens;

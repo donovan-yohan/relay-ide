@@ -1,7 +1,7 @@
-// #729 (Epic #444 view-spine MVP): flag-gated, READ-ONLY render of the
-// client-derived view-tree (`lib/state/view-tree.ts`). Reuses EXISTING sidebar
-// primitives only — no new visual chrome, no new animations. Leaves are COUNTS,
-// not interactive rows. Default OFF; only mounted when `viewSpineEnabled`.
+// Flag-gated six-layer navigation surface over projects, instances, benches,
+// and tabs. It combines derived repo/session state with persisted Workspace and
+// Bench overlays while keeping git-specific actions anchored to their existing
+// repo/worktree contracts.
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSessionsStore } from '../lib/stores/sessions.js';
@@ -49,24 +49,21 @@ function benchErrorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
-/** Create a Tab anchored to a Bench's (nodeId, cwd). Wired to the EXISTING
- *  node-aware session-create entrypoint by `App` — NOT a new create flow, and
- *  NOT the worktree-creation path (`onNewWorktree`). */
+/** Create a Tab anchored to a Bench's (nodeId, cwd). Wired to App's node-aware
+ *  session-create entrypoint; separate from git worktree creation. */
 export type ViewSpineCreateTab = (payload: BenchCreatePayload) => void;
 
-/** #739: focus/select an individual Tab (session). Wired by `App` to the
- *  EXISTING active-session action (`handleSelectSession`) — NOT a new flow. The
- *  argument is the scoped session key the legacy sidebar already selects on. */
+/** Focus/select an individual Tab using the scoped session key that App already
+ *  routes through its active-session action. */
 export type ViewSpineSelectTab = (selectKey: string) => void;
 
-/** #738: pin state + toggle handed to a row. `isPinned(id)` reads the persisted
- *  set; `toggle(id)` flips + persists. Read-only callers omit them entirely. */
+/** Persisted pin state + toggle handed to a row. */
 export interface PinControls {
   isPinned: (id: string) => boolean;
   toggle: (id: string) => void;
 }
 
-// Ad-hoc, ephemeral lenses (#727). Order is the visual + arrow-key order.
+// View lens order is also the visual + arrow-key order.
 const LENSES: ReadonlyArray<{ id: ViewLens; label: string }> = [
   { id: 'recent', label: 'recent' },
   { id: 'all', label: 'all sessions' },
@@ -85,7 +82,7 @@ function CountBadge({ count }: { count: number }) {
   return <span className="session-count-badge">{count}</span>;
 }
 
-// #738: pin/favorite toggle. A tiny icon button (★ pinned / ☆ unpinned) reusing
+// Pin/favorite toggle. A tiny icon button (★ pinned / ☆ unpinned) reusing
 // the muted-icon affordance language already used by the bench delete/chevron —
 // no new color tokens. Pinned items float to the top of their parent via the
 // pure `applyPins` re-order. Keyboard-accessible (real button) + ≥44px touch via
@@ -119,10 +116,8 @@ function PinButton({
   );
 }
 
-// #739: bubbled attention badge — reuses the legacy `.repo-attention-badge`
-// anatomy (a `SessionIndicator` glyph + descendant attention count). Rendered on
-// a Bench/Instance/Project when any descendant Tab needs attention; null when
-// none, so non-attention nodes stay visually quiet.
+// Bubbled attention badge. Rendered on a Bench/Instance/Project when any
+// descendant Tab needs attention; null when none, so quiet nodes stay quiet.
 function AttentionBadge({ attention }: { attention: ViewTreeAttention }) {
   if (!attention.state || attention.count <= 0) return null;
   return (
@@ -136,11 +131,8 @@ function AttentionBadge({ attention }: { attention: ViewTreeAttention }) {
   );
 }
 
-// #739: an individual Tab (session) leaf — a selectable row reusing the legacy
-// sidebar session-row anatomy (`SessionIndicator` glyph + name + attention bold
-// + branch). Click selects/focuses that Tab via the EXISTING active-session
-// action. Indented one level below its Bench. Keyboard-accessible (button-like
-// role, Enter/Space activate), touch ≥44px (`.view-spine-tab-leaf` CSS).
+// Individual Tab (session) leaf. Click/keyboard activation focuses that Tab via
+// App's active-session action. Indented one level below its Bench.
 function TabLeafRow({
   leaf,
   onSelectTab,
@@ -328,7 +320,9 @@ function BenchRow({
             type="button"
             className="bench-overlay-delete"
             disabled={busy}
-            onClick={() => merged.overlayId && onDeleteOverlay(merged.overlayId)}
+            onClick={() =>
+              merged.overlayId && onDeleteOverlay(merged.overlayId)
+            }
             aria-label={`delete bench ${merged.label}`}
             title="delete bench"
           >
@@ -808,7 +802,11 @@ function SavedViewsBar({
   };
 
   return (
-    <div className="view-spine-saved-views" role="group" aria-label="saved views">
+    <div
+      className="view-spine-saved-views"
+      role="group"
+      aria-label="saved views"
+    >
       {savedViews.map((view) => (
         <span key={view.id} className="view-spine-saved-view">
           <button
@@ -961,7 +959,8 @@ export function ViewSpineTree({
   // each `InstanceRow`. Reconcile on a failed bench mutation via `refetch`.
   const { data: allBenches, refetch: refetchBenches } = useIaBenchesAll();
   const overlaysByInstance = useMemo(
-    () => groupBenchOverlaysByInstance((allBenches ?? []) as BenchOverlayInput[]),
+    () =>
+      groupBenchOverlaysByInstance((allBenches ?? []) as BenchOverlayInput[]),
     [allBenches]
   );
   const onRefetchBenches = useCallback(() => {
