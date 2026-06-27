@@ -161,4 +161,104 @@ describe('TopicSidebarView', () => {
     await renderView({ loading: false, error: false, topics: [] });
     expect(container.textContent).toContain('no workspace topics yet');
   });
+
+  it('renders a phone-first attention list sorted before routine topics', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:idle',
+          display: { title: 'Routine lane' },
+          linkedRefs: { sessionIds: ['idle-session'] },
+        }),
+        makeTopic({
+          id: 'topic:approval',
+          display: { title: 'Approval lane' },
+          linkedRefs: { sessionIds: ['approval-session'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 'idle-session',
+          displayName: 'idle',
+          agentState: 'idle',
+          idle: true,
+        }),
+        makeSession({
+          id: 'approval-session',
+          displayName: 'approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          currentActivity: { tool: 'bash', detail: 'allow command?' },
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const mobileRows = Array.from(
+      container.querySelectorAll('.topic-mobile-row')
+    );
+    expect(mobileRows[0]?.textContent).toContain('Approval lane');
+    expect(mobileRows[0]?.textContent).toContain('approve');
+    expect(mobileRows[0]?.textContent).toContain('allow command?');
+    expect(mobileRows[1]?.textContent).toContain('Routine lane');
+  });
+
+  it('uses a two-step audited mobile reply preview before sending input', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          controlFreshness: 'fresh',
+        }),
+      ],
+      onSendInput,
+    });
+
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const form = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+
+    await act(async () => {
+      input.value = 'y';
+      input.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: 'y',
+          inputType: 'insertText',
+        })
+      );
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('confirmation preview');
+    expect(container.textContent).toContain('carriage return appended');
+
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).toHaveBeenCalledWith('s1', 'y\r', undefined);
+    expect(container.textContent).toContain('sent · audit/intervention trail');
+  });
+
+  it('keeps resume and terminal fallback as visible mobile controls', async () => {
+    await renderView();
+
+    const quickActions = container.querySelector('.topic-mobile-actions');
+    expect(quickActions?.textContent).toContain('resume');
+    expect(quickActions?.textContent).toContain('terminal fallback');
+
+    const terminalFallback = Array.from(
+      quickActions?.querySelectorAll('button') ?? []
+    ).find(
+      (button) => button.textContent === 'terminal fallback'
+    ) as HTMLButtonElement;
+    await act(async () => terminalFallback.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+  });
 });

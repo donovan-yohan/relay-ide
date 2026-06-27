@@ -3,23 +3,22 @@ import {
   useEffect,
   useMemo,
   useState,
+  type FormEvent,
   type CSSProperties,
 } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  CircleAlert,
-  Folder,
-  GitBranch,
-  LoaderCircle,
-  MessageSquare,
-  TriangleAlert,
-} from 'lucide-react';
+import { CircleAlert, LoaderCircle, TriangleAlert } from 'lucide-react';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import type { WorkspaceTopic } from '../../../shared/workspace-topics.js';
-import { fetchWorkspaceSurfaces, fetchWorkspaceTopics } from '../lib/api.js';
+import {
+  fetchWorkspaceSurfaces,
+  fetchWorkspaceTopics,
+  sendSessionInput,
+} from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
 import type { SessionSummary } from '../lib/types.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
+import { durabilityDisabledReason } from '../lib/session-durability.js';
 import {
   buildTopicNavModel,
   type TopicNavItem,
@@ -29,13 +28,6 @@ import {
 } from '../lib/state/topic-nav.js';
 import { MarqueeText } from './MarqueeText.js';
 import './TopicSidebarShell.css';
-
-function WorkspaceKindIcon({ kind }: { kind: TopicNavItem['kind'] }) {
-  const props = { 'aria-hidden': true, size: 16, strokeWidth: 1.8 } as const;
-  if (kind === 'repo') return <GitBranch {...props} />;
-  if (kind === 'folder') return <Folder {...props} />;
-  return <MessageSquare {...props} />;
-}
 
 function AttentionIcon({ tone }: { tone: TopicNavItem['tone'] }) {
   if (tone === 'active') {
@@ -57,6 +49,106 @@ function StatusGlyph({ tone }: { tone: TopicNavItem['tone'] }) {
   );
 }
 
+type TopicSendInput = typeof sendSessionInput;
+
+function topicPrimarySession(
+  item: TopicNavItem
+): TopicNavSessionRef | undefined {
+  return [...item.sessions].sort((a, b) => {
+    if (a.displayState !== b.displayState) {
+      const priority = {
+        permission: 0,
+        'needs-answer': 1,
+        error: 2,
+        running: 3,
+        initializing: 4,
+        'unseen-idle': 5,
+        'seen-idle': 6,
+        inactive: 7,
+      } satisfies Record<TopicNavSessionRef['displayState'], number>;
+      return priority[a.displayState] - priority[b.displayState];
+    }
+    return (b.lastActivity ?? '').localeCompare(a.lastActivity ?? '');
+  })[0];
+}
+
+function sessionControlDisabledReason(
+  session: TopicNavSessionRef | undefined
+): string | null {
+  if (!session) return 'no session linked to this topic';
+  const durabilityReason = durabilityDisabledReason(
+    session.durability ?? undefined
+  );
+  if (durabilityReason) return durabilityReason;
+  if (session.controlFreshness === 'stale') return 'stale control state';
+  if (session.controlFreshness && session.controlFreshness !== 'fresh') {
+    return 'unknown control state';
+  }
+  if (session.mode === 'web') return 'web session input is unsupported here';
+  return null;
+}
+
+function topicPrimaryAction(item: TopicNavItem): {
+  label: string;
+  detail: string;
+  disabledReason: string | null;
+} {
+  const session = topicPrimarySession(item);
+  const disabledReason = sessionControlDisabledReason(session);
+  if (session?.displayState === 'permission') {
+    return {
+      label: 'approve',
+      detail: 'send an audited approval reply to the live session',
+      disabledReason,
+    };
+  }
+  if (session?.displayState === 'needs-answer') {
+    return {
+      label: 'reply',
+      detail: 'send a short audited reply without opening the terminal first',
+      disabledReason,
+    };
+  }
+  if (session) {
+    return {
+      label: 'resume',
+      detail: 'open the linked Relay tab; raw PTY remains the fallback',
+      disabledReason: null,
+    };
+  }
+  if (item.surfaces.length > 0) {
+    return {
+      label: 'view artifact',
+      detail: 'open or copy the top linked topic surface',
+      disabledReason: null,
+    };
+  }
+  return {
+    label: 'waiting',
+    detail: 'no live session or artifact is linked yet',
+    disabledReason: 'no live control target',
+  };
+}
+
+function topicLatestStatus(item: TopicNavItem): string {
+  const session = topicPrimarySession(item);
+  if (session?.agentState === 'permission-prompt') {
+    return session.currentActivity?.detail
+      ? `${item.statusLabel} · ${session.currentActivity.detail}`
+      : item.statusLabel;
+  }
+  if (session?.currentActivity) {
+    const detail = session.currentActivity.detail
+      ? ` · ${session.currentActivity.detail}`
+      : '';
+    return `${session.currentActivity.tool}${detail}`;
+  }
+  if (item.surfaces.length > 0) {
+    return `${item.statusLabel} · ${item.surfaces[0]!.label}`;
+  }
+  return item.routingLabel ?? item.statusLabel;
+}
+
 function TopicBadge({ item }: { item: TopicNavItem }) {
   return (
     <span
@@ -64,7 +156,7 @@ function TopicBadge({ item }: { item: TopicNavItem }) {
       style={{ background: deriveColor(item.badgeSeed) }}
       title={`${item.kindLabel} workspace`}
     >
-      <WorkspaceKindIcon kind={item.kind} />
+      {item.badgeText}
     </span>
   );
 }
@@ -157,6 +249,204 @@ function TopicDetail({ item }: { item: TopicNavItem }) {
             <SurfaceButton key={surface.id} surface={surface} />
           ))}
         </div>
+      ) : null}
+    </section>
+  );
+}
+
+function TopicMobileAttentionRow({
+  item,
+  selected,
+  onSelect,
+}: {
+  item: TopicNavItem;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const action = topicPrimaryAction(item);
+  return (
+    <button
+      type="button"
+      className={`topic-mobile-row topic-mobile-row--${item.tone}${selected ? ' selected' : ''}`}
+      onClick={() => onSelect(item.id)}
+      aria-current={selected ? 'page' : undefined}
+    >
+      <TopicBadge item={item} />
+      <span className="topic-mobile-row__main">
+        <span className="topic-mobile-row__title">{item.title}</span>
+        <span className="topic-mobile-row__status">
+          {topicLatestStatus(item)}
+        </span>
+      </span>
+      <span className="topic-mobile-row__cta">{action.label}</span>
+      <StatusGlyph tone={item.tone} />
+    </button>
+  );
+}
+
+function TopicMobileControlPanel({
+  item,
+  onSelectSession,
+  onSendInput,
+}: {
+  item: TopicNavItem;
+  onSelectSession?: ((id: string) => void) | undefined;
+  onSendInput: TopicSendInput;
+}) {
+  const session = topicPrimarySession(item);
+  const action = topicPrimaryAction(item);
+  const [inputValue, setInputValue] = useState('');
+  const [pendingValue, setPendingValue] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const needsInput = action.label === 'approve' || action.label === 'reply';
+  const canSend = Boolean(session && needsInput && !action.disabledReason);
+  const topSurface = item.surfaces[0];
+
+  useEffect(() => {
+    setInputValue('');
+    setPendingValue(null);
+    setStatus(null);
+  }, [item.id, session?.selectKey]);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const value = String(formData.get('controlInput') ?? inputValue).trimEnd();
+    if (!session || !canSend || !value || sending) return;
+    if (value !== inputValue) setInputValue(value);
+    if (pendingValue !== value) {
+      setPendingValue(value);
+      setStatus('preview ready · tap send again to record the intervention');
+      return;
+    }
+    setSending(true);
+    setStatus('sending audited control input...');
+    try {
+      await onSendInput(
+        session.selectKey,
+        `${value}\r`,
+        session.nodeId ?? undefined
+      );
+      setInputValue('');
+      setPendingValue(null);
+      setStatus('sent · audit/intervention trail preserved by session control');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`failed: ${message}`);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleResume = () => {
+    if (session) onSelectSession?.(session.selectKey);
+  };
+
+  const handleSurface = () => {
+    if (!topSurface?.target) return;
+    if (
+      topSurface.openMode === 'direct' &&
+      topSurface.target.startsWith('http')
+    ) {
+      window.open(topSurface.target, '_blank', 'noreferrer');
+      return;
+    }
+    void navigator.clipboard?.writeText(topSurface.target);
+    setStatus('surface target copied for safe mobile handoff');
+  };
+
+  return (
+    <section
+      className="topic-mobile-detail"
+      aria-label={`${item.title} mobile controls`}
+    >
+      <div className="topic-mobile-detail__header">
+        <div>
+          <div className="topic-mobile-detail__eyebrow">{item.statusLabel}</div>
+          <h3>{item.title}</h3>
+        </div>
+        <TopicBadge item={item} />
+      </div>
+      <p className="topic-mobile-detail__latest">{topicLatestStatus(item)}</p>
+      <div className="topic-mobile-detail__meta">
+        <span>{item.kindLabel}</span>
+        {item.routingLabel ? <span>{item.routingLabel}</span> : null}
+        {session ? (
+          <span>
+            {session.agent} · {session.type}
+          </span>
+        ) : null}
+        {session?.nodeId ? <span>{session.nodeId}</span> : null}
+      </div>
+      {item.description ? (
+        <p className="topic-mobile-detail__description">{item.description}</p>
+      ) : null}
+
+      <form className="topic-mobile-control" onSubmit={handleSubmit}>
+        <label htmlFor={`topic-mobile-input-${item.id}`}>{action.label}</label>
+        <input
+          id={`topic-mobile-input-${item.id}`}
+          name="controlInput"
+          value={inputValue}
+          onChange={(event) => {
+            setInputValue(event.target.value);
+            setPendingValue(null);
+          }}
+          disabled={!canSend || sending}
+          placeholder={
+            action.label === 'approve'
+              ? 'approval reply, e.g. y / n / exact text'
+              : action.label === 'reply'
+                ? 'short reply to waiting agent'
+                : action.detail
+          }
+          maxLength={1000}
+        />
+        <button
+          type="submit"
+          className="topic-mobile-control__primary"
+          disabled={!canSend || inputValue.trim().length === 0 || sending}
+          title={action.disabledReason ?? action.detail}
+        >
+          {pendingValue === inputValue.trimEnd() && pendingValue
+            ? `send ${action.label}`
+            : `preview ${action.label}`}
+        </button>
+      </form>
+
+      {pendingValue ? (
+        <div className="topic-mobile-confirm" role="status">
+          <span>confirmation preview</span>
+          <code>{pendingValue}</code>
+          <span>{session?.selectKey} · carriage return appended</span>
+        </div>
+      ) : null}
+
+      <div className="topic-mobile-actions" aria-label="topic quick actions">
+        <button type="button" disabled={!session} onClick={handleResume}>
+          resume
+        </button>
+        <button type="button" disabled={!session} onClick={handleResume}>
+          terminal fallback
+        </button>
+        <button
+          type="button"
+          disabled={!topSurface?.target}
+          onClick={handleSurface}
+        >
+          {topSurface ? `${topSurface.kind} artifact` : 'artifact'}
+        </button>
+      </div>
+      {action.disabledReason ? (
+        <p className="topic-mobile-disabled">
+          controls disabled: {action.disabledReason}
+        </p>
+      ) : null}
+      {status ? (
+        <p className="topic-mobile-status" role="status">
+          {status}
+        </p>
       ) : null}
     </section>
   );
@@ -296,6 +586,7 @@ export function TopicSidebarView({
   error = false,
   derived = false,
   onSelectSession,
+  onSendInput = sendSessionInput,
 }: {
   topics: WorkspaceTopic[];
   sessions: SessionSummary[];
@@ -304,6 +595,7 @@ export function TopicSidebarView({
   error?: boolean;
   derived?: boolean;
   onSelectSession?: ((id: string) => void) | undefined;
+  onSendInput?: TopicSendInput | undefined;
 }) {
   const model = useMemo(
     () => buildTopicNavModel({ topics, sessions, surfaces, derived }),
@@ -337,6 +629,25 @@ export function TopicSidebarView({
 
   const select = useCallback((id: string) => setSelectedId(id), []);
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
+  const [mobileSearch, setMobileSearch] = useState('');
+  const mobileItems = useMemo(() => {
+    const normalized = mobileSearch.trim().toLowerCase();
+    return [...model.items]
+      .filter((item) =>
+        normalized
+          ? [item.title, item.description ?? '', item.routingLabel ?? '']
+              .join(' ')
+              .toLowerCase()
+              .includes(normalized)
+          : true
+      )
+      .sort((a, b) => {
+        if (a.attentionPriority !== b.attentionPriority) {
+          return b.attentionPriority - a.attentionPriority;
+        }
+        return a.title.localeCompare(b.title);
+      });
+  }, [mobileSearch, model.items]);
 
   if (loading) {
     return <div className="topic-shell-state">loading topic shell…</div>;
@@ -358,6 +669,38 @@ export function TopicSidebarView({
           <span className="topic-shell__derived">derived</span>
         ) : null}
       </div>
+      <section
+        className="topic-mobile-cockpit"
+        aria-label="mobile topic cockpit"
+      >
+        <div className="topic-mobile-cockpit__bar">
+          <label>
+            <span>search topics</span>
+            <input
+              value={mobileSearch}
+              onChange={(event) => setMobileSearch(event.target.value)}
+              placeholder="search / command"
+            />
+          </label>
+          <button
+            type="button"
+            disabled
+            title="topic creation flow is routed through workspace-topics.create next"
+          >
+            + topic
+          </button>
+        </div>
+        <div className="topic-mobile-list" aria-label="attention-sorted topics">
+          {mobileItems.map((item) => (
+            <TopicMobileAttentionRow
+              key={item.id}
+              item={item}
+              selected={selectedId === item.id}
+              onSelect={select}
+            />
+          ))}
+        </div>
+      </section>
       <ul className="topic-tree" aria-label="workspace topics">
         {model.rootIds.map((id) => {
           const item = model.byId.get(id);
@@ -376,7 +719,16 @@ export function TopicSidebarView({
           ) : null;
         })}
       </ul>
-      {selectedItem ? <TopicDetail item={selectedItem} /> : null}
+      {selectedItem ? (
+        <>
+          <TopicDetail item={selectedItem} />
+          <TopicMobileControlPanel
+            item={selectedItem}
+            onSelectSession={onSelectSession}
+            onSendInput={onSendInput}
+          />
+        </>
+      ) : null}
     </div>
   );
 }

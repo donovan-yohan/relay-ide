@@ -25,10 +25,20 @@ export interface TopicNavSessionRef {
   id: string;
   selectKey: string;
   label: string;
+  type: SessionSummary['type'];
+  agent: SessionSummary['agent'];
+  mode: SessionSummary['mode'] | null;
   tone: TopicNavTone;
   displayState: DisplayState;
+  agentState: SessionSummary['agentState'] | null;
+  permissionType: SessionSummary['permissionType'] | null;
   branch: string | null;
   nodeId: string | null;
+  cwd: string;
+  controlFreshness: SessionSummary['controlFreshness'] | null;
+  durability: SessionSummary['durability'] | null;
+  currentActivity: SessionSummary['currentActivity'] | null;
+  lastActivity: string | null;
 }
 
 export interface TopicNavSurfaceRef {
@@ -46,6 +56,7 @@ export interface TopicNavItem {
   title: string;
   description: string | null;
   badgeSeed: string;
+  badgeText: string;
   kind: TopicNavKind;
   kindLabel: string;
   pinned: boolean;
@@ -270,7 +281,7 @@ export function buildTopicNavModel(input: {
   surfaces: WorkspaceSurface[];
   derived?: boolean;
 }): TopicNavModel {
-  const items: TopicNavItem[] = input.topics.map((topic) => {
+  const items: TopicNavItem[] = input.topics.map((topic, index) => {
     const sessions = input.sessions
       .filter((session) => sessionMatchesTopic(topic, session))
       .map(
@@ -278,10 +289,20 @@ export function buildTopicNavModel(input: {
           id: session.id,
           selectKey: sessionSelectKey(session),
           label: session.displayName || basename(session.cwd) || session.id,
+          type: session.type,
+          agent: session.agent,
+          mode: session.mode ?? null,
           tone: sessionTone(session),
           displayState: sessionDisplayState(session),
+          agentState: session.agentState ?? null,
+          permissionType: session.permissionType ?? null,
           branch: session.branchName ?? null,
           nodeId: session.nodeId ?? null,
+          cwd: session.cwd,
+          controlFreshness: session.controlFreshness ?? null,
+          durability: session.durability ?? null,
+          currentActivity: session.currentActivity ?? null,
+          lastActivity: session.lastActivity ?? null,
         })
       )
       .sort((a, b) => a.label.localeCompare(b.label));
@@ -303,12 +324,18 @@ export function buildTopicNavModel(input: {
     const tone = topicTone(sessions, surfaces, topic);
     const kind = topicKind(topic);
     const order = topic.grouping.order ?? Number.MAX_SAFE_INTEGER;
+    const badgeText = String(
+      Number.isSafeInteger(topic.grouping.order)
+        ? topic.grouping.order! + 1
+        : index + 1
+    );
     return {
       id: topic.id,
       parentId: topic.grouping.parentTopicId ?? null,
       title: topic.display.title,
       description: topic.display.description ?? null,
       badgeSeed: topic.workspaceId || topic.display.title,
+      badgeText,
       kind: kind.kind,
       kindLabel: kind.label,
       pinned: topic.state.pinned,
