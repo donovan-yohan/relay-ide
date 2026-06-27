@@ -13,9 +13,9 @@ The Relay IDE web app — the only product surface. This kit shows the design sy
 
 - **Sidebar** — wordmark + connection status, three tabs (repos / worktrees / prs), filter input with `>` cursor, repo list grouped by workspace, expand/collapse, status dots, attention pulse, `+ add` rows, scanline overlay (drift disabled at `prefers-reduced-motion`).
 - **Session tabs** — square, edge-to-edge, terracotta top-border for active, attention pulse, hover-only close `×`.
-- **Breadcrumb** — repo badge → branch → agent + status dot, action buttons aligned right (resume / attach tmux / + branch).
+- **Breadcrumb** — repo badge → branch → agent + status dot, action buttons aligned right (resume / attach terminal / + branch).
 - **Terminal** — color tokens used as ANSI roles: `--text-muted` for prose, `--status-success` for OK, `--status-warning` for permission prompts, `--status-info` for paths, `--accent` for `claude` mark and `>` prompt. Block cursor blinks at 1.06s.
-- **Status bar** — bottom rail with tmux session, geometry, shell, diff stats, `⌘P` hint.
+- **Status bar** — bottom rail with `relay-pty` session/backend, geometry, shell, diff stats, `⌘P` hint.
 - **Command palette** — `surface` background, `0 4 16 rgba(0,0,0,.5)` shadow, FZF `>` cursor on the active row, `<em>` matches in `--accent`.
 
 ## Not mocked (yet)
