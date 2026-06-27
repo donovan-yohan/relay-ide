@@ -25,10 +25,21 @@ export interface TopicNavSessionRef {
   id: string;
   selectKey: string;
   label: string;
+  type: SessionSummary['type'];
+  agent: SessionSummary['agent'];
+  mode: SessionSummary['mode'] | null;
+  status: SessionSummary['status'] | null;
   tone: TopicNavTone;
   displayState: DisplayState;
+  agentState: SessionSummary['agentState'] | null;
+  permissionType: SessionSummary['permissionType'] | null;
   branch: string | null;
   nodeId: string | null;
+  cwd: string;
+  controlFreshness: SessionSummary['controlFreshness'] | null;
+  durability: SessionSummary['durability'] | null;
+  currentActivity: SessionSummary['currentActivity'] | null;
+  lastActivity: string | null;
 }
 
 export interface TopicNavSurfaceRef {
@@ -278,10 +289,21 @@ export function buildTopicNavModel(input: {
           id: session.id,
           selectKey: sessionSelectKey(session),
           label: session.displayName || basename(session.cwd) || session.id,
+          type: session.type,
+          agent: session.agent,
+          mode: session.mode ?? null,
+          status: session.status ?? null,
           tone: sessionTone(session),
           displayState: sessionDisplayState(session),
+          agentState: session.agentState ?? null,
+          permissionType: session.permissionType ?? null,
           branch: session.branchName ?? null,
           nodeId: session.nodeId ?? null,
+          cwd: session.cwd,
+          controlFreshness: session.controlFreshness ?? null,
+          durability: session.durability ?? null,
+          currentActivity: session.currentActivity ?? null,
+          lastActivity: session.lastActivity ?? null,
         })
       )
       .sort((a, b) => a.label.localeCompare(b.label));

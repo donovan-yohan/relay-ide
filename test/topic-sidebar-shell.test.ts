@@ -122,6 +122,42 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
+  it('renders kind-icon badges without numeric ordering text', async () => {
+    await renderView({
+      topics: [
+        makeTopic({ id: 'topic:repo', grouping: { order: 3 } }),
+        makeTopic({
+          id: 'topic:folder',
+          workspaceId: 'workspace:folder',
+          grouping: { order: 2 },
+          routingDefaults: { cwd: '/tmp/scratch' },
+        }),
+        makeTopic({
+          id: 'topic:thread',
+          workspaceId: 'workspace:thread',
+          grouping: { order: 1 },
+          routingDefaults: {},
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+    });
+
+    const badges = Array.from(
+      container.querySelectorAll('.topic-tree .topic-row__badge')
+    );
+    expect(badges.map((badge) => badge.getAttribute('data-kind'))).toEqual([
+      'thread',
+      'folder',
+      'repo',
+    ]);
+    for (const badge of badges) {
+      expect(badge.querySelector('svg')).not.toBeNull();
+      expect(badge.textContent).toBe('');
+    }
+  });
+
   it('keeps surface actions outside the clickable row button', async () => {
     await renderView();
 
@@ -164,6 +200,197 @@ describe('TopicSidebarView', () => {
 
     await renderView({ loading: false, error: false, topics: [] });
     expect(container.textContent).toContain('no workspace topics yet');
+  });
+
+  it('renders a phone-first attention list sorted before routine topics', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:idle',
+          display: { title: 'Routine lane' },
+          linkedRefs: { sessionIds: ['idle-session'] },
+        }),
+        makeTopic({
+          id: 'topic:approval',
+          display: { title: 'Approval lane' },
+          linkedRefs: { sessionIds: ['approval-session'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 'idle-session',
+          displayName: 'idle',
+          agentState: 'idle',
+          idle: true,
+        }),
+        makeSession({
+          id: 'approval-session',
+          displayName: 'approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          currentActivity: { tool: 'bash', detail: 'allow command?' },
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const mobileRows = Array.from(
+      container.querySelectorAll('.topic-mobile-row')
+    );
+    expect(mobileRows[0]?.textContent).toContain('Approval lane');
+    expect(mobileRows[0]?.textContent).toContain('approve');
+    expect(mobileRows[0]?.textContent).toContain('allow command?');
+    expect(mobileRows[1]?.textContent).toContain('Routine lane');
+  });
+
+  it('uses the bounded topic search as the only mobile search surface', async () => {
+    await renderView();
+
+    expect(container.querySelector('.topic-search__input')).not.toBeNull();
+    expect(
+      container.querySelector('.topic-mobile-cockpit__bar input')
+    ).toBeNull();
+    expect(container.textContent).toContain('use / search for topic history');
+  });
+
+  it('uses a two-step audited mobile reply preview before sending input', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          controlFreshness: 'fresh',
+        }),
+      ],
+      onSendInput,
+    });
+
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const form = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+
+    await act(async () => {
+      input.value = 'y';
+      input.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: 'y',
+          inputType: 'insertText',
+        })
+      );
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('confirmation preview');
+    expect(container.textContent).toContain('carriage return appended');
+
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).toHaveBeenCalledWith('s1', 'y\r', undefined);
+    expect(container.textContent).toContain('sent · audit/intervention trail');
+  });
+
+  it('sends audited mobile replies to the local session id when linked by global id', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],
+      sessions: [
+        makeSession({
+          id: 'local-session',
+          globalSessionId: 'global:agent-1',
+          displayName: 'global approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          controlFreshness: 'fresh',
+        }),
+      ],
+      onSendInput,
+    });
+
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const form = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+
+    await act(async () => {
+      input.value = 'y';
+      input.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: 'y',
+          inputType: 'insertText',
+        })
+      );
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    await act(async () => form.requestSubmit());
+    await act(async () => form.requestSubmit());
+
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(onSendInput).toHaveBeenCalledWith('local-session', 'y\r', undefined);
+  });
+
+  it('disables disconnected mobile controls before submit', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'offline approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          controlFreshness: 'fresh',
+          status: 'disconnected',
+        }),
+      ],
+      onSendInput,
+    });
+
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const submit = container.querySelector(
+      '.topic-mobile-control__primary'
+    ) as HTMLButtonElement;
+    const form = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+
+    expect(input.disabled).toBe(true);
+    expect(submit.disabled).toBe(true);
+    expect(submit.title).toContain('offline/disconnected');
+    expect(container.textContent).toContain(
+      'controls disabled: session offline/disconnected'
+    );
+
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).not.toHaveBeenCalled();
+  });
+
+  it('makes the resume and terminal-tab mobile controls explicit', async () => {
+    await renderView();
+
+    const quickActions = container.querySelector('.topic-mobile-actions');
+    expect(quickActions?.textContent).toContain('resume topic');
+    expect(quickActions?.textContent).toContain('open terminal tab');
+
+    const terminalTab = Array.from(
+      quickActions?.querySelectorAll('button') ?? []
+    ).find(
+      (button) => button.textContent === 'open terminal tab'
+    ) as HTMLButtonElement;
+    expect(terminalTab.title).toContain('same linked Relay tab as resume');
+    await act(async () => terminalTab.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
   it('renders bounded topic history search without changing the thin-line layout', async () => {

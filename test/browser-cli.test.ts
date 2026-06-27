@@ -19,7 +19,8 @@ type CapturedGatewayRequest = {
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('missing server address');
+  if (!address || typeof address === 'string')
+    throw new Error('missing server address');
   return address.port;
 }
 
@@ -30,7 +31,10 @@ async function close(server: http.Server): Promise<void> {
   });
 }
 
-async function execNode(args: string[], env: NodeJS.ProcessEnv): Promise<string> {
+async function execNode(
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     execFile(
       'node',
@@ -47,7 +51,11 @@ async function execNode(args: string[], env: NodeJS.ProcessEnv): Promise<string>
 async function execNodeFailure(
   args: string[],
   env: NodeJS.ProcessEnv
-): Promise<{ status: number | string | undefined; stdout: string; stderr: string }> {
+): Promise<{
+  status: number | string | undefined;
+  stdout: string;
+  stderr: string;
+}> {
   return await new Promise((resolve, reject) => {
     execFile(
       'node',
@@ -65,7 +73,9 @@ async function execNodeFailure(
   });
 }
 
-function parseEnvelope<T = unknown>(stdout: string): {
+function parseEnvelope<T = unknown>(
+  stdout: string
+): {
   ok: boolean;
   command: string;
   data: T;
@@ -211,7 +221,10 @@ test('v1 gateway commands use scoped bearer auth and the v1 marker header', asyn
       RELAY_IDE_BROWSER_TOKEN: 'scoped-token',
       PATH: process.env.PATH,
     };
-    await execNode(['dist/bin/relay-ide.js', 'v1', 'sessions', 'list', '--json'], env);
+    await execNode(
+      ['dist/bin/relay-ide.js', 'v1', 'sessions', 'list', '--json'],
+      env
+    );
     await execNode(
       [
         'dist/bin/relay-ide.js',
@@ -277,7 +290,10 @@ test('v1 workspace-topics search preserves array scope and update accepts body i
         );
         return;
       }
-      if (req.method === 'PATCH' && req.url === '/workspace-topics/topic-body') {
+      if (
+        req.method === 'PATCH' &&
+        req.url === '/workspace-topics/topic-body'
+      ) {
         res.end(
           JSON.stringify({
             topic: { id: 'topic-body', display: { title: 'Updated' } },
@@ -334,10 +350,8 @@ test('v1 workspace-topics search preserves array scope and update accepts body i
 
   const searchRequest = captured.find((entry) => entry.method === 'GET');
   expect(searchRequest?.url).toBeDefined();
-  const searchParams = new URL(
-    searchRequest?.url ?? '/',
-    'http://127.0.0.1'
-  ).searchParams;
+  const searchParams = new URL(searchRequest?.url ?? '/', 'http://127.0.0.1')
+    .searchParams;
   expect(searchParams.get('workContextId')).toBe('wc-singular');
   expect(searchParams.getAll('workContextIds')).toEqual([
     'wc-plural',
@@ -367,11 +381,19 @@ test('v1 files.read preserves its command envelope when session lookup fails', a
     res.setHeader('content-type', 'application/json');
     if (req.method === 'GET' && req.url === '/sessions/missing') {
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'session not found' } }));
+      res.end(
+        JSON.stringify({
+          error: { code: 'NOT_FOUND', message: 'session not found' },
+        })
+      );
       return;
     }
     res.statusCode = 500;
-    res.end(JSON.stringify({ error: { code: 'INTERNAL', message: 'unexpected route' } }));
+    res.end(
+      JSON.stringify({
+        error: { code: 'INTERNAL', message: 'unexpected route' },
+      })
+    );
   });
   const port = await listen(server);
   try {
@@ -398,7 +420,11 @@ test('v1 files.read preserves its command envelope when session lookup fails', a
     const envelope = JSON.parse(failure.stdout) as {
       ok: boolean;
       command: string;
-      error: { code: string; message: string; details?: Record<string, unknown> };
+      error: {
+        code: string;
+        message: string;
+        details?: Record<string, unknown>;
+      };
     };
     expect(failure.status).not.toBe(0);
     expect(envelope).toMatchObject({
@@ -411,9 +437,10 @@ test('v1 files.read preserves its command envelope when session lookup fails', a
     await close(server);
   }
 
-  expect(captured.map((entry) => `${entry.method} ${entry.url}`)).toEqual(['GET /sessions/missing']);
+  expect(captured.map((entry) => `${entry.method} ${entry.url}`)).toEqual([
+    'GET /sessions/missing',
+  ]);
 });
-
 
 test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches without kill', async () => {
   const captured: CapturedGatewayRequest[] = [];
@@ -545,7 +572,8 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
             path: '/fixture/out.txt',
             mode: entry.body?.['mode'] ?? 'create',
             bytesWritten: 5,
-            newHash: 'aabbccddee112233445566778899001122334455667788990011223344556677',
+            newHash:
+              'aabbccddee112233445566778899001122334455667788990011223344556677',
             newMtime: '2026-01-02T03:04:05.000Z',
             created: true,
           })
@@ -553,7 +581,9 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
         return;
       }
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
   const port = await listen(server);
@@ -565,7 +595,10 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
       PATH: process.env.PATH,
     };
     const nodes = parseEnvelope<{ nodes: unknown[] }>(
-      await execNode(['dist/bin/relay-ide.js', 'v1', 'nodes', 'list', '--json'], env)
+      await execNode(
+        ['dist/bin/relay-ide.js', 'v1', 'nodes', 'list', '--json'],
+        env
+      )
     );
     expect(nodes).toMatchObject({ ok: true, command: 'nodes.list' });
     expect(nodes.data.nodes).toHaveLength(1);
@@ -585,11 +618,25 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
       )
     );
     expect(created).toMatchObject({ ok: true, command: 'sessions.create' });
-    expect(created.data).toMatchObject({ id: 'remote-session-1', nodeId: 'node-a' });
+    expect(created.data).toMatchObject({
+      id: 'remote-session-1',
+      nodeId: 'node-a',
+    });
 
-    const attached = parseEnvelope<{ attach: { streaming: boolean }; session: typeof session }>(
+    const attached = parseEnvelope<{
+      attach: { streaming: boolean };
+      session: typeof session;
+    }>(
       await execNode(
-        ['dist/bin/relay-ide.js', 'v1', 'sessions', 'attach', '--id', 'remote-session-1', '--json'],
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'sessions',
+          'attach',
+          '--id',
+          'remote-session-1',
+          '--json',
+        ],
         env
       )
     );
@@ -632,9 +679,17 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
       )
     );
     expect(stat).toMatchObject({ ok: true, command: 'files.stat' });
-    expect(stat.data).toMatchObject({ name: 'hello.txt', type: 'file', size: 14 });
+    expect(stat.data).toMatchObject({
+      name: 'hello.txt',
+      type: 'file',
+      size: 14,
+    });
 
-    const read = parseEnvelope<{ content: string; maxBytes: number; maxLines: number }>(
+    const read = parseEnvelope<{
+      content: string;
+      maxBytes: number;
+      maxLines: number;
+    }>(
       await execNode(
         [
           'dist/bin/relay-ide.js',
@@ -654,10 +709,18 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
         env
       )
     );
-    expect(read.data).toMatchObject({ content: 'hello gateway\n', maxBytes: 64, maxLines: 2 });
+    expect(read.data).toMatchObject({
+      content: 'hello gateway\n',
+      maxBytes: 64,
+      maxLines: 2,
+    });
 
     // Write a small file via --input-json to avoid needing a real filesystem file
-    const written = parseEnvelope<{ operation: string; bytesWritten: number; created: boolean }>(
+    const written = parseEnvelope<{
+      operation: string;
+      bytesWritten: number;
+      created: boolean;
+    }>(
       await execNode(
         [
           'dist/bin/relay-ide.js',
@@ -682,11 +745,27 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
       )
     );
     expect(written).toMatchObject({ ok: true, command: 'files.write' });
-    expect(written.data).toMatchObject({ operation: 'write', bytesWritten: 5, created: true });
+    expect(written.data).toMatchObject({
+      operation: 'write',
+      bytesWritten: 5,
+      created: true,
+    });
 
-    const detached = parseEnvelope<{ detached: boolean; killed: boolean; session: typeof session }>(
+    const detached = parseEnvelope<{
+      detached: boolean;
+      killed: boolean;
+      session: typeof session;
+    }>(
       await execNode(
-        ['dist/bin/relay-ide.js', 'v1', 'sessions', 'detach', '--id', 'remote-session-1', '--json'],
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'sessions',
+          'detach',
+          '--id',
+          'remote-session-1',
+          '--json',
+        ],
         env
       )
     );
@@ -694,11 +773,22 @@ test('v1 gateway smoke lists node, creates/attaches, reads files, and detaches w
 
     const stillThere = parseEnvelope<typeof session>(
       await execNode(
-        ['dist/bin/relay-ide.js', 'v1', 'sessions', 'get', '--id', 'remote-session-1', '--json'],
+        [
+          'dist/bin/relay-ide.js',
+          'v1',
+          'sessions',
+          'get',
+          '--id',
+          'remote-session-1',
+          '--json',
+        ],
         env
       )
     );
-    expect(stillThere.data).toMatchObject({ id: 'remote-session-1', status: 'active' });
+    expect(stillThere.data).toMatchObject({
+      id: 'remote-session-1',
+      status: 'active',
+    });
   } finally {
     await close(server);
   }
@@ -729,7 +819,15 @@ test('v1 gateway sessions input rejects missing and mixed input sources before a
   };
 
   for (const args of [
-    ['dist/bin/relay-ide.js', 'v1', 'sessions', 'input', '--id', 'remote-session-1', '--json'],
+    [
+      'dist/bin/relay-ide.js',
+      'v1',
+      'sessions',
+      'input',
+      '--id',
+      'remote-session-1',
+      '--json',
+    ],
     [
       'dist/bin/relay-ide.js',
       'v1',
@@ -745,8 +843,14 @@ test('v1 gateway sessions input rejects missing and mixed input sources before a
   ]) {
     const failure = await execNodeFailure(args, env);
     expect(failure.status).toBe(1);
-    const envelope = JSON.parse(failure.stdout) as { ok: boolean; error: { code: string; message: string } };
-    expect(envelope).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    const envelope = JSON.parse(failure.stdout) as {
+      ok: boolean;
+      error: { code: string; message: string };
+    };
+    expect(envelope).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_ARGUMENT' },
+    });
     expect(envelope.error.message).toContain(
       'exactly one of --data, --data-base64, or --stdin is required'
     );
@@ -765,7 +869,11 @@ test('v1 gateway session stream and input use routed PTY websocket', async () =>
     displayName: 'fixture terminal',
     status: 'active',
   };
-  const upgrades: Array<{ url?: string; cookie?: string; marker?: string | string[] }> = [];
+  const upgrades: Array<{
+    url?: string;
+    cookie?: string;
+    marker?: string | string[];
+  }> = [];
   const inputs: string[] = [];
   const server = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
@@ -774,7 +882,9 @@ test('v1 gateway session stream and input use routed PTY websocket', async () =>
       return;
     }
     res.statusCode = 404;
-    res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+    res.end(
+      JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+    );
   });
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
@@ -908,7 +1018,8 @@ test('v1 files.write argv parsing: --mode and --file produce correct request bod
             path: '/fixture/write-payload.txt',
             mode: 'create',
             bytesWritten: 11,
-            newHash: '0011223344556677889900112233445566778899001122334455667788990011',
+            newHash:
+              '0011223344556677889900112233445566778899001122334455667788990011',
             newMtime: '2026-01-02T03:04:05.000Z',
             created: true,
           })
@@ -916,7 +1027,9 @@ test('v1 files.write argv parsing: --mode and --file produce correct request bod
         return;
       }
       res.statusCode = 404;
-      res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }));
+      res.end(
+        JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } })
+      );
     });
   });
   const port = await listen(server);
@@ -934,11 +1047,16 @@ test('v1 files.write argv parsing: --mode and --file produce correct request bod
           'v1',
           'files',
           'write',
-          '--session-id', 'remote-session-1',
-          '--node-id', 'node-a',
-          '--path', 'write-payload.txt',
-          '--mode', 'create',
-          '--file', tmpFile,
+          '--session-id',
+          'remote-session-1',
+          '--node-id',
+          'node-a',
+          '--path',
+          'write-payload.txt',
+          '--mode',
+          'create',
+          '--file',
+          tmpFile,
           '--json',
         ],
         env
@@ -946,7 +1064,9 @@ test('v1 files.write argv parsing: --mode and --file produce correct request bod
     );
     expect(result).toMatchObject({ ok: true, command: 'files.write' });
     expect(result.data).toMatchObject({ operation: 'write', bytesWritten: 11 });
-    const writeEntry = captured.find((entry) => entry.url?.endsWith('/files/write'));
+    const writeEntry = captured.find((entry) =>
+      entry.url?.endsWith('/files/write')
+    );
     expect(writeEntry?.body).toMatchObject({
       path: 'write-payload.txt',
       mode: 'create',
@@ -976,18 +1096,28 @@ test('v1 files.write size cap: oversized file exits non-zero before HTTP', async
       'v1',
       'files',
       'write',
-      '--session-id', 'remote-session-1',
-      '--node-id', 'node-a',
-      '--path', 'oversized.bin',
-      '--mode', 'create',
-      '--file', oversizedFile,
+      '--session-id',
+      'remote-session-1',
+      '--node-id',
+      'node-a',
+      '--path',
+      'oversized.bin',
+      '--mode',
+      'create',
+      '--file',
+      oversizedFile,
       '--json',
     ],
     env
   );
   expect(failure.status).not.toBe(0);
-  const envelope = JSON.parse(failure.stdout) as { ok: boolean; error: { code: string; message: string } };
-  expect(envelope).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+  const envelope = JSON.parse(failure.stdout) as {
+    ok: boolean;
+    error: { code: string; message: string };
+  };
+  expect(envelope).toMatchObject({
+    ok: false,
+    error: { code: 'INVALID_ARGUMENT' },
+  });
   expect(envelope.error.message).toContain('maximum write size');
 });
-

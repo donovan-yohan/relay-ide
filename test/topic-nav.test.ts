@@ -93,6 +93,7 @@ describe('buildTopicNavModel', () => {
           agentState: 'permission-prompt',
           permissionType: 'question',
           nodeId: 'devbox',
+          status: 'active',
         }),
       ],
       surfaces: [],
@@ -102,7 +103,13 @@ describe('buildTopicNavModel', () => {
     expect(item?.tone).toBe('attention');
     expect(item?.statusLabel).toBe('needs input');
     expect(item?.sessions).toMatchObject([
-      { label: 'Agent lane', selectKey: 'global:agent-1', nodeId: 'devbox' },
+      {
+        id: 'local-session',
+        label: 'Agent lane',
+        selectKey: 'global:agent-1',
+        nodeId: 'devbox',
+        status: 'active',
+      },
     ]);
   });
 
@@ -157,6 +164,39 @@ describe('buildTopicNavModel', () => {
       kind: 'thread',
       kindLabel: 'topic',
     });
+  });
+
+  it('uses kind semantics for topic badges instead of ordering numbers', () => {
+    const repo = makeTopic({
+      id: 'topic:repo',
+      display: { title: 'Repo' },
+      grouping: { order: 3 },
+      routingDefaults: { repoPath: '/repo/relay' },
+    });
+    const folder = makeTopic({
+      id: 'topic:folder',
+      display: { title: 'Folder' },
+      grouping: { order: 2 },
+      routingDefaults: { cwd: '/tmp/scratch' },
+    });
+    const thread = makeTopic({
+      id: 'topic:thread',
+      display: { title: 'Thread' },
+      grouping: { order: 1 },
+    });
+
+    const model = buildTopicNavModel({
+      topics: [repo, folder, thread],
+      sessions: [],
+      surfaces: [],
+    });
+
+    expect(model.byId.get('topic:repo')?.kind).toBe('repo');
+    expect(model.byId.get('topic:folder')?.kind).toBe('folder');
+    expect(model.byId.get('topic:thread')?.kind).toBe('thread');
+    for (const item of model.items) {
+      expect(item).not.toHaveProperty('badgeText');
+    }
   });
 
   it('keeps attention topics ahead of idle pinned topics', () => {
