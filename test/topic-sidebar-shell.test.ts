@@ -296,6 +296,86 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('sent · audit/intervention trail');
   });
 
+  it('sends audited mobile replies to the local session id when linked by global id', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],
+      sessions: [
+        makeSession({
+          id: 'local-session',
+          globalSessionId: 'global:agent-1',
+          displayName: 'global approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          controlFreshness: 'fresh',
+        }),
+      ],
+      onSendInput,
+    });
+
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const form = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+
+    await act(async () => {
+      input.value = 'y';
+      input.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: 'y',
+          inputType: 'insertText',
+        })
+      );
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    await act(async () => form.requestSubmit());
+    await act(async () => form.requestSubmit());
+
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(onSendInput).toHaveBeenCalledWith('local-session', 'y\r', undefined);
+  });
+
+  it('disables disconnected mobile controls before submit', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'offline approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          controlFreshness: 'fresh',
+          status: 'disconnected',
+        }),
+      ],
+      onSendInput,
+    });
+
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const submit = container.querySelector(
+      '.topic-mobile-control__primary'
+    ) as HTMLButtonElement;
+    const form = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+
+    expect(input.disabled).toBe(true);
+    expect(submit.disabled).toBe(true);
+    expect(submit.title).toContain('offline/disconnected');
+    expect(container.textContent).toContain(
+      'controls disabled: session offline/disconnected'
+    );
+
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).not.toHaveBeenCalled();
+  });
+
   it('makes the resume and terminal-tab mobile controls explicit', async () => {
     await renderView();
 

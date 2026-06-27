@@ -93,6 +93,7 @@ describe('buildTopicNavModel', () => {
           agentState: 'permission-prompt',
           permissionType: 'question',
           nodeId: 'devbox',
+          status: 'active',
         }),
       ],
       surfaces: [],
@@ -102,7 +103,13 @@ describe('buildTopicNavModel', () => {
     expect(item?.tone).toBe('attention');
     expect(item?.statusLabel).toBe('needs input');
     expect(item?.sessions).toMatchObject([
-      { label: 'Agent lane', selectKey: 'global:agent-1', nodeId: 'devbox' },
+      {
+        id: 'local-session',
+        label: 'Agent lane',
+        selectKey: 'global:agent-1',
+        nodeId: 'devbox',
+        status: 'active',
+      },
     ]);
   });
 

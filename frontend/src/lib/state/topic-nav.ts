@@ -28,6 +28,7 @@ export interface TopicNavSessionRef {
   type: SessionSummary['type'];
   agent: SessionSummary['agent'];
   mode: SessionSummary['mode'] | null;
+  status: SessionSummary['status'] | null;
   tone: TopicNavTone;
   displayState: DisplayState;
   agentState: SessionSummary['agentState'] | null;
@@ -291,6 +292,7 @@ export function buildTopicNavModel(input: {
           type: session.type,
           agent: session.agent,
           mode: session.mode ?? null,
+          status: session.status ?? null,
           tone: sessionTone(session),
           displayState: sessionDisplayState(session),
           agentState: session.agentState ?? null,

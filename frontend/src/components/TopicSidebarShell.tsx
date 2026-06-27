@@ -68,6 +68,9 @@ function TopicKindIcon({ kind }: { kind: TopicNavItem['kind'] }) {
 
 type TopicSendInput = typeof sendSessionInput;
 
+const DISCONNECTED_SESSION_CONTROL_REASON =
+  'session offline/disconnected — controls unavailable until reconnect';
+
 function topicPrimarySession(
   item: TopicNavItem
 ): TopicNavSessionRef | undefined {
@@ -93,6 +96,9 @@ function sessionControlDisabledReason(
   session: TopicNavSessionRef | undefined
 ): string | null {
   if (!session) return 'no session linked to this topic';
+  if (session.status === 'disconnected') {
+    return DISCONNECTED_SESSION_CONTROL_REASON;
+  }
   const durabilityReason = durabilityDisabledReason(
     session.durability ?? undefined
   );
@@ -326,7 +332,7 @@ function TopicMobileControlPanel({
     setInputValue('');
     setPendingValue(null);
     setStatus(null);
-  }, [item.id, session?.selectKey]);
+  }, [item.id, session?.id, session?.selectKey]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -342,11 +348,7 @@ function TopicMobileControlPanel({
     setSending(true);
     setStatus('sending audited control input...');
     try {
-      await onSendInput(
-        session.selectKey,
-        `${value}\r`,
-        session.nodeId ?? undefined
-      );
+      await onSendInput(session.id, `${value}\r`, session.nodeId ?? undefined);
       setInputValue('');
       setPendingValue(null);
       setStatus('sent · audit/intervention trail preserved by session control');
