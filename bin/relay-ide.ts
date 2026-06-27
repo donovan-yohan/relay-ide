@@ -146,9 +146,9 @@ Commands:
     doctor [--json]                   Run bounded hub/node diagnostics
     node-logs <nodeId> [--lines <n>] [--follow]
                                        Print or follow logs from a paired remote node
-  install            Back-compat alias for relay-ide hub install
-  uninstall          Back-compat alias for relay-ide hub uninstall
-  status             Back-compat alias for relay-ide hub status
+  install            Alias for relay-ide hub install
+  uninstall          Alias for relay-ide hub uninstall
+  status             Alias for relay-ide hub status
   cockpit [--json]   Read-first terminal cockpit: what needs operator attention
     get <work-context-id> [--json]
                      Show one cockpit item with safe follow-up commands
@@ -166,13 +166,13 @@ Commands:
     doctor [--hub <url>] [--json]      Diagnose local node health and hub reachability; surfaces all degraded reasons
     pair <hub> [--json]                 Create a device-code pairing request and wait for approval (pair-only)
     pair --hub <url> --pair-token <token>
-                                       Legacy/automation pair-token exchange; sends one heartbeat (pair-only)
+                                       Exchange an operator-minted pair token with a hub and send one heartbeat
     mint-pair-token --hub <url> --operator-grant <handle> [--display-name <name>] [--platform <name>] [--task-ref <ref>] [--json]
                                        Mint a short-lived node pair token through the scoped operator-grant lane
     install --hub <url> [--service auto|manual|launchd|systemd-user|wsl-systemd|wsl-manual]
                                        Install relay-ide globally via npm and optionally set up the local service (no pairing)
     connect --hub <url> --pair-token <token>
-                                       Exchange a pair token and send one heartbeat (back-compat alias for 'pair')
+                                       Alias for token-based node pairing
     ssh-bootstrap --target <host> --hub <url>
                                        Print a paste-able bash script to install and pair on a remote host via SSH
     link --hub <url>                   Open and hold the persistent /hub/node-link reverse WebSocket (foreground)
@@ -8232,8 +8232,8 @@ if (command === 'node') {
     process.exit(0);
   }
   // relay-ide node pair --hub <url> --pair-token <token>
-  // Productized pair-only command. The existing 'connect' subcommand is kept
-  // as a back-compat alias. Both call pairNode() under the hood.
+  // Productized pair-only command. The 'connect' subcommand is an alias for
+  // the same token-based pairing path; both call pairNode() under the hood.
   if (subCommand === 'mint-pair-token') {
     await runNodeMintPairToken(nodeArgs);
     process.exit(0);

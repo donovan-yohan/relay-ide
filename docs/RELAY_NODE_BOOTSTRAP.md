@@ -16,21 +16,21 @@ Relay uses SSH and Tailscale SSH only for bootstrap, reachability checks, diagno
 
 ## Quick Reference
 
-| Task                             | Command                                                                                                  |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Install relay-ide binary on node | `relay-ide node install --hub <url> [--service <mode>]`                                                  |
-| Pair node with hub (pair-only)   | `relay-ide node pair <url>`                                                                              |
-| Mint pair token from grant       | `relay-ide node mint-pair-token --hub <url> --operator-grant <relay-ohg-v1...> --display-name <name>`    |
+| Task                             | Command                                                                                                             |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Install relay-ide binary on node | `relay-ide node install --hub <url> [--service <mode>]`                                                             |
+| Pair node with hub (pair-only)   | `relay-ide node pair <url>`                                                                                         |
+| Mint pair token from grant       | `relay-ide node mint-pair-token --hub <url> --operator-grant <relay-ohg-v1...> --display-name <name>`               |
 | Pair node (automation/legacy)    | `relay-ide node pair --hub <url> --pair-token <token>` or `relay-ide node connect --hub <url> --pair-token <token>` |
-| Generate SSH bootstrap script    | `relay-ide node ssh-bootstrap --target <host> --hub <url>`                                               |
-| Hold reverse node link           | `relay-ide node link --hub <url>`                                                                        |
-| Check node status                | `relay-ide node status`                                                                                  |
-| Read service logs                | `relay-ide node logs`                                                                                    |
-| Diagnose local node health       | `relay-ide node doctor [--hub <url>] [--json]`                                                           |
-| Update node helper binary        | `relay-ide node update [--hub <url>]`                                                                    |
-| Check if update is available     | `relay-ide node update --check [--hub <url>]`                                                            |
-| Update Relay + restart service   | `relay-ide update`                                                                                       |
-| Unpair from hub                  | `DELETE /nodes/{nodeId}` from hub UI/API; then `rm ~/.config/relay-ide/node-credential.json` on the node |
+| Generate SSH bootstrap script    | `relay-ide node ssh-bootstrap --target <host> --hub <url>`                                                          |
+| Hold reverse node link           | `relay-ide node link --hub <url>`                                                                                   |
+| Check node status                | `relay-ide node status`                                                                                             |
+| Read service logs                | `relay-ide node logs`                                                                                               |
+| Diagnose local node health       | `relay-ide node doctor [--hub <url>] [--json]`                                                                      |
+| Update node helper binary        | `relay-ide node update [--hub <url>]`                                                                               |
+| Check if update is available     | `relay-ide node update --check [--hub <url>]`                                                                       |
+| Update Relay + restart service   | `relay-ide update`                                                                                                  |
+| Unpair from hub                  | `DELETE /nodes/{nodeId}` from hub UI/API; then `rm ~/.config/relay-ide/node-credential.json` on the node            |
 
 ## Pairing Lifecycle
 
@@ -105,14 +105,14 @@ Auth lane boundary: the operator grant only authorizes minting this one pair tok
 On the node machine, exchange the pair token:
 
 ```bash
-# Automation/legacy pair-only path: stores credential, sends one heartbeat, then exits
+# Token-based pair-only path: stores credential, sends one heartbeat, then exits
 relay-ide node pair --hub https://hub.example.com --pair-token <token>
 
-# Back-compat alias for the same pair-token exchange
+# Alias for the same pair-token exchange
 relay-ide node connect --hub https://hub.example.com --pair-token <token>
 ```
 
-`relay-ide node connect` is a back-compat alias for `pair`. Both sub-commands call the same pairing flow.
+`relay-ide node connect` is an alias for the token-based `pair` flow. Both subcommands call the same pairing implementation.
 
 > **Important:** `node install` and `node pair` do **not** start the reverse WebSocket link `/hub/node-link`. Use `relay-ide node link --hub <url>` to hold the persistent reverse link in the foreground (or run it from your platform service manager).
 
@@ -192,15 +192,15 @@ Only the **public** key is sent to the hub at pairing (`POST /hub/pairing/exchan
 
 The operator-mints-a-pair-token flow above stays the canonical pre-authorized path. As an alternative, a node can submit a **pending pairing request** that an authenticated operator approves, denies, or edits before any credential exists. The hub API for this lifecycle:
 
-| Lane | Endpoint | Notes |
-| --- | --- | --- |
-| Node (unauthenticated) | `POST /hub/pairing/requests` | Submit `manifest`, optional `publicKey`, `displayName`, `requestedProfile`, `requestedCapabilities`, `requestedRoots`. Returns the redaction-safe request summary, a short **device code**, and a one-time `statusToken`. |
-| Node (status token) | `POST /hub/pairing/requests/:requestId/status` | Poll status with `statusToken`. Returns the current state; on the first poll after approval it returns the issued key-bound credential **exactly once**. |
-| Operator (browser session) | `GET /hub/pairing/requests` | List pending/approved requests. `?deviceCode=<code>` locates one (case-insensitive, dash-tolerant); `?state=` / `?includeResolved=true` filter. |
-| Operator | `GET /hub/pairing/requests/:requestId` | Inspect one request. |
-| Operator | `PATCH /hub/pairing/requests/:requestId/access` | Edit display name / profile / capabilities / roots before approval. Not a re-approval — no credential exists yet. |
-| Operator | `POST /hub/pairing/requests/:requestId/approve` | Approve. Higher-risk (prod profile or elevated capabilities) returns `409 CONFIRMATION_REQUIRED` and must be re-submitted with an exact-operation `confirmationToken`. |
-| Operator | `POST /hub/pairing/requests/:requestId/deny` | Deny. |
+| Lane                       | Endpoint                                        | Notes                                                                                                                                                                                                                     |
+| -------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Node (unauthenticated)     | `POST /hub/pairing/requests`                    | Submit `manifest`, optional `publicKey`, `displayName`, `requestedProfile`, `requestedCapabilities`, `requestedRoots`. Returns the redaction-safe request summary, a short **device code**, and a one-time `statusToken`. |
+| Node (status token)        | `POST /hub/pairing/requests/:requestId/status`  | Poll status with `statusToken`. Returns the current state; on the first poll after approval it returns the issued key-bound credential **exactly once**.                                                                  |
+| Operator (browser session) | `GET /hub/pairing/requests`                     | List pending/approved requests. `?deviceCode=<code>` locates one (case-insensitive, dash-tolerant); `?state=` / `?includeResolved=true` filter.                                                                           |
+| Operator                   | `GET /hub/pairing/requests/:requestId`          | Inspect one request.                                                                                                                                                                                                      |
+| Operator                   | `PATCH /hub/pairing/requests/:requestId/access` | Edit display name / profile / capabilities / roots before approval. Not a re-approval — no credential exists yet.                                                                                                         |
+| Operator                   | `POST /hub/pairing/requests/:requestId/approve` | Approve. Higher-risk (prod profile or elevated capabilities) returns `409 CONFIRMATION_REQUIRED` and must be re-submitted with an exact-operation `confirmationToken`.                                                    |
+| Operator                   | `POST /hub/pairing/requests/:requestId/deny`    | Deny.                                                                                                                                                                                                                     |
 
 Rules: the **device code only locates** a request — it never authorizes a node. `pending` is the only approvable state; `denied` and `expired` are terminal and can never be replayed into an approval or credential. Approval authorizes a key-bound node credential, but the raw credential is minted and delivered only to the waiting node on its authenticated status poll, so it never appears in operator responses, lists, logs, or audit. Requests expire after ten minutes. Public summaries carry only safe handles (`nkey_…` fingerprint, `sourceFingerprint`, lossy `displayHint`, lifecycle state, product-language posture) — never the status token, raw credential, raw hostname, or raw capability bits.
 
