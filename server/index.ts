@@ -2001,11 +2001,11 @@ async function main(): Promise<void> {
     }
     return {
       body: {
+        ...createBody,
         ...buildWorkspaceTopicSessionCreateBody({
           topic,
           overrides: createBody,
         }),
-        ...createBody,
         workspaceTopicId: topic.id,
       },
       topic,

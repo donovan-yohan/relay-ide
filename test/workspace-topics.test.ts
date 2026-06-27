@@ -254,6 +254,16 @@ describe('workspace topics foundation', () => {
     expect(
       buildWorkspaceTopicSessionCreateBody({
         topic,
+        overrides: { initialPrompt: '', workContextId: '' },
+      })
+    ).toMatchObject({
+      workContextId: 'wc-topic',
+      initialPrompt: 'resume this topic\n\nkeep the workspace context attached',
+    });
+
+    expect(
+      buildWorkspaceTopicSessionCreateBody({
+        topic,
         overrides: { worktreePath: null },
       })
     ).toMatchObject({
