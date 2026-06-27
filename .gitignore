@@ -66,6 +66,7 @@ tmp-*.json
 .omo/
 .gstack/
 .hermes/
+.sisyphus/
 .worktrees/
 relay-ide-tmp/
 worktree-meta/
@@ -100,4 +101,7 @@ playwright-report/
 /.chalk-tmp/
 
 # Design system working files (local previews, screenshots, uploads)
-/docs/design-system/
+/docs/design-system/**/.tmp/
+/docs/design-system/**/screenshots/
+/docs/design-system/**/uploads/
+/docs/design-system/**/*.log
