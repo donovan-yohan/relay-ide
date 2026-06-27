@@ -20,7 +20,6 @@ This index separates current source-of-truth docs from historical plans and spik
 | Agent view artifacts  | `AGENT_VIEW_ARTIFACTS.md`               | Static HTML/CSS WorkContext view artifact contract, package route, security model            |
 | Security policy       | `SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, exact-operation approvals, handshake grants  |
 | Handshake grants      | `OPERATOR_HANDSHAKE_GRANTS.md`          | One-time operator grant ceremony copy, lane separation, validation, audit/redaction contract |
-| rmux helper protocol  | `RMUX_HELPER_PROTOCOL.md`               | Experimental #707 helper JSON/stdin-stdout boundary and prototype gates                      |
 | Session durability    | `SESSION_DURABILITY.md`                 | Process-owner vs attach-handle, derived durability state machine, transition emission        |
 | WSL2 nodes            | `WSL2_RELAY_NODE_SUPPORT.md`            | Windows/WSL2 node bootstrap, service mode, known limits                                      |
 | Web chat              | `WEB_CHAT.md`                           | Experimental adapter-shaped web chat surface for agent CLIs (status, scope, limits)          |
@@ -59,15 +58,16 @@ The six-layer vocabulary is the current product language. Treat repo/worktree/se
 
 These directories are useful evidence, but they are not current product docs by default:
 
-| Directory            | Status                                                                                                                           |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `plans/`             | Historical implementation plans and design proposals. Check code/current docs before treating as shipped.                        |
-| `spikes/`            | Research spikes and proposed protocols. Some findings may be implemented elsewhere; the spike itself is not a current guarantee. |
-| `superpowers/plans/` | Historical plan records for earlier agent/chat protocol work.                                                                    |
-| `superpowers/specs/` | Specs/design records; verify against `shared/`, `server/`, `frontend/`, and tests.                                               |
-| `bug-analyses/`      | Debugging writeups and postmortems. Use as history, not current behavior.                                                        |
-| `refactor/`          | Audit/refactor notes. Use as evidence for cleanup decisions.                                                                     |
-| `adrs/`              | Accepted/current ADR files where present. Older ADR summaries may still live in `federated-relay.md` or `ARCHITECTURE.md`.       |
+| Directory                 | Status                                                                                                                                         |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plans/`                  | Historical implementation plans and design proposals. Check code/current docs before treating as shipped.                                      |
+| `spikes/`                 | Research spikes and proposed protocols. Some findings may be implemented elsewhere; the spike itself is not a current guarantee.               |
+| `superpowers/plans/`      | Historical plan records for earlier agent/chat protocol work.                                                                                  |
+| `superpowers/specs/`      | Specs/design records; verify against `shared/`, `server/`, `frontend/`, and tests.                                                             |
+| `bug-analyses/`           | Debugging writeups and postmortems. Use as history, not current behavior.                                                                      |
+| `refactor/`               | Audit/refactor notes. Use as evidence for cleanup decisions.                                                                                   |
+| `adrs/`                   | Accepted/current ADR files where present. Older ADR summaries may still live in `federated-relay.md` or `ARCHITECTURE.md`.                     |
+| `RMUX_HELPER_PROTOCOL.md` | Historical prototype boundary. Current runtime behavior is `relay-pty`; rmux remains diagnostic/prototype-only unless a new issue promotes it. |
 
 ## Guardrails for future doc edits
 

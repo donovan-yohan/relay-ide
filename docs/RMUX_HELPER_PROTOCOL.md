@@ -1,13 +1,13 @@
 # relay-rmux-helper protocol and prototype boundary
 
-Status: experimental spec for #707/#745. This is not a supported default runtime and not a promise that Relay will adopt rmux. It defines the minimum Relay-owned JSON/stdin-stdout boundary that a throwaway Rust `relay-rmux-helper` prototype must satisfy before any TypeScript adapter code is written.
+Status: historical prototype spec for #707/#745. Relay's current terminal runtime is `relay-pty`/libghostty-vt; rmux is not adopted as a runtime and remains diagnostic/prototype-only unless a new issue explicitly promotes it. This file records the minimum Relay-owned JSON/stdin-stdout boundary a throwaway Rust `relay-rmux-helper` prototype would have needed before TypeScript adapter work.
 
 ## Sources and invariants
 
 Reviewed before writing this boundary:
 
-- `AGENTS.md` — Relay architecture direction, tmux requirement, CLI gateway/adapter boundary, node capability notes.
-- `docs/ARCHITECTURE.md` — `SessionAttachment`, hub/node routing, REST/WebSocket identities, tmux as process substrate.
+- `AGENTS.md` — Relay architecture direction, `relay-pty` terminal backend, CLI gateway/adapter boundary, node capability notes.
+- `docs/ARCHITECTURE.md` — `SessionAttachment`, hub/node routing, REST/WebSocket identities, `relay-pty` terminal/session execution.
 - `docs/CLI_GATEWAY.md` — adapter-facing commands are versioned Relay JSON contracts, never private node-link/rmux/tmux protocol clients.
 - `docs/SESSION_DURABILITY.md` — attach handles are not process owners; terminal stream v2 replay/lag/resize semantics are the browser/runtime contract.
 - `docs/adrs/ADR-017-brain-as-peer-cli-session-events.md` — agent brains are hub-level peers that act through the CLI gateway.
@@ -19,7 +19,7 @@ Hard invariants:
 
 1. Relay TypeScript must not speak the rmux daemon wire protocol directly. If the prototype proceeds, the Rust helper uses `rmux-sdk`; Relay speaks only this helper protocol.
 2. Relay product/API identity remains `sessionId`, `globalSessionId`, `nodeId`, `SessionAttachment`, `SessionSummary`, and Workbench nouns. rmux pane/session ids are debug-only substrate handles.
-3. The existing tmux/node-pty path remains the default and clean fallback. rmux is opt-in, experimental, and deletable.
+3. The existing `relay-pty` path remains the default. rmux is prototype-only, diagnostic, and deletable; do not add a tmux fallback or treat rmux as a supported runtime.
 4. Raw bytes are not a stable agent-to-agent/supervisor API. `write` and `submit` below are PTY substrate operations only; typed supervisor/handoff work remains in #718/ADR-018 command slices.
 5. No raw prompt, transcript, provider auth, or unbounded terminal history is stored in audit/logs by default.
 
@@ -451,7 +451,7 @@ Relay maps these into existing `SessionSummary`/durability fields:
 | `closing`                      | transitional; disable writes/resizes                                                     |
 | `closed`                       | `ended` then cleanup                                                                     |
 | `errored`, helper crash        | `error`; include typed degraded reason                                                   |
-| rmux unavailable before create | no rmux session; use default tmux/node-pty fallback if policy allows                     |
+| rmux unavailable before create | no rmux session; use the existing `relay-pty` path if policy allows                      |
 | rmux unavailable after create  | `error` or `stale-node`-like degraded state; do not silently re-home an existing session |
 
 ### `close`
@@ -548,10 +548,10 @@ The prototype is reachable only when every gate passes:
 
 Fallback rules:
 
-- When the feature flag is off, no helper process is spawned and the existing tmux/node-pty path remains unchanged.
-- When the flag is on but the rmux probe is unacceptable, Relay reports a degraded rmux capability and creates sessions with the default tmux/node-pty path unless the user explicitly requested rmux-only behavior for a prototype test.
-- If helper spawn/hello fails during create, Relay may fall back to tmux/node-pty for that create only when the request did not require rmux-only. The response/session metadata must show `runtime: "tmux"`/existing mode, not pretend rmux succeeded.
-- Once a session is created on rmux, Relay must not silently migrate it to tmux after helper/rmux failure. Mark it degraded/error, preserve bounded snapshot if available, and require explicit operator recovery.
+- When the feature flag is off, no helper process is spawned and the existing `relay-pty` path remains unchanged.
+- When the flag is on but the rmux probe is unacceptable, Relay reports a degraded rmux capability and creates sessions through the existing `relay-pty` path unless the user explicitly requested rmux-only behavior for a prototype test.
+- If helper spawn/hello fails during create, Relay may fall back to `relay-pty` for that create only when the request did not require rmux-only. The response/session metadata must show the existing `relay-pty` mode, not pretend rmux succeeded.
+- Once a session is created on rmux, Relay must not silently migrate it to another backend after helper/rmux failure. Mark it degraded/error, preserve bounded snapshot if available, and require explicit operator recovery.
 
 ## Security and audit boundaries
 
@@ -585,7 +585,7 @@ Audit/logging:
 
 | Failure                                        | Expected behavior                                                                                                                        |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Helper process exits before `hello`            | Mark rmux helper unavailable; fallback to tmux/node-pty if create was not rmux-only.                                                     |
+| Helper process exits before `hello`            | Mark rmux helper unavailable; fall back to `relay-pty` if create was not rmux-only.                                                      |
 | Helper exits with live sessions                | Emit/derive `error` for affected sessions, close helper attach streams, keep Relay process alive, do not auto-migrate existing sessions. |
 | rmux daemon unavailable before create          | `RMUX_UNAVAILABLE`; fallback only for non-rmux-only create.                                                                              |
 | rmux daemon timeout during attach/write/resize | Typed `DAEMON_TIMEOUT`; session becomes degraded until `status` recovers or operator kills/recreates.                                    |
@@ -600,7 +600,7 @@ Audit/logging:
 
 A prototype PR that implements this boundary must include evidence for:
 
-- feature flag off: no helper spawn, existing tmux/node-pty path still works;
+- feature flag off: no helper spawn, existing `relay-pty` path still works;
 - probe gate pass: `available-experimental` permits helper in explicit dev mode;
 - probe gate fail: unavailable/unsupported/probe-failed status falls back cleanly;
 - create/attach/output/snapshot/write/submit/resize/status/close/kill happy path;
