@@ -57,7 +57,7 @@
 }
 
 .topic-search__input:focus-visible {
-  outline: 1px solid var(--status-info);
+  outline: 1px solid var(--accent);
   outline-offset: 2px;
 }
 

@@ -196,7 +196,7 @@ describe('TopicSidebarView', () => {
 
     expect(css).toContain('.topic-search__input:focus-visible');
     expect(css).toMatch(
-      /\.topic-search__input:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--status-info\)/
+      /\.topic-search__input:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)/
     );
   });
 
