@@ -493,6 +493,8 @@ describe('TopicSidebarView', () => {
             tool: 'edit',
             detail: 'wiring participant roster',
           },
+          controlMode: 'agent-driven',
+          lastActivity: '2026-06-25T23:44:00Z',
         }),
         makeSession({
           id: 'kame-local',
@@ -501,6 +503,8 @@ describe('TopicSidebarView', () => {
           agent: 'codex',
           activeWorker: { kind: 'agent', displayName: 'kame-qa' },
           status: 'disconnected',
+          controlMode: 'human-driven',
+          lastActivity: '2026-06-24T12:00:00Z',
         }),
       ],
       surfaces: [],
@@ -510,8 +514,19 @@ describe('TopicSidebarView', () => {
     expect(roster?.textContent).toContain('participants');
     expect(roster?.textContent).toContain('frontend · claude');
     expect(roster?.textContent).toContain('qa · codex');
+    expect(roster?.textContent).toContain('last 25-06-26');
+    expect(roster?.textContent).toContain('agent-driven');
+    expect(roster?.textContent).toContain('wiring participant roster');
     expect(roster?.textContent).toContain('running');
     expect(roster?.textContent).toContain('offline');
+
+    const childRows = Array.from(
+      container.querySelectorAll('.topic-child-row')
+    );
+    expect(childRows[0]?.textContent).toContain('agent · pty');
+    expect(childRows[0]?.textContent).toContain('last 25-06-26');
+    expect(childRows[0]?.textContent).toContain('agent-driven');
+    expect(childRows[0]?.textContent).toContain('wiring participant roster');
 
     const ikaCard = Array.from(
       container.querySelectorAll('.topic-participant-card')

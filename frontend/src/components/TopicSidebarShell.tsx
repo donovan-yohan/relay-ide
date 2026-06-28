@@ -28,6 +28,7 @@ import {
 } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
 import type { SessionSummary } from '../lib/types.js';
+import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { durabilityDisabledReason } from '../lib/session-durability.js';
 import {
@@ -219,6 +220,14 @@ function SurfaceButton({ surface }: { surface: TopicNavSurfaceRef }) {
   );
 }
 
+function participantLastActivityLabel(
+  participant: TopicNavParticipantRef
+): string {
+  return participant.lastActivity
+    ? `last ${formatRelativeTimeCompact(participant.lastActivity)}`
+    : 'last unknown';
+}
+
 function ParticipantChildRow({
   participant,
   session,
@@ -228,29 +237,37 @@ function ParticipantChildRow({
   session?: TopicNavSessionRef | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
+  const lastActivityLabel = participantLastActivityLabel(participant);
+  const handleSelect = onSelectSession
+    ? () => onSelectSession(participant.selectKey)
+    : undefined;
   return (
     <li className={`topic-child-row topic-child-row--${participant.tone}`}>
       <button
         type="button"
         className="topic-child-row__button"
-        {...(onSelectSession
-          ? { onClick: () => onSelectSession(participant.selectKey) }
-          : {})}
+        {...(handleSelect ? { onClick: handleSelect } : { disabled: true })}
         title={`open existing session ${participant.selectKey}`}
       >
         <span className="topic-child-row__label">
           <MarqueeText>{participant.label}</MarqueeText>
         </span>
         <span className="topic-child-row__meta topic-child-row__role">
-          {participant.roleLabel}
+          {participant.roleLabel} · {participant.providerLabel}
+        </span>
+        <span className="topic-child-row__meta">
+          {participant.runtimeLabel}
         </span>
         <span className="topic-child-row__meta">{participant.statusLabel}</span>
-        {session?.branch ? (
-          <span className="topic-child-row__meta">{session.branch}</span>
-        ) : null}
+        <span className="topic-child-row__meta">{lastActivityLabel}</span>
         {participant.nodeId ? (
           <span className="topic-child-row__meta">{participant.nodeId}</span>
         ) : null}
+        <span className="topic-child-row__meta">
+          {participant.controlLabel}
+          {participant.summaryLabel ? ` · ${participant.summaryLabel}` : ''}
+          {session?.branch ? ` · ${session.branch}` : ''}
+        </span>
         <StatusGlyph tone={participant.tone} />
       </button>
     </li>
@@ -286,36 +303,48 @@ function ParticipantRoster({
         <div className="topic-participant-group" key={group}>
           <div className="topic-participant-group__label">{group}</div>
           <div className="topic-participant-group__grid">
-            {participants.map((participant) => (
-              <button
-                key={participant.id}
-                type="button"
-                className={`topic-participant-card topic-participant-card--${participant.tone}`}
-                onClick={() => onSelectSession?.(participant.selectKey)}
-                title={`open existing session ${participant.selectKey}`}
-              >
-                <span className="topic-participant-card__topline">
-                  <span className="topic-participant-card__name">
-                    {participant.label}
+            {participants.map((participant) => {
+              const handleSelect = onSelectSession
+                ? () => onSelectSession(participant.selectKey)
+                : undefined;
+              const lastActivityLabel =
+                participantLastActivityLabel(participant);
+              return (
+                <button
+                  key={participant.id}
+                  type="button"
+                  className={`topic-participant-card topic-participant-card--${participant.tone}`}
+                  {...(handleSelect
+                    ? { onClick: handleSelect }
+                    : { disabled: true })}
+                  title={`open existing session ${participant.selectKey}`}
+                >
+                  <span className="topic-participant-card__topline">
+                    <span className="topic-participant-card__name">
+                      {participant.label}
+                    </span>
+                    <span className="topic-participant-card__status">
+                      {participant.statusLabel}
+                    </span>
                   </span>
-                  <span className="topic-participant-card__status">
-                    {participant.statusLabel}
+                  <span className="topic-participant-card__meta">
+                    {participant.roleLabel} · {participant.providerLabel}
                   </span>
-                </span>
-                <span className="topic-participant-card__meta">
-                  {participant.runtimeLabel}
-                  {participant.nodeId ? ` · ${participant.nodeId}` : ''}
-                </span>
-                <span className="topic-participant-card__meta">
-                  {participant.controlLabel}
-                </span>
-                {participant.summaryLabel ? (
-                  <span className="topic-participant-card__summary">
-                    {participant.summaryLabel}
+                  <span className="topic-participant-card__meta">
+                    {participant.runtimeLabel}
+                    {participant.nodeId ? ` · ${participant.nodeId}` : ''}
                   </span>
-                ) : null}
-              </button>
-            ))}
+                  <span className="topic-participant-card__meta">
+                    {lastActivityLabel} · {participant.controlLabel}
+                  </span>
+                  {participant.summaryLabel ? (
+                    <span className="topic-participant-card__summary">
+                      {participant.summaryLabel}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
           </div>
         </div>
       ))}

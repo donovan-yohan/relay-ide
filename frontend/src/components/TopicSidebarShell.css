@@ -435,7 +435,7 @@
 
 .topic-child-row__button {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto 18px;
+  grid-template-columns: minmax(0, 1fr) repeat(6, auto) 18px;
   align-items: center;
   gap: 6px;
   width: 100%;
@@ -451,11 +451,21 @@
   cursor: pointer;
 }
 
+.topic-child-row__button:disabled {
+  cursor: default;
+}
+
 .topic-child-row__button:hover,
 .topic-child-row__button:focus-visible {
   background: var(--surface-hover);
   color: var(--text);
   outline: none;
+}
+
+.topic-child-row__button:disabled:hover,
+.topic-child-row__button:disabled:focus-visible {
+  background: transparent;
+  color: var(--text-muted);
 }
 
 .topic-child-row--idle .topic-child-row__button {
