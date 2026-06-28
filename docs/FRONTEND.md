@@ -59,7 +59,7 @@ Relay's product vocabulary is `View -> Workspace -> Project -> Instance -> Bench
 The six-layer navigation surface is still flag-gated, but it is no longer just a read-only projection. It renders `Workspace -> Project -> Instance -> Bench -> Tab` over existing repo/session/node data plus persisted IA Workspace membership, and it exposes git-bench session launch affordances where the bench has a valid git anchor.
 
 - **Flag:** `viewSpineEnabled` in `frontend/src/lib/stores/ui.ts`, backed by the localStorage key `relay-view-spine`, default `false`. Only the explicit value `'1'` reads as ON (a stale `'0'`/`'false'` reads OFF). Enable in dev with `localStorage.setItem('relay-view-spine', '1')` then reload; `setViewSpineEnabled`/`toggleViewSpineEnabled` are the store actions.
-- **Render swap:** `Sidebar.tsx` mounts `<ViewSpineTree>` (`frontend/src/components/ViewSpineTree.tsx`) when the flag is ON. The OFF path remains the repo/worktree sidebar for compatibility.
+- **Render swap:** `Sidebar.tsx` mounts `<ViewSpineTree>` (`frontend/src/components/ViewSpineTree.tsx`) when the flag is ON. The OFF path is the default `TopicSidebarShell`; the old repo/worktree sidebar fallback was removed after the #1027 parity dogfood gate.
 - **Derive adapter:** `frontend/src/lib/state/view-tree.ts` projects repos, worktrees, sessions, workspace groups, persisted IA Workspaces, and nodes into the six-layer tree. A repo becomes a **Project** keyed on git remote identity (directory fallback keyed on node + path); a node realization becomes an **Instance**; a worktree/cwd becomes a **Bench**; sessions surface as **Tabs**. Sessions with no `repoPath` render in a separate free/remote lane so repo identity and branch do not leak into non-git tabs.
 - **View lenses:** the segmented control filters/reorders the tree for common operator views such as recent, all sessions, and this host.
 - **"+ tab" on a git bench:** a git Bench shows a `+ tab` affordance that creates an agent session anchored to the bench's `(nodeId, repoPath, worktreePath)` via the existing node-aware `createAgentSession` create path. The affordance is withheld on non-git/directory benches, which have no `config.repos`-validated repo anchor.
@@ -70,9 +70,8 @@ The six-layer navigation surface is still flag-gated, but it is no longer just a
 | Component                               | Role                                                                                                                                                                                                                     |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `App.tsx`                               | Root layout: left sidebar + SplitPaneLayout hosting WorkspaceArea and WorkspaceUtilityRail for session view; dashboard / PR top bar + tabs for non-session views                                                         |
-| `Sidebar.tsx`                           | Repo/workspace-group compatibility navigation; swaps to `ViewSpineTree` when `viewSpineEnabled` is ON                                                                                                                    |
+| `Sidebar.tsx`                           | Left-nav shell: renders the default `TopicSidebarShell`, or the preserved opt-in `ViewSpineTree` when `viewSpineEnabled` is ON                                                                                           |
 | `ViewSpineTree.tsx`                     | Flag-gated six-layer tree surface: Project/Instance/Bench/Tab rows, persisted Workspace grouping overlay, free/remote lane, View lens selector, git-bench `+ tab`, and workspace assignment controls                     |
-| `RepoItem.tsx`                          | Repo-kind Project/Bench compatibility row: sessions/tabs, inactive git worktrees, context menus, workspace group membership                                                                                              |
 | `CommandPalette.tsx`                    | Terminal-style command palette with action registry                                                                                                                                                                      |
 | `PrTopBar.tsx`                          | Dynamic PR/CI bar with branch switcher, target branch switcher, diff stats, merge conflict detection, action buttons                                                                                                     |
 | `RepoDashboard.tsx`                     | Repo-bound dashboard: PRs with merge status, activity feed, CTAs; shown only when the selected workspace/repo is the active local context                                                                                |
@@ -111,15 +110,15 @@ The six-layer navigation surface is still flag-gated, but it is no longer just a
 | `MarqueeText.tsx`                       | Horizontal scroll-on-hover for overflow text (Spotify-style)                                                                                                                                                             |
 | `CipherText.tsx`                        | Cipher-decode loading/transition animation                                                                                                                                                                               |
 | `Hint.tsx`                              | Progressive disclosure onboarding hint component                                                                                                                                                                         |
-| `WorkspaceGroup.tsx`                    | Workspace container with color-coded border grouping                                                                                                                                                                     |
-| **Dialogs**                             |                                                                                                                                                                                                                          |
-| `dialogs/DialogShell.tsx`               | Shared dialog wrapper (fullscreen/compact, terminal aesthetic, popover-based stacking)                                                                                                                                   |
-| `dialogs/SettingsDialog.tsx`            | Full settings dialog with TOC, sections, integrations                                                                                                                                                                    |
-| `dialogs/CustomizeSessionDialog.tsx`    | Session creation/customization with agent selection, args, workspace                                                                                                                                                     |
-| `dialogs/AddWorkspaceDialog.tsx`        | Workspace path browser and add flow                                                                                                                                                                                      |
-| `dialogs/DeleteWorktreeDialog.tsx`      | Worktree deletion with dirty-check confirmation                                                                                                                                                                          |
-| `dialogs/RenameWarningModal.tsx`        | Rename + PR warning: push, ignore, or undo                                                                                                                                                                               |
-| `dialogs/WorkspaceEditor.tsx`           | Workspace entity editor: name, repo assignment, theme color                                                                                                                                                              |
+
+| **Dialogs** | |
+| `dialogs/DialogShell.tsx` | Shared dialog wrapper (fullscreen/compact, terminal aesthetic, popover-based stacking) |
+| `dialogs/SettingsDialog.tsx` | Full settings dialog with TOC, sections, integrations |
+| `dialogs/CustomizeSessionDialog.tsx` | Session creation/customization with agent selection, args, workspace |
+| `dialogs/AddWorkspaceDialog.tsx` | Workspace path browser and add flow |
+| `dialogs/DeleteWorktreeDialog.tsx` | Worktree deletion with dirty-check confirmation |
+| `dialogs/RenameWarningModal.tsx` | Rename + PR warning: push, ignore, or undo |
+| `dialogs/WorkspaceEditor.tsx` | Workspace entity editor: name, repo assignment, theme color |
 
 ### Workspace evidence tab (#897)
 
@@ -150,7 +149,7 @@ State is managed via Zustand stores and React hooks. Pure logic modules live und
 | Module             | Role                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `display-state.ts` | Pure display state machine: `transitionDisplayState(current, event) -> newState`, `shouldNotify(from, to)` — 6 states: initializing, running, unseen-idle, seen-idle, permission, inactive                                                                                                                                                                                                                                      |
-| `sidebar-items.ts` | Pure `buildSidebarItems()` function: merges sessions + worktrees + workspaces into `SidebarItem[]` with reconciliation. Drives the default (flag-OFF) sidebar; untouched by the view-spine                                                                                                                                                                                                                                      |
+| `sidebar-items.ts` | Pure `buildSidebarItems()` function: maintains legacy `SidebarItem[]` reconciliation for session/unread state while the visible desktop left nav is `TopicSidebarShell` / `ViewSpineTree`                                                                                                                                                                                                                                       |
 | `view-tree.ts`     | Pure, read-only view-spine derive (#444): `buildViewTree()` projects repos/worktrees/sessions/workspace-groups + `/nodes` status into a `Workspace -> Project -> Instance -> Bench` tree (Tab counts as leaves, dedup across nodes by repo remote, free/remote lane); `applyLens()` applies the recent/all/this-host lenses; `benchCreatePayload()` resolves the git-bench `+ tab` create payload. No persistence, no new fetch |
 | `attention.ts`     | State priority scoring: `STATE_SCORES` mapping, `highestPriorityState()`, `isAttentionState()` for repo-level aggregation                                                                                                                                                                                                                                                                                                       |
 | `unread-logic.ts`  | Unread/attention state transition logic                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -158,17 +157,17 @@ State is managed via Zustand stores and React hooks. Pure logic modules live und
 
 ### Hooks (`frontend/src/hooks/`)
 
-| Hook                     | Role                                                                                |
-| ------------------------ | ----------------------------------------------------------------------------------- |
-| `useEventSocket.ts`      | WebSocket connection to `/ws/events` with auto-reconnect, heartbeat, event dispatch |
-| `useSessionHandlers.ts`  | Session CRUD operations, state transitions, PTY lifecycle                           |
-| `useActionRegistry.ts`   | Action registry integration for CommandPalette                                      |
-| `useRepoAggregation.ts`  | Aggregates session states per repo for sidebar indicators                           |
-| `useAppShortcuts.ts`     | Global keyboard shortcuts (Cmd+T, Cmd+K, etc.)                                      |
-| `useScrollOverflow.ts`   | Detects text overflow for MarqueeText behavior                                      |
-| `useUrlNav.ts`           | URL-based navigation state                                                          |
-| `useOnboardingHints.tsx` | Progressive disclosure hint system                                                  |
-| `useWhatsNew.tsx`        | What's-new feature announcements                                                    |
+| Hook                    | Role                                                                                |
+| ----------------------- | ----------------------------------------------------------------------------------- |
+| `useEventSocket.ts`     | WebSocket connection to `/ws/events` with auto-reconnect, heartbeat, event dispatch |
+| `useSessionHandlers.ts` | Session CRUD operations, state transitions, PTY lifecycle                           |
+| `useActionRegistry.ts`  | Action registry integration for CommandPalette                                      |
+
+| `useAppShortcuts.ts` | Global keyboard shortcuts (Cmd+T, Cmd+K, etc.) |
+| `useScrollOverflow.ts` | Detects text overflow for MarqueeText behavior |
+| `useUrlNav.ts` | URL-based navigation state |
+| `useOnboardingHints.tsx` | Progressive disclosure hint system |
+| `useWhatsNew.tsx` | What's-new feature announcements |
 
 ### Action Registry (`frontend/src/lib/actions/`)
 
@@ -193,7 +192,7 @@ The first converted launch path (#859) is `sessions.create`. `sessionCreateActio
 - CSS modules or scoped styles per component; global CSS variables in `frontend/src/app.css`
 - Sidebar session indicators driven by `SessionIndicator.tsx` with Unicode shape language: `●` running, `▶` idle, `◆◇` permission/needs-answer, `■` error, `─` inactive
 - Display state machine enforces valid transitions — `seen-idle` can never become `unseen-idle` without going through `running` first. Backend emits single `session-backend-state-changed` event; frontend applies `transitionDisplayState()` to update indicators
-- Loading state: tracked in component state; `setLoading`/`clearLoading` wrap async actions (start, kill, delete); RepoItem shows CSS shimmer overlay with `pointer-events: none`
+- Loading state: tracked in component state; `setLoading`/`clearLoading` wrap async actions (start, kill, delete); sidebar/task-room launch rows render disabled/loading states without a duplicate repo-sidebar fallback
 - Hover effects: MarqueeText for overflow text, scroll reveal animation
 - All UI follows DESIGN.md: monospace fonts, lowercase labels, no emoji, outline-only buttons, 0px border-radius
 
@@ -211,8 +210,8 @@ The first converted launch path (#859) is `sessions.create`. `sessionCreateActio
 - **Tab bar "+" dropdown** has three options: "New Agent" (instant create with workspace defaults via `createSession()`), "New Terminal" (instant create via `createSession()` with `type: 'terminal'`), "Customize..." (opens `CustomizeSessionDialog` which also calls `createSession()`). `Cmd/Ctrl+T` triggers instant agent creation. New tabs auto-name as "Agent 1", "Terminal 1" etc. and append rightmost
 - All session/item actions are accessed via a "..." context menu button (ContextMenu component). Menu items vary by state: Active → Rename, Kill; Inactive worktree → Customize, Resume, Resume (YOLO), Delete; Idle repo → Customize, New Worktree
 - "Customize" opens NewSessionDialog pre-filled with the item's workspace and branch (for worktrees). All session creation flows go through the single `createSession()` function → `POST /sessions`
-- Repo root items always display "default" as their name (unless the user has explicitly renamed the active session). Both active and idle repo entries in `RepoItem.tsx` enforce this
-- Session item secondary row order: timestamp → branch name → PR number → context menu (right-aligned via `.context-menu-spacer`). This applies to active sessions and inactive worktrees. Idle-repo entries show only the default branch name (no timestamp or PR). Diff stats appear in the primary row
+- Topic and ViewSpine rows derive visible session labels from the session `displayName` first, then cwd/bench labels; git branch metadata appears only for verified git benches
+- Session/action row secondary metadata should stay contextual: timestamps/activity, branch only when git-bound, and no repo badge/branch leak into free or remote tabs
 - PRs tab uses `PrRepoGroup` components — each repo group independently fetches PRs via `@tanstack/react-query` `useQuery`
 - Filters (root, repo, search) live below the tab bar
 - PR click cascade: active session → inactive worktree → create new worktree + session
@@ -222,7 +221,7 @@ The first converted launch path (#859) is `sessions.create`. `sessionCreateActio
 - Cookie TTL uses human-readable format: `s` (seconds), `m` (minutes), `h` (hours), `d` (days). Default: `24h`
 - **Utility rail + tabs** — `SplitPaneLayout` wraps the active Tab view with `WorkspaceArea` (session/file/diff/html tabs) and `WorkspaceUtilityRail` (right, visible/hidden via the PR top-bar toggle). The rail has a fixed-width icon strip at the far right; the selected utility pane renders immediately to its left, and clicking the active icon clears the selected pane while keeping the icon strip. Utility rail state is currently persisted with legacy workspace/path keys in the UI store; migration code should preserve those keys while exposing a tab-anchor/state-key adapter. `openFileTab()`/`closeFileTab()` drive file tabs inside WorkspaceArea.
 - **Cross-node terminal tabs (#443)** — `WorkspaceTab` session variant carries an optional `nodeId`. When set, `ws.ts` `connectPtySocket` routes via `/nodes/:nodeId/ws/sessions/:sessionId` (resolved through `parseGlobalSessionId` or `session.nodeId`). `WorkspaceTabBar` renders a per-tab node badge (label + heartbeat dot) sourced from `SummaryContext.findNode`, which `WorkspaceArea` populates from `useQuery(['hub-nodes'], fetchHubNodes)`. The tab-bar `+` button is replaced by `TerminalNodePicker` — a dropdown listing "this host" plus paired nodes; only `online` nodes are selectable. Choosing a node calls `createAgentSession({ type: 'terminal', nodeId })`; the layout reconciler picks the new session up via `sessions[]` → `sessionToWorkspaceTab` (which copies `session.nodeId` onto the tab).
-- **Node identity in sidebar session rows (#864)** — `RepoItem` session rows render the same cross-node badge as the tab chrome via the shared `sessionNodeBadge(nodeId, findNode)` helper in `workspace-summary.ts`; local-node sessions stay quiet, remote sessions show label + heartbeat dot (online/stale/updating/offline). `WorkspaceGroup` supplies `findNode` from the shared `useQuery(['hub-nodes'], fetchHubNodes)` index.
+- **Node identity in sidebar/session rows (#864)** — tab chrome and topic/view-spine rows should show remote node identity only when the row is anchored to a non-local node; local-node sessions stay quiet, remote sessions show label + heartbeat state without fabricating repo context.
 
 ### Entrypoint sweep for tab-first IA
 
@@ -232,7 +231,7 @@ Keep these entrypoints aligned when changing tab/session semantics:
 - **Tab-plus picker:** `WorkspaceTabBar` uses `TerminalNodePicker` for terminal creation. It lists `this host` plus paired nodes, disables non-online nodes. Remote file browsing is available for online nodes via `fs.list` (#428); remote git actions remain unavailable.
 - **Command palette / action registry:** `useActionRegistry()` registers session/workspace/PR actions. Contextual actions may still depend on `workspacePath` / `activeRepoPath`; treat those as repo-bound actions, not global active-tab truth.
 - **Restore/resume:** `useSessionHandlers()`, session restore, and worktree resume paths still prefer `repoPath` / `worktreePath`. Remote/global session identity uses `nodeId` / `globalSessionId` when present.
-- **Sidebar / right rail:** Sidebar rows remain repo/worktree-heavy. The right rail derives `stateKey`, anchor label, file resource path, and git resource path from active session context via `deriveUtilityRailContext()`.
+- **Sidebar / right rail:** Sidebar navigation is topic-first by default with ViewSpine as an opt-in IA tree; the right rail derives `stateKey`, anchor label, file resource path, and git resource path from active session context via `deriveUtilityRailContext()`.
 - **Close/delete:** Session close can route through `killSession(id, nodeId)` for remote sessions. Worktree delete remains git-worktree-specific and should only appear for local repo Project/Bench rows.
 - **Hooks/stores:** `useUiStore` still persists rail state by a string key; for remote tabs that key is `node:<nodeId>:<cwd>` (shipped via #479). `useSessionsStore` still has repo enrichment APIs; use them only when a repo binding is verified.
 

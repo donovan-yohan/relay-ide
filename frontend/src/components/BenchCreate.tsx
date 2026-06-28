@@ -281,8 +281,9 @@ export function BenchCreate({
           }}
         />
       ) : (
-        // Reuses the `.add-worktree-row`/`.add-worktree-btn` affordance styling
-        // (same primitive as the "+ tab" row), distinct copy `+ bench`.
+        // Reuses the ViewSpine-scoped `.add-worktree-row`/`.add-worktree-btn`
+        // affordance token (same primitive as the "+ tab" row), distinct copy
+        // `+ bench`.
         <div
           className="add-worktree-row"
           data-track="view-spine.new-bench"

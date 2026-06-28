@@ -1776,7 +1776,8 @@ async function main(): Promise<void> {
   // `config.workspaces` + the local repo inventory, writes ONLY to `ia.db`.
   // Idempotent via a `migration_state` marker + deterministic, upsert-if-absent
   // ids (see `ia-workspace-migration.ts`). Internally guarded so any failure
-  // logs + skips and NEVER crashes boot — the legacy sidebar fallback stays.
+  // logs + skips and NEVER crashes boot; recovery now relies on the topic shell
+  // and persisted IA/view-spine surfaces, not a duplicate repo-sidebar fallback.
   await runBootWorkspaceMigration({
     iaStore,
     getConfig,

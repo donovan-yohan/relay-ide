@@ -92,7 +92,9 @@ export interface MigrateLegacyWorkspacesResult {
 
 /** Deterministic IA WorkspaceId for a legacy workspace id. STABLE across boots:
  *  `createWorkspaceId('migrated:' + legacyId)` → `ws:migrated%3A<legacyId>`. */
-export function migratedWorkspaceId(legacyId: string): ReturnType<typeof createWorkspaceId> {
+export function migratedWorkspaceId(
+  legacyId: string
+): ReturnType<typeof createWorkspaceId> {
   return createWorkspaceId(`${MIGRATED_LOCAL_ID_PREFIX}${legacyId}`);
 }
 
@@ -114,7 +116,9 @@ function buildProjectIdByRepoPath(
 /** Coerce a legacy `repos` field into a clean string[] (tolerates junk). */
 function readRepoPaths(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((p): p is string => typeof p === 'string' && p.length > 0);
+  return value.filter(
+    (p): p is string => typeof p === 'string' && p.length > 0
+  );
 }
 
 /** A normalized, ready-to-upsert plan for one legacy workspace, or `null` when
@@ -279,7 +283,7 @@ export async function runBootWorkspaceMigration(
     });
   } catch (err) {
     logger.warn(
-      'Legacy→IA workspace migration skipped (boot continues, legacy fallback intact): %s',
+      'Legacy→IA workspace migration skipped (boot continues; topic shell/view-spine remain available): %s',
       err instanceof Error ? err.message : err
     );
   }
