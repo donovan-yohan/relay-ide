@@ -164,6 +164,7 @@ export function WorkspaceBar() {
   const {
     workspaces,
     isLoading,
+    isFetching,
     isError,
     refetch,
     invalidate,
@@ -194,11 +195,18 @@ export function WorkspaceBar() {
   );
 
   useEffect(() => {
-    if (isLoading || isError || !activeWorkspaceId) return;
+    if (isLoading || isFetching || isError || !activeWorkspaceId) return;
     if (!workspaces.some((workspace) => workspace.id === activeWorkspaceId)) {
       setActiveWorkspaceId(null);
     }
-  }, [activeWorkspaceId, isError, isLoading, setActiveWorkspaceId, workspaces]);
+  }, [
+    activeWorkspaceId,
+    isError,
+    isFetching,
+    isLoading,
+    setActiveWorkspaceId,
+    workspaces,
+  ]);
 
   function clearError() {
     setActionError(null);

@@ -76,6 +76,7 @@ export function useIaWorkspaces() {
   return {
     workspaces: (query.data ?? []) as IaWorkspace[],
     isLoading: query.isLoading,
+    isFetching: query.isFetching,
     isError: query.isError,
     refetch: query.refetch,
     /** Mark `['ia-workspaces']` stale + refetch. Callers use this after a
