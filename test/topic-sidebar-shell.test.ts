@@ -444,6 +444,34 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('no workspace topics yet');
   });
 
+  it('surfaces task-room creation entrypoints and preview panel', async () => {
+    const onCreateTaskRoom = vi.fn();
+    await renderView({
+      createPanel: React.createElement(
+        'form',
+        { className: 'topic-create-panel', 'aria-label': 'create task room' },
+        React.createElement(
+          'div',
+          { className: 'topic-create-preview' },
+          'provider: hermes'
+        ),
+        React.createElement('button', { type: 'button' }, 'create only'),
+        React.createElement('button', { type: 'button' }, 'create + launch')
+      ),
+      onCreateTaskRoom,
+    });
+
+    const createButton = container.querySelector(
+      '.topic-shell__create'
+    ) as HTMLButtonElement;
+    await act(async () => createButton.click());
+
+    expect(onCreateTaskRoom).toHaveBeenCalled();
+    expect(container.textContent).toContain('provider: hermes');
+    expect(container.textContent).toContain('create only');
+    expect(container.textContent).toContain('create + launch');
+  });
+
   it('renders a phone-first attention list sorted before routine topics', async () => {
     await renderView({
       topics: [

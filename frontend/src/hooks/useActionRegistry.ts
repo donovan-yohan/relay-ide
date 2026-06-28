@@ -12,6 +12,7 @@ import {
   sessionKill,
   sessionStartOnRepo,
   sessionStartOnTicket,
+  sessionCreateTaskRoom,
   sessionCustomize,
   sessionSwitchToTab,
   sessionRename,
@@ -209,13 +210,17 @@ async function executeNodeCommandCenterAction(
   }
   if (kind === 'copy-pair-command') {
     await copyText(NODE_PAIR_COMMAND);
-    useToastStore.getState().showToast('copied redaction-safe pair command', 'info');
+    useToastStore
+      .getState()
+      .showToast('copied redaction-safe pair command', 'info');
     openSettingsNodes();
     return;
   }
   if (kind === 'show-install-instructions') {
     await copyText(NODE_INSTALL_INSTRUCTIONS);
-    useToastStore.getState().showToast('copied redaction-safe install instructions', 'info');
+    useToastStore
+      .getState()
+      .showToast('copied redaction-safe install instructions', 'info');
     openSettingsNodes();
     return;
   }
@@ -265,7 +270,8 @@ async function executeNodeCommandCenterAction(
       return;
     await executeNodeActionMutation(
       'node request denial',
-      () => denyNodePairingRequest(request.requestId, 'denied from command center'),
+      () =>
+        denyNodePairingRequest(request.requestId, 'denied from command center'),
       'node request denied'
     );
     return;
@@ -427,6 +433,11 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       },
       { ...sessionStartOnRepo, handler: () => handleQuickAgent() },
       { ...sessionStartOnTicket, handler: () => navigateToDashboard() },
+      {
+        ...sessionCreateTaskRoom,
+        handler: () =>
+          window.dispatchEvent(new Event('relay:open-topic-task-room')),
+      },
       {
         // #630: opens the env picker dialog. The dialog itself owns
         // default-selection + block-on-stale + launch wiring; the action's
@@ -652,11 +663,16 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
             ui.closeSidebar();
             window.setTimeout(() => getActiveTerminalHandle()?.focusTerm(), 0);
             void sessions.refreshAll().then(() => {
-              useUiStore.getState().setActiveRepoPath(target.activationRepoPath);
-              useSessionsStore.getState().setActiveSessionId(target.activationKey);
+              useUiStore
+                .getState()
+                .setActiveRepoPath(target.activationRepoPath);
+              useSessionsStore
+                .getState()
+                .setActiveSessionId(target.activationKey);
             });
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+            const message =
+              error instanceof Error ? error.message : String(error);
             logger.error('Failed to jump to next active work target', error);
             useToastStore
               .getState()
