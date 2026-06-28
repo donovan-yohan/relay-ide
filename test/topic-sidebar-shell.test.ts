@@ -243,6 +243,38 @@ describe('TopicSidebarView', () => {
     expect(mobileRows[1]?.textContent).toContain('Routine lane');
   });
 
+  it('bounds mobile topic latest status from raw activity text', async () => {
+    const longToolName = 'tool-name-'.repeat(30);
+    await renderView({
+      topics: [
+        makeTopic({
+          linkedRefs: { sessionIds: ['waiting-session'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 'waiting-session',
+          displayName: 'waiting lane',
+          agentState: 'waiting-for-input',
+          currentActivity: { tool: longToolName },
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const mobileRowStatus = container.querySelector(
+      '.topic-mobile-row__status'
+    )?.textContent;
+    const mobileDetailLatest = container.querySelector(
+      '.topic-mobile-detail__latest'
+    )?.textContent;
+
+    expect(mobileRowStatus).toBe(`${longToolName.slice(0, 93)}...`);
+    expect(mobileDetailLatest).toBe(`${longToolName.slice(0, 93)}...`);
+    expect(mobileRowStatus?.length).toBeLessThanOrEqual(96);
+    expect(mobileDetailLatest?.length).toBeLessThanOrEqual(96);
+  });
+
   it('uses the bounded topic search as the only mobile search surface', async () => {
     await renderView();
 

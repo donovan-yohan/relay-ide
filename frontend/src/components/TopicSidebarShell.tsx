@@ -72,6 +72,14 @@ type TopicSendInput = typeof sendSessionInput;
 
 const DISCONNECTED_SESSION_CONTROL_REASON =
   'session offline/disconnected — controls unavailable until reconnect';
+const TOPIC_LATEST_STATUS_MAX_LENGTH = 96;
+
+function boundedTopicLatestStatus(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length > TOPIC_LATEST_STATUS_MAX_LENGTH
+    ? `${trimmed.slice(0, TOPIC_LATEST_STATUS_MAX_LENGTH - 3)}...`
+    : trimmed;
+}
 
 function topicPrimarySession(
   item: TopicNavItem
@@ -158,20 +166,23 @@ function topicPrimaryAction(item: TopicNavItem): {
 function topicLatestStatus(item: TopicNavItem): string {
   const session = topicPrimarySession(item);
   if (session?.agentState === 'permission-prompt') {
-    return session.currentActivity?.detail
+    const status = session.currentActivity?.detail
       ? `${item.statusLabel} · ${session.currentActivity.detail}`
       : item.statusLabel;
+    return boundedTopicLatestStatus(status);
   }
   if (session?.currentActivity) {
     const detail = session.currentActivity.detail
       ? ` · ${session.currentActivity.detail}`
       : '';
-    return `${session.currentActivity.tool}${detail}`;
+    return boundedTopicLatestStatus(`${session.currentActivity.tool}${detail}`);
   }
   if (item.surfaces.length > 0) {
-    return `${item.statusLabel} · ${item.surfaces[0]!.label}`;
+    return boundedTopicLatestStatus(
+      `${item.statusLabel} · ${item.surfaces[0]!.label}`
+    );
   }
-  return item.routingLabel ?? item.statusLabel;
+  return boundedTopicLatestStatus(item.routingLabel ?? item.statusLabel);
 }
 
 function TopicBadge({ item }: { item: TopicNavItem }) {
