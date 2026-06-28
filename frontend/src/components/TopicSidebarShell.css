@@ -507,6 +507,7 @@
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   outline: 1px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .topic-room__section {
@@ -560,7 +561,8 @@
   background: var(--surface-hover);
   color: var(--text);
   outline: 1px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .topic-room-session__label,
