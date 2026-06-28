@@ -1,6 +1,6 @@
-/* #729 view-spine MVP tree. Reuses RepoItem/Sidebar primitives; this file only
-   carries the indent ladder + tiny status-dot alignment tweaks. No new colors,
-   no new animations — all tones come from existing design tokens. */
+/* #729 view-spine MVP tree. Reuses Sidebar chrome primitives and owns its
+   deleted-repo-sidebar-compatible row affordances locally. No new colors, no
+   new animations — all tones come from existing design tokens. */
 
 .view-spine-tree {
   display: flex;
@@ -95,11 +95,11 @@
   flex-shrink: 0;
 }
 
-/* #731 "+ tab" affordance. Reuses the `.add-worktree-row`/`.add-worktree-btn`
-   look (muted, low-opacity, brightens on hover, `creating…` disabled tone) but
-   the rules are scoped under `.view-spine-tree` so they ship even when RepoItem
-   (the original owner of these classes) is not mounted. The row sits indented
-   under its bench's children and keeps a ≥44px touch target. */
+/* #731 "+ tab" affordance. The historical `.add-worktree-row`/
+   `.add-worktree-btn` class names are retained only as a shared affordance
+   token for ViewSpine/BenchCreate: muted, low-opacity, brightens on hover,
+   `creating…` disabled tone. Rules stay scoped under `.view-spine-tree` so no
+   deleted repo-sidebar CSS is required. */
 .view-spine-bench .add-worktree-row {
   display: flex;
   align-items: center;

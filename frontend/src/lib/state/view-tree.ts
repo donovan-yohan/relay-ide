@@ -65,10 +65,10 @@ export interface ViewTreeNodeStatus {
 export type InstanceHostStatus = HubNodeStatus | null;
 
 /** #739: an individual Tab (session) leaf — an interactive, selectable row.
- *  `selectKey` is the SAME scoped session key the legacy sidebar selects on
- *  (`scopedSessionKey`), so the leaf click reuses the existing active-session
- *  action verbatim. `state` is the per-tab lifecycle glyph for `SessionIndicator`,
- *  derived purely from the `SessionSummary` (no store reconciliation). */
+ *  `selectKey` is the shared scoped session key (`scopedSessionKey`), so the
+ *  leaf click reuses the existing active-session action verbatim. `state` is the
+ *  per-tab lifecycle glyph for `SessionIndicator`, derived purely from the
+ *  `SessionSummary` (no store reconciliation). */
 export interface ViewTreeTabLeaf {
   /** Stable React key + dedup identity (scoped session key). */
   selectKey: string;
@@ -265,19 +265,16 @@ function sessionDisplayState(session: SessionSummary): DisplayState {
   return 'seen-idle';
 }
 
-/** Build the interactive Tab leaf for a session. Label/branch presentation
- *  matches the legacy sidebar (displayName, then cwd basename). */
-function tabLeafFor(
-  session: SessionSummary,
-  isGit: boolean
-): ViewTreeTabLeaf {
+/** Build the interactive Tab leaf for a session. Label/branch presentation keeps
+ *  the established displayName-then-cwd-basename ordering. */
+function tabLeafFor(session: SessionSummary, isGit: boolean): ViewTreeTabLeaf {
   const state = sessionDisplayState(session);
   return {
     selectKey: scopedSessionKey(session),
     label: session.displayName || basename(session.cwd),
     // Branch only surfaces for git benches — mirrors the bench-level guard so a
     // directory/free tab never leaks a branch.
-    branch: isGit ? (session.branchName || null) : null,
+    branch: isGit ? session.branchName || null : null,
     state,
     attention: isAttentionState(state),
     lastActivity: session.lastActivity || null,
@@ -515,11 +512,7 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
   /** Add a repoPath-less (or orphaned) session to the free lane, rolling up its
    *  recency + a (branch-less, identity-less) Tab leaf. Shared by the two
    *  no-anchor branches below. */
-  function addToFreeLane(
-    nodeId: NodeId,
-    cwd: string,
-    session: SessionSummary
-  ) {
+  function addToFreeLane(nodeId: NodeId, cwd: string, session: SessionSummary) {
     const activity = session.lastActivity || null;
     const key = `${nodeId} ${cwd}`;
     // Free leaves are NON-git by construction → no branch leak (C2).
@@ -690,7 +683,10 @@ export function buildViewTree(input: BuildViewTreeInput): ViewTree {
 
   const freeLane = [...freeByKey.values()]
     // #739: roll each free entry's leaves up into its attention summary.
-    .map((entry) => ({ ...entry, attention: rollUpAttention(entry.tab.leaves) }))
+    .map((entry) => ({
+      ...entry,
+      attention: rollUpAttention(entry.tab.leaves),
+    }))
     .sort((a, b) => a.key.localeCompare(b.key));
 
   return { workspaces, ungroupedProjects, freeLane };
@@ -753,7 +749,7 @@ export function groupProjectsByWorkspace(
   const claimed = new Set<ProjectId>();
 
   const workspaces: PersistedWorkspaceGroup[] = [...persisted]
-    .sort((a, b) => (a.order - b.order) || a.id.localeCompare(b.id))
+    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
     .map((ws) => {
       const seen = new Set<ProjectId>();
       const grouped: ViewTreeProject[] = [];
@@ -919,7 +915,10 @@ function applyPinsToProject(
  *
  * An empty `pinned` set is identity (same partition order in, same out).
  */
-export function applyPins(tree: ViewTree, pinned: ReadonlySet<string>): ViewTree {
+export function applyPins(
+  tree: ViewTree,
+  pinned: ReadonlySet<string>
+): ViewTree {
   if (pinned.size === 0) return tree;
   const sortProjects = (projects: ViewTreeProject[]): ViewTreeProject[] =>
     pinnedFirst(
