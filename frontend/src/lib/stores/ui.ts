@@ -20,7 +20,6 @@ const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
 // Flag-gated six-layer navigation surface. Set
 // `localStorage.relay-view-spine = '1'` and reload to opt into the tree.
 const VIEW_SPINE_KEY = 'relay-view-spine';
-const TOPIC_SHELL_KEY = 'relay-topic-shell';
 // #738: persistent View layer (FE-only, localStorage). All three ride the same
 // `ls`/`lsSave`/`lsRemove` helpers + fail-soft pattern as the flag above.
 //   - active lens, restored across reload (the #727 lens was ephemeral).
@@ -172,14 +171,6 @@ function loadDiffViewMode(): DiffViewMode {
 function loadViewSpineEnabled(): boolean {
   // Truthy only for the explicit opt-in value so a stale '0'/'false' reads OFF.
   return ls(VIEW_SPINE_KEY) === '1';
-}
-
-export function loadTopicShellEnabled(): boolean {
-  // The thin-line WorkspaceTopic shell is the default desktop sidebar. Keep an
-  // explicit localStorage opt-out so operators can recover the legacy fallback
-  // while #1032 tracks deleting the duplicate implementation.
-  const stored = ls(TOPIC_SHELL_KEY);
-  return stored !== '0' && stored !== 'false';
 }
 
 // ── #738: View-layer persistence (lens / pins / saved Views) ─────────────────
@@ -627,8 +618,6 @@ export interface UiState {
   collapsedWorkspaces: Set<string>;
   /** Six-layer navigation surface flag. Default false; backed by localStorage. */
   viewSpineEnabled: boolean;
-  /** Thin-line WorkspaceTopic sidebar/detail shell flag. Default true. */
-  topicShellEnabled: boolean;
   /** #738: active Views lens, persisted across reload (default `recent`). */
   viewSpineLens: ViewLens;
   /** #738: pinned Project/Bench/Workspace stable ids (pinned-to-top). */
@@ -675,8 +664,6 @@ export interface UiState {
   isWorkspaceCollapsed: (path: string) => boolean;
   setViewSpineEnabled: (enabled: boolean) => void;
   toggleViewSpineEnabled: () => void;
-  setTopicShellEnabled: (enabled: boolean) => void;
-  toggleTopicShellEnabled: () => void;
   /** #738: persist + set the active lens. */
   setViewSpineLens: (lens: ViewLens) => void;
   /** #738: toggle a pin by stable id (Project/Bench/Workspace); persists. */
@@ -715,13 +702,12 @@ export const useUiStore = create<UiState>()((set, get) => ({
   codeTabDirty: {},
   codeTabPendingContent: {},
   sendToTargetSessionId: null,
+  lastChangedFiles: [],
   analyticsView: null,
   orgDashboardTab: 'active-work',
   activeModal: null,
-  lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
   viewSpineEnabled: loadViewSpineEnabled(),
-  topicShellEnabled: loadTopicShellEnabled(),
   viewSpineLens: loadViewSpineLens(),
   viewSpinePins: loadViewSpinePins(),
   viewSpineSavedViews: loadViewSpineSavedViews(),
@@ -1336,13 +1322,6 @@ export const useUiStore = create<UiState>()((set, get) => ({
   toggleViewSpineEnabled: () => {
     get().setViewSpineEnabled(!get().viewSpineEnabled);
   },
-  setTopicShellEnabled: (enabled) => {
-    if (enabled) lsSave(TOPIC_SHELL_KEY, '1');
-    else lsSave(TOPIC_SHELL_KEY, '0');
-    set({ topicShellEnabled: enabled });
-  },
-  toggleTopicShellEnabled: () =>
-    get().setTopicShellEnabled(!get().topicShellEnabled),
 
   setViewSpineLens: (lens) => {
     lsSave(VIEW_SPINE_LENS_KEY, lens);

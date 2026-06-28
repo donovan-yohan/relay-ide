@@ -1194,7 +1194,7 @@ export function ViewSpineTree({
         {visibleGrouped.workspaces.map((ws) =>
           ws.projects.length > 0 ? (
             <section key={ws.id} className="view-spine-workspace">
-              <div className="sidebar-ungrouped-label view-spine-workspace-label">
+              <div className="view-spine-section-label view-spine-workspace-label">
                 <span>{ws.name}</span>
                 {/* #738: pin/favorite this Workspace — floats the whole group to
                     the top of the workspace list. */}
@@ -1223,7 +1223,7 @@ export function ViewSpineTree({
         {visibleGrouped.ungroupedProjects.length > 0 ? (
           <section className="view-spine-workspace">
             {hasPersistedGroups ? (
-              <div className="sidebar-ungrouped-label">ungrouped</div>
+              <div className="view-spine-section-label">ungrouped</div>
             ) : null}
             {visibleGrouped.ungroupedProjects.map((project) => (
               <ProjectRow
@@ -1242,7 +1242,7 @@ export function ViewSpineTree({
 
         {!activeWorkspaceId && tree.freeLane.length > 0 ? (
           <section className="view-spine-free-lane">
-            <div className="sidebar-ungrouped-label">free / remote</div>
+            <div className="view-spine-section-label">free / remote</div>
             <ul className="session-list">
               {tree.freeLane.map((entry) => (
                 <FreeRow

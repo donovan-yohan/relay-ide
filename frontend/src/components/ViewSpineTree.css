@@ -1,6 +1,6 @@
-/* #729 view-spine MVP tree. Reuses RepoItem/Sidebar primitives; this file only
-   carries the indent ladder + tiny status-dot alignment tweaks. No new colors,
-   no new animations — all tones come from existing design tokens. */
+/* #729 view-spine MVP tree. Reuses Sidebar primitives; this file only carries
+   the indent ladder + tiny status-dot alignment tweaks. No new colors, no new
+   animations — all tones come from existing design tokens. */
 
 .view-spine-tree {
   display: flex;
@@ -16,6 +16,254 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+}
+
+.view-spine-section-label {
+  padding: 8px 12px 4px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+
+/* Base row anatomy kept local to ViewSpineTree after the old RepoItem sidebar
+   fallback was retired. */
+.view-spine-tree .repo-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.view-spine-tree .repo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  min-height: 44px;
+  transition: background 0.12s;
+}
+
+.view-spine-tree .repo-header:hover {
+  background: var(--surface-hover);
+}
+
+.view-spine-tree .repo-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.view-spine-tree .initial-block {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 0;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: #000;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.view-spine-tree .repo-name {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.view-spine-tree .repo-kind-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 1px 4px;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
+.view-spine-tree .repo-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0;
+}
+
+.view-spine-tree .repo-attention-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.view-spine-tree .collapse-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.12s;
+}
+
+.view-spine-tree .collapse-chevron:hover {
+  color: var(--text);
+}
+
+.view-spine-tree .session-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.view-spine-tree .session-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 8px 8px 14px;
+  cursor: pointer;
+  min-height: 44px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  transition: background 0.1s;
+  border-left: 3px solid transparent;
+  justify-content: center;
+}
+
+.view-spine-tree .session-row:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.view-spine-tree .session-row.selected {
+  border-left-color: var(--accent);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.view-spine-tree .session-row.state-running:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-success) 70%, transparent);
+}
+
+.view-spine-tree .session-row.state-initializing:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-info) 65%, transparent);
+}
+
+.view-spine-tree .session-row.state-unseen-idle:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-warning) 75%, transparent);
+}
+
+.view-spine-tree .session-row.state-permission:not(.selected),
+.view-spine-tree .session-row.state-needs-answer:not(.selected),
+.view-spine-tree .session-row.state-error:not(.selected) {
+  border-left-color: color-mix(in srgb, var(--status-error) 75%, transparent);
+}
+
+.view-spine-tree .session-row.attention.state-unseen-idle:not(.selected) {
+  background: color-mix(in srgb, var(--status-warning) 6%, transparent);
+}
+
+.view-spine-tree .session-row.attention.state-permission:not(.selected),
+.view-spine-tree .session-row.attention.state-needs-answer:not(.selected),
+.view-spine-tree .session-row.attention.state-error:not(.selected) {
+  background: color-mix(in srgb, var(--status-error) 6%, transparent);
+}
+
+.view-spine-tree .session-row.attention:hover {
+  background: var(--surface-hover);
+}
+
+.view-spine-tree .session-row.attention .session-name {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.view-spine-tree .session-row.inactive .session-name {
+  color: var(--text-muted);
+}
+
+.view-spine-tree .session-row.inactive:hover .session-name {
+  color: var(--text);
+}
+
+.view-spine-tree .session-row.loading {
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.view-spine-tree .session-row.loading .session-name {
+  color: var(--accent);
+}
+
+.view-spine-tree .session-row-primary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.view-spine-tree .session-row-secondary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 22px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.view-spine-tree .session-name {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.view-spine-tree .session-name.bold {
+  font-weight: 700;
+}
+
+.view-spine-tree .secondary-branch {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.view-spine-tree .session-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 0;
+  background: var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  padding: 0 4px;
+  flex-shrink: 0;
 }
 
 /* ── S2 Views selector (#727) ──────────────────────────────────────────────
@@ -95,12 +343,10 @@
   flex-shrink: 0;
 }
 
-/* #731 "+ tab" affordance. Reuses the `.add-worktree-row`/`.add-worktree-btn`
-   look (muted, low-opacity, brightens on hover, `creating…` disabled tone) but
-   the rules are scoped under `.view-spine-tree` so they ship even when RepoItem
-   (the original owner of these classes) is not mounted. The row sits indented
-   under its bench's children and keeps a ≥44px touch target. */
-.view-spine-bench .add-worktree-row {
+/* #731 "+ tab" / #730 "+ bench" affordance. Keeps the muted, low-opacity
+   add-row look scoped under `.view-spine-tree`. The row sits indented under its
+   parent children and keeps a ≥44px touch target. */
+.view-spine-tree .add-worktree-row {
   display: flex;
   align-items: center;
   min-height: 44px;
@@ -108,7 +354,7 @@
   cursor: pointer;
 }
 
-.view-spine-bench .add-worktree-btn {
+.view-spine-tree .add-worktree-btn {
   font-size: var(--font-size-xs);
   font-family: var(--font-mono);
   color: var(--text-muted);
@@ -122,16 +368,16 @@
   padding: 0;
 }
 
-.view-spine-bench .add-worktree-row:hover .add-worktree-btn {
+.view-spine-tree .add-worktree-row:hover .add-worktree-btn {
   opacity: 1;
   color: var(--text);
 }
 
-.view-spine-bench .add-worktree-row.disabled {
+.view-spine-tree .add-worktree-row.disabled {
   pointer-events: none;
 }
 
-.view-spine-bench .add-worktree-row.disabled .add-worktree-btn {
+.view-spine-tree .add-worktree-row.disabled .add-worktree-btn {
   opacity: 0.7;
   color: var(--accent);
 }
