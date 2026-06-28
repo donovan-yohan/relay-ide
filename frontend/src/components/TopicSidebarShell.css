@@ -588,6 +588,7 @@
 
   .topic-mobile-cockpit__bar button,
   .topic-mobile-control__primary,
+  .topic-mobile-control__preset,
   .topic-mobile-actions button {
     min-height: 44px;
     border: 1px solid var(--border);
@@ -601,6 +602,7 @@
 
   .topic-mobile-cockpit__bar button:not(:disabled),
   .topic-mobile-control__primary:not(:disabled),
+  .topic-mobile-control__preset:not(:disabled),
   .topic-mobile-actions button:not(:disabled) {
     color: var(--accent);
     border-color: color-mix(in srgb, var(--accent) 72%, transparent);
@@ -609,6 +611,7 @@
 
   .topic-mobile-cockpit__bar button:disabled,
   .topic-mobile-control__primary:disabled,
+  .topic-mobile-control__preset:disabled,
   .topic-mobile-actions button:disabled,
   .topic-mobile-control input:disabled {
     opacity: 0.45;
@@ -749,6 +752,13 @@
     grid-column: 1 / -1;
     color: var(--text-muted);
     font-size: var(--font-size-xs);
+  }
+
+  .topic-mobile-control__presets {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
   }
 
   .topic-mobile-confirm {

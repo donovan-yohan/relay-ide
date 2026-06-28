@@ -296,6 +296,43 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('sent · audit/intervention trail');
   });
 
+  it('offers explicit approve and deny presets before audited mobile approval send', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          controlFreshness: 'fresh',
+        }),
+      ],
+      onSendInput,
+    });
+
+    const denyPreset = Array.from(
+      container.querySelectorAll('.topic-mobile-control__preset')
+    ).find((button) => button.textContent === 'deny') as HTMLButtonElement;
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const form = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+
+    await act(async () => denyPreset.click());
+    expect(input.value).toBe('n');
+    expect(container.textContent).toContain(
+      'deny selected · preview before sending'
+    );
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('confirmation preview');
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).toHaveBeenCalledWith('s1', 'n\r', undefined);
+  });
+
   it('sends audited mobile replies to the local session id when linked by global id', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
     await renderView({
@@ -374,6 +411,60 @@ describe('TopicSidebarView', () => {
 
     await act(async () => form.requestSubmit());
     expect(onSendInput).not.toHaveBeenCalled();
+  });
+
+  it('disables stale/offline mobile resume while preserving artifact handoff', async () => {
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'offline idle session',
+          agentState: 'idle',
+          idle: true,
+          status: 'disconnected',
+          controlFreshness: 'fresh',
+        }),
+      ],
+      surfaces: [
+        makeSurface({
+          id: 'surface:log',
+          kind: 'logs',
+          label: 'Last known artifact',
+          openMode: 'copy',
+          command: 'relay artifact show surface:log',
+        }),
+      ],
+    });
+
+    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
+      'waiting'
+    );
+    expect(container.textContent).toContain(
+      'controls disabled: session offline/disconnected'
+    );
+
+    const buttons = Array.from(
+      container.querySelectorAll('.topic-mobile-actions button')
+    ) as HTMLButtonElement[];
+    const resume = buttons.find(
+      (button) => button.textContent === 'resume topic'
+    ) as HTMLButtonElement;
+    const terminal = buttons.find(
+      (button) => button.textContent === 'open terminal tab'
+    ) as HTMLButtonElement;
+    const artifact = buttons.find((button) =>
+      button.textContent?.includes('logs artifact')
+    ) as HTMLButtonElement;
+
+    expect(resume.disabled).toBe(true);
+    expect(resume.title).toContain('offline/disconnected');
+    expect(terminal.disabled).toBe(true);
+    expect(artifact.disabled).toBe(false);
+    await act(async () => artifact.click());
+    expect(container.textContent).toMatch(
+      /surface (target ready to copy|target copied|copy unavailable)/
+    );
+    expect(onSelectSession).not.toHaveBeenCalled();
   });
 
   it('makes the resume and terminal-tab mobile controls explicit', async () => {
