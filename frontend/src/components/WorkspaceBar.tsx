@@ -52,6 +52,11 @@ function WorkspaceRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(workspace.name);
 
+  function startEditing() {
+    setDraft(workspace.name);
+    setEditing(true);
+  }
+
   function commit() {
     const trimmed = draft.trim();
     setEditing(false);
@@ -97,16 +102,23 @@ function WorkspaceRow({
           className="workspace-bar__name"
           disabled={busy}
           onClick={onSelect}
-          onDoubleClick={() => {
-            setDraft(workspace.name);
-            setEditing(true);
-          }}
-          title="select workspace; double-click to rename"
+          onDoubleClick={startEditing}
+          title="select workspace; double-click or use rename action to edit"
         >
           {workspace.name}
         </button>
       )}
       <div className="workspace-bar__row-actions">
+        <button
+          type="button"
+          className="workspace-bar__icon-btn"
+          disabled={busy}
+          onClick={startEditing}
+          aria-label={`rename ${workspace.name}`}
+          title="rename workspace"
+        >
+          rename
+        </button>
         <button
           type="button"
           className="workspace-bar__icon-btn"
@@ -152,7 +164,6 @@ export function WorkspaceBar() {
     createMutation,
     updateMutation,
     archiveMutation,
-    deleteMutation,
   } = useIaWorkspaces();
   const activeWorkspaceId = useUiStore((state) => state.activeWorkspaceId);
   const setActiveWorkspaceId = useUiStore(
@@ -171,7 +182,6 @@ export function WorkspaceBar() {
     createMutation.isPending ||
     updateMutation.isPending ||
     archiveMutation.isPending ||
-    deleteMutation.isPending ||
     reordering;
   const ordered = [...workspaces].sort(
     (a, b) => a.order - b.order || a.id.localeCompare(b.id)
