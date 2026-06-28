@@ -2,10 +2,12 @@
 // No wiring yet — Lane A migration, server CRUD, and frontend render in follow-ups.
 
 export type WorkspaceId = string;
+export type WorkspaceStatus = 'active' | 'archived';
 
 export interface Workspace {
   id: WorkspaceId;
   name: string;
+  status: WorkspaceStatus;
   // Ordering within the workspace bar. Lower comes first. Float so reorder
   // without renumber is feasible — same pattern as Bench/Tab follow-ups will use.
   order: number;
@@ -13,6 +15,15 @@ export interface Workspace {
   // an embedded Project[] so a Project can be referenced from a View without
   // duplicating Workspace state.
   projectIds: string[];
+  // Optional user-authored display/default metadata for the durable workspace
+  // rail. These are intentionally nullable/optional so older rows deserialize
+  // cleanly and free/non-git workspaces never have to pretend to be repos.
+  pinned: boolean;
+  color: string | null;
+  icon: string | null;
+  defaultRepoPath: string | null;
+  defaultNodeId: string | null;
+  defaultProvider: string | null;
   createdAt: string;
   updatedAt: string;
 }

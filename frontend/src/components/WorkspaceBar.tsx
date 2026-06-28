@@ -5,7 +5,7 @@
 //
 // Scope (MVP): list persisted Workspaces, CREATE (name), RENAME (inline),
 // REORDER (up/down — lowest-risk vs. DnD, matches no existing drag dep in the
-// sidebar), DELETE. Project assignment lives on the project rows (the parent
+// sidebar), ARCHIVE. Project assignment lives on the project rows (the parent
 // passes `onAssignProject`); this bar owns workspace lifecycle only.
 //
 // States: empty (no workspaces → neutral copy + create affordance), loading,
@@ -16,6 +16,7 @@ import { useState } from 'react';
 
 import type { IaWorkspace } from '../lib/api.js';
 import { useIaWorkspaces } from '../lib/hooks/use-ia-workspaces.js';
+import { useUiStore } from '../lib/stores/ui.js';
 import { createLogger } from '../lib/logger.js';
 import './WorkspaceBar.css';
 
@@ -30,19 +31,23 @@ function WorkspaceRow({
   index,
   count,
   busy,
+  selected,
   onRename,
+  onSelect,
   onMoveUp,
   onMoveDown,
-  onDelete,
+  onArchive,
 }: {
   workspace: IaWorkspace;
   index: number;
   count: number;
   busy: boolean;
+  selected: boolean;
   onRename: (name: string) => void;
+  onSelect: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
-  onDelete: () => void;
+  onArchive: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(workspace.name);
@@ -58,7 +63,13 @@ function WorkspaceRow({
   }
 
   return (
-    <li className="workspace-bar__row">
+    <li
+      className={
+        selected
+          ? 'workspace-bar__row workspace-bar__row--selected'
+          : 'workspace-bar__row'
+      }
+    >
       {editing ? (
         <input
           type="text"
@@ -85,11 +96,12 @@ function WorkspaceRow({
           type="button"
           className="workspace-bar__name"
           disabled={busy}
-          onClick={() => {
+          onClick={onSelect}
+          onDoubleClick={() => {
             setDraft(workspace.name);
             setEditing(true);
           }}
-          title="rename"
+          title="select workspace; double-click to rename"
         >
           {workspace.name}
         </button>
@@ -119,9 +131,9 @@ function WorkspaceRow({
           type="button"
           className="workspace-bar__icon-btn workspace-bar__icon-btn--danger"
           disabled={busy}
-          onClick={onDelete}
-          aria-label={`delete ${workspace.name}`}
-          title="delete workspace"
+          onClick={onArchive}
+          aria-label={`archive ${workspace.name}`}
+          title="archive workspace"
         >
           ×
         </button>
@@ -139,8 +151,13 @@ export function WorkspaceBar() {
     invalidate,
     createMutation,
     updateMutation,
+    archiveMutation,
     deleteMutation,
   } = useIaWorkspaces();
+  const activeWorkspaceId = useUiStore((state) => state.activeWorkspaceId);
+  const setActiveWorkspaceId = useUiStore(
+    (state) => state.setActiveWorkspaceId
+  );
   const [newName, setNewName] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   // #752: a reorder sequences TWO PATCHes; this flag keeps the controls disabled
@@ -153,6 +170,7 @@ export function WorkspaceBar() {
   const pending =
     createMutation.isPending ||
     updateMutation.isPending ||
+    archiveMutation.isPending ||
     deleteMutation.isPending ||
     reordering;
   const ordered = [...workspaces].sort(
@@ -168,9 +186,12 @@ export function WorkspaceBar() {
     if (name.length === 0 || pending) return;
     clearError();
     createMutation.mutate(
-      { name },
+      { name, pinned: true },
       {
-        onSuccess: () => setNewName(''),
+        onSuccess: (created) => {
+          setNewName('');
+          setActiveWorkspaceId(created.id);
+        },
         onError: (err) => {
           logger.warn('create workspace failed', err);
           setActionError(errorMessage(err, 'could not create workspace'));
@@ -219,12 +240,22 @@ export function WorkspaceBar() {
     }
   }
 
-  function handleDelete(workspace: IaWorkspace) {
+  function handleArchive(workspace: IaWorkspace) {
     clearError();
-    deleteMutation.mutate(workspace.id, {
+    if (
+      typeof window !== 'undefined' &&
+      typeof window.confirm === 'function' &&
+      !window.confirm(`archive workspace "${workspace.name}"?`)
+    ) {
+      return;
+    }
+    archiveMutation.mutate(workspace.id, {
+      onSuccess: () => {
+        if (activeWorkspaceId === workspace.id) setActiveWorkspaceId(null);
+      },
       onError: (err) => {
-        logger.warn('delete workspace failed', err);
-        setActionError(errorMessage(err, 'could not delete workspace'));
+        logger.warn('archive workspace failed', err);
+        setActionError(errorMessage(err, 'could not archive workspace'));
       },
     });
   }
@@ -233,6 +264,14 @@ export function WorkspaceBar() {
     <section className="workspace-bar" aria-label="workspaces">
       <div className="workspace-bar__header">
         <span className="workspace-bar__title">workspaces</span>
+        <button
+          type="button"
+          className="workspace-bar__all-btn"
+          disabled={pending || activeWorkspaceId === null}
+          onClick={() => setActiveWorkspaceId(null)}
+        >
+          all
+        </button>
       </div>
 
       {isLoading ? (
@@ -250,7 +289,9 @@ export function WorkspaceBar() {
               index={index}
               count={ordered.length}
               busy={pending}
+              selected={activeWorkspaceId === ws.id}
               onRename={(name) => handleRename(ws, name)}
+              onSelect={() => setActiveWorkspaceId(ws.id)}
               onMoveUp={() => {
                 const prev = ordered[index - 1];
                 if (prev) void handleSwap(ws, prev);
@@ -259,7 +300,7 @@ export function WorkspaceBar() {
                 const next = ordered[index + 1];
                 if (next) void handleSwap(ws, next);
               }}
-              onDelete={() => handleDelete(ws)}
+              onArchive={() => handleArchive(ws)}
             />
           ))}
         </ul>

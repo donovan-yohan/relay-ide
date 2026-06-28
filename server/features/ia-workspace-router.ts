@@ -33,6 +33,7 @@ import {
   createWorkspaceId,
   parseWorkspaceId,
   type Workspace,
+  type WorkspaceStatus,
 } from '../../shared/workspace.js';
 import { randomUUID } from 'node:crypto';
 
@@ -66,6 +67,24 @@ function readProjectIds(value: unknown): string[] | null {
   return out;
 }
 
+function readWorkspaceStatus(value: unknown): WorkspaceStatus | null {
+  if (value === undefined) return null;
+  return value === 'active' || value === 'archived' ? value : null;
+}
+
+function readOptionalText(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readOptionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === 'boolean' ? value : undefined;
+}
+
 export function createIaWorkspaceRouter(
   options: IaWorkspaceRouterOptions
 ): express.Router {
@@ -78,12 +97,9 @@ export function createIaWorkspaceRouter(
     if (!options.iaStore) {
       sendRelayError(
         res,
-        relayError(
-          'NODE_BUSY',
-          'IA persistence store is unavailable',
-          true,
-          { reasonCode: 'IA_STORE_UNAVAILABLE' }
-        )
+        relayError('NODE_BUSY', 'IA persistence store is unavailable', true, {
+          reasonCode: 'IA_STORE_UNAVAILABLE',
+        })
       );
       return null;
     }
@@ -92,11 +108,15 @@ export function createIaWorkspaceRouter(
 
   // GET /hub/ia/workspaces — list all workspaces, ordered by the store
   // (`order` asc then id asc for stability).
-  router.get('/hub/ia/workspaces', requireAuth, (_req, res) => {
+  router.get('/hub/ia/workspaces', requireAuth, (req, res) => {
     const iaStore = store(res);
     if (!iaStore) return;
     try {
-      res.json({ workspaces: iaStore.listWorkspaces() });
+      res.json({
+        workspaces: iaStore.listWorkspaces({
+          includeArchived: req.query['includeArchived'] === 'true',
+        }),
+      });
     } catch (error) {
       sendInternal(res, 'list', error);
     }
@@ -128,10 +148,25 @@ export function createIaWorkspaceRouter(
     let order: number;
     if (body['order'] === undefined) {
       order = nextOrder(iaStore.listWorkspaces());
-    } else if (typeof body['order'] === 'number' && Number.isFinite(body['order'])) {
+    } else if (
+      typeof body['order'] === 'number' &&
+      Number.isFinite(body['order'])
+    ) {
       order = body['order'];
     } else {
       sendValidation(res, 'order must be a finite number', 'order');
+      return;
+    }
+
+    let metadataPatch: ReturnType<typeof workspaceMetadataPatch>;
+    try {
+      metadataPatch = workspaceMetadataPatch(body);
+    } catch (error) {
+      sendValidation(
+        res,
+        error instanceof Error ? error.message : 'invalid workspace metadata',
+        'metadata'
+      );
       return;
     }
 
@@ -141,6 +176,7 @@ export function createIaWorkspaceRouter(
         name: name.trim(),
         order,
         projectIds: projectIds ?? [],
+        ...metadataPatch,
       });
       res.status(201).json({ workspace: created });
     } catch (error) {
@@ -170,7 +206,10 @@ export function createIaWorkspaceRouter(
 
     let name = existing.name;
     if (body['name'] !== undefined) {
-      if (typeof body['name'] !== 'string' || body['name'].trim().length === 0) {
+      if (
+        typeof body['name'] !== 'string' ||
+        body['name'].trim().length === 0
+      ) {
         sendValidation(res, 'name must be a non-empty string', 'name');
         return;
       }
@@ -179,7 +218,10 @@ export function createIaWorkspaceRouter(
 
     let order = existing.order;
     if (body['order'] !== undefined) {
-      if (typeof body['order'] !== 'number' || !Number.isFinite(body['order'])) {
+      if (
+        typeof body['order'] !== 'number' ||
+        !Number.isFinite(body['order'])
+      ) {
         sendValidation(res, 'order must be a finite number', 'order');
         return;
       }
@@ -200,8 +242,33 @@ export function createIaWorkspaceRouter(
       projectIds = parsed;
     }
 
+    const status = readWorkspaceStatus(body['status']);
+    if (body['status'] !== undefined && status === null) {
+      sendValidation(res, 'status must be active or archived', 'status');
+      return;
+    }
+
+    let metadataPatch: ReturnType<typeof workspaceMetadataPatch>;
     try {
-      const updated = iaStore.upsertWorkspace({ id, name, order, projectIds });
+      metadataPatch = workspaceMetadataPatch(body);
+    } catch (error) {
+      sendValidation(
+        res,
+        error instanceof Error ? error.message : 'invalid workspace metadata',
+        'metadata'
+      );
+      return;
+    }
+
+    try {
+      const updated = iaStore.upsertWorkspace({
+        id,
+        name,
+        order,
+        projectIds,
+        ...(status ? { status } : {}),
+        ...metadataPatch,
+      });
       res.json({ workspace: updated });
     } catch (error) {
       sendInternal(res, 'update', error);
@@ -221,7 +288,10 @@ export function createIaWorkspaceRouter(
     try {
       const removed = iaStore.deleteWorkspace(id);
       if (!removed) {
-        sendRelayError(res, relayError('NOT_FOUND', `workspace ${id} not found`));
+        sendRelayError(
+          res,
+          relayError('NOT_FOUND', `workspace ${id} not found`)
+        );
         return;
       }
       res.status(204).end();
@@ -230,7 +300,84 @@ export function createIaWorkspaceRouter(
     }
   });
 
+  router.post('/hub/ia/workspaces/:id/archive', requireAuth, (req, res) => {
+    updateWorkspaceArchiveState(req, res, 'archived');
+  });
+
+  router.post('/hub/ia/workspaces/:id/restore', requireAuth, (req, res) => {
+    updateWorkspaceArchiveState(req, res, 'active');
+  });
+
   return router;
+
+  function updateWorkspaceArchiveState(
+    req: express.Request,
+    res: express.Response,
+    status: WorkspaceStatus
+  ): void {
+    const iaStore = store(res);
+    if (!iaStore) return;
+    const id = req.params['id'];
+    if (!id || !parseWorkspaceId(id)) {
+      sendValidation(res, 'invalid workspace id', 'id');
+      return;
+    }
+    try {
+      const workspace =
+        status === 'archived'
+          ? iaStore.archiveWorkspace(id)
+          : iaStore.restoreWorkspace(id);
+      if (!workspace) {
+        sendRelayError(
+          res,
+          relayError('NOT_FOUND', `workspace ${id} not found`)
+        );
+        return;
+      }
+      res.json({ workspace });
+    } catch (error) {
+      sendInternal(res, status === 'archived' ? 'archive' : 'restore', error);
+    }
+  }
+
+  function workspaceMetadataPatch(body: Record<string, unknown>): Partial<{
+    pinned: boolean;
+    color: string | null;
+    icon: string | null;
+    defaultRepoPath: string | null;
+    defaultNodeId: string | null;
+    defaultProvider: string | null;
+  }> {
+    const patch: Partial<{
+      pinned: boolean;
+      color: string | null;
+      icon: string | null;
+      defaultRepoPath: string | null;
+      defaultNodeId: string | null;
+      defaultProvider: string | null;
+    }> = {};
+
+    const pinned = readOptionalBoolean(body['pinned']);
+    if (body['pinned'] !== undefined && pinned === undefined) {
+      throw new Error('pinned must be a boolean');
+    }
+    if (pinned !== undefined) patch.pinned = pinned;
+
+    for (const [bodyKey, patchKey] of [
+      ['color', 'color'],
+      ['icon', 'icon'],
+      ['defaultRepoPath', 'defaultRepoPath'],
+      ['defaultNodeId', 'defaultNodeId'],
+      ['defaultProvider', 'defaultProvider'],
+    ] as const) {
+      const value = readOptionalText(body[bodyKey]);
+      if (body[bodyKey] !== undefined && value === undefined) {
+        throw new Error(`${bodyKey} must be a string or null`);
+      }
+      if (value !== undefined) patch[patchKey] = value;
+    }
+    return patch;
+  }
 
   function sendValidation(
     res: express.Response,

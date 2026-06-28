@@ -24,6 +24,27 @@
   color: var(--text-muted);
 }
 
+.workspace-bar__all-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.workspace-bar__all-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.workspace-bar__all-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .workspace-bar__hint {
   font-size: var(--font-size-xs);
   color: var(--text-muted);
@@ -46,6 +67,12 @@
   align-items: center;
   gap: 6px;
   min-height: 36px;
+  border-left: 2px solid transparent;
+}
+
+.workspace-bar__row--selected {
+  border-left-color: var(--accent);
+  background: var(--surface-hover);
 }
 
 .workspace-bar__name {

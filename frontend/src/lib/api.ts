@@ -1122,14 +1122,34 @@ export async function copyPipelineHandoffArtifact(
 // membership list of ProjectIds, NOT embedded projects. Backed by the IA store
 // (`ia.db`) and mounted at `/hub/ia/workspaces` — STRICTLY non-destructive of
 // any legacy state. Endpoints: GET (list), POST (create), PATCH (partial
-// rename/reorder/membership), DELETE.
+// rename/reorder/membership/defaults), POST archive/restore, DELETE hard-delete.
 export interface IaWorkspace {
   id: string;
   name: string;
+  status: 'active' | 'archived';
   order: number;
   projectIds: string[];
+  pinned: boolean;
+  color: string | null;
+  icon: string | null;
+  defaultRepoPath: string | null;
+  defaultNodeId: string | null;
+  defaultProvider: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface IaWorkspacePatch {
+  name?: string;
+  status?: 'active' | 'archived';
+  order?: number;
+  projectIds?: string[];
+  pinned?: boolean;
+  color?: string | null;
+  icon?: string | null;
+  defaultRepoPath?: string | null;
+  defaultNodeId?: string | null;
+  defaultProvider?: string | null;
 }
 
 const IA_WORKSPACES_PATH = '/hub/ia/workspaces';
@@ -1145,6 +1165,12 @@ export async function createIaWorkspace(input: {
   name: string;
   projectIds?: string[];
   order?: number;
+  pinned?: boolean;
+  color?: string | null;
+  icon?: string | null;
+  defaultRepoPath?: string | null;
+  defaultNodeId?: string | null;
+  defaultProvider?: string | null;
 }): Promise<IaWorkspace> {
   const data = await json<{ workspace: IaWorkspace }>(
     await fetch(IA_WORKSPACES_PATH, {
@@ -1158,13 +1184,22 @@ export async function createIaWorkspace(input: {
 
 export async function updateIaWorkspace(
   id: string,
-  patch: { name?: string; order?: number; projectIds?: string[] }
+  patch: IaWorkspacePatch
 ): Promise<IaWorkspace> {
   const data = await json<{ workspace: IaWorkspace }>(
     await fetch(`${IA_WORKSPACES_PATH}/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
+    })
+  );
+  return data.workspace;
+}
+
+export async function archiveIaWorkspace(id: string): Promise<IaWorkspace> {
+  const data = await json<{ workspace: IaWorkspace }>(
+    await fetch(`${IA_WORKSPACES_PATH}/${encodeURIComponent(id)}/archive`, {
+      method: 'POST',
     })
   );
   return data.workspace;
