@@ -113,9 +113,7 @@ function sessionControlDisabledReason(
   const attachReason = sessionAttachDisabledReason(session);
   if (attachReason) return attachReason;
   if (session.controlFreshness === 'stale') return 'stale control state';
-  if (session.controlFreshness && session.controlFreshness !== 'fresh') {
-    return 'unknown control state';
-  }
+  if (session.controlFreshness !== 'fresh') return 'unknown control state';
   if (session.mode === 'web') return 'web session input is unsupported here';
   return null;
 }
