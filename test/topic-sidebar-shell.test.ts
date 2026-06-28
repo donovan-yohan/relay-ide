@@ -513,6 +513,38 @@ describe('TopicSidebarView', () => {
     expect(mobileRows[1]?.textContent).toContain('Routine lane');
   });
 
+  it('bounds mobile topic latest status from raw activity text', async () => {
+    const longToolName = 'tool-name-'.repeat(30);
+    await renderView({
+      topics: [
+        makeTopic({
+          linkedRefs: { sessionIds: ['waiting-session'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 'waiting-session',
+          displayName: 'waiting lane',
+          agentState: 'waiting-for-input',
+          currentActivity: { tool: longToolName },
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const mobileRowStatus = container.querySelector(
+      '.topic-mobile-row__status'
+    )?.textContent;
+    const mobileDetailLatest = container.querySelector(
+      '.topic-mobile-detail__latest'
+    )?.textContent;
+
+    expect(mobileRowStatus).toBe(`${longToolName.slice(0, 93)}...`);
+    expect(mobileDetailLatest).toBe(`${longToolName.slice(0, 93)}...`);
+    expect(mobileRowStatus?.length).toBeLessThanOrEqual(96);
+    expect(mobileDetailLatest?.length).toBeLessThanOrEqual(96);
+  });
+
   it('uses the bounded topic search as the only mobile search surface', async () => {
     await renderView();
 
@@ -1045,6 +1077,69 @@ describe('TopicSidebarView', () => {
     await act(async () => clearButton.click());
     expect(onSearchRetry).toHaveBeenCalledTimes(1);
     expect(onSearchClear).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders participant roster cards grouped by role/runtime and opens exact existing sessions', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          linkedRefs: { sessionIds: ['devbox:remote-ika', 'global:kame'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 'remote-ika',
+          nodeId: 'devbox',
+          displayName: 'Ika frontend',
+          agent: 'claude',
+          activeWorker: { kind: 'agent', displayName: 'ika-frontend' },
+          agentState: 'processing',
+          currentActivity: {
+            tool: 'edit',
+            detail: 'wiring participant roster',
+          },
+          controlMode: 'agent-driven',
+          lastActivity: '2026-06-25T23:44:00Z',
+        }),
+        makeSession({
+          id: 'kame-local',
+          globalSessionId: 'global:kame',
+          displayName: 'Kame QA',
+          agent: 'codex',
+          activeWorker: { kind: 'agent', displayName: 'kame-qa' },
+          status: 'disconnected',
+          controlMode: 'human-driven',
+          lastActivity: '2026-06-24T12:00:00Z',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const roster = container.querySelector('.topic-participants');
+    expect(roster?.textContent).toContain('participants');
+    expect(roster?.textContent).toContain('frontend · claude');
+    expect(roster?.textContent).toContain('qa · codex');
+    expect(roster?.textContent).toContain('last 25-06-26');
+    expect(roster?.textContent).toContain('agent-driven');
+    expect(roster?.textContent).toContain('wiring participant roster');
+    expect(roster?.textContent).toContain('running');
+    expect(roster?.textContent).toContain('offline');
+
+    const childRows = Array.from(
+      container.querySelectorAll('.topic-child-row')
+    );
+    expect(childRows[0]?.textContent).toContain('agent · pty');
+    expect(childRows[0]?.textContent).toContain('last 25-06-26');
+    expect(childRows[0]?.textContent).toContain('agent-driven');
+    expect(childRows[0]?.textContent).toContain('wiring participant roster');
+
+    const ikaCard = Array.from(
+      container.querySelectorAll('.topic-participant-card')
+    ).find((card) =>
+      card.textContent?.includes('Ika frontend')
+    ) as HTMLButtonElement;
+    await act(async () => ikaCard.click());
+    expect(onSelectSession).toHaveBeenCalledWith('devbox:remote-ika');
   });
 
   it('renders search result explanation, freshness, disabled action, and truncation metadata', async () => {

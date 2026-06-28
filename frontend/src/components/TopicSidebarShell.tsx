@@ -40,6 +40,7 @@ import {
 import { deriveColor } from '../lib/colors.js';
 import { taskRefFromDraft } from '../lib/topic-task-ref.js';
 import type { SessionSummary } from '../lib/types.js';
+import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
@@ -49,6 +50,7 @@ import {
   buildTopicNavModel,
   type TopicNavItem,
   type TopicNavModel,
+  type TopicNavParticipantRef,
   type TopicNavSessionRef,
   type TopicNavSurfaceRef,
 } from '../lib/state/topic-nav.js';
@@ -85,6 +87,14 @@ type TopicSendInput = typeof sendSessionInput;
 
 const DISCONNECTED_SESSION_CONTROL_REASON =
   'session offline/disconnected — controls unavailable until reconnect';
+const TOPIC_LATEST_STATUS_MAX_LENGTH = 96;
+
+function boundedTopicLatestStatus(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length > TOPIC_LATEST_STATUS_MAX_LENGTH
+    ? `${trimmed.slice(0, TOPIC_LATEST_STATUS_MAX_LENGTH - 3)}...`
+    : trimmed;
+}
 
 function topicPrimarySession(
   item: TopicNavItem
@@ -191,20 +201,23 @@ function topicPrimaryAction(item: TopicNavItem): {
 function topicLatestStatus(item: TopicNavItem): string {
   const session = topicPrimarySession(item);
   if (session?.agentState === 'permission-prompt') {
-    return session.currentActivity?.detail
+    const status = session.currentActivity?.detail
       ? `${item.statusLabel} · ${session.currentActivity.detail}`
       : item.statusLabel;
+    return boundedTopicLatestStatus(status);
   }
   if (session?.currentActivity) {
     const detail = session.currentActivity.detail
       ? ` · ${session.currentActivity.detail}`
       : '';
-    return `${session.currentActivity.tool}${detail}`;
+    return boundedTopicLatestStatus(`${session.currentActivity.tool}${detail}`);
   }
   if (item.surfaces.length > 0) {
-    return `${item.statusLabel} · ${item.surfaces[0]!.label}`;
+    return boundedTopicLatestStatus(
+      `${item.statusLabel} · ${item.surfaces[0]!.label}`
+    );
   }
-  return item.routingLabel ?? item.statusLabel;
+  return boundedTopicLatestStatus(item.routingLabel ?? item.statusLabel);
 }
 
 function TopicBadge({ item }: { item: TopicNavItem }) {
@@ -244,9 +257,6 @@ const TOPIC_ROOM_SESSION_GROUPS: {
 function topicRoomSessionGroup(
   session: TopicNavSessionRef
 ): TopicRoomSessionGroupKey {
-  if (session.displayState === 'error' || session.durability === 'error') {
-    return 'crashed';
-  }
   if (
     session.status === 'disconnected' ||
     session.durability === 'stale-node' ||
@@ -254,6 +264,9 @@ function topicRoomSessionGroup(
     session.controlFreshness === 'stale'
   ) {
     return 'stale-offline';
+  }
+  if (session.displayState === 'error' || session.durability === 'error') {
+    return 'crashed';
   }
   if (session.displayState === 'needs-answer') return 'needs-input';
   if (session.displayState === 'permission') return 'approval';
@@ -346,34 +359,135 @@ function SurfaceButton({ surface }: { surface: TopicNavSurfaceRef }) {
   );
 }
 
-function SessionChildRow({
+function participantLastActivityLabel(
+  participant: TopicNavParticipantRef
+): string {
+  return participant.lastActivity
+    ? `last ${formatRelativeTimeCompact(participant.lastActivity)}`
+    : 'last unknown';
+}
+
+function ParticipantChildRow({
+  participant,
   session,
   onSelectSession,
 }: {
-  session: TopicNavSessionRef;
+  participant: TopicNavParticipantRef;
+  session?: TopicNavSessionRef | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
+  const lastActivityLabel = participantLastActivityLabel(participant);
+  const handleSelect = onSelectSession
+    ? () => onSelectSession(participant.selectKey)
+    : undefined;
   return (
-    <li className={`topic-child-row topic-child-row--${session.tone}`}>
+    <li className={`topic-child-row topic-child-row--${participant.tone}`}>
       <button
         type="button"
         className="topic-child-row__button"
-        {...(onSelectSession
-          ? { onClick: () => onSelectSession(session.selectKey) }
-          : {})}
+        {...(handleSelect ? { onClick: handleSelect } : { disabled: true })}
+        title={`open existing session ${participant.selectKey}`}
       >
         <span className="topic-child-row__label">
-          <MarqueeText>{session.label}</MarqueeText>
+          <MarqueeText>{participant.label}</MarqueeText>
         </span>
-        {session.branch ? (
-          <span className="topic-child-row__meta">{session.branch}</span>
+        <span className="topic-child-row__meta topic-child-row__role">
+          {participant.roleLabel} · {participant.providerLabel}
+        </span>
+        <span className="topic-child-row__meta">
+          {participant.runtimeLabel}
+        </span>
+        <span className="topic-child-row__meta">{participant.statusLabel}</span>
+        <span className="topic-child-row__meta">{lastActivityLabel}</span>
+        {participant.nodeId ? (
+          <span className="topic-child-row__meta">{participant.nodeId}</span>
         ) : null}
-        {session.nodeId ? (
-          <span className="topic-child-row__meta">{session.nodeId}</span>
-        ) : null}
-        <StatusGlyph tone={session.tone} />
+        <span className="topic-child-row__meta">
+          {participant.controlLabel}
+          {participant.summaryLabel ? ` · ${participant.summaryLabel}` : ''}
+          {session?.branch ? ` · ${session.branch}` : ''}
+        </span>
+        <StatusGlyph tone={participant.tone} />
       </button>
     </li>
+  );
+}
+
+function participantGroups(participants: TopicNavParticipantRef[]) {
+  const groups = new Map<string, TopicNavParticipantRef[]>();
+  for (const participant of participants) {
+    const key = `${participant.roleLabel} · ${participant.providerLabel}`;
+    const existing = groups.get(key) ?? [];
+    existing.push(participant);
+    groups.set(key, existing);
+  }
+  return Array.from(groups.entries());
+}
+
+function ParticipantRoster({
+  item,
+  onSelectSession,
+}: {
+  item: TopicNavItem;
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  if (item.participants.length === 0) return null;
+  return (
+    <section className="topic-participants" aria-label="participant roster">
+      <div className="topic-participants__header">
+        <span>participants</span>
+        <span>{item.participants.length} linked</span>
+      </div>
+      {participantGroups(item.participants).map(([group, participants]) => (
+        <div className="topic-participant-group" key={group}>
+          <div className="topic-participant-group__label">{group}</div>
+          <div className="topic-participant-group__grid">
+            {participants.map((participant) => {
+              const handleSelect = onSelectSession
+                ? () => onSelectSession(participant.selectKey)
+                : undefined;
+              const lastActivityLabel =
+                participantLastActivityLabel(participant);
+              return (
+                <button
+                  key={participant.id}
+                  type="button"
+                  className={`topic-participant-card topic-participant-card--${participant.tone}`}
+                  {...(handleSelect
+                    ? { onClick: handleSelect }
+                    : { disabled: true })}
+                  title={`open existing session ${participant.selectKey}`}
+                >
+                  <span className="topic-participant-card__topline">
+                    <span className="topic-participant-card__name">
+                      {participant.label}
+                    </span>
+                    <span className="topic-participant-card__status">
+                      {participant.statusLabel}
+                    </span>
+                  </span>
+                  <span className="topic-participant-card__meta">
+                    {participant.roleLabel} · {participant.providerLabel}
+                  </span>
+                  <span className="topic-participant-card__meta">
+                    {participant.runtimeLabel}
+                    {participant.nodeId ? ` · ${participant.nodeId}` : ''}
+                  </span>
+                  <span className="topic-participant-card__meta">
+                    {lastActivityLabel} · {participant.controlLabel}
+                  </span>
+                  {participant.summaryLabel ? (
+                    <span className="topic-participant-card__summary">
+                      {participant.summaryLabel}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -642,6 +756,8 @@ function TopicDetail({
         raw terminal attach stays secondary; select a session row for exact tab
         fallback.
       </div>
+
+      <ParticipantRoster item={item} onSelectSession={onSelectSession} />
     </section>
   );
 }
@@ -919,11 +1035,11 @@ function TopicRow({
   onSelect: (id: string) => void;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
-  const hasNested = item.childIds.length > 0 || item.sessions.length > 0;
+  const hasNested = item.childIds.length > 0 || item.participants.length > 0;
   const expanded = expandedIds.has(item.id);
   const selected = selectedId === item.id;
   const affordanceCount =
-    item.sessions.length + item.surfaces.length + item.taskRefs.length;
+    item.participants.length + item.surfaces.length + item.taskRefs.length;
 
   const activate = () => {
     onSelect(item.id);
@@ -974,8 +1090,8 @@ function TopicRow({
           aria-label={`${item.statusLabel}, ${affordanceCount} linked items`}
         >
           <span className="topic-row__hover-actions" aria-hidden="true">
-            {item.sessions.length > 0 ? (
-              <span className="topic-chip">s{item.sessions.length}</span>
+            {item.participants.length > 0 ? (
+              <span className="topic-chip">p{item.participants.length}</span>
             ) : null}
             {item.surfaces.slice(0, 2).map((surface) => (
               <SurfaceButton key={surface.id} surface={surface} />
@@ -989,12 +1105,15 @@ function TopicRow({
       </div>
       {expanded ? (
         <>
-          {item.sessions.length > 0 ? (
+          {item.participants.length > 0 ? (
             <ul className="topic-child-list">
-              {item.sessions.map((session) => (
-                <SessionChildRow
-                  key={session.id}
-                  session={session}
+              {item.participants.map((participant) => (
+                <ParticipantChildRow
+                  key={participant.id}
+                  participant={participant}
+                  session={item.sessions.find(
+                    (session) => session.selectKey === participant.selectKey
+                  )}
                   onSelectSession={onSelectSession}
                 />
               ))}
