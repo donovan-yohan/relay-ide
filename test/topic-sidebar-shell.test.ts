@@ -332,6 +332,32 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
+  it('keeps desktop resume enabled when only live input control state is unknown', async () => {
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'readable lane',
+          agentState: 'idle',
+          controlFreshness: undefined,
+        }),
+      ],
+    });
+
+    const primary = container.querySelector(
+      '.topic-room__primary'
+    ) as HTMLButtonElement;
+
+    expect(primary.textContent).toBe('resume');
+    expect(primary.disabled).toBe(false);
+    expect(
+      primary.closest('.topic-room__action-band')?.textContent
+    ).not.toContain('controls disabled: unknown control state');
+
+    await act(async () => primary.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+  });
+
   it('selects the exact global session from the task-room session row', async () => {
     await renderView({
       topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],

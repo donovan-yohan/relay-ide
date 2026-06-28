@@ -124,20 +124,24 @@ function topicPrimaryAction(item: TopicNavItem): {
   disabledReason: string | null;
 } {
   const session = topicPrimarySession(item);
-  const disabledReason = sessionControlDisabledReason(session);
-  const attachDisabledReason = sessionAttachDisabledReason(session);
+  const controlDisabledReason = session
+    ? sessionControlDisabledReason(session)
+    : null;
+  const attachDisabledReason = session
+    ? sessionAttachDisabledReason(session)
+    : null;
   if (session?.displayState === 'permission') {
     return {
       label: 'approve',
       detail: 'send an audited approval reply to the live session',
-      disabledReason,
+      disabledReason: controlDisabledReason,
     };
   }
   if (session?.displayState === 'needs-answer') {
     return {
       label: 'reply',
       detail: 'send a short audited reply without opening the terminal first',
-      disabledReason,
+      disabledReason: controlDisabledReason,
     };
   }
   if (session && attachDisabledReason) {
@@ -152,7 +156,7 @@ function topicPrimaryAction(item: TopicNavItem): {
     return {
       label: 'resume',
       detail: 'open the linked Relay tab; raw PTY remains the fallback',
-      disabledReason,
+      disabledReason: null,
     };
   }
   if (item.surfaces.length > 0) {
