@@ -3,13 +3,19 @@
 import * as fs from 'node:fs';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
 import type {
   WorkspaceTopic,
+  WorkspaceTopicListResponse,
   WorkspaceTopicSearchResult,
 } from '../shared/workspace-topics.js';
-import { TopicSidebarView } from '../frontend/src/components/TopicSidebarShell.js';
+import {
+  TopicSidebarShell,
+  TopicSidebarView,
+} from '../frontend/src/components/TopicSidebarShell.js';
+import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { makeSession } from './helpers/frontend-factories.js';
 
 (
@@ -23,6 +29,12 @@ class ResizeObserverStub {
 }
 
 const NOW = '2026-06-26T00:00:00Z';
+
+async function flushQueryEffects() {
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await Promise.resolve();
+}
 
 function makeTopic(overrides: Partial<WorkspaceTopic> = {}): WorkspaceTopic {
   return {
@@ -85,6 +97,8 @@ describe('TopicSidebarView', () => {
     act(() => root.unmount());
     container.remove();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
+    useSessionsStore.setState({ sessions: [] });
   });
 
   async function renderView(
@@ -107,7 +121,10 @@ describe('TopicSidebarView', () => {
     await renderView();
 
     expect(container.querySelector('.topic-shell')).not.toBeNull();
+    expect(container.querySelector('.topic-room')).not.toBeNull();
     expect(container.textContent).toContain('Build UI shell');
+    expect(container.textContent).toContain('task room');
+    expect(container.textContent).toContain('primary action');
     expect(container.textContent).toContain('Thin-line topic detail');
     expect(container.textContent).toContain('Frontend lane');
     expect(container.textContent).toContain('preview');
@@ -189,6 +206,231 @@ describe('TopicSidebarView', () => {
       'Thin-line topic detail'
     );
     expect(container.textContent).toContain('1 task refs');
+    expect(container.textContent).toContain('no sessions linked yet');
+    const primary = container.querySelector(
+      '.topic-room__primary'
+    ) as HTMLButtonElement;
+    expect(primary.textContent).toBe('view artifact');
+    expect(primary.disabled).toBe(false);
+  });
+
+  it('renders a task-room panel with grouped sessions, refs, and safe artifacts', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          linkedRefs: {
+            sessionIds: [
+              'question-session',
+              'approval-session',
+              'running-session',
+              'idle-session',
+              'stale-session',
+              'crashed-session',
+            ],
+            taskRefs: [
+              {
+                kind: 'github-issue',
+                id: '1044',
+                title: 'topic room detail',
+                url: 'https://github.com/donovan-yohan/relay-ide/issues/1044',
+                status: 'open',
+              },
+            ],
+            artifactIds: ['artifact:evidence-1'],
+          },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 'question-session',
+          displayName: 'question lane',
+          agentState: 'permission-prompt',
+          permissionType: 'question',
+        }),
+        makeSession({
+          id: 'approval-session',
+          displayName: 'approval lane',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+        }),
+        makeSession({
+          id: 'running-session',
+          displayName: 'running lane',
+          agentState: 'processing',
+        }),
+        makeSession({
+          id: 'idle-session',
+          displayName: 'idle lane',
+          agentState: 'idle',
+          idle: true,
+        }),
+        makeSession({
+          id: 'stale-session',
+          displayName: 'stale lane',
+          status: 'disconnected',
+        }),
+        makeSession({
+          id: 'crashed-session',
+          displayName: 'crashed lane',
+          agentState: 'error',
+        }),
+      ],
+      surfaces: [
+        makeSurface(),
+        makeSurface({
+          id: 'surface:copy-only',
+          kind: 'logs',
+          label: 'Build log',
+          openMode: 'copy',
+          url: undefined,
+          logRef: 'artifact:build-log',
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain('needs input · 1');
+    expect(container.textContent).toContain('approval · 1');
+    expect(container.textContent).toContain('running · 1');
+    expect(container.textContent).toContain('idle · 1');
+    expect(container.textContent).toContain('stale/offline · 1');
+    expect(container.textContent).toContain('crashed · 1');
+    expect(container.textContent).toContain('topic room detail');
+    expect(container.textContent).toContain('metadata ref only');
+    expect(container.textContent).toContain('direct open');
+    expect(container.textContent).toContain('copy only');
+    expect(container.textContent).toContain(
+      'raw terminal attach stays secondary'
+    );
+  });
+
+  it('keeps stale sessions inspectable while disabling live room controls', async () => {
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'offline approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          status: 'disconnected',
+        }),
+      ],
+    });
+
+    const primary = container.querySelector(
+      '.topic-room__primary'
+    ) as HTMLButtonElement;
+    const sessionButton = container.querySelector(
+      '.topic-room-session__button'
+    ) as HTMLButtonElement;
+
+    expect(primary.textContent).toBe('approve');
+    expect(primary.disabled).toBe(true);
+    expect(container.textContent).toContain(
+      'controls disabled: session offline/disconnected'
+    );
+    await act(async () => sessionButton.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+  });
+
+  it('keeps desktop resume enabled when only live input control state is unknown', async () => {
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'readable lane',
+          agentState: 'idle',
+          controlFreshness: undefined,
+        }),
+      ],
+    });
+
+    const primary = container.querySelector(
+      '.topic-room__primary'
+    ) as HTMLButtonElement;
+
+    expect(primary.textContent).toBe('resume');
+    expect(primary.disabled).toBe(false);
+    expect(
+      primary.closest('.topic-room__action-band')?.textContent
+    ).not.toContain('controls disabled: unknown control state');
+
+    await act(async () => primary.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+  });
+
+  it('selects the exact global session from the task-room session row', async () => {
+    await renderView({
+      topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],
+      sessions: [
+        makeSession({
+          id: 'local-session',
+          globalSessionId: 'global:agent-1',
+          displayName: 'global lane',
+        }),
+      ],
+    });
+
+    const roomSessionButton = container.querySelector(
+      '.topic-room-session__button'
+    ) as HTMLButtonElement;
+    expect(roomSessionButton.title).toContain('global:agent-1');
+    await act(async () => roomSessionButton.click());
+    expect(onSelectSession).toHaveBeenCalledWith('global:agent-1');
+  });
+
+  it('keeps the room usable when surface loading fails', async () => {
+    await renderView({ surfaces: [], surfacesError: true });
+
+    expect(container.textContent).toContain('Frontend lane');
+    expect(container.textContent).toContain('surfaces unavailable');
+  });
+
+  it('keeps the room usable while surfaces are still loading', async () => {
+    await renderView({ surfaces: [], surfacesLoading: true });
+
+    expect(container.textContent).not.toContain('loading topic shell');
+    expect(container.querySelector('.topic-room')).not.toBeNull();
+    expect(container.textContent).toContain('Frontend lane');
+    expect(container.textContent).toContain('surfaces loading…');
+  });
+
+  it('keeps the shell room mounted while surfaces query is still pending', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const topicsResponse: WorkspaceTopicListResponse = {
+      topics: [makeTopic()],
+      truncated: false,
+      derived: false,
+    };
+    queryClient.setQueryData(['workspace-topics'], topicsResponse);
+    useSessionsStore.setState({
+      sessions: [makeSession({ id: 's1', displayName: 'Frontend lane' })],
+    });
+    const fetchMock = vi.fn(
+      () => new Promise<Response>(() => {})
+    ) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    await act(async () => {
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarShell, { onSelectSession })
+        )
+      );
+      await flushQueryEffects();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/workspace-surfaces', {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    });
+    expect(container.textContent).not.toContain('loading topic shell');
+    expect(container.querySelector('.topic-room')).not.toBeNull();
+    expect(container.textContent).toContain('Build UI shell');
+    expect(container.textContent).toContain('surfaces loading…');
+    queryClient.clear();
   });
 
   it('reports loading, error, and empty states', async () => {
@@ -324,6 +566,43 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('sent · audit/intervention trail');
   });
 
+  it('offers explicit approve and deny presets before audited mobile approval send', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          controlFreshness: 'fresh',
+        }),
+      ],
+      onSendInput,
+    });
+
+    const denyPreset = Array.from(
+      container.querySelectorAll('.topic-mobile-control__preset')
+    ).find((button) => button.textContent === 'deny') as HTMLButtonElement;
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const form = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+
+    await act(async () => denyPreset.click());
+    expect(input.value).toBe('n');
+    expect(container.textContent).toContain(
+      'deny selected · preview before sending'
+    );
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('confirmation preview');
+    await act(async () => form.requestSubmit());
+    expect(onSendInput).toHaveBeenCalledWith('s1', 'n\r', undefined);
+  });
+
   it('sends audited mobile replies to the local session id when linked by global id', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
     await renderView({
@@ -404,6 +683,236 @@ describe('TopicSidebarView', () => {
     expect(onSendInput).not.toHaveBeenCalled();
   });
 
+  it('disables stale/offline mobile resume while preserving artifact handoff', async () => {
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'offline idle session',
+          agentState: 'idle',
+          idle: true,
+          status: 'disconnected',
+          controlFreshness: 'fresh',
+        }),
+      ],
+      surfaces: [
+        makeSurface({
+          id: 'surface:log',
+          kind: 'logs',
+          label: 'Last known artifact',
+          openMode: 'copy',
+          command: 'relay artifact show surface:log',
+        }),
+      ],
+    });
+
+    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
+      'waiting'
+    );
+    expect(container.textContent).toContain(
+      'controls disabled: session offline/disconnected'
+    );
+
+    const buttons = Array.from(
+      container.querySelectorAll('.topic-mobile-actions button')
+    ) as HTMLButtonElement[];
+    const resume = buttons.find(
+      (button) => button.textContent === 'resume topic'
+    ) as HTMLButtonElement;
+    const terminal = buttons.find(
+      (button) => button.textContent === 'open terminal tab'
+    ) as HTMLButtonElement;
+    const artifact = buttons.find((button) =>
+      button.textContent?.includes('logs artifact')
+    ) as HTMLButtonElement;
+
+    expect(resume.disabled).toBe(true);
+    expect(resume.title).toContain('offline/disconnected');
+    expect(terminal.disabled).toBe(true);
+    expect(artifact.disabled).toBe(false);
+    await act(async () => artifact.click());
+    expect(container.textContent).toMatch(
+      /surface (target ready to copy|target copied|copy unavailable)/
+    );
+    expect(onSelectSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps permission/question mobile input fail-closed when control freshness is omitted', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'approval awaiting freshness',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          status: 'active',
+        }),
+      ],
+      onSendInput,
+    });
+
+    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
+      'approve'
+    );
+    expect(container.textContent).toContain(
+      'controls disabled: unknown control state'
+    );
+
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const submit = container.querySelector(
+      '.topic-mobile-control__primary'
+    ) as HTMLButtonElement;
+    const presets = Array.from(
+      container.querySelectorAll('.topic-mobile-control__preset')
+    ) as HTMLButtonElement[];
+    const buttons = Array.from(
+      container.querySelectorAll('.topic-mobile-actions button')
+    ) as HTMLButtonElement[];
+    const resume = buttons.find(
+      (button) => button.textContent === 'resume topic'
+    ) as HTMLButtonElement;
+    const terminal = buttons.find(
+      (button) => button.textContent === 'open terminal tab'
+    ) as HTMLButtonElement;
+
+    expect(input.disabled).toBe(true);
+    expect(submit.disabled).toBe(true);
+    expect(submit.title).toContain('unknown control state');
+    expect(presets.map((preset) => preset.disabled)).toEqual([true, true]);
+    expect(resume.disabled).toBe(false);
+    expect(resume.title).toContain('open the linked Relay tab');
+    expect(terminal.disabled).toBe(false);
+
+    await act(async () => terminal.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+    expect(onSendInput).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'question awaiting freshness',
+          agentState: 'permission-prompt',
+          permissionType: 'question',
+          status: 'active',
+        }),
+      ],
+      onSendInput,
+    });
+
+    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
+      'reply'
+    );
+    expect(container.textContent).toContain(
+      'controls disabled: unknown control state'
+    );
+
+    const questionInput = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const questionSubmit = container.querySelector(
+      '.topic-mobile-control__primary'
+    ) as HTMLButtonElement;
+    const questionTerminal = Array.from(
+      container.querySelectorAll('.topic-mobile-actions button')
+    ).find(
+      (button) => button.textContent === 'open terminal tab'
+    ) as HTMLButtonElement;
+
+    expect(questionInput.disabled).toBe(true);
+    expect(questionSubmit.disabled).toBe(true);
+    expect(
+      container.querySelectorAll('.topic-mobile-control__preset')
+    ).toHaveLength(0);
+    expect(questionTerminal.disabled).toBe(false);
+
+    await act(async () => questionTerminal.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+    expect(onSendInput).not.toHaveBeenCalled();
+  });
+
+  it('keeps mobile resume enabled when only live input control state is unsafe', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'live Hermes pty session',
+          status: 'active',
+          controlFreshness: 'unknown',
+        }),
+      ],
+      onSendInput,
+    });
+
+    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
+      'resume'
+    );
+    expect(container.textContent).toContain(
+      'controls disabled: unknown control state'
+    );
+
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const submit = container.querySelector(
+      '.topic-mobile-control__primary'
+    ) as HTMLButtonElement;
+    const buttons = Array.from(
+      container.querySelectorAll('.topic-mobile-actions button')
+    ) as HTMLButtonElement[];
+    const resume = buttons.find(
+      (button) => button.textContent === 'resume topic'
+    ) as HTMLButtonElement;
+    const terminal = buttons.find(
+      (button) => button.textContent === 'open terminal tab'
+    ) as HTMLButtonElement;
+
+    expect(input.disabled).toBe(true);
+    expect(submit.disabled).toBe(true);
+    expect(resume.disabled).toBe(false);
+    expect(resume.title).toContain('open the linked Relay tab');
+    expect(terminal.disabled).toBe(false);
+
+    await act(async () => terminal.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+    expect(onSendInput).not.toHaveBeenCalled();
+  });
+
+  it('keeps web session input disabled while allowing mobile tab resume', async () => {
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'fresh Hermes web session',
+          mode: 'web',
+          status: 'active',
+          controlFreshness: 'fresh',
+        }),
+      ],
+    });
+
+    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
+      'resume'
+    );
+    expect(container.textContent).toContain(
+      'controls disabled: web session input is unsupported here'
+    );
+
+    const resume = Array.from(
+      container.querySelectorAll('.topic-mobile-actions button')
+    ).find(
+      (button) => button.textContent === 'resume topic'
+    ) as HTMLButtonElement;
+    expect(resume.disabled).toBe(false);
+    await act(async () => resume.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+  });
+
   it('makes the resume and terminal-tab mobile controls explicit', async () => {
     await renderView();
 
@@ -452,6 +961,42 @@ describe('TopicSidebarView', () => {
     expect(css).toContain('.topic-search__input:focus-visible');
     expect(css).toMatch(
       /\.topic-search__input:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)/
+    );
+  });
+
+  it('keeps keyboard-visible focus styling for room controls', () => {
+    const css = fs.readFileSync(
+      'frontend/src/components/TopicSidebarShell.css',
+      'utf8'
+    );
+
+    expect(css).toMatch(
+      /\.topic-room__primary:not\(:disabled\):focus-visible,\s*\.topic-room-ref-list a:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*2px[\s\S]*box-shadow:/
+    );
+    expect(css).toMatch(
+      /\.topic-room-session__button:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*2px[\s\S]*box-shadow:/
+    );
+  });
+
+  it('opens direct surfaces with noopener and noreferrer isolation', async () => {
+    const openMock = vi.fn();
+    vi.stubGlobal('open', openMock);
+
+    await renderView({
+      topics: [makeTopic({ linkedRefs: { sessionIds: [] } })],
+      sessions: [],
+      surfaces: [makeSurface()],
+    });
+
+    const primary = container.querySelector(
+      '.topic-room__primary'
+    ) as HTMLButtonElement;
+    await act(async () => primary.click());
+
+    expect(openMock).toHaveBeenCalledWith(
+      'http://localhost:5173',
+      '_blank',
+      'noopener,noreferrer'
     );
   });
 

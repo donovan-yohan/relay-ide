@@ -53,6 +53,7 @@ export interface TopicNavSurfaceRef {
 
 export interface TopicNavItem {
   id: WorkspaceTopicId;
+  workspaceId: WorkspaceTopic['workspaceId'];
   parentId: WorkspaceTopicId | null;
   title: string;
   description: string | null;
@@ -68,8 +69,11 @@ export interface TopicNavItem {
   sessions: TopicNavSessionRef[];
   surfaces: TopicNavSurfaceRef[];
   taskRefs: NonNullable<WorkspaceTopic['linkedRefs']['taskRefs']>;
+  artifactIds: NonNullable<WorkspaceTopic['linkedRefs']['artifactIds']>;
   childIds: WorkspaceTopicId[];
   routingLabel: string | null;
+  lifecycleLabel: WorkspaceTopic['status'];
+  updatedAt: string;
 }
 
 export interface TopicNavModel {
@@ -327,6 +331,7 @@ export function buildTopicNavModel(input: {
     const order = topic.grouping.order ?? Number.MAX_SAFE_INTEGER;
     return {
       id: topic.id,
+      workspaceId: topic.workspaceId,
       parentId: topic.grouping.parentTopicId ?? null,
       title: topic.display.title,
       description: topic.display.description ?? null,
@@ -342,8 +347,11 @@ export function buildTopicNavModel(input: {
       sessions,
       surfaces,
       taskRefs: topic.linkedRefs.taskRefs ?? [],
+      artifactIds: topic.linkedRefs.artifactIds ?? [],
       childIds: [],
       routingLabel: routingLabel(topic),
+      lifecycleLabel: topic.status,
+      updatedAt: topic.updatedAt,
     };
   });
 
