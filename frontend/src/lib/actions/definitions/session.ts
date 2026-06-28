@@ -109,6 +109,17 @@ export const sessionStartOnTicket: ActionMeta = {
   descriptor: ticketStartWorkDescriptor,
 };
 
+export const sessionCreateTaskRoom: ActionMeta = {
+  id: 'session.create-task-room',
+  label: 'create task room…',
+  description: 'create a WorkspaceTopic room, optionally launching an agent',
+  aliases: ['+ task', 'task room', 'workspace topic', 'create and launch'],
+  category: 'session',
+  icon: '+',
+  when: (ctx) => !!ctx.workspacePath || !!ctx.cwd,
+  descriptor: launchDescriptor,
+};
+
 export const sessionCustomize: ActionMeta = {
   id: 'session.customize',
   label: 'customize session',
@@ -173,6 +184,7 @@ export const sessionActions: ActionMeta[] = [
   sessionKill,
   sessionStartOnRepo,
   sessionStartOnTicket,
+  sessionCreateTaskRoom,
   sessionCustomize,
   sessionSwitchToTab,
   sessionRename,

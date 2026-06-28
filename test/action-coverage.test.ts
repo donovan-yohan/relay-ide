@@ -33,16 +33,18 @@ import { workspaceOpenFileBrowser } from '../frontend/src/lib/actions/definition
 import { actionDescriptorFromMeta } from '../frontend/src/lib/actions/descriptors.js';
 import { stableCommandNames } from '../shared/cli-gateway-contract.js';
 
-// Full allowlist: 62 palettable action IDs (15 Phase 2 + 44 Phase 3 + 1 from #630
-// + workspace.launch from #870 + next-attention WorkContext jump from #933)
+// Full allowlist: 63 palettable action IDs (15 Phase 2 + 44 Phase 3 + 1 from #630
+// + workspace.launch from #870 + next-attention WorkContext jump from #933
+// + task-room create/launch from #1045)
 const ACTION_ALLOWLIST = [
-  // Session (10)
+  // Session (11)
   'session.new-agent',
   'session.new-terminal',
   'session.close-active',
   'session.kill',
   'session.start-on-repo',
   'session.start-on-ticket',
+  'session.create-task-room',
   'session.start-work-in-env',
   'session.customize',
   'session.switch-to-tab',
@@ -164,9 +166,9 @@ describe('Action Coverage', () => {
   });
 
   it('projects stable CLI gateway commands into disabled Command Center metadata', () => {
-    expect(cliGatewayCommandActions.map((action) => action.relayCommand.name)).toEqual(
-      stableCommandNames()
-    );
+    expect(
+      cliGatewayCommandActions.map((action) => action.relayCommand.name)
+    ).toEqual(stableCommandNames());
     expect(cliGatewayCommandActions.map((action) => action.id)).toEqual(
       stableCommandNames().map((name) => `gateway.${name}`)
     );
@@ -176,10 +178,15 @@ describe('Action Coverage', () => {
       expect(action.label).toBe(action.label.toLowerCase());
       expect(action.description).toBe(action.relayCommand.summary);
       expect(action.aliases).toEqual(
-        expect.arrayContaining([action.relayCommand.name, action.relayCommand.sideEffect])
+        expect.arrayContaining([
+          action.relayCommand.name,
+          action.relayCommand.sideEffect,
+        ])
       );
       expect(action.when?.({ view: 'workspace' })).toBe(false);
-      expect(action.disabledReason?.({ view: 'workspace' })).toContain('relay-ide v1');
+      expect(action.disabledReason?.({ view: 'workspace' })).toContain(
+        'relay-ide v1'
+      );
       expect(action.descriptor.contract?.source).toBe(
         'shared/relay-command-manifest.ts'
       );
@@ -207,7 +214,9 @@ describe('Action Coverage', () => {
     );
     expect(descriptor.availability).toMatchObject({
       state: 'unavailable',
-      reason: expect.stringContaining('Command Center execution is not wired yet'),
+      reason: expect.stringContaining(
+        'Command Center execution is not wired yet'
+      ),
     });
     expect(descriptor.contract).toMatchObject({
       relayCommandName: 'sessions.create',
@@ -417,7 +426,8 @@ describe('Action Coverage', () => {
 
     expect(descriptor.availability).toEqual({
       state: 'unavailable',
-      reason: 'file rpc unavailable on this node — check the node helper status',
+      reason:
+        'file rpc unavailable on this node — check the node helper status',
     });
   });
 

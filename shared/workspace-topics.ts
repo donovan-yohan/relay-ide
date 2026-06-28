@@ -212,6 +212,115 @@ export interface WorkspaceTopicUpdateInput {
   privacy?: Partial<WorkspaceTopicPrivacyMetadata>;
 }
 
+export type WorkspaceTopicLaunchIntent = 'create-only' | 'create-and-launch';
+export type WorkspaceTopicTemplateKind =
+  | 'agent-task'
+  | 'terminal-task'
+  | 'note';
+
+export interface WorkspaceTopicLaunchPreviewInput {
+  create: WorkspaceTopicCreateInput;
+  intent: WorkspaceTopicLaunchIntent;
+  templateKind?: WorkspaceTopicTemplateKind;
+  launchOverrides?: WorkspaceTopicLaunchOverrides;
+}
+
+export interface WorkspaceTopicLaunchPreview {
+  intent: WorkspaceTopicLaunchIntent;
+  templateKind: WorkspaceTopicTemplateKind;
+  title: string;
+  workspaceId: WorkspaceId;
+  providerLabel: string;
+  modeLabel: string;
+  nodeLabel: string;
+  cwdLabel: string;
+  promptSources: string[];
+  taskRefs: string[];
+  sideEffects: string[];
+}
+
+function launchOverrideString(
+  overrides: WorkspaceTopicLaunchOverrides | undefined,
+  key: string
+): string | undefined {
+  const value = overrides?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function taskRefLabel(
+  ref: NonNullable<WorkspaceTopicLinkedRefs['taskRefs']>[number]
+): string {
+  return ref.title
+    ? `${ref.kind}:${ref.id} · ${ref.title}`
+    : `${ref.kind}:${ref.id}`;
+}
+
+function providerPreviewLabel(provider: string): string {
+  return provider === 'hermes' ? 'hermes (mode explicit)' : provider;
+}
+
+export function buildWorkspaceTopicLaunchPreview(
+  input: WorkspaceTopicLaunchPreviewInput
+): WorkspaceTopicLaunchPreview {
+  const create = input.create;
+  const overrideProvider = launchOverrideString(input.launchOverrides, 'agent');
+  const overrideNode = launchOverrideString(input.launchOverrides, 'nodeId');
+  const overrideRepo = launchOverrideString(input.launchOverrides, 'repoPath');
+  const overrideWorktree = launchOverrideString(
+    input.launchOverrides,
+    'worktreePath'
+  );
+  const overrideCwd = launchOverrideString(input.launchOverrides, 'cwd');
+  const routing = resolveWorkspaceTopicRoutingDefaults({
+    ...(create.routingDefaults
+      ? { topicDefaults: create.routingDefaults }
+      : {}),
+    explicitSpawnInput: {
+      ...(overrideProvider ? { providerId: overrideProvider } : {}),
+      ...(overrideNode ? { nodeId: overrideNode } : {}),
+      ...(overrideRepo ? { repoPath: overrideRepo } : {}),
+      ...(overrideWorktree ? { worktreePath: overrideWorktree } : {}),
+      ...(overrideCwd ? { cwd: overrideCwd } : {}),
+    },
+  });
+  const provider = routing.providerId ?? 'default provider';
+  const mode = launchOverrideString(input.launchOverrides, 'mode') ?? 'pty';
+  const promptSources = [
+    create.promptDefaults?.starterPrompt ? 'starter prompt' : undefined,
+    create.promptDefaults?.instructions ? 'instructions' : undefined,
+    create.promptDefaults?.contextPacketIds?.length
+      ? `${create.promptDefaults.contextPacketIds.length} context packets`
+      : undefined,
+  ].filter((value): value is string => Boolean(value));
+  const taskRefs = (create.linkedRefs?.taskRefs ?? []).map(taskRefLabel);
+  const sideEffects = [
+    'create WorkspaceTopic room',
+    create.linkedRefs?.workContextIds?.length
+      ? 'link existing WorkContext ref'
+      : 'create WorkContext link for this room',
+    input.intent === 'create-and-launch'
+      ? 'launch provider-neutral session through sessions.create'
+      : undefined,
+    input.intent === 'create-and-launch'
+      ? 'link created session back to WorkspaceTopic/WorkContext'
+      : undefined,
+  ].filter((value): value is string => Boolean(value));
+  return {
+    intent: input.intent,
+    templateKind: input.templateKind ?? 'agent-task',
+    title: create.title,
+    workspaceId: create.workspaceId,
+    providerLabel: providerPreviewLabel(provider),
+    modeLabel: mode,
+    nodeLabel: routing.nodeId ?? 'local/default node',
+    cwdLabel:
+      routing.worktreePath ?? routing.cwd ?? routing.repoPath ?? 'default cwd',
+    promptSources: promptSources.length ? promptSources : ['none'],
+    taskRefs: taskRefs.length ? taskRefs : ['none'],
+    sideEffects,
+  };
+}
+
 export interface WorkspaceTopicValidationOptions {
   knownRepoPaths?: readonly string[];
   knownWorktreePaths?: readonly string[];

@@ -5,8 +5,9 @@ import {
   useState,
   type FormEvent,
   type CSSProperties,
+  type ReactNode,
 } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CircleAlert,
   Folder,
@@ -16,19 +17,29 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
-import type {
-  WorkspaceTopic,
-  WorkspaceTopicSearchResult,
-} from '../../../shared/workspace-topics.js';
 import {
+  buildWorkspaceTopicLaunchPreview,
+  type WorkspaceTopic,
+  type WorkspaceTopicCreateInput,
+  type WorkspaceTopicLaunchIntent,
+  type WorkspaceTopicSearchResult,
+} from '../../../shared/workspace-topics.js';
+import type { TaskRef } from '../../../shared/work-context.js';
+import {
+  createWorkspaceTopicRoomAndMaybeLaunch,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
+  launchWorkspaceTopicRoom,
   searchWorkspaceTopics,
   sendSessionInput,
+  type WorkspaceTopicLaunchFailure,
+  type WorkspaceTopicRoomCreateResult,
 } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
 import type { SessionSummary } from '../lib/types.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
+import { useUiStore } from '../lib/stores/ui.js';
+import { useConfigStore } from '../lib/stores/config.js';
 import { durabilityDisabledReason } from '../lib/session-durability.js';
 import {
   buildTopicNavModel,
@@ -692,14 +703,140 @@ function topicEmptyStateText(input: {
   return `no topic matches for “${input.searchQuery.trim()}”`;
 }
 
+type TopicRoomDraft = {
+  title: string;
+  prompt: string;
+  taskRef: string;
+};
+
+interface TopicRoomCreatePanelProps {
+  open: boolean;
+  draft: TopicRoomDraft;
+  previewCreate: WorkspaceTopicCreateInput;
+  launchFailure?: WorkspaceTopicLaunchFailure | null | undefined;
+  submittingIntent?: WorkspaceTopicLaunchIntent | null | undefined;
+  onDraftChange: (patch: Partial<TopicRoomDraft>) => void;
+  onSubmit: (intent: WorkspaceTopicLaunchIntent) => void;
+  onCancel: () => void;
+}
+
+function TopicRoomCreatePanel({
+  open,
+  draft,
+  previewCreate,
+  launchFailure,
+  submittingIntent,
+  onDraftChange,
+  onSubmit,
+  onCancel,
+}: TopicRoomCreatePanelProps) {
+  const preview = useMemo(
+    () =>
+      buildWorkspaceTopicLaunchPreview({
+        create: previewCreate,
+        intent: 'create-and-launch',
+        templateKind: 'agent-task',
+        launchOverrides: {
+          type: 'agent',
+          mode: 'pty',
+          agent: previewCreate.routingDefaults?.providerId,
+        },
+      }),
+    [previewCreate]
+  );
+  if (!open) return null;
+  const disabled = !draft.title.trim() || Boolean(submittingIntent);
+  return (
+    <form
+      className="topic-create-panel"
+      aria-label="create task room"
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault();
+        if (!disabled) onSubmit('create-and-launch');
+      }}
+    >
+      <div className="topic-create-panel__title">new task room</div>
+      <label>
+        <span>title</span>
+        <input
+          value={draft.title}
+          onChange={(event) => onDraftChange({ title: event.target.value })}
+          placeholder="issue title or task"
+        />
+      </label>
+      <label>
+        <span>starter prompt</span>
+        <textarea
+          value={draft.prompt}
+          onChange={(event) => onDraftChange({ prompt: event.target.value })}
+          placeholder="what should the agent start with?"
+          rows={3}
+        />
+      </label>
+      <label>
+        <span>task ref</span>
+        <input
+          value={draft.taskRef}
+          onChange={(event) => onDraftChange({ taskRef: event.target.value })}
+          placeholder="github issue number or URL"
+        />
+      </label>
+      <div className="topic-create-preview" aria-label="launch preview">
+        <div>provider: {preview.providerLabel}</div>
+        <div>mode: {preview.modeLabel}</div>
+        <div>node: {preview.nodeLabel}</div>
+        <div>cwd: {preview.cwdLabel}</div>
+        <div>prompt: {preview.promptSources.join(', ')}</div>
+        <div>tasks: {preview.taskRefs.join(', ')}</div>
+        <div>side effects: {preview.sideEffects.join(' · ')}</div>
+      </div>
+      {launchFailure ? (
+        <div className="topic-create-failure" role="alert">
+          {launchFailure.stage === 'session'
+            ? 'launch failed after room creation'
+            : 'room creation failed'}{' '}
+          ({launchFailure.stage}): {launchFailure.message}
+        </div>
+      ) : null}
+      <div className="topic-create-panel__actions">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={Boolean(submittingIntent)}
+        >
+          cancel
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onSubmit('create-only')}
+        >
+          {submittingIntent === 'create-only' ? 'creating…' : 'create only'}
+        </button>
+        <button type="submit" disabled={disabled}>
+          {submittingIntent === 'create-and-launch'
+            ? 'launching…'
+            : launchFailure
+              ? launchFailure.stage === 'session'
+                ? 'retry launch'
+                : 'retry create + launch'
+              : 'create + launch'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function TopicMobileCockpit({
   mobileItems,
   selectedId,
   onSelect,
+  onCreateTaskRoom,
 }: {
   mobileItems: TopicNavItem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onCreateTaskRoom?: (() => void) | undefined;
 }) {
   return (
     <section className="topic-mobile-cockpit" aria-label="mobile topic cockpit">
@@ -712,10 +849,15 @@ function TopicMobileCockpit({
         </span>
         <button
           type="button"
-          disabled
-          title="topic creation flow is routed through workspace-topics.create next"
+          disabled={!onCreateTaskRoom}
+          title={
+            onCreateTaskRoom
+              ? 'create a task room from workspace defaults'
+              : 'topic creation unavailable'
+          }
+          onClick={onCreateTaskRoom}
         >
-          + topic
+          + task
         </button>
       </div>
       <div className="topic-mobile-list" aria-label="attention-sorted topics">
@@ -831,6 +973,8 @@ export function TopicSidebarView({
   onSearchClear,
   onSelectSession,
   onSendInput = sendSessionInput,
+  createPanel,
+  onCreateTaskRoom,
 }: {
   topics: WorkspaceTopic[];
   sessions: SessionSummary[];
@@ -849,6 +993,8 @@ export function TopicSidebarView({
   onSearchClear?: (() => void) | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
   onSendInput?: TopicSendInput | undefined;
+  createPanel?: ReactNode;
+  onCreateTaskRoom?: (() => void) | undefined;
 }) {
   const model = useMemo(
     () => buildTopicNavModel({ topics, sessions, surfaces, derived }),
@@ -907,6 +1053,15 @@ export function TopicSidebarView({
     <div className="topic-shell" data-track="topic-shell">
       <div className="topic-shell__header">
         <span>topics</span>
+        {onCreateTaskRoom ? (
+          <button
+            className="topic-shell__create"
+            type="button"
+            onClick={onCreateTaskRoom}
+          >
+            + task
+          </button>
+        ) : null}
         {searchQuery.trim() ? (
           <span className="topic-shell__derived">search</span>
         ) : model.derived ? (
@@ -917,7 +1072,9 @@ export function TopicSidebarView({
         mobileItems={mobileItems}
         selectedId={selectedId}
         onSelect={select}
+        onCreateTaskRoom={onCreateTaskRoom}
       />
+      {createPanel}
       <TopicSearchPanel
         model={model}
         searchQuery={searchQuery}
@@ -963,13 +1120,51 @@ export function TopicSidebarView({
   );
 }
 
+function taskRefFromDraft(value: string, title: string): TaskRef | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const issueMatch = trimmed.match(/(?:issues\/|#)?(\d+)\b/);
+  if (!issueMatch) {
+    return { kind: 'external', id: trimmed, title };
+  }
+  const issueId = issueMatch[1]!;
+  return {
+    kind: 'github-issue',
+    id: issueId,
+    title,
+    ...(trimmed.startsWith('http') ? { url: trimmed } : {}),
+  };
+}
+
 export function TopicSidebarShell({
   onSelectSession,
 }: {
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
+  const queryClient = useQueryClient();
   const sessions = useSessionsStore((s) => s.sessions);
+  const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+  const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
+  const activeRepoPath = useUiStore((s) => s.activeRepoPath);
+  const activeWorkspaceId = useUiStore((s) => s.activeWorkspaceId);
+  const defaultAgent = useConfigStore((s) => s.defaultAgent);
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.id === activeSessionId),
+    [activeSessionId, sessions]
+  );
   const [searchQuery, setSearchQuery] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createDraft, setCreateDraft] = useState<TopicRoomDraft>({
+    title: '',
+    prompt: '',
+    taskRef: '',
+  });
+  const [submittingIntent, setSubmittingIntent] =
+    useState<WorkspaceTopicLaunchIntent | null>(null);
+  const [launchFailure, setLaunchFailure] =
+    useState<WorkspaceTopicLaunchFailure | null>(null);
+  const [createdRoom, setCreatedRoom] =
+    useState<WorkspaceTopicRoomCreateResult | null>(null);
   const normalizedSearchQuery = searchQuery.trim();
   const topicsQuery = useQuery({
     queryKey: ['workspace-topics'],
@@ -988,9 +1183,182 @@ export function TopicSidebarShell({
     queryFn: () => fetchWorkspaceSurfaces(),
     staleTime: 30_000,
   });
+  useEffect(() => {
+    const openCreate = () => {
+      setCreateOpen(true);
+      setLaunchFailure(null);
+    };
+    window.addEventListener('relay:open-topic-task-room', openCreate);
+    return () =>
+      window.removeEventListener('relay:open-topic-task-room', openCreate);
+  }, []);
   const searchActive = normalizedSearchQuery.length > 0;
   const searchData = topicSearchQuery.data;
   const searchResults = searchData?.results ?? [];
+  const taskRef = taskRefFromDraft(createDraft.taskRef, createDraft.title);
+  const previewCreate = useMemo<WorkspaceTopicCreateInput>(() => {
+    const repoPath = activeSession?.repoPath ?? activeRepoPath ?? undefined;
+    const worktreePath = activeSession?.worktreePath ?? undefined;
+    const cwd = activeSession?.cwd ?? worktreePath ?? repoPath ?? undefined;
+    return {
+      workspaceId: activeWorkspaceId ?? 'workspace:local',
+      title: createDraft.title.trim() || 'Untitled task room',
+      ...(createDraft.prompt.trim()
+        ? { description: createDraft.prompt.trim().slice(0, 240) }
+        : {}),
+      promptDefaults: {
+        ...(createDraft.prompt.trim()
+          ? { starterPrompt: createDraft.prompt.trim() }
+          : {}),
+      },
+      routingDefaults: {
+        ...(defaultAgent ? { providerId: defaultAgent } : {}),
+        ...(repoPath ? { repoPath } : {}),
+        ...(worktreePath ? { worktreePath } : {}),
+        ...(cwd ? { cwd } : {}),
+      },
+      linkedRefs: {
+        ...(taskRef ? { taskRefs: [taskRef] } : {}),
+      },
+    };
+  }, [
+    activeRepoPath,
+    activeSession,
+    activeWorkspaceId,
+    createDraft,
+    defaultAgent,
+    taskRef,
+  ]);
+
+  const handleCreateSubmit = useCallback(
+    async (intent: WorkspaceTopicLaunchIntent) => {
+      if (!createDraft.title.trim()) return;
+      setSubmittingIntent(intent);
+      setLaunchFailure(null);
+      try {
+        if (intent === 'create-and-launch' && createdRoom) {
+          const result = await launchWorkspaceTopicRoom({
+            room: createdRoom,
+            launch: {
+              type: 'agent',
+              mode: 'pty',
+              agent: defaultAgent,
+              controlMode: 'agent-driven',
+            },
+          });
+          if (result.status === 'launch_failed') {
+            setLaunchFailure(result.failure);
+            return;
+          }
+          await useSessionsStore.getState().refreshAll();
+          setActiveSessionId(result.session.id);
+          onSelectSession?.(result.session.id);
+          setCreateOpen(false);
+          setCreatedRoom(null);
+          setCreateDraft({ title: '', prompt: '', taskRef: '' });
+          return;
+        }
+        const result = await createWorkspaceTopicRoomAndMaybeLaunch({
+          room: {
+            topic: previewCreate,
+            ...(taskRef ? { taskRef } : {}),
+            workContext: {
+              title: previewCreate.title,
+              anchors: {
+                project: { workspaceId: previewCreate.workspaceId },
+                repo: {
+                  ...(previewCreate.routingDefaults?.repoPath
+                    ? { localPath: previewCreate.routingDefaults.repoPath }
+                    : {}),
+                },
+                worktree: {
+                  ...(previewCreate.routingDefaults?.worktreePath
+                    ? { localPath: previewCreate.routingDefaults.worktreePath }
+                    : {}),
+                },
+              },
+            },
+          },
+          ...(intent === 'create-and-launch'
+            ? {
+                launch: {
+                  type: 'agent',
+                  mode: 'pty',
+                  agent: defaultAgent,
+                  controlMode: 'agent-driven',
+                },
+              }
+            : {}),
+        });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-topics'] }),
+          queryClient.invalidateQueries({ queryKey: ['workspace-surfaces'] }),
+        ]);
+        if (result.status === 'launch_failed') {
+          setLaunchFailure(result.failure);
+          setCreatedRoom({
+            topic: result.topic,
+            workContext: result.workContext,
+          });
+          return;
+        }
+        if (result.status === 'launched') {
+          await useSessionsStore.getState().refreshAll();
+          setActiveSessionId(result.session.id);
+          onSelectSession?.(result.session.id);
+        }
+        setCreateOpen(false);
+        setCreatedRoom(null);
+        setCreateDraft({ title: '', prompt: '', taskRef: '' });
+      } catch (error) {
+        const failure = error as WorkspaceTopicLaunchFailure;
+        setLaunchFailure({
+          stage: failure.stage ?? 'topic',
+          message:
+            typeof failure.message === 'string'
+              ? failure.message
+              : error instanceof Error
+                ? error.message
+                : String(error),
+          retryable: failure.retryable ?? false,
+          ...(failure.code ? { code: failure.code } : {}),
+          ...(failure.status ? { status: failure.status } : {}),
+        });
+      } finally {
+        setSubmittingIntent(null);
+      }
+    },
+    [
+      createDraft.title,
+      createdRoom,
+      defaultAgent,
+      onSelectSession,
+      previewCreate,
+      queryClient,
+      setActiveSessionId,
+      taskRef,
+    ]
+  );
+
+  const createPanel = (
+    <TopicRoomCreatePanel
+      open={createOpen}
+      draft={createDraft}
+      previewCreate={previewCreate}
+      launchFailure={launchFailure}
+      submittingIntent={submittingIntent}
+      onDraftChange={(patch) => {
+        setCreateDraft((current) => ({ ...current, ...patch }));
+        setCreatedRoom(null);
+        setLaunchFailure(null);
+      }}
+      onSubmit={(intent) => void handleCreateSubmit(intent)}
+      onCancel={() => {
+        setCreateOpen(false);
+        setLaunchFailure(null);
+      }}
+    />
+  );
 
   return (
     <TopicSidebarView
@@ -1025,6 +1393,11 @@ export function TopicSidebarShell({
       onSearchRetry={() => void topicSearchQuery.refetch()}
       onSearchClear={() => setSearchQuery('')}
       onSelectSession={onSelectSession}
+      createPanel={createPanel}
+      onCreateTaskRoom={() => {
+        setCreateOpen(true);
+        setLaunchFailure(null);
+      }}
     />
   );
 }

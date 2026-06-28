@@ -29,6 +29,7 @@ import type {
 import type { WorkContext } from '../shared/work-context.js';
 import {
   WORKSPACE_TOPICS_MAX_LIST_ENTRIES,
+  buildWorkspaceTopicLaunchPreview,
   buildWorkspaceTopicSessionCreateBody,
   buildWorkspaceTopicRecord,
   parseWorkspaceTopicCreateInput,
@@ -292,6 +293,66 @@ describe('workspace topics foundation', () => {
         workContextIds: ['wc-topic'],
         sessionIds: ['session-topic'],
       },
+    });
+  });
+
+  it('previews create-only and create+launch side effects from topic defaults', () => {
+    const create = {
+      workspaceId: 'ws-launch',
+      title: 'Issue 1045 task room',
+      promptDefaults: {
+        starterPrompt: 'start on #1045',
+        contextPacketIds: ['ctx:one', 'ctx:two'],
+      },
+      routingDefaults: {
+        providerId: 'hermes',
+        nodeId: 'devbox',
+        repoPath: '/repo/relay',
+        worktreePath: '/repo/relay/.worktrees/1045',
+      },
+      linkedRefs: {
+        taskRefs: [
+          { kind: 'github-issue' as const, id: '1045', title: 'Launch flow' },
+        ],
+      },
+    };
+
+    expect(
+      buildWorkspaceTopicLaunchPreview({
+        create,
+        intent: 'create-only',
+        templateKind: 'agent-task',
+      })
+    ).toMatchObject({
+      intent: 'create-only',
+      providerLabel: 'hermes (mode explicit)',
+      modeLabel: 'pty',
+      nodeLabel: 'devbox',
+      cwdLabel: '/repo/relay/.worktrees/1045',
+      taskRefs: ['github-issue:1045 · Launch flow'],
+      sideEffects: [
+        'create WorkspaceTopic room',
+        'create WorkContext link for this room',
+      ],
+    });
+
+    expect(
+      buildWorkspaceTopicLaunchPreview({
+        create,
+        intent: 'create-and-launch',
+        launchOverrides: { agent: 'claude', mode: 'web', cwd: '/repo/relay' },
+      })
+    ).toMatchObject({
+      intent: 'create-and-launch',
+      providerLabel: 'claude',
+      modeLabel: 'web',
+      cwdLabel: '/repo/relay/.worktrees/1045',
+      sideEffects: [
+        'create WorkspaceTopic room',
+        'create WorkContext link for this room',
+        'launch provider-neutral session through sessions.create',
+        'link created session back to WorkspaceTopic/WorkContext',
+      ],
     });
   });
 
