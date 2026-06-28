@@ -131,6 +131,21 @@ describe('buildTopicNavModel', () => {
     ]);
   });
 
+  it('preserves artifact refs for topic-room metadata without loading payloads', () => {
+    const topic = makeTopic({
+      linkedRefs: { artifactIds: ['artifact:evidence-1'] },
+    });
+    const model = buildTopicNavModel({
+      topics: [topic],
+      sessions: [],
+      surfaces: [],
+    });
+
+    expect(model.byId.get('topic:alpha')?.artifactIds).toEqual([
+      'artifact:evidence-1',
+    ]);
+  });
+
   it('classifies topic workspace kind from routing defaults', () => {
     const repo = makeTopic({
       id: 'topic:repo',

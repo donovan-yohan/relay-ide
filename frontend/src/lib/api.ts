@@ -35,6 +35,8 @@ import type {
   WorkspaceSurfaceListResponse,
 } from '../../../shared/workspace-surfaces.js';
 import type {
+  WorkspaceTopic,
+  WorkspaceTopicCreateInput,
   WorkspaceTopicListResponse,
   WorkspaceTopicSearchResponse,
 } from '../../../shared/workspace-topics.js';
@@ -43,7 +45,7 @@ import type {
   PipelineHandoffStageName,
 } from '../../../shared/pipeline-handoff-artifact.js';
 import type { ViewArtifactPackage } from '../../../shared/agent-view-artifact.js';
-import type { TaskRef } from '../../../shared/work-context.js';
+import type { TaskRef, WorkContext } from '../../../shared/work-context.js';
 import type {
   PipelineHandoffArtifactEnvelope,
   PublicPipelineHandoffArtifactSummary,
@@ -1122,14 +1124,34 @@ export async function copyPipelineHandoffArtifact(
 // membership list of ProjectIds, NOT embedded projects. Backed by the IA store
 // (`ia.db`) and mounted at `/hub/ia/workspaces` — STRICTLY non-destructive of
 // any legacy state. Endpoints: GET (list), POST (create), PATCH (partial
-// rename/reorder/membership), DELETE.
+// rename/reorder/membership/defaults), POST archive/restore, DELETE hard-delete.
 export interface IaWorkspace {
   id: string;
   name: string;
+  status: 'active' | 'archived';
   order: number;
   projectIds: string[];
+  pinned: boolean;
+  color: string | null;
+  icon: string | null;
+  defaultRepoPath: string | null;
+  defaultNodeId: string | null;
+  defaultProvider: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface IaWorkspacePatch {
+  name?: string;
+  status?: 'active' | 'archived';
+  order?: number;
+  projectIds?: string[];
+  pinned?: boolean;
+  color?: string | null;
+  icon?: string | null;
+  defaultRepoPath?: string | null;
+  defaultNodeId?: string | null;
+  defaultProvider?: string | null;
 }
 
 const IA_WORKSPACES_PATH = '/hub/ia/workspaces';
@@ -1145,6 +1167,12 @@ export async function createIaWorkspace(input: {
   name: string;
   projectIds?: string[];
   order?: number;
+  pinned?: boolean;
+  color?: string | null;
+  icon?: string | null;
+  defaultRepoPath?: string | null;
+  defaultNodeId?: string | null;
+  defaultProvider?: string | null;
 }): Promise<IaWorkspace> {
   const data = await json<{ workspace: IaWorkspace }>(
     await fetch(IA_WORKSPACES_PATH, {
@@ -1158,13 +1186,22 @@ export async function createIaWorkspace(input: {
 
 export async function updateIaWorkspace(
   id: string,
-  patch: { name?: string; order?: number; projectIds?: string[] }
+  patch: IaWorkspacePatch
 ): Promise<IaWorkspace> {
   const data = await json<{ workspace: IaWorkspace }>(
     await fetch(`${IA_WORKSPACES_PATH}/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
+    })
+  );
+  return data.workspace;
+}
+
+export async function archiveIaWorkspace(id: string): Promise<IaWorkspace> {
+  const data = await json<{ workspace: IaWorkspace }>(
+    await fetch(`${IA_WORKSPACES_PATH}/${encodeURIComponent(id)}/archive`, {
+      method: 'POST',
     })
   );
   return data.workspace;
@@ -1637,6 +1674,202 @@ export async function fetchWorkspaceTopics(
   };
 }
 
+export interface WorkContextCreateBody {
+  title?: string;
+  source?: string;
+  anchors?: WorkContext['anchors'];
+  tasks?: TaskRef[];
+  privacy?: WorkContext['privacy'];
+}
+
+export interface WorkspaceTopicRoomCreateInput {
+  topic: WorkspaceTopicCreateInput;
+  workContext?: WorkContextCreateBody;
+  taskRef?: TaskRef;
+}
+
+export interface WorkspaceTopicRoomCreateResult {
+  topic: WorkspaceTopic;
+  workContext: WorkContext;
+}
+
+export interface WorkspaceTopicLaunchFailure {
+  stage: 'work-context' | 'topic' | 'session';
+  code?: string;
+  message: string;
+  retryable: boolean;
+  status?: number;
+}
+
+export type WorkspaceTopicRoomLaunchResult =
+  | {
+      status: 'created';
+      topic: WorkspaceTopic;
+      workContext: WorkContext;
+    }
+  | {
+      status: 'launched';
+      topic: WorkspaceTopic;
+      workContext: WorkContext;
+      session: SessionSummary;
+    }
+  | {
+      status: 'launch_failed';
+      topic: WorkspaceTopic;
+      workContext: WorkContext;
+      failure: WorkspaceTopicLaunchFailure;
+    };
+
+export type WorkspaceTopicRoomSessionLaunchResult = Extract<
+  WorkspaceTopicRoomLaunchResult,
+  { status: 'launched' | 'launch_failed' }
+>;
+
+function launchFailure(
+  stage: WorkspaceTopicLaunchFailure['stage'],
+  err: unknown
+): WorkspaceTopicLaunchFailure {
+  if (err instanceof HttpError) {
+    return {
+      stage,
+      message: err.message,
+      retryable: err.retryable ?? stage === 'session',
+      status: err.status,
+      ...(err.code ? { code: err.code } : {}),
+    };
+  }
+  return {
+    stage,
+    message: err instanceof Error ? err.message : String(err),
+    retryable: stage === 'session',
+  };
+}
+
+export async function createWorkContextForTopicRoom(
+  input: WorkspaceTopicRoomCreateInput
+): Promise<WorkContext> {
+  const taskRef = input.taskRef ?? input.workContext?.tasks?.[0];
+  const nodeId = input.topic.routingDefaults?.nodeId;
+  const body = {
+    title: input.workContext?.title ?? input.topic.title,
+    source: input.workContext?.source ?? 'workspace-topic-room',
+    anchors: input.workContext?.anchors ?? {
+      project: { workspaceId: input.topic.workspaceId },
+      ...(nodeId
+        ? {
+            node: {
+              nodeId,
+              kind: nodeId === DEFAULT_LOCAL_NODE_ID ? 'local' : 'remote',
+            },
+          }
+        : {}),
+      repo: {
+        ...(input.topic.routingDefaults?.repoPath
+          ? { localPath: input.topic.routingDefaults.repoPath }
+          : {}),
+      },
+      worktree: {
+        ...(input.topic.routingDefaults?.worktreePath
+          ? { localPath: input.topic.routingDefaults.worktreePath }
+          : {}),
+      },
+    },
+    tasks: input.workContext?.tasks,
+    privacy: input.workContext?.privacy,
+    ...(taskRef ? { taskRef } : {}),
+  };
+  const path = taskRef ? '/work-contexts/from-task-ref' : '/work-contexts';
+  const data = await json<{ workContext?: WorkContext }>(
+    await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  );
+  if (!data.workContext)
+    throw new Error('work context response missing workContext');
+  return data.workContext;
+}
+
+export async function createWorkspaceTopicRoom(
+  input: WorkspaceTopicRoomCreateInput
+): Promise<WorkspaceTopicRoomCreateResult> {
+  let workContext: WorkContext;
+  try {
+    workContext = await createWorkContextForTopicRoom(input);
+  } catch (err) {
+    throw launchFailure('work-context', err);
+  }
+  const linkedRefs = {
+    ...(input.topic.linkedRefs ?? {}),
+    workContextIds: Array.from(
+      new Set([
+        ...(input.topic.linkedRefs?.workContextIds ?? []),
+        workContext.id,
+      ])
+    ),
+    ...(input.taskRef
+      ? {
+          taskRefs: Array.from(
+            new Map(
+              [...(input.topic.linkedRefs?.taskRefs ?? []), input.taskRef].map(
+                (ref) => [`${ref.kind}:${ref.id}`, ref]
+              )
+            ).values()
+          ),
+        }
+      : {}),
+  };
+  try {
+    const data = await json<{ topic?: WorkspaceTopic }>(
+      await fetch('/workspace-topics', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({ ...input.topic, linkedRefs }),
+      })
+    );
+    if (!data.topic) throw new Error('workspace topic response missing topic');
+    return { topic: data.topic, workContext };
+  } catch (err) {
+    throw launchFailure('topic', err);
+  }
+}
+
+export async function createWorkspaceTopicRoomAndMaybeLaunch(input: {
+  room: WorkspaceTopicRoomCreateInput;
+  launch?: Omit<CreateSessionBody, 'workspaceTopicId' | 'workContextId'>;
+}): Promise<WorkspaceTopicRoomLaunchResult> {
+  const room = await createWorkspaceTopicRoom(input.room);
+  if (!input.launch) return { status: 'created', ...room };
+  return launchWorkspaceTopicRoom({ room, launch: input.launch });
+}
+
+export async function launchWorkspaceTopicRoom(input: {
+  room: WorkspaceTopicRoomCreateResult;
+  launch: Omit<CreateSessionBody, 'workspaceTopicId' | 'workContextId'>;
+}): Promise<WorkspaceTopicRoomSessionLaunchResult> {
+  try {
+    const nodeId =
+      input.launch.nodeId ?? input.room.topic.routingDefaults?.nodeId;
+    const session = await createSession({
+      ...input.launch,
+      ...(nodeId ? { nodeId } : {}),
+      workspaceTopicId: input.room.topic.id,
+      workContextId: input.room.workContext.id,
+    });
+    return { status: 'launched', ...input.room, session };
+  } catch (err) {
+    return {
+      status: 'launch_failed',
+      ...input.room,
+      failure: launchFailure('session', err),
+    };
+  }
+}
+
 export async function searchWorkspaceTopics(args: {
   q: string;
   workspaceId?: string;
@@ -1898,6 +2131,9 @@ export interface CreateSessionBody {
    */
   initialPrompt?: string | undefined;
   sessionLane?: SessionLane | undefined;
+  workContextId?: string | undefined;
+  workspaceTopicId?: string | undefined;
+  controlMode?: 'agent-driven' | 'human-driven' | 'co-driven' | undefined;
   /** #740: Bench-inherited env overrides applied additively to the PTY env.
    *  Reserved keys (`PATH`, `RELAY_*`) are refused by the backend. */
   envOverrides?: Record<string, string> | undefined;

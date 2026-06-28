@@ -5,8 +5,9 @@ import {
   useState,
   type FormEvent,
   type CSSProperties,
+  type ReactNode,
 } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CircleAlert,
   Folder,
@@ -16,21 +17,35 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
-import type {
-  WorkspaceTopic,
-  WorkspaceTopicSearchResult,
+import {
+  buildWorkspaceTopicLaunchPreview,
+  type WorkspaceTopic,
+  type WorkspaceTopicCreateInput,
+  type WorkspaceTopicLaunchIntent,
+  type WorkspaceTopicTemplateKind,
+  type WorkspaceTopicSearchResult,
 } from '../../../shared/workspace-topics.js';
 import {
+  createWorkspaceTopicRoomAndMaybeLaunch,
+  fetchHubNodes,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
+  launchWorkspaceTopicRoom,
   searchWorkspaceTopics,
+  type CreateSessionBody,
   sendSessionInput,
+  type WorkspaceTopicLaunchFailure,
+  type WorkspaceTopicRoomCreateResult,
 } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
+import { taskRefFromDraft } from '../lib/topic-task-ref.js';
 import type { SessionSummary } from '../lib/types.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
+import { useUiStore } from '../lib/stores/ui.js';
+import { useConfigStore } from '../lib/stores/config.js';
 import { durabilityDisabledReason } from '../lib/session-durability.js';
+import { resolveSessionByKey } from '../lib/session-keys.js';
 import {
   buildTopicNavModel,
   type TopicNavItem,
@@ -102,7 +117,7 @@ function topicPrimarySession(
   })[0];
 }
 
-function sessionControlDisabledReason(
+function sessionAttachDisabledReason(
   session: TopicNavSessionRef | undefined
 ): string | null {
   if (!session) return 'no session linked to this topic';
@@ -113,10 +128,17 @@ function sessionControlDisabledReason(
     session.durability ?? undefined
   );
   if (durabilityReason) return durabilityReason;
+  return null;
+}
+
+function sessionControlDisabledReason(
+  session: TopicNavSessionRef | undefined
+): string | null {
+  if (!session) return 'no session linked to this topic';
+  const attachReason = sessionAttachDisabledReason(session);
+  if (attachReason) return attachReason;
   if (session.controlFreshness === 'stale') return 'stale control state';
-  if (session.controlFreshness && session.controlFreshness !== 'fresh') {
-    return 'unknown control state';
-  }
+  if (session.controlFreshness !== 'fresh') return 'unknown control state';
   if (session.mode === 'web') return 'web session input is unsupported here';
   return null;
 }
@@ -127,19 +149,32 @@ function topicPrimaryAction(item: TopicNavItem): {
   disabledReason: string | null;
 } {
   const session = topicPrimarySession(item);
-  const disabledReason = sessionControlDisabledReason(session);
+  const controlDisabledReason = session
+    ? sessionControlDisabledReason(session)
+    : null;
+  const attachDisabledReason = session
+    ? sessionAttachDisabledReason(session)
+    : null;
   if (session?.displayState === 'permission') {
     return {
       label: 'approve',
       detail: 'send an audited approval reply to the live session',
-      disabledReason,
+      disabledReason: controlDisabledReason,
     };
   }
   if (session?.displayState === 'needs-answer') {
     return {
       label: 'reply',
       detail: 'send a short audited reply without opening the terminal first',
-      disabledReason,
+      disabledReason: controlDisabledReason,
+    };
+  }
+  if (session && attachDisabledReason) {
+    return {
+      label: 'waiting',
+      detail:
+        'last known session context remains readable; live controls are disabled',
+      disabledReason: attachDisabledReason,
     };
   }
   if (session) {
@@ -197,6 +232,99 @@ function TopicBadge({ item }: { item: TopicNavItem }) {
       <TopicKindIcon kind={item.kind} />
     </span>
   );
+}
+
+type TopicRoomSessionGroupKey =
+  | 'needs-input'
+  | 'approval'
+  | 'running'
+  | 'idle'
+  | 'stale-offline'
+  | 'crashed';
+
+const TOPIC_ROOM_SESSION_GROUPS: {
+  key: TopicRoomSessionGroupKey;
+  label: string;
+}[] = [
+  { key: 'needs-input', label: 'needs input' },
+  { key: 'approval', label: 'approval' },
+  { key: 'running', label: 'running' },
+  { key: 'idle', label: 'idle' },
+  { key: 'stale-offline', label: 'stale/offline' },
+  { key: 'crashed', label: 'crashed' },
+];
+
+function topicRoomSessionGroup(
+  session: TopicNavSessionRef
+): TopicRoomSessionGroupKey {
+  if (
+    session.status === 'disconnected' ||
+    session.durability === 'stale-node' ||
+    session.durability === 'ended' ||
+    session.controlFreshness === 'stale'
+  ) {
+    return 'stale-offline';
+  }
+  if (session.displayState === 'error' || session.durability === 'error') {
+    return 'crashed';
+  }
+  if (session.displayState === 'needs-answer') return 'needs-input';
+  if (session.displayState === 'permission') return 'approval';
+  if (
+    session.displayState === 'running' ||
+    session.displayState === 'initializing'
+  ) {
+    return 'running';
+  }
+  return 'idle';
+}
+
+function topicRoomGroupedSessions(item: TopicNavItem): {
+  key: TopicRoomSessionGroupKey;
+  label: string;
+  sessions: TopicNavSessionRef[];
+}[] {
+  return TOPIC_ROOM_SESSION_GROUPS.map((group) => ({
+    ...group,
+    sessions: item.sessions.filter(
+      (session) => topicRoomSessionGroup(session) === group.key
+    ),
+  })).filter((group) => group.sessions.length > 0);
+}
+
+function topicRoomFreshnessLabel(item: TopicNavItem): string {
+  const groups = new Set(item.sessions.map(topicRoomSessionGroup));
+  if (groups.has('stale-offline')) return 'stale/offline';
+  if (groups.has('crashed')) return 'crashed';
+  if (groups.has('needs-input') || groups.has('approval')) return 'needs input';
+  if (groups.has('running')) return 'fresh';
+  if (item.surfaces.some((surface) => surface.health === 'unreachable')) {
+    return 'surface error';
+  }
+  if (
+    item.sessions.length === 0 &&
+    item.surfaces.length === 0 &&
+    item.taskRefs.length === 0 &&
+    item.artifactIds.length === 0
+  ) {
+    return 'empty';
+  }
+  return 'last known';
+}
+
+function topicRoomLatestSummary(item: TopicNavItem): string {
+  const session = topicPrimarySession(item);
+  if (session?.currentActivity) return topicLatestStatus(item);
+  if (session) return `${session.label} · ${session.displayState}`;
+  if (item.surfaces[0]) return `newest surface · ${item.surfaces[0].label}`;
+  if (item.taskRefs[0]) {
+    return `task ref · ${item.taskRefs[0].title ?? item.taskRefs[0].id}`;
+  }
+  return 'no sessions linked yet';
+}
+
+function topicRoomAnchorLabel(item: TopicNavItem): string {
+  return item.routingLabel ?? 'no repo binding';
 }
 
 function SurfaceButton({ surface }: { surface: TopicNavSurfaceRef }) {
@@ -363,38 +491,272 @@ function ParticipantRoster({
   );
 }
 
+function TopicRoomSessionRow({
+  session,
+  onSelectSession,
+}: {
+  session: TopicNavSessionRef;
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  const disabledReason = sessionControlDisabledReason(session);
+  return (
+    <li className={`topic-room-session topic-room-session--${session.tone}`}>
+      <button
+        type="button"
+        className="topic-room-session__button"
+        title={`open exact session ${session.selectKey}`}
+        onClick={() => onSelectSession?.(session.selectKey)}
+      >
+        <span className="topic-room-session__main">
+          <span className="topic-room-session__label">
+            <MarqueeText>{session.label}</MarqueeText>
+          </span>
+          <span className="topic-room-session__meta">
+            {session.agent} · {session.type} · {session.displayState}
+          </span>
+        </span>
+        <span className="topic-room-session__anchor">
+          {session.nodeId ? `${session.nodeId} · ` : ''}
+          {session.branch ?? session.cwd}
+        </span>
+        <StatusGlyph tone={session.tone} />
+      </button>
+      {disabledReason ? (
+        <span className="topic-room-session__disabled">
+          live controls disabled: {disabledReason}
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
+function TopicRoomTaskRefs({ item }: { item: TopicNavItem }) {
+  if (item.taskRefs.length === 0) {
+    return <p className="topic-room-empty">no task refs linked yet</p>;
+  }
+  return (
+    <ul className="topic-room-ref-list" aria-label="task refs">
+      {item.taskRefs.map((taskRef) => {
+        const label = taskRef.title ?? taskRef.id;
+        const content = (
+          <>
+            <span>{taskRef.kind}</span>
+            <strong>{label}</strong>
+            {taskRef.status ? <span>{taskRef.status}</span> : null}
+          </>
+        );
+        return (
+          <li key={`${taskRef.kind}:${taskRef.id}`}>
+            {taskRef.url ? (
+              <a href={taskRef.url} rel="noreferrer" target="_blank">
+                {content}
+              </a>
+            ) : (
+              <span>{content}</span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function TopicRoomSurfaceStrip({
+  item,
+  surfacesError,
+  surfacesLoading,
+}: {
+  item: TopicNavItem;
+  surfacesError?: boolean | undefined;
+  surfacesLoading?: boolean | undefined;
+}) {
+  if (surfacesLoading && item.surfaces.length === 0) {
+    return <p className="topic-room-empty">surfaces loading…</p>;
+  }
+  if (surfacesError && item.surfaces.length === 0) {
+    return <p className="topic-room-empty error">surfaces unavailable</p>;
+  }
+  if (item.surfaces.length === 0 && item.artifactIds.length === 0) {
+    return (
+      <p className="topic-room-empty">no artifacts or surfaces linked yet</p>
+    );
+  }
+  return (
+    <ul
+      className="topic-room-surface-list"
+      aria-label="artifact and surface strip"
+    >
+      {item.surfaces.map((surface) => (
+        <li key={surface.id}>
+          <SurfaceButton surface={surface} />
+          <span className="topic-room-surface-list__label">
+            {surface.label}
+          </span>
+          <span className="topic-room-surface-list__safety">
+            {surface.openMode === 'direct'
+              ? 'direct open'
+              : `${surface.openMode} only`}
+          </span>
+        </li>
+      ))}
+      {item.artifactIds.map((artifactId) => (
+        <li key={artifactId}>
+          <span className="topic-action">artifact</span>
+          <span className="topic-room-surface-list__label">{artifactId}</span>
+          <span className="topic-room-surface-list__safety">
+            metadata ref only
+          </span>
+        </li>
+      ))}
+      {surfacesError ? (
+        <li className="topic-room-empty error">
+          surfaces partially unavailable
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+
 function TopicDetail({
   item,
+  surfacesError,
+  surfacesLoading,
   onSelectSession,
 }: {
   item: TopicNavItem;
+  surfacesError?: boolean | undefined;
+  surfacesLoading?: boolean | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
+  const action = topicPrimaryAction(item);
+  const session = topicPrimarySession(item);
+  const topSurface = item.surfaces[0];
+  const groupedSessions = topicRoomGroupedSessions(item);
+  const primaryDisabled =
+    Boolean(action.disabledReason) || (!session && !topSurface?.target);
   return (
-    <section className="topic-detail" aria-label={`${item.title} details`}>
-      <div className="topic-detail__title">{item.title}</div>
+    <section
+      className={`topic-detail topic-room topic-room--${item.tone}`}
+      aria-label={`${item.title} task room`}
+    >
+      <header className="topic-room__header">
+        <div className="topic-room__identity">
+          <span className="topic-room__eyebrow">task room</span>
+          <div className="topic-detail__title topic-room__title">
+            <MarqueeText>{item.title}</MarqueeText>
+          </div>
+        </div>
+        <TopicBadge item={item} />
+      </header>
       {item.description ? (
         <p className="topic-detail__description">{item.description}</p>
       ) : (
         <p className="topic-detail__description muted">no topic brief yet</p>
       )}
-      <div className="topic-detail__meta">
-        <span>{item.statusLabel}</span>
-        {item.routingLabel ? <span>{item.routingLabel}</span> : null}
-        {item.taskRefs.length > 0 ? (
-          <span>{item.taskRefs.length} task refs</span>
-        ) : null}
-        {item.surfaces.length > 0 ? (
-          <span>{item.surfaces.length} surfaces</span>
+      <div className="topic-detail__meta topic-room__meta">
+        <span>{item.workspaceId}</span>
+        <span>{item.lifecycleLabel}</span>
+        <span>{topicRoomFreshnessLabel(item)}</span>
+        <span>{topicRoomAnchorLabel(item)}</span>
+        <span>updated {item.updatedAt}</span>
+      </div>
+
+      <div className="topic-room__action-band">
+        <div>
+          <span>primary action</span>
+          <strong>{action.label}</strong>
+          <p>{action.detail}</p>
+        </div>
+        <button
+          type="button"
+          className="topic-room__primary"
+          disabled={primaryDisabled}
+          title={action.disabledReason ?? action.detail}
+          onClick={() => {
+            if (session) {
+              onSelectSession?.(session.selectKey);
+              return;
+            }
+            if (!topSurface?.target) return;
+            if (
+              topSurface.openMode === 'direct' &&
+              topSurface.target.startsWith('http')
+            ) {
+              window.open(topSurface.target, '_blank', 'noopener,noreferrer');
+              return;
+            }
+            void navigator.clipboard?.writeText(topSurface.target);
+          }}
+        >
+          {action.label}
+        </button>
+        {action.disabledReason ? (
+          <p className="topic-room__disabled">
+            controls disabled: {action.disabledReason}
+          </p>
         ) : null}
       </div>
-      {item.surfaces.length > 0 ? (
-        <div className="topic-detail__surfaces" aria-label="topic surfaces">
-          {item.surfaces.slice(0, 6).map((surface) => (
-            <SurfaceButton key={surface.id} surface={surface} />
-          ))}
+
+      <div className="topic-room__status-card">
+        <span>latest bounded status</span>
+        <strong>{topicRoomLatestSummary(item)}</strong>
+      </div>
+
+      <section className="topic-room__section" aria-label="grouped sessions">
+        <div className="topic-room__section-header">
+          <span>sessions</span>
+          <span>{item.sessions.length}</span>
         </div>
-      ) : null}
+        {groupedSessions.length > 0 ? (
+          groupedSessions.map((group) => (
+            <div className="topic-room-session-group" key={group.key}>
+              <div className="topic-room-session-group__label">
+                {group.label} · {group.sessions.length}
+              </div>
+              <ul>
+                {group.sessions.map((groupSession) => (
+                  <TopicRoomSessionRow
+                    key={groupSession.id}
+                    session={groupSession}
+                    onSelectSession={onSelectSession}
+                  />
+                ))}
+              </ul>
+            </div>
+          ))
+        ) : (
+          <p className="topic-room-empty">no sessions linked yet</p>
+        )}
+      </section>
+
+      <section className="topic-room__section" aria-label="task refs">
+        <div className="topic-room__section-header">
+          <span>refs</span>
+          <span>{item.taskRefs.length} task refs</span>
+        </div>
+        <TopicRoomTaskRefs item={item} />
+      </section>
+
+      <section
+        className="topic-room__section"
+        aria-label="artifacts and surfaces"
+      >
+        <div className="topic-room__section-header">
+          <span>artifacts/surfaces</span>
+          <span>{item.surfaces.length + item.artifactIds.length}</span>
+        </div>
+        <TopicRoomSurfaceStrip
+          item={item}
+          surfacesError={surfacesError}
+          surfacesLoading={surfacesLoading}
+        />
+      </section>
+
+      <div className="topic-room__fallback">
+        raw terminal attach stays secondary; select a session row for exact tab
+        fallback.
+      </div>
+
       <ParticipantRoster item={item} onSelectSession={onSelectSession} />
     </section>
   );
@@ -447,7 +809,16 @@ function TopicMobileControlPanel({
   const [sending, setSending] = useState(false);
   const needsInput = action.label === 'approve' || action.label === 'reply';
   const canSend = Boolean(session && needsInput && !action.disabledReason);
+  const resumeDisabledReason = sessionAttachDisabledReason(session);
+  const canResume = Boolean(session && !resumeDisabledReason);
   const topSurface = item.surfaces[0];
+  const approvalPresets =
+    action.label === 'approve'
+      ? [
+          { label: 'approve', value: 'y' },
+          { label: 'deny', value: 'n' },
+        ]
+      : [];
 
   useEffect(() => {
     setInputValue('');
@@ -491,11 +862,23 @@ function TopicMobileControlPanel({
       topSurface.openMode === 'direct' &&
       topSurface.target.startsWith('http')
     ) {
-      window.open(topSurface.target, '_blank', 'noreferrer');
+      window.open(topSurface.target, '_blank', 'noopener,noreferrer');
       return;
     }
-    void navigator.clipboard?.writeText(topSurface.target);
-    setStatus('surface target copied for safe mobile handoff');
+    const clipboard = navigator.clipboard;
+    setStatus(`surface target ready to copy: ${topSurface.target}`);
+    if (clipboard?.writeText) {
+      void clipboard.writeText(topSurface.target).then(
+        () => setStatus('surface target copied for safe mobile handoff'),
+        (error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          setStatus(
+            `surface copy unavailable: ${message}; target ${topSurface.target}`
+          );
+        }
+      );
+    }
   };
 
   return (
@@ -545,6 +928,30 @@ function TopicMobileControlPanel({
           }
           maxLength={1000}
         />
+        {approvalPresets.length > 0 ? (
+          <div
+            className="topic-mobile-control__presets"
+            aria-label="approval reply presets"
+          >
+            {approvalPresets.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                className="topic-mobile-control__preset"
+                disabled={!canSend || sending}
+                onClick={() => {
+                  setInputValue(preset.value);
+                  setPendingValue(null);
+                  setStatus(
+                    `${preset.label} selected · preview before sending`
+                  );
+                }}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <button
           type="submit"
           className="topic-mobile-control__primary"
@@ -566,14 +973,24 @@ function TopicMobileControlPanel({
       ) : null}
 
       <div className="topic-mobile-actions" aria-label="topic quick actions">
-        <button type="button" disabled={!session} onClick={handleResume}>
+        <button
+          type="button"
+          disabled={!canResume}
+          onClick={handleResume}
+          title={
+            resumeDisabledReason ?? 'open the linked Relay tab for this topic'
+          }
+        >
           resume topic
         </button>
         <button
           type="button"
-          disabled={!session}
+          disabled={!canResume}
           onClick={handleResume}
-          title="same linked Relay tab as resume; raw PTY is the fallback once open"
+          title={
+            resumeDisabledReason ??
+            'same linked Relay tab as resume; raw PTY is the fallback once open'
+          }
         >
           open terminal tab
         </button>
@@ -816,14 +1233,384 @@ function topicEmptyStateText(input: {
   return `no topic matches for “${input.searchQuery.trim()}”`;
 }
 
+type TopicRoomDraft = {
+  title: string;
+  prompt: string;
+  taskRef: string;
+  providerId: string;
+  agentId: string;
+  nodeId: string;
+  repoPath: string;
+  worktreePath: string;
+  cwd: string;
+  templateKind: WorkspaceTopicTemplateKind;
+};
+
+const TOPIC_ROOM_DRAFT_EMPTY: TopicRoomDraft = {
+  title: '',
+  prompt: '',
+  taskRef: '',
+  providerId: '',
+  agentId: '',
+  nodeId: '',
+  repoPath: '',
+  worktreePath: '',
+  cwd: '',
+  templateKind: 'agent-task',
+};
+
+const TOPIC_ROOM_TEMPLATE_OPTIONS: Array<{
+  value: WorkspaceTopicTemplateKind;
+  label: string;
+}> = [
+  { value: 'agent-task', label: 'agent task' },
+  { value: 'terminal-task', label: 'terminal task' },
+  { value: 'note', label: 'note / room only' },
+];
+
+const FALLBACK_PROVIDER_IDS = ['claude', 'codex', 'opencode', 'hermes'];
+
+function compactString(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(values.map((value) => compactString(value)).filter(Boolean))
+  ) as string[];
+}
+
+function launchTypeForTemplate(
+  templateKind: WorkspaceTopicTemplateKind
+): CreateSessionBody['type'] | null {
+  if (templateKind === 'terminal-task') return 'terminal';
+  if (templateKind === 'agent-task') return 'agent';
+  return null;
+}
+
+function buildTopicRoomLaunchBody(
+  create: WorkspaceTopicCreateInput,
+  templateKind: WorkspaceTopicTemplateKind
+): Omit<CreateSessionBody, 'workspaceTopicId' | 'workContextId'> | null {
+  const type = launchTypeForTemplate(templateKind);
+  if (!type) return null;
+  const routing = create.routingDefaults ?? {};
+  return {
+    type,
+    mode: 'pty',
+    ...(type === 'agent' && routing.providerId
+      ? { agent: routing.providerId }
+      : {}),
+    ...(routing.nodeId ? { nodeId: routing.nodeId } : {}),
+    ...(routing.repoPath ? { repoPath: routing.repoPath } : {}),
+    ...(routing.worktreePath ? { worktreePath: routing.worktreePath } : {}),
+    ...(routing.cwd ? { cwd: routing.cwd } : {}),
+    controlMode: type === 'agent' ? 'agent-driven' : 'human-driven',
+  };
+}
+
+function buildTopicRoomCreateInput(input: {
+  draft: TopicRoomDraft;
+  workspaceId: string | null;
+  defaultProviderId: string;
+  defaultNodeId?: string | undefined;
+  defaultRepoPath?: string | undefined;
+  defaultWorktreePath?: string | undefined;
+  defaultCwd?: string | undefined;
+  taskRef: ReturnType<typeof taskRefFromDraft>;
+}): WorkspaceTopicCreateInput {
+  const providerId =
+    compactString(input.draft.providerId) ?? input.defaultProviderId;
+  const agentId = compactString(input.draft.agentId);
+  const nodeId = compactString(input.draft.nodeId) ?? input.defaultNodeId;
+  const repoPath = compactString(input.draft.repoPath) ?? input.defaultRepoPath;
+  const worktreePath =
+    compactString(input.draft.worktreePath) ?? input.defaultWorktreePath;
+  const cwd = compactString(input.draft.cwd) ?? input.defaultCwd;
+  const prompt = input.draft.prompt.trim();
+
+  return {
+    workspaceId: input.workspaceId ?? 'workspace:local',
+    title: input.draft.title.trim() || 'Untitled task room',
+    ...(prompt ? { description: prompt.slice(0, 240) } : {}),
+    promptDefaults: {
+      ...(prompt ? { starterPrompt: prompt } : {}),
+    },
+    routingDefaults: {
+      ...(providerId ? { providerId } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(nodeId ? { nodeId } : {}),
+      ...(repoPath ? { repoPath } : {}),
+      ...(worktreePath ? { worktreePath } : {}),
+      ...(cwd ? { cwd } : {}),
+    },
+    linkedRefs: {
+      ...(input.taskRef ? { taskRefs: [input.taskRef] } : {}),
+    },
+  };
+}
+
+interface TopicRoomCreatePanelProps {
+  open: boolean;
+  draft: TopicRoomDraft;
+  previewCreate: WorkspaceTopicCreateInput;
+  providerOptions: string[];
+  nodeOptions: Array<{ value: string; label: string }>;
+  repoPathOptions: string[];
+  worktreePathOptions: string[];
+  cwdOptions: string[];
+  launchFailure?: WorkspaceTopicLaunchFailure | null | undefined;
+  submittingIntent?: WorkspaceTopicLaunchIntent | null | undefined;
+  onDraftChange: (patch: Partial<TopicRoomDraft>) => void;
+  onSubmit: (intent: WorkspaceTopicLaunchIntent) => void;
+  onCancel: () => void;
+}
+
+function TopicRoomCreatePanel({
+  open,
+  draft,
+  previewCreate,
+  providerOptions,
+  nodeOptions,
+  repoPathOptions,
+  worktreePathOptions,
+  cwdOptions,
+  launchFailure,
+  submittingIntent,
+  onDraftChange,
+  onSubmit,
+  onCancel,
+}: TopicRoomCreatePanelProps) {
+  const preview = useMemo(
+    () =>
+      buildWorkspaceTopicLaunchPreview({
+        create: previewCreate,
+        intent:
+          draft.templateKind === 'note' ? 'create-only' : 'create-and-launch',
+        templateKind: draft.templateKind,
+        launchOverrides: {
+          type: launchTypeForTemplate(draft.templateKind) ?? 'agent',
+          mode: 'pty',
+          agent: previewCreate.routingDefaults?.providerId,
+          nodeId: previewCreate.routingDefaults?.nodeId,
+          repoPath: previewCreate.routingDefaults?.repoPath,
+          worktreePath: previewCreate.routingDefaults?.worktreePath,
+          cwd: previewCreate.routingDefaults?.cwd,
+        },
+      }),
+    [draft.templateKind, previewCreate]
+  );
+  if (!open) return null;
+  const launchDisabled = draft.templateKind === 'note';
+  const disabled = !draft.title.trim() || Boolean(submittingIntent);
+  return (
+    <form
+      className="topic-create-panel"
+      aria-label="create task room"
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault();
+        if (!disabled && !launchDisabled) onSubmit('create-and-launch');
+      }}
+    >
+      <div className="topic-create-panel__title">new task room</div>
+      <label>
+        <span>title</span>
+        <input
+          value={draft.title}
+          onChange={(event) => onDraftChange({ title: event.target.value })}
+          placeholder="issue title or task"
+        />
+      </label>
+      <label>
+        <span>starter prompt</span>
+        <textarea
+          value={draft.prompt}
+          onChange={(event) => onDraftChange({ prompt: event.target.value })}
+          placeholder="what should the agent start with?"
+          rows={3}
+        />
+      </label>
+      <label>
+        <span>task ref</span>
+        <input
+          value={draft.taskRef}
+          onChange={(event) => onDraftChange({ taskRef: event.target.value })}
+          placeholder="github issue number or URL"
+        />
+      </label>
+      <label>
+        <span>provider</span>
+        <input
+          list="topic-room-provider-options"
+          value={draft.providerId}
+          onChange={(event) =>
+            onDraftChange({ providerId: event.target.value })
+          }
+          placeholder={
+            previewCreate.routingDefaults?.providerId ?? 'default provider'
+          }
+        />
+        <datalist id="topic-room-provider-options">
+          {providerOptions.map((providerId) => (
+            <option key={providerId} value={providerId} />
+          ))}
+        </datalist>
+      </label>
+      <label>
+        <span>agent id</span>
+        <input
+          value={draft.agentId}
+          onChange={(event) => onDraftChange({ agentId: event.target.value })}
+          placeholder="optional agent identity"
+        />
+      </label>
+      <label>
+        <span>template kind</span>
+        <select
+          value={draft.templateKind}
+          onChange={(event) =>
+            onDraftChange({
+              templateKind: event.target.value as WorkspaceTopicTemplateKind,
+            })
+          }
+        >
+          {TOPIC_ROOM_TEMPLATE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>node</span>
+        <input
+          list="topic-room-node-options"
+          value={draft.nodeId}
+          onChange={(event) => onDraftChange({ nodeId: event.target.value })}
+          placeholder={
+            previewCreate.routingDefaults?.nodeId ?? 'local/default node'
+          }
+        />
+        <datalist id="topic-room-node-options">
+          {nodeOptions.map((node) => (
+            <option key={node.value} value={node.value} label={node.label} />
+          ))}
+        </datalist>
+      </label>
+      <label>
+        <span>repo</span>
+        <input
+          list="topic-room-repo-options"
+          value={draft.repoPath}
+          onChange={(event) => onDraftChange({ repoPath: event.target.value })}
+          placeholder={
+            previewCreate.routingDefaults?.repoPath ?? 'default repo'
+          }
+        />
+        <datalist id="topic-room-repo-options">
+          {repoPathOptions.map((repoPath) => (
+            <option key={repoPath} value={repoPath} />
+          ))}
+        </datalist>
+      </label>
+      <label>
+        <span>worktree</span>
+        <input
+          list="topic-room-worktree-options"
+          value={draft.worktreePath}
+          onChange={(event) =>
+            onDraftChange({ worktreePath: event.target.value })
+          }
+          placeholder={
+            previewCreate.routingDefaults?.worktreePath ?? 'default worktree'
+          }
+        />
+        <datalist id="topic-room-worktree-options">
+          {worktreePathOptions.map((worktreePath) => (
+            <option key={worktreePath} value={worktreePath} />
+          ))}
+        </datalist>
+      </label>
+      <label>
+        <span>cwd</span>
+        <input
+          list="topic-room-cwd-options"
+          value={draft.cwd}
+          onChange={(event) => onDraftChange({ cwd: event.target.value })}
+          placeholder={previewCreate.routingDefaults?.cwd ?? 'default cwd'}
+        />
+        <datalist id="topic-room-cwd-options">
+          {cwdOptions.map((cwd) => (
+            <option key={cwd} value={cwd} />
+          ))}
+        </datalist>
+      </label>
+      <div className="topic-create-preview" aria-label="launch preview">
+        <div>template: {preview.templateKind}</div>
+        <div>provider: {preview.providerLabel}</div>
+        <div>
+          agent:{' '}
+          {previewCreate.routingDefaults?.agentId ??
+            previewCreate.routingDefaults?.providerId ??
+            'default agent'}
+        </div>
+        <div>mode: {preview.modeLabel}</div>
+        <div>node: {preview.nodeLabel}</div>
+        <div>cwd: {preview.cwdLabel}</div>
+        <div>prompt: {preview.promptSources.join(', ')}</div>
+        <div>tasks: {preview.taskRefs.join(', ')}</div>
+        <div>side effects: {preview.sideEffects.join(' · ')}</div>
+      </div>
+      {launchFailure ? (
+        <div className="topic-create-failure" role="alert">
+          {launchFailure.stage === 'session'
+            ? 'launch failed after room creation'
+            : 'room creation failed'}{' '}
+          ({launchFailure.stage}): {launchFailure.message}
+        </div>
+      ) : null}
+      <div className="topic-create-panel__actions">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={Boolean(submittingIntent)}
+        >
+          cancel
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onSubmit('create-only')}
+        >
+          {submittingIntent === 'create-only' ? 'creating…' : 'create only'}
+        </button>
+        <button type="submit" disabled={disabled || launchDisabled}>
+          {submittingIntent === 'create-and-launch'
+            ? 'launching…'
+            : launchDisabled
+              ? 'note is create-only'
+              : launchFailure
+                ? launchFailure.stage === 'session'
+                  ? 'retry launch'
+                  : 'retry create + launch'
+                : 'create + launch'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function TopicMobileCockpit({
   mobileItems,
   selectedId,
   onSelect,
+  onCreateTaskRoom,
 }: {
   mobileItems: TopicNavItem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onCreateTaskRoom?: (() => void) | undefined;
 }) {
   return (
     <section className="topic-mobile-cockpit" aria-label="mobile topic cockpit">
@@ -836,10 +1623,15 @@ function TopicMobileCockpit({
         </span>
         <button
           type="button"
-          disabled
-          title="topic creation flow is routed through workspace-topics.create next"
+          disabled={!onCreateTaskRoom}
+          title={
+            onCreateTaskRoom
+              ? 'create a task room from workspace defaults'
+              : 'topic creation unavailable'
+          }
+          onClick={onCreateTaskRoom}
         >
-          + topic
+          + task
         </button>
       </div>
       <div className="topic-mobile-list" aria-label="attention-sorted topics">
@@ -944,17 +1736,21 @@ export function TopicSidebarView({
   loading = false,
   error = false,
   derived = false,
+  surfacesLoading = false,
   searchQuery = '',
   searchLoading = false,
   searchError = false,
   searchResults = [],
   searchTruncated = false,
   searchUnavailableReason,
+  surfacesError = false,
   onSearchQueryChange,
   onSearchRetry,
   onSearchClear,
   onSelectSession,
   onSendInput = sendSessionInput,
+  createPanel,
+  onCreateTaskRoom,
 }: {
   topics: WorkspaceTopic[];
   sessions: SessionSummary[];
@@ -962,17 +1758,21 @@ export function TopicSidebarView({
   loading?: boolean;
   error?: boolean;
   derived?: boolean;
+  surfacesLoading?: boolean;
   searchQuery?: string;
   searchLoading?: boolean;
   searchError?: boolean;
   searchResults?: WorkspaceTopicSearchResult[];
   searchTruncated?: boolean;
   searchUnavailableReason?: string | undefined;
+  surfacesError?: boolean;
   onSearchQueryChange?: ((query: string) => void) | undefined;
   onSearchRetry?: (() => void) | undefined;
   onSearchClear?: (() => void) | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
   onSendInput?: TopicSendInput | undefined;
+  createPanel?: ReactNode;
+  onCreateTaskRoom?: (() => void) | undefined;
 }) {
   const model = useMemo(
     () => buildTopicNavModel({ topics, sessions, surfaces, derived }),
@@ -1031,6 +1831,15 @@ export function TopicSidebarView({
     <div className="topic-shell" data-track="topic-shell">
       <div className="topic-shell__header">
         <span>topics</span>
+        {onCreateTaskRoom ? (
+          <button
+            className="topic-shell__create"
+            type="button"
+            onClick={onCreateTaskRoom}
+          >
+            + task
+          </button>
+        ) : null}
         {searchQuery.trim() ? (
           <span className="topic-shell__derived">search</span>
         ) : model.derived ? (
@@ -1041,7 +1850,9 @@ export function TopicSidebarView({
         mobileItems={mobileItems}
         selectedId={selectedId}
         onSelect={select}
+        onCreateTaskRoom={onCreateTaskRoom}
       />
+      {createPanel}
       <TopicSearchPanel
         model={model}
         searchQuery={searchQuery}
@@ -1075,7 +1886,12 @@ export function TopicSidebarView({
       </ul>
       {selectedItem ? (
         <>
-          <TopicDetail item={selectedItem} onSelectSession={onSelectSession} />
+          <TopicDetail
+            item={selectedItem}
+            surfacesError={surfacesError}
+            surfacesLoading={surfacesLoading}
+            onSelectSession={onSelectSession}
+          />
           <TopicMobileControlPanel
             item={selectedItem}
             onSelectSession={onSelectSession}
@@ -1087,13 +1903,35 @@ export function TopicSidebarView({
   );
 }
 
+// eslint-disable-next-line complexity -- topic room creation composes query, routing-default, and launch retry state in one shell boundary.
 export function TopicSidebarShell({
   onSelectSession,
 }: {
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
+  const queryClient = useQueryClient();
   const sessions = useSessionsStore((s) => s.sessions);
+  const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+  const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
+  const activeRepoPath = useUiStore((s) => s.activeRepoPath);
+  const activeWorkspaceId = useUiStore((s) => s.activeWorkspaceId);
+  const defaultAgent = useConfigStore((s) => s.defaultAgent);
+  const frameworks = useConfigStore((s) => s.frameworks);
+  const activeSession = useMemo(
+    () => resolveSessionByKey(sessions, activeSessionId),
+    [activeSessionId, sessions]
+  );
   const [searchQuery, setSearchQuery] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createDraft, setCreateDraft] = useState<TopicRoomDraft>(
+    TOPIC_ROOM_DRAFT_EMPTY
+  );
+  const [submittingIntent, setSubmittingIntent] =
+    useState<WorkspaceTopicLaunchIntent | null>(null);
+  const [launchFailure, setLaunchFailure] =
+    useState<WorkspaceTopicLaunchFailure | null>(null);
+  const [createdRoom, setCreatedRoom] =
+    useState<WorkspaceTopicRoomCreateResult | null>(null);
   const normalizedSearchQuery = searchQuery.trim();
   const topicsQuery = useQuery({
     queryKey: ['workspace-topics'],
@@ -1112,9 +1950,209 @@ export function TopicSidebarShell({
     queryFn: () => fetchWorkspaceSurfaces(),
     staleTime: 30_000,
   });
+  const nodesQuery = useQuery({
+    queryKey: ['hub-nodes'],
+    queryFn: fetchHubNodes,
+    staleTime: 60_000,
+  });
+  useEffect(() => {
+    const openCreate = () => {
+      setCreateOpen(true);
+      setLaunchFailure(null);
+    };
+    window.addEventListener('relay:open-topic-task-room', openCreate);
+    return () =>
+      window.removeEventListener('relay:open-topic-task-room', openCreate);
+  }, []);
   const searchActive = normalizedSearchQuery.length > 0;
   const searchData = topicSearchQuery.data;
   const searchResults = searchData?.results ?? [];
+  const taskRef = taskRefFromDraft(createDraft.taskRef, createDraft.title);
+  const defaultRepoPath =
+    activeSession?.repoPath ?? activeRepoPath ?? undefined;
+  const defaultWorktreePath = activeSession?.worktreePath ?? undefined;
+  const defaultCwd =
+    activeSession?.cwd ?? defaultWorktreePath ?? defaultRepoPath ?? undefined;
+  const providerOptions = useMemo(
+    () =>
+      uniqueStrings([
+        defaultAgent,
+        ...frameworks.map((framework) => framework.id),
+        ...FALLBACK_PROVIDER_IDS,
+      ]),
+    [defaultAgent, frameworks]
+  );
+  const nodeOptions = useMemo(
+    () =>
+      (nodesQuery.data ?? []).map((node) => ({
+        value: node.nodeId,
+        label: node.displayName
+          ? `${node.displayName} · ${node.status}`
+          : node.status,
+      })),
+    [nodesQuery.data]
+  );
+  const repoPathOptions = useMemo(
+    () =>
+      uniqueStrings([
+        defaultRepoPath,
+        ...sessions.map((session) => session.repoPath),
+      ]),
+    [defaultRepoPath, sessions]
+  );
+  const worktreePathOptions = useMemo(
+    () =>
+      uniqueStrings([
+        defaultWorktreePath,
+        ...sessions.map((session) => session.worktreePath),
+      ]),
+    [defaultWorktreePath, sessions]
+  );
+  const cwdOptions = useMemo(
+    () =>
+      uniqueStrings([defaultCwd, ...sessions.map((session) => session.cwd)]),
+    [defaultCwd, sessions]
+  );
+  const previewCreate = useMemo<WorkspaceTopicCreateInput>(
+    () =>
+      buildTopicRoomCreateInput({
+        draft: createDraft,
+        workspaceId: activeWorkspaceId,
+        defaultProviderId: defaultAgent,
+        defaultNodeId: activeSession?.nodeId,
+        defaultRepoPath,
+        defaultWorktreePath,
+        defaultCwd,
+        taskRef,
+      }),
+    [
+      activeSession?.nodeId,
+      activeWorkspaceId,
+      createDraft,
+      defaultAgent,
+      defaultCwd,
+      defaultRepoPath,
+      defaultWorktreePath,
+      taskRef,
+    ]
+  );
+
+  const handleCreateSubmit = useCallback(
+    async (intent: WorkspaceTopicLaunchIntent) => {
+      if (!createDraft.title.trim()) return;
+      const launch = buildTopicRoomLaunchBody(
+        previewCreate,
+        createDraft.templateKind
+      );
+      const submitIntent =
+        intent === 'create-and-launch' && launch
+          ? 'create-and-launch'
+          : 'create-only';
+      setSubmittingIntent(submitIntent);
+      setLaunchFailure(null);
+      try {
+        if (submitIntent === 'create-and-launch' && createdRoom && launch) {
+          const result = await launchWorkspaceTopicRoom({
+            room: createdRoom,
+            launch,
+          });
+          if (result.status === 'launch_failed') {
+            setLaunchFailure(result.failure);
+            return;
+          }
+          await useSessionsStore.getState().refreshAll();
+          setActiveSessionId(result.session.id);
+          onSelectSession?.(result.session.id);
+          setCreateOpen(false);
+          setCreatedRoom(null);
+          setCreateDraft(TOPIC_ROOM_DRAFT_EMPTY);
+          return;
+        }
+        const result = await createWorkspaceTopicRoomAndMaybeLaunch({
+          room: {
+            topic: previewCreate,
+            ...(taskRef ? { taskRef } : {}),
+          },
+          ...(submitIntent === 'create-and-launch' && launch
+            ? {
+                launch,
+              }
+            : {}),
+        });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-topics'] }),
+          queryClient.invalidateQueries({ queryKey: ['workspace-surfaces'] }),
+        ]);
+        if (result.status === 'launch_failed') {
+          setLaunchFailure(result.failure);
+          setCreatedRoom({
+            topic: result.topic,
+            workContext: result.workContext,
+          });
+          return;
+        }
+        if (result.status === 'launched') {
+          await useSessionsStore.getState().refreshAll();
+          setActiveSessionId(result.session.id);
+          onSelectSession?.(result.session.id);
+        }
+        setCreateOpen(false);
+        setCreatedRoom(null);
+        setCreateDraft(TOPIC_ROOM_DRAFT_EMPTY);
+      } catch (error) {
+        const failure = error as WorkspaceTopicLaunchFailure;
+        setLaunchFailure({
+          stage: failure.stage ?? 'topic',
+          message:
+            typeof failure.message === 'string'
+              ? failure.message
+              : error instanceof Error
+                ? error.message
+                : String(error),
+          retryable: failure.retryable ?? false,
+          ...(failure.code ? { code: failure.code } : {}),
+          ...(failure.status ? { status: failure.status } : {}),
+        });
+      } finally {
+        setSubmittingIntent(null);
+      }
+    },
+    [
+      createDraft.title,
+      createDraft.templateKind,
+      createdRoom,
+      onSelectSession,
+      previewCreate,
+      queryClient,
+      setActiveSessionId,
+      taskRef,
+    ]
+  );
+
+  const createPanel = (
+    <TopicRoomCreatePanel
+      open={createOpen}
+      draft={createDraft}
+      previewCreate={previewCreate}
+      providerOptions={providerOptions}
+      nodeOptions={nodeOptions}
+      repoPathOptions={repoPathOptions}
+      worktreePathOptions={worktreePathOptions}
+      cwdOptions={cwdOptions}
+      launchFailure={launchFailure}
+      submittingIntent={submittingIntent}
+      onDraftChange={(patch) => {
+        setCreateDraft((current) => ({ ...current, ...patch }));
+        setCreatedRoom(null);
+        setLaunchFailure(null);
+      }}
+      onSubmit={(intent) => void handleCreateSubmit(intent)}
+      onCancel={() => {
+        setCreateOpen(false);
+        setLaunchFailure(null);
+      }}
+    />
+  );
 
   return (
     <TopicSidebarView
@@ -1125,15 +2163,10 @@ export function TopicSidebarShell({
       }
       sessions={sessions}
       surfaces={surfacesQuery.data ?? []}
-      loading={
-        !searchActive &&
-        ((topicsQuery.isLoading && !topicsQuery.data) ||
-          (surfacesQuery.isLoading && !surfacesQuery.data))
-      }
-      error={
-        (topicsQuery.isError && !topicsQuery.data && !searchActive) ||
-        (surfacesQuery.isError && !surfacesQuery.data)
-      }
+      loading={!searchActive && topicsQuery.isLoading && !topicsQuery.data}
+      error={topicsQuery.isError && !topicsQuery.data && !searchActive}
+      surfacesLoading={surfacesQuery.isLoading && !surfacesQuery.data}
+      surfacesError={surfacesQuery.isError}
       derived={
         searchActive
           ? (searchData?.derived ?? false)
@@ -1149,6 +2182,11 @@ export function TopicSidebarShell({
       onSearchRetry={() => void topicSearchQuery.refetch()}
       onSearchClear={() => setSearchQuery('')}
       onSelectSession={onSelectSession}
+      createPanel={createPanel}
+      onCreateTaskRoom={() => {
+        setCreateOpen(true);
+        setLaunchFailure(null);
+      }}
     />
   );
 }

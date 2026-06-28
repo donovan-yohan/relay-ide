@@ -99,7 +99,11 @@ describe('IA Workspace CRUD router', () => {
     });
     expect(createB.status).toBe(201);
     const { workspace: b } = (await createB.json()) as { workspace: Workspace };
-    expect(b).toMatchObject({ name: 'Beta', order: 1, projectIds: ['p1', 'p2'] });
+    expect(b).toMatchObject({
+      name: 'Beta',
+      order: 1,
+      projectIds: ['p1', 'p2'],
+    });
 
     // list returns both, ordered by order asc
     const listed = (await (await fetch(`${baseUrl}${WS}`)).json()) as {
@@ -127,7 +131,10 @@ describe('IA Workspace CRUD router', () => {
     const reordered = (await (await fetch(`${baseUrl}${WS}`)).json()) as {
       workspaces: Workspace[];
     };
-    expect(reordered.workspaces.map((w) => w.name)).toEqual(['Beta', 'Alpha-2']);
+    expect(reordered.workspaces.map((w) => w.name)).toEqual([
+      'Beta',
+      'Alpha-2',
+    ]);
 
     // DELETE B
     const del = await fetch(`${baseUrl}${WS}/${encodeURIComponent(b.id)}`, {
@@ -153,17 +160,127 @@ describe('IA Workspace CRUD router', () => {
 
     // rename only — order + projectIds must survive
     const patched = (await (
-      await fetch(`${baseUrl}${WS}/${encodeURIComponent(created.workspace.id)}`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'Gamma-renamed' }),
-      })
+      await fetch(
+        `${baseUrl}${WS}/${encodeURIComponent(created.workspace.id)}`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'Gamma-renamed' }),
+        }
+      )
     ).json()) as { workspace: Workspace };
     expect(patched.workspace).toMatchObject({
       name: 'Gamma-renamed',
       order: 3,
       projectIds: ['p1'],
     });
+  });
+
+  it('persists rail metadata and archive/restore filters default list', async () => {
+    await mount({ iaStore: store });
+    const created = (await (
+      await fetch(`${baseUrl}${WS}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Relay',
+          pinned: true,
+          color: 'blue',
+          icon: 'crab',
+          defaultRepoPath: '/work/relay',
+          defaultNodeId: 'local-node',
+          defaultProvider: 'hermes',
+        }),
+      })
+    ).json()) as { workspace: Workspace };
+
+    expect(created.workspace).toMatchObject({
+      status: 'active',
+      pinned: true,
+      color: 'blue',
+      icon: 'crab',
+      defaultRepoPath: '/work/relay',
+      defaultNodeId: 'local-node',
+      defaultProvider: 'hermes',
+    });
+
+    const archived = await fetch(
+      `${baseUrl}${WS}/${encodeURIComponent(created.workspace.id)}/archive`,
+      { method: 'POST' }
+    );
+    expect(archived.status).toBe(200);
+    expect(
+      ((await archived.json()) as { workspace: Workspace }).workspace.status
+    ).toBe('archived');
+
+    expect(
+      (
+        (await (await fetch(`${baseUrl}${WS}`)).json()) as {
+          workspaces: Workspace[];
+        }
+      ).workspaces
+    ).toEqual([]);
+    expect(
+      (
+        (await (
+          await fetch(`${baseUrl}${WS}?includeArchived=true`)
+        ).json()) as {
+          workspaces: Workspace[];
+        }
+      ).workspaces.map((w) => w.id)
+    ).toEqual([created.workspace.id]);
+
+    const restored = await fetch(
+      `${baseUrl}${WS}/${encodeURIComponent(created.workspace.id)}/restore`,
+      { method: 'POST' }
+    );
+    expect(restored.status).toBe(200);
+    expect(
+      ((await restored.json()) as { workspace: Workspace }).workspace.status
+    ).toBe('active');
+  });
+
+  it('appends new workspaces after archived rows so restore keeps active orders unique', async () => {
+    await mount({ iaStore: store });
+    const create = async (name: string, order?: number): Promise<Workspace> => {
+      const res = await fetch(`${baseUrl}${WS}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          ...(order === undefined ? {} : { order }),
+        }),
+      });
+      expect(res.status).toBe(201);
+      return ((await res.json()) as { workspace: Workspace }).workspace;
+    };
+
+    const archivedMax = await create('Archived max', 6);
+    const archive = await fetch(
+      `${baseUrl}${WS}/${encodeURIComponent(archivedMax.id)}/archive`,
+      { method: 'POST' }
+    );
+    expect(archive.status).toBe(200);
+
+    const active = await create('Active after archive');
+    expect(active.order).toBe(7);
+
+    const restore = await fetch(
+      `${baseUrl}${WS}/${encodeURIComponent(archivedMax.id)}/restore`,
+      { method: 'POST' }
+    );
+    expect(restore.status).toBe(200);
+
+    const listed = (await (await fetch(`${baseUrl}${WS}`)).json()) as {
+      workspaces: Workspace[];
+    };
+    expect(listed.workspaces.map((w) => [w.name, w.order])).toEqual([
+      ['Archived max', 6],
+      ['Active after archive', 7],
+    ]);
+    expect(new Set(listed.workspaces.map((w) => w.order)).size).toBe(
+      listed.workspaces.length
+    );
   });
 
   it('rejects blank name on create (400)', async () => {
@@ -174,7 +291,9 @@ describe('IA Workspace CRUD router', () => {
       body: JSON.stringify({ name: '   ' }),
     });
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: { code: string; details?: { field?: string } } };
+    const body = (await res.json()) as {
+      error: { code: string; details?: { field?: string } };
+    };
     expect(body.error.code).toBe('INVALID_REQUEST');
     expect(body.error.details?.field).toBe('name');
   });
@@ -196,6 +315,21 @@ describe('IA Workspace CRUD router', () => {
     });
     expect(badOrder.status).toBe(400);
     expect((await badOrder.json()).error.details.field).toBe('order');
+  });
+
+  it('rejects invalid workspace rail metadata as bad input', async () => {
+    await mount({ iaStore: store });
+    const res = await fetch(`${baseUrl}${WS}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'X', pinned: 'yes' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: { code: string; details?: { field?: string } };
+    };
+    expect(body.error.code).toBe('INVALID_REQUEST');
+    expect(body.error.details?.field).toBe('metadata');
   });
 
   it('PATCH/DELETE on unknown id → 404; bad id → 400', async () => {

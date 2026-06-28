@@ -12,11 +12,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
+  archiveIaWorkspace,
   createIaWorkspace,
   deleteIaWorkspace,
   fetchIaWorkspaces,
   updateIaWorkspace,
   type IaWorkspace,
+  type IaWorkspacePatch,
 } from '../api.js';
 
 export const IA_WORKSPACES_QUERY_KEY = ['ia-workspaces'] as const;
@@ -43,6 +45,12 @@ export function useIaWorkspaces() {
       name: string;
       projectIds?: string[];
       order?: number;
+      pinned?: boolean;
+      color?: string | null;
+      icon?: string | null;
+      defaultRepoPath?: string | null;
+      defaultNodeId?: string | null;
+      defaultProvider?: string | null;
     }) => createIaWorkspace(input),
     onSuccess: invalidate,
   });
@@ -51,10 +59,13 @@ export function useIaWorkspaces() {
   // reconcile with ONE caller-driven refetch at the end. Single-op callers
   // (rename) invalidate explicitly.
   const updateMutation = useMutation({
-    mutationFn: (args: {
-      id: string;
-      patch: { name?: string; order?: number; projectIds?: string[] };
-    }) => updateIaWorkspace(args.id, args.patch),
+    mutationFn: (args: { id: string; patch: IaWorkspacePatch }) =>
+      updateIaWorkspace(args.id, args.patch),
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: (id: string) => archiveIaWorkspace(id),
+    onSuccess: invalidate,
   });
 
   const deleteMutation = useMutation({
@@ -65,6 +76,7 @@ export function useIaWorkspaces() {
   return {
     workspaces: (query.data ?? []) as IaWorkspace[],
     isLoading: query.isLoading,
+    isFetching: query.isFetching,
     isError: query.isError,
     refetch: query.refetch,
     /** Mark `['ia-workspaces']` stale + refetch. Callers use this after a
@@ -72,6 +84,7 @@ export function useIaWorkspaces() {
     invalidate,
     createMutation,
     updateMutation,
+    archiveMutation,
     deleteMutation,
   };
 }
