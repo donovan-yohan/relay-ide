@@ -467,6 +467,85 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).not.toHaveBeenCalled();
   });
 
+  it('keeps mobile resume enabled when only live input control state is unsafe', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'live Hermes web session',
+          mode: 'web',
+          status: 'active',
+          controlFreshness: 'unknown',
+        }),
+      ],
+      onSendInput,
+    });
+
+    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
+      'resume'
+    );
+    expect(container.textContent).toContain(
+      'controls disabled: unknown control state'
+    );
+
+    const input = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    const submit = container.querySelector(
+      '.topic-mobile-control__primary'
+    ) as HTMLButtonElement;
+    const buttons = Array.from(
+      container.querySelectorAll('.topic-mobile-actions button')
+    ) as HTMLButtonElement[];
+    const resume = buttons.find(
+      (button) => button.textContent === 'resume topic'
+    ) as HTMLButtonElement;
+    const terminal = buttons.find(
+      (button) => button.textContent === 'open terminal tab'
+    ) as HTMLButtonElement;
+
+    expect(input.disabled).toBe(true);
+    expect(submit.disabled).toBe(true);
+    expect(resume.disabled).toBe(false);
+    expect(resume.title).toContain('open the linked Relay tab');
+    expect(terminal.disabled).toBe(false);
+
+    await act(async () => terminal.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+    expect(onSendInput).not.toHaveBeenCalled();
+  });
+
+  it('keeps web session input disabled while allowing mobile tab resume', async () => {
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'fresh Hermes web session',
+          mode: 'web',
+          status: 'active',
+          controlFreshness: 'fresh',
+        }),
+      ],
+    });
+
+    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
+      'resume'
+    );
+    expect(container.textContent).toContain(
+      'controls disabled: web session input is unsupported here'
+    );
+
+    const resume = Array.from(
+      container.querySelectorAll('.topic-mobile-actions button')
+    ).find(
+      (button) => button.textContent === 'resume topic'
+    ) as HTMLButtonElement;
+    expect(resume.disabled).toBe(false);
+    await act(async () => resume.click());
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+  });
+
   it('makes the resume and terminal-tab mobile controls explicit', async () => {
     await renderView();
 

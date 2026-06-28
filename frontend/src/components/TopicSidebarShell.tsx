@@ -92,7 +92,7 @@ function topicPrimarySession(
   })[0];
 }
 
-function sessionControlDisabledReason(
+function sessionAttachDisabledReason(
   session: TopicNavSessionRef | undefined
 ): string | null {
   if (!session) return 'no session linked to this topic';
@@ -103,6 +103,15 @@ function sessionControlDisabledReason(
     session.durability ?? undefined
   );
   if (durabilityReason) return durabilityReason;
+  return null;
+}
+
+function sessionControlDisabledReason(
+  session: TopicNavSessionRef | undefined
+): string | null {
+  if (!session) return 'no session linked to this topic';
+  const attachReason = sessionAttachDisabledReason(session);
+  if (attachReason) return attachReason;
   if (session.controlFreshness === 'stale') return 'stale control state';
   if (session.controlFreshness && session.controlFreshness !== 'fresh') {
     return 'unknown control state';
@@ -118,6 +127,7 @@ function topicPrimaryAction(item: TopicNavItem): {
 } {
   const session = topicPrimarySession(item);
   const disabledReason = sessionControlDisabledReason(session);
+  const attachDisabledReason = sessionAttachDisabledReason(session);
   if (session?.displayState === 'permission') {
     return {
       label: 'approve',
@@ -132,19 +142,19 @@ function topicPrimaryAction(item: TopicNavItem): {
       disabledReason,
     };
   }
-  if (session && disabledReason) {
+  if (session && attachDisabledReason) {
     return {
       label: 'waiting',
       detail:
         'last known session context remains readable; live controls are disabled',
-      disabledReason,
+      disabledReason: attachDisabledReason,
     };
   }
   if (session) {
     return {
       label: 'resume',
       detail: 'open the linked Relay tab; raw PTY remains the fallback',
-      disabledReason: null,
+      disabledReason,
     };
   }
   if (item.surfaces.length > 0) {
@@ -334,8 +344,8 @@ function TopicMobileControlPanel({
   const [sending, setSending] = useState(false);
   const needsInput = action.label === 'approve' || action.label === 'reply';
   const canSend = Boolean(session && needsInput && !action.disabledReason);
-  const liveControlDisabledReason = sessionControlDisabledReason(session);
-  const canResume = Boolean(session && !liveControlDisabledReason);
+  const resumeDisabledReason = sessionAttachDisabledReason(session);
+  const canResume = Boolean(session && !resumeDisabledReason);
   const topSurface = item.surfaces[0];
   const approvalPresets =
     action.label === 'approve'
@@ -503,8 +513,7 @@ function TopicMobileControlPanel({
           disabled={!canResume}
           onClick={handleResume}
           title={
-            liveControlDisabledReason ??
-            'open the linked Relay tab for this topic'
+            resumeDisabledReason ?? 'open the linked Relay tab for this topic'
           }
         >
           resume topic
@@ -514,7 +523,7 @@ function TopicMobileControlPanel({
           disabled={!canResume}
           onClick={handleResume}
           title={
-            liveControlDisabledReason ??
+            resumeDisabledReason ??
             'same linked Relay tab as resume; raw PTY is the fallback once open'
           }
         >
