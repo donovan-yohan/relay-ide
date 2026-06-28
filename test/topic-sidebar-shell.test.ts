@@ -474,6 +474,54 @@ describe('TopicSidebarView', () => {
     expect(onSearchClear).toHaveBeenCalledTimes(1);
   });
 
+  it('renders participant roster cards grouped by role/runtime and opens exact existing sessions', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          linkedRefs: { sessionIds: ['devbox:remote-ika', 'global:kame'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 'remote-ika',
+          nodeId: 'devbox',
+          displayName: 'Ika frontend',
+          agent: 'claude',
+          activeWorker: { kind: 'agent', displayName: 'ika-frontend' },
+          agentState: 'processing',
+          currentActivity: {
+            tool: 'edit',
+            detail: 'wiring participant roster',
+          },
+        }),
+        makeSession({
+          id: 'kame-local',
+          globalSessionId: 'global:kame',
+          displayName: 'Kame QA',
+          agent: 'codex',
+          activeWorker: { kind: 'agent', displayName: 'kame-qa' },
+          status: 'disconnected',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const roster = container.querySelector('.topic-participants');
+    expect(roster?.textContent).toContain('participants');
+    expect(roster?.textContent).toContain('frontend · claude');
+    expect(roster?.textContent).toContain('qa · codex');
+    expect(roster?.textContent).toContain('running');
+    expect(roster?.textContent).toContain('offline');
+
+    const ikaCard = Array.from(
+      container.querySelectorAll('.topic-participant-card')
+    ).find((card) =>
+      card.textContent?.includes('Ika frontend')
+    ) as HTMLButtonElement;
+    await act(async () => ikaCard.click());
+    expect(onSelectSession).toHaveBeenCalledWith('devbox:remote-ika');
+  });
+
   it('renders search result explanation, freshness, disabled action, and truncation metadata', async () => {
     const staleTopic = makeTopic({
       id: 'topic:stale',

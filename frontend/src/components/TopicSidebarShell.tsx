@@ -34,6 +34,7 @@ import {
   buildTopicNavModel,
   type TopicNavItem,
   type TopicNavModel,
+  type TopicNavParticipantRef,
   type TopicNavSessionRef,
   type TopicNavSurfaceRef,
 } from '../lib/state/topic-nav.js';
@@ -218,38 +219,117 @@ function SurfaceButton({ surface }: { surface: TopicNavSurfaceRef }) {
   );
 }
 
-function SessionChildRow({
+function ParticipantChildRow({
+  participant,
   session,
   onSelectSession,
 }: {
-  session: TopicNavSessionRef;
+  participant: TopicNavParticipantRef;
+  session?: TopicNavSessionRef | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
   return (
-    <li className={`topic-child-row topic-child-row--${session.tone}`}>
+    <li className={`topic-child-row topic-child-row--${participant.tone}`}>
       <button
         type="button"
         className="topic-child-row__button"
         {...(onSelectSession
-          ? { onClick: () => onSelectSession(session.selectKey) }
+          ? { onClick: () => onSelectSession(participant.selectKey) }
           : {})}
+        title={`open existing session ${participant.selectKey}`}
       >
         <span className="topic-child-row__label">
-          <MarqueeText>{session.label}</MarqueeText>
+          <MarqueeText>{participant.label}</MarqueeText>
         </span>
-        {session.branch ? (
+        <span className="topic-child-row__meta topic-child-row__role">
+          {participant.roleLabel}
+        </span>
+        <span className="topic-child-row__meta">{participant.statusLabel}</span>
+        {session?.branch ? (
           <span className="topic-child-row__meta">{session.branch}</span>
         ) : null}
-        {session.nodeId ? (
-          <span className="topic-child-row__meta">{session.nodeId}</span>
+        {participant.nodeId ? (
+          <span className="topic-child-row__meta">{participant.nodeId}</span>
         ) : null}
-        <StatusGlyph tone={session.tone} />
+        <StatusGlyph tone={participant.tone} />
       </button>
     </li>
   );
 }
 
-function TopicDetail({ item }: { item: TopicNavItem }) {
+function participantGroups(participants: TopicNavParticipantRef[]) {
+  const groups = new Map<string, TopicNavParticipantRef[]>();
+  for (const participant of participants) {
+    const key = `${participant.roleLabel} · ${participant.providerLabel}`;
+    const existing = groups.get(key) ?? [];
+    existing.push(participant);
+    groups.set(key, existing);
+  }
+  return Array.from(groups.entries());
+}
+
+function ParticipantRoster({
+  item,
+  onSelectSession,
+}: {
+  item: TopicNavItem;
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  if (item.participants.length === 0) return null;
+  return (
+    <section className="topic-participants" aria-label="participant roster">
+      <div className="topic-participants__header">
+        <span>participants</span>
+        <span>{item.participants.length} linked</span>
+      </div>
+      {participantGroups(item.participants).map(([group, participants]) => (
+        <div className="topic-participant-group" key={group}>
+          <div className="topic-participant-group__label">{group}</div>
+          <div className="topic-participant-group__grid">
+            {participants.map((participant) => (
+              <button
+                key={participant.id}
+                type="button"
+                className={`topic-participant-card topic-participant-card--${participant.tone}`}
+                onClick={() => onSelectSession?.(participant.selectKey)}
+                title={`open existing session ${participant.selectKey}`}
+              >
+                <span className="topic-participant-card__topline">
+                  <span className="topic-participant-card__name">
+                    {participant.label}
+                  </span>
+                  <span className="topic-participant-card__status">
+                    {participant.statusLabel}
+                  </span>
+                </span>
+                <span className="topic-participant-card__meta">
+                  {participant.runtimeLabel}
+                  {participant.nodeId ? ` · ${participant.nodeId}` : ''}
+                </span>
+                <span className="topic-participant-card__meta">
+                  {participant.controlLabel}
+                </span>
+                {participant.summaryLabel ? (
+                  <span className="topic-participant-card__summary">
+                    {participant.summaryLabel}
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function TopicDetail({
+  item,
+  onSelectSession,
+}: {
+  item: TopicNavItem;
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
   return (
     <section className="topic-detail" aria-label={`${item.title} details`}>
       <div className="topic-detail__title">{item.title}</div>
@@ -275,6 +355,7 @@ function TopicDetail({ item }: { item: TopicNavItem }) {
           ))}
         </div>
       ) : null}
+      <ParticipantRoster item={item} onSelectSession={onSelectSession} />
     </section>
   );
 }
@@ -497,11 +578,11 @@ function TopicRow({
   onSelect: (id: string) => void;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
-  const hasNested = item.childIds.length > 0 || item.sessions.length > 0;
+  const hasNested = item.childIds.length > 0 || item.participants.length > 0;
   const expanded = expandedIds.has(item.id);
   const selected = selectedId === item.id;
   const affordanceCount =
-    item.sessions.length + item.surfaces.length + item.taskRefs.length;
+    item.participants.length + item.surfaces.length + item.taskRefs.length;
 
   const activate = () => {
     onSelect(item.id);
@@ -552,8 +633,8 @@ function TopicRow({
           aria-label={`${item.statusLabel}, ${affordanceCount} linked items`}
         >
           <span className="topic-row__hover-actions" aria-hidden="true">
-            {item.sessions.length > 0 ? (
-              <span className="topic-chip">s{item.sessions.length}</span>
+            {item.participants.length > 0 ? (
+              <span className="topic-chip">p{item.participants.length}</span>
             ) : null}
             {item.surfaces.slice(0, 2).map((surface) => (
               <SurfaceButton key={surface.id} surface={surface} />
@@ -567,12 +648,15 @@ function TopicRow({
       </div>
       {expanded ? (
         <>
-          {item.sessions.length > 0 ? (
+          {item.participants.length > 0 ? (
             <ul className="topic-child-list">
-              {item.sessions.map((session) => (
-                <SessionChildRow
-                  key={session.id}
-                  session={session}
+              {item.participants.map((participant) => (
+                <ParticipantChildRow
+                  key={participant.id}
+                  participant={participant}
+                  session={item.sessions.find(
+                    (session) => session.selectKey === participant.selectKey
+                  )}
                   onSelectSession={onSelectSession}
                 />
               ))}
@@ -951,7 +1035,7 @@ export function TopicSidebarView({
       </ul>
       {selectedItem ? (
         <>
-          <TopicDetail item={selectedItem} />
+          <TopicDetail item={selectedItem} onSelectSession={onSelectSession} />
           <TopicMobileControlPanel
             item={selectedItem}
             onSelectSession={onSelectSession}

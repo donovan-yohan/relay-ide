@@ -234,6 +234,137 @@ describe('buildTopicNavModel', () => {
     });
   });
 
+  it('projects a participant roster with role, provider, runtime, and bounded status summary', () => {
+    const topic = makeTopic({
+      linkedRefs: { sessionIds: ['global:ika', 'global:kame'] },
+    });
+    const longSummary = `${'reviewing '.repeat(20)}approval prompt`;
+    const model = buildTopicNavModel({
+      topics: [topic],
+      sessions: [
+        makeSession({
+          id: 'ika-local',
+          globalSessionId: 'global:ika',
+          displayName: 'Ika frontend lane',
+          agent: 'claude',
+          mode: 'pty',
+          activeWorker: { kind: 'agent', displayName: 'ika-frontend' },
+          agentState: 'processing',
+          currentActivity: { tool: 'npm', detail: longSummary },
+        }),
+        makeSession({
+          id: 'kame-local',
+          globalSessionId: 'global:kame',
+          displayName: 'Kame QA gate',
+          agent: 'codex',
+          mode: 'web',
+          activeWorker: { kind: 'agent', displayName: 'kame-qa' },
+          agentState: 'idle',
+          idle: true,
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const item = model.byId.get('topic:alpha');
+    expect(item?.participants).toMatchObject([
+      {
+        label: 'Ika frontend lane',
+        roleLabel: 'frontend',
+        providerLabel: 'claude',
+        runtimeLabel: 'agent · pty',
+        statusLabel: 'running',
+        selectKey: 'global:ika',
+      },
+      {
+        label: 'Kame QA gate',
+        roleLabel: 'qa',
+        providerLabel: 'codex',
+        runtimeLabel: 'agent · web',
+        statusLabel: 'idle',
+        selectKey: 'global:kame',
+      },
+    ]);
+    expect(item?.participants[0]?.summaryLabel?.length).toBeLessThanOrEqual(96);
+  });
+
+  it('aggregates room status in task-room priority order', () => {
+    const model = buildTopicNavModel({
+      topics: [
+        makeTopic({
+          id: 'topic:mixed',
+          linkedRefs: { sessionIds: ['running', 'prompt'] },
+        }),
+        makeTopic({
+          id: 'topic:blocker',
+          linkedRefs: { sessionIds: ['offline'] },
+        }),
+      ],
+      sessions: [
+        makeSession({ id: 'running', agentState: 'processing' }),
+        makeSession({
+          id: 'prompt',
+          agentState: 'waiting-for-input',
+          currentActivity: { tool: 'question', detail: 'pick route' },
+        }),
+        makeSession({ id: 'offline', status: 'disconnected' }),
+      ],
+      surfaces: [],
+    });
+
+    expect(model.byId.get('topic:mixed')).toMatchObject({
+      tone: 'attention',
+      statusLabel: 'needs input',
+    });
+    expect(model.byId.get('topic:blocker')).toMatchObject({
+      tone: 'error',
+      statusLabel: 'blocked',
+    });
+  });
+
+  it('marks stale/offline participants without losing exact selection keys', () => {
+    const model = buildTopicNavModel({
+      topics: [
+        makeTopic({
+          linkedRefs: {
+            sessionIds: ['devbox:remote-session', 'stale-session'],
+          },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 'remote-session',
+          nodeId: 'devbox',
+          displayName: 'remote lane',
+          status: 'disconnected',
+        }),
+        makeSession({
+          id: 'stale-session',
+          displayName: 'stale lane',
+          controlFreshness: 'stale',
+          controlReason: 'node heartbeat expired',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const participants = model.byId.get('topic:alpha')?.participants ?? [];
+    expect(participants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'remote lane',
+          statusLabel: 'offline',
+          selectKey: 'devbox:remote-session',
+        }),
+        expect.objectContaining({
+          label: 'stale lane',
+          statusLabel: 'stale',
+          controlLabel: 'control stale',
+        }),
+      ])
+    );
+  });
+
   it('breaks cyclic parent links into roots instead of recursive children', () => {
     const a = makeTopic({
       id: 'topic:a',

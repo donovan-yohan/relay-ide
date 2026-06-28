@@ -6,6 +6,7 @@ import type {
 import type { SessionSummary } from '../types.js';
 import { isAttentionState, type DisplayState } from './display-state.js';
 import { highestPriorityState } from './attention.js';
+import { scopedSessionKey, sessionKeyMatches } from '../session-keys.js';
 
 export type TopicNavTone = 'active' | 'attention' | 'idle' | 'empty' | 'error';
 export type TopicNavKind = 'repo' | 'folder' | 'thread';
@@ -42,6 +43,22 @@ export interface TopicNavSessionRef {
   lastActivity: string | null;
 }
 
+export interface TopicNavParticipantRef {
+  id: string;
+  sessionId: string;
+  selectKey: string;
+  label: string;
+  roleLabel: string;
+  providerLabel: string;
+  runtimeLabel: string;
+  nodeId: string | null;
+  tone: TopicNavTone;
+  statusLabel: string;
+  controlLabel: string;
+  summaryLabel: string | null;
+  lastActivity: string | null;
+}
+
 export interface TopicNavSurfaceRef {
   id: string;
   label: string;
@@ -66,6 +83,7 @@ export interface TopicNavItem {
   statusLabel: string;
   attentionPriority: number;
   sessions: TopicNavSessionRef[];
+  participants: TopicNavParticipantRef[];
   surfaces: TopicNavSurfaceRef[];
   taskRefs: NonNullable<WorkspaceTopic['linkedRefs']['taskRefs']>;
   childIds: WorkspaceTopicId[];
@@ -87,12 +105,15 @@ function basename(path: string | undefined): string | null {
 }
 
 function sessionSelectKey(session: SessionSummary): string {
-  return session.globalSessionId ?? session.id;
+  return scopedSessionKey(session);
 }
 
 function sessionTone(session: SessionSummary): TopicNavTone {
   if (session.agentState === 'error') return 'error';
   if (session.agentState === 'permission-prompt') return 'attention';
+  if (session.agentState === 'waiting-for-input') return 'attention';
+  if (session.status === 'disconnected') return 'error';
+  if (session.controlFreshness === 'stale') return 'attention';
   if (
     session.agentState === 'processing' ||
     session.agentState === 'initializing'
@@ -108,7 +129,9 @@ function sessionDisplayState(session: SessionSummary): DisplayState {
       ? 'needs-answer'
       : 'permission';
   }
+  if (session.agentState === 'waiting-for-input') return 'needs-answer';
   if (session.agentState === 'error') return 'error';
+  if (session.status === 'disconnected') return 'error';
   if (session.agentState === 'processing') return 'running';
   if (session.agentState === 'initializing') return 'initializing';
   return 'seen-idle';
@@ -119,11 +142,7 @@ function sessionMatchesTopic(
   session: SessionSummary
 ): boolean {
   const linked = topic.linkedRefs;
-  if (
-    linked.sessionIds?.some(
-      (id) => id === session.id || id === session.globalSessionId
-    )
-  ) {
+  if (linked.sessionIds?.some((id) => sessionKeyMatches(session, id))) {
     return true;
   }
   if (
@@ -186,6 +205,156 @@ function routingLabel(topic: WorkspaceTopic): string | null {
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
+type TopicParticipantRole = {
+  label: string;
+  patterns: RegExp[];
+};
+
+const TOPIC_PARTICIPANT_ROLES: TopicParticipantRole[] = [
+  { label: 'product', patterns: [/\bkoi\b/i, /product/i] },
+  { label: 'planner', patterns: [/\btako\b/i, /planner/i, /plan/i] },
+  { label: 'frontend', patterns: [/\bika\b/i, /front.?end/i, /ui/i] },
+  { label: 'backend', patterns: [/\bkani\b/i, /back.?end/i, /server/i] },
+  { label: 'qa', patterns: [/\bkame\b/i, /\bqa\b/i, /test/i] },
+  { label: 'review', patterns: [/\bfugu\b/i, /review/i] },
+  { label: 'ops', patterns: [/\bkujira\b/i, /ops/i, /release/i] },
+  { label: 'design', patterns: [/\bhotate\b/i, /design/i] },
+];
+
+function actorLabel(
+  actor: NonNullable<SessionSummary['activeActors']>[number] | undefined
+): string | null {
+  if (!actor) return null;
+  return actor.displayName ?? actor.id ?? actor.kind ?? null;
+}
+
+function sessionRoleLabel(session: SessionSummary): string {
+  const peer = session.sessionEnvelope?.peerIdentity;
+  const candidates = [
+    actorLabel(session.activeWorker),
+    ...((session.activeActors ?? [])
+      .map(actorLabel)
+      .filter(Boolean) as string[]),
+    peer && 'displayName' in peer ? peer.displayName : undefined,
+    peer && 'id' in peer ? peer.id : undefined,
+    peer && 'adapter' in peer ? peer.adapter : undefined,
+    session.displayName,
+    session.agent,
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    for (const role of TOPIC_PARTICIPANT_ROLES) {
+      if (role.patterns.some((pattern) => pattern.test(candidate))) {
+        return role.label;
+      }
+    }
+  }
+
+  if (session.type === 'terminal') return 'terminal';
+  return 'agent';
+}
+
+function sessionProviderLabel(session: SessionSummary): string {
+  const peer = session.sessionEnvelope?.peerIdentity;
+  if (peer?.kind === 'agent') return peer.adapter;
+  if (peer?.kind === 'local-user') return 'local user';
+  if (peer?.kind === 'relay-node') return 'relay node';
+  return session.agent || session.type;
+}
+
+function sessionRuntimeLabel(session: SessionSummary): string {
+  const mode = session.mode ?? 'pty';
+  return `${session.type} · ${mode}`;
+}
+
+function boundedSummary(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return trimmed.length > 96 ? `${trimmed.slice(0, 93)}...` : trimmed;
+}
+
+function sessionParticipantStatus(session: SessionSummary): {
+  label: string;
+  summary: string | null;
+} {
+  if (session.status === 'disconnected') {
+    return { label: 'offline', summary: 'session disconnected' };
+  }
+  if (session.controlFreshness === 'stale') {
+    return {
+      label: 'stale',
+      summary: boundedSummary(session.controlReason) ?? 'stale control state',
+    };
+  }
+  if (session.agentState === 'permission-prompt') {
+    return {
+      label:
+        session.permissionType === 'question'
+          ? 'needs answer'
+          : 'needs approval',
+      summary:
+        boundedSummary(session.currentActivity?.detail) ??
+        session.currentActivity?.tool ??
+        null,
+    };
+  }
+  if (session.agentState === 'waiting-for-input') {
+    return {
+      label: 'needs input',
+      summary:
+        boundedSummary(session.currentActivity?.detail) ??
+        session.currentActivity?.tool ??
+        null,
+    };
+  }
+  if (session.agentState === 'error') {
+    return { label: 'error', summary: boundedSummary(session.controlReason) };
+  }
+  if (session.agentState === 'processing') {
+    return {
+      label: 'running',
+      summary: boundedSummary(
+        session.currentActivity?.detail ?? session.currentActivity?.tool
+      ),
+    };
+  }
+  if (session.agentState === 'initializing') {
+    return { label: 'starting', summary: 'initializing session' };
+  }
+  return {
+    label: session.idle ? 'idle' : 'active',
+    summary: boundedSummary(
+      session.currentActivity?.detail ?? session.controlReason
+    ),
+  };
+}
+
+function sessionControlLabel(session: SessionSummary): string {
+  if (session.controlFreshness === 'stale') return 'control stale';
+  if (session.controlFreshness === 'unknown') return 'control unknown';
+  return session.controlMode ?? 'control unknown';
+}
+
+function topicParticipantRef(session: SessionSummary): TopicNavParticipantRef {
+  const status = sessionParticipantStatus(session);
+  const selectKey = sessionSelectKey(session);
+  return {
+    id: selectKey,
+    sessionId: session.id,
+    selectKey,
+    label: session.displayName || basename(session.cwd) || session.id,
+    roleLabel: sessionRoleLabel(session),
+    providerLabel: sessionProviderLabel(session),
+    runtimeLabel: sessionRuntimeLabel(session),
+    nodeId: session.nodeId ?? null,
+    tone: sessionTone(session),
+    statusLabel: status.label,
+    controlLabel: sessionControlLabel(session),
+    summaryLabel: status.summary,
+    lastActivity: session.lastActivity ?? null,
+  };
+}
+
 function topicTone(
   sessions: TopicNavSessionRef[],
   surfaces: TopicNavSurfaceRef[],
@@ -211,7 +380,11 @@ function topicTone(
     };
   }
   if (attentionState === 'error') {
-    return { tone: 'error', label: 'error', priority: DISPLAY_PRIORITY.error };
+    return {
+      tone: 'error',
+      label: 'blocked',
+      priority: DISPLAY_PRIORITY.error,
+    };
   }
   if (attentionState === 'unseen-idle') {
     return {
@@ -282,8 +455,10 @@ export function buildTopicNavModel(input: {
   derived?: boolean;
 }): TopicNavModel {
   const items: TopicNavItem[] = input.topics.map((topic) => {
-    const sessions = input.sessions
-      .filter((session) => sessionMatchesTopic(topic, session))
+    const matchedSessions = input.sessions.filter((session) =>
+      sessionMatchesTopic(topic, session)
+    );
+    const sessions = matchedSessions
       .map(
         (session): TopicNavSessionRef => ({
           id: session.id,
@@ -323,6 +498,17 @@ export function buildTopicNavModel(input: {
       .sort((a, b) => a.label.localeCompare(b.label));
 
     const tone = topicTone(sessions, surfaces, topic);
+    const participants = matchedSessions
+      .map(topicParticipantRef)
+      .sort((a, b) => {
+        if (a.roleLabel !== b.roleLabel) {
+          return a.roleLabel.localeCompare(b.roleLabel);
+        }
+        if (a.providerLabel !== b.providerLabel) {
+          return a.providerLabel.localeCompare(b.providerLabel);
+        }
+        return a.label.localeCompare(b.label);
+      });
     const kind = topicKind(topic);
     const order = topic.grouping.order ?? Number.MAX_SAFE_INTEGER;
     return {
@@ -340,6 +526,7 @@ export function buildTopicNavModel(input: {
       statusLabel: tone.label,
       attentionPriority: tone.priority,
       sessions,
+      participants,
       surfaces,
       taskRefs: topic.linkedRefs.taskRefs ?? [],
       childIds: [],

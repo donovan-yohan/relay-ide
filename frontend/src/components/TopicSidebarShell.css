@@ -435,7 +435,7 @@
 
 .topic-child-row__button {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto 18px;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto 18px;
   align-items: center;
   gap: 6px;
   width: 100%;
@@ -492,6 +492,115 @@
 .topic-child-row__button:hover .topic-child-row__meta,
 .topic-child-row__button:focus-visible .topic-child-row__meta {
   opacity: 1;
+}
+
+.topic-child-row__role {
+  color: var(--accent);
+}
+
+.topic-participants {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.topic-participants__header,
+.topic-participant-group__label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.58rem;
+}
+
+.topic-participants__header > span:first-child,
+.topic-participant-group__label {
+  color: var(--accent);
+}
+
+.topic-participant-group {
+  display: grid;
+  gap: 4px;
+}
+
+.topic-participant-group__grid {
+  display: grid;
+  gap: 4px;
+}
+
+.topic-participant-card {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  text-align: left;
+}
+
+.topic-participant-card:not(:disabled) {
+  cursor: pointer;
+}
+
+.topic-participant-card:hover,
+.topic-participant-card:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+  outline: none;
+}
+
+.topic-participant-card--attention {
+  border-color: color-mix(in srgb, var(--status-warning) 62%, transparent);
+}
+
+.topic-participant-card--error {
+  border-color: color-mix(in srgb, var(--status-error) 62%, transparent);
+}
+
+.topic-participant-card__topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.topic-participant-card__name,
+.topic-participant-card__status,
+.topic-participant-card__meta,
+.topic-participant-card__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-participant-card__name {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.topic-participant-card__status {
+  color: var(--accent);
+}
+
+.topic-participant-card--attention .topic-participant-card__status {
+  color: var(--status-warning);
+}
+
+.topic-participant-card--error .topic-participant-card__status {
+  color: var(--status-error);
+}
+
+.topic-participant-card__meta,
+.topic-participant-card__summary {
+  color: var(--text-muted);
+  font-size: 0.58rem;
 }
 
 .topic-shell-state {
