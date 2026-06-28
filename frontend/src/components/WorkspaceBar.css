@@ -9,6 +9,9 @@
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .workspace-bar__header {
@@ -60,6 +63,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .workspace-bar__row {
@@ -67,7 +72,11 @@
   align-items: center;
   gap: 6px;
   min-height: 36px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   border-left: 2px solid transparent;
+  position: relative;
 }
 
 .workspace-bar__row--selected {
@@ -105,6 +114,52 @@
   align-items: center;
   gap: 2px;
   flex: 0 0 auto;
+}
+
+.workspace-bar__rename-btn {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.workspace-bar__rename-btn:focus-visible {
+  z-index: 1;
+  inset-block-start: 50%;
+  inset-inline-start: 2px;
+  transform: translateY(-50%);
+  inline-size: auto;
+  min-inline-size: 44px;
+  block-size: 44px;
+  margin: 0;
+  padding: 0 6px;
+  overflow: visible;
+  clip: auto;
+  clip-path: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+
+.workspace-bar__rename-btn:disabled {
+  cursor: default;
 }
 
 .workspace-bar__icon-btn {

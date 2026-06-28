@@ -103,22 +103,22 @@ function WorkspaceRow({
           disabled={busy}
           onClick={onSelect}
           onDoubleClick={startEditing}
-          title="select workspace; double-click or use rename action to edit"
+          title="select workspace; double-click or tab to rename action to edit"
         >
           {workspace.name}
         </button>
       )}
+      <button
+        type="button"
+        className="workspace-bar__rename-btn"
+        disabled={busy}
+        onClick={startEditing}
+        aria-label={`rename ${workspace.name}`}
+        title="rename workspace"
+      >
+        rename
+      </button>
       <div className="workspace-bar__row-actions">
-        <button
-          type="button"
-          className="workspace-bar__icon-btn"
-          disabled={busy}
-          onClick={startEditing}
-          aria-label={`rename ${workspace.name}`}
-          title="rename workspace"
-        >
-          rename
-        </button>
         <button
           type="button"
           className="workspace-bar__icon-btn"
