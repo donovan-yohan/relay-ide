@@ -69,11 +69,13 @@ function WorkspaceRow({
 
   return (
     <li
-      className={
-        selected
-          ? 'workspace-bar__row workspace-bar__row--selected'
-          : 'workspace-bar__row'
-      }
+      className={[
+        'workspace-bar__row',
+        selected ? 'workspace-bar__row--selected' : null,
+        editing ? 'workspace-bar__row--editing' : null,
+      ]
+        .filter(Boolean)
+        .join(' ')}
     >
       {editing ? (
         <input
@@ -108,48 +110,52 @@ function WorkspaceRow({
           {workspace.name}
         </button>
       )}
-      <button
-        type="button"
-        className="workspace-bar__rename-btn"
-        disabled={busy}
-        onClick={startEditing}
-        aria-label={`rename ${workspace.name}`}
-        title="rename workspace"
-      >
-        rename
-      </button>
-      <div className="workspace-bar__row-actions">
-        <button
-          type="button"
-          className="workspace-bar__icon-btn"
-          disabled={busy || index === 0}
-          onClick={onMoveUp}
-          aria-label={`move ${workspace.name} up`}
-          title="move up"
-        >
-          ↑
-        </button>
-        <button
-          type="button"
-          className="workspace-bar__icon-btn"
-          disabled={busy || index === count - 1}
-          onClick={onMoveDown}
-          aria-label={`move ${workspace.name} down`}
-          title="move down"
-        >
-          ↓
-        </button>
-        <button
-          type="button"
-          className="workspace-bar__icon-btn workspace-bar__icon-btn--danger"
-          disabled={busy}
-          onClick={onArchive}
-          aria-label={`archive ${workspace.name}`}
-          title="archive workspace"
-        >
-          ×
-        </button>
-      </div>
+      {!editing ? (
+        <>
+          <button
+            type="button"
+            className="workspace-bar__rename-btn"
+            disabled={busy}
+            onClick={startEditing}
+            aria-label={`rename ${workspace.name}`}
+            title="rename workspace"
+          >
+            rename
+          </button>
+          <div className="workspace-bar__row-actions">
+            <button
+              type="button"
+              className="workspace-bar__icon-btn"
+              disabled={busy || index === 0}
+              onClick={onMoveUp}
+              aria-label={`move ${workspace.name} up`}
+              title="move up"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="workspace-bar__icon-btn"
+              disabled={busy || index === count - 1}
+              onClick={onMoveDown}
+              aria-label={`move ${workspace.name} down`}
+              title="move down"
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              className="workspace-bar__icon-btn workspace-bar__icon-btn--danger"
+              disabled={busy}
+              onClick={onArchive}
+              aria-label={`archive ${workspace.name}`}
+              title="archive workspace"
+            >
+              ×
+            </button>
+          </div>
+        </>
+      ) : null}
     </li>
   );
 }
