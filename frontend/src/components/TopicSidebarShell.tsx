@@ -41,6 +41,7 @@ import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { durabilityDisabledReason } from '../lib/session-durability.js';
+import { resolveSessionByKey } from '../lib/session-keys.js';
 import {
   buildTopicNavModel,
   type TopicNavItem,
@@ -1133,7 +1134,7 @@ export function TopicSidebarShell({
   const activeWorkspaceId = useUiStore((s) => s.activeWorkspaceId);
   const defaultAgent = useConfigStore((s) => s.defaultAgent);
   const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId),
+    () => resolveSessionByKey(sessions, activeSessionId),
     [activeSessionId, sessions]
   );
   const [searchQuery, setSearchQuery] = useState('');
@@ -1197,6 +1198,7 @@ export function TopicSidebarShell({
       },
       routingDefaults: {
         ...(defaultAgent ? { providerId: defaultAgent } : {}),
+        ...(activeSession?.nodeId ? { nodeId: activeSession.nodeId } : {}),
         ...(repoPath ? { repoPath } : {}),
         ...(worktreePath ? { worktreePath } : {}),
         ...(cwd ? { cwd } : {}),
@@ -1246,22 +1248,6 @@ export function TopicSidebarShell({
           room: {
             topic: previewCreate,
             ...(taskRef ? { taskRef } : {}),
-            workContext: {
-              title: previewCreate.title,
-              anchors: {
-                project: { workspaceId: previewCreate.workspaceId },
-                repo: {
-                  ...(previewCreate.routingDefaults?.repoPath
-                    ? { localPath: previewCreate.routingDefaults.repoPath }
-                    : {}),
-                },
-                worktree: {
-                  ...(previewCreate.routingDefaults?.worktreePath
-                    ? { localPath: previewCreate.routingDefaults.worktreePath }
-                    : {}),
-                },
-              },
-            },
           },
           ...(intent === 'create-and-launch'
             ? {

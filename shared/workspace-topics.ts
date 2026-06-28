@@ -1129,6 +1129,8 @@ export function buildWorkspaceTopicSessionCreateBody(input: {
   const explicitSpawnInput: WorkspaceTopicRoutingDefaults = {};
   const explicitProvider = readLaunchString(overrides, 'agent');
   if (explicitProvider) explicitSpawnInput.providerId = explicitProvider;
+  const explicitNode = readLaunchString(overrides, 'nodeId');
+  if (explicitNode) explicitSpawnInput.nodeId = explicitNode;
   const explicitRepoPath = readLaunchString(overrides, 'repoPath');
   if (explicitRepoPath) explicitSpawnInput.repoPath = explicitRepoPath;
   if (typeof explicitWorktreePath === 'string' && explicitWorktreePath.trim()) {
@@ -1154,6 +1156,7 @@ export function buildWorkspaceTopicSessionCreateBody(input: {
   }
   const agent = routing.providerId;
   if (agent) body['agent'] = agent;
+  if (routing.nodeId) body['nodeId'] = routing.nodeId;
   for (const key of [
     'type',
     'mode',

@@ -238,6 +238,7 @@ describe('workspace topics foundation', () => {
         },
         routingDefaults: {
           providerId: 'hermes',
+          nodeId: 'devbox',
           repoPath: '/repo',
           cwd: '/repo/.worktrees/topic',
         },
@@ -256,6 +257,7 @@ describe('workspace topics foundation', () => {
       repoPath: '/repo',
       worktreePath: '/repo/.worktrees/topic',
       agent: 'hermes',
+      nodeId: 'devbox',
       workContextId: 'wc-topic',
       initialPrompt: 'explicit prompt',
       yolo: true,
@@ -280,6 +282,7 @@ describe('workspace topics foundation', () => {
       repoPath: '/repo',
       worktreePath: null,
       agent: 'hermes',
+      nodeId: 'devbox',
     });
 
     expect(

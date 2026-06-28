@@ -1714,11 +1714,20 @@ export async function createWorkContextForTopicRoom(
   input: WorkspaceTopicRoomCreateInput
 ): Promise<WorkContext> {
   const taskRef = input.taskRef ?? input.workContext?.tasks?.[0];
+  const nodeId = input.topic.routingDefaults?.nodeId;
   const body = {
     title: input.workContext?.title ?? input.topic.title,
     source: input.workContext?.source ?? 'workspace-topic-room',
     anchors: input.workContext?.anchors ?? {
       project: { workspaceId: input.topic.workspaceId },
+      ...(nodeId
+        ? {
+            node: {
+              nodeId,
+              kind: nodeId === DEFAULT_LOCAL_NODE_ID ? 'local' : 'remote',
+            },
+          }
+        : {}),
       repo: {
         ...(input.topic.routingDefaults?.repoPath
           ? { localPath: input.topic.routingDefaults.repoPath }
@@ -1808,8 +1817,11 @@ export async function launchWorkspaceTopicRoom(input: {
   launch: Omit<CreateSessionBody, 'workspaceTopicId' | 'workContextId'>;
 }): Promise<WorkspaceTopicRoomSessionLaunchResult> {
   try {
+    const nodeId =
+      input.launch.nodeId ?? input.room.topic.routingDefaults?.nodeId;
     const session = await createSession({
       ...input.launch,
+      ...(nodeId ? { nodeId } : {}),
       workspaceTopicId: input.room.topic.id,
       workContextId: input.room.workContext.id,
     });
