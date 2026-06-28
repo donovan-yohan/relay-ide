@@ -927,6 +927,7 @@ export function ViewSpineTree({
   const saveView = useUiStore((s) => s.saveViewSpineView);
   const deleteView = useUiStore((s) => s.deleteViewSpineView);
   const applySavedView = useUiStore((s) => s.applyViewSpineSavedView);
+  const activeWorkspaceId = useUiStore((s) => s.activeWorkspaceId);
 
   const pins: PinControls = useMemo(
     () => ({
@@ -1007,6 +1008,15 @@ export function ViewSpineTree({
       ),
     [flatProjects, persistedWorkspaces, pinnedIds]
   );
+
+  const visibleGrouped = useMemo(() => {
+    if (!activeWorkspaceId) return grouped;
+    const match = grouped.workspaces.find((ws) => ws.id === activeWorkspaceId);
+    return {
+      workspaces: match ? [match] : [],
+      ungroupedProjects: [],
+    };
+  }, [grouped, activeWorkspaceId]);
 
   // The workspace each project currently belongs to (first claimant by order),
   // so the per-project assign control can show the right selection.
@@ -1136,9 +1146,10 @@ export function ViewSpineTree({
   }
 
   const hasGroupedContent =
-    grouped.workspaces.some((ws) => ws.projects.length > 0) ||
-    grouped.ungroupedProjects.length > 0;
-  const hasContent = hasGroupedContent || tree.freeLane.length > 0;
+    visibleGrouped.workspaces.some((ws) => ws.projects.length > 0) ||
+    visibleGrouped.ungroupedProjects.length > 0;
+  const hasContent =
+    hasGroupedContent || (!activeWorkspaceId && tree.freeLane.length > 0);
 
   if (!hasContent) {
     return (
@@ -1156,7 +1167,7 @@ export function ViewSpineTree({
     );
   }
 
-  const hasPersistedGroups = grouped.workspaces.some(
+  const hasPersistedGroups = visibleGrouped.workspaces.some(
     (ws) => ws.projects.length > 0
   );
 
@@ -1180,7 +1191,7 @@ export function ViewSpineTree({
             </button>
           </div>
         ) : null}
-        {grouped.workspaces.map((ws) =>
+        {visibleGrouped.workspaces.map((ws) =>
           ws.projects.length > 0 ? (
             <section key={ws.id} className="view-spine-workspace">
               <div className="sidebar-ungrouped-label view-spine-workspace-label">
@@ -1209,12 +1220,12 @@ export function ViewSpineTree({
           ) : null
         )}
 
-        {grouped.ungroupedProjects.length > 0 ? (
+        {visibleGrouped.ungroupedProjects.length > 0 ? (
           <section className="view-spine-workspace">
             {hasPersistedGroups ? (
               <div className="sidebar-ungrouped-label">ungrouped</div>
             ) : null}
-            {grouped.ungroupedProjects.map((project) => (
+            {visibleGrouped.ungroupedProjects.map((project) => (
               <ProjectRow
                 key={project.id}
                 project={project}
@@ -1229,7 +1240,7 @@ export function ViewSpineTree({
           </section>
         ) : null}
 
-        {tree.freeLane.length > 0 ? (
+        {!activeWorkspaceId && tree.freeLane.length > 0 ? (
           <section className="view-spine-free-lane">
             <div className="sidebar-ungrouped-label">free / remote</div>
             <ul className="session-list">

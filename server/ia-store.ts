@@ -20,7 +20,11 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { createLogger } from './logger.js';
-import type { Workspace, WorkspaceId } from '../shared/workspace.js';
+import type {
+  Workspace,
+  WorkspaceId,
+  WorkspaceStatus,
+} from '../shared/workspace.js';
 import { parseWorkspaceId } from '../shared/workspace.js';
 import type { BenchId } from '../shared/bench.js';
 import { parseBenchId } from '../shared/bench.js';
@@ -65,16 +69,38 @@ CREATE TABLE IF NOT EXISTS ia_migration_state (
 );
 `;
 
+// v3 (#1043): durable workspace rail metadata + soft archive. The status column
+// lets the UI/API archive workspaces without deleting membership/defaults.
+const SCHEMA_V3 = `
+ALTER TABLE ia_workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE ia_workspaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ia_workspaces ADD COLUMN color TEXT;
+ALTER TABLE ia_workspaces ADD COLUMN icon TEXT;
+ALTER TABLE ia_workspaces ADD COLUMN default_repo_path TEXT;
+ALTER TABLE ia_workspaces ADD COLUMN default_node_id TEXT;
+ALTER TABLE ia_workspaces ADD COLUMN default_provider TEXT;
+CREATE INDEX IF NOT EXISTS idx_ia_workspaces_status_order
+  ON ia_workspaces(status, sort_order ASC);
+`;
+
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
+  { version: 3, sql: SCHEMA_V3 },
 ];
 
 interface WorkspaceRow {
   id: string;
   name: string;
+  status: string;
   sort_order: number;
   project_ids_json: string;
+  pinned: number;
+  color: string | null;
+  icon: string | null;
+  default_repo_path: string | null;
+  default_node_id: string | null;
+  default_provider: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +122,17 @@ export interface WorkspaceUpsertInput {
   name: string;
   order: number;
   projectIds: string[];
+  status?: WorkspaceStatus;
+  pinned?: boolean;
+  color?: string | null;
+  icon?: string | null;
+  defaultRepoPath?: string | null;
+  defaultNodeId?: string | null;
+  defaultProvider?: string | null;
+}
+
+export interface WorkspaceListOptions {
+  includeArchived?: boolean;
 }
 
 /** Persisted Bench overlay: the sparse, user-authored layer on top of the
@@ -123,11 +160,13 @@ export interface IaStore {
   close(): void;
 
   // ── Workspace ────────────────────────────────────────────────────────────
-  /** All workspaces, ordered by `order` ascending then id for stability. */
-  listWorkspaces(): Workspace[];
+  /** Active workspaces by default, ordered by `order` ascending then id. */
+  listWorkspaces(options?: WorkspaceListOptions): Workspace[];
   getWorkspace(id: WorkspaceId): Workspace | null;
   /** Insert or update a workspace. Preserves `createdAt` on update. */
   upsertWorkspace(input: WorkspaceUpsertInput): Workspace;
+  archiveWorkspace(id: WorkspaceId): Workspace | null;
+  restoreWorkspace(id: WorkspaceId): Workspace | null;
   deleteWorkspace(id: WorkspaceId): boolean;
 
   // ── Bench overlay ──────────────────────────────────────────────────────
@@ -167,23 +206,44 @@ export function createIaStore(dbPath: string): IaStore {
 
   runMigrations(db);
 
+  const workspaceColumns = `id, name, status, sort_order, project_ids_json,
+    pinned, color, icon, default_repo_path, default_node_id, default_provider,
+    created_at, updated_at`;
   const selectWorkspace = db.prepare(
-    `SELECT id, name, sort_order, project_ids_json, created_at, updated_at
-     FROM ia_workspaces WHERE id = ?`
+    `SELECT ${workspaceColumns} FROM ia_workspaces WHERE id = ?`
+  );
+  const selectActiveWorkspaces = db.prepare(
+    `SELECT ${workspaceColumns} FROM ia_workspaces
+     WHERE status != 'archived'
+     ORDER BY sort_order ASC, id ASC`
   );
   const selectAllWorkspaces = db.prepare(
-    `SELECT id, name, sort_order, project_ids_json, created_at, updated_at
-     FROM ia_workspaces ORDER BY sort_order ASC, id ASC`
+    `SELECT ${workspaceColumns} FROM ia_workspaces
+     ORDER BY sort_order ASC, id ASC`
   );
   const upsertWorkspaceStmt = db.prepare(
     `INSERT INTO ia_workspaces (
-       id, name, sort_order, project_ids_json, created_at, updated_at
-     ) VALUES (@id, @name, @order, @projectIdsJson, @createdAt, @updatedAt)
+       id, name, status, sort_order, project_ids_json, pinned, color, icon,
+       default_repo_path, default_node_id, default_provider, created_at, updated_at
+     ) VALUES (
+       @id, @name, @status, @order, @projectIdsJson, @pinned, @color, @icon,
+       @defaultRepoPath, @defaultNodeId, @defaultProvider, @createdAt, @updatedAt
+     )
      ON CONFLICT(id) DO UPDATE SET
        name             = excluded.name,
+       status           = excluded.status,
        sort_order       = excluded.sort_order,
        project_ids_json = excluded.project_ids_json,
+       pinned           = excluded.pinned,
+       color            = excluded.color,
+       icon             = excluded.icon,
+       default_repo_path = excluded.default_repo_path,
+       default_node_id   = excluded.default_node_id,
+       default_provider  = excluded.default_provider,
        updated_at       = excluded.updated_at`
+  );
+  const updateWorkspaceStatusStmt = db.prepare(
+    `UPDATE ia_workspaces SET status = ?, updated_at = ? WHERE id = ?`
   );
   const deleteWorkspaceStmt = db.prepare(
     'DELETE FROM ia_workspaces WHERE id = ?'
@@ -238,8 +298,11 @@ export function createIaStore(dbPath: string): IaStore {
       db.close();
     },
 
-    listWorkspaces() {
-      return (selectAllWorkspaces.all() as WorkspaceRow[])
+    listWorkspaces(options: WorkspaceListOptions = {}) {
+      const stmt = options.includeArchived
+        ? selectAllWorkspaces
+        : selectActiveWorkspaces;
+      return (stmt.all() as WorkspaceRow[])
         .map(rowToWorkspaceSafe)
         .filter((ws): ws is Workspace => ws !== null);
     },
@@ -256,21 +319,46 @@ export function createIaStore(dbPath: string): IaStore {
       if (!Number.isFinite(input.order)) {
         throw new IaStoreError('workspace_order_invalid');
       }
-      const projectIds = normalizeProjectIds(input.projectIds);
       const now = new Date().toISOString();
       const existing = getWorkspaceById(input.id);
+      const projectIds = normalizeProjectIds(input.projectIds);
+      const status = normalizeWorkspaceStatus(input.status, existing?.status);
       const createdAt = existing?.createdAt ?? now;
       upsertWorkspaceStmt.run({
         id: input.id,
         name: input.name,
+        status,
         order: input.order,
         projectIdsJson: JSON.stringify(projectIds),
+        pinned: booleanToSql(input.pinned ?? existing?.pinned ?? false),
+        color: normalizeOptionalText(input.color, existing?.color),
+        icon: normalizeOptionalText(input.icon, existing?.icon),
+        defaultRepoPath: normalizeOptionalText(
+          input.defaultRepoPath,
+          existing?.defaultRepoPath
+        ),
+        defaultNodeId: normalizeOptionalText(
+          input.defaultNodeId,
+          existing?.defaultNodeId
+        ),
+        defaultProvider: normalizeOptionalText(
+          input.defaultProvider,
+          existing?.defaultProvider
+        ),
         createdAt,
         updatedAt: now,
       });
       const written = getWorkspaceById(input.id);
       if (!written) throw new IaStoreError('workspace_write_failed');
       return written;
+    },
+
+    archiveWorkspace(id: WorkspaceId) {
+      return updateWorkspaceStatus(id, 'archived');
+    },
+
+    restoreWorkspace(id: WorkspaceId) {
+      return updateWorkspaceStatus(id, 'active');
     },
 
     deleteWorkspace(id: WorkspaceId) {
@@ -333,6 +421,15 @@ export function createIaStore(dbPath: string): IaStore {
       });
     },
   };
+
+  function updateWorkspaceStatus(
+    id: WorkspaceId,
+    status: WorkspaceStatus
+  ): Workspace | null {
+    if (!parseWorkspaceId(id)) throw new IaStoreError('invalid_workspace_id');
+    updateWorkspaceStatusStmt.run(status, new Date().toISOString(), id);
+    return getWorkspaceById(id);
+  }
 }
 
 // ── Migration runner ─────────────────────────────────────────────────────
@@ -341,7 +438,9 @@ export function createIaStore(dbPath: string): IaStore {
 // tables (CREATE ... IF NOT EXISTS + version gate). Bump by appending a new
 // {version, sql} entry to MIGRATIONS. Mirrors the runner in work-contexts.ts.
 function runMigrations(db: Database.Database): void {
-  db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)'
+  );
   const row = db.prepare('SELECT version FROM schema_version').get() as
     | { version: number }
     | undefined;
@@ -356,7 +455,9 @@ function runMigrations(db: Database.Database): void {
         if (hadRow || currentVersion > 0) {
           db.prepare('UPDATE schema_version SET version = ?').run(ver);
         } else {
-          db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(ver);
+          db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
+            ver
+          );
         }
       })();
       currentVersion = ver;
@@ -370,8 +471,15 @@ function rowToWorkspace(row: WorkspaceRow): Workspace {
   return {
     id: row.id,
     name: row.name,
+    status: normalizeWorkspaceStatus(row.status),
     order: row.sort_order,
     projectIds: parseStringArray(row.project_ids_json),
+    pinned: row.pinned === 1,
+    color: normalizeNullableText(row.color),
+    icon: normalizeNullableText(row.icon),
+    defaultRepoPath: normalizeNullableText(row.default_repo_path),
+    defaultNodeId: normalizeNullableText(row.default_node_id),
+    defaultProvider: normalizeNullableText(row.default_provider),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -414,6 +522,32 @@ function normalizeProjectIds(value: string[] | undefined): string[] {
   return value.filter(
     (id): id is string => typeof id === 'string' && id.length > 0
   );
+}
+
+function normalizeWorkspaceStatus(
+  value: unknown,
+  fallback: WorkspaceStatus = 'active'
+): WorkspaceStatus {
+  if (value === 'active' || value === 'archived') return value;
+  return fallback;
+}
+
+function booleanToSql(value: boolean): number {
+  return value ? 1 : 0;
+}
+
+function normalizeNullableText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeOptionalText(
+  value: string | null | undefined,
+  fallback: string | null | undefined
+): string | null {
+  if (value === undefined) return fallback ?? null;
+  return normalizeNullableText(value);
 }
 
 function normalizeEnvOverrides(

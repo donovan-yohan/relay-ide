@@ -92,7 +92,7 @@ function topicPrimarySession(
   })[0];
 }
 
-function sessionControlDisabledReason(
+function sessionAttachDisabledReason(
   session: TopicNavSessionRef | undefined
 ): string | null {
   if (!session) return 'no session linked to this topic';
@@ -103,10 +103,17 @@ function sessionControlDisabledReason(
     session.durability ?? undefined
   );
   if (durabilityReason) return durabilityReason;
+  return null;
+}
+
+function sessionControlDisabledReason(
+  session: TopicNavSessionRef | undefined
+): string | null {
+  if (!session) return 'no session linked to this topic';
+  const attachReason = sessionAttachDisabledReason(session);
+  if (attachReason) return attachReason;
   if (session.controlFreshness === 'stale') return 'stale control state';
-  if (session.controlFreshness && session.controlFreshness !== 'fresh') {
-    return 'unknown control state';
-  }
+  if (session.controlFreshness !== 'fresh') return 'unknown control state';
   if (session.mode === 'web') return 'web session input is unsupported here';
   return null;
 }
@@ -118,6 +125,7 @@ function topicPrimaryAction(item: TopicNavItem): {
 } {
   const session = topicPrimarySession(item);
   const disabledReason = sessionControlDisabledReason(session);
+  const attachDisabledReason = sessionAttachDisabledReason(session);
   if (session?.displayState === 'permission') {
     return {
       label: 'approve',
@@ -132,11 +140,19 @@ function topicPrimaryAction(item: TopicNavItem): {
       disabledReason,
     };
   }
+  if (session && attachDisabledReason) {
+    return {
+      label: 'waiting',
+      detail:
+        'last known session context remains readable; live controls are disabled',
+      disabledReason: attachDisabledReason,
+    };
+  }
   if (session) {
     return {
       label: 'resume',
       detail: 'open the linked Relay tab; raw PTY remains the fallback',
-      disabledReason: null,
+      disabledReason,
     };
   }
   if (item.surfaces.length > 0) {
@@ -658,7 +674,16 @@ function TopicMobileControlPanel({
   const [sending, setSending] = useState(false);
   const needsInput = action.label === 'approve' || action.label === 'reply';
   const canSend = Boolean(session && needsInput && !action.disabledReason);
+  const resumeDisabledReason = sessionAttachDisabledReason(session);
+  const canResume = Boolean(session && !resumeDisabledReason);
   const topSurface = item.surfaces[0];
+  const approvalPresets =
+    action.label === 'approve'
+      ? [
+          { label: 'approve', value: 'y' },
+          { label: 'deny', value: 'n' },
+        ]
+      : [];
 
   useEffect(() => {
     setInputValue('');
@@ -705,8 +730,20 @@ function TopicMobileControlPanel({
       window.open(topSurface.target, '_blank', 'noopener,noreferrer');
       return;
     }
-    void navigator.clipboard?.writeText(topSurface.target);
-    setStatus('surface target copied for safe mobile handoff');
+    const clipboard = navigator.clipboard;
+    setStatus(`surface target ready to copy: ${topSurface.target}`);
+    if (clipboard?.writeText) {
+      void clipboard.writeText(topSurface.target).then(
+        () => setStatus('surface target copied for safe mobile handoff'),
+        (error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          setStatus(
+            `surface copy unavailable: ${message}; target ${topSurface.target}`
+          );
+        }
+      );
+    }
   };
 
   return (
@@ -756,6 +793,30 @@ function TopicMobileControlPanel({
           }
           maxLength={1000}
         />
+        {approvalPresets.length > 0 ? (
+          <div
+            className="topic-mobile-control__presets"
+            aria-label="approval reply presets"
+          >
+            {approvalPresets.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                className="topic-mobile-control__preset"
+                disabled={!canSend || sending}
+                onClick={() => {
+                  setInputValue(preset.value);
+                  setPendingValue(null);
+                  setStatus(
+                    `${preset.label} selected · preview before sending`
+                  );
+                }}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <button
           type="submit"
           className="topic-mobile-control__primary"
@@ -777,14 +838,24 @@ function TopicMobileControlPanel({
       ) : null}
 
       <div className="topic-mobile-actions" aria-label="topic quick actions">
-        <button type="button" disabled={!session} onClick={handleResume}>
+        <button
+          type="button"
+          disabled={!canResume}
+          onClick={handleResume}
+          title={
+            resumeDisabledReason ?? 'open the linked Relay tab for this topic'
+          }
+        >
           resume topic
         </button>
         <button
           type="button"
-          disabled={!session}
+          disabled={!canResume}
           onClick={handleResume}
-          title="same linked Relay tab as resume; raw PTY is the fallback once open"
+          title={
+            resumeDisabledReason ??
+            'same linked Relay tab as resume; raw PTY is the fallback once open'
+          }
         >
           open terminal tab
         </button>
