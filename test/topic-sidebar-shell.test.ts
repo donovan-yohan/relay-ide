@@ -345,6 +345,15 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('surfaces unavailable');
   });
 
+  it('keeps the room usable while surfaces are still loading', async () => {
+    await renderView({ surfaces: [], surfacesLoading: true });
+
+    expect(container.textContent).not.toContain('loading topic shell');
+    expect(container.querySelector('.topic-room')).not.toBeNull();
+    expect(container.textContent).toContain('Frontend lane');
+    expect(container.textContent).toContain('surfaces loading…');
+  });
+
   it('reports loading, error, and empty states', async () => {
     await renderView({ loading: true, topics: [] });
     expect(container.textContent).toContain('loading topic shell');
@@ -578,6 +587,20 @@ describe('TopicSidebarView', () => {
     expect(css).toContain('.topic-search__input:focus-visible');
     expect(css).toMatch(
       /\.topic-search__input:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)/
+    );
+  });
+
+  it('keeps keyboard-visible focus styling for room controls', () => {
+    const css = fs.readFileSync(
+      'frontend/src/components/TopicSidebarShell.css',
+      'utf8'
+    );
+
+    expect(css).toMatch(
+      /\.topic-room__primary:not\(:disabled\):focus-visible,\s*\.topic-room-ref-list a:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*2px/
+    );
+    expect(css).toMatch(
+      /\.topic-room-session__button:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*1px/
     );
   });
 

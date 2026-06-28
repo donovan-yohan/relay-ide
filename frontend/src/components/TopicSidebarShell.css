@@ -498,11 +498,15 @@
 }
 
 .topic-room__primary:not(:disabled):hover,
+.topic-room-ref-list a:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .topic-room__primary:not(:disabled):focus-visible,
-.topic-room-ref-list a:hover,
 .topic-room-ref-list a:focus-visible {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
-  outline: none;
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .topic-room__section {
@@ -547,11 +551,16 @@
   text-align: left;
 }
 
-.topic-room-session__button:hover,
+.topic-room-session__button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 .topic-room-session__button:focus-visible {
   background: var(--surface-hover);
   color: var(--text);
-  outline: none;
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .topic-room-session__label,

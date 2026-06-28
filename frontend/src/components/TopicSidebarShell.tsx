@@ -415,10 +415,15 @@ function TopicRoomTaskRefs({ item }: { item: TopicNavItem }) {
 function TopicRoomSurfaceStrip({
   item,
   surfacesError,
+  surfacesLoading,
 }: {
   item: TopicNavItem;
   surfacesError?: boolean | undefined;
+  surfacesLoading?: boolean | undefined;
 }) {
+  if (surfacesLoading && item.surfaces.length === 0) {
+    return <p className="topic-room-empty">surfaces loading…</p>;
+  }
   if (surfacesError && item.surfaces.length === 0) {
     return <p className="topic-room-empty error">surfaces unavailable</p>;
   }
@@ -466,10 +471,12 @@ function TopicRoomSurfaceStrip({
 function TopicDetail({
   item,
   surfacesError,
+  surfacesLoading,
   onSelectSession,
 }: {
   item: TopicNavItem;
   surfacesError?: boolean | undefined;
+  surfacesLoading?: boolean | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
   const action = topicPrimaryAction(item);
@@ -526,7 +533,7 @@ function TopicDetail({
               topSurface.openMode === 'direct' &&
               topSurface.target.startsWith('http')
             ) {
-              window.open(topSurface.target, '_blank', 'noreferrer');
+              window.open(topSurface.target, '_blank', 'noopener,noreferrer');
               return;
             }
             void navigator.clipboard?.writeText(topSurface.target);
@@ -589,7 +596,11 @@ function TopicDetail({
           <span>artifacts/surfaces</span>
           <span>{item.surfaces.length + item.artifactIds.length}</span>
         </div>
-        <TopicRoomSurfaceStrip item={item} surfacesError={surfacesError} />
+        <TopicRoomSurfaceStrip
+          item={item}
+          surfacesError={surfacesError}
+          surfacesLoading={surfacesLoading}
+        />
       </section>
 
       <div className="topic-room__fallback">
@@ -691,7 +702,7 @@ function TopicMobileControlPanel({
       topSurface.openMode === 'direct' &&
       topSurface.target.startsWith('http')
     ) {
-      window.open(topSurface.target, '_blank', 'noreferrer');
+      window.open(topSurface.target, '_blank', 'noopener,noreferrer');
       return;
     }
     void navigator.clipboard?.writeText(topSurface.target);
@@ -1141,6 +1152,7 @@ export function TopicSidebarView({
   loading = false,
   error = false,
   derived = false,
+  surfacesLoading = false,
   searchQuery = '',
   searchLoading = false,
   searchError = false,
@@ -1160,6 +1172,7 @@ export function TopicSidebarView({
   loading?: boolean;
   error?: boolean;
   derived?: boolean;
+  surfacesLoading?: boolean;
   searchQuery?: string;
   searchLoading?: boolean;
   searchError?: boolean;
@@ -1277,6 +1290,7 @@ export function TopicSidebarView({
           <TopicDetail
             item={selectedItem}
             surfacesError={surfacesError}
+            surfacesLoading={surfacesLoading}
             onSelectSession={onSelectSession}
           />
           <TopicMobileControlPanel
@@ -1328,12 +1342,9 @@ export function TopicSidebarShell({
       }
       sessions={sessions}
       surfaces={surfacesQuery.data ?? []}
-      loading={
-        !searchActive &&
-        ((topicsQuery.isLoading && !topicsQuery.data) ||
-          (surfacesQuery.isLoading && !surfacesQuery.data))
-      }
+      loading={!searchActive && topicsQuery.isLoading && !topicsQuery.data}
       error={topicsQuery.isError && !topicsQuery.data && !searchActive}
+      surfacesLoading={surfacesQuery.isLoading && !surfacesQuery.data}
       surfacesError={surfacesQuery.isError}
       derived={
         searchActive
