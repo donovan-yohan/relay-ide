@@ -22,14 +22,17 @@ import {
   type WorkspaceTopic,
   type WorkspaceTopicCreateInput,
   type WorkspaceTopicLaunchIntent,
+  type WorkspaceTopicTemplateKind,
   type WorkspaceTopicSearchResult,
 } from '../../../shared/workspace-topics.js';
 import {
   createWorkspaceTopicRoomAndMaybeLaunch,
+  fetchHubNodes,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
   launchWorkspaceTopicRoom,
   searchWorkspaceTopics,
+  type CreateSessionBody,
   sendSessionInput,
   type WorkspaceTopicLaunchFailure,
   type WorkspaceTopicRoomCreateResult,
@@ -708,12 +711,129 @@ type TopicRoomDraft = {
   title: string;
   prompt: string;
   taskRef: string;
+  providerId: string;
+  agentId: string;
+  nodeId: string;
+  repoPath: string;
+  worktreePath: string;
+  cwd: string;
+  templateKind: WorkspaceTopicTemplateKind;
 };
+
+const TOPIC_ROOM_DRAFT_EMPTY: TopicRoomDraft = {
+  title: '',
+  prompt: '',
+  taskRef: '',
+  providerId: '',
+  agentId: '',
+  nodeId: '',
+  repoPath: '',
+  worktreePath: '',
+  cwd: '',
+  templateKind: 'agent-task',
+};
+
+const TOPIC_ROOM_TEMPLATE_OPTIONS: Array<{
+  value: WorkspaceTopicTemplateKind;
+  label: string;
+}> = [
+  { value: 'agent-task', label: 'agent task' },
+  { value: 'terminal-task', label: 'terminal task' },
+  { value: 'note', label: 'note / room only' },
+];
+
+const FALLBACK_PROVIDER_IDS = ['claude', 'codex', 'opencode', 'hermes'];
+
+function compactString(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(values.map((value) => compactString(value)).filter(Boolean))
+  ) as string[];
+}
+
+function launchTypeForTemplate(
+  templateKind: WorkspaceTopicTemplateKind
+): CreateSessionBody['type'] | null {
+  if (templateKind === 'terminal-task') return 'terminal';
+  if (templateKind === 'agent-task') return 'agent';
+  return null;
+}
+
+function buildTopicRoomLaunchBody(
+  create: WorkspaceTopicCreateInput,
+  templateKind: WorkspaceTopicTemplateKind
+): Omit<CreateSessionBody, 'workspaceTopicId' | 'workContextId'> | null {
+  const type = launchTypeForTemplate(templateKind);
+  if (!type) return null;
+  const routing = create.routingDefaults ?? {};
+  return {
+    type,
+    mode: 'pty',
+    ...(type === 'agent' && routing.providerId
+      ? { agent: routing.providerId }
+      : {}),
+    ...(routing.nodeId ? { nodeId: routing.nodeId } : {}),
+    ...(routing.repoPath ? { repoPath: routing.repoPath } : {}),
+    ...(routing.worktreePath ? { worktreePath: routing.worktreePath } : {}),
+    ...(routing.cwd ? { cwd: routing.cwd } : {}),
+    controlMode: type === 'agent' ? 'agent-driven' : 'human-driven',
+  };
+}
+
+function buildTopicRoomCreateInput(input: {
+  draft: TopicRoomDraft;
+  workspaceId: string | null;
+  defaultProviderId: string;
+  defaultNodeId?: string | undefined;
+  defaultRepoPath?: string | undefined;
+  defaultWorktreePath?: string | undefined;
+  defaultCwd?: string | undefined;
+  taskRef: ReturnType<typeof taskRefFromDraft>;
+}): WorkspaceTopicCreateInput {
+  const providerId =
+    compactString(input.draft.providerId) ?? input.defaultProviderId;
+  const agentId = compactString(input.draft.agentId);
+  const nodeId = compactString(input.draft.nodeId) ?? input.defaultNodeId;
+  const repoPath = compactString(input.draft.repoPath) ?? input.defaultRepoPath;
+  const worktreePath =
+    compactString(input.draft.worktreePath) ?? input.defaultWorktreePath;
+  const cwd = compactString(input.draft.cwd) ?? input.defaultCwd;
+  const prompt = input.draft.prompt.trim();
+
+  return {
+    workspaceId: input.workspaceId ?? 'workspace:local',
+    title: input.draft.title.trim() || 'Untitled task room',
+    ...(prompt ? { description: prompt.slice(0, 240) } : {}),
+    promptDefaults: {
+      ...(prompt ? { starterPrompt: prompt } : {}),
+    },
+    routingDefaults: {
+      ...(providerId ? { providerId } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(nodeId ? { nodeId } : {}),
+      ...(repoPath ? { repoPath } : {}),
+      ...(worktreePath ? { worktreePath } : {}),
+      ...(cwd ? { cwd } : {}),
+    },
+    linkedRefs: {
+      ...(input.taskRef ? { taskRefs: [input.taskRef] } : {}),
+    },
+  };
+}
 
 interface TopicRoomCreatePanelProps {
   open: boolean;
   draft: TopicRoomDraft;
   previewCreate: WorkspaceTopicCreateInput;
+  providerOptions: string[];
+  nodeOptions: Array<{ value: string; label: string }>;
+  repoPathOptions: string[];
+  worktreePathOptions: string[];
+  cwdOptions: string[];
   launchFailure?: WorkspaceTopicLaunchFailure | null | undefined;
   submittingIntent?: WorkspaceTopicLaunchIntent | null | undefined;
   onDraftChange: (patch: Partial<TopicRoomDraft>) => void;
@@ -725,6 +845,11 @@ function TopicRoomCreatePanel({
   open,
   draft,
   previewCreate,
+  providerOptions,
+  nodeOptions,
+  repoPathOptions,
+  worktreePathOptions,
+  cwdOptions,
   launchFailure,
   submittingIntent,
   onDraftChange,
@@ -735,17 +860,23 @@ function TopicRoomCreatePanel({
     () =>
       buildWorkspaceTopicLaunchPreview({
         create: previewCreate,
-        intent: 'create-and-launch',
-        templateKind: 'agent-task',
+        intent:
+          draft.templateKind === 'note' ? 'create-only' : 'create-and-launch',
+        templateKind: draft.templateKind,
         launchOverrides: {
-          type: 'agent',
+          type: launchTypeForTemplate(draft.templateKind) ?? 'agent',
           mode: 'pty',
           agent: previewCreate.routingDefaults?.providerId,
+          nodeId: previewCreate.routingDefaults?.nodeId,
+          repoPath: previewCreate.routingDefaults?.repoPath,
+          worktreePath: previewCreate.routingDefaults?.worktreePath,
+          cwd: previewCreate.routingDefaults?.cwd,
         },
       }),
-    [previewCreate]
+    [draft.templateKind, previewCreate]
   );
   if (!open) return null;
+  const launchDisabled = draft.templateKind === 'note';
   const disabled = !draft.title.trim() || Boolean(submittingIntent);
   return (
     <form
@@ -753,7 +884,7 @@ function TopicRoomCreatePanel({
       aria-label="create task room"
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
-        if (!disabled) onSubmit('create-and-launch');
+        if (!disabled && !launchDisabled) onSubmit('create-and-launch');
       }}
     >
       <div className="topic-create-panel__title">new task room</div>
@@ -782,8 +913,122 @@ function TopicRoomCreatePanel({
           placeholder="github issue number or URL"
         />
       </label>
+      <label>
+        <span>provider</span>
+        <input
+          list="topic-room-provider-options"
+          value={draft.providerId}
+          onChange={(event) =>
+            onDraftChange({ providerId: event.target.value })
+          }
+          placeholder={
+            previewCreate.routingDefaults?.providerId ?? 'default provider'
+          }
+        />
+        <datalist id="topic-room-provider-options">
+          {providerOptions.map((providerId) => (
+            <option key={providerId} value={providerId} />
+          ))}
+        </datalist>
+      </label>
+      <label>
+        <span>agent id</span>
+        <input
+          value={draft.agentId}
+          onChange={(event) => onDraftChange({ agentId: event.target.value })}
+          placeholder="optional agent identity"
+        />
+      </label>
+      <label>
+        <span>template kind</span>
+        <select
+          value={draft.templateKind}
+          onChange={(event) =>
+            onDraftChange({
+              templateKind: event.target.value as WorkspaceTopicTemplateKind,
+            })
+          }
+        >
+          {TOPIC_ROOM_TEMPLATE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>node</span>
+        <input
+          list="topic-room-node-options"
+          value={draft.nodeId}
+          onChange={(event) => onDraftChange({ nodeId: event.target.value })}
+          placeholder={
+            previewCreate.routingDefaults?.nodeId ?? 'local/default node'
+          }
+        />
+        <datalist id="topic-room-node-options">
+          {nodeOptions.map((node) => (
+            <option key={node.value} value={node.value} label={node.label} />
+          ))}
+        </datalist>
+      </label>
+      <label>
+        <span>repo</span>
+        <input
+          list="topic-room-repo-options"
+          value={draft.repoPath}
+          onChange={(event) => onDraftChange({ repoPath: event.target.value })}
+          placeholder={
+            previewCreate.routingDefaults?.repoPath ?? 'default repo'
+          }
+        />
+        <datalist id="topic-room-repo-options">
+          {repoPathOptions.map((repoPath) => (
+            <option key={repoPath} value={repoPath} />
+          ))}
+        </datalist>
+      </label>
+      <label>
+        <span>worktree</span>
+        <input
+          list="topic-room-worktree-options"
+          value={draft.worktreePath}
+          onChange={(event) =>
+            onDraftChange({ worktreePath: event.target.value })
+          }
+          placeholder={
+            previewCreate.routingDefaults?.worktreePath ?? 'default worktree'
+          }
+        />
+        <datalist id="topic-room-worktree-options">
+          {worktreePathOptions.map((worktreePath) => (
+            <option key={worktreePath} value={worktreePath} />
+          ))}
+        </datalist>
+      </label>
+      <label>
+        <span>cwd</span>
+        <input
+          list="topic-room-cwd-options"
+          value={draft.cwd}
+          onChange={(event) => onDraftChange({ cwd: event.target.value })}
+          placeholder={previewCreate.routingDefaults?.cwd ?? 'default cwd'}
+        />
+        <datalist id="topic-room-cwd-options">
+          {cwdOptions.map((cwd) => (
+            <option key={cwd} value={cwd} />
+          ))}
+        </datalist>
+      </label>
       <div className="topic-create-preview" aria-label="launch preview">
+        <div>template: {preview.templateKind}</div>
         <div>provider: {preview.providerLabel}</div>
+        <div>
+          agent:{' '}
+          {previewCreate.routingDefaults?.agentId ??
+            previewCreate.routingDefaults?.providerId ??
+            'default agent'}
+        </div>
         <div>mode: {preview.modeLabel}</div>
         <div>node: {preview.nodeLabel}</div>
         <div>cwd: {preview.cwdLabel}</div>
@@ -814,14 +1059,16 @@ function TopicRoomCreatePanel({
         >
           {submittingIntent === 'create-only' ? 'creating…' : 'create only'}
         </button>
-        <button type="submit" disabled={disabled}>
+        <button type="submit" disabled={disabled || launchDisabled}>
           {submittingIntent === 'create-and-launch'
             ? 'launching…'
-            : launchFailure
-              ? launchFailure.stage === 'session'
-                ? 'retry launch'
-                : 'retry create + launch'
-              : 'create + launch'}
+            : launchDisabled
+              ? 'note is create-only'
+              : launchFailure
+                ? launchFailure.stage === 'session'
+                  ? 'retry launch'
+                  : 'retry create + launch'
+                : 'create + launch'}
         </button>
       </div>
     </form>
@@ -1121,6 +1368,7 @@ export function TopicSidebarView({
   );
 }
 
+// eslint-disable-next-line complexity -- topic room creation composes query, routing-default, and launch retry state in one shell boundary.
 export function TopicSidebarShell({
   onSelectSession,
 }: {
@@ -1133,17 +1381,16 @@ export function TopicSidebarShell({
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const activeWorkspaceId = useUiStore((s) => s.activeWorkspaceId);
   const defaultAgent = useConfigStore((s) => s.defaultAgent);
+  const frameworks = useConfigStore((s) => s.frameworks);
   const activeSession = useMemo(
     () => resolveSessionByKey(sessions, activeSessionId),
     [activeSessionId, sessions]
   );
   const [searchQuery, setSearchQuery] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
-  const [createDraft, setCreateDraft] = useState<TopicRoomDraft>({
-    title: '',
-    prompt: '',
-    taskRef: '',
-  });
+  const [createDraft, setCreateDraft] = useState<TopicRoomDraft>(
+    TOPIC_ROOM_DRAFT_EMPTY
+  );
   const [submittingIntent, setSubmittingIntent] =
     useState<WorkspaceTopicLaunchIntent | null>(null);
   const [launchFailure, setLaunchFailure] =
@@ -1168,6 +1415,11 @@ export function TopicSidebarShell({
     queryFn: () => fetchWorkspaceSurfaces(),
     staleTime: 30_000,
   });
+  const nodesQuery = useQuery({
+    queryKey: ['hub-nodes'],
+    queryFn: fetchHubNodes,
+    staleTime: 60_000,
+  });
   useEffect(() => {
     const openCreate = () => {
       setCreateOpen(true);
@@ -1181,56 +1433,93 @@ export function TopicSidebarShell({
   const searchData = topicSearchQuery.data;
   const searchResults = searchData?.results ?? [];
   const taskRef = taskRefFromDraft(createDraft.taskRef, createDraft.title);
-  const previewCreate = useMemo<WorkspaceTopicCreateInput>(() => {
-    const repoPath = activeSession?.repoPath ?? activeRepoPath ?? undefined;
-    const worktreePath = activeSession?.worktreePath ?? undefined;
-    const cwd = activeSession?.cwd ?? worktreePath ?? repoPath ?? undefined;
-    return {
-      workspaceId: activeWorkspaceId ?? 'workspace:local',
-      title: createDraft.title.trim() || 'Untitled task room',
-      ...(createDraft.prompt.trim()
-        ? { description: createDraft.prompt.trim().slice(0, 240) }
-        : {}),
-      promptDefaults: {
-        ...(createDraft.prompt.trim()
-          ? { starterPrompt: createDraft.prompt.trim() }
-          : {}),
-      },
-      routingDefaults: {
-        ...(defaultAgent ? { providerId: defaultAgent } : {}),
-        ...(activeSession?.nodeId ? { nodeId: activeSession.nodeId } : {}),
-        ...(repoPath ? { repoPath } : {}),
-        ...(worktreePath ? { worktreePath } : {}),
-        ...(cwd ? { cwd } : {}),
-      },
-      linkedRefs: {
-        ...(taskRef ? { taskRefs: [taskRef] } : {}),
-      },
-    };
-  }, [
-    activeRepoPath,
-    activeSession,
-    activeWorkspaceId,
-    createDraft,
-    defaultAgent,
-    taskRef,
-  ]);
+  const defaultRepoPath =
+    activeSession?.repoPath ?? activeRepoPath ?? undefined;
+  const defaultWorktreePath = activeSession?.worktreePath ?? undefined;
+  const defaultCwd =
+    activeSession?.cwd ?? defaultWorktreePath ?? defaultRepoPath ?? undefined;
+  const providerOptions = useMemo(
+    () =>
+      uniqueStrings([
+        defaultAgent,
+        ...frameworks.map((framework) => framework.id),
+        ...FALLBACK_PROVIDER_IDS,
+      ]),
+    [defaultAgent, frameworks]
+  );
+  const nodeOptions = useMemo(
+    () =>
+      (nodesQuery.data ?? []).map((node) => ({
+        value: node.nodeId,
+        label: node.displayName
+          ? `${node.displayName} · ${node.status}`
+          : node.status,
+      })),
+    [nodesQuery.data]
+  );
+  const repoPathOptions = useMemo(
+    () =>
+      uniqueStrings([
+        defaultRepoPath,
+        ...sessions.map((session) => session.repoPath),
+      ]),
+    [defaultRepoPath, sessions]
+  );
+  const worktreePathOptions = useMemo(
+    () =>
+      uniqueStrings([
+        defaultWorktreePath,
+        ...sessions.map((session) => session.worktreePath),
+      ]),
+    [defaultWorktreePath, sessions]
+  );
+  const cwdOptions = useMemo(
+    () =>
+      uniqueStrings([defaultCwd, ...sessions.map((session) => session.cwd)]),
+    [defaultCwd, sessions]
+  );
+  const previewCreate = useMemo<WorkspaceTopicCreateInput>(
+    () =>
+      buildTopicRoomCreateInput({
+        draft: createDraft,
+        workspaceId: activeWorkspaceId,
+        defaultProviderId: defaultAgent,
+        defaultNodeId: activeSession?.nodeId,
+        defaultRepoPath,
+        defaultWorktreePath,
+        defaultCwd,
+        taskRef,
+      }),
+    [
+      activeSession?.nodeId,
+      activeWorkspaceId,
+      createDraft,
+      defaultAgent,
+      defaultCwd,
+      defaultRepoPath,
+      defaultWorktreePath,
+      taskRef,
+    ]
+  );
 
   const handleCreateSubmit = useCallback(
     async (intent: WorkspaceTopicLaunchIntent) => {
       if (!createDraft.title.trim()) return;
-      setSubmittingIntent(intent);
+      const launch = buildTopicRoomLaunchBody(
+        previewCreate,
+        createDraft.templateKind
+      );
+      const submitIntent =
+        intent === 'create-and-launch' && launch
+          ? 'create-and-launch'
+          : 'create-only';
+      setSubmittingIntent(submitIntent);
       setLaunchFailure(null);
       try {
-        if (intent === 'create-and-launch' && createdRoom) {
+        if (submitIntent === 'create-and-launch' && createdRoom && launch) {
           const result = await launchWorkspaceTopicRoom({
             room: createdRoom,
-            launch: {
-              type: 'agent',
-              mode: 'pty',
-              agent: defaultAgent,
-              controlMode: 'agent-driven',
-            },
+            launch,
           });
           if (result.status === 'launch_failed') {
             setLaunchFailure(result.failure);
@@ -1241,7 +1530,7 @@ export function TopicSidebarShell({
           onSelectSession?.(result.session.id);
           setCreateOpen(false);
           setCreatedRoom(null);
-          setCreateDraft({ title: '', prompt: '', taskRef: '' });
+          setCreateDraft(TOPIC_ROOM_DRAFT_EMPTY);
           return;
         }
         const result = await createWorkspaceTopicRoomAndMaybeLaunch({
@@ -1249,14 +1538,9 @@ export function TopicSidebarShell({
             topic: previewCreate,
             ...(taskRef ? { taskRef } : {}),
           },
-          ...(intent === 'create-and-launch'
+          ...(submitIntent === 'create-and-launch' && launch
             ? {
-                launch: {
-                  type: 'agent',
-                  mode: 'pty',
-                  agent: defaultAgent,
-                  controlMode: 'agent-driven',
-                },
+                launch,
               }
             : {}),
         });
@@ -1279,7 +1563,7 @@ export function TopicSidebarShell({
         }
         setCreateOpen(false);
         setCreatedRoom(null);
-        setCreateDraft({ title: '', prompt: '', taskRef: '' });
+        setCreateDraft(TOPIC_ROOM_DRAFT_EMPTY);
       } catch (error) {
         const failure = error as WorkspaceTopicLaunchFailure;
         setLaunchFailure({
@@ -1300,8 +1584,8 @@ export function TopicSidebarShell({
     },
     [
       createDraft.title,
+      createDraft.templateKind,
       createdRoom,
-      defaultAgent,
       onSelectSession,
       previewCreate,
       queryClient,
@@ -1315,6 +1599,11 @@ export function TopicSidebarShell({
       open={createOpen}
       draft={createDraft}
       previewCreate={previewCreate}
+      providerOptions={providerOptions}
+      nodeOptions={nodeOptions}
+      repoPathOptions={repoPathOptions}
+      worktreePathOptions={worktreePathOptions}
+      cwdOptions={cwdOptions}
       launchFailure={launchFailure}
       submittingIntent={submittingIntent}
       onDraftChange={(patch) => {

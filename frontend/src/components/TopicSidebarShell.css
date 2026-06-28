@@ -66,6 +66,7 @@
 }
 
 .topic-create-panel input,
+.topic-create-panel select,
 .topic-create-panel textarea {
   min-width: 0;
   border: 1px solid var(--border);
