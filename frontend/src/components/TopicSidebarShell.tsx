@@ -24,7 +24,6 @@ import {
   type WorkspaceTopicLaunchIntent,
   type WorkspaceTopicSearchResult,
 } from '../../../shared/workspace-topics.js';
-import type { TaskRef } from '../../../shared/work-context.js';
 import {
   createWorkspaceTopicRoomAndMaybeLaunch,
   fetchWorkspaceSurfaces,
@@ -36,6 +35,7 @@ import {
   type WorkspaceTopicRoomCreateResult,
 } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
+import { taskRefFromDraft } from '../lib/topic-task-ref.js';
 import type { SessionSummary } from '../lib/types.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
@@ -1118,22 +1118,6 @@ export function TopicSidebarView({
       ) : null}
     </div>
   );
-}
-
-function taskRefFromDraft(value: string, title: string): TaskRef | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const issueMatch = trimmed.match(/(?:issues\/|#)?(\d+)\b/);
-  if (!issueMatch) {
-    return { kind: 'external', id: trimmed, title };
-  }
-  const issueId = issueMatch[1]!;
-  return {
-    kind: 'github-issue',
-    id: issueId,
-    title,
-    ...(trimmed.startsWith('http') ? { url: trimmed } : {}),
-  };
 }
 
 export function TopicSidebarShell({
