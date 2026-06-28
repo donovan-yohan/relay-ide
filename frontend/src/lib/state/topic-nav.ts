@@ -292,19 +292,17 @@ function sessionParticipantStatus(session: SessionSummary): {
         session.permissionType === 'question'
           ? 'needs answer'
           : 'needs approval',
-      summary:
-        boundedSummary(session.currentActivity?.detail) ??
-        session.currentActivity?.tool ??
-        null,
+      summary: boundedSummary(
+        session.currentActivity?.detail ?? session.currentActivity?.tool
+      ),
     };
   }
   if (session.agentState === 'waiting-for-input') {
     return {
       label: 'needs input',
-      summary:
-        boundedSummary(session.currentActivity?.detail) ??
-        session.currentActivity?.tool ??
-        null,
+      summary: boundedSummary(
+        session.currentActivity?.detail ?? session.currentActivity?.tool
+      ),
     };
   }
   if (session.agentState === 'error') {

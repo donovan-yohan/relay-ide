@@ -288,6 +288,37 @@ describe('buildTopicNavModel', () => {
     expect(item?.participants[0]?.summaryLabel?.length).toBeLessThanOrEqual(96);
   });
 
+  it('bounds participant attention summaries when only tool names are available', () => {
+    const topic = makeTopic({
+      linkedRefs: { sessionIds: ['approval', 'question'] },
+    });
+    const longToolName = 'tool-name-'.repeat(30);
+    const model = buildTopicNavModel({
+      topics: [topic],
+      sessions: [
+        makeSession({
+          id: 'approval',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
+          currentActivity: { tool: longToolName },
+        }),
+        makeSession({
+          id: 'question',
+          agentState: 'waiting-for-input',
+          currentActivity: { tool: longToolName },
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const participants = model.byId.get('topic:alpha')?.participants ?? [];
+    expect(participants).toHaveLength(2);
+    for (const participant of participants) {
+      expect(participant.summaryLabel?.length).toBeLessThanOrEqual(96);
+      expect(participant.summaryLabel).toBe(`${longToolName.slice(0, 93)}...`);
+    }
+  });
+
   it('aggregates room status in task-room priority order', () => {
     const model = buildTopicNavModel({
       topics: [
