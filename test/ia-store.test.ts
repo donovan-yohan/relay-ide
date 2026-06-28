@@ -186,6 +186,43 @@ describe('ia-store: workspace', () => {
     expect(ws.order).toBe(1.5);
     expect(store.getWorkspace(id)!.order).toBe(1.5);
   });
+
+  it('persists workspace rail metadata and archives without deleting', () => {
+    const { store } = makeStore();
+    const id = createWorkspaceId('rail');
+    const ws = store.upsertWorkspace({
+      id,
+      name: 'Rail',
+      order: 1,
+      projectIds: [],
+      pinned: true,
+      color: ' blue ',
+      icon: ' crab ',
+      defaultRepoPath: '/work/relay',
+      defaultNodeId: 'local-node',
+      defaultProvider: 'hermes',
+    });
+
+    expect(ws).toMatchObject({
+      status: 'active',
+      pinned: true,
+      color: 'blue',
+      icon: 'crab',
+      defaultRepoPath: '/work/relay',
+      defaultNodeId: 'local-node',
+      defaultProvider: 'hermes',
+    });
+
+    const archived = store.archiveWorkspace(id);
+    expect(archived?.status).toBe('archived');
+    expect(store.listWorkspaces()).toEqual([]);
+    expect(
+      store.listWorkspaces({ includeArchived: true }).map((w) => w.id)
+    ).toEqual([id]);
+
+    expect(store.restoreWorkspace(id)?.status).toBe('active');
+    expect(store.listWorkspaces().map((w) => w.id)).toEqual([id]);
+  });
 });
 
 describe('ia-store: bench overlay', () => {
@@ -308,14 +345,25 @@ describe('ia-store: durability + migration', () => {
     const benchId = createBenchId(INSTANCE_ID, '/work/widget/corrupt');
 
     const s1 = createIaStore(dbPath);
-    s1.upsertWorkspace({ id: wsId, name: 'Corrupt', order: 1, projectIds: ['proj:repo:x'] });
+    s1.upsertWorkspace({
+      id: wsId,
+      name: 'Corrupt',
+      order: 1,
+      projectIds: ['proj:repo:x'],
+    });
     s1.upsertBenchOverlay({ id: benchId, envOverrides: { K: 'v' } });
     s1.close();
 
     // Simulate out-of-band corruption of the JSON payload columns.
     const raw = new Database(dbPath);
-    raw.prepare('UPDATE ia_workspaces SET project_ids_json = ? WHERE id = ?').run('{not json', wsId);
-    raw.prepare('UPDATE ia_bench_overlays SET env_overrides_json = ? WHERE id = ?').run('{not json', benchId);
+    raw
+      .prepare('UPDATE ia_workspaces SET project_ids_json = ? WHERE id = ?')
+      .run('{not json', wsId);
+    raw
+      .prepare(
+        'UPDATE ia_bench_overlays SET env_overrides_json = ? WHERE id = ?'
+      )
+      .run('{not json', benchId);
     raw.close();
 
     const s2 = createIaStore(dbPath);
@@ -346,14 +394,14 @@ describe('ia-store: durability + migration', () => {
     openStores.push(c);
     expect(c.listWorkspaces()).toHaveLength(1);
 
-    // schema_version pinned at the latest migration version (v2 adds the #736
-    // ia_migration_state marker table).
+    // schema_version pinned at the latest migration version (v3 adds the #1043
+    // workspace rail metadata columns).
     const db = new Database(dbPath);
     try {
       const row = db.prepare('SELECT version FROM schema_version').get() as {
         version: number;
       };
-      expect(row.version).toBe(2);
+      expect(row.version).toBe(3);
     } finally {
       db.close();
     }
@@ -397,9 +445,7 @@ describe('ia-store: durability + migration', () => {
     seed.exec(
       'CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)'
     );
-    seed
-      .prepare('INSERT INTO schema_version (version) VALUES (?)')
-      .run(0);
+    seed.prepare('INSERT INTO schema_version (version) VALUES (?)').run(0);
     seed.exec('CREATE TABLE legacy_thing (id TEXT PRIMARY KEY)');
     seed.prepare('INSERT INTO legacy_thing (id) VALUES (?)').run('keep-me');
     seed.close();
@@ -417,9 +463,9 @@ describe('ia-store: durability + migration', () => {
     // Pre-existing unrelated table + row untouched.
     const db = new Database(dbPath);
     try {
-      const legacy = db
-        .prepare('SELECT id FROM legacy_thing')
-        .all() as Array<{ id: string }>;
+      const legacy = db.prepare('SELECT id FROM legacy_thing').all() as Array<{
+        id: string;
+      }>;
       expect(legacy).toEqual([{ id: 'keep-me' }]);
     } finally {
       db.close();
