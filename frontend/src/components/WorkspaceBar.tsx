@@ -12,7 +12,7 @@
 // error (failed mutation → non-destructive inline message, list refetches),
 // in-flight (controls disabled while a mutation is pending). Reuses existing
 // TUI primitives + design tokens — no new visual language.
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import type { IaWorkspace } from '../lib/api.js';
 import { useIaWorkspaces } from '../lib/hooks/use-ia-workspaces.js';
@@ -192,6 +192,13 @@ export function WorkspaceBar() {
   const ordered = [...workspaces].sort(
     (a, b) => a.order - b.order || a.id.localeCompare(b.id)
   );
+
+  useEffect(() => {
+    if (isLoading || isError || !activeWorkspaceId) return;
+    if (!workspaces.some((workspace) => workspace.id === activeWorkspaceId)) {
+      setActiveWorkspaceId(null);
+    }
+  }, [activeWorkspaceId, isError, isLoading, setActiveWorkspaceId, workspaces]);
 
   function clearError() {
     setActionError(null);

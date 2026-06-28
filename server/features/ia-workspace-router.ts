@@ -147,7 +147,7 @@ export function createIaWorkspaceRouter(
 
     let order: number;
     if (body['order'] === undefined) {
-      order = nextOrder(iaStore.listWorkspaces());
+      order = nextOrder(iaStore.listWorkspaces({ includeArchived: true }));
     } else if (
       typeof body['order'] === 'number' &&
       Number.isFinite(body['order'])
