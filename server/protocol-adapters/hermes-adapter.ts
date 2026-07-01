@@ -494,6 +494,58 @@ export function buildRelayHermesMetadata(input: {
   return md;
 }
 
+const MIME_BY_EXTENSION: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+
+/** Turn an image Attachment into a Responses `image_url` (data URI or passthrough). */
+export function attachmentToResponsesImageUrl(
+  attachment: Attachment,
+  readFile: (p: string) => Buffer = (p) => fs.readFileSync(p)
+): string | null {
+  const source = attachment.path;
+  if (!source) return null;
+  if (/^(data:|https?:|blob:)/i.test(source)) return source;
+  try {
+    const bytes = readFile(source);
+    const ext = path.extname(source).toLowerCase();
+    const mime = attachment.mimeType ?? MIME_BY_EXTENSION[ext] ?? 'image/png';
+    return `data:${mime};base64,${bytes.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+type ResponsesContentPart =
+  | { type: 'input_text'; text: string }
+  | { type: 'input_image'; image_url: string };
+
+/**
+ * Build the Responses API `input`. With no image attachments this is the plain
+ * prompt string (unchanged behaviour); with images it becomes a single user
+ * message whose content interleaves the text and each `input_image` part.
+ */
+export function buildResponsesInput(
+  content: string,
+  attachments?: Attachment[],
+  readFile?: (p: string) => Buffer
+): string | Array<{ role: 'user'; content: ResponsesContentPart[] }> {
+  const images = (attachments ?? []).filter((a) => a.type === 'image');
+  if (images.length === 0) return content;
+  const parts: ResponsesContentPart[] = [{ type: 'input_text', text: content }];
+  for (const image of images) {
+    const url = readFile
+      ? attachmentToResponsesImageUrl(image, readFile)
+      : attachmentToResponsesImageUrl(image);
+    if (url) parts.push({ type: 'input_image', image_url: url });
+  }
+  return [{ role: 'user', content: parts }];
+}
+
 /**
  * Hermes protocol adapter.
  *
@@ -565,7 +617,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   async sendMessage(
     turnId: string,
     content: string,
-    _attachments?: Attachment[]
+    attachments?: Attachment[]
   ): Promise<void> {
     const sessionId = this._config?.sessionId;
     if (!sessionId) throw new Error('No session ID');
@@ -581,7 +633,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     });
 
     const body: Record<string, unknown> = {
-      input: content,
+      input: buildResponsesInput(content, attachments),
       stream: true,
       store: true,
       session_id: sessionId,
