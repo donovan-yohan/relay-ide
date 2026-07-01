@@ -1365,3 +1365,18 @@ export function archiveWorkspaceTopicRecord(
     updatedAt: now,
   };
 }
+
+/** Inverse of archive: reactivate a topic and clear its archivedAt marker. */
+export function restoreWorkspaceTopicRecord(
+  topic: WorkspaceTopic,
+  now: string
+): WorkspaceTopic {
+  const state = { ...topic.state };
+  delete state.archivedAt;
+  return {
+    ...topic,
+    status: 'active',
+    state,
+    updatedAt: now,
+  };
+}

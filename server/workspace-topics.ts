@@ -19,6 +19,7 @@ import {
   WorkspaceTopicValidationError,
   applyWorkspaceTopicUpdate,
   archiveWorkspaceTopicRecord,
+  restoreWorkspaceTopicRecord,
   assertWorkspaceTopicId,
   buildWorkspaceTopicRecord,
   createWorkspaceTopicId,
@@ -92,6 +93,7 @@ export interface WorkspaceTopicStore {
   create(input: WorkspaceTopicCreateInput): WorkspaceTopic;
   update(id: string, patch: WorkspaceTopicUpdateInput): WorkspaceTopic | null;
   archive(id: string): WorkspaceTopic | null;
+  restore(id: string): WorkspaceTopic | null;
   get(id: string): WorkspaceTopic | null;
   list(filter?: WorkspaceTopicListFilter): WorkspaceTopic[];
 }
@@ -224,6 +226,12 @@ export function createWorkspaceTopicStore(input: {
       const existing = parseRow(getStmt.get(id) as TopicRow | undefined);
       if (!existing) return null;
       return persist(archiveWorkspaceTopicRecord(existing, clock()));
+    },
+
+    restore(id) {
+      const existing = parseRow(getStmt.get(id) as TopicRow | undefined);
+      if (!existing) return null;
+      return persist(restoreWorkspaceTopicRecord(existing, clock()));
     },
 
     get(id) {
@@ -1455,6 +1463,60 @@ export function createWorkspaceTopicsRouter(
           res,
           'INTERNAL',
           'workspace topic archive failed',
+          true
+        );
+      }
+    }
+  );
+
+  router.post(
+    '/workspace-topics/:id/restore',
+    writeAuth('workspace-topics.restore', (req) =>
+      topicWorkContextScopeFromPersistedTopic({ store: options.store, req })
+    ),
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      if (!options.store) {
+        sendGatewayError(
+          res,
+          'SERVER_UNAVAILABLE',
+          'workspace topic store is unavailable',
+          true,
+          {
+            reasonCode: 'WORKSPACE_TOPIC_STORE_UNAVAILABLE',
+          }
+        );
+        return;
+      }
+      const id = req.params['id'] ?? '';
+      try {
+        assertWorkspaceTopicId(id);
+        const topic = options.store.restore(id);
+        if (!topic) {
+          sendGatewayError(
+            res,
+            'NOT_FOUND',
+            'workspace topic not found',
+            false,
+            {
+              id,
+            }
+          );
+          return;
+        }
+        res.json({ topic, mutationPolicy: mutationPolicy('update') });
+      } catch (error) {
+        if (error instanceof WorkspaceTopicValidationError) {
+          sendGatewayError(res, 'INVALID_ARGUMENT', error.message, false, {
+            reasonCode: 'WORKSPACE_TOPIC_VALIDATION_FAILED',
+            ...error.details,
+          });
+          return;
+        }
+        sendGatewayError(
+          res,
+          'INTERNAL',
+          'workspace topic restore failed',
           true
         );
       }
