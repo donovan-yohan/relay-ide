@@ -33,7 +33,7 @@ describe('ActiveWorkEmpty', () => {
     expect(container.querySelector('.active-work-empty__panel')).not.toBeNull();
     expect(container.textContent).toContain('no active work yet');
     const cta = container.querySelector(
-      '.active-work-empty__cta'
+      '.active-work-empty__actions .tui-btn'
     ) as HTMLButtonElement;
     expect(cta).not.toBeNull();
     expect(cta.textContent).toContain('new topic');
@@ -45,7 +45,7 @@ describe('ActiveWorkEmpty', () => {
       root.render(React.createElement(ActiveWorkEmpty, { onStartTopic }))
     );
     const cta = container.querySelector(
-      '.active-work-empty__cta'
+      '.active-work-empty__actions .tui-btn'
     ) as HTMLButtonElement;
     act(() => cta.click());
     expect(onStartTopic).toHaveBeenCalledTimes(1);

@@ -626,13 +626,9 @@ export function ActiveWorkEmpty({
           context.
         </p>
         <div className="active-work-empty__actions">
-          <button
-            type="button"
-            className="active-work-empty__cta"
-            onClick={onStartTopic}
-          >
+          <TuiButton variant="primary" onClick={onStartTopic}>
             + new topic
-          </button>
+          </TuiButton>
           <span className="active-work-empty__hint">
             or search topics, tasks, and artifacts from the sidebar
           </span>
@@ -644,13 +640,20 @@ export function ActiveWorkEmpty({
 
 export default function ActiveWorkSurface() {
   const queryClient = useQueryClient();
-  const openSidebar = useUiStore((s) => s.openSidebar);
-  // Mirror ChatFirstLanding's start-a-topic affordance so the empty cockpit
-  // drives the same primary next action.
+  // Drive the same primary next action as the sidebar's create affordance. The
+  // create panel lives in TopicSidebarShell, which is unmounted while the
+  // sidebar is collapsed — so un-collapse + open first, then dispatch on the
+  // next tick once the shell has mounted and registered its listener (otherwise
+  // the event fires into the void and the CTA is a no-op in collapsed mode).
   const startTopic = useCallback(() => {
-    openSidebar();
-    window.dispatchEvent(new Event('relay:open-topic-task-room'));
-  }, [openSidebar]);
+    const ui = useUiStore.getState();
+    if (ui.sidebarCollapsed) ui.toggleSidebarCollapsed();
+    ui.openSidebar();
+    setTimeout(
+      () => window.dispatchEvent(new Event('relay:open-topic-task-room')),
+      0
+    );
+  }, []);
   const {
     data = [],
     isLoading,

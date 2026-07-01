@@ -93,22 +93,6 @@
   margin-top: 4px;
 }
 
-.active-work-empty__cta {
-  min-height: 32px;
-  padding: 0 14px;
-  border: 1px solid var(--accent);
-  border-radius: 0;
-  background: transparent;
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-}
-
-.active-work-empty__cta:hover {
-  background: var(--surface-hover);
-}
-
 .active-work-empty__hint {
   color: var(--text-muted);
   font-family: var(--font-mono);
