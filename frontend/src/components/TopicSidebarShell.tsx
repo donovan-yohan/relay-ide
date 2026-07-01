@@ -1729,6 +1729,23 @@ function TopicSearchPanel({
   );
 }
 
+/**
+ * Active workspace context a topic establishes when it is selected. `repoPath`
+ * prefers the topic's repo, then its worktree; a topic with neither (a pure
+ * thread) leaves the current repo context untouched. The node is not tracked as
+ * separate active state — launches read it from the topic's routing defaults.
+ */
+export function resolveTopicActiveContext(topic: WorkspaceTopic): {
+  workspaceId: string;
+  repoPath: string | null;
+} {
+  const routing = topic.routingDefaults;
+  return {
+    workspaceId: topic.workspaceId,
+    repoPath: routing.repoPath ?? routing.worktreePath ?? null,
+  };
+}
+
 export function TopicSidebarView({
   topics,
   sessions,
@@ -1778,6 +1795,10 @@ export function TopicSidebarView({
     () => buildTopicNavModel({ topics, sessions, surfaces, derived }),
     [topics, sessions, surfaces, derived]
   );
+  const topicsById = useMemo(
+    () => new Map(topics.map((topic) => [topic.id, topic])),
+    [topics]
+  );
   const firstId = model.rootIds[0] ?? model.items[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(firstId);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(
@@ -1804,7 +1825,22 @@ export function TopicSidebarView({
     });
   }, []);
 
-  const select = useCallback((id: string) => setSelectedId(id), []);
+  // Selecting a topic establishes its node + cwd context so terminals, agents,
+  // and the workspace pane operate in the topic's node/repo. Only fires on an
+  // explicit user selection — the initial/auto-selection sets `selectedId`
+  // directly and never clobbers the active repo.
+  const select = useCallback(
+    (id: string) => {
+      setSelectedId(id);
+      const topic = topicsById.get(id);
+      if (!topic) return;
+      const context = resolveTopicActiveContext(topic);
+      const ui = useUiStore.getState();
+      ui.setActiveWorkspaceId(context.workspaceId);
+      if (context.repoPath) ui.setActiveRepoPath(context.repoPath);
+    },
+    [topicsById]
+  );
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
   const mobileItems = useMemo(
     () =>

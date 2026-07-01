@@ -12,10 +12,12 @@ import type {
   WorkspaceTopicSearchResult,
 } from '../shared/workspace-topics.js';
 import {
+  resolveTopicActiveContext,
   TopicSidebarShell,
   TopicSidebarView,
 } from '../frontend/src/components/TopicSidebarShell.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
+import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { makeSession } from './helpers/frontend-factories.js';
 
 (
@@ -99,6 +101,8 @@ describe('TopicSidebarView', () => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     useSessionsStore.setState({ sessions: [] });
+    useUiStore.getState().setActiveRepoPath(null);
+    useUiStore.getState().setActiveWorkspaceId(null);
   });
 
   async function renderView(
@@ -137,6 +141,73 @@ describe('TopicSidebarView', () => {
     ) as HTMLButtonElement;
     await act(async () => sessionButton.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
+  });
+
+  it('establishes the topic node/repo context when a topic is selected', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:ctx',
+          workspaceId: 'workspace:ctx',
+          routingDefaults: { nodeId: 'devbox', repoPath: '/repo/ctx' },
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+    });
+    // Auto-selection on mount must not clobber the active repo.
+    expect(useUiStore.getState().activeRepoPath).toBeNull();
+
+    const row = container.querySelector('.topic-row__main') as HTMLElement;
+    await act(async () => row.click());
+
+    expect(useUiStore.getState().activeRepoPath).toBe('/repo/ctx');
+    expect(useUiStore.getState().activeWorkspaceId).toBe('workspace:ctx');
+  });
+
+  it('keeps the active repo for a thread topic but still sets the workspace', async () => {
+    useUiStore.getState().setActiveRepoPath('/repo/keep');
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:thread',
+          workspaceId: 'workspace:thread',
+          routingDefaults: {},
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+    });
+    const row = container.querySelector('.topic-row__main') as HTMLElement;
+    await act(async () => row.click());
+
+    expect(useUiStore.getState().activeRepoPath).toBe('/repo/keep');
+    expect(useUiStore.getState().activeWorkspaceId).toBe('workspace:thread');
+  });
+
+  it('resolveTopicActiveContext prefers repo, then worktree, else null', () => {
+    expect(
+      resolveTopicActiveContext(
+        makeTopic({
+          workspaceId: 'w',
+          routingDefaults: { repoPath: '/r', worktreePath: '/wt' },
+        })
+      )
+    ).toEqual({ workspaceId: 'w', repoPath: '/r' });
+    expect(
+      resolveTopicActiveContext(
+        makeTopic({
+          workspaceId: 'w',
+          routingDefaults: { worktreePath: '/wt' },
+        })
+      )
+    ).toEqual({ workspaceId: 'w', repoPath: '/wt' });
+    expect(
+      resolveTopicActiveContext(
+        makeTopic({ workspaceId: 'w', routingDefaults: { cwd: '/c' } })
+      )
+    ).toEqual({ workspaceId: 'w', repoPath: null });
   });
 
   it('renders kind-icon badges without numeric ordering text', async () => {
