@@ -197,6 +197,7 @@ export async function createWebSession(
  * Each provider stores its resumable ID under a known key:
  *   claude → claudeSessionId
  *   codex  → threadId  (PR 5)
+ *   hermes → hermesResponseId  (last completed gateway response, #1087)
  *
  * Returns undefined if no recognized key is present.
  */
