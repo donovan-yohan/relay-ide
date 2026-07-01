@@ -158,13 +158,40 @@
 
 .session-mailbox-compose {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
   padding: 6px 8px;
   border-top: 1px solid var(--border);
 }
 
-.session-mailbox-compose__input {
+.session-mailbox-compose__mode {
+  display: flex;
+  gap: 4px;
+}
+
+.session-mailbox-compose__tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 1px 8px;
+  cursor: pointer;
+}
+
+.session-mailbox-compose__tab.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.session-mailbox-compose__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-mailbox-compose__input,
+.session-mailbox-compose__target {
   flex: 1;
   min-width: 0;
   background: var(--bg);
@@ -175,7 +202,8 @@
   padding: 4px 6px;
 }
 
-.session-mailbox-compose__input:focus {
+.session-mailbox-compose__input:focus,
+.session-mailbox-compose__target:focus {
   outline: none;
   border-color: var(--accent);
 }

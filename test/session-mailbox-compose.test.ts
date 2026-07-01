@@ -110,6 +110,48 @@ describe('SessionMailboxPanel composer', () => {
     ).toBe('');
   });
 
+  it('sends cross-workspace MAIL to a work context when in mail mode', async () => {
+    act(() =>
+      root.render(
+        React.createElement(SessionMailboxPanel, { targetSessionId: 's1' })
+      )
+    );
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value'
+    )!.set!;
+
+    const mailTab = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'mail'
+    ) as HTMLButtonElement;
+    act(() => mailTab.click());
+
+    const target = container.querySelector(
+      '.session-mailbox-compose__target'
+    ) as HTMLInputElement;
+    const input = container.querySelector(
+      '.session-mailbox-compose__input'
+    ) as HTMLInputElement;
+    act(() => {
+      setValue.call(target, 'wc-other-workspace');
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      setValue.call(input, 'mail across workspaces');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const sendBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'send'
+    ) as HTMLButtonElement;
+    act(() => sendBtn.click());
+    await flush();
+
+    expect(mocks.sendInboxMessage).toHaveBeenCalledWith({
+      targetWorkContextId: 'wc-other-workspace',
+      text: 'mail across workspaces',
+      contextPacketIds: [],
+    });
+  });
+
   it('does not send an empty message', async () => {
     act(() =>
       root.render(
