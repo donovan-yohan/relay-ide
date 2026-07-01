@@ -8,6 +8,11 @@ import type {
 } from '../../../../shared/agent-chat-protocol-v2.js';
 import { ApprovalCard } from './ApprovalCard.js';
 import { FileChangeRow } from './FileChangeRow.js';
+import {
+  ImageGenerationCard,
+  ImageViewCard,
+  WebSearchCard,
+} from './MediaCard.js';
 import { ToolCard } from './ToolCard.js';
 import { TurnFooter } from './TurnFooter.js';
 import { TurnHeader } from './TurnHeader.js';
@@ -125,11 +130,11 @@ function renderItem(
         </div>
       );
     case 'webSearch':
-      return <pre className="tl-text">{item.query}</pre>;
+      return <WebSearchCard item={item} />;
     case 'imageView':
-      return <pre className="tl-text">{item.source}</pre>;
+      return <ImageViewCard item={item} />;
     case 'imageGeneration':
-      return <pre className="tl-text">{item.prompt}</pre>;
+      return <ImageGenerationCard item={item} />;
     case 'hookPrompt':
       return <pre className="tl-text">{item.prompt}</pre>;
     case 'errorMessage':
