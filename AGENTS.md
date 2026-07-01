@@ -30,6 +30,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Architecture         | `docs/ARCHITECTURE.md`                       | Module boundaries, data flow, API routes, ADR rules                                                                      |
 | Boo/session model    | `docs/BOO_PHILOSOPHY.md`                     | Scriptable session substrate, rendered-screen gaps, operator-cockpit roadmap                                             |
 | Workbench            | `docs/WORKBENCH_BOUNDARY.md`                 | Relay product boundary, #552 nouns, mobile/pair/dogfood acceptance                                                       |
+| Chat-first simplify  | `docs/CHAT_FIRST_SIMPLIFICATION.md`          | Epic #1058 surface audit (primary/settings/diagnostics/cli), branch reuse ledger, ship order, open product decisions     |
 | Visual Design        | `DESIGN.md`                                  | Product framing, TUI aesthetic, colors, spacing, buttons                                                                 |
 | Design               | `docs/DESIGN.md`                             | Backend patterns, auth flow, PTY management, session types                                                               |
 | Frontend             | `docs/FRONTEND.md`                           | React 19 components, state management (Zustand + TanStack Query)                                                         |
