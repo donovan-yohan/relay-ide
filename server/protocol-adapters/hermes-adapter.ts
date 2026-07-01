@@ -476,7 +476,8 @@ export function sanitizeResponsesMetadata(
 /**
  * Build the Relay workspace/topic anchors that tag a Hermes conversation so the
  * gateway (and any audit/observer) can associate the session with its topic,
- * repo, and node. Empty fields are omitted.
+ * repo, node, and (when launched from a ticket) the originating ticket.
+ * Empty fields are omitted.
  */
 export function buildRelayHermesMetadata(input: {
   topicId?: string | null | undefined;
@@ -484,6 +485,9 @@ export function buildRelayHermesMetadata(input: {
   repoPath?: string | null | undefined;
   branchName?: string | null | undefined;
   nodeId?: string | null | undefined;
+  ticketId?: string | null | undefined;
+  ticketSource?: string | null | undefined;
+  ticketUrl?: string | null | undefined;
 }): Record<string, string> {
   const md: Record<string, string> = {};
   if (input.topicId) md['relay_topic_id'] = input.topicId;
@@ -491,6 +495,9 @@ export function buildRelayHermesMetadata(input: {
   if (input.repoPath) md['relay_repo_path'] = input.repoPath;
   if (input.branchName) md['relay_branch'] = input.branchName;
   if (input.nodeId) md['relay_node_id'] = input.nodeId;
+  if (input.ticketId) md['relay_ticket_id'] = input.ticketId;
+  if (input.ticketSource) md['relay_ticket_source'] = input.ticketSource;
+  if (input.ticketUrl) md['relay_ticket_url'] = input.ticketUrl;
   return md;
 }
 
