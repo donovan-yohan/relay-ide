@@ -451,6 +451,7 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'workspace-topics.create',
     'workspace-topics.update',
     'workspace-topics.archive',
+    'workspace-topics.restore',
   ]);
 
   for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {
