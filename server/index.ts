@@ -36,7 +36,10 @@ import { AGENT_CONTINUE_ARGS, AGENT_YOLO_ARGS } from './types.js';
 
 import { setupWebSocket } from './ws.js';
 import { createLocalRelayNode } from './local-node.js';
-import { buildRelayHermesMetadata } from './protocol-adapters/hermes-adapter.js';
+import {
+  buildHermesInstructions,
+  buildRelayHermesMetadata,
+} from './protocol-adapters/hermes-adapter.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
   parseGlobalSessionId,
@@ -347,18 +350,30 @@ const TERMINAL_BACKEND_RELAY_PTY: TerminalBackend = 'relay-pty';
 /**
  * Build the `extra` payload for a Hermes web session so its conversation is
  * tagged with the topic/workspace/repo/node anchors (via the responses
- * `metadata` field). Returns an empty object for non-Hermes agents or when
- * there is no context to attach, so it can be spread into createWeb params.
+ * `metadata` field) and carries the channel's prompt defaults (via the
+ * responses `instructions` field). Returns an empty object for non-Hermes
+ * agents or when there is nothing to attach, so it can be spread into
+ * createWeb params.
  */
 function buildHermesCreateExtra(
   resolvedAgent: string,
   ctx: {
-    workspaceTopic?: { id?: string; workspaceId?: string } | null | undefined;
+    workspaceTopic?:
+      | {
+          id?: string;
+          workspaceId?: string;
+          promptDefaults?: {
+            systemPrompt?: string | null;
+            instructions?: string | null;
+          };
+        }
+      | null
+      | undefined;
     repoPath?: string | null | undefined;
     branchName?: string | null | undefined;
     nodeId?: string | null | undefined;
   }
-): { extra: { metadata: Record<string, string> } } | Record<string, never> {
+): { extra: Record<string, unknown> } | Record<string, never> {
   if (resolvedAgent !== 'hermes') return {};
   const metadata = buildRelayHermesMetadata({
     topicId: ctx.workspaceTopic?.id,
@@ -367,7 +382,13 @@ function buildHermesCreateExtra(
     branchName: ctx.branchName,
     nodeId: ctx.nodeId,
   });
-  return Object.keys(metadata).length > 0 ? { extra: { metadata } } : {};
+  const instructions = buildHermesInstructions(
+    ctx.workspaceTopic?.promptDefaults
+  );
+  const extra: Record<string, unknown> = {};
+  if (Object.keys(metadata).length > 0) extra['metadata'] = metadata;
+  if (instructions) extra['instructions'] = instructions;
+  return Object.keys(extra).length > 0 ? { extra } : {};
 }
 
 const localRelayNode = createLocalRelayNode();
