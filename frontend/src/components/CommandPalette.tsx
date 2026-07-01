@@ -25,6 +25,14 @@ import { isMobileDevice, isMac } from '../lib/utils.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
 import { buildSessionPaletteResults } from '../lib/command-palette-session-results.js';
 import {
+  buildTopicPaletteResults,
+  recentTopicPaletteResults,
+} from '../lib/command-palette-topic-results.js';
+import type {
+  WorkspaceTopic,
+  WorkspaceTopicListResponse,
+} from '../../../shared/workspace-topics.js';
+import {
   executeCommandCenterAssistantCommand,
   resolveCommandCenterAssistantIntent,
 } from '../lib/api.js';
@@ -43,7 +51,14 @@ import './CommandPalette.css';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const TABS = ['all', 'sessions', 'workspaces', 'prs', 'settings'] as const;
+const TABS = [
+  'all',
+  'sessions',
+  'topics',
+  'workspaces',
+  'prs',
+  'settings',
+] as const;
 type Tab = (typeof TABS)[number];
 
 const SEC_GENERAL = 'section-general';
@@ -134,6 +149,13 @@ type PaletteResult =
       data: SessionSummary;
     }
   | {
+      type: 'topic';
+      id: string;
+      label: string;
+      sublabel?: string;
+      data: WorkspaceTopic;
+    }
+  | {
       type: 'pr' | 'attention';
       id: string;
       label: string;
@@ -177,6 +199,7 @@ export interface CommandPaletteProps {
   onClose: () => void;
   onSelectWorkspace: (path: string) => void;
   onSelectSession: (id: string) => void;
+  onSelectTopic?: (topic: WorkspaceTopic) => void;
   onSelectPr: (pr: PullRequest) => void;
   onOpenSettings?: (sectionId: string) => void;
   resolveAssistantIntent?: (
@@ -211,6 +234,8 @@ function categoryIcon(type: PaletteResult['type']): string {
       return '■';
     case 'session':
       return '▸';
+    case 'topic':
+      return '◇';
     case 'pr':
     case 'attention':
       return '●';
@@ -228,6 +253,7 @@ function categoryIcon(type: PaletteResult['type']): string {
 function matchesTab(type: PaletteResult['type'], activeTab: Tab): boolean {
   if (activeTab === 'all') return true;
   if (activeTab === 'sessions') return type === 'session' || type === 'command';
+  if (activeTab === 'topics') return type === 'topic';
   if (activeTab === 'workspaces') return type === 'workspace';
   if (activeTab === 'prs') return type === 'pr' || type === 'attention';
   if (activeTab === 'settings') return type === 'setting' || type === 'command';
@@ -259,7 +285,13 @@ function useCachedData(open: boolean) {
       [],
     [queryClient, open]
   );
-  return { cachedPrs, cachedGithubIssues, cachedJiraIssues };
+  const cachedTopics = useMemo<WorkspaceTopic[]>(
+    () =>
+      queryClient.getQueryData<WorkspaceTopicListResponse>(['workspace-topics'])
+        ?.topics ?? [],
+    [queryClient, open]
+  );
+  return { cachedPrs, cachedGithubIssues, cachedJiraIssues, cachedTopics };
 }
 
 /**
@@ -289,6 +321,7 @@ function buildResults(
   cachedPrs: PullRequest[],
   cachedGithubIssues: GitHubIssue[],
   cachedJiraIssues: JiraIssue[],
+  cachedTopics: WorkspaceTopic[],
   registryCommands: Action[],
   /** Actions that have a disabledReason but failed `when` — shown greyed-out. */
   degradedCommands: { action: Action; reason: string }[],
@@ -314,6 +347,8 @@ function buildResults(
         sublabel: ws.path,
         data: ws,
       });
+    for (const topic of recentTopicPaletteResults(cachedTopics, 5))
+      items.push(topic);
     for (const a of registryCommands)
       items.push(actionToPaletteCommand(a, actionContext));
     for (const { action, reason } of degradedCommands.filter(
@@ -341,6 +376,9 @@ function buildResults(
     });
   for (const result of buildSessionPaletteResults(q, sessions, 5)) {
     items.push(result);
+  }
+  for (const topic of buildTopicPaletteResults(q, cachedTopics, 5)) {
+    items.push(topic);
   }
   for (const pr of cachedPrs
     .filter(
@@ -434,6 +472,7 @@ function useGroupedResults(
       ? [
           { type: 'workspace', label: 'workspaces' },
           { type: 'session', label: 'sessions' },
+          { type: 'topic', label: 'topics' },
           { type: 'pr', label: 'pull requests' },
           { type: 'ticket', label: 'tickets' },
           { type: 'command', label: 'commands' },
@@ -442,6 +481,7 @@ function useGroupedResults(
       : [
           { type: 'attention', label: 'needs attention' },
           { type: 'workspace', label: 'workspaces' },
+          { type: 'topic', label: 'topics' },
           { type: 'command', label: 'commands' },
         ];
     return typeOrder.flatMap(({ type, label }) => {
@@ -516,6 +556,7 @@ function usePaletteHandlers(
   onClose: () => void,
   onSelectWorkspace: (path: string) => void,
   onSelectSession: (id: string) => void,
+  onSelectTopic: ((topic: WorkspaceTopic) => void) | undefined,
   onSelectPr: (pr: PullRequest) => void,
   onOpenSettings?: (sectionId: string) => void
 ) {
@@ -544,6 +585,8 @@ function usePaletteHandlers(
         onSelectWorkspace((item.data as Repo).path);
       else if (item.type === 'session')
         onSelectSession(scopedSessionKey(item.data as SessionSummary));
+      else if (item.type === 'topic')
+        onSelectTopic?.(item.data as WorkspaceTopic);
       else if (item.type === 'attention' || item.type === 'pr')
         onSelectPr(item.data as PullRequest);
       else if (item.type === 'setting')
@@ -554,6 +597,7 @@ function usePaletteHandlers(
       onClose,
       onSelectWorkspace,
       onSelectSession,
+      onSelectTopic,
       onSelectPr,
       onOpenSettings,
     ]
@@ -785,6 +829,7 @@ export function CommandPalette({
   onClose,
   onSelectWorkspace,
   onSelectSession,
+  onSelectTopic,
   onSelectPr,
   onOpenSettings,
   resolveAssistantIntent = resolveCommandCenterAssistantIntent,
@@ -815,7 +860,7 @@ export function CommandPalette({
     setDragging,
     dragStartYRef,
   } = usePaletteState(open, inputRef);
-  const { cachedPrs, cachedGithubIssues, cachedJiraIssues } =
+  const { cachedPrs, cachedGithubIssues, cachedJiraIssues, cachedTopics } =
     useCachedData(open);
   // Commands that pass `when` — active and invocable.
   const registryCommands = useMemo(
@@ -857,6 +902,7 @@ export function CommandPalette({
         cachedPrs,
         cachedGithubIssues,
         cachedJiraIssues,
+        cachedTopics,
         registryCommands,
         degradedCommands,
         needsAttention,
@@ -870,6 +916,7 @@ export function CommandPalette({
       cachedPrs,
       cachedGithubIssues,
       cachedJiraIssues,
+      cachedTopics,
       registryCommands,
       degradedCommands,
       needsAttention,
@@ -911,6 +958,7 @@ export function CommandPalette({
     onClose,
     onSelectWorkspace,
     onSelectSession,
+    onSelectTopic,
     onSelectPr,
     onOpenSettings
   );
