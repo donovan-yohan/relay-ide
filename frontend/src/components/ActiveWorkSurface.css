@@ -44,15 +44,75 @@
   white-space: nowrap;
 }
 
+/* Empty cockpit: float a single bordered panel into the vertical center of the
+   open space so it drives the next action instead of leaving a void. The panel
+   fills the area but keeps its content left-aligned (TUI-native, not a centered
+   consumer hero — see DESIGN.md). */
 .active-work-empty {
   display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 44vh;
+  padding: 24px 16px;
+}
+
+.active-work-empty__panel {
+  display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 16px;
+  gap: 12px;
+  width: 100%;
+  max-width: 620px;
+  padding: 20px;
   border: 1px solid var(--border);
+  text-align: left;
+}
+
+.active-work-empty__title {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.active-work-empty__lede {
+  margin: 0;
+  max-width: 56ch;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.active-work-empty__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.active-work-empty__cta {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.active-work-empty__cta:hover {
+  background: var(--surface-hover);
+}
+
+.active-work-empty__hint {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 
 .active-work-list {
