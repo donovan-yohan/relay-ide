@@ -379,6 +379,87 @@ describe('TopicSidebarView', () => {
     }
   });
 
+  it('resolves the topic detail meta strip to the workspace name, never the raw workspace id (#1061)', async () => {
+    const workspaceId = 'ws:3fa85f64-5717-4562-b3fc-2c963f66afa6';
+    await renderView({
+      topics: [
+        makeTopic({
+          workspaceId,
+          display: { title: 'Ugly workspace id topic' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      workspaces: [
+        {
+          id: workspaceId,
+          name: 'Platform Guild',
+          order: 0,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+      ],
+    });
+
+    expect(container.textContent).toContain('Platform Guild');
+    expect(container.textContent).not.toContain(workspaceId);
+  });
+
+  it('omits the workspace meta span entirely when the workspace name is unresolved, never falling back to the raw id (#1061)', async () => {
+    const workspaceId = 'ws:9c858901-8a57-4791-81fe-4c455b099bc9';
+    await renderView({
+      topics: [
+        makeTopic({
+          workspaceId,
+          display: { title: 'Unmapped workspace topic' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      workspaces: [],
+    });
+
+    expect(container.textContent).not.toContain(workspaceId);
+  });
+
+  it('never renders raw routing node ids in participant/session/mobile-control meta; resolves via the node roster when known (#1061)', async () => {
+    const knownNodeId = 'node_7Kx9QoZmP3vL1nRt5sWyAeBcDfGhIjKl';
+    const unknownNodeId = 'node_Zz01Xy23Wv45Ut67Sr89Qp01On23Ml45';
+    await renderView({
+      topics: [
+        makeTopic({
+          linkedRefs: {
+            sessionIds: [
+              `${knownNodeId}:known-node-session`,
+              `${unknownNodeId}:unknown-node-session`,
+            ],
+          },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 'known-node-session',
+          nodeId: knownNodeId,
+          displayName: 'Known node lane',
+        }),
+        makeSession({
+          id: 'unknown-node-session',
+          nodeId: unknownNodeId,
+          displayName: 'Unknown node lane',
+        }),
+      ],
+      surfaces: [],
+      nodes: [{ nodeId: knownNodeId, displayName: 'Ops Box' }],
+    });
+
+    expect(container.textContent).toContain('Ops Box');
+    expect(container.textContent).not.toContain(knownNodeId);
+    expect(container.textContent).not.toContain(unknownNodeId);
+  });
+
   it('establishes the topic node/repo context when a topic is selected', async () => {
     await renderView({
       topics: [
@@ -608,6 +689,23 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain(
       'raw terminal attach stays secondary'
     );
+  });
+
+  it('formats an untitled github issue task ref as #<id>, not the bare tracker id (#1061)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          linkedRefs: {
+            taskRefs: [{ kind: 'github-issue', id: '9821', status: 'open' }],
+          },
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+    });
+
+    const refs = container.querySelector('.topic-room-ref-list');
+    expect(refs?.textContent).toContain('#9821');
   });
 
   it('keeps stale sessions inspectable while disabling live room controls', async () => {

@@ -36,7 +36,10 @@ export interface TopicNavSessionRef {
   agentState: SessionSummary['agentState'] | null;
   permissionType: SessionSummary['permissionType'] | null;
   branch: string | null;
+  /** Raw routing node id — only for functional routing, never render directly. */
   nodeId: string | null;
+  /** Friendly node display name, resolved against the known node roster; null when unresolved (never a raw id). */
+  nodeLabel: string | null;
   cwd: string;
   controlFreshness: SessionSummary['controlFreshness'] | null;
   durability: SessionSummary['durability'] | null;
@@ -52,7 +55,10 @@ export interface TopicNavParticipantRef {
   roleLabel: string;
   providerLabel: string;
   runtimeLabel: string;
+  /** Raw routing node id — only for functional routing, never render directly. */
   nodeId: string | null;
+  /** Friendly node display name, resolved against the known node roster; null when unresolved (never a raw id). */
+  nodeLabel: string | null;
   tone: TopicNavTone;
   statusLabel: string;
   controlLabel: string;
@@ -114,6 +120,16 @@ export interface TopicNavWorkspace {
   pinned: boolean;
   color: string | null;
   icon: string | null;
+}
+
+/**
+ * Minimal node identity the topic sidebar resolves raw routing node ids
+ * against for display. Unknown/unpaired node ids simply fail to resolve —
+ * callers must never fall back to rendering the raw id (#1061).
+ */
+export interface TopicNavNode {
+  nodeId: string;
+  displayName: string | null | undefined;
 }
 
 export interface TopicNavWorkspaceGroup {
@@ -284,16 +300,52 @@ function topicKind(topic: WorkspaceTopic): {
   return { kind: 'thread', label: 'topic' };
 }
 
-function routingLabel(topic: WorkspaceTopic): string | null {
+/**
+ * Resolve a raw routing node id to its friendly display name. Never returns
+ * the raw id itself — an unresolved/unknown node id resolves to `null` so
+ * callers omit the node affordance rather than leak a raw substrate id
+ * (#1061).
+ */
+function nodeLabelFor(
+  nodeId: string | null | undefined,
+  nodeNameById: Map<string, string>
+): string | null {
+  if (!nodeId) return null;
+  return nodeNameById.get(nodeId) ?? null;
+}
+
+function routingLabel(
+  topic: WorkspaceTopic,
+  nodeNameById: Map<string, string>
+): string | null {
   const routing = topic.routingDefaults;
   const parts = [
     routing.providerId,
-    routing.nodeId,
+    nodeLabelFor(routing.nodeId, nodeNameById),
     basename(routing.worktreePath) ??
       basename(routing.repoPath) ??
       basename(routing.cwd),
   ].filter((part): part is string => Boolean(part));
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/**
+ * Human-friendly label for a linked task ref. Already-human refs (an
+ * authored `title`, or ids like `PROJ-123` for ticket trackers) render as-is;
+ * kind-specific formatting fills the gap when only a bare id is known (e.g.
+ * a github issue/PR number becomes `#1234` instead of the raw numeric id).
+ */
+export function formatTaskRefLabel(taskRef: {
+  kind: string;
+  id: string;
+  title?: string | null;
+}): string {
+  const title = taskRef.title?.trim();
+  if (title) return title;
+  if (taskRef.kind === 'github-issue' || taskRef.kind === 'github-pr') {
+    return `#${taskRef.id}`;
+  }
+  return taskRef.id;
 }
 
 type TopicParticipantRole = {
@@ -424,7 +476,10 @@ function sessionControlLabel(session: SessionSummary): string {
   return session.controlMode ?? 'control unknown';
 }
 
-function topicParticipantRef(session: SessionSummary): TopicNavParticipantRef {
+function topicParticipantRef(
+  session: SessionSummary,
+  nodeNameById: Map<string, string>
+): TopicNavParticipantRef {
   const status = sessionParticipantStatus(session);
   const selectKey = sessionSelectKey(session);
   return {
@@ -436,6 +491,7 @@ function topicParticipantRef(session: SessionSummary): TopicNavParticipantRef {
     providerLabel: sessionProviderLabel(session),
     runtimeLabel: sessionRuntimeLabel(session),
     nodeId: session.nodeId ?? null,
+    nodeLabel: nodeLabelFor(session.nodeId, nodeNameById),
     tone: sessionTone(session),
     statusLabel: status.label,
     controlLabel: sessionControlLabel(session),
@@ -542,7 +598,14 @@ export function buildTopicNavModel(input: {
   sessions: SessionSummary[];
   surfaces: WorkspaceSurface[];
   derived?: boolean;
+  /** Known node roster, used to resolve raw routing node ids to display names. */
+  nodes?: TopicNavNode[] | undefined;
 }): TopicNavModel {
+  const nodeNameById = new Map<string, string>();
+  for (const node of input.nodes ?? []) {
+    const name = node.displayName?.trim();
+    if (name) nodeNameById.set(node.nodeId, name);
+  }
   const items: TopicNavItem[] = input.topics.map((topic) => {
     const matchedSessions = input.sessions.filter((session) =>
       sessionMatchesTopic(topic, session)
@@ -563,6 +626,7 @@ export function buildTopicNavModel(input: {
           permissionType: session.permissionType ?? null,
           branch: session.branchName ?? null,
           nodeId: session.nodeId ?? null,
+          nodeLabel: nodeLabelFor(session.nodeId, nodeNameById),
           cwd: session.cwd,
           controlFreshness: session.controlFreshness ?? null,
           durability: session.durability ?? null,
@@ -588,7 +652,7 @@ export function buildTopicNavModel(input: {
 
     const tone = topicTone(sessions, surfaces, topic);
     const participants = matchedSessions
-      .map(topicParticipantRef)
+      .map((session) => topicParticipantRef(session, nodeNameById))
       .sort((a, b) => {
         if (a.roleLabel !== b.roleLabel) {
           return a.roleLabel.localeCompare(b.roleLabel);
@@ -624,7 +688,7 @@ export function buildTopicNavModel(input: {
       taskRefs: topic.linkedRefs.taskRefs ?? [],
       artifactIds: topic.linkedRefs.artifactIds ?? [],
       childIds: [],
-      routingLabel: routingLabel(topic),
+      routingLabel: routingLabel(topic, nodeNameById),
       lifecycleLabel: topic.status,
       updatedAt: topic.updatedAt,
     };
