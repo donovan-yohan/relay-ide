@@ -19,6 +19,7 @@ import {
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
   buildWorkspaceTopicLaunchPreview,
+  resolveTopicActiveContext,
   type WorkspaceTopic,
   type WorkspaceTopicCreateInput,
   type WorkspaceTopicLaunchIntent,
@@ -1729,6 +1730,10 @@ function TopicSearchPanel({
   );
 }
 
+const EMPTY_TOPICS: WorkspaceTopic[] = [];
+const EMPTY_SURFACES: WorkspaceSurface[] = [];
+const EMPTY_SEARCH_RESULTS: WorkspaceTopicSearchResult[] = [];
+
 export function TopicSidebarView({
   topics,
   sessions,
@@ -1778,6 +1783,10 @@ export function TopicSidebarView({
     () => buildTopicNavModel({ topics, sessions, surfaces, derived }),
     [topics, sessions, surfaces, derived]
   );
+  const topicsById = useMemo(
+    () => new Map(topics.map((topic) => [topic.id, topic])),
+    [topics]
+  );
   const firstId = model.rootIds[0] ?? model.items[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(firstId);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(
@@ -1804,7 +1813,22 @@ export function TopicSidebarView({
     });
   }, []);
 
-  const select = useCallback((id: string) => setSelectedId(id), []);
+  // Selecting a topic establishes its node + cwd context so terminals, agents,
+  // and the workspace pane operate in the topic's node/repo. Only fires on an
+  // explicit user selection — the initial/auto-selection sets `selectedId`
+  // directly and never clobbers the active repo.
+  const select = useCallback(
+    (id: string) => {
+      setSelectedId(id);
+      const topic = topicsById.get(id);
+      if (!topic) return;
+      const context = resolveTopicActiveContext(topic);
+      const ui = useUiStore.getState();
+      ui.setActiveWorkspaceId(context.workspaceId);
+      if (context.repoPath) ui.setActiveRepoPath(context.repoPath);
+    },
+    [topicsById]
+  );
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
   const mobileItems = useMemo(
     () =>
@@ -1903,7 +1927,6 @@ export function TopicSidebarView({
   );
 }
 
-// eslint-disable-next-line complexity -- topic room creation composes query, routing-default, and launch retry state in one shell boundary.
 export function TopicSidebarShell({
   onSelectSession,
 }: {
@@ -1966,7 +1989,23 @@ export function TopicSidebarShell({
   }, []);
   const searchActive = normalizedSearchQuery.length > 0;
   const searchData = topicSearchQuery.data;
-  const searchResults = searchData?.results ?? [];
+  const searchResults = useMemo(
+    () => searchData?.results ?? EMPTY_SEARCH_RESULTS,
+    [searchData]
+  );
+  // Keep the arrays passed to TopicSidebarView referentially stable so its
+  // model/topicsById memoization is not invalidated on every render.
+  const viewTopics = useMemo(
+    () =>
+      searchActive
+        ? searchResults.map((result) => result.topic)
+        : (topicsQuery.data?.topics ?? EMPTY_TOPICS),
+    [searchActive, searchResults, topicsQuery.data]
+  );
+  const viewSurfaces = useMemo(
+    () => surfacesQuery.data ?? EMPTY_SURFACES,
+    [surfacesQuery.data]
+  );
   const taskRef = taskRefFromDraft(createDraft.taskRef, createDraft.title);
   const defaultRepoPath =
     activeSession?.repoPath ?? activeRepoPath ?? undefined;
@@ -2156,13 +2195,9 @@ export function TopicSidebarShell({
 
   return (
     <TopicSidebarView
-      topics={
-        searchActive
-          ? searchResults.map((result) => result.topic)
-          : (topicsQuery.data?.topics ?? [])
-      }
+      topics={viewTopics}
       sessions={sessions}
-      surfaces={surfacesQuery.data ?? []}
+      surfaces={viewSurfaces}
       loading={!searchActive && topicsQuery.isLoading && !topicsQuery.data}
       error={topicsQuery.isError && !topicsQuery.data && !searchActive}
       surfacesLoading={surfacesQuery.isLoading && !surfacesQuery.data}
