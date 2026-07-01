@@ -180,6 +180,98 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('Beta channel');
   });
 
+  it('groups the mobile cockpit under the same workspace headers (#1088)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          display: { title: 'Alpha channel' },
+          linkedRefs: {},
+        }),
+        makeTopic({
+          id: 'topic:b',
+          workspaceId: 'ws:b',
+          display: { title: 'Beta channel' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      workspaces: [
+        {
+          id: 'ws:a',
+          name: 'engineering',
+          order: 0,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+        {
+          id: 'ws:b',
+          name: 'research',
+          order: 1,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+      ],
+    });
+    const mobileHeaders = Array.from(
+      container.querySelectorAll('.topic-mobile-group__name')
+    ).map((el) => el.textContent);
+    expect(mobileHeaders).toContain('engineering');
+    expect(mobileHeaders).toContain('research');
+  });
+
+  it('resumes the most recent session in one tap from the mobile cockpit (#1088)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          display: { title: 'Alpha channel' },
+          linkedRefs: { sessionIds: ['s-old', 's-new'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 's-old',
+          displayName: 'older',
+          lastActivity: '2026-06-01T00:00:00Z',
+        }),
+        makeSession({
+          id: 's-new',
+          displayName: 'newer',
+          lastActivity: '2026-06-25T00:00:00Z',
+        }),
+      ],
+      surfaces: [],
+    });
+    const resume = container.querySelector(
+      '.topic-mobile-cockpit__resume'
+    ) as HTMLButtonElement;
+    expect(resume).not.toBeNull();
+    expect(resume.disabled).toBe(false);
+    await act(async () => resume.click());
+    expect(onSelectSession).toHaveBeenCalledTimes(1);
+    const key = onSelectSession.mock.calls[0][0] as string;
+    expect(key).toContain('s-new');
+  });
+
+  it('disables mobile resume-last when no session has activity yet (#1088)', async () => {
+    await renderView({
+      topics: [makeTopic({ id: 'topic:a', linkedRefs: {} })],
+      sessions: [],
+      surfaces: [],
+    });
+    const resume = container.querySelector(
+      '.topic-mobile-cockpit__resume'
+    ) as HTMLButtonElement;
+    expect(resume).not.toBeNull();
+    expect(resume.disabled).toBe(true);
+  });
+
   it('shows a search scope toggle only when a workspace is active', async () => {
     const onToggleSearchScope = vi.fn();
     await renderView({ activeWorkspaceId: 'ws:a', onToggleSearchScope });

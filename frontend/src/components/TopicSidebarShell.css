@@ -1040,10 +1040,38 @@
     cursor: not-allowed;
   }
 
+  .topic-mobile-cockpit__actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   .topic-mobile-list {
     display: flex;
     flex-direction: column;
     padding: 4px 0;
+  }
+
+  .topic-mobile-group {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .topic-mobile-group__header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px 2px;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .topic-mobile-group__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .topic-mobile-row {

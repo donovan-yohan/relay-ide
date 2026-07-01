@@ -1633,17 +1633,37 @@ function TopicRoomCreatePanel({
   );
 }
 
+/** A workspace bucket of mobile topic rows, kept in attention order. */
+interface MobileTopicGroup {
+  id: string;
+  title: string;
+  icon: string | null;
+  items: TopicNavItem[];
+}
+
 function TopicMobileCockpit({
-  mobileItems,
+  groups,
+  ungrouped,
   selectedId,
   onSelect,
   onCreateTaskRoom,
+  onResumeLast,
 }: {
-  mobileItems: TopicNavItem[];
+  groups: MobileTopicGroup[];
+  ungrouped: TopicNavItem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onCreateTaskRoom?: (() => void) | undefined;
+  onResumeLast?: (() => void) | undefined;
 }) {
+  const renderRow = (item: TopicNavItem): ReactNode => (
+    <TopicMobileAttentionRow
+      key={item.id}
+      item={item}
+      selected={selectedId === item.id}
+      onSelect={onSelect}
+    />
+  );
   return (
     <section className="topic-mobile-cockpit" aria-label="mobile topic cockpit">
       <div
@@ -1653,28 +1673,64 @@ function TopicMobileCockpit({
         <span className="topic-mobile-cockpit__hint">
           use / search for topic history
         </span>
-        <button
-          type="button"
-          disabled={!onCreateTaskRoom}
-          title={
-            onCreateTaskRoom
-              ? 'create a task room from workspace defaults'
-              : 'topic creation unavailable'
-          }
-          onClick={onCreateTaskRoom}
-        >
-          + task
-        </button>
+        <div className="topic-mobile-cockpit__actions">
+          <button
+            type="button"
+            className="topic-mobile-cockpit__resume"
+            disabled={!onResumeLast}
+            title={
+              onResumeLast
+                ? 'resume your most recent session'
+                : 'no recent session to resume'
+            }
+            onClick={onResumeLast}
+          >
+            resume last
+          </button>
+          <button
+            type="button"
+            disabled={!onCreateTaskRoom}
+            title={
+              onCreateTaskRoom
+                ? 'create a task room from workspace defaults'
+                : 'topic creation unavailable'
+            }
+            onClick={onCreateTaskRoom}
+          >
+            + task
+          </button>
+        </div>
       </div>
-      <div className="topic-mobile-list" aria-label="attention-sorted topics">
-        {mobileItems.map((item) => (
-          <TopicMobileAttentionRow
-            key={item.id}
-            item={item}
-            selected={selectedId === item.id}
-            onSelect={onSelect}
-          />
+      <div className="topic-mobile-list" aria-label="workspace-grouped topics">
+        {groups.map((group) => (
+          <section
+            key={group.id}
+            className="topic-mobile-group"
+            aria-label={group.title}
+          >
+            <div className="topic-mobile-group__header">
+              {group.icon ? (
+                <span className="topic-mobile-group__icon" aria-hidden="true">
+                  {group.icon}
+                </span>
+              ) : null}
+              <span className="topic-mobile-group__name">{group.title}</span>
+            </div>
+            {group.items.map(renderRow)}
+          </section>
         ))}
+        {ungrouped.length > 0 && groups.length > 0 ? (
+          <section
+            className="topic-mobile-group topic-mobile-group--orphan"
+            aria-label="no workspace"
+          >
+            <div className="topic-mobile-group__header">
+              <span className="topic-mobile-group__name">no workspace</span>
+            </div>
+            {ungrouped.map(renderRow)}
+          </section>
+        ) : null}
+        {groups.length === 0 ? ungrouped.map(renderRow) : null}
       </div>
     </section>
   );
@@ -2003,6 +2059,48 @@ export function TopicSidebarView({
       }),
     [model.items]
   );
+  // Bucket the attention-sorted mobile rows under their workspace, in the same
+  // pinned-first workspace order the desktop tree uses, so mobile exposes the
+  // same workspace→topic nav (#1088). Rows keep attention order within a group.
+  const { mobileGroups, mobileUngrouped } = useMemo(() => {
+    const groupOrder = new Map(grouped.groups.map((g, index) => [g.id, index]));
+    const buckets = new Map<string, TopicNavItem[]>();
+    const ungrouped: TopicNavItem[] = [];
+    for (const item of mobileItems) {
+      const workspaceId = item.workspaceId;
+      if (workspaceId && groupOrder.has(workspaceId)) {
+        const list = buckets.get(workspaceId);
+        if (list) list.push(item);
+        else buckets.set(workspaceId, [item]);
+      } else {
+        ungrouped.push(item);
+      }
+    }
+    const groups: MobileTopicGroup[] = grouped.groups
+      .filter((g) => buckets.has(g.id))
+      .map((g) => ({
+        id: g.id,
+        title: g.title,
+        icon: g.icon,
+        items: buckets.get(g.id) ?? [],
+      }));
+    return { mobileGroups: groups, mobileUngrouped: ungrouped };
+  }, [mobileItems, grouped.groups]);
+  // One-tap resume-last: the select key of the most recently active session
+  // across every topic. Null when nothing resumable exists yet.
+  const resumeLastSelectKey = useMemo(() => {
+    let bestKey: string | null = null;
+    let bestAt = '';
+    for (const item of model.items) {
+      for (const session of item.sessions) {
+        if (session.lastActivity && session.lastActivity > bestAt) {
+          bestAt = session.lastActivity;
+          bestKey = session.selectKey;
+        }
+      }
+    }
+    return bestKey;
+  }, [model.items]);
   const activeSearchLoading = Boolean(searchQuery.trim() && searchLoading);
 
   if (loading && !activeSearchLoading) {
@@ -2034,10 +2132,16 @@ export function TopicSidebarView({
         ) : null}
       </div>
       <TopicMobileCockpit
-        mobileItems={mobileItems}
+        groups={mobileGroups}
+        ungrouped={mobileUngrouped}
         selectedId={selectedId}
         onSelect={select}
         onCreateTaskRoom={onCreateTaskRoom}
+        onResumeLast={
+          resumeLastSelectKey && onSelectSession
+            ? () => onSelectSession(resumeLastSelectKey)
+            : undefined
+        }
       />
       {createPanel}
       <TopicSearchPanel
