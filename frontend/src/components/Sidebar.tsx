@@ -84,6 +84,7 @@ export function Sidebar({
   const sidebarWidth = useUiStore((s) => s.sidebarWidth);
   const analyticsView = useUiStore((s) => s.analyticsView);
   const viewSpineEnabled = useUiStore((s) => s.viewSpineEnabled);
+  const advancedMode = useUiStore((s) => s.advancedMode);
   const closeSidebar = useUiStore((s) => s.closeSidebar);
   const toggleSidebarCollapsed = useUiStore((s) => s.toggleSidebarCollapsed);
   const { startResize, resetWidth } = useSidebarResize();
@@ -189,31 +190,33 @@ export function Sidebar({
             >
               + add project
             </TuiButton>
-            <button
-              className={[
-                'sidebar-settings-icon-btn',
-                analyticsView !== null && 'active',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              data-track="sidebar.analytics"
-              onClick={onOpenAnalytics}
-              aria-label="Analytics"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="square"
-                width="14"
-                height="14"
+            {advancedMode && (
+              <button
+                className={[
+                  'sidebar-settings-icon-btn',
+                  analyticsView !== null && 'active',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                data-track="sidebar.analytics"
+                onClick={onOpenAnalytics}
+                aria-label="Analytics"
               >
-                <rect x="3" y="12" width="4" height="9" />
-                <rect x="10" y="7" width="4" height="14" />
-                <rect x="17" y="3" width="4" height="18" />
-              </svg>
-            </button>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="square"
+                  width="14"
+                  height="14"
+                >
+                  <rect x="3" y="12" width="4" height="9" />
+                  <rect x="10" y="7" width="4" height="14" />
+                  <rect x="17" y="3" width="4" height="18" />
+                </svg>
+              </button>
+            )}
             <button
               className="sidebar-settings-icon-btn"
               data-track="sidebar.settings"

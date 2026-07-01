@@ -104,6 +104,9 @@ import {
   navOpenFile,
   navNextAttentionWork,
   navOpenWorkCockpit,
+  navOpenNodesDashboard,
+  navOpenAnalytics,
+  navOpenActiveWork,
 } from '../lib/actions/definitions/navigation.js';
 import { cliGatewayCommandActions } from '../lib/actions/definitions/cli-gateway.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
@@ -396,7 +399,18 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       navSwitchToTab,
     ];
 
-    const noopActions = noopDefs.map((def) => ({ ...def, handler: () => {} }));
+    // #1058: these placeholders exist for keyboard-shortcut/registry
+    // completeness (contextual UI elements — sort headers, tab toggles,
+    // inline row buttons — already handle the real interaction) but do
+    // nothing when invoked from the palette. Selectable-but-inert commands
+    // erode trust in the palette, so they're excluded from its visible
+    // listing via `when: () => false` (CommandPalette.tsx already filters on
+    // `when`) while staying registered for any other registry consumer.
+    const noopActions = noopDefs.map((def) => ({
+      ...def,
+      when: () => false,
+      handler: () => {},
+    }));
 
     registerGlobal([
       // ── Session ─────────────────────────────────────────────────────────────
@@ -695,6 +709,48 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
           sessions.setActiveSessionId(null);
           ui.setActiveRepoPath(null);
           ui.setForceOrgCockpit(true);
+        },
+      },
+      {
+        // #1058: one-off escape hatch — opens the work cockpit's nodes tab
+        // without flipping the persistent advancedMode flag, so the tab
+        // strip stays hidden on the next visit unless the user opts in via
+        // Settings.
+        ...navOpenNodesDashboard,
+        handler: () => {
+          const sessions = useSessionsStore.getState();
+          const ui = useUiStore.getState();
+          ui.setAnalyticsView(null);
+          sessions.setActiveSessionId(null);
+          ui.setActiveRepoPath(null);
+          ui.setOrgDashboardTab('nodes');
+          ui.setForceOrgCockpit(true);
+        },
+      },
+      {
+        // #1058: one-off escape hatch — opens the work cockpit's active-work
+        // tab without flipping the persistent advancedMode flag.
+        ...navOpenActiveWork,
+        handler: () => {
+          const sessions = useSessionsStore.getState();
+          const ui = useUiStore.getState();
+          ui.setAnalyticsView(null);
+          sessions.setActiveSessionId(null);
+          ui.setActiveRepoPath(null);
+          ui.setOrgDashboardTab('active-work');
+          ui.setForceOrgCockpit(true);
+        },
+      },
+      {
+        // #1058: one-off escape hatch — opens the analytics dashboard
+        // without flipping the persistent advancedMode flag (mirrors
+        // App.tsx's openAnalytics handler for the sidebar icon).
+        ...navOpenAnalytics,
+        handler: () => {
+          const ui = useUiStore.getState();
+          ui.setAnalyticsView('dashboard');
+          useSessionsStore.getState().setActiveSessionId(null);
+          ui.setActiveRepoPath(null);
         },
       },
       {
