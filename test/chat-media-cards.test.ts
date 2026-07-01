@@ -188,6 +188,21 @@ describe('ImageGenerationCard', () => {
     expect(img?.getAttribute('alt')).toBe('a red terminal');
   });
 
+  it('shows a short message instead of the raw data URI on load failure', () => {
+    const bigDataUri = `data:image/png;base64,${'A'.repeat(4096)}`;
+    render(
+      React.createElement(ImageGenerationCard, {
+        item: imageGeneration({ imageUrl: bigDataUri }),
+      })
+    );
+    act(() => {
+      container.querySelector('img')?.dispatchEvent(new Event('error'));
+    });
+    const fallback = container.querySelector('.mcard__src');
+    expect(fallback?.textContent).toBe('image unavailable');
+    expect(fallback?.textContent).not.toContain('AAAA');
+  });
+
   it('ignores a non-renderable imageUrl scheme', () => {
     render(
       React.createElement(ImageGenerationCard, {

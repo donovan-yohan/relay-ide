@@ -33,6 +33,18 @@ interface InlineImageProps {
   alt: string;
 }
 
+/**
+ * Fallback text shown when an image fails to load. `data:`/`blob:` sources can
+ * be megabytes of encoded data (and blob URLs are opaque anyway), so show a
+ * short message rather than dumping the raw string into the DOM; a readable
+ * path/URL is kept for debuggability.
+ */
+function imageFallbackText(src: string): string {
+  return src.startsWith('data:') || src.startsWith('blob:')
+    ? 'image unavailable'
+    : src;
+}
+
 /** Inline image with an error fallback to the source string. */
 const InlineImage: React.FC<InlineImageProps> = ({ src, alt }) => {
   const [failed, setFailed] = useState(false);
@@ -40,7 +52,7 @@ const InlineImage: React.FC<InlineImageProps> = ({ src, alt }) => {
   // the item first rendered) rather than showing the fallback forever.
   useEffect(() => setFailed(false), [src]);
   if (failed) {
-    return <span className="mcard__src">{src}</span>;
+    return <span className="mcard__src">{imageFallbackText(src)}</span>;
   }
   return (
     <img
