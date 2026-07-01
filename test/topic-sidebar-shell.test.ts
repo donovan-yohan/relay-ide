@@ -200,6 +200,69 @@ describe('TopicSidebarView', () => {
     expect(chip?.getAttribute('aria-pressed')).toBe('true');
   });
 
+  it('toggles the show-archived control', async () => {
+    const onToggleArchived = vi.fn();
+    await renderView({ onToggleArchived });
+    const btn = container.querySelector(
+      '.topic-archived-toggle__btn'
+    ) as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+    expect(btn.textContent).toBe('show archived');
+    await act(async () => btn.click());
+    expect(onToggleArchived).toHaveBeenCalled();
+  });
+
+  it('restores an archived topic from its detail panel', async () => {
+    const onRestoreTopic = vi.fn();
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:old',
+          workspaceId: 'ws:a',
+          status: 'archived',
+          display: { title: 'Archived lane' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      onRestoreTopic,
+    });
+    expect(container.querySelector('.topic-row.archived')).not.toBeNull();
+    const restore = container.querySelector(
+      '.topic-detail__restore'
+    ) as HTMLButtonElement;
+    expect(restore).not.toBeNull();
+    await act(async () => restore.click());
+    expect(onRestoreTopic).toHaveBeenCalledWith('topic:old');
+  });
+
+  it('disables the restore button while its restore is in flight', async () => {
+    const onRestoreTopic = vi.fn();
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:old',
+          workspaceId: 'ws:a',
+          status: 'archived',
+          display: { title: 'Archived lane' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      onRestoreTopic,
+      restoringTopicId: 'topic:old',
+    });
+    const restore = container.querySelector(
+      '.topic-detail__restore'
+    ) as HTMLButtonElement;
+    expect(restore.disabled).toBe(true);
+    expect(restore.textContent).toContain('restoring');
+    await act(async () => restore.click());
+    expect(onRestoreTopic).not.toHaveBeenCalled();
+  });
+
   it('selects linked sessions using the existing sidebar callback', async () => {
     await renderView();
     const sessionButton = container.querySelector(

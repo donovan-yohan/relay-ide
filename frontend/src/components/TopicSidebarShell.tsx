@@ -7,7 +7,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CircleAlert,
   Folder,
@@ -32,6 +32,7 @@ import {
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
   launchWorkspaceTopicRoom,
+  restoreWorkspaceTopic,
   searchWorkspaceTopics,
   type CreateSessionBody,
   sendSessionInput,
@@ -44,6 +45,7 @@ import type { SessionSummary } from '../lib/types.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
+import { useToastStore } from '../lib/stores/toasts.js';
 import { useIaWorkspacesQuery } from '../lib/hooks/use-ia-workspaces.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { durabilityDisabledReason } from '../lib/session-durability.js';
@@ -51,6 +53,7 @@ import { resolveSessionByKey } from '../lib/session-keys.js';
 import {
   buildTopicNavModel,
   groupTopicsByWorkspace,
+  type GroupedTopicNav,
   type TopicNavItem,
   type TopicNavModel,
   type TopicNavWorkspace,
@@ -636,11 +639,15 @@ function TopicDetail({
   surfacesError,
   surfacesLoading,
   onSelectSession,
+  onRestoreTopic,
+  restoringTopicId,
 }: {
   item: TopicNavItem;
   surfacesError?: boolean | undefined;
   surfacesLoading?: boolean | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
+  onRestoreTopic?: ((topicId: string) => void) | undefined;
+  restoringTopicId?: string | undefined;
 }) {
   const action = topicPrimaryAction(item);
   const session = topicPrimarySession(item);
@@ -673,6 +680,16 @@ function TopicDetail({
         <span>{topicRoomFreshnessLabel(item)}</span>
         <span>{topicRoomAnchorLabel(item)}</span>
         <span>updated {item.updatedAt}</span>
+        {item.lifecycleLabel === 'archived' && onRestoreTopic ? (
+          <button
+            type="button"
+            className="topic-detail__restore"
+            disabled={restoringTopicId === item.id}
+            onClick={() => onRestoreTopic(item.id)}
+          >
+            {restoringTopicId === item.id ? 'restoring…' : 'restore'}
+          </button>
+        ) : null}
       </div>
 
       <div className="topic-room__action-band">
@@ -1066,6 +1083,7 @@ function TopicRow({
     `topic-row--${item.tone}`,
     selected && 'selected',
     item.muted && 'muted',
+    item.lifecycleLabel === 'archived' && 'archived',
   ]
     .filter(Boolean)
     .join(' ');
@@ -1769,6 +1787,77 @@ const EMPTY_SURFACES: WorkspaceSurface[] = [];
 const EMPTY_SEARCH_RESULTS: WorkspaceTopicSearchResult[] = [];
 const EMPTY_WORKSPACES: TopicNavWorkspace[] = [];
 
+/** Show/hide archived channels toggle; renders nothing without a handler. */
+function ArchivedToggle({
+  showArchived,
+  onToggle,
+}: {
+  showArchived: boolean;
+  onToggle?: (() => void) | undefined;
+}) {
+  if (!onToggle) return null;
+  return (
+    <div className="topic-archived-toggle">
+      <button
+        type="button"
+        className={`topic-archived-toggle__btn${showArchived ? ' is-active' : ''}`}
+        aria-pressed={showArchived}
+        onClick={onToggle}
+      >
+        {showArchived ? 'hide archived' : 'show archived'}
+      </button>
+    </div>
+  );
+}
+
+/** The workspace-grouped topic tree: a section per workspace + an orphan lane. */
+function GroupedTopicTree({
+  grouped,
+  renderRow,
+}: {
+  grouped: GroupedTopicNav;
+  renderRow: (id: string) => ReactNode;
+}) {
+  return (
+    <div className="topic-tree" aria-label="workspace topics">
+      {grouped.groups.map((group) => (
+        <section
+          key={group.id}
+          className="topic-workspace-group"
+          aria-label={group.title}
+        >
+          <div className="topic-workspace-group__header">
+            {group.icon ? (
+              <span className="topic-workspace-group__icon" aria-hidden="true">
+                {group.icon}
+              </span>
+            ) : null}
+            <span className="topic-workspace-group__name">{group.title}</span>
+          </div>
+          <ul className="topic-tree__list">
+            {group.rootIds.map((id) => renderRow(id))}
+          </ul>
+        </section>
+      ))}
+      {grouped.orphanRootIds.length > 0 ? (
+        <section
+          className="topic-workspace-group topic-workspace-group--orphan"
+          aria-label="no workspace"
+        >
+          {grouped.groups.length > 0 ? (
+            <div className="topic-workspace-group__header">
+              <span className="topic-workspace-group__name">no workspace</span>
+            </div>
+          ) : null}
+          <ul className="topic-tree__list">
+            {grouped.orphanRootIds.map((id) => renderRow(id))}
+          </ul>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 export function TopicSidebarView({
   topics,
   sessions,
@@ -1795,6 +1884,10 @@ export function TopicSidebarView({
   activeWorkspaceId = null,
   searchScope = 'all',
   onToggleSearchScope,
+  showArchived = false,
+  onToggleArchived,
+  onRestoreTopic,
+  restoringTopicId,
 }: {
   topics: WorkspaceTopic[];
   sessions: SessionSummary[];
@@ -1803,6 +1896,10 @@ export function TopicSidebarView({
   activeWorkspaceId?: string | null;
   searchScope?: 'all' | 'workspace';
   onToggleSearchScope?: (() => void) | undefined;
+  showArchived?: boolean;
+  onToggleArchived?: (() => void) | undefined;
+  onRestoreTopic?: ((topicId: string) => void) | undefined;
+  restoringTopicId?: string | undefined;
   loading?: boolean;
   error?: boolean;
   derived?: boolean;
@@ -1959,47 +2056,8 @@ export function TopicSidebarView({
         onToggleSearchScope={onToggleSearchScope}
         canScope={activeWorkspaceId != null}
       />
-      <div className="topic-tree" aria-label="workspace topics">
-        {grouped.groups.map((group) => (
-          <section
-            key={group.id}
-            className="topic-workspace-group"
-            aria-label={group.title}
-          >
-            <div className="topic-workspace-group__header">
-              {group.icon ? (
-                <span
-                  className="topic-workspace-group__icon"
-                  aria-hidden="true"
-                >
-                  {group.icon}
-                </span>
-              ) : null}
-              <span className="topic-workspace-group__name">{group.title}</span>
-            </div>
-            <ul className="topic-tree__list">
-              {group.rootIds.map((id) => renderTopicRow(id))}
-            </ul>
-          </section>
-        ))}
-        {grouped.orphanRootIds.length > 0 ? (
-          <section
-            className="topic-workspace-group topic-workspace-group--orphan"
-            aria-label="no workspace"
-          >
-            {grouped.groups.length > 0 ? (
-              <div className="topic-workspace-group__header">
-                <span className="topic-workspace-group__name">
-                  no workspace
-                </span>
-              </div>
-            ) : null}
-            <ul className="topic-tree__list">
-              {grouped.orphanRootIds.map((id) => renderTopicRow(id))}
-            </ul>
-          </section>
-        ) : null}
-      </div>
+      <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
+      <GroupedTopicTree grouped={grouped} renderRow={renderTopicRow} />
       {selectedItem ? (
         <>
           <TopicDetail
@@ -2007,6 +2065,8 @@ export function TopicSidebarView({
             surfacesError={surfacesError}
             surfacesLoading={surfacesLoading}
             onSelectSession={onSelectSession}
+            onRestoreTopic={onRestoreTopic}
+            restoringTopicId={restoringTopicId}
           />
           <TopicMobileControlPanel
             item={selectedItem}
@@ -2051,10 +2111,28 @@ export function TopicSidebarShell({
   const [createdRoom, setCreatedRoom] =
     useState<WorkspaceTopicRoomCreateResult | null>(null);
   const normalizedSearchQuery = searchQuery.trim();
+  const [showArchived, setShowArchived] = useState(false);
   const topicsQuery = useQuery({
-    queryKey: ['workspace-topics'],
-    queryFn: () => fetchWorkspaceTopics(),
+    // Keep the canonical key for the default (active) view so shared cache and
+    // invalidations still hit; the archived view uses a distinct key.
+    queryKey: showArchived
+      ? ['workspace-topics', 'with-archived']
+      : ['workspace-topics'],
+    queryFn: () => fetchWorkspaceTopics({ includeArchived: showArchived }),
     staleTime: 30_000,
+  });
+  const restoreTopicMutation = useMutation({
+    mutationFn: (topicId: string) => restoreWorkspaceTopic(topicId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workspace-topics'] });
+    },
+    onError: (err: unknown) => {
+      useToastStore
+        .getState()
+        .showToast(
+          err instanceof Error ? err.message : 'failed to restore topic'
+        );
+    },
   });
   const workspacesQuery = useIaWorkspacesQuery();
   const viewWorkspaces = useMemo<TopicNavWorkspace[]>(
@@ -2312,6 +2390,14 @@ export function TopicSidebarShell({
       searchScope={searchScope}
       onToggleSearchScope={() =>
         setSearchScope((scope) => (scope === 'all' ? 'workspace' : 'all'))
+      }
+      showArchived={showArchived}
+      onToggleArchived={() => setShowArchived((prev) => !prev)}
+      onRestoreTopic={(topicId) => restoreTopicMutation.mutate(topicId)}
+      restoringTopicId={
+        restoreTopicMutation.isPending
+          ? restoreTopicMutation.variables
+          : undefined
       }
       loading={!searchActive && topicsQuery.isLoading && !topicsQuery.data}
       error={topicsQuery.isError && !topicsQuery.data && !searchActive}
