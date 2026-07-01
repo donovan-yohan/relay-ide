@@ -1803,5 +1803,52 @@ describe('WorkContext artifact router', () => {
         error: { reasonCode: 'CLI_ACTOR_MISSING_SCOPE' },
       });
     });
+
+    it('rejects hub-wide search in-handler even when the auth middleware defers WorkContext scope validation', async () => {
+      // Defense-in-depth (#1065 review): this test does NOT pass a
+      // `scopeForRequest` to `scopedActorReadAuth` for the `list` command, and
+      // sets `deferWorkContextScope: true` instead — simulating a future/
+      // misconfigured wiring where the production `scopeForRequest` middleware
+      // no longer catches a hub-wide `q` search for a scoped actor. The
+      // handler's own `denyScopedActorHubWideSearch` check must still reject
+      // it independently.
+      const { root, store } = tmpStore();
+      const workContextId = 'wc:router-search-defer-scoped';
+      store.storePipelineHandoffArtifact({
+        workContextId,
+        artifact: artifact({
+          id: 'pipeline-handoff:router-search-defer-scoped:aaaaaaaa',
+        }),
+      });
+      const registry = new ScopedActorCredentialRegistry({
+        secretBytes: () => Buffer.from('0123456789abcdef0123456789abcdef'),
+      });
+      const scoped = issueCliGatewayActorCredential(registry, {
+        scope: { workContextIds: [workContextId] },
+      });
+      const { baseUrl } = await serve({
+        root,
+        store,
+        workContextStore: fakeWorkContextStore(
+          createWorkContext(workContextId)
+        ),
+        requireReadAuth: {
+          list: scopedActorReadAuth(registry, 'work-context-artifacts.list', {
+            deferWorkContextScope: true,
+          }),
+        },
+      });
+
+      const res = await fetch(`${baseUrl}/work-context-artifacts?q=widget`, {
+        headers: actorHeadersWithToken(
+          'work-context-artifacts.list',
+          scoped.token
+        ),
+      });
+      expect(res.status).toBe(403);
+      expect(await json(res)).toMatchObject({
+        error: { details: { reasonCode: 'CLI_ACTOR_MISSING_SCOPE' } },
+      });
+    });
   });
 });

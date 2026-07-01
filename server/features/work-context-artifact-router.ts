@@ -216,6 +216,36 @@ function denyUnauthorizedActorWorkContextScope(
   return true;
 }
 
+/**
+ * Belt-and-suspenders (#1065 review): the hub-wide `q` search lane has no
+ * workContextId to scope-check, so its safety today depends entirely on the
+ * production `scopeForRequest` middleware wiring (`workContextScopeFromQuery`)
+ * rejecting scoped actors before this handler runs. This is an in-handler
+ * second gate that fails closed independent of that middleware wiring: any
+ * scoped CLI actor credential is rejected for a q-only (no workContextId)
+ * list/search request, regardless of what scope the middleware attached.
+ */
+function denyScopedActorHubWideSearch(
+  req: Request,
+  res: Response,
+  operation: string
+): boolean {
+  const credential = authenticatedCliGatewayActorCredential(req);
+  if (!credential?.scope.workContextIds?.length) return false;
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    'scoped CLI actor credential rejected: CLI_ACTOR_MISSING_SCOPE',
+    false,
+    {
+      reasonCode: 'CLI_ACTOR_MISSING_SCOPE',
+      operation,
+      credentialId: credential.id,
+    }
+  );
+  return true;
+}
+
 function denyMissingCapability(
   req: Request,
   res: Response,
@@ -1387,6 +1417,13 @@ export function createWorkContextArtifactRouter(
           workContextId: input.workContextId,
           operation: 'list',
         })
+      ) {
+        return;
+      }
+      if (
+        input.q &&
+        !input.workContextId &&
+        denyScopedActorHubWideSearch(req, res, 'list')
       ) {
         return;
       }
