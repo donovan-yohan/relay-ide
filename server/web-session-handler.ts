@@ -207,6 +207,7 @@ function extractProviderSessionId(
   if (!providerSession) return undefined;
   if (agentType === 'claude') return providerSession['claudeSessionId'];
   if (agentType === 'codex') return providerSession['threadId'];
+  if (agentType === 'hermes') return providerSession['hermesResponseId'];
   return undefined;
 }
 

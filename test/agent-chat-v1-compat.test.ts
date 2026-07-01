@@ -35,6 +35,25 @@ describe('Agent Chat v1 compatibility bridge', () => {
     ]);
   });
 
+  it('maps a provider-session event to a session-updated providerSession patch', () => {
+    const event: ChatEvent = {
+      type: 'chat:provider-session',
+      sessionId: 'session-1',
+      timestamp,
+      source: 'hermes',
+      providerSession: { hermesResponseId: 'resp_abc' },
+    };
+
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([
+      {
+        type: 'agent-session-updated-v2',
+        sessionId: 'session-1',
+        timestamp,
+        providerSession: { hermesResponseId: 'resp_abc' },
+      },
+    ]);
+  });
+
   it('maps v1 approval requests to an approval item and active request', () => {
     const event: ChatEvent = {
       type: 'chat:approval-request',

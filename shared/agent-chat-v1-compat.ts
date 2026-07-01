@@ -33,12 +33,23 @@ function legacyDecisionToV2(
   decision: 'allow' | 'allow-always' | 'deny'
 ): AgentApprovalDecisionV2 {
   if (decision === 'deny') return { kind: 'decline' };
-  if (decision === 'allow-always') return { kind: 'accept', scope: 'permanent' };
+  if (decision === 'allow-always')
+    return { kind: 'accept', scope: 'permanent' };
   return { kind: 'accept', scope: 'once' };
 }
 
 export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
   switch (event.type) {
+    case 'chat:provider-session':
+      return [
+        {
+          type: 'agent-session-updated-v2',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          providerSession: event.providerSession,
+        },
+      ];
+
     case 'chat:session-status':
       return [
         {

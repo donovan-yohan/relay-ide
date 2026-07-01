@@ -780,8 +780,15 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     return this._config?.sessionId ?? crypto.randomBytes(8).toString('hex');
   }
 
-  async resumeSession(_sessionId: string): Promise<void> {
-    // no-op — resume handled by spawn args if supported
+  async resumeSession(providerSessionId: string): Promise<void> {
+    // The Hermes gateway is stateful (`store: true` + a stable `session_id`);
+    // resuming means restoring the last completed response id so the next turn
+    // chains via `previous_response_id`. `connect()` (run before resume on the
+    // cold-restart path) already reset this to null and re-set `_config`, so we
+    // only reinstate the chaining anchor here.
+    if (providerSessionId) {
+      this._lastResponseId = providerSessionId;
+    }
   }
 
   async forkSession(_sessionId: string): Promise<string> {
@@ -912,6 +919,13 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
         const responseId = response?.['id'];
         if (typeof responseId === 'string') {
           this._lastResponseId = responseId;
+          // Persist the completed response id so a resumed session (after a
+          // Relay restart) can continue the conversation via
+          // `previous_response_id`. Only completed responses are chainable.
+          this.fire({
+            type: 'chat:provider-session',
+            providerSession: { hermesResponseId: responseId },
+          });
         }
         if (this._currentTurnId) {
           this.fire({

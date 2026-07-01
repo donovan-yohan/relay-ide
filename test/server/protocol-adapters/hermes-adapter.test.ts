@@ -64,7 +64,23 @@ describe('Hermes V2 web adapter registration', () => {
       fileChanges: true,
       approvals: true,
       interrupt: true,
+      resume: true,
     });
+  });
+
+  it('delegates resumeSession to the wrapped Hermes adapter when resume is enabled', async () => {
+    const adapter = createAdapterV2('hermes');
+    // Hermes resumeSession only restores in-memory chaining state (no network),
+    // so it resolves without a connected gateway.
+    await expect(adapter.resumeSession('resp_stored')).resolves.toBeUndefined();
+  });
+
+  it('keeps resumeSession throwing for a legacy adapter without resume capability', async () => {
+    const opencode = createAdapterV2('opencode');
+    expect(opencode.capabilities.resume).toBe(false);
+    await expect(opencode.resumeSession('anything')).rejects.toThrow(
+      /does not support resume/
+    );
   });
 });
 
