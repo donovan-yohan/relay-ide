@@ -202,6 +202,13 @@
   text-underline-offset: 2px;
 }
 
+/* markdown image placeholder — click-to-load link, not a live <img>, so
+   agent-supplied image URLs never auto-fetch (see AssistantMarkdown.tsx). */
+.tl-markdown a.tl-md-img-link {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .tl-markdown hr {
   border: none;
   border-top: 1px solid var(--border);

@@ -351,6 +351,97 @@ describe('chat v2 rendering against chat.html primitives', () => {
     expect((globalThis as { __pwned?: boolean }).__pwned).toBeUndefined();
   });
 
+  it('preserves newlines in language-less and indented code blocks', async () => {
+    mocks.session = makeSession({
+      turns: [
+        {
+          id: 'turn-md-bare',
+          status: 'completed',
+          inputMessageId: 'user-md-bare',
+          startedAt: timestamp(),
+          items: [
+            {
+              id: 'user-md-bare',
+              type: 'userMessage',
+              text: 'show the output',
+              status: 'completed',
+            },
+            {
+              id: 'assistant-md-bare',
+              type: 'assistantMessage',
+              text: [
+                '```',
+                'line1',
+                'line2',
+                '```',
+                '',
+                '    indented1',
+                '    indented2',
+              ].join('\n'),
+              status: 'completed',
+            },
+          ],
+        },
+      ],
+    });
+
+    await renderChat();
+
+    // Both blocks must go through the CodeBlock/<pre> path (which preserves
+    // whitespace via the UA `pre` stylesheet) rather than the inline
+    // `.tl-md-code` path (which inherits `white-space: normal` from
+    // `.tl-markdown` and collapses newlines to spaces).
+    const preBlocks = container.querySelectorAll('.tl-md-pre .code-block');
+    expect(preBlocks.length).toBe(2);
+    expect(container.querySelector('.tl-markdown > .tl-md-code')).toBeNull();
+
+    const preText = Array.from(preBlocks).map((el) => el.textContent);
+    expect(preText[0]).toContain('line1');
+    expect(preText[0]).toContain('line2');
+    expect(preText[1]).toContain('indented1');
+    expect(preText[1]).toContain('indented2');
+  });
+
+  it('renders markdown images as click-to-load links, never a live <img>', async () => {
+    mocks.session = makeSession({
+      turns: [
+        {
+          id: 'turn-md-img',
+          status: 'completed',
+          inputMessageId: 'user-md-img',
+          startedAt: timestamp(),
+          items: [
+            {
+              id: 'user-md-img',
+              type: 'userMessage',
+              text: 'show me',
+              status: 'completed',
+            },
+            {
+              id: 'assistant-md-img',
+              type: 'assistantMessage',
+              text: '![a diagram](https://attacker.example/pixel.png)',
+              status: 'completed',
+            },
+          ],
+        },
+      ],
+    });
+
+    await renderChat();
+
+    expect(container.querySelector('.tl-markdown img')).toBeNull();
+    const imgLink = container.querySelector<HTMLAnchorElement>(
+      '.tl-markdown a.tl-md-img-link'
+    );
+    expect(imgLink?.getAttribute('href')).toBe(
+      'https://attacker.example/pixel.png'
+    );
+    expect(imgLink?.getAttribute('target')).toBe('_blank');
+    expect(imgLink?.getAttribute('rel')).toContain('noopener');
+    expect(imgLink?.textContent).toContain('a diagram');
+  });
+
   it('shows a truncated reasoning summary in <summary>, falling back to "thinking"', async () => {
     const longSummary =
       'Investigating the composer regression across every provider adapter and slash-command handler before proposing a fix';
