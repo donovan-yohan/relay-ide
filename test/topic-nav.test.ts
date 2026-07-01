@@ -3,6 +3,7 @@ import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
 import type { WorkspaceTopic } from '../shared/workspace-topics.js';
 import {
   buildTopicNavModel,
+  formatTaskRefLabel,
   groupTopicsByWorkspace,
   type TopicNavWorkspace,
 } from '../frontend/src/lib/state/topic-nav.js';
@@ -456,6 +457,94 @@ describe('buildTopicNavModel', () => {
     expect(model.byId.get('topic:a')?.childIds).toEqual([]);
     expect(model.byId.get('topic:b')?.childIds).toEqual([]);
     expect(model.byId.get('topic:self')?.childIds).toEqual([]);
+  });
+
+  // #1061: raw substrate node ids (e.g. `node_<random token>`) must never
+  // leak into nav-model fields consumers render directly — only a resolved
+  // friendly name (or `null`, which callers must omit) is exposed.
+  const RAW_NODE_ID = 'node_AbCdEfGh12345678IjKlMnOpQrStUvWx';
+
+  it('resolves session/participant node ids to friendly names from the node roster', () => {
+    const model = buildTopicNavModel({
+      topics: [
+        makeTopic({
+          routingDefaults: { nodeId: RAW_NODE_ID },
+          linkedRefs: { sessionIds: [`${RAW_NODE_ID}:s1`] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 's1',
+          nodeId: RAW_NODE_ID,
+          displayName: 'remote lane',
+        }),
+      ],
+      surfaces: [],
+      nodes: [{ nodeId: RAW_NODE_ID, displayName: 'Ops Box' }],
+    });
+
+    const item = model.byId.get('topic:alpha');
+    expect(item?.sessions[0]).toMatchObject({
+      nodeId: RAW_NODE_ID,
+      nodeLabel: 'Ops Box',
+    });
+    expect(item?.participants[0]).toMatchObject({
+      nodeId: RAW_NODE_ID,
+      nodeLabel: 'Ops Box',
+    });
+    expect(item?.routingLabel).toContain('Ops Box');
+    expect(item?.routingLabel).not.toContain(RAW_NODE_ID);
+  });
+
+  it('leaves nodeLabel null for an unresolved/unpaired node id instead of falling back to the raw id', () => {
+    const model = buildTopicNavModel({
+      topics: [
+        makeTopic({
+          routingDefaults: { nodeId: RAW_NODE_ID },
+          linkedRefs: { sessionIds: [`${RAW_NODE_ID}:s1`] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 's1',
+          nodeId: RAW_NODE_ID,
+          displayName: 'remote lane',
+        }),
+      ],
+      surfaces: [],
+      // No matching node roster entry (or no `nodes` input at all).
+    });
+
+    const item = model.byId.get('topic:alpha');
+    expect(item?.sessions[0]?.nodeLabel).toBeNull();
+    expect(item?.participants[0]?.nodeLabel).toBeNull();
+    // Unresolved routing node id with no other routing parts omits entirely
+    // rather than falling back to the raw id.
+    expect(item?.routingLabel).toBeNull();
+  });
+});
+
+describe('formatTaskRefLabel', () => {
+  it('prefers an authored title over any id formatting', () => {
+    expect(
+      formatTaskRefLabel({ kind: 'github-issue', id: '1234', title: 'Fix it' })
+    ).toBe('Fix it');
+  });
+
+  it('formats an untitled github issue/PR ref as #<id>', () => {
+    expect(formatTaskRefLabel({ kind: 'github-issue', id: '1234' })).toBe(
+      '#1234'
+    );
+    expect(formatTaskRefLabel({ kind: 'github-pr', id: '42' })).toBe('#42');
+  });
+
+  it('keeps already-human refs (e.g. ticket keys) as-is when untitled', () => {
+    expect(formatTaskRefLabel({ kind: 'jira-ticket', id: 'REL-1061' })).toBe(
+      'REL-1061'
+    );
+    expect(formatTaskRefLabel({ kind: 'linear-issue', id: 'ENG-42' })).toBe(
+      'ENG-42'
+    );
   });
 });
 

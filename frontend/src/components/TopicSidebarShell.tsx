@@ -52,10 +52,12 @@ import { durabilityDisabledReason } from '../lib/session-durability.js';
 import { resolveSessionByKey } from '../lib/session-keys.js';
 import {
   buildTopicNavModel,
+  formatTaskRefLabel,
   groupTopicsByWorkspace,
   type GroupedTopicNav,
   type TopicNavItem,
   type TopicNavModel,
+  type TopicNavNode,
   type TopicNavWorkspace,
   type TopicNavParticipantRef,
   type TopicNavSessionRef,
@@ -416,8 +418,8 @@ function ParticipantChildRow({
         </span>
         <span className="topic-child-row__meta">{participant.statusLabel}</span>
         <span className="topic-child-row__meta">{lastActivityLabel}</span>
-        {participant.nodeId ? (
-          <span className="topic-child-row__meta">{participant.nodeId}</span>
+        {participant.nodeLabel ? (
+          <span className="topic-child-row__meta">{participant.nodeLabel}</span>
         ) : null}
         <span className="topic-child-row__meta">
           {participant.controlLabel}
@@ -488,7 +490,7 @@ function ParticipantRoster({
                   </span>
                   <span className="topic-participant-card__meta">
                     {participant.runtimeLabel}
-                    {participant.nodeId ? ` · ${participant.nodeId}` : ''}
+                    {participant.nodeLabel ? ` · ${participant.nodeLabel}` : ''}
                   </span>
                   <span className="topic-participant-card__meta">
                     {lastActivityLabel} · {participant.controlLabel}
@@ -533,7 +535,7 @@ function TopicRoomSessionRow({
           </span>
         </span>
         <span className="topic-room-session__anchor">
-          {session.nodeId ? `${session.nodeId} · ` : ''}
+          {session.nodeLabel ? `${session.nodeLabel} · ` : ''}
           {session.branch ?? session.cwd}
         </span>
         <StatusGlyph tone={session.tone} />
@@ -554,7 +556,7 @@ function TopicRoomTaskRefs({ item }: { item: TopicNavItem }) {
   return (
     <ul className="topic-room-ref-list" aria-label="task refs">
       {item.taskRefs.map((taskRef) => {
-        const label = taskRef.title ?? taskRef.id;
+        const label = formatTaskRefLabel(taskRef);
         const content = (
           <>
             <span>{taskRef.kind}</span>
@@ -634,8 +636,18 @@ function TopicRoomSurfaceStrip({
   );
 }
 
+/** Friendly workspace name for a topic; `null` (never a raw id) when unresolved. */
+function resolveWorkspaceName(
+  item: TopicNavItem,
+  workspaceNameById: Map<string, string>
+): string | null {
+  if (!item.workspaceId) return null;
+  return workspaceNameById.get(item.workspaceId) ?? null;
+}
+
 function TopicDetail({
   item,
+  workspaceName,
   surfacesError,
   surfacesLoading,
   onSelectSession,
@@ -643,6 +655,8 @@ function TopicDetail({
   restoringTopicId,
 }: {
   item: TopicNavItem;
+  /** Friendly workspace name for the meta strip; omitted entirely (never a raw id) when unresolved. */
+  workspaceName?: string | null | undefined;
   surfacesError?: boolean | undefined;
   surfacesLoading?: boolean | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
@@ -675,7 +689,7 @@ function TopicDetail({
         <p className="topic-detail__description muted">no topic brief yet</p>
       )}
       <div className="topic-detail__meta topic-room__meta">
-        <span>{item.workspaceId}</span>
+        {workspaceName ? <span>{workspaceName}</span> : null}
         <span>{item.lifecycleLabel}</span>
         <span>{topicRoomFreshnessLabel(item)}</span>
         <span>{topicRoomAnchorLabel(item)}</span>
@@ -933,7 +947,7 @@ function TopicMobileControlPanel({
             {session.agent} · {session.type}
           </span>
         ) : null}
-        {session?.nodeId ? <span>{session.nodeId}</span> : null}
+        {session?.nodeLabel ? <span>{session.nodeLabel}</span> : null}
       </div>
       {item.description ? (
         <p className="topic-mobile-detail__description">{item.description}</p>
@@ -1937,6 +1951,7 @@ export function TopicSidebarView({
   createPanel,
   onCreateTaskRoom,
   workspaces = EMPTY_WORKSPACES,
+  nodes,
   activeWorkspaceId = null,
   searchScope = 'all',
   onToggleSearchScope,
@@ -1949,6 +1964,8 @@ export function TopicSidebarView({
   sessions: SessionSummary[];
   surfaces: WorkspaceSurface[];
   workspaces?: TopicNavWorkspace[];
+  /** Known node roster; resolves raw routing node ids to friendly names. */
+  nodes?: TopicNavNode[];
   activeWorkspaceId?: string | null;
   searchScope?: 'all' | 'workspace';
   onToggleSearchScope?: (() => void) | undefined;
@@ -1976,12 +1993,17 @@ export function TopicSidebarView({
   onCreateTaskRoom?: (() => void) | undefined;
 }) {
   const model = useMemo(
-    () => buildTopicNavModel({ topics, sessions, surfaces, derived }),
-    [topics, sessions, surfaces, derived]
+    () => buildTopicNavModel({ topics, sessions, surfaces, derived, nodes }),
+    [topics, sessions, surfaces, derived, nodes]
   );
   const topicsById = useMemo(
     () => new Map(topics.map((topic) => [topic.id, topic])),
     [topics]
+  );
+  const workspaceNameById = useMemo(
+    () =>
+      new Map(workspaces.map((workspace) => [workspace.id, workspace.name])),
+    [workspaces]
   );
   // Grouping always shows every workspace so the full channel list stays
   // visible; the active workspace only scopes search (via the scope chip),
@@ -2166,6 +2188,10 @@ export function TopicSidebarView({
         <>
           <TopicDetail
             item={selectedItem}
+            workspaceName={resolveWorkspaceName(
+              selectedItem,
+              workspaceNameById
+            )}
             surfacesError={surfacesError}
             surfacesLoading={surfacesLoading}
             onSelectSession={onSelectSession}
@@ -2296,6 +2322,14 @@ export function TopicSidebarShell({
   const viewSurfaces = useMemo(
     () => surfacesQuery.data ?? EMPTY_SURFACES,
     [surfacesQuery.data]
+  );
+  const viewNodes = useMemo<TopicNavNode[]>(
+    () =>
+      (nodesQuery.data ?? []).map((node) => ({
+        nodeId: node.nodeId,
+        displayName: node.displayName,
+      })),
+    [nodesQuery.data]
   );
   const taskRef = taskRefFromDraft(createDraft.taskRef, createDraft.title);
   const defaultRepoPath =
@@ -2490,6 +2524,7 @@ export function TopicSidebarShell({
       sessions={sessions}
       surfaces={viewSurfaces}
       workspaces={viewWorkspaces}
+      nodes={viewNodes}
       activeWorkspaceId={activeWorkspaceId}
       searchScope={searchScope}
       onToggleSearchScope={() =>
