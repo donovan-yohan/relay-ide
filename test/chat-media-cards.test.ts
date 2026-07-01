@@ -120,6 +120,45 @@ describe('ImageViewCard', () => {
       'a diagram'
     );
   });
+
+  it('falls back to the source chip when the image fails to load', () => {
+    render(
+      React.createElement(ImageViewCard, {
+        item: imageView({ source: 'https://example.com/broken.png' }),
+      })
+    );
+    const img = container.querySelector('img');
+    expect(img).not.toBeNull();
+    act(() => {
+      img?.dispatchEvent(new Event('error'));
+    });
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('.mcard__src')?.textContent).toBe(
+      'https://example.com/broken.png'
+    );
+  });
+
+  it('retries (clears the failed state) when the source changes', () => {
+    render(
+      React.createElement(ImageViewCard, {
+        item: imageView({ source: 'https://example.com/broken.png' }),
+      })
+    );
+    act(() => {
+      container.querySelector('img')?.dispatchEvent(new Event('error'));
+    });
+    expect(container.querySelector('img')).toBeNull();
+    // Same component position → same InlineImage instance; a new src must
+    // reset the failed state and attempt to render the image again.
+    render(
+      React.createElement(ImageViewCard, {
+        item: imageView({ source: 'https://example.com/fresh.png' }),
+      })
+    );
+    const img = container.querySelector('img');
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute('src')).toBe('https://example.com/fresh.png');
+  });
 });
 
 describe('ImageGenerationCard', () => {

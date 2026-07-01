@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import './MediaCard.css';
 import type {
   AgentImageGenerationItemV2,
@@ -36,6 +36,9 @@ interface InlineImageProps {
 /** Inline image with an error fallback to the source string. */
 const InlineImage: React.FC<InlineImageProps> = ({ src, alt }) => {
   const [failed, setFailed] = useState(false);
+  // Retry when the source changes (e.g. a generated image URL arrives after
+  // the item first rendered) rather than showing the fallback forever.
+  useEffect(() => setFailed(false), [src]);
   if (failed) {
     return <span className="mcard__src">{src}</span>;
   }
