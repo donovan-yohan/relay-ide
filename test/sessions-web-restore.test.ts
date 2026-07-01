@@ -277,4 +277,49 @@ describe('web session restore failure recovery', () => {
     });
     expect(upsertWebSessionNow).toHaveBeenLastCalledWith(session);
   });
+
+  it('resumes a persisted Hermes session from its stored response id', async () => {
+    loadAllWebSessions.mockReturnValueOnce([
+      {
+        id: 'web-restore-hermes',
+        vendor: 'hermes',
+        vendorSessionId: 'resp_stored',
+        cwd: configDir,
+        repoPath: null,
+        worktreePath: null,
+        branchName: null,
+        displayName: 'hermes restart session',
+        workspaceId: null,
+        agentSessionV2: emptyAgentSessionV2({
+          id: 'web-restore-hermes',
+          provider: 'hermes',
+          cwd: configDir,
+          capabilities,
+          // Hermes persists the last completed gateway response id under this
+          // key; extractProviderSessionId must read it to resume chaining.
+          providerSession: { hermesResponseId: 'resp_stored' },
+        }),
+        meta: {
+          type: 'agent',
+          agent: 'hermes',
+          customCommand: null,
+          runtimeOwnership: 'attached',
+          hookToken: 'hermes-restored-hook-token',
+          adapterType: 'hermes',
+        },
+        createdAt: Date.now() - 10_000,
+        lastActivity: Date.now() - 5_000,
+        status: 'active',
+      },
+    ]);
+
+    const sessions = await import('../server/sessions.js');
+    sessions.configure({ port: 4567, configDir });
+
+    const restored = await sessions.restoreFromDisk(configDir);
+
+    expect(restored).toBe(1);
+    expect(resumeSession).toHaveBeenCalledWith('resp_stored');
+    expect(reconnect).not.toHaveBeenCalled();
+  });
 });

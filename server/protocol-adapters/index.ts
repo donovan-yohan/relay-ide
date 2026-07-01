@@ -53,7 +53,7 @@ export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
       queue: false,
       interrupt: true,
       cancelQueued: false,
-      resume: false,
+      resume: true,
     }),
 };
 
@@ -61,7 +61,7 @@ export function createAdapterV2(agentType: string): ProtocolAdapterV2 {
   const factory = v2Adapters[agentType];
   if (!factory)
     throw new Error(
-      `No v2 protocol adapter registered for agent type: ${agentType}`,
+      `No v2 protocol adapter registered for agent type: ${agentType}`
     );
   return factory();
 }

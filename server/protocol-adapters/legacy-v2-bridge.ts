@@ -97,10 +97,15 @@ export class LegacyProtocolAdapterV2Bridge extends BaseProtocolAdapterV2 {
     }
   }
 
-  async resumeSession(_sessionId: string): Promise<void> {
-    throw new Error(
-      `${this.agentType} does not support resume (capabilities.resume is false).`
-    );
+  async resumeSession(sessionId: string): Promise<void> {
+    if (!this.capabilities.resume) {
+      throw new Error(
+        `${this.agentType} does not support resume (capabilities.resume is false).`
+      );
+    }
+    // The wrapped adapter is already connected (patch subscription is live from
+    // connect()); resume only restores provider-native continuation state.
+    await this.inner.resumeSession(sessionId);
   }
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {

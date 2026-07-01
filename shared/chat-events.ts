@@ -6,7 +6,12 @@
 // All agent backends (Codex, OpenCode, Claude Code) map their native protocol
 // messages into this canonical type system via ProtocolAdapters.
 
-export type ChatEventSource = 'codex' | 'opencode' | 'claude' | 'mock' | 'hermes';
+export type ChatEventSource =
+  | 'codex'
+  | 'opencode'
+  | 'claude'
+  | 'mock'
+  | 'hermes';
 
 export interface ChatEventBase {
   sessionId: string;
@@ -259,6 +264,19 @@ export interface RateLimitEvent extends ChatEventBase {
   windowName: string;
 }
 
+/**
+ * Provider-native session identity changed and should be persisted durably on
+ * the session (e.g. the Hermes gateway response id used to chain the next turn
+ * via `previous_response_id` when resuming after a Relay restart). Legacy V1
+ * adapters emit this so the V1→V2 bridge can surface a `providerSession` patch;
+ * native V2 adapters set `providerSession` on their own session-updated patches.
+ */
+export interface ProviderSessionEvent extends ChatEventBase {
+  type: 'chat:provider-session';
+  /** Provider-specific identity to merge into the session's `providerSession`. */
+  providerSession: Record<string, string>;
+}
+
 // ── Union Type ────────────────────────────────────────────────────────────────
 
 export type ChatEvent =
@@ -280,7 +298,8 @@ export type ChatEvent =
   | TurnCompletedEvent
   | ErrorEvent
   | TelemetryEvent
-  | RateLimitEvent;
+  | RateLimitEvent
+  | ProviderSessionEvent;
 
 export type ChatEventType = ChatEvent['type'];
 
@@ -314,6 +333,7 @@ const VALID_TYPES: ReadonlySet<string> = new Set([
   'chat:error',
   'chat:telemetry',
   'chat:rate-limit',
+  'chat:provider-session',
 ]);
 
 export function isChatEvent(event: unknown): event is ChatEvent {
