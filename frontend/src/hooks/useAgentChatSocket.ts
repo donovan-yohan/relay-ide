@@ -17,7 +17,11 @@ export interface AgentChatSocketState {
   session: AgentSessionV2 | null;
   connected: boolean;
   send: (msg: Record<string, unknown>) => boolean;
-  sendMessage: (turnId: string, content: string) => void;
+  sendMessage: (
+    turnId: string,
+    content: string,
+    attachments?: Array<{ type: 'image'; path: string; mimeType?: string }>
+  ) => void;
   interrupt: (turnId?: string) => void;
   approve: (requestId: string, decision: AgentApprovalDecisionV2) => void;
   answer: (requestId: string, answers: Record<string, string[]>) => void;
@@ -86,8 +90,17 @@ export function useAgentChatSocket(
   }, []);
 
   const sendMessage = useCallback(
-    (turnId: string, content: string) => {
-      send({ type: 'agent-send-message-v2', turnId, content });
+    (
+      turnId: string,
+      content: string,
+      attachments?: Array<{ type: 'image'; path: string; mimeType?: string }>
+    ) => {
+      send({
+        type: 'agent-send-message-v2',
+        turnId,
+        content,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      });
     },
     [send]
   );
