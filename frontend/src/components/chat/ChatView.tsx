@@ -7,6 +7,7 @@ import {
   type ComposerSendAttachment,
 } from './Composer.js';
 import { QueueChips } from './QueueChips.js';
+import { isNearBottom } from './scrollNearBottom.js';
 import { Turn, type EventVerbosity } from './Turn.js';
 import type { AgentSlashCommandV2 } from '../../../../shared/agent-chat-protocol-v2.js';
 
@@ -46,6 +47,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   } = useAgentChatSocket(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [eventVerbosity, setEventVerbosity] =
     React.useState<EventVerbosity>('normal');
 
@@ -55,15 +57,35 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     [session]
   );
 
+  // Auto-follow the bottom of the timeline as new items arrive AND as a
+  // single streaming item (e.g. an assistantMessage growing via deltas)
+  // grows the content height without changing itemCount. A ResizeObserver on
+  // the content wrapper catches both cases; scrolling only happens if the
+  // user was already near the bottom, so scrolling up to read history is
+  // never interrupted.
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
-    const nearBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight <
-      150;
-    if (nearBottom) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
+    const content = contentRef.current;
+    if (!container || !content) return;
+
+    const followIfNearBottom = () => {
+      if (
+        isNearBottom({
+          scrollHeight: container.scrollHeight,
+          scrollTop: container.scrollTop,
+          clientHeight: container.clientHeight,
+        })
+      ) {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }
+    };
+
+    followIfNearBottom();
+
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(followIfNearBottom);
+    observer.observe(content);
+    return () => observer.disconnect();
   }, [itemCount]);
 
   const isActive = useMemo(
@@ -199,7 +221,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         {!session || session.turns.length === 0 ? (
           <div className="tl-empty">no messages yet</div>
         ) : (
-          <>
+          <div ref={contentRef} className="tl-content">
             {session.turns.map((turn, index) => (
               <Turn
                 key={turn.id}
@@ -212,7 +234,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
               />
             ))}
             <QueueChips session={session} />
-          </>
+          </div>
         )}
         <div ref={bottomRef} />
       </div>
