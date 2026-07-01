@@ -380,3 +380,121 @@ test('POST /sessions rejects hermes when the host CLI is not installed', async (
     await stopChild(gateway.child);
   }
 }, 20_000);
+
+// Regression guard for #1062: ticketContext validation used to run only on
+// the PTY branch of POST /sessions, so a malformed ticketContext launched in
+// `mode: 'web'` silently skipped validation entirely (the branch returned
+// before that code ran). Validation is now hoisted above the mode branch, so
+// both modes must reject the same malformed ticketContext with the same 400
+// shape.
+test('POST /sessions rejects an invalid ticketContext the same way for pty and web modes (#1062)', async () => {
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-hermes-ticket-e2e-')
+  );
+  writeAgentStub(
+    tmpDir,
+    'hermes',
+    `#!/usr/bin/env node
+process.exit(0);
+`
+  );
+  const server = await startRelayServer(tmpDir);
+
+  const invalidTicketContext = {
+    ticketId: '42', // missing the required GH-<number> shape
+    title: 'Fix the thing',
+    url: 'https://github.com/donovan-yohan/relay-ide/issues/42',
+    source: 'github',
+    repoPath: tmpDir,
+    repoName: 'relay-ide',
+  };
+
+  try {
+    const bodies: Array<Record<string, unknown>> = [];
+    for (const mode of ['pty', 'web'] as const) {
+      const createRes = await fetch(
+        `http://127.0.0.1:${server.port}/sessions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Cookie: server.authCookie,
+          },
+          body: JSON.stringify({
+            repoPath: tmpDir,
+            type: 'agent',
+            agent: 'hermes',
+            mode,
+            ticketContext: invalidTicketContext,
+          }),
+        }
+      );
+      expect(createRes.status).toBe(400);
+      const body = (await createRes.json()) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        error: 'ticketContext.ticketId for github must match GH-<number>',
+      });
+      bodies.push(body);
+    }
+    // Identical error shape regardless of which mode branch validated it.
+    expect(bodies[0]).toEqual(bodies[1]);
+  } finally {
+    await stopRelayServer(server);
+  }
+}, 20_000);
+
+// Regression guard for #1062: a well-formed ticketContext must be accepted
+// on the web-mode branch (previously it was ignored, not validated) and the
+// session must still be created normally.
+test('POST /sessions creates a hermes web session launched from a valid ticketContext (#1062)', async () => {
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-hermes-ticket-e2e-')
+  );
+  writeAgentStub(
+    tmpDir,
+    'hermes',
+    `#!/usr/bin/env node
+process.exit(0);
+`
+  );
+  const gateway = await startHermesGatewayStub(tmpDir);
+  const server = await startRelayServer(tmpDir, {
+    HERMES_API_ENDPOINT: gateway.endpoint,
+    HERMES_API_TOKEN: gateway.apiToken,
+  });
+
+  try {
+    const createRes = await fetch(`http://127.0.0.1:${server.port}/sessions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: server.authCookie,
+      },
+      body: JSON.stringify({
+        repoPath: tmpDir,
+        type: 'agent',
+        agent: 'hermes',
+        mode: 'web',
+        ticketContext: {
+          ticketId: 'GH-42',
+          title: 'Fix the thing',
+          url: 'https://github.com/donovan-yohan/relay-ide/issues/42',
+          source: 'github',
+          repoPath: tmpDir,
+          repoName: 'relay-ide',
+        },
+      }),
+    });
+
+    expect(createRes.status).toBe(201);
+    const session = (await createRes.json()) as {
+      agent: string;
+      mode: string;
+    };
+    expect(session.agent).toBe('hermes');
+    expect(session.mode).toBe('web');
+  } finally {
+    await stopRelayServer(server);
+    await stopChild(gateway.child);
+  }
+}, 20_000);

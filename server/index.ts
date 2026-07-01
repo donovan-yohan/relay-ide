@@ -349,13 +349,19 @@ const TERMINAL_BACKEND_RELAY_PTY: TerminalBackend = 'relay-pty';
 
 /**
  * Build the `extra` payload for a Hermes web session so its conversation is
- * tagged with the topic/workspace/repo/node anchors (via the responses
+ * tagged with the topic/workspace/repo/node/ticket anchors (via the responses
  * `metadata` field) and carries the channel's prompt defaults (via the
- * responses `instructions` field). Returns an empty object for non-Hermes
- * agents or when there is nothing to attach, so it can be spread into
- * createWeb params.
+ * responses `instructions` field, resent on every turn — a channel behaves
+ * like a pre-configured room, mirrors #1090) plus the ticket-launch initial
+ * prompt (via `initialInstructions`, folded into `instructions` by the
+ * adapter for the first turn only — see HermesProtocolAdapter#sendMessage —
+ * so the one-shot ticket kickoff doesn't persist as system framing for the
+ * rest of the conversation, unlike the PTY path's literal typed prompt it
+ * would otherwise semantically diverge from). Returns an empty object for
+ * non-Hermes agents or when there is nothing to attach, so it can be spread
+ * into createWeb params.
  */
-function buildHermesCreateExtra(
+export function buildHermesCreateExtra(
   resolvedAgent: string,
   ctx: {
     workspaceTopic?:
@@ -372,6 +378,11 @@ function buildHermesCreateExtra(
     repoPath?: string | null | undefined;
     branchName?: string | null | undefined;
     nodeId?: string | null | undefined;
+    ticketContext?:
+      | { ticketId?: string; source?: string; url?: string }
+      | null
+      | undefined;
+    initialPrompt?: string | null | undefined;
   }
 ): { extra: Record<string, unknown> } | Record<string, never> {
   if (resolvedAgent !== 'hermes') return {};
@@ -381,13 +392,22 @@ function buildHermesCreateExtra(
     repoPath: ctx.repoPath,
     branchName: ctx.branchName,
     nodeId: ctx.nodeId,
+    ticketId: ctx.ticketContext?.ticketId,
+    ticketSource: ctx.ticketContext?.source,
+    ticketUrl: ctx.ticketContext?.url,
   });
-  const instructions = buildHermesInstructions(
+  const channelInstructions = buildHermesInstructions(
     ctx.workspaceTopic?.promptDefaults
   );
+  const ticketInitialInstructions =
+    typeof ctx.initialPrompt === 'string' && ctx.initialPrompt.trim()
+      ? ctx.initialPrompt.trim()
+      : undefined;
   const extra: Record<string, unknown> = {};
   if (Object.keys(metadata).length > 0) extra['metadata'] = metadata;
-  if (instructions) extra['instructions'] = instructions;
+  if (channelInstructions) extra['instructions'] = channelInstructions;
+  if (ticketInitialInstructions)
+    extra['initialInstructions'] = ticketInitialInstructions;
   return Object.keys(extra).length > 0 ? { extra } : {};
 }
 
@@ -646,7 +666,7 @@ async function ensureFrontendBuilt(
 }
 
 /** Returns a validation error string, or null if the ticket context is valid. */
-function validateTicketContext(
+export function validateTicketContext(
   ticketContext: TicketContext,
   configuredWorkspaces: string[]
 ): string | null {
@@ -679,7 +699,7 @@ function validateTicketContext(
 }
 
 /** Builds the initial prompt string from a ticket context and repo settings. */
-function buildTicketInitialPrompt(
+export function buildTicketInitialPrompt(
   ticketContext: TicketContext,
   repoSettings: WorkspaceSettings | undefined
 ): string {
@@ -5268,6 +5288,27 @@ async function main(): Promise<void> {
       return;
     }
 
+    // Ticket context validation and initial prompt. Hoisted above the
+    // web/pty mode branch (#1062) so a Hermes web-mode session launched from
+    // a ticket gets the same validation + computed prompt as the PTY path,
+    // instead of the web branch returning early with neither.
+    let computedInitialPrompt: string | undefined = initialPrompt;
+    if (ticketContext) {
+      const ticketErr = validateTicketContext(
+        ticketContext,
+        freshConfig.repos ?? []
+      );
+      if (ticketErr) {
+        res.status(400).json({ error: ticketErr });
+        return;
+      }
+      const repoSettings = freshConfig.repoSettings?.[ticketContext.repoPath];
+      computedInitialPrompt = buildTicketInitialPrompt(
+        ticketContext,
+        repoSettings
+      );
+    }
+
     // Web-mode agents bypass PTY and use ProtocolAdapter + WebSocket.
     // Hermes remains web by default for backwards compatibility with the
     // original native-Hermes launch path.
@@ -5298,7 +5339,13 @@ async function main(): Promise<void> {
             workspaceTopic,
             repoPath: checkedRepoPath,
             branchName: requestBranchName,
+            // Local hub is itself a node (server/local-node.ts); this call
+            // site only ever creates sessions on the local node today, so
+            // DEFAULT_LOCAL_NODE_ID is always correct here. Flagged for
+            // revisit once /sessions can target a federated node directly.
             nodeId: DEFAULT_LOCAL_NODE_ID,
+            ticketContext,
+            initialPrompt: computedInitialPrompt,
           }),
         });
         gitWatcher.watch(session.cwd);
@@ -5321,24 +5368,6 @@ async function main(): Promise<void> {
       resolved.yolo,
       resolved.continuePolicy
     );
-
-    // Ticket context validation and initial prompt
-    let computedInitialPrompt: string | undefined = initialPrompt;
-    if (ticketContext) {
-      const ticketErr = validateTicketContext(
-        ticketContext,
-        freshConfig.repos ?? []
-      );
-      if (ticketErr) {
-        res.status(400).json({ error: ticketErr });
-        return;
-      }
-      const repoSettings = freshConfig.repoSettings?.[ticketContext.repoPath];
-      computedInitialPrompt = buildTicketInitialPrompt(
-        ticketContext,
-        repoSettings
-      );
-    }
 
     const displayName = sessions.nextAgentName();
 

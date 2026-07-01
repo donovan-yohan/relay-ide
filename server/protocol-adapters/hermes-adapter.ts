@@ -476,7 +476,8 @@ export function sanitizeResponsesMetadata(
 /**
  * Build the Relay workspace/topic anchors that tag a Hermes conversation so the
  * gateway (and any audit/observer) can associate the session with its topic,
- * repo, and node. Empty fields are omitted.
+ * repo, node, and (when launched from a ticket) the originating ticket.
+ * Empty fields are omitted.
  */
 export function buildRelayHermesMetadata(input: {
   topicId?: string | null | undefined;
@@ -484,6 +485,9 @@ export function buildRelayHermesMetadata(input: {
   repoPath?: string | null | undefined;
   branchName?: string | null | undefined;
   nodeId?: string | null | undefined;
+  ticketId?: string | null | undefined;
+  ticketSource?: string | null | undefined;
+  ticketUrl?: string | null | undefined;
 }): Record<string, string> {
   const md: Record<string, string> = {};
   if (input.topicId) md['relay_topic_id'] = input.topicId;
@@ -491,6 +495,9 @@ export function buildRelayHermesMetadata(input: {
   if (input.repoPath) md['relay_repo_path'] = input.repoPath;
   if (input.branchName) md['relay_branch'] = input.branchName;
   if (input.nodeId) md['relay_node_id'] = input.nodeId;
+  if (input.ticketId) md['relay_ticket_id'] = input.ticketId;
+  if (input.ticketSource) md['relay_ticket_source'] = input.ticketSource;
+  if (input.ticketUrl) md['relay_ticket_url'] = input.ticketUrl;
   return md;
 }
 
@@ -581,6 +588,13 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   private _currentTurnId: string | null = null;
   private _apiKey: string | null = null;
   private _lastResponseId: string | null = null;
+  // One-shot delivery for `extra.initialInstructions` (e.g. a ticket-launch
+  // kickoff prompt, #1062): unlike `extra.instructions` (channel promptDefaults,
+  // resent every turn — #1090), this is folded into `instructions` for the
+  // first sendMessage call only, then dropped, so it behaves like the PTY
+  // path's one-shot typed initial prompt (server/sessions.ts) instead of
+  // persisting as system framing for the whole conversation.
+  private _initialInstructionsSent = false;
 
   get status(): AdapterStatus {
     return this._status;
@@ -595,6 +609,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._currentTurnId = null;
     this._lastResponseId = null;
     this._turnCounter = 0;
+    this._initialInstructionsSent = false;
 
     const settings = resolveHermesGatewaySettings(config.extra);
     this._endpoint = settings.endpoint;
@@ -663,9 +678,31 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     if (metadata) {
       body['metadata'] = metadata;
     }
-    const instructions = this._config?.extra?.['instructions'];
-    if (typeof instructions === 'string' && instructions.trim()) {
-      body['instructions'] = instructions;
+    // `instructions` (channel promptDefaults, #1090) is persistent system
+    // framing resent on every turn. `initialInstructions` (ticket-launch
+    // kickoff, #1062) is one-shot: fold it in only for the first turn of this
+    // adapter instance, then drop it, so it doesn't linger as system framing
+    // and cause the model to re-anchor on a one-time kickoff instruction
+    // mid-conversation.
+    const persistentInstructions = this._config?.extra?.['instructions'];
+    const oneShotInstructions = this._config?.extra?.['initialInstructions'];
+    const instructionParts: string[] = [];
+    if (
+      typeof persistentInstructions === 'string' &&
+      persistentInstructions.trim()
+    ) {
+      instructionParts.push(persistentInstructions.trim());
+    }
+    if (
+      !this._initialInstructionsSent &&
+      typeof oneShotInstructions === 'string' &&
+      oneShotInstructions.trim()
+    ) {
+      instructionParts.push(oneShotInstructions.trim());
+    }
+    this._initialInstructionsSent = true;
+    if (instructionParts.length > 0) {
+      body['instructions'] = instructionParts.join('\n\n');
     }
 
     try {
