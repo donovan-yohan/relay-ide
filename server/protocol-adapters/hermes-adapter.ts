@@ -494,6 +494,22 @@ export function buildRelayHermesMetadata(input: {
   return md;
 }
 
+/**
+ * Combine a channel/topic's system prompt + instructions into a single
+ * Responses-API `instructions` string, so a channel behaves like a
+ * pre-configured room. Returns undefined when there is nothing to send.
+ */
+export function buildHermesInstructions(
+  promptDefaults:
+    | { systemPrompt?: string | null; instructions?: string | null }
+    | undefined
+): string | undefined {
+  const parts = [promptDefaults?.systemPrompt, promptDefaults?.instructions]
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter((part) => part.length > 0);
+  return parts.length > 0 ? parts.join('\n\n') : undefined;
+}
+
 const MIME_BY_EXTENSION: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -646,6 +662,10 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     );
     if (metadata) {
       body['metadata'] = metadata;
+    }
+    const instructions = this._config?.extra?.['instructions'];
+    if (typeof instructions === 'string' && instructions.trim()) {
+      body['instructions'] = instructions;
     }
 
     try {
