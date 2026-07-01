@@ -588,6 +588,13 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   private _currentTurnId: string | null = null;
   private _apiKey: string | null = null;
   private _lastResponseId: string | null = null;
+  // One-shot delivery for `extra.initialInstructions` (e.g. a ticket-launch
+  // kickoff prompt, #1062): unlike `extra.instructions` (channel promptDefaults,
+  // resent every turn — #1090), this is folded into `instructions` for the
+  // first sendMessage call only, then dropped, so it behaves like the PTY
+  // path's one-shot typed initial prompt (server/sessions.ts) instead of
+  // persisting as system framing for the whole conversation.
+  private _initialInstructionsSent = false;
 
   get status(): AdapterStatus {
     return this._status;
@@ -602,6 +609,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._currentTurnId = null;
     this._lastResponseId = null;
     this._turnCounter = 0;
+    this._initialInstructionsSent = false;
 
     const settings = resolveHermesGatewaySettings(config.extra);
     this._endpoint = settings.endpoint;
@@ -670,9 +678,31 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     if (metadata) {
       body['metadata'] = metadata;
     }
-    const instructions = this._config?.extra?.['instructions'];
-    if (typeof instructions === 'string' && instructions.trim()) {
-      body['instructions'] = instructions;
+    // `instructions` (channel promptDefaults, #1090) is persistent system
+    // framing resent on every turn. `initialInstructions` (ticket-launch
+    // kickoff, #1062) is one-shot: fold it in only for the first turn of this
+    // adapter instance, then drop it, so it doesn't linger as system framing
+    // and cause the model to re-anchor on a one-time kickoff instruction
+    // mid-conversation.
+    const persistentInstructions = this._config?.extra?.['instructions'];
+    const oneShotInstructions = this._config?.extra?.['initialInstructions'];
+    const instructionParts: string[] = [];
+    if (
+      typeof persistentInstructions === 'string' &&
+      persistentInstructions.trim()
+    ) {
+      instructionParts.push(persistentInstructions.trim());
+    }
+    if (
+      !this._initialInstructionsSent &&
+      typeof oneShotInstructions === 'string' &&
+      oneShotInstructions.trim()
+    ) {
+      instructionParts.push(oneShotInstructions.trim());
+    }
+    this._initialInstructionsSent = true;
+    if (instructionParts.length > 0) {
+      body['instructions'] = instructionParts.join('\n\n');
     }
 
     try {

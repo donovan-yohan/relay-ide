@@ -38,7 +38,7 @@ describe('buildHermesCreateExtra (#1062 ticket context for web mode)', () => {
     expect(buildHermesCreateExtra('hermes', {})).toEqual({});
   });
 
-  it('tags the conversation with ticket metadata and carries the initial prompt as instructions', () => {
+  it('tags the conversation with ticket metadata and carries the initial prompt as one-shot initialInstructions', () => {
     const result = buildHermesCreateExtra('hermes', {
       repoPath: ticket.repoPath,
       ticketContext: ticket,
@@ -52,12 +52,18 @@ describe('buildHermesCreateExtra (#1062 ticket context for web mode)', () => {
           relay_ticket_source: 'github',
           relay_ticket_url: ticket.url,
         },
-        instructions: 'You are working on ticket GH-42: Fix the thing.',
+        initialInstructions: 'You are working on ticket GH-42: Fix the thing.',
       },
     });
+    // The ticket kickoff is one-shot (delivered by the adapter on turn 1
+    // only, see hermes-adapter.test.ts), so it must NOT be folded into the
+    // persistent `instructions` field alongside channel promptDefaults.
+    expect(
+      (result as { extra: { instructions?: string } }).extra.instructions
+    ).toBeUndefined();
   });
 
-  it('combines channel promptDefaults instructions with the ticket initial prompt, channel first', () => {
+  it('keeps channel promptDefaults instructions (persistent) separate from the ticket initial prompt (one-shot)', () => {
     const result = buildHermesCreateExtra('hermes', {
       workspaceTopic: {
         id: 'topic-1',
@@ -68,8 +74,8 @@ describe('buildHermesCreateExtra (#1062 ticket context for web mode)', () => {
     });
     expect(result).toMatchObject({
       extra: {
-        instructions:
-          'Prefer terse answers.\n\nYou are working on ticket GH-42.',
+        instructions: 'Prefer terse answers.',
+        initialInstructions: 'You are working on ticket GH-42.',
       },
     });
   });
@@ -80,7 +86,7 @@ describe('buildHermesCreateExtra (#1062 ticket context for web mode)', () => {
       initialPrompt: 'plain initial prompt, no ticket',
     });
     expect(result).toMatchObject({
-      extra: { instructions: 'plain initial prompt, no ticket' },
+      extra: { initialInstructions: 'plain initial prompt, no ticket' },
     });
     const metadata = (
       result as { extra: { metadata?: Record<string, string> } }

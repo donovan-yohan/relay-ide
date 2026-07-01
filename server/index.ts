@@ -350,12 +350,16 @@ const TERMINAL_BACKEND_RELAY_PTY: TerminalBackend = 'relay-pty';
 /**
  * Build the `extra` payload for a Hermes web session so its conversation is
  * tagged with the topic/workspace/repo/node/ticket anchors (via the responses
- * `metadata` field) and carries the channel's prompt defaults plus the
- * ticket-launch initial prompt (via the responses `instructions` field, so a
- * ticket-launched Hermes conversation behaves like a pre-briefed room —
- * mirrors the channel promptDefaults plumbing from #1090). Returns an empty
- * object for non-Hermes agents or when there is nothing to attach, so it can
- * be spread into createWeb params.
+ * `metadata` field) and carries the channel's prompt defaults (via the
+ * responses `instructions` field, resent on every turn — a channel behaves
+ * like a pre-configured room, mirrors #1090) plus the ticket-launch initial
+ * prompt (via `initialInstructions`, folded into `instructions` by the
+ * adapter for the first turn only — see HermesProtocolAdapter#sendMessage —
+ * so the one-shot ticket kickoff doesn't persist as system framing for the
+ * rest of the conversation, unlike the PTY path's literal typed prompt it
+ * would otherwise semantically diverge from). Returns an empty object for
+ * non-Hermes agents or when there is nothing to attach, so it can be spread
+ * into createWeb params.
  */
 export function buildHermesCreateExtra(
   resolvedAgent: string,
@@ -395,14 +399,15 @@ export function buildHermesCreateExtra(
   const channelInstructions = buildHermesInstructions(
     ctx.workspaceTopic?.promptDefaults
   );
-  const instructionParts = [channelInstructions, ctx.initialPrompt]
-    .map((part) => (typeof part === 'string' ? part.trim() : ''))
-    .filter((part) => part.length > 0);
-  const instructions =
-    instructionParts.length > 0 ? instructionParts.join('\n\n') : undefined;
+  const ticketInitialInstructions =
+    typeof ctx.initialPrompt === 'string' && ctx.initialPrompt.trim()
+      ? ctx.initialPrompt.trim()
+      : undefined;
   const extra: Record<string, unknown> = {};
   if (Object.keys(metadata).length > 0) extra['metadata'] = metadata;
-  if (instructions) extra['instructions'] = instructions;
+  if (channelInstructions) extra['instructions'] = channelInstructions;
+  if (ticketInitialInstructions)
+    extra['initialInstructions'] = ticketInitialInstructions;
   return Object.keys(extra).length > 0 ? { extra } : {};
 }
 
