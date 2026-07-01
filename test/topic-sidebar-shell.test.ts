@@ -180,6 +180,26 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('Beta channel');
   });
 
+  it('shows a search scope toggle only when a workspace is active', async () => {
+    const onToggleSearchScope = vi.fn();
+    await renderView({ activeWorkspaceId: 'ws:a', onToggleSearchScope });
+    const chip = container.querySelector('.topic-search__scope');
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent).toBe('all');
+    await act(async () => (chip as HTMLButtonElement).click());
+    expect(onToggleSearchScope).toHaveBeenCalled();
+
+    await renderView({ activeWorkspaceId: null });
+    expect(container.querySelector('.topic-search__scope')).toBeNull();
+  });
+
+  it('reflects the workspace scope on the toggle label', async () => {
+    await renderView({ activeWorkspaceId: 'ws:a', searchScope: 'workspace' });
+    const chip = container.querySelector('.topic-search__scope');
+    expect(chip?.textContent).toBe('this workspace');
+    expect(chip?.getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('selects linked sessions using the existing sidebar callback', async () => {
     await renderView();
     const sessionButton = container.querySelector(

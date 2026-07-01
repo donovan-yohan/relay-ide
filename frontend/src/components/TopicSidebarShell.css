@@ -1231,3 +1231,20 @@
   margin: 0;
   padding: 0;
 }
+
+/* #1084: search scope toggle */
+.topic-search__scope {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 1px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.topic-search__scope.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
