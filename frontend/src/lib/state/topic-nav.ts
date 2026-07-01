@@ -101,6 +101,88 @@ export interface TopicNavModel {
   derived: boolean;
 }
 
+/** Minimal workspace shape the topic sidebar groups channels under. */
+export interface TopicNavWorkspace {
+  id: string;
+  name: string;
+  order: number;
+  pinned: boolean;
+  color: string | null;
+  icon: string | null;
+}
+
+export interface TopicNavWorkspaceGroup {
+  id: string;
+  title: string;
+  color: string | null;
+  icon: string | null;
+  pinned: boolean;
+  rootIds: WorkspaceTopicId[];
+}
+
+export interface GroupedTopicNav {
+  groups: TopicNavWorkspaceGroup[];
+  /** Root topics whose workspace is unknown/unset (the "no workspace" lane). */
+  orphanRootIds: WorkspaceTopicId[];
+}
+
+/**
+ * Group the model's root topics under their workspace (the Discord
+ * server→channel shape). Workspaces sort pinned-first then by `order`. When
+ * `activeWorkspaceId` is set, collapse to just that workspace (orphans hidden);
+ * when null, every workspace group plus the orphan lane is returned. Pure and
+ * backward-compatible: with no workspaces, all roots fall into `orphanRootIds`.
+ */
+export function groupTopicsByWorkspace(
+  model: TopicNavModel,
+  workspaces: TopicNavWorkspace[],
+  activeWorkspaceId: string | null
+): GroupedTopicNav {
+  const rootsByWorkspace = new Map<string, WorkspaceTopicId[]>();
+  const orphanRootIds: WorkspaceTopicId[] = [];
+  const knownIds = new Set(workspaces.map((w) => w.id));
+  for (const id of model.rootIds) {
+    const workspaceId = model.byId.get(id)?.workspaceId;
+    if (workspaceId && knownIds.has(workspaceId)) {
+      const bucket = rootsByWorkspace.get(workspaceId);
+      if (bucket) bucket.push(id);
+      else rootsByWorkspace.set(workspaceId, [id]);
+    } else {
+      orphanRootIds.push(id);
+    }
+  }
+
+  const ordered = [...workspaces].sort(
+    (a, b) =>
+      Number(b.pinned) - Number(a.pinned) ||
+      a.order - b.order ||
+      a.id.localeCompare(b.id)
+  );
+
+  const visible =
+    activeWorkspaceId != null
+      ? ordered.filter((w) => w.id === activeWorkspaceId)
+      : ordered;
+
+  const groups: TopicNavWorkspaceGroup[] = visible
+    .map((w) => ({
+      id: w.id,
+      title: w.name,
+      color: w.color,
+      icon: w.icon,
+      pinned: w.pinned,
+      rootIds: rootsByWorkspace.get(w.id) ?? [],
+    }))
+    // Hide empty workspace groups only in the all-workspaces view; keep the
+    // active workspace visible even when it has no channels yet.
+    .filter((g) => activeWorkspaceId != null || g.rootIds.length > 0);
+
+  return {
+    groups,
+    orphanRootIds: activeWorkspaceId != null ? [] : orphanRootIds,
+  };
+}
+
 function basename(path: string | undefined): string | null {
   if (!path) return null;
   const trimmed = path.replace(/[\\/]+$/, '');

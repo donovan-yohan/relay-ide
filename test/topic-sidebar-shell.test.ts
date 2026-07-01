@@ -134,6 +134,52 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('preview');
   });
 
+  it('groups topics under workspace channel headers', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          display: { title: 'Alpha channel' },
+          linkedRefs: {},
+        }),
+        makeTopic({
+          id: 'topic:b',
+          workspaceId: 'ws:b',
+          display: { title: 'Beta channel' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      workspaces: [
+        {
+          id: 'ws:a',
+          name: 'engineering',
+          order: 0,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+        {
+          id: 'ws:b',
+          name: 'research',
+          order: 1,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+      ],
+    });
+    const headers = Array.from(
+      container.querySelectorAll('.topic-workspace-group__name')
+    ).map((el) => el.textContent);
+    expect(headers).toContain('engineering');
+    expect(headers).toContain('research');
+    expect(container.textContent).toContain('Alpha channel');
+    expect(container.textContent).toContain('Beta channel');
+  });
+
   it('selects linked sessions using the existing sidebar callback', async () => {
     await renderView();
     const sessionButton = container.querySelector(

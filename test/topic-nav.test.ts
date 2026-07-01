@@ -1,8 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
 import type { WorkspaceTopic } from '../shared/workspace-topics.js';
-import { buildTopicNavModel } from '../frontend/src/lib/state/topic-nav.js';
+import {
+  buildTopicNavModel,
+  groupTopicsByWorkspace,
+  type TopicNavWorkspace,
+} from '../frontend/src/lib/state/topic-nav.js';
 import { makeSession } from './helpers/frontend-factories.js';
+
+function makeWorkspace(
+  overrides: Partial<TopicNavWorkspace> = {}
+): TopicNavWorkspace {
+  return {
+    id: 'ws:a',
+    name: 'workspace a',
+    order: 0,
+    pinned: false,
+    color: null,
+    icon: null,
+    ...overrides,
+  };
+}
 
 const NOW = '2026-06-26T00:00:00Z';
 
@@ -438,5 +456,79 @@ describe('buildTopicNavModel', () => {
     expect(model.byId.get('topic:a')?.childIds).toEqual([]);
     expect(model.byId.get('topic:b')?.childIds).toEqual([]);
     expect(model.byId.get('topic:self')?.childIds).toEqual([]);
+  });
+});
+
+describe('groupTopicsByWorkspace', () => {
+  const model = () =>
+    buildTopicNavModel({
+      topics: [
+        makeTopic({ id: 't:a1', workspaceId: 'ws:a' }),
+        makeTopic({ id: 't:b1', workspaceId: 'ws:b' }),
+        makeTopic({ id: 't:orphan', workspaceId: 'ws:unknown' }),
+      ],
+      sessions: [],
+      surfaces: [],
+      derived: false,
+    });
+
+  it('groups roots under their workspace and orphans the rest', () => {
+    const grouped = groupTopicsByWorkspace(
+      model(),
+      [
+        makeWorkspace({ id: 'ws:a', name: 'A', order: 1 }),
+        makeWorkspace({ id: 'ws:b', name: 'B', order: 0 }),
+      ],
+      null
+    );
+    // Sorted by order: B (0) before A (1).
+    expect(grouped.groups.map((g) => g.id)).toEqual(['ws:b', 'ws:a']);
+    expect(grouped.groups[0]!.rootIds).toEqual(['t:b1']);
+    expect(grouped.groups[1]!.rootIds).toEqual(['t:a1']);
+    expect(grouped.orphanRootIds).toEqual(['t:orphan']);
+  });
+
+  it('floats pinned workspaces before order', () => {
+    const grouped = groupTopicsByWorkspace(
+      model(),
+      [
+        makeWorkspace({ id: 'ws:a', order: 0, pinned: false }),
+        makeWorkspace({ id: 'ws:b', order: 9, pinned: true }),
+      ],
+      null
+    );
+    expect(grouped.groups.map((g) => g.id)).toEqual(['ws:b', 'ws:a']);
+  });
+
+  it('collapses to a single workspace and hides orphans when active', () => {
+    const grouped = groupTopicsByWorkspace(
+      model(),
+      [makeWorkspace({ id: 'ws:a' }), makeWorkspace({ id: 'ws:b' })],
+      'ws:a'
+    );
+    expect(grouped.groups.map((g) => g.id)).toEqual(['ws:a']);
+    expect(grouped.orphanRootIds).toEqual([]);
+  });
+
+  it('drops empty groups in the all view but keeps the active one', () => {
+    const grouped = groupTopicsByWorkspace(
+      model(),
+      [makeWorkspace({ id: 'ws:a' }), makeWorkspace({ id: 'ws:empty' })],
+      null
+    );
+    expect(grouped.groups.map((g) => g.id)).toEqual(['ws:a']);
+    const active = groupTopicsByWorkspace(
+      model(),
+      [makeWorkspace({ id: 'ws:empty' })],
+      'ws:empty'
+    );
+    expect(active.groups.map((g) => g.id)).toEqual(['ws:empty']);
+    expect(active.groups[0]!.rootIds).toEqual([]);
+  });
+
+  it('puts every root in the orphan lane when there are no workspaces', () => {
+    const grouped = groupTopicsByWorkspace(model(), [], null);
+    expect(grouped.groups).toEqual([]);
+    expect(grouped.orphanRootIds).toEqual(['t:a1', 't:b1', 't:orphan']);
   });
 });

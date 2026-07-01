@@ -1199,3 +1199,35 @@
     word-break: break-word;
   }
 }
+
+/* #1083: workspace-first channel grouping */
+.topic-workspace-group {
+  display: block;
+}
+
+.topic-workspace-group__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 2px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+
+.topic-workspace-group__icon {
+  flex-shrink: 0;
+}
+
+.topic-workspace-group__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-tree__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
