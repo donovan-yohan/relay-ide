@@ -19,6 +19,7 @@ import {
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
   buildWorkspaceTopicLaunchPreview,
+  resolveTopicActiveContext,
   type WorkspaceTopic,
   type WorkspaceTopicCreateInput,
   type WorkspaceTopicLaunchIntent,
@@ -1729,22 +1730,9 @@ function TopicSearchPanel({
   );
 }
 
-/**
- * Active workspace context a topic establishes when it is selected. `repoPath`
- * prefers the topic's repo, then its worktree; a topic with neither (a pure
- * thread) leaves the current repo context untouched. The node is not tracked as
- * separate active state — launches read it from the topic's routing defaults.
- */
-export function resolveTopicActiveContext(topic: WorkspaceTopic): {
-  workspaceId: string;
-  repoPath: string | null;
-} {
-  const routing = topic.routingDefaults;
-  return {
-    workspaceId: topic.workspaceId,
-    repoPath: routing.repoPath ?? routing.worktreePath ?? null,
-  };
-}
+const EMPTY_TOPICS: WorkspaceTopic[] = [];
+const EMPTY_SURFACES: WorkspaceSurface[] = [];
+const EMPTY_SEARCH_RESULTS: WorkspaceTopicSearchResult[] = [];
 
 export function TopicSidebarView({
   topics,
@@ -1939,7 +1927,6 @@ export function TopicSidebarView({
   );
 }
 
-// eslint-disable-next-line complexity -- topic room creation composes query, routing-default, and launch retry state in one shell boundary.
 export function TopicSidebarShell({
   onSelectSession,
 }: {
@@ -2002,7 +1989,23 @@ export function TopicSidebarShell({
   }, []);
   const searchActive = normalizedSearchQuery.length > 0;
   const searchData = topicSearchQuery.data;
-  const searchResults = searchData?.results ?? [];
+  const searchResults = useMemo(
+    () => searchData?.results ?? EMPTY_SEARCH_RESULTS,
+    [searchData]
+  );
+  // Keep the arrays passed to TopicSidebarView referentially stable so its
+  // model/topicsById memoization is not invalidated on every render.
+  const viewTopics = useMemo(
+    () =>
+      searchActive
+        ? searchResults.map((result) => result.topic)
+        : (topicsQuery.data?.topics ?? EMPTY_TOPICS),
+    [searchActive, searchResults, topicsQuery.data]
+  );
+  const viewSurfaces = useMemo(
+    () => surfacesQuery.data ?? EMPTY_SURFACES,
+    [surfacesQuery.data]
+  );
   const taskRef = taskRefFromDraft(createDraft.taskRef, createDraft.title);
   const defaultRepoPath =
     activeSession?.repoPath ?? activeRepoPath ?? undefined;
@@ -2192,13 +2195,9 @@ export function TopicSidebarShell({
 
   return (
     <TopicSidebarView
-      topics={
-        searchActive
-          ? searchResults.map((result) => result.topic)
-          : (topicsQuery.data?.topics ?? [])
-      }
+      topics={viewTopics}
       sessions={sessions}
-      surfaces={surfacesQuery.data ?? []}
+      surfaces={viewSurfaces}
       loading={!searchActive && topicsQuery.isLoading && !topicsQuery.data}
       error={topicsQuery.isError && !topicsQuery.data && !searchActive}
       surfacesLoading={surfacesQuery.isLoading && !surfacesQuery.data}

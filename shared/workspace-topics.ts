@@ -1069,6 +1069,24 @@ export function resolveWorkspaceTopicRoutingDefaults(
   };
 }
 
+/**
+ * Active workspace context a topic establishes when it is selected in the UI.
+ * `repoPath` prefers the topic's repo, then its worktree; a pure-thread topic
+ * with neither yields `null` so the caller can leave the current repo context
+ * untouched. The node is intentionally not part of this context — launches read
+ * it from the topic's routing defaults.
+ */
+export function resolveTopicActiveContext(topic: WorkspaceTopic): {
+  workspaceId: string;
+  repoPath: string | null;
+} {
+  const routing = topic.routingDefaults;
+  return {
+    workspaceId: topic.workspaceId,
+    repoPath: routing.repoPath ?? routing.worktreePath ?? null,
+  };
+}
+
 function readLaunchString(
   overrides: WorkspaceTopicLaunchOverrides,
   key: string

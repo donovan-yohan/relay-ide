@@ -6,13 +6,13 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
-import type {
-  WorkspaceTopic,
-  WorkspaceTopicListResponse,
-  WorkspaceTopicSearchResult,
-} from '../shared/workspace-topics.js';
 import {
   resolveTopicActiveContext,
+  type WorkspaceTopic,
+  type WorkspaceTopicListResponse,
+  type WorkspaceTopicSearchResult,
+} from '../shared/workspace-topics.js';
+import {
   TopicSidebarShell,
   TopicSidebarView,
 } from '../frontend/src/components/TopicSidebarShell.js';
