@@ -7,6 +7,7 @@ import type {
   AgentTurnV2,
 } from '../../../../shared/agent-chat-protocol-v2.js';
 import { ApprovalCard } from './ApprovalCard.js';
+import { AssistantMarkdown } from './AssistantMarkdown.js';
 import { FileChangeRow } from './FileChangeRow.js';
 import {
   ImageGenerationCard,
@@ -81,6 +82,17 @@ function renderUserMessage(
   );
 }
 
+const REASONING_LABEL_MAX_LEN = 80;
+
+/** Single-line, truncated label for the reasoning <summary>; falls back to 'thinking'. */
+function reasoningLabel(summary: string | undefined): string {
+  if (!summary) return 'thinking';
+  const singleLine = summary.replace(/\s+/g, ' ').trim();
+  if (!singleLine) return 'thinking';
+  if (singleLine.length <= REASONING_LABEL_MAX_LEN) return singleLine;
+  return `${singleLine.slice(0, REASONING_LABEL_MAX_LEN - 1).trimEnd()}…`;
+}
+
 function renderItem(
   item: AgentItemV2,
   eventVerbosity: EventVerbosity,
@@ -93,11 +105,13 @@ function renderItem(
     case 'userMessage':
       return renderUserMessage(item.text, commandIndex);
     case 'assistantMessage':
-      return item.text ? <pre className="tl-text">{item.text}</pre> : null;
+      return item.text ? (
+        <AssistantMarkdown text={item.text} keyPrefix={item.id} />
+      ) : null;
     case 'reasoning':
       return (
         <details className="reasoning" open={item.visibility === 'full'}>
-          <summary>thinking</summary>
+          <summary>{reasoningLabel(item.summary)}</summary>
           <pre className="tl-text">{item.detail ?? item.summary}</pre>
         </details>
       );

@@ -242,9 +242,17 @@ describe('chat v2 rendering against chat.html primitives', () => {
     await clickByText('allow always');
     await clickByText('deny');
 
-    expect(mocks.approve).toHaveBeenCalledWith('approval-1', { kind: 'accept', scope: 'once' });
-    expect(mocks.approve).toHaveBeenCalledWith('approval-1', { kind: 'accept', scope: 'permanent' });
-    expect(mocks.approve).toHaveBeenCalledWith('approval-1', { kind: 'decline' });
+    expect(mocks.approve).toHaveBeenCalledWith('approval-1', {
+      kind: 'accept',
+      scope: 'once',
+    });
+    expect(mocks.approve).toHaveBeenCalledWith('approval-1', {
+      kind: 'accept',
+      scope: 'permanent',
+    });
+    expect(mocks.approve).toHaveBeenCalledWith('approval-1', {
+      kind: 'decline',
+    });
   });
 
   it('hides queued-message cancel buttons when the provider cannot cancel queued messages', async () => {
@@ -263,7 +271,8 @@ describe('chat v2 rendering against chat.html primitives', () => {
 
     expect(container.textContent).not.toContain('message_stop');
 
-    const textarea = container.querySelector<HTMLTextAreaElement>('.composer__ta');
+    const textarea =
+      container.querySelector<HTMLTextAreaElement>('.composer__ta');
     expect(textarea).toBeTruthy();
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(
@@ -284,5 +293,181 @@ describe('chat v2 rendering against chat.html primitives', () => {
       expect.anything(),
       expect.stringContaining('/relay-verbosity')
     );
+  });
+
+  it('renders assistantMessage text as sanitized markdown (bold, links, inline code, code fences)', async () => {
+    mocks.session = makeSession({
+      turns: [
+        {
+          id: 'turn-md',
+          status: 'completed',
+          inputMessageId: 'user-md',
+          startedAt: timestamp(),
+          items: [
+            {
+              id: 'user-md',
+              type: 'userMessage',
+              text: 'explain the fix',
+              status: 'completed',
+            },
+            {
+              id: 'assistant-md',
+              type: 'assistantMessage',
+              text: [
+                '**bold** and a [link](https://example.com/doc) and `inline code`.',
+                '',
+                '```ts',
+                'const x = 1;',
+                '```',
+                '',
+                '<img src="x" onerror="window.__pwned = true">',
+              ].join('\n'),
+              status: 'completed',
+            },
+          ],
+        },
+      ],
+    });
+
+    await renderChat();
+
+    const bold = container.querySelector('.tl-markdown strong');
+    expect(bold?.textContent).toBe('bold');
+
+    const link = container.querySelector<HTMLAnchorElement>('.tl-markdown a');
+    expect(link?.getAttribute('href')).toBe('https://example.com/doc');
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(link?.getAttribute('rel')).toContain('noopener');
+
+    expect(container.querySelector('.tl-md-code')?.textContent).toBe(
+      'inline code'
+    );
+
+    expect(container.querySelector('.tl-md-pre .code-block')).toBeTruthy();
+    expect(container.textContent).toContain('const x = 1;');
+
+    // Raw HTML is never parsed into live elements — it's shown as inert text.
+    expect(container.querySelector('.tl-markdown img')).toBeNull();
+    expect((globalThis as { __pwned?: boolean }).__pwned).toBeUndefined();
+  });
+
+  it('shows a truncated reasoning summary in <summary>, falling back to "thinking"', async () => {
+    const longSummary =
+      'Investigating the composer regression across every provider adapter and slash-command handler before proposing a fix';
+    mocks.session = makeSession({
+      turns: [
+        {
+          id: 'turn-reasoning',
+          status: 'completed',
+          inputMessageId: 'user-reasoning',
+          startedAt: timestamp(),
+          items: [
+            {
+              id: 'user-reasoning',
+              type: 'userMessage',
+              text: 'why did this fail?',
+              status: 'completed',
+            },
+            {
+              id: 'thinking-short',
+              type: 'reasoning',
+              summary: 'checking the socket reconnect path',
+              visibility: 'summary',
+              status: 'completed',
+            },
+            {
+              id: 'thinking-long',
+              type: 'reasoning',
+              summary: longSummary,
+              visibility: 'summary',
+              status: 'completed',
+            },
+            {
+              id: 'thinking-empty',
+              type: 'reasoning',
+              summary: '',
+              visibility: 'summary',
+              status: 'completed',
+            },
+          ],
+        },
+      ],
+    });
+
+    await renderChat();
+
+    const summaries = Array.from(
+      container.querySelectorAll('.reasoning summary')
+    ).map((el) => el.textContent);
+
+    expect(summaries[0]).toBe('checking the socket reconnect path');
+    expect(summaries[1]).toBe(`${longSummary.slice(0, 79)}…`);
+    expect(summaries[1]?.length).toBeLessThanOrEqual(80);
+    expect(summaries[2]).toBe('thinking');
+  });
+
+  it('auto-follows the bottom as streamed content resizes the timeline, without yanking a scrolled-up reader', async () => {
+    class ResizeObserverStub {
+      static instances: ResizeObserverStub[] = [];
+      callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        ResizeObserverStub.instances.push(this);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      trigger() {
+        this.callback([], this as unknown as ResizeObserver);
+      }
+    }
+    ResizeObserverStub.instances = [];
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    const scrollSpy = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(() => {});
+
+    try {
+      await renderChat();
+
+      const timeline = container.querySelector('.tl') as HTMLElement;
+      expect(timeline).toBeTruthy();
+      const observerInstance = ResizeObserverStub.instances.at(-1);
+      expect(observerInstance).toBeTruthy();
+
+      // Reader is near the bottom when a stream delta grows the content.
+      Object.defineProperty(timeline, 'scrollHeight', {
+        value: 1000,
+        configurable: true,
+      });
+      Object.defineProperty(timeline, 'clientHeight', {
+        value: 400,
+        configurable: true,
+      });
+      Object.defineProperty(timeline, 'scrollTop', {
+        value: 650,
+        configurable: true,
+      });
+      scrollSpy.mockClear();
+      await act(async () => {
+        observerInstance?.trigger();
+      });
+      expect(scrollSpy).toHaveBeenCalled();
+
+      // Reader scrolled up to read history — a resize (more streamed
+      // content) must not yank them back down.
+      Object.defineProperty(timeline, 'scrollTop', {
+        value: 50,
+        configurable: true,
+      });
+      scrollSpy.mockClear();
+      await act(async () => {
+        observerInstance?.trigger();
+      });
+      expect(scrollSpy).not.toHaveBeenCalled();
+    } finally {
+      scrollSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });
