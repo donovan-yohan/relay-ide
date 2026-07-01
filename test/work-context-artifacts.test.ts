@@ -29,7 +29,9 @@ const nextHeadSha = 'b'.repeat(40);
 const cleanup: Array<() => void> = [];
 
 function tmpStore(): { root: string; store: WorkContextArtifactStore } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'work-context-artifacts-'));
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'work-context-artifacts-')
+  );
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const store = createWorkContextArtifactStore({
     dbPath: path.join(root, 'index.db'),
@@ -49,7 +51,9 @@ afterEach(() => {
   for (const dispose of cleanup.splice(0).reverse()) dispose();
 });
 
-function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoffArtifact {
+function artifact(
+  input: Partial<PipelineHandoffArtifact> = {}
+): PipelineHandoffArtifact {
   return {
     schemaVersion: PIPELINE_HANDOFF_ARTIFACT_SCHEMA_VERSION,
     id: 'pipeline-handoff:example:aaaaaaaa',
@@ -75,7 +79,10 @@ function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoff
         'payload files are separate from indexed metadata',
         'list queries are bounded by the metadata index',
       ],
-      nonGoals: ['no raw transcript ingestion', 'no internal dispatcher or local worktree public copy'],
+      nonGoals: [
+        'no raw transcript ingestion',
+        'no internal dispatcher or local worktree public copy',
+      ],
     },
     head: {
       repo: { ownerRepo: 'example-org/example-project' },
@@ -94,7 +101,8 @@ function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoff
         stage: 'implementation',
         addedAt: now,
         actorId: 'agent:kani-backend',
-        summary: 'stored payload file from /home/operator/example while keeping index metadata bounded',
+        summary:
+          'stored payload file from /home/operator/example while keeping index metadata bounded',
         acceptanceEvidence: [
           {
             label: 'storage/index',
@@ -111,18 +119,23 @@ function artifact(input: Partial<PipelineHandoffArtifact> = {}): PipelineHandoff
             exitCode: 0,
           },
         ],
-        downstreamFocus: ['verify append-only metadata and public sanitizer boundaries'],
+        downstreamFocus: [
+          'verify append-only metadata and public sanitizer boundaries',
+        ],
         nonGoals: ['no UI or resume-packet integration in this slice'],
         decision: 'implemented',
         changedFiles: ['server/work-context-artifacts.ts'],
-        migrationOrStateRisk: 'new isolated SQLite index and payload directory only',
+        migrationOrStateRisk:
+          'new isolated SQLite index and payload directory only',
       },
     ],
     ...input,
   };
 }
 
-function viewArtifact(input: Partial<ViewArtifactPackage> = {}): ViewArtifactPackage {
+function viewArtifact(
+  input: Partial<ViewArtifactPackage> = {}
+): ViewArtifactPackage {
   const manifest = {
     kind: AGENT_VIEW_MANIFEST_KIND,
     schemaVersion: AGENT_VIEW_SCHEMA_VERSION,
@@ -134,9 +147,21 @@ function viewArtifact(input: Partial<ViewArtifactPackage> = {}): ViewArtifactPac
     updatedAt: now,
     scope: {
       repo: 'example-org/example-project',
-      taskRefs: [{ kind: 'github-issue', id: '830', url: 'https://github.com/example-org/example-project/issues/830' }],
+      taskRefs: [
+        {
+          kind: 'github-issue',
+          id: '830',
+          url: 'https://github.com/example-org/example-project/issues/830',
+        },
+      ],
     },
-    sources: [{ label: 'Issue 830', url: 'https://github.com/example-org/example-project/issues/830', kind: 'github-issue' }],
+    sources: [
+      {
+        label: 'Issue 830',
+        url: 'https://github.com/example-org/example-project/issues/830',
+        kind: 'github-issue',
+      },
+    ],
     capabilities: [],
     export: { policy: 'private' },
     revision: { id: 'agent-view:example:aaaaaaaa' },
@@ -201,7 +226,8 @@ function createLegacyV1Store(input: {
       CHECK (visibility IN ('private', 'public'))
     );
   `);
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO work_context_artifacts (
       id, work_context_id, project_id, task_ref_kind, task_ref_id, stage,
       provenance_actor_id, kind, title, summary, visibility, created_at,
@@ -215,7 +241,8 @@ function createLegacyV1Store(input: {
       @payloadSha256, @payloadBytes, @prNumber, @headSha, @baseName,
       @branchName, @supersedesArtifactId, @metadataJson
     )
-  `).run({
+  `
+  ).run({
     id: input.payload.id,
     workContextId: 'wc:legacy-v1',
     projectId: 'project:example-org/example-project',
@@ -277,12 +304,16 @@ describe('WorkContext artifact store/index', () => {
       baseName: 'nightly',
       branchName: 'issue-42-artifact-store',
     });
-    expect(stored.payloadPath.startsWith(path.join(root, 'payloads'))).toBe(true);
+    expect(stored.payloadPath.startsWith(path.join(root, 'payloads'))).toBe(
+      true
+    );
     expect(fs.existsSync(stored.payloadPath)).toBe(true);
 
     const byContext = store.list({ workContextId: 'wc:example' });
     expect(byContext).toHaveLength(1);
-    expect(byContext[0]?.metadata.payloadSha256).toBe(stored.metadata.payloadSha256);
+    expect(byContext[0]?.metadata.payloadSha256).toBe(
+      stored.metadata.payloadSha256
+    );
 
     const byTask = store.list({ taskRef: { kind: 'github-issue', id: '42' } });
     expect(byTask.map((entry) => entry.metadata.id)).toEqual([
@@ -290,7 +321,9 @@ describe('WorkContext artifact store/index', () => {
     ]);
 
     const read = store.read(stored.metadata.id);
-    expect((read?.payload as PipelineHandoffArtifact | undefined)?.title).toBe('Example Project implementation handoff');
+    expect((read?.payload as PipelineHandoffArtifact | undefined)?.title).toBe(
+      'Example Project implementation handoff'
+    );
   });
 
   it('stores agent view artifacts with agent-view payload kind and sha-addressed packages', () => {
@@ -316,19 +349,31 @@ describe('WorkContext artifact store/index', () => {
       payloadSha256: sha256Hex(payloadJson),
       payloadBytes: Buffer.byteLength(payloadJson, 'utf8'),
     });
-    expect(stored.payloadPath.startsWith(path.join(root, 'payloads'))).toBe(true);
-    expect(JSON.parse(fs.readFileSync(stored.payloadPath, 'utf8'))).toEqual(pkg);
-    expect(store.readViewArtifactPackage(stored.metadata.id)?.payload).toEqual(pkg);
+    expect(stored.payloadPath.startsWith(path.join(root, 'payloads'))).toBe(
+      true
+    );
+    expect(JSON.parse(fs.readFileSync(stored.payloadPath, 'utf8'))).toEqual(
+      pkg
+    );
+    expect(store.readViewArtifactPackage(stored.metadata.id)?.payload).toEqual(
+      pkg
+    );
     expect(store.read(stored.metadata.id)?.payload).toEqual(pkg);
   });
 
   it('normalizes agent view timestamps accepted by the shared contract', () => {
     const { store } = tmpStore();
     const pkg = viewArtifact({
-      manifest: { ...viewArtifact().manifest, updatedAt: '2026-06-08T12:00:03Z' },
+      manifest: {
+        ...viewArtifact().manifest,
+        updatedAt: '2026-06-08T12:00:03Z',
+      },
     });
 
-    const stored = store.storeAgentViewArtifact({ workContextId: 'wc:view-timestamp', viewArtifact: pkg });
+    const stored = store.storeAgentViewArtifact({
+      workContextId: 'wc:view-timestamp',
+      viewArtifact: pkg,
+    });
 
     expect(stored.metadata.capturedAt).toBe('2026-06-08T12:00:03.000Z');
   });
@@ -336,11 +381,17 @@ describe('WorkContext artifact store/index', () => {
   it('rejects impossible agent view timestamps without date rollover', () => {
     const { store } = tmpStore();
     const pkg = viewArtifact({
-      manifest: { ...viewArtifact().manifest, updatedAt: '2026-02-30T12:00:03Z' },
+      manifest: {
+        ...viewArtifact().manifest,
+        updatedAt: '2026-02-30T12:00:03Z',
+      },
     });
 
     expect(() =>
-      store.storeAgentViewArtifact({ workContextId: 'wc:view-invalid-timestamp', viewArtifact: pkg })
+      store.storeAgentViewArtifact({
+        workContextId: 'wc:view-invalid-timestamp',
+        viewArtifact: pkg,
+      })
     ).toThrow(WorkContextArtifactStoreError);
   });
 
@@ -354,7 +405,10 @@ describe('WorkContext artifact store/index', () => {
       manifest: {
         ...viewArtifact().manifest,
         updatedAt: '2026-06-08T12:10:00.000Z',
-        revision: { id: 'agent-view:example:manifest-supersedes', supersedes: first.metadata.id },
+        revision: {
+          id: 'agent-view:example:manifest-supersedes',
+          supersedes: first.metadata.id,
+        },
       },
     });
 
@@ -364,9 +418,11 @@ describe('WorkContext artifact store/index', () => {
     });
 
     expect(replacement.metadata.supersedesArtifactId).toBe(first.metadata.id);
-    expect(store.list({ workContextId: 'wc:view-manifest-supersede' }).map((entry) => entry.metadata.id)).toEqual([
-      replacement.metadata.id,
-    ]);
+    expect(
+      store
+        .list({ workContextId: 'wc:view-manifest-supersede' })
+        .map((entry) => entry.metadata.id)
+    ).toEqual([replacement.metadata.id]);
   });
 
   it('rejects top-level visibility that disagrees with an agent view export policy', () => {
@@ -395,7 +451,10 @@ describe('WorkContext artifact store/index', () => {
       manifest: {
         ...viewArtifact().manifest,
         updatedAt: '2026-06-08T12:10:00.000Z',
-        revision: { id: 'agent-view:example:bbbbbbbb', supersedes: first.metadata.id },
+        revision: {
+          id: 'agent-view:example:bbbbbbbb',
+          supersedes: first.metadata.id,
+        },
       },
     });
 
@@ -406,12 +465,18 @@ describe('WorkContext artifact store/index', () => {
     });
 
     expect(replacement.metadata.supersedesArtifactId).toBe(first.metadata.id);
-    expect(store.get(first.metadata.id)?.metadata.payloadKind).toBe('agent-view-artifact');
-    expect(store.get(handoff.metadata.id)?.metadata.payloadKind).toBe('pipeline-handoff-artifact');
-    expect(store.list({ workContextId: 'wc:view-supersede' }).map((entry) => entry.metadata.id).sort()).toEqual([
-      handoff.metadata.id,
-      replacement.metadata.id,
-    ].sort());
+    expect(store.get(first.metadata.id)?.metadata.payloadKind).toBe(
+      'agent-view-artifact'
+    );
+    expect(store.get(handoff.metadata.id)?.metadata.payloadKind).toBe(
+      'pipeline-handoff-artifact'
+    );
+    expect(
+      store
+        .list({ workContextId: 'wc:view-supersede' })
+        .map((entry) => entry.metadata.id)
+        .sort()
+    ).toEqual([handoff.metadata.id, replacement.metadata.id].sort());
   });
 
   it('backfills agent view task refs from manifest scope during migration', () => {
@@ -428,10 +493,15 @@ describe('WorkContext artifact store/index', () => {
         },
       },
     });
-    const stored = store.storeAgentViewArtifact({ workContextId: 'wc:view-backfill', viewArtifact: pkg });
+    const stored = store.storeAgentViewArtifact({
+      workContextId: 'wc:view-backfill',
+      viewArtifact: pkg,
+    });
     const db = new Database(path.join(root, 'index.db'));
     cleanup.push(() => db.close());
-    db.prepare('DELETE FROM work_context_artifact_task_refs WHERE artifact_id = ?').run(stored.metadata.id);
+    db.prepare(
+      'DELETE FROM work_context_artifact_task_refs WHERE artifact_id = ?'
+    ).run(stored.metadata.id);
 
     const reopened = createWorkContextArtifactStore({
       dbPath: path.join(root, 'index.db'),
@@ -439,9 +509,10 @@ describe('WorkContext artifact store/index', () => {
     });
     cleanup.push(() => reopened.close());
 
-    expect(reopened.list({ taskRef: { kind: 'github-pr', id: '920' } })[0]?.metadata.id).toBe(
-      stored.metadata.id
-    );
+    expect(
+      reopened.list({ taskRef: { kind: 'github-pr', id: '920' } })[0]?.metadata
+        .id
+    ).toBe(stored.metadata.id);
   });
 
   it('indexes every task ref from a handoff artifact payload', () => {
@@ -476,11 +547,15 @@ describe('WorkContext artifact store/index', () => {
       artifact: multiRefArtifact,
     });
 
-    expect(store.list({ taskRef: { kind: 'github-issue', id: '889' } })).toHaveLength(1);
-    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })).toHaveLength(1);
-    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })[0]?.metadata.id).toBe(
-      stored.metadata.id
-    );
+    expect(
+      store.list({ taskRef: { kind: 'github-issue', id: '889' } })
+    ).toHaveLength(1);
+    expect(
+      store.list({ taskRef: { kind: 'github-pr', id: '893' } })
+    ).toHaveLength(1);
+    expect(
+      store.list({ taskRef: { kind: 'github-pr', id: '893' } })[0]?.metadata.id
+    ).toBe(stored.metadata.id);
   });
 
   it('backfills v1 artifact rows from every valid payload task ref during migration', () => {
@@ -521,11 +596,15 @@ describe('WorkContext artifact store/index', () => {
     });
     cleanup.push(() => store.close());
 
-    expect(store.list({ taskRef: { kind: 'github-issue', id: '889' } })).toHaveLength(1);
-    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })).toHaveLength(1);
-    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })[0]?.metadata.id).toBe(
-      legacyPayload.id
-    );
+    expect(
+      store.list({ taskRef: { kind: 'github-issue', id: '889' } })
+    ).toHaveLength(1);
+    expect(
+      store.list({ taskRef: { kind: 'github-pr', id: '893' } })
+    ).toHaveLength(1);
+    expect(
+      store.list({ taskRef: { kind: 'github-pr', id: '893' } })[0]?.metadata.id
+    ).toBe(legacyPayload.id);
   });
 
   it('falls back to the legacy primary task ref when a v1 payload is tampered', () => {
@@ -545,15 +624,22 @@ describe('WorkContext artifact store/index', () => {
       payload: legacyPayload,
       primaryTaskRef: { kind: 'github-issue', id: '889' },
     });
-    fs.writeFileSync(payloadPath, '{"scope":{"taskRefs":[{"kind":"github-pr","id":"893"}]}}');
+    fs.writeFileSync(
+      payloadPath,
+      '{"scope":{"taskRefs":[{"kind":"github-pr","id":"893"}]}}'
+    );
     const store = createWorkContextArtifactStore({
       dbPath,
       payloadRoot: path.join(root, 'payloads'),
     });
     cleanup.push(() => store.close());
 
-    expect(store.list({ taskRef: { kind: 'github-issue', id: '889' } })).toHaveLength(1);
-    expect(store.list({ taskRef: { kind: 'github-pr', id: '893' } })).toHaveLength(0);
+    expect(
+      store.list({ taskRef: { kind: 'github-issue', id: '889' } })
+    ).toHaveLength(1);
+    expect(
+      store.list({ taskRef: { kind: 'github-pr', id: '893' } })
+    ).toHaveLength(0);
   });
 
   it('lists from the SQLite index without reading payload files', () => {
@@ -569,7 +655,103 @@ describe('WorkContext artifact store/index', () => {
     expect(listed[0]?.metadata.summary).toBe(
       'artifact store foundation for generic project work'
     );
-    expect(() => store.read(stored.metadata.id)).toThrow(WorkContextArtifactStoreError);
+    expect(() => store.read(stored.metadata.id)).toThrow(
+      WorkContextArtifactStoreError
+    );
+  });
+
+  it('supports hub-wide q search over metadata only, most-recent-first, capped at 20', () => {
+    const { store } = tmpStore();
+    store.storePipelineHandoffArtifact({
+      workContextId: 'wc:search-alpha',
+      artifact: artifact({
+        id: 'pipeline-handoff:search:aaaaaaaa',
+        title: 'Alpha widget rollout handoff',
+        createdAt: now,
+        updatedAt: now,
+      }),
+    });
+    store.storePipelineHandoffArtifact({
+      workContextId: 'wc:search-beta',
+      artifact: artifact({
+        id: 'pipeline-handoff:search:bbbbbbbb',
+        title: 'Beta gadget rollout handoff',
+        createdAt: '2026-06-08T12:00:01.000Z',
+        updatedAt: '2026-06-08T12:00:01.000Z',
+        head: {
+          ...artifact().head,
+          capturedAt: '2026-06-08T12:00:01.000Z',
+        },
+      }),
+    });
+
+    const byTitle = store.list({ q: 'widget' });
+    expect(byTitle.map((entry) => entry.metadata.id)).toEqual([
+      'pipeline-handoff:search:aaaaaaaa',
+    ]);
+
+    const byWorkContext = store.list({ q: 'search-beta' });
+    expect(byWorkContext.map((entry) => entry.metadata.id)).toEqual([
+      'pipeline-handoff:search:bbbbbbbb',
+    ]);
+
+    // Never matches on body/summary content — metadata only.
+    const bySummaryContent = store.list({
+      q: 'foundation for generic project work',
+    });
+    expect(bySummaryContent).toHaveLength(0);
+
+    // Most-recent-first across matching contexts.
+    const both = store.list({ q: 'rollout handoff' });
+    expect(both.map((entry) => entry.metadata.id)).toEqual([
+      'pipeline-handoff:search:bbbbbbbb',
+      'pipeline-handoff:search:aaaaaaaa',
+    ]);
+  });
+
+  it('caps q search at 20 results even when 25 rows match and a larger limit is requested', () => {
+    const { store } = tmpStore();
+    for (let i = 0; i < 25; i += 1) {
+      store.storePipelineHandoffArtifact({
+        workContextId: `wc:search-cap-${i}`,
+        artifact: artifact({
+          id: `pipeline-handoff:search-cap:${i.toString().padStart(8, '0')}`,
+          title: `Search cap fixture #${i}`,
+        }),
+      });
+    }
+
+    const uncapped = store.list({ q: 'search cap fixture', limit: 200 });
+    expect(uncapped).toHaveLength(20);
+
+    const defaultLimit = store.list({ q: 'search cap fixture' });
+    expect(defaultLimit).toHaveLength(20);
+  });
+
+  it('narrows q search results with an exact kind filter', () => {
+    const { store } = tmpStore();
+    store.storePipelineHandoffArtifact({
+      workContextId: 'wc:search-kind',
+      artifact: artifact({ id: 'pipeline-handoff:search-kind:aaaaaaaa' }),
+    });
+    const view = store.storeAgentViewArtifact({
+      workContextId: 'wc:search-kind',
+      kind: 'screenshot',
+      viewArtifact: viewArtifact(),
+    });
+
+    const anyKind = store.list({ q: 'search-kind' });
+    expect(anyKind.map((entry) => entry.metadata.id).sort()).toEqual(
+      ['pipeline-handoff:search-kind:aaaaaaaa', view.metadata.id].sort()
+    );
+
+    const onlyScreenshots = store.list({
+      q: 'search-kind',
+      kind: 'screenshot',
+    });
+    expect(onlyScreenshots.map((entry) => entry.metadata.id)).toEqual([
+      view.metadata.id,
+    ]);
   });
 
   it('preserves append-only history and models superseded refs without rewriting prior rows', () => {
@@ -603,9 +785,11 @@ describe('WorkContext artifact store/index', () => {
 
     expect(replacement.metadata.supersedesArtifactId).toBe(first.metadata.id);
     expect(store.get(first.metadata.id)?.metadata.headSha).toBe(headSha);
-    expect(store.list({ workContextId: 'wc:append-only' }).map((entry) => entry.metadata.id)).toEqual([
-      replacement.metadata.id,
-    ]);
+    expect(
+      store
+        .list({ workContextId: 'wc:append-only' })
+        .map((entry) => entry.metadata.id)
+    ).toEqual([replacement.metadata.id]);
     expect(
       store
         .list({ workContextId: 'wc:append-only', includeSuperseded: true })
@@ -650,7 +834,9 @@ describe('WorkContext artifact store/index', () => {
     });
 
     const publicCopy = store.publicSummary(stored.metadata.id);
-    const publicPayload = publicCopy?.payload as PipelineHandoffArtifact | undefined;
+    const publicPayload = publicCopy?.payload as
+      | PipelineHandoffArtifact
+      | undefined;
     expect(publicCopy?.metadata).not.toHaveProperty('payloadPath');
     expect(publicCopy?.metadata.taskRef).toMatchObject({
       kind: 'github-issue',
@@ -664,11 +850,19 @@ describe('WorkContext artifact store/index', () => {
       },
     ]);
     expect(publicPayload?.stages[0]?.actorId).toBe('agent');
-    expect(publicPayload?.stages[0]?.summary).toContain('[redacted-local-path]');
+    expect(publicPayload?.stages[0]?.summary).toContain(
+      '[redacted-local-path]'
+    );
     expect(
-      publicPayload?.scope.nonGoals.some((item) => /kanban|dispatcher|worktree/i.test(item))
+      publicPayload?.scope.nonGoals.some((item) =>
+        /kanban|dispatcher|worktree/i.test(item)
+      )
     ).toBe(false);
-    expect(validatePublicPipelineHandoffArtifact(publicPayload as PipelineHandoffArtifact).valid).toBe(true);
+    expect(
+      validatePublicPipelineHandoffArtifact(
+        publicPayload as PipelineHandoffArtifact
+      ).valid
+    ).toBe(true);
   });
 
   it('returns public summaries for agent view artifacts with sanitized manifest only', () => {
@@ -676,12 +870,14 @@ describe('WorkContext artifact store/index', () => {
     const pkg = viewArtifact({
       manifest: {
         ...viewArtifact().manifest,
-        description: 'Public view from /home/operator/relay with t_12345678 internal scratch id',
+        description:
+          'Public view from /home/operator/relay with t_12345678 internal scratch id',
         export: { policy: 'public' },
         revision: { id: 'agent-view:example:public' },
       },
       files: {
-        'index.html': '<main>raw html bytes mention /home/operator/relay and t_12345678</main>',
+        'index.html':
+          '<main>raw html bytes mention /home/operator/relay and t_12345678</main>',
       },
     });
     const stored = store.storeAgentViewArtifact({
@@ -732,8 +928,12 @@ describe('WorkContext artifact store/index', () => {
       )
     );
 
-    expect(() => store.read(stored.metadata.id)).toThrow(WorkContextArtifactStoreError);
-    expect(() => store.publicSummary(stored.metadata.id)).toThrow(WorkContextArtifactStoreError);
+    expect(() => store.read(stored.metadata.id)).toThrow(
+      WorkContextArtifactStoreError
+    );
+    expect(() => store.publicSummary(stored.metadata.id)).toThrow(
+      WorkContextArtifactStoreError
+    );
   });
 
   it('rejects supersedes edges across WorkContexts', () => {
@@ -753,9 +953,9 @@ describe('WorkContext artifact store/index', () => {
         supersedesArtifactId: first.metadata.id,
       })
     ).toThrow(WorkContextArtifactStoreError);
-    expect(store.list({ workContextId: 'wc:a' }).map((entry) => entry.metadata.id)).toEqual([
-      first.metadata.id,
-    ]);
+    expect(
+      store.list({ workContextId: 'wc:a' }).map((entry) => entry.metadata.id)
+    ).toEqual([first.metadata.id]);
   });
 
   it('rejects loose timestamps and mismatched store ids', () => {

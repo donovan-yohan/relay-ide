@@ -15,6 +15,7 @@ import type {
   GitHubIssuesResponse,
   JiraIssue,
   JiraIssuesResponse,
+  WorkContextActiveGroup,
 } from '../lib/types.js';
 import { derivePrDotStatus } from '../lib/pr-status.js';
 import StatusDot from './StatusDot.js';
@@ -28,6 +29,12 @@ import {
   buildTopicPaletteResults,
   recentTopicPaletteResults,
 } from '../lib/command-palette-topic-results.js';
+import {
+  artifactKindIcon,
+  fetchArtifactPaletteResults,
+  type ArtifactPaletteResult,
+} from '../lib/command-palette-artifact-results.js';
+import type { PipelineHandoffArtifactEnvelope } from '../lib/pipeline-handoff-timeline.js';
 import type {
   WorkspaceTopic,
   WorkspaceTopicListResponse,
@@ -56,6 +63,7 @@ const TABS = [
   'sessions',
   'topics',
   'workspaces',
+  'artifacts',
   'prs',
   'settings',
 ] as const;
@@ -63,6 +71,7 @@ type Tab = (typeof TABS)[number];
 
 const SEC_GENERAL = 'section-general';
 const SEC_INTEGRATIONS = 'section-integrations';
+const SEC_NODES = 'section-nodes';
 const SEC_ADVANCED = 'section-advanced';
 const SEC_ABOUT = 'section-about';
 
@@ -110,6 +119,12 @@ const SETTINGS_ENTRIES = [
     section: SEC_INTEGRATIONS,
   },
   {
+    id: 'setting-nodes',
+    label: 'Nodes',
+    description: 'Pair, rename, or revoke Relay nodes',
+    section: SEC_NODES,
+  },
+  {
     id: 'setting-devtools',
     label: 'Developer Tools',
     description: 'Mobile debug panel',
@@ -154,6 +169,13 @@ type PaletteResult =
       label: string;
       sublabel?: string;
       data: WorkspaceTopic;
+    }
+  | {
+      type: 'artifact';
+      id: string;
+      label: string;
+      sublabel?: string;
+      data: PipelineHandoffArtifactEnvelope;
     }
   | {
       type: 'pr' | 'attention';
@@ -236,6 +258,8 @@ function categoryIcon(type: PaletteResult['type']): string {
       return '▸';
     case 'topic':
       return '◇';
+    case 'artifact':
+      return '▤';
     case 'pr':
     case 'attention':
       return '●';
@@ -255,6 +279,7 @@ function matchesTab(type: PaletteResult['type'], activeTab: Tab): boolean {
   if (activeTab === 'sessions') return type === 'session' || type === 'command';
   if (activeTab === 'topics') return type === 'topic';
   if (activeTab === 'workspaces') return type === 'workspace';
+  if (activeTab === 'artifacts') return type === 'artifact';
   if (activeTab === 'prs') return type === 'pr' || type === 'attention';
   if (activeTab === 'settings') return type === 'setting' || type === 'command';
   return true;
@@ -262,6 +287,24 @@ function matchesTab(type: PaletteResult['type'], activeTab: Tab): boolean {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Resolves the workspace path to open for an artifact result (#1065). There
+ * is no direct deep-link into the evidence tab yet (see PR notes) — this is
+ * the cheapest existing open path: the WorkContext's worktree/repo path, so
+ * `onSelectWorkspace` can navigate there and the user opens the evidence tab
+ * manually.
+ */
+function repoPathForWorkContext(
+  activeWork: WorkContextActiveGroup[],
+  workContextId: string
+): string | undefined {
+  const group = activeWork.find((g) => g.context?.id === workContextId);
+  return (
+    group?.context?.anchors.worktree?.localPath ??
+    group?.context?.anchors.repo?.localPath
+  );
 }
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
@@ -291,7 +334,18 @@ function useCachedData(open: boolean) {
         ?.topics ?? [],
     [queryClient, open]
   );
-  return { cachedPrs, cachedGithubIssues, cachedJiraIssues, cachedTopics };
+  const cachedActiveWork = useMemo<WorkContextActiveGroup[]>(
+    () =>
+      queryClient.getQueryData<WorkContextActiveGroup[]>(['active-work']) ?? [],
+    [queryClient, open]
+  );
+  return {
+    cachedPrs,
+    cachedGithubIssues,
+    cachedJiraIssues,
+    cachedTopics,
+    cachedActiveWork,
+  };
 }
 
 /**
@@ -327,7 +381,9 @@ function buildResults(
   degradedCommands: { action: Action; reason: string }[],
   needsAttention: PullRequest[],
   activeTab: Tab,
-  actionContext: ActionContext
+  actionContext: ActionContext,
+  /** Hub-wide artifact search results (#1065) — already fetched+filtered server-side for `q`. */
+  artifactResults: ArtifactPaletteResult[]
 ): PaletteResult[] {
   const items: PaletteResult[] = [];
   if (!q) {
@@ -384,6 +440,9 @@ function buildResults(
   }
   for (const topic of buildTopicPaletteResults(q, cachedTopics, 5)) {
     items.push(topic);
+  }
+  for (const result of artifactResults) {
+    items.push(result);
   }
   for (const pr of cachedPrs
     .filter(
@@ -478,6 +537,7 @@ function useGroupedResults(
           { type: 'workspace', label: 'workspaces' },
           { type: 'session', label: 'sessions' },
           { type: 'topic', label: 'topics' },
+          { type: 'artifact', label: 'artifacts' },
           { type: 'pr', label: 'pull requests' },
           { type: 'ticket', label: 'tickets' },
           { type: 'command', label: 'commands' },
@@ -494,6 +554,46 @@ function useGroupedResults(
       return items.length > 0 ? [{ label, items }] : [];
     });
   }, [results, query]);
+}
+
+/**
+ * Hub-wide artifact search (#1065): fetches once `debouncedQuery` settles
+ * (the palette already debounces the raw query 150ms before this hook sees
+ * it, so no further debouncing is needed here). A monotonically increasing
+ * request id guards against a slow earlier request clobbering a faster
+ * later one.
+ */
+function useArtifactPaletteResults(
+  debouncedQuery: string,
+  cachedTopics: WorkspaceTopic[],
+  open: boolean
+): ArtifactPaletteResult[] {
+  const [results, setResults] = useState<ArtifactPaletteResult[]>([]);
+  const requestIdRef = useRef(0);
+
+  useEffect(() => {
+    const q = debouncedQuery.trim();
+    if (!open || !q) {
+      setResults([]);
+      return;
+    }
+    const requestId = ++requestIdRef.current;
+    let cancelled = false;
+    void fetchArtifactPaletteResults(q, cachedTopics, 5)
+      .then((next) => {
+        if (cancelled || requestId !== requestIdRef.current) return;
+        setResults(next);
+      })
+      .catch(() => {
+        if (cancelled || requestId !== requestIdRef.current) return;
+        setResults([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedQuery, cachedTopics, open]);
+
+  return results;
 }
 
 // ── usePaletteState hook ───────────────────────────────────────────────────────
@@ -563,6 +663,7 @@ function usePaletteHandlers(
   onSelectSession: (id: string) => void,
   onSelectTopic: ((topic: WorkspaceTopic) => void) | undefined,
   onSelectPr: (pr: PullRequest) => void,
+  cachedActiveWork: WorkContextActiveGroup[],
   onOpenSettings?: (sectionId: string) => void
 ) {
   const scrollFocusedIntoView = useCallback(() => {
@@ -592,7 +693,22 @@ function usePaletteHandlers(
         onSelectSession(scopedSessionKey(item.data as SessionSummary));
       else if (item.type === 'topic')
         onSelectTopic?.(item.data as WorkspaceTopic);
-      else if (item.type === 'attention' || item.type === 'pr')
+      else if (item.type === 'artifact') {
+        // #1065: no direct deep-link into the evidence artifacts tab exists
+        // yet (see PR notes) — copy the artifact reference and navigate to
+        // the owning workspace as the cheapest existing open path so the
+        // user can open the evidence tab manually.
+        const envelope = item.data as PipelineHandoffArtifactEnvelope;
+        const uri = `relay://work-context-artifacts/${encodeURIComponent(envelope.metadata.id)}`;
+        if (globalThis.navigator?.clipboard?.writeText) {
+          void globalThis.navigator.clipboard.writeText(uri);
+        }
+        const repoPath = repoPathForWorkContext(
+          cachedActiveWork,
+          envelope.metadata.workContextId
+        );
+        if (repoPath) onSelectWorkspace(repoPath);
+      } else if (item.type === 'attention' || item.type === 'pr')
         onSelectPr(item.data as PullRequest);
       else if (item.type === 'setting')
         onOpenSettings?.((item.data as SettingEntry).section);
@@ -604,6 +720,7 @@ function usePaletteHandlers(
       onSelectSession,
       onSelectTopic,
       onSelectPr,
+      cachedActiveWork,
       onOpenSettings,
     ]
   );
@@ -865,8 +982,13 @@ export function CommandPalette({
     setDragging,
     dragStartYRef,
   } = usePaletteState(open, inputRef);
-  const { cachedPrs, cachedGithubIssues, cachedJiraIssues, cachedTopics } =
-    useCachedData(open);
+  const {
+    cachedPrs,
+    cachedGithubIssues,
+    cachedJiraIssues,
+    cachedTopics,
+    cachedActiveWork,
+  } = useCachedData(open);
   // Commands that pass `when` — active and invocable.
   const registryCommands = useMemo(
     () => getAllActions().filter((a) => !a.when || a.when(actionContext)),
@@ -897,6 +1019,11 @@ export function CommandPalette({
         .slice(0, 5),
     [cachedPrs]
   );
+  const artifactResults = useArtifactPaletteResults(
+    debouncedQuery,
+    cachedTopics,
+    open
+  );
 
   const results = useMemo(
     () =>
@@ -912,7 +1039,8 @@ export function CommandPalette({
         degradedCommands,
         needsAttention,
         activeTab,
-        actionContext
+        actionContext,
+        artifactResults
       ),
     [
       debouncedQuery,
@@ -927,6 +1055,7 @@ export function CommandPalette({
       needsAttention,
       activeTab,
       actionContext,
+      artifactResults,
     ]
   );
   const groupedResults = useGroupedResults(results, debouncedQuery);
@@ -965,6 +1094,7 @@ export function CommandPalette({
     onSelectSession,
     onSelectTopic,
     onSelectPr,
+    cachedActiveWork,
     onOpenSettings
   );
 
@@ -1254,6 +1384,13 @@ export function CommandPalette({
                           (item.data as Action).icon ? (
                           <span className="item-icon">
                             {(item.data as Action).icon}
+                          </span>
+                        ) : item.type === 'artifact' ? (
+                          <span className="item-icon">
+                            {artifactKindIcon(
+                              (item.data as PipelineHandoffArtifactEnvelope)
+                                .metadata.kind
+                            )}
                           </span>
                         ) : (
                           <span className="item-icon">

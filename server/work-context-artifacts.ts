@@ -29,6 +29,8 @@ import {
 } from '../shared/work-context.js';
 
 const SCHEMA_VERSION = 2;
+/** Hard cap for `q`-driven searches (#1065) — hub-wide, so keep results tight. */
+export const WORK_CONTEXT_ARTIFACT_SEARCH_MAX_LIMIT = 20;
 const DEFAULT_PAYLOAD_MEDIA_TYPE = 'application/json';
 const DEFAULT_VISIBILITY: WorkContextArtifactVisibility = 'private';
 const VISIBILITIES = new Set<string>(['private', 'public']);
@@ -41,7 +43,8 @@ const WINDOWS_ABSOLUTE_PATH_RE = /(?:^|[\s:=('"])[a-z]:[\\/][^\s)'"]+/gi;
 const UNC_PATH_RE = /(?:^|[\s:=('"])\\\\[^\s\\/'"]+[\\/][^\s)'"]+/g;
 const KANBAN_TASK_ID_RE = /\bt_[a-f0-9]{8,}\b/gi;
 const STRICT_ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const AGENT_VIEW_ISO_TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/;
+const AGENT_VIEW_ISO_TIMESTAMP_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS work_context_artifacts (
@@ -97,7 +100,9 @@ CREATE INDEX IF NOT EXISTS idx_work_context_artifact_task_refs_lookup
 `;
 
 export type WorkContextArtifactVisibility = 'private' | 'public';
-export type WorkContextArtifactPayloadKind = 'pipeline-handoff-artifact' | 'agent-view-artifact';
+export type WorkContextArtifactPayloadKind =
+  | 'pipeline-handoff-artifact'
+  | 'agent-view-artifact';
 
 export interface WorkContextArtifactIndexInput {
   id?: string;
@@ -197,12 +202,24 @@ export interface WorkContextArtifactListInput {
   stage?: PipelineHandoffStageName;
   includeSuperseded?: boolean;
   limit?: number;
+  /**
+   * Free-text hub-wide search over metadata only (title/kind/taskRef/workContextId) —
+   * never body/payload content (#1065). Presence of `q` puts `list()` into
+   * search mode, which enforces a tighter hard limit (<=20, see
+   * WORK_CONTEXT_ARTIFACT_SEARCH_MAX_LIMIT) regardless of the requested limit.
+   */
+  q?: string;
+  kind?: ArtifactKind;
 }
 
 export interface WorkContextArtifactStore {
   close(): void;
-  storePipelineHandoffArtifact(input: StorePipelineHandoffArtifactInput): WorkContextArtifactRecord;
-  storeAgentViewArtifact(input: StoreAgentViewArtifactInput): WorkContextArtifactRecord;
+  storePipelineHandoffArtifact(
+    input: StorePipelineHandoffArtifactInput
+  ): WorkContextArtifactRecord;
+  storeAgentViewArtifact(
+    input: StoreAgentViewArtifactInput
+  ): WorkContextArtifactRecord;
   get(id: string): WorkContextArtifactRecord | null;
   read(id: string): WorkContextArtifactReadResult | null;
   readViewArtifactPackage(id: string): AgentViewArtifactReadResult | null;
@@ -242,7 +259,9 @@ interface PersistedMetadataJson {
   taskRef: TaskRef;
 }
 
-type IndexedTaskRef = Pick<TaskRef, 'id' | 'title' | 'url' | 'status'> & { kind: string };
+type IndexedTaskRef = Pick<TaskRef, 'id' | 'title' | 'url' | 'status'> & {
+  kind: string;
+};
 
 export class WorkContextArtifactStoreError extends Error {
   readonly status: number;
@@ -270,24 +289,32 @@ export function createWorkContextArtifactStore(input: {
   payloadRoot?: string;
 }): WorkContextArtifactStore {
   mkdirSync(path.dirname(input.dbPath), { recursive: true });
-  const payloadRoot = input.payloadRoot ?? path.join(path.dirname(input.dbPath), 'work-context-artifacts', 'payloads');
+  const payloadRoot =
+    input.payloadRoot ??
+    path.join(path.dirname(input.dbPath), 'work-context-artifacts', 'payloads');
   mkdirSync(payloadRoot, { recursive: true });
 
   const db = new Database(input.dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('synchronous = NORMAL');
-  db.exec('CREATE TABLE IF NOT EXISTS work_context_artifact_schema_version (version INTEGER NOT NULL)');
-  const schemaRow = db.prepare('SELECT version FROM work_context_artifact_schema_version').get() as
-    | { version: number }
-    | undefined;
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS work_context_artifact_schema_version (version INTEGER NOT NULL)'
+  );
+  const schemaRow = db
+    .prepare('SELECT version FROM work_context_artifact_schema_version')
+    .get() as { version: number } | undefined;
   const hadSchemaRow = schemaRow !== undefined;
   if ((schemaRow?.version ?? 0) < SCHEMA_VERSION) {
     db.transaction(() => {
       db.exec(SCHEMA_SQL);
       if (hadSchemaRow) {
-        db.prepare('UPDATE work_context_artifact_schema_version SET version = ?').run(SCHEMA_VERSION);
+        db.prepare(
+          'UPDATE work_context_artifact_schema_version SET version = ?'
+        ).run(SCHEMA_VERSION);
       } else {
-        db.prepare('INSERT INTO work_context_artifact_schema_version (version) VALUES (?)').run(SCHEMA_VERSION);
+        db.prepare(
+          'INSERT INTO work_context_artifact_schema_version (version) VALUES (?)'
+        ).run(SCHEMA_VERSION);
       }
     })();
   }
@@ -315,7 +342,9 @@ export function createWorkContextArtifactStore(input: {
     )
   `);
   backfillArtifactTaskRefs(db, insertTaskRef);
-  const selectById = db.prepare('SELECT * FROM work_context_artifacts WHERE id = ?');
+  const selectById = db.prepare(
+    'SELECT * FROM work_context_artifacts WHERE id = ?'
+  );
 
   function mustNotAlreadyExist(id: string): void {
     if (selectById.get(id)) {
@@ -330,10 +359,16 @@ export function createWorkContextArtifactStore(input: {
     if (!id) return;
     const row = selectById.get(id) as WorkContextArtifactRow | undefined;
     if (!row) {
-      throw new WorkContextArtifactStoreError(400, 'superseded_artifact_not_found');
+      throw new WorkContextArtifactStoreError(
+        400,
+        'superseded_artifact_not_found'
+      );
     }
     if (row.work_context_id !== workContextId) {
-      throw new WorkContextArtifactStoreError(400, 'superseded_artifact_scope_mismatch');
+      throw new WorkContextArtifactStoreError(
+        400,
+        'superseded_artifact_scope_mismatch'
+      );
     }
   }
 
@@ -367,7 +402,9 @@ export function createWorkContextArtifactStore(input: {
       db.close();
     },
 
-    storePipelineHandoffArtifact(storeInput: StorePipelineHandoffArtifactInput) {
+    storePipelineHandoffArtifact(
+      storeInput: StorePipelineHandoffArtifactInput
+    ) {
       assertNonEmptyString(storeInput.workContextId, 'workContextId');
       if (storeInput.projectId !== undefined)
         assertNonEmptyString(storeInput.projectId, 'projectId');
@@ -376,7 +413,8 @@ export function createWorkContextArtifactStore(input: {
         assertNonEmptyString(storeInput.provenanceActorId, 'provenanceActorId');
       if (storeInput.visibility !== undefined)
         assertValidVisibility(storeInput.visibility);
-      if (storeInput.kind !== undefined) assertValidArtifactKind(storeInput.kind);
+      if (storeInput.kind !== undefined)
+        assertValidArtifactKind(storeInput.kind);
       if (storeInput.title !== undefined)
         assertNonEmptyString(storeInput.title, 'title');
       if (storeInput.summary !== undefined)
@@ -391,23 +429,34 @@ export function createWorkContextArtifactStore(input: {
       }
       if (storeInput.id !== undefined) {
         assertNonEmptyString(storeInput.id, 'id');
-        if (storeInput.artifact.id !== undefined && storeInput.id !== storeInput.artifact.id) {
+        if (
+          storeInput.artifact.id !== undefined &&
+          storeInput.id !== storeInput.artifact.id
+        ) {
           throw new WorkContextArtifactStoreError(400, 'artifact_id_mismatch');
         }
       }
-      const artifactId = storeInput.id ?? storeInput.artifact.id ?? `artifact:${randomUUID()}`;
+      const artifactId =
+        storeInput.id ?? storeInput.artifact.id ?? `artifact:${randomUUID()}`;
       mustNotAlreadyExist(artifactId);
-      mustValidateSupersedes(storeInput.supersedesArtifactId, storeInput.workContextId);
+      mustValidateSupersedes(
+        storeInput.supersedesArtifactId,
+        storeInput.workContextId
+      );
 
       const taskRef = storeInput.taskRef ?? firstTaskRef(storeInput.artifact);
       if (!taskRef) {
         throw new WorkContextArtifactStoreError(400, 'task_ref_required');
       }
       assertValidTaskRef(taskRef);
-      const taskRefs = dedupeTaskRefs([taskRef, ...storeInput.artifact.scope.taskRefs]);
+      const taskRefs = dedupeTaskRefs([
+        taskRef,
+        ...storeInput.artifact.scope.taskRefs,
+      ]);
       for (const indexedTaskRef of taskRefs) assertValidTaskRef(indexedTaskRef);
       const now = new Date().toISOString();
-      const capturedAt = storeInput.capturedAt ?? storeInput.artifact.head.capturedAt;
+      const capturedAt =
+        storeInput.capturedAt ?? storeInput.artifact.head.capturedAt;
       assertIsoTimestamp(capturedAt, 'capturedAt');
       const payloadJson = JSON.stringify(storeInput.artifact, null, 2);
       const payloadSha256 = sha256Hex(payloadJson);
@@ -419,7 +468,9 @@ export function createWorkContextArtifactStore(input: {
         ...(storeInput.projectId ? { projectId: storeInput.projectId } : {}),
         taskRef,
         ...(storeInput.stage ? { stage: storeInput.stage } : {}),
-        ...(storeInput.provenanceActorId ? { provenanceActorId: storeInput.provenanceActorId } : {}),
+        ...(storeInput.provenanceActorId
+          ? { provenanceActorId: storeInput.provenanceActorId }
+          : {}),
         kind: storeInput.kind ?? 'report',
         title: storeInput.title ?? storeInput.artifact.title,
         summary: storeInput.summary ?? storeInput.artifact.scope.summary,
@@ -431,11 +482,17 @@ export function createWorkContextArtifactStore(input: {
         payloadMediaType: DEFAULT_PAYLOAD_MEDIA_TYPE,
         payloadSha256,
         payloadBytes,
-        ...(storeInput.artifact.head.pr?.number ? { prNumber: storeInput.artifact.head.pr.number } : {}),
+        ...(storeInput.artifact.head.pr?.number
+          ? { prNumber: storeInput.artifact.head.pr.number }
+          : {}),
         headSha: storeInput.artifact.head.headSha,
         baseName: storeInput.artifact.head.base.name,
-        ...(storeInput.artifact.head.branch?.name ? { branchName: storeInput.artifact.head.branch.name } : {}),
-        ...(storeInput.supersedesArtifactId ? { supersedesArtifactId: storeInput.supersedesArtifactId } : {}),
+        ...(storeInput.artifact.head.branch?.name
+          ? { branchName: storeInput.artifact.head.branch.name }
+          : {}),
+        ...(storeInput.supersedesArtifactId
+          ? { supersedesArtifactId: storeInput.supersedesArtifactId }
+          : {}),
       };
       db.transaction(() => {
         insertArtifact.run({
@@ -463,7 +520,9 @@ export function createWorkContextArtifactStore(input: {
           baseName: metadata.baseName ?? null,
           branchName: metadata.branchName ?? null,
           supersedesArtifactId: metadata.supersedesArtifactId ?? null,
-          metadataJson: JSON.stringify({ taskRef: metadata.taskRef } satisfies PersistedMetadataJson),
+          metadataJson: JSON.stringify({
+            taskRef: metadata.taskRef,
+          } satisfies PersistedMetadataJson),
         });
         for (const indexedTaskRef of taskRefs) {
           insertTaskRef.run({
@@ -488,7 +547,8 @@ export function createWorkContextArtifactStore(input: {
         assertNonEmptyString(storeInput.provenanceActorId, 'provenanceActorId');
       if (storeInput.visibility !== undefined)
         assertValidVisibility(storeInput.visibility);
-      if (storeInput.kind !== undefined) assertValidArtifactKind(storeInput.kind);
+      if (storeInput.kind !== undefined)
+        assertValidArtifactKind(storeInput.kind);
       if (storeInput.title !== undefined)
         assertNonEmptyString(storeInput.title, 'title');
       if (storeInput.summary !== undefined)
@@ -507,25 +567,35 @@ export function createWorkContextArtifactStore(input: {
           throw new WorkContextArtifactStoreError(400, 'artifact_id_mismatch');
         }
       }
-      const artifactId = storeInput.id ?? storeInput.viewArtifact.manifest.revision.id;
+      const artifactId =
+        storeInput.id ?? storeInput.viewArtifact.manifest.revision.id;
       mustNotAlreadyExist(artifactId);
-      const manifestSupersedesArtifactId = storeInput.viewArtifact.manifest.revision.supersedes;
-      const supersedesArtifactId = storeInput.supersedesArtifactId ?? manifestSupersedesArtifactId;
+      const manifestSupersedesArtifactId =
+        storeInput.viewArtifact.manifest.revision.supersedes;
+      const supersedesArtifactId =
+        storeInput.supersedesArtifactId ?? manifestSupersedesArtifactId;
       mustValidateSupersedes(supersedesArtifactId, storeInput.workContextId);
       if (
         storeInput.supersedesArtifactId &&
         manifestSupersedesArtifactId &&
         manifestSupersedesArtifactId !== storeInput.supersedesArtifactId
       ) {
-        throw new WorkContextArtifactStoreError(400, 'artifact_supersedes_mismatch');
+        throw new WorkContextArtifactStoreError(
+          400,
+          'artifact_supersedes_mismatch'
+        );
       }
 
-      const taskRef = storeInput.taskRef ?? firstTaskRef(storeInput.viewArtifact);
+      const taskRef =
+        storeInput.taskRef ?? firstTaskRef(storeInput.viewArtifact);
       if (!taskRef) {
         throw new WorkContextArtifactStoreError(400, 'task_ref_required');
       }
       assertValidTaskRef(taskRef);
-      const taskRefs = dedupeTaskRefs([taskRef, ...storeInput.viewArtifact.manifest.scope.taskRefs]);
+      const taskRefs = dedupeTaskRefs([
+        taskRef,
+        ...storeInput.viewArtifact.manifest.scope.taskRefs,
+      ]);
       for (const indexedTaskRef of taskRefs) assertValidTaskRef(indexedTaskRef);
       const now = new Date().toISOString();
       const capturedAt = normalizeAgentViewIsoTimestamp(
@@ -533,8 +603,14 @@ export function createWorkContextArtifactStore(input: {
         'capturedAt'
       );
       const visibility = storeInput.viewArtifact.manifest.export.policy;
-      if (storeInput.visibility !== undefined && storeInput.visibility !== visibility) {
-        throw new WorkContextArtifactStoreError(400, 'artifact_visibility_mismatch');
+      if (
+        storeInput.visibility !== undefined &&
+        storeInput.visibility !== visibility
+      ) {
+        throw new WorkContextArtifactStoreError(
+          400,
+          'artifact_visibility_mismatch'
+        );
       }
       const payloadJson = JSON.stringify(storeInput.viewArtifact, null, 2);
       const payloadSha256 = sha256Hex(payloadJson);
@@ -546,10 +622,15 @@ export function createWorkContextArtifactStore(input: {
         ...(storeInput.projectId ? { projectId: storeInput.projectId } : {}),
         taskRef,
         ...(storeInput.stage ? { stage: storeInput.stage } : {}),
-        ...(storeInput.provenanceActorId ? { provenanceActorId: storeInput.provenanceActorId } : {}),
+        ...(storeInput.provenanceActorId
+          ? { provenanceActorId: storeInput.provenanceActorId }
+          : {}),
         kind: storeInput.kind ?? 'report',
         title: storeInput.title ?? storeInput.viewArtifact.manifest.title,
-        summary: storeInput.summary ?? storeInput.viewArtifact.manifest.description ?? storeInput.viewArtifact.manifest.title,
+        summary:
+          storeInput.summary ??
+          storeInput.viewArtifact.manifest.description ??
+          storeInput.viewArtifact.manifest.title,
         visibility,
         createdAt: now,
         updatedAt: now,
@@ -586,7 +667,9 @@ export function createWorkContextArtifactStore(input: {
           baseName: null,
           branchName: null,
           supersedesArtifactId: metadata.supersedesArtifactId ?? null,
-          metadataJson: JSON.stringify({ taskRef: metadata.taskRef } satisfies PersistedMetadataJson),
+          metadataJson: JSON.stringify({
+            taskRef: metadata.taskRef,
+          } satisfies PersistedMetadataJson),
         });
         for (const indexedTaskRef of taskRefs) {
           insertTaskRef.run({
@@ -616,13 +699,19 @@ export function createWorkContextArtifactStore(input: {
       const payload = JSON.parse(raw) as unknown;
       if (row.payload_kind === 'pipeline-handoff-artifact') {
         if (!isPipelineHandoffArtifact(payload)) {
-          throw new WorkContextArtifactStoreError(500, 'stored_payload_invalid');
+          throw new WorkContextArtifactStoreError(
+            500,
+            'stored_payload_invalid'
+          );
         }
         return { ...record, payload };
       }
       if (row.payload_kind === 'agent-view-artifact') {
         if (!isAgentViewArtifact(payload)) {
-          throw new WorkContextArtifactStoreError(500, 'stored_payload_invalid');
+          throw new WorkContextArtifactStoreError(
+            500,
+            'stored_payload_invalid'
+          );
         }
         return { ...record, payload };
       }
@@ -633,7 +722,10 @@ export function createWorkContextArtifactStore(input: {
       const row = getRow(id);
       if (!row) return null;
       if (row.payload_kind !== 'agent-view-artifact') {
-        throw new WorkContextArtifactStoreError(400, 'artifact_payload_kind_mismatch');
+        throw new WorkContextArtifactStoreError(
+          400,
+          'artifact_payload_kind_mismatch'
+        );
       }
       const record = rowToRecord(row);
       const raw = readFileSync(row.payload_path, 'utf8');
@@ -646,7 +738,13 @@ export function createWorkContextArtifactStore(input: {
     },
 
     list(input: WorkContextArtifactListInput = {}) {
-      const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+      const searchMode = Boolean(input.q);
+      const limit = searchMode
+        ? Math.min(
+            Math.max(input.limit ?? WORK_CONTEXT_ARTIFACT_SEARCH_MAX_LIMIT, 1),
+            WORK_CONTEXT_ARTIFACT_SEARCH_MAX_LIMIT
+          )
+        : Math.min(Math.max(input.limit ?? 50, 1), 200);
       const clauses: string[] = [];
       const params: Record<string, unknown> = { limit };
       if (input.workContextId) {
@@ -656,6 +754,22 @@ export function createWorkContextArtifactStore(input: {
       if (input.projectId) {
         clauses.push('project_id = @projectId');
         params.projectId = input.projectId;
+      }
+      if (input.kind) {
+        clauses.push('kind = @kind');
+        params.kind = input.kind;
+      }
+      if (input.q) {
+        // Metadata-only search (#1065): title/kind/taskRef/workContextId. Never
+        // body/payload content — the payload lives on disk, not in this table.
+        clauses.push(`(
+          title LIKE @q ESCAPE '\\' OR
+          kind LIKE @q ESCAPE '\\' OR
+          work_context_id LIKE @q ESCAPE '\\' OR
+          task_ref_kind LIKE @q ESCAPE '\\' OR
+          task_ref_id LIKE @q ESCAPE '\\'
+        )`);
+        params.q = `%${escapeSqlLikeWildcards(input.q)}%`;
       }
       if (input.taskRef) {
         clauses.push(`EXISTS (
@@ -681,7 +795,11 @@ export function createWorkContextArtifactStore(input: {
         )`);
       }
       const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-      const rows = db.prepare(`SELECT * FROM work_context_artifacts ${where} ORDER BY captured_at DESC, created_at DESC LIMIT @limit`).all(params) as WorkContextArtifactRow[];
+      const rows = db
+        .prepare(
+          `SELECT * FROM work_context_artifacts ${where} ORDER BY captured_at DESC, created_at DESC LIMIT @limit`
+        )
+        .all(params) as WorkContextArtifactRow[];
       return rows.map(rowToRecord);
     },
 
@@ -695,7 +813,10 @@ export function createWorkContextArtifactStore(input: {
       const parsed = JSON.parse(raw) as unknown;
       if (row.payload_kind === 'pipeline-handoff-artifact') {
         if (!isPipelineHandoffArtifact(parsed)) {
-          throw new WorkContextArtifactStoreError(500, 'stored_payload_invalid');
+          throw new WorkContextArtifactStoreError(
+            500,
+            'stored_payload_invalid'
+          );
         }
         const payload = sanitizePipelineHandoffArtifactForPublic(parsed);
         const publicValidation = validatePublicPipelineHandoffArtifact(payload);
@@ -710,7 +831,10 @@ export function createWorkContextArtifactStore(input: {
       }
       if (row.payload_kind === 'agent-view-artifact') {
         if (!isAgentViewArtifact(parsed)) {
-          throw new WorkContextArtifactStoreError(500, 'stored_payload_invalid');
+          throw new WorkContextArtifactStoreError(
+            500,
+            'stored_payload_invalid'
+          );
         }
         const manifest = sanitizeAgentViewManifestForPublic(parsed.manifest);
         const publicValidation = validatePublicAgentViewManifest(manifest);
@@ -732,10 +856,15 @@ function backfillArtifactTaskRefs(
   db: Database.Database,
   insertTaskRef: Database.Statement
 ): void {
-  const rows = db.prepare('SELECT * FROM work_context_artifacts').all() as WorkContextArtifactRow[];
+  const rows = db
+    .prepare('SELECT * FROM work_context_artifacts')
+    .all() as WorkContextArtifactRow[];
   db.transaction(() => {
     for (const row of rows) {
-      const taskRefs = dedupeTaskRefs([legacyTaskRef(row), ...payloadTaskRefs(row)]);
+      const taskRefs = dedupeTaskRefs([
+        legacyTaskRef(row),
+        ...payloadTaskRefs(row),
+      ]);
       for (const taskRef of taskRefs) {
         insertTaskRef.run({
           artifactId: row.id,
@@ -763,19 +892,23 @@ function payloadTaskRefs(row: WorkContextArtifactRow): IndexedTaskRef[] {
     const directScope = parsed.scope;
     const manifest = parsed.manifest;
     const manifestScope = isRecord(manifest) ? manifest.scope : undefined;
-    const directRefs = isRecord(directScope) && Array.isArray(directScope.taskRefs)
-      ? directScope.taskRefs
-      : [];
-    const manifestRefs = isRecord(manifestScope) && Array.isArray(manifestScope.taskRefs)
-      ? manifestScope.taskRefs
-      : [];
+    const directRefs =
+      isRecord(directScope) && Array.isArray(directScope.taskRefs)
+        ? directScope.taskRefs
+        : [];
+    const manifestRefs =
+      isRecord(manifestScope) && Array.isArray(manifestScope.taskRefs)
+        ? manifestScope.taskRefs
+        : [];
     return [...directRefs, ...manifestRefs].filter(isIndexableTaskRef);
   } catch {
     return [];
   }
 }
 
-function rowToMetadata(row: WorkContextArtifactRow): WorkContextArtifactMetadata {
+function rowToMetadata(
+  row: WorkContextArtifactRow
+): WorkContextArtifactMetadata {
   const json = JSON.parse(row.metadata_json) as PersistedMetadataJson;
   return {
     id: row.id,
@@ -783,7 +916,9 @@ function rowToMetadata(row: WorkContextArtifactRow): WorkContextArtifactMetadata
     ...(row.project_id ? { projectId: row.project_id } : {}),
     taskRef: json.taskRef,
     ...(row.stage ? { stage: row.stage as PipelineHandoffStageName } : {}),
-    ...(row.provenance_actor_id ? { provenanceActorId: row.provenance_actor_id } : {}),
+    ...(row.provenance_actor_id
+      ? { provenanceActorId: row.provenance_actor_id }
+      : {}),
     kind: row.kind as ArtifactKind,
     title: row.title,
     summary: row.summary,
@@ -799,7 +934,9 @@ function rowToMetadata(row: WorkContextArtifactRow): WorkContextArtifactMetadata
     ...(row.head_sha ? { headSha: row.head_sha } : {}),
     ...(row.base_name ? { baseName: row.base_name } : {}),
     ...(row.branch_name ? { branchName: row.branch_name } : {}),
-    ...(row.supersedes_artifact_id ? { supersedesArtifactId: row.supersedes_artifact_id } : {}),
+    ...(row.supersedes_artifact_id
+      ? { supersedesArtifactId: row.supersedes_artifact_id }
+      : {}),
   };
 }
 
@@ -810,15 +947,23 @@ function publicMetadata(
     ? {
         kind: metadata.taskRef.kind,
         id: sanitizePublicText(metadata.taskRef.id),
-        ...(metadata.taskRef.title ? { title: sanitizePublicText(metadata.taskRef.title) } : {}),
-        ...(metadata.taskRef.url ? { url: sanitizePublicText(metadata.taskRef.url) } : {}),
-        ...(metadata.taskRef.status ? { status: sanitizePublicText(metadata.taskRef.status) } : {}),
+        ...(metadata.taskRef.title
+          ? { title: sanitizePublicText(metadata.taskRef.title) }
+          : {}),
+        ...(metadata.taskRef.url
+          ? { url: sanitizePublicText(metadata.taskRef.url) }
+          : {}),
+        ...(metadata.taskRef.status
+          ? { status: sanitizePublicText(metadata.taskRef.status) }
+          : {}),
       }
     : undefined;
   return {
     id: sanitizePublicText(metadata.id),
     workContextId: sanitizePublicText(metadata.workContextId),
-    ...(metadata.projectId ? { projectId: sanitizePublicText(metadata.projectId) } : {}),
+    ...(metadata.projectId
+      ? { projectId: sanitizePublicText(metadata.projectId) }
+      : {}),
     ...(taskRef ? { taskRef } : {}),
     ...(metadata.stage ? { stage: metadata.stage } : {}),
     kind: metadata.kind,
@@ -831,15 +976,25 @@ function publicMetadata(
     payloadBytes: metadata.payloadBytes,
     ...(metadata.prNumber ? { prNumber: metadata.prNumber } : {}),
     ...(metadata.headSha ? { headSha: metadata.headSha } : {}),
-    ...(metadata.baseName ? { baseName: sanitizePublicText(metadata.baseName) } : {}),
-    ...(metadata.branchName ? { branchName: sanitizePublicText(metadata.branchName) } : {}),
+    ...(metadata.baseName
+      ? { baseName: sanitizePublicText(metadata.baseName) }
+      : {}),
+    ...(metadata.branchName
+      ? { branchName: sanitizePublicText(metadata.branchName) }
+      : {}),
     ...(metadata.supersedesArtifactId
-      ? { supersedesArtifactId: sanitizePublicText(metadata.supersedesArtifactId) }
+      ? {
+          supersedesArtifactId: sanitizePublicText(
+            metadata.supersedesArtifactId
+          ),
+        }
       : {}),
   };
 }
 
-function firstTaskRef(artifact: PipelineHandoffArtifact | ViewArtifactPackage): TaskRef | undefined {
+function firstTaskRef(
+  artifact: PipelineHandoffArtifact | ViewArtifactPackage
+): TaskRef | undefined {
   const taskRefs = isAgentViewArtifact(artifact)
     ? artifact.manifest.scope.taskRefs
     : artifact.scope.taskRefs;
@@ -850,7 +1005,9 @@ function firstTaskRef(artifact: PipelineHandoffArtifact | ViewArtifactPackage): 
   );
 }
 
-function dedupeTaskRefs<T extends { kind: string; id: string }>(taskRefs: T[]): T[] {
+function dedupeTaskRefs<T extends { kind: string; id: string }>(
+  taskRefs: T[]
+): T[] {
   const seen = new Set<string>();
   const unique: T[] = [];
   for (const taskRef of taskRefs) {
@@ -866,9 +1023,17 @@ function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+/** Escapes SQLite LIKE wildcards (`%`, `_`) so free-text search terms match literally. */
+function escapeSqlLikeWildcards(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
 function assertPayloadSha256(raw: string, row: WorkContextArtifactRow): void {
   if (sha256Hex(raw) !== row.payload_sha256) {
-    throw new WorkContextArtifactStoreError(500, 'stored_payload_sha256_mismatch');
+    throw new WorkContextArtifactStoreError(
+      500,
+      'stored_payload_sha256_mismatch'
+    );
   }
 }
 
@@ -893,7 +1058,16 @@ function normalizeAgentViewIsoTimestamp(value: string, label: string): string {
 function parseAgentViewIsoTimestamp(value: string): Date | null {
   const match = AGENT_VIEW_ISO_TIMESTAMP_RE.exec(value);
   if (!match) return null;
-  const [, rawYear, rawMonth, rawDay, rawHour, rawMinute, rawSecond, rawFraction] = match;
+  const [
+    ,
+    rawYear,
+    rawMonth,
+    rawDay,
+    rawHour,
+    rawMinute,
+    rawSecond,
+    rawFraction,
+  ] = match;
   const year = Number(rawYear);
   const month = Number(rawMonth);
   const day = Number(rawDay);
@@ -901,7 +1075,9 @@ function parseAgentViewIsoTimestamp(value: string): Date | null {
   const minute = Number(rawMinute);
   const second = Number(rawSecond);
   const milliseconds = rawFraction ? Number(rawFraction.padEnd(3, '0')) : 0;
-  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second, milliseconds));
+  const parsed = new Date(
+    Date.UTC(year, month - 1, day, hour, minute, second, milliseconds)
+  );
   if (
     parsed.getUTCFullYear() !== year ||
     parsed.getUTCMonth() + 1 !== month ||
@@ -971,15 +1147,15 @@ function sanitizePublicText(value: string): string {
   return value
     .replace(SECRET_TEXT_RE, '[redacted-secret]')
     .replace(ABSOLUTE_LOCAL_PATH_RE, (match) => {
-      const prefix = " \t:=('\"".includes(match[0] ?? '') ? match[0] : '';
+      const prefix = ' \t:=(\'"'.includes(match[0] ?? '') ? match[0] : '';
       return `${prefix}[redacted-local-path]`;
     })
     .replace(WINDOWS_ABSOLUTE_PATH_RE, (match) => {
-      const prefix = " \t:=('\"".includes(match[0] ?? '') ? match[0] : '';
+      const prefix = ' \t:=(\'"'.includes(match[0] ?? '') ? match[0] : '';
       return `${prefix}[redacted-local-path]`;
     })
     .replace(UNC_PATH_RE, (match) => {
-      const prefix = " \t:=('\"".includes(match[0] ?? '') ? match[0] : '';
+      const prefix = ' \t:=(\'"'.includes(match[0] ?? '') ? match[0] : '';
       return `${prefix}[redacted-local-path]`;
     })
     .replace(KANBAN_TASK_ID_RE, '[redacted-kanban-task]');
