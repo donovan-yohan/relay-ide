@@ -2,14 +2,45 @@ import { describe, expect, it } from 'vitest';
 import { resolveAppViewMode } from '../frontend/src/lib/state/app-view-mode.js';
 
 describe('resolveAppViewMode', () => {
-  it('routes the no-project/no-session landing path to the WorkContext cockpit', () => {
+  it('routes the no-project/no-session landing path to the chat/topic spine', () => {
     expect(
       resolveAppViewMode({
         analyticsView: null,
         hasActiveSession: false,
         activeRepoPath: null,
       })
+    ).toBe('chat');
+  });
+
+  it('routes back to the WorkContext cockpit when forceOrgCockpit is set', () => {
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: false,
+        activeRepoPath: null,
+        forceOrgCockpit: true,
+      })
     ).toBe('org');
+  });
+
+  it('ignores forceOrgCockpit once a session or explicit repo takes priority', () => {
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: true,
+        activeRepoPath: null,
+        forceOrgCockpit: true,
+      })
+    ).toBe('session');
+
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: false,
+        activeRepoPath: '/repo/relay-ide',
+        forceOrgCockpit: true,
+      })
+    ).toBe('dashboard');
   });
 
   it('preserves session, analytics, and explicit repo dashboard priority', () => {

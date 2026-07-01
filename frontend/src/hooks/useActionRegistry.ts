@@ -103,6 +103,7 @@ import {
   navSwitchToTab,
   navOpenFile,
   navNextAttentionWork,
+  navOpenWorkCockpit,
 } from '../lib/actions/definitions/navigation.js';
 import { cliGatewayCommandActions } from '../lib/actions/definitions/cli-gateway.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
@@ -678,6 +679,22 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
               .getState()
               .showToast(`could not load active work: ${message}`);
           }
+        },
+      },
+      {
+        // #1058: the chat/topic spine is the default no-session/no-repo
+        // landing; this is the escape hatch back to the legacy WorkContext
+        // cockpit. Clears the active session/repo/analytics view so
+        // resolveAppViewMode's no-session/no-repo branch is reached, then
+        // sets forceOrgCockpit so it resolves to 'org' instead of 'chat'.
+        ...navOpenWorkCockpit,
+        handler: () => {
+          const sessions = useSessionsStore.getState();
+          const ui = useUiStore.getState();
+          ui.setAnalyticsView(null);
+          sessions.setActiveSessionId(null);
+          ui.setActiveRepoPath(null);
+          ui.setForceOrgCockpit(true);
         },
       },
       {

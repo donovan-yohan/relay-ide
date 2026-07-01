@@ -63,6 +63,7 @@ import { getActiveTerminalHandle } from './lib/terminal-refs.js';
 import PrTopBar from './components/PrTopBar.js';
 import RepoDashboard from './components/RepoDashboard.js';
 import OrgDashboard from './components/OrgDashboard.js';
+import ChatHome from './components/ChatHome.js';
 import Toolbar from './components/Toolbar.js';
 import MobileHeader from './components/MobileHeader.js';
 import SessionStatusBar from './components/SessionStatusBar.js';
@@ -178,6 +179,8 @@ function resolveTerminalFilePath(
 function useTerminalDerivedState() {
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const analyticsView = useUiStore((s) => s.analyticsView);
+  const forceOrgCockpit = useUiStore((s) => s.forceOrgCockpit);
+  const setForceOrgCockpit = useUiStore((s) => s.setForceOrgCockpit);
   const sessions = useSessionsStore((s) => s.sessions);
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
@@ -248,9 +251,17 @@ function useTerminalDerivedState() {
         analyticsView,
         hasActiveSession,
         activeRepoPath,
+        forceOrgCockpit,
       }),
-    [analyticsView, hasActiveSession, activeRepoPath]
+    [analyticsView, hasActiveSession, activeRepoPath, forceOrgCockpit]
   );
+
+  // #1058: once a session goes active, drop the explicit cockpit override so
+  // the next no-session/no-repo landing defaults back to the chat spine
+  // instead of leaving the operator stuck in the legacy cockpit.
+  useEffect(() => {
+    if (hasActiveSession && forceOrgCockpit) setForceOrgCockpit(false);
+  }, [hasActiveSession, forceOrgCockpit, setForceOrgCockpit]);
 
   return {
     activeRepoPath,
@@ -698,6 +709,8 @@ function TerminalAreaContent({
         onRightSidebarClick={handleToggleUtilityRail}
         hidden={keyboardOpen}
       />
+      {viewMode === 'chat' && <ChatHome onSelectSession={onSelectSession} />}
+
       {viewMode === 'org' && (
         <OrgDashboard
           onOpenPrSession={onOpenPrSession}
