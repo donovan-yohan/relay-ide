@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { SessionInboxMessageId } from '../../../shared/context-packet.js';
 import type { SessionMailboxAction } from '../hooks/useSessionMailbox.js';
 import { useSessionMailbox } from '../hooks/useSessionMailbox.js';
@@ -5,8 +6,73 @@ import type {
   SessionMailboxMessage,
   SessionMailboxSummary,
 } from '../lib/session-mailbox.js';
+import { sendInboxMessage } from '../lib/api.js';
 import { TuiButton } from './TuiButton.js';
 import './SessionMailboxPanel.css';
+
+interface MailboxComposerProps {
+  targetSessionId: string;
+  onSent: () => void;
+}
+
+/**
+ * Compose a direct message to a LOCAL agent friend — the session that owns this
+ * mailbox — via the inbox (`targetSessionId`). Cross-workspace MAIL
+ * (`targetWorkContextId`) is a separate affordance tracked on #1079.
+ */
+function MailboxComposer({ targetSessionId, onSent }: MailboxComposerProps) {
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const send = async (): Promise<void> => {
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      await sendInboxMessage({ targetSessionId, text, contextPacketIds: [] });
+      setDraft('');
+      onSent();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to send message');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="session-mailbox-compose">
+      <input
+        className="session-mailbox-compose__input"
+        value={draft}
+        placeholder="message this agent…"
+        aria-label="message this agent"
+        disabled={sending}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            void send();
+          }
+        }}
+      />
+      <TuiButton
+        size="sm"
+        variant="info"
+        disabled={sending || draft.trim().length === 0}
+        onClick={() => void send()}
+      >
+        {sending ? 'sending' : 'send'}
+      </TuiButton>
+      {error && (
+        <span className="session-mailbox-compose__error" role="alert">
+          {error}
+        </span>
+      )}
+    </div>
+  );
+}
 
 interface SessionMailboxBadgeProps {
   targetSessionId: string;
@@ -25,7 +91,10 @@ export function SessionMailboxBadge({
   targetSessionId,
   label,
 }: SessionMailboxBadgeProps) {
-  const mailbox = useSessionMailbox(targetSessionId, { mode: 'preview', limit: 6 });
+  const mailbox = useSessionMailbox(targetSessionId, {
+    mode: 'preview',
+    limit: 6,
+  });
   const summary = mailbox.summary;
   const visible =
     mailbox.isLoading ||
@@ -56,7 +125,9 @@ interface SessionMailboxPanelProps {
   compact?: boolean;
 }
 
-function actionForMessage(message: SessionMailboxMessage): SessionMailboxAction[] {
+function actionForMessage(
+  message: SessionMailboxMessage
+): SessionMailboxAction[] {
   if (!message.open) return [];
   const actions: SessionMailboxAction[] = [];
   if (message.ackable) actions.push('ack');
@@ -103,7 +174,10 @@ function SessionMailboxCard({
         {message.createdAt && <span>{message.createdAt}</span>}
       </div>
       {message.artifacts.length > 0 && (
-        <div className="session-mailbox-card__artifacts" aria-label="artifact refs">
+        <div
+          className="session-mailbox-card__artifacts"
+          aria-label="artifact refs"
+        >
           {message.artifacts.map((artifact) => (
             <span key={artifact.packetId} className="session-mailbox-artifact">
               {artifact.kind} · {artifact.label}
@@ -169,15 +243,25 @@ export default function SessionMailboxPanel({
       </div>
       {mailbox.isError ? (
         <div className="session-mailbox-state session-mailbox-state--error">
-          <span>mailbox failed: {mailbox.error?.message ?? 'unknown error'}</span>
-          <TuiButton size="sm" variant="ghost" onClick={() => void mailbox.refetch()}>
+          <span>
+            mailbox failed: {mailbox.error?.message ?? 'unknown error'}
+          </span>
+          <TuiButton
+            size="sm"
+            variant="ghost"
+            onClick={() => void mailbox.refetch()}
+          >
             retry
           </TuiButton>
         </div>
       ) : mailbox.isLoading ? (
-        <div className="session-mailbox-state">loading mailroom messages...</div>
+        <div className="session-mailbox-state">
+          loading mailroom messages...
+        </div>
       ) : mailbox.summary.messages.length === 0 ? (
-        <div className="session-mailbox-state">mailbox clear · no session mail</div>
+        <div className="session-mailbox-state">
+          mailbox clear · no session mail
+        </div>
       ) : (
         <div className="session-mailbox-list">
           {mailbox.summary.messages.map((message) => (
@@ -189,6 +273,12 @@ export default function SessionMailboxPanel({
             />
           ))}
         </div>
+      )}
+      {!compact && (
+        <MailboxComposer
+          targetSessionId={targetSessionId}
+          onSent={() => void mailbox.refetch()}
+        />
       )}
     </section>
   );

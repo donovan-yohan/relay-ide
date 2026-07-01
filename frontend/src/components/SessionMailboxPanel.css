@@ -155,3 +155,32 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.session-mailbox-compose {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.session-mailbox-compose__input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  padding: 4px 6px;
+}
+
+.session-mailbox-compose__input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.session-mailbox-compose__error {
+  color: var(--status-error);
+  font-size: var(--font-size-xs);
+}
