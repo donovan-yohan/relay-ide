@@ -31,6 +31,7 @@ import {
   resubscribeIfNeeded,
 } from './lib/notifications.js';
 import type { Repo, PullRequest, SessionSummary } from './lib/types.js';
+import { resolveTopicActiveContext } from '../../shared/workspace-topics.js';
 import { estimateTerminalDimensions } from './lib/utils.js';
 import { createSessionWithoutActivation } from './lib/session-utils.js';
 import {
@@ -736,15 +737,15 @@ function TerminalAreaContent({
           {activeRepoPath &&
             activeSession?.repoPath === activeRepoPath &&
             activeWorkspace?.kind === 'repo' && (
-            <PrTopBar
-              workspacePath={activeRepoPath}
-              utilityRailWorkspacePath={utilityRailStateKey}
-              branchName={activeSession?.branchName ?? ''}
-              sessionId={activeSessionId}
-              agentRunning={activeSession?.agentState === 'processing'}
-              onArchive={onArchive}
-            />
-          )}
+              <PrTopBar
+                workspacePath={activeRepoPath}
+                utilityRailWorkspacePath={utilityRailStateKey}
+                branchName={activeSession?.branchName ?? ''}
+                sessionId={activeSessionId}
+                agentRunning={activeSession?.agentState === 'processing'}
+                onArchive={onArchive}
+              />
+            )}
           <SplitPaneLayout
             rightSidebarCollapsed={!utilityRailState.visible}
             rightSidebarWidth={utilityRailWidth}
@@ -1376,6 +1377,13 @@ export default function App() {
           closeSidebar();
         }}
         onSelectSession={(id) => handleSelectSession(id)}
+        onSelectTopic={(topic) => {
+          const context = resolveTopicActiveContext(topic);
+          const ui = useUiStore.getState();
+          ui.setActiveWorkspaceId(context.workspaceId);
+          if (context.repoPath) ui.setActiveRepoPath(context.repoPath);
+          closeSidebar();
+        }}
         onSelectPr={handlePaletteSelectPr}
         onOpenSettings={(sectionId) => {
           setSpotlightOpen(false);
