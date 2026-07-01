@@ -450,6 +450,50 @@ function parseToolArguments(value: unknown): Record<string, unknown> {
   }
 }
 
+const RESPONSES_METADATA_MAX_KEYS = 16;
+const RESPONSES_METADATA_KEY_MAX = 64;
+const RESPONSES_METADATA_VALUE_MAX = 512;
+
+/**
+ * Coerce an `extra.metadata` object into the string-keyed/string-valued shape
+ * the OpenAI-compatible Responses API accepts (≤16 pairs, bounded lengths).
+ * Returns undefined when there is nothing to send.
+ */
+export function sanitizeResponsesMetadata(
+  raw: unknown
+): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value === null || value === undefined) continue;
+    if (Object.keys(out).length >= RESPONSES_METADATA_MAX_KEYS) break;
+    const k = key.slice(0, RESPONSES_METADATA_KEY_MAX);
+    out[k] = String(value).slice(0, RESPONSES_METADATA_VALUE_MAX);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Build the Relay workspace/topic anchors that tag a Hermes conversation so the
+ * gateway (and any audit/observer) can associate the session with its topic,
+ * repo, and node. Empty fields are omitted.
+ */
+export function buildRelayHermesMetadata(input: {
+  topicId?: string | null | undefined;
+  workspaceId?: string | null | undefined;
+  repoPath?: string | null | undefined;
+  branchName?: string | null | undefined;
+  nodeId?: string | null | undefined;
+}): Record<string, string> {
+  const md: Record<string, string> = {};
+  if (input.topicId) md['relay_topic_id'] = input.topicId;
+  if (input.workspaceId) md['relay_workspace_id'] = input.workspaceId;
+  if (input.repoPath) md['relay_repo_path'] = input.repoPath;
+  if (input.branchName) md['relay_branch'] = input.branchName;
+  if (input.nodeId) md['relay_node_id'] = input.nodeId;
+  return md;
+}
+
 /**
  * Hermes protocol adapter.
  *
@@ -544,6 +588,12 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     };
     if (this._lastResponseId) {
       body['previous_response_id'] = this._lastResponseId;
+    }
+    const metadata = sanitizeResponsesMetadata(
+      this._config?.extra?.['metadata']
+    );
+    if (metadata) {
+      body['metadata'] = metadata;
     }
 
     try {
