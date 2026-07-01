@@ -200,6 +200,39 @@ describe('QuestionCard rendering', () => {
     expect(container.textContent).toContain('Pick an approach');
     expect(container.textContent).toContain('rewrite');
   });
+
+  it('falls back to raw answers when a fields-less completed item is mounted fresh (reload/reconnect)', async () => {
+    // Simulates a reload/second-client scenario: no prior render exists to
+    // seed the fields cache, so the ref is empty on first mount. The
+    // completed item never carries `fields` (mirrors the real codex
+    // completion patch), only `answers`. The read-only summary must still
+    // surface the answers instead of rendering nothing.
+    const freshContainer = document.createElement('div');
+    document.body.appendChild(freshContainer);
+    const freshRoot = createRoot(freshContainer);
+
+    try {
+      await act(async () => {
+        freshRoot.render(
+          React.createElement(QuestionCard, {
+            item: makeQuestionItem({
+              fields: undefined,
+              status: 'completed',
+              answers: { approach: ['rewrite'] },
+              completedAt: timestamp(),
+            }),
+            onAnswer,
+          })
+        );
+      });
+
+      expect(freshContainer.textContent).toContain('answered');
+      expect(freshContainer.textContent).toContain('rewrite');
+    } finally {
+      act(() => freshRoot.unmount());
+      freshContainer.remove();
+    }
+  });
 });
 
 function makePlanItem(

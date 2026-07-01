@@ -12,7 +12,12 @@ import type { AgentQuestionItemV2 } from '../../../../shared/agent-chat-protocol
  * The codex adapter's `agent-item-updated-v2` completion patch does not
  * re-send `fields` (only `answers`), so this component caches the last
  * non-empty `fields` array in a ref keyed by item id to keep the read-only
- * view legible (field prompts, not just raw ids).
+ * view legible (field prompts, not just raw ids) for the lifetime of a
+ * mounted instance. A fresh mount (reload, navigate-away-and-back, a second
+ * client) has no cache to draw on, so the answered view falls back to
+ * iterating `item.answers` directly (field id + joined values) whenever
+ * `fields` is empty — the answers still render, just without the original
+ * prompt text.
  */
 
 interface QuestionField {
@@ -104,63 +109,73 @@ export const QuestionCard: React.FC<QuestionCardProps> = ({
       </div>
       {item.question && <div className="qcard__question">{item.question}</div>}
       <div className="qcard__fields">
-        {fields.map((field) => (
-          <div className="qcard__field" key={field.id}>
-            {field.prompt && (
-              <div className="qcard__prompt">{field.prompt}</div>
-            )}
-            {answered ? (
-              <div className="qcard__answer">
-                {(item.answers?.[field.id] ?? []).join(', ') || '(no answer)'}
+        {answered && fields.length === 0
+          ? Object.entries(item.answers ?? {}).map(([fieldId, values]) => (
+              <div className="qcard__field" key={fieldId}>
+                <div className="qcard__prompt">{fieldId}</div>
+                <div className="qcard__answer">
+                  {values.join(', ') || '(no answer)'}
+                </div>
               </div>
-            ) : (
-              <>
-                {field.options && field.options.length > 0 && (
-                  <div
-                    className="qcard__options"
-                    role="radiogroup"
-                    aria-label={field.prompt}
-                  >
-                    {field.options.map((option) => (
-                      <button
-                        key={option}
-                        type="button"
-                        role="radio"
-                        aria-checked={selections[field.id] === option}
-                        className={`qcard__opt${
-                          selections[field.id] === option
-                            ? ' qcard__opt--selected'
-                            : ''
-                        }`}
-                        onClick={() => handleSelect(field.id, option)}
-                      >
-                        {option}
-                      </button>
-                    ))}
+            ))
+          : fields.map((field) => (
+              <div className="qcard__field" key={field.id}>
+                {field.prompt && (
+                  <div className="qcard__prompt">{field.prompt}</div>
+                )}
+                {answered ? (
+                  <div className="qcard__answer">
+                    {(item.answers?.[field.id] ?? []).join(', ') ||
+                      '(no answer)'}
                   </div>
+                ) : (
+                  <>
+                    {field.options && field.options.length > 0 && (
+                      <div
+                        className="qcard__options"
+                        role="radiogroup"
+                        aria-label={field.prompt}
+                      >
+                        {field.options.map((option) => (
+                          <button
+                            key={option}
+                            type="button"
+                            role="radio"
+                            aria-checked={selections[field.id] === option}
+                            className={`qcard__opt${
+                              selections[field.id] === option
+                                ? ' qcard__opt--selected'
+                                : ''
+                            }`}
+                            onClick={() => handleSelect(field.id, option)}
+                          >
+                            {option}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {(field.isOther ||
+                      !field.options ||
+                      field.options.length === 0) && (
+                      <input
+                        type="text"
+                        className="qcard__other"
+                        placeholder={
+                          field.options && field.options.length > 0
+                            ? 'other…'
+                            : 'your answer'
+                        }
+                        value={otherText[field.id] ?? ''}
+                        onChange={(e) =>
+                          handleOtherChange(field.id, e.target.value)
+                        }
+                        aria-label={`${field.prompt || field.id} (other)`}
+                      />
+                    )}
+                  </>
                 )}
-                {(field.isOther ||
-                  !field.options ||
-                  field.options.length === 0) && (
-                  <input
-                    type="text"
-                    className="qcard__other"
-                    placeholder={
-                      field.options && field.options.length > 0
-                        ? 'other…'
-                        : 'your answer'
-                    }
-                    value={otherText[field.id] ?? ''}
-                    onChange={(e) =>
-                      handleOtherChange(field.id, e.target.value)
-                    }
-                    aria-label={`${field.prompt || field.id} (other)`}
-                  />
-                )}
-              </>
-            )}
-          </div>
-        ))}
+              </div>
+            ))}
       </div>
       {!answered && (
         <div className="qcard__actions">
