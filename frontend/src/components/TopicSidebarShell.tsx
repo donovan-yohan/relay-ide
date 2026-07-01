@@ -387,7 +387,7 @@ function ParticipantChildRow({
         type="button"
         className="topic-child-row__button"
         {...(handleSelect ? { onClick: handleSelect } : { disabled: true })}
-        title={`open existing session ${participant.selectKey}`}
+        title={`open existing session ${participant.label}`}
       >
         <span className="topic-child-row__label">
           <MarqueeText>{participant.label}</MarqueeText>
@@ -457,7 +457,7 @@ function ParticipantRoster({
                   {...(handleSelect
                     ? { onClick: handleSelect }
                     : { disabled: true })}
-                  title={`open existing session ${participant.selectKey}`}
+                  title={`open existing session ${participant.label}`}
                 >
                   <span className="topic-participant-card__topline">
                     <span className="topic-participant-card__name">
@@ -505,7 +505,7 @@ function TopicRoomSessionRow({
       <button
         type="button"
         className="topic-room-session__button"
-        title={`open exact session ${session.selectKey}`}
+        title={`open exact session ${session.label}`}
         onClick={() => onSelectSession?.(session.selectKey)}
       >
         <span className="topic-room-session__main">
@@ -969,7 +969,7 @@ function TopicMobileControlPanel({
         <div className="topic-mobile-confirm" role="status">
           <span>confirmation preview</span>
           <code>{pendingValue}</code>
-          <span>{session?.selectKey} · carriage return appended</span>
+          <span>{session?.label} · carriage return appended</span>
         </div>
       ) : null}
 

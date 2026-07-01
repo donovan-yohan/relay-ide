@@ -143,6 +143,21 @@ describe('TopicSidebarView', () => {
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
+  it('labels open-session affordances with a friendly name, not the raw select key', async () => {
+    await renderView();
+    const tips = Array.from(container.querySelectorAll('[title]'))
+      .map((el) => el.getAttribute('title') ?? '')
+      .filter((title) => title.startsWith('open'));
+    expect(tips.length).toBeGreaterThan(0);
+    expect(
+      tips.some((title) => title === 'open existing session Frontend lane')
+    ).toBe(true);
+    // The internal scoped select key must not leak into any tooltip.
+    for (const title of tips) {
+      expect(title).not.toMatch(/::|worktree:|node:/);
+    }
+  });
+
   it('establishes the topic node/repo context when a topic is selected', async () => {
     await renderView({
       topics: [
@@ -444,7 +459,9 @@ describe('TopicSidebarView', () => {
     const roomSessionButton = container.querySelector(
       '.topic-room-session__button'
     ) as HTMLButtonElement;
-    expect(roomSessionButton.title).toContain('global:agent-1');
+    // Tooltip shows the friendly label; the raw global select key stays internal.
+    expect(roomSessionButton.title).toBe('open exact session global lane');
+    expect(roomSessionButton.title).not.toContain('global:agent-1');
     await act(async () => roomSessionButton.click());
     expect(onSelectSession).toHaveBeenCalledWith('global:agent-1');
   });
