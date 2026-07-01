@@ -44,13 +44,16 @@ import type { SessionSummary } from '../lib/types.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
+import { useIaWorkspacesQuery } from '../lib/hooks/use-ia-workspaces.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import { durabilityDisabledReason } from '../lib/session-durability.js';
 import { resolveSessionByKey } from '../lib/session-keys.js';
 import {
   buildTopicNavModel,
+  groupTopicsByWorkspace,
   type TopicNavItem,
   type TopicNavModel,
+  type TopicNavWorkspace,
   type TopicNavParticipantRef,
   type TopicNavSessionRef,
   type TopicNavSurfaceRef,
@@ -1733,6 +1736,7 @@ function TopicSearchPanel({
 const EMPTY_TOPICS: WorkspaceTopic[] = [];
 const EMPTY_SURFACES: WorkspaceSurface[] = [];
 const EMPTY_SEARCH_RESULTS: WorkspaceTopicSearchResult[] = [];
+const EMPTY_WORKSPACES: TopicNavWorkspace[] = [];
 
 export function TopicSidebarView({
   topics,
@@ -1756,10 +1760,14 @@ export function TopicSidebarView({
   onSendInput = sendSessionInput,
   createPanel,
   onCreateTaskRoom,
+  workspaces = EMPTY_WORKSPACES,
+  activeWorkspaceId = null,
 }: {
   topics: WorkspaceTopic[];
   sessions: SessionSummary[];
   surfaces: WorkspaceSurface[];
+  workspaces?: TopicNavWorkspace[];
+  activeWorkspaceId?: string | null;
   loading?: boolean;
   error?: boolean;
   derived?: boolean;
@@ -1786,6 +1794,10 @@ export function TopicSidebarView({
   const topicsById = useMemo(
     () => new Map(topics.map((topic) => [topic.id, topic])),
     [topics]
+  );
+  const grouped = useMemo(
+    () => groupTopicsByWorkspace(model, workspaces, activeWorkspaceId),
+    [model, workspaces, activeWorkspaceId]
   );
   const firstId = model.rootIds[0] ?? model.items[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(firstId);
@@ -1829,6 +1841,22 @@ export function TopicSidebarView({
     },
     [topicsById]
   );
+  const renderTopicRow = (id: string): ReactNode => {
+    const item = model.byId.get(id);
+    return item ? (
+      <TopicRow
+        key={item.id}
+        item={item}
+        depth={0}
+        model={model}
+        expandedIds={expandedIds}
+        selectedId={selectedId}
+        onToggle={toggle}
+        onSelect={select}
+        onSelectSession={onSelectSession}
+      />
+    ) : null;
+  };
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
   const mobileItems = useMemo(
     () =>
@@ -1890,24 +1918,47 @@ export function TopicSidebarView({
         onSearchClear={onSearchClear}
         onSelectSession={onSelectSession}
       />
-      <ul className="topic-tree" aria-label="workspace topics">
-        {model.rootIds.map((id) => {
-          const item = model.byId.get(id);
-          return item ? (
-            <TopicRow
-              key={item.id}
-              item={item}
-              depth={0}
-              model={model}
-              expandedIds={expandedIds}
-              selectedId={selectedId}
-              onToggle={toggle}
-              onSelect={select}
-              onSelectSession={onSelectSession}
-            />
-          ) : null;
-        })}
-      </ul>
+      <div className="topic-tree" aria-label="workspace topics">
+        {grouped.groups.map((group) => (
+          <section
+            key={group.id}
+            className="topic-workspace-group"
+            aria-label={group.title}
+          >
+            <div className="topic-workspace-group__header">
+              {group.icon ? (
+                <span
+                  className="topic-workspace-group__icon"
+                  aria-hidden="true"
+                >
+                  {group.icon}
+                </span>
+              ) : null}
+              <span className="topic-workspace-group__name">{group.title}</span>
+            </div>
+            <ul className="topic-tree__list">
+              {group.rootIds.map((id) => renderTopicRow(id))}
+            </ul>
+          </section>
+        ))}
+        {grouped.orphanRootIds.length > 0 ? (
+          <section
+            className="topic-workspace-group topic-workspace-group--orphan"
+            aria-label="no workspace"
+          >
+            {grouped.groups.length > 0 ? (
+              <div className="topic-workspace-group__header">
+                <span className="topic-workspace-group__name">
+                  no workspace
+                </span>
+              </div>
+            ) : null}
+            <ul className="topic-tree__list">
+              {grouped.orphanRootIds.map((id) => renderTopicRow(id))}
+            </ul>
+          </section>
+        ) : null}
+      </div>
       {selectedItem ? (
         <>
           <TopicDetail
@@ -1961,6 +2012,11 @@ export function TopicSidebarShell({
     queryFn: () => fetchWorkspaceTopics(),
     staleTime: 30_000,
   });
+  const workspacesQuery = useIaWorkspacesQuery();
+  const viewWorkspaces = useMemo<TopicNavWorkspace[]>(
+    () => workspacesQuery.data ?? EMPTY_WORKSPACES,
+    [workspacesQuery.data]
+  );
   const topicSearchQuery = useQuery({
     queryKey: ['workspace-topics', 'search', normalizedSearchQuery],
     queryFn: () =>
@@ -2198,6 +2254,7 @@ export function TopicSidebarShell({
       topics={viewTopics}
       sessions={sessions}
       surfaces={viewSurfaces}
+      workspaces={viewWorkspaces}
       loading={!searchActive && topicsQuery.isLoading && !topicsQuery.data}
       error={topicsQuery.isError && !topicsQuery.data && !searchActive}
       surfacesLoading={surfacesQuery.isLoading && !surfacesQuery.data}
