@@ -224,15 +224,14 @@ export function activeWorkAnchorLabel(
 ): string {
   const nodeLabel = group.node.displayName ?? group.node.nodeId;
   const nodeKind = group.node.kind ?? 'remote';
-  const cwd = session?.cwd ?? group.context?.anchors?.session?.cwd ?? 'no cwd reported';
+  const cwd =
+    session?.cwd ?? group.context?.anchors?.session?.cwd ?? 'no cwd reported';
   if (session) {
     const binding = resolveSessionRepoBinding(session, repos);
     if (binding?.kind === 'directory') {
       return `${nodeLabel} · ${cwd} · directory`;
     }
-    const repoLabel = binding
-      ? formatRepoBindingLabel(session, binding)
-      : null;
+    const repoLabel = binding ? formatRepoBindingLabel(session, binding) : null;
     if (repoLabel) return `repo ${repoLabel}`;
   }
   const anchorPrefix =
@@ -278,7 +277,9 @@ function sessionMeta(
       : undefined,
   ].filter(Boolean) as string[];
   const binding = resolveSessionRepoBinding(session, repos);
-  const bindingLabel = binding ? formatRepoBindingLabel(session, binding) : null;
+  const bindingLabel = binding
+    ? formatRepoBindingLabel(session, binding)
+    : null;
   if (binding?.kind === 'directory') {
     // directory-kind: hide git-only meta (branch, PR chips handled at card level)
     if (bindingLabel) meta.push(bindingLabel);
@@ -478,7 +479,9 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
         <SessionMailboxPanel
           compact
           targetSessionId={
-            primarySession ? activeWorkSessionActivationKey(primarySession) : null
+            primarySession
+              ? activeWorkSessionActivationKey(primarySession)
+              : null
           }
           title="primary session mailbox"
         />
@@ -601,8 +604,56 @@ function ActiveWorkCard({ group }: { group: WorkContextActiveGroup }) {
   );
 }
 
+/**
+ * Empty-cockpit state: a single bordered panel floated into the open space that
+ * drives the primary next action (start a topic) instead of leaving a void.
+ * Content is left-aligned (TUI-native, not a centered hero — see DESIGN.md).
+ */
+export function ActiveWorkEmpty({
+  onStartTopic,
+}: {
+  onStartTopic: () => void;
+}) {
+  return (
+    <div className="active-work-empty">
+      <div className="active-work-empty__panel">
+        <span className="active-work-empty__title">no active work yet</span>
+        <p className="active-work-empty__lede">
+          start a topic to chat with an agent, launch a terminal, or review
+          artifacts — each runs in its own node and repo. workcontexts,
+          mailboxes, and stale/offline node state show up here once work begins;
+          prs, tickets, nodes, and audit stay available above as secondary
+          context.
+        </p>
+        <div className="active-work-empty__actions">
+          <TuiButton variant="primary" onClick={onStartTopic}>
+            + new topic
+          </TuiButton>
+          <span className="active-work-empty__hint">
+            or search topics, tasks, and artifacts from the sidebar
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ActiveWorkSurface() {
   const queryClient = useQueryClient();
+  // Drive the same primary next action as the sidebar's create affordance. The
+  // create panel lives in TopicSidebarShell, which is unmounted while the
+  // sidebar is collapsed — so un-collapse + open first, then dispatch on the
+  // next tick once the shell has mounted and registered its listener (otherwise
+  // the event fires into the void and the CTA is a no-op in collapsed mode).
+  const startTopic = useCallback(() => {
+    const ui = useUiStore.getState();
+    if (ui.sidebarCollapsed) ui.toggleSidebarCollapsed();
+    ui.openSidebar();
+    setTimeout(
+      () => window.dispatchEvent(new Event('relay:open-topic-task-room')),
+      0
+    );
+  }, []);
   const {
     data = [],
     isLoading,
@@ -621,7 +672,10 @@ export default function ActiveWorkSurface() {
     };
     window.addEventListener('relay-active-work-changed', invalidateActiveWork);
     return () => {
-      window.removeEventListener('relay-active-work-changed', invalidateActiveWork);
+      window.removeEventListener(
+        'relay-active-work-changed',
+        invalidateActiveWork
+      );
     };
   }, [queryClient]);
 
@@ -648,8 +702,8 @@ export default function ActiveWorkSurface() {
     return (
       <div className="state-message state-message--error">
         <span>
-          could not load active work cockpit. prs, tickets, nodes, and audit stay
-          available as secondary tabs; retry to refresh workcontext status.
+          could not load active work cockpit. prs, tickets, nodes, and audit
+          stay available as secondary tabs; retry to refresh workcontext status.
         </span>
         <TuiButton size="sm" variant="ghost" onClick={() => void refetch()}>
           retry
@@ -667,8 +721,8 @@ export default function ActiveWorkSurface() {
         <div>
           <h2>active work</h2>
           <p>
-            primary operator cockpit grouped by workcontext across local, remote,
-            repo-bound, and free sessions
+            primary operator cockpit grouped by workcontext across local,
+            remote, repo-bound, and free sessions
           </p>
         </div>
         <div className="active-work-surface__summary">
@@ -677,15 +731,7 @@ export default function ActiveWorkSurface() {
         </div>
       </div>
       {groups.length === 0 ? (
-        <div className="active-work-empty">
-          <span>no active work in the cockpit</span>
-          <span>
-            start from an issue, assistant, or node terminal; workcontexts,
-            mailboxes, artifacts, and stale/offline node state will appear here.
-            prs, tickets, nodes, and audit stay available above as secondary
-            context.
-          </span>
-        </div>
+        <ActiveWorkEmpty onStartTopic={startTopic} />
       ) : (
         <div className="active-work-list">
           {groups.map((group) => (

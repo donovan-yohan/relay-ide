@@ -63,7 +63,6 @@ import { getActiveTerminalHandle } from './lib/terminal-refs.js';
 import PrTopBar from './components/PrTopBar.js';
 import RepoDashboard from './components/RepoDashboard.js';
 import OrgDashboard from './components/OrgDashboard.js';
-import ChatFirstLanding from './components/ChatFirstLanding.js';
 import Toolbar from './components/Toolbar.js';
 import MobileHeader from './components/MobileHeader.js';
 import SessionStatusBar from './components/SessionStatusBar.js';
@@ -700,13 +699,10 @@ function TerminalAreaContent({
         hidden={keyboardOpen}
       />
       {viewMode === 'org' && (
-        <>
-          <ChatFirstLanding />
-          <OrgDashboard
-            onOpenPrSession={onOpenPrSession}
-            onPrAction={onPrAction}
-          />
-        </>
+        <OrgDashboard
+          onOpenPrSession={onOpenPrSession}
+          onPrAction={onPrAction}
+        />
       )}
 
       {viewMode === 'analytics' && <AnalyticsViewContent />}
