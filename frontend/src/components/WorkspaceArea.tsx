@@ -650,6 +650,7 @@ export function WorkspaceArea({
   const layout = useWorkspaceLayoutStore((s) => s.layout);
   const activePaneId = useWorkspaceLayoutStore((s) => s.activePaneId);
   const addTab = useWorkspaceLayoutStore((s) => s.addTab);
+  const openTabBeside = useWorkspaceLayoutStore((s) => s.openTabBeside);
   const closeTab = useWorkspaceLayoutStore((s) => s.closeTab);
   const selectTab = useWorkspaceLayoutStore((s) => s.selectTab);
   const resetLayout = useWorkspaceLayoutStore((s) => s.resetLayout);
@@ -899,65 +900,120 @@ export function WorkspaceArea({
     [pendingRemoteTerminal, remoteTerminalCreating]
   );
 
+  // #1076/#1077: spawn a native Hermes chat and place it in a split pane
+  // beside the pane whose control was used, so agents can be watched together.
+  const spawnHermesBeside = useCallback(
+    async (paneId: string) => {
+      const { currentActiveWorkspace, currentWorktreePath } =
+        getCurrentSessionContext();
+      if (!currentActiveWorkspace) {
+        useUiStore.getState().setActiveModal({ modal: 'env-picker' });
+        return;
+      }
+      setActivePane(paneId);
+      const { session, error } = await createAgentSession({
+        agent: 'hermes',
+        type: 'agent',
+        mode: 'web',
+        repoPath: currentActiveWorkspace.path,
+        worktreePath: currentWorktreePath,
+        sessionLane: 'local-repo',
+      });
+      if (error && !(error instanceof ConflictError)) {
+        workspaceLogger.error('failed to create hermes chat', error);
+        useToastStore
+          .getState()
+          .showToast(
+            error instanceof Error
+              ? error.message
+              : 'failed to create hermes chat'
+          );
+        return;
+      }
+      if (session?.id) {
+        useSessionsStore.getState().setActiveSessionId(session.id);
+        openTabBeside({
+          kind: 'session',
+          sessionId: session.id,
+          sessionType: 'agent',
+        });
+      }
+    },
+    [setActivePane, openTabBeside]
+  );
+
   const renderAddControl = useCallback(
     (paneId: string) => (
-      <TerminalNodePicker
-        onSelect={async (nodeId) => {
-          // Resolve repoPath + worktreePath from the live session context.
-          // workspacePath is the active worktree's cwd, which the
-          // `/sessions` route would reject as a repoPath; mirror the same
-          // split that handleQuickTerminal uses.
-          const { currentActiveWorkspace, currentWorktreePath } =
-            getCurrentSessionContext();
-          if (!currentActiveWorkspace) {
-            // #862: no active workspace (repo-less hub) — route through the
-            // env-picker so the user can pick a node/cwd to launch a terminal
-            // against, instead of silently bailing. The picker derives its
-            // options from the canonical env inventory and launches a bare
-            // terminal (launchOverrides={{ type: 'terminal' }} wired in App).
-            useUiStore.getState().setActiveModal({ modal: 'env-picker' });
-            return;
-          }
-          // The new session lands in whichever pane is active; activate
-          // the pane whose `+` was used before the create call so the
-          // layout reconciler routes the tab to the correct pane.
-          setActivePane(paneId);
-          const isRemoteNode = nodeId !== DEFAULT_LOCAL_NODE_ID;
-          if (isRemoteNode) {
-            const node = hubNodes?.find(
-              (candidate) => candidate.nodeId === nodeId
-            );
-            setRemoteTerminalError(null);
-            setPendingRemoteTerminal({
-              nodeId,
-              label: node?.displayName || nodeId,
-              ...(node?.homeDir ? { homeDir: node.homeDir } : {}),
-            });
-            return;
-          }
-          const { session, error } = await createAgentSession({
-            repoPath: currentActiveWorkspace.path,
-            worktreePath: currentWorktreePath,
-            type: 'terminal',
-            sessionLane: 'local-repo',
-          });
-          if (error && !(error instanceof ConflictError)) {
-            workspaceLogger.error('failed to create terminal session', error);
-            useToastStore
-              .getState()
-              .showToast(
-                error instanceof Error
-                  ? error.message
-                  : 'failed to create terminal session'
+      <span className="ws-pane-add">
+        <button
+          type="button"
+          className="ws-pane-add__chat"
+          title="new hermes chat beside"
+          aria-label="new hermes chat beside"
+          onClick={() => {
+            void spawnHermesBeside(paneId);
+          }}
+        >
+          +chat
+        </button>
+        <TerminalNodePicker
+          onSelect={async (nodeId) => {
+            // Resolve repoPath + worktreePath from the live session context.
+            // workspacePath is the active worktree's cwd, which the
+            // `/sessions` route would reject as a repoPath; mirror the same
+            // split that handleQuickTerminal uses.
+            const { currentActiveWorkspace, currentWorktreePath } =
+              getCurrentSessionContext();
+            if (!currentActiveWorkspace) {
+              // #862: no active workspace (repo-less hub) — route through the
+              // env-picker so the user can pick a node/cwd to launch a terminal
+              // against, instead of silently bailing. The picker derives its
+              // options from the canonical env inventory and launches a bare
+              // terminal (launchOverrides={{ type: 'terminal' }} wired in App).
+              useUiStore.getState().setActiveModal({ modal: 'env-picker' });
+              return;
+            }
+            // The new session lands in whichever pane is active; activate
+            // the pane whose `+` was used before the create call so the
+            // layout reconciler routes the tab to the correct pane.
+            setActivePane(paneId);
+            const isRemoteNode = nodeId !== DEFAULT_LOCAL_NODE_ID;
+            if (isRemoteNode) {
+              const node = hubNodes?.find(
+                (candidate) => candidate.nodeId === nodeId
               );
-          }
-          if (session?.id) {
-            useSessionsStore.getState().setActiveSessionId(session.id);
-          }
-        }}
-      />
+              setRemoteTerminalError(null);
+              setPendingRemoteTerminal({
+                nodeId,
+                label: node?.displayName || nodeId,
+                ...(node?.homeDir ? { homeDir: node.homeDir } : {}),
+              });
+              return;
+            }
+            const { session, error } = await createAgentSession({
+              repoPath: currentActiveWorkspace.path,
+              worktreePath: currentWorktreePath,
+              type: 'terminal',
+              sessionLane: 'local-repo',
+            });
+            if (error && !(error instanceof ConflictError)) {
+              workspaceLogger.error('failed to create terminal session', error);
+              useToastStore
+                .getState()
+                .showToast(
+                  error instanceof Error
+                    ? error.message
+                    : 'failed to create terminal session'
+                );
+            }
+            if (session?.id) {
+              useSessionsStore.getState().setActiveSessionId(session.id);
+            }
+          }}
+        />
+      </span>
     ),
-    [setActivePane, hubNodes]
+    [setActivePane, hubNodes, spawnHermesBeside]
   );
 
   const renderTab = useCallback(

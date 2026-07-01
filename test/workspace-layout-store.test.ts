@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   _resetIdCounters,
   createDefaultWorkspaceLayout,
+  listPanes,
   workspaceTabId,
   type WorkspaceLayoutNode,
   type WorkspacePane,
@@ -153,5 +154,52 @@ describe('workspace-layout-store', () => {
     expect(
       useWorkspaceLayoutStore.getState().splitSizes[split.id]
     ).toBeUndefined();
+  });
+
+  it('openTabBeside splits a new tab beside the active pane', () => {
+    const { setLayout, openTabBeside } = useWorkspaceLayoutStore.getState();
+    setLayout(createDefaultWorkspaceLayout([sessionTab('a')]));
+    openTabBeside(sessionTab('b'));
+
+    const state = useWorkspaceLayoutStore.getState();
+    expect(state.layout.type).toBe('split');
+    const panes = listPanes(state.layout);
+    expect(panes).toHaveLength(2);
+    const paneWithA = panes.find((p) =>
+      p.tabs.some((t) => workspaceTabId(t) === workspaceTabId(sessionTab('a')))
+    );
+    const paneWithB = panes.find((p) =>
+      p.tabs.some((t) => workspaceTabId(t) === workspaceTabId(sessionTab('b')))
+    );
+    expect(paneWithA).toBeDefined();
+    expect(paneWithB).toBeDefined();
+    expect(paneWithA!.id).not.toBe(paneWithB!.id);
+    // Active pane follows the newly opened tab.
+    expect(state.activePaneId).toBe(paneWithB!.id);
+  });
+
+  it('openTabBeside opens in place when the active pane is empty', () => {
+    const { openTabBeside } = useWorkspaceLayoutStore.getState();
+    openTabBeside(sessionTab('solo'));
+    const state = useWorkspaceLayoutStore.getState();
+    expect(state.layout.type).toBe('pane');
+    expect(listPanes(state.layout)).toHaveLength(1);
+    expect((state.layout as WorkspacePane).tabs).toHaveLength(1);
+  });
+
+  it('openTabBeside does not duplicate a tab already open elsewhere', () => {
+    const { setLayout, openTabBeside } = useWorkspaceLayoutStore.getState();
+    setLayout(createDefaultWorkspaceLayout([sessionTab('a')]));
+    openTabBeside(sessionTab('b'));
+    // Calling again with the same tab keeps two panes, no duplicate.
+    openTabBeside(sessionTab('b'));
+    const panes = listPanes(useWorkspaceLayoutStore.getState().layout);
+    expect(panes).toHaveLength(2);
+    const bCount = panes
+      .flatMap((p) => p.tabs)
+      .filter(
+        (t) => workspaceTabId(t) === workspaceTabId(sessionTab('b'))
+      ).length;
+    expect(bCount).toBe(1);
   });
 });

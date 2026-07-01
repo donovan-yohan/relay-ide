@@ -75,3 +75,24 @@
   justify-content: flex-end;
   gap: 8px;
 }
+
+.ws-pane-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ws-pane-add__chat {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 1px 5px;
+  cursor: pointer;
+}
+
+.ws-pane-add__chat:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
