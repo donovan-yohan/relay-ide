@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import './ChatView.css';
 import { useAgentChatSocket } from '../../hooks/useAgentChatSocket.js';
-import { Composer, type ClientCommandHandler } from './Composer.js';
+import {
+  Composer,
+  type ClientCommandHandler,
+  type ComposerSendAttachment,
+} from './Composer.js';
 import { QueueChips } from './QueueChips.js';
 import { Turn, type EventVerbosity } from './Turn.js';
 import type { AgentSlashCommandV2 } from '../../../../shared/agent-chat-protocol-v2.js';
@@ -78,9 +82,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   }, [session]);
 
   const handleSend = useCallback(
-    (content: string) => {
+    (content: string, attachments?: ComposerSendAttachment[]) => {
       const turnId = crypto.randomUUID();
-      sendMessage(turnId, content);
+      sendMessage(turnId, content, attachments);
     },
     [sendMessage]
   );

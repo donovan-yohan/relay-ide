@@ -20,8 +20,27 @@ export type ClientCommandHandler = (
   args: string
 ) => { ok: true } | { ok: false; error: string };
 
+/** Wire-shaped image attachment forwarded to the adapter (server Attachment). */
+export interface ComposerSendAttachment {
+  type: 'image';
+  /** data: URI carrying the image bytes. */
+  path: string;
+  mimeType?: string;
+}
+
+/** Composer-local attachment state (richer than the wire shape, for chips). */
+interface ComposerAttachment {
+  id: string;
+  dataUri: string;
+  mimeType: string;
+  name: string;
+}
+
+/** Reject images above this size to keep WebSocket frames sane. */
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
 interface ComposerProps {
-  onSend: (content: string) => void;
+  onSend: (content: string, attachments?: ComposerSendAttachment[]) => void;
   onInterrupt: () => void;
   isActive: boolean;
   capabilities?: AgentCapabilitySetV2 | undefined;
@@ -56,6 +75,17 @@ function buildCommandIndex(commands: AgentSlashCommandV2[]): Set<string> {
   return index;
 }
 
+function toSendAttachments(
+  attachments: ComposerAttachment[]
+): ComposerSendAttachment[] | undefined {
+  if (attachments.length === 0) return undefined;
+  return attachments.map((a) => ({
+    type: 'image' as const,
+    path: a.dataUri,
+    mimeType: a.mimeType,
+  }));
+}
+
 export const Composer: React.FC<ComposerProps> = ({
   onSend,
   onInterrupt,
@@ -73,6 +103,80 @@ export const Composer: React.FC<ComposerProps> = ({
   const [caret, setCaret] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
   const [, setSendError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const addImageFiles = useCallback(
+    (files: FileList | File[]) => {
+      const images = Array.from(files).filter((f) =>
+        f.type.startsWith('image/')
+      );
+      for (const file of images) {
+        if (file.size > MAX_IMAGE_BYTES) {
+          pushClientError?.(
+            `image too large: ${file.name} (max 8MB)`,
+            'attach'
+          );
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUri =
+            typeof reader.result === 'string' ? reader.result : '';
+          if (!dataUri) return;
+          setAttachments((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              dataUri,
+              mimeType: file.type,
+              name: file.name || 'image',
+            },
+          ]);
+        };
+        reader.readAsDataURL(file);
+      }
+    },
+    [pushClientError]
+  );
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const files: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) files.push(file);
+        }
+      }
+      if (files.length > 0) {
+        e.preventDefault();
+        addImageFiles(files);
+      }
+    },
+    [addImageFiles]
+  );
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLTextAreaElement>) => {
+      const dropped = e.dataTransfer?.files;
+      if (!dropped || dropped.length === 0) return;
+      const images = Array.from(dropped).filter((f) =>
+        f.type.startsWith('image/')
+      );
+      if (images.length > 0) {
+        e.preventDefault();
+        addImageFiles(images);
+      }
+    },
+    [addImageFiles]
+  );
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+  }, []);
 
   const filteredCommands = useSlashCommands(
     capabilities,
@@ -144,66 +248,58 @@ export const Composer: React.FC<ComposerProps> = ({
     [capabilities.slashCommands, commandIndex, pushClientError]
   );
 
+  // Intercept client-dispatch slash commands (handled in-frontend, never sent
+  // to the adapter). Returns true when it fully handled the input.
+  const tryClientCommand = useCallback(
+    (content: string): boolean => {
+      if (!clientHandlers || !slashCommands) return false;
+      const leadingMatch = /^[/$](\S+)(?:\s+([\s\S]*))?$/.exec(content);
+      if (!leadingMatch) return false;
+      const name = (leadingMatch[1] ?? '').toLowerCase();
+      const args = leadingMatch[2] ?? '';
+      const matched = slashCommands.find(
+        (cmd) =>
+          cmd.dispatch === 'client' &&
+          (cmd.name.replace(/^[/$]/, '').toLowerCase() === name ||
+            (cmd.aliases ?? []).some(
+              (a) => a.replace(/^[/$]/, '').toLowerCase() === name
+            ))
+      );
+      if (!matched) return false;
+      const handler =
+        clientHandlers[matched.name.replace(/^[/$]/, '').toLowerCase()];
+      if (!handler) {
+        const missingMsg = `handler not implemented for ${matched.name}`;
+        if (pushClientError) pushClientError(missingMsg, matched.name);
+        else setSendError(missingMsg);
+        return true;
+      }
+      const result = handler(args);
+      if (!result.ok) {
+        if (pushClientError) pushClientError(result.error, matched.name);
+        else setSendError(result.error);
+        return true;
+      }
+      setDraft('');
+      setCaret(0);
+      setSendError(null);
+      return true;
+    },
+    [clientHandlers, slashCommands, pushClientError]
+  );
+
   const submitDraft = useCallback(() => {
     const content = draft.trim();
-    if (!content) return;
+    if (!content && attachments.length === 0) return;
     if (!validateAndSend(content)) return;
+    if (tryClientCommand(content)) return;
 
-    // Intercept client-dispatch commands (handled in frontend, never sent to adapter).
-    if (clientHandlers && slashCommands) {
-      const leadingMatch = /^[/$](\S+)(?:\s+([\s\S]*))?$/.exec(content);
-      if (leadingMatch) {
-        const name = (leadingMatch[1] ?? '').toLowerCase();
-        const args = leadingMatch[2] ?? '';
-        const matched = slashCommands.find(
-          (cmd) =>
-            cmd.dispatch === 'client' &&
-            (cmd.name.replace(/^[/$]/, '').toLowerCase() === name ||
-              (cmd.aliases ?? []).some(
-                (a) => a.replace(/^[/$]/, '').toLowerCase() === name
-              ))
-        );
-        if (matched) {
-          const handler =
-            clientHandlers[matched.name.replace(/^[/$]/, '').toLowerCase()];
-          if (handler) {
-            const result = handler(args);
-            if (!result.ok) {
-              if (pushClientError) {
-                pushClientError(result.error, matched.name);
-              } else {
-                setSendError(result.error);
-              }
-              return;
-            }
-            setDraft('');
-            setCaret(0);
-            setSendError(null);
-            return;
-          }
-          const missingMsg = `handler not implemented for ${matched.name}`;
-          if (pushClientError) {
-            pushClientError(missingMsg, matched.name);
-          } else {
-            setSendError(missingMsg);
-          }
-          return;
-        }
-      }
-    }
-
-    onSend(content);
+    onSend(content, toSendAttachments(attachments));
     setDraft('');
     setCaret(0);
     setSendError(null);
-  }, [
-    draft,
-    onSend,
-    validateAndSend,
-    clientHandlers,
-    slashCommands,
-    pushClientError,
-  ]);
+    setAttachments([]);
+  }, [draft, attachments, onSend, validateAndSend, tryClientCommand]);
 
   const applySelectedCommand = useCallback(() => {
     const cmd = filteredCommands[activeIndex];
@@ -391,13 +487,58 @@ export const Composer: React.FC<ComposerProps> = ({
             onKeyUp={updateCaret}
             onClick={updateCaret}
             onSelect={updateCaret}
+            onPaste={handlePaste}
+            onDrop={handleDrop}
+            onDragOver={(e) => e.preventDefault()}
             value={draft}
             rows={1}
             data-streaming={isActive ? 'true' : 'false'}
             aria-label="message input"
           />
         </div>
+        {attachments.length > 0 && (
+          <div className="composer__attachments" aria-label="attachments">
+            {attachments.map((a) => (
+              <span key={a.id} className="composer__chip" title={a.name}>
+                <img
+                  className="composer__chip-thumb"
+                  src={a.dataUri}
+                  alt={a.name}
+                />
+                <span className="composer__chip-name">{a.name}</span>
+                <button
+                  type="button"
+                  className="composer__chip-remove"
+                  aria-label={`remove ${a.name}`}
+                  onClick={() => removeAttachment(a.id)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="composer__bar">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              if (e.currentTarget.files) addImageFiles(e.currentTarget.files);
+              e.currentTarget.value = '';
+            }}
+          />
+          <button
+            type="button"
+            className="composer__attach"
+            aria-label="attach image"
+            title="attach image"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            +img
+          </button>
           <span className="composer__hint">{hintContent}</span>
           <span className="right ctx-pop-anchor" ref={ctxAnchorRef}>
             {modelName && (
