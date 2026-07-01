@@ -72,7 +72,9 @@ describe('Hermes V2 web adapter registration', () => {
       approvals: true,
       interrupt: true,
       resume: true,
-      telemetry: true,
+      // chat:telemetry isn't mapped by mapChatEventToAgentPatchV2 yet, so the
+      // bridge can't deliver it to the V2 stream/UI (see index.ts comment).
+      telemetry: false,
     });
   });
 
