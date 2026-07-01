@@ -54,6 +54,7 @@ export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
       interrupt: true,
       cancelQueued: false,
       resume: true,
+      telemetry: true,
     }),
 };
 

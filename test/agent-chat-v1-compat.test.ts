@@ -193,6 +193,111 @@ describe('Agent Chat v1 compatibility bridge', () => {
     ]);
   });
 
+  it('maps v1 tool-call events to a dynamicToolCall item update', () => {
+    const event: ChatEvent = {
+      type: 'chat:tool-call',
+      sessionId: 'session-1',
+      timestamp,
+      source: 'hermes',
+      turnId: 'turn-1',
+      toolCallId: 'call-1',
+      toolName: 'read_file',
+      description: '',
+      input: { path: 'a.txt' },
+      status: 'completed',
+    };
+
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([
+      {
+        type: 'agent-item-updated-v2',
+        sessionId: 'session-1',
+        timestamp,
+        turnId: 'turn-1',
+        item: {
+          type: 'dynamicToolCall',
+          id: 'tool-call-1',
+          namespace: 'hermes',
+          tool: 'read_file',
+          arguments: { path: 'a.txt' },
+          status: 'completed',
+          metadata: { source: 'hermes' },
+        },
+      },
+    ]);
+  });
+
+  it('maps v1 tool-result events to a content-appending item delta keyed by the same tool item id', () => {
+    const event: ChatEvent = {
+      type: 'chat:tool-result',
+      sessionId: 'session-1',
+      timestamp,
+      source: 'hermes',
+      turnId: 'turn-1',
+      toolCallId: 'call-1',
+      toolName: 'read_file',
+      status: 'completed',
+      output: 'file contents',
+      durationMs: 12,
+    };
+
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([
+      {
+        type: 'agent-item-delta-v2',
+        sessionId: 'session-1',
+        timestamp,
+        turnId: 'turn-1',
+        itemId: 'tool-call-1',
+        delta: { content: 'file contents' },
+      },
+    ]);
+  });
+
+  it('drops tool-result events with no output or error to avoid a no-op patch', () => {
+    const event: ChatEvent = {
+      type: 'chat:tool-result',
+      sessionId: 'session-1',
+      timestamp,
+      source: 'hermes',
+      turnId: 'turn-1',
+      toolCallId: 'call-1',
+      toolName: 'read_file',
+      status: 'completed',
+      durationMs: 12,
+    };
+
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([]);
+  });
+
+  it('maps v1 reasoning events to a reasoning item update', () => {
+    const event: ChatEvent = {
+      type: 'chat:reasoning',
+      sessionId: 'session-1',
+      timestamp,
+      source: 'hermes',
+      turnId: 'turn-1',
+      messageId: 'reasoning-turn-1',
+      content: 'Thinking it through',
+      isDelta: false,
+    };
+
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([
+      {
+        type: 'agent-item-updated-v2',
+        sessionId: 'session-1',
+        timestamp,
+        turnId: 'turn-1',
+        item: {
+          type: 'reasoning',
+          id: 'reasoning-turn-1',
+          summary: 'Thinking it through',
+          visibility: 'summary',
+          status: 'completed',
+          metadata: { source: 'hermes' },
+        },
+      },
+    ]);
+  });
+
   it('maps v2 assistant message deltas back to v1 text deltas with preserved source for legacy UI', () => {
     const patch: AgentPatchV2 & { metadata: { source: 'opencode' } } = {
       type: 'agent-item-delta-v2',
