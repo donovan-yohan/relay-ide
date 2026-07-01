@@ -41,6 +41,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     sendMessage,
     interrupt,
     approve,
+    answer,
     resume,
     continueHere,
     pushClientError,
@@ -230,6 +231,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
                 session={session}
                 eventVerbosity={eventVerbosity}
                 onApprove={approve}
+                onAnswer={answer}
                 slashCommands={mergedSlashCommands}
               />
             ))}

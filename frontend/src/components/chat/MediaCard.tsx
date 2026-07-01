@@ -1,16 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import './MediaCard.css';
 import type {
+  AgentCompactionItemV2,
+  AgentHookPromptItemV2,
   AgentImageGenerationItemV2,
   AgentImageViewItemV2,
   AgentWebSearchItemV2,
 } from '../../../../shared/agent-chat-protocol-v2.js';
 
 /**
- * Media/artifact cards for the chat timeline. Renders web searches, viewed
- * images, and generated images as compact product-quality cards instead of
- * the raw `<pre>` fallbacks. Follows the ToolCard visual pattern: 1px outline,
- * lowercase labels, monospace, no filled backgrounds (see DESIGN.md).
+ * Media/compact-message cards for the chat timeline. Renders web searches,
+ * viewed images, generated images, compaction summaries, and hook prompts as
+ * compact product-quality cards instead of the raw `<pre>` fallbacks. Follows
+ * the ToolCard visual pattern: 1px outline, lowercase labels, monospace, no
+ * filled backgrounds (see DESIGN.md).
  */
 
 /**
@@ -123,6 +126,54 @@ export const ImageGenerationCard: React.FC<{
           />
         </div>
       )}
+    </div>
+  );
+};
+
+export const CompactionCard: React.FC<{ item: AgentCompactionItemV2 }> = ({
+  item,
+}) => {
+  const hasTokens =
+    item.tokensBefore !== undefined && item.tokensAfter !== undefined;
+  return (
+    <div
+      className="mcard mcard--compaction"
+      role="article"
+      aria-label="compaction"
+    >
+      <div className="mcard__h">
+        <span className="mcard__label">compaction</span>
+        {hasTokens && (
+          <span className="mcard__meta">
+            {item.tokensBefore} → {item.tokensAfter} tokens
+          </span>
+        )}
+      </div>
+      {item.summary && (
+        <div className="mcard__body">
+          <span className="mcard__src">{item.summary}</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const HookPromptCard: React.FC<{ item: AgentHookPromptItemV2 }> = ({
+  item,
+}) => {
+  return (
+    <div
+      className="mcard mcard--hookprompt"
+      role="article"
+      aria-label="hook prompt"
+    >
+      <div className="mcard__h">
+        <span className="mcard__label">hook prompt</span>
+        {item.source && <span className="mcard__meta">{item.source}</span>}
+      </div>
+      <div className="mcard__body">
+        <span className="mcard__src">{item.prompt}</span>
+      </div>
     </div>
   );
 };

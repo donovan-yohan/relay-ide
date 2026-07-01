@@ -8,6 +8,7 @@ import type { AgentSessionV2 } from '../../shared/agent-chat-protocol-v2.js';
 const mocks = vi.hoisted(() => ({
   session: null as AgentSessionV2 | null,
   approve: vi.fn(),
+  answer: vi.fn(),
   sendMessage: vi.fn(),
   interrupt: vi.fn(),
 }));
@@ -20,7 +21,7 @@ vi.mock('../../frontend/src/hooks/useAgentChatSocket.js', () => ({
     sendMessage: mocks.sendMessage,
     interrupt: mocks.interrupt,
     approve: mocks.approve,
-    answer: vi.fn(),
+    answer: mocks.answer,
   }),
 }));
 
@@ -172,6 +173,7 @@ describe('chat v2 rendering against chat.html primitives', () => {
   beforeEach(() => {
     mocks.session = makeSession();
     mocks.approve.mockClear();
+    mocks.answer.mockClear();
     mocks.sendMessage.mockClear();
     mocks.interrupt.mockClear();
     container = document.createElement('div');
@@ -253,6 +255,56 @@ describe('chat v2 rendering against chat.html primitives', () => {
     expect(mocks.approve).toHaveBeenCalledWith('approval-1', {
       kind: 'decline',
     });
+  });
+
+  it('forwards question-card submissions through the v2 socket answer callback', async () => {
+    mocks.session = makeSession({
+      turns: [
+        {
+          id: 'turn-question',
+          status: 'waiting',
+          inputMessageId: 'user-question',
+          startedAt: timestamp(),
+          items: [
+            {
+              id: 'user-question',
+              type: 'userMessage',
+              text: 'go ahead',
+              status: 'completed',
+            },
+            {
+              id: 'question-1',
+              type: 'question',
+              requestId: 'input-1',
+              question: 'pick one',
+              fields: [
+                { id: 'choice', prompt: 'pick one', options: ['a', 'b'] },
+              ],
+              status: 'pending',
+            },
+          ],
+        },
+      ],
+    });
+
+    await renderChat();
+
+    const optionButton = Array.from(container.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent === 'a'
+    );
+    expect(optionButton).toBeTruthy();
+    await act(async () => {
+      optionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const submitButton = Array.from(container.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent === 'submit'
+    );
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(mocks.answer).toHaveBeenCalledWith('input-1', { choice: ['a'] });
   });
 
   it('hides queued-message cancel buttons when the provider cannot cancel queued messages', async () => {

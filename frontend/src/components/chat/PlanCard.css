@@ -1,0 +1,83 @@
+.pcard {
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.pcard__h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pcard__label {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.pcard__approval {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.pcard__approval--pending {
+  color: var(--status-warning);
+}
+
+.pcard__approval--approved {
+  color: var(--status-success);
+}
+
+.pcard__approval--rejected {
+  color: var(--status-error);
+}
+
+.pcard__approval--revising {
+  color: var(--text-muted);
+}
+
+.pcard__steps {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.pcard__step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 10px;
+}
+
+.pcard__glyph {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.pcard__step--completed .pcard__glyph {
+  color: var(--status-success);
+}
+
+.pcard__step--inProgress .pcard__glyph {
+  color: var(--accent);
+}
+
+.pcard__step-text {
+  color: var(--text);
+}
+
+.pcard__step--completed .pcard__step-text {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.pcard__text {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
