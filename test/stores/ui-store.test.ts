@@ -67,6 +67,8 @@ function resetStore() {
     lastChangedFiles: [],
     collapsedWorkspaces: new Set(),
     viewSpineEnabled: false,
+    advancedMode: false,
+    orgDashboardTab: 'prs',
   });
 }
 
@@ -712,6 +714,56 @@ describe('ui Zustand store', () => {
       useUiStore.getState().toggleWorkspaceCollapse('/repo/x');
       const stored = JSON.parse(storage['claude-remote-collapsed-workspaces']!);
       expect(stored).toEqual(['/repo/x']);
+    });
+  });
+
+  describe('advanced mode (#1058)', () => {
+    it('setAdvancedMode(true) persists the flag and preserves the current tab', () => {
+      useUiStore.getState().setOrgDashboardTab('tickets');
+      useUiStore.getState().setAdvancedMode(true);
+
+      expect(useUiStore.getState().advancedMode).toBe(true);
+      expect(useUiStore.getState().orgDashboardTab).toBe('tickets');
+      expect(storage['relay-advanced-mode']).toBe('1');
+    });
+
+    it('setAdvancedMode(false) rewrites a substrate tab back to prs', () => {
+      useUiStore.getState().setAdvancedMode(true);
+      useUiStore.getState().setOrgDashboardTab('active-work');
+
+      useUiStore.getState().setAdvancedMode(false);
+
+      expect(useUiStore.getState().advancedMode).toBe(false);
+      expect(useUiStore.getState().orgDashboardTab).toBe('prs');
+      expect(storage['relay-advanced-mode']).toBe(undefined);
+    });
+
+    it('setAdvancedMode(false) rewrites the other substrate tab (nodes) back to prs too', () => {
+      useUiStore.getState().setAdvancedMode(true);
+      useUiStore.getState().setOrgDashboardTab('nodes');
+
+      useUiStore.getState().setAdvancedMode(false);
+
+      expect(useUiStore.getState().orgDashboardTab).toBe('prs');
+    });
+
+    it('setAdvancedMode(false) leaves non-substrate tabs untouched', () => {
+      useUiStore.getState().setAdvancedMode(true);
+      useUiStore.getState().setOrgDashboardTab('audit');
+
+      useUiStore.getState().setAdvancedMode(false);
+
+      expect(useUiStore.getState().orgDashboardTab).toBe('audit');
+    });
+
+    it('toggleAdvancedMode flips the persisted flag', () => {
+      expect(useUiStore.getState().advancedMode).toBe(false);
+      useUiStore.getState().toggleAdvancedMode();
+      expect(useUiStore.getState().advancedMode).toBe(true);
+      expect(storage['relay-advanced-mode']).toBe('1');
+      useUiStore.getState().toggleAdvancedMode();
+      expect(useUiStore.getState().advancedMode).toBe(false);
+      expect(storage['relay-advanced-mode']).toBe(undefined);
     });
   });
 
