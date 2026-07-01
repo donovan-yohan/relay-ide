@@ -228,7 +228,7 @@ function sessionDisplayState(session: SessionSummary): DisplayState {
   return 'seen-idle';
 }
 
-function sessionMatchesTopic(
+export function sessionMatchesTopic(
   topic: WorkspaceTopic,
   session: SessionSummary
 ): boolean {

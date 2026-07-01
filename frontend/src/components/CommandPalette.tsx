@@ -374,7 +374,12 @@ function buildResults(
       sublabel: ws.path,
       data: ws,
     });
-  for (const result of buildSessionPaletteResults(q, sessions, 5)) {
+  for (const result of buildSessionPaletteResults(
+    q,
+    sessions,
+    5,
+    cachedTopics
+  )) {
     items.push(result);
   }
   for (const topic of buildTopicPaletteResults(q, cachedTopics, 5)) {
