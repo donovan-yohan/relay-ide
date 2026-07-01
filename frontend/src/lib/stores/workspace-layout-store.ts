@@ -42,6 +42,13 @@ interface WorkspaceLayoutState {
     tab: WorkspaceTab,
     opts?: { activate?: boolean; index?: number }
   ) => void;
+  /**
+   * Open a tab in a new pane beside the active pane (splitting it). If the
+   * active pane is empty the tab simply opens in place. Idempotent against the
+   * WorkspaceArea reconciler: a tab already present elsewhere is moved beside
+   * rather than duplicated.
+   */
+  openTabBeside: (tab: WorkspaceTab, direction?: SplitDirection) => void;
   setSplitSizes: (splitId: string, sizes: number[]) => void;
   resetLayout: (tabs: WorkspaceTab[]) => void;
   setLayout: (layout: WorkspaceLayoutNode) => void;
@@ -137,6 +144,40 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>()(
         return {
           layout: next,
           activePaneId: opts?.activate === false ? state.activePaneId : paneId,
+        };
+      }),
+
+    openTabBeside: (tab, direction = 'horizontal') =>
+      set((state) => {
+        const paneId =
+          state.activePaneId ?? listPanes(state.layout)[0]?.id ?? null;
+        if (!paneId) return state;
+        const tabId = workspaceTabId(tab);
+        // Ensure the tab exists in the active pane (moves it there if it was
+        // already added elsewhere, e.g. by the WorkspaceArea reconciler).
+        const withTab = addTabToPane(state.layout, paneId, tab, {
+          activate: true,
+        });
+        // Split it out beside the active pane. A single-tab active pane is a
+        // no-op split, so the first agent just opens in place.
+        const next = splitPaneWithTab(
+          withTab,
+          paneId,
+          tabId,
+          direction,
+          'after'
+        );
+        let activePaneId = paneId;
+        for (const pane of listPanes(next)) {
+          if (pane.tabs.some((t) => workspaceTabId(t) === tabId)) {
+            activePaneId = pane.id;
+            break;
+          }
+        }
+        return {
+          layout: next,
+          activePaneId,
+          splitSizes: gcSplitSizes(next, state.splitSizes),
         };
       }),
 
