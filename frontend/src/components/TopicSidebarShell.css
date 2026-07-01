@@ -1282,3 +1282,8 @@
   padding: 1px 8px;
   cursor: pointer;
 }
+
+.topic-detail__restore:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

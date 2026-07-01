@@ -237,6 +237,32 @@ describe('TopicSidebarView', () => {
     expect(onRestoreTopic).toHaveBeenCalledWith('topic:old');
   });
 
+  it('disables the restore button while its restore is in flight', async () => {
+    const onRestoreTopic = vi.fn();
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:old',
+          workspaceId: 'ws:a',
+          status: 'archived',
+          display: { title: 'Archived lane' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      onRestoreTopic,
+      restoringTopicId: 'topic:old',
+    });
+    const restore = container.querySelector(
+      '.topic-detail__restore'
+    ) as HTMLButtonElement;
+    expect(restore.disabled).toBe(true);
+    expect(restore.textContent).toContain('restoring');
+    await act(async () => restore.click());
+    expect(onRestoreTopic).not.toHaveBeenCalled();
+  });
+
   it('selects linked sessions using the existing sidebar callback', async () => {
     await renderView();
     const sessionButton = container.querySelector(

@@ -640,12 +640,14 @@ function TopicDetail({
   surfacesLoading,
   onSelectSession,
   onRestoreTopic,
+  restoringTopicId,
 }: {
   item: TopicNavItem;
   surfacesError?: boolean | undefined;
   surfacesLoading?: boolean | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
+  restoringTopicId?: string | undefined;
 }) {
   const action = topicPrimaryAction(item);
   const session = topicPrimarySession(item);
@@ -682,9 +684,10 @@ function TopicDetail({
           <button
             type="button"
             className="topic-detail__restore"
+            disabled={restoringTopicId === item.id}
             onClick={() => onRestoreTopic(item.id)}
           >
-            restore
+            {restoringTopicId === item.id ? 'restoring…' : 'restore'}
           </button>
         ) : null}
       </div>
@@ -1884,6 +1887,7 @@ export function TopicSidebarView({
   showArchived = false,
   onToggleArchived,
   onRestoreTopic,
+  restoringTopicId,
 }: {
   topics: WorkspaceTopic[];
   sessions: SessionSummary[];
@@ -1895,6 +1899,7 @@ export function TopicSidebarView({
   showArchived?: boolean;
   onToggleArchived?: (() => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
+  restoringTopicId?: string | undefined;
   loading?: boolean;
   error?: boolean;
   derived?: boolean;
@@ -2061,6 +2066,7 @@ export function TopicSidebarView({
             surfacesLoading={surfacesLoading}
             onSelectSession={onSelectSession}
             onRestoreTopic={onRestoreTopic}
+            restoringTopicId={restoringTopicId}
           />
           <TopicMobileControlPanel
             item={selectedItem}
@@ -2388,6 +2394,11 @@ export function TopicSidebarShell({
       showArchived={showArchived}
       onToggleArchived={() => setShowArchived((prev) => !prev)}
       onRestoreTopic={(topicId) => restoreTopicMutation.mutate(topicId)}
+      restoringTopicId={
+        restoreTopicMutation.isPending
+          ? restoreTopicMutation.variables
+          : undefined
+      }
       loading={!searchActive && topicsQuery.isLoading && !topicsQuery.data}
       error={topicsQuery.isError && !topicsQuery.data && !searchActive}
       surfacesLoading={surfacesQuery.isLoading && !surfacesQuery.data}
