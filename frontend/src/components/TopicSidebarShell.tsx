@@ -1674,6 +1674,9 @@ function TopicSearchPanel({
   onSearchRetry,
   onSearchClear,
   onSelectSession,
+  searchScope = 'all',
+  onToggleSearchScope,
+  canScope = false,
 }: {
   model: TopicNavModel;
   searchQuery: string;
@@ -1686,6 +1689,9 @@ function TopicSearchPanel({
   onSearchRetry?: (() => void) | undefined;
   onSearchClear?: (() => void) | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
+  searchScope?: 'all' | 'workspace';
+  onToggleSearchScope?: (() => void) | undefined;
+  canScope?: boolean;
 }) {
   const searchActive = searchQuery.trim().length > 0;
   return (
@@ -1699,6 +1705,21 @@ function TopicSearchPanel({
           placeholder="search topics, tasks, artifacts..."
           spellCheck={false}
         />
+        {canScope ? (
+          <button
+            type="button"
+            className={`topic-search__scope${searchScope === 'workspace' ? ' is-active' : ''}`}
+            aria-pressed={searchScope === 'workspace'}
+            title={
+              searchScope === 'workspace'
+                ? 'searching this workspace'
+                : 'searching all workspaces'
+            }
+            onClick={onToggleSearchScope}
+          >
+            {searchScope === 'workspace' ? 'this workspace' : 'all'}
+          </button>
+        ) : null}
         {searchLoading ? <span className="topic-search__state">…</span> : null}
       </label>
       {searchError ? (
@@ -1772,12 +1793,16 @@ export function TopicSidebarView({
   onCreateTaskRoom,
   workspaces = EMPTY_WORKSPACES,
   activeWorkspaceId = null,
+  searchScope = 'all',
+  onToggleSearchScope,
 }: {
   topics: WorkspaceTopic[];
   sessions: SessionSummary[];
   surfaces: WorkspaceSurface[];
   workspaces?: TopicNavWorkspace[];
   activeWorkspaceId?: string | null;
+  searchScope?: 'all' | 'workspace';
+  onToggleSearchScope?: (() => void) | undefined;
   loading?: boolean;
   error?: boolean;
   derived?: boolean;
@@ -1805,9 +1830,12 @@ export function TopicSidebarView({
     () => new Map(topics.map((topic) => [topic.id, topic])),
     [topics]
   );
+  // Grouping always shows every workspace so the full channel list stays
+  // visible; the active workspace only scopes search (via the scope chip),
+  // not the tree. (The filter arg is exercised for a future rail selection.)
   const grouped = useMemo(
-    () => groupTopicsByWorkspace(model, workspaces, activeWorkspaceId),
-    [model, workspaces, activeWorkspaceId]
+    () => groupTopicsByWorkspace(model, workspaces, null),
+    [model, workspaces]
   );
   const firstId = model.rootIds[0] ?? model.items[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(firstId);
@@ -1927,6 +1955,9 @@ export function TopicSidebarView({
         onSearchRetry={onSearchRetry}
         onSearchClear={onSearchClear}
         onSelectSession={onSelectSession}
+        searchScope={searchScope}
+        onToggleSearchScope={onToggleSearchScope}
+        canScope={activeWorkspaceId != null}
       />
       <div className="topic-tree" aria-label="workspace topics">
         {grouped.groups.map((group) => (
@@ -2006,6 +2037,9 @@ export function TopicSidebarShell({
     [activeSessionId, sessions]
   );
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchScope, setSearchScope] = useState<'all' | 'workspace'>('all');
+  const scopedWorkspaceId =
+    searchScope === 'workspace' ? activeWorkspaceId : null;
   const [createOpen, setCreateOpen] = useState(false);
   const [createDraft, setCreateDraft] = useState<TopicRoomDraft>(
     TOPIC_ROOM_DRAFT_EMPTY
@@ -2028,9 +2062,18 @@ export function TopicSidebarShell({
     [workspacesQuery.data]
   );
   const topicSearchQuery = useQuery({
-    queryKey: ['workspace-topics', 'search', normalizedSearchQuery],
+    queryKey: [
+      'workspace-topics',
+      'search',
+      normalizedSearchQuery,
+      scopedWorkspaceId ?? 'all',
+    ],
     queryFn: () =>
-      searchWorkspaceTopics({ q: normalizedSearchQuery, limit: 20 }),
+      searchWorkspaceTopics({
+        q: normalizedSearchQuery,
+        limit: 20,
+        ...(scopedWorkspaceId ? { workspaceId: scopedWorkspaceId } : {}),
+      }),
     enabled: normalizedSearchQuery.length > 0,
     staleTime: 10_000,
   });
@@ -2265,6 +2308,11 @@ export function TopicSidebarShell({
       sessions={sessions}
       surfaces={viewSurfaces}
       workspaces={viewWorkspaces}
+      activeWorkspaceId={activeWorkspaceId}
+      searchScope={searchScope}
+      onToggleSearchScope={() =>
+        setSearchScope((scope) => (scope === 'all' ? 'workspace' : 'all'))
+      }
       loading={!searchActive && topicsQuery.isLoading && !topicsQuery.data}
       error={topicsQuery.isError && !topicsQuery.data && !searchActive}
       surfacesLoading={surfacesQuery.isLoading && !surfacesQuery.data}
