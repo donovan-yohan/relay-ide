@@ -558,6 +558,24 @@ describe('workspace topics foundation', () => {
     expect(includeArchived.body.topics.map((topic) => topic.status)).toEqual([
       'archived',
     ]);
+
+    const restore = await writeJson<{
+      topic: WorkspaceTopic;
+      mutationPolicy: unknown;
+    }>({
+      port,
+      method: 'POST',
+      url: '/workspace-topics/topic%3Abuild-lane/restore',
+      body: {},
+    });
+    expect(restore.status).toBe(200);
+    expect(restore.body.topic.status).toBe('active');
+    expect(restore.body.topic.state).not.toHaveProperty('archivedAt');
+    const activeAgain = await getJson<WorkspaceTopicListResponse>(
+      port,
+      '/workspace-topics?workspaceId=ws-1'
+    );
+    expect(activeAgain.body.topics).toHaveLength(1);
   });
 
   it('authorizes update and archive against persisted topic workContext refs', async () => {

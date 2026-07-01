@@ -98,6 +98,7 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'workspace-topics.create',
   'workspace-topics.update',
   'workspace-topics.archive',
+  'workspace-topics.restore',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];

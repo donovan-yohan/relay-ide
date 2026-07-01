@@ -1674,6 +1674,19 @@ export async function fetchWorkspaceTopics(
   };
 }
 
+/** Reactivate an archived topic (clears its archivedAt marker). */
+export async function restoreWorkspaceTopic(
+  id: string
+): Promise<WorkspaceTopic> {
+  const data = await json<{ topic: WorkspaceTopic }>(
+    await fetch(`/workspace-topics/${encodeURIComponent(id)}/restore`, {
+      method: 'POST',
+      headers: { 'x-relay-capabilities': 'context:write' },
+    })
+  );
+  return data.topic;
+}
+
 export interface WorkContextCreateBody {
   title?: string;
   source?: string;
