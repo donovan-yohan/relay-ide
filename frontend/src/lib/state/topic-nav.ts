@@ -1,6 +1,7 @@
 import type { WorkspaceSurface } from '../../../../shared/workspace-surfaces.js';
 import type {
   WorkspaceTopic,
+  WorkspaceTopicChannelKind,
   WorkspaceTopicId,
 } from '../../../../shared/workspace-topics.js';
 import type { SessionSummary } from '../types.js';
@@ -77,6 +78,10 @@ export interface TopicNavItem {
   badgeSeed: string;
   kind: TopicNavKind;
   kindLabel: string;
+  /** User-chosen Discord-style channel taxonomy (repo/product-area/…). */
+  channelKind: WorkspaceTopicChannelKind | null;
+  icon: string | null;
+  color: string | null;
   pinned: boolean;
   muted: boolean;
   order: number;
@@ -604,6 +609,9 @@ export function buildTopicNavModel(input: {
       badgeSeed: topic.workspaceId || topic.display.title,
       kind: kind.kind,
       kindLabel: kind.label,
+      channelKind: topic.display.kind ?? null,
+      icon: topic.display.icon ?? null,
+      color: topic.display.color ?? null,
       pinned: topic.state.pinned,
       muted: topic.state.muted,
       order,

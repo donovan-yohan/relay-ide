@@ -532,3 +532,29 @@ describe('groupTopicsByWorkspace', () => {
     expect(grouped.orphanRootIds).toEqual(['t:a1', 't:b1', 't:orphan']);
   });
 });
+
+describe('topic nav channel identity', () => {
+  it('threads channelKind, icon, and color from display into the nav item', () => {
+    const model = buildTopicNavModel({
+      topics: [
+        makeTopic({
+          id: 'topic:chan',
+          display: { title: 'Ops', kind: 'ops', icon: '⚙', color: '#f00' },
+        }),
+        makeTopic({ id: 'topic:plain', display: { title: 'Plain' } }),
+      ],
+      sessions: [],
+      surfaces: [],
+    });
+    expect(model.byId.get('topic:chan')).toMatchObject({
+      channelKind: 'ops',
+      icon: '⚙',
+      color: '#f00',
+    });
+    expect(model.byId.get('topic:plain')).toMatchObject({
+      channelKind: null,
+      icon: null,
+      color: null,
+    });
+  });
+});

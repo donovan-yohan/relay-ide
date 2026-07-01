@@ -225,15 +225,25 @@ function topicLatestStatus(item: TopicNavItem): string {
 }
 
 function TopicBadge({ item }: { item: TopicNavItem }) {
+  const background = item.color ?? deriveColor(item.badgeSeed);
+  const label = item.channelKind
+    ? `${item.channelKind} channel`
+    : `${item.kindLabel} workspace`;
   return (
     <span
       className="topic-row__badge"
-      data-kind={item.kind}
-      style={{ background: deriveColor(item.badgeSeed) }}
-      aria-label={`${item.kindLabel} workspace`}
-      title={`${item.kindLabel} workspace`}
+      data-kind={item.channelKind ?? item.kind}
+      style={{ background }}
+      aria-label={label}
+      title={label}
     >
-      <TopicKindIcon kind={item.kind} />
+      {item.icon ? (
+        <span className="topic-row__channel-icon" aria-hidden="true">
+          {item.icon}
+        </span>
+      ) : (
+        <TopicKindIcon kind={item.kind} />
+      )}
     </span>
   );
 }

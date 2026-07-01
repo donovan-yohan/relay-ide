@@ -56,11 +56,37 @@ export interface WorkspaceTopicPrivacyMetadata {
   rawDefaultsStored: false;
 }
 
+/**
+ * Discord-style channel taxonomy for a topic — a semantic facet chosen by the
+ * user, distinct from the routing-derived structural kind (repo/folder/thread).
+ */
+export type WorkspaceTopicChannelKind =
+  | 'repo'
+  | 'product-area'
+  | 'journal'
+  | 'ops'
+  | 'research'
+  | 'topic';
+
+export const WORKSPACE_TOPIC_CHANNEL_KINDS: readonly WorkspaceTopicChannelKind[] =
+  ['repo', 'product-area', 'journal', 'ops', 'research', 'topic'] as const;
+
+export function isWorkspaceTopicChannelKind(
+  value: unknown
+): value is WorkspaceTopicChannelKind {
+  return (
+    typeof value === 'string' &&
+    (WORKSPACE_TOPIC_CHANNEL_KINDS as readonly string[]).includes(value)
+  );
+}
+
 export interface WorkspaceTopicDisplay {
   title: string;
   description?: string;
   icon?: string;
   color?: string;
+  /** Optional channel taxonomy (repo/product-area/journal/ops/research/topic). */
+  kind?: WorkspaceTopicChannelKind;
 }
 
 export interface WorkspaceTopicGrouping {
@@ -189,6 +215,7 @@ export interface WorkspaceTopicCreateInput {
   workspaceId: WorkspaceId;
   title: string;
   description?: string;
+  channelKind?: WorkspaceTopicChannelKind;
   visibility?: WorkspaceTopicVisibility;
   grouping?: WorkspaceTopicGrouping;
   promptDefaults?: WorkspaceTopicPromptDefaults;
@@ -202,6 +229,7 @@ export interface WorkspaceTopicCreateInput {
 export interface WorkspaceTopicUpdateInput {
   title?: string;
   description?: string | null;
+  channelKind?: WorkspaceTopicChannelKind | null;
   visibility?: WorkspaceTopicVisibility;
   grouping?: WorkspaceTopicGrouping;
   promptDefaults?: WorkspaceTopicPromptDefaults;
@@ -339,6 +367,7 @@ export class WorkspaceTopicValidationError extends Error {
 
 const TOPIC_ID_PATTERN = /^topic:[A-Za-z0-9._~%-]{1,160}$/;
 const VISIBILITIES = new Set<string>(['default', 'private', 'shared']);
+const CHANNEL_KINDS = new Set<string>(WORKSPACE_TOPIC_CHANNEL_KINDS);
 const PRIVACY_CLASSES = new Set<string>(['public', 'internal', 'sensitive']);
 const RETENTION_CLASSES = new Set<string>([
   'ephemeral',
@@ -922,6 +951,14 @@ export function parseWorkspaceTopicCreateInput(
     WORKSPACE_TOPIC_DESCRIPTION_MAX
   );
   if (description) out.description = description;
+  if (record['channelKind'] !== undefined && record['channelKind'] !== null) {
+    out.channelKind = readEnum<WorkspaceTopicChannelKind>(
+      record['channelKind'],
+      'channelKind',
+      CHANNEL_KINDS,
+      'topic'
+    );
+  }
   out.visibility = readEnum<WorkspaceTopicVisibility>(
     record['visibility'],
     'visibility',
@@ -958,6 +995,16 @@ export function parseWorkspaceTopicUpdateInput(
       WORKSPACE_TOPIC_DESCRIPTION_MAX
     );
     if (description) out.description = description;
+  }
+  if (record['channelKind'] === null) {
+    out.channelKind = null;
+  } else if (record['channelKind'] !== undefined) {
+    out.channelKind = readEnum<WorkspaceTopicChannelKind>(
+      record['channelKind'],
+      'channelKind',
+      CHANNEL_KINDS,
+      'topic'
+    );
   }
   if (record['visibility'] !== undefined) {
     out.visibility = readEnum<WorkspaceTopicVisibility>(
@@ -1247,6 +1294,7 @@ export function buildWorkspaceTopicRecord(input: {
       ...(input.create.description
         ? { description: input.create.description }
         : {}),
+      ...(input.create.channelKind ? { kind: input.create.channelKind } : {}),
     },
     grouping: input.create.grouping ?? {},
     promptDefaults: input.create.promptDefaults ?? {},
@@ -1274,6 +1322,8 @@ export function applyWorkspaceTopicUpdate(input: {
   if (patch.description === null) delete display.description;
   else if (patch.description !== undefined)
     display.description = patch.description;
+  if (patch.channelKind === null) delete display.kind;
+  else if (patch.channelKind !== undefined) display.kind = patch.channelKind;
   return {
     ...topic,
     display,
