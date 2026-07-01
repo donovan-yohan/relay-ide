@@ -54,10 +54,24 @@ export const navNextAttentionWork: ActionMeta = {
   icon: '◆',
 };
 
+// #1058: the chat/topic spine is the default no-session/no-repo landing;
+// this keeps the legacy WorkContext cockpit (PRs, tickets, nodes, audit)
+// reachable rather than deleting it outright.
+export const navOpenWorkCockpit: ActionMeta = {
+  id: 'navigation.open-work-cockpit',
+  label: 'open work cockpit',
+  description:
+    'switch to the WorkContext cockpit — active work, prs, tickets, nodes, and audit across all workspaces',
+  aliases: ['org dashboard', 'active work cockpit', 'work cockpit'],
+  category: 'navigation',
+  icon: '▦',
+};
+
 export const navigationActions: ActionMeta[] = [
   navPreviousTab,
   navNextTab,
   navSwitchToTab,
   navOpenFile,
   navNextAttentionWork,
+  navOpenWorkCockpit,
 ];

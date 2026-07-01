@@ -35,7 +35,7 @@ import { stableCommandNames } from '../shared/cli-gateway-contract.js';
 
 // Full allowlist: 63 palettable action IDs (15 Phase 2 + 44 Phase 3 + 1 from #630
 // + workspace.launch from #870 + next-attention WorkContext jump from #933
-// + task-room create/launch from #1045)
+// + task-room create/launch from #1045 + open-work-cockpit from #1058)
 const ACTION_ALLOWLIST = [
   // Session (11)
   'session.new-agent',
@@ -105,12 +105,13 @@ const ACTION_ALLOWLIST = [
   // Terminal (2)
   'terminal.scroll-top',
   'terminal.scroll-bottom',
-  // Navigation (5)
+  // Navigation (6)
   'navigation.previous-tab',
   'navigation.next-tab',
   'navigation.switch-to-tab',
   'navigation.open-file',
   'navigation.next-attention-work',
+  'navigation.open-work-cockpit',
 ] as const;
 
 const ALL_META: ActionMeta[] = [

@@ -1,0 +1,11 @@
+/* #1058: chat/topic spine default landing — the panel it hosts
+   (`.active-work-empty`) centers in the open space while keeping its content
+   left-aligned (TUI-native — see DESIGN.md). */
+.chat-home {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
+}
