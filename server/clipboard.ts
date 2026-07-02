@@ -1,4 +1,5 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import * as fs from 'node:fs';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -21,6 +22,16 @@ export function detectClipboardTool(): string | null {
     return cachedTool;
   }
 
+  if (process.env['WAYLAND_DISPLAY']) {
+    try {
+      execFileSync('which', ['wl-copy'], { stdio: 'ignore' });
+      cachedTool = 'wl-copy';
+      return cachedTool;
+    } catch {
+      // wl-copy not found
+    }
+  }
+
   if (process.env['DISPLAY'] || process.env['WAYLAND_DISPLAY']) {
     try {
       execFileSync('which', ['xclip'], { stdio: 'ignore' });
@@ -28,6 +39,14 @@ export function detectClipboardTool(): string | null {
       return cachedTool;
     } catch {
       // xclip not found
+    }
+
+    try {
+      execFileSync('which', ['xsel'], { stdio: 'ignore' });
+      cachedTool = 'xsel';
+      return cachedTool;
+    } catch {
+      // xsel not found
     }
   }
 
@@ -43,6 +62,28 @@ function mimeInfo(mimeType: string): { ext: string; osascriptClass: string } {
 
 export function extensionForMime(mimeType: string): string {
   return mimeInfo(mimeType).ext;
+}
+
+function writeFileToStdin(
+  command: string,
+  args: string[],
+  filePath: string
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'pipe'] });
+    const chunks: Buffer[] = [];
+    child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const stderr = Buffer.concat(chunks).toString('utf8').trim();
+      reject(new Error(`${command} exited ${code}${stderr ? `: ${stderr}` : ''}`));
+    });
+    fs.createReadStream(filePath).on('error', reject).pipe(child.stdin);
+  });
 }
 
 export async function setClipboardImage(
@@ -67,6 +108,20 @@ export async function setClipboardImage(
       '-i',
       filePath,
     ]);
+    return true;
+  }
+
+  if (tool === 'wl-copy') {
+    await writeFileToStdin('wl-copy', ['--type', mimeType], filePath);
+    return true;
+  }
+
+  if (tool === 'xsel') {
+    await writeFileToStdin(
+      'xsel',
+      ['--clipboard', '--input', '--mime-type', mimeType],
+      filePath
+    );
     return true;
   }
 

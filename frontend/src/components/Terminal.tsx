@@ -1002,6 +1002,8 @@ function usePtyPause(
 
 // ── useImageUpload hook ───────────────────────────────────────────────────────
 
+const MAX_TERMINAL_IMAGE_UPLOAD_BYTES = 8 * 1024 * 1024;
+
 function useImageUpload(
   sessionId: string | null,
   onImageUpload?: (text: string, showInsert: boolean, path?: string) => void
@@ -1011,6 +1013,10 @@ function useImageUpload(
   const handleImageUpload = useCallback(
     async (blob: Blob, mimeType: string) => {
       if (inProgressRef.current || !sessionId) return;
+      if (blob.size > MAX_TERMINAL_IMAGE_UPLOAD_BYTES) {
+        onImageUpload?.('Image too large (max 8MB)', false);
+        return;
+      }
       inProgressRef.current = true;
       onImageUpload?.('Pasting image\u2026', false);
       const reader = new FileReader();
@@ -1019,6 +1025,7 @@ function useImageUpload(
         try {
           const data = await uploadImage(sessionId!, base64, mimeType);
           if (data.clipboardSet) onImageUpload?.('Image pasted', false);
+          else if (data.inserted) onImageUpload?.('Image path inserted', false);
           else onImageUpload?.(data.path, true, data.path);
         } catch (err: unknown) {
           const msg =
@@ -1151,7 +1158,7 @@ export const Terminal = forwardRef<TerminalHandle, TerminalProps>(
     const { scrollbarState: sbState, updateScrollbar: updateSb } =
       useScrollbar(termRef);
     const { zoomVisible, zoomText, applyZoom } = useTerminalZoom(termRef, fit);
-    const { handleImageUpload } = useImageUpload(sessionId, onImageUpload);
+    const { handleImageUpload } = useImageUpload(ptySessionKey, onImageUpload);
     const {
       selectionMode,
       inCopyMode: _inCopyMode,

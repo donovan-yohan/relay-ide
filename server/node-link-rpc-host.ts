@@ -36,6 +36,11 @@ import type {
 } from '../shared/relay-node-protocol.js';
 import { isSessionLane, type SessionLane } from '../shared/session-lane.js';
 import type { SessionSummary, TerminalBackend } from './types.js';
+import {
+  ingressSessionImage,
+  parseSessionImagePayload,
+  SessionImageIngressError,
+} from './session-image-ingress.js';
 
 // Node-side RPC dispatcher. Hub initiates rpc/<type> requests over the
 // reverse WS; this module receives them, calls into the local
@@ -634,6 +639,52 @@ export function createNodeLinkRpcHost(
     ctx.send(next);
   }
 
+  async function handleSessionsImage(
+    envelope: RelayNodeEnvelope,
+    ctx: NodeLinkEnvelopeHandlerContext
+  ): Promise<void> {
+    const record = asRecord(envelope.payload);
+    const id = asString(record?.['id']);
+    if (!record || !id) {
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        invalidRequest('sessions.image payload.id must be a non-empty string')
+      );
+      return;
+    }
+    let payload: ReturnType<typeof parseSessionImagePayload>;
+    try {
+      payload = parseSessionImagePayload(record);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendErrorEnvelope(ctx, envelope, invalidRequest(message));
+      return;
+    }
+
+    try {
+      const result = await ingressSessionImage({
+        sessions: localRelayNode.sessions,
+        sessionId: id,
+        payload,
+      });
+      sendResultEnvelope(ctx, envelope, { ...result, id, sessionId: id });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : String(error ?? 'unknown');
+      logger.error(`sessions.image failed: ${message}`);
+      sendErrorEnvelope(
+        ctx,
+        envelope,
+        error instanceof SessionImageIngressError && error.status === 404
+          ? notFound(message)
+          : error instanceof SessionImageIngressError && error.status < 500
+            ? invalidRequest(message)
+            : internalError(message)
+      );
+    }
+  }
+
   function handleLogsTail(
     envelope: RelayNodeEnvelope,
     ctx: NodeLinkEnvelopeHandlerContext
@@ -762,6 +813,10 @@ export function createNodeLinkRpcHost(
     }
     if (envelope.type === 'sessions.rename') {
       handleSessionsRename(envelope, ctx);
+      return;
+    }
+    if (envelope.type === 'sessions.image') {
+      void handleSessionsImage(envelope, ctx);
       return;
     }
     if (envelope.type === 'credential.rotate') {

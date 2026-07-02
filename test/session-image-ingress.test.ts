@@ -1,0 +1,132 @@
+import * as fs from 'node:fs';
+import { describe, expect, it, afterEach } from 'vitest';
+
+import {
+  cleanupSessionImageTempDir,
+  ingressSessionImage,
+  parseSessionImagePayload,
+  SessionImageIngressError,
+} from '../server/session-image-ingress.js';
+import { _resetForTesting as resetClipboardToolCache } from '../server/clipboard.js';
+import type { Session } from '../server/types.js';
+
+const OLD_DISPLAY = process.env['DISPLAY'];
+const OLD_WAYLAND_DISPLAY = process.env['WAYLAND_DISPLAY'];
+
+afterEach(() => {
+  if (OLD_DISPLAY === undefined) delete process.env['DISPLAY'];
+  else process.env['DISPLAY'] = OLD_DISPLAY;
+  if (OLD_WAYLAND_DISPLAY === undefined) delete process.env['WAYLAND_DISPLAY'];
+  else process.env['WAYLAND_DISPLAY'] = OLD_WAYLAND_DISPLAY;
+  resetClipboardToolCache();
+  cleanupSessionImageTempDir('sess-image-test');
+});
+
+describe('session image ingress', () => {
+  it('validates MIME and size before writing', () => {
+    expect(() => parseSessionImagePayload({ data: 'abc', mimeType: 'image/png' })).not.toThrow();
+    expect(() => parseSessionImagePayload({ data: 'abc', mimeType: 'text/plain' })).toThrow(
+      SessionImageIngressError
+    );
+    expect(() =>
+      parseSessionImagePayload({ data: 'x'.repeat(15 * 1024 * 1024), mimeType: 'image/png' })
+    ).toThrow(/too large/i);
+  });
+
+  it('falls back to bracketed-paste path injection when no clipboard tool is available', async () => {
+    delete process.env['DISPLAY'];
+    delete process.env['WAYLAND_DISPLAY'];
+    resetClipboardToolCache();
+
+    const writes: string[] = [];
+    const sessions = {
+      get: (id: string) =>
+        id === 'sess-image-test'
+          ? ({ id, mode: 'pty' } as unknown as Session)
+          : undefined,
+      write: (_id: string, data: string) => writes.push(data),
+    };
+
+    const result = await ingressSessionImage({
+      sessions,
+      sessionId: 'sess-image-test',
+      payload: { data: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' },
+      now: () => 123,
+    });
+
+    expect(result).toMatchObject({ clipboardSet: false, inserted: true, mode: 'path' });
+    expect(result.path).toMatch(/sess-image-test\/paste-123\.png$/);
+    expect(fs.readFileSync(result.path, 'utf8')).toBe('png-bytes');
+    expect(writes).toEqual([`\x1b[200~${result.path}\x1b[201~`]);
+  });
+
+  it('records fallback PTY insertion as human supervisor input when available', async () => {
+    delete process.env['DISPLAY'];
+    delete process.env['WAYLAND_DISPLAY'];
+    resetClipboardToolCache();
+
+    const supervisorWrites: unknown[] = [];
+    const sessions = {
+      get: (id: string) =>
+        id === 'sess-image-test'
+          ? ({ id, mode: 'pty' } as unknown as Session)
+          : undefined,
+      write: () => {
+        throw new Error('raw PTY write should not be used when supervisorWrite exists');
+      },
+      supervisorWrite: (_id: string, input: unknown) => supervisorWrites.push(input),
+    };
+
+    const result = await ingressSessionImage({
+      sessions,
+      sessionId: 'sess-image-test',
+      payload: { data: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' },
+      now: () => 789,
+    });
+
+    expect(supervisorWrites).toEqual([
+      {
+        action: 'sendText',
+        actor: {
+          kind: 'human',
+          id: 'browser-image-paste',
+          displayName: 'Browser image paste',
+        },
+        payload: `\x1b[200~${result.path}\x1b[201~`,
+      },
+    ]);
+  });
+
+  it('sends structured image attachments to web sessions instead of writing PTY bytes', async () => {
+    const messages: unknown[] = [];
+    const sessions = {
+      get: (id: string) =>
+        id === 'sess-image-test'
+          ? ({
+              id,
+              mode: 'web',
+              adapterV2: { sendMessage: async (input: unknown) => messages.push(input) },
+            } as unknown as Session)
+          : undefined,
+      write: () => {
+        throw new Error('PTY write should not be used for web image ingress');
+      },
+    };
+
+    const result = await ingressSessionImage({
+      sessions,
+      sessionId: 'sess-image-test',
+      payload: { data: Buffer.from('jpg-bytes').toString('base64'), mimeType: 'image/jpeg' },
+      now: () => 456,
+    });
+
+    expect(result).toMatchObject({ clipboardSet: false, inserted: true, mode: 'attachment' });
+    expect(messages).toEqual([
+      {
+        turnId: 'image-paste-456',
+        content: '',
+        attachments: [{ type: 'image', path: result.path, mimeType: 'image/jpeg' }],
+      },
+    ]);
+  });
+});

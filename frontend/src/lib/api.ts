@@ -2375,9 +2375,19 @@ export async function uploadImage(
   sessionId: string,
   data: string,
   mimeType: string
-): Promise<{ path: string; clipboardSet: boolean }> {
-  return json<{ path: string; clipboardSet: boolean }>(
-    await fetch('/sessions/' + sessionId + '/image', {
+): Promise<{
+  path: string;
+  clipboardSet: boolean;
+  inserted?: boolean;
+  mode?: 'clipboard' | 'path' | 'attachment';
+}> {
+  return json<{
+    path: string;
+    clipboardSet: boolean;
+    inserted?: boolean;
+    mode?: 'clipboard' | 'path' | 'attachment';
+  }>(
+    await fetch('/sessions/' + encodeURIComponent(sessionId) + '/image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data, mimeType }),
