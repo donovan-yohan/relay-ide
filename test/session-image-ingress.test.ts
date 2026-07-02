@@ -97,6 +97,27 @@ describe('session image ingress', () => {
     ]);
   });
 
+  it('rejects web image ingress when the adapter is missing', async () => {
+    const sessions = {
+      get: (id: string) =>
+        id === 'sess-image-test'
+          ? ({ id, mode: 'web', adapterV2: undefined } as unknown as Session)
+          : undefined,
+      write: () => {
+        throw new Error('PTY write should not be used for web image ingress');
+      },
+    };
+
+    await expect(
+      ingressSessionImage({
+        sessions,
+        sessionId: 'sess-image-test',
+        payload: { data: Buffer.from('jpg-bytes').toString('base64'), mimeType: 'image/jpeg' },
+        now: () => 456,
+      })
+    ).rejects.toThrow('Web session adapter is not initialized');
+  });
+
   it('sends structured image attachments to web sessions instead of writing PTY bytes', async () => {
     const messages: unknown[] = [];
     const sessions = {

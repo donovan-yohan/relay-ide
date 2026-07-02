@@ -169,7 +169,7 @@ describe('node-link-rpc-host', () => {
       }),
       ctx
     );
-    await new Promise((resolve) => setImmediate(resolve));
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
 
     expect(sent[0]).toMatchObject({
       channel: 'rpc',

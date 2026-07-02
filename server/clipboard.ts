@@ -40,14 +40,6 @@ export function detectClipboardTool(): string | null {
     } catch {
       // xclip not found
     }
-
-    try {
-      execFileSync('which', ['xsel'], { stdio: 'ignore' });
-      cachedTool = 'xsel';
-      return cachedTool;
-    } catch {
-      // xsel not found
-    }
   }
 
   cachedTool = null;
@@ -74,6 +66,9 @@ function writeFileToStdin(
     const chunks: Buffer[] = [];
     child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk));
     child.on('error', reject);
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EPIPE') reject(error);
+    });
     child.on('close', (code) => {
       if (code === 0) {
         resolve();
@@ -113,15 +108,6 @@ export async function setClipboardImage(
 
   if (tool === 'wl-copy') {
     await writeFileToStdin('wl-copy', ['--type', mimeType], filePath);
-    return true;
-  }
-
-  if (tool === 'xsel') {
-    await writeFileToStdin(
-      'xsel',
-      ['--clipboard', '--input', '--mime-type', mimeType],
-      filePath
-    );
     return true;
   }
 
