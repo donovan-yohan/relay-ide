@@ -16,10 +16,8 @@ import {
   deriveTopicTitleFromPrompt,
   TOPIC_ROOM_TEMPLATE_OPTIONS,
 } from '../lib/topic-create.js';
-import {
-  takeTopicComposerSeed,
-  TOPIC_COMPOSER_FOCUS_EVENT,
-} from '../lib/topic-task-room.js';
+import { TOPIC_COMPOSER_FOCUS_EVENT } from '../lib/topic-task-room.js';
+import { useUiStore } from '../lib/stores/ui.js';
 import { isMobileDevice } from '../lib/utils.js';
 import TuiButton from './TuiButton.js';
 import './TopicComposer.css';
@@ -39,10 +37,7 @@ export default function TopicComposer({
   onSelectSession?: ((id: string) => void) | undefined;
   resume?: { label: string; onResume: () => void } | undefined;
 }) {
-  // One-shot routing seed captured by openTopicTaskRoom() before it cleared
-  // the active session — keeps "+ task" from inside a session launching into
-  // that session's node/repo/cwd instead of bare workspace defaults.
-  const [seed] = useState(takeTopicComposerSeed);
+  const setTopicComposerOpen = useUiStore((s) => s.setTopicComposerOpen);
   const {
     draft,
     updateDraft,
@@ -57,7 +52,7 @@ export default function TopicComposer({
     repoPathOptions,
     worktreePathOptions,
     cwdOptions,
-  } = useTopicRoomCreate({ onLaunched: onSelectSession, seed });
+  } = useTopicRoomCreate({ onLaunched: onSelectSession });
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -127,6 +122,10 @@ export default function TopicComposer({
               ) {
                 event.preventDefault();
                 void submit(primaryIntent);
+              } else if (event.key === 'Escape') {
+                // Composer opened over an active session — Escape returns to
+                // it. No-op on the bare landing (flag already false).
+                setTopicComposerOpen(false);
               }
             }}
             placeholder="what should the agent do?"

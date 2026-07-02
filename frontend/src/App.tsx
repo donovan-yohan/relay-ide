@@ -181,6 +181,8 @@ function useTerminalDerivedState() {
   const analyticsView = useUiStore((s) => s.analyticsView);
   const forceOrgCockpit = useUiStore((s) => s.forceOrgCockpit);
   const setForceOrgCockpit = useUiStore((s) => s.setForceOrgCockpit);
+  const topicComposerOpen = useUiStore((s) => s.topicComposerOpen);
+  const setTopicComposerOpen = useUiStore((s) => s.setTopicComposerOpen);
   const sessions = useSessionsStore((s) => s.sessions);
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
@@ -252,8 +254,15 @@ function useTerminalDerivedState() {
         hasActiveSession,
         activeRepoPath,
         forceOrgCockpit,
+        topicComposerOpen,
       }),
-    [analyticsView, hasActiveSession, activeRepoPath, forceOrgCockpit]
+    [
+      analyticsView,
+      hasActiveSession,
+      activeRepoPath,
+      forceOrgCockpit,
+      topicComposerOpen,
+    ]
   );
 
   // #1058: once a session goes active, drop the explicit cockpit override so
@@ -262,6 +271,18 @@ function useTerminalDerivedState() {
   useEffect(() => {
     if (hasActiveSession && forceOrgCockpit) setForceOrgCockpit(false);
   }, [hasActiveSession, forceOrgCockpit, setForceOrgCockpit]);
+
+  // #1058: the composer overlay closes when the active session CHANGES —
+  // a launch from the composer or a sidebar selection navigates to that
+  // session. (The composer can open while a session is still active, so a
+  // mere "session is active" check would close it immediately.)
+  const composerPrevSessionRef = useRef(activeSessionId);
+  useEffect(() => {
+    if (composerPrevSessionRef.current !== activeSessionId) {
+      composerPrevSessionRef.current = activeSessionId;
+      if (topicComposerOpen) setTopicComposerOpen(false);
+    }
+  }, [activeSessionId, topicComposerOpen, setTopicComposerOpen]);
 
   return {
     activeRepoPath,

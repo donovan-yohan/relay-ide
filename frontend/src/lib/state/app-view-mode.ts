@@ -18,6 +18,13 @@ export interface ResolveAppViewModeInput {
    * explicit repo/project selection still resolves to `dashboard`.
    */
   forceOrgCockpit?: boolean;
+  /**
+   * #1058: the main-pane topic composer was opened explicitly (sidebar
+   * "+ task", palette, cockpit CTA). Routes to the chat landing WITHOUT
+   * requiring the session/repo selection to be cleared, so the composer can
+   * inherit that context as routing defaults.
+   */
+  topicComposerOpen?: boolean;
 }
 
 export function resolveAppViewMode({
@@ -25,8 +32,10 @@ export function resolveAppViewMode({
   hasActiveSession,
   activeRepoPath,
   forceOrgCockpit = false,
+  topicComposerOpen = false,
 }: ResolveAppViewModeInput): AppViewMode {
   if (analyticsView !== null) return 'analytics';
+  if (topicComposerOpen) return 'chat';
   if (hasActiveSession) return 'session';
 
   // The no-session / no-explicit-project landing path defaults to the

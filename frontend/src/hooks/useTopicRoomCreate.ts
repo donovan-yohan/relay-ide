@@ -21,10 +21,10 @@ import {
   type TopicRoomDraft,
 } from '../lib/topic-create.js';
 import { taskRefFromDraft } from '../lib/topic-task-ref.js';
-import type { TopicComposerSeed } from '../lib/topic-task-room.js';
 import { resolveSessionByKey } from '../lib/session-keys.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
+import { useToastStore } from '../lib/stores/toasts.js';
 import { useConfigStore } from '../lib/stores/config.js';
 
 /**
@@ -35,14 +35,12 @@ import { useConfigStore } from '../lib/stores/config.js';
  */
 export function useTopicRoomCreate({
   onLaunched,
-  seed,
 }: {
   onLaunched?: ((sessionId: string) => void) | undefined;
-  /** Routing context captured before navigation cleared the active session. */
-  seed?: TopicComposerSeed | null | undefined;
 } = {}) {
   const queryClient = useQueryClient();
   const sessions = useSessionsStore((s) => s.sessions);
+  const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const setActiveSessionId = useSessionsStore((s) => s.setActiveSessionId);
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
@@ -68,17 +66,18 @@ export function useTopicRoomCreate({
 
   const effectiveTitle = effectiveDraftTitle(draft);
   const taskRef = taskRefFromDraft(draft.taskRef, effectiveTitle);
-  const defaultNodeId = activeSession?.nodeId ?? seed?.nodeId;
+  const defaultNodeId = activeSession?.nodeId ?? undefined;
+  // Fall back to the first configured repo: agent sessions REQUIRE a
+  // configured repoPath server-side (validateSessionCreateRequest), so a
+  // fresh landing with no session/repo context must still launch somewhere.
   const defaultRepoPath =
-    activeSession?.repoPath ?? activeRepoPath ?? seed?.repoPath ?? undefined;
-  const defaultWorktreePath =
-    activeSession?.worktreePath ?? seed?.worktreePath ?? undefined;
-  const defaultCwd =
-    activeSession?.cwd ??
-    seed?.cwd ??
-    defaultWorktreePath ??
-    defaultRepoPath ??
+    activeSession?.repoPath ??
+    activeRepoPath ??
+    repos[0]?.path ??
     undefined;
+  const defaultWorktreePath = activeSession?.worktreePath ?? undefined;
+  const defaultCwd =
+    activeSession?.cwd ?? defaultWorktreePath ?? defaultRepoPath ?? undefined;
   const nodes = useMemo(
     () =>
       (nodesQuery.data ?? []).map((node) => ({
@@ -189,6 +188,7 @@ export function useTopicRoomCreate({
           }
           await useSessionsStore.getState().refreshAll();
           setActiveSessionId(result.session.id);
+          useUiStore.getState().setTopicComposerOpen(false);
           onLaunched?.(result.session.id);
           setCreatedRoom(null);
           setDraft(TOPIC_ROOM_DRAFT_EMPTY);
@@ -220,7 +220,15 @@ export function useTopicRoomCreate({
         if (result.status === 'launched') {
           await useSessionsStore.getState().refreshAll();
           setActiveSessionId(result.session.id);
+          useUiStore.getState().setTopicComposerOpen(false);
           onLaunched?.(result.session.id);
+        } else {
+          // create-only success has no navigation — confirm it happened and
+          // surface where the new room lives.
+          useToastStore
+            .getState()
+            .showToast('topic room created — find it in the sidebar', 'info');
+          useUiStore.getState().openSidebar();
         }
         setCreatedRoom(null);
         setDraft(TOPIC_ROOM_DRAFT_EMPTY);
