@@ -6,6 +6,7 @@ import {
   afterEach,
   expect,
   describe,
+  vi,
 } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -278,9 +279,7 @@ describe('PortAllocator', () => {
       RELAY_IDE_DEV_FRONTEND_PORT: initial.RELAY_IDE_DEV_FRONTEND_PORT,
       PORT: expect.any(Number),
     });
-    expect(allocator.getPortsForWorktree('repo-1', 'wt-1')).toEqual(
-      reconciled
-    );
+    expect(allocator.getPortsForWorktree('repo-1', 'wt-1')).toEqual(reconciled);
   });
 
   test('returns same port for repeated allocation of same variable', async () => {
@@ -298,6 +297,31 @@ describe('PortAllocator', () => {
     ]);
 
     expect(ports1.PORT).toBe(ports2.PORT);
+  });
+
+  test('does not rewrite port assignments when repeated allocation is unchanged', async () => {
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({}), 'utf8');
+
+    const allocator = new PortAllocator({ configPath });
+    await allocator.initialize();
+    await allocator.allocatePortsForWorktree('repo-1', 'wt-1', ['PORT']);
+
+    const assignmentsPath = resolvePortAssignmentsPath(configPath);
+    const before = fs.readFileSync(assignmentsPath, 'utf8');
+    const writeSpy = vi.spyOn(fs, 'writeFileSync');
+    try {
+      await allocator.allocatePortsForWorktree('repo-1', 'wt-1', ['PORT']);
+      await allocator.reconcilePortsForWorktree('repo-1', 'wt-1', ['PORT']);
+      const assignmentWrites = writeSpy.mock.calls.filter(
+        ([target]) => String(target) === assignmentsPath
+      );
+      expect(assignmentWrites).toHaveLength(0);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(assignmentsPath, 'utf8')).toBe(before);
   });
 
   test('assigns different ports to different variables', async () => {
@@ -936,6 +960,27 @@ describe('Port allocator + .env block integration', () => {
       'utf8'
     );
     expect(withoutPorts.trim()).toBe('EXISTING=true');
+  });
+
+  test('env file helpers skip disk writes when managed block is unchanged', () => {
+    const worktreeDir = fs.mkdtempSync(path.join(tmpDir, 'wt-'));
+    const envPath = path.join(worktreeDir, '.env');
+    upsertPortsInEnvFile(worktreeDir, { PORT: 10001, API_PORT: 10002 });
+    const before = fs.readFileSync(envPath, 'utf8');
+
+    const writeSpy = vi.spyOn(fs, 'writeFileSync');
+    try {
+      upsertPortsInEnvFile(worktreeDir, { PORT: 10001, API_PORT: 10002 });
+      removePortsFromEnvFile(worktreeDir, ['MISSING_PORT']);
+      const envWrites = writeSpy.mock.calls.filter(
+        ([target]) => String(target) === envPath
+      );
+      expect(envWrites).toHaveLength(0);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(envPath, 'utf8')).toBe(before);
   });
 
   test('env file helper can remove one stale variable without deleting self-host ports', () => {
