@@ -1,8 +1,7 @@
 import { useMemo } from 'react';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { scopedSessionKey } from '../lib/session-keys.js';
-import { openTopicTaskRoom } from '../lib/topic-task-room.js';
-import { ActiveWorkEmpty } from './ActiveWorkSurface.js';
+import TopicComposer from './TopicComposer.js';
 import './ChatHome.css';
 
 export interface ChatHomeProps {
@@ -10,13 +9,12 @@ export interface ChatHomeProps {
 }
 
 /**
- * #1058: the chat/topic spine is the default no-session/no-repo landing —
- * replacing the WorkContext cockpit as the first thing an operator sees. The
- * topic sidebar stays primary; this main-pane empty state reuses the
- * cockpit's `ActiveWorkEmpty` panel/CTA pattern so the two surfaces stay
- * visually consistent, and offers a one-tap resume of the most recently
- * active session when one exists. The full cockpit remains reachable via the
- * "open work cockpit" command-palette action.
+ * #1058: the chat/topic spine is the default no-session/no-repo landing — and
+ * the landing IS the composer. No sidebar clicking: type the first prompt into
+ * the main pane and the topic + session are created with that message
+ * (codex-style). One-tap resume of the most recently active session stays as
+ * a secondary affordance; the full cockpit remains reachable via the "open
+ * work cockpit" command-palette action.
  */
 export default function ChatHome({ onSelectSession }: ChatHomeProps) {
   const sessions = useSessionsStore((s) => s.sessions);
@@ -38,19 +36,7 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
 
   return (
     <div className="chat-home" aria-label="chat and topic home">
-      <ActiveWorkEmpty
-        onStartTopic={openTopicTaskRoom}
-        title="start a topic"
-        lede={
-          <>
-            chat with an agent, launch a terminal, or review artifacts — each
-            topic runs in its own node and repo. topics, sessions, and
-            workspaces live in the sidebar; open the work cockpit from the
-            command palette for cross-node prs, tickets, nodes, and audit.
-          </>
-        }
-        {...(resume ? { resume } : {})}
-      />
+      <TopicComposer onSelectSession={onSelectSession} resume={resume} />
     </div>
   );
 }
