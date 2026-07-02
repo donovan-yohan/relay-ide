@@ -631,6 +631,14 @@ export interface UiState {
    * a session becomes active so the next empty state defaults back to chat.
    */
   forceOrgCockpit: boolean;
+  /**
+   * #1058: the main-pane topic composer is open. Set by openTopicTaskRoom()
+   * so `resolveAppViewMode` shows the chat landing WITHOUT clearing the
+   * active session/repo selection — the composer inherits that context as
+   * its routing defaults. Cleared when a session becomes active (launch or
+   * sidebar selection). Session-transient; never persisted.
+   */
+  topicComposerOpen: boolean;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
   /** Six-layer navigation surface flag. Default false; backed by localStorage. */
@@ -685,6 +693,7 @@ export interface UiState {
   setAnalyticsView: (v: AnalyticsView) => void;
   setOrgDashboardTab: (tab: OrgDashboardTab) => void;
   setForceOrgCockpit: (v: boolean) => void;
+  setTopicComposerOpen: (v: boolean) => void;
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
@@ -736,6 +745,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   // default to 'prs' so a fresh session never lands on a hidden tab's content.
   orgDashboardTab: loadAdvancedMode() ? 'active-work' : 'prs',
   forceOrgCockpit: false,
+  topicComposerOpen: false,
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
@@ -1163,6 +1173,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setAnalyticsView: (v) => set({ analyticsView: v }),
   setOrgDashboardTab: (tab) => set({ orgDashboardTab: tab }),
   setForceOrgCockpit: (v) => set({ forceOrgCockpit: v }),
+  setTopicComposerOpen: (v) => set({ topicComposerOpen: v }),
   setActiveModal: (v) => set({ activeModal: v }),
 
   saveRightSidebarWidth: () =>

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type React from 'react';
 import { registerGlobal } from '../lib/actions/registry.js';
+import { openTopicTaskRoom } from '../lib/topic-task-room.js';
 import {
   registerContextual,
   unregisterContextual,
@@ -449,9 +450,10 @@ export function useActionRegistry(params: UseActionRegistryParams): void {
       { ...sessionStartOnRepo, handler: () => handleQuickAgent() },
       { ...sessionStartOnTicket, handler: () => navigateToDashboard() },
       {
+        // #1058: the composer is the landing view — starting a topic is a
+        // navigation, not a sidebar panel.
         ...sessionCreateTaskRoom,
-        handler: () =>
-          window.dispatchEvent(new Event('relay:open-topic-task-room')),
+        handler: () => openTopicTaskRoom(),
       },
       {
         // #630: opens the env picker dialog. The dialog itself owns

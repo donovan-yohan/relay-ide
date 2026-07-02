@@ -43,6 +43,27 @@ describe('resolveAppViewMode', () => {
     ).toBe('dashboard');
   });
 
+  it('shows the topic composer over an active session/repo without clearing them (#1058)', () => {
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: true,
+        activeRepoPath: '/repo/relay-ide',
+        topicComposerOpen: true,
+      })
+    ).toBe('chat');
+
+    // analytics still wins — the composer flag only overrides session/repo.
+    expect(
+      resolveAppViewMode({
+        analyticsView: 'dashboard',
+        hasActiveSession: true,
+        activeRepoPath: null,
+        topicComposerOpen: true,
+      })
+    ).toBe('analytics');
+  });
+
   it('preserves session, analytics, and explicit repo dashboard priority', () => {
     expect(
       resolveAppViewMode({
