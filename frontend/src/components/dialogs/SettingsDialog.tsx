@@ -15,6 +15,7 @@ import GitHubIntegration from './integrations/GitHubIntegration.js';
 import WebhookIntegration from './integrations/WebhookIntegration.js';
 import JiraIntegration from './integrations/JiraIntegration.js';
 import SettingsNodesSection from './SettingsNodesSection.js';
+import { useUiStore } from '../../lib/stores/ui.js';
 import {
   setDefaultAgent,
   setDefaultContinue,
@@ -126,6 +127,10 @@ const SECTION_KEYWORDS: Record<string, string[]> = {
     'stale',
   ],
   advanced: [
+    'advanced mode',
+    'infrastructure',
+    'nodes',
+    'active work',
     'developer tools',
     'analytics',
     'debug panel',
@@ -303,6 +308,8 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
       NotificationPermission | 'unsupported'
     >(getPermissionState());
     const [devtoolsEnabled, setDevtoolsEnabled] = useState(false);
+    const advancedMode = useUiStore((s) => s.advancedMode);
+    const setAdvancedMode = useUiStore((s) => s.setAdvancedMode);
     const [searchQuery, setSearchQuery] = useState('');
     const [tocOpen, setTocOpen] = useState(false);
 
@@ -491,6 +498,8 @@ const SettingsDialog = forwardRef<SettingsDialogHandle, SettingsDialogProps>(
                 localStorage.setItem('devtools-enabled', v ? 'true' : 'false');
                 window.dispatchEvent(new Event('devtools-changed'));
               }}
+              advancedModeEnabled={advancedMode}
+              onAdvancedModeChange={(v) => setAdvancedMode(v)}
               onClearAnalytics={() => void handleClearAnalytics()}
             />
             <AboutSection
@@ -688,6 +697,8 @@ function AdvancedSection({
   clearing,
   devtoolsEnabled,
   onDevtoolsChange,
+  advancedModeEnabled,
+  onAdvancedModeChange,
   onClearAnalytics,
 }: {
   searchQuery: string;
@@ -695,6 +706,8 @@ function AdvancedSection({
   clearing: boolean;
   devtoolsEnabled: boolean;
   onDevtoolsChange: (v: boolean) => void;
+  advancedModeEnabled: boolean;
+  onAdvancedModeChange: (v: boolean) => void;
   onClearAnalytics: () => void;
 }) {
   return (
@@ -703,6 +716,15 @@ function AdvancedSection({
       className={sectionClass('section-advanced', searchQuery)}
     >
       <h3 className="settings-dialog-section-heading">advanced</h3>
+      <SettingRow
+        name="Advanced mode"
+        description="Show infrastructure surfaces: nodes, analytics, active work detail"
+      >
+        <TuiCheckbox
+          checked={advancedModeEnabled}
+          onChange={(v) => onAdvancedModeChange(v)}
+        />
+      </SettingRow>
       <SettingRow name="Developer Tools" description="Mobile debug panel">
         <TuiCheckbox
           checked={devtoolsEnabled}

@@ -17,6 +17,10 @@ const UTILITY_RAIL_STATE_KEY_PREFIX = 'relay-utility-rail::';
 const DIFF_VIEW_MODE_KEY = 'claude-remote-diff-view-mode';
 const WORD_WRAP_KEY = 'claude-remote-word-wrap';
 const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
+// #1058: persistent "advanced mode" toggle (Settings). Hides mechanics-heavy
+// substrate surfaces (nodes/active-work tabs, analytics icon) from primary
+// chrome by default; each surface stays reachable one-off via a palette action.
+const ADVANCED_MODE_KEY = 'relay-advanced-mode';
 // Flag-gated six-layer navigation surface. Set
 // `localStorage.relay-view-spine = '1'` and reload to opt into the tree.
 const VIEW_SPINE_KEY = 'relay-view-spine';
@@ -171,6 +175,11 @@ function loadDiffViewMode(): DiffViewMode {
 function loadViewSpineEnabled(): boolean {
   // Truthy only for the explicit opt-in value so a stale '0'/'false' reads OFF.
   return ls(VIEW_SPINE_KEY) === '1';
+}
+
+function loadAdvancedMode(): boolean {
+  // Truthy only for the explicit opt-in value so a stale '0'/'false' reads OFF.
+  return ls(ADVANCED_MODE_KEY) === '1';
 }
 
 // ── #738: View-layer persistence (lens / pins / saved Views) ─────────────────
@@ -626,6 +635,13 @@ export interface UiState {
   collapsedWorkspaces: Set<string>;
   /** Six-layer navigation surface flag. Default false; backed by localStorage. */
   viewSpineEnabled: boolean;
+  /**
+   * #1058: hides mechanics-heavy substrate surfaces (nodes/active-work tabs
+   * in the work cockpit, sidebar analytics icon) from primary chrome.
+   * Default false; backed by localStorage. Each gated surface stays
+   * reachable one-off via a command-palette action regardless of this flag.
+   */
+  advancedMode: boolean;
 
   /** #738: active Views lens, persisted across reload (default `recent`). */
   viewSpineLens: ViewLens;
@@ -674,6 +690,8 @@ export interface UiState {
   isWorkspaceCollapsed: (path: string) => boolean;
   setViewSpineEnabled: (enabled: boolean) => void;
   toggleViewSpineEnabled: () => void;
+  setAdvancedMode: (enabled: boolean) => void;
+  toggleAdvancedMode: () => void;
 
   /** #738: persist + set the active lens. */
   setViewSpineLens: (lens: ViewLens) => void;
@@ -714,12 +732,15 @@ export const useUiStore = create<UiState>()((set, get) => ({
   codeTabPendingContent: {},
   sendToTargetSessionId: null,
   analyticsView: null,
-  orgDashboardTab: 'active-work',
+  // #1058: 'active-work' is a substrate tab hidden unless advancedMode is on;
+  // default to 'prs' so a fresh session never lands on a hidden tab's content.
+  orgDashboardTab: loadAdvancedMode() ? 'active-work' : 'prs',
   forceOrgCockpit: false,
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
   viewSpineEnabled: loadViewSpineEnabled(),
+  advancedMode: loadAdvancedMode(),
 
   viewSpineLens: loadViewSpineLens(),
   viewSpinePins: loadViewSpinePins(),
@@ -1335,6 +1356,23 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
   toggleViewSpineEnabled: () => {
     get().setViewSpineEnabled(!get().viewSpineEnabled);
+  },
+  setAdvancedMode: (enabled) => {
+    if (enabled) lsSave(ADVANCED_MODE_KEY, '1');
+    else lsRemove(ADVANCED_MODE_KEY);
+    // #1058: correct away from a substrate tab the moment advanced mode is
+    // turned off, so the work cockpit never lingers on a now-hidden tab —
+    // one-off palette deep links set the tab afresh and aren't affected by
+    // this (they run after advancedMode is already settled).
+    const current = get().orgDashboardTab;
+    const fallbackTab =
+      !enabled && (current === 'active-work' || current === 'nodes')
+        ? 'prs'
+        : current;
+    set({ advancedMode: enabled, orgDashboardTab: fallbackTab });
+  },
+  toggleAdvancedMode: () => {
+    get().setAdvancedMode(!get().advancedMode);
   },
   setViewSpineLens: (lens) => {
     lsSave(VIEW_SPINE_LENS_KEY, lens);

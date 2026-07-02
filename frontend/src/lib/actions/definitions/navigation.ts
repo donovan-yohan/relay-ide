@@ -67,6 +67,39 @@ export const navOpenWorkCockpit: ActionMeta = {
   icon: '▦',
 };
 
+// #1058: advanced-mode substrate surfaces (nodes dashboard, analytics, active
+// work detail) are hidden from primary chrome by default (Settings >
+// advanced). These are the one-off palette escape hatches — each opens its
+// surface without flipping the persistent `advancedMode` flag.
+export const navOpenNodesDashboard: ActionMeta = {
+  id: 'navigation.open-nodes-dashboard',
+  label: 'open nodes dashboard',
+  description:
+    'jump to the nodes tab of the work cockpit without enabling advanced mode',
+  aliases: ['nodes', 'node dashboard', 'hub nodes'],
+  category: 'navigation',
+  icon: '▦',
+};
+
+export const navOpenAnalytics: ActionMeta = {
+  id: 'navigation.open-analytics',
+  label: 'open analytics',
+  description: 'jump to the analytics dashboard without enabling advanced mode',
+  aliases: ['analytics', 'usage stats'],
+  category: 'navigation',
+  icon: '▦',
+};
+
+export const navOpenActiveWork: ActionMeta = {
+  id: 'navigation.open-active-work',
+  label: 'open active work detail',
+  description:
+    'jump to the active work tab of the work cockpit without enabling advanced mode',
+  aliases: ['active work', 'work cockpit active work'],
+  category: 'navigation',
+  icon: '▦',
+};
+
 export const navigationActions: ActionMeta[] = [
   navPreviousTab,
   navNextTab,
@@ -74,4 +107,7 @@ export const navigationActions: ActionMeta[] = [
   navOpenFile,
   navNextAttentionWork,
   navOpenWorkCockpit,
+  navOpenNodesDashboard,
+  navOpenAnalytics,
+  navOpenActiveWork,
 ];

@@ -401,6 +401,26 @@ function tabButtonClass(
     .join(' ');
 }
 
+// #1058: 'active-work' and 'nodes' are mechanics-heavy substrate surfaces
+// hidden from primary chrome unless advanced mode is on (Settings > advanced,
+// or the one-off palette escape hatches navigation.open-nodes-dashboard /
+// navigation.open-active-work).
+const SUBSTRATE_TABS: ReadonlySet<OrgDashboardTab> = new Set([
+  'active-work',
+  'nodes',
+]);
+
+function visibleOrgTabs(advancedMode: boolean): OrgDashboardTab[] {
+  const all: OrgDashboardTab[] = [
+    'active-work',
+    'nodes',
+    'prs',
+    'tickets',
+    'audit',
+  ];
+  return advancedMode ? all : all.filter((tab) => !SUBSTRATE_TABS.has(tab));
+}
+
 // ── NodesTab sub-component ────────────────────────────────────────────────────
 
 function NodesTab() {
@@ -428,6 +448,26 @@ export function OrgDashboard({
 }: OrgDashboardProps) {
   const activeTab = useUiStore((s) => s.orgDashboardTab);
   const setActiveTab = useUiStore((s) => s.setOrgDashboardTab);
+  const advancedMode = useUiStore((s) => s.advancedMode);
+  // #1058: the base visible set is advancedMode-gated, but a one-off palette
+  // action (navigation.open-nodes-dashboard / navigation.open-active-work)
+  // can deep-link to a substrate tab while advancedMode is off — keep that
+  // explicitly-selected tab in the strip so it renders with a real tab
+  // button instead of disappearing content. `setAdvancedMode` (ui.ts) itself
+  // corrects `orgDashboardTab` back to a visible tab when advanced mode is
+  // turned off, so a *stale* hidden tab never lingers as `activeTab` here.
+  const tabs = useMemo(() => {
+    const base = visibleOrgTabs(advancedMode);
+    return base.includes(activeTab) ? base : [activeTab, ...base];
+  }, [advancedMode, activeTab]);
+
+  const tabLabels: Record<OrgDashboardTab, string> = {
+    'active-work': 'active work',
+    nodes: 'nodes',
+    prs: 'prs',
+    tickets: 'tickets',
+    audit: 'audit',
+  };
 
   return (
     <div className="org-dashboard">
@@ -442,36 +482,15 @@ export function OrgDashboard({
       </div>
       {/* tab-strip uses raw buttons intentionally — underline-indicator navigation, not TuiButton actions */}
       <div className="tab-strip">
-        <button
-          className={tabButtonClass(activeTab, 'active-work')}
-          onClick={() => setActiveTab('active-work')}
-        >
-          active work
-        </button>
-        <button
-          className={tabButtonClass(activeTab, 'nodes')}
-          onClick={() => setActiveTab('nodes')}
-        >
-          nodes
-        </button>
-        <button
-          className={tabButtonClass(activeTab, 'prs')}
-          onClick={() => setActiveTab('prs')}
-        >
-          prs
-        </button>
-        <button
-          className={tabButtonClass(activeTab, 'tickets')}
-          onClick={() => setActiveTab('tickets')}
-        >
-          tickets
-        </button>
-        <button
-          className={tabButtonClass(activeTab, 'audit')}
-          onClick={() => setActiveTab('audit')}
-        >
-          audit
-        </button>
+        {tabs.map((tab) => (
+          <button
+            key={tab}
+            className={tabButtonClass(activeTab, tab)}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tabLabels[tab]}
+          </button>
+        ))}
       </div>
       {activeTab === 'active-work' && <ActiveWorkSurface />}
       {activeTab === 'nodes' && <NodesTab />}
