@@ -1025,7 +1025,9 @@ function useImageUpload(
         try {
           const data = await uploadImage(sessionId!, base64, mimeType);
           if (data.clipboardSet) onImageUpload?.('Image pasted', false);
-          else if (data.inserted) onImageUpload?.('Image path inserted', false);
+          else if (data.mode === 'path') onImageUpload?.('Image path inserted', false);
+          else if (data.mode === 'attachment') onImageUpload?.('Image attached', false);
+          else if (data.inserted) onImageUpload?.('Image inserted', false);
           else onImageUpload?.(data.path, true, data.path);
         } catch (err: unknown) {
           const msg =

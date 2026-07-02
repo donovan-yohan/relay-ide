@@ -49,7 +49,8 @@ export interface SessionImageBoundary {
 }
 
 function imageTempDir(sessionId: string): string {
-  return path.join(os.tmpdir(), 'relay-ide', sessionId);
+  const safeSessionDir = Buffer.from(sessionId, 'utf8').toString('base64url');
+  return path.join(os.tmpdir(), 'relay-ide', safeSessionDir);
 }
 
 export function cleanupSessionImageTempDir(sessionId: string): void {

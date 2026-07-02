@@ -59,25 +59,41 @@ export function extensionForMime(mimeType: string): string {
 function writeFileToStdin(
   command: string,
   args: string[],
-  filePath: string
+  filePath: string,
+  timeoutMs = 5_000
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'pipe'] });
     const chunks: Buffer[] = [];
+    let settled = false;
+    function settle(error?: Error, killChild = false): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killChild) child.kill();
+      if (error) reject(error);
+      else resolve();
+    }
+    const timer = setTimeout(() => {
+      settle(new Error(`${command} timed out after ${timeoutMs}ms`), true);
+    }, timeoutMs);
+    timer.unref?.();
     child.stderr.on('data', (chunk: Buffer) => chunks.push(chunk));
-    child.on('error', reject);
+    child.on('error', (error) => settle(error));
     child.stdin.on('error', (error: NodeJS.ErrnoException) => {
-      if (error.code !== 'EPIPE') reject(error);
+      if (error.code !== 'EPIPE') settle(error, true);
     });
     child.on('close', (code) => {
       if (code === 0) {
-        resolve();
+        settle();
         return;
       }
       const stderr = Buffer.concat(chunks).toString('utf8').trim();
-      reject(new Error(`${command} exited ${code}${stderr ? `: ${stderr}` : ''}`));
+      settle(new Error(`${command} exited ${code}${stderr ? `: ${stderr}` : ''}`));
     });
-    fs.createReadStream(filePath).on('error', reject).pipe(child.stdin);
+    fs.createReadStream(filePath)
+      .on('error', (error) => settle(error, true))
+      .pipe(child.stdin);
   });
 }
 

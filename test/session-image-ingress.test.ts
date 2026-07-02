@@ -20,6 +20,7 @@ afterEach(() => {
   else process.env['WAYLAND_DISPLAY'] = OLD_WAYLAND_DISPLAY;
   resetClipboardToolCache();
   cleanupSessionImageTempDir('sess-image-test');
+  cleanupSessionImageTempDir('../evil');
 });
 
 describe('session image ingress', () => {
@@ -55,9 +56,38 @@ describe('session image ingress', () => {
     });
 
     expect(result).toMatchObject({ clipboardSet: false, inserted: true, mode: 'path' });
-    expect(result.path).toMatch(/sess-image-test\/paste-123\.png$/);
+    expect(result.path).toContain(
+      Buffer.from('sess-image-test', 'utf8').toString('base64url')
+    );
+    expect(result.path.endsWith('/paste-123.png')).toBe(true);
     expect(fs.readFileSync(result.path, 'utf8')).toBe('png-bytes');
     expect(writes).toEqual([`\x1b[200~${result.path}\x1b[201~`]);
+  });
+
+  it('encodes session ids before using them in temp paths', async () => {
+    delete process.env['DISPLAY'];
+    delete process.env['WAYLAND_DISPLAY'];
+    resetClipboardToolCache();
+
+    const traversalId = '../evil';
+    const sessions = {
+      get: (id: string) =>
+        id === traversalId ? ({ id, mode: 'pty' } as unknown as Session) : undefined,
+      write: () => undefined,
+    };
+
+    const result = await ingressSessionImage({
+      sessions,
+      sessionId: traversalId,
+      payload: { data: Buffer.from('png-bytes').toString('base64'), mimeType: 'image/png' },
+      now: () => 321,
+    });
+
+    expect(result.path).toContain(
+      Buffer.from(traversalId, 'utf8').toString('base64url')
+    );
+    expect(result.path).not.toContain('../evil');
+    expect(fs.readFileSync(result.path, 'utf8')).toBe('png-bytes');
   });
 
   it('records fallback PTY insertion as human supervisor input when available', async () => {
