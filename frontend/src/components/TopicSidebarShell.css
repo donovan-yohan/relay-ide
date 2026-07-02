@@ -81,6 +81,23 @@
   resize: vertical;
 }
 
+.topic-create-panel__context {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.topic-create-panel button.topic-create-panel__advanced-toggle {
+  justify-self: start;
+  padding: 1px 6px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+}
+
+.topic-create-panel button.topic-create-panel__advanced-toggle:hover {
+  color: var(--accent);
+}
+
 .topic-create-preview,
 .topic-create-failure {
   display: grid;

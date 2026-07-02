@@ -1327,6 +1327,37 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   ) as string[];
 }
 
+/**
+ * #1058: codex-style topic creation — the first message doubles as the room
+ * title unless the operator overrides it in the advanced section.
+ */
+function deriveTopicTitleFromPrompt(prompt: string): string {
+  const firstLine = prompt.trim().split('\n')[0] ?? '';
+  const collapsed = firstLine.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '';
+  // Code-point-aware truncation so a trailing emoji is not split in half.
+  const points = Array.from(collapsed);
+  return points.length > 60 ? `${points.slice(0, 59).join('')}…` : collapsed;
+}
+
+/** Title used for create/launch: explicit override wins, else the message. */
+function effectiveDraftTitle(draft: Pick<TopicRoomDraft, 'title' | 'prompt'>) {
+  return draft.title.trim() || deriveTopicTitleFromPrompt(draft.prompt);
+}
+
+function launchSubmitLabel(input: {
+  submittingIntent?: WorkspaceTopicLaunchIntent | null | undefined;
+  launchDisabled: boolean;
+  launchFailure?: WorkspaceTopicLaunchFailure | null | undefined;
+}): string {
+  if (input.submittingIntent === 'create-and-launch') return 'launching…';
+  if (input.launchDisabled) return 'note is create-only';
+  if (!input.launchFailure) return 'start';
+  return input.launchFailure.stage === 'session'
+    ? 'retry launch'
+    : 'retry create + launch';
+}
+
 function launchTypeForTemplate(
   templateKind: WorkspaceTopicTemplateKind
 ): CreateSessionBody['type'] | null {
@@ -1402,6 +1433,7 @@ interface TopicRoomCreatePanelProps {
   draft: TopicRoomDraft;
   previewCreate: WorkspaceTopicCreateInput;
   providerOptions: string[];
+  nodes: TopicNavNode[];
   nodeOptions: Array<{ value: string; label: string }>;
   repoPathOptions: string[];
   worktreePathOptions: string[];
@@ -1418,6 +1450,7 @@ function TopicRoomCreatePanel({
   draft,
   previewCreate,
   providerOptions,
+  nodes,
   nodeOptions,
   repoPathOptions,
   worktreePathOptions,
@@ -1447,167 +1480,218 @@ function TopicRoomCreatePanel({
       }),
     [draft.templateKind, previewCreate]
   );
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   if (!open) return null;
   const launchDisabled = draft.templateKind === 'note';
-  const disabled = !draft.title.trim() || Boolean(submittingIntent);
+  const disabled = !effectiveDraftTitle(draft) || Boolean(submittingIntent);
+  // #1103: never render a raw node id — resolve through the roster or fall
+  // back to a generic label.
+  const routedNodeId = previewCreate.routingDefaults?.nodeId;
+  const friendlyNodeLabel = routedNodeId
+    ? nodes.find((node) => node.nodeId === routedNodeId)?.displayName ||
+      'remote node'
+    : preview.nodeLabel;
   return (
     <form
       className="topic-create-panel"
-      aria-label="create task room"
+      aria-label="new topic"
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
         if (!disabled && !launchDisabled) onSubmit('create-and-launch');
       }}
     >
-      <div className="topic-create-panel__title">new task room</div>
-      <label>
-        <span>title</span>
-        <input
-          value={draft.title}
-          onChange={(event) => onDraftChange({ title: event.target.value })}
-          placeholder="issue title or task"
-        />
-      </label>
-      <label>
-        <span>starter prompt</span>
-        <textarea
-          value={draft.prompt}
-          onChange={(event) => onDraftChange({ prompt: event.target.value })}
-          placeholder="what should the agent start with?"
-          rows={3}
-        />
-      </label>
-      <label>
-        <span>task ref</span>
-        <input
-          value={draft.taskRef}
-          onChange={(event) => onDraftChange({ taskRef: event.target.value })}
-          placeholder="github issue number or URL"
-        />
-      </label>
-      <label>
-        <span>provider</span>
-        <input
-          list="topic-room-provider-options"
-          value={draft.providerId}
-          onChange={(event) =>
-            onDraftChange({ providerId: event.target.value })
+      <div className="topic-create-panel__title">new topic</div>
+      <textarea
+        value={draft.prompt}
+        onChange={(event) => onDraftChange({ prompt: event.target.value })}
+        onKeyDown={(event) => {
+          if (
+            event.key === 'Enter' &&
+            !event.shiftKey &&
+            !event.nativeEvent.isComposing &&
+            !disabled &&
+            !launchDisabled
+          ) {
+            event.preventDefault();
+            onSubmit('create-and-launch');
           }
-          placeholder={
-            previewCreate.routingDefaults?.providerId ?? 'default provider'
-          }
-        />
-        <datalist id="topic-room-provider-options">
-          {providerOptions.map((providerId) => (
-            <option key={providerId} value={providerId} />
-          ))}
-        </datalist>
-      </label>
-      <label>
-        <span>agent id</span>
-        <input
-          value={draft.agentId}
-          onChange={(event) => onDraftChange({ agentId: event.target.value })}
-          placeholder="optional agent identity"
-        />
-      </label>
-      <label>
-        <span>template kind</span>
-        <select
-          value={draft.templateKind}
-          onChange={(event) =>
-            onDraftChange({
-              templateKind: event.target.value as WorkspaceTopicTemplateKind,
-            })
-          }
-        >
-          {TOPIC_ROOM_TEMPLATE_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>node</span>
-        <input
-          list="topic-room-node-options"
-          value={draft.nodeId}
-          onChange={(event) => onDraftChange({ nodeId: event.target.value })}
-          placeholder={
-            previewCreate.routingDefaults?.nodeId ?? 'local/default node'
-          }
-        />
-        <datalist id="topic-room-node-options">
-          {nodeOptions.map((node) => (
-            <option key={node.value} value={node.value} label={node.label} />
-          ))}
-        </datalist>
-      </label>
-      <label>
-        <span>repo</span>
-        <input
-          list="topic-room-repo-options"
-          value={draft.repoPath}
-          onChange={(event) => onDraftChange({ repoPath: event.target.value })}
-          placeholder={
-            previewCreate.routingDefaults?.repoPath ?? 'default repo'
-          }
-        />
-        <datalist id="topic-room-repo-options">
-          {repoPathOptions.map((repoPath) => (
-            <option key={repoPath} value={repoPath} />
-          ))}
-        </datalist>
-      </label>
-      <label>
-        <span>worktree</span>
-        <input
-          list="topic-room-worktree-options"
-          value={draft.worktreePath}
-          onChange={(event) =>
-            onDraftChange({ worktreePath: event.target.value })
-          }
-          placeholder={
-            previewCreate.routingDefaults?.worktreePath ?? 'default worktree'
-          }
-        />
-        <datalist id="topic-room-worktree-options">
-          {worktreePathOptions.map((worktreePath) => (
-            <option key={worktreePath} value={worktreePath} />
-          ))}
-        </datalist>
-      </label>
-      <label>
-        <span>cwd</span>
-        <input
-          list="topic-room-cwd-options"
-          value={draft.cwd}
-          onChange={(event) => onDraftChange({ cwd: event.target.value })}
-          placeholder={previewCreate.routingDefaults?.cwd ?? 'default cwd'}
-        />
-        <datalist id="topic-room-cwd-options">
-          {cwdOptions.map((cwd) => (
-            <option key={cwd} value={cwd} />
-          ))}
-        </datalist>
-      </label>
-      <div className="topic-create-preview" aria-label="launch preview">
-        <div>template: {preview.templateKind}</div>
-        <div>provider: {preview.providerLabel}</div>
-        <div>
-          agent:{' '}
-          {previewCreate.routingDefaults?.agentId ??
-            previewCreate.routingDefaults?.providerId ??
-            'default agent'}
-        </div>
-        <div>mode: {preview.modeLabel}</div>
-        <div>node: {preview.nodeLabel}</div>
-        <div>cwd: {preview.cwdLabel}</div>
-        <div>prompt: {preview.promptSources.join(', ')}</div>
-        <div>tasks: {preview.taskRefs.join(', ')}</div>
-        <div>side effects: {preview.sideEffects.join(' · ')}</div>
+        }}
+        placeholder="what should the agent do?"
+        rows={3}
+        aria-label="first message"
+        autoFocus
+      />
+      <div className="topic-create-panel__context">
+        {preview.providerLabel} · {friendlyNodeLabel} · {preview.cwdLabel}
       </div>
+      <button
+        type="button"
+        className="topic-create-panel__advanced-toggle"
+        aria-expanded={advancedOpen}
+        onClick={() => setAdvancedOpen((prev) => !prev)}
+      >
+        <span aria-hidden="true">{advancedOpen ? '▾ ' : '▸ '}</span>
+        advanced
+      </button>
+      {advancedOpen ? (
+        <>
+          <label>
+            <span>title</span>
+            <input
+              value={draft.title}
+              onChange={(event) => onDraftChange({ title: event.target.value })}
+              placeholder={
+                deriveTopicTitleFromPrompt(draft.prompt) || 'auto from message'
+              }
+            />
+          </label>
+          <label>
+            <span>task ref</span>
+            <input
+              value={draft.taskRef}
+              onChange={(event) =>
+                onDraftChange({ taskRef: event.target.value })
+              }
+              placeholder="github issue number or URL"
+            />
+          </label>
+          <label>
+            <span>provider</span>
+            <input
+              list="topic-room-provider-options"
+              value={draft.providerId}
+              onChange={(event) =>
+                onDraftChange({ providerId: event.target.value })
+              }
+              placeholder={
+                previewCreate.routingDefaults?.providerId ?? 'default provider'
+              }
+            />
+            <datalist id="topic-room-provider-options">
+              {providerOptions.map((providerId) => (
+                <option key={providerId} value={providerId} />
+              ))}
+            </datalist>
+          </label>
+          <label>
+            <span>agent id</span>
+            <input
+              value={draft.agentId}
+              onChange={(event) =>
+                onDraftChange({ agentId: event.target.value })
+              }
+              placeholder="optional agent identity"
+            />
+          </label>
+          <label>
+            <span>template kind</span>
+            <select
+              value={draft.templateKind}
+              onChange={(event) =>
+                onDraftChange({
+                  templateKind: event.target
+                    .value as WorkspaceTopicTemplateKind,
+                })
+              }
+            >
+              {TOPIC_ROOM_TEMPLATE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>node</span>
+            <input
+              list="topic-room-node-options"
+              value={draft.nodeId}
+              onChange={(event) =>
+                onDraftChange({ nodeId: event.target.value })
+              }
+              placeholder={
+                previewCreate.routingDefaults?.nodeId ?? 'local/default node'
+              }
+            />
+            <datalist id="topic-room-node-options">
+              {nodeOptions.map((node) => (
+                <option
+                  key={node.value}
+                  value={node.value}
+                  label={node.label}
+                />
+              ))}
+            </datalist>
+          </label>
+          <label>
+            <span>repo</span>
+            <input
+              list="topic-room-repo-options"
+              value={draft.repoPath}
+              onChange={(event) =>
+                onDraftChange({ repoPath: event.target.value })
+              }
+              placeholder={
+                previewCreate.routingDefaults?.repoPath ?? 'default repo'
+              }
+            />
+            <datalist id="topic-room-repo-options">
+              {repoPathOptions.map((repoPath) => (
+                <option key={repoPath} value={repoPath} />
+              ))}
+            </datalist>
+          </label>
+          <label>
+            <span>worktree</span>
+            <input
+              list="topic-room-worktree-options"
+              value={draft.worktreePath}
+              onChange={(event) =>
+                onDraftChange({ worktreePath: event.target.value })
+              }
+              placeholder={
+                previewCreate.routingDefaults?.worktreePath ??
+                'default worktree'
+              }
+            />
+            <datalist id="topic-room-worktree-options">
+              {worktreePathOptions.map((worktreePath) => (
+                <option key={worktreePath} value={worktreePath} />
+              ))}
+            </datalist>
+          </label>
+          <label>
+            <span>cwd</span>
+            <input
+              list="topic-room-cwd-options"
+              value={draft.cwd}
+              onChange={(event) => onDraftChange({ cwd: event.target.value })}
+              placeholder={previewCreate.routingDefaults?.cwd ?? 'default cwd'}
+            />
+            <datalist id="topic-room-cwd-options">
+              {cwdOptions.map((cwd) => (
+                <option key={cwd} value={cwd} />
+              ))}
+            </datalist>
+          </label>
+          <div className="topic-create-preview" aria-label="launch preview">
+            <div>template: {preview.templateKind}</div>
+            <div>provider: {preview.providerLabel}</div>
+            <div>
+              agent:{' '}
+              {previewCreate.routingDefaults?.agentId ??
+                previewCreate.routingDefaults?.providerId ??
+                'default agent'}
+            </div>
+            <div>mode: {preview.modeLabel}</div>
+            <div>node: {friendlyNodeLabel}</div>
+            <div>cwd: {preview.cwdLabel}</div>
+            <div>prompt: {preview.promptSources.join(', ')}</div>
+            <div>tasks: {preview.taskRefs.join(', ')}</div>
+            <div>side effects: {preview.sideEffects.join(' · ')}</div>
+          </div>
+        </>
+      ) : null}
       {launchFailure ? (
         <div className="topic-create-failure" role="alert">
           {launchFailure.stage === 'session'
@@ -1624,23 +1708,21 @@ function TopicRoomCreatePanel({
         >
           cancel
         </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => onSubmit('create-only')}
-        >
-          {submittingIntent === 'create-only' ? 'creating…' : 'create only'}
-        </button>
+        {advancedOpen || launchDisabled ? (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => onSubmit('create-only')}
+          >
+            {submittingIntent === 'create-only' ? 'creating…' : 'create only'}
+          </button>
+        ) : null}
         <button type="submit" disabled={disabled || launchDisabled}>
-          {submittingIntent === 'create-and-launch'
-            ? 'launching…'
-            : launchDisabled
-              ? 'note is create-only'
-              : launchFailure
-                ? launchFailure.stage === 'session'
-                  ? 'retry launch'
-                  : 'retry create + launch'
-                : 'create + launch'}
+          {launchSubmitLabel({
+            submittingIntent,
+            launchDisabled,
+            launchFailure,
+          })}
         </button>
       </div>
     </form>
@@ -2331,7 +2413,8 @@ export function TopicSidebarShell({
       })),
     [nodesQuery.data]
   );
-  const taskRef = taskRefFromDraft(createDraft.taskRef, createDraft.title);
+  const effectiveCreateTitle = effectiveDraftTitle(createDraft);
+  const taskRef = taskRefFromDraft(createDraft.taskRef, effectiveCreateTitle);
   const defaultRepoPath =
     activeSession?.repoPath ?? activeRepoPath ?? undefined;
   const defaultWorktreePath = activeSession?.worktreePath ?? undefined;
@@ -2380,7 +2463,7 @@ export function TopicSidebarShell({
   const previewCreate = useMemo<WorkspaceTopicCreateInput>(
     () =>
       buildTopicRoomCreateInput({
-        draft: createDraft,
+        draft: { ...createDraft, title: effectiveCreateTitle },
         workspaceId: activeWorkspaceId,
         defaultProviderId: defaultAgent,
         defaultNodeId: activeSession?.nodeId,
@@ -2397,13 +2480,14 @@ export function TopicSidebarShell({
       defaultCwd,
       defaultRepoPath,
       defaultWorktreePath,
+      effectiveCreateTitle,
       taskRef,
     ]
   );
 
   const handleCreateSubmit = useCallback(
     async (intent: WorkspaceTopicLaunchIntent) => {
-      if (!createDraft.title.trim()) return;
+      if (!effectiveCreateTitle) return;
       const launch = buildTopicRoomLaunchBody(
         previewCreate,
         createDraft.templateKind
@@ -2482,7 +2566,7 @@ export function TopicSidebarShell({
       }
     },
     [
-      createDraft.title,
+      effectiveCreateTitle,
       createDraft.templateKind,
       createdRoom,
       onSelectSession,
@@ -2499,6 +2583,7 @@ export function TopicSidebarShell({
       draft={createDraft}
       previewCreate={previewCreate}
       providerOptions={providerOptions}
+      nodes={viewNodes}
       nodeOptions={nodeOptions}
       repoPathOptions={repoPathOptions}
       worktreePathOptions={worktreePathOptions}
