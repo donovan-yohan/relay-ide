@@ -190,6 +190,7 @@ export class PortAllocator {
   private readonly skipVerifyVariableNames: Set<string>;
   private assignments: PortAssignmentsFile;
   private initialized = false;
+  private lastSavedAssignmentsText: string | null = null;
 
   constructor(options: PortAllocatorOptions) {
     this.assignmentsPath = resolvePortAssignmentsPath(options.configPath);
@@ -395,6 +396,9 @@ export class PortAllocator {
       const raw = fs.readFileSync(filePath, 'utf8');
       const data = JSON.parse(raw) as PortAssignmentsFile;
       if (data.version === 1 && Array.isArray(data.assignments)) {
+        if (filePath === this.assignmentsPath) {
+          this.lastSavedAssignmentsText = raw;
+        }
         return data;
       }
       logWarn(
@@ -425,11 +429,22 @@ export class PortAllocator {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(
-        this.assignmentsPath,
-        JSON.stringify(this.assignments, null, 2),
-        'utf8'
-      );
+      const next = JSON.stringify(this.assignments, null, 2);
+      if (
+        this.lastSavedAssignmentsText === next &&
+        fs.existsSync(this.assignmentsPath)
+      ) {
+        return;
+      }
+      if (
+        fs.existsSync(this.assignmentsPath) &&
+        fs.readFileSync(this.assignmentsPath, 'utf8') === next
+      ) {
+        this.lastSavedAssignmentsText = next;
+        return;
+      }
+      fs.writeFileSync(this.assignmentsPath, next, 'utf8');
+      this.lastSavedAssignmentsText = next;
     } catch (err) {
       logWarn(this.logger, 'Failed to save port assignments:', err);
       throw err;
@@ -693,7 +708,9 @@ export function removeEnvBlockVariables(
   const existing = parseEnvBlock(content);
   if (!existing) return content;
 
-  const variablesToRemove = new Set(sanitizeOptionalPortVariables(variableNames));
+  const variablesToRemove = new Set(
+    sanitizeOptionalPortVariables(variableNames)
+  );
   const remaining = Object.fromEntries(
     Object.entries(existing).filter(
       ([variableName]) => !variablesToRemove.has(variableName)
@@ -716,6 +733,7 @@ export function upsertPortsInEnvFile(
     ? fs.readFileSync(envPath, 'utf8')
     : '';
   const next = upsertEnvBlock(current, portMapping);
+  if (next === current) return;
   fs.writeFileSync(envPath, next, 'utf8');
 }
 
@@ -729,6 +747,7 @@ export function removePortsFromEnvFile(
   const next = variableNames
     ? removeEnvBlockVariables(current, variableNames)
     : removeEnvBlock(current);
+  if (next === current) return;
   if (next.length === 0) {
     fs.rmSync(envPath, { force: true });
     return;
