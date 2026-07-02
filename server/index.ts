@@ -287,12 +287,16 @@ import { sessionEnvelopeRegistry } from './session-envelope-registry.js';
 import { createLogger, initFileLogging } from './logger.js';
 import { createSecurityAuditLog } from './security-audit-log.js';
 import {
-  initializeDefaultAllocator,
   getDefaultAllocator,
+  initializeDefaultAllocator,
   normalizePortVariables,
   removePortsFromEnvFile,
   upsertPortsInEnvFile,
 } from './port-allocator.js';
+import {
+  createPortReconciliationWarningLogger,
+  filterPortReconciliationRepoPaths,
+} from './port-reconciliation.js';
 import {
   actorFromRequestBody,
   capabilityDecisionFromRequest,
@@ -527,23 +531,7 @@ function getAllocatorOrNull(): ReturnType<typeof getDefaultAllocator> | null {
   }
 }
 
-const portReconciliationWarningKeys = new Set<string>();
-
-function logPortReconciliationOnce(
-  key: string,
-  message: string,
-  ...args: unknown[]
-): void {
-  if (portReconciliationWarningKeys.has(key)) {
-    logger.debug(message, ...args);
-    return;
-  }
-  if (portReconciliationWarningKeys.size > 512) {
-    portReconciliationWarningKeys.clear();
-  }
-  portReconciliationWarningKeys.add(key);
-  logger.warn(message, ...args);
-}
+const logPortReconciliationOnce = createPortReconciliationWarningLogger(logger);
 
 function logPortReconciliationFailure(err: unknown): void {
   logger.warn(
@@ -1715,7 +1703,7 @@ async function main(): Promise<void> {
   }
 
   async function reconcilePortsForAllRepos(repoPaths: string[]): Promise<void> {
-    for (const repoPath of repoPaths) {
+    for (const repoPath of filterPortReconciliationRepoPaths(repoPaths)) {
       await reconcilePortsForRepo(repoPath);
     }
   }
