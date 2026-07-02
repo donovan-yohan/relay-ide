@@ -5,6 +5,8 @@ import { TuiButton } from './TuiButton';
 import './ImageToast.css';
 
 const IMAGE_NOTIFICATION_ID = 'image-toast';
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
 let autoDismissTimer: number | null = null;
 
 function clearAutoDismissTimer(): void {
@@ -45,7 +47,7 @@ interface ImageToastContentProps {
 const ImageToastContent: React.FC<ImageToastContentProps> = ({ text, showInsert, imagePath }) => {
   const handleInsert = React.useCallback(() => {
     if (imagePath) {
-      sendPtyData(imagePath);
+      sendPtyData(`${BRACKETED_PASTE_START}${imagePath}${BRACKETED_PASTE_END}`);
     }
     hideImageToast();
   }, [imagePath]);

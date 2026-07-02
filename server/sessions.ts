@@ -109,6 +109,7 @@ import {
   isTerminalInputKey,
   type TerminalInputKey,
 } from './terminal-model-backend.js';
+import { cleanupSessionImageTempDir } from './session-image-ingress.js';
 
 const logger = createLogger('sessions');
 
@@ -1169,6 +1170,7 @@ function kill(id: string): void {
     deleteWebSession(id);
   }
 
+  cleanupSessionImageTempDir(id);
   sessions.delete(id);
   sessionEnvelopeRegistry.delete(id);
 }

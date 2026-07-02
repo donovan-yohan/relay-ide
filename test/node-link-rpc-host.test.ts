@@ -1,8 +1,10 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import { createNodeLinkRpcHost } from '../server/node-link-rpc-host.js';
+import { _resetForTesting as resetClipboardToolCache } from '../server/clipboard.js';
+import { cleanupSessionImageTempDir } from '../server/session-image-ingress.js';
 import type {
   RelayNodeEnvelope,
   RelayNodeError,
@@ -15,6 +17,18 @@ import type { LocalRelayNode } from '../server/local-node.js';
 import type { CreateParams } from '../server/sessions.js';
 import type { CreateWebParams } from '../server/web-session-handler.js';
 import type { SessionSummary } from '../server/types.js';
+
+const OLD_DISPLAY = process.env['DISPLAY'];
+const OLD_WAYLAND_DISPLAY = process.env['WAYLAND_DISPLAY'];
+
+afterEach(() => {
+  if (OLD_DISPLAY === undefined) delete process.env['DISPLAY'];
+  else process.env['DISPLAY'] = OLD_DISPLAY;
+  if (OLD_WAYLAND_DISPLAY === undefined) delete process.env['WAYLAND_DISPLAY'];
+  else process.env['WAYLAND_DISPLAY'] = OLD_WAYLAND_DISPLAY;
+  resetClipboardToolCache();
+  cleanupSessionImageTempDir('sess-1');
+});
 
 function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -132,6 +146,45 @@ describe('node-link-rpc-host', () => {
     const replyPayload = reply.payload as { session: SessionSummary };
     expect(replyPayload.session.id).toBe('sess-1');
     expect(replyPayload.session).not.toHaveProperty('pid');
+  });
+
+  it('routes sessions.image to node-local image ingress', async () => {
+    delete process.env['DISPLAY'];
+    delete process.env['WAYLAND_DISPLAY'];
+    resetClipboardToolCache();
+
+    const writes: string[] = [];
+    const localRelayNode = fakeLocalNode({
+      get: (id) => (id === 'sess-1' ? ({ id, mode: 'pty' } as never) : undefined),
+      write: (_id, data) => writes.push(data),
+    });
+    const host = createNodeLinkRpcHost({ localRelayNode });
+    const { sent, ctx } = context();
+
+    host.handle(
+      envelope('sessions.image', {
+        id: 'sess-1',
+        data: Buffer.from('image').toString('base64'),
+        mimeType: 'image/png',
+      }),
+      ctx
+    );
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    expect(sent[0]).toMatchObject({
+      channel: 'rpc',
+      type: 'sessions.image.result',
+      requestId: 'req-1',
+      payload: {
+        id: 'sess-1',
+        sessionId: 'sess-1',
+        clipboardSet: false,
+        inserted: true,
+        mode: 'path',
+      },
+    });
+    const payload = sent[0]!.payload as { path: string };
+    expect(writes).toEqual([`\x1b[200~${payload.path}\x1b[201~`]);
   });
 
   it('passes routed terminalBackend and rejects legacy routed useTmux', () => {
