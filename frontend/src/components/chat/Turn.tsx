@@ -10,10 +10,14 @@ import { ApprovalCard } from './ApprovalCard.js';
 import { AssistantMarkdown } from './AssistantMarkdown.js';
 import { FileChangeRow } from './FileChangeRow.js';
 import {
+  CompactionCard,
+  HookPromptCard,
   ImageGenerationCard,
   ImageViewCard,
   WebSearchCard,
 } from './MediaCard.js';
+import { PlanCard } from './PlanCard.js';
+import { QuestionCard } from './QuestionCard.js';
 import { ToolCard } from './ToolCard.js';
 import { TurnFooter } from './TurnFooter.js';
 import { TurnHeader } from './TurnHeader.js';
@@ -28,6 +32,7 @@ interface TurnProps {
   session: AgentSessionV2;
   eventVerbosity?: EventVerbosity;
   onApprove: (requestId: string, decision: AgentApprovalDecisionV2) => void;
+  onAnswer: (requestId: string, answers: Record<string, string[]>) => void;
   /** Slash command catalog for skill token highlighting in user messages. */
   slashCommands?: AgentSlashCommandV2[];
 }
@@ -97,6 +102,7 @@ function renderItem(
   item: AgentItemV2,
   eventVerbosity: EventVerbosity,
   onApprove: (requestId: string, decision: AgentApprovalDecisionV2) => void,
+  onAnswer: (requestId: string, answers: Record<string, string[]>) => void,
   commandIndex: Set<string>
 ): React.ReactNode {
   if (!shouldRenderItem(item, eventVerbosity)) return null;
@@ -126,11 +132,11 @@ function renderItem(
     case 'providerExtension':
       return renderProviderExtension(item);
     case 'question':
-      return <pre className="tl-text">{item.question}</pre>;
+      return <QuestionCard item={item} onAnswer={onAnswer} />;
     case 'plan':
-      return <pre className="tl-text">{item.text}</pre>;
+      return <PlanCard item={item} />;
     case 'compaction':
-      return <pre className="tl-text">{item.summary}</pre>;
+      return <CompactionCard item={item} />;
     case 'sessionBreak':
       return (
         <div
@@ -150,7 +156,7 @@ function renderItem(
     case 'imageGeneration':
       return <ImageGenerationCard item={item} />;
     case 'hookPrompt':
-      return <pre className="tl-text">{item.prompt}</pre>;
+      return <HookPromptCard item={item} />;
     case 'errorMessage':
       return (
         <div
@@ -187,6 +193,7 @@ export const Turn: React.FC<TurnProps> = ({
   session,
   eventVerbosity = 'normal',
   onApprove,
+  onAnswer,
   slashCommands,
 }) => {
   const commandIndex = slashCommands
@@ -198,7 +205,7 @@ export const Turn: React.FC<TurnProps> = ({
       <TurnHeader turn={turn} />
       {turn.items.map((item) => (
         <React.Fragment key={item.id}>
-          {renderItem(item, eventVerbosity, onApprove, commandIndex)}
+          {renderItem(item, eventVerbosity, onApprove, onAnswer, commandIndex)}
         </React.Fragment>
       ))}
       {turn.error && (
