@@ -595,6 +595,15 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   // path's one-shot typed initial prompt (server/sessions.ts) instead of
   // persisting as system framing for the whole conversation.
   private _initialInstructionsSent = false;
+  /** In-flight function_call items, keyed by the Responses API item id, so
+   * `function_call_arguments.delta/.done` can accumulate arguments before
+   * `output_item.done` emits the completed tool-call. */
+  private _pendingToolCalls = new Map<
+    string,
+    { callId: string; toolName: string; argsBuffer: string }
+  >();
+  /** Accumulated reasoning summary text for the turn currently streaming. */
+  private _reasoningBuffer = '';
 
   get status(): AdapterStatus {
     return this._status;
@@ -610,6 +619,8 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._lastResponseId = null;
     this._turnCounter = 0;
     this._initialInstructionsSent = false;
+    this._pendingToolCalls.clear();
+    this._reasoningBuffer = '';
 
     const settings = resolveHermesGatewaySettings(config.extra);
     this._endpoint = settings.endpoint;
@@ -632,6 +643,8 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._messageAbortController = null;
     this._currentTurnId = null;
     this._lastResponseId = null;
+    this._pendingToolCalls.clear();
+    this._reasoningBuffer = '';
     this._status = 'disconnected';
   }
 
@@ -655,6 +668,8 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
 
     this._messageAbortController = new AbortController();
     this._currentTurnId = turnId;
+    this._reasoningBuffer = '';
+    this._pendingToolCalls.clear();
 
     this.fire({ type: 'chat:session-status', status: 'active' });
     this.fire({
@@ -724,6 +739,16 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       }
 
       await this.consumeResponsesSse(res.body);
+
+      if (this._currentTurnId === turnId) {
+        // The stream closed without a terminal response event (no
+        // response.completed/failed/error/incomplete). Never leave the turn
+        // hanging forever waiting for an event that will never arrive.
+        this.failCurrentTurn(
+          'Hermes stream ended without a terminal response event',
+          'error'
+        );
+      }
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError';
       if (isAbort) {
@@ -911,110 +936,320 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     const turnId = this._currentTurnId ?? 'turn-0';
 
     switch (type) {
-      case 'response.created': {
-        const response = event.data['response'] as
-          | Record<string, unknown>
-          | undefined;
-        const responseId = response?.['id'];
-        if (typeof responseId === 'string') {
-          this._lastResponseId = responseId;
-        }
+      case 'response.created':
+        this.handleResponseCreated(event);
         break;
-      }
-      case 'response.output_text.delta': {
-        const delta = event.data['delta'];
-        if (typeof delta === 'string' && delta) {
-          this.fire({
-            type: 'chat:text-delta',
-            turnId,
-            messageId: `msg-${turnId}`,
-            delta,
-          });
-        }
+      case 'response.output_text.delta':
+        this.handleOutputTextDelta(event, turnId);
         break;
-      }
-      case 'response.output_item.added': {
-        const item = event.data['item'] as Record<string, unknown> | undefined;
-        if (item?.['type'] !== 'function_call') break;
-        this.fire({
-          type: 'chat:tool-call',
-          turnId,
-          toolCallId: String(
-            item['call_id'] ?? item['id'] ?? crypto.randomUUID()
-          ),
-          toolName: String(item['name'] ?? 'unknown'),
-          description: '',
-          input: parseToolArguments(item['arguments']),
-          status: 'running',
-        });
+      case 'response.output_text.done':
+        this.handleOutputTextDone(event, turnId);
         break;
-      }
-      case 'response.completed': {
-        const response = event.data['response'] as
-          | Record<string, unknown>
-          | undefined;
-        const responseId = response?.['id'];
-        if (typeof responseId === 'string') {
-          this._lastResponseId = responseId;
-          // Persist the completed response id so a resumed session (after a
-          // Relay restart) can continue the conversation via
-          // `previous_response_id`. Only completed responses are chainable.
-          this.fire({
-            type: 'chat:provider-session',
-            providerSession: { hermesResponseId: responseId },
-          });
-        }
-        if (this._currentTurnId) {
-          this.fire({
-            type: 'chat:turn-completed',
-            turnId: this._currentTurnId,
-            reason: 'completed',
-            durationMs: 0,
-            toolCallCount: 0,
-            messageCount: 1,
-          });
-          this._currentTurnId = null;
-        }
-        this.fire({ type: 'chat:session-status', status: 'idle' });
+      case 'response.output_item.added':
+        this.handleOutputItemAdded(event, turnId);
         break;
-      }
-      case 'response.failed': {
-        const response = event.data['response'] as
-          | Record<string, unknown>
-          | undefined;
-        const error = response?.['error'] as
-          | Record<string, unknown>
-          | undefined;
-        this._lastResponseId = null;
-        this.fire({
-          type: 'chat:error',
-          kind: 'protocol',
-          message: String(error?.['message'] ?? 'Hermes response failed'),
-          retryable: true,
-          turnId,
-        });
-        if (this._currentTurnId) {
-          this.fire({
-            type: 'chat:turn-completed',
-            turnId: this._currentTurnId,
-            reason: 'failed',
-            durationMs: 0,
-            toolCallCount: 0,
-            messageCount: 0,
-          });
-          this._currentTurnId = null;
-        }
-        this.fire({ type: 'chat:session-status', status: 'error' });
+      case 'response.function_call_arguments.delta':
+        this.handleFunctionCallArgumentsDelta(event);
         break;
-      }
+      case 'response.function_call_arguments.done':
+        this.handleFunctionCallArgumentsDone(event);
+        break;
+      case 'response.output_item.done':
+        this.handleOutputItemDone(event, turnId);
+        break;
+      case 'response.reasoning_summary_text.delta':
+        this.handleReasoningSummaryDelta(event, turnId);
+        break;
+      case 'response.reasoning_summary_text.done':
+        this.handleReasoningSummaryDone(event, turnId);
+        break;
+      case 'response.completed':
+        this.handleResponseCompleted(event, turnId);
+        break;
+      case 'response.failed':
+        this.handleResponseFailed(event);
+        break;
+      case 'response.error':
+      case 'error':
+        this.handleResponseError(event);
+        break;
+      case 'response.incomplete':
+        this.handleResponseIncomplete(event);
+        break;
       case 'permission.requested':
-      case 'permission.asked': {
+      case 'permission.asked':
         this.handlePermissionRequested(event);
         break;
-      }
       default:
         logger.debug('Unhandled Hermes Responses event:', type);
     }
+  }
+
+  private handleResponseCreated(event: SseEvent): void {
+    const response = event.data['response'] as
+      | Record<string, unknown>
+      | undefined;
+    const responseId = response?.['id'];
+    if (typeof responseId === 'string') {
+      this._lastResponseId = responseId;
+    }
+  }
+
+  private handleOutputTextDelta(event: SseEvent, turnId: string): void {
+    const delta = event.data['delta'];
+    if (typeof delta === 'string' && delta) {
+      this.fire({
+        type: 'chat:text-delta',
+        turnId,
+        messageId: `msg-${turnId}`,
+        delta,
+      });
+    }
+  }
+
+  private handleOutputTextDone(event: SseEvent, turnId: string): void {
+    const text = event.data['text'];
+    this.fire({
+      type: 'chat:message-complete',
+      turnId,
+      messageId: `msg-${turnId}`,
+      role: 'assistant',
+      content: typeof text === 'string' ? text : '',
+    });
+  }
+
+  private handleOutputItemAdded(event: SseEvent, turnId: string): void {
+    const item = event.data['item'] as Record<string, unknown> | undefined;
+    if (item?.['type'] !== 'function_call') return;
+    const itemId = String(item['id'] ?? crypto.randomUUID());
+    const callId = String(item['call_id'] ?? itemId);
+    const toolName = String(item['name'] ?? 'unknown');
+    this._pendingToolCalls.set(itemId, {
+      callId,
+      toolName,
+      argsBuffer:
+        typeof item['arguments'] === 'string' ? item['arguments'] : '',
+    });
+    this.fire({
+      type: 'chat:tool-call',
+      turnId,
+      toolCallId: callId,
+      toolName,
+      description: '',
+      input: parseToolArguments(item['arguments']),
+      status: 'running',
+    });
+  }
+
+  private handleFunctionCallArgumentsDelta(event: SseEvent): void {
+    const itemId = event.data['item_id'];
+    const delta = event.data['delta'];
+    if (typeof itemId === 'string' && typeof delta === 'string') {
+      const pending = this._pendingToolCalls.get(itemId);
+      if (pending) pending.argsBuffer += delta;
+    }
+  }
+
+  private handleFunctionCallArgumentsDone(event: SseEvent): void {
+    const itemId = event.data['item_id'];
+    const args = event.data['arguments'];
+    if (typeof itemId === 'string' && typeof args === 'string') {
+      const pending = this._pendingToolCalls.get(itemId);
+      if (pending) pending.argsBuffer = args;
+    }
+  }
+
+  private handleOutputItemDone(event: SseEvent, turnId: string): void {
+    const item = event.data['item'] as Record<string, unknown> | undefined;
+    if (item?.['type'] !== 'function_call') return;
+    const itemId = String(item['id'] ?? '');
+    const pending = this._pendingToolCalls.get(itemId);
+    const callId = String(item['call_id'] ?? pending?.callId ?? itemId);
+    const toolName = String(item['name'] ?? pending?.toolName ?? 'unknown');
+    const rawArgs =
+      typeof item['arguments'] === 'string' && item['arguments']
+        ? item['arguments']
+        : (pending?.argsBuffer ?? '');
+    const isIncomplete = item['status'] === 'incomplete';
+    this.fire({
+      type: 'chat:tool-call',
+      turnId,
+      toolCallId: callId,
+      toolName,
+      description: '',
+      input: parseToolArguments(rawArgs),
+      status: isIncomplete ? 'error' : 'completed',
+    });
+    const output = item['output'];
+    if (output !== undefined && output !== null) {
+      this.fire({
+        type: 'chat:tool-result',
+        turnId,
+        toolCallId: callId,
+        toolName,
+        status: isIncomplete ? 'error' : 'completed',
+        output: typeof output === 'string' ? output : JSON.stringify(output),
+        durationMs: 0,
+      });
+    }
+    this._pendingToolCalls.delete(itemId);
+  }
+
+  private handleReasoningSummaryDelta(event: SseEvent, turnId: string): void {
+    const delta = event.data['delta'];
+    if (typeof delta === 'string' && delta) {
+      this._reasoningBuffer += delta;
+      this.fire({
+        type: 'chat:reasoning',
+        turnId,
+        messageId: `reasoning-${turnId}`,
+        content: this._reasoningBuffer,
+        isDelta: true,
+      });
+    }
+  }
+
+  private handleReasoningSummaryDone(event: SseEvent, turnId: string): void {
+    const text = event.data['text'];
+    const content = typeof text === 'string' ? text : this._reasoningBuffer;
+    this.fire({
+      type: 'chat:reasoning',
+      turnId,
+      messageId: `reasoning-${turnId}`,
+      content,
+      isDelta: false,
+    });
+    this._reasoningBuffer = '';
+  }
+
+  private handleResponseCompleted(event: SseEvent, turnId: string): void {
+    const response = event.data['response'] as
+      | Record<string, unknown>
+      | undefined;
+    const responseId = response?.['id'];
+    if (typeof responseId === 'string') {
+      this._lastResponseId = responseId;
+      // Persist the completed response id so a resumed session (after a
+      // Relay restart) can continue the conversation via
+      // `previous_response_id`. Only completed responses are chainable.
+      this.fire({
+        type: 'chat:provider-session',
+        providerSession: { hermesResponseId: responseId },
+      });
+    }
+    this.emitTelemetryFromResponse(response, turnId);
+    if (this._currentTurnId) {
+      this.fire({
+        type: 'chat:turn-completed',
+        turnId: this._currentTurnId,
+        reason: 'completed',
+        durationMs: 0,
+        toolCallCount: 0,
+        messageCount: 1,
+      });
+      this._currentTurnId = null;
+    }
+    this._pendingToolCalls.clear();
+    this.fire({ type: 'chat:session-status', status: 'idle' });
+  }
+
+  private handleResponseFailed(event: SseEvent): void {
+    const response = event.data['response'] as
+      | Record<string, unknown>
+      | undefined;
+    const error = response?.['error'] as Record<string, unknown> | undefined;
+    this._lastResponseId = null;
+    this.failCurrentTurn(
+      String(error?.['message'] ?? 'Hermes response failed'),
+      'failed'
+    );
+  }
+
+  private handleResponseError(event: SseEvent): void {
+    const message = event.data['message'];
+    this._lastResponseId = null;
+    this.failCurrentTurn(
+      typeof message === 'string' ? message : 'Hermes response error',
+      'failed'
+    );
+  }
+
+  private handleResponseIncomplete(event: SseEvent): void {
+    const response = event.data['response'] as
+      | Record<string, unknown>
+      | undefined;
+    const responseId = response?.['id'];
+    if (typeof responseId === 'string') {
+      // Incomplete responses are still chainable via `previous_response_id`,
+      // so keep the anchor for the next turn.
+      this._lastResponseId = responseId;
+    }
+    const details = response?.['incomplete_details'] as
+      | Record<string, unknown>
+      | undefined;
+    const reasonText = details?.['reason'];
+    this.failCurrentTurn(
+      `Hermes response is incomplete${
+        reasonText ? `: ${String(reasonText)}` : ''
+      }`,
+      'error'
+    );
+  }
+
+  /**
+   * Surface a terminal turn failure: emit `chat:error`, complete the active
+   * turn with the given reason, clear in-flight tool-call state, and mark the
+   * session idle-on-error. Used for `response.failed`/`response.error`/
+   * `response.incomplete` and for the stream-end-without-terminal-event
+   * guard in `sendMessage` — every path that would otherwise leave the UI
+   * waiting on a turn that will never resolve.
+   */
+  private failCurrentTurn(message: string, reason: 'failed' | 'error'): void {
+    const turnId = this._currentTurnId ?? 'turn-0';
+    this.fire({
+      type: 'chat:error',
+      kind: 'protocol',
+      message,
+      retryable: true,
+      turnId,
+    });
+    if (this._currentTurnId) {
+      this.fire({
+        type: 'chat:turn-completed',
+        turnId: this._currentTurnId,
+        reason,
+        durationMs: 0,
+        toolCallCount: 0,
+        messageCount: 0,
+      });
+      this._currentTurnId = null;
+    }
+    this._pendingToolCalls.clear();
+    this.fire({ type: 'chat:session-status', status: 'error' });
+  }
+
+  /** Emit `chat:telemetry` from a completed response's `usage` payload, if present. */
+  private emitTelemetryFromResponse(
+    response: Record<string, unknown> | undefined,
+    turnId: string
+  ): void {
+    const usage = response?.['usage'] as Record<string, unknown> | undefined;
+    if (!usage) return;
+    const inputDetails = usage['input_tokens_details'] as
+      | Record<string, unknown>
+      | undefined;
+    this.fire({
+      type: 'chat:telemetry',
+      turnId,
+      model: String(response?.['model'] ?? ''),
+      inputTokens: Number(usage['input_tokens'] ?? 0),
+      outputTokens: Number(usage['output_tokens'] ?? 0),
+      cacheReadTokens: Number(inputDetails?.['cached_tokens'] ?? 0),
+      cacheWriteTokens: 0,
+      costUsd: null,
+      contextPercent: 0,
+      contextWindowSize: 0,
+    });
   }
 
   private handlePermissionRequested(event: SseEvent): void {

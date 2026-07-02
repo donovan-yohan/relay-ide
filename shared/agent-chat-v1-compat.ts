@@ -13,6 +13,7 @@ import type {
   ChatEvent,
   ChatEventSource,
   MessageCompleteEvent,
+  ToolCallStatus,
 } from './chat-events.js';
 
 type CompatAgentPatchV2 = AgentPatchV2 & {
@@ -36,6 +37,24 @@ function legacyDecisionToV2(
   if (decision === 'allow-always')
     return { kind: 'accept', scope: 'permanent' };
   return { kind: 'accept', scope: 'once' };
+}
+
+/** Stable v2 item id for a legacy tool-call/tool-result pair sharing `toolCallId`. */
+function toolCallItemId(toolCallId: string): string {
+  return `tool-${toolCallId}`;
+}
+
+function toolCallStatusToItemStatus(
+  status: ToolCallStatus
+): 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' {
+  switch (status) {
+    case 'declined':
+      return 'cancelled';
+    case 'error':
+      return 'failed';
+    default:
+      return status;
+  }
 }
 
 export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
@@ -135,6 +154,61 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
           timestamp: event.timestamp,
           turnId: event.turnId,
           item: messageCompleteToItem(event),
+        },
+      ];
+
+    case 'chat:tool-call':
+      return [
+        {
+          type: 'agent-item-updated-v2',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          turnId: event.turnId,
+          item: {
+            type: 'dynamicToolCall',
+            id: toolCallItemId(event.toolCallId),
+            namespace: event.source,
+            tool: event.toolName,
+            arguments: event.input,
+            status: toolCallStatusToItemStatus(event.status),
+            metadata: compactMetadata({
+              source: event.source,
+              description: event.description || undefined,
+            }),
+          },
+        },
+      ];
+
+    case 'chat:tool-result': {
+      const content = event.output || event.error || '';
+      if (!content) return [];
+      return [
+        {
+          type: 'agent-item-delta-v2',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          turnId: event.turnId,
+          itemId: toolCallItemId(event.toolCallId),
+          delta: { content },
+        },
+      ];
+    }
+
+    case 'chat:reasoning':
+      return [
+        {
+          type: 'agent-item-updated-v2',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          turnId: event.turnId,
+          item: {
+            type: 'reasoning',
+            id: event.messageId,
+            summary: event.content,
+            visibility: 'summary',
+            status: event.isDelta ? 'running' : 'completed',
+            metadata: { source: event.source },
+          },
         },
       ];
 

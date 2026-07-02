@@ -54,6 +54,13 @@ export const v2Adapters: Record<string, () => ProtocolAdapterV2> = {
       interrupt: true,
       cancelQueued: false,
       resume: true,
+      // `HermesProtocolAdapter` emits `chat:telemetry`, but
+      // `mapChatEventToAgentPatchV2` has no case for it yet, so
+      // `LegacyProtocolAdapterV2Bridge` silently drops it before it reaches the
+      // V2 stream/UI (same pre-existing gap as opencode/opencode-attached
+      // above). Keep this `false` until that compat mapping exists so the
+      // capability bit doesn't advertise a feature that can't render.
+      telemetry: false,
     }),
 };
 
