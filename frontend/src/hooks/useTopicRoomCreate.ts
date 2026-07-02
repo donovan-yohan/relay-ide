@@ -14,9 +14,10 @@ import {
 import {
   buildTopicRoomCreateInput,
   buildTopicRoomLaunchBody,
+  deriveTopicProviderLaunchMode,
+  deriveTopicProviderOptions,
   effectiveDraftTitle,
   uniqueStrings,
-  FALLBACK_PROVIDER_IDS,
   TOPIC_ROOM_DRAFT_EMPTY,
   type TopicRoomDraft,
 } from '../lib/topic-create.js';
@@ -78,6 +79,7 @@ export function useTopicRoomCreate({
   const defaultWorktreePath = activeSession?.worktreePath ?? undefined;
   const defaultCwd =
     activeSession?.cwd ?? defaultWorktreePath ?? defaultRepoPath ?? undefined;
+  const selectedProviderId = draft.providerId.trim() || defaultAgent;
   const nodes = useMemo(
     () =>
       (nodesQuery.data ?? []).map((node) => ({
@@ -88,12 +90,19 @@ export function useTopicRoomCreate({
   );
   const providerOptions = useMemo(
     () =>
-      uniqueStrings([
-        defaultAgent,
-        ...frameworks.map((framework) => framework.id),
-        ...FALLBACK_PROVIDER_IDS,
-      ]),
-    [defaultAgent, frameworks]
+      deriveTopicProviderOptions({
+        frameworks,
+        defaultProviderId: defaultAgent,
+        selectedProviderId,
+        templateKind: draft.templateKind,
+      }),
+    [defaultAgent, draft.templateKind, frameworks, selectedProviderId]
+  );
+  const selectedProviderOption = useMemo(
+    () =>
+      providerOptions.find((option) => option.id === selectedProviderId) ??
+      providerOptions[0],
+    [providerOptions, selectedProviderId]
   );
   const nodeOptions = useMemo(
     () =>
@@ -150,6 +159,15 @@ export function useTopicRoomCreate({
       taskRef,
     ]
   );
+  const launchMode = useMemo(
+    () =>
+      deriveTopicProviderLaunchMode(
+        previewCreate.routingDefaults?.providerId ?? defaultAgent,
+        draft.templateKind,
+        frameworks
+      ),
+    [defaultAgent, draft.templateKind, frameworks, previewCreate.routingDefaults]
+  );
 
   const updateDraft = useCallback((patch: Partial<TopicRoomDraft>) => {
     setDraft((current) => ({ ...current, ...patch }));
@@ -168,7 +186,8 @@ export function useTopicRoomCreate({
       if (!effectiveTitle) return;
       const launch = buildTopicRoomLaunchBody(
         previewCreate,
-        draft.templateKind
+        draft.templateKind,
+        frameworks
       );
       const submitIntent =
         intent === 'create-and-launch' && launch
@@ -254,6 +273,7 @@ export function useTopicRoomCreate({
       createdRoom,
       draft.templateKind,
       effectiveTitle,
+      frameworks,
       onLaunched,
       previewCreate,
       queryClient,
@@ -273,6 +293,9 @@ export function useTopicRoomCreate({
     previewCreate,
     nodes,
     providerOptions,
+    selectedProviderId,
+    selectedProviderOption,
+    launchMode,
     nodeOptions,
     repoPathOptions,
     worktreePathOptions,

@@ -543,7 +543,7 @@ function GeneralSection({
       <h3 className="settings-dialog-section-heading">general</h3>
       <SettingRow
         name="Default Coding Agent"
-        description="Which AI agent to use for new sessions"
+        description="Seeds new topic composer sessions; per-topic overrides do not change this setting"
       >
         <select
           className="settings-dialog-select"

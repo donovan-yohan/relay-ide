@@ -15,12 +15,85 @@ import {
   launchTypeForTemplate,
   deriveTopicTitleFromPrompt,
   TOPIC_ROOM_TEMPLATE_OPTIONS,
+  type TopicProviderOption,
 } from '../lib/topic-create.js';
 import { TOPIC_COMPOSER_FOCUS_EVENT } from '../lib/topic-task-room.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { isMobileDevice } from '../lib/utils.js';
 import TuiButton from './TuiButton.js';
 import './TopicComposer.css';
+
+function TopicComposerProviderRow({
+  providerOptions,
+  selectedProviderId,
+  selectedProviderOption,
+  providerUnavailable,
+  onProviderChange,
+}: {
+  providerOptions: TopicProviderOption[];
+  selectedProviderId: string;
+  selectedProviderOption?: TopicProviderOption | undefined;
+  providerUnavailable: boolean;
+  onProviderChange: (providerId: string) => void;
+}) {
+  return (
+    <label className="topic-composer__provider-row">
+      <span className="topic-composer__provider-label">coding agent</span>
+      <select
+        className="topic-composer__provider-select"
+        value={selectedProviderId}
+        onChange={(event) => onProviderChange(event.currentTarget.value)}
+        aria-describedby="topic-composer-provider-status"
+      >
+        {providerOptions.map((option) => (
+          <option
+            key={option.id}
+            value={option.id}
+            disabled={option.disabled && option.id !== selectedProviderId}
+          >
+            {option.label}
+            {option.isDefault ? ' (default)' : ''}
+            {option.disabled ? ' (unavailable)' : ''}
+          </option>
+        ))}
+      </select>
+      <span
+        className={
+          providerUnavailable
+            ? 'topic-composer__provider-status topic-composer__provider-status--error'
+            : 'topic-composer__provider-status'
+        }
+        id="topic-composer-provider-status"
+      >
+        {selectedProviderOption?.status ?? 'global default · tui launch'}
+      </span>
+    </label>
+  );
+}
+
+function primaryIntentForTemplate(templateKind: WorkspaceTopicTemplateKind) {
+  return templateKind === 'note' ? 'create-only' : 'create-and-launch';
+}
+
+function composerSubmitDisabled(input: {
+  effectiveTitle: string;
+  submitting: boolean;
+  providerUnavailable: boolean;
+}) {
+  return !input.effectiveTitle || input.submitting || input.providerUnavailable;
+}
+
+function friendlyTopicNodeLabel(input: {
+  routedNodeId?: string | undefined;
+  nodes: Array<{ nodeId: string; displayName?: string | undefined }>;
+  fallbackLabel: string;
+}) {
+  if (!input.routedNodeId) return input.fallbackLabel;
+  return (
+    input.nodes.find((node) => node.nodeId === input.routedNodeId)
+      ?.displayName || 'remote node'
+  );
+}
 
 /**
  * #1058: the codex-style primary entry point. Lives in the main pane (not the
@@ -48,6 +121,9 @@ export default function TopicComposer({
     previewCreate,
     nodes,
     providerOptions,
+    selectedProviderId,
+    selectedProviderOption,
+    launchMode,
     nodeOptions,
     repoPathOptions,
     worktreePathOptions,
@@ -73,7 +149,7 @@ export default function TopicComposer({
         templateKind: draft.templateKind,
         launchOverrides: {
           type: launchTypeForTemplate(draft.templateKind) ?? 'agent',
-          mode: 'pty',
+          mode: launchMode ?? 'pty',
           agent: previewCreate.routingDefaults?.providerId,
           nodeId: previewCreate.routingDefaults?.nodeId,
           repoPath: previewCreate.routingDefaults?.repoPath,
@@ -81,20 +157,26 @@ export default function TopicComposer({
           cwd: previewCreate.routingDefaults?.cwd,
         },
       }),
-    [draft.templateKind, previewCreate]
+    [draft.templateKind, launchMode, previewCreate]
   );
   const launchDisabled = draft.templateKind === 'note';
   // Notes are rooms without a session — the primary action degrades to
   // create-only instead of dead-ending the keyboard.
-  const primaryIntent = launchDisabled ? 'create-only' : 'create-and-launch';
-  const disabled = !effectiveTitle || Boolean(submittingIntent);
+  const primaryIntent = primaryIntentForTemplate(draft.templateKind);
+  const providerUnavailable = Boolean(selectedProviderOption?.disabled);
+  const disabled = composerSubmitDisabled({
+    effectiveTitle,
+    submitting: Boolean(submittingIntent),
+    providerUnavailable,
+  });
   // #1103: never render a raw node id — resolve through the roster or fall
   // back to a generic label.
   const routedNodeId = previewCreate.routingDefaults?.nodeId;
-  const friendlyNodeLabel = routedNodeId
-    ? nodes.find((node) => node.nodeId === routedNodeId)?.displayName ||
-      'remote node'
-    : preview.nodeLabel;
+  const friendlyNodeLabel = friendlyTopicNodeLabel({
+    routedNodeId,
+    nodes,
+    fallbackLabel: preview.nodeLabel,
+  });
 
   return (
     <div className="topic-composer">
@@ -135,10 +217,17 @@ export default function TopicComposer({
             // pop the software keyboard on every app open.
             autoFocus={!isMobileDevice}
           />
+          <TopicComposerProviderRow
+            providerOptions={providerOptions}
+            selectedProviderId={selectedProviderId}
+            selectedProviderOption={selectedProviderOption}
+            providerUnavailable={providerUnavailable}
+            onProviderChange={(providerId) => updateDraft({ providerId })}
+          />
           <div className="topic-composer__bar">
             <span className="topic-composer__context">
-              {preview.providerLabel} · {friendlyNodeLabel} ·{' '}
-              {preview.cwdLabel}
+              {selectedProviderOption?.label ?? preview.providerLabel} ·{' '}
+              {preview.modeLabel} · {friendlyNodeLabel} · {preview.cwdLabel}
             </span>
             <TuiButton variant="primary" type="submit" disabled={disabled}>
               {launchSubmitLabel({
@@ -185,25 +274,6 @@ export default function TopicComposer({
                   }
                   placeholder="github issue number or URL"
                 />
-              </label>
-              <label>
-                <span>provider</span>
-                <input
-                  list="topic-composer-provider-options"
-                  value={draft.providerId}
-                  onChange={(event) =>
-                    updateDraft({ providerId: event.target.value })
-                  }
-                  placeholder={
-                    previewCreate.routingDefaults?.providerId ??
-                    'default provider'
-                  }
-                />
-                <datalist id="topic-composer-provider-options">
-                  {providerOptions.map((providerId) => (
-                    <option key={providerId} value={providerId} />
-                  ))}
-                </datalist>
               </label>
               <label>
                 <span>agent id</span>
@@ -311,7 +381,9 @@ export default function TopicComposer({
               </label>
               <div className="topic-composer__preview" aria-label="launch preview">
                 <div>template: {preview.templateKind}</div>
-                <div>provider: {preview.providerLabel}</div>
+                <div>
+                  provider: {selectedProviderOption?.label ?? preview.providerLabel}
+                </div>
                 <div>
                   agent:{' '}
                   {previewCreate.routingDefaults?.agentId ??
