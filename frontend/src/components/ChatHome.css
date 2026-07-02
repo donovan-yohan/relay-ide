@@ -1,5 +1,5 @@
 /* #1058: chat/topic spine default landing — the panel it hosts
-   (`.active-work-empty`) centers in the open space while keeping its content
+   (`.topic-composer`) centers in the open space while keeping its content
    left-aligned (TUI-native — see DESIGN.md). */
 .chat-home {
   display: flex;

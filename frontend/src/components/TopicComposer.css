@@ -70,8 +70,11 @@
 }
 
 .topic-composer__advanced-toggle {
+  display: inline-flex;
+  align-items: center;
   justify-self: start;
-  padding: 1px 0;
+  min-height: 32px;
+  padding: 4px 8px 4px 0;
   border: none;
   background: none;
   color: var(--text-muted);
@@ -99,6 +102,8 @@
 .topic-composer__advanced input,
 .topic-composer__advanced select {
   min-width: 0;
+  min-height: 30px;
+  padding: 4px 6px;
   border: 1px solid var(--border);
   border-radius: 0;
   background: var(--bg);
@@ -128,22 +133,6 @@
 .topic-composer__advanced-actions {
   display: flex;
   justify-content: flex-end;
-}
-
-.topic-composer__create-only {
-  border: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--bg-elevated);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--font-size-xs);
-  text-transform: lowercase;
-  cursor: pointer;
-}
-
-.topic-composer__create-only:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 .topic-composer__footer {

@@ -21,6 +21,7 @@ import {
   type TopicRoomDraft,
 } from '../lib/topic-create.js';
 import { taskRefFromDraft } from '../lib/topic-task-ref.js';
+import type { TopicComposerSeed } from '../lib/topic-task-room.js';
 import { resolveSessionByKey } from '../lib/session-keys.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
@@ -34,8 +35,11 @@ import { useConfigStore } from '../lib/stores/config.js';
  */
 export function useTopicRoomCreate({
   onLaunched,
+  seed,
 }: {
   onLaunched?: ((sessionId: string) => void) | undefined;
+  /** Routing context captured before navigation cleared the active session. */
+  seed?: TopicComposerSeed | null | undefined;
 } = {}) {
   const queryClient = useQueryClient();
   const sessions = useSessionsStore((s) => s.sessions);
@@ -64,11 +68,17 @@ export function useTopicRoomCreate({
 
   const effectiveTitle = effectiveDraftTitle(draft);
   const taskRef = taskRefFromDraft(draft.taskRef, effectiveTitle);
+  const defaultNodeId = activeSession?.nodeId ?? seed?.nodeId;
   const defaultRepoPath =
-    activeSession?.repoPath ?? activeRepoPath ?? undefined;
-  const defaultWorktreePath = activeSession?.worktreePath ?? undefined;
+    activeSession?.repoPath ?? activeRepoPath ?? seed?.repoPath ?? undefined;
+  const defaultWorktreePath =
+    activeSession?.worktreePath ?? seed?.worktreePath ?? undefined;
   const defaultCwd =
-    activeSession?.cwd ?? defaultWorktreePath ?? defaultRepoPath ?? undefined;
+    activeSession?.cwd ??
+    seed?.cwd ??
+    defaultWorktreePath ??
+    defaultRepoPath ??
+    undefined;
   const nodes = useMemo(
     () =>
       (nodesQuery.data ?? []).map((node) => ({
@@ -123,14 +133,14 @@ export function useTopicRoomCreate({
         draft: { ...draft, title: effectiveTitle },
         workspaceId: activeWorkspaceId,
         defaultProviderId: defaultAgent,
-        defaultNodeId: activeSession?.nodeId,
+        defaultNodeId,
         defaultRepoPath,
         defaultWorktreePath,
         defaultCwd,
         taskRef,
       }),
     [
-      activeSession?.nodeId,
+      defaultNodeId,
       activeWorkspaceId,
       draft,
       defaultAgent,

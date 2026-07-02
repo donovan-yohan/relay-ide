@@ -1,4 +1,10 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react';
 import {
   buildWorkspaceTopicLaunchPreview,
   type WorkspaceTopicTemplateKind,
@@ -10,6 +16,11 @@ import {
   deriveTopicTitleFromPrompt,
   TOPIC_ROOM_TEMPLATE_OPTIONS,
 } from '../lib/topic-create.js';
+import {
+  takeTopicComposerSeed,
+  TOPIC_COMPOSER_FOCUS_EVENT,
+} from '../lib/topic-task-room.js';
+import { isMobileDevice } from '../lib/utils.js';
 import TuiButton from './TuiButton.js';
 import './TopicComposer.css';
 
@@ -28,6 +39,10 @@ export default function TopicComposer({
   onSelectSession?: ((id: string) => void) | undefined;
   resume?: { label: string; onResume: () => void } | undefined;
 }) {
+  // One-shot routing seed captured by openTopicTaskRoom() before it cleared
+  // the active session — keeps "+ task" from inside a session launching into
+  // that session's node/repo/cwd instead of bare workspace defaults.
+  const [seed] = useState(takeTopicComposerSeed);
   const {
     draft,
     updateDraft,
@@ -42,8 +57,17 @@ export default function TopicComposer({
     repoPathOptions,
     worktreePathOptions,
     cwdOptions,
-  } = useTopicRoomCreate({ onLaunched: onSelectSession });
+  } = useTopicRoomCreate({ onLaunched: onSelectSession, seed });
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Focus request from openTopicTaskRoom() — covers the already-on-landing
+  // case where the component does not remount so autoFocus never re-fires.
+  useEffect(() => {
+    const focus = () => taRef.current?.focus();
+    window.addEventListener(TOPIC_COMPOSER_FOCUS_EVENT, focus);
+    return () => window.removeEventListener(TOPIC_COMPOSER_FOCUS_EVENT, focus);
+  }, []);
 
   const preview = useMemo(
     () =>
@@ -65,6 +89,9 @@ export default function TopicComposer({
     [draft.templateKind, previewCreate]
   );
   const launchDisabled = draft.templateKind === 'note';
+  // Notes are rooms without a session — the primary action degrades to
+  // create-only instead of dead-ending the keyboard.
+  const primaryIntent = launchDisabled ? 'create-only' : 'create-and-launch';
   const disabled = !effectiveTitle || Boolean(submittingIntent);
   // #1103: never render a raw node id — resolve through the roster or fall
   // back to a generic label.
@@ -83,10 +110,11 @@ export default function TopicComposer({
           aria-label="new topic"
           onSubmit={(event: FormEvent) => {
             event.preventDefault();
-            if (!disabled && !launchDisabled) void submit('create-and-launch');
+            if (!disabled) void submit(primaryIntent);
           }}
         >
           <textarea
+            ref={taRef}
             className="topic-composer__ta"
             value={draft.prompt}
             onChange={(event) => updateDraft({ prompt: event.target.value })}
@@ -95,28 +123,25 @@ export default function TopicComposer({
                 event.key === 'Enter' &&
                 !event.shiftKey &&
                 !event.nativeEvent.isComposing &&
-                !disabled &&
-                !launchDisabled
+                !disabled
               ) {
                 event.preventDefault();
-                void submit('create-and-launch');
+                void submit(primaryIntent);
               }
             }}
             placeholder="what should the agent do?"
             rows={4}
             aria-label="first message"
-            autoFocus
+            // On mobile the landing is the default view; autofocusing would
+            // pop the software keyboard on every app open.
+            autoFocus={!isMobileDevice}
           />
           <div className="topic-composer__bar">
             <span className="topic-composer__context">
               {preview.providerLabel} · {friendlyNodeLabel} ·{' '}
               {preview.cwdLabel}
             </span>
-            <TuiButton
-              variant="primary"
-              type="submit"
-              disabled={disabled || launchDisabled}
-            >
+            <TuiButton variant="primary" type="submit" disabled={disabled}>
               {launchSubmitLabel({
                 submittingIntent,
                 launchDisabled,
@@ -128,13 +153,17 @@ export default function TopicComposer({
             type="button"
             className="topic-composer__advanced-toggle"
             aria-expanded={advancedOpen}
+            aria-controls="topic-composer-advanced"
             onClick={() => setAdvancedOpen((prev) => !prev)}
           >
             <span aria-hidden="true">{advancedOpen ? '▾ ' : '▸ '}</span>
             advanced
           </button>
           {advancedOpen ? (
-            <div className="topic-composer__advanced">
+            <div
+              className="topic-composer__advanced"
+              id="topic-composer-advanced"
+            >
               <label>
                 <span>title</span>
                 <input
@@ -298,16 +327,15 @@ export default function TopicComposer({
                 <div>side effects: {preview.sideEffects.join(' · ')}</div>
               </div>
               <div className="topic-composer__advanced-actions">
-                <button
-                  type="button"
-                  className="topic-composer__create-only"
+                <TuiButton
+                  variant="ghost"
                   disabled={disabled}
                   onClick={() => void submit('create-only')}
                 >
                   {submittingIntent === 'create-only'
                     ? 'creating…'
                     : 'create only'}
-                </button>
+                </TuiButton>
               </div>
             </div>
           ) : null}

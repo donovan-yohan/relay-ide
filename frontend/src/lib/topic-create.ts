@@ -89,7 +89,8 @@ export function launchSubmitLabel(input: {
   launchFailure?: WorkspaceTopicLaunchFailure | null | undefined;
 }): string {
   if (input.submittingIntent === 'create-and-launch') return 'launching…';
-  if (input.launchDisabled) return 'note is create-only';
+  if (input.submittingIntent === 'create-only') return 'creating…';
+  if (input.launchDisabled) return 'create room';
   if (!input.launchFailure) return 'start';
   return input.launchFailure.stage === 'session'
     ? 'retry launch'

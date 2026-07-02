@@ -1328,7 +1328,7 @@ function TopicMobileCockpit({
             disabled={!onCreateTaskRoom}
             title={
               onCreateTaskRoom
-                ? 'create a task room from workspace defaults'
+                ? 'start a new topic in the main pane'
                 : 'topic creation unavailable'
             }
             onClick={onCreateTaskRoom}
