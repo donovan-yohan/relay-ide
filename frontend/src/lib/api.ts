@@ -1091,6 +1091,29 @@ export async function fetchPipelineHandoffArtifact(
   return data.artifact;
 }
 
+/**
+ * Hub-wide WorkContext artifact search (#1065) — metadata only (title/kind/
+ * taskRef/workContextId), never body/payload content. Hard-capped at 20
+ * results server-side regardless of the requested limit.
+ */
+export async function searchWorkContextArtifacts(
+  q: string,
+  options: { kind?: string; limit?: number } = {}
+): Promise<PipelineHandoffArtifactEnvelope[]> {
+  const trimmed = q.trim();
+  if (!trimmed) return [];
+  const params = new URLSearchParams();
+  params.set('q', trimmed);
+  if (options.kind) params.set('kind', options.kind);
+  params.set('limit', String(options.limit ?? 8));
+  const data = await json<{ artifacts?: PipelineHandoffArtifactEnvelope[] }>(
+    await fetch(`/work-context-artifacts?${params.toString()}`, {
+      headers: HANDOFF_ARTIFACT_HEADERS,
+    })
+  );
+  return Array.isArray(data.artifacts) ? data.artifacts : [];
+}
+
 export interface CopyPipelineHandoffArtifactResult {
   artifact: {
     metadata: PublicPipelineHandoffArtifactSummary;
