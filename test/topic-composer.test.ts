@@ -276,6 +276,11 @@ describe('TopicComposer', () => {
     );
   }
 
+  function getProviderStatus(provider: HTMLSelectElement): HTMLElement | null {
+    const describedBy = provider.getAttribute('aria-describedby');
+    return describedBy ? document.getElementById(describedBy) : null;
+  }
+
   it('renders the centered message box with start disabled until typed', () => {
     renderComposer();
     const ta = container.querySelector(
@@ -297,10 +302,15 @@ describe('TopicComposer', () => {
     ) as HTMLSelectElement;
     expect(provider).not.toBeNull();
     expect(provider.value).toBe('claude');
-    expect(provider.textContent).toContain('Claude Code (default)');
-    expect(container.querySelector('#topic-composer-provider-status')?.textContent).toBe(
+    expect(provider.labels?.[0]?.textContent).toBe('coding agent');
+    expect(provider.labels?.[0]?.textContent).not.toContain('Claude Code');
+    expect(getProviderStatus(provider)?.textContent).toBe(
       'global default · tui launch'
     );
+    expect(provider.getAttribute('aria-describedby')).toBe(
+      getProviderStatus(provider)?.id
+    );
+    expect(provider.textContent).toContain('Claude Code (default)');
     expect(container.querySelector('.topic-composer__advanced')).toBeNull();
   });
 
@@ -331,7 +341,7 @@ describe('TopicComposer', () => {
     expect(provider.selectedOptions[0]?.textContent).toContain(
       'OpenCode (default) (unavailable)'
     );
-    expect(container.querySelector('#topic-composer-provider-status')?.textContent).toBe(
+    expect(getProviderStatus(provider)?.textContent).toBe(
       'global default · unavailable: opencode CLI missing'
     );
     expect(start.disabled).toBe(true);
@@ -399,7 +409,7 @@ describe('TopicComposer', () => {
       setSelectValue(provider, 'hermes');
     });
     expect(useConfigStore.getState().defaultAgent).toBe('claude');
-    expect(container.querySelector('#topic-composer-provider-status')?.textContent).toBe(
+    expect(getProviderStatus(provider)?.textContent).toBe(
       'one-off override · web launch'
     );
 

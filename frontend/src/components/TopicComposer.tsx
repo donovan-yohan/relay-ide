@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -36,14 +37,23 @@ function TopicComposerProviderRow({
   providerUnavailable: boolean;
   onProviderChange: (providerId: string) => void;
 }) {
+  const providerSelectId = useId();
+  const providerStatusId = useId();
+
   return (
-    <label className="topic-composer__provider-row">
-      <span className="topic-composer__provider-label">coding agent</span>
+    <div className="topic-composer__provider-row">
+      <label
+        className="topic-composer__provider-label"
+        htmlFor={providerSelectId}
+      >
+        coding agent
+      </label>
       <select
         className="topic-composer__provider-select"
+        id={providerSelectId}
         value={selectedProviderId}
         onChange={(event) => onProviderChange(event.currentTarget.value)}
-        aria-describedby="topic-composer-provider-status"
+        aria-describedby={providerStatusId}
       >
         {providerOptions.map((option) => (
           <option
@@ -63,11 +73,11 @@ function TopicComposerProviderRow({
             ? 'topic-composer__provider-status topic-composer__provider-status--error'
             : 'topic-composer__provider-status'
         }
-        id="topic-composer-provider-status"
+        id={providerStatusId}
       >
         {selectedProviderOption?.status ?? 'global default · tui launch'}
       </span>
-    </label>
+    </div>
   );
 }
 

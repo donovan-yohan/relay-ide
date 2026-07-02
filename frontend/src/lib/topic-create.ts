@@ -147,7 +147,7 @@ export function deriveTopicProviderLaunchMode(
   if (!type) return null;
   if (type === 'terminal') return 'pty';
   const framework = frameworkForProvider(frameworks, providerId);
-  return framework?.capabilities.supportsWebSessions === true &&
+  return framework?.capabilities?.supportsWebSessions === true &&
     isFrameworkWebAvailable(framework)
     ? 'web'
     : 'pty';
@@ -189,7 +189,7 @@ export function deriveTopicProviderOptions(input: {
         input.frameworks
       ) ?? 'pty';
     const webUnavailableReason =
-      framework?.capabilities.supportsWebSessions === true && launchMode !== 'web'
+      framework?.capabilities?.supportsWebSessions === true && launchMode !== 'web'
         ? (framework.webAvailability?.reason ?? 'web runtime unavailable')
         : undefined;
     const missingReason = installed
