@@ -88,9 +88,11 @@ function primaryIntentForTemplate(templateKind: WorkspaceTopicTemplateKind) {
 function composerSubmitDisabled(input: {
   effectiveTitle: string;
   submitting: boolean;
-  providerUnavailable: boolean;
+  launchProviderUnavailable: boolean;
 }) {
-  return !input.effectiveTitle || input.submitting || input.providerUnavailable;
+  return (
+    !input.effectiveTitle || input.submitting || input.launchProviderUnavailable
+  );
 }
 
 function friendlyTopicNodeLabel(input: {
@@ -174,10 +176,12 @@ export default function TopicComposer({
   // create-only instead of dead-ending the keyboard.
   const primaryIntent = primaryIntentForTemplate(draft.templateKind);
   const providerUnavailable = Boolean(selectedProviderOption?.disabled);
+  const createOnlyDisabled = !effectiveTitle || Boolean(submittingIntent);
   const disabled = composerSubmitDisabled({
     effectiveTitle,
     submitting: Boolean(submittingIntent),
-    providerUnavailable,
+    launchProviderUnavailable:
+      primaryIntent === 'create-and-launch' && providerUnavailable,
   });
   // #1103: never render a raw node id — resolve through the roster or fall
   // back to a generic label.
@@ -410,7 +414,7 @@ export default function TopicComposer({
               <div className="topic-composer__advanced-actions">
                 <TuiButton
                   variant="ghost"
-                  disabled={disabled}
+                  disabled={createOnlyDisabled}
                   onClick={() => void submit('create-only')}
                 >
                   {submittingIntent === 'create-only'

@@ -216,6 +216,12 @@ describe('CustomizeSessionDialog session mode options', () => {
     expect(defaultSessionModeForAgent([framework('claude')], 'claude')).toBe(
       'pty'
     );
+    expect(defaultSessionModeForAgent([framework('codex')], 'codex')).toBe(
+      'pty'
+    );
+    expect(defaultSessionModeForAgent([framework('opencode')], 'opencode')).toBe(
+      'pty'
+    );
   });
 
   it('disables web mode when an installed agent runtime is unavailable', () => {

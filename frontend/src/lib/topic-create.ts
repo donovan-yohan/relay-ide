@@ -7,6 +7,11 @@ import type {
   CreateSessionBody,
   WorkspaceTopicLaunchFailure,
 } from './api.js';
+import {
+  defaultSessionModeForAgent,
+  isFrameworkAvailable,
+  isFrameworkWebAvailable,
+} from './session-launch-mode.js';
 import type { FrameworkInfo } from './types.js';
 import type { taskRefFromDraft } from './topic-task-ref.js';
 
@@ -130,14 +135,6 @@ function frameworkDisplayName(
   return frameworkForProvider(frameworks, providerId)?.displayName ?? providerId;
 }
 
-function isFrameworkInstalled(framework: FrameworkInfo | undefined): boolean {
-  return framework?.availability?.installed !== false;
-}
-
-function isFrameworkWebAvailable(framework: FrameworkInfo | undefined): boolean {
-  return framework?.webAvailability?.available !== false;
-}
-
 export function deriveTopicProviderLaunchMode(
   providerId: string,
   templateKind: WorkspaceTopicTemplateKind,
@@ -146,11 +143,7 @@ export function deriveTopicProviderLaunchMode(
   const type = launchTypeForTemplate(templateKind);
   if (!type) return null;
   if (type === 'terminal') return 'pty';
-  const framework = frameworkForProvider(frameworks, providerId);
-  return framework?.capabilities?.supportsWebSessions === true &&
-    isFrameworkWebAvailable(framework)
-    ? 'web'
-    : 'pty';
+  return defaultSessionModeForAgent(frameworks, providerId);
 }
 
 export function topicProviderStatus(input: {
@@ -181,7 +174,7 @@ export function deriveTopicProviderOptions(input: {
   ]);
   return providerIds.map((providerId) => {
     const framework = frameworkForProvider(input.frameworks, providerId);
-    const installed = isFrameworkInstalled(framework);
+    const installed = framework ? isFrameworkAvailable(framework) : true;
     const launchMode =
       deriveTopicProviderLaunchMode(
         providerId,
@@ -189,7 +182,10 @@ export function deriveTopicProviderOptions(input: {
         input.frameworks
       ) ?? 'pty';
     const webUnavailableReason =
-      framework?.capabilities?.supportsWebSessions === true && launchMode !== 'web'
+      providerId === 'hermes' &&
+      framework?.capabilities?.supportsWebSessions === true &&
+      launchMode !== 'web' &&
+      !isFrameworkWebAvailable(framework)
         ? (framework.webAvailability?.reason ?? 'web runtime unavailable')
         : undefined;
     const missingReason = installed

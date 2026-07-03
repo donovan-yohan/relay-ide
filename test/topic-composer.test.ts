@@ -130,7 +130,7 @@ describe('topic provider launch helpers', () => {
     });
   });
 
-  it('derives web only for verified web-capable providers and keeps terminal/custom fallback on pty', () => {
+  it('derives the shared default launch mode and keeps terminal/custom fallback on pty', () => {
     const frameworks = [
       framework('hermes', {
         capabilities: {
@@ -138,6 +138,15 @@ describe('topic provider launch helpers', () => {
           supportsYolo: true,
           supportsHooks: false,
           supportsTelemetry: true,
+          supportsWebSessions: true,
+        },
+      }),
+      framework('opencode', {
+        capabilities: {
+          supportsContinue: true,
+          supportsYolo: true,
+          supportsHooks: false,
+          supportsTelemetry: false,
           supportsWebSessions: true,
         },
       }),
@@ -151,6 +160,9 @@ describe('topic provider launch helpers', () => {
     expect(deriveTopicProviderLaunchMode('codex', 'agent-task', frameworks)).toBe(
       'pty'
     );
+    expect(
+      deriveTopicProviderLaunchMode('opencode', 'agent-task', frameworks)
+    ).toBe('pty');
     expect(
       deriveTopicProviderLaunchMode('custom:local', 'agent-task', frameworks)
     ).toBe('pty');
@@ -222,6 +234,45 @@ describe('topic provider launch helpers', () => {
     expect(buildTopicRoomLaunchBody(create, 'terminal-task', frameworks)).toMatchObject({
       type: 'terminal',
       mode: 'pty',
+    });
+  });
+
+  it('keeps OpenCode on tui launch by default even when it exposes web mode', () => {
+    const frameworks = [
+      framework('opencode', {
+        displayName: 'OpenCode',
+        capabilities: {
+          supportsContinue: true,
+          supportsYolo: true,
+          supportsHooks: false,
+          supportsTelemetry: false,
+          supportsWebSessions: true,
+        },
+      }),
+    ];
+    const create = buildTopicRoomCreateInput({
+      draft: { ...TOPIC_ROOM_DRAFT_EMPTY, prompt: 'run it' },
+      workspaceId: null,
+      defaultProviderId: 'opencode',
+      taskRef: null,
+    });
+
+    expect(
+      deriveTopicProviderOptions({
+        frameworks,
+        defaultProviderId: 'opencode',
+        selectedProviderId: 'opencode',
+        templateKind: 'agent-task',
+      })[0]
+    ).toMatchObject({
+      id: 'opencode',
+      launchMode: 'pty',
+      status: 'global default · tui launch',
+    });
+    expect(buildTopicRoomLaunchBody(create, 'agent-task', frameworks)).toMatchObject({
+      type: 'agent',
+      mode: 'pty',
+      agent: 'opencode',
     });
   });
 });
@@ -345,6 +396,96 @@ describe('TopicComposer', () => {
       'global default · unavailable: opencode CLI missing'
     );
     expect(start.disabled).toBe(true);
+  });
+
+  it('allows note room creation when the default provider is unavailable', async () => {
+    vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
+      status: 'created',
+      topic: { id: 'topic:note' },
+      workContext: { id: 'wc:note' },
+    } as never);
+    useConfigStore.setState({
+      defaultAgent: 'opencode',
+      frameworks: [
+        framework('opencode', {
+          displayName: 'OpenCode',
+          availability: { installed: false, reason: 'opencode CLI missing' },
+        }),
+      ],
+    });
+    renderComposer();
+    const ta = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    const toggle = container.querySelector(
+      '.topic-composer__advanced-toggle'
+    ) as HTMLButtonElement;
+    act(() => {
+      setNativeValue(ta, 'capture the note');
+      toggle.click();
+    });
+    const templateSelect = Array.from(
+      container.querySelectorAll('select')
+    ).find((select) =>
+      Array.from(select.options).some((option) => option.value === 'note')
+    ) as HTMLSelectElement;
+    act(() => setSelectValue(templateSelect, 'note'));
+    const start = container.querySelector(
+      '.topic-composer__bar button[type="submit"]'
+    ) as HTMLButtonElement;
+
+    expect(start.textContent).toBe('create room');
+    expect(start.disabled).toBe(false);
+
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+    const call = vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mock
+      .calls[0]?.[0] as { launch?: unknown };
+    expect(call.launch).toBeUndefined();
+  });
+
+  it('allows advanced create-only when the selected provider is unavailable', async () => {
+    vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
+      status: 'created',
+      topic: { id: 'topic:create-only' },
+      workContext: { id: 'wc:create-only' },
+    } as never);
+    useConfigStore.setState({
+      defaultAgent: 'opencode',
+      frameworks: [
+        framework('opencode', {
+          displayName: 'OpenCode',
+          availability: { installed: false, reason: 'opencode CLI missing' },
+        }),
+      ],
+    });
+    renderComposer();
+    const ta = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    const toggle = container.querySelector(
+      '.topic-composer__advanced-toggle'
+    ) as HTMLButtonElement;
+    act(() => {
+      setNativeValue(ta, 'create the room first');
+      toggle.click();
+    });
+    const createOnly = container.querySelector(
+      '.topic-composer__advanced-actions button'
+    ) as HTMLButtonElement;
+
+    expect(createOnly.disabled).toBe(false);
+
+    await act(async () => {
+      createOnly.click();
+    });
+    const call = vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mock
+      .calls[0]?.[0] as { launch?: unknown };
+    expect(call.launch).toBeUndefined();
   });
 
   it('keeps the metadata fields behind the advanced disclosure', () => {
