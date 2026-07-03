@@ -36,7 +36,10 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
 
   return (
     <div className="chat-home" aria-label="chat home">
-      <TopicComposer onSelectSession={onSelectSession} resume={resume} />
+      {/* Launches are already selected by useTopicRoomCreate. Keep the session
+          selection callback reserved for explicit resume/sidebar clicks so a
+          fresh chat does not inherit repo-dashboard routing. */}
+      <TopicComposer resume={resume} />
     </div>
   );
 }
