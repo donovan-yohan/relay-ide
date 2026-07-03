@@ -26,6 +26,15 @@ import {
   buildEnvironmentOptions,
   firstDegradedReasonMessage,
 } from '../../lib/environment-options.js';
+import {
+  defaultSessionModeForAgent,
+  getSessionModeOptions,
+  isFrameworkAvailable,
+  isFrameworkWebAvailable,
+  selectLaunchAgent,
+  type SessionLaunchMode,
+  type SessionModeOption,
+} from '../../lib/session-launch-mode.js';
 import type {
   AgentType,
   AggregatedRepoInventoryGroup,
@@ -48,6 +57,14 @@ import { pickDefaultEnvironment } from '../../../../shared/safe-defaults.js';
 import type { SessionLane } from '../../../../shared/session-lane.js';
 import './CustomizeSessionDialog.css';
 
+export {
+  defaultSessionModeForAgent,
+  getSessionModeOptions,
+  isFrameworkAvailable,
+  isFrameworkWebAvailable,
+  selectLaunchAgent,
+};
+
 export interface CustomizeSessionDialogHandle {
   open(
     workspace: { name: string; path: string; isGitRepo?: boolean },
@@ -59,64 +76,6 @@ export interface CustomizeSessionDialogHandle {
 
 interface Props {
   onSessionCreated?: (sessionId: string) => void;
-}
-
-type SessionLaunchMode = 'pty' | 'web';
-
-export interface SessionModeOption {
-  value: SessionLaunchMode;
-  label: string;
-  disabled?: boolean;
-  reason?: string;
-}
-
-export function isFrameworkAvailable(framework: FrameworkInfo): boolean {
-  return framework.availability?.installed !== false;
-}
-
-export function isFrameworkWebAvailable(framework: FrameworkInfo): boolean {
-  return framework.webAvailability?.available !== false;
-}
-
-export function selectLaunchAgent(
-  frameworks: FrameworkInfo[],
-  preferredAgent: AgentType
-): AgentType {
-  const preferred = frameworks.find((f) => f.id === preferredAgent);
-  if (!preferred || isFrameworkAvailable(preferred)) return preferredAgent;
-  return frameworks.find(isFrameworkAvailable)?.id ?? preferredAgent;
-}
-
-export function getSessionModeOptions(
-  frameworks: FrameworkInfo[],
-  selectedAgent: AgentType
-): SessionModeOption[] {
-  const selectedFramework = frameworks.find((f) => f.id === selectedAgent);
-  if (selectedFramework?.capabilities.supportsWebSessions === true) {
-    const webAvailable = isFrameworkWebAvailable(selectedFramework);
-    return [
-      { value: 'pty', label: 'tui' },
-      {
-        value: 'web',
-        label: webAvailable ? 'web' : 'web (unavailable)',
-        ...(!webAvailable ? { disabled: true } : {}),
-        ...(selectedFramework.webAvailability?.reason
-          ? { reason: selectedFramework.webAvailability.reason }
-          : {}),
-      },
-    ];
-  }
-  return [{ value: 'pty', label: 'tui' }];
-}
-
-export function defaultSessionModeForAgent(
-  frameworks: FrameworkInfo[],
-  selectedAgent: AgentType
-): SessionLaunchMode {
-  const supportsWeb = getSessionModeOptions(frameworks, selectedAgent).some(
-    (option) => option.value === 'web' && !option.disabled
-  );
-  return selectedAgent === 'hermes' && supportsWeb ? 'web' : 'pty';
 }
 
 type EnvironmentChoice = {

@@ -7,6 +7,12 @@ import type {
   CreateSessionBody,
   WorkspaceTopicLaunchFailure,
 } from './api.js';
+import {
+  defaultSessionModeForAgent,
+  isFrameworkAvailable,
+  isFrameworkWebAvailable,
+} from './session-launch-mode.js';
+import type { FrameworkInfo } from './types.js';
 import type { taskRefFromDraft } from './topic-task-ref.js';
 
 /**
@@ -51,6 +57,16 @@ export const TOPIC_ROOM_TEMPLATE_OPTIONS: Array<{
 ];
 
 export const FALLBACK_PROVIDER_IDS = ['claude', 'codex', 'opencode', 'hermes'];
+
+export type TopicProviderOption = {
+  id: string;
+  label: string;
+  status: string;
+  disabled: boolean;
+  isDefault: boolean;
+  launchMode: CreateSessionBody['mode'];
+  reason?: string;
+};
 
 export function compactString(
   value: string | null | undefined
@@ -105,16 +121,107 @@ export function launchTypeForTemplate(
   return null;
 }
 
+function frameworkForProvider(
+  frameworks: FrameworkInfo[],
+  providerId: string
+): FrameworkInfo | undefined {
+  return frameworks.find((framework) => framework.id === providerId);
+}
+
+function frameworkDisplayName(
+  frameworks: FrameworkInfo[],
+  providerId: string
+): string {
+  return frameworkForProvider(frameworks, providerId)?.displayName ?? providerId;
+}
+
+export function deriveTopicProviderLaunchMode(
+  providerId: string,
+  templateKind: WorkspaceTopicTemplateKind,
+  frameworks: FrameworkInfo[]
+): CreateSessionBody['mode'] | null {
+  const type = launchTypeForTemplate(templateKind);
+  if (!type) return null;
+  if (type === 'terminal') return 'pty';
+  return defaultSessionModeForAgent(frameworks, providerId);
+}
+
+export function topicProviderStatus(input: {
+  option: Pick<
+    TopicProviderOption,
+    'isDefault' | 'launchMode' | 'disabled' | 'reason'
+  >;
+}): string {
+  const prefix = input.option.isDefault ? 'global default' : 'one-off override';
+  if (input.option.disabled) {
+    return `${prefix} · unavailable${input.option.reason ? `: ${input.option.reason}` : ''}`;
+  }
+  const mode = input.option.launchMode === 'web' ? 'web launch' : 'tui launch';
+  return `${prefix} · ${mode}${input.option.reason ? ` · ${input.option.reason}` : ''}`;
+}
+
+export function deriveTopicProviderOptions(input: {
+  frameworks: FrameworkInfo[];
+  defaultProviderId: string;
+  selectedProviderId?: string | undefined;
+  templateKind: WorkspaceTopicTemplateKind;
+}): TopicProviderOption[] {
+  const providerIds = uniqueStrings([
+    input.selectedProviderId,
+    input.defaultProviderId,
+    ...input.frameworks.map((framework) => framework.id),
+    ...FALLBACK_PROVIDER_IDS,
+  ]);
+  return providerIds.map((providerId) => {
+    const framework = frameworkForProvider(input.frameworks, providerId);
+    const installed = framework ? isFrameworkAvailable(framework) : true;
+    const launchMode =
+      deriveTopicProviderLaunchMode(
+        providerId,
+        input.templateKind,
+        input.frameworks
+      ) ?? 'pty';
+    const webUnavailableReason =
+      providerId === 'hermes' &&
+      framework?.capabilities?.supportsWebSessions === true &&
+      launchMode !== 'web' &&
+      !isFrameworkWebAvailable(framework)
+        ? (framework.webAvailability?.reason ?? 'web runtime unavailable')
+        : undefined;
+    const missingReason = installed
+      ? undefined
+      : (framework?.availability?.reason ?? `${providerId} CLI not found on PATH`);
+    const option: TopicProviderOption = {
+      id: providerId,
+      label: frameworkDisplayName(input.frameworks, providerId),
+      disabled: !installed,
+      isDefault: providerId === input.defaultProviderId,
+      launchMode,
+      ...(missingReason ?? webUnavailableReason
+        ? { reason: missingReason ?? `web unavailable: ${webUnavailableReason}` }
+        : {}),
+      status: '',
+    };
+    return { ...option, status: topicProviderStatus({ option }) };
+  });
+}
+
 export function buildTopicRoomLaunchBody(
   create: WorkspaceTopicCreateInput,
-  templateKind: WorkspaceTopicTemplateKind
+  templateKind: WorkspaceTopicTemplateKind,
+  frameworks: FrameworkInfo[] = []
 ): Omit<CreateSessionBody, 'workspaceTopicId' | 'workContextId'> | null {
   const type = launchTypeForTemplate(templateKind);
   if (!type) return null;
   const routing = create.routingDefaults ?? {};
+  const mode = deriveTopicProviderLaunchMode(
+    routing.providerId ?? '',
+    templateKind,
+    frameworks
+  );
   return {
     type,
-    mode: 'pty',
+    mode: mode ?? 'pty',
     ...(type === 'agent' && routing.providerId
       ? { agent: routing.providerId }
       : {}),
