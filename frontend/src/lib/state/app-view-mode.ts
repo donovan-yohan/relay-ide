@@ -12,10 +12,10 @@ export interface ResolveAppViewModeInput {
   hasActiveSession: boolean;
   activeRepoPath: string | null;
   /**
-   * #1058: explicit escape hatch back to the legacy WorkContext cockpit
-   * (`OrgDashboard`), set via the "open work cockpit" command-palette
-   * action. Only relevant for the no-session/no-repo landing path — an
-   * explicit repo/project selection still resolves to `dashboard`.
+   * #1058/#1123: explicit escape hatch back to the legacy WorkContext/session
+   * cockpit, set via the "open work cockpit" command-palette action. Primary
+   * start/resume/message flows stay in the chat shell even after a session is
+   * selected so raw terminal/workspace chrome is never the default landing.
    */
   forceOrgCockpit?: boolean;
   /**
@@ -36,7 +36,7 @@ export function resolveAppViewMode({
 }: ResolveAppViewModeInput): AppViewMode {
   if (analyticsView !== null) return 'analytics';
   if (topicComposerOpen) return 'chat';
-  if (hasActiveSession) return 'session';
+  if (hasActiveSession) return forceOrgCockpit ? 'session' : 'chat';
 
   // The no-session / no-explicit-project landing path defaults to the
   // chat/topic spine (#1058). The legacy WorkContext cockpit remains

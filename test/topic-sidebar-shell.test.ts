@@ -134,6 +134,18 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('preview');
   });
 
+  it('keeps recency row labels contextual and avoids aria-hidden interactive detail', async () => {
+    await renderView();
+
+    const trail = container.querySelector('.topic-row__trail');
+    expect(trail?.getAttribute('aria-label')).toContain('idle');
+    expect(trail?.getAttribute('aria-label')).toContain('linked items');
+    expect(trail?.getAttribute('aria-label')).toContain('updated');
+    expect(
+      container.querySelector('.topic-shell__advanced-detail[aria-hidden="true"]')
+    ).toBeNull();
+  });
+
   it('groups topics under workspace channel headers', async () => {
     await renderView({
       topics: [

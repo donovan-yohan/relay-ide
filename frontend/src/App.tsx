@@ -181,7 +181,6 @@ function useTerminalDerivedState() {
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const analyticsView = useUiStore((s) => s.analyticsView);
   const forceOrgCockpit = useUiStore((s) => s.forceOrgCockpit);
-  const setForceOrgCockpit = useUiStore((s) => s.setForceOrgCockpit);
   const topicComposerOpen = useUiStore((s) => s.topicComposerOpen);
   const setTopicComposerOpen = useUiStore((s) => s.setTopicComposerOpen);
   const sessions = useSessionsStore((s) => s.sessions);
@@ -265,13 +264,6 @@ function useTerminalDerivedState() {
       topicComposerOpen,
     ]
   );
-
-  // #1058: once a session goes active, drop the explicit cockpit override so
-  // the next no-session/no-repo landing defaults back to the chat spine
-  // instead of leaving the operator stuck in the legacy cockpit.
-  useEffect(() => {
-    if (hasActiveSession && forceOrgCockpit) setForceOrgCockpit(false);
-  }, [hasActiveSession, forceOrgCockpit, setForceOrgCockpit]);
 
   // #1058: the composer overlay closes when the active session CHANGES —
   // a launch from the composer or a sidebar selection navigates to that

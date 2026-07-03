@@ -1138,7 +1138,7 @@ function TopicRow({
           className="topic-row__trail"
           aria-label={
             recencyLabel
-              ? `updated ${recencyLabel}`
+              ? `${item.statusLabel}, ${affordanceCount} linked items, updated ${recencyLabel}`
               : `${item.statusLabel}, ${affordanceCount} linked items`
           }
         >
@@ -1824,7 +1824,7 @@ export function TopicSidebarView({
       <GroupedTopicTree grouped={grouped} renderRow={renderTopicRow} />
       {selectedItem ? (
         <>
-          <div className="topic-shell__advanced-detail" hidden aria-hidden="true">
+          <div className="topic-shell__advanced-detail" hidden>
             <TopicDetail
               item={selectedItem}
               workspaceName={resolveWorkspaceName(

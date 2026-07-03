@@ -627,8 +627,8 @@ export interface UiState {
    * #1058: the chat/topic spine is the default no-session/no-repo landing.
    * The legacy WorkContext cockpit (`OrgDashboard`) stays reachable via the
    * "open work cockpit" command-palette action, which sets this flag so
-   * `resolveAppViewMode` routes there instead of the chat home. Cleared once
-   * a session becomes active so the next empty state defaults back to chat.
+   * `resolveAppViewMode` routes there instead of the chat home/session shell.
+   * Session-transient; never persisted.
    */
   forceOrgCockpit: boolean;
   /**
