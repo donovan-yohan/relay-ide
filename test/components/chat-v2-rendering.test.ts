@@ -203,6 +203,7 @@ describe('chat v2 rendering against chat.html primitives', () => {
         'value'
       )?.set;
       setter?.call(textarea, value);
+      textarea.setSelectionRange(value.length, value.length);
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
     });
   }
@@ -371,6 +372,35 @@ describe('chat v2 rendering against chat.html primitives', () => {
     expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
     expect(mocks.sendMessage.mock.calls[0]?.[1]).toBe('mobile reply');
     expect(textarea!.value).toBe('');
+  });
+
+  it('applies the highlighted slash command on mobile send-key beforeinput while the palette is visible', async () => {
+    mocks.session = makeSession({
+      slashCommands: [
+        {
+          name: 'review',
+          description: 'Pre-landing PR review.',
+          argumentHint: '<scope>',
+        },
+      ],
+    });
+    await renderChat();
+
+    const textarea =
+      container.querySelector<HTMLTextAreaElement>('.composer__ta');
+    expect(textarea).toBeTruthy();
+
+    await setTextareaDraft(textarea!, '/rev');
+    expect(container.textContent).toContain('/review');
+
+    const event = makeBeforeInputEvent('insertLineBreak');
+    await act(async () => {
+      textarea!.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+    expect(textarea!.value).toBe('/review');
   });
 
   it('keeps Shift+Enter available for composer newlines', async () => {

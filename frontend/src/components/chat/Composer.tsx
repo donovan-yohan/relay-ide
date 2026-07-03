@@ -404,9 +404,13 @@ export const Composer: React.FC<ComposerProps> = ({
       // key; they only report a beforeinput line-break intent. Treat that as
       // send before the newline mutates the controlled draft.
       inputEvent.preventDefault();
+      if (paletteVisible) {
+        applySelectedCommand();
+        return;
+      }
       submitDraft();
     },
-    [submitDraft]
+    [paletteVisible, applySelectedCommand, submitDraft]
   );
 
   useEffect(() => {
