@@ -677,6 +677,13 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       turnId,
       turnIndex: this._turnCounter++,
     });
+    this.fire({
+      type: 'chat:message-complete',
+      turnId,
+      messageId: `user-${turnId}`,
+      role: 'user',
+      content,
+    });
 
     const body: Record<string, unknown> = {
       input: buildResponsesInput(content, attachments),

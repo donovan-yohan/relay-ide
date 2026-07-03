@@ -470,6 +470,39 @@ describe('Hermes Responses SSE hardening', () => {
     });
   });
 
+  it('echoes the submitted user message when the turn starts', async () => {
+    gateway = await startInlineGateway((send, res) => {
+      send({ type: 'response.created', response: { id: 'resp_user_echo' } });
+      send({
+        type: 'response.completed',
+        response: { id: 'resp_user_echo', status: 'completed' },
+      });
+      res.end();
+    });
+    adapter = new HermesProtocolAdapter();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+
+    await adapter.connect(configFor(gateway.endpoint, 'sess-user-echo'));
+    await adapter.sendMessage('turn-1', 'hi from enter');
+
+    const turnStartedIndex = events.findIndex(
+      (event) => event.type === 'chat:turn-started'
+    );
+    const userEchoIndex = events.findIndex(
+      (event) => event.type === 'chat:message-complete' && event.role === 'user'
+    );
+    expect(turnStartedIndex).toBeGreaterThanOrEqual(0);
+    expect(userEchoIndex).toBeGreaterThan(turnStartedIndex);
+    expect(events[userEchoIndex]).toMatchObject({
+      type: 'chat:message-complete',
+      turnId: 'turn-1',
+      messageId: 'user-turn-1',
+      role: 'user',
+      content: 'hi from enter',
+    });
+  });
+
   it('completes the assistant message on response.output_text.done', async () => {
     gateway = await startInlineGateway((send, res) => {
       send({ type: 'response.created', response: { id: 'resp_msg' } });
@@ -490,7 +523,8 @@ describe('Hermes Responses SSE hardening', () => {
     await adapter.sendMessage('turn-1', 'hi');
 
     const complete = events.find(
-      (event) => event.type === 'chat:message-complete'
+      (event) =>
+        event.type === 'chat:message-complete' && event.role === 'assistant'
     );
     expect(complete).toMatchObject({ role: 'assistant', content: 'Hello' });
   });
