@@ -38,6 +38,7 @@ interface ComposerAttachment {
 
 /** Reject images above this size to keep WebSocket frames sane. */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const LINE_BREAK_INPUT_TYPES = new Set(['insertLineBreak', 'insertParagraph']);
 
 interface ComposerProps {
   onSend: (content: string, attachments?: ComposerSendAttachment[]) => void;
@@ -99,6 +100,7 @@ export const Composer: React.FC<ComposerProps> = ({
   pushClientError,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const skipNextLineBreakBeforeInputRef = useRef(false);
   const [draft, setDraft] = useState('');
   const [caret, setCaret] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -327,6 +329,7 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      const nativeEvent = e.nativeEvent as KeyboardEvent;
       if (paletteVisible) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
@@ -338,7 +341,7 @@ export const Composer: React.FC<ComposerProps> = ({
           setActiveIndex((i) => Math.max(i - 1, 0));
           return;
         }
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && !e.shiftKey && !nativeEvent.isComposing) {
           e.preventDefault();
           applySelectedCommand();
           return;
@@ -356,7 +359,17 @@ export const Composer: React.FC<ComposerProps> = ({
         }
       }
 
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && nativeEvent.isComposing) return;
+
+      if (e.key === 'Enter' && e.shiftKey) {
+        skipNextLineBreakBeforeInputRef.current = true;
+        window.setTimeout(() => {
+          skipNextLineBreakBeforeInputRef.current = false;
+        }, 0);
+        return;
+      }
+
+      if (e.key === 'Enter') {
         e.preventDefault();
         submitDraft();
         return;
@@ -376,6 +389,34 @@ export const Composer: React.FC<ComposerProps> = ({
       onInterrupt,
     ]
   );
+
+  const handleBeforeInput = useCallback(
+    (inputEvent: InputEvent) => {
+      if (!LINE_BREAK_INPUT_TYPES.has(inputEvent.inputType)) return;
+
+      if (inputEvent.isComposing) return;
+      if (skipNextLineBreakBeforeInputRef.current) {
+        skipNextLineBreakBeforeInputRef.current = false;
+        return;
+      }
+
+      // Some mobile IMEs do not emit a reliable keydown for the textarea send
+      // key; they only report a beforeinput line-break intent. Treat that as
+      // send before the newline mutates the controlled draft.
+      inputEvent.preventDefault();
+      submitDraft();
+    },
+    [submitDraft]
+  );
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.addEventListener('beforeinput', handleBeforeInput);
+    return () => {
+      textarea.removeEventListener('beforeinput', handleBeforeInput);
+    };
+  }, [handleBeforeInput]);
 
   const ctxInput = usage?.inputTokens ?? 0;
   const ctxCached = usage?.cachedInputTokens ?? usage?.cacheReadTokens ?? 0;
@@ -492,6 +533,7 @@ export const Composer: React.FC<ComposerProps> = ({
             onDragOver={(e) => e.preventDefault()}
             value={draft}
             rows={1}
+            enterKeyHint="send"
             data-streaming={isActive ? 'true' : 'false'}
             aria-label="message input"
           />

@@ -193,6 +193,40 @@ describe('chat v2 rendering against chat.html primitives', () => {
     });
   }
 
+  async function setTextareaDraft(
+    textarea: HTMLTextAreaElement,
+    value: string
+  ) {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        'value'
+      )?.set;
+      setter?.call(textarea, value);
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  function makeBeforeInputEvent(inputType: string): InputEvent {
+    if (typeof InputEvent === 'function') {
+      return new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        data: null,
+        inputType,
+      });
+    }
+
+    const event = new Event('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+    }) as InputEvent;
+    Object.defineProperty(event, 'inputType', { value: inputType });
+    Object.defineProperty(event, 'data', { value: null });
+    Object.defineProperty(event, 'isComposing', { value: false });
+    return event;
+  }
+
   it('renders the chat.html timeline, tool, file, approval, live, queue, slash, and composer primitives', async () => {
     await renderChat();
 
@@ -316,6 +350,55 @@ describe('chat v2 rendering against chat.html primitives', () => {
 
     expect(container.querySelector('.queue')).toBeTruthy();
     expect(container.querySelector('.queue__cancel')).toBeNull();
+  });
+
+  it('submits mobile textarea send-key beforeinput line-break intents', async () => {
+    await renderChat();
+
+    const textarea =
+      container.querySelector<HTMLTextAreaElement>('.composer__ta');
+    expect(textarea).toBeTruthy();
+    expect(textarea?.getAttribute('enterkeyhint')).toBe('send');
+
+    await setTextareaDraft(textarea!, 'mobile reply');
+
+    const event = makeBeforeInputEvent('insertLineBreak');
+    await act(async () => {
+      textarea!.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.sendMessage.mock.calls[0]?.[1]).toBe('mobile reply');
+    expect(textarea!.value).toBe('');
+  });
+
+  it('keeps Shift+Enter available for composer newlines', async () => {
+    await renderChat();
+
+    const textarea =
+      container.querySelector<HTMLTextAreaElement>('.composer__ta');
+    expect(textarea).toBeTruthy();
+
+    await setTextareaDraft(textarea!, 'line one');
+    await act(async () => {
+      textarea!.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
+
+    const event = makeBeforeInputEvent('insertLineBreak');
+    await act(async () => {
+      textarea!.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
   });
 
   it('hides trace provider events by default and reveals them via /relay-verbosity trace', async () => {
