@@ -196,6 +196,16 @@ function topicPrimaryAction(item: TopicNavItem): {
   };
 }
 
+function shouldShowMobileControlPanel(item: TopicNavItem | undefined): boolean {
+  if (!item) return false;
+  const action = topicPrimaryAction(item);
+  return (
+    action.label === 'approve' ||
+    action.label === 'reply' ||
+    action.label === 'waiting'
+  );
+}
+
 function topicLatestStatus(item: TopicNavItem): string {
   const session = topicPrimarySession(item);
   if (session?.agentState === 'permission-prompt') {
@@ -813,17 +823,35 @@ function TopicMobileAttentionRow({
   item,
   selected,
   onSelect,
+  onSelectSession,
 }: {
   item: TopicNavItem;
   selected: boolean;
   onSelect: (id: string) => void;
+  onSelectSession?: ((id: string) => void) | undefined;
 }) {
   const action = topicPrimaryAction(item);
+  const session = topicPrimarySession(item);
+  const resumeDisabledReason = sessionAttachDisabledReason(session);
+  const canResume = Boolean(
+    action.label === 'resume' && session && !resumeDisabledReason && onSelectSession
+  );
   return (
     <button
       type="button"
       className={`topic-mobile-row topic-mobile-row--${item.tone}${selected ? ' selected' : ''}`}
-      onClick={() => onSelect(item.id)}
+      onClick={() => {
+        if (canResume && session) {
+          onSelectSession?.(session.selectKey);
+          return;
+        }
+        onSelect(item.id);
+      }}
+      title={
+        canResume && session
+          ? `resume chat ${session.label}`
+          : (resumeDisabledReason ?? action.detail)
+      }
       aria-current={selected ? 'page' : undefined}
     >
       <TopicBadge item={item} />
@@ -1060,6 +1088,25 @@ function TopicMobileControlPanel({
         </p>
       ) : null}
     </section>
+  );
+}
+
+function TopicMobileControlPanelGate({
+  item,
+  onSelectSession,
+  onSendInput,
+}: {
+  item: TopicNavItem | undefined;
+  onSelectSession?: ((id: string) => void) | undefined;
+  onSendInput: TopicSendInput;
+}) {
+  if (!item || !shouldShowMobileControlPanel(item)) return null;
+  return (
+    <TopicMobileControlPanel
+      item={item}
+      onSelectSession={onSelectSession}
+      onSendInput={onSendInput}
+    />
   );
 }
 
@@ -1301,6 +1348,7 @@ function TopicMobileCockpit({
   ungrouped,
   selectedId,
   onSelect,
+  onSelectSession,
   onCreateTaskRoom,
   onResumeLast,
 }: {
@@ -1308,6 +1356,7 @@ function TopicMobileCockpit({
   ungrouped: TopicNavItem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onSelectSession?: ((id: string) => void) | undefined;
   onCreateTaskRoom?: (() => void) | undefined;
   onResumeLast?: (() => void) | undefined;
 }) {
@@ -1317,6 +1366,7 @@ function TopicMobileCockpit({
       item={item}
       selected={selectedId === item.id}
       onSelect={onSelect}
+      onSelectSession={onSelectSession}
     />
   );
   return (
@@ -1797,6 +1847,7 @@ export function TopicSidebarView({
         ungrouped={mobileUngrouped}
         selectedId={selectedId}
         onSelect={select}
+        onSelectSession={onSelectSession}
         onCreateTaskRoom={onCreateTaskRoom}
         onResumeLast={
           resumeLastSelectKey && onSelectSession
@@ -1838,7 +1889,7 @@ export function TopicSidebarView({
               restoringTopicId={restoringTopicId}
             />
           </div>
-          <TopicMobileControlPanel
+          <TopicMobileControlPanelGate
             item={selectedItem}
             onSelectSession={onSelectSession}
             onSendInput={onSendInput}

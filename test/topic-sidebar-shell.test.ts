@@ -284,6 +284,67 @@ describe('TopicSidebarView', () => {
     expect(resume.disabled).toBe(true);
   });
 
+  it('resumes a chat when tapping its mobile switcher row instead of opening detail chrome (#1122)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          routingDefaults: { repoPath: '/repo/mobile-detail' },
+          display: { title: 'Mobile resume target' },
+          linkedRefs: { sessionIds: ['s-old', 's-new'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 's-old',
+          displayName: 'older',
+          lastActivity: '2026-06-01T00:00:00Z',
+        }),
+        makeSession({
+          id: 's-new',
+          displayName: 'newer',
+          lastActivity: '2026-06-25T00:00:00Z',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    expect(row).not.toBeNull();
+    await act(async () => row.click());
+
+    expect(onSelectSession).toHaveBeenCalledTimes(1);
+    expect(onSelectSession).toHaveBeenCalledWith('s-new');
+    expect(useUiStore.getState().activeRepoPath).toBeNull();
+  });
+
+  it('hides the mobile detail/control chrome for resumable chat rows (#1122)', async () => {
+    await renderView();
+
+    expect(container.querySelector('.topic-mobile-detail')).toBeNull();
+    expect(container.textContent).not.toContain('resume topic');
+    expect(container.textContent).not.toContain('open terminal tab');
+  });
+
+  it('keeps the mobile control panel available for reply/approval states', async () => {
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'Frontend lane',
+          agentState: 'waiting-for-input',
+          controlFreshness: 'fresh',
+          mode: 'pty',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    expect(container.querySelector('.topic-mobile-detail')).not.toBeNull();
+    expect(container.textContent).toContain('reply');
+  });
+
   it('shows a search scope toggle only when a workspace is active', async () => {
     const onToggleSearchScope = vi.fn();
     await renderView({ activeWorkspaceId: 'ws:a', onToggleSearchScope });
@@ -1290,38 +1351,16 @@ describe('TopicSidebarView', () => {
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'resume'
     );
-    expect(container.textContent).toContain(
-      'controls disabled: unknown control state'
-    );
+    expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const input = container.querySelector(
-      '.topic-mobile-control input'
-    ) as HTMLInputElement;
-    const submit = container.querySelector(
-      '.topic-mobile-control__primary'
-    ) as HTMLButtonElement;
-    const buttons = Array.from(
-      container.querySelectorAll('.topic-mobile-actions button')
-    ) as HTMLButtonElement[];
-    const resume = buttons.find(
-      (button) => button.textContent === 'resume topic'
-    ) as HTMLButtonElement;
-    const terminal = buttons.find(
-      (button) => button.textContent === 'open terminal tab'
-    ) as HTMLButtonElement;
-
-    expect(input.disabled).toBe(true);
-    expect(submit.disabled).toBe(true);
-    expect(resume.disabled).toBe(false);
-    expect(resume.title).toContain('open the linked Relay tab');
-    expect(terminal.disabled).toBe(false);
-
-    await act(async () => terminal.click());
+    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    expect(row.title).toContain('resume chat');
+    await act(async () => row.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
     expect(onSendInput).not.toHaveBeenCalled();
   });
 
-  it('keeps web session input disabled while allowing mobile tab resume', async () => {
+  it('keeps web session input hidden while allowing mobile row resume', async () => {
     await renderView({
       sessions: [
         makeSession({
@@ -1337,34 +1376,21 @@ describe('TopicSidebarView', () => {
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'resume'
     );
-    expect(container.textContent).toContain(
-      'controls disabled: web session input is unsupported here'
-    );
+    expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const resume = Array.from(
-      container.querySelectorAll('.topic-mobile-actions button')
-    ).find(
-      (button) => button.textContent === 'resume topic'
-    ) as HTMLButtonElement;
-    expect(resume.disabled).toBe(false);
-    await act(async () => resume.click());
+    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    await act(async () => row.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
-  it('makes the resume and terminal-tab mobile controls explicit', async () => {
+  it('makes the mobile row itself the explicit resume affordance', async () => {
     await renderView();
 
-    const quickActions = container.querySelector('.topic-mobile-actions');
-    expect(quickActions?.textContent).toContain('resume topic');
-    expect(quickActions?.textContent).toContain('open terminal tab');
-
-    const terminalTab = Array.from(
-      quickActions?.querySelectorAll('button') ?? []
-    ).find(
-      (button) => button.textContent === 'open terminal tab'
-    ) as HTMLButtonElement;
-    expect(terminalTab.title).toContain('same linked Relay tab as resume');
-    await act(async () => terminalTab.click());
+    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    expect(container.querySelector('.topic-mobile-actions')).toBeNull();
+    expect(row.textContent).toContain('resume');
+    expect(row.title).toContain('resume chat');
+    await act(async () => row.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
