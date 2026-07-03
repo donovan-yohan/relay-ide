@@ -218,6 +218,19 @@ function topicLatestStatus(item: TopicNavItem): string {
   return boundedTopicLatestStatus(item.routingLabel ?? item.statusLabel);
 }
 
+function topicRowRecencyLabel(item: TopicNavItem): string | null {
+  if (
+    item.tone === 'active' ||
+    item.tone === 'attention' ||
+    item.tone === 'error'
+  ) {
+    return null;
+  }
+  const session = topicPrimarySession(item);
+  const at = session?.lastActivity ?? item.updatedAt;
+  return at ? formatRelativeTimeCompact(at) : null;
+}
+
 function TopicBadge({ item }: { item: TopicNavItem }) {
   const background = item.color ?? deriveColor(item.badgeSeed);
   const label = item.channelKind
@@ -1090,6 +1103,7 @@ function TopicRow({
   ]
     .filter(Boolean)
     .join(' ');
+  const recencyLabel = topicRowRecencyLabel(item);
 
   return (
     <li
@@ -1122,7 +1136,11 @@ function TopicRow({
         </button>
         <span
           className="topic-row__trail"
-          aria-label={`${item.statusLabel}, ${affordanceCount} linked items`}
+          aria-label={
+            recencyLabel
+              ? `updated ${recencyLabel}`
+              : `${item.statusLabel}, ${affordanceCount} linked items`
+          }
         >
           <span className="topic-row__hover-actions" aria-hidden="true">
             {item.participants.length > 0 ? (
@@ -1135,7 +1153,11 @@ function TopicRow({
               <span className="topic-chip">t{item.taskRefs.length}</span>
             ) : null}
           </span>
-          <StatusGlyph tone={item.tone} />
+          {recencyLabel ? (
+            <span className="topic-row__recency">{recencyLabel}</span>
+          ) : (
+            <StatusGlyph tone={item.tone} />
+          )}
         </span>
       </div>
       {expanded ? (
@@ -1182,7 +1204,7 @@ function TopicRow({
 
 function searchMatchSummary(result: WorkspaceTopicSearchResult): string {
   const primary = result.matches[0];
-  if (!primary) return 'matched topic metadata';
+  if (!primary) return 'matched chat metadata';
   return `${primary.label}: ${primary.value}`;
 }
 
@@ -1199,17 +1221,14 @@ function TopicSearchResults({
   return (
     <div
       className="topic-search-results"
-      aria-label="topic search result details"
+      aria-label="chat search result details"
     >
       {results.map((result) => {
         const disabledReason = result.action.disabledReason;
         const primarySessionId = result.action.primarySessionId;
         const actionDisabled = Boolean(disabledReason) || !primarySessionId;
         const actionTitle =
-          disabledReason ??
-          (primarySessionId
-            ? `open session ${primarySessionId}`
-            : 'no linked session');
+          disabledReason ?? (primarySessionId ? 'open chat' : 'no linked chat');
         return (
           <div
             key={result.topic.id}
@@ -1261,11 +1280,11 @@ function topicEmptyStateText(input: {
   searchUnavailableReason?: string | undefined;
   searchQuery: string;
 }): string {
-  if (!input.searchActive) return 'no workspace topics yet';
+  if (!input.searchActive) return 'no chats yet';
   if (input.searchUnavailableReason === 'empty_query') {
-    return 'type to search bounded topic history';
+    return 'type to search chat history';
   }
-  return `no topic matches for “${input.searchQuery.trim()}”`;
+  return `no chat matches for “${input.searchQuery.trim()}”`;
 }
 
 
@@ -1301,13 +1320,13 @@ function TopicMobileCockpit({
     />
   );
   return (
-    <section className="topic-mobile-cockpit" aria-label="mobile topic cockpit">
+    <section className="topic-mobile-cockpit" aria-label="mobile chat switcher">
       <div
         className="topic-mobile-cockpit__bar"
-        aria-label="mobile topic actions"
+        aria-label="mobile chat actions"
       >
         <span className="topic-mobile-cockpit__hint">
-          use / search for topic history
+          search chat history
         </span>
         <div className="topic-mobile-cockpit__actions">
           <button
@@ -1328,16 +1347,16 @@ function TopicMobileCockpit({
             disabled={!onCreateTaskRoom}
             title={
               onCreateTaskRoom
-                ? 'start a new topic in the main pane'
-                : 'topic creation unavailable'
+                ? 'start a new chat in the main pane'
+                : 'chat creation unavailable'
             }
             onClick={onCreateTaskRoom}
           >
-            + task
+            new
           </button>
         </div>
       </div>
-      <div className="topic-mobile-list" aria-label="workspace-grouped topics">
+      <div className="topic-mobile-list" aria-label="workspace-grouped chats">
         {groups.map((group) => (
           <section
             key={group.id}
@@ -1406,13 +1425,13 @@ function TopicSearchPanel({
   const searchActive = searchQuery.trim().length > 0;
   return (
     <>
-      <label className="topic-search" aria-label="search topic history">
+      <label className="topic-search" aria-label="search chat history">
         <span className="topic-search__prompt">/</span>
         <input
           className="topic-search__input"
           value={searchQuery}
           onChange={(event) => onSearchQueryChange?.(event.target.value)}
-          placeholder="search topics, tasks, artifacts..."
+          placeholder="search chats..."
           spellCheck={false}
         />
         {canScope ? (
@@ -1434,7 +1453,7 @@ function TopicSearchPanel({
       </label>
       {searchError ? (
         <div className="topic-shell-state topic-search-state error">
-          <span>topic search unavailable</span>
+          <span>chat search unavailable</span>
           <span className="topic-search-state__actions">
             {onSearchRetry ? (
               <button type="button" onClick={onSearchRetry}>
@@ -1451,7 +1470,7 @@ function TopicSearchPanel({
       ) : null}
       {searchLoading && model.items.length === 0 ? (
         <div className="topic-shell-state topic-search-state">
-          searching topic history…
+          searching chat history…
         </div>
       ) : null}
       {model.items.length === 0 && !searchLoading && !searchError ? (
@@ -1479,7 +1498,7 @@ const EMPTY_SURFACES: WorkspaceSurface[] = [];
 const EMPTY_SEARCH_RESULTS: WorkspaceTopicSearchResult[] = [];
 const EMPTY_WORKSPACES: TopicNavWorkspace[] = [];
 
-/** Show/hide archived channels toggle; renders nothing without a handler. */
+/** Show/hide older chats toggle; renders nothing without a handler. */
 function ArchivedToggle({
   showArchived,
   onToggle,
@@ -1496,13 +1515,13 @@ function ArchivedToggle({
         aria-pressed={showArchived}
         onClick={onToggle}
       >
-        {showArchived ? 'hide archived' : 'show archived'}
+        {showArchived ? 'hide older chats' : 'show older chats'}
       </button>
     </div>
   );
 }
 
-/** The workspace-grouped topic tree: a section per workspace + an orphan lane. */
+/** The workspace-grouped chat tree: a section per workspace + an orphan lane. */
 function GroupedTopicTree({
   grouped,
   renderRow,
@@ -1511,7 +1530,7 @@ function GroupedTopicTree({
   renderRow: (id: string) => ReactNode;
 }) {
   return (
-    <div className="topic-tree" aria-label="workspace topics">
+    <div className="topic-tree" aria-label="workspace chats">
       {grouped.groups.map((group) => (
         <section
           key={group.id}
@@ -1746,25 +1765,25 @@ export function TopicSidebarView({
   const activeSearchLoading = Boolean(searchQuery.trim() && searchLoading);
 
   if (loading && !activeSearchLoading) {
-    return <div className="topic-shell-state">loading topic shell…</div>;
+    return <div className="topic-shell-state">loading chats…</div>;
   }
   if (error) {
     return (
-      <div className="topic-shell-state error">topic shell unavailable</div>
+      <div className="topic-shell-state error">chat list unavailable</div>
     );
   }
 
   return (
     <div className="topic-shell" data-track="topic-shell">
       <div className="topic-shell__header">
-        <span>topics</span>
+        <span>chats</span>
         {onCreateTaskRoom ? (
           <button
             className="topic-shell__create"
             type="button"
             onClick={onCreateTaskRoom}
           >
-            + task
+            new chat
           </button>
         ) : null}
         {searchQuery.trim() ? (
@@ -1805,18 +1824,20 @@ export function TopicSidebarView({
       <GroupedTopicTree grouped={grouped} renderRow={renderTopicRow} />
       {selectedItem ? (
         <>
-          <TopicDetail
-            item={selectedItem}
-            workspaceName={resolveWorkspaceName(
-              selectedItem,
-              workspaceNameById
-            )}
-            surfacesError={surfacesError}
-            surfacesLoading={surfacesLoading}
-            onSelectSession={onSelectSession}
-            onRestoreTopic={onRestoreTopic}
-            restoringTopicId={restoringTopicId}
-          />
+          <div className="topic-shell__advanced-detail" hidden aria-hidden="true">
+            <TopicDetail
+              item={selectedItem}
+              workspaceName={resolveWorkspaceName(
+                selectedItem,
+                workspaceNameById
+              )}
+              surfacesError={surfacesError}
+              surfacesLoading={surfacesLoading}
+              onSelectSession={onSelectSession}
+              onRestoreTopic={onRestoreTopic}
+              restoringTopicId={restoringTopicId}
+            />
+          </div>
           <TopicMobileControlPanel
             item={selectedItem}
             onSelectSession={onSelectSession}

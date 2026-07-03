@@ -33,6 +33,7 @@ import {
 import type { Repo, PullRequest, SessionSummary } from './lib/types.js';
 import { resolveTopicActiveContext } from '../../shared/workspace-topics.js';
 import { estimateTerminalDimensions } from './lib/utils.js';
+import { openTopicTaskRoom } from './lib/topic-task-room.js';
 import { createSessionWithoutActivation } from './lib/session-utils.js';
 import {
   resolveSessionByKey,
@@ -726,6 +727,7 @@ function TerminalAreaContent({
       <MobileHeader
         title={sessionTitle}
         onMenuClick={openSidebar}
+        onNewChatClick={openTopicTaskRoom}
         onCommandClick={() => setSpotlightOpen(true)}
         onRightSidebarClick={handleToggleUtilityRail}
         hidden={keyboardOpen}

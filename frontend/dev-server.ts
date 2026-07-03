@@ -15,6 +15,7 @@ export const backendProxyPaths = [
   '/branches',
   '/worktrees',
   '/workspaces',
+  '/work-contexts',
   '/workspace-surfaces',
   '/workspace-topics',
   '/workspace-groups',

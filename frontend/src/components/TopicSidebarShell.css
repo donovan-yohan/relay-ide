@@ -298,6 +298,15 @@
   color: transparent;
 }
 
+.topic-row__recency {
+  display: inline-flex;
+  justify-content: flex-end;
+  min-width: 2.5em;
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  white-space: nowrap;
+}
+
 .topic-status svg {
   width: 13px;
   height: 13px;

@@ -9,9 +9,9 @@ export interface ChatHomeProps {
 }
 
 /**
- * #1058: the chat/topic spine is the default no-session/no-repo landing — and
- * the landing IS the composer. No sidebar clicking: type the first prompt into
- * the main pane and the topic + session are created with that message
+ * #1058/#1122: the chat/workspace spine is the default no-session/no-repo landing — and
+ * the landing IS the composer. No sidebar clicking: type the first prompt, hit
+ * send, and the chat + session are created with that message.
  * (codex-style). One-tap resume of the most recently active session stays as
  * a secondary affordance; the full cockpit remains reachable via the "open
  * work cockpit" command-palette action.
@@ -35,7 +35,7 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
     : undefined;
 
   return (
-    <div className="chat-home" aria-label="chat and topic home">
+    <div className="chat-home" aria-label="chat home">
       <TopicComposer onSelectSession={onSelectSession} resume={resume} />
     </div>
   );

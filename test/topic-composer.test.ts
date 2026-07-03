@@ -434,7 +434,7 @@ describe('TopicComposer', () => {
       '.topic-composer__bar button[type="submit"]'
     ) as HTMLButtonElement;
 
-    expect(start.textContent).toBe('create room');
+    expect(start.textContent).toBe('create chat');
     expect(start.disabled).toBe(false);
 
     const form = container.querySelector(
@@ -499,7 +499,7 @@ describe('TopicComposer', () => {
     expect(advanced).not.toBeNull();
     expect(advanced?.textContent).toContain('agent id');
     expect(advanced?.textContent).toContain('node');
-    expect(advanced?.textContent).toContain('task ref');
+    expect(advanced?.textContent).toContain('reference');
     expect(
       advanced?.querySelector('input[list="topic-composer-provider-options"]')
     ).toBeNull();

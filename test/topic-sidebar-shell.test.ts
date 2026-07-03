@@ -299,7 +299,7 @@ describe('TopicSidebarView', () => {
       '.topic-archived-toggle__btn'
     ) as HTMLButtonElement;
     expect(btn).not.toBeNull();
-    expect(btn.textContent).toBe('show archived');
+    expect(btn.textContent).toBe('show older chats');
     await act(async () => btn.click());
     expect(onToggleArchived).toHaveBeenCalled();
   });
@@ -842,13 +842,13 @@ describe('TopicSidebarView', () => {
 
   it('reports loading, error, and empty states', async () => {
     await renderView({ loading: true, topics: [] });
-    expect(container.textContent).toContain('loading topic shell');
+    expect(container.textContent).toContain('loading chats');
 
     await renderView({ loading: false, error: true, topics: [] });
-    expect(container.textContent).toContain('topic shell unavailable');
+    expect(container.textContent).toContain('chat list unavailable');
 
     await renderView({ loading: false, error: false, topics: [] });
-    expect(container.textContent).toContain('no workspace topics yet');
+    expect(container.textContent).toContain('no chats yet');
   });
 
   it('routes the task-room creation entrypoint to the main-pane composer', async () => {
@@ -946,7 +946,7 @@ describe('TopicSidebarView', () => {
     expect(
       container.querySelector('.topic-mobile-cockpit__bar input')
     ).toBeNull();
-    expect(container.textContent).toContain('use / search for topic history');
+    expect(container.textContent).toContain('search chat history');
   });
 
   it('uses a two-step audited mobile reply preview before sending input', async () => {
@@ -1460,7 +1460,7 @@ describe('TopicSidebarView', () => {
 
     expect(container.querySelector('.topic-shell')).not.toBeNull();
     expect(container.querySelector('.topic-search__input')).not.toBeNull();
-    expect(container.textContent).toContain('topic search unavailable');
+    expect(container.textContent).toContain('chat search unavailable');
     const retryButton = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent === 'retry'
     ) as HTMLButtonElement;
