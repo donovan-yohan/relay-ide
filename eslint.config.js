@@ -12,7 +12,7 @@ export default [
     ...sonarjs.configs.recommended,
     files: ['**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
     rules: {
-      'sonarjs/cognitive-complexity': ['error', 50],
+      'sonarjs/cognitive-complexity': ['error', 30],
       'sonarjs/no-duplicate-string': ['warn', { threshold: 4 }],
       'sonarjs/max-switch-cases': ['warn', 15],
     },
@@ -38,7 +38,7 @@ export default [
           ignoreRestSiblings: true,
         },
       ],
-      complexity: ['error', 50],
+      complexity: ['error', 30],
       'max-depth': ['error', 4],
       'max-params': 'off',
     },
@@ -59,8 +59,8 @@ export default [
     // than the project default rather than splitting them artificially.
     files: ['server/protocol-adapters/**/*.ts'],
     rules: {
-      complexity: ['error', 60],
-      'sonarjs/cognitive-complexity': ['error', 60],
+      complexity: ['error', 40],
+      'sonarjs/cognitive-complexity': ['error', 40],
       'sonarjs/max-switch-cases': 'off',
     },
   },

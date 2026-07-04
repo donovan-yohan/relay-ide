@@ -46,10 +46,10 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
   return (
     <div className="chat-home" aria-label="chat home">
       {activeSession?.mode === 'web' && !topicComposerOpen ? (
-        <ChatView sessionId={activeSession.id} />
+        <ChatView sessionId={scopedSessionKey(activeSession)} />
       ) : null}
       {activeSession?.mode !== 'web' || topicComposerOpen ? (
-        <TopicComposer resume={resume} />
+        <TopicComposer {...(resume ? { resume } : {})} />
       ) : null}
     </div>
   );

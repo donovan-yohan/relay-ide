@@ -1841,8 +1841,8 @@ export function TopicSidebarView({
     <div className="topic-shell" data-track="topic-shell">
       <TopicShellHeader
         derived={model.derived}
-        onCreateTaskRoom={onCreateTaskRoom ? openCreateTaskRoom : undefined}
         searchQuery={searchQuery}
+        {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
       />
       <TopicMobileCockpit
         groups={mobileGroups}
@@ -1850,12 +1850,10 @@ export function TopicSidebarView({
         selectedId={selectedId}
         onSelect={select}
         onSelectSession={onSelectSession}
-        onCreateTaskRoom={onCreateTaskRoom ? openCreateTaskRoom : undefined}
-        onResumeLast={
-          resumeLastSelectKey && onSelectSession
-            ? () => onSelectSession(resumeLastSelectKey)
-            : undefined
-        }
+        {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
+        {...(resumeLastSelectKey && onSelectSession
+          ? { onResumeLast: () => onSelectSession(resumeLastSelectKey) }
+          : {})}
       />
       <TopicSearchPanel
         model={model}
