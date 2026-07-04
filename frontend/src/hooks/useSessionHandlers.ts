@@ -87,6 +87,7 @@ export function useSessionHandlers({
 
   const navigateToSession = useCallback(
     (sessionId: string, _sessionType: string) => {
+      useUiStore.getState().setForceOrgCockpit(false);
       useSessionsStore.getState().setActiveSessionId(sessionId);
       const session = resolveSessionByKey(
         useSessionsStore.getState().sessions,
@@ -125,6 +126,7 @@ export function useSessionHandlers({
   const handleSelectSession = useCallback(
     (id: string) => {
       setAnalyticsView(null);
+      useUiStore.getState().setForceOrgCockpit(false);
       useSessionsStore.getState().setActiveSessionId(id);
       const session = resolveSessionByKey(
         useSessionsStore.getState().sessions,

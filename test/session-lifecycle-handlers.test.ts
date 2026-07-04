@@ -8,6 +8,8 @@ import type { SessionSummary } from '../frontend/src/lib/types.js';
 import { useSessionHandlers } from '../frontend/src/hooks/useSessionHandlers.js';
 import { useActionRegistry } from '../frontend/src/hooks/useActionRegistry.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
+import { useUiStore } from '../frontend/src/lib/stores/ui.js';
+import { resolveAppViewMode } from '../frontend/src/lib/state/app-view-mode.js';
 import {
   _resetForTesting,
   getAction,
@@ -124,6 +126,13 @@ describe('session lifecycle handlers', () => {
       backendConnectionStatus: 'connected',
       refreshAll: refreshAll as unknown as typeof originalRefreshAll,
     });
+    useUiStore.setState({
+      activeRepoPath: null,
+      analyticsView: null,
+      forceOrgCockpit: false,
+      topicComposerOpen: false,
+      sidebarOpen: false,
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -148,8 +157,103 @@ describe('session lifecycle handlers', () => {
       backendConnectionStatus: 'connected',
       refreshAll: originalRefreshAll,
     });
+    useUiStore.setState({
+      activeRepoPath: null,
+      analyticsView: null,
+      forceOrgCockpit: false,
+      topicComposerOpen: false,
+      sidebarOpen: false,
+    });
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('clears a stale forced cockpit flag when selecting an existing session', async () => {
+    const local = makeSession({ id: 'select-session-1' });
+    useSessionsStore.setState({
+      sessions: [local],
+      activeSessionId: null,
+    });
+    useUiStore.setState({
+      activeRepoPath: null,
+      analyticsView: null,
+      forceOrgCockpit: true,
+      sidebarOpen: true,
+    });
+
+    let handlers: SessionHandlers | undefined;
+    await act(async () => {
+      root!.render(
+        React.createElement(SessionHandlersHarness, {
+          onReady: (next) => {
+            handlers = next;
+          },
+        })
+      );
+    });
+
+    await act(async () => {
+      handlers!.handleSelectSession(local.id);
+    });
+
+    const ui = useUiStore.getState();
+    expect(useSessionsStore.getState().activeSessionId).toBe(local.id);
+    expect(ui.forceOrgCockpit).toBe(false);
+    expect(ui.activeRepoPath).toBe(local.repoPath);
+    expect(ui.sidebarOpen).toBe(false);
+    expect(
+      resolveAppViewMode({
+        analyticsView: ui.analyticsView,
+        hasActiveSession: true,
+        activeRepoPath: ui.activeRepoPath,
+        forceOrgCockpit: ui.forceOrgCockpit,
+        topicComposerOpen: ui.topicComposerOpen,
+      })
+    ).toBe('chat');
+  });
+
+  it('clears a stale forced cockpit flag when resuming a session by id', async () => {
+    const local = makeSession({ id: 'resume-session-1' });
+    useSessionsStore.setState({
+      sessions: [local],
+      activeSessionId: null,
+    });
+    useUiStore.setState({
+      activeRepoPath: null,
+      analyticsView: null,
+      forceOrgCockpit: true,
+      sidebarOpen: true,
+    });
+
+    let handlers: SessionHandlers | undefined;
+    await act(async () => {
+      root!.render(
+        React.createElement(SessionHandlersHarness, {
+          onReady: (next) => {
+            handlers = next;
+          },
+        })
+      );
+    });
+
+    await act(async () => {
+      handlers!.navigateToSession(local.id, local.type);
+    });
+
+    const ui = useUiStore.getState();
+    expect(useSessionsStore.getState().activeSessionId).toBe(local.id);
+    expect(ui.forceOrgCockpit).toBe(false);
+    expect(ui.activeRepoPath).toBe(local.repoPath);
+    expect(ui.sidebarOpen).toBe(false);
+    expect(
+      resolveAppViewMode({
+        analyticsView: ui.analyticsView,
+        hasActiveSession: true,
+        activeRepoPath: ui.activeRepoPath,
+        forceOrgCockpit: ui.forceOrgCockpit,
+        topicComposerOpen: ui.topicComposerOpen,
+      })
+    ).toBe('chat');
   });
 
   it('routes tab close for remote sessions through the owning node', async () => {
