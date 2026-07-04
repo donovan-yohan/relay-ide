@@ -121,8 +121,8 @@ describe('TopicSidebarView', () => {
     });
   }
 
-  it('renders a topic row, inline detail, linked session, and surface affordance', async () => {
-    await renderView();
+  it('renders a topic row plus explicit advanced detail, linked session, and surface affordance', async () => {
+    await renderView({ showAdvancedDetail: true });
 
     expect(container.querySelector('.topic-shell')).not.toBeNull();
     expect(container.querySelector('.topic-room')).not.toBeNull();
@@ -134,16 +134,15 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('preview');
   });
 
-  it('keeps recency row labels contextual and avoids aria-hidden interactive detail', async () => {
+  it('keeps recency row labels contextual without mounting default advanced detail chrome', async () => {
     await renderView();
 
     const trail = container.querySelector('.topic-row__trail');
     expect(trail?.getAttribute('aria-label')).toContain('idle');
     expect(trail?.getAttribute('aria-label')).toContain('linked items');
     expect(trail?.getAttribute('aria-label')).toContain('updated');
-    expect(
-      container.querySelector('.topic-shell__advanced-detail[aria-hidden="true"]')
-    ).toBeNull();
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+    expect(container.querySelector('.topic-room')).toBeNull();
   });
 
   it('groups topics under workspace channel headers', async () => {
@@ -236,6 +235,20 @@ describe('TopicSidebarView', () => {
     expect(mobileHeaders).toContain('research');
   });
 
+  it('keeps mobile workspace headers natural-case without uppercase styling', () => {
+    const css = fs.readFileSync(
+      'frontend/src/components/TopicSidebarShell.css',
+      'utf8'
+    );
+    const headerBlock = css.match(
+      /\.topic-mobile-group__header\s*{[\s\S]*?\n\s*}/
+    )?.[0];
+
+    expect(headerBlock).toBeTruthy();
+    expect(headerBlock).not.toMatch(/text-transform\s*:\s*uppercase/i);
+    expect(headerBlock).not.toMatch(/letter-spacing\s*:/i);
+  });
+
   it('resumes the most recent session in one tap from the mobile cockpit (#1088)', async () => {
     await renderView({
       topics: [
@@ -323,6 +336,8 @@ describe('TopicSidebarView', () => {
     await renderView();
 
     expect(container.querySelector('.topic-mobile-detail')).toBeNull();
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+    expect(container.querySelector('.topic-room')).toBeNull();
     expect(container.textContent).not.toContain('resume topic');
     expect(container.textContent).not.toContain('open terminal tab');
   });
@@ -380,6 +395,7 @@ describe('TopicSidebarView', () => {
   it('restores an archived topic from its detail panel', async () => {
     const onRestoreTopic = vi.fn();
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           id: 'topic:old',
@@ -405,6 +421,7 @@ describe('TopicSidebarView', () => {
   it('disables the restore button while its restore is in flight', async () => {
     const onRestoreTopic = vi.fn();
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           id: 'topic:old',
@@ -651,6 +668,7 @@ describe('TopicSidebarView', () => {
 
   it('shows detail for a selected topic even when it has no nested sessions', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           linkedRefs: {
@@ -677,6 +695,7 @@ describe('TopicSidebarView', () => {
 
   it('renders a task-room panel with grouped sessions, refs, and safe artifacts', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           linkedRefs: {
@@ -766,6 +785,7 @@ describe('TopicSidebarView', () => {
 
   it('formats an untitled github issue task ref as #<id>, not the bare tracker id (#1061)', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           linkedRefs: {
@@ -783,6 +803,7 @@ describe('TopicSidebarView', () => {
 
   it('keeps stale sessions inspectable while disabling live room controls', async () => {
     await renderView({
+      showAdvancedDetail: true,
       sessions: [
         makeSession({
           id: 's1',
@@ -812,6 +833,7 @@ describe('TopicSidebarView', () => {
 
   it('keeps desktop resume enabled when only live input control state is unknown', async () => {
     await renderView({
+      showAdvancedDetail: true,
       sessions: [
         makeSession({
           id: 's1',
@@ -838,6 +860,7 @@ describe('TopicSidebarView', () => {
 
   it('selects the exact global session from the task-room session row', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],
       sessions: [
         makeSession({
@@ -859,14 +882,14 @@ describe('TopicSidebarView', () => {
   });
 
   it('keeps the room usable when surface loading fails', async () => {
-    await renderView({ surfaces: [], surfacesError: true });
+    await renderView({ surfaces: [], surfacesError: true, showAdvancedDetail: true });
 
     expect(container.textContent).toContain('Frontend lane');
     expect(container.textContent).toContain('surfaces unavailable');
   });
 
   it('keeps the room usable while surfaces are still loading', async () => {
-    await renderView({ surfaces: [], surfacesLoading: true });
+    await renderView({ surfaces: [], surfacesLoading: true, showAdvancedDetail: true });
 
     expect(container.textContent).not.toContain('loading topic shell');
     expect(container.querySelector('.topic-room')).not.toBeNull();
@@ -874,7 +897,7 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('surfaces loading…');
   });
 
-  it('keeps the shell room mounted while surfaces query is still pending', async () => {
+  it('keeps the chat list mounted without advanced detail while surfaces query is still pending', async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -907,9 +930,10 @@ describe('TopicSidebarView', () => {
       headers: { 'x-relay-capabilities': 'context:read' },
     });
     expect(container.textContent).not.toContain('loading topic shell');
-    expect(container.querySelector('.topic-room')).not.toBeNull();
+    expect(container.querySelector('.topic-shell')).not.toBeNull();
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+    expect(container.querySelector('.topic-room')).toBeNull();
     expect(container.textContent).toContain('Build UI shell');
-    expect(container.textContent).toContain('surfaces loading…');
     queryClient.clear();
   });
 
@@ -1447,6 +1471,7 @@ describe('TopicSidebarView', () => {
     vi.stubGlobal('open', openMock);
 
     await renderView({
+      showAdvancedDetail: true,
       topics: [makeTopic({ linkedRefs: { sessionIds: [] } })],
       sessions: [],
       surfaces: [makeSurface()],
@@ -1513,6 +1538,7 @@ describe('TopicSidebarView', () => {
 
   it('renders participant roster cards grouped by role/runtime and opens exact existing sessions', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           linkedRefs: { sessionIds: ['devbox:remote-ika', 'global:kame'] },

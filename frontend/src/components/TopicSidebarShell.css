@@ -1011,8 +1011,6 @@
     padding: 8px 10px 2px;
     color: var(--text-muted);
     font-size: var(--font-size-xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
   }
 
   .topic-mobile-group__name {

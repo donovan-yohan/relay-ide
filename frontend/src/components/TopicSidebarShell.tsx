@@ -1110,6 +1110,41 @@ function TopicMobileControlPanelGate({
   );
 }
 
+function TopicAdvancedDetailGate({
+  item,
+  show,
+  workspaceNameById,
+  surfacesError,
+  surfacesLoading,
+  onSelectSession,
+  onRestoreTopic,
+  restoringTopicId,
+}: {
+  item: TopicNavItem | undefined;
+  show: boolean;
+  workspaceNameById: Map<string, string>;
+  surfacesError: boolean;
+  surfacesLoading: boolean;
+  onSelectSession?: ((id: string) => void) | undefined;
+  onRestoreTopic?: ((topicId: string) => void) | undefined;
+  restoringTopicId?: string | undefined;
+}) {
+  if (!item || !show) return null;
+  return (
+    <div className="topic-shell__advanced-detail">
+      <TopicDetail
+        item={item}
+        workspaceName={resolveWorkspaceName(item, workspaceNameById)}
+        surfacesError={surfacesError}
+        surfacesLoading={surfacesLoading}
+        onSelectSession={onSelectSession}
+        onRestoreTopic={onRestoreTopic}
+        restoringTopicId={restoringTopicId}
+      />
+    </div>
+  );
+}
+
 function TopicRow({
   item,
   depth,
@@ -1649,6 +1684,7 @@ export function TopicSidebarView({
   onToggleArchived,
   onRestoreTopic,
   restoringTopicId,
+  showAdvancedDetail = false,
 }: {
   topics: WorkspaceTopic[];
   sessions: SessionSummary[];
@@ -1680,6 +1716,7 @@ export function TopicSidebarView({
   onSelectSession?: ((id: string) => void) | undefined;
   onSendInput?: TopicSendInput | undefined;
   onCreateTaskRoom?: (() => void) | undefined;
+  showAdvancedDetail?: boolean | undefined;
 }) {
   const model = useMemo(
     () => buildTopicNavModel({ topics, sessions, surfaces, derived, nodes }),
@@ -1873,29 +1910,21 @@ export function TopicSidebarView({
       />
       <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
       <GroupedTopicTree grouped={grouped} renderRow={renderTopicRow} />
-      {selectedItem ? (
-        <>
-          <div className="topic-shell__advanced-detail" hidden>
-            <TopicDetail
-              item={selectedItem}
-              workspaceName={resolveWorkspaceName(
-                selectedItem,
-                workspaceNameById
-              )}
-              surfacesError={surfacesError}
-              surfacesLoading={surfacesLoading}
-              onSelectSession={onSelectSession}
-              onRestoreTopic={onRestoreTopic}
-              restoringTopicId={restoringTopicId}
-            />
-          </div>
-          <TopicMobileControlPanelGate
-            item={selectedItem}
-            onSelectSession={onSelectSession}
-            onSendInput={onSendInput}
-          />
-        </>
-      ) : null}
+      <TopicAdvancedDetailGate
+        item={selectedItem}
+        show={showAdvancedDetail}
+        workspaceNameById={workspaceNameById}
+        surfacesError={surfacesError}
+        surfacesLoading={surfacesLoading}
+        onSelectSession={onSelectSession}
+        onRestoreTopic={onRestoreTopic}
+        restoringTopicId={restoringTopicId}
+      />
+      <TopicMobileControlPanelGate
+        item={selectedItem}
+        onSelectSession={onSelectSession}
+        onSendInput={onSendInput}
+      />
     </div>
   );
 }
