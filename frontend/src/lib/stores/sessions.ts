@@ -38,6 +38,7 @@ import {
   type TabControlEvent,
 } from '../../../../shared/control-state.js';
 import type { SessionDurabilityState } from '../../../../shared/session-durability.js';
+import { useUiStore } from './ui.js';
 
 const NOTIFICATIONS_STORAGE_KEY = 'claude-remote-notifications';
 const ACTIVE_SESSION_KEY = 'claude-remote-active-session';
@@ -415,6 +416,12 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
 
   setActiveSessionId: (id) => {
     const key = id === null ? null : resolveSessionKey(get().sessions, id);
+    if (key !== null) {
+      // `forceOrgCockpit` is a one-off escape hatch for the explicit Work
+      // cockpit commands. Any normal session activation should return to the
+      // chat/session shell instead of inheriting a stale forced cockpit mode.
+      useUiStore.getState().setForceOrgCockpit(false);
+    }
     saveActiveSessionId(key);
     set({ activeSessionId: key });
   },

@@ -4,12 +4,14 @@ import * as React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionSummary } from '../frontend/src/lib/types.js';
+import type { Repo, SessionSummary } from '../frontend/src/lib/types.js';
 import { useSessionHandlers } from '../frontend/src/hooks/useSessionHandlers.js';
 import { useActionRegistry } from '../frontend/src/hooks/useActionRegistry.js';
+import { useUrlNav } from '../frontend/src/hooks/useUrlNav.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { resolveAppViewMode } from '../frontend/src/lib/state/app-view-mode.js';
+import { hashPath } from '../frontend/src/lib/url-nav.js';
 import {
   _resetForTesting,
   getAction,
@@ -42,6 +44,18 @@ function makeSession(
     createdAt: '2026-05-14T00:00:00.000Z',
     lastActivity: '2026-05-14T00:00:00.000Z',
     idle: false,
+    ...overrides,
+  };
+}
+
+function makeRepo(overrides: Partial<Repo> = {}): Repo {
+  return {
+    path: '/repo/relay-ide',
+    name: 'relay-ide',
+    isGitRepo: true,
+    kind: 'repo',
+    defaultBranch: 'nightly',
+    currentBranch: 'nightly',
     ...overrides,
   };
 }
@@ -93,6 +107,7 @@ function ActionRegistryHarness() {
     handleCloseSession: vi.fn(),
     handleSelectSession: vi.fn(),
     handleNewWorktree: vi.fn(),
+    handleLaunchWorkspaceSession: vi.fn(),
     handleOpenSettings: vi.fn(),
     handleRenameActiveSession: vi.fn(),
     handleArchive: vi.fn(),
@@ -102,6 +117,16 @@ function ActionRegistryHarness() {
     workspaceSettingsDialogRef: React.createRef(),
     setFilePickerOpen: vi.fn(),
   });
+  return null;
+}
+
+function UrlNavHarness({
+  onReady,
+}: {
+  onReady: (nav: ReturnType<typeof useUrlNav>) => void;
+}) {
+  const nav = useUrlNav();
+  onReady(nav);
   return null;
 }
 
@@ -133,6 +158,7 @@ describe('session lifecycle handlers', () => {
       topicComposerOpen: false,
       sidebarOpen: false,
     });
+    window.history.replaceState(null, '', '/');
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -166,6 +192,97 @@ describe('session lifecycle handlers', () => {
     });
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('clears a stale forced cockpit flag when restoring a session URL', async () => {
+    const repo = makeRepo();
+    const local = makeSession({ id: 'url-session-1' });
+    useSessionsStore.setState({
+      repos: [repo],
+      sessions: [local],
+      activeSessionId: null,
+    });
+    useUiStore.setState({
+      activeRepoPath: null,
+      analyticsView: null,
+      forceOrgCockpit: true,
+    });
+    window.history.replaceState(
+      null,
+      '',
+      `/${hashPath(repo.path)}/${local.id}`
+    );
+
+    let nav: ReturnType<typeof useUrlNav> | undefined;
+    await act(async () => {
+      root!.render(
+        React.createElement(UrlNavHarness, {
+          onReady: (next) => {
+            nav = next;
+          },
+        })
+      );
+    });
+
+    await act(async () => {
+      nav!.restoreFromUrl();
+    });
+
+    const ui = useUiStore.getState();
+    expect(useSessionsStore.getState().activeSessionId).toBe(local.id);
+    expect(ui.forceOrgCockpit).toBe(false);
+    expect(ui.activeRepoPath).toBe(repo.path);
+    expect(
+      resolveAppViewMode({
+        analyticsView: ui.analyticsView,
+        hasActiveSession: true,
+        activeRepoPath: ui.activeRepoPath,
+        forceOrgCockpit: ui.forceOrgCockpit,
+        topicComposerOpen: ui.topicComposerOpen,
+      })
+    ).toBe('chat');
+  });
+
+  it('clears a stale forced cockpit flag when browser history activates a session', async () => {
+    const repo = makeRepo();
+    const local = makeSession({ id: 'popstate-session-1' });
+    useSessionsStore.setState({
+      repos: [repo],
+      sessions: [local],
+      activeSessionId: null,
+    });
+    useUiStore.setState({
+      activeRepoPath: null,
+      analyticsView: null,
+      forceOrgCockpit: true,
+    });
+
+    await act(async () => {
+      root!.render(
+        React.createElement(UrlNavHarness, {
+          onReady: () => undefined,
+        })
+      );
+    });
+    window.history.pushState(null, '', `/${hashPath(repo.path)}/${local.id}`);
+
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+
+    const ui = useUiStore.getState();
+    expect(useSessionsStore.getState().activeSessionId).toBe(local.id);
+    expect(ui.forceOrgCockpit).toBe(false);
+    expect(ui.activeRepoPath).toBe(repo.path);
+    expect(
+      resolveAppViewMode({
+        analyticsView: ui.analyticsView,
+        hasActiveSession: true,
+        activeRepoPath: ui.activeRepoPath,
+        forceOrgCockpit: ui.forceOrgCockpit,
+        topicComposerOpen: ui.topicComposerOpen,
+      })
+    ).toBe('chat');
   });
 
   it('clears a stale forced cockpit flag when selecting an existing session', async () => {
@@ -446,6 +563,72 @@ describe('session lifecycle handlers', () => {
       '/hub/nodes/node-a/sessions/archive-session-1',
       { method: 'DELETE' }
     );
+  });
+
+  it('clears a stale forced cockpit flag when jumping to next attention work', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
+      jsonResponse({
+        groups: [
+          {
+            id: 'active-work-1',
+            node: { nodeId: 'local', displayName: 'local', status: 'online' },
+            staleReadModel: false,
+            sessions: [
+              {
+                id: 'next-attention-session-1',
+                type: 'agent',
+                agent: 'claude',
+                repoPath: '/repo/relay-ide',
+                cwd: '/repo/relay-ide',
+                live: true,
+                agentState: 'waiting-for-input',
+                controlFreshness: 'fresh',
+                durability: 'running-attached',
+                associatedAt: '2026-05-14T00:00:00.000Z',
+                lastActivity: '2026-05-14T00:00:00.000Z',
+              },
+            ],
+          },
+        ],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    useSessionsStore.setState({ sessions: [], activeSessionId: null });
+    useUiStore.setState({
+      activeRepoPath: null,
+      analyticsView: null,
+      forceOrgCockpit: true,
+      sidebarOpen: true,
+    });
+
+    await act(async () => {
+      root!.render(React.createElement(ActionRegistryHarness));
+    });
+    await flushPromises();
+
+    const action = getAction('navigation.next-attention-work');
+    expect(action).toBeDefined();
+    await act(async () => {
+      await action!.handler({ view: 'org' });
+    });
+    await flushPromises();
+
+    const ui = useUiStore.getState();
+    expect(useSessionsStore.getState().activeSessionId).toContain(
+      'next-attention-session-1'
+    );
+    expect(ui.forceOrgCockpit).toBe(false);
+    expect(ui.activeRepoPath).toBe('/repo/relay-ide');
+    expect(ui.sidebarOpen).toBe(false);
+    expect(
+      resolveAppViewMode({
+        analyticsView: ui.analyticsView,
+        hasActiveSession: true,
+        activeRepoPath: ui.activeRepoPath,
+        forceOrgCockpit: ui.forceOrgCockpit,
+        topicComposerOpen: ui.topicComposerOpen,
+      })
+    ).toBe('chat');
   });
 
   it('routes command-palette kill for remote sessions through the owning node', async () => {
