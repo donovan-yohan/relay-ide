@@ -73,10 +73,7 @@ export function useTopicRoomCreate({
   // configured repoPath server-side (validateSessionCreateRequest), so a
   // fresh landing with no session/repo context must still launch somewhere.
   const defaultRepoPath =
-    activeSession?.repoPath ??
-    activeRepoPath ??
-    repos[0]?.path ??
-    undefined;
+    activeSession?.repoPath ?? activeRepoPath ?? repos[0]?.path ?? undefined;
   const defaultWorktreePath = activeSession?.worktreePath ?? undefined;
   const defaultCwd =
     activeSession?.cwd ?? defaultWorktreePath ?? defaultRepoPath ?? undefined;
@@ -167,7 +164,12 @@ export function useTopicRoomCreate({
         draft.templateKind,
         frameworks
       ),
-    [defaultAgent, draft.templateKind, frameworks, previewCreate.routingDefaults]
+    [
+      defaultAgent,
+      draft.templateKind,
+      frameworks,
+      previewCreate.routingDefaults,
+    ]
   );
 
   const updateDraft = useCallback((patch: Partial<TopicRoomDraft>) => {
@@ -190,18 +192,26 @@ export function useTopicRoomCreate({
       const refreshedSession =
         resolveSessionByKey(sessionsState.sessions, launchedKey) ??
         resolveSessionByKey(sessionsState.sessions, session.id);
-      const selectedKey = refreshedSession
-        ? scopedSessionKey(refreshedSession)
-        : launchedKey;
+      if (!refreshedSession) {
+        useSessionsStore.setState((state) => {
+          const alreadyPresent =
+            resolveSessionByKey(state.sessions, launchedKey) ??
+            resolveSessionByKey(state.sessions, session.id);
+          if (alreadyPresent) return {};
+          return { sessions: [session, ...state.sessions] };
+        });
+      }
+      const selectedSession = refreshedSession ?? session;
+      const selectedKey = scopedSessionKey(selectedSession);
       const ui = useUiStore.getState();
 
       // #1123: topic launches are chat-first even when they inherit repo
       // routing defaults. Keep the workspace recall map warm, but do not bind
       // the primary route to the repo dashboard; the cockpit remains an
       // explicit escape hatch.
-      if (refreshedSession?.repoPath) {
+      if (selectedSession.repoPath) {
         sessionsState.rememberSessionForWorkspace(
-          refreshedSession.repoPath,
+          selectedSession.repoPath,
           selectedKey
         );
       }

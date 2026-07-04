@@ -24,7 +24,17 @@ vi.mock('../frontend/src/lib/api.js', async (importOriginal) => {
   };
 });
 
-import { createWorkspaceTopicRoomAndMaybeLaunch, launchWorkspaceTopicRoom } from '../frontend/src/lib/api.js';
+vi.mock('../frontend/src/components/chat/ChatView.js', () => ({
+  ChatView: ({ sessionId }: { sessionId: string | null }) =>
+    React.createElement('div', { 'data-testid': 'chat-view' }, sessionId),
+  default: ({ sessionId }: { sessionId: string | null }) =>
+    React.createElement('div', { 'data-testid': 'chat-view' }, sessionId),
+}));
+
+import {
+  createWorkspaceTopicRoomAndMaybeLaunch,
+  launchWorkspaceTopicRoom,
+} from '../frontend/src/lib/api.js';
 import { useConfigStore } from '../frontend/src/lib/stores/config.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
@@ -84,9 +94,9 @@ describe('topic title derivation', () => {
     const long = '💡'.repeat(61) + 'x';
     const derived = deriveTopicTitleFromPrompt(long);
     expect(derived.endsWith('…')).toBe(true);
-    expect((derived as unknown as { isWellFormed: () => boolean }).isWellFormed()).toBe(
-      true
-    );
+    expect(
+      (derived as unknown as { isWellFormed: () => boolean }).isWellFormed()
+    ).toBe(true);
   });
 
   it('prefers an explicit title override over the message', () => {
@@ -157,12 +167,12 @@ describe('topic provider launch helpers', () => {
       framework('custom:local'),
     ];
 
-    expect(deriveTopicProviderLaunchMode('hermes', 'agent-task', frameworks)).toBe(
-      'web'
-    );
-    expect(deriveTopicProviderLaunchMode('codex', 'agent-task', frameworks)).toBe(
-      'pty'
-    );
+    expect(
+      deriveTopicProviderLaunchMode('hermes', 'agent-task', frameworks)
+    ).toBe('web');
+    expect(
+      deriveTopicProviderLaunchMode('codex', 'agent-task', frameworks)
+    ).toBe('pty');
     expect(
       deriveTopicProviderLaunchMode('opencode', 'agent-task', frameworks)
     ).toBe('pty');
@@ -229,15 +239,23 @@ describe('topic provider launch helpers', () => {
       taskRef: null,
     });
 
-    expect(buildTopicRoomLaunchBody(create, 'agent-task', frameworks)).toMatchObject({
+    expect(
+      buildTopicRoomLaunchBody(create, 'agent-task', frameworks)
+    ).toMatchObject({
       type: 'agent',
       mode: 'web',
       agent: 'hermes',
+      initialPrompt: 'run it',
     });
-    expect(buildTopicRoomLaunchBody(create, 'terminal-task', frameworks)).toMatchObject({
+    expect(
+      buildTopicRoomLaunchBody(create, 'terminal-task', frameworks)
+    ).toMatchObject({
       type: 'terminal',
       mode: 'pty',
     });
+    expect(
+      buildTopicRoomLaunchBody(create, 'terminal-task', frameworks)
+    ).not.toHaveProperty('initialPrompt');
   });
 
   it('keeps OpenCode on tui launch by default even when it exposes web mode', () => {
@@ -272,7 +290,9 @@ describe('topic provider launch helpers', () => {
       launchMode: 'pty',
       status: 'global default · tui launch',
     });
-    expect(buildTopicRoomLaunchBody(create, 'agent-task', frameworks)).toMatchObject({
+    expect(
+      buildTopicRoomLaunchBody(create, 'agent-task', frameworks)
+    ).toMatchObject({
       type: 'agent',
       mode: 'pty',
       agent: 'opencode',
@@ -657,28 +677,32 @@ describe('TopicComposer', () => {
 
     expect(refreshAll).toHaveBeenCalledTimes(1);
     expect(useSessionsStore.getState().activeSessionId).toBe('session-late');
+    expect(useSessionsStore.getState().sessions).toContainEqual(
+      expect.objectContaining({ id: 'session-late' })
+    );
     expect(useUiStore.getState().activeRepoPath).toBeNull();
     expect(useUiStore.getState().forceOrgCockpit).toBe(false);
     expect(onSelectSession).toHaveBeenCalledWith('session-late');
   });
 
-  it('does not route ChatHome launches through repo session selection', async () => {
+  it('opens ChatHome launches into the active web chat without repo routing', async () => {
+    const launchedSession = {
+      id: 'session-chat-home',
+      type: 'agent',
+      agent: 'hermes',
+      mode: 'web',
+      repoPath: '/repo/relay-ide',
+      cwd: '/repo/relay-ide',
+      displayName: 'chat home session',
+      createdAt: '2026-07-03T00:00:00.000Z',
+      lastActivity: '2026-07-03T00:00:00.000Z',
+      idle: false,
+    } as const;
     vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
       status: 'launched',
       topic: { id: 'topic:chat-home' },
       workContext: { id: 'wc:chat-home' },
-      session: {
-        id: 'session-chat-home',
-        type: 'agent',
-        agent: 'claude',
-        mode: 'pty',
-        repoPath: '/repo/relay-ide',
-        cwd: '/repo/relay-ide',
-        displayName: 'chat home session',
-        createdAt: '2026-07-03T00:00:00.000Z',
-        lastActivity: '2026-07-03T00:00:00.000Z',
-        idle: false,
-      },
+      session: launchedSession,
     } as never);
     useSessionsStore.setState({
       sessions: [],
@@ -711,6 +735,10 @@ describe('TopicComposer', () => {
     expect(useUiStore.getState().activeRepoPath).toBeNull();
     expect(useUiStore.getState().forceOrgCockpit).toBe(false);
     expect(onSelectSession).not.toHaveBeenCalled();
+    expect(
+      container.querySelector('[data-testid="chat-view"]')?.textContent
+    ).toBe('session-chat-home');
+    expect(container.querySelector('.topic-composer')).toBeNull();
   });
 
   it('keeps the created room and provider launch mode when retrying after session launch failure', async () => {
@@ -751,9 +779,9 @@ describe('TopicComposer', () => {
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true }));
     });
-    expect(container.querySelector('.topic-composer__failure')?.textContent).toContain(
-      'provider temporarily unavailable'
-    );
+    expect(
+      container.querySelector('.topic-composer__failure')?.textContent
+    ).toContain('provider temporarily unavailable');
 
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true }));

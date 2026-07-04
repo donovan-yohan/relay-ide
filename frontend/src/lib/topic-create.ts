@@ -3,10 +3,7 @@ import type {
   WorkspaceTopicLaunchIntent,
   WorkspaceTopicTemplateKind,
 } from '../../../shared/workspace-topics.js';
-import type {
-  CreateSessionBody,
-  WorkspaceTopicLaunchFailure,
-} from './api.js';
+import type { CreateSessionBody, WorkspaceTopicLaunchFailure } from './api.js';
 import {
   defaultSessionModeForAgent,
   isFrameworkAvailable,
@@ -132,7 +129,9 @@ function frameworkDisplayName(
   frameworks: FrameworkInfo[],
   providerId: string
 ): string {
-  return frameworkForProvider(frameworks, providerId)?.displayName ?? providerId;
+  return (
+    frameworkForProvider(frameworks, providerId)?.displayName ?? providerId
+  );
 }
 
 export function deriveTopicProviderLaunchMode(
@@ -190,15 +189,18 @@ export function deriveTopicProviderOptions(input: {
         : undefined;
     const missingReason = installed
       ? undefined
-      : (framework?.availability?.reason ?? `${providerId} CLI not found on PATH`);
+      : (framework?.availability?.reason ??
+        `${providerId} CLI not found on PATH`);
     const option: TopicProviderOption = {
       id: providerId,
       label: frameworkDisplayName(input.frameworks, providerId),
       disabled: !installed,
       isDefault: providerId === input.defaultProviderId,
       launchMode,
-      ...(missingReason ?? webUnavailableReason
-        ? { reason: missingReason ?? `web unavailable: ${webUnavailableReason}` }
+      ...((missingReason ?? webUnavailableReason)
+        ? {
+            reason: missingReason ?? `web unavailable: ${webUnavailableReason}`,
+          }
         : {}),
       status: '',
     };
@@ -219,12 +221,17 @@ export function buildTopicRoomLaunchBody(
     templateKind,
     frameworks
   );
+  const starterPrompt =
+    type === 'agent'
+      ? compactString(create.promptDefaults?.starterPrompt)
+      : undefined;
   return {
     type,
     mode: mode ?? 'pty',
     ...(type === 'agent' && routing.providerId
       ? { agent: routing.providerId }
       : {}),
+    ...(starterPrompt ? { initialPrompt: starterPrompt } : {}),
     ...(routing.nodeId ? { nodeId: routing.nodeId } : {}),
     ...(routing.repoPath ? { repoPath: routing.repoPath } : {}),
     ...(routing.worktreePath ? { worktreePath: routing.worktreePath } : {}),

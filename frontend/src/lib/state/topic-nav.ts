@@ -258,6 +258,9 @@ export function sessionMatchesTopic(
   ) {
     return true;
   }
+  if ((linked.sessionIds?.length ?? 0) > 0) return false;
+  if ((linked.workContextIds?.length ?? 0) > 0) return false;
+
   const routing = topic.routingDefaults;
   if (routing.worktreePath && session.worktreePath === routing.worktreePath)
     return true;

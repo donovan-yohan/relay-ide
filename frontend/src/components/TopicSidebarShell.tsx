@@ -228,19 +228,6 @@ function topicLatestStatus(item: TopicNavItem): string {
   return boundedTopicLatestStatus(item.routingLabel ?? item.statusLabel);
 }
 
-function topicRowRecencyLabel(item: TopicNavItem): string | null {
-  if (
-    item.tone === 'active' ||
-    item.tone === 'attention' ||
-    item.tone === 'error'
-  ) {
-    return null;
-  }
-  const session = topicPrimarySession(item);
-  const at = session?.lastActivity ?? item.updatedAt;
-  return at ? formatRelativeTimeCompact(at) : null;
-}
-
 function TopicBadge({ item }: { item: TopicNavItem }) {
   const background = item.color ?? deriveColor(item.badgeSeed);
   const label = item.channelKind
@@ -400,14 +387,11 @@ function participantLastActivityLabel(
 
 function ParticipantChildRow({
   participant,
-  session,
   onSelectSession,
 }: {
   participant: TopicNavParticipantRef;
-  session?: TopicNavSessionRef | undefined;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
-  const lastActivityLabel = participantLastActivityLabel(participant);
   const handleSelect = onSelectSession
     ? () => onSelectSession(participant.selectKey)
     : undefined;
@@ -419,24 +403,11 @@ function ParticipantChildRow({
         {...(handleSelect ? { onClick: handleSelect } : { disabled: true })}
         title={`open existing session ${participant.label}`}
       >
+        <span className="topic-child-row__icon" aria-hidden="true">
+          <MessageSquare size={12} />
+        </span>
         <span className="topic-child-row__label">
           <MarqueeText>{participant.label}</MarqueeText>
-        </span>
-        <span className="topic-child-row__meta topic-child-row__role">
-          {participant.roleLabel} · {participant.providerLabel}
-        </span>
-        <span className="topic-child-row__meta">
-          {participant.runtimeLabel}
-        </span>
-        <span className="topic-child-row__meta">{participant.statusLabel}</span>
-        <span className="topic-child-row__meta">{lastActivityLabel}</span>
-        {participant.nodeLabel ? (
-          <span className="topic-child-row__meta">{participant.nodeLabel}</span>
-        ) : null}
-        <span className="topic-child-row__meta">
-          {participant.controlLabel}
-          {participant.summaryLabel ? ` · ${participant.summaryLabel}` : ''}
-          {session?.branch ? ` · ${session.branch}` : ''}
         </span>
         <StatusGlyph tone={participant.tone} />
       </button>
@@ -834,7 +805,10 @@ function TopicMobileAttentionRow({
   const session = topicPrimarySession(item);
   const resumeDisabledReason = sessionAttachDisabledReason(session);
   const canResume = Boolean(
-    action.label === 'resume' && session && !resumeDisabledReason && onSelectSession
+    action.label === 'resume' &&
+    session &&
+    !resumeDisabledReason &&
+    onSelectSession
   );
   return (
     <button
@@ -1167,8 +1141,6 @@ function TopicRow({
   const hasNested = item.childIds.length > 0 || item.participants.length > 0;
   const expanded = expandedIds.has(item.id);
   const selected = selectedId === item.id;
-  const affordanceCount =
-    item.participants.length + item.surfaces.length + item.taskRefs.length;
 
   const activate = () => {
     onSelect(item.id);
@@ -1185,7 +1157,6 @@ function TopicRow({
   ]
     .filter(Boolean)
     .join(' ');
-  const recencyLabel = topicRowRecencyLabel(item);
 
   return (
     <li
@@ -1216,30 +1187,8 @@ function TopicRow({
             <MarqueeText>{item.title}</MarqueeText>
           </span>
         </button>
-        <span
-          className="topic-row__trail"
-          aria-label={
-            recencyLabel
-              ? `${item.statusLabel}, ${affordanceCount} linked items, updated ${recencyLabel}`
-              : `${item.statusLabel}, ${affordanceCount} linked items`
-          }
-        >
-          <span className="topic-row__hover-actions" aria-hidden="true">
-            {item.participants.length > 0 ? (
-              <span className="topic-chip">p{item.participants.length}</span>
-            ) : null}
-            {item.surfaces.slice(0, 2).map((surface) => (
-              <SurfaceButton key={surface.id} surface={surface} />
-            ))}
-            {item.taskRefs.length > 0 ? (
-              <span className="topic-chip">t{item.taskRefs.length}</span>
-            ) : null}
-          </span>
-          {recencyLabel ? (
-            <span className="topic-row__recency">{recencyLabel}</span>
-          ) : (
-            <StatusGlyph tone={item.tone} />
-          )}
+        <span className="topic-row__trail" aria-label={item.statusLabel}>
+          <StatusGlyph tone={item.tone} />
         </span>
       </div>
       {expanded ? (
@@ -1250,9 +1199,6 @@ function TopicRow({
                 <ParticipantChildRow
                   key={participant.id}
                   participant={participant}
-                  session={item.sessions.find(
-                    (session) => session.selectKey === participant.selectKey
-                  )}
                   onSelectSession={onSelectSession}
                 />
               ))}
@@ -1369,7 +1315,6 @@ function topicEmptyStateText(input: {
   return `no chat matches for “${input.searchQuery.trim()}”`;
 }
 
-
 /** A workspace bucket of mobile topic rows, kept in attention order. */
 interface MobileTopicGroup {
   id: string;
@@ -1410,9 +1355,7 @@ function TopicMobileCockpit({
         className="topic-mobile-cockpit__bar"
         aria-label="mobile chat actions"
       >
-        <span className="topic-mobile-cockpit__hint">
-          search chat history
-        </span>
+        <span className="topic-mobile-cockpit__hint">search chat history</span>
         <div className="topic-mobile-cockpit__actions">
           <button
             type="button"
@@ -1654,6 +1597,41 @@ function GroupedTopicTree({
   );
 }
 
+function applyTopicActiveContext(topic: WorkspaceTopic | undefined): void {
+  if (!topic) return;
+  const context = resolveTopicActiveContext(topic);
+  const ui = useUiStore.getState();
+  ui.setActiveWorkspaceId(context.workspaceId);
+  if (context.repoPath) ui.setActiveRepoPath(context.repoPath);
+}
+
+function TopicShellHeader({
+  derived,
+  onCreateTaskRoom,
+  searchQuery,
+}: {
+  derived: boolean;
+  onCreateTaskRoom?: (() => void) | undefined;
+  searchQuery: string;
+}) {
+  const badge = searchQuery.trim() ? 'search' : derived ? 'derived' : null;
+  return (
+    <div className="topic-shell__header">
+      <span>chats</span>
+      {onCreateTaskRoom ? (
+        <button
+          className="topic-shell__create"
+          type="button"
+          onClick={onCreateTaskRoom}
+        >
+          new chat
+        </button>
+      ) : null}
+      {badge ? <span className="topic-shell__derived">{badge}</span> : null}
+    </div>
+  );
+}
+
 export function TopicSidebarView({
   topics,
   sessions,
@@ -1771,15 +1749,16 @@ export function TopicSidebarView({
   const select = useCallback(
     (id: string) => {
       setSelectedId(id);
-      const topic = topicsById.get(id);
-      if (!topic) return;
-      const context = resolveTopicActiveContext(topic);
-      const ui = useUiStore.getState();
-      ui.setActiveWorkspaceId(context.workspaceId);
-      if (context.repoPath) ui.setActiveRepoPath(context.repoPath);
+      applyTopicActiveContext(topicsById.get(id));
     },
     [topicsById]
   );
+  const openCreateTaskRoom = useCallback(() => {
+    applyTopicActiveContext(
+      selectedId ? topicsById.get(selectedId) : undefined
+    );
+    onCreateTaskRoom?.();
+  }, [onCreateTaskRoom, selectedId, topicsById]);
   const renderTopicRow = (id: string): ReactNode => {
     const item = model.byId.get(id);
     return item ? (
@@ -1855,37 +1834,23 @@ export function TopicSidebarView({
     return <div className="topic-shell-state">loading chats…</div>;
   }
   if (error) {
-    return (
-      <div className="topic-shell-state error">chat list unavailable</div>
-    );
+    return <div className="topic-shell-state error">chat list unavailable</div>;
   }
 
   return (
     <div className="topic-shell" data-track="topic-shell">
-      <div className="topic-shell__header">
-        <span>chats</span>
-        {onCreateTaskRoom ? (
-          <button
-            className="topic-shell__create"
-            type="button"
-            onClick={onCreateTaskRoom}
-          >
-            new chat
-          </button>
-        ) : null}
-        {searchQuery.trim() ? (
-          <span className="topic-shell__derived">search</span>
-        ) : model.derived ? (
-          <span className="topic-shell__derived">derived</span>
-        ) : null}
-      </div>
+      <TopicShellHeader
+        derived={model.derived}
+        onCreateTaskRoom={onCreateTaskRoom ? openCreateTaskRoom : undefined}
+        searchQuery={searchQuery}
+      />
       <TopicMobileCockpit
         groups={mobileGroups}
         ungrouped={mobileUngrouped}
         selectedId={selectedId}
         onSelect={select}
         onSelectSession={onSelectSession}
-        onCreateTaskRoom={onCreateTaskRoom}
+        onCreateTaskRoom={onCreateTaskRoom ? openCreateTaskRoom : undefined}
         onResumeLast={
           resumeLastSelectKey && onSelectSession
             ? () => onSelectSession(resumeLastSelectKey)

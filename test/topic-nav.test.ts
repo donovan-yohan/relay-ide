@@ -132,6 +132,49 @@ describe('buildTopicNavModel', () => {
     ]);
   });
 
+  it('does not borrow same-repo sessions across explicitly linked chat topics', () => {
+    const firstTopic = makeTopic({
+      id: 'topic:first',
+      display: { title: 'First chat' },
+      routingDefaults: { repoPath: '/repo/relay' },
+      linkedRefs: { workContextIds: ['wc:first'] },
+    });
+    const secondTopic = makeTopic({
+      id: 'topic:second',
+      display: { title: 'Second chat' },
+      routingDefaults: { repoPath: '/repo/relay' },
+      linkedRefs: { workContextIds: ['wc:second'] },
+    });
+
+    const model = buildTopicNavModel({
+      topics: [firstTopic, secondTopic],
+      sessions: [
+        makeSession({
+          id: 'agent-1',
+          displayName: 'Agent 1',
+          repoPath: '/repo/relay',
+          cwd: '/repo/relay',
+          workContextId: 'wc:first',
+        }),
+        makeSession({
+          id: 'agent-2',
+          displayName: 'Agent 2',
+          repoPath: '/repo/relay',
+          cwd: '/repo/relay',
+          workContextId: 'wc:second',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    expect(model.byId.get('topic:first')?.participants).toMatchObject([
+      { sessionId: 'agent-1', label: 'Agent 1' },
+    ]);
+    expect(model.byId.get('topic:second')?.participants).toMatchObject([
+      { sessionId: 'agent-2', label: 'Agent 2' },
+    ]);
+  });
+
   it('links surfaces by workspace id without fabricating sessions', () => {
     const topic = makeTopic({ workspaceId: 'workspace:alpha' });
     const model = buildTopicNavModel({
