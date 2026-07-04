@@ -104,13 +104,13 @@ export function launchSubmitLabel(input: {
   launchDisabled: boolean;
   launchFailure?: WorkspaceTopicLaunchFailure | null | undefined;
 }): string {
-  if (input.submittingIntent === 'create-and-launch') return 'launching…';
+  if (input.submittingIntent === 'create-and-launch') return 'starting…';
   if (input.submittingIntent === 'create-only') return 'creating…';
-  if (input.launchDisabled) return 'create room';
-  if (!input.launchFailure) return 'start';
+  if (input.launchDisabled) return 'create chat';
+  if (!input.launchFailure) return 'start chat';
   return input.launchFailure.stage === 'session'
-    ? 'retry launch'
-    : 'retry create + launch';
+    ? 'retry start'
+    : 'retry create + start';
 }
 
 export function launchTypeForTemplate(
@@ -255,7 +255,7 @@ export function buildTopicRoomCreateInput(input: {
 
   return {
     workspaceId: input.workspaceId ?? 'workspace:local',
-    title: input.draft.title.trim() || 'Untitled task room',
+    title: input.draft.title.trim() || 'Untitled chat',
     ...(prompt ? { description: prompt.slice(0, 240) } : {}),
     promptDefaults: {
       ...(prompt ? { starterPrompt: prompt } : {}),

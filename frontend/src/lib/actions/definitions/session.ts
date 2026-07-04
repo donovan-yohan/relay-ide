@@ -111,9 +111,9 @@ export const sessionStartOnTicket: ActionMeta = {
 
 export const sessionCreateTaskRoom: ActionMeta = {
   id: 'session.create-task-room',
-  label: 'create task room…',
-  description: 'create a WorkspaceTopic room, optionally launching an agent',
-  aliases: ['+ task', 'task room', 'workspace topic', 'create and launch'],
+  label: 'new chat…',
+  description: 'start a workspace chat, optionally launching an agent',
+  aliases: ['new chat', '+ chat', 'chat', 'workspace chat', 'create and launch'],
   category: 'session',
   icon: '+',
   when: (ctx) => !!ctx.workspacePath || !!ctx.cwd,

@@ -22,11 +22,12 @@ import {
   type TopicRoomDraft,
 } from '../lib/topic-create.js';
 import { taskRefFromDraft } from '../lib/topic-task-ref.js';
-import { resolveSessionByKey } from '../lib/session-keys.js';
+import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useToastStore } from '../lib/stores/toasts.js';
 import { useConfigStore } from '../lib/stores/config.js';
+import type { SessionSummary } from '../lib/types.js';
 
 /**
  * #1058: stateful draft + create/launch plumbing for codex-style topic
@@ -181,6 +182,44 @@ export function useTopicRoomCreate({
     setLaunchFailure(null);
   }, []);
 
+  const selectLaunchedSession = useCallback(
+    async (session: SessionSummary) => {
+      await useSessionsStore.getState().refreshAll();
+      const sessionsState = useSessionsStore.getState();
+      const launchedKey = scopedSessionKey(session);
+      const refreshedSession =
+        resolveSessionByKey(sessionsState.sessions, launchedKey) ??
+        resolveSessionByKey(sessionsState.sessions, session.id);
+      const selectedKey = refreshedSession
+        ? scopedSessionKey(refreshedSession)
+        : launchedKey;
+      const ui = useUiStore.getState();
+
+      // #1123: topic launches are chat-first even when they inherit repo
+      // routing defaults. Keep the workspace recall map warm, but do not bind
+      // the primary route to the repo dashboard; the cockpit remains an
+      // explicit escape hatch.
+      if (refreshedSession?.repoPath) {
+        sessionsState.rememberSessionForWorkspace(
+          refreshedSession.repoPath,
+          selectedKey
+        );
+      }
+      ui.setActiveRepoPath(null);
+
+      setActiveSessionId(selectedKey);
+      ui.setForceOrgCockpit(false);
+      ui.setTopicComposerOpen(false);
+      onLaunched?.(selectedKey);
+      // App-level launch handlers historically select the session and restore
+      // its repo route. Re-assert chat-first routing after those sync handlers
+      // run so start/resume cannot bounce into dashboard chrome.
+      useUiStore.getState().setActiveRepoPath(null);
+      useUiStore.getState().setForceOrgCockpit(false);
+    },
+    [onLaunched, setActiveSessionId]
+  );
+
   const submit = useCallback(
     async (intent: WorkspaceTopicLaunchIntent) => {
       if (!effectiveTitle) return;
@@ -205,10 +244,7 @@ export function useTopicRoomCreate({
             setLaunchFailure(result.failure);
             return;
           }
-          await useSessionsStore.getState().refreshAll();
-          setActiveSessionId(result.session.id);
-          useUiStore.getState().setTopicComposerOpen(false);
-          onLaunched?.(result.session.id);
+          await selectLaunchedSession(result.session);
           setCreatedRoom(null);
           setDraft(TOPIC_ROOM_DRAFT_EMPTY);
           return;
@@ -237,10 +273,7 @@ export function useTopicRoomCreate({
           return;
         }
         if (result.status === 'launched') {
-          await useSessionsStore.getState().refreshAll();
-          setActiveSessionId(result.session.id);
-          useUiStore.getState().setTopicComposerOpen(false);
-          onLaunched?.(result.session.id);
+          await selectLaunchedSession(result.session);
         } else {
           // create-only success has no navigation — confirm it happened and
           // surface where the new room lives.
@@ -274,10 +307,9 @@ export function useTopicRoomCreate({
       draft.templateKind,
       effectiveTitle,
       frameworks,
-      onLaunched,
       previewCreate,
       queryClient,
-      setActiveSessionId,
+      selectLaunchedSession,
       taskRef,
     ]
   );

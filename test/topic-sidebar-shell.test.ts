@@ -121,8 +121,8 @@ describe('TopicSidebarView', () => {
     });
   }
 
-  it('renders a topic row, inline detail, linked session, and surface affordance', async () => {
-    await renderView();
+  it('renders a topic row plus explicit advanced detail, linked session, and surface affordance', async () => {
+    await renderView({ showAdvancedDetail: true });
 
     expect(container.querySelector('.topic-shell')).not.toBeNull();
     expect(container.querySelector('.topic-room')).not.toBeNull();
@@ -132,6 +132,17 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('Thin-line topic detail');
     expect(container.textContent).toContain('Frontend lane');
     expect(container.textContent).toContain('preview');
+  });
+
+  it('keeps recency row labels contextual without mounting default advanced detail chrome', async () => {
+    await renderView();
+
+    const trail = container.querySelector('.topic-row__trail');
+    expect(trail?.getAttribute('aria-label')).toContain('idle');
+    expect(trail?.getAttribute('aria-label')).toContain('linked items');
+    expect(trail?.getAttribute('aria-label')).toContain('updated');
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+    expect(container.querySelector('.topic-room')).toBeNull();
   });
 
   it('groups topics under workspace channel headers', async () => {
@@ -224,6 +235,20 @@ describe('TopicSidebarView', () => {
     expect(mobileHeaders).toContain('research');
   });
 
+  it('keeps mobile workspace headers natural-case without uppercase styling', () => {
+    const css = fs.readFileSync(
+      'frontend/src/components/TopicSidebarShell.css',
+      'utf8'
+    );
+    const headerBlock = css.match(
+      /\.topic-mobile-group__header\s*{[\s\S]*?\n\s*}/
+    )?.[0];
+
+    expect(headerBlock).toBeTruthy();
+    expect(headerBlock).not.toMatch(/text-transform\s*:\s*uppercase/i);
+    expect(headerBlock).not.toMatch(/letter-spacing\s*:/i);
+  });
+
   it('resumes the most recent session in one tap from the mobile cockpit (#1088)', async () => {
     await renderView({
       topics: [
@@ -272,6 +297,69 @@ describe('TopicSidebarView', () => {
     expect(resume.disabled).toBe(true);
   });
 
+  it('resumes a chat when tapping its mobile switcher row instead of opening detail chrome (#1122)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          routingDefaults: { repoPath: '/repo/mobile-detail' },
+          display: { title: 'Mobile resume target' },
+          linkedRefs: { sessionIds: ['s-old', 's-new'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 's-old',
+          displayName: 'older',
+          lastActivity: '2026-06-01T00:00:00Z',
+        }),
+        makeSession({
+          id: 's-new',
+          displayName: 'newer',
+          lastActivity: '2026-06-25T00:00:00Z',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    expect(row).not.toBeNull();
+    await act(async () => row.click());
+
+    expect(onSelectSession).toHaveBeenCalledTimes(1);
+    expect(onSelectSession).toHaveBeenCalledWith('s-new');
+    expect(useUiStore.getState().activeRepoPath).toBeNull();
+  });
+
+  it('hides the mobile detail/control chrome for resumable chat rows (#1122)', async () => {
+    await renderView();
+
+    expect(container.querySelector('.topic-mobile-detail')).toBeNull();
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+    expect(container.querySelector('.topic-room')).toBeNull();
+    expect(container.textContent).not.toContain('resume topic');
+    expect(container.textContent).not.toContain('open terminal tab');
+  });
+
+  it('keeps the mobile control panel available for reply/approval states', async () => {
+    await renderView({
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'Frontend lane',
+          agentState: 'waiting-for-input',
+          controlFreshness: 'fresh',
+          mode: 'pty',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    expect(container.querySelector('.topic-mobile-detail')).not.toBeNull();
+    expect(container.textContent).toContain('reply');
+  });
+
   it('shows a search scope toggle only when a workspace is active', async () => {
     const onToggleSearchScope = vi.fn();
     await renderView({ activeWorkspaceId: 'ws:a', onToggleSearchScope });
@@ -299,7 +387,7 @@ describe('TopicSidebarView', () => {
       '.topic-archived-toggle__btn'
     ) as HTMLButtonElement;
     expect(btn).not.toBeNull();
-    expect(btn.textContent).toBe('show archived');
+    expect(btn.textContent).toBe('show older chats');
     await act(async () => btn.click());
     expect(onToggleArchived).toHaveBeenCalled();
   });
@@ -307,6 +395,7 @@ describe('TopicSidebarView', () => {
   it('restores an archived topic from its detail panel', async () => {
     const onRestoreTopic = vi.fn();
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           id: 'topic:old',
@@ -332,6 +421,7 @@ describe('TopicSidebarView', () => {
   it('disables the restore button while its restore is in flight', async () => {
     const onRestoreTopic = vi.fn();
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           id: 'topic:old',
@@ -578,6 +668,7 @@ describe('TopicSidebarView', () => {
 
   it('shows detail for a selected topic even when it has no nested sessions', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           linkedRefs: {
@@ -604,6 +695,7 @@ describe('TopicSidebarView', () => {
 
   it('renders a task-room panel with grouped sessions, refs, and safe artifacts', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           linkedRefs: {
@@ -693,6 +785,7 @@ describe('TopicSidebarView', () => {
 
   it('formats an untitled github issue task ref as #<id>, not the bare tracker id (#1061)', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           linkedRefs: {
@@ -710,6 +803,7 @@ describe('TopicSidebarView', () => {
 
   it('keeps stale sessions inspectable while disabling live room controls', async () => {
     await renderView({
+      showAdvancedDetail: true,
       sessions: [
         makeSession({
           id: 's1',
@@ -739,6 +833,7 @@ describe('TopicSidebarView', () => {
 
   it('keeps desktop resume enabled when only live input control state is unknown', async () => {
     await renderView({
+      showAdvancedDetail: true,
       sessions: [
         makeSession({
           id: 's1',
@@ -765,6 +860,7 @@ describe('TopicSidebarView', () => {
 
   it('selects the exact global session from the task-room session row', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],
       sessions: [
         makeSession({
@@ -786,14 +882,14 @@ describe('TopicSidebarView', () => {
   });
 
   it('keeps the room usable when surface loading fails', async () => {
-    await renderView({ surfaces: [], surfacesError: true });
+    await renderView({ surfaces: [], surfacesError: true, showAdvancedDetail: true });
 
     expect(container.textContent).toContain('Frontend lane');
     expect(container.textContent).toContain('surfaces unavailable');
   });
 
   it('keeps the room usable while surfaces are still loading', async () => {
-    await renderView({ surfaces: [], surfacesLoading: true });
+    await renderView({ surfaces: [], surfacesLoading: true, showAdvancedDetail: true });
 
     expect(container.textContent).not.toContain('loading topic shell');
     expect(container.querySelector('.topic-room')).not.toBeNull();
@@ -801,7 +897,7 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('surfaces loading…');
   });
 
-  it('keeps the shell room mounted while surfaces query is still pending', async () => {
+  it('keeps the chat list mounted without advanced detail while surfaces query is still pending', async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -834,21 +930,22 @@ describe('TopicSidebarView', () => {
       headers: { 'x-relay-capabilities': 'context:read' },
     });
     expect(container.textContent).not.toContain('loading topic shell');
-    expect(container.querySelector('.topic-room')).not.toBeNull();
+    expect(container.querySelector('.topic-shell')).not.toBeNull();
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+    expect(container.querySelector('.topic-room')).toBeNull();
     expect(container.textContent).toContain('Build UI shell');
-    expect(container.textContent).toContain('surfaces loading…');
     queryClient.clear();
   });
 
   it('reports loading, error, and empty states', async () => {
     await renderView({ loading: true, topics: [] });
-    expect(container.textContent).toContain('loading topic shell');
+    expect(container.textContent).toContain('loading chats');
 
     await renderView({ loading: false, error: true, topics: [] });
-    expect(container.textContent).toContain('topic shell unavailable');
+    expect(container.textContent).toContain('chat list unavailable');
 
     await renderView({ loading: false, error: false, topics: [] });
-    expect(container.textContent).toContain('no workspace topics yet');
+    expect(container.textContent).toContain('no chats yet');
   });
 
   it('routes the task-room creation entrypoint to the main-pane composer', async () => {
@@ -946,7 +1043,7 @@ describe('TopicSidebarView', () => {
     expect(
       container.querySelector('.topic-mobile-cockpit__bar input')
     ).toBeNull();
-    expect(container.textContent).toContain('use / search for topic history');
+    expect(container.textContent).toContain('search chat history');
   });
 
   it('uses a two-step audited mobile reply preview before sending input', async () => {
@@ -1278,38 +1375,16 @@ describe('TopicSidebarView', () => {
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'resume'
     );
-    expect(container.textContent).toContain(
-      'controls disabled: unknown control state'
-    );
+    expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const input = container.querySelector(
-      '.topic-mobile-control input'
-    ) as HTMLInputElement;
-    const submit = container.querySelector(
-      '.topic-mobile-control__primary'
-    ) as HTMLButtonElement;
-    const buttons = Array.from(
-      container.querySelectorAll('.topic-mobile-actions button')
-    ) as HTMLButtonElement[];
-    const resume = buttons.find(
-      (button) => button.textContent === 'resume topic'
-    ) as HTMLButtonElement;
-    const terminal = buttons.find(
-      (button) => button.textContent === 'open terminal tab'
-    ) as HTMLButtonElement;
-
-    expect(input.disabled).toBe(true);
-    expect(submit.disabled).toBe(true);
-    expect(resume.disabled).toBe(false);
-    expect(resume.title).toContain('open the linked Relay tab');
-    expect(terminal.disabled).toBe(false);
-
-    await act(async () => terminal.click());
+    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    expect(row.title).toContain('resume chat');
+    await act(async () => row.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
     expect(onSendInput).not.toHaveBeenCalled();
   });
 
-  it('keeps web session input disabled while allowing mobile tab resume', async () => {
+  it('keeps web session input hidden while allowing mobile row resume', async () => {
     await renderView({
       sessions: [
         makeSession({
@@ -1325,34 +1400,21 @@ describe('TopicSidebarView', () => {
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'resume'
     );
-    expect(container.textContent).toContain(
-      'controls disabled: web session input is unsupported here'
-    );
+    expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const resume = Array.from(
-      container.querySelectorAll('.topic-mobile-actions button')
-    ).find(
-      (button) => button.textContent === 'resume topic'
-    ) as HTMLButtonElement;
-    expect(resume.disabled).toBe(false);
-    await act(async () => resume.click());
+    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    await act(async () => row.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
-  it('makes the resume and terminal-tab mobile controls explicit', async () => {
+  it('makes the mobile row itself the explicit resume affordance', async () => {
     await renderView();
 
-    const quickActions = container.querySelector('.topic-mobile-actions');
-    expect(quickActions?.textContent).toContain('resume topic');
-    expect(quickActions?.textContent).toContain('open terminal tab');
-
-    const terminalTab = Array.from(
-      quickActions?.querySelectorAll('button') ?? []
-    ).find(
-      (button) => button.textContent === 'open terminal tab'
-    ) as HTMLButtonElement;
-    expect(terminalTab.title).toContain('same linked Relay tab as resume');
-    await act(async () => terminalTab.click());
+    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    expect(container.querySelector('.topic-mobile-actions')).toBeNull();
+    expect(row.textContent).toContain('resume');
+    expect(row.title).toContain('resume chat');
+    await act(async () => row.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
@@ -1409,6 +1471,7 @@ describe('TopicSidebarView', () => {
     vi.stubGlobal('open', openMock);
 
     await renderView({
+      showAdvancedDetail: true,
       topics: [makeTopic({ linkedRefs: { sessionIds: [] } })],
       sessions: [],
       surfaces: [makeSurface()],
@@ -1460,7 +1523,7 @@ describe('TopicSidebarView', () => {
 
     expect(container.querySelector('.topic-shell')).not.toBeNull();
     expect(container.querySelector('.topic-search__input')).not.toBeNull();
-    expect(container.textContent).toContain('topic search unavailable');
+    expect(container.textContent).toContain('chat search unavailable');
     const retryButton = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent === 'retry'
     ) as HTMLButtonElement;
@@ -1475,6 +1538,7 @@ describe('TopicSidebarView', () => {
 
   it('renders participant roster cards grouped by role/runtime and opens exact existing sessions', async () => {
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           linkedRefs: { sessionIds: ['devbox:remote-ika', 'global:kame'] },

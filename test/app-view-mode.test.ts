@@ -23,7 +23,7 @@ describe('resolveAppViewMode', () => {
     ).toBe('org');
   });
 
-  it('ignores forceOrgCockpit once a session or explicit repo takes priority', () => {
+  it('uses forceOrgCockpit as the only escape hatch back to the session cockpit', () => {
     expect(
       resolveAppViewMode({
         analyticsView: null,
@@ -64,7 +64,7 @@ describe('resolveAppViewMode', () => {
     ).toBe('analytics');
   });
 
-  it('preserves session, analytics, and explicit repo dashboard priority', () => {
+  it('keeps start/resume in the chat shell while preserving analytics and explicit repo dashboard priority', () => {
     expect(
       resolveAppViewMode({
         analyticsView: { sessionId: 'session-1' },
@@ -87,7 +87,15 @@ describe('resolveAppViewMode', () => {
         hasActiveSession: true,
         activeRepoPath: null,
       })
-    ).toBe('session');
+    ).toBe('chat');
+
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: true,
+        activeRepoPath: '/repo/relay-ide',
+      })
+    ).toBe('chat');
 
     expect(
       resolveAppViewMode({

@@ -195,10 +195,10 @@ export default function TopicComposer({
   return (
     <div className="topic-composer">
       <div className="topic-composer__panel">
-        <span className="topic-composer__title">start a topic</span>
+        <span className="topic-composer__title">new chat</span>
         <form
           className="topic-composer__form"
-          aria-label="new topic"
+          aria-label="new chat"
           onSubmit={(event: FormEvent) => {
             event.preventDefault();
             if (!disabled) void submit(primaryIntent);
@@ -240,8 +240,8 @@ export default function TopicComposer({
           />
           <div className="topic-composer__bar">
             <span className="topic-composer__context">
-              {selectedProviderOption?.label ?? preview.providerLabel} ·{' '}
-              {preview.modeLabel} · {friendlyNodeLabel} · {preview.cwdLabel}
+              using {selectedProviderOption?.label ?? preview.providerLabel} in{' '}
+              {preview.cwdLabel}
             </span>
             <TuiButton variant="primary" type="submit" disabled={disabled}>
               {launchSubmitLabel({
@@ -259,7 +259,7 @@ export default function TopicComposer({
             onClick={() => setAdvancedOpen((prev) => !prev)}
           >
             <span aria-hidden="true">{advancedOpen ? '▾ ' : '▸ '}</span>
-            advanced
+            route/context
           </button>
           {advancedOpen ? (
             <div
@@ -280,7 +280,7 @@ export default function TopicComposer({
                 />
               </label>
               <label>
-                <span>task ref</span>
+                <span>reference</span>
                 <input
                   value={draft.taskRef}
                   onChange={(event) =>
@@ -427,9 +427,9 @@ export default function TopicComposer({
           {launchFailure ? (
             <div className="topic-composer__failure" role="alert">
               {launchFailure.stage === 'session'
-                ? 'launch failed after room creation'
-                : 'room creation failed'}{' '}
-              ({launchFailure.stage}): {launchFailure.message}
+                ? 'chat created, but agent launch failed'
+                : 'could not create chat'}{' '}
+              — {launchFailure.message}
             </div>
           ) : null}
         </form>
@@ -440,8 +440,8 @@ export default function TopicComposer({
             </TuiButton>
           ) : null}
           <span className="topic-composer__hint">
-            enter to start · shift+enter for a new line · topics and sessions
-            live in the sidebar
+            enter to send · shift+enter for a new line · chats live in the
+            sidebar
           </span>
         </div>
       </div>

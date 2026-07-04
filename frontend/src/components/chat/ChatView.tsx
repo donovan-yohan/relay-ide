@@ -186,7 +186,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
           <div className="tl-resume-banner">
             <span className="tl-resume-hint">
               {resumeFailed
-                ? 'resume failed — retry or start a new context'
+                ? 'could not resume this chat — retry or continue here'
                 : 'session paused — resume where you left off'}
             </span>
             {resumeFailed ? (
@@ -220,7 +220,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
           </div>
         )}
         {!session || session.turns.length === 0 ? (
-          <div className="tl-empty">no messages yet</div>
+          <div className="tl-empty">send the first message to start this chat</div>
         ) : (
           <div ref={contentRef} className="tl-content">
             {session.turns.map((turn, index) => (

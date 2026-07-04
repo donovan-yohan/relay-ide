@@ -33,6 +33,7 @@ import {
 import type { Repo, PullRequest, SessionSummary } from './lib/types.js';
 import { resolveTopicActiveContext } from '../../shared/workspace-topics.js';
 import { estimateTerminalDimensions } from './lib/utils.js';
+import { openTopicTaskRoom } from './lib/topic-task-room.js';
 import { createSessionWithoutActivation } from './lib/session-utils.js';
 import {
   resolveSessionByKey,
@@ -180,7 +181,6 @@ function useTerminalDerivedState() {
   const activeRepoPath = useUiStore((s) => s.activeRepoPath);
   const analyticsView = useUiStore((s) => s.analyticsView);
   const forceOrgCockpit = useUiStore((s) => s.forceOrgCockpit);
-  const setForceOrgCockpit = useUiStore((s) => s.setForceOrgCockpit);
   const topicComposerOpen = useUiStore((s) => s.topicComposerOpen);
   const setTopicComposerOpen = useUiStore((s) => s.setTopicComposerOpen);
   const sessions = useSessionsStore((s) => s.sessions);
@@ -264,13 +264,6 @@ function useTerminalDerivedState() {
       topicComposerOpen,
     ]
   );
-
-  // #1058: once a session goes active, drop the explicit cockpit override so
-  // the next no-session/no-repo landing defaults back to the chat spine
-  // instead of leaving the operator stuck in the legacy cockpit.
-  useEffect(() => {
-    if (hasActiveSession && forceOrgCockpit) setForceOrgCockpit(false);
-  }, [hasActiveSession, forceOrgCockpit, setForceOrgCockpit]);
 
   // #1058: the composer overlay closes when the active session CHANGES —
   // a launch from the composer or a sidebar selection navigates to that
@@ -726,6 +719,7 @@ function TerminalAreaContent({
       <MobileHeader
         title={sessionTitle}
         onMenuClick={openSidebar}
+        onNewChatClick={openTopicTaskRoom}
         onCommandClick={() => setSpotlightOpen(true)}
         onRightSidebarClick={handleToggleUtilityRail}
         hidden={keyboardOpen}

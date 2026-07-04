@@ -26,8 +26,11 @@ vi.mock('../frontend/src/lib/api.js', async (importOriginal) => {
 
 import { createWorkspaceTopicRoomAndMaybeLaunch, launchWorkspaceTopicRoom } from '../frontend/src/lib/api.js';
 import { useConfigStore } from '../frontend/src/lib/stores/config.js';
+import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
+import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import type { FrameworkInfo } from '../frontend/src/lib/types.js';
 import TopicComposer from '../frontend/src/components/TopicComposer.js';
+import ChatHome from '../frontend/src/components/ChatHome.js';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -278,6 +281,7 @@ describe('topic provider launch helpers', () => {
 });
 
 describe('TopicComposer', () => {
+  const originalRefreshAll = useSessionsStore.getState().refreshAll;
   let container: HTMLDivElement;
   let root: Root;
   let queryClient: QueryClient;
@@ -300,6 +304,18 @@ describe('TopicComposer', () => {
         }),
       ],
     });
+    useSessionsStore.setState({
+      sessions: [],
+      repos: [],
+      activeSessionId: null,
+      workspaceLastSession: {},
+      refreshAll: originalRefreshAll,
+    });
+    useUiStore.setState({
+      activeRepoPath: null,
+      forceOrgCockpit: false,
+      topicComposerOpen: false,
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -313,15 +329,30 @@ describe('TopicComposer', () => {
     container.remove();
     queryClient.clear();
     vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
-  function renderComposer() {
+  function renderComposer(onSelectSession?: (id: string) => void) {
     act(() =>
       root.render(
         React.createElement(
           QueryClientProvider,
           { client: queryClient },
-          React.createElement(TopicComposer, {})
+          React.createElement(TopicComposer, {
+            ...(onSelectSession ? { onSelectSession } : {}),
+          })
+        )
+      )
+    );
+  }
+
+  function renderChatHome(onSelectSession: (id: string) => void) {
+    act(() =>
+      root.render(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(ChatHome, { onSelectSession })
         )
       )
     );
@@ -434,7 +465,7 @@ describe('TopicComposer', () => {
       '.topic-composer__bar button[type="submit"]'
     ) as HTMLButtonElement;
 
-    expect(start.textContent).toBe('create room');
+    expect(start.textContent).toBe('create chat');
     expect(start.disabled).toBe(false);
 
     const form = container.querySelector(
@@ -499,7 +530,7 @@ describe('TopicComposer', () => {
     expect(advanced).not.toBeNull();
     expect(advanced?.textContent).toContain('agent id');
     expect(advanced?.textContent).toContain('node');
-    expect(advanced?.textContent).toContain('task ref');
+    expect(advanced?.textContent).toContain('reference');
     expect(
       advanced?.querySelector('input[list="topic-composer-provider-options"]')
     ).toBeNull();
@@ -568,6 +599,118 @@ describe('TopicComposer', () => {
     expect(call.room.topic.routingDefaults?.providerId).toBe('hermes');
     expect(call.launch).toMatchObject({ mode: 'web', agent: 'hermes' });
     expect(useConfigStore.getState().defaultAgent).toBe('claude');
+  });
+
+  it('keeps a launched chat in the chat shell while the sessions feed catches up', async () => {
+    vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
+      status: 'launched',
+      topic: { id: 'topic:launched' },
+      workContext: { id: 'wc:launched' },
+      session: {
+        id: 'session-late',
+        type: 'agent',
+        agent: 'claude',
+        mode: 'pty',
+        repoPath: '/repo/relay-ide',
+        cwd: '/repo/relay-ide',
+        displayName: 'late session',
+        createdAt: '2026-07-03T00:00:00.000Z',
+        lastActivity: '2026-07-03T00:00:00.000Z',
+        idle: false,
+      },
+    } as never);
+    const refreshAll = vi.fn(async () => {});
+    useSessionsStore.setState({
+      sessions: [],
+      repos: [
+        {
+          path: '/repo/relay-ide',
+          name: 'relay-ide',
+          isGitRepo: true,
+          kind: 'repo',
+          defaultBranch: 'nightly',
+          currentBranch: 'issue-1122-ruthless-core-loop',
+        },
+      ],
+      activeSessionId: null,
+      refreshAll,
+    });
+    useUiStore.setState({
+      activeRepoPath: '/repo/relay-ide',
+      forceOrgCockpit: true,
+    });
+    const onSelectSession = vi.fn(() => {
+      useUiStore.getState().setActiveRepoPath('/repo/relay-ide');
+    });
+    renderComposer(onSelectSession);
+    const ta = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+    act(() => setNativeValue(ta, 'start from repo context'));
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    expect(refreshAll).toHaveBeenCalledTimes(1);
+    expect(useSessionsStore.getState().activeSessionId).toBe('session-late');
+    expect(useUiStore.getState().activeRepoPath).toBeNull();
+    expect(useUiStore.getState().forceOrgCockpit).toBe(false);
+    expect(onSelectSession).toHaveBeenCalledWith('session-late');
+  });
+
+  it('does not route ChatHome launches through repo session selection', async () => {
+    vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
+      status: 'launched',
+      topic: { id: 'topic:chat-home' },
+      workContext: { id: 'wc:chat-home' },
+      session: {
+        id: 'session-chat-home',
+        type: 'agent',
+        agent: 'claude',
+        mode: 'pty',
+        repoPath: '/repo/relay-ide',
+        cwd: '/repo/relay-ide',
+        displayName: 'chat home session',
+        createdAt: '2026-07-03T00:00:00.000Z',
+        lastActivity: '2026-07-03T00:00:00.000Z',
+        idle: false,
+      },
+    } as never);
+    useSessionsStore.setState({
+      sessions: [],
+      activeSessionId: null,
+      refreshAll: vi.fn(async () => {}),
+    });
+    useUiStore.setState({
+      activeRepoPath: '/repo/relay-ide',
+      forceOrgCockpit: true,
+    });
+    const onSelectSession = vi.fn(() => {
+      useUiStore.getState().setActiveRepoPath('/repo/relay-ide');
+    });
+    renderChatHome(onSelectSession);
+    const ta = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+    act(() => setNativeValue(ta, 'start from chat home'));
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    expect(useSessionsStore.getState().activeSessionId).toBe(
+      'session-chat-home'
+    );
+    expect(useUiStore.getState().activeRepoPath).toBeNull();
+    expect(useUiStore.getState().forceOrgCockpit).toBe(false);
+    expect(onSelectSession).not.toHaveBeenCalled();
   });
 
   it('keeps the created room and provider launch mode when retrying after session launch failure', async () => {
