@@ -134,13 +134,14 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('preview');
   });
 
-  it('keeps recency row labels contextual without mounting default advanced detail chrome', async () => {
+  it('keeps collapsed topic rows free of linked-item and recency metadata', async () => {
     await renderView();
 
     const trail = container.querySelector('.topic-row__trail');
-    expect(trail?.getAttribute('aria-label')).toContain('idle');
-    expect(trail?.getAttribute('aria-label')).toContain('linked items');
-    expect(trail?.getAttribute('aria-label')).toContain('updated');
+    expect(trail?.getAttribute('aria-label')).toBe('idle');
+    expect(container.querySelector('.topic-chip')).toBeNull();
+    expect(container.querySelector('.topic-row__hover-actions')).toBeNull();
+    expect(container.querySelector('.topic-row__recency')).toBeNull();
     expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
     expect(container.querySelector('.topic-room')).toBeNull();
   });
@@ -323,7 +324,9 @@ describe('TopicSidebarView', () => {
       surfaces: [],
     });
 
-    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
     expect(row).not.toBeNull();
     await act(async () => row.click());
 
@@ -519,6 +522,7 @@ describe('TopicSidebarView', () => {
     const knownNodeId = 'node_7Kx9QoZmP3vL1nRt5sWyAeBcDfGhIjKl';
     const unknownNodeId = 'node_Zz01Xy23Wv45Ut67Sr89Qp01On23Ml45';
     await renderView({
+      showAdvancedDetail: true,
       topics: [
         makeTopic({
           linkedRefs: {
@@ -548,6 +552,15 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('Ops Box');
     expect(container.textContent).not.toContain(knownNodeId);
     expect(container.textContent).not.toContain(unknownNodeId);
+
+    const childRows = Array.from(
+      container.querySelectorAll('.topic-child-row')
+    );
+    for (const row of childRows) {
+      expect(row.textContent).not.toContain('Ops Box');
+      expect(row.textContent).not.toContain(knownNodeId);
+      expect(row.textContent).not.toContain(unknownNodeId);
+    }
   });
 
   it('establishes the topic node/repo context when a topic is selected', async () => {
@@ -653,7 +666,7 @@ describe('TopicSidebarView', () => {
     }
   });
 
-  it('keeps surface actions outside the clickable row button', async () => {
+  it('keeps surface actions out of collapsed topic rows', async () => {
     await renderView();
 
     const rowMain = container.querySelector('.topic-row__main');
@@ -662,8 +675,7 @@ describe('TopicSidebarView', () => {
     );
 
     expect(rowMain).not.toBeNull();
-    expect(surfaceAction).not.toBeNull();
-    expect(rowMain?.contains(surfaceAction)).toBe(false);
+    expect(surfaceAction).toBeNull();
   });
 
   it('shows detail for a selected topic even when it has no nested sessions', async () => {
@@ -882,14 +894,22 @@ describe('TopicSidebarView', () => {
   });
 
   it('keeps the room usable when surface loading fails', async () => {
-    await renderView({ surfaces: [], surfacesError: true, showAdvancedDetail: true });
+    await renderView({
+      surfaces: [],
+      surfacesError: true,
+      showAdvancedDetail: true,
+    });
 
     expect(container.textContent).toContain('Frontend lane');
     expect(container.textContent).toContain('surfaces unavailable');
   });
 
   it('keeps the room usable while surfaces are still loading', async () => {
-    await renderView({ surfaces: [], surfacesLoading: true, showAdvancedDetail: true });
+    await renderView({
+      surfaces: [],
+      surfacesLoading: true,
+      showAdvancedDetail: true,
+    });
 
     expect(container.textContent).not.toContain('loading topic shell');
     expect(container.querySelector('.topic-room')).not.toBeNull();
@@ -960,6 +980,8 @@ describe('TopicSidebarView', () => {
     await act(async () => createButton.click());
 
     expect(onCreateTaskRoom).toHaveBeenCalled();
+    expect(useUiStore.getState().activeWorkspaceId).toBe('workspace:alpha');
+    expect(useUiStore.getState().activeRepoPath).toBe('/repo/relay');
     expect(container.querySelector('.topic-create-panel')).toBeNull();
   });
 
@@ -1377,7 +1399,9 @@ describe('TopicSidebarView', () => {
     );
     expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
     expect(row.title).toContain('resume chat');
     await act(async () => row.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
@@ -1402,7 +1426,9 @@ describe('TopicSidebarView', () => {
     );
     expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
     await act(async () => row.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
@@ -1410,7 +1436,9 @@ describe('TopicSidebarView', () => {
   it('makes the mobile row itself the explicit resume affordance', async () => {
     await renderView();
 
-    const row = container.querySelector('.topic-mobile-row') as HTMLButtonElement;
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
     expect(container.querySelector('.topic-mobile-actions')).toBeNull();
     expect(row.textContent).toContain('resume');
     expect(row.title).toContain('resume chat');
@@ -1586,10 +1614,13 @@ describe('TopicSidebarView', () => {
     const childRows = Array.from(
       container.querySelectorAll('.topic-child-row')
     );
-    expect(childRows[0]?.textContent).toContain('agent · pty');
-    expect(childRows[0]?.textContent).toContain('last 25-06-26');
-    expect(childRows[0]?.textContent).toContain('agent-driven');
-    expect(childRows[0]?.textContent).toContain('wiring participant roster');
+    expect(childRows[0]?.textContent).toContain('Ika frontend');
+    expect(childRows[0]?.textContent).not.toContain('agent · pty');
+    expect(childRows[0]?.textContent).not.toContain('last 25-06-26');
+    expect(childRows[0]?.textContent).not.toContain('agent-driven');
+    expect(childRows[0]?.textContent).not.toContain(
+      'wiring participant roster'
+    );
 
     const ikaCard = Array.from(
       container.querySelectorAll('.topic-participant-card')

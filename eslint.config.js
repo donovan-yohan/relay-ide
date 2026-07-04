@@ -65,7 +65,11 @@ export default [
     },
   },
   {
-    files: ['test/**/*.{ts,tsx}'],
+    files: [
+      'test/**/*.{ts,tsx}',
+      '**/*.{test,spec}.{ts,tsx}',
+      'frontend/src/test-*.tsx',
+    ],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       'sonarjs/no-duplicate-string': 'off',

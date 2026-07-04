@@ -1,7 +1,9 @@
 import { useMemo } from 'react';
 import { useSessionsStore } from '../lib/stores/sessions.js';
-import { scopedSessionKey } from '../lib/session-keys.js';
+import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
+import { useUiStore } from '../lib/stores/ui.js';
 import TopicComposer from './TopicComposer.js';
+import ChatView from './chat/ChatView.js';
 import './ChatHome.css';
 
 export interface ChatHomeProps {
@@ -18,6 +20,13 @@ export interface ChatHomeProps {
  */
 export default function ChatHome({ onSelectSession }: ChatHomeProps) {
   const sessions = useSessionsStore((s) => s.sessions);
+  const activeSessionId = useSessionsStore((s) => s.activeSessionId);
+  const topicComposerOpen = useUiStore((s) => s.topicComposerOpen);
+  const activeSession = useMemo(
+    () =>
+      activeSessionId ? resolveSessionByKey(sessions, activeSessionId) : null,
+    [activeSessionId, sessions]
+  );
 
   const mostRecentSession = useMemo(() => {
     let best: (typeof sessions)[number] | undefined;
@@ -36,10 +45,12 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
 
   return (
     <div className="chat-home" aria-label="chat home">
-      {/* Launches are already selected by useTopicRoomCreate. Keep the session
-          selection callback reserved for explicit resume/sidebar clicks so a
-          fresh chat does not inherit repo-dashboard routing. */}
-      <TopicComposer resume={resume} />
+      {activeSession?.mode === 'web' && !topicComposerOpen ? (
+        <ChatView sessionId={scopedSessionKey(activeSession)} />
+      ) : null}
+      {activeSession?.mode !== 'web' || topicComposerOpen ? (
+        <TopicComposer {...(resume ? { resume } : {})} />
+      ) : null}
     </div>
   );
 }
