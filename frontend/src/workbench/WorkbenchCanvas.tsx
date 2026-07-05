@@ -44,6 +44,7 @@ import type {
   EnvironmentHistoryEntry,
 } from '../../../shared/safe-defaults.js';
 import { fetchWorkbenchLayout, putWorkbenchLayout } from '../lib/api.js';
+import { createBrowserId } from '../lib/browserId.js';
 import { BlockHost } from './BlockHost.js';
 import {
   WorkbenchBlockCreateDialog,
@@ -555,10 +556,7 @@ export function WorkbenchCanvas({
     (req: WorkbenchBlockCreateRequest) => {
       const descriptor = buildBlockDescriptor({
         request: req,
-        idFactory: () =>
-          typeof crypto !== 'undefined' && 'randomUUID' in crypto
-            ? crypto.randomUUID()
-            : `block-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        idFactory: () => createBrowserId('block'),
       });
       const existing = layoutRef.current;
       const blockCount = existing?.blocks.length ?? 0;
