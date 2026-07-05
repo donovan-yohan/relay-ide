@@ -12,6 +12,7 @@ import type {
   AgentSlashCommandV2,
   AgentUsageV2,
 } from '../../../../shared/agent-chat-protocol-v2.js';
+import { createBrowserId } from '../../lib/browserId.js';
 import { SlashPalette, useSlashCommands } from './SlashPalette.js';
 import { detectSlashTrigger } from './slashTrigger.js';
 import { renderInlineSkillTokens } from './skillTokens.js';
@@ -129,7 +130,7 @@ export const Composer: React.FC<ComposerProps> = ({
           setAttachments((prev) => [
             ...prev,
             {
-              id: crypto.randomUUID(),
+              id: createBrowserId('attachment'),
               dataUri,
               mimeType: file.type,
               name: file.name || 'image',

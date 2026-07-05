@@ -4,6 +4,7 @@ import {
   type SavedView,
   type ViewLens,
 } from '../state/view-tree.js';
+import { createBrowserId } from '../browserId.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const SIDEBAR_WIDTH_KEY = 'claude-remote-sidebar-width';
@@ -1404,11 +1405,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
     const trimmed = name.trim();
     if (!trimmed) return null;
     const view: SavedView = {
-      // Local id; crypto.randomUUID where available, else a time+rand fallback.
-      id:
-        typeof crypto !== 'undefined' && 'randomUUID' in crypto
-          ? crypto.randomUUID()
-          : `sv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: createBrowserId('sv'),
       name: trimmed,
       lens: get().viewSpineLens,
     };

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import './ChatView.css';
 import { useAgentChatSocket } from '../../hooks/useAgentChatSocket.js';
+import { createBrowserId } from '../../lib/browserId.js';
 import {
   Composer,
   type ClientCommandHandler,
@@ -30,15 +31,6 @@ const RELAY_CLIENT_COMMANDS: AgentSlashCommandV2[] = [
     collisionKey: 'relay-verbosity',
   },
 ];
-
-function createTurnId(): string {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
-  }
-  return `turn-${Date.now().toString(36)}-${Math.random()
-    .toString(36)
-    .slice(2, 10)}`;
-}
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -115,7 +107,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
   const handleSend = useCallback(
     (content: string, attachments?: ComposerSendAttachment[]) => {
-      const turnId = createTurnId();
+      const turnId = createBrowserId('turn');
       sendMessage(turnId, content, attachments);
     },
     [sendMessage]
