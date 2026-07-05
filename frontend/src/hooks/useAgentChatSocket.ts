@@ -5,6 +5,11 @@ import {
   type AgentPatchV2,
   type AgentSessionV2,
 } from '../../../shared/agent-chat-protocol-v2.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  parseGlobalSessionId,
+} from '../../../shared/identity.js';
+import { nodeSessionWebSocketPath } from '../../../shared/node-boundary.js';
 
 const PING_INTERVAL = 30_000;
 const PONG_TIMEOUT = 5_000;
@@ -12,6 +17,15 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_DELAY = 3_000;
 const PING_MSG = '{"type":"ping"}';
 const PONG_MSG = '{"type":"pong"}';
+
+export function agentChatWebSocketPath(sessionId: string): string {
+  const parsed = parseGlobalSessionId(sessionId);
+  if (!parsed) return `/ws/${encodeURIComponent(sessionId)}`;
+  if (parsed.nodeId === DEFAULT_LOCAL_NODE_ID) {
+    return `/ws/${encodeURIComponent(parsed.localSessionId)}`;
+  }
+  return nodeSessionWebSocketPath(parsed.nodeId, parsed.localSessionId);
+}
 
 export interface AgentChatSocketState {
   session: AgentSessionV2 | null;
@@ -155,7 +169,9 @@ export function useAgentChatSocket(
       clearPing();
 
       const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${wsProtocol}//${location.host}/ws/${sid}`);
+      const ws = new WebSocket(
+        `${wsProtocol}//${location.host}${agentChatWebSocketPath(sid)}`
+      );
       wsRef.current = ws;
 
       ws.onopen = () => {

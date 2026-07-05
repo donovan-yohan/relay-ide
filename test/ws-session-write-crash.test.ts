@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { WebSocket } from 'ws';
 import {
   applyTerminalPtyMessage,
+  resolveLocalWebSocketSessionId,
   TERMINAL_WS_SESSION_NOT_FOUND_CLOSE_CODE,
 } from '../server/ws.js';
 
@@ -125,10 +126,15 @@ describe('applyTerminalPtyMessage (#905 reaped-session write crash)', () => {
       },
     };
     expect(() =>
-      applyTerminalPtyMessage(ws as unknown as WebSocket, 'live-session', sink, {
-        kind: 'write',
-        data: 'x',
-      })
+      applyTerminalPtyMessage(
+        ws as unknown as WebSocket,
+        'live-session',
+        sink,
+        {
+          kind: 'write',
+          data: 'x',
+        }
+      )
     ).toThrow('disk on fire');
     expect(ws.closes).toHaveLength(0);
   });
@@ -150,5 +156,25 @@ describe('applyTerminalPtyMessage (#905 reaped-session write crash)', () => {
     expect(outcome).toBe('applied');
     expect(writes).toEqual(['echo hi\n']);
     expect(ws.closes).toHaveLength(0);
+  });
+});
+
+describe('resolveLocalWebSocketSessionId', () => {
+  it('accepts raw local session ids', () => {
+    expect(resolveLocalWebSocketSessionId('c0dbeb605f82d893')).toBe(
+      'c0dbeb605f82d893'
+    );
+  });
+
+  it('accepts scoped local session ids for cached chat bundles', () => {
+    expect(resolveLocalWebSocketSessionId('local:c0dbeb605f82d893')).toBe(
+      'c0dbeb605f82d893'
+    );
+  });
+
+  it('rejects non-local scoped session ids on the local websocket route', () => {
+    expect(
+      resolveLocalWebSocketSessionId('node-a:c0dbeb605f82d893')
+    ).toBeNull();
   });
 });
