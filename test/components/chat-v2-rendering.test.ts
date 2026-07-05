@@ -374,6 +374,40 @@ describe('chat v2 rendering against chat.html primitives', () => {
     expect(textarea!.value).toBe('');
   });
 
+  it('sends with a fallback turn id when crypto.randomUUID is unavailable', async () => {
+    const cryptoDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      'crypto'
+    );
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: {},
+    });
+    try {
+      await renderChat();
+
+      const textarea =
+        container.querySelector<HTMLTextAreaElement>('.composer__ta');
+      expect(textarea).toBeTruthy();
+      await setTextareaDraft(textarea!, 'fallback id reply');
+
+      const event = makeBeforeInputEvent('insertLineBreak');
+      await act(async () => {
+        textarea!.dispatchEvent(event);
+      });
+
+      expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+      expect(mocks.sendMessage.mock.calls[0]?.[0]).toMatch(/^turn-/);
+      expect(mocks.sendMessage.mock.calls[0]?.[1]).toBe('fallback id reply');
+    } finally {
+      if (cryptoDescriptor) {
+        Object.defineProperty(globalThis, 'crypto', cryptoDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, 'crypto');
+      }
+    }
+  });
+
   it('applies the highlighted slash command on mobile send-key beforeinput while the palette is visible', async () => {
     mocks.session = makeSession({
       slashCommands: [

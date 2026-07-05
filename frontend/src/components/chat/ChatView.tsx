@@ -31,6 +31,15 @@ const RELAY_CLIENT_COMMANDS: AgentSlashCommandV2[] = [
   },
 ];
 
+function createTurnId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `turn-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
 interface ChatViewProps {
   sessionId: string | null;
 }
@@ -106,7 +115,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
 
   const handleSend = useCallback(
     (content: string, attachments?: ComposerSendAttachment[]) => {
-      const turnId = crypto.randomUUID();
+      const turnId = createTurnId();
       sendMessage(turnId, content, attachments);
     },
     [sendMessage]
@@ -220,7 +229,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
           </div>
         )}
         {!session || session.turns.length === 0 ? (
-          <div className="tl-empty">send the first message to start this chat</div>
+          <div className="tl-empty">
+            send the first message to start this chat
+          </div>
         ) : (
           <div ref={contentRef} className="tl-content">
             {session.turns.map((turn, index) => (

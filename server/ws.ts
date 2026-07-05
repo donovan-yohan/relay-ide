@@ -15,6 +15,10 @@ import { verifyCookieToken } from './auth.js';
 import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
+  DEFAULT_LOCAL_NODE_ID,
+  parseGlobalSessionId,
+} from '../shared/identity.js';
+import {
   MAX_PROMPT_ATTACHMENTS_PER_MESSAGE,
   parsePromptAttachmentList,
 } from '../shared/prompt-attachment.js';
@@ -72,6 +76,14 @@ function sendTerminalStreamEnvelope(
 // discovers the session is gone and renders `[session ended]`.
 export const TERMINAL_WS_SESSION_NOT_FOUND_CLOSE_CODE = 4404;
 const TERMINAL_WS_SESSION_NOT_FOUND_REASON = 'session-not-found';
+
+export function resolveLocalWebSocketSessionId(
+  requestedSessionKey: string
+): string | null {
+  const parsed = parseGlobalSessionId(requestedSessionKey);
+  if (!parsed) return requestedSessionKey;
+  return parsed.nodeId === DEFAULT_LOCAL_NODE_ID ? parsed.localSessionId : null;
+}
 
 function isSessionNotFoundError(error: unknown): boolean {
   return (
@@ -704,7 +716,12 @@ function setupWebSocket(
       return true;
     }
     wss.handleUpgrade(request, socket, head, (ws) => {
-      handleHubNodeLink(ws, hubNodeRegistry, authenticated.authenticated, nodeLinks);
+      handleHubNodeLink(
+        ws,
+        hubNodeRegistry,
+        authenticated.authenticated,
+        nodeLinks
+      );
     });
     return true;
   }
@@ -712,7 +729,10 @@ function setupWebSocket(
   server.on('upgrade', (request, socket, head) => {
     const requestUrl = new URL(request.url ?? '/', 'http://relay.local');
     const requestPath = requestUrl.pathname.replace(/\/$/, '');
-    if (requestPath === '/hub/node-link' && handleNodeLinkUpgrade(request, socket, head)) {
+    if (
+      requestPath === '/hub/node-link' &&
+      handleNodeLinkUpgrade(request, socket, head)
+    ) {
       return;
     }
 
@@ -827,14 +847,27 @@ function setupWebSocket(
     }
 
     // PTY channel: /ws/:sessionId
-    const match = requestPath.match(/^\/ws\/([a-f0-9]+)$/);
+    const match = requestPath.match(/^\/ws\/([^/]+)$/);
     if (!match) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
       return;
     }
 
-    const sessionId = match[1]!;
+    let requestedSessionKey: string;
+    try {
+      requestedSessionKey = decodeURIComponent(match[1]!);
+    } catch {
+      socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const sessionId = resolveLocalWebSocketSessionId(requestedSessionKey);
+    if (!sessionId) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     const session = sessions.get(sessionId);
     if (!session) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
