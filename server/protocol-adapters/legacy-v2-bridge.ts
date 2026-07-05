@@ -87,9 +87,9 @@ export class LegacyProtocolAdapterV2Bridge extends BaseProtocolAdapterV2 {
   }
 
   async reconnect(): Promise<void> {
-    this.subscribePatches();
     try {
       await this.inner.reconnect();
+      this.subscribePatches();
     } catch (error) {
       this.unlisten?.();
       this.unlisten = null;
