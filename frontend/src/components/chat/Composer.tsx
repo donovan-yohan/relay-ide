@@ -40,6 +40,7 @@ interface ComposerAttachment {
 /** Reject images above this size to keep WebSocket frames sane. */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const LINE_BREAK_INPUT_TYPES = new Set(['insertLineBreak', 'insertParagraph']);
+const LINE_BREAK_BEFOREINPUT_SKIP_WINDOW_MS = 500;
 
 interface ComposerProps {
   onSend: (content: string, attachments?: ComposerSendAttachment[]) => void;
@@ -101,7 +102,7 @@ export const Composer: React.FC<ComposerProps> = ({
   pushClientError,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const skipNextLineBreakBeforeInputRef = useRef(false);
+  const skipNextLineBreakBeforeInputUntilRef = useRef(0);
   const [draft, setDraft] = useState('');
   const [caret, setCaret] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -363,12 +364,12 @@ export const Composer: React.FC<ComposerProps> = ({
       if (e.key === 'Enter' && nativeEvent.isComposing) return;
 
       if (e.key === 'Enter' && e.shiftKey) {
-        skipNextLineBreakBeforeInputRef.current = true;
-        window.setTimeout(() => {
-          skipNextLineBreakBeforeInputRef.current = false;
-        }, 0);
+        skipNextLineBreakBeforeInputUntilRef.current =
+          performance.now() + LINE_BREAK_BEFOREINPUT_SKIP_WINDOW_MS;
         return;
       }
+
+      skipNextLineBreakBeforeInputUntilRef.current = 0;
 
       if (e.key === 'Enter') {
         e.preventDefault();
@@ -396,10 +397,14 @@ export const Composer: React.FC<ComposerProps> = ({
       if (!LINE_BREAK_INPUT_TYPES.has(inputEvent.inputType)) return;
 
       if (inputEvent.isComposing) return;
-      if (skipNextLineBreakBeforeInputRef.current) {
-        skipNextLineBreakBeforeInputRef.current = false;
+      if (
+        skipNextLineBreakBeforeInputUntilRef.current > 0 &&
+        performance.now() <= skipNextLineBreakBeforeInputUntilRef.current
+      ) {
+        skipNextLineBreakBeforeInputUntilRef.current = 0;
         return;
       }
+      skipNextLineBreakBeforeInputUntilRef.current = 0;
 
       // Some mobile IMEs do not emit a reliable keydown for the textarea send
       // key; they only report a beforeinput line-break intent. Treat that as
