@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSurface } from '../shared/workspace-surfaces.js';
+import type { WorkflowRunProjection } from '../shared/workflow-run.js';
 import {
   resolveTopicActiveContext,
   type WorkspaceTopic,
@@ -108,15 +109,22 @@ describe('TopicSidebarView', () => {
   async function renderView(
     props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {}
   ) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     await act(async () => {
       root.render(
-        React.createElement(TopicSidebarView, {
-          topics: [makeTopic()],
-          sessions: [makeSession({ id: 's1', displayName: 'Frontend lane' })],
-          surfaces: [makeSurface()],
-          onSelectSession,
-          ...props,
-        })
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(TopicSidebarView, {
+            topics: [makeTopic()],
+            sessions: [makeSession({ id: 's1', displayName: 'Frontend lane' })],
+            surfaces: [makeSurface()],
+            onSelectSession,
+            ...props,
+          })
+        )
       );
     });
   }
@@ -132,6 +140,97 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('Thin-line topic detail');
     expect(container.textContent).toContain('Frontend lane');
     expect(container.textContent).toContain('preview');
+  });
+
+  it('renders WorkContext orchestration runs with clickable visible lanes', async () => {
+    const workflowRun: WorkflowRunProjection = {
+      schemaVersion: 1,
+      id: 'workflow-run:demo',
+      runId: 'relay-orchestration:demo',
+      providerRuntime: 'relay-orchestration',
+      runKind: 'relay-orchestration',
+      workContextId: 'wc:relay',
+      definition: {
+        hash: 'relay-orchestration-launch:v0',
+        templateId: 'relay/orchestration-launch-v0',
+      },
+      state: 'running',
+      links: {
+        artifactIds: ['artifact:demo'],
+        inboxMessageIds: ['inbox:seed'],
+      },
+      orchestration: {
+        planner: {
+          role: 'planner',
+          provider: 'codex',
+          displayName: 'Codex planner',
+          globalSessionId: 'global:planner',
+          state: 'running',
+          attention: { pendingInboxCount: 2 },
+        },
+        children: [
+          {
+            role: 'implementer',
+            provider: 'claude',
+            displayName: 'Claude worker',
+            globalSessionId: 'global:worker',
+            state: 'waiting',
+            attention: {
+              needsAttention: true,
+              reasons: ['message-delivery-failed'],
+              pendingInboxCount: 1,
+            },
+          },
+        ],
+      },
+      createdAt: NOW,
+      updatedAt: NOW,
+      version: 1,
+      redaction: {
+        rawPayloadStored: false,
+        rawTranscriptStored: false,
+        providerPrivateStateStored: false,
+        truncated: false,
+        omittedKeys: [],
+      },
+    };
+    const fetchMock = vi.fn(async () =>
+      Response.json({ workflowRuns: [workflowRun] })
+    ) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+
+    await renderView({
+      showAdvancedDetail: true,
+      topics: [
+        makeTopic({
+          linkedRefs: { workContextIds: ['wc:relay'] },
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+    });
+    await act(async () => {
+      await flushQueryEffects();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/workflow-runs?workContextId=wc%3Arelay&limit=5',
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(container.textContent).toContain('orchestration');
+    expect(container.textContent).toContain('relay/orchestration-launch-v0');
+    expect(container.textContent).toContain('Codex planner');
+    expect(container.textContent).toContain('Claude worker');
+    expect(container.textContent).toContain('2 lanes');
+    expect(container.textContent).toContain('3 mail');
+    expect(container.textContent).toContain('1 evidence refs');
+
+    const workerButton = Array.from(
+      container.querySelectorAll('.topic-orchestration-lane__button')
+    ).find((button) => button.textContent?.includes('Claude worker'));
+    expect(workerButton).toBeTruthy();
+    await act(async () => (workerButton as HTMLButtonElement).click());
+    expect(onSelectSession).toHaveBeenCalledWith('global:worker');
   });
 
   it('keeps collapsed topic rows free of linked-item and recency metadata', async () => {
@@ -1490,7 +1589,7 @@ describe('TopicSidebarView', () => {
       /\.topic-room__primary:not\(:disabled\):focus-visible,\s*\.topic-room-ref-list a:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*2px[\s\S]*box-shadow:/
     );
     expect(css).toMatch(
-      /\.topic-room-session__button:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*2px[\s\S]*box-shadow:/
+      /\.topic-room-session__button:focus-visible,\s*\.topic-orchestration-lane__button:focus-visible\s*{[\s\S]*outline:\s*1px solid var\(--accent\)[\s\S]*outline-offset:\s*2px[\s\S]*box-shadow:/
     );
   });
 
