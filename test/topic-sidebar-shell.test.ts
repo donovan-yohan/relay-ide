@@ -224,6 +224,7 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('2 lanes');
     expect(container.textContent).toContain('3 mail');
     expect(container.textContent).toContain('1 evidence refs');
+    expect(container.textContent).toContain('artifact:demo');
 
     const workerButton = Array.from(
       container.querySelectorAll('.topic-orchestration-lane__button')

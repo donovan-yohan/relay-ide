@@ -646,6 +646,23 @@
   flex-wrap: wrap;
 }
 
+.topic-orchestration-run__evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.topic-orchestration-run__evidence span {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  padding: 1px 4px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .topic-orchestration-lane__button {
   grid-template-columns: 16px minmax(0, 1fr) minmax(64px, auto) 16px;
   min-height: 34px;

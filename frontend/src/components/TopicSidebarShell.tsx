@@ -596,11 +596,11 @@ function orchestrationRunSummary(run: WorkflowRunProjection): string {
   return latest?.summary ?? 'no run journal yet';
 }
 
-function orchestrationRunEvidenceCount(run: WorkflowRunProjection): number {
-  return (
-    (run.links?.artifactIds?.length ?? 0) +
-    (run.links?.handoffArtifactIds?.length ?? 0)
-  );
+function orchestrationRunEvidenceRefs(run: WorkflowRunProjection): string[] {
+  return [
+    ...(run.links?.artifactIds ?? []),
+    ...(run.links?.handoffArtifactIds ?? []),
+  ];
 }
 
 function orchestrationRunMailCount(run: WorkflowRunProjection): number {
@@ -629,7 +629,8 @@ function OrchestrationLaneRow({
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
   const selectKey = orchestrationLaneSelectKey(link);
-  const canOpen = Boolean(selectKey && onSelectSession);
+  const handleSelect =
+    selectKey && onSelectSession ? () => onSelectSession(selectKey) : undefined;
   const tone = orchestrationLaneTone(link);
   return (
     <li
@@ -638,11 +639,10 @@ function OrchestrationLaneRow({
       <button
         type="button"
         className="topic-orchestration-lane__button"
-        disabled={!canOpen}
-        title={canOpen ? `open ${link.role} session` : 'session not linked'}
-        onClick={() => {
-          if (selectKey) onSelectSession?.(selectKey);
-        }}
+        {...(handleSelect ? { onClick: handleSelect } : { disabled: true })}
+        title={
+          handleSelect ? `open ${link.role} session` : 'session not linked'
+        }
       >
         <span className="topic-orchestration-lane__icon" aria-hidden="true">
           <MessageSquare size={12} />
@@ -674,7 +674,7 @@ function OrchestrationRunCard({
   const planner = run.orchestration?.planner;
   const children = run.orchestration?.children ?? [];
   const lanes = (planner ? 1 : 0) + children.length;
-  const evidenceCount = orchestrationRunEvidenceCount(run);
+  const evidenceRefs = orchestrationRunEvidenceRefs(run);
   const mailCount = orchestrationRunMailCount(run);
   return (
     <article
@@ -692,15 +692,28 @@ function OrchestrationRunCard({
       <div className="topic-orchestration-run__meta">
         <span>{lanes} lanes</span>
         <span>{mailCount} mail</span>
-        <span>{evidenceCount} evidence refs</span>
+        <span>{evidenceRefs.length} evidence refs</span>
         <span>updated {formatRelativeTimeCompact(run.updatedAt)}</span>
       </div>
+      {evidenceRefs.length > 0 ? (
+        <div
+          className="topic-orchestration-run__evidence"
+          aria-label="orchestration evidence refs"
+        >
+          {evidenceRefs.slice(0, 3).map((ref) => (
+            <span key={ref}>{ref}</span>
+          ))}
+          {evidenceRefs.length > 3 ? (
+            <span>+{evidenceRefs.length - 3} more</span>
+          ) : null}
+        </div>
+      ) : null}
       <ul className="topic-orchestration-run__lanes">
         {planner ? (
           <OrchestrationLaneRow
             link={planner}
             laneKind="planner"
-            onSelectSession={onSelectSession}
+            {...(onSelectSession ? { onSelectSession } : {})}
           />
         ) : null}
         {children.map((child, index) => (
@@ -712,7 +725,7 @@ function OrchestrationRunCard({
             }
             link={child}
             laneKind="worker"
-            onSelectSession={onSelectSession}
+            {...(onSelectSession ? { onSelectSession } : {})}
           />
         ))}
         {!planner && children.length === 0 ? (
@@ -758,7 +771,7 @@ function TopicRoomOrchestrationRuns({
         <OrchestrationRunCard
           key={run.id}
           run={run}
-          onSelectSession={onSelectSession}
+          {...(onSelectSession ? { onSelectSession } : {})}
         />
       ))}
       {error ? (
@@ -1367,11 +1380,13 @@ function TopicAdvancedDetailGate({
   const workContextId = item?.workContextIds[0] ?? null;
   const workflowRunsQuery = useQuery({
     queryKey: ['workflow-runs', workContextId, WORKFLOW_RUNS_LIMIT],
-    queryFn: () =>
-      fetchWorkflowRuns({
-        workContextId: workContextId!,
+    queryFn: () => {
+      if (!workContextId) return Promise.resolve(EMPTY_WORKFLOW_RUNS);
+      return fetchWorkflowRuns({
+        workContextId,
         limit: WORKFLOW_RUNS_LIMIT,
-      }),
+      });
+    },
     enabled: Boolean(item && show && workContextId),
     staleTime: 10_000,
   });
