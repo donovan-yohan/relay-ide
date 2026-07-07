@@ -150,6 +150,7 @@ const COMMAND_LABELS: Record<RelayCliGatewayCommand, string> = {
   'workflow-runs.update': 'update workflow run projection',
   'workflow-runs.list': 'list workflow run projections',
   'workflow-runs.get': 'workflow run details',
+  'orchestration-runs.launch': 'launch orchestration run',
   'automation-runs.register': 'register automation/watchdog run',
   'automation-runs.observe': 'observe automation/watchdog run',
   'automation-runs.retire': 'retire automation/watchdog run',
@@ -242,6 +243,7 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'handoff-artifacts.attach',
   'workflow-runs.publish',
   'workflow-runs.update',
+  'orchestration-runs.launch',
   'automation-runs.register',
   'automation-runs.observe',
   'automation-runs.retire',
@@ -264,6 +266,22 @@ const WRITE_GATEWAY_COMMANDS = new Set<RelayCliGatewayCommand>([
   'webhooks.ping',
 ]);
 
+const WORK_CONTEXT_ONLY_SCOPE_PREFIXES = [
+  'work-contexts.',
+  'work-context-messages.',
+  'work-context-artifacts.',
+  'handoff-artifacts.',
+  'workflow-runs.',
+  'workspace-topics.',
+] as const;
+
+function startsWithAny(
+  name: RelayCliGatewayCommand,
+  prefixes: readonly string[]
+): boolean {
+  return prefixes.some((prefix) => name.startsWith(prefix));
+}
+
 function sideEffectForGatewayCommand(
   spec: RelayCliGatewayCommandSpec
 ): RelayCommandSideEffect {
@@ -283,22 +301,17 @@ function scopeKindsForGatewayCommand(
     return ['work-context', 'repo', 'worktree'];
   if (name.startsWith('worktrees.')) return ['repo', 'worktree'];
   if (name.startsWith('files.')) return ['session'];
-  if (name.startsWith('work-contexts.')) return ['work-context'];
-  if (name.startsWith('work-context-messages.templates.'))
+  if (startsWithAny(name, WORK_CONTEXT_ONLY_SCOPE_PREFIXES))
     return ['work-context'];
-  if (name.startsWith('work-context-messages.')) return ['work-context'];
-  if (name.startsWith('work-context-artifacts.')) return ['work-context'];
-  if (name.startsWith('handoff-artifacts.')) return ['work-context'];
-  if (name.startsWith('workflow-runs.')) return ['work-context'];
   if (name.startsWith('automation-runs.'))
     return ['work-context', 'repo', 'session'];
   if (name.startsWith('pr-overseer.'))
     return ['work-context', 'repo', 'session'];
   if (name.startsWith('workspace-surfaces.'))
     return ['work-context', 'repo', 'worktree', 'node'];
-  if (name.startsWith('workspace-topics.')) return ['work-context'];
   if (name.startsWith('roster.')) return ['repo', 'work-context', 'session'];
-  if (name.startsWith('cockpit.')) return ['work-context', 'session'];
+  if (name.startsWith('cockpit.') || name.startsWith('orchestration-runs.'))
+    return ['work-context', 'session'];
   if (name.startsWith('context.')) return ['work-context', 'session'];
   if (name.startsWith('inbox.')) return ['session', 'work-context'];
   if (name.startsWith('handoffs.'))

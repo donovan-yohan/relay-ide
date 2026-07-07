@@ -80,6 +80,10 @@ import {
   validateAndSanitizeGatewayCreateInput,
 } from '../shared/cli-gateway-runtime.js';
 import {
+  OrchestrationLaunchValidationError,
+  launchOrchestrationRun,
+} from '../shared/orchestration-run-launch.js';
+import {
   DEFAULT_LOCAL_NODE_ID,
   parseRepoInstanceId,
   parseWorktreeInstanceId,
@@ -1558,8 +1562,11 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'handoff-artifacts.list',
   'handoff-artifacts.show',
   'handoff-artifacts.copy',
+  'workflow-runs.publish',
+  'workflow-runs.update',
   'workflow-runs.list',
   'workflow-runs.get',
+  'inbox.send',
   'automation-runs.list',
   'automation-runs.get',
   'pr-overseer.list',
@@ -1680,6 +1687,85 @@ async function gatewayHttpJson(input: {
   return body;
 }
 
+async function gatewayHttpJsonForLaunch(input: {
+  commandName: RelayCliGatewayCommand;
+  actorCommandName?: RelayCliGatewayCommand;
+  pathName: string;
+  method?: string;
+  body?: unknown;
+  capabilities?: readonly string[];
+}): Promise<unknown> {
+  const actorToken = gatewayActorToken();
+  const actorCommandName = input.actorCommandName ?? input.commandName;
+  if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(actorCommandName)) {
+    throw new Error(
+      `--actor-token is not supported for ${actorCommandName} in this slice`
+    );
+  }
+  const token = actorToken || (process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '');
+  if (!token) {
+    printGatewayEnvelope(
+      gatewayError(input.commandName, {
+        code: 'UNAUTHORIZED',
+        message:
+          'RELAY_IDE_ACTOR_TOKEN/--actor-token or RELAY_IDE_BROWSER_TOKEN not set. Use a scoped CLI actor credential for the actor lane or run from an authenticated Relay session.',
+        retryable: false,
+      }),
+      1
+    );
+  }
+
+  const port =
+    getArg('--port') ?? process.env['RELAY_IDE_PORT'] ?? String(DEFAULTS.port);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    'x-relay-cli-gateway': 'v1',
+  };
+  if (actorToken) {
+    headers['x-relay-cli-actor-token'] = 'v1';
+    headers['x-relay-cli-command'] = actorCommandName;
+  }
+  const correlationId = gatewayCorrelationId();
+  if (correlationId) headers['x-relay-correlation-id'] = correlationId;
+  if (input.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (input.capabilities?.length) {
+    headers['x-relay-capabilities'] = input.capabilities.join(',');
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${port}${input.pathName}`, {
+      method: input.method ?? 'GET',
+      headers,
+      ...(input.body !== undefined ? { body: JSON.stringify(input.body) } : {}),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `could not connect to Relay hub on port ${port}: ${message}`,
+      {
+        cause: error,
+      }
+    );
+  }
+
+  const text = await res.text();
+  let body: unknown;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { raw: text };
+  }
+  if (!res.ok) {
+    const upstream =
+      typeof body === 'object' && body !== null
+        ? (body as Record<string, unknown>)
+        : undefined;
+    throw new Error(gatewayErrorMessage(res.status, upstream));
+  }
+  return body;
+}
+
 function requireGatewaySessionId(
   commandName: RelayCliGatewayCommand,
   sessionArgs: string[]
@@ -1692,7 +1778,7 @@ function requireGatewaySessionId(
 
 function gatewayUsage(): never {
   logger.error(
-    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|roster list|roster register|roster update-self|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
+    'Usage: relay-ide v1 (--list|schema|nodes manifest|nodes list|sessions list|sessions get|sessions create|tickets start-work|branches open-session|sessions renew|sessions attach|sessions detach|sessions kill|sessions rename|sessions stream|sessions wait|sessions input|sessions interventions|sessions hand-back|files list|files stat|files read|files write|work-contexts get|work-contexts resume|context create|context get|context list|context pin|context unpin|work-context-artifacts publish|work-context-artifacts list|work-context-artifacts show|work-context-artifacts pin|work-context-artifacts unpin|work-context-artifacts export|work-context-artifacts doctor|handoff-artifacts attach|handoff-artifacts list|handoff-artifacts show|handoff-artifacts copy|roster list|roster register|roster update-self|cockpit list|cockpit get|inbox send|inbox list|inbox get|inbox ack|inbox resolve|inbox ignore|workflow-runs publish|workflow-runs update|workflow-runs list|workflow-runs get|orchestration-runs launch|handoffs plan|handoffs create|handoffs status|handoffs cancel|handoffs resume|handoffs launch|artifacts read|supervisor snapshot|supervisor sessions|supervisor send-text|supervisor submit|events subscribe|settings get|settings update|webhooks status|webhooks ping) --json'
   );
   process.exit(1);
 }
@@ -4945,6 +5031,100 @@ async function runGatewayWorkflowRuns(gatewayArgs: string[]): Promise<never> {
   });
 }
 
+async function runGatewayOrchestrationRuns(
+  gatewayArgs: string[]
+): Promise<never> {
+  const subcommand = gatewayArgs[1];
+  const launchArgs = gatewayArgs.slice(2);
+  if (subcommand !== 'launch') {
+    gatewayInvalid(
+      'orchestration-runs.launch',
+      'unknown orchestration-runs command',
+      { args: gatewayArgs }
+    );
+  }
+  const commandName: RelayCliGatewayCommand = 'orchestration-runs.launch';
+  const input = parseGatewayInputObject(commandName, launchArgs);
+  try {
+    const result = await launchOrchestrationRun(input, {
+      publishWorkflowRun: (body) =>
+        gatewayHttpJsonForLaunch({
+          commandName,
+          actorCommandName: 'workflow-runs.publish',
+          pathName: '/workflow-runs',
+          method: 'POST',
+          body,
+          capabilities: ['context:write'],
+        }),
+      updateWorkflowRun: (workflowRunId, body) =>
+        gatewayHttpJsonForLaunch({
+          commandName,
+          actorCommandName: 'workflow-runs.update',
+          pathName: `/workflow-runs/${encodeURIComponent(workflowRunId)}`,
+          method: 'PATCH',
+          body,
+          capabilities: ['context:write'],
+        }),
+      createSession: (rawBody) => {
+        const validated = validateAndSanitizeGatewayCreateInput(rawBody);
+        if (validated.ok === false) throw new Error(validated.error.message);
+        const nodeId = validated.nodeId;
+        const body = { ...validated.input };
+        delete body['nodeId'];
+        return gatewayHttpJsonForLaunch({
+          commandName,
+          actorCommandName: 'sessions.create',
+          pathName: nodeId
+            ? `/hub/nodes/${encodeURIComponent(nodeId)}/sessions`
+            : '/sessions',
+          method: 'POST',
+          body,
+          capabilities: [
+            validated.sessionType === 'terminal'
+              ? 'session:create:terminal'
+              : 'session:create:agent',
+            'context:write',
+            ...(validated.input['controlMode'] === 'agent-driven'
+              ? ['tab:mode:set-agent']
+              : []),
+          ],
+        });
+      },
+      sendInboxMessage: (body) =>
+        gatewayHttpJsonForLaunch({
+          commandName,
+          actorCommandName: 'inbox.send',
+          pathName: '/inbox',
+          method: 'POST',
+          body,
+          capabilities: ['inbox:write'],
+        }),
+    });
+    printGatewayEnvelope(gatewayOk(commandName, result), 0);
+  } catch (error) {
+    if (error instanceof OrchestrationLaunchValidationError) {
+      printGatewayEnvelope(
+        gatewayError(commandName, {
+          code: 'INVALID_ARGUMENT',
+          message: error.message,
+          retryable: false,
+          details: error.details,
+        }),
+        1
+      );
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    printGatewayEnvelope(
+      gatewayError(commandName, {
+        code: 'UPSTREAM_ERROR',
+        message,
+        retryable: true,
+      }),
+      1
+    );
+  }
+}
+
 function automationRunListSearch(runArgs: string[]): string {
   const query = new URLSearchParams();
   for (const [flag, key] of [
@@ -5646,6 +5826,7 @@ async function runGatewayV1(): Promise<never> {
       'work-context-artifacts': runGatewayWorkContextArtifacts,
       'handoff-artifacts': runGatewayHandoffArtifacts,
       'workflow-runs': runGatewayWorkflowRuns,
+      'orchestration-runs': runGatewayOrchestrationRuns,
       'automation-runs': runGatewayAutomationRuns,
       'pr-overseer': runGatewayPrOverseer,
       'workspace-surfaces': runGatewayWorkspaceSurfaces,
