@@ -157,6 +157,70 @@ This is local-node, in-memory only: the buffer does not survive a hub restart an
 
 `role` is a lightweight collaboration **hint** (default map: `claude → implementer`, `codex → reviewer`, `hermes`/`ebi → orchestrator`, else `collaborator`), not an authorization boundary and not a hard-coded architecture — Relay projects one collaboration vocabulary across providers. `attention.needsAttention` is derived (`agentState ∈ {permission-prompt, waiting-for-input, error}` or a non-empty pending inbox backlog); the roster never mutates inbox state (it reads with delivery suppressed). Terminals are excluded unless `--include-terminals`. Cross-node aggregation of remote sessions into the roster is a documented follow-up; this slice projects locally-owned sessions (already WorkContext-decorated).
 
+## Workflow run topology (#1016/#1129)
+
+`workflow-runs.*` stores bounded WorkContext-scoped workflow projections and, as of the
+visible orchestration work, can also carry Relay-owned planner/worker topology. This
+keeps provider-runtime projections compatible while giving Relay enough structure to
+render and steer visible agent teams.
+
+A Relay orchestration run sets `runKind: "relay-orchestration"` and usually
+`providerRuntime: "relay-orchestration"`. Its optional `orchestration` block is
+metadata-only:
+
+```json
+{
+  "planner": {
+    "role": "planner",
+    "sessionId": "planner-session-id",
+    "globalSessionId": "local:planner-session-id",
+    "provider": "hermes",
+    "nodeId": "local",
+    "cwd": "/repo/relay-ide",
+    "repoPath": "/repo/relay-ide",
+    "worktreePath": "/repo/relay-ide/.worktrees/...",
+    "state": "running",
+    "attention": {
+      "needsAttention": false,
+      "pendingInboxCount": 0
+    }
+  },
+  "children": [
+    {
+      "role": "implementer",
+      "sessionId": "claude-session-id",
+      "provider": "claude",
+      "state": "running"
+    },
+    {
+      "role": "reviewer",
+      "sessionId": "codex-session-id",
+      "provider": "codex",
+      "state": "waiting",
+      "attention": {
+        "needsAttention": true,
+        "reasons": ["pending-inbox"],
+        "pendingInboxCount": 1
+      }
+    }
+  ]
+}
+```
+
+Rules:
+
+- `planner` and each `children[]` entry must include `role` plus `sessionId` or
+  `globalSessionId`.
+- Roles are collaboration hints, not authorization boundaries.
+- Session links may include provider/node/cwd/repo/worktree/state/attention hints,
+  but raw transcripts, prompts, provider private state, env, tokens, and message
+  bodies remain forbidden.
+- Event summaries include planner ids, participant ids, child ids/count, artifact refs,
+  inbox refs, handoff refs, and task refs so the UI can refresh without transcript
+  scraping.
+- The v0 contract is local-run topology only. Launching child sessions is tracked by
+  #1130; the WorkContext cockpit is tracked by #158.
+
 ## Automation / watchdog run registry (#959)
 
 `automation-runs.*` is a Relay-visible registry of operator crons, watchdogs, and automations that drive Relay sessions. It exists so a watcher that keeps firing at a session id that no longer exists is **obvious and retirable** instead of silent: the run's target session ids, owner/orchestrator, linked issue/PR, last observation, and cleanup state all live in Relay, and Relay itself probes whether the target sessions are still alive. This is intentionally distinct from `workflow-runs.*` (the provider-runtime workflow-VM projection); it does not replace Hermes cron and is not a Kanban board.

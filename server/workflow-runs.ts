@@ -68,7 +68,9 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function parseRow(row: WorkflowRunRow | undefined): WorkflowRunProjection | null {
+function parseRow(
+  row: WorkflowRunRow | undefined
+): WorkflowRunProjection | null {
   if (!row) return null;
   return JSON.parse(row.projection_json) as WorkflowRunProjection;
 }
@@ -78,7 +80,9 @@ function cleanLimit(limit: number | undefined): number {
   return Math.min(limit, 100);
 }
 
-export function createWorkflowRunStore(input: { dbPath: string }): WorkflowRunStore {
+export function createWorkflowRunStore(input: {
+  dbPath: string;
+}): WorkflowRunStore {
   const db = new Database(input.dbPath);
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA_SQL);
@@ -100,7 +104,9 @@ export function createWorkflowRunStore(input: { dbPath: string }): WorkflowRunSt
            version = @version
      WHERE id = @id
   `);
-  const getStmt = db.prepare('SELECT projection_json FROM workflow_runs WHERE id = ?');
+  const getStmt = db.prepare(
+    'SELECT projection_json FROM workflow_runs WHERE id = ?'
+  );
 
   return {
     close() {
@@ -116,16 +122,22 @@ export function createWorkflowRunStore(input: { dbPath: string }): WorkflowRunSt
         id,
         runId: parsed.runId,
         providerRuntime: parsed.providerRuntime,
+        ...(parsed.runKind ? { runKind: parsed.runKind } : {}),
         workContextId: parsed.workContextId,
         definition: parsed.definition,
         state: parsed.state ?? 'queued',
         ...(parsed.progress ? { progress: parsed.progress } : {}),
         ...(parsed.phases ? { phases: parsed.phases } : {}),
         ...(parsed.steps ? { steps: parsed.steps } : {}),
-        ...(parsed.resultSummary ? { resultSummary: parsed.resultSummary } : {}),
+        ...(parsed.resultSummary
+          ? { resultSummary: parsed.resultSummary }
+          : {}),
         ...(parsed.errorSummary ? { errorSummary: parsed.errorSummary } : {}),
         ...(parsed.journal ? { journal: parsed.journal } : {}),
         ...(parsed.links ? { links: parsed.links } : {}),
+        ...(parsed.orchestration
+          ? { orchestration: parsed.orchestration }
+          : {}),
         createdAt,
         updatedAt,
         version: 1,
@@ -146,9 +158,14 @@ export function createWorkflowRunStore(input: { dbPath: string }): WorkflowRunSt
         });
       } catch (error) {
         if (error instanceof Error && error.message.includes('UNIQUE')) {
-          throw new WorkflowRunStoreError(409, 'workflow_run_conflict', 'workflow run already exists', {
-            workflowRunId: projection.id,
-          });
+          throw new WorkflowRunStoreError(
+            409,
+            'workflow_run_conflict',
+            'workflow run already exists',
+            {
+              workflowRunId: projection.id,
+            }
+          );
         }
         throw error;
       }
@@ -157,17 +174,30 @@ export function createWorkflowRunStore(input: { dbPath: string }): WorkflowRunSt
     update(id, rawInput) {
       const existing = parseRow(getStmt.get(id) as WorkflowRunRow | undefined);
       if (!existing) {
-        throw new WorkflowRunStoreError(404, 'workflow_run_not_found', 'workflow run not found', {
-          workflowRunId: id,
-        });
+        throw new WorkflowRunStoreError(
+          404,
+          'workflow_run_not_found',
+          'workflow run not found',
+          {
+            workflowRunId: id,
+          }
+        );
       }
       const parsed = parseWorkflowRunUpdateInput(rawInput);
-      if (parsed.expectedVersion !== undefined && parsed.expectedVersion !== existing.version) {
-        throw new WorkflowRunStoreError(409, 'workflow_run_stale_version', 'workflow run version is stale', {
-          workflowRunId: id,
-          expectedVersion: parsed.expectedVersion,
-          currentVersion: existing.version,
-        });
+      if (
+        parsed.expectedVersion !== undefined &&
+        parsed.expectedVersion !== existing.version
+      ) {
+        throw new WorkflowRunStoreError(
+          409,
+          'workflow_run_stale_version',
+          'workflow run version is stale',
+          {
+            workflowRunId: id,
+            expectedVersion: parsed.expectedVersion,
+            currentVersion: existing.version,
+          }
+        );
       }
       const updatedAt = parsed.updatedAt ?? nowIso();
       const next: WorkflowRunProjection = {
@@ -176,17 +206,23 @@ export function createWorkflowRunStore(input: { dbPath: string }): WorkflowRunSt
         ...(parsed.progress ? { progress: parsed.progress } : {}),
         ...(parsed.phases ? { phases: parsed.phases } : {}),
         ...(parsed.steps ? { steps: parsed.steps } : {}),
-        ...(parsed.resultSummary ? { resultSummary: parsed.resultSummary } : {}),
+        ...(parsed.resultSummary
+          ? { resultSummary: parsed.resultSummary }
+          : {}),
         ...(parsed.errorSummary ? { errorSummary: parsed.errorSummary } : {}),
         ...(parsed.journal ? { journal: parsed.journal } : {}),
         ...(parsed.links ? { links: parsed.links } : {}),
+        ...(parsed.orchestration
+          ? { orchestration: parsed.orchestration }
+          : {}),
         updatedAt,
         version: existing.version + 1,
         redaction: {
           rawPayloadStored: false,
           rawTranscriptStored: false,
           providerPrivateStateStored: false,
-          truncated: existing.redaction.truncated || parsed.redactionPatch.truncated,
+          truncated:
+            existing.redaction.truncated || parsed.redactionPatch.truncated,
           omittedKeys: [
             ...existing.redaction.omittedKeys,
             ...parsed.redactionPatch.omittedKeys.filter(
@@ -209,7 +245,9 @@ export function createWorkflowRunStore(input: { dbPath: string }): WorkflowRunSt
     },
     list(input) {
       const clauses = ['work_context_id = @workContextId'];
-      const params: Record<string, unknown> = { workContextId: input.workContextId };
+      const params: Record<string, unknown> = {
+        workContextId: input.workContextId,
+      };
       if (input.state) {
         clauses.push('state = @state');
         params['state'] = input.state;
@@ -235,5 +273,7 @@ export function createWorkflowRunStore(input: { dbPath: string }): WorkflowRunSt
 }
 
 export function initWorkflowRunStore(configDir: string): WorkflowRunStore {
-  return createWorkflowRunStore({ dbPath: path.join(configDir, 'workflow-runs.db') });
+  return createWorkflowRunStore({
+    dbPath: path.join(configDir, 'workflow-runs.db'),
+  });
 }

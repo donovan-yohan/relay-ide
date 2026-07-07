@@ -32,7 +32,9 @@ export interface WorkflowRunRouterDeps {
   requireWriteActorAuth?: (
     expectedCommand: CliGatewayActorWriteCommand,
     options?: {
-      scopeForRequest?: (req: Request) => { workContextIds?: string[] } | undefined;
+      scopeForRequest?: (
+        req: Request
+      ) => { workContextIds?: string[] } | undefined;
       deferWorkContextScope?: boolean;
     }
   ) => RequestHandler;
@@ -41,7 +43,12 @@ export interface WorkflowRunRouterDeps {
 
 function parseCapabilityHeader(value: string | undefined): Set<string> {
   if (!value) return new Set();
-  return new Set(value.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean));
+  return new Set(
+    value
+      .split(/[\s,]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
 }
 
 function sendGatewayError(
@@ -63,16 +70,30 @@ function sendGatewayError(
             : code === 'INTERNAL'
               ? 500
               : 400;
-  res.status(status).json({ error: { code, message, retryable, ...(details ? { details } : {}) } });
+  res
+    .status(status)
+    .json({
+      error: { code, message, retryable, ...(details ? { details } : {}) },
+    });
 }
 
-function denyMissingCapability(req: Request, res: Response, required: string[]): boolean {
+function denyMissingCapability(
+  req: Request,
+  res: Response,
+  required: string[]
+): boolean {
   const caps = parseCapabilityHeader(req.header('x-relay-capabilities'));
   const missing = required.filter((cap) => !caps.has(cap));
   if (missing.length === 0) return false;
-  sendGatewayError(res, 'FORBIDDEN', `missing required capability: ${missing.join(', ')}`, false, {
-    capability: missing[0],
-  });
+  sendGatewayError(
+    res,
+    'FORBIDDEN',
+    `missing required capability: ${missing.join(', ')}`,
+    false,
+    {
+      capability: missing[0],
+    }
+  );
   return true;
 }
 
@@ -89,20 +110,32 @@ function readString(value: unknown): string | undefined {
 function readLimit(value: unknown): number | undefined {
   if (typeof value !== 'string') return undefined;
   const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100) : undefined;
+  return Number.isInteger(parsed) && parsed > 0
+    ? Math.min(parsed, 100)
+    : undefined;
 }
 
 function readState(value: unknown): WorkflowRunState | undefined {
-  return typeof value === 'string' && (WORKFLOW_RUN_STATES as readonly string[]).includes(value)
+  return typeof value === 'string' &&
+    (WORKFLOW_RUN_STATES as readonly string[]).includes(value)
     ? (value as WorkflowRunState)
     : undefined;
 }
 
-function storeOr503(res: Response, store: WorkflowRunStore | null): WorkflowRunStore | null {
+function storeOr503(
+  res: Response,
+  store: WorkflowRunStore | null
+): WorkflowRunStore | null {
   if (store) return store;
-  sendGatewayError(res, 'SERVER_UNAVAILABLE', 'workflow run store is unavailable', true, {
-    reasonCode: 'WORKFLOW_RUN_STORE_UNAVAILABLE',
-  });
+  sendGatewayError(
+    res,
+    'SERVER_UNAVAILABLE',
+    'workflow run store is unavailable',
+    true,
+    {
+      reasonCode: 'WORKFLOW_RUN_STORE_UNAVAILABLE',
+    }
+  );
   return null;
 }
 
@@ -113,7 +146,9 @@ function ensureWorkContext(
 ): boolean {
   if (!store) return true;
   if (store.get(workContextId)) return true;
-  sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found', false, { workContextId });
+  sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found', false, {
+    workContextId,
+  });
   return false;
 }
 
@@ -128,7 +163,11 @@ function mapError(res: Response, error: unknown, operation: string): void {
   }
   if (error instanceof WorkflowRunStoreError) {
     const code: RelayCliGatewayErrorCode =
-      error.status === 404 ? 'NOT_FOUND' : error.status === 409 ? 'SESSION_CONFLICT' : 'INTERNAL';
+      error.status === 404
+        ? 'NOT_FOUND'
+        : error.status === 409
+          ? 'SESSION_CONFLICT'
+          : 'INTERNAL';
     sendGatewayError(res, code, error.message, false, {
       reasonCode: error.code.toUpperCase(),
       operation,
@@ -136,7 +175,9 @@ function mapError(res: Response, error: unknown, operation: string): void {
     });
     return;
   }
-  sendGatewayError(res, 'INTERNAL', 'workflow run operation failed', true, { operation });
+  sendGatewayError(res, 'INTERNAL', 'workflow run operation failed', true, {
+    operation,
+  });
 }
 
 function emitRunEvent(
@@ -145,12 +186,17 @@ function emitRunEvent(
   run: WorkflowRunProjection,
   previousState?: WorkflowRunState
 ): void {
+  const sessionId =
+    run.orchestration?.planner?.sessionId ?? run.links?.sessionIds?.[0];
+  const globalSessionId =
+    run.orchestration?.planner?.globalSessionId ??
+    run.links?.globalSessionIds?.[0];
   events?.publish({
     topic: 'workflow-runs',
     type,
     workContextId: run.workContextId,
-    ...(run.links?.sessionIds?.[0] ? { sessionId: run.links.sessionIds[0] } : {}),
-    ...(run.links?.globalSessionIds?.[0] ? { globalSessionId: run.links.globalSessionIds[0] } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(globalSessionId ? { globalSessionId } : {}),
     payload: {
       ...workflowRunSummaryPayload(run),
       ...(previousState ? { previousState } : {}),
@@ -160,11 +206,14 @@ function emitRunEvent(
 
 export function createWorkflowRunRouter(deps: WorkflowRunRouterDeps): Router {
   const router = Router();
-  const auth = deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
+  const auth =
+    deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
   const readAuth = deps.requireReadAuth ?? {};
   const writeAuth = (
     command: CliGatewayActorWriteCommand,
-    scopeForRequest?: (req: Request) => { workContextIds?: string[] } | undefined
+    scopeForRequest?: (
+      req: Request
+    ) => { workContextIds?: string[] } | undefined
   ): RequestHandler =>
     deps.requireWriteActorAuth?.(
       command,
@@ -178,52 +227,83 @@ export function createWorkflowRunRouter(deps: WorkflowRunRouterDeps): Router {
   const runScope = (req: Request) => {
     const id = req.params['id'] ?? '';
     const workflowRun = id && deps.store ? deps.store.get(id) : null;
-    return workflowRun ? { workContextIds: [workflowRun.workContextId] } : undefined;
+    return workflowRun
+      ? { workContextIds: [workflowRun.workContextId] }
+      : undefined;
   };
 
-  router.post('/workflow-runs', writeAuth('workflow-runs.publish', publishScope), (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
-    const s = storeOr503(res, deps.store);
-    if (!s) return;
-    const workContextId = readString(bodyRecord(req)['workContextId']);
-    if (!workContextId) {
-      sendGatewayError(res, 'INVALID_ARGUMENT', 'workContextId is required', false, {
-        field: 'workContextId',
-      });
-      return;
-    }
-    if (!ensureWorkContext(res, deps.workContextStore, workContextId)) return;
-    try {
-      const workflowRun = s.publish(bodyRecord(req));
-      emitRunEvent(deps.events, 'workflow-run.published', workflowRun);
-      res.status(201).json({ workflowRun });
-    } catch (error) {
-      mapError(res, error, 'publish');
-    }
-  });
-
-  router.patch('/workflow-runs/:id', writeAuth('workflow-runs.update', runScope), (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
-    const s = storeOr503(res, deps.store);
-    if (!s) return;
-    const id = req.params['id'] ?? '';
-    const existing = s.get(id);
-    if (!existing) {
-      sendGatewayError(res, 'NOT_FOUND', 'workflow run not found', false, { workflowRunId: id });
-      return;
-    }
-    if (!ensureWorkContext(res, deps.workContextStore, existing.workContextId)) return;
-    try {
-      const workflowRun = s.update(id, bodyRecord(req));
-      emitRunEvent(deps.events, 'workflow-run.updated', workflowRun, existing.state);
-      if (workflowRun.state !== existing.state) {
-        emitRunEvent(deps.events, 'workflow-run.state-changed', workflowRun, existing.state);
+  router.post(
+    '/workflow-runs',
+    writeAuth('workflow-runs.publish', publishScope),
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      const s = storeOr503(res, deps.store);
+      if (!s) return;
+      const workContextId = readString(bodyRecord(req)['workContextId']);
+      if (!workContextId) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          'workContextId is required',
+          false,
+          {
+            field: 'workContextId',
+          }
+        );
+        return;
       }
-      res.json({ workflowRun });
-    } catch (error) {
-      mapError(res, error, 'update');
+      if (!ensureWorkContext(res, deps.workContextStore, workContextId)) return;
+      try {
+        const workflowRun = s.publish(bodyRecord(req));
+        emitRunEvent(deps.events, 'workflow-run.published', workflowRun);
+        res.status(201).json({ workflowRun });
+      } catch (error) {
+        mapError(res, error, 'publish');
+      }
     }
-  });
+  );
+
+  router.patch(
+    '/workflow-runs/:id',
+    writeAuth('workflow-runs.update', runScope),
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      const s = storeOr503(res, deps.store);
+      if (!s) return;
+      const id = req.params['id'] ?? '';
+      const existing = s.get(id);
+      if (!existing) {
+        sendGatewayError(res, 'NOT_FOUND', 'workflow run not found', false, {
+          workflowRunId: id,
+        });
+        return;
+      }
+      if (
+        !ensureWorkContext(res, deps.workContextStore, existing.workContextId)
+      )
+        return;
+      try {
+        const workflowRun = s.update(id, bodyRecord(req));
+        emitRunEvent(
+          deps.events,
+          'workflow-run.updated',
+          workflowRun,
+          existing.state
+        );
+        if (workflowRun.state !== existing.state) {
+          emitRunEvent(
+            deps.events,
+            'workflow-run.state-changed',
+            workflowRun,
+            existing.state
+          );
+        }
+        res.json({ workflowRun });
+      } catch (error) {
+        mapError(res, error, 'update');
+      }
+    }
+  );
 
   router.get('/workflow-runs', readAuth.list ?? auth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
@@ -231,9 +311,15 @@ export function createWorkflowRunRouter(deps: WorkflowRunRouterDeps): Router {
     if (!s) return;
     const workContextId = readString(req.query['workContextId']);
     if (!workContextId) {
-      sendGatewayError(res, 'INVALID_ARGUMENT', 'workContextId is required', false, {
-        field: 'workContextId',
-      });
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'workContextId is required',
+        false,
+        {
+          field: 'workContextId',
+        }
+      );
       return;
     }
     if (!ensureWorkContext(res, deps.workContextStore, workContextId)) return;
@@ -261,7 +347,10 @@ export function createWorkflowRunRouter(deps: WorkflowRunRouterDeps): Router {
       });
       return;
     }
-    if (!ensureWorkContext(res, deps.workContextStore, workflowRun.workContextId)) return;
+    if (
+      !ensureWorkContext(res, deps.workContextStore, workflowRun.workContextId)
+    )
+      return;
     res.json({ workflowRun });
   });
 

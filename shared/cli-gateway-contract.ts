@@ -2843,6 +2843,48 @@ const eventsSubscribeFrameSchema: RelayJsonSchema = {
   required: ['event', 'topic', 'sequence'],
 };
 
+const workflowRunSessionAttentionSchema: RelayJsonSchema = {
+  title: 'WorkflowRunSessionAttention',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    needsAttention: { type: 'boolean' },
+    reasons: { type: 'array', items: stringSchema },
+    pendingInboxCount: { type: 'number', minimum: 0 },
+  },
+};
+
+const workflowRunSessionLinkSchema: RelayJsonSchema = {
+  title: 'WorkflowRunSessionLink',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    role: stringSchema,
+    sessionId: stringSchema,
+    globalSessionId: stringSchema,
+    provider: stringSchema,
+    nodeId: stringSchema,
+    displayName: stringSchema,
+    cwd: stringSchema,
+    repoPath: stringSchema,
+    worktreePath: stringSchema,
+    state: stringSchema,
+    attention: workflowRunSessionAttentionSchema,
+    createdAt: { type: 'string', format: 'date-time' },
+  },
+  required: ['role'],
+};
+
+const workflowRunOrchestrationSchema: RelayJsonSchema = {
+  title: 'WorkflowRunOrchestration',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    planner: workflowRunSessionLinkSchema,
+    children: { type: 'array', items: workflowRunSessionLinkSchema },
+  },
+};
+
 const workflowRunProjectionSchema: RelayJsonSchema = {
   title: 'WorkflowRunProjection',
   type: 'object',
@@ -2851,8 +2893,13 @@ const workflowRunProjectionSchema: RelayJsonSchema = {
     id: stringSchema,
     runId: stringSchema,
     providerRuntime: stringSchema,
+    runKind: {
+      type: 'string',
+      enum: ['provider-runtime', 'relay-orchestration'],
+    },
     workContextId: stringSchema,
     state: stringSchema,
+    orchestration: workflowRunOrchestrationSchema,
     version: { type: 'number', minimum: 1 },
     redaction: { type: 'object', additionalProperties: true },
   },
@@ -2875,9 +2922,14 @@ const workflowRunPublishInputSchema: RelayJsonSchema = {
     id: stringSchema,
     runId: stringSchema,
     providerRuntime: stringSchema,
+    runKind: {
+      type: 'string',
+      enum: ['provider-runtime', 'relay-orchestration'],
+    },
     workContextId: stringSchema,
     definition: { type: 'object', additionalProperties: true },
     state: stringSchema,
+    orchestration: workflowRunOrchestrationSchema,
   },
   required: ['runId', 'providerRuntime', 'workContextId', 'definition'],
 };
@@ -2890,6 +2942,7 @@ const workflowRunUpdateInputSchema: RelayJsonSchema = {
     id: stringSchema,
     expectedVersion: { type: 'number', minimum: 1 },
     state: stringSchema,
+    orchestration: workflowRunOrchestrationSchema,
   },
 };
 
@@ -6077,7 +6130,7 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '--json',
     ],
     summary:
-      'Publish a bounded WorkContext-scoped external workflow run projection without raw transcripts or provider-private state.',
+      'Publish a bounded WorkContext-scoped workflow run projection, including Relay orchestration topology, without raw transcripts or provider-private state.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
@@ -6142,7 +6195,8 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       '<id>',
       '--json',
     ],
-    summary: 'List bounded workflow run projections by WorkContext.',
+    summary:
+      'List bounded workflow run projections and Relay orchestration runs by WorkContext.',
     stable: true,
     transport: 'hub-http',
     requiresAuth: true,
