@@ -189,7 +189,6 @@ describe('workflow run projection router', () => {
       id: 'workflow-run:orchestration-1',
       runId: 'relay-orchestration-1',
       providerRuntime: 'relay-orchestration',
-      runKind: 'relay-orchestration',
       orchestration: {
         planner: {
           role: 'planner',
@@ -258,11 +257,6 @@ describe('workflow run projection router', () => {
       {
         expectedVersion: 1,
         orchestration: {
-          planner: {
-            role: 'planner',
-            sessionId: 'planner:test',
-            globalSessionId: 'local:planner:test',
-          },
           children: [
             {
               role: 'implementer',
@@ -279,6 +273,11 @@ describe('workflow run projection router', () => {
     expect(updated.body.workflowRun).toMatchObject({
       version: 2,
       orchestration: {
+        planner: {
+          role: 'planner',
+          sessionId: 'planner:test',
+          globalSessionId: 'local:planner:test',
+        },
         children: [
           {
             role: 'implementer',
@@ -304,6 +303,75 @@ describe('workflow run projection router', () => {
         childCount: 2,
       },
     });
+    expect(published[1]).toMatchObject({
+      topic: 'workflow-runs',
+      type: 'workflow-run.updated',
+      sessionId: 'planner:test',
+      globalSessionId: 'local:planner:test',
+      payload: {
+        runKind: 'relay-orchestration',
+        plannerSessionId: 'planner:test',
+        participantSessionIds: ['planner:test', 'worker:claude'],
+        childSessionIds: ['worker:claude'],
+        childCount: 1,
+      },
+    });
+  });
+
+  it('rejects provider-runtime workflow runs that include Relay orchestration topology', async () => {
+    await mount();
+
+    const rejected = await req('POST', '/workflow-runs', {
+      ...publishInput,
+      id: 'workflow-run:provider-runtime-with-orchestration',
+      runKind: 'provider-runtime',
+      orchestration: {
+        planner: {
+          role: 'planner',
+          sessionId: 'planner:test',
+        },
+      },
+    });
+
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error).toMatchObject({
+      code: 'INVALID_ARGUMENT',
+      details: {
+        reasonCode: 'WORKFLOW_RUN_VALIDATION_FAILED',
+        field: 'runKind',
+      },
+    });
+  });
+
+  it('marks orchestration topology as truncated when child or attention limits are exceeded', async () => {
+    await mount();
+
+    const created = await req('POST', '/workflow-runs', {
+      ...publishInput,
+      id: 'workflow-run:orchestration-truncated',
+      orchestration: {
+        children: Array.from({ length: 51 }, (_value, index) => ({
+          role: 'worker',
+          sessionId: `worker:${index}`,
+          attention: {
+            reasons: Array.from(
+              { length: 21 },
+              (_reasonValue, reasonIndex) => `reason-${reasonIndex}`
+            ),
+          },
+        })),
+      },
+    });
+
+    expect(created.status).toBe(201);
+    expect(created.body.workflowRun).toMatchObject({
+      runKind: 'relay-orchestration',
+      redaction: { truncated: true },
+    });
+    expect(created.body.workflowRun.orchestration.children).toHaveLength(50);
+    expect(
+      created.body.workflowRun.orchestration.children[0].attention.reasons
+    ).toHaveLength(20);
   });
 
   it('rejects raw/private fields inside Relay orchestration topology', async () => {

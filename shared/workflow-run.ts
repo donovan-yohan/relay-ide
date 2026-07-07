@@ -351,10 +351,11 @@ function parseStringArray(value: unknown): string[] | undefined {
   return strings.length ? strings : undefined;
 }
 
-function parseAttention(
-  value: unknown
-): WorkflowRunSessionAttention | undefined {
-  if (!isRecord(value)) return undefined;
+function parseAttention(value: unknown): {
+  attention?: WorkflowRunSessionAttention;
+  truncated: boolean;
+} {
+  if (!isRecord(value)) return { truncated: false };
   const attention: WorkflowRunSessionAttention = {};
   if (typeof value['needsAttention'] === 'boolean')
     attention.needsAttention = value['needsAttention'];
@@ -362,16 +363,20 @@ function parseAttention(
   if (pendingInboxCount !== undefined)
     attention.pendingInboxCount = pendingInboxCount;
   const reasonsRaw = parseStringArray(value['reasons']);
+  const truncated =
+    (reasonsRaw?.length ?? 0) > WORKFLOW_RUN_MAX_ATTENTION_REASONS;
   const reasons = reasonsRaw?.slice(0, WORKFLOW_RUN_MAX_ATTENTION_REASONS);
   if (reasons?.length) attention.reasons = reasons;
-  return Object.keys(attention).length ? attention : undefined;
+  return Object.keys(attention).length
+    ? { attention, truncated }
+    : { truncated };
 }
 
 function parseSessionLink(
   value: unknown,
   field: string
-): WorkflowRunSessionLink | undefined {
-  if (!isRecord(value)) return undefined;
+): { link?: WorkflowRunSessionLink; truncated: boolean } {
+  if (!isRecord(value)) return { truncated: false };
   const role = stringField(value, 'role');
   if (!role) {
     throw new WorkflowRunValidationError(
@@ -422,19 +427,21 @@ function parseSessionLink(
       ? { worktreePath: stringField(value, 'worktreePath') }
       : {}),
     ...(state ? { state } : {}),
-    ...(attention ? { attention } : {}),
+    ...(attention.attention ? { attention: attention.attention } : {}),
     ...(stringField(value, 'createdAt')
       ? { createdAt: stringField(value, 'createdAt') }
       : {}),
   };
-  return link;
+  return { link, truncated: attention.truncated };
 }
 
-function parseOrchestration(
-  value: unknown
-): WorkflowRunOrchestration | undefined {
-  if (!isRecord(value)) return undefined;
+function parseOrchestration(value: unknown): {
+  orchestration?: WorkflowRunOrchestration;
+  truncated: boolean;
+} {
+  if (!isRecord(value)) return { truncated: false };
   const planner = parseSessionLink(value['planner'], 'orchestration.planner');
+  let truncated = planner.truncated;
   const childrenRaw = value['children'];
   let children: WorkflowRunSessionLink[] | undefined;
   if (childrenRaw !== undefined) {
@@ -446,16 +453,22 @@ function parseOrchestration(
         }
       );
     }
-    children = childrenRaw
-      .slice(0, WORKFLOW_RUN_MAX_CHILD_SESSIONS)
-      .map((entry) => parseSessionLink(entry, 'orchestration.children'))
-      .filter((entry): entry is WorkflowRunSessionLink => Boolean(entry));
+    truncated =
+      truncated || childrenRaw.length > WORKFLOW_RUN_MAX_CHILD_SESSIONS;
+    children = [];
+    for (const entry of childrenRaw.slice(0, WORKFLOW_RUN_MAX_CHILD_SESSIONS)) {
+      const child = parseSessionLink(entry, 'orchestration.children');
+      truncated = truncated || child.truncated;
+      if (child.link) children.push(child.link);
+    }
   }
   const orchestration: WorkflowRunOrchestration = {
-    ...(planner ? { planner } : {}),
+    ...(planner.link ? { planner: planner.link } : {}),
     ...(children?.length ? { children } : {}),
   };
-  return Object.keys(orchestration).length ? orchestration : undefined;
+  return Object.keys(orchestration).length
+    ? { orchestration, truncated }
+    : { truncated };
 }
 
 function parseTaskRefs(
@@ -590,6 +603,7 @@ function parseProjectionParts(input: Record<string, unknown>): {
   const progress = parseProgress(input['progress']);
   const links = parseLinks(input['links']);
   const orchestration = parseOrchestration(input['orchestration']);
+  truncated = truncated || orchestration.truncated;
   return {
     partial: {
       ...(state ? { state } : {}),
@@ -600,7 +614,9 @@ function parseProjectionParts(input: Record<string, unknown>): {
       ...(errorSummary ? { errorSummary: errorSummary.value } : {}),
       ...(journal.journal ? { journal: journal.journal } : {}),
       ...(links ? { links } : {}),
-      ...(orchestration ? { orchestration } : {}),
+      ...(orchestration.orchestration
+        ? { orchestration: orchestration.orchestration }
+        : {}),
       ...(stringField(input, 'updatedAt')
         ? { updatedAt: stringField(input, 'updatedAt') }
         : {}),
@@ -621,7 +637,16 @@ export function parseWorkflowRunPublishInput(
     );
   }
   const parts = parseProjectionParts(value);
-  const runKind = parseRunKind(value['runKind']);
+  const parsedRunKind = parseRunKind(value['runKind']);
+  if (parts.partial.orchestration && parsedRunKind === 'provider-runtime') {
+    throw new WorkflowRunValidationError(
+      'runKind must be relay-orchestration when orchestration is present',
+      { field: 'runKind' }
+    );
+  }
+  const runKind = parts.partial.orchestration
+    ? 'relay-orchestration'
+    : parsedRunKind;
   return {
     runId: requireString(value, 'runId'),
     providerRuntime: requireString(value, 'providerRuntime'),
@@ -691,6 +716,8 @@ export function workflowRunSummaryPayload(
     ...(run.orchestration?.children ?? []),
   ];
   const childSessions = run.orchestration?.children ?? [];
+  const plannerSessionId = run.orchestration?.planner?.sessionId;
+  const plannerGlobalSessionId = run.orchestration?.planner?.globalSessionId;
   return {
     workflowRunId: run.id,
     runId: run.runId,
@@ -700,8 +727,8 @@ export function workflowRunSummaryPayload(
     state: run.state,
     version: run.version,
     updatedAt: run.updatedAt,
-    plannerSessionId: run.orchestration?.planner?.sessionId,
-    plannerGlobalSessionId: run.orchestration?.planner?.globalSessionId,
+    ...(plannerSessionId ? { plannerSessionId } : {}),
+    ...(plannerGlobalSessionId ? { plannerGlobalSessionId } : {}),
     participantSessionIds: orchestrationSessions.flatMap((link) =>
       link.sessionId ? [link.sessionId] : []
     ),

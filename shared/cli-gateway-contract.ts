@@ -2873,6 +2873,7 @@ const workflowRunSessionLinkSchema: RelayJsonSchema = {
     createdAt: { type: 'string', format: 'date-time' },
   },
   required: ['role'],
+  anyOf: [{ required: ['sessionId'] }, { required: ['globalSessionId'] }],
 };
 
 const workflowRunOrchestrationSchema: RelayJsonSchema = {
