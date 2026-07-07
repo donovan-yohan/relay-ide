@@ -218,8 +218,53 @@ Rules:
 - Event summaries include planner ids, participant ids, child ids/count, artifact refs,
   inbox refs, handoff refs, and task refs so the UI can refresh without transcript
   scraping.
-- The v0 contract is local-run topology only. Launching child sessions is tracked by
-  #1130; the WorkContext cockpit is tracked by #158.
+- The v0 contract is local-run topology only. The trusted local launcher below is
+  the first dogfood path for creating that topology; the WorkContext cockpit is
+  tracked by #158.
+
+### Trusted local orchestration launcher (#1130)
+
+`orchestration-runs.launch` composes existing Relay-owned APIs instead of writing
+provider state directly:
+
+1. `workflow-runs.publish` creates a `relay-orchestration` run for a WorkContext.
+2. Each lane calls normal `sessions.create`, so workers are visible Relay tabs.
+3. Optional lane `inboxMessage` values go through `inbox.send`.
+4. `workflow-runs.update` patches the run with child session links and partial
+   failure state.
+
+```bash
+relay-ide v1 orchestration-runs launch --input-json '{
+  "workContextId": "wc:relay-dogfood",
+  "planner": {
+    "role": "planner",
+    "sessionId": "current-planner-session",
+    "provider": "hermes"
+  },
+  "lanes": [
+    {
+      "role": "implementer",
+      "provider": "claude",
+      "repoPath": "/home/me/relay-ide",
+      "worktreePath": "/home/me/relay-ide/.worktrees/launcher",
+      "initialPrompt": "Implement the scoped launcher task."
+    },
+    {
+      "role": "reviewer",
+      "provider": "codex",
+      "repoPath": "/home/me/relay-ide",
+      "worktreePath": "/home/me/relay-ide/.worktrees/launcher",
+      "inboxMessage": "Review the launcher diff once the implementer lands it."
+    }
+  ]
+}' --json
+```
+
+The command returns `workflowRunId`, child `sessionId`/`globalSessionId` values,
+per-lane launch status, `partialFailure`, and follow-up `workflow-runs get` /
+`events subscribe` command hints. Partial lane failures do not erase successfully
+launched sessions; they mark the run `waiting` and add attention metadata to the
+affected child link when possible.
 
 ## Automation / watchdog run registry (#959)
 
@@ -380,7 +425,7 @@ The #857 inventory is kept in [`docs/refactor/857-action-parity-inventory.md`](r
 
 Local discovery commands (`contract.*`, `nodes.manifest`) do not require a hub token.
 
-Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `work-context-artifacts.*`, `handoff-artifacts.*`, `workflow-runs.*`, `automation-runs.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
+Hub-backed commands (`nodes.list`, `sessions.*`, `files.*`, `work-contexts.*`, `context.*`, `work-context-artifacts.*`, `handoff-artifacts.*`, `workflow-runs.*`, `orchestration-runs.*`, `automation-runs.*`, `inbox.*`, `handoffs.*`, `artifacts.*`, `supervisor.*`, `events.*`, `settings.*`, and `webhooks.*`) are in the CLI/agent lane, which is distinct from node credentials and the browser-only UI lane. #802 defines the scoped actor credential registry; #805 wires the first CLI gateway scoped credential lane.
 
 ### Scoped actor credential MVP (#805)
 

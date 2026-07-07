@@ -79,6 +79,7 @@ export type RelayCliGatewayCommand =
   | 'workflow-runs.update'
   | 'workflow-runs.list'
   | 'workflow-runs.get'
+  | 'orchestration-runs.launch'
   | 'automation-runs.register'
   | 'automation-runs.observe'
   | 'automation-runs.retire'
@@ -2982,6 +2983,103 @@ const workflowRunListOutputDataSchema: RelayJsonSchema = {
     workflowRuns: { type: 'array', items: workflowRunProjectionSchema },
   },
   required: ['workflowRuns'],
+};
+
+const orchestrationLaunchLaneInputSchema: RelayJsonSchema = {
+  title: 'OrchestrationLaunchLaneInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    role: stringSchema,
+    provider: stringSchema,
+    agent: stringSchema,
+    nodeId: stringSchema,
+    type: { type: 'string', enum: ['agent', 'terminal'] },
+    mode: { type: 'string', enum: ['pty', 'web'] },
+    cwd: stringSchema,
+    repoPath: stringSchema,
+    worktreePath: stringSchema,
+    initialPrompt: stringSchema,
+    inboxMessage: stringSchema,
+    controlMode: stringSchema,
+    yolo: booleanSchema,
+    cols: { type: 'number', minimum: 1 },
+    rows: { type: 'number', minimum: 1 },
+  },
+  required: ['role'],
+  anyOf: [{ required: ['provider'] }, { required: ['agent'] }],
+};
+
+const orchestrationLaunchInputSchema: RelayJsonSchema = {
+  title: 'OrchestrationLaunchInput',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: stringSchema,
+    runId: stringSchema,
+    workContextId: stringSchema,
+    providerRuntime: stringSchema,
+    definition: { type: 'object', additionalProperties: true },
+    planner: workflowRunSessionLinkSchema,
+    lanes: { type: 'array', items: orchestrationLaunchLaneInputSchema },
+  },
+  required: ['workContextId', 'lanes'],
+};
+
+const orchestrationLaunchLaneResultSchema: RelayJsonSchema = {
+  title: 'OrchestrationLaunchLaneResult',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    role: stringSchema,
+    provider: stringSchema,
+    launched: booleanSchema,
+    sessionId: stringSchema,
+    globalSessionId: stringSchema,
+    nodeId: stringSchema,
+    inboxMessageId: stringSchema,
+    failureStage: {
+      type: 'string',
+      enum: ['session-create', 'message-delivery'],
+    },
+    error: stringSchema,
+  },
+  required: ['role', 'provider', 'launched'],
+};
+
+const orchestrationLaunchOutputDataSchema: RelayJsonSchema = {
+  title: 'OrchestrationLaunchOutputData',
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workflowRunId: stringSchema,
+    runId: stringSchema,
+    workContextId: stringSchema,
+    planner: workflowRunSessionLinkSchema,
+    children: { type: 'array', items: workflowRunSessionLinkSchema },
+    lanes: { type: 'array', items: orchestrationLaunchLaneResultSchema },
+    partialFailure: booleanSchema,
+    workflowRun: { type: 'object', additionalProperties: true },
+    next: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        workflowRunCommand: stringSchema,
+        eventsCommand: stringSchema,
+      },
+      required: ['workflowRunCommand', 'eventsCommand'],
+    },
+  },
+  required: [
+    'workflowRunId',
+    'runId',
+    'workContextId',
+    'children',
+    'lanes',
+    'partialFailure',
+    'workflowRun',
+    'next',
+  ],
 };
 
 const automationRunTargetSchema: RelayJsonSchema = {
@@ -6232,6 +6330,45 @@ const commandSpecs: readonly RelayCliGatewayCommandSpec[] = [
       'FORBIDDEN',
       'NOT_FOUND',
       'SERVER_UNAVAILABLE',
+      'UPSTREAM_ERROR',
+    ],
+  },
+  {
+    name: 'orchestration-runs.launch',
+    cli: [
+      'relay-ide',
+      'v1',
+      'orchestration-runs',
+      'launch',
+      '--input-json',
+      '<json>',
+      '--json',
+    ],
+    summary:
+      'Trusted local launcher that creates a Relay orchestration run, starts visible child sessions, optionally sends bounded inbox messages, and patches the run topology.',
+    stable: true,
+    transport: 'hub-http',
+    requiresAuth: true,
+    capabilityHints: [
+      'context:write',
+      'session:create:agent',
+      'session:create:terminal',
+      'inbox:write',
+      'tab:mode:set-agent',
+    ],
+    inputSchema: orchestrationLaunchInputSchema,
+    outputSchema: okOutput(
+      'OrchestrationLaunchOutput',
+      orchestrationLaunchOutputDataSchema
+    ),
+    errorCodes: [
+      'UNAUTHORIZED',
+      'INVALID_ARGUMENT',
+      'FORBIDDEN',
+      'NOT_FOUND',
+      'SESSION_CONFLICT',
+      'SERVER_UNAVAILABLE',
+      'UNSUPPORTED',
       'UPSTREAM_ERROR',
     ],
   },
