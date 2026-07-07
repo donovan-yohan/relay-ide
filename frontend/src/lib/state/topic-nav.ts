@@ -99,6 +99,7 @@ export interface TopicNavItem {
   surfaces: TopicNavSurfaceRef[];
   taskRefs: NonNullable<WorkspaceTopic['linkedRefs']['taskRefs']>;
   artifactIds: NonNullable<WorkspaceTopic['linkedRefs']['artifactIds']>;
+  workContextIds: NonNullable<WorkspaceTopic['linkedRefs']['workContextIds']>;
   childIds: WorkspaceTopicId[];
   routingLabel: string | null;
   lifecycleLabel: WorkspaceTopic['status'];
@@ -690,6 +691,7 @@ export function buildTopicNavModel(input: {
       surfaces,
       taskRefs: topic.linkedRefs.taskRefs ?? [],
       artifactIds: topic.linkedRefs.artifactIds ?? [],
+      workContextIds: topic.linkedRefs.workContextIds ?? [],
       childIds: [],
       routingLabel: routingLabel(topic, nodeNameById),
       lifecycleLabel: topic.status,

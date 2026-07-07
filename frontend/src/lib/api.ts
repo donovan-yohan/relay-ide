@@ -41,6 +41,10 @@ import type {
   WorkspaceTopicSearchResponse,
 } from '../../../shared/workspace-topics.js';
 import type {
+  WorkflowRunProjection,
+  WorkflowRunState,
+} from '../../../shared/workflow-run.js';
+import type {
   PipelineHandoffArtifact,
   PipelineHandoffStageName,
 } from '../../../shared/pipeline-handoff-artifact.js';
@@ -987,6 +991,31 @@ export async function fetchActiveWork(): Promise<WorkContextActiveGroup[]> {
     await fetch('/work-contexts/active')
   );
   return Array.isArray(data.groups) ? data.groups : [];
+}
+
+export interface FetchWorkflowRunsOptions {
+  workContextId: string;
+  state?: WorkflowRunState;
+  providerRuntime?: string;
+  limit?: number;
+}
+
+export async function fetchWorkflowRuns({
+  workContextId,
+  state,
+  providerRuntime,
+  limit = 5,
+}: FetchWorkflowRunsOptions): Promise<WorkflowRunProjection[]> {
+  const params = new URLSearchParams({ workContextId });
+  if (state) params.set('state', state);
+  if (providerRuntime) params.set('providerRuntime', providerRuntime);
+  if (limit > 0) params.set('limit', String(limit));
+  const data = await json<{ workflowRuns?: WorkflowRunProjection[] }>(
+    await fetch(`/workflow-runs?${params.toString()}`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return Array.isArray(data.workflowRuns) ? data.workflowRuns : [];
 }
 
 export interface FetchPipelineHandoffArtifactsOptions {

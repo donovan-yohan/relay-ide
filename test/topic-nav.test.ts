@@ -208,6 +208,19 @@ describe('buildTopicNavModel', () => {
     ]);
   });
 
+  it('preserves WorkContext refs for topic-room orchestration reads', () => {
+    const topic = makeTopic({
+      linkedRefs: { workContextIds: ['wc:relay'] },
+    });
+    const model = buildTopicNavModel({
+      topics: [topic],
+      sessions: [],
+      surfaces: [],
+    });
+
+    expect(model.byId.get('topic:alpha')?.workContextIds).toEqual(['wc:relay']);
+  });
+
   it('classifies topic workspace kind from routing defaults', () => {
     const repo = makeTopic({
       id: 'topic:repo',

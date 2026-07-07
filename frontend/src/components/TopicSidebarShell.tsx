@@ -16,6 +16,15 @@ import {
   MessageSquare,
   TriangleAlert,
 } from 'lucide-react';
+import type {
+  WorkflowRunProjection,
+  WorkflowRunSessionLink,
+  WorkflowRunState,
+} from '../../../shared/workflow-run.js';
+import {
+  createGlobalSessionId,
+  DEFAULT_LOCAL_NODE_ID,
+} from '../../../shared/identity.js';
 import type { WorkspaceSurface } from '../../../shared/workspace-surfaces.js';
 import {
   resolveTopicActiveContext,
@@ -24,6 +33,7 @@ import {
 } from '../../../shared/workspace-topics.js';
 import {
   fetchHubNodes,
+  fetchWorkflowRuns,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
   restoreWorkspaceTopic,
@@ -51,6 +61,7 @@ import {
   type TopicNavParticipantRef,
   type TopicNavSessionRef,
   type TopicNavSurfaceRef,
+  type TopicNavTone,
 } from '../lib/state/topic-nav.js';
 import { MarqueeText } from './MarqueeText.js';
 import './TopicSidebarShell.css';
@@ -86,6 +97,8 @@ type TopicSendInput = typeof sendSessionInput;
 const DISCONNECTED_SESSION_CONTROL_REASON =
   'session offline/disconnected — controls unavailable until reconnect';
 const TOPIC_LATEST_STATUS_MAX_LENGTH = 96;
+const WORKFLOW_RUNS_LIMIT = 5;
+const EMPTY_WORKFLOW_RUNS: WorkflowRunProjection[] = [];
 
 function boundedTopicLatestStatus(value: string): string {
   const trimmed = value.trim();
@@ -532,6 +545,244 @@ function TopicRoomSessionRow({
   );
 }
 
+function workflowRunTone(state: WorkflowRunState): TopicNavTone {
+  if (state === 'failed' || state === 'cancelled' || state === 'stale') {
+    return 'error';
+  }
+  if (state === 'waiting') return 'attention';
+  if (state === 'queued' || state === 'running') return 'active';
+  if (state === 'succeeded') return 'idle';
+  return 'empty';
+}
+
+function orchestrationLaneTone(link: WorkflowRunSessionLink): TopicNavTone {
+  if (link.attention?.needsAttention) return 'attention';
+  return workflowRunTone(link.state ?? 'unknown');
+}
+
+function orchestrationLaneSelectKey(
+  link: WorkflowRunSessionLink
+): string | null {
+  if (link.globalSessionId) return link.globalSessionId;
+  if (link.nodeId && link.nodeId !== DEFAULT_LOCAL_NODE_ID && link.sessionId) {
+    return createGlobalSessionId(link.nodeId, link.sessionId);
+  }
+  return link.sessionId ?? null;
+}
+
+function orchestrationLaneLabel(link: WorkflowRunSessionLink): string {
+  return (
+    link.displayName ??
+    link.sessionId ??
+    link.globalSessionId ??
+    `${link.role} lane`
+  );
+}
+
+function orchestrationLaneStatus(link: WorkflowRunSessionLink): string {
+  const pending = link.attention?.pendingInboxCount ?? 0;
+  if (pending > 0) return `${pending} pending`;
+  if (link.attention?.needsAttention) {
+    const reasons = link.attention.reasons?.slice(0, 2).join(', ');
+    return reasons ? `attention · ${reasons}` : 'needs attention';
+  }
+  return link.state ?? 'linked';
+}
+
+function orchestrationRunSummary(run: WorkflowRunProjection): string {
+  if (run.errorSummary) return run.errorSummary;
+  if (run.resultSummary) return run.resultSummary;
+  const latest = run.journal?.[run.journal.length - 1];
+  return latest?.summary ?? 'no run journal yet';
+}
+
+function orchestrationRunEvidenceRefs(run: WorkflowRunProjection): string[] {
+  return [
+    ...(run.links?.artifactIds ?? []),
+    ...(run.links?.handoffArtifactIds ?? []),
+  ];
+}
+
+function orchestrationRunMailCount(run: WorkflowRunProjection): number {
+  const links = [
+    run.orchestration?.planner,
+    ...(run.orchestration?.children ?? []),
+  ].filter((link): link is WorkflowRunSessionLink => Boolean(link));
+  const attentionCount = links.reduce(
+    (sum, link) => sum + (link.attention?.pendingInboxCount ?? 0),
+    0
+  );
+  return Math.max(run.links?.inboxMessageIds?.length ?? 0, attentionCount);
+}
+
+function isOrchestrationWorkflowRun(run: WorkflowRunProjection): boolean {
+  return run.runKind === 'relay-orchestration' || Boolean(run.orchestration);
+}
+
+function OrchestrationLaneRow({
+  link,
+  laneKind,
+  onSelectSession,
+}: {
+  link: WorkflowRunSessionLink;
+  laneKind: 'planner' | 'worker';
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  const selectKey = orchestrationLaneSelectKey(link);
+  const handleSelect =
+    selectKey && onSelectSession ? () => onSelectSession(selectKey) : undefined;
+  const tone = orchestrationLaneTone(link);
+  return (
+    <li
+      className={`topic-orchestration-lane topic-orchestration-lane--${tone}`}
+    >
+      <button
+        type="button"
+        className="topic-orchestration-lane__button"
+        {...(handleSelect ? { onClick: handleSelect } : { disabled: true })}
+        title={
+          handleSelect ? `open ${link.role} session` : 'session not linked'
+        }
+      >
+        <span className="topic-orchestration-lane__icon" aria-hidden="true">
+          <MessageSquare size={12} />
+        </span>
+        <span className="topic-orchestration-lane__main">
+          <span className="topic-orchestration-lane__label">
+            <MarqueeText>{orchestrationLaneLabel(link)}</MarqueeText>
+          </span>
+          <span className="topic-orchestration-lane__meta">
+            {laneKind} · {link.role} · {link.provider ?? 'provider unknown'}
+          </span>
+        </span>
+        <span className="topic-orchestration-lane__state">
+          {orchestrationLaneStatus(link)}
+        </span>
+        <StatusGlyph tone={tone} />
+      </button>
+    </li>
+  );
+}
+
+function OrchestrationRunCard({
+  run,
+  onSelectSession,
+}: {
+  run: WorkflowRunProjection;
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  const planner = run.orchestration?.planner;
+  const children = run.orchestration?.children ?? [];
+  const lanes = (planner ? 1 : 0) + children.length;
+  const evidenceRefs = orchestrationRunEvidenceRefs(run);
+  const mailCount = orchestrationRunMailCount(run);
+  return (
+    <article
+      className={`topic-orchestration-run topic-orchestration-run--${workflowRunTone(run.state)}`}
+    >
+      <div className="topic-orchestration-run__header">
+        <span className="topic-orchestration-run__title">
+          <MarqueeText>{run.definition.templateId ?? run.runId}</MarqueeText>
+        </span>
+        <span className="topic-orchestration-run__state">{run.state}</span>
+      </div>
+      <p className="topic-orchestration-run__summary">
+        {orchestrationRunSummary(run)}
+      </p>
+      <div className="topic-orchestration-run__meta">
+        <span>{lanes} lanes</span>
+        <span>{mailCount} mail</span>
+        <span>{evidenceRefs.length} evidence refs</span>
+        <span>updated {formatRelativeTimeCompact(run.updatedAt)}</span>
+      </div>
+      {evidenceRefs.length > 0 ? (
+        <div
+          className="topic-orchestration-run__evidence"
+          aria-label="orchestration evidence refs"
+        >
+          {evidenceRefs.slice(0, 3).map((ref) => (
+            <span key={ref}>{ref}</span>
+          ))}
+          {evidenceRefs.length > 3 ? (
+            <span>+{evidenceRefs.length - 3} more</span>
+          ) : null}
+        </div>
+      ) : null}
+      <ul className="topic-orchestration-run__lanes">
+        {planner ? (
+          <OrchestrationLaneRow
+            link={planner}
+            laneKind="planner"
+            {...(onSelectSession ? { onSelectSession } : {})}
+          />
+        ) : null}
+        {children.map((child, index) => (
+          <OrchestrationLaneRow
+            key={
+              child.globalSessionId ??
+              child.sessionId ??
+              `${child.role}:${child.provider ?? 'worker'}:${index}`
+            }
+            link={child}
+            laneKind="worker"
+            {...(onSelectSession ? { onSelectSession } : {})}
+          />
+        ))}
+        {!planner && children.length === 0 ? (
+          <li className="topic-room-empty">no visible lanes linked yet</li>
+        ) : null}
+      </ul>
+    </article>
+  );
+}
+
+function TopicRoomOrchestrationRuns({
+  item,
+  workflowRuns,
+  loading,
+  error,
+  onSelectSession,
+}: {
+  item: TopicNavItem;
+  workflowRuns: WorkflowRunProjection[];
+  loading: boolean;
+  error: boolean;
+  onSelectSession?: ((id: string) => void) | undefined;
+}) {
+  const workContextId = item.workContextIds[0];
+  if (!workContextId) {
+    return <p className="topic-room-empty">no WorkContext linked yet</p>;
+  }
+  if (loading && workflowRuns.length === 0) {
+    return <p className="topic-room-empty">orchestration runs loading...</p>;
+  }
+  if (error && workflowRuns.length === 0) {
+    return (
+      <p className="topic-room-empty error">orchestration runs unavailable</p>
+    );
+  }
+  const orchestrationRuns = workflowRuns.filter(isOrchestrationWorkflowRun);
+  if (orchestrationRuns.length === 0) {
+    return <p className="topic-room-empty">no orchestration runs linked yet</p>;
+  }
+  return (
+    <div className="topic-orchestration-list">
+      {orchestrationRuns.map((run) => (
+        <OrchestrationRunCard
+          key={run.id}
+          run={run}
+          {...(onSelectSession ? { onSelectSession } : {})}
+        />
+      ))}
+      {error ? (
+        <p className="topic-room-empty error">
+          orchestration runs partially unavailable
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function TopicRoomTaskRefs({ item }: { item: TopicNavItem }) {
   if (item.taskRefs.length === 0) {
     return <p className="topic-room-empty">no task refs linked yet</p>;
@@ -633,6 +884,9 @@ function TopicDetail({
   workspaceName,
   surfacesError,
   surfacesLoading,
+  workflowRuns,
+  workflowRunsError,
+  workflowRunsLoading,
   onSelectSession,
   onRestoreTopic,
   restoringTopicId,
@@ -642,6 +896,9 @@ function TopicDetail({
   workspaceName?: string | null | undefined;
   surfacesError?: boolean | undefined;
   surfacesLoading?: boolean | undefined;
+  workflowRuns: WorkflowRunProjection[];
+  workflowRunsError: boolean;
+  workflowRunsLoading: boolean;
   onSelectSession?: ((id: string) => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
   restoringTopicId?: string | undefined;
@@ -650,6 +907,9 @@ function TopicDetail({
   const session = topicPrimarySession(item);
   const topSurface = item.surfaces[0];
   const groupedSessions = topicRoomGroupedSessions(item);
+  const orchestrationRunCount = workflowRuns.filter(
+    isOrchestrationWorkflowRun
+  ).length;
   const primaryDisabled =
     Boolean(action.disabledReason) || (!session && !topSurface?.target);
   return (
@@ -729,6 +989,20 @@ function TopicDetail({
         <span>latest bounded status</span>
         <strong>{topicRoomLatestSummary(item)}</strong>
       </div>
+
+      <section className="topic-room__section" aria-label="orchestration runs">
+        <div className="topic-room__section-header">
+          <span>orchestration</span>
+          <span>{orchestrationRunCount} runs</span>
+        </div>
+        <TopicRoomOrchestrationRuns
+          item={item}
+          workflowRuns={workflowRuns}
+          loading={workflowRunsLoading}
+          error={workflowRunsError}
+          onSelectSession={onSelectSession}
+        />
+      </section>
 
       <section className="topic-room__section" aria-label="grouped sessions">
         <div className="topic-room__section-header">
@@ -1103,6 +1377,19 @@ function TopicAdvancedDetailGate({
   onRestoreTopic?: ((topicId: string) => void) | undefined;
   restoringTopicId?: string | undefined;
 }) {
+  const workContextId = item?.workContextIds[0] ?? null;
+  const workflowRunsQuery = useQuery({
+    queryKey: ['workflow-runs', workContextId, WORKFLOW_RUNS_LIMIT],
+    queryFn: () => {
+      if (!workContextId) return Promise.resolve(EMPTY_WORKFLOW_RUNS);
+      return fetchWorkflowRuns({
+        workContextId,
+        limit: WORKFLOW_RUNS_LIMIT,
+      });
+    },
+    enabled: Boolean(item && show && workContextId),
+    staleTime: 10_000,
+  });
   if (!item || !show) return null;
   return (
     <div className="topic-shell__advanced-detail">
@@ -1111,6 +1398,11 @@ function TopicAdvancedDetailGate({
         workspaceName={resolveWorkspaceName(item, workspaceNameById)}
         surfacesError={surfacesError}
         surfacesLoading={surfacesLoading}
+        workflowRuns={workflowRunsQuery.data ?? EMPTY_WORKFLOW_RUNS}
+        workflowRunsError={workflowRunsQuery.isError}
+        workflowRunsLoading={
+          workflowRunsQuery.isLoading || workflowRunsQuery.isFetching
+        }
         onSelectSession={onSelectSession}
         onRestoreTopic={onRestoreTopic}
         restoringTopicId={restoringTopicId}
@@ -2026,6 +2318,7 @@ export function TopicSidebarShell({
       onSearchClear={() => setSearchQuery('')}
       onSelectSession={onSelectSession}
       onCreateTaskRoom={openTopicTaskRoom}
+      showAdvancedDetail={!(surfacesQuery.isLoading && !surfacesQuery.data)}
     />
   );
 }
