@@ -1562,8 +1562,11 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'handoff-artifacts.list',
   'handoff-artifacts.show',
   'handoff-artifacts.copy',
+  'workflow-runs.publish',
+  'workflow-runs.update',
   'workflow-runs.list',
   'workflow-runs.get',
+  'inbox.send',
   'automation-runs.list',
   'automation-runs.get',
   'pr-overseer.list',
@@ -1686,19 +1689,17 @@ async function gatewayHttpJson(input: {
 
 async function gatewayHttpJsonForLaunch(input: {
   commandName: RelayCliGatewayCommand;
+  actorCommandName?: RelayCliGatewayCommand;
   pathName: string;
   method?: string;
   body?: unknown;
   capabilities?: readonly string[];
 }): Promise<unknown> {
   const actorToken = gatewayActorToken();
-  if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(input.commandName)) {
-    gatewayInvalid(
-      input.commandName,
-      '--actor-token is only supported for scoped CLI gateway actor commands in this slice',
-      {
-        allowedCommands: Array.from(CLI_GATEWAY_ACTOR_TOKEN_COMMANDS),
-      }
+  const actorCommandName = input.actorCommandName ?? input.commandName;
+  if (actorToken && !CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(actorCommandName)) {
+    throw new Error(
+      `--actor-token is not supported for ${actorCommandName} in this slice`
     );
   }
   const token = actorToken || (process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '');
@@ -1720,6 +1721,10 @@ async function gatewayHttpJsonForLaunch(input: {
     Authorization: `Bearer ${token}`,
     'x-relay-cli-gateway': 'v1',
   };
+  if (actorToken) {
+    headers['x-relay-cli-actor-token'] = 'v1';
+    headers['x-relay-cli-command'] = actorCommandName;
+  }
   const correlationId = gatewayCorrelationId();
   if (correlationId) headers['x-relay-correlation-id'] = correlationId;
   if (input.body !== undefined) headers['Content-Type'] = 'application/json';
@@ -5045,6 +5050,7 @@ async function runGatewayOrchestrationRuns(
       publishWorkflowRun: (body) =>
         gatewayHttpJsonForLaunch({
           commandName,
+          actorCommandName: 'workflow-runs.publish',
           pathName: '/workflow-runs',
           method: 'POST',
           body,
@@ -5053,6 +5059,7 @@ async function runGatewayOrchestrationRuns(
       updateWorkflowRun: (workflowRunId, body) =>
         gatewayHttpJsonForLaunch({
           commandName,
+          actorCommandName: 'workflow-runs.update',
           pathName: `/workflow-runs/${encodeURIComponent(workflowRunId)}`,
           method: 'PATCH',
           body,
@@ -5066,6 +5073,7 @@ async function runGatewayOrchestrationRuns(
         delete body['nodeId'];
         return gatewayHttpJsonForLaunch({
           commandName,
+          actorCommandName: 'sessions.create',
           pathName: nodeId
             ? `/hub/nodes/${encodeURIComponent(nodeId)}/sessions`
             : '/sessions',
@@ -5085,6 +5093,7 @@ async function runGatewayOrchestrationRuns(
       sendInboxMessage: (body) =>
         gatewayHttpJsonForLaunch({
           commandName,
+          actorCommandName: 'inbox.send',
           pathName: '/inbox',
           method: 'POST',
           body,

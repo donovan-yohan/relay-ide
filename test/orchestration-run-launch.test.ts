@@ -212,6 +212,39 @@ describe('launchOrchestrationRun', () => {
     });
   });
 
+  it('reports session-create failure when a created session has no identifiers', async () => {
+    const deps = createDeps({
+      createSession: async (input) => {
+        deps.sessions.push(input);
+        return { agent: 'claude' };
+      },
+    });
+
+    const result = await launchOrchestrationRun(
+      {
+        workContextId: 'wc:test',
+        lanes: [{ role: 'implementer', provider: 'claude', repoPath: '/repo' }],
+      },
+      deps
+    );
+
+    expect(result.partialFailure).toBe(true);
+    expect(result.children).toHaveLength(0);
+    expect(result.lanes).toEqual([
+      expect.objectContaining({
+        role: 'implementer',
+        launched: false,
+        failureStage: 'session-create',
+        error:
+          'sessions.create response must include sessionId or globalSessionId',
+      }),
+    ]);
+    expect(deps.updated[0].input).toMatchObject({
+      state: 'waiting',
+      errorSummary: 'one or more orchestration launch lanes need attention',
+    });
+  });
+
   it('keeps launched sessions linked when inbox delivery fails', async () => {
     const deps = createDeps({
       sendInboxMessage: async (input) => {

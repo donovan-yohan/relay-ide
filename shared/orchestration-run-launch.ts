@@ -125,6 +125,31 @@ function messageFromResponse(value: unknown): Record<string, unknown> {
   return responseRecord(value, 'message');
 }
 
+function sessionIdentifiers(session: Record<string, unknown>): {
+  sessionId?: string;
+  globalSessionId?: string;
+} {
+  const sessionId =
+    stringValue(session['id']) ?? stringValue(session['sessionId']);
+  const globalSessionId = stringValue(session['globalSessionId']);
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(globalSessionId ? { globalSessionId } : {}),
+  };
+}
+
+function requireSessionIdentifiers(
+  session: Record<string, unknown>
+): ReturnType<typeof sessionIdentifiers> {
+  const ids = sessionIdentifiers(session);
+  if (!ids.sessionId && !ids.globalSessionId) {
+    throw new Error(
+      'sessions.create response must include sessionId or globalSessionId'
+    );
+  }
+  return ids;
+}
+
 function requireString(value: unknown, field: string): string {
   const parsed = stringValue(value);
   if (!parsed)
@@ -270,9 +295,7 @@ function linkFromSession(
   failedMessage: boolean
 ): WorkflowRunSessionLink {
   const provider = lane.provider ?? lane.agent ?? 'unknown';
-  const sessionId =
-    stringValue(session['id']) ?? stringValue(session['sessionId']);
-  const globalSessionId = stringValue(session['globalSessionId']);
+  const { sessionId, globalSessionId } = sessionIdentifiers(session);
   const nodeId =
     stringValue(session['nodeId']) ??
     stringValue(session['node']) ??
@@ -310,6 +333,33 @@ function linkFromSession(
       : {}),
     createdAt,
   };
+}
+
+async function deliverInboxMessage(
+  lane: OrchestrationLaunchLaneInput,
+  sessionIds: ReturnType<typeof sessionIdentifiers>,
+  sendInboxMessage: OrchestrationLaunchDeps['sendInboxMessage']
+): Promise<{ inboxMessageId?: string; failedMessage?: string }> {
+  if (!lane.inboxMessage) return {};
+  if (!sessionIds.sessionId) {
+    return {
+      failedMessage:
+        'sessions.create response must include sessionId for inbox delivery',
+    };
+  }
+  try {
+    const message = messageFromResponse(
+      await sendInboxMessage({
+        targetSessionId: sessionIds.sessionId,
+        text: lane.inboxMessage,
+        createdBy: 'orchestration-runs.launch',
+      })
+    );
+    const inboxMessageId = stringValue(message['id']);
+    return inboxMessageId ? { inboxMessageId } : {};
+  } catch (error) {
+    return { failedMessage: errorMessage(error) };
+  }
 }
 
 function requireWorkflowRunId(workflowRun: Record<string, unknown>): string {
@@ -354,23 +404,12 @@ export async function launchOrchestrationRun(
       const session = sessionFromResponse(
         await deps.createSession(laneSessionBody(lane, input.workContextId))
       );
-      let inboxMessageId: string | undefined;
-      let failedMessage: string | undefined;
-      if (lane.inboxMessage) {
-        try {
-          const message = messageFromResponse(
-            await deps.sendInboxMessage({
-              targetSessionId:
-                stringValue(session['id']) ?? stringValue(session['sessionId']),
-              text: lane.inboxMessage,
-              createdBy: 'orchestration-runs.launch',
-            })
-          );
-          inboxMessageId = stringValue(message['id']);
-        } catch (error) {
-          failedMessage = errorMessage(error);
-        }
-      }
+      const sessionIds = requireSessionIdentifiers(session);
+      const { inboxMessageId, failedMessage } = await deliverInboxMessage(
+        lane,
+        sessionIds,
+        deps.sendInboxMessage
+      );
       const link = linkFromSession(
         lane,
         session,
