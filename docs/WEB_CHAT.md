@@ -120,6 +120,32 @@ The session factory (`createWebSession`):
 3. Maps ChatEvent types to `agentState` transitions (`processing`, `idle`, `permission-prompt`, `error`)
 4. Maintains a bounded FIFO buffer (1000 events) with protection for approval events
 
+### Architecture Audit Note: Attached Hermes Sessions
+
+Validated 2026-07-06 while tightening the chat-first Hermes path.
+
+Relay `WebSession` already carries the selected session `cwd`, `repoPath`, and
+`worktreePath`; the gap was at the attached Hermes boundary. Metadata such as
+`relay_repo_path` is useful for audit/grouping, but metadata alone does not
+shape model behavior. Hermes already has the right upstream seam:
+the `instructions` field on `POST /v1/responses` becomes the run's ephemeral
+system prompt, the same conceptual lane as the Discord gateway's
+per-channel/thread prompt.
+
+Required contract:
+
+- Relay sends the stable `session_id` for Responses chaining.
+- Relay packages per-thread context (`cwd`, workspace/topic ids, repo,
+  worktree, branch, node, and ticket anchors) into `instructions`.
+- Hermes receives that context through its existing ephemeral prompt path; no
+  Relay-specific `cwd` request field or Hermes API fork is required.
+
+This keeps one Relay chat, one Hermes transcript, and one filesystem anchor in
+one prompt context. Do not replace this with metadata-only tagging; that
+recreates the bug where a Relay chat launched from a workspace has no usable
+cwd guidance. Do not reintroduce Hermes API extensions for this unless upstream
+adds an official field.
+
 ## Frontend Components
 
 **Location:** `frontend/src/components/chat/`

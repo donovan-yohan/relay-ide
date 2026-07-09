@@ -543,7 +543,20 @@
 }
 
 @media (max-width: 767px) {
+  .tl {
+    padding: 10px 6px;
+    gap: 14px;
+  }
+
+  .tl-content {
+    gap: 14px;
+  }
+
   .tl-text {
+    max-width: 95%;
+  }
+
+  .queue__item {
     max-width: 95%;
   }
 }

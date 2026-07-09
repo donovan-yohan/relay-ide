@@ -332,12 +332,19 @@
 }
 
 @media (max-width: 767px) {
+  .slash {
+    left: 4px;
+    right: 4px;
+  }
+
+  .composer__overlay,
   .composer__ta {
-    padding: 8px 10px;
+    padding: 6px 4px;
   }
 
   .composer__bar {
-    padding: 4px 8px;
+    gap: 4px;
+    padding: 3px 4px;
   }
 }
 
@@ -358,6 +365,12 @@
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--text-muted);
+}
+
+@media (max-width: 767px) {
+  .composer__attachments {
+    padding: 4px 4px 0;
+  }
 }
 
 .composer__chip-thumb {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildHermesInstructions,
+  buildRelayHermesSessionInstructions,
   resolveHermesGatewaySettings,
 } from '../server/protocol-adapters/hermes-adapter.js';
 
@@ -25,6 +26,35 @@ describe('buildHermesInstructions', () => {
     expect(
       buildHermesInstructions({ systemPrompt: '  ', instructions: null })
     ).toBeUndefined();
+  });
+});
+
+describe('buildRelayHermesSessionInstructions', () => {
+  it('builds a per-thread Relay context block for upstream Hermes instructions', () => {
+    const instructions = buildRelayHermesSessionInstructions({
+      sessionId: 'sess-1',
+      cwd: '/repo/relay-ide',
+      metadata: {
+        relay_workspace_id: 'workspace-1',
+        relay_topic_id: 'topic-1',
+        relay_repo_path: '/repo/relay-ide',
+        relay_worktree_path: '/repo/relay-ide/.worktrees/feature',
+        relay_branch: 'feature',
+        relay_node_id: 'local',
+      },
+    });
+
+    expect(instructions).toContain('Relay session context:');
+    expect(instructions).toContain('- relay_session_id: sess-1');
+    expect(instructions).toContain('- cwd: /repo/relay-ide');
+    expect(instructions).toContain('- repo_path: /repo/relay-ide');
+    expect(instructions).toContain(
+      '- worktree_path: /repo/relay-ide/.worktrees/feature'
+    );
+  });
+
+  it('returns undefined when there is no session context to send', () => {
+    expect(buildRelayHermesSessionInstructions({})).toBeUndefined();
   });
 });
 

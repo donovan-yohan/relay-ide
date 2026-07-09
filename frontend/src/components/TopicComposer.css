@@ -190,12 +190,16 @@
   .topic-composer {
     align-items: stretch;
     min-height: 0;
-    padding: 12px 8px;
+    padding: 8px 4px;
   }
 
   .topic-composer__panel {
     max-width: none;
-    padding: 12px;
+    padding: 8px;
+  }
+
+  .topic-composer__ta {
+    padding: 6px 4px;
   }
 
   .topic-composer__provider-row {

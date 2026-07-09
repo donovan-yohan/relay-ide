@@ -156,4 +156,22 @@ describe('Hermes durable resume', () => {
     expect(gateway.requests).toHaveLength(1);
     expect(gateway.requests[0]?.['previous_response_id']).toBeUndefined();
   });
+
+  it('injects the Relay cwd through instructions without a custom cwd request field', async () => {
+    gateway = await startInlineGateway('resp_cwd');
+    adapter = new HermesProtocolAdapter();
+
+    await adapter.connect(configFor(gateway.endpoint, 'sess-cwd-1'));
+    await adapter.sendMessage('turn-1', 'where am I?');
+
+    expect(gateway.requests).toHaveLength(1);
+    expect(gateway.requests[0]?.['session_id']).toBe('sess-cwd-1');
+    expect(gateway.requests[0]?.['cwd']).toBeUndefined();
+    expect(gateway.requests[0]?.['instructions']).toContain(
+      'Relay session context:'
+    );
+    expect(gateway.requests[0]?.['instructions']).toContain(
+      `- cwd: ${process.cwd()}`
+    );
+  });
 });

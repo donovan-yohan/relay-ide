@@ -190,10 +190,7 @@ import {
   type HandoffCapabilityContext,
   type HandoffDestinationLaunchInput,
 } from './handoffs.js';
-import {
-  createHubNodeLinkManager,
-  HubNodeLinkError,
-} from './hub-node-link.js';
+import { createHubNodeLinkManager, HubNodeLinkError } from './hub-node-link.js';
 import {
   aggregateRemoteSessions,
   createRemoteSessionReadModelCache,
@@ -394,6 +391,7 @@ export function buildHermesCreateExtra(
       | null
       | undefined;
     repoPath?: string | null | undefined;
+    worktreePath?: string | null | undefined;
     branchName?: string | null | undefined;
     nodeId?: string | null | undefined;
     ticketContext?:
@@ -408,6 +406,7 @@ export function buildHermesCreateExtra(
     topicId: ctx.workspaceTopic?.id,
     workspaceId: ctx.workspaceTopic?.workspaceId,
     repoPath: ctx.repoPath,
+    worktreePath: ctx.worktreePath,
     branchName: ctx.branchName,
     nodeId: ctx.nodeId,
     ticketId: ctx.ticketContext?.ticketId,
@@ -5340,6 +5339,7 @@ async function main(): Promise<void> {
           ...buildHermesCreateExtra(resolvedAgent, {
             workspaceTopic,
             repoPath: checkedRepoPath,
+            worktreePath,
             branchName: requestBranchName,
             // Local hub is itself a node (server/local-node.ts); this call
             // site only ever creates sessions on the local node today, so
@@ -5492,7 +5492,8 @@ async function main(): Promise<void> {
     try {
       payload = parseSessionImagePayload(req.body);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Image upload failed';
+      const message =
+        err instanceof Error ? err.message : 'Image upload failed';
       res
         .status(err instanceof SessionImageIngressError ? err.status : 400)
         .json({ error: message });
@@ -5519,7 +5520,10 @@ async function main(): Promise<void> {
             globalSessionId: targetId,
             now: new Date(),
           })
-        : sessionEnvelopeRegistry.validate({ sessionId: targetId, now: new Date() });
+        : sessionEnvelopeRegistry.validate({
+            sessionId: targetId,
+            now: new Date(),
+          });
       if (!firstValidation.ok) {
         res
           .status(relayNodeErrorStatus(firstValidation.error))
@@ -5561,17 +5565,29 @@ async function main(): Promise<void> {
         sessionId,
         expiresAt: scoped.expiresAt,
         ...(scoped.revokedAt ? { revokedAt: scoped.revokedAt } : {}),
-        ...(scoped.correlationId ? { correlationId: scoped.correlationId } : {}),
-        params: { mimeType: payload.mimeType, bytesBase64: payload.data.length },
+        ...(scoped.correlationId
+          ? { correlationId: scoped.correlationId }
+          : {}),
+        params: {
+          mimeType: payload.mimeType,
+          bytesBase64: payload.data.length,
+        },
         now: new Date(),
       });
-      const auditedDecision = appendPolicyAudit(securityAuditLog, policyDecision);
+      const auditedDecision = appendPolicyAudit(
+        securityAuditLog,
+        policyDecision
+      );
       if (auditedDecision.decision !== 'allow') {
         const error = policyDecisionToRelayError(auditedDecision);
         res.status(relayNodeErrorStatus(error)).json({ error });
         return;
       }
-      if (!node || node.status !== 'online' || !hubNodeLinks.hasActiveNode(nodeId)) {
+      if (
+        !node ||
+        node.status !== 'online' ||
+        !hubNodeLinks.hasActiveNode(nodeId)
+      ) {
         res.status(404).json({
           error: {
             code: 'NODE_OFFLINE',

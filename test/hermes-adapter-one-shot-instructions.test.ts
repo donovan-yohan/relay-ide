@@ -1,7 +1,10 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HermesProtocolAdapter } from '../server/protocol-adapters/hermes-adapter.js';
+import {
+  buildRelayHermesSessionInstructions,
+  HermesProtocolAdapter,
+} from '../server/protocol-adapters/hermes-adapter.js';
 import type { AdapterConfig } from '../server/protocol-adapter.js';
 
 /**
@@ -126,14 +129,20 @@ describe('HermesProtocolAdapter one-shot initialInstructions (#1062 review follo
     await adapter.sendMessage('turn-1', 'hello');
     await adapter.sendMessage('turn-2', 'continue');
 
+    const relayContext = buildRelayHermesSessionInstructions({
+      sessionId: 'sess-ticket-1',
+      cwd: process.cwd(),
+    });
     expect(gateway.requests).toHaveLength(2);
     expect(gateway.requests[0]?.['instructions']).toBe(
-      'Prefer terse answers.\n\nYou are working on ticket GH-42.'
+      `${relayContext}\n\nPrefer terse answers.\n\nYou are working on ticket GH-42.`
     );
-    expect(gateway.requests[1]?.['instructions']).toBe('Prefer terse answers.');
+    expect(gateway.requests[1]?.['instructions']).toBe(
+      `${relayContext}\n\nPrefer terse answers.`
+    );
   });
 
-  it('sends no instructions field once the one-shot kickoff is consumed and there is no persistent channel instructions', async () => {
+  it('keeps only Relay context once the one-shot kickoff is consumed and there is no persistent channel instructions', async () => {
     gateway = await startInlineGateway();
     adapter = new HermesProtocolAdapter();
 
@@ -145,11 +154,15 @@ describe('HermesProtocolAdapter one-shot initialInstructions (#1062 review follo
     await adapter.sendMessage('turn-1', 'hello');
     await adapter.sendMessage('turn-2', 'continue');
 
+    const relayContext = buildRelayHermesSessionInstructions({
+      sessionId: 'sess-ticket-2',
+      cwd: process.cwd(),
+    });
     expect(gateway.requests).toHaveLength(2);
     expect(gateway.requests[0]?.['instructions']).toBe(
-      'You are working on ticket GH-42.'
+      `${relayContext}\n\nYou are working on ticket GH-42.`
     );
-    expect(gateway.requests[1]?.['instructions']).toBeUndefined();
+    expect(gateway.requests[1]?.['instructions']).toBe(relayContext);
   });
 
   it('resets the one-shot flag on reconnect so a fresh conversation gets the kickoff again', async () => {
@@ -164,12 +177,16 @@ describe('HermesProtocolAdapter one-shot initialInstructions (#1062 review follo
     await adapter.reconnect();
     await adapter.sendMessage('turn-2', 'hello again');
 
+    const relayContext = buildRelayHermesSessionInstructions({
+      sessionId: 'sess-ticket-3',
+      cwd: process.cwd(),
+    });
     expect(gateway.requests).toHaveLength(2);
     expect(gateway.requests[0]?.['instructions']).toBe(
-      'You are working on ticket GH-42.'
+      `${relayContext}\n\nYou are working on ticket GH-42.`
     );
     expect(gateway.requests[1]?.['instructions']).toBe(
-      'You are working on ticket GH-42.'
+      `${relayContext}\n\nYou are working on ticket GH-42.`
     );
   });
 });
