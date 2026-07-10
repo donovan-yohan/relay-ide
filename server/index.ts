@@ -1096,6 +1096,25 @@ function sendSessionCreateError(
   });
 }
 
+/**
+ * A launch anchor is valid when it IS a configured project path or lives
+ * inside one (worktrees under `.worktrees/<slug>`, monorepo subdirs). The
+ * boundary check uses path segments, so `/repo-evil` does not match `/repo`.
+ */
+function isConfiguredLaunchAnchor(
+  anchor: string,
+  configured: Set<string>
+): boolean {
+  if (configured.has(anchor)) return true;
+  for (const root of configured) {
+    const rel = path.relative(root, anchor);
+    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function validateSessionCreateRequest(
   repoPath: string | undefined,
   cwd: string | undefined,
@@ -1120,9 +1139,9 @@ export function validateSessionCreateRequest(
     });
     return false;
   }
-  if (configured.size > 0 && !configured.has(anchor)) {
+  if (configured.size > 0 && !isConfiguredLaunchAnchor(anchor, configured)) {
     res.status(400).json({
-      error: `${sessionType} sessions require a repoPath or cwd that is a configured project path`,
+      error: `${sessionType} sessions require a repoPath or cwd inside a configured project path`,
     });
     return false;
   }

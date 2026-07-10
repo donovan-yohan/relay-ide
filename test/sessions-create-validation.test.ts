@@ -88,6 +88,36 @@ describe('validateSessionCreateRequest', () => {
     expect(res.status).toBe(200); // no error response sent
   });
 
+  it('returns true for agent session with cwd inside a configured repo (worktree)', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      undefined,
+      `${configuredPath}/.worktrees/issue-123`,
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(true);
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects cwd that only shares a path prefix with a configured repo', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      undefined,
+      `${configuredPath}-evil`,
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(false);
+    expect(res.status).toBe(400);
+  });
+
   it('returns true for agent session with configured cwd (no repoPath)', () => {
     const res = makeRes();
     const result = validateSessionCreateRequest(
@@ -184,7 +214,7 @@ describe('validateSessionCreateRequest', () => {
     expect(res.status).toBe(400);
     expect(res.body).toMatchObject({
       error:
-        'terminal sessions require a repoPath or cwd that is a configured project path',
+        'terminal sessions require a repoPath or cwd inside a configured project path',
     });
   });
 
