@@ -3261,7 +3261,10 @@ async function runGatewaySessionInput(sessionArgs: string[]): Promise<never> {
         .toString('utf8');
       bytesReceived = maxBytes;
       truncated = true;
-      fail(`PTY output exceeded maxBytes before waitFor matched`);
+      // Without --wait-for this is fire-and-forget: the attach replay can
+      // exceed maxBytes on its own, which must not turn a delivered write
+      // into an error envelope. The 10ms post-send finish() still runs.
+      if (waitFor) fail(`PTY output exceeded maxBytes before waitFor matched`);
       return;
     }
     output += text;
