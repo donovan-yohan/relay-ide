@@ -1099,6 +1099,12 @@ function setupWebSocket(
     }
   });
 
+  // Sessions can be created outside the browser (CLI gateway, REST) — without
+  // a push event the web UI only discovers them on reconnect/refresh.
+  sessions.onSessionCreate((sessionId, cwd, branchName) => {
+    broadcastEvent('session-created', { sessionId, cwd, branchName });
+  });
+
   sessions.onSessionEnd((sessionId, cwd, branchName) => {
     broadcastEvent('session-ended', { sessionId, cwd, branchName });
   });
