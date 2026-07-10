@@ -387,7 +387,7 @@ export function collaborationPromptAppendix(
     '- Discover active collaborators in this repo / work context: `relay-ide v1 roster list --json` (filter with `--repo` or `--work-context-id`).',
     '- Announce yourself so others can find you, then heartbeat: `relay-ide v1 roster register --input-json \'{"role":"implementer","useCase":"<what you are doing>","sessionId":"<your session id>"}\' --json`, and periodically `relay-ide v1 roster update-self --input-json \'{"sessionId":"<your session id>","statusText":"<current status>"}\' --json`. Declare only role/use-case/status/capability hints — keep it metadata-only and never include anything sensitive.',
     '- Send a direct message / context to another session: `relay-ide v1 inbox send --json`.',
-    '- Check and acknowledge your inbox at task boundaries: `relay-ide v1 inbox list --json`, then `inbox ack` / `inbox resolve` / `inbox ignore`.',
+    '- Check and acknowledge your inbox at task boundaries: `relay-ide v1 inbox list --target-session-id local:$RELAY_IDE_SESSION_ID --json`, then `inbox ack` / `inbox resolve` / `inbox ignore`.',
     '- React to messages and attention without a polling loop: subscribe to `relay-ide v1 events subscribe --topic inbox --json` and `relay-ide v1 events subscribe --topic attention --json` (use the per-event `cursor` with `--cursor` to resume).',
     '- Escalate a blocker or question by sending an inbox message to the relevant session or work context rather than spamming status checks.',
   ].join('\n');

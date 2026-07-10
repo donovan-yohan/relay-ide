@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseRenderedScreenMaxLines,
+  resolveSessionLaunchPaths,
   validateSessionCreateRequest,
 } from '../server/index.js';
 import type { Config } from '../server/types.js';
@@ -32,7 +33,9 @@ function makeStore(): WorkContextStore {
       return contexts.get(id);
     },
     associateSession() {},
-    findSessionWorkContextIds() { return []; },
+    findSessionWorkContextIds() {
+      return [];
+    },
     // @ts-expect-error partial stub
   } as WorkContextStore;
 }
@@ -42,8 +45,12 @@ function makeRes() {
   let capturedStatus = 200;
   let capturedBody: unknown = undefined;
   return {
-    get status() { return capturedStatus; },
-    get body() { return capturedBody; },
+    get status() {
+      return capturedStatus;
+    },
+    get body() {
+      return capturedBody;
+    },
     resObj: {
       status(code: number) {
         capturedStatus = code;
@@ -81,7 +88,52 @@ describe('validateSessionCreateRequest', () => {
     expect(res.status).toBe(200); // no error response sent
   });
 
-  it('returns false with 400 for agent session with no repoPath', () => {
+  it('returns true for agent session with cwd inside a configured repo (worktree)', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      undefined,
+      `${configuredPath}/.worktrees/issue-123`,
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(true);
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects cwd that only shares a path prefix with a configured repo', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      undefined,
+      `${configuredPath}-evil`,
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(false);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns true for agent session with configured cwd (no repoPath)', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      undefined,
+      nonGitPath,
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(true);
+    expect(res.status).toBe(200);
+  });
+
+  it('returns false with 400 for agent session with no launch anchor', () => {
     const res = makeRes();
     const result = validateSessionCreateRequest(
       undefined,
@@ -94,7 +146,9 @@ describe('validateSessionCreateRequest', () => {
     );
     expect(result).toBe(false);
     expect(res.status).toBe(400);
-    expect(res.body).toMatchObject({ error: expect.stringContaining('repoPath') });
+    expect(res.body).toMatchObject({
+      error: 'agent sessions require a repoPath or cwd launch anchor',
+    });
   });
 
   it('returns false with 400 for agent session with unconfigured repoPath', () => {
@@ -110,6 +164,9 @@ describe('validateSessionCreateRequest', () => {
     );
     expect(result).toBe(false);
     expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      error: 'repoPath must be a configured project path when provided',
+    });
   });
 
   it('returns true for terminal session with configured cwd (no repoPath)', () => {
@@ -155,7 +212,10 @@ describe('validateSessionCreateRequest', () => {
     );
     expect(result).toBe(false);
     expect(res.status).toBe(400);
-    expect(res.body).toMatchObject({ error: 'terminal sessions require a cwd that is a configured project path' });
+    expect(res.body).toMatchObject({
+      error:
+        'terminal sessions require a repoPath or cwd inside a configured project path',
+    });
   });
 
   it('returns false with 400 for terminal session with all paths undefined (fail-closed)', () => {
@@ -171,10 +231,12 @@ describe('validateSessionCreateRequest', () => {
     );
     expect(result).toBe(false);
     expect(res.status).toBe(400);
-    expect(res.body).toMatchObject({ error: 'terminal sessions require a cwd that is a configured project path' });
+    expect(res.body).toMatchObject({
+      error: 'terminal sessions require a repoPath or cwd launch anchor',
+    });
   });
 
-  it('defaults to agent type when type is undefined (requires repoPath)', () => {
+  it('defaults to agent type when type is undefined', () => {
     const res = makeRes();
     const result = validateSessionCreateRequest(
       undefined,
@@ -185,8 +247,23 @@ describe('validateSessionCreateRequest', () => {
       undefined,
       res.resObj as never
     );
-    expect(result).toBe(false);
-    expect(res.status).toBe(400);
+    expect(result).toBe(true);
+    expect(res.status).toBe(200);
+  });
+
+  it('allows cwd-only launch anchors when no project list is configured', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      undefined,
+      '/unlisted/dev/repo',
+      'agent',
+      makeConfig([]),
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(true);
+    expect(res.status).toBe(200);
   });
 
   it('returns false with 404 when workContextId is set but not found', () => {
@@ -203,6 +280,98 @@ describe('validateSessionCreateRequest', () => {
     expect(result).toBe(false);
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ error: 'work_context_not_found' });
+  });
+
+  // Security: a configured repoPath must not be usable to smuggle an out-of-tree
+  // launch cwd past the boundary. The session launches in the resolved `cwd`
+  // (worktreePath ?? requestCwd ?? repoPath), so `cwd` — not `repoPath` — is
+  // what has to be inside a configured project.
+  it('rejects a configured repoPath paired with an out-of-tree cwd (launch-anchor bypass)', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      configuredPath,
+      '/home/user/.ssh',
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(false);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      error:
+        'agent sessions require a repoPath or cwd inside a configured project path',
+    });
+  });
+
+  it('allows a configured repoPath paired with a worktree cwd inside it', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      configuredPath,
+      `${configuredPath}/.worktrees/issue-9`,
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(true);
+    expect(res.status).toBe(200);
+  });
+
+  // End-to-end: the real request path resolves the launch cwd first, then
+  // validates it. A configured repoPath + arbitrary cwd must fail closed at the
+  // integration boundary, not just in isolation.
+  it('closes the launch-anchor bypass through resolveSessionLaunchPaths + validate', () => {
+    const { requestedRepoPath, cwd } = resolveSessionLaunchPaths({
+      repoPath: configuredPath,
+      cwd: '/etc',
+      config,
+    });
+    expect(cwd).toBe('/etc'); // requestCwd wins over repoPath as the launch dir
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      requestedRepoPath,
+      cwd,
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(false);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('resolveSessionLaunchPaths', () => {
+  it('uses cwd as the launch anchor without synthesizing repoPath', () => {
+    expect(
+      resolveSessionLaunchPaths({
+        cwd: ' /configured/non-git ',
+        config: makeConfig(['/configured/repo']),
+      })
+    ).toEqual({
+      requestedRepoPath: undefined,
+      requestedWorktreePath: undefined,
+      cwd: '/configured/non-git',
+      settingsAnchorPath: '/configured/non-git',
+    });
+  });
+
+  it('falls back to the local dev cwd when no project is configured', () => {
+    expect(
+      resolveSessionLaunchPaths({
+        config: makeConfig([]),
+        devCwdFallback: '/home/dev/relay-ide',
+      })
+    ).toEqual({
+      requestedRepoPath: undefined,
+      requestedWorktreePath: undefined,
+      cwd: '/home/dev/relay-ide',
+      settingsAnchorPath: '/home/dev/relay-ide',
+    });
   });
 });
 

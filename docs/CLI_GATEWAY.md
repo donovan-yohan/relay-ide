@@ -444,6 +444,12 @@ The scoped actor credential slice supports the read-only hub-backed set plus the
 | `relay-ide v1 work-context-artifacts show --id <id> --json`              | `work-context-artifacts.show`   | `session:read`      | Reads one artifact envelope after metadata-derived WorkContext scope authorization; validates stored payload integrity; requires `context:read`. |
 | `relay-ide v1 work-context-artifacts export --id <id> --json`            | `work-context-artifacts.export` | `session:read`      | Exports only the sanitized public-summary copy after metadata-derived WorkContext scope authorization; requires `context:read`.                  |
 | `relay-ide v1 work-context-artifacts doctor --json`                      | `work-context-artifacts.doctor` | `session:read`      | Reads bounded artifact store diagnostics; requires `context:read`.                                                                               |
+| `relay-ide v1 context list --json`                                       | `context.list`                  | `context:read`      | Lists context packets; enforces exact WorkContext scope when `--work-context-id` is present.                                                     |
+| `relay-ide v1 context get --id <id> --json`                              | `context.get`                   | `context:read`      | Reads one context packet by id. Packets are not WorkContext-bound, so a WorkContext-scoped credential fails closed (`missing_scope`).            |
+| `relay-ide v1 inbox list --json`                                         | `inbox.list`                    | `inbox:read`        | Lists inbox messages for the matched target session/WorkContext scope; PULL delivery flips `queued → delivered` as a read side effect.           |
+| `relay-ide v1 inbox get --id <id> --json`                                | `inbox.get`                     | `inbox:read`        | Reads one inbox message; scope is checked against the message's own target session/WorkContext; PULL delivery flips `queued → delivered`.        |
+
+The `inbox.list`/`inbox.get` reads require the `inbox:read` capability bit, which is part of the scoped actor credential grant allowlist (alongside `session:read`, `context:read`, `context:write`, `inbox:write`, `artifact:write`). Combined with the `inbox.send`/`inbox.ack`/`inbox.resolve`/`inbox.ignore` and `context.create`/`context.get`/`context.list`/`context.pin`/`context.unpin` verbs below, a single scoped actor credential can run the full agent mail loop (create context, send, read/list, and transition) and subscribe to the `inbox` events topic — no browser token required. Inbox transitions record the acting actor (`transitionedBy`) from `--actor-id`.
 
 Write allowlist:
 
@@ -627,7 +633,8 @@ Web launch parity (#859): the converted browser launch actions use the same stab
 
 Supported now:
 
-- local repo/worktree-backed session creation using `repoPath` and optional `worktreePath`
+- local session creation using `cwd`, or repo-backed `repoPath` plus optional `worktreePath`
+- optional `displayName` to label the session in session lists and the web UI (defaults to `Agent N` / `Terminal N`)
 - routed node creation with `nodeId`, `cwd`, `type` (defaulting to `agent` when omitted), `mode`, `agent`, lifecycle fields, and optional non-agent `sessionEnvelope` where the existing backend supports them
 - routed node creation with the typed `environment` object (see [Typed environment IDs](#typed-environment-ids-626) below)
 - optional `terminalBackend`, with `relay-pty` as the only accepted value; `tmux-compat` fails closed as an unsupported legacy backend
@@ -738,9 +745,8 @@ Legacy flat fields `nodeId`, `repoPath`, `worktreePath`, and `cwd` on `sessions.
 
 Fail-closed examples:
 
-- local create without `repoPath` returns `INVALID_ARGUMENT`
+- local create without `repoPath`, `cwd`, or `workspaceTopicId` returns `INVALID_ARGUMENT`
 - unknown `sessions create` input fields return `INVALID_ARGUMENT` before any backend forwarding
-- local create with explicit `cwd` returns `UNSUPPORTED` because the local endpoint derives `cwd` from `repoPath`/`worktreePath`
 - local scoped/lifecycle/peer fields (`sessionEnvelope`, `ttlSeconds`, `expiresAt`, `confirmationToken`) return `UNSUPPORTED` until implemented locally
 - `sessionEnvelope.peerIdentity.kind: "agent"` returns `UNSUPPORTED` until hub-owned agent peer identity is implemented
 - local `controlMode=agent-driven` returns `UNSUPPORTED` until local create has the same policy gate as routed creation
@@ -1060,7 +1066,7 @@ The first envelope is always `event: "open"`. The final envelope is always `even
 - `--idle-timeout-ms N` detaches after N ms without an event frame.
 - If stdout backpressure is observed, the CLI aborts the upstream stream and emits `closed` with `reason: "stdout backpressure"`.
 
-Capability gating fails closed: `sessions`, `nodes`, and `attention` require `session:read`; `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs` require `context:read`; `inbox` requires `inbox:read`; `audit` additionally requires `tab:intervention:read`. Unknown topics surface as `INVALID_ARGUMENT` with `details.field: "topic"` before the CLI opens any hub request. Missing or denied capabilities surface as `FORBIDDEN` envelopes. The hub side enforces the same gate; the CLI side enforces the same allowlist. This is the only `events.*` verb in v1 — no `events.publish`, no `events.replay`, no event-bus write surface.
+Capability gating fails closed: `sessions`, `nodes`, and `attention` require `session:read`; `context`, `work-context-artifacts`, `handoff-artifacts`, and `workflow-runs` require `context:read`; `inbox` requires `inbox:read`; `audit` additionally requires `tab:intervention:read`. Unknown topics surface as `INVALID_ARGUMENT` with `details.field: "topic"` before the CLI opens any hub request. Missing or denied capabilities surface as `FORBIDDEN` envelopes. The hub side enforces the same gate; the CLI side enforces the same allowlist. This is the only `events.*` verb in v1 — no `events.publish`, no `events.replay`, no event-bus write surface. `events subscribe` accepts a scoped actor credential (`--actor-token` / `RELAY_IDE_ACTOR_TOKEN`), sending the actor lane headers so the hub validates the topic capability against the credential; it falls back to `RELAY_IDE_BROWSER_TOKEN` when no actor token is present.
 
 Smoke form:
 

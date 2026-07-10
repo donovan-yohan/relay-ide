@@ -980,6 +980,7 @@ describe('CLI gateway contract', () => {
         expect.arrayContaining([
           'repoPath',
           'worktreePath',
+          'cwd',
           'type',
           'mode',
           'agent',
@@ -992,9 +993,6 @@ describe('CLI gateway contract', () => {
       expect(
         localLifecycle.error.details?.['supportedLocalFields']
       ).not.toContain('ttlSeconds');
-      expect(
-        localLifecycle.error.details?.['supportedLocalFields']
-      ).not.toContain('cwd');
     }
 
     const localEnvelope = validateAndSanitizeGatewayCreateInput({
@@ -1087,6 +1085,21 @@ describe('CLI gateway contract', () => {
         workContextId: 'wc:handoff',
       },
       sessionType: 'terminal',
+    });
+
+    const cwdOnly = validateAndSanitizeLocalGatewayCreateInput({
+      cwd: '/tmp/non-git-project',
+      type: 'agent',
+      agent: 'codex',
+    });
+    expect(cwdOnly).toMatchObject({
+      ok: true,
+      input: {
+        cwd: '/tmp/non-git-project',
+        type: 'agent',
+        agent: 'codex',
+      },
+      sessionType: 'agent',
     });
 
     const topicLaunch = validateAndSanitizeLocalGatewayCreateInput({

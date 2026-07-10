@@ -4,6 +4,7 @@ import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import TopicComposer from './TopicComposer.js';
 import ChatView from './chat/ChatView.js';
+import LiveSessionsPanel from './LiveSessionsPanel.js';
 import './ChatHome.css';
 
 export interface ChatHomeProps {
@@ -36,6 +37,15 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
     return best;
   }, [sessions]);
 
+  // Live PTY agent/terminal sessions (Claude/Codex/Hermes TUIs, bare
+  // terminals). Web-mode chat sessions live in the composer/ChatView flow, so
+  // they are excluded here — this list is exactly the set that routes to the
+  // terminal view when selected.
+  const liveSessions = useMemo(
+    () => sessions.filter((session) => session.mode !== 'web'),
+    [sessions]
+  );
+
   const resume = mostRecentSession
     ? {
         label: `resume "${mostRecentSession.displayName}"`,
@@ -47,10 +57,16 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
     <div className="chat-home" aria-label="chat home">
       {activeSession?.mode === 'web' && !topicComposerOpen ? (
         <ChatView sessionId={scopedSessionKey(activeSession)} />
-      ) : null}
-      {activeSession?.mode !== 'web' || topicComposerOpen ? (
-        <TopicComposer {...(resume ? { resume } : {})} />
-      ) : null}
+      ) : (
+        <>
+          <LiveSessionsPanel
+            sessions={liveSessions}
+            activeSessionKey={activeSessionId}
+            onSelect={onSelectSession}
+          />
+          <TopicComposer {...(resume ? { resume } : {})} />
+        </>
+      )}
     </div>
   );
 }

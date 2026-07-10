@@ -64,7 +64,7 @@ describe('resolveAppViewMode', () => {
     ).toBe('analytics');
   });
 
-  it('keeps start/resume in the chat shell while preserving analytics and explicit repo dashboard priority', () => {
+  it('keeps a web chat session in the chat shell while preserving analytics and explicit repo dashboard priority', () => {
     expect(
       resolveAppViewMode({
         analyticsView: { sessionId: 'session-1' },
@@ -86,6 +86,7 @@ describe('resolveAppViewMode', () => {
         analyticsView: null,
         hasActiveSession: true,
         activeRepoPath: null,
+        activeSessionMode: 'web',
       })
     ).toBe('chat');
 
@@ -94,6 +95,7 @@ describe('resolveAppViewMode', () => {
         analyticsView: null,
         hasActiveSession: true,
         activeRepoPath: '/repo/relay-ide',
+        activeSessionMode: 'web',
       })
     ).toBe('chat');
 
@@ -104,5 +106,47 @@ describe('resolveAppViewMode', () => {
         activeRepoPath: '/repo/relay-ide',
       })
     ).toBe('dashboard');
+  });
+
+  it('routes an active PTY agent/terminal session to the terminal view (#1058)', () => {
+    // A live PTY session (Claude/Codex/Hermes TUI) must surface its terminal.
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: true,
+        activeRepoPath: null,
+        activeSessionMode: 'pty',
+      })
+    ).toBe('session');
+
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: true,
+        activeRepoPath: '/repo/relay-ide',
+        activeSessionMode: 'pty',
+      })
+    ).toBe('session');
+
+    // Legacy/undefined mode is treated as a PTY terminal, matching ChatHome's
+    // own `mode === 'web'` gate.
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: true,
+        activeRepoPath: null,
+      })
+    ).toBe('session');
+
+    // The topic composer overlay still wins over a live PTY session.
+    expect(
+      resolveAppViewMode({
+        analyticsView: null,
+        hasActiveSession: true,
+        activeRepoPath: null,
+        activeSessionMode: 'pty',
+        topicComposerOpen: true,
+      })
+    ).toBe('chat');
   });
 });

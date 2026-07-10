@@ -12,6 +12,7 @@ import { trackEvent } from './analytics.js';
 import { createLogger } from './logger.js';
 import { loadConfig } from './config.js';
 import { verifyCookieToken } from './auth.js';
+import { validateScopedToken } from './browser-content.js';
 import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
@@ -589,6 +590,10 @@ function setupWebSocket(
     const cookies = parseCookies(cookieHeader);
     const token = cookies['token'] ?? '';
     if (authenticatedTokens.has(token)) return true;
+    // Browser scoped token: hub-injected RELAY_IDE_BROWSER_TOKEN, already
+    // accepted on the HTTP gateway lane; without this the CLI's PTY-stream
+    // verbs (sessions input/stream/wait) 401 on WS upgrade.
+    if (validateScopedToken(token)) return true;
     if (!configPath) return false;
     try {
       const config = loadConfig(configPath);
@@ -729,6 +734,36 @@ function setupWebSocket(
   server.on('upgrade', (request, socket, head) => {
     const requestUrl = new URL(request.url ?? '/', 'http://relay.local');
     const requestPath = requestUrl.pathname.replace(/\/$/, '');
+
+    const attachLocalPty = (sessionKey: string): void => {
+      const sessionId = resolveLocalWebSocketSessionId(sessionKey);
+      if (!sessionId) {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      const session = sessions.get(sessionId);
+      if (!session) {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        sessionMap.set(ws, session);
+        localPtyAttachContext.set(ws, {
+          replayCursor: parseReplayCursor(
+            requestUrl.searchParams.get('cursor')
+          ),
+          clientId:
+            parseClientId(requestUrl.searchParams.get('clientId')) ??
+            createTerminalStreamClientId(),
+          resizeOwner: parseResizeOwner(
+            requestUrl.searchParams.get('resizeOwner')
+          ),
+        });
+        wss.emit('connection', ws, request);
+      });
+    };
     if (
       requestPath === '/hub/node-link' &&
       handleNodeLinkUpgrade(request, socket, head)
@@ -754,6 +789,13 @@ function setupWebSocket(
       } catch {
         socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
         socket.destroy();
+        return;
+      }
+      // The hub's own node is in-process — no node-link, no session envelope.
+      // Routed-path attaches addressed to it (e.g. the CLI gateway's
+      // /nodes/local/ws/sessions/:id) are local PTY attaches.
+      if (localNode && nodeId === localNode.nodeId) {
+        attachLocalPty(sessionId);
         return;
       }
       const validation = sessionEnvelopes.validate({
@@ -862,32 +904,7 @@ function setupWebSocket(
       socket.destroy();
       return;
     }
-    const sessionId = resolveLocalWebSocketSessionId(requestedSessionKey);
-    if (!sessionId) {
-      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    const session = sessions.get(sessionId);
-    if (!session) {
-      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      sessionMap.set(ws, session);
-      localPtyAttachContext.set(ws, {
-        replayCursor: parseReplayCursor(requestUrl.searchParams.get('cursor')),
-        clientId:
-          parseClientId(requestUrl.searchParams.get('clientId')) ??
-          createTerminalStreamClientId(),
-        resizeOwner: parseResizeOwner(
-          requestUrl.searchParams.get('resizeOwner')
-        ),
-      });
-      wss.emit('connection', ws, request);
-    });
+    attachLocalPty(requestedSessionKey);
   });
 
   const sessionMap = new WeakMap<WebSocket, Session>();
@@ -1080,6 +1097,12 @@ function setupWebSocket(
         session_id: sessionId,
       });
     }
+  });
+
+  // Sessions can be created outside the browser (CLI gateway, REST) — without
+  // a push event the web UI only discovers them on reconnect/refresh.
+  sessions.onSessionCreate((sessionId, cwd, branchName) => {
+    broadcastEvent('session-created', { sessionId, cwd, branchName });
   });
 
   sessions.onSessionEnd((sessionId, cwd, branchName) => {

@@ -35,13 +35,25 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   } as SessionSummary;
 }
 
-function boundary(sessions: Record<string, SessionSummary>, writes: string[] = []): SupervisorActionSessionBoundary {
+function boundary(
+  sessions: Record<string, SessionSummary>,
+  writes: string[] = []
+): SupervisorActionSessionBoundary {
   return {
     list: () => Object.values(sessions),
     get: (id: string) => sessions[id] as Session | undefined,
-    supervisorWrite: (id: string, input: { payload: string }) => {
-      writes.push(`${id}:${input.payload}`);
-      return { eventId: `evt-${id}`, modeBefore: 'agent-driven', modeAfter: 'co-driven' };
+    // Record the full byte stream (typed payload + deferred submit tail):
+    // the split-write mechanics are pinned in supervisor-route-handlers tests.
+    supervisorWrite: (
+      id: string,
+      input: { payload: string; deferredTail?: string }
+    ) => {
+      writes.push(`${id}:${input.payload}${input.deferredTail ?? ''}`);
+      return {
+        eventId: `evt-${id}`,
+        modeBefore: 'agent-driven',
+        modeAfter: 'co-driven',
+      };
     },
   };
 }
@@ -54,7 +66,10 @@ describe('typed supervisor actions', () => {
       session({ id: 'stale-1', controlFreshness: 'stale' }),
     ]);
 
-    expect(response).toMatchObject({ command: 'supervisor.sessions', count: 3 });
+    expect(response).toMatchObject({
+      command: 'supervisor.sessions',
+      count: 3,
+    });
     expect(response.sessions[0]?.actions).toEqual({
       sendText: { allowed: true },
       sendKey: { allowed: true },
@@ -90,7 +105,11 @@ describe('typed supervisor actions', () => {
       command: 'supervisor.sendText',
       action: 'sendText',
       counts: { requested: 1, succeeded: 1, denied: 0, failed: 0, skipped: 0 },
-      redaction: { rawContentAvailable: false, rawContentStored: false, hashesOnly: true },
+      redaction: {
+        rawContentAvailable: false,
+        rawContentStored: false,
+        hashesOnly: true,
+      },
     });
     expect(submit.command).toBe('supervisor.submit');
     expect(sendText.audit.content).toMatchObject({
@@ -150,7 +169,11 @@ describe('typed supervisor actions', () => {
       });
 
       expect(writes).toEqual([]);
-      expect(result.counts).toMatchObject({ requested: 1, succeeded: 0, failed: 1 });
+      expect(result.counts).toMatchObject({
+        requested: 1,
+        succeeded: 0,
+        failed: 1,
+      });
       expect(result.results[0]?.error).toMatchObject({
         code: 'INVALID_ARGUMENT',
         reasonCode: 'KEY_INVALID',
@@ -211,10 +234,17 @@ describe('typed supervisor actions', () => {
       'sess-2': session({ id: 'sess-2' }),
     };
     const actionBoundary = boundary(sessions, writes);
-    actionBoundary.supervisorWrite = (id: string, input: { payload: string }) => {
+    actionBoundary.supervisorWrite = (
+      id: string,
+      input: { payload: string; deferredTail?: string }
+    ) => {
       if (id === 'sess-2') throw new Error('pty is gone');
-      writes.push(`${id}:${input.payload}`);
-      return { eventId: `evt-${id}`, modeBefore: 'agent-driven', modeAfter: 'co-driven' };
+      writes.push(`${id}:${input.payload}${input.deferredTail ?? ''}`);
+      return {
+        eventId: `evt-${id}`,
+        modeBefore: 'agent-driven',
+        modeAfter: 'co-driven',
+      };
     };
 
     const result = executeSupervisorAction({
@@ -260,14 +290,21 @@ describe('typed supervisor actions', () => {
   it('refuses control sequences and stale sessions before writing', () => {
     const writes: string[] = [];
     const result = executeSupervisorAction({
-      boundary: boundary({ 'sess-1': session({ controlFreshness: 'stale' }) }, writes),
+      boundary: boundary(
+        { 'sess-1': session({ controlFreshness: 'stale' }) },
+        writes
+      ),
       action: 'sendText',
       targetIds: ['sess-1'],
       text: '\u001b[200~paste',
     });
 
     expect(writes).toEqual([]);
-    expect(result.counts).toMatchObject({ requested: 1, succeeded: 0, failed: 1 });
+    expect(result.counts).toMatchObject({
+      requested: 1,
+      succeeded: 0,
+      failed: 1,
+    });
     expect(result.results[0]?.error).toMatchObject({
       code: 'INVALID_ARGUMENT',
       reasonCode: 'TEXT_MUST_BE_LITERAL',
@@ -312,7 +349,11 @@ describe('#958 typed supervisor submit', () => {
     // Trailing newline is stripped; embedded newline is preserved as a literal
     // LF; exactly one CR is appended by the primitive.
     expect(writes).toEqual(['sess-1:first line\nsecond line\r']);
-    expect(result.counts).toMatchObject({ requested: 1, succeeded: 1, failed: 0 });
+    expect(result.counts).toMatchObject({
+      requested: 1,
+      succeeded: 1,
+      failed: 0,
+    });
     expect(result.results[0]).toMatchObject({
       ok: true,
       submitPerformed: true,
@@ -391,8 +432,15 @@ describe('#958 typed supervisor submit', () => {
     });
 
     expect(writes).toEqual([]);
-    expect(result.counts).toMatchObject({ requested: 1, succeeded: 1, failed: 0 });
-    expect(result.audit).toMatchObject({ dryRun: true, rawContentStored: false });
+    expect(result.counts).toMatchObject({
+      requested: 1,
+      succeeded: 1,
+      failed: 0,
+    });
+    expect(result.audit).toMatchObject({
+      dryRun: true,
+      rawContentStored: false,
+    });
     expect(result.results[0]).toMatchObject({
       ok: true,
       dryRun: true,
@@ -415,7 +463,11 @@ describe('#958 typed supervisor submit', () => {
     });
 
     expect(writes).toEqual([]);
-    expect(result.counts).toMatchObject({ requested: 1, succeeded: 0, failed: 1 });
+    expect(result.counts).toMatchObject({
+      requested: 1,
+      succeeded: 0,
+      failed: 1,
+    });
     expect(result.results[0]?.error).toMatchObject({
       code: 'INVALID_ARGUMENT',
       reasonCode: 'TEXT_MUST_BE_LITERAL',

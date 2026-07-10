@@ -69,9 +69,9 @@ export function useTopicRoomCreate({
   const effectiveTitle = effectiveDraftTitle(draft);
   const taskRef = taskRefFromDraft(draft.taskRef, effectiveTitle);
   const defaultNodeId = activeSession?.nodeId ?? undefined;
-  // Fall back to the first configured repo: agent sessions REQUIRE a
-  // configured repoPath server-side (validateSessionCreateRequest), so a
-  // fresh landing with no session/repo context must still launch somewhere.
+  // Prefer repo/worktree context when it exists, but launch only needs a cwd
+  // anchor. Fresh dev/self-host sessions can rely on the backend's local cwd
+  // fallback when no repo has been configured yet.
   const defaultRepoPath =
     activeSession?.repoPath ?? activeRepoPath ?? repos[0]?.path ?? undefined;
   const defaultWorktreePath = activeSession?.worktreePath ?? undefined;

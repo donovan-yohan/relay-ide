@@ -32,6 +32,7 @@ export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = [
   'session:read',
   'context:read',
   'context:write',
+  'inbox:read',
   'inbox:write',
   'artifact:write',
 ] as const;
@@ -67,6 +68,10 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'workspace-topics.list',
   'workspace-topics.search',
   'workspace-topics.get',
+  'context.get',
+  'context.list',
+  'inbox.list',
+  'inbox.get',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
@@ -319,6 +324,14 @@ export function cliGatewayActorCommandCapabilities(
   command: CliGatewayActorCommand
 ): readonly RelayCapabilityBit[] {
   if (command === 'events.subscribe') return ['context:read'];
+  // context/inbox reads must resolve to their read capability BEFORE the generic
+  // read fallback (session:read) and the `startsWith('context.'|'inbox.')` write
+  // branches below, so the required bit matches the route's read gate
+  // (`CONTEXT_READ`/`INBOX_READ` in context-inbox-router).
+  if (command === 'context.get' || command === 'context.list')
+    return ['context:read'];
+  if (command === 'inbox.list' || command === 'inbox.get')
+    return ['inbox:read'];
   if (command === 'work-context-messages.append') return ['context:write'];
   if (
     command === 'workflow-runs.list' ||
@@ -380,9 +393,16 @@ export function validateCliGatewayActorCredential(
   return registry.validate(input.token, {
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     requiredCapabilities: [...input.capabilities],
-    scope: input.capabilities.includes('session:read')
-      ? { taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF, ...validationScope }
-      : validationScope,
+    // The read task-ref is a permissive marker that `defaultCliGatewayActorScope`
+    // stamps into EVERY session:read credential's stored scope. It must therefore
+    // be satisfiable for every command such a credential runs — not only the ones
+    // whose required capability is `session:read`. Inject it as the request's
+    // taskRef fallback unconditionally: a real request-scoped taskRef still wins
+    // (`...validationScope` spreads after), and credentials without the marker
+    // skip the taskRef rule entirely (no spurious `missing_scope`). Gating this on
+    // `session:read` broke the context/inbox read verbs (and write verbs) for the
+    // natural single mail-loop credential that also carries session:read.
+    scope: { taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF, ...validationScope },
     ...(input.correlationId ? { correlationId: input.correlationId } : {}),
   });
 }

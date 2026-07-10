@@ -34,6 +34,7 @@ const createSessionAllowedFields = new Set([
   'cols',
   'rows',
   'branchName',
+  'displayName',
   'initialPrompt',
   'continuePolicy',
   'workContextId',
@@ -77,6 +78,7 @@ const stringFields = [
   'agent',
   'terminalBackend',
   'branchName',
+  'displayName',
   'initialPrompt',
   'workContextId',
   'workspaceTopicId',
@@ -94,6 +96,7 @@ const localUnsupportedFields = [
 const localCreateSupportedFields = [
   'repoPath',
   'worktreePath',
+  'cwd',
   'type',
   'mode',
   'agent',
@@ -102,6 +105,7 @@ const localCreateSupportedFields = [
   'cols',
   'rows',
   'branchName',
+  'displayName',
   'initialPrompt',
   'continuePolicy',
   'workContextId',
@@ -525,12 +529,6 @@ function validateLocalCreateSupport(
       );
     }
   }
-  if (typeof input['cwd'] === 'string') {
-    return unsupportedCreateInput(
-      'local /sessions creation derives cwd from repoPath/worktreePath; explicit cwd requires routed node creation',
-      { field: 'cwd', supported: ['repoPath', 'worktreePath'] }
-    );
-  }
   if (input['controlMode'] === 'agent-driven') {
     return unsupportedCreateInput(
       'local /sessions creation does not yet policy-gate initial controlMode=agent-driven; use routed node creation or omit controlMode',
@@ -539,11 +537,16 @@ function validateLocalCreateSupport(
   }
   if (
     typeof input['repoPath'] !== 'string' &&
+    typeof input['cwd'] !== 'string' &&
     typeof input['workspaceTopicId'] !== 'string'
   ) {
-    return invalidCreateInput('local session creation requires repoPath', {
-      field: 'repoPath',
-    });
+    return invalidCreateInput(
+      'local session creation requires repoPath, cwd, or workspaceTopicId',
+      {
+        field: 'repoPath',
+        supported: ['repoPath', 'cwd', 'workspaceTopicId'],
+      }
+    );
   }
   return null;
 }
@@ -704,9 +707,12 @@ export function gatewayErrorMessage(
   upstream: Record<string, unknown> | undefined
 ): string {
   const body = upstreamErrorRecord(upstream);
-  return typeof body?.['message'] === 'string'
-    ? body['message']
-    : `Relay hub returned HTTP ${status}`;
+  if (typeof body?.['message'] === 'string') return body['message'];
+  // Legacy REST routes report `{ error: "<message>" }` with a string error;
+  // don't collapse that detail into a bare status code.
+  const rawError = upstream?.['error'];
+  if (typeof rawError === 'string' && rawError.length > 0) return rawError;
+  return `Relay hub returned HTTP ${status}`;
 }
 
 function redactedChallenge(

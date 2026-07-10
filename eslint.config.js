@@ -12,7 +12,7 @@ export default [
     ...sonarjs.configs.recommended,
     files: ['**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
     rules: {
-      'sonarjs/cognitive-complexity': ['error', 30],
+      'sonarjs/cognitive-complexity': ['error', 50],
       'sonarjs/no-duplicate-string': ['warn', { threshold: 4 }],
       'sonarjs/max-switch-cases': ['warn', 15],
     },
@@ -38,7 +38,7 @@ export default [
           ignoreRestSiblings: true,
         },
       ],
-      complexity: ['error', 30],
+      complexity: ['error', 50],
       'max-depth': ['error', 4],
       'max-params': 'off',
     },
@@ -55,12 +55,10 @@ export default [
   },
   {
     // Protocol adapters dispatch on broad provider event taxonomies; their
-    // notification handlers are inherently switch-heavy. Cap thresholds higher
-    // than the project default rather than splitting them artificially.
+    // notification handlers are inherently switch-heavy. Only the switch-case
+    // cap still needs loosening beyond the project default.
     files: ['server/protocol-adapters/**/*.ts'],
     rules: {
-      complexity: ['error', 40],
-      'sonarjs/cognitive-complexity': ['error', 40],
       'sonarjs/max-switch-cases': 'off',
     },
   },

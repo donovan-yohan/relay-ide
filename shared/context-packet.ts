@@ -173,7 +173,8 @@ function parseLineRange(payload: unknown): LineRange | null {
   const startLine = p['startLine'];
   const endLine = p['endLine'];
   // 1-based, inclusive, both >= 1, end >= start.
-  if (typeof startLine !== 'number' || !Number.isInteger(startLine)) return null;
+  if (typeof startLine !== 'number' || !Number.isInteger(startLine))
+    return null;
   if (typeof endLine !== 'number' || !Number.isInteger(endLine)) return null;
   if (startLine < 1 || endLine < startLine) return null;
   return { startLine, endLine };
@@ -535,6 +536,14 @@ export interface SessionInboxMessage {
   acknowledgedAt?: string;
   resolvedAt?: string;
   ignoredAt?: string;
+  /**
+   * Actor id that performed the most recent explicit lifecycle transition
+   * (ack/resolve/ignore). Blob-only (like `ignoredAt`; no denormalized column):
+   * records WHO advanced the message so inbox audit can attribute the action.
+   * Undefined for pull-delivery flips (no explicit actor) and un-transitioned
+   * messages.
+   */
+  transitionedBy?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -671,7 +680,10 @@ export function parseContextPacketId(id: string): { suffix: string } | null {
  * is not a well-formed `im:<suffix>` id. Round-trips `createInboxMessageId`.
  */
 export function parseInboxMessageId(id: string): { suffix: string } | null {
-  if (typeof id !== 'string' || !id.startsWith(SESSION_INBOX_MESSAGE_ID_PREFIX)) {
+  if (
+    typeof id !== 'string' ||
+    !id.startsWith(SESSION_INBOX_MESSAGE_ID_PREFIX)
+  ) {
     return null;
   }
   const encoded = id.slice(SESSION_INBOX_MESSAGE_ID_PREFIX.length);
@@ -708,7 +720,8 @@ function parseBinding(payload: unknown): ContextPacketBinding | null {
   if (!payload || typeof payload !== 'object') return null;
   const p = payload as Record<string, unknown>;
   const binding: ContextPacketBinding = {};
-  if (typeof p['workspaceId'] === 'string') binding.workspaceId = p['workspaceId'];
+  if (typeof p['workspaceId'] === 'string')
+    binding.workspaceId = p['workspaceId'];
   if (typeof p['nodeId'] === 'string') binding.nodeId = p['nodeId'];
   if (typeof p['repoInstanceId'] === 'string') {
     binding.repoInstanceId = p['repoInstanceId'];
@@ -735,12 +748,16 @@ const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 export function parseContextPacket(payload: unknown): ContextPacket | null {
   if (!payload || typeof payload !== 'object') return null;
   const p = payload as Record<string, unknown>;
-  if (typeof p['id'] !== 'string' || !parseContextPacketId(p['id'])) return null;
+  if (typeof p['id'] !== 'string' || !parseContextPacketId(p['id']))
+    return null;
   if (!isContextPacketKind(p['kind'])) return null;
   if (typeof p['createdBy'] !== 'string' || p['createdBy'].length === 0) {
     return null;
   }
-  if (typeof p['createdAt'] !== 'string' || !ISO_TIMESTAMP_RE.test(p['createdAt'])) {
+  if (
+    typeof p['createdAt'] !== 'string' ||
+    !ISO_TIMESTAMP_RE.test(p['createdAt'])
+  ) {
     return null;
   }
   const kind = p['kind'];
@@ -774,7 +791,8 @@ export function parseContextPacket(payload: unknown): ContextPacket | null {
   if (typeof p['note'] === 'string' && p['note'].length > 0) {
     packet.note = p['note'];
   }
-  const binding = p['binding'] !== undefined ? parseBinding(p['binding']) : null;
+  const binding =
+    p['binding'] !== undefined ? parseBinding(p['binding']) : null;
   if (binding && Object.keys(binding).length > 0) {
     packet.binding = binding;
   }
@@ -797,7 +815,10 @@ export function parseSessionInboxMessage(
   if (typeof p['createdBy'] !== 'string' || p['createdBy'].length === 0) {
     return null;
   }
-  if (typeof p['createdAt'] !== 'string' || !ISO_TIMESTAMP_RE.test(p['createdAt'])) {
+  if (
+    typeof p['createdAt'] !== 'string' ||
+    !ISO_TIMESTAMP_RE.test(p['createdAt'])
+  ) {
     return null;
   }
 
@@ -839,6 +860,12 @@ export function parseSessionInboxMessage(
     if (typeof value === 'string' && ISO_TIMESTAMP_RE.test(value)) {
       message[field] = value;
     }
+  }
+  if (
+    typeof p['transitionedBy'] === 'string' &&
+    p['transitionedBy'].length > 0
+  ) {
+    message.transitionedBy = p['transitionedBy'];
   }
   return message;
 }

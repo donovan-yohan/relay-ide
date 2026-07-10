@@ -1140,10 +1140,9 @@ export function groupBenchOverlaysByInstance(
 // session-create entrypoint (`createAgentSession` → `createSession`, the #473
 // local/remote/free flow). A Bench is anchored to a single (nodeId, worktree);
 // the nodeId lives on its owning Instance. The payload MIRRORS the local-git
-// branch of `createSessionFromForm` (the dialog) so it satisfies the backend
-// `validateSessionCreateRequest` agent contract: `repoPath` MUST be a configured
-// repo (`config.repos`) and the worktree becomes the session cwd
-// (`cwd = worktreePath ?? repoPath`, server/index.ts).
+// branch of `createSessionFromForm` (the dialog): `repoPath` carries configured
+// repo context for repo-backed benches, and the worktree/cwd is the launch anchor
+// (`cwd = worktreePath ?? requestCwd ?? repoPath`, server/index.ts).
 //
 // #740: the payload now also carries the bench's identity (`instanceId` +
 // deterministic `benchId`) so the create handler can look up that Bench's
@@ -1151,9 +1150,9 @@ export function groupBenchOverlaysByInstance(
 // identity are still NOT inherited — only env overrides.
 
 /** The anchor + repo context a new agent Tab needs. `repoPath` is the configured
- *  parent repo (validated against `config.repos` by the backend); `worktreePath`
- *  is the bench's worktree (becomes the session cwd); `cwd` mirrors the worktree
- *  for callers/consumers that want it explicit. `instanceId`/`benchId` identify
+ *  parent repo context for repo-backed benches; `worktreePath` is the bench's
+ *  worktree (becomes the session cwd); `cwd` mirrors the worktree for
+ *  callers/consumers that want it explicit. `instanceId`/`benchId` identify
  *  the anchoring Bench so its persisted env overlay can be inherited (#740).
  *  Consumed by the `handleViewSpineCreateTab` path — this helper invents NO new
  *  create logic. */

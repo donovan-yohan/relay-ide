@@ -239,6 +239,10 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
+        // 'web' keeps this assertion discriminating: a stale cockpit flag
+        // would force 'session', a cleared one routes web sessions to 'chat'.
+        // (PTY sessions now route to 'session' regardless of the flag.)
+        activeSessionMode: 'web',
       })
     ).toBe('chat');
   });
@@ -281,6 +285,10 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
+        // 'web' keeps this assertion discriminating: a stale cockpit flag
+        // would force 'session', a cleared one routes web sessions to 'chat'.
+        // (PTY sessions now route to 'session' regardless of the flag.)
+        activeSessionMode: 'web',
       })
     ).toBe('chat');
   });
@@ -325,6 +333,10 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
+        // 'web' keeps this assertion discriminating: a stale cockpit flag
+        // would force 'session', a cleared one routes web sessions to 'chat'.
+        // (PTY sessions now route to 'session' regardless of the flag.)
+        activeSessionMode: 'web',
       })
     ).toBe('chat');
   });
@@ -369,6 +381,10 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
+        // 'web' keeps this assertion discriminating: a stale cockpit flag
+        // would force 'session', a cleared one routes web sessions to 'chat'.
+        // (PTY sessions now route to 'session' regardless of the flag.)
+        activeSessionMode: 'web',
       })
     ).toBe('chat');
   });
@@ -627,6 +643,10 @@ describe('session lifecycle handlers', () => {
         activeRepoPath: ui.activeRepoPath,
         forceOrgCockpit: ui.forceOrgCockpit,
         topicComposerOpen: ui.topicComposerOpen,
+        // 'web' keeps this assertion discriminating: a stale cockpit flag
+        // would force 'session', a cleared one routes web sessions to 'chat'.
+        // (PTY sessions now route to 'session' regardless of the flag.)
+        activeSessionMode: 'web',
       })
     ).toBe('chat');
   });

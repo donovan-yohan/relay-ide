@@ -183,10 +183,13 @@ export interface ContextPacketStore {
   /**
    * Transition an inbox message to `to`. Idempotent (`from === to` is a no-op
    * success) and rejects transitions out of terminal states (ADR-019 C2).
+   * `transitionedBy` (optional) records the actor that advanced the message on a
+   * real forward transition; it is ignored for idempotent re-touches.
    */
   transitionInboxMessage(
     id: SessionInboxMessageId,
-    to: SessionInboxMessageState
+    to: SessionInboxMessageState,
+    transitionedBy?: string
   ): SessionInboxMessage;
   deleteInboxMessage(id: SessionInboxMessageId): boolean;
 }
@@ -229,7 +232,9 @@ export function createContextPacketStore(dbPath: string): ContextPacketStore {
        @id, @kind, @packetJson, @nodeId, @workspaceId, @createdBy, @createdAt, @updatedAt
      )`
   );
-  const deletePacketStmt = db.prepare('DELETE FROM context_packets WHERE id = ?');
+  const deletePacketStmt = db.prepare(
+    'DELETE FROM context_packets WHERE id = ?'
+  );
 
   // ── Inbox message statements ───────────────────────────────────────────────
   const selectMessage = db.prepare(
@@ -260,14 +265,18 @@ export function createContextPacketStore(dbPath: string): ContextPacketStore {
     `INSERT INTO inbox_message_packets (message_id, context_packet_id, ordinal)
      VALUES (?, ?, ?)`
   );
-  const deleteMessageStmt = db.prepare('DELETE FROM inbox_messages WHERE id = ?');
+  const deleteMessageStmt = db.prepare(
+    'DELETE FROM inbox_messages WHERE id = ?'
+  );
 
   function getPacketById(id: ContextPacketId): ContextPacket | null {
     const row = selectPacket.get(id) as ContextPacketRow | undefined;
     return row ? rowToPacketSafe(row) : null;
   }
 
-  function getMessageById(id: SessionInboxMessageId): SessionInboxMessage | null {
+  function getMessageById(
+    id: SessionInboxMessageId
+  ): SessionInboxMessage | null {
     const row = selectMessage.get(id) as InboxMessageRow | undefined;
     return row ? rowToMessageSafe(row) : null;
   }
@@ -345,10 +354,7 @@ export function createContextPacketStore(dbPath: string): ContextPacketStore {
         // ON DELETE RESTRICT on the join FK surfaces as a FK constraint error
         // when a live message still references the packet.
         if (isForeignKeyConstraintError(err)) {
-          throw new ContextPacketStoreError(
-            409,
-            'context_packet_referenced'
-          );
+          throw new ContextPacketStoreError(409, 'context_packet_referenced');
         }
         throw err;
       }
@@ -408,7 +414,8 @@ export function createContextPacketStore(dbPath: string): ContextPacketStore {
 
     transitionInboxMessage(
       id: SessionInboxMessageId,
-      to: SessionInboxMessageState
+      to: SessionInboxMessageState,
+      transitionedBy?: string
     ) {
       const existing = mustGetMessage(id);
       const validation = validateInboxTransition(existing.state, to);
@@ -423,7 +430,13 @@ export function createContextPacketStore(dbPath: string): ContextPacketStore {
       // Idempotent re-touch (from === to): refresh `updated_at` so a PULL
       // `inbox.list` re-delivering a row is observable, but DO NOT overwrite the
       // first-observed transition timestamp.
-      const next = applyTransition(existing, to, now, validation.idempotent);
+      const next = applyTransition(
+        existing,
+        to,
+        now,
+        validation.idempotent,
+        transitionedBy
+      );
       updateMessageState.run({
         id: next.id,
         messageJson: JSON.stringify(next),
@@ -495,7 +508,9 @@ export function createContextPacketStore(dbPath: string): ContextPacketStore {
 // `schema_version` row (CREATE ... IF NOT EXISTS + version gate). Mirrors the
 // runner in ia-store.ts / work-contexts.ts. Bump by appending a {version, sql}.
 function runMigrations(db: Database.Database): void {
-  db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)'
+  );
   const row = db.prepare('SELECT version FROM schema_version').get() as
     | { version: number }
     | undefined;
@@ -510,7 +525,9 @@ function runMigrations(db: Database.Database): void {
         if (hadRow || currentVersion > 0) {
           db.prepare('UPDATE schema_version SET version = ?').run(ver);
         } else {
-          db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(ver);
+          db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
+            ver
+          );
         }
       })();
       currentVersion = ver;
@@ -535,7 +552,10 @@ function buildPacketFromInput(
     throw new ContextPacketStoreError(400, 'context_packet_kind_required');
   }
   if (typeof input.createdBy !== 'string' || input.createdBy.length === 0) {
-    throw new ContextPacketStoreError(400, 'context_packet_created_by_required');
+    throw new ContextPacketStoreError(
+      400,
+      'context_packet_created_by_required'
+    );
   }
   const draft: ContextPacket = {
     id: input.id ?? mintPacketId(),
@@ -581,7 +601,9 @@ function buildMessageFromInput(
     state: 'queued',
     createdBy: input.createdBy,
     createdAt: now,
-    ...(input.targetSessionId ? { targetSessionId: input.targetSessionId } : {}),
+    ...(input.targetSessionId
+      ? { targetSessionId: input.targetSessionId }
+      : {}),
     ...(input.targetWorkContextId
       ? { targetWorkContextId: input.targetWorkContextId }
       : {}),
@@ -604,13 +626,17 @@ function applyTransition(
   message: SessionInboxMessage,
   to: SessionInboxMessageState,
   now: string,
-  idempotent: boolean
+  idempotent: boolean,
+  transitionedBy?: string
 ): SessionInboxMessage {
   if (idempotent) {
-    // No-op success: state unchanged, timestamps preserved.
+    // No-op success: state unchanged, timestamps + attribution preserved.
     return message;
   }
   const next: SessionInboxMessage = { ...message, state: to };
+  // Attribute the actor that advanced the message (blob-only). Only overwrite
+  // when an actor is supplied so pull-delivery flips don't clear prior attribution.
+  if (transitionedBy) next.transitionedBy = transitionedBy;
   switch (to) {
     case 'delivered':
       if (!next.deliveredAt) next.deliveredAt = now;
@@ -661,7 +687,10 @@ function denormalizePacket(packet: ContextPacket): {
   workspaceId: string | null;
 } {
   const nodeId =
-    packet.binding?.nodeId ?? packet.anchor?.ref.nodeId ?? packet.fileRef?.nodeId ?? null;
+    packet.binding?.nodeId ??
+    packet.anchor?.ref.nodeId ??
+    packet.fileRef?.nodeId ??
+    null;
   const workspaceId = packet.binding?.workspaceId ?? null;
   return { nodeId, workspaceId };
 }
