@@ -183,7 +183,9 @@ describe('collaborationPromptAppendix', () => {
     // #964: external agents are told how to self-declare + heartbeat presence.
     expect(text).toContain('relay-ide v1 roster register');
     expect(text).toContain('roster update-self');
-    expect(text).toContain('relay-ide v1 inbox');
+    expect(text).toContain(
+      'relay-ide v1 inbox list --target-session-id local:$RELAY_IDE_SESSION_ID --json'
+    );
     expect(text).toContain('events subscribe --topic inbox');
     expect(text).toContain('events subscribe --topic attention');
     expect(text.toLowerCase()).not.toContain('tmux');
