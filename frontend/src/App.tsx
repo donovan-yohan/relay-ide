@@ -255,6 +255,7 @@ function useTerminalDerivedState() {
         activeRepoPath,
         forceOrgCockpit,
         topicComposerOpen,
+        activeSessionMode: activeSession?.mode,
       }),
     [
       analyticsView,
@@ -262,6 +263,7 @@ function useTerminalDerivedState() {
       activeRepoPath,
       forceOrgCockpit,
       topicComposerOpen,
+      activeSession?.mode,
     ]
   );
 
