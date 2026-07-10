@@ -730,28 +730,45 @@ function create({
     startedAt: new Date().toISOString(),
   });
   if (initialPrompt) {
-    const promptHandler = (changedId: string, state: AgentState) => {
-      if (
-        changedId === id &&
-        state === 'waiting-for-input' &&
-        ptySession.initialPrompt
-      ) {
-        const prompt = ptySession.initialPrompt;
-        ptySession.initialPrompt = undefined; // one-shot
-        // Small delay to ensure the agent's input handler is ready
-        setTimeout(() => {
+    // One-shot injection, guarded by ptySession.initialPrompt. The submit CR
+    // is a second deferred write (canonical Enter, CR not LF): TUI input
+    // loops coalesce a text+newline chunk into a paste and leave the prompt
+    // sitting unsubmitted in the composer (#958).
+    const injectInitialPrompt = (delayMs: number) => {
+      if (!ptySession.initialPrompt) return;
+      const prompt = ptySession.initialPrompt;
+      ptySession.initialPrompt = undefined;
+      const idx = stateChangeCallbacks.indexOf(promptHandler);
+      if (idx !== -1) stateChangeCallbacks.splice(idx, 1);
+      setTimeout(() => {
+        try {
+          ptySession.pty.write(prompt);
+        } catch (err) {
+          logger.error('Failed to inject initial prompt:', err);
+          return;
+        }
+        const submitTimer = setTimeout(() => {
           try {
-            ptySession.pty.write(prompt + '\n');
+            ptySession.pty.write('\r');
           } catch (err) {
-            logger.error('Failed to inject initial prompt:', err);
+            logger.error('Failed to submit initial prompt:', err);
           }
-        }, 500);
-        // Remove this handler after firing
-        const idx = stateChangeCallbacks.indexOf(promptHandler);
-        if (idx !== -1) stateChangeCallbacks.splice(idx, 1);
+        }, SUPERVISOR_DEFERRED_TAIL_DELAY_MS);
+        submitTimer.unref?.();
+      }, delayMs);
+    };
+    const promptHandler = (changedId: string, state: AgentState) => {
+      if (changedId === id && state === 'waiting-for-input') {
+        injectInitialPrompt(500);
       }
     };
     stateChangeCallbacks.push(promptHandler);
+    // Fallback: not every framework reports waiting-for-input (state
+    // detection depends on per-provider hooks/parsers — Codex sessions can
+    // sit in `initializing` forever). If the state signal hasn't fired by
+    // the deadline, inject anyway; the TUI is up long before this.
+    const fallbackTimer = setTimeout(() => injectInitialPrompt(0), 8000);
+    fallbackTimer.unref?.();
   }
   const summary = withLocalIdentity({
     ...result,
