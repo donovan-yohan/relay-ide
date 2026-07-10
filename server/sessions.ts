@@ -1223,12 +1223,18 @@ function write(id: string, data: string): void {
   }
 }
 
+// Delay between a submit body and its deferred CR. TUI input loops coalesce
+// bytes that arrive in one read into a paste, so the CR must land as its own
+// key event for the submit to actually fire.
+const SUPERVISOR_DEFERRED_TAIL_DELAY_MS = 50;
+
 function supervisorWrite(
   id: string,
   input: {
     action: SupervisorInterventionAction;
     actor: ControlActor;
     payload: string;
+    deferredTail?: string;
   }
 ): { eventId: string; modeBefore?: ControlMode; modeAfter?: ControlMode } {
   const session = sessions.get(id);
@@ -1246,7 +1252,30 @@ function supervisorWrite(
     );
     throw error;
   }
-  const event = recordSupervisorAction(session, input, controlEngineOptions());
+  const deferredTail = input.deferredTail;
+  if (deferredTail !== undefined && deferredTail.length > 0) {
+    const timer = setTimeout(() => {
+      try {
+        const liveSession = sessions.get(id);
+        if (liveSession?.mode === 'pty') liveSession.pty.write(deferredTail);
+      } catch (error) {
+        logger.warn(
+          `supervisorWrite() failed deferred tail write to PTY session ${id}: ${String(error)}`
+        );
+      }
+    }, SUPERVISOR_DEFERRED_TAIL_DELAY_MS);
+    timer.unref?.();
+  }
+  const auditInput = {
+    action: input.action,
+    actor: input.actor,
+    payload: input.payload + (deferredTail ?? ''),
+  };
+  const event = recordSupervisorAction(
+    session,
+    auditInput,
+    controlEngineOptions()
+  );
   if (event.type !== 'tab.intervention') {
     throw new Error(
       `Supervisor action did not produce an intervention event for ${id}`

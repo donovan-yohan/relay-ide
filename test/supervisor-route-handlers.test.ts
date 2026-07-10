@@ -303,7 +303,10 @@ describe('supervisor route handlers', () => {
     );
     expect(res.status).not.toHaveBeenCalled();
     expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ command: 'supervisor.submit', action: 'submit' })
+      expect.objectContaining({
+        command: 'supervisor.submit',
+        action: 'submit',
+      })
     );
   });
 
@@ -374,9 +377,15 @@ describe('supervisor route handlers', () => {
       sessions
     );
 
+    // The typed body and the owned CR are separate PTY writes so TUI paste
+    // detection still sees Enter as its own key event.
     expect(sessions.supervisorWrite).toHaveBeenCalledWith(
       'sess-1',
-      expect.objectContaining({ action: 'submit', payload: 'run it\r' })
+      expect.objectContaining({
+        action: 'submit',
+        payload: 'run it',
+        deferredTail: '\r',
+      })
     );
     expect(res.status).not.toHaveBeenCalled();
   });

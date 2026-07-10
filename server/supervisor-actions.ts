@@ -1,6 +1,10 @@
 import * as crypto from 'node:crypto';
 
-import { normalizeControlStateSummary, type ControlActor, type ControlMode } from '../shared/control-state.js';
+import {
+  normalizeControlStateSummary,
+  type ControlActor,
+  type ControlMode,
+} from '../shared/control-state.js';
 import {
   SUPERVISOR_SEND_KEY_NAMES,
   supervisorActionCommandId,
@@ -17,8 +21,14 @@ import {
   type SupervisorSubmitObservation,
   type SupervisorSubmitStep,
 } from '../shared/supervisor-actions.js';
-import { DEFAULT_LOCAL_NODE_ID, createGlobalSessionId } from '../shared/identity.js';
-import { encodeTerminalInput, type TerminalInputKey } from './terminal-model-backend.js';
+import {
+  DEFAULT_LOCAL_NODE_ID,
+  createGlobalSessionId,
+} from '../shared/identity.js';
+import {
+  encodeTerminalInput,
+  type TerminalInputKey,
+} from './terminal-model-backend.js';
 import type { Session, SessionSummary } from './types.js';
 
 const MAX_SUPERVISOR_TEXT_CHARS = 1000;
@@ -40,7 +50,10 @@ const CLEAR_INPUT_SEQUENCE = '\u0015';
 // treat embedded newlines as literal content instead of premature submissions.
 const BRACKETED_PASTE_START = '\u001b[200~';
 const BRACKETED_PASTE_END = '\u001b[201~';
-const SUPERVISOR_SEND_KEY_INPUTS: Record<SupervisorSendKeyName, TerminalInputKey> = {
+const SUPERVISOR_SEND_KEY_INPUTS: Record<
+  SupervisorSendKeyName,
+  TerminalInputKey
+> = {
   escape: 'Escape',
   tab: 'Tab',
   'arrow-up': 'ArrowUp',
@@ -64,14 +77,24 @@ const DEFAULT_SUPERVISOR_ACTOR: ControlActor = {
 export interface SupervisorActionSessionBoundary {
   list(): SessionSummary[];
   get(id: string): Session | undefined;
-  supervisorWrite(id: string, input: { action: SupervisorActionType; actor: ControlActor; payload: string }): { eventId: string; modeBefore?: ControlMode; modeAfter?: ControlMode };
+  supervisorWrite(
+    id: string,
+    input: {
+      action: SupervisorActionType;
+      actor: ControlActor;
+      payload: string;
+      deferredTail?: string;
+    }
+  ): { eventId: string; modeBefore?: ControlMode; modeAfter?: ControlMode };
 }
 
 function sha256(input: string): string {
   return crypto.createHash('sha256').update(input).digest('hex');
 }
 
-function actorSummary(actor: ControlActor): SupervisorActionAuditSummary['actor'] {
+function actorSummary(
+  actor: ControlActor
+): SupervisorActionAuditSummary['actor'] {
   return {
     kind: actor.kind,
     ...(actor.id ? { idHash: sha256(actor.id) } : {}),
@@ -81,15 +104,25 @@ function actorSummary(actor: ControlActor): SupervisorActionAuditSummary['actor'
   };
 }
 
-function targetIdentity(session: Session | SessionSummary | undefined, requestedId: string) {
+function targetIdentity(
+  session: Session | SessionSummary | undefined,
+  requestedId: string
+) {
   const nodeId = session?.nodeId ?? DEFAULT_LOCAL_NODE_ID;
   const explicitGlobalSessionId =
-    session && 'globalSessionId' in session ? session.globalSessionId : undefined;
+    session && 'globalSessionId' in session
+      ? session.globalSessionId
+      : undefined;
   return {
     sessionId: session?.id ?? requestedId,
     ...(explicitGlobalSessionId
       ? { globalSessionId: explicitGlobalSessionId }
-      : { globalSessionId: createGlobalSessionId(nodeId, session?.id ?? requestedId) }),
+      : {
+          globalSessionId: createGlobalSessionId(
+            nodeId,
+            session?.id ?? requestedId
+          ),
+        }),
     nodeId,
   };
 }
@@ -176,28 +209,50 @@ function error(
   retryable: boolean,
   details?: Record<string, unknown>
 ): SupervisorActionError {
-  return { code, reasonCode, message, retryable, ...(details ? { details } : {}) };
+  return {
+    code,
+    reasonCode,
+    message,
+    retryable,
+    ...(details ? { details } : {}),
+  };
 }
 
-function validateLiteralText(text: unknown): { ok: true; text: string } | { ok: false; error: SupervisorActionError } {
+function validateLiteralText(
+  text: unknown
+): { ok: true; text: string } | { ok: false; error: SupervisorActionError } {
   if (typeof text !== 'string' || text.length === 0) {
     return {
       ok: false,
-      error: error('INVALID_ARGUMENT', 'TEXT_REQUIRED', 'sendText requires non-empty literal text', false),
+      error: error(
+        'INVALID_ARGUMENT',
+        'TEXT_REQUIRED',
+        'sendText requires non-empty literal text',
+        false
+      ),
     };
   }
   if (Array.from(text).length > MAX_SUPERVISOR_TEXT_CHARS) {
     return {
       ok: false,
-      error: error('INVALID_ARGUMENT', 'TEXT_TOO_LARGE', `sendText is limited to ${MAX_SUPERVISOR_TEXT_CHARS} characters`, false, {
-        maxChars: MAX_SUPERVISOR_TEXT_CHARS,
-      }),
+      error: error(
+        'INVALID_ARGUMENT',
+        'TEXT_TOO_LARGE',
+        `sendText is limited to ${MAX_SUPERVISOR_TEXT_CHARS} characters`,
+        false,
+        {
+          maxChars: MAX_SUPERVISOR_TEXT_CHARS,
+        }
+      ),
     };
   }
-  if (/\r|\n/.test(text) || Array.from(text).some((char) => {
-    const code = char.charCodeAt(0);
-    return code === 0x1b || code === 0x7f || (code < 0x20 && code !== 0x09);
-  })) {
+  if (
+    /\r|\n/.test(text) ||
+    Array.from(text).some((char) => {
+      const code = char.charCodeAt(0);
+      return code === 0x1b || code === 0x7f || (code < 0x20 && code !== 0x09);
+    })
+  ) {
     return {
       ok: false,
       error: error(
@@ -259,6 +314,15 @@ function validateSendKey(
 interface SupervisorSubmitPlan {
   /** Exact bytes written to the PTY: [clear?] + [body|bracketed-body] + CR. */
   payload: string;
+  /**
+   * When a body is typed, the owned CR is written as a separate deferred PTY
+   * write instead of riding the same chunk: TUI input loops (crossterm et al)
+   * treat text+CR arriving together as one paste and leave the text sitting
+   * unsubmitted in the composer. `payload` stays the full byte evidence;
+   * `typedPayload`/`submitTail` describe the actual two-write split.
+   */
+  typedPayload: string;
+  submitTail: string;
   /** The normalized text body (no control framing, trailing newlines stripped). */
   body: string;
   charsAccepted: number;
@@ -276,10 +340,7 @@ interface SupervisorSubmitPlan {
  * one owned carriage return, so callers never need to send a second `\r` (#958).
  */
 function normalizeSubmitBody(text: string): string {
-  return text
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/\n+$/u, '');
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/u, '');
 }
 
 function validateSubmitText(
@@ -368,10 +429,10 @@ function buildSubmitPlan(input: {
     );
     steps.push('type-text');
   }
-  parts.push(SUBMIT_ENTER_SEQUENCE);
   steps.push('submit');
 
-  const payload = parts.join('');
+  const typedPayload = parts.join('');
+  const payload = typedPayload + SUBMIT_ENTER_SEQUENCE;
   const classes = [
     'submit',
     ...(body.length > 0 ? ['literal-text'] : []),
@@ -382,6 +443,8 @@ function buildSubmitPlan(input: {
     ok: true,
     plan: {
       payload,
+      typedPayload,
+      submitTail: SUBMIT_ENTER_SEQUENCE,
       body,
       charsAccepted: Array.from(body).length,
       bytesAccepted: Buffer.byteLength(body, 'utf8'),
@@ -418,22 +481,52 @@ function observePostSubmit(
 }
 
 function missingSessionError(requestedId: string): SupervisorActionError {
-  return error('NOT_FOUND', 'SESSION_NOT_FOUND', 'session was not found or is not locally writable', false, { sessionId: requestedId });
+  return error(
+    'NOT_FOUND',
+    'SESSION_NOT_FOUND',
+    'session was not found or is not locally writable',
+    false,
+    { sessionId: requestedId }
+  );
 }
 
 function targetPreflight(session: Session): SupervisorActionError | undefined {
   const control = normalizeControlStateSummary(session.controlState);
   if (session.status === 'disconnected') {
-    return error('SESSION_CONFLICT', 'SESSION_DISCONNECTED', 'cannot run supervisor action on a disconnected session', false, { sessionId: session.id });
+    return error(
+      'SESSION_CONFLICT',
+      'SESSION_DISCONNECTED',
+      'cannot run supervisor action on a disconnected session',
+      false,
+      { sessionId: session.id }
+    );
   }
   if (session.mode !== 'pty') {
-    return error('SESSION_CONFLICT', 'SESSION_MODE_UNSUPPORTED', 'typed supervisor actions are only supported for PTY sessions', false, { sessionId: session.id, mode: session.mode });
+    return error(
+      'SESSION_CONFLICT',
+      'SESSION_MODE_UNSUPPORTED',
+      'typed supervisor actions are only supported for PTY sessions',
+      false,
+      { sessionId: session.id, mode: session.mode }
+    );
   }
   if (control.controlFreshness === 'stale') {
-    return error('CONTROL_STATE_STALE', 'CONTROL_STATE_STALE', 'cannot run supervisor action from stale control state', true, { sessionId: session.id });
+    return error(
+      'CONTROL_STATE_STALE',
+      'CONTROL_STATE_STALE',
+      'cannot run supervisor action from stale control state',
+      true,
+      { sessionId: session.id }
+    );
   }
   if (control.controlFreshness !== 'fresh') {
-    return error('CONTROL_STATE_UNKNOWN', 'CONTROL_STATE_UNKNOWN', 'cannot run supervisor action from unknown control state', true, { sessionId: session.id });
+    return error(
+      'CONTROL_STATE_UNKNOWN',
+      'CONTROL_STATE_UNKNOWN',
+      'cannot run supervisor action from unknown control state',
+      true,
+      { sessionId: session.id }
+    );
   }
   return undefined;
 }
@@ -442,7 +535,9 @@ function emptyCounts(requested: number): SupervisorActionCounts {
   return { requested, succeeded: 0, denied: 0, failed: 0, skipped: 0 };
 }
 
-function tally(results: SupervisorActionTargetResult[]): SupervisorActionCounts {
+function tally(
+  results: SupervisorActionTargetResult[]
+): SupervisorActionCounts {
   const counts = emptyCounts(results.length);
   for (const result of results) {
     if (result.ok) counts.succeeded += 1;
@@ -452,7 +547,9 @@ function tally(results: SupervisorActionTargetResult[]): SupervisorActionCounts 
   return counts;
 }
 
-export function listSupervisorSessions(sessions: readonly SessionSummary[]): SupervisorSessionsResponse {
+export function listSupervisorSessions(
+  sessions: readonly SessionSummary[]
+): SupervisorSessionsResponse {
   return {
     command: 'supervisor.sessions',
     sessions: sessions.map((session): SupervisorSessionEligibility => {
@@ -472,8 +569,12 @@ export function listSupervisorSessions(sessions: readonly SessionSummary[]): Sup
         ...common,
         mode: session.mode,
         status: session.status,
-        ...(session.controlMode === undefined ? {} : { controlMode: session.controlMode }),
-        ...(session.controlFreshness === undefined ? {} : { controlFreshness: session.controlFreshness }),
+        ...(session.controlMode === undefined
+          ? {}
+          : { controlMode: session.controlMode }),
+        ...(session.controlFreshness === undefined
+          ? {}
+          : { controlFreshness: session.controlFreshness }),
         actions: {
           sendText: { allowed, ...(reason ? { reasonCode: reason } : {}) },
           sendKey: { allowed, ...(reason ? { reasonCode: reason } : {}) },
@@ -592,7 +693,9 @@ function runSupervisorTarget(
 ): SupervisorActionTargetResult {
   const session = id ? ctx.boundary.get(id) : undefined;
   const identity = targetIdentity(session, id);
-  const fail = (error: SupervisorActionError): SupervisorActionTargetResult => ({
+  const fail = (
+    error: SupervisorActionError
+  ): SupervisorActionTargetResult => ({
     ...identity,
     ok: false,
     action: ctx.action,
@@ -600,7 +703,8 @@ function runSupervisorTarget(
   });
 
   if (ctx.deniedByCapability) return fail(ctx.deniedByCapability);
-  if (prepared.payloadValidationError) return fail(prepared.payloadValidationError);
+  if (prepared.payloadValidationError)
+    return fail(prepared.payloadValidationError);
   if (!session) return fail(missingSessionError(id));
   const preflight = targetPreflight(session);
   if (preflight) return fail(preflight);
@@ -610,27 +714,42 @@ function runSupervisorTarget(
   }
 
   try {
+    const splitSubmit =
+      prepared.submitPlan && prepared.submitPlan.typedPayload.length > 0;
     const write = ctx.boundary.supervisorWrite(session.id, {
       action: ctx.action,
       actor: ctx.actor,
-      payload: prepared.payload,
+      ...(splitSubmit && prepared.submitPlan
+        ? {
+            payload: prepared.submitPlan.typedPayload,
+            deferredTail: prepared.submitPlan.submitTail,
+          }
+        : { payload: prepared.payload }),
     });
     return {
       ...identity,
       ok: true,
       action: ctx.action,
       bytesWritten: Buffer.byteLength(prepared.payload, 'utf8'),
-      ...(prepared.canonicalKey === undefined ? {} : { key: prepared.canonicalKey }),
+      ...(prepared.canonicalKey === undefined
+        ? {}
+        : { key: prepared.canonicalKey }),
       interventionEventId: write.eventId,
-      ...(write.modeBefore === undefined ? {} : { controlModeBefore: write.modeBefore }),
-      ...(write.modeAfter === undefined ? {} : { controlModeAfter: write.modeAfter }),
+      ...(write.modeBefore === undefined
+        ? {}
+        : { controlModeBefore: write.modeBefore }),
+      ...(write.modeAfter === undefined
+        ? {}
+        : { controlModeAfter: write.modeAfter }),
       ...(prepared.submitPlan
         ? submitSuccessEvidence(prepared.submitPlan, session, ctx.timestamp)
         : {}),
     };
   } catch (caught) {
     const message =
-      caught instanceof Error ? caught.message : 'failed to write supervisor action';
+      caught instanceof Error
+        ? caught.message
+        : 'failed to write supervisor action';
     return fail(
       error('UPSTREAM_ERROR', 'UPSTREAM_WRITE_FAILED', message, true, {
         sessionId: session.id,
@@ -693,12 +812,15 @@ export function executeSupervisorAction(input: {
     actor: actorSummary(actor),
     targetSessionIds: results.map((result) => result.sessionId),
     targetCount: results.length,
-    ...(prepared.canonicalKey === undefined ? {} : { key: prepared.canonicalKey }),
+    ...(prepared.canonicalKey === undefined
+      ? {}
+      : { key: prepared.canonicalKey }),
     timestamp,
     ...(prepared.auditContent ? { content: prepared.auditContent } : {}),
     counts,
     rawContentStored: false,
-    partialFailure: counts.failed > 0 || counts.denied > 0 || counts.skipped > 0,
+    partialFailure:
+      counts.failed > 0 || counts.denied > 0 || counts.skipped > 0,
     ...(dryRun ? { dryRun: true } : {}),
   };
   return {
