@@ -42,6 +42,7 @@ describe('websocket scoped-token auth', () => {
     const client = new WebSocket(`ws://127.0.0.1:${port}/ws/events`, {
       headers: { Cookie: `token=${encodeURIComponent(scopedToken)}` },
     });
+    client.on('error', () => {});
     cleanupFns.push(() => client.close());
     await once(client, 'open');
     expect(client.readyState).toBe(WebSocket.OPEN);
@@ -66,6 +67,7 @@ describe('websocket scoped-token auth', () => {
     const client = new WebSocket(`ws://127.0.0.1:${port}/ws/events`, {
       headers: { Cookie: 'token=not-the-scoped-token' },
     });
+    client.on('error', () => {});
     cleanupFns.push(() => client.close());
     const [, res] = (await once(client, 'unexpected-response')) as [
       http.ClientRequest,

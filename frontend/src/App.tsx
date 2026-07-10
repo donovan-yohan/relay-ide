@@ -778,6 +778,16 @@ function TerminalAreaContent({
             )}
           <SplitPaneLayout
             rightSidebarCollapsed={!utilityRailState.visible}
+            // #1058: on mobile (<768px) the sidebar renders as a full-screen
+            // overlay, not a narrow icon rail — it must only slide in once a
+            // tab is actually selected. `visible` alone defaults to true on
+            // every fresh session (it drives desktop's always-on icon rail),
+            // so gating the mobile overlay on it too made every newly-opened
+            // PTY terminal load hidden behind an empty full-screen overlay.
+            rightSidebarMobileOpen={
+              utilityRailState.visible &&
+              utilityRailState.selectedRailTab !== null
+            }
             rightSidebarWidth={utilityRailWidth}
             onRightSidebarWidthChange={handleUtilityRailWidthChange}
             onRightSidebarResizeEnd={handleUtilityRailResizeEnd}

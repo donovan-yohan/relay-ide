@@ -9,6 +9,17 @@ export interface SplitPaneLayoutProps {
   rightSidebar?: React.ReactNode;
   /** Whether the right sidebar is collapsed */
   rightSidebarCollapsed?: boolean;
+  /**
+   * Whether the right sidebar should render as the full-screen mobile
+   * overlay (`<768px` viewport). Distinct from `rightSidebarCollapsed`:
+   * on desktop, `visible` alone drives the narrow always-on icon rail vs.
+   * fully hidden (width 0). On mobile there's no narrow-rail state — the
+   * sidebar is either fully off-screen or a full-screen panel — so it must
+   * only open once there's actual tab content to show, not just because the
+   * (default-true) icon rail "visible" flag is set. Defaults to mirroring
+   * `!rightSidebarCollapsed` for callers that don't need the distinction.
+   */
+  rightSidebarMobileOpen?: boolean;
   /** Current right sidebar width in px */
   rightSidebarWidth?: number;
   onRightSidebarWidthChange?: (width: number) => void;
@@ -23,6 +34,7 @@ export function SplitPaneLayout({
   terminal,
   rightSidebar,
   rightSidebarCollapsed = false,
+  rightSidebarMobileOpen,
   rightSidebarWidth: externalRightSidebarWidth,
   onRightSidebarWidthChange,
   onRightSidebarResizeEnd,
@@ -31,6 +43,7 @@ export function SplitPaneLayout({
   rightSidebarMinWidth = MIN_RIGHT_SIDEBAR_WIDTH,
   rightSidebarMaxWidth = MAX_RIGHT_SIDEBAR_WIDTH,
 }: SplitPaneLayoutProps) {
+  const mobileOpen = rightSidebarMobileOpen ?? !rightSidebarCollapsed;
   const [internalRightSidebarWidth, setInternalRightSidebarWidth] =
     useState(320);
   const [dragging, setDragging] = useState(false);
@@ -100,9 +113,7 @@ export function SplitPaneLayout({
 
   return (
     <div className="split-pane-layout" ref={containerRef}>
-      <div className="pane-terminal">
-        {terminal}
-      </div>
+      <div className="pane-terminal">{terminal}</div>
 
       {rightSidebar ? (
         <>
@@ -119,15 +130,14 @@ export function SplitPaneLayout({
             role="separator"
             aria-label="resize right sidebar"
             onPointerDown={(e) => {
-              if (rightSidebarResizable)
-                handlePointerDown(e);
+              if (rightSidebarResizable) handlePointerDown(e);
             }}
           />
           <div
             className={[
               'pane-right-sidebar',
               rightSidebarCollapsed && 'collapsed',
-              !rightSidebarCollapsed && 'mobile-open',
+              mobileOpen && 'mobile-open',
             ]
               .filter(Boolean)
               .join(' ')}
