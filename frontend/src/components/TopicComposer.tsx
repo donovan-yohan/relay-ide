@@ -144,10 +144,22 @@ export default function TopicComposer({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
-  // Focus request from openTopicTaskRoom() — covers the already-on-landing
-  // case where the component does not remount so autoFocus never re-fires.
+  // #1058: focus on mount (desktop only — see the isMobileDevice guard).
+  // Uses an imperative `.focus({ preventScroll: true })` instead of the JSX
+  // `autoFocus` attribute: `autoFocus`'s default scroll-into-view behavior
+  // scrolls the *page*, not just the textarea into view, which on a landing
+  // with a live-sessions list taller than the viewport yanks the whole
+  // scroll position down to the composer — pushing every session row
+  // offscreen before the user (or a test driving `.click()`) can reach them.
   useEffect(() => {
-    const focus = () => taRef.current?.focus();
+    if (!isMobileDevice) taRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  // Focus request from openTopicTaskRoom() — covers the already-on-landing
+  // case where the component does not remount so the mount-time focus effect
+  // never re-fires. Same preventScroll rationale as above.
+  useEffect(() => {
+    const focus = () => taRef.current?.focus({ preventScroll: true });
     window.addEventListener(TOPIC_COMPOSER_FOCUS_EVENT, focus);
     return () => window.removeEventListener(TOPIC_COMPOSER_FOCUS_EVENT, focus);
   }, []);
@@ -227,9 +239,11 @@ export default function TopicComposer({
             placeholder="what should the agent do?"
             rows={4}
             aria-label="first message"
-            // On mobile the landing is the default view; autofocusing would
-            // pop the software keyboard on every app open.
-            autoFocus={!isMobileDevice}
+            // Focus is applied imperatively (see the mount effect above) so
+            // it can suppress the default scroll-into-view — see rationale
+            // there. On mobile the landing is the default view; autofocusing
+            // would pop the software keyboard on every app open, so it's
+            // skipped entirely there (not just scroll-suppressed).
           />
           <TopicComposerProviderRow
             providerOptions={providerOptions}
@@ -393,10 +407,14 @@ export default function TopicComposer({
                   ))}
                 </datalist>
               </label>
-              <div className="topic-composer__preview" aria-label="launch preview">
+              <div
+                className="topic-composer__preview"
+                aria-label="launch preview"
+              >
                 <div>template: {preview.templateKind}</div>
                 <div>
-                  provider: {selectedProviderOption?.label ?? preview.providerLabel}
+                  provider:{' '}
+                  {selectedProviderOption?.label ?? preview.providerLabel}
                 </div>
                 <div>
                   agent:{' '}
