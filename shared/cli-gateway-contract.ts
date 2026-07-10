@@ -1369,6 +1369,11 @@ const createSessionInputSchema: RelayJsonSchema = {
     cols: { type: 'number', minimum: 1, maximum: 500 },
     rows: { type: 'number', minimum: 1, maximum: 200 },
     branchName: stringSchema,
+    displayName: {
+      ...stringSchema,
+      description:
+        'Human-readable session label shown in session lists and the web UI; defaults to "Agent N" / "Terminal N".',
+    },
     initialPrompt: stringSchema,
     continuePolicy: { type: 'string', enum: ['always', 'never'] },
     workContextId: stringSchema,

@@ -5164,6 +5164,14 @@ async function main(): Promise<void> {
     res.json({ ok: true, branchDeleted });
   });
 
+  function resolveSessionDisplayName(
+    requested: string | undefined,
+    fallback: () => string
+  ): string {
+    const trimmed = requested?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : fallback();
+  }
+
   // POST /sessions — unified endpoint for agent and terminal sessions
   app.post('/sessions', requireCliGatewayAuth, async (req, res) => {
     const requestedCreateBody = sessionCreateBodyFromRequest(req, res);
@@ -5188,6 +5196,7 @@ async function main(): Promise<void> {
       cols,
       rows,
       branchName: requestBranchName,
+      displayName: requestedDisplayName,
       needsBranchRename,
       newWorktree,
       branchRenamePrompt,
@@ -5211,6 +5220,7 @@ async function main(): Promise<void> {
       cols?: number;
       rows?: number;
       branchName?: string;
+      displayName?: string;
       needsBranchRename?: boolean;
       newWorktree?: boolean;
       branchRenamePrompt?: string;
@@ -5381,7 +5391,10 @@ async function main(): Promise<void> {
         res.status(400).json(webAvailability.body);
         return;
       }
-      const displayName = sessions.nextAgentName();
+      const displayName = resolveSessionDisplayName(
+        requestedDisplayName,
+        sessions.nextAgentName
+      );
       try {
         const { session } = await localRelayNode.sessions.createWeb({
           agentType: resolvedAgent,
@@ -5429,7 +5442,10 @@ async function main(): Promise<void> {
       resolved.continuePolicy
     );
 
-    const displayName = sessions.nextAgentName();
+    const displayName = resolveSessionDisplayName(
+      requestedDisplayName,
+      sessions.nextAgentName
+    );
 
     let session: CreateResult;
     try {

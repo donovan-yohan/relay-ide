@@ -628,6 +628,7 @@ Web launch parity (#859): the converted browser launch actions use the same stab
 Supported now:
 
 - local session creation using `cwd`, or repo-backed `repoPath` plus optional `worktreePath`
+- optional `displayName` to label the session in session lists and the web UI (defaults to `Agent N` / `Terminal N`)
 - routed node creation with `nodeId`, `cwd`, `type` (defaulting to `agent` when omitted), `mode`, `agent`, lifecycle fields, and optional non-agent `sessionEnvelope` where the existing backend supports them
 - routed node creation with the typed `environment` object (see [Typed environment IDs](#typed-environment-ids-626) below)
 - optional `terminalBackend`, with `relay-pty` as the only accepted value; `tmux-compat` fails closed as an unsupported legacy backend
