@@ -65,6 +65,12 @@ export type EventMessage =
       cwdPath?: string;
     } & SessionScopedEvent)
   | ({
+      type: 'session-created';
+      sessionId: string;
+      cwd?: string;
+      branchName?: string;
+    } & SessionScopedEvent)
+  | ({
       type: 'session-ended';
       sessionId?: string;
       cwd?: string;
@@ -337,10 +343,7 @@ function createTerminalStreamClientId(): string {
     .slice(2, 10)}`;
 }
 
-function appendTerminalStreamParams(
-  path: string,
-  conn: PtyConnection
-): string {
+function appendTerminalStreamParams(path: string, conn: PtyConnection): string {
   const params = new URLSearchParams({
     clientId: conn.terminalStreamClientId,
     resizeOwner: conn.resizeOwner,
@@ -388,7 +391,10 @@ function handleTerminalStreamEnvelope(
   conn: PtyConnection,
   envelope: TerminalStreamEnvelope
 ): void {
-  conn.terminalStreamCursor = Math.max(conn.terminalStreamCursor, envelope.cursor);
+  conn.terminalStreamCursor = Math.max(
+    conn.terminalStreamCursor,
+    envelope.cursor
+  );
   if (envelope.kind === 'data') {
     enqueuePtyOutput(conn, envelope.payload.data);
     return;
@@ -405,7 +411,9 @@ function handleTerminalStreamEnvelope(
   }
 }
 
-function parseTerminalStreamMessage(data: string): TerminalStreamEnvelope | null {
+function parseTerminalStreamMessage(
+  data: string
+): TerminalStreamEnvelope | null {
   if (!data.startsWith('{')) return null;
   try {
     const parsed: unknown = JSON.parse(data);
@@ -655,7 +663,8 @@ function openPtySocket(conn: PtyConnection): void {
         '/ws/sessions/' +
         encodeURIComponent(conn.localSessionId)
       : '/ws/' + encodeURIComponent(conn.localSessionId);
-  const url = wsProtocol + '//' + location.host + appendTerminalStreamParams(path, conn);
+  const url =
+    wsProtocol + '//' + location.host + appendTerminalStreamParams(path, conn);
   const socket = new WebSocket(url);
   conn.pendingWs = socket;
 

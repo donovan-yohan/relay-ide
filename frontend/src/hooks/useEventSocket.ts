@@ -327,6 +327,10 @@ export function useEventSocket({
           .handleBranchChanged(msg.sessionId, msg.branch, scope);
         if (repoPaths.length > 0) invalidateScopedPrData(repoPaths, 'manual');
       },
+      'session-created': () => {
+        queryClient.invalidateQueries({ queryKey: ['active-work'] });
+        useSessionsStore.getState().refreshAll();
+      },
       'session-ended': (msg) => {
         queryClient.invalidateQueries({ queryKey: ['active-work'] });
         const scope = eventSessionScope(msg);
