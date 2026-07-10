@@ -31,7 +31,10 @@ import { Router } from 'express';
 import type { RequestHandler, Request, Response } from 'express';
 
 import type { RelayCliGatewayErrorCode } from '../../shared/cli-gateway-contract.js';
-import { parseGlobalSessionId, type GlobalSessionId } from '../../shared/identity.js';
+import {
+  parseGlobalSessionId,
+  type GlobalSessionId,
+} from '../../shared/identity.js';
 import {
   createWorkContextPrivacyMetadata,
   type ArtifactRef,
@@ -42,6 +45,7 @@ import {
   cliGatewayActorFailure,
   cliGatewayCorrelationId,
   sendCliGatewayActorFailure,
+  type CliGatewayActorReadCommand,
   type CliGatewayActorWriteCommand,
 } from '../cli-gateway-actor-auth.js';
 import type {
@@ -172,6 +176,21 @@ export interface ContextInboxRouterDeps {
   workContextStore?: WorkContextStore;
   events?: Pick<CliGatewayEventBus, 'publish'>;
   requireAuth?: RequestHandler;
+  requireReadActorAuth?: (
+    expectedCommand: CliGatewayActorReadCommand,
+    options?: {
+      scopeForRequest?: (req: Request) =>
+        | {
+            workContextIds?: string[];
+            sessionIds?: string[];
+            globalSessionIds?: string[];
+            repoIds?: string[];
+            taskRefs?: string[];
+          }
+        | undefined;
+      deferWorkContextScope?: boolean;
+    }
+  ) => RequestHandler;
   requireWriteActorAuth?: (
     expectedCommand: CliGatewayActorWriteCommand,
     options?: {
@@ -327,7 +346,8 @@ function denyMissingCapability(
 ): boolean {
   const provided = parseCapabilityHeader(req.header('x-relay-capabilities'));
   const actorCredential = authenticatedCliGatewayActorCredential(req);
-  for (const capability of actorCredential?.capabilities ?? []) provided.add(capability);
+  for (const capability of actorCredential?.capabilities ?? [])
+    provided.add(capability);
   const missing = required.filter((cap) => !provided.has(cap));
   if (missing.length === 0) return false;
   sendGatewayError(
@@ -353,25 +373,35 @@ function bodyRecord(req: Request): Record<string, unknown> {
 
 function writeScopeFromBody(
   req: Request
-): { workContextIds?: string[]; sessionIds?: string[]; globalSessionIds?: string[]; repoIds?: string[]; taskRefs?: string[] } | undefined {
+):
+  | {
+      workContextIds?: string[];
+      sessionIds?: string[];
+      globalSessionIds?: string[];
+      repoIds?: string[];
+      taskRefs?: string[];
+    }
+  | undefined {
   const body = bodyRecord(req);
-  const workContextId = readString(body['workContextId']) ?? readString(body['targetWorkContextId']);
+  const workContextId =
+    readString(body['workContextId']) ??
+    readString(body['targetWorkContextId']);
   const sessionId = readString(body['targetSessionId']);
   const taskRef = readString(body['taskRef']);
   const repoId = readString(body['repoId']);
   return workContextId || sessionId || taskRef || repoId
     ? {
         ...(workContextId ? { workContextIds: [workContextId] } : {}),
-        ...(sessionId ? { sessionIds: [sessionId], globalSessionIds: [sessionId] } : {}),
+        ...(sessionId
+          ? { sessionIds: [sessionId], globalSessionIds: [sessionId] }
+          : {}),
         ...(repoId ? { repoIds: [repoId] } : {}),
         ...(taskRef ? { taskRefs: [taskRef] } : {}),
       }
     : undefined;
 }
 
-function actorScopeForInboxMessage(
-  message: SessionInboxMessage | null
-):
+function actorScopeForInboxMessage(message: SessionInboxMessage | null):
   | {
       nodeIds?: string[];
       workContextIds?: string[];
@@ -906,7 +936,10 @@ function validateArtifactRefPayload(payload: unknown): FieldValidationHint[] {
   const uri = payload['uri'];
   if (uri !== undefined) {
     if (typeof uri !== 'string') {
-      hints.push({ field: 'artifactRef.uri', message: 'must be a string when set' });
+      hints.push({
+        field: 'artifactRef.uri',
+        message: 'must be a string when set',
+      });
     } else if (looksLikeAbsoluteLocalPath(uri)) {
       hints.push({
         field: 'artifactRef.uri',
@@ -1009,8 +1042,50 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     deps.requireAuth ?? ((_req: Request, _res: Response, next) => next());
   const writeActorAuth = (
     command: CliGatewayActorWriteCommand,
-    options?: Parameters<NonNullable<ContextInboxRouterDeps['requireWriteActorAuth']>>[1]
+    options?: Parameters<
+      NonNullable<ContextInboxRouterDeps['requireWriteActorAuth']>
+    >[1]
   ): RequestHandler => deps.requireWriteActorAuth?.(command, options) ?? auth;
+  const readActorAuth = (
+    command: CliGatewayActorReadCommand,
+    options?: Parameters<
+      NonNullable<ContextInboxRouterDeps['requireReadActorAuth']>
+    >[1]
+  ): RequestHandler => deps.requireReadActorAuth?.(command, options) ?? auth;
+  // Read-side actor scope extractors mirror the write side (`writeScopeFromBody`):
+  // a WorkContext/session-scoped actor credential is authorized against the exact
+  // target it is reading. `inboxMessageScopeForRequest` is shared by the inbox.get
+  // read and the ack/resolve/ignore transitions. Unscoped credentials pass through
+  // untouched (no scope dimension → no `missing_scope`).
+  const inboxListScopeForRequest = (req: Request) => {
+    const targetWorkContextId = readString(req.query['targetWorkContextId']);
+    const targetSessionId = readString(req.query['targetSessionId']);
+    return targetWorkContextId || targetSessionId
+      ? {
+          ...(targetWorkContextId
+            ? { workContextIds: [targetWorkContextId] }
+            : {}),
+          ...(targetSessionId
+            ? {
+                sessionIds: [targetSessionId],
+                globalSessionIds: [targetSessionId],
+              }
+            : {}),
+        }
+      : undefined;
+  };
+  const contextListScopeForRequest = (req: Request) => {
+    const workContextId = readString(req.query['workContextId']);
+    return workContextId ? { workContextIds: [workContextId] } : undefined;
+  };
+  const inboxMessageScopeForRequest = (req: Request) =>
+    actorScopeForInboxMessage(
+      req.params['id']
+        ? (deps.store?.getInboxMessage(req.params['id'], {
+            markDelivered: false,
+          }) ?? null)
+        : null
+    );
   // has not wired a fetcher, in which case packets pass through undecorated.
   const resolveAnchorState: AnchorStateResolver =
     deps.resolveAnchorState ?? resolveAnchorWithRegisteredFetcher;
@@ -1063,7 +1138,11 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     return contextPackets.length > 0 ? { ...message, contextPackets } : message;
   }
 
-  function emitContextEvent(type: string, packet: ContextPacket, workContextId?: string): void {
+  function emitContextEvent(
+    type: string,
+    packet: ContextPacket,
+    workContextId?: string
+  ): void {
     deps.events?.publish({
       topic: 'context',
       type,
@@ -1073,17 +1152,27 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
         kind: packet.kind,
         createdBy: packet.createdBy,
         ...(packet.binding?.nodeId ? { nodeId: packet.binding.nodeId } : {}),
-        ...(packet.binding?.workspaceId ? { workspaceId: packet.binding.workspaceId } : {}),
+        ...(packet.binding?.workspaceId
+          ? { workspaceId: packet.binding.workspaceId }
+          : {}),
       },
     });
   }
 
-  function emitInboxEvent(type: string, message: SessionInboxMessage, previousState?: SessionInboxMessageState): void {
+  function emitInboxEvent(
+    type: string,
+    message: SessionInboxMessage,
+    previousState?: SessionInboxMessageState
+  ): void {
     deps.events?.publish({
       topic: 'inbox',
       type,
-      ...(message.targetWorkContextId ? { workContextId: message.targetWorkContextId } : {}),
-      ...(message.targetSessionId ? { globalSessionId: message.targetSessionId } : {}),
+      ...(message.targetWorkContextId
+        ? { workContextId: message.targetWorkContextId }
+        : {}),
+      ...(message.targetSessionId
+        ? { globalSessionId: message.targetSessionId }
+        : {}),
       payload: {
         messageId: message.id,
         state: message.state,
@@ -1147,230 +1236,257 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   }
 
   // -- context.create ------------------------------------------------------
-  router.post('/context', writeActorAuth('context.create', { scopeForRequest: writeScopeFromBody }), (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
-    const s = store(res);
-    if (!s) return;
-    const body = bodyRecord(req);
-    const kind = readPacketKind(body['kind']);
-    if (!kind) {
-      sendGatewayError(
-        res,
-        'INVALID_ARGUMENT',
-        'kind is required and must be a known ContextPacketKind',
-        false,
-        {
-          field: 'kind',
-        }
-      );
-      return;
+  router.post(
+    '/context',
+    writeActorAuth('context.create', { scopeForRequest: writeScopeFromBody }),
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      const s = store(res);
+      if (!s) return;
+      const body = bodyRecord(req);
+      const kind = readPacketKind(body['kind']);
+      if (!kind) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          'kind is required and must be a known ContextPacketKind',
+          false,
+          {
+            field: 'kind',
+          }
+        );
+        return;
+      }
+      const fieldErrors = validateContextCreatePayload(kind, body);
+      if (fieldErrors.length > 0) {
+        const [first] = fieldErrors;
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          `invalid ${kind} context packet: ${first?.field ?? 'payload'} ${first?.message ?? 'is invalid'}`,
+          false,
+          { reasonCode: 'INVALID_CONTEXT_PACKET', fieldErrors }
+        );
+        return;
+      }
+      const createdBy = readString(body['createdBy']) ?? 'cli-gateway';
+      try {
+        const contextPacket = s.createPacket({
+          kind,
+          ...(body['anchor'] !== undefined
+            ? { anchor: body['anchor'] as ContextPacket['anchor'] }
+            : {}),
+          ...(body['fileRef'] !== undefined
+            ? { fileRef: body['fileRef'] as ContextPacket['fileRef'] }
+            : {}),
+          ...(body['artifactRef'] !== undefined
+            ? {
+                artifactRef: body[
+                  'artifactRef'
+                ] as ContextPacket['artifactRef'],
+              }
+            : {}),
+          ...(readString(body['note']) ? { note: body['note'] as string } : {}),
+          ...(body['binding'] !== undefined
+            ? { binding: body['binding'] as ContextPacketBinding }
+            : {}),
+          createdBy,
+        });
+        emitContextEvent('context.created', contextPacket);
+        res.status(201).json({ contextPacket });
+      } catch (err) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          err instanceof Error ? err.message : 'invalid context packet'
+        );
+      }
     }
-    const fieldErrors = validateContextCreatePayload(kind, body);
-    if (fieldErrors.length > 0) {
-      const [first] = fieldErrors;
-      sendGatewayError(
-        res,
-        'INVALID_ARGUMENT',
-        `invalid ${kind} context packet: ${first?.field ?? 'payload'} ${first?.message ?? 'is invalid'}`,
-        false,
-        { reasonCode: 'INVALID_CONTEXT_PACKET', fieldErrors }
-      );
-      return;
-    }
-    const createdBy = readString(body['createdBy']) ?? 'cli-gateway';
-    try {
-      const contextPacket = s.createPacket({
-        kind,
-        ...(body['anchor'] !== undefined
-          ? { anchor: body['anchor'] as ContextPacket['anchor'] }
-          : {}),
-        ...(body['fileRef'] !== undefined
-          ? { fileRef: body['fileRef'] as ContextPacket['fileRef'] }
-          : {}),
-        ...(body['artifactRef'] !== undefined
-          ? { artifactRef: body['artifactRef'] as ContextPacket['artifactRef'] }
-          : {}),
-        ...(readString(body['note']) ? { note: body['note'] as string } : {}),
-        ...(body['binding'] !== undefined
-          ? { binding: body['binding'] as ContextPacketBinding }
-          : {}),
-        createdBy,
-      });
-      emitContextEvent('context.created', contextPacket);
-      res.status(201).json({ contextPacket });
-    } catch (err) {
-      sendGatewayError(
-        res,
-        'INVALID_ARGUMENT',
-        err instanceof Error ? err.message : 'invalid context packet'
-      );
-    }
-  });
+  );
 
   // -- context.pin / context.unpin -----------------------------------------
   // #763: pinning records a WorkContext artifact ref to an existing packet.
   // The packet body stays in the context-packet store; WorkContext artifacts are
   // the durable handoff/review pool. Unpin removes only that artifact ref and
   // writes an audit lifecycle event; it never deletes the packet itself.
-  router.post('/context/:id/pin', writeActorAuth('context.pin', { scopeForRequest: writeScopeFromBody }), async (req, res, next) => {
-    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
-    const s = store(res);
-    const wcStore = workContexts(res);
-    if (!s || !wcStore) return;
-    const packetId = req.params['id'] ?? '';
-    const packet = s.getPacket(packetId);
-    if (!packet) {
-      sendGatewayError(res, 'NOT_FOUND', 'context packet not found');
-      return;
-    }
-    const body = bodyRecord(req);
-    const workContextId = readString(body['workContextId']);
-    if (!workContextId) {
-      sendGatewayError(
-        res,
-        'INVALID_ARGUMENT',
-        'workContextId is required',
-        false,
-        { field: 'workContextId' }
-      );
-      return;
-    }
-    const existing = wcStore.get(workContextId);
-    if (!existing) {
-      sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found');
-      return;
-    }
-    const actorId =
-      readString(body['actorId']) ?? readString(body['createdBy']);
-    const artifact = packetPinnedArtifact(packet, actorId);
-    const alreadyPinned = existing.artifacts.some(
-      (item) => item.id === artifact.id || item.uri === artifact.uri
-    );
-    try {
-      let workContext = existing;
-      if (!alreadyPinned) {
-        workContext = wcStore.recordLifecycleEvent(workContextId, {
-          type: 'artifact.recorded',
-          ...(actorId ? { actorId } : {}),
-          artifacts: [artifact],
-          summary: `Pinned context packet ${packet.id} to WorkContext ${workContextId}`,
-        });
-        emitContextEvent('context.pinned', packet, workContextId);
+  router.post(
+    '/context/:id/pin',
+    writeActorAuth('context.pin', { scopeForRequest: writeScopeFromBody }),
+    async (req, res, next) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      const s = store(res);
+      const wcStore = workContexts(res);
+      if (!s || !wcStore) return;
+      const packetId = req.params['id'] ?? '';
+      const packet = s.getPacket(packetId);
+      if (!packet) {
+        sendGatewayError(res, 'NOT_FOUND', 'context packet not found');
+        return;
       }
-      const pinned = await pinnedContextPacketsFor(s, workContextId);
-      res.status(alreadyPinned ? 200 : 201).json({
-        workContext,
-        contextPacket: await decoratePacketAnchorState(
-          packet,
-          resolveAnchorState
-        ),
-        pinnedContextPackets: pinned?.contextPackets ?? [],
-        pinnedArtifacts: pinned?.artifacts ?? [],
-        alreadyPinned,
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  router.post('/context/:id/unpin', writeActorAuth('context.unpin', { scopeForRequest: writeScopeFromBody }), (req, res) => {
-    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
-    const s = store(res);
-    const wcStore = workContexts(res);
-    if (!s || !wcStore) return;
-    const packetId = req.params['id'] ?? '';
-    const body = bodyRecord(req);
-    const workContextId = readString(body['workContextId']);
-    if (!workContextId) {
-      sendGatewayError(
-        res,
-        'INVALID_ARGUMENT',
-        'workContextId is required',
-        false,
-        { field: 'workContextId' }
+      const body = bodyRecord(req);
+      const workContextId = readString(body['workContextId']);
+      if (!workContextId) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          'workContextId is required',
+          false,
+          { field: 'workContextId' }
+        );
+        return;
+      }
+      const existing = wcStore.get(workContextId);
+      if (!existing) {
+        sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found');
+        return;
+      }
+      const actorId =
+        readString(body['actorId']) ?? readString(body['createdBy']);
+      const artifact = packetPinnedArtifact(packet, actorId);
+      const alreadyPinned = existing.artifacts.some(
+        (item) => item.id === artifact.id || item.uri === artifact.uri
       );
-      return;
+      try {
+        let workContext = existing;
+        if (!alreadyPinned) {
+          workContext = wcStore.recordLifecycleEvent(workContextId, {
+            type: 'artifact.recorded',
+            ...(actorId ? { actorId } : {}),
+            artifacts: [artifact],
+            summary: `Pinned context packet ${packet.id} to WorkContext ${workContextId}`,
+          });
+          emitContextEvent('context.pinned', packet, workContextId);
+        }
+        const pinned = await pinnedContextPacketsFor(s, workContextId);
+        res.status(alreadyPinned ? 200 : 201).json({
+          workContext,
+          contextPacket: await decoratePacketAnchorState(
+            packet,
+            resolveAnchorState
+          ),
+          pinnedContextPackets: pinned?.contextPackets ?? [],
+          pinnedArtifacts: pinned?.artifacts ?? [],
+          alreadyPinned,
+        });
+      } catch (err) {
+        next(err);
+      }
     }
-    const existing = wcStore.get(workContextId);
-    if (!existing) {
-      sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found');
-      return;
+  );
+
+  router.post(
+    '/context/:id/unpin',
+    writeActorAuth('context.unpin', { scopeForRequest: writeScopeFromBody }),
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      const s = store(res);
+      const wcStore = workContexts(res);
+      if (!s || !wcStore) return;
+      const packetId = req.params['id'] ?? '';
+      const body = bodyRecord(req);
+      const workContextId = readString(body['workContextId']);
+      if (!workContextId) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          'workContextId is required',
+          false,
+          { field: 'workContextId' }
+        );
+        return;
+      }
+      const existing = wcStore.get(workContextId);
+      if (!existing) {
+        sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found');
+        return;
+      }
+      const artifactId = contextPacketArtifactId(packetId);
+      const artifactUri = contextPacketArtifactUri(packetId);
+      const nextArtifacts = existing.artifacts.filter(
+        (item) => item.id !== artifactId && item.uri !== artifactUri
+      );
+      const removed = nextArtifacts.length !== existing.artifacts.length;
+      const actorId =
+        readString(body['actorId']) ?? readString(body['createdBy']);
+      const updated = removed
+        ? wcStore.update(workContextId, { artifacts: nextArtifacts })
+        : existing;
+      const workContext = removed
+        ? wcStore.recordLifecycleEvent(workContextId, {
+            type: 'artifact.unpinned',
+            ...(actorId ? { actorId } : {}),
+            summary: `Unpinned context packet ${packetId} from WorkContext ${workContextId}; packet retained for GC until unreferenced`,
+          })
+        : updated;
+      const packet = s.getPacket(packetId);
+      if (removed && packet)
+        emitContextEvent('context.unpinned', packet, workContextId);
+      res.json({
+        workContext,
+        ...(packet ? { contextPacket: packet } : {}),
+        removed,
+        lifecycle: {
+          packetDeleted: false,
+          gc: 'packet retained; orphan cleanup must only delete packets with no inbox messages and no WorkContext artifact pins',
+        },
+      });
     }
-    const artifactId = contextPacketArtifactId(packetId);
-    const artifactUri = contextPacketArtifactUri(packetId);
-    const nextArtifacts = existing.artifacts.filter(
-      (item) => item.id !== artifactId && item.uri !== artifactUri
-    );
-    const removed = nextArtifacts.length !== existing.artifacts.length;
-    const actorId =
-      readString(body['actorId']) ?? readString(body['createdBy']);
-    const updated = removed
-      ? wcStore.update(workContextId, { artifacts: nextArtifacts })
-      : existing;
-    const workContext = removed
-      ? wcStore.recordLifecycleEvent(workContextId, {
-          type: 'artifact.unpinned',
-          ...(actorId ? { actorId } : {}),
-          summary: `Unpinned context packet ${packetId} from WorkContext ${workContextId}; packet retained for GC until unreferenced`,
-        })
-      : updated;
-    const packet = s.getPacket(packetId);
-    if (removed && packet) emitContextEvent('context.unpinned', packet, workContextId);
-    res.json({
-      workContext,
-      ...(packet ? { contextPacket: packet } : {}),
-      removed,
-      lifecycle: {
-        packetDeleted: false,
-        gc: 'packet retained; orphan cleanup must only delete packets with no inbox messages and no WorkContext artifact pins',
-      },
-    });
-  });
+  );
 
   // -- context.list --------------------------------------------------------
-  router.get('/context', auth, (req, res, next) => {
-    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
-    const s = store(res);
-    if (!s) return;
-    const workContextId = readString(req.query['workContextId']);
-    const filter: ListContextPacketsFilter = {};
-    const nodeId = readString(req.query['nodeId']);
-    const workspaceId = readString(req.query['workspaceId']);
-    const limit = readLimit(req.query['limit']);
-    if (workContextId) {
-      if (!workContexts(res)) return;
-      pinnedContextPacketsFor(s, workContextId)
-        .then((result) => {
-          if (!result) {
-            sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found');
-            return;
-          }
-          let contextPackets = result.contextPackets;
-          if (nodeId)
-            contextPackets = contextPackets.filter(
-              (packet) => packet.binding?.nodeId === nodeId
-            );
-          if (workspaceId)
-            contextPackets = contextPackets.filter(
-              (packet) => packet.binding?.workspaceId === workspaceId
-            );
-          if (limit !== undefined)
-            contextPackets = contextPackets.slice(0, limit);
-          res.json({ contextPackets, pinnedArtifacts: result.artifacts });
-        })
-        .catch(next);
-      return;
+  router.get(
+    '/context',
+    readActorAuth('context.list', {
+      scopeForRequest: contextListScopeForRequest,
+    }),
+    (req, res, next) => {
+      if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+      const s = store(res);
+      if (!s) return;
+      const workContextId = readString(req.query['workContextId']);
+      const filter: ListContextPacketsFilter = {};
+      const nodeId = readString(req.query['nodeId']);
+      const workspaceId = readString(req.query['workspaceId']);
+      const limit = readLimit(req.query['limit']);
+      if (workContextId) {
+        if (!workContexts(res)) return;
+        pinnedContextPacketsFor(s, workContextId)
+          .then((result) => {
+            if (!result) {
+              sendGatewayError(res, 'NOT_FOUND', 'WorkContext not found');
+              return;
+            }
+            let contextPackets = result.contextPackets;
+            if (nodeId)
+              contextPackets = contextPackets.filter(
+                (packet) => packet.binding?.nodeId === nodeId
+              );
+            if (workspaceId)
+              contextPackets = contextPackets.filter(
+                (packet) => packet.binding?.workspaceId === workspaceId
+              );
+            if (limit !== undefined)
+              contextPackets = contextPackets.slice(0, limit);
+            res.json({ contextPackets, pinnedArtifacts: result.artifacts });
+          })
+          .catch(next);
+        return;
+      }
+      if (nodeId) filter.nodeId = nodeId;
+      if (workspaceId) filter.workspaceId = workspaceId;
+      if (limit !== undefined) filter.limit = limit;
+      res.json({ contextPackets: s.listPackets(filter) });
     }
-    if (nodeId) filter.nodeId = nodeId;
-    if (workspaceId) filter.workspaceId = workspaceId;
-    if (limit !== undefined) filter.limit = limit;
-    res.json({ contextPackets: s.listPackets(filter) });
-  });
+  );
 
   // -- context.get ---------------------------------------------------------
   // #760: decorate a returned `file-anchor` packet with its DERIVED, NON-STORED
   // `AnchorState` (the runtime consumer of #766 flagged as missing by #759).
-  router.get('/context/:id', auth, (req, res, next) => {
+  // A packet is not WorkContext-bound, so no `scopeForRequest` is derivable: a
+  // WorkContext-scoped credential fails closed (`missing_scope`) here and an
+  // unscoped credential reads by id. This preserves existing scope rules without
+  // widening them.
+  router.get('/context/:id', readActorAuth('context.get'), (req, res, next) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
     const s = store(res);
     if (!s) return;
@@ -1385,79 +1501,87 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   });
 
   // -- inbox.send ----------------------------------------------------------
-  router.post('/inbox', writeActorAuth('inbox.send', { scopeForRequest: writeScopeFromBody }), (req, res) => {
-    if (denyMissingCapability(req, res, [INBOX_WRITE])) return;
-    const s = store(res);
-    if (!s) return;
-    const body = bodyRecord(req);
-    const targetSessionId = readString(body['targetSessionId']);
-    const targetWorkContextId = readString(body['targetWorkContextId']);
-    if (!targetSessionId && !targetWorkContextId) {
-      sendGatewayError(
-        res,
-        'INVALID_ARGUMENT',
-        'one of targetSessionId or targetWorkContextId is required',
-        false,
-        {
-          field: 'targetSessionId',
-        }
-      );
-      return;
+  router.post(
+    '/inbox',
+    writeActorAuth('inbox.send', { scopeForRequest: writeScopeFromBody }),
+    (req, res) => {
+      if (denyMissingCapability(req, res, [INBOX_WRITE])) return;
+      const s = store(res);
+      if (!s) return;
+      const body = bodyRecord(req);
+      const targetSessionId = readString(body['targetSessionId']);
+      const targetWorkContextId = readString(body['targetWorkContextId']);
+      if (!targetSessionId && !targetWorkContextId) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          'one of targetSessionId or targetWorkContextId is required',
+          false,
+          {
+            field: 'targetSessionId',
+          }
+        );
+        return;
+      }
+      const createdBy = readString(body['createdBy']) ?? 'cli-gateway';
+      try {
+        const message = s.createInboxMessage({
+          ...(targetSessionId ? { targetSessionId } : {}),
+          ...(targetWorkContextId ? { targetWorkContextId } : {}),
+          contextPacketIds: readStringArray(body['contextPacketIds']),
+          ...(readString(body['text']) ? { text: body['text'] as string } : {}),
+          createdBy,
+        });
+        emitInboxEvent('inbox.sent', message);
+        res.status(201).json({ message });
+      } catch (err) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          err instanceof Error ? err.message : 'invalid inbox message'
+        );
+      }
     }
-    const createdBy = readString(body['createdBy']) ?? 'cli-gateway';
-    try {
-      const message = s.createInboxMessage({
-        ...(targetSessionId ? { targetSessionId } : {}),
-        ...(targetWorkContextId ? { targetWorkContextId } : {}),
-        contextPacketIds: readStringArray(body['contextPacketIds']),
-        ...(readString(body['text']) ? { text: body['text'] as string } : {}),
-        createdBy,
-      });
-      emitInboxEvent('inbox.sent', message);
-      res.status(201).json({ message });
-    } catch (err) {
-      sendGatewayError(
-        res,
-        'INVALID_ARGUMENT',
-        err instanceof Error ? err.message : 'invalid inbox message'
-      );
-    }
-  });
+  );
 
   // -- inbox.list ----------------------------------------------------------
   // PULL delivery: the store flips queued → delivered as a read side effect.
-  router.get('/inbox', auth, (req, res, next) => {
-    if (denyMissingCapability(req, res, [INBOX_READ])) return;
-    const s = store(res);
-    if (!s) return;
-    const targetSessionId = readString(req.query['targetSessionId']);
-    const targetWorkContextId = readString(req.query['targetWorkContextId']);
-    if (!targetSessionId && !targetWorkContextId) {
-      sendGatewayError(
-        res,
-        'INVALID_ARGUMENT',
-        'one of targetSessionId or targetWorkContextId is required',
-        false,
-        {
-          field: 'targetSessionId',
-        }
-      );
-      return;
+  router.get(
+    '/inbox',
+    readActorAuth('inbox.list', { scopeForRequest: inboxListScopeForRequest }),
+    (req, res, next) => {
+      if (denyMissingCapability(req, res, [INBOX_READ])) return;
+      const s = store(res);
+      if (!s) return;
+      const targetSessionId = readString(req.query['targetSessionId']);
+      const targetWorkContextId = readString(req.query['targetWorkContextId']);
+      if (!targetSessionId && !targetWorkContextId) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          'one of targetSessionId or targetWorkContextId is required',
+          false,
+          {
+            field: 'targetSessionId',
+          }
+        );
+        return;
+      }
+      const filter: ListInboxMessagesFilter = {};
+      if (targetSessionId) filter.targetSessionId = targetSessionId;
+      if (targetWorkContextId) filter.targetWorkContextId = targetWorkContextId;
+      const state = readInboxState(req.query['state']);
+      const limit = readLimit(req.query['limit']);
+      if (state) filter.state = state;
+      if (limit !== undefined) filter.limit = limit;
+      // PULL delivery runs first (the store flips queued → delivered), then each
+      // message's referenced file-anchor packets are decorated with derived state.
+      const messages = s.listInboxMessages(filter);
+      Promise.all(messages.map((m) => decorateMessage(s, m)))
+        .then((decorated) => res.json({ messages: decorated }))
+        .catch(next);
     }
-    const filter: ListInboxMessagesFilter = {};
-    if (targetSessionId) filter.targetSessionId = targetSessionId;
-    if (targetWorkContextId) filter.targetWorkContextId = targetWorkContextId;
-    const state = readInboxState(req.query['state']);
-    const limit = readLimit(req.query['limit']);
-    if (state) filter.state = state;
-    if (limit !== undefined) filter.limit = limit;
-    // PULL delivery runs first (the store flips queued → delivered), then each
-    // message's referenced file-anchor packets are decorated with derived state.
-    const messages = s.listInboxMessages(filter);
-    Promise.all(messages.map((m) => decorateMessage(s, m)))
-      .then((decorated) => res.json({ messages: decorated }))
-      .catch(next);
-  });
+  );
 
   // -- inbox.preview -------------------------------------------------------
   // Sender-side/read-model preview: list and decorate messages WITHOUT the PULL
@@ -1498,19 +1622,25 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
   // -- inbox.get -----------------------------------------------------------
   // PULL delivery: the store flips queued → delivered as a read side effect.
   // #760: referenced file-anchor packets are decorated with derived AnchorState.
-  router.get('/inbox/:id', auth, (req, res, next) => {
-    if (denyMissingCapability(req, res, [INBOX_READ])) return;
-    const s = store(res);
-    if (!s) return;
-    const message = s.getInboxMessage(req.params['id'] ?? '');
-    if (!message) {
-      sendGatewayError(res, 'NOT_FOUND', 'inbox message not found');
-      return;
+  router.get(
+    '/inbox/:id',
+    readActorAuth('inbox.get', {
+      scopeForRequest: inboxMessageScopeForRequest,
+    }),
+    (req, res, next) => {
+      if (denyMissingCapability(req, res, [INBOX_READ])) return;
+      const s = store(res);
+      if (!s) return;
+      const message = s.getInboxMessage(req.params['id'] ?? '');
+      if (!message) {
+        sendGatewayError(res, 'NOT_FOUND', 'inbox message not found');
+        return;
+      }
+      decorateMessage(s, message)
+        .then((decorated) => res.json({ message: decorated }))
+        .catch(next);
     }
-    decorateMessage(s, message)
-      .then((decorated) => res.json({ message: decorated }))
-      .catch(next);
-  });
+  );
 
   // -- inbox.ack / inbox.resolve / inbox.ignore ----------------------------
   // All three go through the store's transition-guarded update; the router
@@ -1546,26 +1676,28 @@ export function createContextInboxRouter(deps: ContextInboxRouterDeps): Router {
     };
   }
 
-  const transitionScopeForRequest = (req: Request) => {
-    const id = req.params['id'] ?? '';
-    return actorScopeForInboxMessage(
-      id ? deps.store?.getInboxMessage(id, { markDelivered: false }) ?? null : null
-    );
-  };
-
+  // Reuses `inboxMessageScopeForRequest` (defined above): both the inbox.get read
+  // and the ack/resolve/ignore transitions authorize a scoped credential against
+  // the message's own target session/WorkContext.
   router.post(
     '/inbox/:id/ack',
-    writeActorAuth('inbox.ack', { scopeForRequest: transitionScopeForRequest }),
+    writeActorAuth('inbox.ack', {
+      scopeForRequest: inboxMessageScopeForRequest,
+    }),
     transitionHandler('acknowledged')
   );
   router.post(
     '/inbox/:id/resolve',
-    writeActorAuth('inbox.resolve', { scopeForRequest: transitionScopeForRequest }),
+    writeActorAuth('inbox.resolve', {
+      scopeForRequest: inboxMessageScopeForRequest,
+    }),
     transitionHandler('resolved')
   );
   router.post(
     '/inbox/:id/ignore',
-    writeActorAuth('inbox.ignore', { scopeForRequest: transitionScopeForRequest }),
+    writeActorAuth('inbox.ignore', {
+      scopeForRequest: inboxMessageScopeForRequest,
+    }),
     transitionHandler('ignored')
   );
 

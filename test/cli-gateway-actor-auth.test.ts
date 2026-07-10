@@ -239,6 +239,39 @@ test('validates scoped actor write credentials without forcing the read task sen
   ).toMatchObject({ ok: false, reason: 'wrong_task_scope' });
 });
 
+test('mints and validates actor credentials carrying the inbox/context read bits', () => {
+  const scopedRegistry = registry();
+  // inbox:read is now part of the actor grant allowlist so a scoped credential
+  // can satisfy the inbox.list/get route gate; context:read was already allowed.
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['context:read', 'inbox:read'],
+    scope: { workContextIds: ['wc:allowed'] },
+  });
+  expect(issued.credential.capabilities).toEqual([
+    'context:read',
+    'inbox:read',
+  ]);
+
+  for (const command of ['inbox.list', 'inbox.get', 'context.list'] as const) {
+    expect(
+      validateCliGatewayActorCredential(scopedRegistry, {
+        token: issued.token,
+        capabilities: cliGatewayActorCommandCapabilities(command),
+        scope: { workContextIds: ['wc:allowed'] },
+      }),
+      command
+    ).toMatchObject({ ok: true });
+  }
+  // Wrong WorkContext scope still fails closed on a read.
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: cliGatewayActorCommandCapabilities('inbox.list'),
+      scope: { workContextIds: ['wc:other'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_work_context_scope' });
+});
+
 test('classifies only server-bound read-only CLI gateway actor routes into the actor lane', () => {
   const token = 'relay-sac-v1.credential-id.[REDACTED]';
   expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toEqual([
@@ -273,6 +306,10 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'workspace-topics.list',
     'workspace-topics.search',
     'workspace-topics.get',
+    'context.get',
+    'context.list',
+    'inbox.list',
+    'inbox.get',
   ]);
   expect(
     classifyCliGatewayCredentialLane(
@@ -282,6 +319,37 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
       'nodes.list'
     )
   ).toBe('scoped-actor-credential');
+  // context/inbox reads (mail loop) classify into the actor lane on GET.
+  for (const command of [
+    'context.get',
+    'context.list',
+    'inbox.list',
+    'inbox.get',
+  ] as const) {
+    expect(
+      classifyCliGatewayCredentialLane(
+        req({
+          authorization: `Bearer ${token}`,
+          actorMarker: 'v1',
+          command,
+        }),
+        command
+      ),
+      command
+    ).toBe('scoped-actor-credential');
+  }
+  // A read verb presented on POST (a write method) is not an actor read route.
+  expect(
+    classifyCliGatewayCredentialLane(
+      req({
+        method: 'POST',
+        authorization: `Bearer ${token}`,
+        actorMarker: 'v1',
+        command: 'inbox.list',
+      }),
+      'inbox.list'
+    )
+  ).toBe('unsupported-route');
   expect(
     classifyCliGatewayCredentialLane(
       req({
@@ -521,7 +589,24 @@ test('maps write actor commands to required Relay capability bits', () => {
   expect(cliGatewayActorCommandCapabilities('context.create')).toEqual([
     'context:write',
   ]);
+  // context/inbox reads resolve to their READ bit (matching the router gate),
+  // NOT the session:read fallback or the context.*/inbox.* write default.
+  expect(cliGatewayActorCommandCapabilities('context.get')).toEqual([
+    'context:read',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('context.list')).toEqual([
+    'context:read',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('inbox.list')).toEqual([
+    'inbox:read',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('inbox.get')).toEqual([
+    'inbox:read',
+  ]);
   expect(cliGatewayActorCommandCapabilities('inbox.send')).toEqual([
+    'inbox:write',
+  ]);
+  expect(cliGatewayActorCommandCapabilities('inbox.ack')).toEqual([
     'inbox:write',
   ]);
   expect(

@@ -32,6 +32,7 @@ export const CLI_GATEWAY_ACTOR_GRANT_CAPABILITIES = [
   'session:read',
   'context:read',
   'context:write',
+  'inbox:read',
   'inbox:write',
   'artifact:write',
 ] as const;
@@ -67,6 +68,10 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'workspace-topics.list',
   'workspace-topics.search',
   'workspace-topics.get',
+  'context.get',
+  'context.list',
+  'inbox.list',
+  'inbox.get',
 ] as const;
 export type CliGatewayActorReadCommand =
   (typeof CLI_GATEWAY_ACTOR_READ_COMMANDS)[number];
@@ -319,6 +324,14 @@ export function cliGatewayActorCommandCapabilities(
   command: CliGatewayActorCommand
 ): readonly RelayCapabilityBit[] {
   if (command === 'events.subscribe') return ['context:read'];
+  // context/inbox reads must resolve to their read capability BEFORE the generic
+  // read fallback (session:read) and the `startsWith('context.'|'inbox.')` write
+  // branches below, so the required bit matches the route's read gate
+  // (`CONTEXT_READ`/`INBOX_READ` in context-inbox-router).
+  if (command === 'context.get' || command === 'context.list')
+    return ['context:read'];
+  if (command === 'inbox.list' || command === 'inbox.get')
+    return ['inbox:read'];
   if (command === 'work-context-messages.append') return ['context:write'];
   if (
     command === 'workflow-runs.list' ||

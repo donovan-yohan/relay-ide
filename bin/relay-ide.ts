@@ -1549,6 +1549,21 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'sessions.screen',
   'work-contexts.get',
   'work-contexts.resume',
+  // context/inbox mail loop: a scoped actor credential can create/read context
+  // packets and send/read/transition its own inbox (server allowlist + capability
+  // gates enforce scope). events.subscribe carries the inbox topic push channel.
+  'context.create',
+  'context.get',
+  'context.list',
+  'context.pin',
+  'context.unpin',
+  'inbox.send',
+  'inbox.list',
+  'inbox.get',
+  'inbox.ack',
+  'inbox.resolve',
+  'inbox.ignore',
+  'events.subscribe',
   'work-context-messages.list',
   'work-context-messages.show',
   'work-context-messages.query',
@@ -1579,6 +1594,8 @@ const CLI_GATEWAY_ACTOR_TOKEN_COMMANDS = new Set<RelayCliGatewayCommand>([
   'workspace-topics.update',
   'workspace-topics.archive',
   'roster.list',
+  'roster.register',
+  'roster.updateSelf',
   'cockpit.list',
   'cockpit.get',
 ]);
@@ -1793,7 +1810,7 @@ function loadGatewayManifestConfig(): Pick<Config, 'frameworks'> | undefined {
   }
 }
 
-// eslint-disable-next-line complexity, sonarjs/cognitive-complexity
+// eslint-disable-next-line sonarjs/cognitive-complexity
 async function runGatewayNodes(gatewayArgs: string[]): Promise<never> {
   const nodeSubcommand = gatewayArgs[1];
   if (nodeSubcommand === 'manifest') {
@@ -2656,13 +2673,21 @@ function gatewayOptionalPositiveInt(
 }
 
 function gatewayRequiredToken(commandName: RelayCliGatewayCommand): string {
+  // The scoped actor lane (events.subscribe, etc.) prefers RELAY_IDE_ACTOR_TOKEN
+  // / --actor-token; other WS paths (PTY streams) stay on the browser token.
+  const actorToken = gatewayActorToken();
+  const actorCapable = CLI_GATEWAY_ACTOR_TOKEN_COMMANDS.has(commandName);
+  if (actorToken && actorCapable) {
+    return actorToken;
+  }
   const token = process.env['RELAY_IDE_BROWSER_TOKEN'] ?? '';
   if (!token) {
     printGatewayEnvelope(
       gatewayError(commandName, {
         code: 'UNAUTHORIZED',
-        message:
-          'RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.',
+        message: actorCapable
+          ? 'RELAY_IDE_ACTOR_TOKEN/--actor-token or RELAY_IDE_BROWSER_TOKEN not set. Use a scoped CLI actor credential for the actor lane or run from an authenticated Relay session.'
+          : 'RELAY_IDE_BROWSER_TOKEN not set. Run from an authenticated Relay session or set a scoped API token.',
         retryable: false,
       }),
       1
@@ -4138,7 +4163,6 @@ function addWorkContextArtifactBodyFlags(
   return body;
 }
 
-// eslint-disable-next-line complexity, sonarjs/cognitive-complexity -- CLI gateway subcommand dispatcher keeps each public verb's argv mapping explicit.
 async function runGatewayWorkContextArtifacts(
   gatewayArgs: string[]
 ): Promise<never> {
@@ -4556,7 +4580,6 @@ async function runGatewayWorkContextMessages(
   );
 }
 
-// eslint-disable-next-line sonarjs/cognitive-complexity -- mirrors the stable handoff-artifacts attach/list/show/copy argv contract explicitly.
 async function runGatewayHandoffArtifacts(
   gatewayArgs: string[]
 ): Promise<never> {
@@ -4727,6 +4750,9 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
   );
 
   const token = gatewayRequiredToken('events.subscribe');
+  const actorToken = gatewayActorToken();
+  const usingActorToken = actorToken.length > 0 && token === actorToken;
+  const correlationId = gatewayCorrelationId();
   const port = gatewayWsPort();
   const query = new URLSearchParams({ topic });
   for (const [flag, key] of [
@@ -4762,6 +4788,15 @@ async function runGatewayEventsSubscribe(eventsArgs: string[]): Promise<never> {
         'x-relay-cli-gateway': 'v1',
         'x-relay-capabilities': capabilities,
         Accept: 'application/x-ndjson',
+        // Actor lane parity with gatewayHttpJson: mark the actor credential and
+        // command so the hub routes to `requireCliGatewayEventsAuth`'s actor path.
+        ...(usingActorToken
+          ? {
+              'x-relay-cli-actor-token': 'v1',
+              'x-relay-cli-command': 'events.subscribe',
+            }
+          : {}),
+        ...(correlationId ? { 'x-relay-correlation-id': correlationId } : {}),
       },
       signal: controller.signal,
     });

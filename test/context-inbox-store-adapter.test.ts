@@ -217,4 +217,25 @@ describe('context-inbox store adapter — throw → result-union remap', () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.message.state).toBe('acknowledged');
   });
+
+  it('records the acting actorId on an ack/resolve transition', () => {
+    const msg = seedMessage();
+    const ack = adapter.updateInboxState(msg.id, 'acknowledged', 'agent_kani');
+    expect(ack.ok).toBe(true);
+    if (ack.ok) expect(ack.message.transitionedBy).toBe('agent_kani');
+    // Attribution survives a store round-trip (blob-only persistence).
+    expect(store.getInboxMessage(msg.id)?.transitionedBy).toBe('agent_kani');
+
+    // A later resolve by a different actor overwrites attribution.
+    const resolve = adapter.updateInboxState(msg.id, 'resolved', 'agent_fugu');
+    expect(resolve.ok).toBe(true);
+    if (resolve.ok) expect(resolve.message.transitionedBy).toBe('agent_fugu');
+  });
+
+  it('leaves transitionedBy unset when no actorId is supplied', () => {
+    const msg = seedMessage();
+    const ack = adapter.updateInboxState(msg.id, 'acknowledged');
+    expect(ack.ok).toBe(true);
+    if (ack.ok) expect(ack.message.transitionedBy).toBeUndefined();
+  });
 });

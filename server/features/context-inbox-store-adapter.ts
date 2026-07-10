@@ -27,10 +27,12 @@
 //      same-state idempotence + forward-only rule make a redundant flip safe, and
 //      we only attempt it for `queued` rows). NEVER pushed via `sessions.input`.
 //
-// The `actorId` the router forwards is currently DROPPED on the floor: #758's
-// `transitionInboxMessage` does not record an actor, and ADR-019's audit of
-// inbox transitions is a follow-up (#499 audit envelopes cover PTY interventions,
-// not inbox lifecycle yet). Recording it is a non-destructive future column add.
+// The `actorId` the router forwards is threaded into the store's
+// `transitionInboxMessage(id, to, transitionedBy)`, which records it blob-only on
+// the message (`transitionedBy`, mirroring `ignoredAt` — no denormalized column).
+// This attributes WHO acked/resolved/ignored a message. Full ADR-019 hash-chained
+// audit of inbox transitions (parity with #499 PTY intervention envelopes) remains
+// a follow-up; this is the minimal attribution the transition needs today.
 
 import type {
   ContextPacketStore,
@@ -202,13 +204,15 @@ export function createContextInboxStoreAdapter(
     updateInboxState(
       id: SessionInboxMessageId,
       targetState: SessionInboxMessageState,
-      _actorId?: string
+      actorId?: string
     ): UpdateInboxStateResult {
       // Read the current state first so a terminal/illegal rejection can report
       // it without a second round trip after the throw.
       const before = store.getInboxMessage(id);
       try {
-        const message = store.transitionInboxMessage(id, targetState);
+        // Forward the actor performing the ack/resolve/ignore so the store records
+        // WHO advanced the message (blob-only `transitionedBy`).
+        const message = store.transitionInboxMessage(id, targetState, actorId);
         return { ok: true, message };
       } catch (err) {
         if (isStoreError(err)) {

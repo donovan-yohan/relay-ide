@@ -2669,6 +2669,7 @@ async function main(): Promise<void> {
   app.use(
     createContextInboxRouter({
       requireAuth: requireCliGatewayAuth,
+      requireReadActorAuth: requireCliGatewayAuthForActorCommand,
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
       store: contextInboxStore,
       workContextStore,
