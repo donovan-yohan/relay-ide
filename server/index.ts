@@ -1132,7 +1132,13 @@ export function validateSessionCreateRequest(
     });
     return false;
   }
-  const anchor = repoPath ?? cwd ?? '';
+  // Validate the actual launch directory. The session spawns in `cwd` (the
+  // call site resolves it to worktreePath ?? requestCwd ?? repoPath), so `cwd`
+  // is what has to be inside a configured project — it takes precedence here.
+  // Checking `repoPath ?? cwd` let a request pair a configured repoPath with an
+  // arbitrary cwd/worktreePath and launch outside the boundary; `cwd ?? repoPath`
+  // still honors a repoPath-only anchor while closing that bypass.
+  const anchor = cwd ?? repoPath ?? '';
   if (!anchor) {
     res.status(400).json({
       error: `${sessionType} sessions require a repoPath or cwd launch anchor`,

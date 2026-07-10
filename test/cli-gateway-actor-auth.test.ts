@@ -272,6 +272,49 @@ test('mints and validates actor credentials carrying the inbox/context read bits
   ).toMatchObject({ ok: false, reason: 'wrong_work_context_scope' });
 });
 
+test('lets a single session:read mail-loop credential run both read and write verbs', () => {
+  const scopedRegistry = registry();
+  // The natural single credential for the agent mail loop: session:read for
+  // sessions.list, context/inbox read to read mail, inbox:write to send/ack.
+  // session:read stamps the read task-ref into the STORED scope; that marker
+  // must not block the non-session:read verbs (regression: those verbs 403'd
+  // with missing_scope for exactly this credential shape).
+  const issued = issueCliGatewayActorCredential(scopedRegistry, {
+    capabilities: ['session:read', 'context:read', 'inbox:read', 'inbox:write'],
+    scope: { workContextIds: ['wc:allowed'] },
+  });
+  expect(issued.credential.scope.taskRefs).toEqual([
+    CLI_GATEWAY_READ_SCOPE_TASK_REF,
+  ]);
+
+  for (const command of [
+    'sessions.list',
+    'inbox.list',
+    'inbox.get',
+    'context.list',
+    'inbox.ack',
+  ] as const) {
+    expect(
+      validateCliGatewayActorCredential(scopedRegistry, {
+        token: issued.token,
+        capabilities: cliGatewayActorCommandCapabilities(command),
+        scope: { workContextIds: ['wc:allowed'] },
+      }),
+      command
+    ).toMatchObject({ ok: true });
+  }
+
+  // Scope enforcement is intact — the fix neutralizes the read-marker task-ref,
+  // it does not widen WorkContext scoping.
+  expect(
+    validateCliGatewayActorCredential(scopedRegistry, {
+      token: issued.token,
+      capabilities: cliGatewayActorCommandCapabilities('inbox.get'),
+      scope: { workContextIds: ['wc:other'] },
+    })
+  ).toMatchObject({ ok: false, reason: 'wrong_work_context_scope' });
+});
+
 test('classifies only server-bound read-only CLI gateway actor routes into the actor lane', () => {
   const token = 'relay-sac-v1.credential-id.[REDACTED]';
   expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toEqual([

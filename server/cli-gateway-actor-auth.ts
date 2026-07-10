@@ -393,9 +393,16 @@ export function validateCliGatewayActorCredential(
   return registry.validate(input.token, {
     audience: CLI_GATEWAY_ACTOR_AUDIENCE,
     requiredCapabilities: [...input.capabilities],
-    scope: input.capabilities.includes('session:read')
-      ? { taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF, ...validationScope }
-      : validationScope,
+    // The read task-ref is a permissive marker that `defaultCliGatewayActorScope`
+    // stamps into EVERY session:read credential's stored scope. It must therefore
+    // be satisfiable for every command such a credential runs — not only the ones
+    // whose required capability is `session:read`. Inject it as the request's
+    // taskRef fallback unconditionally: a real request-scoped taskRef still wins
+    // (`...validationScope` spreads after), and credentials without the marker
+    // skip the taskRef rule entirely (no spurious `missing_scope`). Gating this on
+    // `session:read` broke the context/inbox read verbs (and write verbs) for the
+    // natural single mail-loop credential that also carries session:read.
+    scope: { taskRef: CLI_GATEWAY_READ_SCOPE_TASK_REF, ...validationScope },
     ...(input.correlationId ? { correlationId: input.correlationId } : {}),
   });
 }

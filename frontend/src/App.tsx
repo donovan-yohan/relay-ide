@@ -8,6 +8,7 @@ import {
   MAX_UTILITY_RAIL_WIDTH,
   MIN_UTILITY_RAIL_WIDTH,
   UTILITY_ICON_RAIL_WIDTH,
+  nextMobileUtilityRailAction,
   type WorkspaceUtilityRailState,
 } from './lib/stores/ui.js';
 import {
@@ -699,6 +700,23 @@ function TerminalAreaContent({
     );
   }, [toggleUtilityRailVisible, utilityRailStateKey]);
 
+  // #1058: the mobile-only MobileHeader "files" button must actually open the
+  // full-screen utility-rail overlay, which requires a selected tab — a plain
+  // `visible` toggle left it dead in the default state. Open on the last tab
+  // (else `files`); close when already open. Desktop uses the shared toggle
+  // (`handleToggleUtilityRail`, also the overlay's close button) unchanged.
+  const handleOpenMobileUtilityRail = useCallback(() => {
+    if (!utilityRailStateKey) return;
+    const action = nextMobileUtilityRailAction(
+      useUiStore.getState().utilityRailByWorkspace[utilityRailStateKey]
+    );
+    if (action.kind === 'close') {
+      toggleUtilityRailVisible(utilityRailStateKey);
+      return;
+    }
+    useUiStore.getState().openUtilityRailTab(utilityRailStateKey, action.tab);
+  }, [toggleUtilityRailVisible, utilityRailStateKey]);
+
   const {
     handleCreateUtilityTerminal,
     handleSelectUtilityTerminal,
@@ -723,7 +741,7 @@ function TerminalAreaContent({
         onMenuClick={openSidebar}
         onNewChatClick={openTopicTaskRoom}
         onCommandClick={() => setSpotlightOpen(true)}
-        onRightSidebarClick={handleToggleUtilityRail}
+        onRightSidebarClick={handleOpenMobileUtilityRail}
         hidden={keyboardOpen}
       />
       {viewMode === 'chat' && <ChatHome onSelectSession={onSelectSession} />}

@@ -27,6 +27,7 @@ import type { AnchorStateResolver } from '../server/context-adapters/file-range.
 import type { ResolveAnchorOutcome } from '../server/anchor-resolution.js';
 import {
   attachAuthenticatedCliGatewayActorCredential,
+  type CliGatewayActorReadCommand,
   type CliGatewayActorWriteCommand,
 } from '../server/cli-gateway-actor-auth.js';
 import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
@@ -309,7 +310,9 @@ function scopeIncludes(
   granted: readonly string[] | undefined,
   requested: readonly string[] | undefined
 ): boolean {
-  return !granted?.length || !!requested?.some((value) => granted.includes(value));
+  return (
+    !granted?.length || !!requested?.some((value) => granted.includes(value))
+  );
 }
 
 function actorCredentialMatchesRequestScope(
@@ -343,28 +346,51 @@ function mount(
 ): Promise<void> {
   const app = express();
   app.use(express.json());
+  // Shared mock for BOTH the read and write actor-auth lanes: enforce the
+  // route's `scopeForRequest` against the credential exactly the way production
+  // does, so read-side scope gating (GET /inbox, /inbox/:id, /context) has the
+  // same coverage as the write side rather than falling through to no-op auth.
+  const actorAuthMiddleware = (options?: {
+    scopeForRequest?: (req: express.Request) =>
+      | {
+          nodeIds?: string[];
+          workContextIds?: string[];
+          sessionIds?: string[];
+          globalSessionIds?: string[];
+          repoIds?: string[];
+          taskRefs?: string[];
+        }
+      | undefined;
+  }): express.RequestHandler => {
+    return (req, res, next) => {
+      if (!actorCredential) return next();
+      const requestScope = options?.scopeForRequest?.(req);
+      if (
+        requestScope &&
+        !actorCredentialMatchesRequestScope(actorCredential, requestScope)
+      ) {
+        res.status(403).json({
+          error: {
+            code: 'FORBIDDEN',
+            reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE',
+          },
+        });
+        return;
+      }
+      attachAuthenticatedCliGatewayActorCredential(req, actorCredential);
+      next();
+    };
+  };
   app.use(
     createContextInboxRouter({
       requireAuth: (_req, _res, next) => next(),
+      requireReadActorAuth: actorCredential
+        ? (_expectedCommand: CliGatewayActorReadCommand, options) =>
+            actorAuthMiddleware(options)
+        : undefined,
       requireWriteActorAuth: actorCredential
         ? (_expectedCommand: CliGatewayActorWriteCommand, options) =>
-            (req, res, next) => {
-              const requestScope = options?.scopeForRequest?.(req);
-              if (
-                requestScope &&
-                !actorCredentialMatchesRequestScope(actorCredential, requestScope)
-              ) {
-                res.status(403).json({
-                  error: {
-                    code: 'FORBIDDEN',
-                    reasonCode: 'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE',
-                  },
-                });
-                return;
-              }
-              attachAuthenticatedCliGatewayActorCredential(req, actorCredential);
-              next();
-            }
+            actorAuthMiddleware(options)
         : undefined,
       store,
       workContextStore,
@@ -650,9 +676,9 @@ describe('context/inbox gateway router', () => {
     expect(rejected.body.error.reasonCode).toBe(
       'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE'
     );
-    expect(store.getInboxMessage(denied.id, { markDelivered: false })?.state).toBe(
-      'queued'
-    );
+    expect(
+      store.getInboxMessage(denied.id, { markDelivered: false })?.state
+    ).toBe('queued');
 
     const allowedWorkContext = store.createInboxMessage({
       targetWorkContextId: 'wc:allowed',
@@ -686,6 +712,79 @@ describe('context/inbox gateway router', () => {
     );
     expect(sessionAck.status).toBe(200);
     expect(sessionAck.body.message.state).toBe('acknowledged');
+  });
+
+  it('authorizes scoped actor inbox/context reads against stored WorkContext scope', async () => {
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    const store = createFakeStore();
+    await mount(
+      store,
+      undefined,
+      createFakeWorkContextStore(createFakeWorkContext('wc:allowed')),
+      testActorCredential({ workContextIds: ['wc:allowed'] })
+    );
+
+    const deniedMsg = store.createInboxMessage({
+      targetWorkContextId: 'wc:denied',
+      contextPacketIds: [],
+      createdBy: 'agent_1',
+    });
+    const allowedMsg = store.createInboxMessage({
+      targetWorkContextId: 'wc:allowed',
+      contextPacketIds: [],
+      createdBy: 'agent_1',
+    });
+
+    // inbox.list — scoped to the query's targetWorkContextId.
+    const deniedList = await req(
+      'GET',
+      '/inbox?targetWorkContextId=wc:denied',
+      {
+        caps: 'inbox:read',
+      }
+    );
+    expect(deniedList.status).toBe(403);
+    expect(deniedList.body.error.reasonCode).toBe(
+      'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE'
+    );
+    const allowedList = await req(
+      'GET',
+      '/inbox?targetWorkContextId=wc:allowed',
+      { caps: 'inbox:read' }
+    );
+    expect(allowedList.status).toBe(200);
+
+    // inbox.get — scope derived from the stored message's WorkContext target.
+    const deniedGet = await req(
+      'GET',
+      `/inbox/${encodeURIComponent(deniedMsg.id)}`,
+      { caps: 'inbox:read' }
+    );
+    expect(deniedGet.status).toBe(403);
+    expect(deniedGet.body.error.reasonCode).toBe(
+      'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE'
+    );
+    const allowedGet = await req(
+      'GET',
+      `/inbox/${encodeURIComponent(allowedMsg.id)}`,
+      { caps: 'inbox:read' }
+    );
+    expect(allowedGet.status).toBe(200);
+
+    // context.list — scoped to ?workContextId.
+    const deniedContext = await req('GET', '/context?workContextId=wc:denied', {
+      caps: 'context:read',
+    });
+    expect(deniedContext.status).toBe(403);
+    expect(deniedContext.body.error.reasonCode).toBe(
+      'CLI_ACTOR_WRONG_WORK_CONTEXT_SCOPE'
+    );
+    const allowedContext = await req(
+      'GET',
+      '/context?workContextId=wc:allowed',
+      { caps: 'context:read' }
+    );
+    expect(allowedContext.status).toBe(200);
   });
 
   it('denies write verbs lacking the capability bit with 403 FORBIDDEN', async () => {

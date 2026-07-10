@@ -281,6 +281,68 @@ describe('validateSessionCreateRequest', () => {
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ error: 'work_context_not_found' });
   });
+
+  // Security: a configured repoPath must not be usable to smuggle an out-of-tree
+  // launch cwd past the boundary. The session launches in the resolved `cwd`
+  // (worktreePath ?? requestCwd ?? repoPath), so `cwd` — not `repoPath` — is
+  // what has to be inside a configured project.
+  it('rejects a configured repoPath paired with an out-of-tree cwd (launch-anchor bypass)', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      configuredPath,
+      '/home/user/.ssh',
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(false);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      error:
+        'agent sessions require a repoPath or cwd inside a configured project path',
+    });
+  });
+
+  it('allows a configured repoPath paired with a worktree cwd inside it', () => {
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      configuredPath,
+      `${configuredPath}/.worktrees/issue-9`,
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(true);
+    expect(res.status).toBe(200);
+  });
+
+  // End-to-end: the real request path resolves the launch cwd first, then
+  // validates it. A configured repoPath + arbitrary cwd must fail closed at the
+  // integration boundary, not just in isolation.
+  it('closes the launch-anchor bypass through resolveSessionLaunchPaths + validate', () => {
+    const { requestedRepoPath, cwd } = resolveSessionLaunchPaths({
+      repoPath: configuredPath,
+      cwd: '/etc',
+      config,
+    });
+    expect(cwd).toBe('/etc'); // requestCwd wins over repoPath as the launch dir
+    const res = makeRes();
+    const result = validateSessionCreateRequest(
+      requestedRepoPath,
+      cwd,
+      'agent',
+      config,
+      store,
+      undefined,
+      res.resObj as never
+    );
+    expect(result).toBe(false);
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('resolveSessionLaunchPaths', () => {

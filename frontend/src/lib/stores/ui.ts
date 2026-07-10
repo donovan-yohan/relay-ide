@@ -116,6 +116,26 @@ export function fileTabKey(filePath: string, tabType?: FileTabType): string {
   return `${tabType ?? 'code'}::${filePath}`;
 }
 
+/**
+ * Decide what the mobile utility-rail affordance (the MobileHeader "files"
+ * button) should do given the current rail state. On mobile the rail renders as
+ * a full-screen overlay that only slides in when a tab is actually selected
+ * (`visible && selectedRailTab !== null`). The default fresh state is
+ * `{ visible: true, selectedRailTab: null }`, so a plain `visible` toggle never
+ * opened the overlay — the button was dead. This returns an explicit action so
+ * the button can open the overlay on a real tab (restoring the last-selected
+ * tab, else `files`) and close it when already open. Pure + exported for tests.
+ */
+export function nextMobileUtilityRailAction(
+  railState: WorkspaceUtilityRailState | undefined
+): { kind: 'close' } | { kind: 'open'; tab: UtilityRailTab } {
+  const overlayOpen =
+    railState?.visible === true &&
+    (railState?.selectedRailTab ?? null) !== null;
+  if (overlayOpen) return { kind: 'close' };
+  return { kind: 'open', tab: railState?.selectedRailTab ?? 'files' };
+}
+
 export interface OpenFileTab {
   filePath: string;
   fileName: string;
