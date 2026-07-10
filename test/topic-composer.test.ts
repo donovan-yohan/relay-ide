@@ -258,6 +258,32 @@ describe('topic provider launch helpers', () => {
     ).not.toHaveProperty('initialPrompt');
   });
 
+  it('builds cwd-only launch bodies without synthesizing repoPath', () => {
+    const create = buildTopicRoomCreateInput({
+      draft: { ...TOPIC_ROOM_DRAFT_EMPTY, prompt: 'run it' },
+      workspaceId: null,
+      defaultProviderId: 'claude',
+      defaultCwd: '/configured/project',
+      taskRef: null,
+    });
+    const body = buildTopicRoomLaunchBody(create, 'agent-task', [
+      framework('claude'),
+    ]);
+
+    expect(create.routingDefaults).toMatchObject({
+      providerId: 'claude',
+      cwd: '/configured/project',
+    });
+    expect(create.routingDefaults).not.toHaveProperty('repoPath');
+    expect(body).toMatchObject({
+      type: 'agent',
+      mode: 'pty',
+      agent: 'claude',
+      cwd: '/configured/project',
+    });
+    expect(body).not.toHaveProperty('repoPath');
+  });
+
   it('keeps OpenCode on tui launch by default even when it exposes web mode', () => {
     const frameworks = [
       framework('opencode', {

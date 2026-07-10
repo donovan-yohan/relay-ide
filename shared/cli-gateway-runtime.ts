@@ -94,6 +94,7 @@ const localUnsupportedFields = [
 const localCreateSupportedFields = [
   'repoPath',
   'worktreePath',
+  'cwd',
   'type',
   'mode',
   'agent',
@@ -525,12 +526,6 @@ function validateLocalCreateSupport(
       );
     }
   }
-  if (typeof input['cwd'] === 'string') {
-    return unsupportedCreateInput(
-      'local /sessions creation derives cwd from repoPath/worktreePath; explicit cwd requires routed node creation',
-      { field: 'cwd', supported: ['repoPath', 'worktreePath'] }
-    );
-  }
   if (input['controlMode'] === 'agent-driven') {
     return unsupportedCreateInput(
       'local /sessions creation does not yet policy-gate initial controlMode=agent-driven; use routed node creation or omit controlMode',
@@ -539,11 +534,16 @@ function validateLocalCreateSupport(
   }
   if (
     typeof input['repoPath'] !== 'string' &&
+    typeof input['cwd'] !== 'string' &&
     typeof input['workspaceTopicId'] !== 'string'
   ) {
-    return invalidCreateInput('local session creation requires repoPath', {
-      field: 'repoPath',
-    });
+    return invalidCreateInput(
+      'local session creation requires repoPath, cwd, or workspaceTopicId',
+      {
+        field: 'repoPath',
+        supported: ['repoPath', 'cwd', 'workspaceTopicId'],
+      }
+    );
   }
   return null;
 }

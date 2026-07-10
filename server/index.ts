@@ -837,7 +837,7 @@ function resolveContinuePolicy(
 type AgentSessionParams = {
   id?: string;
   repoName: string;
-  repoPath: string;
+  repoPath?: string | undefined;
   worktreePath: string | null | undefined;
   cwd: string;
   requestBranchName: string | undefined;
@@ -867,7 +867,7 @@ type AgentSessionParams = {
 
 type TerminalSessionParams = {
   repoName: string;
-  repoPath: string;
+  repoPath?: string | undefined;
   worktreePath: string | null | undefined;
   cwd: string;
   safeCols: number | undefined;
@@ -889,7 +889,7 @@ function createTerminalSessionRecord(
     type: 'terminal',
     agent: 'claude' as AgentType,
     repoName: params.repoName,
-    repoPath: params.repoPath,
+    ...(params.repoPath ? { repoPath: params.repoPath } : {}),
     worktreePath: params.worktreePath ?? null,
     cwd: params.cwd,
     displayName,
@@ -914,7 +914,7 @@ function createAgentSessionRecord(params: AgentSessionParams): CreateResult {
     type: 'agent',
     agent: params.resolvedAgent,
     repoName: params.repoName,
-    repoPath: params.repoPath,
+    ...(params.repoPath ? { repoPath: params.repoPath } : {}),
     worktreePath: params.worktreePath ?? null,
     cwd: params.cwd,
     branchName: params.requestBranchName ?? '',
@@ -981,6 +981,53 @@ export function parseRenderedScreenMaxLines(
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) return undefined;
   return parsed;
+}
+
+function compactRequestPath(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+type SessionLaunchPaths = {
+  requestedRepoPath?: string | undefined;
+  requestedWorktreePath?: string | undefined;
+  cwd: string;
+  settingsAnchorPath: string;
+};
+
+export function resolveSessionLaunchPaths(input: {
+  repoPath?: unknown;
+  worktreePath?: unknown;
+  cwd?: unknown;
+  config: Pick<Config, 'repos'>;
+  devCwdFallback?: string | undefined;
+}): SessionLaunchPaths {
+  const requestedRepoPath = compactRequestPath(input.repoPath);
+  const requestedWorktreePath = compactRequestPath(input.worktreePath);
+  const requestedCwd = compactRequestPath(input.cwd);
+  const defaultProjectPath =
+    compactRequestPath(input.config.repos?.[0]) ?? input.devCwdFallback;
+  const cwd =
+    requestedWorktreePath ??
+    requestedCwd ??
+    requestedRepoPath ??
+    defaultProjectPath ??
+    '';
+  return {
+    requestedRepoPath,
+    requestedWorktreePath,
+    cwd,
+    settingsAnchorPath: requestedRepoPath ?? cwd,
+  };
+}
+
+function devSessionCwdFallback(): string | undefined {
+  if (
+    process.env.RELAY_IDE_DEV_INSTANCE === '1' ||
+    process.env.RELAY_IDE_SELF_HOST === '1'
+  ) {
+    return process.cwd();
+  }
+  return undefined;
 }
 
 function resolveLocalScreenSessionId(
@@ -1060,22 +1107,24 @@ export function validateSessionCreateRequest(
 ): boolean {
   const configured = new Set(config.repos ?? []);
   const sessionType = type ?? 'agent';
-  if (sessionType === 'agent') {
-    if (!repoPath || !configured.has(repoPath)) {
-      res
-        .status(400)
-        .json({ error: 'repoPath is required for agent sessions' });
-      return false;
-    }
-  } else {
-    const anchor = repoPath ?? cwd ?? '';
-    if (!configured.has(anchor)) {
-      res.status(400).json({
-        error:
-          'terminal sessions require a cwd that is a configured project path',
-      });
-      return false;
-    }
+  if (repoPath && configured.size > 0 && !configured.has(repoPath)) {
+    res.status(400).json({
+      error: 'repoPath must be a configured project path when provided',
+    });
+    return false;
+  }
+  const anchor = repoPath ?? cwd ?? '';
+  if (!anchor) {
+    res.status(400).json({
+      error: `${sessionType} sessions require a repoPath or cwd launch anchor`,
+    });
+    return false;
+  }
+  if (configured.size > 0 && !configured.has(anchor)) {
+    res.status(400).json({
+      error: `${sessionType} sessions require a repoPath or cwd that is a configured project path`,
+    });
+    return false;
   }
   if (!workContextId) return true;
   if (workContextStore.get(workContextId)) return true;
@@ -5129,6 +5178,7 @@ async function main(): Promise<void> {
     const {
       repoPath,
       worktreePath,
+      cwd: requestCwd,
       type = 'agent',
       mode,
       agent,
@@ -5151,6 +5201,7 @@ async function main(): Promise<void> {
     } = createBody as {
       repoPath?: string;
       worktreePath?: string | null;
+      cwd?: string;
       type?: 'agent' | 'terminal';
       mode?: 'pty' | 'web';
       agent?: AgentType;
@@ -5188,14 +5239,23 @@ async function main(): Promise<void> {
     // PTY layer applies these additively and refuses reserved keys.
     const sessionEnvOverrides = sanitizeSessionEnvOverrides(rawEnvOverrides);
 
-    // For terminal sessions where only cwd/worktreePath is set, fall back to that as repoPath
-    // Use repoPath if set; for terminal-only sessions the validated anchor was cwd/worktreePath
-    const checkedRepoPath = repoPath || worktreePath || '';
+    const {
+      requestedRepoPath,
+      requestedWorktreePath,
+      cwd,
+      settingsAnchorPath,
+    } = resolveSessionLaunchPaths({
+      repoPath,
+      worktreePath,
+      cwd: requestCwd,
+      config: freshConfig,
+      devCwdFallback: devSessionCwdFallback(),
+    });
 
     if (
       !validateSessionCreateRequest(
-        repoPath,
-        checkedRepoPath,
+        requestedRepoPath,
+        cwd,
         type,
         freshConfig,
         workContextStore,
@@ -5206,8 +5266,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    const cwd = worktreePath ?? checkedRepoPath;
-
     // Validate cwd directory exists
     if (!fs.existsSync(cwd)) {
       res.status(400).json({ error: `Directory does not exist: ${cwd}` });
@@ -5217,8 +5275,8 @@ async function main(): Promise<void> {
     const safeCols = clampDimension(cols, 1, 500);
     const safeRows = clampDimension(rows, 1, 200);
 
-    const name = sessionNameFromRepoPath(checkedRepoPath);
-    const portVariables = getRepoPortVariables(freshConfig, checkedRepoPath);
+    const name = sessionNameFromRepoPath(settingsAnchorPath);
+    const portVariables = getRepoPortVariables(freshConfig, settingsAnchorPath);
     const capacityResponse = buildPtyCapacityResponse(
       activePtySessionCount(),
       freshConfig.maxPtySessions
@@ -5228,7 +5286,7 @@ async function main(): Promise<void> {
     if (type === 'terminal') {
       const terminalSettings = resolveSessionSettings(
         freshConfig,
-        checkedRepoPath,
+        settingsAnchorPath,
         {
           terminalBackend: requestedTerminalBackend,
         }
@@ -5238,8 +5296,8 @@ async function main(): Promise<void> {
       try {
         session = createTerminalSessionRecord({
           repoName: name,
-          repoPath: checkedRepoPath,
-          worktreePath: worktreePath ?? null,
+          repoPath: requestedRepoPath,
+          worktreePath: requestedWorktreePath ?? null,
           cwd,
           safeCols,
           safeRows,
@@ -5272,7 +5330,7 @@ async function main(): Promise<void> {
       newWorktree ?? false
     );
 
-    const resolved = resolveSessionSettings(freshConfig, checkedRepoPath, {
+    const resolved = resolveSessionSettings(freshConfig, settingsAnchorPath, {
       agent,
       yolo,
       terminalBackend: requestedTerminalBackend,
@@ -5328,9 +5386,9 @@ async function main(): Promise<void> {
         const { session } = await localRelayNode.sessions.createWeb({
           agentType: resolvedAgent,
           cwd,
-          repoPath: checkedRepoPath,
+          repoPath: requestedRepoPath,
           repoName: name,
-          worktreePath: worktreePath ?? null,
+          worktreePath: requestedWorktreePath ?? null,
           branchName: requestBranchName ?? '',
           displayName,
           port: startupConfig.port,
@@ -5338,8 +5396,8 @@ async function main(): Promise<void> {
           sessionLane,
           ...buildHermesCreateExtra(resolvedAgent, {
             workspaceTopic,
-            repoPath: checkedRepoPath,
-            worktreePath,
+            repoPath: requestedRepoPath,
+            worktreePath: requestedWorktreePath,
             branchName: requestBranchName,
             // Local hub is itself a node (server/local-node.ts); this call
             // site only ever creates sessions on the local node today, so
@@ -5377,8 +5435,8 @@ async function main(): Promise<void> {
     try {
       session = createAgentSessionRecord({
         repoName: name,
-        repoPath: checkedRepoPath,
-        worktreePath,
+        repoPath: requestedRepoPath,
+        worktreePath: requestedWorktreePath,
         cwd,
         requestBranchName,
         displayName,

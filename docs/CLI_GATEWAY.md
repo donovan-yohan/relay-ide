@@ -627,7 +627,7 @@ Web launch parity (#859): the converted browser launch actions use the same stab
 
 Supported now:
 
-- local repo/worktree-backed session creation using `repoPath` and optional `worktreePath`
+- local session creation using `cwd`, or repo-backed `repoPath` plus optional `worktreePath`
 - routed node creation with `nodeId`, `cwd`, `type` (defaulting to `agent` when omitted), `mode`, `agent`, lifecycle fields, and optional non-agent `sessionEnvelope` where the existing backend supports them
 - routed node creation with the typed `environment` object (see [Typed environment IDs](#typed-environment-ids-626) below)
 - optional `terminalBackend`, with `relay-pty` as the only accepted value; `tmux-compat` fails closed as an unsupported legacy backend
@@ -738,9 +738,8 @@ Legacy flat fields `nodeId`, `repoPath`, `worktreePath`, and `cwd` on `sessions.
 
 Fail-closed examples:
 
-- local create without `repoPath` returns `INVALID_ARGUMENT`
+- local create without `repoPath`, `cwd`, or `workspaceTopicId` returns `INVALID_ARGUMENT`
 - unknown `sessions create` input fields return `INVALID_ARGUMENT` before any backend forwarding
-- local create with explicit `cwd` returns `UNSUPPORTED` because the local endpoint derives `cwd` from `repoPath`/`worktreePath`
 - local scoped/lifecycle/peer fields (`sessionEnvelope`, `ttlSeconds`, `expiresAt`, `confirmationToken`) return `UNSUPPORTED` until implemented locally
 - `sessionEnvelope.peerIdentity.kind: "agent"` returns `UNSUPPORTED` until hub-owned agent peer identity is implemented
 - local `controlMode=agent-driven` returns `UNSUPPORTED` until local create has the same policy gate as routed creation
