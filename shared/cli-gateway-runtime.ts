@@ -707,9 +707,12 @@ export function gatewayErrorMessage(
   upstream: Record<string, unknown> | undefined
 ): string {
   const body = upstreamErrorRecord(upstream);
-  return typeof body?.['message'] === 'string'
-    ? body['message']
-    : `Relay hub returned HTTP ${status}`;
+  if (typeof body?.['message'] === 'string') return body['message'];
+  // Legacy REST routes report `{ error: "<message>" }` with a string error;
+  // don't collapse that detail into a bare status code.
+  const rawError = upstream?.['error'];
+  if (typeof rawError === 'string' && rawError.length > 0) return rawError;
+  return `Relay hub returned HTTP ${status}`;
 }
 
 function redactedChallenge(
