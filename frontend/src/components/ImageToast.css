@@ -1,8 +1,0 @@
-/* ImageToast-specific overrides — base card styles in NotificationStack.css */
-
-.image-toast-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 60vw;
-}

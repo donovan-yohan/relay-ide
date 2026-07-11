@@ -1,8 +1,0 @@
-#!/usr/bin/env sh
-set -e
-
-# chalkbag hook — best-effort, skip silently if binary missing.
-if command -v chalkbag >/dev/null 2>&1; then
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
-  chalkbag internal hook-run "$repo_root" >/dev/null 2>&1 || true
-fi

@@ -1,9 +1,0 @@
-.shortcut-hint {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-  padding: 1px 4px;
-  border-radius: 0;
-  white-space: nowrap;
-}
