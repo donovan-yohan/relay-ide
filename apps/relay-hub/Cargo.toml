@@ -1,0 +1,12 @@
+[package]
+name = "relay-hub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+relay-factory-core = { path = "../../crates/relay-factory-core" }
+
+[lints]
+workspace = true

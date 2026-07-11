@@ -1,0 +1,7 @@
+{
+  "name": "@relay-factory/pwa-shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Liveness-only PWA shell for the Relay factory"
+}
