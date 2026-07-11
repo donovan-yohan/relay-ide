@@ -3,6 +3,7 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     process::ExitCode,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -107,17 +108,32 @@ fn serve(arguments: &[String]) -> Result<(), RunError> {
         "relay-hub liveness listening on {}",
         listener.local_addr().map_err(|_| RunError::Io)?
     );
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
+    serve_connections(identity, || listener.accept().map(|(stream, _)| stream))
+}
+
+fn serve_connections(
+    identity: ServiceIdentity,
+    mut accept: impl FnMut() -> io::Result<TcpStream>,
+) -> Result<(), RunError> {
+    loop {
+        let stream = match accept() {
+            Ok(stream) => stream,
+            Err(error) => {
+                eprintln!("relay-hub accept error: {error}");
+                return Err(RunError::Io);
+            }
+        };
+        thread::Builder::new()
+            .spawn(move || {
                 if let Err(error) = handle_connection(stream, identity) {
                     eprintln!("relay-hub connection error: {error}");
                 }
-            }
-            Err(error) => eprintln!("relay-hub accept error: {error}"),
-        }
+            })
+            .map_err(|error| {
+                eprintln!("relay-hub connection handler error: {error}");
+                RunError::Io
+            })?;
     }
-    Ok(())
 }
 
 fn handle_connection(
@@ -179,5 +195,21 @@ fn read_request(stream: &mut TcpStream, request: &mut [u8]) -> Result<usize, Req
             return Err(RequestReadError::Disconnected);
         }
         length += received;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::*;
+
+    #[test]
+    fn listener_accept_failure_stops_serving() {
+        let result = serve_connections(ServiceIdentity::Hub, || {
+            Err(io::Error::other("injected listener failure"))
+        });
+
+        assert!(matches!(result, Err(RunError::Io)));
     }
 }

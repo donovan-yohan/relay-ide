@@ -62,7 +62,7 @@ try {
   await assertHealthResponse();
   await assertSurvivesDisconnectedClient();
   await assertHealthResponse();
-  await assertSurvivesStalledClient();
+  await assertHealthRespondsDuringStalledClient();
   await assertHealthResponse();
   await assertNotFoundResponse("POST /health HTTP/1.1\r\nHost: localhost\r\n\r\n");
   await assertHealthResponse();
@@ -124,12 +124,21 @@ async function assertSurvivesDisconnectedClient() {
   client.destroy();
 }
 
-async function assertSurvivesStalledClient() {
+async function assertHealthRespondsDuringStalledClient() {
   const client = createConnection({ host: "127.0.0.1", port });
   client.on("error", () => {});
   await once(client, "connect");
-  await delay(2_200);
-  client.destroy();
+  await delay(100);
+  const started = performance.now();
+  try {
+    await assertHealthResponse();
+  } finally {
+    client.destroy();
+  }
+  assert.ok(
+    performance.now() - started < 1_000,
+    "an idle client must not delay a concurrent liveness request until its two-second timeout",
+  );
 }
 
 async function assertNotFoundResponse(request) {
