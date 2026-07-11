@@ -3,6 +3,7 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     process::ExitCode,
+    time::Duration,
 };
 
 use relay_factory_core::{
@@ -82,6 +83,9 @@ fn handle_connection(
     mut stream: TcpStream,
     identity: ServiceIdentity,
 ) -> Result<(), std::io::Error> {
+    let timeout = Some(Duration::from_secs(2));
+    stream.set_read_timeout(timeout)?;
+    stream.set_write_timeout(timeout)?;
     let mut request = [0_u8; 1024];
     let length = stream.read(&mut request)?;
     let request = String::from_utf8_lossy(&request[..length]);
