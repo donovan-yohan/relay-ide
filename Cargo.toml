@@ -1,0 +1,19 @@
+[workspace]
+members = [
+  "crates/relay-factory-core",
+  "apps/relay-hub",
+  "apps/relay-node",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

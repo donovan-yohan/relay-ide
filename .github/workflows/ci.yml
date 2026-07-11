@@ -1,0 +1,32 @@
+name: Factory verification
+
+on:
+  pull_request:
+    branches: [reboot/relay-next]
+  push:
+    branches: [reboot/relay-next]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy,rustfmt
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm run bench

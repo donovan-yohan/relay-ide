@@ -1,0 +1,8 @@
+{
+  "name": "Relay factory",
+  "short_name": "Relay",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#152334",
+  "theme_color": "#152334"
+}

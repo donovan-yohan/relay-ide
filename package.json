@@ -1,0 +1,19 @@
+{
+  "name": "relay-factory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.22.3 <23"
+  },
+  "packageManager": "npm@10.9.8",
+  "scripts": {
+    "toolchain:check": "node scripts/check-toolchains.mjs",
+    "dev": "node scripts/dev.mjs",
+    "test": "npm run toolchain:check && sh scripts/cargo.sh test --workspace --locked && node --test web/test/*.test.mjs && npm run smoke",
+    "lint": "npm run toolchain:check && sh scripts/cargo.sh fmt --all -- --check && sh scripts/cargo.sh clippy --workspace --all-targets --locked -- -D warnings && node scripts/lint-web.mjs",
+    "build": "npm run toolchain:check && sh scripts/cargo.sh build --workspace --locked && node scripts/build-web.mjs",
+    "bench": "npm run toolchain:check && sh scripts/cargo.sh bench --workspace --no-run --locked",
+    "smoke": "node scripts/smoke.mjs"
+  }
+}
