@@ -1,7 +1,97 @@
 use std::fmt;
 
+use url::Url;
+
+mod auth;
+
+pub use auth::{AuthBoundary, CeremonyStart, EnrollmentAuthority, SessionDevice, SessionGrant};
+
 pub const API_VERSION: &str = "relay-factory/v1";
 pub const MAX_CONFIG_INPUT_BYTES: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthError {
+    InsecureOrigin,
+    InvalidOrigin,
+    OriginMismatch,
+    InvalidRecoveryConfig,
+    RecoveryRequired,
+    RecoveryDenied,
+    PasskeyDenied,
+    UnknownCeremony,
+    CeremonyExpired,
+    CeremonyLimit,
+    CredentialLimit,
+    SessionMissing,
+    CsrfDenied,
+    Internal,
+}
+
+impl AuthError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InsecureOrigin => "insecure_origin",
+            Self::InvalidOrigin => "invalid_origin",
+            Self::OriginMismatch => "origin_mismatch",
+            Self::InvalidRecoveryConfig => "invalid_recovery_config",
+            Self::RecoveryRequired => "recovery_required",
+            Self::RecoveryDenied => "recovery_denied",
+            Self::PasskeyDenied => "passkey_denied",
+            Self::UnknownCeremony => "unknown_ceremony",
+            Self::CeremonyExpired => "ceremony_expired",
+            Self::CeremonyLimit => "ceremony_limit",
+            Self::CredentialLimit => "credential_limit",
+            Self::SessionMissing => "session_missing",
+            Self::CsrfDenied => "csrf_denied",
+            Self::Internal => "internal",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthOrigin {
+    origin: Url,
+    rp_id: String,
+}
+
+impl AuthOrigin {
+    pub fn parse(value: &str) -> Result<Self, AuthError> {
+        let origin = Url::parse(value).map_err(|_| AuthError::InvalidOrigin)?;
+
+        if origin.scheme() != "https" {
+            return Err(AuthError::InsecureOrigin);
+        }
+        if origin.cannot_be_a_base()
+            || origin.username() != ""
+            || origin.password().is_some()
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || origin.path() != "/"
+        {
+            return Err(AuthError::InvalidOrigin);
+        }
+
+        let rp_id = origin
+            .host_str()
+            .filter(|host| !host.is_empty())
+            .ok_or(AuthError::InvalidOrigin)?
+            .to_owned();
+
+        Ok(Self { origin, rp_id })
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.origin.as_str()
+    }
+
+    pub fn rp_id(&self) -> &str {
+        &self.rp_id
+    }
+
+    pub(crate) fn as_url(&self) -> &Url {
+        &self.origin
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceIdentity {

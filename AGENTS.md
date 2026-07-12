@@ -12,7 +12,7 @@ This repository is deliberately a greenfield factory. Work only from the active 
 
 ## Boundaries
 
-The only implemented runtime boundary is `GET /health` on the hub and the matching `relay-node probe` command. Their response is a small versioned liveness record. Do not add process, provider, filesystem, authentication, persistence, PTY, mailbox, browser-control, cross-node, or layout behavior without a later accepted issue.
+The implemented runtime boundaries are `GET /health` on the hub, the matching `relay-node probe` command, and the #1143 passkey-first browser boundary. Do not add process, provider, filesystem beyond #1143's bounded in-memory auth state, PTY, mailbox, browser-control grants, cross-node control, or layout behavior without a later accepted issue.
 
 Product nouns and deferred scope live in `docs/PRODUCT_CONTEXT.md`; design decisions live in `docs/adrs/`. GitHub issues are the source of truth for product scope. Child reboot PRs preserve ancestry, target `reboot/relay-next`, and use `Refs #1136` until a later milestone says otherwise.
 
