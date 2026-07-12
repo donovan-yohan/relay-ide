@@ -1037,4 +1037,25 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 409 Conflict"));
         assert!(response.contains("input_delivery_lost"));
     }
+
+    #[test]
+    fn terminal_capacity_and_transport_remain_typed_api_failures() {
+        for (error, status, code) in [
+            (
+                ClaudePtyError::Capacity,
+                "HTTP/1.1 409 Conflict",
+                "session_capacity",
+            ),
+            (
+                ClaudePtyError::Transport,
+                "HTTP/1.1 503 Service Unavailable",
+                "pty_transport",
+            ),
+        ] {
+            let response = claude_pty_error_response(error);
+
+            assert!(response.starts_with(status));
+            assert!(response.contains(code));
+        }
+    }
 }

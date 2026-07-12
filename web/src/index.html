@@ -168,6 +168,18 @@
 
       .session-note { color: #c5d1ed; font-size: 0.85rem; margin: 0; }
       .terminal-status { color: #aab8d8; font-size: 0.78rem; margin: 0; }
+      .terminal-input-recovery {
+        align-items: center;
+        border: 1px solid #ffb6ce;
+        color: #ffd0dd;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.65rem;
+      }
+      .terminal-input-recovery[hidden] { display: none; }
+      .terminal-input-recovery p { flex: 1 1 18rem; }
+      .terminal-input-recovery button { min-height: 2.15rem; }
       .terminal-host {
         background: #050914;
         border: 1px solid #43537b;

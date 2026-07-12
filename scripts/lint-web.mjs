@@ -5,6 +5,7 @@ const requiredFiles = [
   "web/src/main.js",
   "web/src/workspace-layout.js",
   "web/src/auth.js",
+  "web/src/terminal-recovery.js",
   "web/public/manifest.webmanifest",
 ];
 
@@ -12,7 +13,7 @@ for (const file of requiredFiles) {
   await access(file, constants.R_OK);
 }
 
-const [page, app, layout, auth, manifest] = await Promise.all(requiredFiles.map((file) => readFile(file, "utf8")));
+const [page, app, layout, auth, terminalRecovery, manifest] = await Promise.all(requiredFiles.map((file) => readFile(file, "utf8")));
 const errors = [];
 
 if (!page.includes("manifest.webmanifest") || !page.includes("data-workspace-shell")) {
@@ -44,6 +45,9 @@ if (/WebSocket|Authorization/.test(app)) {
 }
 if (!auth.includes("recovery_required") || !auth.includes("passkey_denied")) {
   errors.push("PWA auth adapter must expose typed recovery and denied states");
+}
+if (!terminalRecovery.includes("input_delivery_lost") || !terminalRecovery.includes("network_uncertain")) {
+  errors.push("PWA terminal recovery adapter must expose typed delivery-loss and uncertain-network states");
 }
 if (!manifest.includes('"display": "standalone"')) {
   errors.push("PWA manifest must declare standalone display");

@@ -103,7 +103,7 @@ test("terminal input stops when a newer runtime replaces the terminal", async ()
   assert.deepEqual(sent, ["first"]);
 });
 
-test("terminal input reports a failed batch and continues with later input", async () => {
+test("terminal input preserves a transport-rejected batch until explicit retry", async () => {
   const sent = [];
   const errors = [];
   let failFirst = true;
@@ -122,19 +122,27 @@ test("terminal input reports a failed batch and continues with later input", asy
   queue.enqueue("first");
   await eventually(() => errors.length === 1);
   queue.enqueue("second");
+  await Promise.resolve();
+  assert.equal(queue.isPaused(), true);
+  assert.deepEqual(sent, ["first"]);
+  assert.equal(queue.resume(), true);
   await eventually(() => sent.length === 2);
-  assert.deepEqual(sent, ["first", "second"]);
+  assert.deepEqual(sent, ["first", "firstsecond"]);
   assert.deepEqual(errors, [{ code: "pty_transport" }]);
 });
 
-test("terminal input exposes delivery loss without retrying the batch", async () => {
+test("terminal input exposes delivery loss and saves the batch for explicit retry", async () => {
   const sent = [];
   const errors = [];
+  let failFirst = true;
   const queue = createTerminalInputQueue({
     isActive: () => true,
     send: async (data) => {
       sent.push(data);
-      throw { code: "input_delivery_lost" };
+      if (failFirst) {
+        failFirst = false;
+        throw { code: "input_delivery_lost" };
+      }
     },
     onError: (error) => errors.push(error),
   });
@@ -143,6 +151,37 @@ test("terminal input exposes delivery loss without retrying the batch", async ()
   await eventually(() => errors.length === 1);
   assert.deepEqual(sent, ["first"]);
   assert.deepEqual(errors, [{ code: "input_delivery_lost" }]);
+  assert.equal(queue.isPaused(), true);
+  assert.equal(queue.resume(), true);
+  await eventually(() => sent.length === 2);
+  assert.deepEqual(sent, ["first", "first"]);
+});
+
+test("terminal input preserves a network-uncertain batch without automatic replay", async () => {
+  const sent = [];
+  const errors = [];
+  let failFirst = true;
+  const queue = createTerminalInputQueue({
+    isActive: () => true,
+    send: async (data) => {
+      sent.push(data);
+      if (failFirst) {
+        failFirst = false;
+        throw new TypeError("Failed to fetch");
+      }
+    },
+    onError: (error) => errors.push(error),
+  });
+
+  queue.enqueue("first");
+  await eventually(() => errors.length === 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(queue.isPaused(), true);
+  assert.deepEqual(sent, ["first"]);
+  assert.ok(errors[0] instanceof TypeError);
+  assert.equal(queue.resume(), true);
+  await eventually(() => sent.length === 2);
+  assert.deepEqual(sent, ["first", "first"]);
 });
 
 test("terminal input bounds queued bytes without reordering accepted input", async () => {
@@ -162,7 +201,7 @@ test("terminal input bounds queued bytes without reordering accepted input", asy
   queue.enqueue("one");
   await eventually(() => sent.length === 1);
   queue.enqueue("abc");
-  assert.deepEqual(errors, [{ code: "input_backpressure" }]);
+  assert.deepEqual(errors, [{ code: "input_backpressure", delivery: "not_queued" }]);
 
   first.resolve();
   await new Promise((resolve) => setImmediate(resolve));

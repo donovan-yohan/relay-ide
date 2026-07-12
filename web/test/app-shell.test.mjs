@@ -5,11 +5,12 @@ import test from "node:test";
 const source = new URL("../src/", import.meta.url);
 
 test("the PWA shell combines passkey controls with a presentation-only Workspace layout", async () => {
-  const [page, app, layout, auth] = await Promise.all([
+  const [page, app, layout, auth, terminalRecovery] = await Promise.all([
     readFile(new URL("index.html", source), "utf8"),
     readFile(new URL("main.js", source), "utf8"),
     readFile(new URL("workspace-layout.js", source), "utf8"),
     readFile(new URL("auth.js", source), "utf8"),
+    readFile(new URL("terminal-recovery.js", source), "utf8"),
   ]);
 
   assert.match(page, /manifest\.webmanifest/);
@@ -37,6 +38,13 @@ test("the PWA shell combines passkey controls with a presentation-only Workspace
   assert.match(app, /\/node\/claude\/sessions/);
   assert.match(app, /function canOpenClaudeTerminal/);
   assert.match(app, /claudeCreateInFlight/);
+  assert.match(app, /terminalInputRecovery/);
+  assert.match(app, /Retry saved input/);
+  assert.match(app, /Discard saved input/);
+  assert.match(page, /terminal-input-recovery/);
+  assert.match(terminalRecovery, /session_capacity/);
+  assert.match(terminalRecovery, /pty_transport/);
+  assert.match(terminalRecovery, /network_uncertain/);
   assert.match(app, /snapshot\.hasMore \? 0 : 100/);
   assert.match(auth, /recovery_required/);
   assert.doesNotMatch(app, /WebSocket|Authorization/);
