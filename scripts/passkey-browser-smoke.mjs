@@ -16,7 +16,6 @@ const publicRoot = resolve("web/public");
 const scratch = await mkdtemp(`${tmpdir()}/relay-passkey-browser-`);
 const recoveryHash = createHash("sha256").update(recoveryCode).digest("hex");
 const httpsPort = await reservePort();
-const debugPort = await reservePort();
 const origin = `https://relay.test:${httpsPort}`;
 let hub;
 let proxy;
@@ -74,14 +73,14 @@ try {
       "--headless=new",
       "--no-sandbox",
       "--disable-gpu",
-      `--remote-debugging-port=${debugPort}`,
+      "--remote-debugging-port=0",
       `--user-data-dir=${scratch}/chrome-profile`,
       "--ignore-certificate-errors",
       "--host-resolver-rules=MAP relay.test 127.0.0.1",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
-  browser = await connectBrowser();
+  browser = await connectBrowser(chromiumProcess, captureProcessOutput(chromiumProcess));
   const { targetId } = await browser.command("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await browser.command("Target.attachToTarget", { targetId, flatten: true });
   await browser.command("Page.enable", {}, sessionId);
@@ -362,17 +361,47 @@ async function reservePort() {
   return port;
 }
 
-async function connectBrowser() {
-  await waitFor(async () => {
-    try {
-      const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`);
-      return response.ok;
-    } catch {
+function captureProcessOutput(process_) {
+  let output = "";
+  for (const stream of [process_.stdout, process_.stderr]) {
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk) => {
+      output = `${output}${chunk}`.slice(-4_096);
+    });
+  }
+  return () => output;
+}
+
+async function connectBrowser(process_, output) {
+  const debuggerUrl = await waitFor(
+    () => {
+      const match = output().match(/DevTools listening on (ws:\/\/\S+)/);
+      if (match) return match[1];
+      if (process_.exitCode !== null || process_.signalCode !== null) {
+        throw new Error(`Chromium exited before exposing a DevTools endpoint: ${processOutputSummary(process_, output())}`);
+      }
       return false;
-    }
-  });
-  const version = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then((response) => response.json());
-  return Cdp.connect(version.webSocketDebuggerUrl);
+    },
+    () => `Chromium DevTools endpoint: ${processOutputSummary(process_, output())}`,
+  );
+  try {
+    return await Cdp.connect(debuggerUrl);
+  } catch (error) {
+    throw new Error(`could not connect to Chromium DevTools at ${debuggerUrl}: ${processOutputSummary(process_, output())}`, {
+      cause: error,
+    });
+  }
+}
+
+function processOutputSummary(process_, output) {
+  const status =
+    process_.exitCode !== null
+      ? `exited with ${process_.exitCode}`
+      : process_.signalCode !== null
+        ? `exited from ${process_.signalCode}`
+        : "running";
+  const compactOutput = output.trim().replace(/\s+/g, " ").slice(0, 1_000) || "(no Chromium output)";
+  return `Chromium ${status}; output: ${compactOutput}`;
 }
 
 async function evaluate(sessionId, expression) {
@@ -385,12 +414,12 @@ async function evaluate(sessionId, expression) {
   return response.result.value;
 }
 
-async function waitFor(predicate) {
+async function waitFor(predicate, timeoutDescription = "browser matrix state") {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const result = await predicate();
     if (result) return result;
     await new Promise((resolve_) => setTimeout(resolve_, 50));
   }
-  throw new Error("timed out waiting for browser matrix state");
+  throw new Error(`timed out waiting for ${typeof timeoutDescription === "function" ? timeoutDescription() : timeoutDescription}`);
 }
