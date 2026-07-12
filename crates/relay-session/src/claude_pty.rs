@@ -22,7 +22,7 @@ use nix::{errno::Errno, sys::signal::kill};
 #[cfg(unix)]
 use nix::{
     sys::signal::{Signal, killpg},
-    unistd::{Pid, getpgid, getsid},
+    unistd::{Pid, getpgid, getsid, tcgetpgrp},
 };
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 #[cfg(target_os = "linux")]
@@ -239,6 +239,8 @@ impl PtyInput {
 struct PtyOwnership {
     process_group: i32,
     writer: FileDescriptor,
+    #[cfg(test)]
+    foreground_override: Option<ForegroundIdentity>,
 }
 
 #[cfg(target_os = "linux")]
@@ -249,6 +251,14 @@ impl AsRawFd for MasterFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0
     }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum ForegroundIdentity {
+    NoForegroundGroup,
+    ProcessGroup(i32),
+    Unavailable,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -287,6 +297,38 @@ pub struct PtyTermination {
     reader: Option<JoinHandle<()>>,
     next_cursor: u64,
     dropped_chunks: u64,
+}
+
+/// A create operation separates lock-bound runtime bookkeeping from any
+/// bounded PTY teardown that the caller must finish after releasing the lock.
+pub struct PtyCreate {
+    result: Result<SessionId, ClaudePtyError>,
+    terminations: Vec<PtyTermination>,
+}
+
+impl PtyCreate {
+    fn failure(error: ClaudePtyError, terminations: Vec<PtyTermination>) -> Self {
+        Self {
+            result: Err(error),
+            terminations,
+        }
+    }
+
+    pub fn into_parts(self) -> (Result<SessionId, ClaudePtyError>, Vec<PtyTermination>) {
+        (self.result, self.terminations)
+    }
+}
+
+/// The outcome of selecting PTYs for owner invalidation cleanup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerSessionCloseDisposition {
+    Complete,
+    Retry,
+}
+
+pub struct OwnerSessionClosures {
+    pub terminations: Vec<PtyTermination>,
+    pub disposition: OwnerSessionCloseDisposition,
 }
 
 /// The node-local source of truth for Relay-owned Claude PTY Session handles.
@@ -346,18 +388,30 @@ impl NodePtyRuntime {
     /// Start the fixed Claude Code TUI in a real PTY. No caller-controlled
     /// command, arguments, HOME, PATH, or working directory enter this path.
     pub fn create(&mut self, owner_device_id: &str) -> Result<SessionId, ClaudePtyError> {
-        if owner_device_id.is_empty() || owner_device_id.len() > 64 {
-            return Err(ClaudePtyError::Forbidden);
+        let (result, terminations) = self.begin_create(owner_device_id).into_parts();
+        for termination in terminations {
+            let _ = termination.finish();
         }
-        self.prune_finished_sessions();
+        result
+    }
+
+    /// Begin fixed-PTY creation while the runtime is locked. Any automatic
+    /// pruning or partially-started PTY cleanup is returned to the caller so
+    /// TERM/KILL grace never runs under the hub's global PTY mutex.
+    pub fn begin_create(&mut self, owner_device_id: &str) -> PtyCreate {
+        if owner_device_id.is_empty() || owner_device_id.len() > 64 {
+            return PtyCreate::failure(ClaudePtyError::Forbidden, Vec::new());
+        }
+        let mut terminations = self.begin_prune_finished_sessions();
         if self.sessions.len() >= MAX_PTY_SESSIONS {
-            return Err(ClaudePtyError::Capacity);
+            return PtyCreate::failure(ClaudePtyError::Capacity, terminations);
         }
 
         let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(default_size())
-            .map_err(|_| ClaudePtyError::Transport)?;
+        let pair = match pty_system.openpty(default_size()) {
+            Ok(pair) => pair,
+            Err(_) => return PtyCreate::failure(ClaudePtyError::Transport, terminations),
+        };
         let mut command = CommandBuilder::new(self.owner.claude_path());
         command.env_clear();
         for argument in &self.arguments {
@@ -372,10 +426,10 @@ impl NodePtyRuntime {
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
 
-        let mut child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|_| ClaudePtyError::Unavailable)?;
+        let mut child = match pair.slave.spawn_command(command) {
+            Ok(child) => child,
+            Err(_) => return PtyCreate::failure(ClaudePtyError::Unavailable, terminations),
+        };
         drop(pair.slave);
         let process_group = child
             .process_id()
@@ -387,13 +441,21 @@ impl NodePtyRuntime {
             // missing identity is a fail-closed transport setup failure.
             let _ = child.kill();
             reap_child(child);
-            return Err(ClaudePtyError::Transport);
+            return PtyCreate::failure(ClaudePtyError::Transport, terminations);
         }
+        let id = format!("claude-pty-{}", self.next_id);
+        self.next_id = self.next_id.saturating_add(1);
+        let session_id = SessionId::new(id.clone());
         let reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(_) => {
-                let _ = terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
-                return Err(ClaudePtyError::Transport);
+                terminations.push(PtyTermination::startup_failure(
+                    session_id,
+                    child,
+                    process_group,
+                    pair.master,
+                ));
+                return PtyCreate::failure(ClaudePtyError::Transport, terminations);
             }
         };
         let input = match process_group
@@ -403,8 +465,13 @@ impl NodePtyRuntime {
         {
             Ok(input) => input,
             Err(error) => {
-                let _ = terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
-                return Err(error);
+                terminations.push(PtyTermination::startup_failure(
+                    session_id,
+                    child,
+                    process_group,
+                    pair.master,
+                ));
+                return PtyCreate::failure(error, terminations);
             }
         };
         let (reader_tx, reader_rx) = mpsc::sync_channel(PTY_INBOUND_CAP);
@@ -421,15 +488,18 @@ impl NodePtyRuntime {
             Ok(reader_thread) => reader_thread,
             Err(error) => {
                 input.finish();
-                let _ = terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
-                return Err(error);
+                terminations.push(PtyTermination::startup_failure(
+                    session_id,
+                    child,
+                    process_group,
+                    pair.master,
+                ));
+                return PtyCreate::failure(error, terminations);
             }
         };
 
-        let id = format!("claude-pty-{}", self.next_id);
-        self.next_id = self.next_id.saturating_add(1);
         self.sessions.insert(
-            id.clone(),
+            id,
             ManagedSession {
                 owner_device_id: owner_device_id.to_owned(),
                 status: ClaudePtyStatus::Starting,
@@ -450,7 +520,10 @@ impl NodePtyRuntime {
                 foreign_foreground_seen: false,
             },
         );
-        Ok(SessionId::new(id))
+        PtyCreate {
+            result: Ok(session_id),
+            terminations,
+        }
     }
 
     /// Return an incremental, loss-aware output snapshot. Disconnection merely
@@ -606,29 +679,50 @@ impl NodePtyRuntime {
     /// before they can consume another live-session slot. Keeping an exited
     /// record until the next create lets a browser observe the terminal result,
     /// while the next create deterministically releases its PTY resources.
+    #[cfg(test)]
     fn prune_finished_sessions(&mut self) {
-        self.sessions.retain(|_, session| {
-            session.pump();
-            !session.foreground_is_owned()
-                || !matches!(
-                    session.status,
-                    ClaudePtyStatus::Closed | ClaudePtyStatus::Exited
-                )
-        });
+        for termination in self.begin_prune_finished_sessions() {
+            let _ = termination.finish();
+        }
+    }
+
+    fn begin_prune_finished_sessions(&mut self) -> Vec<PtyTermination> {
+        let session_ids = self
+            .sessions
+            .iter_mut()
+            .filter_map(|(session_id, session)| {
+                session.pump();
+                (session.foreground_is_owned()
+                    && matches!(
+                        session.status,
+                        ClaudePtyStatus::Closed | ClaudePtyStatus::Exited
+                    ))
+                .then(|| session_id.clone())
+            })
+            .collect::<Vec<_>>();
+        session_ids
+            .into_iter()
+            .filter_map(|session_id| {
+                self.sessions
+                    .remove(&session_id)
+                    .map(|session| session.into_termination(&session_id))
+            })
+            .collect()
     }
 
     /// Reap every PTY bound to a browser-device identity after that browser
     /// session is revoked. The opaque browser session token never crosses the
     /// auth boundary; this runtime only receives its already-authenticated
     /// device identity.
-    pub fn begin_owner_session_closes(&mut self, owner_device_id: &str) -> Vec<PtyTermination> {
+    pub fn begin_owner_session_closes(&mut self, owner_device_id: &str) -> OwnerSessionClosures {
         let session_ids = self
             .sessions
             .iter()
             .filter(|(_, session)| session.owner_device_id == owner_device_id)
             .map(|(session_id, _)| session_id.clone())
             .collect::<Vec<_>>();
-        session_ids
+        let mut disposition = OwnerSessionCloseDisposition::Complete;
+        let terminations = session_ids
             .into_iter()
             .filter_map(|session_id| {
                 let session = self
@@ -638,17 +732,23 @@ impl NodePtyRuntime {
                 session.pump();
                 if !session.foreground_is_owned() {
                     eprintln!("relay Claude PTY teardown refused an unowned foreground group");
+                    disposition = OwnerSessionCloseDisposition::Retry;
                     return None;
                 }
                 self.sessions
                     .remove(&session_id)
                     .map(|session| session.into_termination(&session_id))
             })
-            .collect()
+            .collect();
+        OwnerSessionClosures {
+            terminations,
+            disposition,
+        }
     }
 
     pub fn close_owner_sessions(&mut self, owner_device_id: &str) {
-        for termination in self.begin_owner_session_closes(owner_device_id) {
+        let closures = self.begin_owner_session_closes(owner_device_id);
+        for termination in closures.terminations {
             let _ = termination.finish();
         }
     }
@@ -735,7 +835,7 @@ impl ManagedSession {
             if self
                 .process_group
                 .as_ref()
-                .is_some_and(|ownership| !ownership.foreground_is_owned(self.master.as_deref()))
+                .is_some_and(|ownership| !ownership.foreground_is_owned())
             {
                 self.foreign_foreground_seen = true;
             }
@@ -749,7 +849,7 @@ impl ManagedSession {
                 && self
                     .process_group
                     .as_ref()
-                    .is_none_or(|ownership| ownership.foreground_is_owned(self.master.as_deref()))
+                    .is_some_and(PtyOwnership::foreground_is_owned)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -793,7 +893,7 @@ impl ManagedSession {
             input.finish();
         }
         if let Some(child) = self.child.take() {
-            let _ = terminate_child(child, self.master.as_deref(), process_group.as_ref());
+            let _ = terminate_child(child, process_group.as_ref());
         }
         self.master.take();
         drop(process_group);
@@ -818,6 +918,23 @@ impl Drop for ManagedSession {
 }
 
 impl PtyTermination {
+    fn startup_failure(
+        session_id: SessionId,
+        child: Box<dyn Child + Send + Sync>,
+        process_group: Option<PtyOwnership>,
+        master: Box<dyn MasterPty + Send>,
+    ) -> Self {
+        Self {
+            session_id,
+            child: Some(child),
+            process_group,
+            master: Some(master),
+            reader: None,
+            next_cursor: 0,
+            dropped_chunks: 0,
+        }
+    }
+
     /// Finish the bounded teardown after the caller has released the runtime
     /// mutex. A terminal signalling failure is returned rather than pretending
     /// that an unverified foreground descendant was reaped.
@@ -836,9 +953,7 @@ impl PtyTermination {
 
     fn finish_inner(&mut self) -> Result<(), ClaudePtyError> {
         let result = match self.child.take() {
-            Some(child) => {
-                terminate_child(child, self.master.as_deref(), self.process_group.as_ref())
-            }
+            Some(child) => terminate_child(child, self.process_group.as_ref()),
             None => Ok(()),
         };
         self.master.take();
@@ -1038,24 +1153,41 @@ fn delivery_error(written: usize) -> ClaudePtyError {
 }
 
 #[cfg(target_os = "linux")]
+fn foreground_identity(writer: &FileDescriptor) -> ForegroundIdentity {
+    match tcgetpgrp(writer) {
+        Ok(process_group) if process_group.as_raw() > 0 => {
+            ForegroundIdentity::ProcessGroup(process_group.as_raw())
+        }
+        // `tcgetpgrp` successfully reported no foreground group. This is not
+        // an unavailable identity and cannot smuggle in a foreign numeric PGID.
+        Ok(_) => ForegroundIdentity::NoForegroundGroup,
+        Err(_) => ForegroundIdentity::Unavailable,
+    }
+}
+
+#[cfg(target_os = "linux")]
 impl PtyOwnership {
-    fn foreground_is_owned(&self, master: Option<&(dyn MasterPty + Send)>) -> bool {
-        master
-            .and_then(MasterPty::process_group_leader)
-            .is_none_or(|foreground| foreground == self.process_group)
+    fn foreground_is_owned(&self) -> bool {
+        #[cfg(test)]
+        let identity = self
+            .foreground_override
+            .unwrap_or_else(|| foreground_identity(&self.writer));
+        #[cfg(not(test))]
+        let identity = foreground_identity(&self.writer);
+        match identity {
+            ForegroundIdentity::NoForegroundGroup => true,
+            ForegroundIdentity::ProcessGroup(process_group) => process_group == self.process_group,
+            ForegroundIdentity::Unavailable => false,
+        }
     }
 
-    fn signal_groups(
-        &self,
-        master: Option<&(dyn MasterPty + Send)>,
-        signal: Signal,
-    ) -> Result<(), ClaudePtyError> {
+    fn signal_groups(&self, signal: Signal) -> Result<(), ClaudePtyError> {
         // Relay holds a lifetime-safe identity only for the original group: its
         // direct leader remains unreaped until teardown finishes. A PTY
         // foreground group can outlive its leader, so never convert the numeric
         // `tcgetpgrp` result into `killpg`. Refuse the close instead of risking
         // an unrelated/reused group or claiming to have reaped an unowned one.
-        if !self.foreground_is_owned(master) {
+        if !self.foreground_is_owned() {
             return Err(ClaudePtyError::Transport);
         }
         // The direct child remains unreaped until this teardown completes, so
@@ -1081,6 +1213,8 @@ fn session_process_group(process_id: u32, master: &(dyn MasterPty + Send)) -> Op
         (process_group == process_id && session_id == process_id).then_some(PtyOwnership {
             process_group,
             writer,
+            #[cfg(test)]
+            foreground_override: None,
         })
     }
     #[cfg(not(target_os = "linux"))]
@@ -1092,16 +1226,15 @@ fn session_process_group(process_id: u32, master: &(dyn MasterPty + Send)) -> Op
 
 fn terminate_child(
     mut child: Box<dyn Child + Send + Sync>,
-    master: Option<&(dyn MasterPty + Send)>,
     ownership: Option<&PtyOwnership>,
 ) -> Result<(), ClaudePtyError> {
     let result = {
         #[cfg(target_os = "linux")]
         {
             if let Some(ownership) = ownership {
-                ownership.signal_groups(master, Signal::SIGTERM)?;
+                ownership.signal_groups(Signal::SIGTERM)?;
                 thread::sleep(PTY_TERMINATION_GRACE);
-                ownership.signal_groups(master, Signal::SIGKILL)?;
+                ownership.signal_groups(Signal::SIGKILL)?;
             }
             Ok(())
         }
@@ -1406,6 +1539,68 @@ mod tests {
             termination.finish().unwrap().status,
             ClaudePtyStatus::Closed
         );
+    }
+
+    #[test]
+    fn automatic_pruning_does_not_wait_through_term_grace_before_create_returns() {
+        let mut runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "sleep 30"]);
+        let exited = runtime.create("device-a").unwrap();
+        runtime.sessions.get_mut(exited.as_str()).unwrap().status = ClaudePtyStatus::Exited;
+
+        let started = Instant::now();
+        let (result, terminations) = runtime.begin_create("device-a").into_parts();
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "automatic pruning must detach TERM/KILL grace before the caller releases its runtime mutex"
+        );
+
+        let replacement = result.unwrap();
+        for termination in terminations {
+            termination.finish().unwrap();
+        }
+
+        runtime.close(replacement.as_str(), "device-a").unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unavailable_foreground_identity_fails_closed_before_numeric_group_signalling() {
+        let mut runtime = NodePtyRuntime::test_runtime(
+            "/bin/sh",
+            &["-c", "trap '' TERM; while :; do sleep 1; done"],
+        );
+        let session = runtime.create("device-a").unwrap();
+        let process_group = runtime.sessions[session.as_str()]
+            .process_group
+            .as_ref()
+            .expect("Linux test session records a process group")
+            .process_group;
+        runtime
+            .sessions
+            .get_mut(session.as_str())
+            .unwrap()
+            .process_group
+            .as_mut()
+            .unwrap()
+            .foreground_override = Some(ForegroundIdentity::Unavailable);
+
+        assert_eq!(
+            runtime.close(session.as_str(), "device-a"),
+            Err(ClaudePtyError::Transport),
+            "missing foreground identity must refuse teardown instead of issuing killpg"
+        );
+        assert!(runtime.sessions.contains_key(session.as_str()));
+
+        let _ = killpg(Pid::from_raw(process_group), Signal::SIGKILL);
+        if let Some(child) = runtime
+            .sessions
+            .get_mut(session.as_str())
+            .unwrap()
+            .child
+            .take()
+        {
+            reap_child(child);
+        }
     }
 
     #[test]
@@ -1826,7 +2021,9 @@ mod tests {
         // unowned foreground group, so it never authorizes a numeric fallback.
         thread::sleep(Duration::from_millis(300));
         assert!(runtime.sessions[session.as_str()].foreign_foreground_seen);
-        assert!(runtime.begin_owner_session_closes("device-a").is_empty());
+        let closures = runtime.begin_owner_session_closes("device-a");
+        assert_eq!(closures.disposition, OwnerSessionCloseDisposition::Retry);
+        assert!(closures.terminations.is_empty());
         assert!(runtime.sessions.contains_key(session.as_str()));
         assert_eq!(
             runtime.close(session.as_str(), "device-a"),

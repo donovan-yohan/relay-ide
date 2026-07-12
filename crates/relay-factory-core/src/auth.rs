@@ -96,8 +96,9 @@ impl AuthState {
         }
     }
 
-    fn take_invalidated_device_ids(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.invalidated_device_ids)
+    fn acknowledge_invalidated_device_ids(&mut self, device_ids: &[String]) {
+        self.invalidated_device_ids
+            .retain(|device_id| !device_ids.contains(device_id));
     }
 }
 
@@ -320,12 +321,23 @@ impl AuthBoundary {
     }
 
     /// Return device identities whose browser authority was removed by TTL,
-    /// explicit revocation, or oldest-session eviction. Resource owners can
-    /// reap their handles without receiving an opaque browser session token.
-    pub fn take_invalidated_device_ids(&self) -> Result<Vec<String>, AuthError> {
+    /// explicit revocation, or oldest-session eviction. Resource owners must
+    /// acknowledge only identities whose owned resources were actually reaped,
+    /// so a fail-closed teardown refusal remains eligible for retry.
+    pub fn invalidated_device_ids(&self) -> Result<Vec<String>, AuthError> {
         self.state
             .lock()
-            .map(|mut state| state.take_invalidated_device_ids())
+            .map(|state| state.invalidated_device_ids.clone())
+            .map_err(|_| AuthError::Internal)
+    }
+
+    pub fn acknowledge_invalidated_device_ids(
+        &self,
+        device_ids: &[String],
+    ) -> Result<(), AuthError> {
+        self.state
+            .lock()
+            .map(|mut state| state.acknowledge_invalidated_device_ids(device_ids))
             .map_err(|_| AuthError::Internal)
     }
 
@@ -581,9 +593,17 @@ mod tests {
             Err(AuthError::SessionMissing)
         );
         assert_eq!(
-            boundary.take_invalidated_device_ids().unwrap(),
+            boundary.invalidated_device_ids().unwrap(),
             vec!["expired-device"]
         );
+        assert_eq!(
+            boundary.invalidated_device_ids().unwrap(),
+            vec!["expired-device"],
+            "a failed owner teardown must leave invalidation pending for retry"
+        );
+        boundary
+            .acknowledge_invalidated_device_ids(&["expired-device".into()])
+            .unwrap();
 
         {
             let mut state = boundary.state.lock().expect("auth state");
@@ -611,9 +631,12 @@ mod tests {
             .revoke_session("requester", "requester-csrf", "revoked-device")
             .expect("live session can revoke the target device");
         assert_eq!(
-            boundary.take_invalidated_device_ids().unwrap(),
+            boundary.invalidated_device_ids().unwrap(),
             vec!["revoked-device"]
         );
+        boundary
+            .acknowledge_invalidated_device_ids(&["revoked-device".into()])
+            .unwrap();
 
         let capacity_boundary = self::boundary();
         {
@@ -634,7 +657,7 @@ mod tests {
             issue_session(&mut state).expect("capacity eviction issues a replacement");
         }
         assert_eq!(
-            capacity_boundary.take_invalidated_device_ids().unwrap(),
+            capacity_boundary.invalidated_device_ids().unwrap(),
             vec!["device-0"]
         );
     }
