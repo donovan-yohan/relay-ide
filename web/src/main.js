@@ -5,6 +5,7 @@ import {
   presentationForAuthError,
 } from "./auth.js";
 import { createTerminalInputQueue } from "./terminal-input.js";
+import { terminalErrorPresentation, terminalInputRecovery } from "./terminal-recovery.js";
 import {
   MAX_PANE_COUNT,
   MAX_TAB_COUNT,
@@ -280,14 +281,34 @@ function renderLayoutNode(node) {
   );
   if (activeTab.content.sessionId.startsWith("claude-pty-")) {
     const status = textElement("p", "Attaching Relay-owned Claude terminal…", "terminal-status");
+    status.setAttribute("aria-live", "polite");
     const host = document.createElement("div");
     host.className = "terminal-host";
+    const inputRecovery = document.createElement("div");
+    inputRecovery.className = "terminal-input-recovery";
+    inputRecovery.hidden = true;
+    const inputRecoveryMessage = textElement("p", "", "terminal-status");
+    const retryInput = document.createElement("button");
+    retryInput.type = "button";
+    retryInput.textContent = "Retry saved input";
+    const discardInput = document.createElement("button");
+    discardInput.type = "button";
+    discardInput.textContent = "Discard saved input";
+    inputRecovery.append(inputRecoveryMessage, retryInput, discardInput);
     session.append(
       status,
       host,
+      inputRecovery,
       textElement("p", "Pane moves and close detach this browser view; only the explicit terminal close reaps the node-owned process.", "session-note"),
     );
-    if (node.id === state.selectedPaneId) mountTerminal(activeTab.content.sessionId, host, status);
+    if (node.id === state.selectedPaneId) {
+      mountTerminal(activeTab.content.sessionId, host, status, {
+        root: inputRecovery,
+        message: inputRecoveryMessage,
+        retry: retryInput,
+        discard: discardInput,
+      });
+    }
   } else {
     session.append(textElement(
       "p",
@@ -354,7 +375,7 @@ async function closeClaudeTerminal() {
   }
 }
 
-function mountTerminal(sessionId, host, status) {
+function mountTerminal(sessionId, host, status, inputRecovery) {
   const terminal = new window.Terminal({
     cols: 120,
     rows: 36,
@@ -377,6 +398,7 @@ function mountTerminal(sessionId, host, status) {
     resizeObserver: null,
     inputSubscription: null,
     inputQueue: null,
+    inputRecovery,
     cols: 0,
     rows: 0,
   };
@@ -389,8 +411,26 @@ function mountTerminal(sessionId, host, status) {
       body: JSON.stringify({ data }),
     }),
     onError: (error) => {
-      if (terminalRuntime === runtime) runtime.status.textContent = `Input rejected: ${terminalErrorMessage(error)}`;
+      if (terminalRuntime !== runtime) return;
+      const presentation = terminalInputRecovery(error);
+      const inputPaused = runtime.inputQueue?.isPaused();
+      runtime.status.textContent = `${inputPaused ? "Input paused" : "Input not queued"}: ${presentation.message}`;
+      if (inputPaused) {
+        showTerminalInputRecovery(runtime, presentation.message);
+      } else {
+        hideTerminalInputRecovery(runtime);
+      }
     },
+  });
+  inputRecovery.retry.addEventListener("click", () => {
+    if (!runtime.inputQueue?.resume()) return;
+    hideTerminalInputRecovery(runtime);
+    runtime.status.textContent = "Retrying saved terminal input. Inspect terminal output for possible duplicate delivery.";
+  });
+  inputRecovery.discard.addEventListener("click", () => {
+    if (!runtime.inputQueue?.discard()) return;
+    hideTerminalInputRecovery(runtime);
+    runtime.status.textContent = "Saved terminal input was discarded.";
   });
   runtime.inputSubscription = terminal.onData((data) => runtime.inputQueue.enqueue(data));
   if (typeof ResizeObserver === "function") {
@@ -416,6 +456,16 @@ function disposeTerminal() {
   terminalRuntime.inputQueue?.dispose();
   terminalRuntime.terminal.dispose();
   terminalRuntime = null;
+}
+
+function showTerminalInputRecovery(runtime, message) {
+  runtime.inputRecovery.message.textContent = message;
+  runtime.inputRecovery.root.hidden = false;
+}
+
+function hideTerminalInputRecovery(runtime) {
+  runtime.inputRecovery.message.textContent = "";
+  runtime.inputRecovery.root.hidden = true;
 }
 
 async function pollTerminal(runtime) {
@@ -477,12 +527,7 @@ async function resizeTerminal(runtime) {
 }
 
 function terminalErrorMessage(error) {
-  const code = error?.code;
-  if (code === "stale_session") return "This Session belongs to a prior node runtime. Open a new terminal explicitly.";
-  if (code === "claude_unavailable") return "Claude Code could not start in the node-owner context.";
-  if (code === "input_backpressure") return "Terminal input is temporarily backlogged. Wait for Relay to catch up.";
-  if (code === "input_delivery_lost") return "Relay could not finish a queued input batch. Re-enter the command; it was not retried automatically.";
-  return presentationForAuthError(error).message;
+  return terminalErrorPresentation(error).message;
 }
 
 function sessionAuthorityMessage() {

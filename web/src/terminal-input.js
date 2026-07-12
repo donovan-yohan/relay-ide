@@ -34,10 +34,11 @@ export function createTerminalInputQueue({
   let pendingBytes = 0;
   let sending = false;
   let disposed = false;
+  let paused = false;
   let retryTimer = null;
 
   async function flush() {
-    if (disposed || sending || !isActive() || !pending) return;
+    if (disposed || paused || sending || !isActive() || !pending) return;
     const [data, remaining] = takeTerminalInputBatch(pending, maxBytes);
     pending = remaining;
     sending = true;
@@ -52,12 +53,16 @@ export function createTerminalInputQueue({
           void flush();
         }, 50);
       } else if (!disposed && isActive()) {
-        pendingBytes -= encoder.encode(data).byteLength;
+        // A rejected request is safe to retry, while a failed network request
+        // may already have reached Relay. Preserve both cases for an explicit
+        // operator decision instead of silently dropping typed terminal input.
+        pending = data + pending;
+        paused = true;
         onError(error);
       }
     } finally {
       sending = false;
-      if (!disposed && isActive() && pending && retryTimer === null) void flush();
+      if (!disposed && !paused && isActive() && pending && retryTimer === null) void flush();
     }
   }
 
@@ -66,15 +71,32 @@ export function createTerminalInputQueue({
       if (disposed || !isActive() || !data) return;
       const dataBytes = encoder.encode(data).byteLength;
       if (pendingBytes + dataBytes > maxPendingBytes) {
-        onError({ code: "input_backpressure" });
+        onError({ code: "input_backpressure", delivery: "not_queued" });
         return;
       }
       pending += data;
       pendingBytes += dataBytes;
       void flush();
     },
+    resume() {
+      if (disposed || !paused || !isActive()) return false;
+      paused = false;
+      void flush();
+      return true;
+    },
+    discard() {
+      if (disposed || !paused) return false;
+      paused = false;
+      pending = "";
+      pendingBytes = 0;
+      return true;
+    },
+    isPaused() {
+      return paused;
+    },
     dispose() {
       disposed = true;
+      paused = false;
       clearTimeout(retryTimer);
       retryTimer = null;
       pending = "";
