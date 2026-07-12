@@ -667,6 +667,7 @@ async function connectBrowser(process_, output, profile) {
       return false;
     },
     () => `Chromium DevTools endpoint: ${processOutputSummary(process_, output())}`,
+    45_000,
   );
   try {
     return await Cdp.connect(debuggerUrl);
@@ -706,8 +707,8 @@ async function evaluate(sessionId, expression) {
   return response.result.value;
 }
 
-async function waitFor(predicate, timeoutDescription = "browser matrix state") {
-  const deadline = Date.now() + 15_000;
+async function waitFor(predicate, timeoutDescription = "browser matrix state", timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await predicate();
     if (result) return result;
