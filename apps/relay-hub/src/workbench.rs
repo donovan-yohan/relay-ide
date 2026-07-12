@@ -208,6 +208,12 @@ impl Workbench {
         let mut directories = Vec::with_capacity(MAX_DIRECTORY_ENTRIES);
         for entry in entries.take(MAX_DIRECTORY_SCAN) {
             let Ok(entry) = entry else { continue };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() && !file_type.is_symlink() {
+                continue;
+            }
             let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
                 continue;
             };
