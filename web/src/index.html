@@ -11,6 +11,23 @@
     <main>
       <h1>Relay factory</h1>
       <p id="status" aria-live="polite">Checking hub liveness…</p>
+      <section aria-labelledby="passkey-heading">
+        <h2 id="passkey-heading">Operator passkey</h2>
+        <p id="auth-status" aria-live="polite">Checking passkey support…</p>
+        <label for="recovery-code">Recovery code (enrollment only)</label>
+        <input id="recovery-code" type="password" autocomplete="off" />
+        <p>Recovery can enroll a replacement passkey. It never signs an operator in.</p>
+        <button id="enroll-passkey" type="button">Enroll passkey</button>
+        <button id="sign-in" type="button">Sign in with passkey</button>
+        <button id="refresh-sessions" type="button">Refresh trusted devices</button>
+        <button id="revoke-current" type="button" disabled>Revoke this browser session</button>
+        <p id="session-status" aria-live="polite"></p>
+        <ul id="trusted-devices" aria-label="Trusted browser sessions"></ul>
+      </section>
+      <section aria-labelledby="node-heading">
+        <h2 id="node-heading">Node authority</h2>
+        <p>Node credentials remain separate from the browser session. This screen cannot rotate, mint, or export node authority.</p>
+      </section>
     </main>
     <script type="module" src="./main.js"></script>
   </body>

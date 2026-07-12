@@ -10,10 +10,12 @@
   "scripts": {
     "toolchain:check": "node scripts/check-toolchains.mjs",
     "dev": "node scripts/dev.mjs",
-    "test": "npm run toolchain:check && sh scripts/cargo.sh test --workspace --locked && node --test web/test/*.test.mjs && npm run smoke",
+    "test": "npm run toolchain:check && sh scripts/cargo.sh test --workspace --locked && node --test web/test/*.test.mjs && npm run smoke && npm run auth:smoke && npm run auth:browser",
     "lint": "npm run toolchain:check && sh scripts/cargo.sh fmt --all -- --check && sh scripts/cargo.sh clippy --workspace --all-targets --locked -- -D warnings && node scripts/lint-web.mjs",
     "build": "npm run toolchain:check && sh scripts/cargo.sh build --workspace --locked && node scripts/build-web.mjs",
     "bench": "npm run toolchain:check && sh scripts/cargo.sh bench --workspace --no-run --locked",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "auth:smoke": "node scripts/auth-smoke.mjs",
+    "auth:browser": "node scripts/passkey-browser-smoke.mjs"
   }
 }
