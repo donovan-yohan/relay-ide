@@ -15,7 +15,7 @@ serde_json = "1.0"
 [target.'cfg(unix)'.dependencies]
 filedescriptor = "0.8.3"
 nix = { version = "0.28", features = ["process", "signal"] }
-rustix = { version = "1.1.4", features = ["process"] }
+rustix = { version = "1.1.4", features = ["event", "process"] }
 
 [lints]
 workspace = true
