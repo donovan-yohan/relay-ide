@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { access, mkdtemp, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, resolve, sep } from "node:path";
 
@@ -38,10 +38,14 @@ class Cdp {
     this.socket = socket;
     this.nextId = 1;
     this.pending = new Map();
+    this.events = [];
     socket.addEventListener("message", (message) => {
       const response = JSON.parse(message.data);
       const pending = this.pending.get(response.id);
-      if (!pending) return;
+      if (!pending) {
+        this.events.push(response);
+        return;
+      }
       this.pending.delete(response.id);
       if (response.error) pending.reject(new Error(response.error.message));
       else pending.resolve(response.result);
@@ -86,6 +90,7 @@ try {
   const { targetId } = await browser.command("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await browser.command("Target.attachToTarget", { targetId, flatten: true });
   await browser.command("Page.enable", {}, sessionId);
+  await browser.command("Runtime.enable", {}, sessionId);
   await browser.command("WebAuthn.enable", {}, sessionId);
   await browser.command(
     "WebAuthn.addVirtualAuthenticator",
@@ -142,7 +147,8 @@ try {
   await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Passkey enrolled"));
 
   await evaluate(sessionId, "document.querySelector('#sign-in').click()");
-  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Passkey verified"));
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Browser access verified"));
+  await browser.command("Log.enable", {}, sessionId);
   assert.equal(
     await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
     200,
@@ -156,6 +162,17 @@ try {
     200,
     "a valueless unrelated Cookie segment must not invalidate a valid browser session",
   );
+
+  if (process.env.RELAY_WORKBENCH_LIVE === "1") {
+    const liveEventOffset = browser.events.length;
+    await exerciseLiveWorkbench(sessionId, process.cwd());
+    const pageErrors = browser.events.slice(liveEventOffset).filter((event) => (
+      event.method === "Runtime.exceptionThrown"
+      || (event.method === "Runtime.consoleAPICalled" && event.params.type === "error")
+      || (event.method === "Log.entryAdded" && event.params.entry.level === "error")
+    ));
+    assert.deepEqual(pageErrors, [], "the live workbench path must not emit page or console errors");
+  }
 
   const revokeStatuses = await evaluate(
     sessionId,
@@ -271,6 +288,102 @@ async function recoveryValueAfterFailedEnrollment(sessionId) {
   return evaluate(sessionId, "document.querySelector('#recovery-code').value");
 }
 
+async function exerciseLiveWorkbench(sessionId, cwd) {
+  await evaluate(
+    sessionId,
+    `document.querySelector("#show-workspace-add").click(); document.querySelector("#workspace-cwd").value = ${JSON.stringify(cwd)}; document.querySelector("#workspace-form").requestSubmit();`,
+  );
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length")) === 1,
+    async () => evaluate(sessionId, "({ list: document.querySelector('#workspace-list').innerText, error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, title: document.querySelector('#session-title').textContent })"),
+  );
+  assert.equal(
+    await evaluate(sessionId, "document.querySelector('[data-provider=\"hermes\"]').disabled"),
+    true,
+    "an unavailable Hermes adapter must remain visibly unavailable instead of presenting a fake conversation",
+  );
+  await evaluate(sessionId, "document.querySelector('[data-provider=\"codex\"]').click()");
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) === 1,
+    async () => evaluate(sessionId, "({ error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, state: document.querySelector('#session-status').dataset.state })"),
+  );
+  const composerState = await evaluate(
+    sessionId,
+    "({ inputDisabled: document.querySelector('#message-input').disabled, sendDisabled: document.querySelector('#send-message').disabled, sendType: document.querySelector('#send-message').type, formId: document.querySelector('#send-message').form?.id })",
+  );
+  assert.deepEqual(composerState, { inputDisabled: false, sendDisabled: false, sendType: "submit", formId: "composer" });
+  await evaluate(
+    sessionId,
+    `window.relaySubmitObserved = false; document.querySelector("#composer").addEventListener("submit", () => { window.relaySubmitObserved = true; }, { once: true }); document.querySelector("#message-input").value = "Reply with one word: relay"; document.querySelector("#send-message").click();`,
+  );
+  assert.equal(await evaluate(sessionId, "window.relaySubmitObserved"), true, "Send must submit the shared composer");
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelectorAll('.chat-event--user').length")) === 1,
+    async () => ({
+      dom: await evaluate(sessionId, "({ disabled: document.querySelector('#message-input').disabled, error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, timeline: document.querySelector('.chat-timeline')?.innerText, state: document.querySelector('#session-status').dataset.state })"),
+      runtimeEvents: browser.events.filter((event) => event.method === "Runtime.exceptionThrown"),
+    }),
+  );
+  await waitFor(
+    async () => evaluate(sessionId, "[...document.querySelectorAll('.chat-event code')].some((label) => label.textContent === 'turn.started')"),
+    async () => evaluate(sessionId, "({ error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, state: document.querySelector('#session-status').dataset.state, timeline: document.querySelector('.chat-timeline')?.innerText })"),
+  );
+  await evaluate(sessionId, "document.querySelector('[data-layout-action=\"new-tab\"]').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.session-tab').length")) === 2);
+  await evaluate(sessionId, "document.querySelector('[data-layout-action=\"split-pane\"]').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.workbench-pane').length")) === 2);
+  const divider = await evaluate(
+    sessionId,
+    "(() => { const box = document.querySelector('.pane-divider').getBoundingClientRect(); const split = document.querySelector('.workspace-split').getBoundingClientRect(); return { compact: window.matchMedia('(max-width: 64rem)').matches, x: box.x + box.width / 2, y: box.y + box.height / 2, width: split.width, height: split.height }; })()",
+  );
+  const targetX = divider.x + Math.min(80, divider.width / 5);
+  const targetY = divider.y + Math.min(80, divider.height / 5);
+  await evaluate(
+    sessionId,
+    `(() => {
+      const handle = document.querySelector('.pane-divider');
+      handle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: ${divider.x}, clientY: ${divider.y}, pointerId: 1 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, button: 0, clientX: ${divider.compact ? divider.x : targetX}, clientY: ${divider.compact ? targetY : divider.y}, pointerId: 1 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, clientX: ${divider.compact ? divider.x : targetX}, clientY: ${divider.compact ? targetY : divider.y}, pointerId: 1 }));
+    })()`,
+  );
+  await waitFor(async () => Number(await evaluate(sessionId, "document.querySelector('.pane-divider').getAttribute('aria-valuenow')")) > 50, "a resized pane divider");
+  await evaluate(
+    sessionId,
+    `(() => {
+      const source = document.querySelector('[data-pane-id="pane-1"][data-tab-index="0"]');
+      const target = document.querySelector('[data-pane-id="pane-2"][data-tab-index="0"]');
+      const data = new DataTransfer();
+      source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: data }));
+      target.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer: data }));
+    })()`,
+  );
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('[data-pane-id=\"pane-2\"].session-tab').length")) === 2, "a tab moved across panes");
+  const viewport = await evaluate(
+    sessionId,
+    "(() => { const split = document.querySelector('.workspace-split'); return { innerWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth, shellWidth: document.querySelector('.workbench-shell').getBoundingClientRect().width, splitWidth: split.getBoundingClientRect().width, mainWidth: document.querySelector('.main-panel').getBoundingClientRect().width, paneRootWidth: document.querySelector('.pane-root').getBoundingClientRect().width, columns: getComputedStyle(split).gridTemplateColumns, inlineColumns: split.style.gridTemplateColumns, paneWidths: [...document.querySelectorAll('.workbench-pane')].map((pane) => pane.getBoundingClientRect().width), tabScrollWidths: [...document.querySelectorAll('.tab-strip')].map((tabs) => tabs.scrollWidth) }; })()",
+  );
+  assert.equal(viewport.scrollWidth > viewport.innerWidth, false, `split workbench overflow: ${JSON.stringify(viewport)}`);
+  if (process.env.RELAY_WORKBENCH_SCREENSHOT_PATH) {
+    const screenshot = await browser.command("Page.captureScreenshot", { format: "png" }, sessionId);
+    await writeFile(process.env.RELAY_WORKBENCH_SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
+  }
+  await browser.command("Page.reload", { ignoreCache: true }, sessionId);
+  await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) >= 1);
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.workbench-pane').length")) === 2, "a restored pane layout");
+  await evaluate(sessionId, "document.querySelector('#session-list button[aria-label=\"Resume session\"]').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) >= 2, "a resumed Codex session");
+  const restored = await evaluate(
+    sessionId,
+    "({ workspaceCount: document.querySelectorAll('#workspace-list button').length, userEvents: document.querySelectorAll('.chat-event--user').length, panes: document.querySelectorAll('.workbench-pane').length, sessionState: document.querySelector('#session-status').dataset.state })",
+  );
+  assert.equal(restored.workspaceCount, 1, "browser refresh must restore the selected CWD Workspace");
+  assert.ok(restored.userEvents >= 1, "submitted user text must remain in the restored shared timeline");
+  assert.equal(restored.panes, 2, "browser refresh must restore the direct-manipulation layout");
+  assert.notEqual(restored.sessionState, "unknown", "restored session must report an honest provider state");
+}
+
 async function createCertificate() {
   const result = spawnSync(
     "openssl",
@@ -300,7 +413,7 @@ async function startProxy(hubPort) {
   const [key, cert] = await Promise.all([readFile(`${scratch}/key.pem`), readFile(`${scratch}/cert.pem`)]);
   const server = createHttpsServer({ key, cert }, (request, response) => {
     const path = new URL(request.url ?? "/", origin).pathname;
-    if (path.startsWith("/auth/") || path.startsWith("/protected/")) {
+    if (path.startsWith("/auth/") || path.startsWith("/protected/") || path.startsWith("/api/")) {
       const upstream = httpRequest(
         {
           host: "127.0.0.1",
@@ -423,5 +536,6 @@ async function waitFor(predicate, timeoutDescription = "browser matrix state") {
     if (result) return result;
     await new Promise((resolve_) => setTimeout(resolve_, 50));
   }
-  throw new Error(`timed out waiting for ${typeof timeoutDescription === "function" ? timeoutDescription() : timeoutDescription}`);
+  const description = typeof timeoutDescription === "function" ? await timeoutDescription() : timeoutDescription;
+  throw new Error(`timed out waiting for ${typeof description === "string" ? description : JSON.stringify(description)}`);
 }

@@ -3,283 +3,216 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#111827" />
+    <meta name="theme-color" content="#000000" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E" />
     <link rel="manifest" href="./manifest.webmanifest" />
-    <title>Relay workspace</title>
+    <title>Relay</title>
     <style>
       :root {
         color-scheme: dark;
-        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-        background: #0b1020;
-        color: #edf2ff;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        background: #000;
+        color: #d8d2cd;
       }
 
       * { box-sizing: border-box; }
+      html, body { height: 100%; overflow: hidden; }
+      body { margin: 0; min-width: 320px; background: #000; }
+      button, input, textarea { color: inherit; font: inherit; }
+      button, input, textarea { border: 1px solid #302b28; border-radius: 0; background: #0b0a09; }
+      button { align-items: center; cursor: pointer; display: inline-flex; justify-content: center; min-height: 2.25rem; padding: 0.45rem 0.65rem; }
+      button:hover:not(:disabled) { background: #181411; border-color: #7d4836; }
+      button:focus-visible, input:focus-visible, textarea:focus-visible, [role="separator"]:focus-visible { outline: 2px solid #d97855; outline-offset: 2px; }
+      button:disabled { color: #746d67; cursor: not-allowed; }
+      input, textarea { min-height: 2.25rem; padding: 0.5rem 0.6rem; width: 100%; }
+      textarea { min-height: 4.5rem; resize: vertical; }
+      code { color: #b8aaa1; font: inherit; }
 
-      body {
-        margin: 0;
-        min-width: 320px;
-        background: radial-gradient(circle at top right, rgb(63 81 181 / 24%), transparent 34rem), #0b1020;
+      .workbench-shell { display: grid; grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr); height: 100dvh; min-height: 0; }
+      .sidebar { border-right: 1px solid #302b28; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; min-height: 0; min-width: 0; padding: 0.75rem; }
+      .brand { align-items: center; border-bottom: 1px solid #302b28; display: flex; justify-content: space-between; padding: 0 0 0.75rem; }
+      .brand__mark, .section-label { color: #d97855; font-size: 0.73rem; font-weight: 700; letter-spacing: 0.12em; margin: 0; text-transform: uppercase; }
+      .icon-button { flex: 0 0 2.25rem; padding: 0.35rem; width: 2.25rem; }
+      .icon-button svg { fill: none; height: 1.1rem; stroke: currentColor; stroke-linecap: square; stroke-linejoin: miter; stroke-width: 1.6; width: 1.1rem; }
+      .workspace-add { border-bottom: 1px solid #302b28; display: grid; gap: 0.55rem; padding: 0.75rem 0; }
+      .workspace-add[hidden] { display: none; }
+      .workspace-add__form { display: grid; gap: 0.45rem; }
+      .workspace-add__actions { display: flex; gap: 0.45rem; }
+      .workspace-list, .session-list { display: grid; gap: 0.18rem; list-style: none; margin: 0; padding: 0; }
+      .workspace-list { margin: 0.65rem 0 0; }
+      .workspace-section { padding-top: 0.8rem; }
+      .session-section { min-height: 0; overflow: auto; padding-top: 1rem; }
+      .session-list { margin-top: 0.65rem; }
+      .sidebar-item { align-items: center; background: transparent; border: 0; color: #b8b0aa; display: flex; gap: 0.55rem; justify-content: flex-start; min-width: 0; text-align: left; width: 100%; }
+      .sidebar-item[aria-current="page"] { background: #19120f; color: #f2e8e1; box-shadow: inset 2px 0 #d97855; }
+      .sidebar-item__meta { color: #867d76; font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .sidebar-item__text { display: grid; min-width: 0; }
+      .sidebar-item__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .sidebar-empty { color: #716a64; font-size: 0.78rem; line-height: 1.5; margin: 0.65rem 0 0; }
+      .session-row { align-items: stretch; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0.18rem; }
+      .session-row__action { min-height: 2rem; opacity: 0.82; width: 2rem; }
+      .auth-compact { border-top: 1px solid #302b28; color: #8d847d; font-size: 0.74rem; padding-top: 0.75rem; }
+      .auth-compact summary { color: #b8b0aa; cursor: pointer; }
+      .auth-compact__body { display: grid; gap: 0.5rem; margin-top: 0.7rem; }
+      .auth-compact__body label { font-size: 0.72rem; }
+
+      .main-panel { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; min-width: 0; }
+      .session-header { align-items: center; border-bottom: 1px solid #302b28; display: flex; gap: 0.8rem; justify-content: space-between; min-height: 3.85rem; padding: 0.75rem 1rem; }
+      .session-header__title { min-width: 0; }
+      .session-header h1 { font-size: 0.95rem; font-weight: 600; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .session-header p { color: #877e77; font-size: 0.72rem; margin: 0.25rem 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .session-actions, .layout-toolbar { align-items: center; display: flex; gap: 0.35rem; }
+      .layout-toolbar { border-right: 1px solid #302b28; padding-right: 0.55rem; }
+      .session-state { color: #d97855; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
+      .session-state[data-state="error"], .session-state[data-state="degraded"] { color: #df8a69; }
+      .session-state[data-state="idle"] { color: #9ca78b; }
+
+      .pane-root { background: #050403; min-height: 0; min-width: 0; overflow: hidden; padding: clamp(0.75rem, 2vw, 1.5rem); }
+      .pane-root > .workbench-pane, .pane-root > .workspace-split { height: 100%; min-height: 0; }
+      .workspace-split { display: grid; max-width: 100%; min-width: 0; width: 100%; }
+      .workbench-pane { background: #090807; border: 1px solid #302b28; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }
+      .workbench-pane--selected { border-color: #4b3026; }
+      .tab-strip { align-items: stretch; background: #0b0a09; border-bottom: 1px solid #302b28; display: flex; gap: 0.2rem; min-height: 2.55rem; min-width: 0; overflow-x: auto; padding: 0.22rem; }
+      .session-tab { background: transparent; border: 0; color: #8d847d; flex: 0 0 auto; font-size: 0.72rem; min-height: 2rem; max-width: 12rem; overflow: hidden; padding: 0.35rem 0.55rem; text-overflow: ellipsis; white-space: nowrap; }
+      .session-tab[data-active="true"] { background: #19120f; color: #f2e8e1; box-shadow: inset 0 -2px #d97855; }
+      .pane-divider { background: #171310; cursor: col-resize; min-width: 0.5rem; position: relative; }
+      .pane-divider:hover { background: #593526; }
+      .pane-divider::after { background: #52433b; content: ""; inset: 0.6rem 0.18rem; position: absolute; }
+      .pane-body { min-height: 0; min-width: 0; overflow: auto; padding: clamp(0.8rem, 2vw, 1.5rem); }
+      .chat-timeline { display: grid; gap: 0.8rem; margin: 0 auto; max-width: 54rem; min-height: 100%; }
+      .chat-event { border-left: 2px solid #3a332e; display: grid; gap: 0.35rem; padding: 0.4rem 0 0.4rem 0.75rem; }
+      .chat-event header { align-items: center; display: flex; gap: 0.55rem; }
+      .chat-event__role { color: #e2d8d1; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+      .chat-event code { color: #887f78; font-size: 0.72rem; }
+      .chat-event p { color: #c6bdb7; line-height: 1.5; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+      .chat-event--user { border-left-color: #d97855; }
+      .chat-event--assistant { border-left-color: #9ca78b; }
+      .chat-event--tool { border-left-color: #bb987a; }
+      .chat-event--error { border-left-color: #df8a69; }
+      .chat-empty { color: #776f69; line-height: 1.6; margin: 0; padding: 1.5rem 0; }
+      .workspace-canvas-empty { margin: 0 auto; max-width: 54rem; }
+      .composer { border-top: 1px solid #302b28; padding: 0.75rem 1rem 1rem; }
+      .composer__inner { display: grid; gap: 0.55rem; margin: 0 auto; max-width: 54rem; }
+      .composer__row { align-items: end; display: flex; gap: 0.55rem; }
+      .composer__row textarea { flex: 1; }
+      .provider-picker { align-items: center; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+      .provider-picker__label { color: #827971; font-size: 0.72rem; margin-right: 0.1rem; }
+      .provider-button { color: #b8b0aa; font-size: 0.75rem; min-height: 2rem; }
+      .provider-button[data-provider="hermes"] { border-color: #4c3a34; }
+      .workspace-error { color: #df8a69; font-size: 0.76rem; margin: 0; min-height: 1.1rem; }
+
+      @media (max-width: 64rem) {
+        .pane-divider { cursor: row-resize; min-height: 0.5rem; min-width: 0; }
+        .pane-divider::after { inset: 0.18rem 0.6rem; }
       }
 
-      button, input {
-        border: 1px solid #39476b;
-        border-radius: 0.5rem;
-        background: #18233f;
-        color: inherit;
-        font: inherit;
-      }
-
-      button {
-        cursor: pointer;
-        min-height: 2.5rem;
-        padding: 0.5rem 0.75rem;
-      }
-
-      button:hover:not(:disabled) { background: #26355b; }
-      button:focus-visible, input:focus-visible { outline: 3px solid #82aaff; outline-offset: 2px; }
-      button:disabled { color: #9aa7c6; cursor: not-allowed; opacity: 0.72; }
-      input { min-height: 2.5rem; padding: 0.5rem 0.75rem; width: 100%; }
-
-      .workspace-shell {
-        display: grid;
-        gap: 1rem;
-        margin: 0 auto;
-        max-width: 90rem;
-        min-height: 100vh;
-        padding: 1rem;
-      }
-
-      .app-header, .meta-card, .workbench, .notice, .pane {
-        border: 1px solid #273553;
-        border-radius: 0.9rem;
-        background: rgb(16 25 45 / 90%);
-        box-shadow: 0 0.75rem 2.25rem rgb(0 0 0 / 18%);
-      }
-
-      .app-header {
-        align-items: center;
-        display: flex;
-        gap: 1rem;
-        justify-content: space-between;
-        padding: 1rem 1.25rem;
-      }
-
-      .eyebrow, .meta-label, .pane-label {
-        color: #aab8d8;
-        font-size: 0.75rem;
-        font-weight: 700;
-        letter-spacing: 0.1em;
-        margin: 0;
-        text-transform: uppercase;
-      }
-
-      h1, h2, h3, p { margin-top: 0; }
-      h1 { font-size: clamp(1.25rem, 3vw, 1.65rem); margin-bottom: 0.2rem; }
-      h2 { font-size: 1rem; margin-bottom: 0.85rem; }
-
-      .node-status {
-        align-items: center;
-        border-radius: 999px;
-        display: inline-flex;
-        font-size: 0.85rem;
-        font-weight: 700;
-        gap: 0.45rem;
-        padding: 0.45rem 0.7rem;
-        white-space: nowrap;
-      }
-
-      .node-status::before {
-        background: currentColor;
-        border-radius: 50%;
-        content: "";
-        height: 0.55rem;
-        width: 0.55rem;
-      }
-
-      .node-status[data-state="available"] { background: #123f36; color: #8bf0cf; }
-      .node-status[data-state="unavailable"] { background: #50243a; color: #ffb6ce; }
-      .node-status[data-state="unknown"] { background: #483819; color: #ffe29a; }
-
-      .workspace-grid {
-        display: grid;
-        gap: 1rem;
-        grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr);
-      }
-
-      .workspace-rail { display: grid; align-content: start; gap: 1rem; }
-      .meta-card { padding: 1rem; }
-      .meta-value { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
-      .meta-card dl { display: grid; gap: 0.85rem; margin: 0; }
-      .meta-card dt { color: #aab8d8; font-size: 0.8rem; }
-      .meta-card dd { margin: 0.2rem 0 0; }
-      .root-kind { color: #8bf0cf; font-size: 0.85rem; }
-      .layer-list { color: #c5d1ed; display: grid; font-size: 0.85rem; gap: 0.45rem; list-style: none; margin: 0; padding: 0; }
-      .layer-list li::before { color: #82aaff; content: "→"; margin-right: 0.45rem; }
-      .layer-list strong { color: #edf2ff; }
-
-      .auth-card { display: grid; gap: 0.65rem; }
-      .auth-card label { color: #c5d1ed; font-size: 0.85rem; }
-      .auth-card > p, .auth-card li { color: #c5d1ed; font-size: 0.85rem; }
-      .auth-actions { display: grid; gap: 0.5rem; }
-      .auth-card ul { display: grid; gap: 0.5rem; margin: 0; padding-left: 1.1rem; }
-      .auth-card li button { margin-top: 0.4rem; width: 100%; }
-
-      .workbench { min-width: 0; padding: 1rem; }
-      .workbench-header { align-items: start; display: flex; gap: 1rem; justify-content: space-between; }
-      .workbench-header p { color: #c5d1ed; font-size: 0.9rem; margin-bottom: 0; }
-      .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0; }
-      .toolbar button[data-action="new-tab"] { background: #344d91; border-color: #5975c8; }
-
-      .notice { border-left: 0.35rem solid #ffe29a; color: #ffe9b8; margin-bottom: 1rem; padding: 0.75rem 0.9rem; }
-      .notice[hidden] { display: none; }
-      .notice[data-kind="error"] { border-left-color: #ff9ab7; color: #ffd0dd; }
-
-      .layout { display: grid; gap: 0.75rem; min-height: 25rem; }
-      .split { display: grid; gap: 0.75rem; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-      .pane { display: grid; gap: 0.75rem; min-width: 0; padding: 0.8rem; }
-      .pane[data-selected="true"] { border-color: #82aaff; box-shadow: 0 0 0 1px #82aaff inset; }
-      .pane-head { align-items: center; display: flex; gap: 0.5rem; justify-content: space-between; }
-      .pane-select { background: transparent; border: 0; min-height: auto; padding: 0.15rem; text-align: left; }
-      .pane-id { color: #9faccc; font-size: 0.78rem; }
-      .tab-strip { display: flex; gap: 0.35rem; overflow-x: auto; padding-bottom: 0.15rem; }
-      .tab-strip[hidden] { display: none; }
-      .tab { border-radius: 0.4rem; min-height: 2.15rem; white-space: nowrap; }
-      .tab[aria-selected="true"] { background: #344d91; border-color: #82aaff; }
-
-      .session-card {
-        background: #0d162b;
-        border: 1px dashed #43537b;
-        border-radius: 0.65rem;
-        display: grid;
-        gap: 0.65rem;
-        min-height: 9rem;
-        padding: 0.9rem;
-      }
-
-      .session-card code, .identity-list code {
-        background: #151f38;
-        border-radius: 0.35rem;
-        color: #b9caff;
-        overflow-wrap: anywhere;
-        padding: 0.2rem 0.35rem;
-      }
-
-      .session-note { color: #c5d1ed; font-size: 0.85rem; margin: 0; }
-      .identity-list { color: #c5d1ed; font-size: 0.85rem; margin: 1rem 0 0; }
-      .authority { border-top: 1px solid #273553; margin-top: 1rem; padding-top: 1rem; }
-      .authority p { color: #c5d1ed; font-size: 0.85rem; margin-bottom: 0.65rem; }
-      .authority button { width: 100%; }
-
-      @media (max-width: 52rem) {
-        .app-header, .workbench-header { align-items: stretch; flex-direction: column; }
-        .workspace-grid { grid-template-columns: 1fr; }
-        .workspace-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .workspace-rail .meta-card:last-child { grid-column: 1 / -1; }
-      }
-
-      @media (max-width: 36rem) {
-        .workspace-shell { padding: 0.7rem; }
-        .workspace-rail { grid-template-columns: 1fr; }
-        .workspace-rail .meta-card:last-child { grid-column: auto; }
-        .split { grid-template-columns: 1fr; }
-        .toolbar button { flex: 1 1 8.5rem; }
+      @media (max-width: 48rem) {
+        html, body { height: auto; overflow: auto; }
+        .workbench-shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: auto; min-height: 100dvh; }
+        .sidebar { border-bottom: 1px solid #302b28; border-right: 0; grid-template-rows: auto auto auto auto; }
+        .session-section { max-height: 8.5rem; padding-top: 0.75rem; }
+        .workspace-list, .session-list { display: flex; overflow-x: auto; }
+        .sidebar-item { flex: 0 0 auto; max-width: 14rem; }
+        .session-header { align-items: flex-start; }
+        .session-actions { gap: 0.25rem; }
+        .layout-toolbar { gap: 0.2rem; padding-right: 0.35rem; }
+        .pane-root { min-height: 22rem; padding: 0.6rem; }
+        .workspace-split { min-width: 0; }
+        .pane-root { overflow: auto; }
       }
     </style>
   </head>
   <body>
-    <main class="workspace-shell" data-workspace-shell>
-      <header class="app-header">
-        <div>
-          <p class="eyebrow">View / Workspace</p>
-          <h1>Local workspace layout</h1>
-          <p class="meta-value">Presentation is separate from the Node-owned Session lifecycle.</p>
-        </div>
-        <p id="status" class="node-status" data-node-status data-state="unknown" aria-live="polite">Checking Node</p>
-      </header>
+    <main class="workbench-shell" data-workspace-shell>
+      <aside class="sidebar" aria-label="Workspaces and recent conversations">
+        <header class="brand">
+          <p class="brand__mark">Relay</p>
+          <button id="show-workspace-add" class="icon-button" type="button" aria-label="Add workspace" title="Add workspace">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          </button>
+        </header>
 
-      <div class="workspace-grid">
-        <aside class="workspace-rail" aria-label="Workspace context">
-          <section class="meta-card">
-            <p class="meta-label">Workspace</p>
-            <h2 data-workspace-name>Local workspace</h2>
-            <dl>
-              <div>
-                <dt>Node</dt>
-                <dd data-node-binding>Local Node</dd>
-              </div>
-              <div>
-                <dt>Approved local root</dt>
-                <dd><code data-root-path>/home/relay/scratch</code></dd>
-                <dd class="root-kind" data-root-kind>Non-repo roots are valid</dd>
-              </div>
-            </dl>
-          </section>
-
-          <section class="meta-card">
-            <p class="meta-label">Vocabulary</p>
-            <ol class="layer-list">
-              <li>View</li>
-              <li><strong>Workspace</strong></li>
-              <li>Project</li>
-              <li>Instance</li>
-              <li>Bench</li>
-              <li>Tab</li>
-            </ol>
-          </section>
-
-          <section class="meta-card">
-            <p class="meta-label">Stable references</p>
-            <p class="identity-list" data-session-identity>No Session references yet.</p>
-          </section>
-
-          <section class="meta-card auth-card" aria-labelledby="passkey-heading">
-            <p class="meta-label">Operator authority</p>
-            <h2 id="passkey-heading">Operator passkey</h2>
-            <p id="auth-status" aria-live="polite">Checking passkey support…</p>
-            <label for="recovery-code">Recovery code (enrollment only)</label>
-            <input id="recovery-code" type="password" autocomplete="off" />
-            <p>Recovery can enroll a replacement passkey. It never signs an operator in.</p>
-            <div class="auth-actions">
-              <button id="enroll-passkey" type="button">Enroll passkey</button>
-              <button id="sign-in" type="button">Sign in with passkey</button>
-              <button id="refresh-sessions" type="button">Refresh trusted devices</button>
-              <button id="revoke-current" type="button" disabled>Revoke this browser session</button>
+        <section id="workspace-add" class="workspace-add" hidden aria-label="Add workspace">
+          <p class="section-label">Workspace CWD</p>
+          <form id="workspace-form" class="workspace-add__form">
+            <label for="workspace-cwd" class="sidebar-empty">Approved local directory</label>
+            <input id="workspace-cwd" name="cwd" type="text" autocomplete="off" required />
+            <div class="workspace-add__actions">
+              <button type="submit">Open</button>
+              <button id="cancel-workspace-add" type="button">Cancel</button>
             </div>
-            <p id="session-status" aria-live="polite"></p>
-            <ul id="trusted-devices" aria-label="Trusted browser sessions"></ul>
-            <p>Node credentials remain separate from the browser session. This screen cannot rotate, mint, or export node authority.</p>
-          </section>
-        </aside>
-
-        <section class="workbench" aria-labelledby="workbench-heading">
-          <div class="workbench-header">
-            <div>
-              <p class="meta-label">Workbench</p>
-              <h2 id="workbench-heading">Bounded layout</h2>
-              <p data-layout-summary>Loading layout…</p>
-            </div>
-            <span class="pane-id">Layout-only controls</span>
-          </div>
-
-          <div class="toolbar" role="toolbar" aria-label="Layout controls">
-            <button type="button" data-action="new-tab">New Session tab</button>
-            <button type="button" data-action="split">Split pane</button>
-            <button type="button" data-action="move">Move pane</button>
-            <button type="button" data-action="toggle-strip">Show/hide tabs</button>
-            <button type="button" data-action="close">Close pane</button>
-          </div>
-
-          <aside class="notice" data-layout-notice hidden aria-live="polite"></aside>
-          <div class="layout" data-layout aria-label="Workspace layout"></div>
-
-          <section class="authority" aria-label="Session authority boundary">
-            <p>Pane and tab changes only alter local presentation references. Session input and end actions require a separate Node/runtime authority and are not exposed by this layout slice.</p>
-            <button type="button" id="end-session" disabled aria-describedby="session-authority-note">End Session (Node authority required)</button>
-            <p id="session-authority-note" class="session-note" data-session-authority></p>
-          </section>
+          </form>
         </section>
-      </div>
+
+        <section class="workspace-section" aria-labelledby="workspaces-heading">
+          <p id="workspaces-heading" class="section-label">Workspaces</p>
+          <nav id="workspace-list" class="workspace-list" aria-label="Workspaces"></nav>
+          <p id="workspace-empty" class="sidebar-empty">Sign in, then open an approved local directory.</p>
+        </section>
+
+        <section class="session-section" aria-labelledby="sessions-heading">
+          <p id="sessions-heading" class="section-label">Recent</p>
+          <nav id="session-list" class="session-list" aria-label="Recent conversations"></nav>
+          <p id="session-empty" class="sidebar-empty">No conversations in this Workspace.</p>
+        </section>
+
+        <details class="auth-compact">
+          <summary>Browser access</summary>
+          <div class="auth-compact__body">
+            <p id="auth-status" aria-live="polite">Checking passkey support…</p>
+            <label for="recovery-code">Recovery code for passkey enrollment</label>
+            <input id="recovery-code" type="password" autocomplete="off" />
+            <button id="enroll-passkey" type="button">Enroll passkey</button>
+            <button id="sign-in" type="button">Sign in with passkey</button>
+          </div>
+        </details>
+      </aside>
+
+      <section class="main-panel" aria-labelledby="session-title">
+        <header class="session-header">
+          <div class="session-header__title">
+            <h1 id="session-title">Relay workbench</h1>
+            <p id="session-subtitle">Choose a Workspace to continue.</p>
+          </div>
+          <div class="session-actions">
+            <div class="layout-toolbar" aria-label="Workspace layout">
+              <button class="icon-button" type="button" data-layout-action="new-tab" aria-label="New tab" title="New tab (Ctrl+T)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14v12H5zM12 9v6M9 12h6" /></svg>
+              </button>
+              <button class="icon-button" type="button" data-layout-action="split-pane" aria-label="Split pane" title="Split pane (Ctrl+\\)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM12 5v14" /></svg>
+              </button>
+              <button class="icon-button" type="button" data-layout-action="move-pane" aria-label="Move pane" title="Move pane (Ctrl+M)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h12M13 4l3 3-3 3M20 17H8M11 14l-3 3 3 3" /></svg>
+              </button>
+              <button class="icon-button" type="button" data-layout-action="close-pane" aria-label="Close view" title="Close view (Ctrl+W)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" /></svg>
+              </button>
+            </div>
+            <span id="session-status" class="session-state" data-state="unknown" aria-live="polite">offline</span>
+            <button id="interrupt-session" class="icon-button" type="button" aria-label="Interrupt session" title="Interrupt session" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z" /></svg>
+            </button>
+          </div>
+        </header>
+
+        <div id="pane-root" class="pane-root" aria-label="Conversation panes"></div>
+
+        <footer class="composer">
+          <form id="composer" class="composer__inner">
+            <p id="workbench-error" class="workspace-error" aria-live="polite"></p>
+            <div class="provider-picker" aria-label="Start a provider conversation">
+              <span class="provider-picker__label">Start</span>
+              <button class="provider-button" type="button" data-provider="hermes">Hermes</button>
+              <button class="provider-button" type="button" data-provider="codex">Codex</button>
+            </div>
+            <div class="composer__row">
+              <textarea id="message-input" name="message" placeholder="Message the selected session" aria-label="Message" disabled></textarea>
+              <button id="send-message" type="submit" disabled>Send</button>
+            </div>
+          </form>
+        </footer>
+      </section>
     </main>
     <script type="module" src="./main.js"></script>
   </body>
