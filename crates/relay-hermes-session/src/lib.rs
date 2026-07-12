@@ -126,12 +126,11 @@ fn parse_loopback_authority(authority: &str) -> Result<(String, u16), AdapterErr
 }
 
 fn has_supported_credential(query: &str) -> bool {
-    query.split('&').any(|item| {
-        let Some((key, value)) = item.split_once('=') else {
-            return false;
-        };
-        !value.is_empty() && key == "token"
-    })
+    let mut items = query.split('&');
+    let Some((key, value)) = items.next().and_then(|item| item.split_once('=')) else {
+        return false;
+    };
+    key == "token" && !value.is_empty() && items.next().is_none()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1023,6 +1022,10 @@ mod tests {
         );
         assert!(GatewayEndpoint::parse("ws://127.0.0.1:9119/v1/chat/completions?token=x").is_err());
         assert!(GatewayEndpoint::parse("wss://127.0.0.1:9119/api/ws?token=x").is_err());
+        assert!(
+            GatewayEndpoint::parse("ws://127.0.0.1:9119/api/ws?token=x&ticket=browser-auth")
+                .is_err()
+        );
         assert!(
             GatewayEndpoint::parse("ws://127.0.0.1:9119/api/ws?token=x\r\nInjected: y").is_err()
         );
