@@ -17,5 +17,8 @@
     "smoke": "node scripts/smoke.mjs",
     "auth:smoke": "node scripts/auth-smoke.mjs",
     "auth:browser": "node scripts/passkey-browser-smoke.mjs"
+  },
+  "dependencies": {
+    "@xterm/xterm": "^5.5.0"
   }
 }

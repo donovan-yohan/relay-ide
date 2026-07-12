@@ -10,6 +10,7 @@ import {
   LayoutLimitError,
   addSessionTab,
   activeSessionTab,
+  attachSessionToSelectedTab,
   canUseLiveSessionActions,
   closeSelectedPane,
   createWorkspaceLayout,
@@ -177,6 +178,15 @@ test("opening, dragging, and resizing Session tabs remains a bounded presentatio
     () => moveTab(state, sourcePaneId, state.layout.first.tabs[0].id, targetPaneId, 0),
     (error) => error instanceof LayoutLimitError && error.code === "move-tab-unavailable",
   );
+});
+
+test("attaching an already-owned Session replaces only the selected opaque layout reference", () => {
+  const initial = createWorkspaceLayout({ sessionId: "session-opaque-14" });
+  const attached = attachSessionToSelectedTab(initial, "session-opaque-15", "Attached session");
+
+  assert.equal(activeSessionTab(attached).tab.content.sessionId, "session-opaque-15");
+  assert.equal(activeSessionTab(attached).tab.title, "Attached session");
+  assert.equal("runtime" in attached, false);
 });
 
 test("closing a provider Session removes only its presentation references", () => {

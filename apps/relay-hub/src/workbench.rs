@@ -86,6 +86,8 @@ enum LiveSession {
         supervisor: Supervisor<ProcessTransport>,
         active_turn: Option<String>,
     },
+    #[cfg(test)]
+    RetainedTerminalFixture,
 }
 
 /// Hub-owned one-node Workbench state. It deliberately stores only the approved
@@ -278,6 +280,8 @@ impl Workbench {
                     *active_turn = Some(turn_id);
                 })
                 .map_err(map_codex_error),
+            #[cfg(test)]
+            LiveSession::RetainedTerminalFixture => Err(WorkbenchError::new("session_terminal")),
         };
 
         if let Err(error) = result {
@@ -312,6 +316,8 @@ impl Workbench {
                 *active_turn = None;
                 Ok(())
             }
+            #[cfg(test)]
+            LiveSession::RetainedTerminalFixture => Err(WorkbenchError::new("session_terminal")),
         };
 
         if let Err(error) = result {
@@ -379,8 +385,7 @@ impl Workbench {
         workspace: &Workspace,
         resume: Option<&str>,
     ) -> Result<StoredSession, WorkbenchError> {
-        self.reap_terminal_sessions();
-        ensure_session_capacity(self.sessions.len())?;
+        self.ensure_provider_session_capacity()?;
         let (provider_session_id, status, live) = match provider {
             Provider::Hermes => {
                 let endpoint = self
@@ -463,14 +468,8 @@ impl Workbench {
         }
     }
 
-    fn reap_terminal_sessions(&mut self) {
-        self.sessions.retain(|_, session| match &session.live {
-            LiveSession::Hermes { adapter, .. } => !matches!(
-                adapter.status(),
-                relay_hermes_session::SessionStatus::Failed
-            ),
-            LiveSession::Codex { supervisor, .. } => !supervisor.status().is_terminal(),
-        });
+    fn ensure_provider_session_capacity(&self) -> Result<(), WorkbenchError> {
+        ensure_session_capacity(self.sessions.len())
     }
 }
 
@@ -568,6 +567,8 @@ fn pump_session(session: &mut StoredSession) {
                 *active_turn = None;
             }
         }
+        #[cfg(test)]
+        LiveSession::RetainedTerminalFixture => {}
     }
 
     if let Some(error_code) = pump_error_code {
@@ -696,6 +697,20 @@ mod tests {
         root
     }
 
+    fn retained_terminal_session(index: usize) -> StoredSession {
+        StoredSession {
+            id: format!("session-{index}"),
+            workspace_id: "workspace-retained".to_owned(),
+            provider: Provider::Codex,
+            provider_session_id: format!("provider-terminal-{index}"),
+            status: "error".to_owned(),
+            events: VecDeque::new(),
+            next_event_sequence: 1,
+            reported_dropped: 0,
+            live: LiveSession::RetainedTerminalFixture,
+        }
+    }
+
     #[test]
     fn workbench_rejects_a_second_authenticated_browser_session() {
         let root = temp_root("owner");
@@ -811,6 +826,42 @@ mod tests {
             ensure_session_capacity(MAX_STORED_SESSIONS),
             Err(WorkbenchError::new("session_limit_reached"))
         );
+    }
+
+    #[test]
+    fn failed_sessions_remain_visible_and_resume_eligible_until_the_bounded_cap() {
+        let root = temp_root("retained-terminal");
+        let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
+        for index in 0..MAX_STORED_SESSIONS {
+            let session = retained_terminal_session(index);
+            workbench.sessions.insert(session.id.clone(), session);
+        }
+
+        let snapshot = workbench.sessions_snapshot();
+        assert_eq!(snapshot.as_array().unwrap().len(), MAX_STORED_SESSIONS);
+        assert!(
+            snapshot
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|session| session["status"] == "error"),
+            "failed provider history must remain visible"
+        );
+        assert!(
+            workbench.has_provider_session(
+                "workspace-retained",
+                Provider::Codex,
+                "provider-terminal-0"
+            ),
+            "a retained provider ID remains eligible for explicit resume"
+        );
+        assert_eq!(
+            workbench.ensure_provider_session_capacity(),
+            Err(WorkbenchError::new("session_limit_reached")),
+            "retention must remain bounded instead of evicting failed history"
+        );
+        assert_eq!(workbench.sessions.len(), MAX_STORED_SESSIONS);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

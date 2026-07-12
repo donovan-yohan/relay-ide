@@ -6,6 +6,7 @@ const requiredFiles = [
   "web/src/chat.js",
   "web/src/workspace-layout.js",
   "web/src/auth.js",
+  "web/src/terminal-recovery.js",
   "web/public/manifest.webmanifest",
 ];
 
@@ -13,7 +14,7 @@ for (const file of requiredFiles) {
   await access(file, constants.R_OK);
 }
 
-const [page, app, chat, layout, auth, manifest] = await Promise.all(requiredFiles.map((file) => readFile(file, "utf8")));
+const [page, app, chat, layout, auth, terminalRecovery, manifest] = await Promise.all(requiredFiles.map((file) => readFile(file, "utf8")));
 const errors = [];
 
 if (!page.includes("manifest.webmanifest") || !page.includes("data-workspace-shell")) {
@@ -40,11 +41,17 @@ if (!app.includes("__Host-relay_csrf") || !app.includes("navigator.credentials")
 if (!chat.includes("eventPresentation") || !chat.includes("renderChatTimeline")) {
   errors.push("shared chat component must handle provider-neutral timeline events");
 }
+if (/vendor\/xterm|open-claude|terminal-host/.test(page) || /new window\.Terminal|\/node\/claude\/sessions/.test(app)) {
+  errors.push("Claude terminal UI must remain outside the CWD chat workbench reconciliation");
+}
 if (/fetch|localStorage|document\.cookie|WebSocket|terminate|sendInput/.test(layout)) {
   errors.push("Workspace layout contract must stay presentation-only and transport-free");
 }
 if (!auth.includes("recovery_required") || !auth.includes("passkey_denied")) {
   errors.push("PWA auth adapter must expose typed recovery and denied states");
+}
+if (!terminalRecovery.includes("input_delivery_lost") || !terminalRecovery.includes("network_uncertain")) {
+  errors.push("PWA terminal recovery adapter must retain typed delivery-loss and uncertain-network states");
 }
 if (!manifest.includes('"display": "standalone"')) {
   errors.push("PWA manifest must declare standalone display");

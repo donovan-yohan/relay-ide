@@ -867,8 +867,13 @@ async function request(path, options = {}) {
       ...options.headers,
     },
   });
-  const body = await response.json().catch(() => ({ error: { code: "invalid_response" } }));
-  if (!response.ok) throw body.error;
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    throw { code: "invalid_response" };
+  }
+  if (!response.ok) throw body?.error ?? { code: "invalid_response" };
   return body;
 }
 

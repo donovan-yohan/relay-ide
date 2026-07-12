@@ -8,7 +8,10 @@ import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, resolve, sep } from "node:path";
 
-import { devToolsEndpointFromOutput } from "./cdp-endpoint.mjs";
+import {
+  devToolsEndpointFromActivePort,
+  devToolsEndpointFromOutput,
+} from "./cdp-endpoint.mjs";
 
 
 const chromium = "/usr/bin/chromium";
@@ -16,6 +19,7 @@ const recoveryCode = "browser-virtual-authenticator-recovery";
 const root = resolve("web/src");
 const publicRoot = resolve("web/public");
 const scratch = await mkdtemp(`${tmpdir()}/relay-passkey-browser-`);
+const chromeProfile = resolve(scratch, "chrome-profile");
 const recoveryHash = createHash("sha256").update(recoveryCode).digest("hex");
 const httpsPort = await reservePort();
 const origin = `https://relay.test:${httpsPort}`;
@@ -80,13 +84,13 @@ try {
       "--no-sandbox",
       "--disable-gpu",
       "--remote-debugging-port=0",
-      `--user-data-dir=${scratch}/chrome-profile`,
+      `--user-data-dir=${chromeProfile}`,
       "--ignore-certificate-errors",
       "--host-resolver-rules=MAP relay.test 127.0.0.1",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
-  browser = await connectBrowser(chromiumProcess, captureProcessOutput(chromiumProcess));
+  browser = await connectBrowser(chromiumProcess, captureProcessOutput(chromiumProcess), chromeProfile);
   const { targetId } = await browser.command("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await browser.command("Target.attachToTarget", { targetId, flatten: true });
   await browser.command("Page.enable", {}, sessionId);
@@ -163,6 +167,56 @@ try {
     "a valueless unrelated Cookie segment must not invalidate a valid browser session",
   );
 
+  const terminalApi = await evaluate(
+    sessionId,
+    `(async () => {
+      const csrf = document.cookie.split("; ").find((cookie) => cookie.startsWith("__Host-relay_csrf="))?.slice("__Host-relay_csrf=".length);
+      const request = async (path, body) => {
+        const response = await fetch(path, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-Relay-CSRF": csrf },
+          body: JSON.stringify(body),
+        });
+        return { status: response.status, body: await response.json() };
+      };
+      const created = await request("/node/claude/sessions", {});
+      const terminalId = created.body.sessionId;
+      const resize = await request("/node/claude/sessions/" + terminalId + "/resize", { cols: 92, rows: 28 });
+      const input = await request("/node/claude/sessions/" + terminalId + "/input", { data: "browser-api\\n" });
+      let poll = { status: 0, body: { output: [] } };
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const response = await fetch("/node/claude/sessions/" + terminalId + "?trace=browser-smoke&cursor=0", { credentials: "same-origin" });
+        poll = { status: response.status, body: await response.json() };
+        if (poll.body.output.some((chunk) => chunk.text.includes("browser-api"))) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const interrupt = await request("/node/claude/sessions/" + terminalId + "/interrupt", {});
+      const close = await request("/node/claude/sessions/" + terminalId + "/close", {});
+      let closed = close;
+      for (let attempt = 0; !["closed", "exited"].includes(closed.body.status) && attempt < 50; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const response = await fetch("/node/claude/sessions/" + terminalId + "?cursor=0", { credentials: "same-origin" });
+        closed = { status: response.status, body: await response.json() };
+      }
+      const replacement = await request("/node/claude/sessions", {});
+      return { created, resize, input, poll, interrupt, close, closed, replacement };
+    })()`,
+  );
+  assert.equal(terminalApi.created.status, 200, "authenticated browser authority must create the bounded PTY through the node route");
+  assert.match(terminalApi.created.body.sessionId, /^claude-pty-\d+$/, "the browser receives only an opaque PTY Session ID");
+  assert.equal(terminalApi.resize.status, 200, "authenticated resize must reach the owned PTY");
+  assert.equal(terminalApi.input.status, 200, "authenticated input must reach the owned PTY");
+  assert.ok(
+    terminalApi.poll.body.output.some((chunk) => chunk.text.includes("browser-api")),
+    "the direct browser API seam must return bounded PTY output",
+  );
+  assert.equal(terminalApi.interrupt.status, 200, "interrupt must not imply terminal close");
+  assert.ok([200, 202].includes(terminalApi.close.status), "explicit close must enter the retained teardown lifecycle");
+  assert.equal(terminalApi.closed.body.status, "closed", "autonomous retries must make terminal closure observable without another mutation");
+  assert.equal(terminalApi.replacement.status, 200, "reaped capacity must admit a replacement PTY before auth revocation");
+  assert.notEqual(terminalApi.replacement.body.sessionId, terminalApi.created.body.sessionId);
+
   if (process.env.RELAY_WORKBENCH_LIVE === "1") {
     const liveEventOffset = browser.events.length;
     await exerciseLiveWorkbench(sessionId, process.cwd());
@@ -233,6 +287,8 @@ function startHub() {
       origin,
       "--recovery-code-hash",
       recoveryHash,
+      "--test-claude-fixture",
+      "cat",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -413,7 +469,7 @@ async function startProxy(hubPort) {
   const [key, cert] = await Promise.all([readFile(`${scratch}/key.pem`), readFile(`${scratch}/cert.pem`)]);
   const server = createHttpsServer({ key, cert }, (request, response) => {
     const path = new URL(request.url ?? "/", origin).pathname;
-    if (path.startsWith("/auth/") || path.startsWith("/protected/") || path.startsWith("/api/")) {
+    if (path === "/health" || path.startsWith("/auth/") || path.startsWith("/api/") || path.startsWith("/node/") || path.startsWith("/protected/")) {
       const upstream = httpRequest(
         {
           host: "127.0.0.1",
@@ -487,10 +543,10 @@ function captureProcessOutput(process_) {
   return () => output;
 }
 
-async function connectBrowser(process_, output) {
+async function connectBrowser(process_, output, profile) {
   const debuggerUrl = await waitFor(
-    () => {
-      const endpoint = devToolsEndpointFromOutput(output());
+    async () => {
+      const endpoint = (await devToolsEndpointFromProfile(profile)) ?? devToolsEndpointFromOutput(output());
       if (endpoint) return endpoint;
       if (process_.exitCode !== null || process_.signalCode !== null) {
         throw new Error(`Chromium exited before exposing a DevTools endpoint: ${processOutputSummary(process_, output())}`);
@@ -505,6 +561,14 @@ async function connectBrowser(process_, output) {
     throw new Error(`could not connect to Chromium DevTools at ${debuggerUrl}: ${processOutputSummary(process_, output())}`, {
       cause: error,
     });
+  }
+}
+
+async function devToolsEndpointFromProfile(profile) {
+  try {
+    return devToolsEndpointFromActivePort(await readFile(resolve(profile, "DevToolsActivePort"), "utf8"));
+  } catch {
+    return undefined;
   }
 }
 
