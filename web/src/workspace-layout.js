@@ -357,12 +357,13 @@ function firstPaneId(node) {
 
 function nextId(layout, prefix) {
   let highest = 0;
+  const expression = new RegExp(`^${prefix}-([0-9]+)$`);
   visitLayout(layout, 0, (node) => {
-    const match = new RegExp(`^${prefix}-(\\d+)$`).exec(node.id);
+    const match = expression.exec(node.id);
     if (match) highest = Math.max(highest, Number(match[1]));
     if (node.kind === "tabs") {
       for (const tab of node.tabs) {
-        const tabMatch = new RegExp(`^${prefix}-(\\d+)$`).exec(tab.id);
+        const tabMatch = expression.exec(tab.id);
         if (tabMatch) highest = Math.max(highest, Number(tabMatch[1]));
       }
     }
