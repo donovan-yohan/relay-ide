@@ -11,7 +11,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, TryRecvError, TrySendError};
+use std::sync::mpsc::{self, Receiver, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -175,7 +175,6 @@ pub struct TerminalSnapshot {
 #[derive(Debug)]
 enum ReaderEvent {
     Output(Vec<u8>),
-    Exit,
 }
 
 #[derive(Debug)]
@@ -284,6 +283,7 @@ struct ManagedSession {
     reader: Option<JoinHandle<()>>,
     reader_rx: Receiver<ReaderEvent>,
     reader_stop: Arc<AtomicBool>,
+    reader_terminal: Arc<AtomicBool>,
     reader_dropped: Arc<AtomicU64>,
     output: VecDeque<ScrollbackChunk>,
     output_bytes: usize,
@@ -420,11 +420,13 @@ impl NodePtyRuntime {
         };
         let (reader_tx, reader_rx) = mpsc::sync_channel(PTY_INBOUND_CAP);
         let reader_stop = Arc::new(AtomicBool::new(false));
+        let reader_terminal = Arc::new(AtomicBool::new(false));
         let reader_dropped = Arc::new(AtomicU64::new(0));
         let reader_thread = match spawn_reader(
             reader,
             reader_tx,
             Arc::clone(&reader_stop),
+            Arc::clone(&reader_terminal),
             Arc::clone(&reader_dropped),
         ) {
             Ok(reader_thread) => reader_thread,
@@ -453,6 +455,7 @@ impl NodePtyRuntime {
                 reader: Some(reader_thread),
                 reader_rx,
                 reader_stop,
+                reader_terminal,
                 reader_dropped,
                 output: VecDeque::new(),
                 output_bytes: 0,
@@ -652,15 +655,12 @@ impl NodePtyRuntime {
 
 impl ManagedSession {
     fn pump(&mut self) {
-        loop {
-            match self.reader_rx.try_recv() {
-                Ok(ReaderEvent::Output(bytes)) => self.append_output(bytes),
-                Ok(ReaderEvent::Exit) => {
-                    self.flush_pending_output();
-                    self.terminal_seen = true;
-                }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(ReaderEvent::Output(bytes)) = self.reader_rx.try_recv() {
+            self.append_output(bytes);
+        }
+        if self.reader_terminal.load(Ordering::Acquire) {
+            self.flush_pending_output();
+            self.terminal_seen = true;
         }
         if self.status == ClaudePtyStatus::Closed {
             return;
@@ -801,6 +801,7 @@ fn spawn_reader(
     mut reader: Box<dyn Read + Send>,
     sender: mpsc::SyncSender<ReaderEvent>,
     stop: Arc<AtomicBool>,
+    terminal: Arc<AtomicBool>,
     dropped: Arc<AtomicU64>,
 ) -> Result<JoinHandle<()>, ClaudePtyError> {
     thread::Builder::new()
@@ -813,7 +814,7 @@ fn spawn_reader(
                 }
                 match reader.read(&mut buffer) {
                     Ok(0) => {
-                        let _ = sender.try_send(ReaderEvent::Exit);
+                        terminal.store(true, Ordering::Release);
                         break;
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -821,7 +822,7 @@ fn spawn_reader(
                         thread::sleep(PTY_INPUT_POLL_INTERVAL);
                     }
                     Err(_) => {
-                        let _ = sender.try_send(ReaderEvent::Exit);
+                        terminal.store(true, Ordering::Release);
                         break;
                     }
                     Ok(length) => {
@@ -1274,6 +1275,43 @@ mod tests {
         assert_eq!(reattached.session_id, session);
         assert!(reattached.next_cursor >= first.next_cursor);
         runtime.close(session.as_str(), "device-a").unwrap();
+    }
+
+    #[test]
+    fn saturated_reader_queue_still_releases_a_naturally_exited_session() {
+        let mut runtime = NodePtyRuntime::test_runtime(
+            "/bin/sh",
+            &["-c", "yes saturated-terminal-output | head -c 1048576"],
+        );
+        let session = runtime.create("device-a").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        loop {
+            let managed = &runtime.sessions[session.as_str()];
+            if managed.reader_dropped.load(Ordering::Acquire) > 0
+                && managed.reader.as_ref().is_some_and(JoinHandle::is_finished)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "fixture did not fill and drain the non-polling reader queue"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let status = {
+            let managed = runtime.sessions.get_mut(session.as_str()).unwrap();
+            managed.pump();
+            managed.status
+        };
+        assert_eq!(status, ClaudePtyStatus::Exited);
+
+        runtime.prune_finished_sessions();
+        assert!(
+            !runtime.sessions.contains_key(session.as_str()),
+            "reader EOF must make a saturated non-polling session prunable"
+        );
     }
 
     #[test]
