@@ -6,6 +6,9 @@ use std::{
 };
 
 use relay_factory_core::{ServiceIdentity, configured_identity, health_json};
+use relay_hermes_session::{
+    AdapterError, EventKind, GatewayEndpoint, HermesSessionAdapter, SessionStatus,
+};
 use relay_session::claude_pty::{ClaudePtyStatus, NodePtyRuntime};
 use relay_session::{
     DEFAULT_DEADLINE, ProcessTransport, SessionError, Supervisor,
@@ -32,9 +35,21 @@ fn main() -> ExitCode {
             codex_stdio_probe(probe_arguments)
         }
         [command] if command == "claude-pty-probe" => claude_pty_probe(),
+        [command, smoke_arguments @ ..] if command == "hermes-smoke" => {
+            match run_hermes_smoke(smoke_arguments) {
+                Ok(summary) => {
+                    println!("{summary}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{{\"error\":{{\"code\":\"{}\"}}}}", error.code());
+                    ExitCode::from(2)
+                }
+            }
+        }
         _ => {
             eprintln!(
-                "usage: relay-node <probe [--identity node]|codex-stdio-probe [--negative-transport|--handshake|--exercise]|claude-pty-probe>"
+                "usage: relay-node <probe [--identity node]|codex-stdio-probe [--negative-transport|--handshake|--exercise]|claude-pty-probe|hermes-smoke --gateway-url ws://127.0.0.1:PORT/api/ws?token=... [--cwd PATH] [--prompt TEXT] [--observe-ms 0..30000]>"
             );
             ExitCode::from(64)
         }
@@ -174,4 +189,108 @@ fn live_stdio_probe(exercise_turn: bool) -> ExitCode {
 fn probe_error(error: SessionError) -> ExitCode {
     eprintln!(r#"{{"error":{{"code":"{}"}}}}"#, error.code());
     ExitCode::FAILURE
+}
+
+fn run_hermes_smoke(arguments: &[String]) -> Result<String, AdapterError> {
+    let options = HermesSmokeOptions::parse(arguments)?;
+    let endpoint = GatewayEndpoint::parse(&options.gateway_url)?;
+    let mut adapter = HermesSessionAdapter::connect(endpoint)?;
+
+    let listed = adapter.list()?;
+    let created = adapter.create(options.cwd.as_deref())?;
+    adapter.prompt(&created.live_id, &options.prompt)?;
+    let resumed = adapter.resume(&created.stored_id)?;
+
+    // Prompt submission is asynchronous. The caller chooses a bounded window
+    // for real status/tool/interaction observation; a quiet interval is normal.
+    let deadline = Instant::now() + Duration::from_millis(options.observe_ms);
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match adapter.pump(remaining.min(Duration::from_millis(250))) {
+            Ok(()) | Err(AdapterError::Timeout) => {}
+            Err(AdapterError::GatewayLost) => return Err(AdapterError::GatewayLost),
+            Err(error) => return Err(error),
+        }
+    }
+    let signals = adapter.stream_signals();
+    let events = adapter.drain_events();
+    let event_count = events.len();
+    let tool_events = events
+        .iter()
+        .filter(|event| event.kind == EventKind::Tool)
+        .count();
+    let interaction_events = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                EventKind::ApprovalRequest | EventKind::ClarificationRequest
+            )
+        })
+        .count();
+    let status = match adapter.status() {
+        SessionStatus::Idle => "idle",
+        SessionStatus::Working => "working",
+        SessionStatus::Degraded => "degraded",
+        SessionStatus::Failed => "failed",
+    };
+
+    Ok(format!(
+        "{{\"adapter\":\"hermes-rich-client\",\"create\":true,\"list_count\":{},\"resume\":{},\"prompt\":true,\"observed_events\":{},\"tool_events\":{},\"interaction_events\":{},\"unsupported_events\":{},\"foreign_events\":{},\"dropped_events\":{},\"interaction_limited\":{},\"status\":\"{}\"}}",
+        listed.len(),
+        !resumed.live_id.is_empty(),
+        event_count,
+        tool_events,
+        interaction_events,
+        signals.unsupported,
+        signals.foreign,
+        signals.dropped,
+        signals.interaction_limited,
+        status,
+    ))
+}
+
+struct HermesSmokeOptions {
+    gateway_url: String,
+    cwd: Option<String>,
+    prompt: String,
+    observe_ms: u64,
+}
+
+impl HermesSmokeOptions {
+    fn parse(arguments: &[String]) -> Result<Self, AdapterError> {
+        let mut gateway_url = None;
+        let mut cwd = None;
+        let mut prompt = "Reply with exactly: relay rich-client smoke acknowledged".to_owned();
+        let mut observe_ms = 200;
+        let mut index = 0;
+        while index < arguments.len() {
+            let flag = &arguments[index];
+            let value = arguments.get(index + 1).ok_or(AdapterError::MalformedRpc)?;
+            match flag.as_str() {
+                "--gateway-url" => gateway_url = Some(value.clone()),
+                "--cwd" => cwd = Some(value.clone()),
+                "--prompt" => prompt = value.clone(),
+                "--observe-ms" => {
+                    observe_ms = value
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|milliseconds| *milliseconds <= 30_000)
+                        .ok_or(AdapterError::MalformedRpc)?;
+                }
+                _ => return Err(AdapterError::MalformedRpc),
+            }
+            index += 2;
+        }
+        let gateway_url = gateway_url.ok_or(AdapterError::MalformedRpc)?;
+        if prompt.is_empty() {
+            return Err(AdapterError::MalformedRpc);
+        }
+        Ok(Self {
+            gateway_url,
+            cwd,
+            prompt,
+            observe_ms,
+        })
+    }
 }
