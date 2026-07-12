@@ -5,7 +5,7 @@
 //! remote endpoints: Relay's first Hermes integration is one-node only.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fmt,
     io::{self, Read, Write},
     net::{TcpStream, ToSocketAddrs},
@@ -25,6 +25,7 @@ pub const MAX_CONNECT_ATTEMPTS: usize = 3;
 const CONNECT_BACKOFFS: [Duration; MAX_CONNECT_ATTEMPTS - 1] =
     [Duration::from_millis(50), Duration::from_millis(100)];
 pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(15);
+const GLOBAL_UNSCOPED_EVENTS: &[&str] = &["gateway.ready"];
 
 /// A loopback dashboard URL with an already-present dashboard credential.
 ///
@@ -137,6 +138,7 @@ fn has_supported_credential(query: &str) -> bool {
 pub enum AdapterError {
     UnsupportedEndpoint,
     AuthFailed,
+    EntropyUnavailable,
     GatewayLost,
     MalformedRpc,
     Timeout,
@@ -155,6 +157,7 @@ impl AdapterError {
         match self {
             Self::UnsupportedEndpoint => "unsupported_endpoint",
             Self::AuthFailed => "auth_failed",
+            Self::EntropyUnavailable => "entropy_unavailable",
             Self::GatewayLost => "gateway_lost",
             Self::MalformedRpc => "malformed_rpc",
             Self::Timeout => "timeout",
@@ -233,8 +236,8 @@ pub struct SessionSummary {
 
 /// The public ledger is intentionally narrow. Any event not in this set becomes
 /// an `Unsupported` event; it is never guessed, normalized through another
-/// provider, or silently dropped. A `clarify.request` needs an opaque response
-/// id before it can join this supported set.
+/// provider, or silently dropped. `clarify.request` is supported only when it
+/// carries the opaque response id injected by the installed gateway.
 pub const GUARANTEED_EVENTS: &[&str] = &[
     "gateway.ready",
     "session.info",
@@ -251,6 +254,7 @@ pub const GUARANTEED_EVENTS: &[&str] = &[
     "tool.complete",
     "tool.output_risk",
     "approval.request",
+    "clarify.request",
     "error",
 ];
 
@@ -276,6 +280,7 @@ pub const UNSUPPORTED_METHODS: &[&str] = &[
 pub struct HermesSessionAdapter {
     endpoint: Option<GatewayEndpoint>,
     socket: Option<TcpStream>,
+    rpc_timeout: Duration,
     enforce_session_scope: bool,
     owned_live_sessions: HashSet<String>,
     next_rpc_id: u64,
@@ -286,7 +291,7 @@ pub struct HermesSessionAdapter {
     queue: VecDeque<SessionEvent>,
     replay: VecDeque<SessionEvent>,
     signals: StreamSignals,
-    pending_approvals: HashSet<String>,
+    pending_approvals: HashMap<String, usize>,
     pending_clarifications: HashSet<String>,
 }
 
@@ -332,6 +337,7 @@ impl HermesSessionAdapter {
         Self {
             endpoint: None,
             socket: None,
+            rpc_timeout: DEFAULT_RPC_TIMEOUT,
             enforce_session_scope: false,
             owned_live_sessions: HashSet::new(),
             next_rpc_id: 0,
@@ -342,7 +348,7 @@ impl HermesSessionAdapter {
             queue: VecDeque::new(),
             replay: VecDeque::new(),
             signals: StreamSignals::default(),
-            pending_approvals: HashSet::new(),
+            pending_approvals: HashMap::new(),
             pending_clarifications: HashSet::new(),
         }
     }
@@ -472,15 +478,37 @@ impl HermesSessionAdapter {
         choice: ApprovalChoice,
     ) -> Result<(), AdapterError> {
         self.require_owned_live_session(live_id)?;
-        if !self.pending_approvals.remove(live_id) {
+        if !self.pending_approvals.contains_key(live_id) {
             self.status = SessionStatus::Degraded;
             return Err(AdapterError::Raced);
         }
-        self.call(
+        let result = self.call(
             "approval.respond",
             json!({"session_id": live_id, "choice": choice.as_wire()}),
-        )
-        .map(|_| ())
+        )?;
+        let resolved = result
+            .get("resolved")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                self.status = SessionStatus::Degraded;
+                AdapterError::MalformedRpc
+            })?;
+        if resolved == 0 {
+            self.status = SessionStatus::Degraded;
+            return Err(AdapterError::Raced);
+        }
+        let remove_marker = {
+            let pending = self
+                .pending_approvals
+                .get_mut(live_id)
+                .expect("checked before control RPC");
+            *pending -= 1;
+            *pending == 0
+        };
+        if remove_marker {
+            self.pending_approvals.remove(live_id);
+        }
+        Ok(())
     }
 
     pub fn respond_clarification(
@@ -491,15 +519,16 @@ impl HermesSessionAdapter {
         if request_id.is_empty() || request_id.len() > 256 || answer.len() > MAX_RPC_BYTES / 2 {
             return Err(AdapterError::PayloadTooLarge);
         }
-        if !self.pending_clarifications.remove(request_id) {
+        if !self.pending_clarifications.contains(request_id) {
             self.status = SessionStatus::Degraded;
             return Err(AdapterError::Raced);
         }
         self.call(
             "clarify.respond",
             json!({"request_id": request_id, "answer": answer}),
-        )
-        .map(|_| ())
+        )?;
+        self.pending_clarifications.remove(request_id);
+        Ok(())
     }
 
     pub fn pump(&mut self, timeout: Duration) -> Result<(), AdapterError> {
@@ -536,7 +565,14 @@ impl HermesSessionAdapter {
         self.send_frame(&wire)?;
 
         loop {
-            let raw = self.receive_frame(DEFAULT_RPC_TIMEOUT)?;
+            let raw = match self.receive_frame(self.rpc_timeout) {
+                Ok(raw) => raw,
+                Err(AdapterError::Timeout) => {
+                    self.quarantine_transport();
+                    return Err(AdapterError::Timeout);
+                }
+                Err(error) => return Err(error),
+            };
             let frame: Value = serde_json::from_str(&raw).map_err(|_| {
                 self.signals.malformed += 1;
                 self.status = SessionStatus::Degraded;
@@ -560,6 +596,11 @@ impl HermesSessionAdapter {
         }
     }
 
+    fn quarantine_transport(&mut self) {
+        self.socket.take();
+        self.status = SessionStatus::Failed;
+    }
+
     fn ingest_frame(&mut self, frame: Value) -> Result<(), AdapterError> {
         if frame.get("method").and_then(Value::as_str) != Some("event") {
             self.signals.malformed += 1;
@@ -579,12 +620,25 @@ impl HermesSessionAdapter {
             self.status = SessionStatus::Degraded;
             AdapterError::MalformedRpc
         })?;
-        let session_id = params
-            .get("session_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if self.enforce_session_scope
-            && !session_id.is_empty()
+        let is_global = GLOBAL_UNSCOPED_EVENTS.contains(&event_type);
+        let session_id = if is_global {
+            params
+                .get("session_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        } else {
+            params
+                .get("session_id")
+                .and_then(Value::as_str)
+                .filter(|session_id| !session_id.is_empty())
+                .ok_or_else(|| {
+                    self.signals.malformed += 1;
+                    self.status = SessionStatus::Degraded;
+                    AdapterError::MalformedRpc
+                })?
+        };
+        if !is_global
+            && self.enforce_session_scope
             && !self.owned_live_sessions.contains(session_id)
         {
             self.signals.foreign += 1;
@@ -654,8 +708,11 @@ impl HermesSessionAdapter {
                 "tool_output_risk",
                 "tool output risk updated".to_owned(),
             ),
-            "approval.request" if !session_id.is_empty() => {
-                self.pending_approvals.insert(session_id.to_owned());
+            "approval.request" => {
+                *self
+                    .pending_approvals
+                    .entry(session_id.to_owned())
+                    .or_default() += 1;
                 (
                     EventKind::ApprovalRequest,
                     "approval_request",
@@ -922,10 +979,12 @@ fn connect_once(endpoint: &GatewayEndpoint) -> Result<TcpStream, AdapterError> {
 
 fn websocket_key() -> Result<String, AdapterError> {
     let mut nonce = [0_u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut source| source.read_exact(&mut nonce))
-        .map_err(map_io_error)?;
+    fill_random(&mut nonce)?;
     Ok(STANDARD.encode(nonce))
+}
+
+fn fill_random(bytes: &mut [u8]) -> Result<(), AdapterError> {
+    getrandom::getrandom(bytes).map_err(|_| AdapterError::EntropyUnavailable)
 }
 
 fn websocket_accept(key: &str) -> String {
@@ -956,7 +1015,7 @@ fn write_websocket_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> 
         ));
     }
     let mut mask = [0_u8; 4];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut mask)?;
+    fill_random(&mut mask).map_err(|_| io::Error::other("secure randomness unavailable"))?;
     let mut header = vec![0x80 | opcode, 0x80];
     if payload.len() <= 125 {
         header[1] |= payload.len() as u8;
@@ -968,10 +1027,14 @@ fn write_websocket_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> 
         header.extend_from_slice(&(payload.len() as u64).to_be_bytes());
     }
     header.extend_from_slice(&mask);
+    header.reserve(payload.len());
+    header.extend(
+        payload
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ mask[index % mask.len()]),
+    );
     stream.write_all(&header)?;
-    for (index, byte) in payload.iter().enumerate() {
-        stream.write_all(&[byte ^ mask[index % mask.len()]])?;
-    }
     stream.flush()
 }
 
@@ -1011,6 +1074,7 @@ fn map_io_error(error: io::Error) -> AdapterError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn accepts_only_loopback_dashboard_websocket_urls_with_credentials() {
@@ -1055,5 +1119,70 @@ mod tests {
         }
         assert_eq!(adapter.replay_from(1), Err(AdapterError::ReplayGap));
         assert_eq!(adapter.replay_from(2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn control_timeout_quarantines_the_socket_before_a_late_response_can_be_reused() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_headers(&mut stream).unwrap();
+            let key = request
+                .lines()
+                .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+                .unwrap();
+            let accept = websocket_accept(key);
+            write!(
+                stream,
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+            )
+            .unwrap();
+            read_client_frame(&mut stream).unwrap();
+            write_server_text_frame(
+                &mut stream,
+                r#"{"jsonrpc":"2.0","id":1,"result":{"session_id":"live-session","stored_session_id":"stored-session"}}"#,
+            )
+            .unwrap();
+            read_client_frame(&mut stream).unwrap();
+            thread::sleep(Duration::from_millis(20));
+            let _ = write_server_text_frame(&mut stream, r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+        });
+
+        let endpoint =
+            GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+                .unwrap();
+        let mut adapter = HermesSessionAdapter::connect(endpoint).unwrap();
+        let session = adapter.create(None).unwrap();
+        adapter.rpc_timeout = Duration::from_millis(5);
+
+        assert_eq!(
+            adapter.interrupt(&session.live_id),
+            Err(AdapterError::Timeout)
+        );
+        assert_eq!(adapter.status(), SessionStatus::Failed);
+        assert_eq!(
+            adapter.interrupt(&session.live_id),
+            Err(AdapterError::GatewayLost)
+        );
+        server.join().unwrap();
+    }
+
+    fn write_server_text_frame(stream: &mut TcpStream, text: &str) -> io::Result<()> {
+        stream.write_all(&[0x81, text.len() as u8])?;
+        stream.write_all(text.as_bytes())?;
+        stream.flush()
+    }
+
+    fn read_client_frame(stream: &mut TcpStream) -> io::Result<()> {
+        let mut header = [0_u8; 2];
+        stream.read_exact(&mut header)?;
+        assert_ne!(header[1] & 0x80, 0, "client frames are masked");
+        let length = usize::from(header[1] & 0x7F);
+        assert!(length < 126, "test request stays compact");
+        let mut mask = [0_u8; 4];
+        stream.read_exact(&mut mask)?;
+        let mut payload = vec![0_u8; length];
+        stream.read_exact(&mut payload)
     }
 }

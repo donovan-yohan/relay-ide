@@ -27,10 +27,10 @@ This adapter is verified against the installed **Hermes Agent v0.18.2
 uses one JSON-RPC object per WebSocket text message; it emits `gateway.ready`
 on accept and routes `session.create`, `session.list`, `session.resume`,
 `prompt.submit`, `session.interrupt`, and `approval.respond` through the same
-gateway handlers used by the TUI and dashboard. The installed gateway's
-`clarify.request` frame does not expose the `request_id` required by
-`clarify.respond`, so Relay observes that frame as a visible unsupported
-correlation gap rather than guessing a response target.
+gateway handlers used by the TUI and dashboard. Its blocking prompt bridge
+injects an opaque `payload.request_id` before it emits `clarify.request`, and
+`clarify.respond` consumes that exact id. Relay therefore supports one
+clarification response without retaining a question, choice, or transcript.
 
 The accepted Relay credential shape is intentionally narrower than every
 Hermes auth shape: only the loopback dashboard `token` query parameter is
@@ -53,16 +53,17 @@ The adapter assigns monotonic arrival sequences and emits only provider-neutral 
 | `message.start`, `message.delta`, `message.complete` | status | `message_started`, `message_delta`, `message_complete` | fixed text; no transcript |
 | `thinking.delta`, `reasoning.delta`, `reasoning.available` | status | `reasoning` | always `redacted reasoning` |
 | `status.update` | status | `status_update` | fixed text |
-| `tool.start`, `tool.generating`, `tool.complete`, `tool.output_risk` | tool | `tool_started`, `tool_progress`, `tool_complete`, `tool_output_risk` | safe ASCII tool name only; otherwise `tool activity` |
+| `tool.start`, `tool.progress`, `tool.generating`, `tool.complete`, `tool.output_risk` | tool | `tool_started`, `tool_progress`, `tool_complete`, `tool_output_risk` | safe ASCII tool name only; otherwise `tool activity` |
 | `approval.request` | approval request | `approval_request` | fixed text; a response is session-scoped with one-shot `once` or `deny`; Hermes's persistent `session`/`always` grants are deliberately unsupported |
+| `clarify.request` | clarification request | `clarification_request` | only the opaque `request_id` is retained for one `clarify.respond`; question, choices, and answer contents are never retained |
 | `error` | diagnostic | `gateway_error` | fixed text |
 
-Hermes 0.18.2 emits `clarify.request` without the `request_id` its
-`clarify.respond` handler requires. Relay therefore emits the request as the
-visible unsupported `clarification_without_id` marker, leaves the Session
-degraded, and never guesses a response target. If a future gateway adds an
-opaque response id, Relay exposes only that id as `clarification_id` and permits
-one response; it still retains no question, choices, or transcript content.
+Hermes 0.18.2 injects `request_id` into every blocking `clarify.request` before
+emission, and `clarify.respond` consumes it. Relay exposes only that opaque id
+as `clarification_id` and permits one response; it retains no question, choices,
+or transcript content. A malformed future frame without a nonempty opaque id is
+still visible as `clarification_without_id`, leaves the Session degraded, and
+never guesses a response target.
 Each emitted event retains the live gateway session id so Relay never attributes
 a shared-gateway event to the wrong Session.
 
@@ -100,14 +101,14 @@ method returns typed `unsupported` before it touches the transport.
 | Auth upgrade rejected | typed `auth_failed`; no retry and no credential echo |
 | Connection or dashboard restart | typed `gateway_lost`; connection setup retries at most three times, then reports `retry_exhausted` |
 | Malformed RPC or non-text frame | typed `malformed_rpc`, cumulative signal, Session becomes degraded |
-| Control-RPC deadline | typed `timeout` and Session degradation; no automatic retry of create, prompt, approval, clarification, or interrupt because they are not safely idempotent |
+| Control-RPC deadline | typed `timeout`; Relay quarantines and closes that socket, marks the Session failed, and requires a new adapter so a late response cannot be misattributed to a later control RPC |
 | Passive observation deadline | typed `timeout` but retains the prior Session state; a quiet bounded observation window is normal |
 | Queue pressure | queue holds at most 128 events; oldest event is dropped, `dropped` increments, `replay_gap=true`, Session becomes degraded |
 | Foreign session event | not queued or allowed to alter this adapter's status; `foreign` increments without retaining a provider payload |
 | Replay request before retained history | typed `replay_gap`; replay retention is at most 64 events |
 | Oversize RPC/frame | 8 KiB request and 64 KiB frame limits; typed `payload_too_large` |
-| Interrupt/approval response races | a `4009` server race or missing pending request becomes typed `raced`; other server failures remain typed `remote_failure` and Session becomes degraded |
-| Clarification correlation gap | a `clarify.request` without an opaque response id becomes visible `clarification_without_id`; no response is sent |
+| Interrupt/approval response races | a `4009` server race, `approval.respond` result with `resolved: 0`, or missing pending request becomes typed `raced`; only a positive `resolved` acknowledgement decrements Relay's per-session pending count, so another request received during the call remains pending; other RPC failures retain the count and become typed `remote_failure`/transport errors |
+| Clarification correlation | Hermes 0.18.2 supplies an opaque `request_id`; Relay permits one matching response and retains no prompt content. A frame without a usable id becomes visible `clarification_without_id`; no response is sent |
 
 The adapter emits no normal logs. `relay-node hermes-smoke` prints only booleans, counts, and a coarse status; it does not print endpoint URLs, tokens, session IDs, prompts, event payloads, transcripts, or private reasoning.
 

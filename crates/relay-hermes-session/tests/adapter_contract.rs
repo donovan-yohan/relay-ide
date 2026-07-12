@@ -59,3 +59,33 @@ fn malformed_frames_fail_closed_with_a_typed_error() {
     assert_eq!(error, AdapterError::MalformedRpc);
     assert_eq!(adapter.status(), SessionStatus::Degraded);
 }
+
+#[test]
+fn only_gateway_ready_may_be_unscoped() {
+    let mut adapter = HermesSessionAdapter::scripted();
+
+    adapter
+        .ingest_json(r#"{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready"}}"#)
+        .expect("the global gateway lifecycle event is allowed without a session ID");
+
+    let events = adapter.drain_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].session_id, "");
+    assert_eq!(events[0].kind, EventKind::Lifecycle);
+}
+
+#[test]
+fn session_scoped_events_fail_closed_without_a_nonempty_string_session_id() {
+    for raw in [
+        r#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.start"}}"#,
+        r#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.start","session_id":7}}"#,
+        r#"{"jsonrpc":"2.0","method":"event","params":{"type":"status.update","session_id":""}}"#,
+        r#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":null}}"#,
+    ] {
+        let mut adapter = HermesSessionAdapter::scripted();
+
+        assert_eq!(adapter.ingest_json(raw), Err(AdapterError::MalformedRpc));
+        assert!(adapter.drain_events().is_empty());
+        assert_eq!(adapter.status(), SessionStatus::Degraded);
+    }
+}

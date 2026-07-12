@@ -148,6 +148,153 @@ fn approval_response_uses_a_supported_gateway_choice() {
 }
 
 #[test]
+fn approval_race_is_not_reported_as_success_and_keeps_the_request_retryable() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake dashboard");
+    let port = listener.local_addr().expect("listener address").port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("adapter connects");
+        accept_upgrade(&mut stream);
+        read_text_frame(&mut stream);
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"session_id":"live-session","stored_session_id":"stored-session"}}"#,
+        );
+        let request = read_text_frame(&mut stream);
+        assert_eq!(request["method"], "approval.respond");
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","id":2,"result":{"resolved":0}}"#,
+        );
+        let request = read_text_frame(&mut stream);
+        assert_eq!(request["method"], "approval.respond");
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","id":3,"result":{"resolved":1}}"#,
+        );
+    });
+
+    let endpoint =
+        GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+            .expect("loopback dashboard URL");
+    let mut adapter = HermesSessionAdapter::connect(endpoint).expect("dashboard handshake");
+    let session = adapter.create(None).expect("owned live session");
+    adapter
+        .ingest_json(
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"live-session","payload":{}}}"#,
+        )
+        .expect("approval event");
+
+    assert_eq!(
+        adapter.respond_approval(&session.live_id, ApprovalChoice::Once),
+        Err(AdapterError::Raced)
+    );
+    assert_eq!(
+        adapter.respond_approval(&session.live_id, ApprovalChoice::Once),
+        Ok(())
+    );
+    server.join().expect("fake dashboard exits");
+}
+
+#[test]
+fn approval_event_arriving_during_a_response_keeps_its_own_pending_marker() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake dashboard");
+    let port = listener.local_addr().expect("listener address").port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("adapter connects");
+        accept_upgrade(&mut stream);
+        read_text_frame(&mut stream);
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"session_id":"live-session","stored_session_id":"stored-session"}}"#,
+        );
+        let request = read_text_frame(&mut stream);
+        assert_eq!(request["method"], "approval.respond");
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"live-session","payload":{}}}"#,
+        );
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","id":2,"result":{"resolved":1}}"#,
+        );
+        let request = read_text_frame(&mut stream);
+        assert_eq!(request["method"], "approval.respond");
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","id":3,"result":{"resolved":1}}"#,
+        );
+    });
+
+    let endpoint =
+        GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+            .expect("loopback dashboard URL");
+    let mut adapter = HermesSessionAdapter::connect(endpoint).expect("dashboard handshake");
+    let session = adapter.create(None).expect("owned live session");
+    adapter
+        .ingest_json(
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"live-session","payload":{}}}"#,
+        )
+        .expect("first approval event");
+
+    assert_eq!(
+        adapter.respond_approval(&session.live_id, ApprovalChoice::Once),
+        Ok(())
+    );
+    assert_eq!(
+        adapter.respond_approval(&session.live_id, ApprovalChoice::Once),
+        Ok(())
+    );
+    server.join().expect("fake dashboard exits");
+}
+
+#[test]
+fn approval_remote_failure_does_not_clear_the_pending_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake dashboard");
+    let port = listener.local_addr().expect("listener address").port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("adapter connects");
+        accept_upgrade(&mut stream);
+        read_text_frame(&mut stream);
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"session_id":"live-session","stored_session_id":"stored-session"}}"#,
+        );
+        read_text_frame(&mut stream);
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":5000,"message":"retryable gateway failure"}}"#,
+        );
+        let request = read_text_frame(&mut stream);
+        assert_eq!(request["method"], "approval.respond");
+        write_text_frame(
+            &mut stream,
+            r#"{"jsonrpc":"2.0","id":3,"result":{"resolved":1}}"#,
+        );
+    });
+
+    let endpoint =
+        GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+            .expect("loopback dashboard URL");
+    let mut adapter = HermesSessionAdapter::connect(endpoint).expect("dashboard handshake");
+    let session = adapter.create(None).expect("owned live session");
+    adapter
+        .ingest_json(
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"live-session","payload":{}}}"#,
+        )
+        .expect("approval event");
+
+    assert_eq!(
+        adapter.respond_approval(&session.live_id, ApprovalChoice::Once),
+        Err(AdapterError::RemoteFailure)
+    );
+    assert_eq!(
+        adapter.respond_approval(&session.live_id, ApprovalChoice::Once),
+        Ok(())
+    );
+    server.join().expect("fake dashboard exits");
+}
+
+#[test]
 fn clarification_response_exposes_only_its_opaque_correlation_id() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake dashboard");
     let port = listener.local_addr().expect("listener address").port();
