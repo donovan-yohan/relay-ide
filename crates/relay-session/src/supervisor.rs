@@ -33,6 +33,11 @@ pub const DROP_TOLERANCE: u64 = 4096;
 /// Default deadline for one control request.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Bounded number of control writes awaiting the process writer.
+pub const OUTBOUND_QUEUE_CAP: usize = 16;
+
+const OUTBOUND_CONTROL_LINE_TOO_LARGE: &str = "outbound control line exceeds limit";
+
 /// One arrival-ordered transport item.
 #[derive(Debug)]
 pub enum TransportItem {
@@ -41,17 +46,29 @@ pub enum TransportItem {
 }
 
 /// A writable JSONL transport with owned lifecycle control.
+///
+/// `write_line` queues one bounded line and returns a completion receiver. It
+/// must not wait for the child to consume the line; the supervisor applies the
+/// control operation's deadline while waiting for that completion.
 pub trait Transport: Send {
-    fn write_line(&mut self, line: &str) -> io::Result<()>;
+    fn write_line(&mut self, line: String) -> io::Result<Receiver<io::Result<()>>>;
+    /// Interrupt a pending control write without waiting for thread teardown.
+    fn abort_write(&mut self);
     fn items(&self) -> &Receiver<TransportItem>;
     fn shutdown(&mut self);
+}
+
+struct OutboundWrite {
+    line: String,
+    complete: SyncSender<io::Result<()>>,
 }
 
 /// The real, fixed-command local process transport.
 pub struct ProcessTransport {
     child: Option<Child>,
-    stdin: Option<ChildStdin>,
+    write_tx: Option<SyncSender<OutboundWrite>>,
     rx: Receiver<TransportItem>,
+    writer: Option<JoinHandle<()>>,
     reader: Option<JoinHandle<()>>,
     stopping: Arc<AtomicBool>,
 }
@@ -77,16 +94,40 @@ impl ProcessTransport {
         let stdin = child.stdin.take().ok_or(SessionError::Transport)?;
         let stdout = child.stdout.take().ok_or(SessionError::Transport)?;
         let (tx, rx) = mpsc::sync_channel(INBOUND_QUEUE_CAP);
+        let (write_tx, write_rx) = mpsc::sync_channel(OUTBOUND_QUEUE_CAP);
         let stopping = Arc::new(AtomicBool::new(false));
+        let writer_stopping = Arc::clone(&stopping);
+        let writer = match thread::Builder::new()
+            .name("relay-codex-writer".into())
+            .spawn(move || writer_loop(stdin, write_rx, writer_stopping))
+        {
+            Ok(writer) => writer,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SessionError::Transport);
+            }
+        };
         let reader_stopping = Arc::clone(&stopping);
-        let reader = thread::Builder::new()
+        let reader = match thread::Builder::new()
             .name("relay-codex-reader".into())
             .spawn(move || reader_loop(stdout, tx, reader_stopping))
-            .map_err(|_| SessionError::Transport)?;
+        {
+            Ok(reader) => reader,
+            Err(_) => {
+                stopping.store(true, Ordering::Release);
+                drop(write_tx);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer.join();
+                return Err(SessionError::Transport);
+            }
+        };
         Ok(Self {
             child: Some(child),
-            stdin: Some(stdin),
+            write_tx: Some(write_tx),
             rx,
+            writer: Some(writer),
             reader: Some(reader),
             stopping,
         })
@@ -135,6 +176,30 @@ fn reader_loop<R: io::Read>(stdout: R, tx: SyncSender<TransportItem>, stopping: 
     }
 }
 
+/// Write control lines on a dedicated bounded worker. The supervisor waits on
+/// each completion receiver, so a child that stops reading stdin cannot block
+/// its control deadline.
+fn writer_loop(mut stdin: ChildStdin, rx: Receiver<OutboundWrite>, stopping: Arc<AtomicBool>) {
+    while let Ok(write) = rx.recv() {
+        let result = if stopping.load(Ordering::Acquire) {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "transport stopping",
+            ))
+        } else {
+            stdin
+                .write_all(write.line.as_bytes())
+                .and_then(|()| stdin.write_all(b"\n"))
+                .and_then(|()| stdin.flush())
+        };
+        let failed = result.is_err();
+        let _ = write.complete.send(result);
+        if failed {
+            return;
+        }
+    }
+}
+
 /// Read one line while retaining no more than `MAX_LINE_BYTES + 1` bytes. The
 /// rest of an over-limit line is drained before the next frame is read.
 fn read_bounded_line<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> io::Result<usize> {
@@ -168,14 +233,33 @@ fn read_bounded_line<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> io::Re
 }
 
 impl Transport for ProcessTransport {
-    fn write_line(&mut self, line: &str) -> io::Result<()> {
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "stdin closed"))?;
-        stdin.write_all(line.as_bytes())?;
-        stdin.write_all(b"\n")?;
-        stdin.flush()
+    fn write_line(&mut self, line: String) -> io::Result<Receiver<io::Result<()>>> {
+        let (complete_tx, complete_rx) = mpsc::sync_channel(1);
+        let write = OutboundWrite {
+            line,
+            complete: complete_tx,
+        };
+        self.write_tx
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "stdin closed"))?
+            .try_send(write)
+            .map_err(|error| match error {
+                TrySendError::Full(_) => {
+                    io::Error::new(io::ErrorKind::WouldBlock, "outbound queue full")
+                }
+                TrySendError::Disconnected(_) => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "writer stopped")
+                }
+            })?;
+        Ok(complete_rx)
+    }
+
+    fn abort_write(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        self.write_tx.take();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+        }
     }
 
     fn items(&self) -> &Receiver<TransportItem> {
@@ -184,10 +268,13 @@ impl Transport for ProcessTransport {
 
     fn shutdown(&mut self) {
         self.stopping.store(true, Ordering::Release);
-        self.stdin.take();
+        self.write_tx.take();
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -251,16 +338,20 @@ impl ScriptedTransport {
 }
 
 impl Transport for ScriptedTransport {
-    fn write_line(&mut self, line: &str) -> io::Result<()> {
+    fn write_line(&mut self, line: String) -> io::Result<Receiver<io::Result<()>>> {
         if self.write_fails {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "scripted write failure",
             ));
         }
-        self.writes.push(line.to_owned());
-        Ok(())
+        self.writes.push(line);
+        let (complete_tx, complete_rx) = mpsc::sync_channel(1);
+        let _ = complete_tx.send(Ok(()));
+        Ok(complete_rx)
     }
+
+    fn abort_write(&mut self) {}
 
     fn items(&self) -> &Receiver<TransportItem> {
         &self.rx
@@ -337,6 +428,7 @@ impl<T: Transport> Supervisor<T> {
         decision: ApprovalDecision,
     ) -> Result<(), SessionError> {
         self.ensure_live()?;
+        let deadline = Instant::now() + DEFAULT_DEADLINE;
         let index = self
             .approvals
             .iter()
@@ -351,9 +443,7 @@ impl<T: Transport> Supervisor<T> {
             "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"decision\":\"{decision}\"}}}}",
             approval.id.as_str()
         );
-        self.transport
-            .write_line(&response)
-            .map_err(|_| SessionError::Transport)?;
+        self.write_control_line(&response, deadline)?;
         self.approvals.remove(index);
         Ok(())
     }
@@ -361,10 +451,10 @@ impl<T: Transport> Supervisor<T> {
     pub fn create(&mut self, deadline: Duration) -> Result<SessionId, SessionError> {
         self.ensure_live()?;
         let overall = Instant::now() + deadline;
-        let initialize = self.send_request("initialize", INITIALIZE_PARAMS)?;
+        let initialize = self.send_request("initialize", INITIALIZE_PARAMS, overall)?;
         self.await_response(&initialize, overall)?;
-        self.send_notification("initialized")?;
-        let start = self.send_request("thread/start", "{}")?;
+        self.send_notification("initialized", overall)?;
+        let start = self.send_request("thread/start", "{}", overall)?;
         let thread_id = self.await_result_thread_id(&start, overall)?;
         let session = SessionId::new(thread_id);
         self.session = Some(session.clone());
@@ -379,11 +469,11 @@ impl<T: Transport> Supervisor<T> {
     ) -> Result<SessionId, SessionError> {
         self.ensure_live()?;
         let overall = Instant::now() + deadline;
-        let initialize = self.send_request("initialize", INITIALIZE_PARAMS)?;
+        let initialize = self.send_request("initialize", INITIALIZE_PARAMS, overall)?;
         self.await_response(&initialize, overall)?;
-        self.send_notification("initialized")?;
-        let params = format!("{{\"threadId\":{}}}", json_string(thread_id));
-        let resume = self.send_request("thread/resume", &params)?;
+        self.send_notification("initialized", overall)?;
+        let params = format!("{{\"threadId\":{}}}", json_string_bounded(thread_id)?);
+        let resume = self.send_request("thread/resume", &params, overall)?;
         let resumed_id = self.await_result_thread_id(&resume, overall)?;
         if resumed_id != thread_id {
             self.status = SessionStatus::Failed(FailureKind::ProtocolViolation);
@@ -397,17 +487,18 @@ impl<T: Transport> Supervisor<T> {
 
     pub fn prompt(&mut self, text: &str, deadline: Duration) -> Result<String, SessionError> {
         self.ensure_live()?;
+        let overall = Instant::now() + deadline;
         let session = self
             .session
             .clone()
             .ok_or(SessionError::Unsupported("no active session"))?;
         let params = format!(
             "{{\"threadId\":{},\"input\":[{{\"type\":\"text\",\"text\":{}}}]}}",
-            json_string(session.as_str()),
-            json_string(text)
+            json_string_bounded(session.as_str())?,
+            json_string_bounded(text)?
         );
-        let turn = self.send_request("turn/start", &params)?;
-        let turn_id = self.await_result_turn_id(&turn, Instant::now() + deadline)?;
+        let turn = self.send_request("turn/start", &params, overall)?;
+        let turn_id = self.await_result_turn_id(&turn, overall)?;
         if self.take_completed_turn(&turn_id) {
             self.active_turn = None;
             self.status = SessionStatus::Idle;
@@ -420,6 +511,7 @@ impl<T: Transport> Supervisor<T> {
 
     pub fn cancel(&mut self, turn_id: &str, deadline: Duration) -> Result<(), SessionError> {
         self.ensure_live()?;
+        let overall = Instant::now() + deadline;
         let session = self
             .session
             .clone()
@@ -432,11 +524,11 @@ impl<T: Transport> Supervisor<T> {
         }
         let params = format!(
             "{{\"threadId\":{},\"turnId\":{}}}",
-            json_string(session.as_str()),
-            json_string(turn_id)
+            json_string_bounded(session.as_str())?,
+            json_string_bounded(turn_id)?
         );
-        let interrupt = self.send_request("turn/interrupt", &params)?;
-        match self.await_response(&interrupt, Instant::now() + deadline) {
+        let interrupt = self.send_request("turn/interrupt", &params, overall)?;
+        match self.await_response(&interrupt, overall) {
             Ok(()) => {
                 self.active_turn = None;
                 self.status = SessionStatus::Idle;
@@ -479,24 +571,47 @@ impl<T: Transport> Supervisor<T> {
         }
     }
 
-    fn send_request(&mut self, method: &str, params: &str) -> Result<String, SessionError> {
+    fn send_request(
+        &mut self,
+        method: &str,
+        params: &str,
+        deadline: Instant,
+    ) -> Result<String, SessionError> {
         let id = self.next_id;
-        self.next_id += 1;
         let request = format!(
             "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":{},\"params\":{params}}}",
             json_string(method)
         );
-        self.transport
-            .write_line(&request)
-            .map_err(|_| SessionError::Transport)?;
+        self.write_control_line(&request, deadline)?;
+        self.next_id += 1;
         Ok(id.to_string())
     }
 
-    fn send_notification(&mut self, method: &str) -> Result<(), SessionError> {
+    fn send_notification(&mut self, method: &str, deadline: Instant) -> Result<(), SessionError> {
         let notification = format!("{{\"jsonrpc\":\"2.0\",\"method\":{}}}", json_string(method));
-        self.transport
-            .write_line(&notification)
-            .map_err(|_| SessionError::Transport)
+        self.write_control_line(&notification, deadline)
+    }
+
+    fn write_control_line(&mut self, line: &str, deadline: Instant) -> Result<(), SessionError> {
+        if line.len() > MAX_LINE_BYTES {
+            return Err(SessionError::Unsupported(OUTBOUND_CONTROL_LINE_TOO_LARGE));
+        }
+        let remaining = self.remaining(deadline)?;
+        let complete = self
+            .transport
+            .write_line(line.to_owned())
+            .map_err(|_| SessionError::Transport)?;
+        match complete.recv_timeout(remaining) {
+            Ok(Ok(())) => {
+                self.remaining(deadline)?;
+                Ok(())
+            }
+            Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => Err(SessionError::Transport),
+            Err(RecvTimeoutError::Timeout) => {
+                self.transport.abort_write();
+                Err(self.timeout())
+            }
+        }
     }
 
     fn await_response(&mut self, id: &str, deadline: Instant) -> Result<(), SessionError> {
@@ -749,6 +864,38 @@ fn response_ok(frame: &Frame) -> bool {
 /// Escape and quote a string as JSON without retaining a raw provider payload.
 pub fn json_string(value: &str) -> String {
     let mut output = String::with_capacity(value.len() + 2);
+    append_json_string(value, &mut output);
+    output
+}
+
+/// Escape and quote a JSON string only when its encoded value is safe to place
+/// on a bounded control line. This stops oversized prompt/session input before
+/// cloning it into an outbound payload.
+fn json_string_bounded(value: &str) -> Result<String, SessionError> {
+    let capacity = escaped_json_string_len(value, MAX_LINE_BYTES)
+        .ok_or(SessionError::Unsupported(OUTBOUND_CONTROL_LINE_TOO_LARGE))?;
+    let mut output = String::with_capacity(capacity);
+    append_json_string(value, &mut output);
+    Ok(output)
+}
+
+fn escaped_json_string_len(value: &str, limit: usize) -> Option<usize> {
+    let mut length: usize = 2;
+    for character in value.chars() {
+        let encoded = match character {
+            '"' | '\\' | '\n' | '\r' | '\t' => 2,
+            control if (control as u32) < 0x20 => 6,
+            character => character.len_utf8(),
+        };
+        length = length.checked_add(encoded)?;
+        if length > limit {
+            return None;
+        }
+    }
+    Some(length)
+}
+
+fn append_json_string(value: &str, output: &mut String) {
     output.push('"');
     for character in value.chars() {
         match character {
@@ -764,7 +911,6 @@ pub fn json_string(value: &str) -> String {
         }
     }
     output.push('"');
-    output
 }
 
 const INITIALIZE_PARAMS: &str = "{\"clientInfo\":{\"name\":\"relay-node\",\"version\":\"0.1.0\"}}";
@@ -775,6 +921,46 @@ mod tests {
 
     fn response(id: u64, body: &str) -> String {
         format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{body}}}")
+    }
+
+    struct StalledWriteTransport {
+        rx: Receiver<TransportItem>,
+        pending: Vec<SyncSender<io::Result<()>>>,
+        aborted: Arc<AtomicBool>,
+    }
+
+    impl StalledWriteTransport {
+        fn new() -> (Self, Arc<AtomicBool>) {
+            let (_tx, rx) = mpsc::channel();
+            let aborted = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    rx,
+                    pending: Vec::new(),
+                    aborted: Arc::clone(&aborted),
+                },
+                aborted,
+            )
+        }
+    }
+
+    impl Transport for StalledWriteTransport {
+        fn write_line(&mut self, _line: String) -> io::Result<Receiver<io::Result<()>>> {
+            let (complete_tx, complete_rx) = mpsc::sync_channel(1);
+            self.pending.push(complete_tx);
+            Ok(complete_rx)
+        }
+
+        fn abort_write(&mut self) {
+            self.aborted.store(true, Ordering::Release);
+            self.pending.clear();
+        }
+
+        fn items(&self) -> &Receiver<TransportItem> {
+            &self.rx
+        }
+
+        fn shutdown(&mut self) {}
     }
 
     #[test]
@@ -792,6 +978,37 @@ mod tests {
         assert!(writes[0].contains("\"method\":\"initialize\""));
         assert!(writes[1].contains("\"method\":\"initialized\""));
         assert!(writes[2].contains("\"method\":\"thread/start\""));
+    }
+
+    #[test]
+    fn prompt_write_deadline_interrupts_a_stalled_transport() {
+        let (transport, aborted) = StalledWriteTransport::new();
+        let mut supervisor = Supervisor::new(transport);
+        supervisor.session = Some(SessionId::new("thread-1"));
+
+        let started = Instant::now();
+        assert_eq!(
+            supervisor.prompt("hello", Duration::from_millis(10)),
+            Err(SessionError::Timeout)
+        );
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert!(aborted.load(Ordering::Acquire));
+        assert_eq!(
+            supervisor.status(),
+            &SessionStatus::Failed(FailureKind::Timeout)
+        );
+    }
+
+    #[test]
+    fn oversized_prompt_is_rejected_before_transport_submission() {
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_items(vec![]));
+        supervisor.session = Some(SessionId::new("thread-1"));
+
+        assert_eq!(
+            supervisor.prompt(&"x".repeat(MAX_LINE_BYTES - 2), DEFAULT_DEADLINE),
+            Err(SessionError::Unsupported(OUTBOUND_CONTROL_LINE_TOO_LARGE))
+        );
+        assert!(supervisor.transport().writes().is_empty());
     }
 
     #[test]
