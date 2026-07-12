@@ -15,11 +15,20 @@ Later issues may introduce these terms only with explicit ownership and storage 
 - `relay-hub` serves `GET /health` with a bounded liveness record.
 - `relay-node probe` prints the same record for the node identity.
 - The PWA shell renders that record and nothing else.
+- `relay-node codex-stdio-probe` owns a one-node, local `codex app-server
+  --stdio` Session seam. Its explicit exercise mode creates, resumes, prompts,
+  and cancels native Codex threads through bounded JSONL; it exposes neither a
+  network transport nor raw provider transcripts.
 
 ## Authority and data path
 
-The factory owns no process, provider, filesystem, authentication, browser-control, cross-node, or product-state authority. The web shell reads the hub health endpoint only. No client write path or persistence exists.
+The node owns the child process identity/lifecycle for the Codex stdio seam.
+The adapter bounds/redacts event previews and does not persist raw provider
+transcripts, credentials, approval grants, or thread data. The web shell still
+reads the hub health endpoint only; it has no client write path or persistence.
 
 ## Deferred scope
 
-PTY/RMUX, Codex, Hermes, provider adapters, mailbox, passkeys, files, Workspace persistence, layout, browser control, cross-node behavior, and legacy API compatibility are outside #1137.
+PTY/RMUX, Hermes, other provider adapters, mailbox, passkeys, files, Workspace
+persistence, layout, browser control, cross-node behavior, approval-grant
+persistence, and legacy API compatibility remain deferred.
