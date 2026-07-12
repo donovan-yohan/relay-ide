@@ -185,6 +185,19 @@ try {
   assert.equal(terminal.hasTerminal, true, "the workbench must render an interactive xterm surface");
   assert.match(terminal.sessionId, /^claude-pty-\d+$/, "the browser receives only an opaque Relay Session ID");
   assert.ok(terminal.csrf, "the browser keeps a CSRF token distinct from the HttpOnly session cookie");
+  await evaluate(
+    sessionId,
+    `window.relayOriginalTerminalFetch = window.fetch; window.relayTerminalPollFailed = false; window.fetch = async (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, window.location.href); const method = init?.method ?? (typeof input === 'string' ? 'GET' : input.method); if (!window.relayTerminalPollFailed && method === 'GET' && url.pathname.startsWith('/node/claude/sessions/')) { window.relayTerminalPollFailed = true; throw new TypeError('transient terminal poll failure'); } return window.relayOriginalTerminalFetch(input, init); };`,
+  );
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent"))?.startsWith("Terminal unavailable:"),
+    "transient terminal polling failure",
+  );
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent"))?.includes("Relay-owned terminal · running"),
+    "terminal polling recovery",
+  );
+  await evaluate(sessionId, "window.fetch = window.relayOriginalTerminalFetch; delete window.relayOriginalTerminalFetch; delete window.relayTerminalPollFailed");
   await evaluate(sessionId, "document.querySelector('.xterm-helper-textarea').focus()");
   await browser.command("Input.insertText", { text: "browser-keyboard\n" }, sessionId);
   const terminalOperations = await evaluate(
@@ -198,7 +211,7 @@ try {
       const resize = await post('/resize', { cols: 92, rows: 28 });
       let poll = { output: [] };
       for (let attempt = 0; attempt < 25; attempt += 1) {
-        poll = await fetch('/node/claude/sessions/' + sessionId + '?cursor=0', { credentials: 'same-origin' }).then((response) => response.json());
+        poll = await fetch('/node/claude/sessions/' + sessionId + '?trace=browser-smoke&cursor=0', { credentials: 'same-origin' }).then((response) => response.json());
         if (poll.output.some((chunk) => chunk.text.includes('browser-keyboard'))) break;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }

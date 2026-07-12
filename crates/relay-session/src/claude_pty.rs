@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError, TrySendError};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 #[cfg(all(unix, test))]
 use nix::{errno::Errno, sys::signal::kill};
@@ -57,6 +58,7 @@ const MIN_ROWS: u16 = 4;
 const MAX_ROWS: u16 = 300;
 const MIN_COLS: u16 = 20;
 const MAX_COLS: u16 = 500;
+const PTY_TERMINATION_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeOwnerContext {
@@ -177,6 +179,7 @@ struct ManagedSession {
     output: VecDeque<ScrollbackChunk>,
     output_bytes: usize,
     next_sequence: u64,
+    pending_utf8: Vec<u8>,
     terminal_seen: bool,
 }
 
@@ -187,6 +190,7 @@ struct ManagedSession {
 /// command, cwd, PID, or environment.
 pub struct NodePtyRuntime {
     owner: NodeOwnerContext,
+    launch_directory: PathBuf,
     /// Empty in production. Tests may inject a fixed fixture argument vector;
     /// no browser/API request can influence this field.
     arguments: Vec<String>,
@@ -202,8 +206,10 @@ impl Default for NodePtyRuntime {
 
 impl NodePtyRuntime {
     pub fn new(owner: NodeOwnerContext) -> Self {
+        let launch_directory = owner.home.clone();
         Self {
             owner,
+            launch_directory,
             arguments: Vec::new(),
             sessions: HashMap::new(),
             next_id: 1,
@@ -223,6 +229,7 @@ impl NodePtyRuntime {
     pub fn test_fixture_cat() -> Self {
         let mut runtime = Self::default();
         runtime.owner.claude_path = PathBuf::from("/bin/sh");
+        runtime.launch_directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         runtime.arguments = vec![
             "-c".into(),
             "trap 'exit 0' INT; while IFS= read -r line; do printf '%s\\n' \"$line\"; done".into(),
@@ -250,7 +257,7 @@ impl NodePtyRuntime {
         for argument in &self.arguments {
             command.arg(argument);
         }
-        command.cwd(self.owner.home());
+        command.cwd(&self.launch_directory);
         command.env("HOME", self.owner.home());
         command.env("USER", "donovanyohan");
         command.env("LOGNAME", "donovanyohan");
@@ -314,6 +321,7 @@ impl NodePtyRuntime {
                 output: VecDeque::new(),
                 output_bytes: 0,
                 next_sequence: 1,
+                pending_utf8: Vec::new(),
                 terminal_seen: false,
             },
         );
@@ -473,15 +481,12 @@ impl NodePtyRuntime {
 
     #[cfg(test)]
     fn new_with_program(owner: NodeOwnerContext, program: PathBuf, arguments: Vec<String>) -> Self {
-        Self {
-            owner: NodeOwnerContext {
-                home: owner.home,
-                claude_path: program,
-            },
-            arguments,
-            sessions: HashMap::new(),
-            next_id: 1,
-        }
+        let mut runtime = Self::new(owner);
+        runtime.owner.claude_path = program;
+        runtime.launch_directory =
+            std::env::current_dir().expect("test process has a working directory");
+        runtime.arguments = arguments;
+        runtime
     }
 }
 
@@ -490,7 +495,10 @@ impl ManagedSession {
         loop {
             match self.reader_rx.try_recv() {
                 Ok(ReaderEvent::Output(bytes)) => self.append_output(bytes),
-                Ok(ReaderEvent::Exit) => self.terminal_seen = true,
+                Ok(ReaderEvent::Exit) => {
+                    self.flush_pending_output();
+                    self.terminal_seen = true;
+                }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
@@ -511,11 +519,18 @@ impl ManagedSession {
     }
 
     fn append_output(&mut self, bytes: Vec<u8>) {
-        if bytes.is_empty() {
+        self.append_output_chunk(bytes, false);
+    }
+
+    fn flush_pending_output(&mut self) {
+        self.append_output_chunk(Vec::new(), true);
+    }
+
+    fn append_output_chunk(&mut self, bytes: Vec<u8>, finish: bool) {
+        let (text, bytes_len) = decode_terminal_output(&mut self.pending_utf8, bytes, finish);
+        if text.is_empty() {
             return;
         }
-        let bytes_len = bytes.len();
-        let text = String::from_utf8_lossy(&bytes).into_owned();
         let chunk = ScrollbackChunk {
             sequence: self.next_sequence,
             text,
@@ -546,6 +561,8 @@ impl ManagedSession {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
+        self.pump();
+        self.flush_pending_output();
         self.status = ClaudePtyStatus::Closed;
     }
 }
@@ -563,6 +580,53 @@ fn default_size() -> PtySize {
         pixel_width: 0,
         pixel_height: 0,
     }
+}
+
+fn decode_terminal_output(
+    pending: &mut Vec<u8>,
+    incoming: Vec<u8>,
+    finish: bool,
+) -> (String, usize) {
+    let mut bytes = std::mem::take(pending);
+    bytes.extend(incoming);
+
+    let mut input = bytes.as_slice();
+    let mut text = String::new();
+    let mut consumed: usize = 0;
+    while !input.is_empty() {
+        match std::str::from_utf8(input) {
+            Ok(valid) => {
+                text.push_str(valid);
+                consumed = consumed.saturating_add(input.len());
+                break;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                text.push_str(
+                    std::str::from_utf8(&input[..valid_up_to])
+                        .expect("UTF-8 error valid prefix is valid UTF-8"),
+                );
+                consumed = consumed.saturating_add(valid_up_to);
+                match error.error_len() {
+                    Some(invalid_len) => {
+                        text.push('\u{FFFD}');
+                        consumed = consumed.saturating_add(invalid_len);
+                        input = &input[valid_up_to + invalid_len..];
+                    }
+                    None if finish => {
+                        text.push('\u{FFFD}');
+                        consumed = consumed.saturating_add(input.len() - valid_up_to);
+                        break;
+                    }
+                    None => {
+                        pending.extend_from_slice(&input[valid_up_to..]);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    (text, consumed)
 }
 
 fn spawn_reader(
@@ -623,11 +687,18 @@ fn session_process_group(process_id: u32) -> Option<i32> {
 fn terminate_child(child: &mut Box<dyn Child + Send + Sync>, process_group: Option<i32>) {
     #[cfg(unix)]
     if let Some(process_group) = process_group {
-        // Terminate both the session leader and its PTY descendants. The
-        // immediate SIGKILL prevents a child that ignores SIGTERM from being
-        // orphaned after Relay closes the only retained handle.
+        // Terminate both the session leader and its PTY descendants. Give a
+        // cooperative TUI a bounded chance to handle SIGTERM before the final
+        // group kill guarantees Relay does not orphan descendants.
         let process_group = Pid::from_raw(process_group);
         let _ = killpg(process_group, Signal::SIGTERM);
+        let deadline = Instant::now() + PTY_TERMINATION_GRACE;
+        while Instant::now() < deadline {
+            if child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         let _ = killpg(process_group, Signal::SIGKILL);
     }
     let _ = child.kill();
@@ -714,6 +785,19 @@ mod tests {
         let runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "printf READY; cat"]);
         assert_eq!(runtime.owner().home(), Path::new(NODE_OWNER_HOME));
         assert_eq!(runtime.owner().claude_path(), Path::new("/bin/sh"));
+        assert!(runtime.launch_directory.is_dir());
+        assert_ne!(runtime.launch_directory, runtime.owner().home());
+    }
+
+    #[test]
+    fn production_runtime_fails_closed_when_the_owner_runtime_is_unavailable() {
+        let mut runtime = NodePtyRuntime::new(NodeOwnerContext {
+            home: PathBuf::from("/definitely/not/a-relay-owner-home"),
+            claude_path: PathBuf::from("/bin/sh"),
+        });
+
+        assert_eq!(runtime.create("device-a"), Err(ClaudePtyError::Unavailable));
+        assert!(runtime.sessions.is_empty());
     }
 
     #[test]
@@ -763,6 +847,35 @@ mod tests {
 
         assert_eq!(runtime.create("device-a"), Err(ClaudePtyError::Unavailable));
         assert!(runtime.sessions.is_empty());
+    }
+
+    #[test]
+    fn split_utf8_output_is_reassembled_without_replacement_characters() {
+        let mut pending = Vec::new();
+        let (first, first_bytes) =
+            decode_terminal_output(&mut pending, b"before \xF0\x9F".to_vec(), false);
+        assert_eq!(first, "before ");
+        assert_eq!(first_bytes, 7);
+        assert_eq!(pending, vec![0xF0, 0x9F]);
+
+        let (second, second_bytes) =
+            decode_terminal_output(&mut pending, b"\x98\x80 after".to_vec(), false);
+        assert_eq!(second, "😀 after");
+        assert_eq!(second_bytes, 10);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn incomplete_utf8_at_terminal_exit_is_replaced_once() {
+        let mut pending = Vec::new();
+        let (first, first_bytes) = decode_terminal_output(&mut pending, vec![0xF0, 0x9F], false);
+        assert_eq!(first, "");
+        assert_eq!(first_bytes, 0);
+
+        let (last, last_bytes) = decode_terminal_output(&mut pending, Vec::new(), true);
+        assert_eq!(last, "�");
+        assert_eq!(last_bytes, 2);
+        assert!(pending.is_empty());
     }
 
     #[test]

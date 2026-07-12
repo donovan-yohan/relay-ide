@@ -707,10 +707,22 @@ fn claude_session_id<'a>(path: &'a str, suffix: &str) -> Option<&'a str> {
 }
 
 fn terminal_cursor(query: Option<&str>) -> Option<u64> {
-    match query {
-        None => Some(0),
-        Some(query) => query.strip_prefix("cursor=")?.parse().ok(),
+    let Some(query) = query else {
+        return Some(0);
+    };
+    let mut cursor = None;
+    for parameter in query.split('&') {
+        let Some((key, value)) = parameter.split_once('=') else {
+            continue;
+        };
+        if key != "cursor" {
+            continue;
+        }
+        if cursor.replace(value.parse().ok()?).is_some() {
+            return None;
+        }
     }
+    Some(cursor.unwrap_or(0))
 }
 
 fn terminal_input(body: &str) -> Option<String> {
@@ -963,5 +975,15 @@ mod tests {
                 "cookie: {cookie}"
             );
         }
+    }
+
+    #[test]
+    fn terminal_cursor_accepts_unrelated_parameters_and_rejects_ambiguous_cursor_values() {
+        assert_eq!(terminal_cursor(None), Some(0));
+        assert_eq!(terminal_cursor(Some("trace=browser&cursor=42")), Some(42));
+        assert_eq!(terminal_cursor(Some("cursor=42&trace=browser")), Some(42));
+        assert_eq!(terminal_cursor(Some("trace=browser")), Some(0));
+        assert_eq!(terminal_cursor(Some("cursor=not-a-number")), None);
+        assert_eq!(terminal_cursor(Some("cursor=1&cursor=2")), None);
     }
 }

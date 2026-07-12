@@ -4,6 +4,7 @@ import {
   isPasskeySupported,
   presentationForAuthError,
 } from "./auth.js";
+import { createTerminalInputQueue } from "./terminal-input.js";
 import {
   MAX_PANE_COUNT,
   MAX_TAB_COUNT,
@@ -369,11 +370,23 @@ function mountTerminal(sessionId, host, status) {
     resizeTimer: null,
     resizeObserver: null,
     inputSubscription: null,
+    inputQueue: null,
     cols: 0,
     rows: 0,
   };
   terminalRuntime = runtime;
-  runtime.inputSubscription = terminal.onData((data) => void sendTerminalInput(runtime, data));
+  runtime.inputQueue = createTerminalInputQueue({
+    isActive: () => terminalRuntime === runtime,
+    send: (data) => request(`/node/claude/sessions/${runtime.sessionId}/input`, {
+      method: "POST",
+      headers: { "X-Relay-CSRF": csrfToken() },
+      body: JSON.stringify({ data }),
+    }),
+    onError: (error) => {
+      if (terminalRuntime === runtime) runtime.status.textContent = `Input rejected: ${terminalErrorMessage(error)}`;
+    },
+  });
+  runtime.inputSubscription = terminal.onData((data) => runtime.inputQueue.enqueue(data));
   if (typeof ResizeObserver === "function") {
     runtime.resizeObserver = new ResizeObserver(() => {
       if (runtime.resizeTimer !== null) return;
@@ -394,6 +407,7 @@ function disposeTerminal() {
   clearTimeout(terminalRuntime.resizeTimer);
   terminalRuntime.resizeObserver?.disconnect();
   terminalRuntime.inputSubscription?.dispose();
+  terminalRuntime.inputQueue?.dispose();
   terminalRuntime.terminal.dispose();
   terminalRuntime = null;
 }
@@ -409,21 +423,17 @@ async function pollTerminal(runtime) {
     if (["closed", "exited"].includes(snapshot.status)) return;
     runtime.timer = window.setTimeout(() => void pollTerminal(runtime), snapshot.hasMore ? 0 : 100);
   } catch (error) {
-    if (terminalRuntime === runtime) runtime.status.textContent = `Terminal unavailable: ${terminalErrorMessage(error)}`;
+    if (terminalRuntime === runtime) {
+      runtime.status.textContent = `Terminal unavailable: ${terminalErrorMessage(error)}`;
+      if (shouldRetryTerminalPoll(error)) {
+        runtime.timer = window.setTimeout(() => void pollTerminal(runtime), 1_000);
+      }
+    }
   }
 }
 
-async function sendTerminalInput(runtime, data) {
-  if (terminalRuntime !== runtime || !data) return;
-  try {
-    await request(`/node/claude/sessions/${runtime.sessionId}/input`, {
-      method: "POST",
-      headers: { "X-Relay-CSRF": csrfToken() },
-      body: JSON.stringify({ data }),
-    });
-  } catch (error) {
-    if (terminalRuntime === runtime) runtime.status.textContent = `Input rejected: ${terminalErrorMessage(error)}`;
-  }
+function shouldRetryTerminalPoll(error) {
+  return !error?.code || error.code === "pty_transport";
 }
 
 async function resizeTerminal(runtime) {
@@ -449,6 +459,7 @@ function terminalErrorMessage(error) {
   const code = error?.code;
   if (code === "stale_session") return "This Session belongs to a prior node runtime. Open a new terminal explicitly.";
   if (code === "claude_unavailable") return "Claude Code could not start in the node-owner context.";
+  if (code === "input_backpressure") return "Terminal input is temporarily backlogged. Wait for Relay to catch up.";
   return presentationForAuthError(error).message;
 }
 
