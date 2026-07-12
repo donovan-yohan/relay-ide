@@ -381,23 +381,9 @@ try {
     403,
     "a browser session must never become node authority",
   );
-  const pendingOwnerCleanupLine = "relay Claude PTY owner cleanup remains pending for retry";
-  const pendingOwnerCleanupCount = () => hubAddress.output().split(`${pendingOwnerCleanupLine}\n`).length - 1;
-  assert.equal(
-    await evaluate(sessionId, "fetch('/health').then((response) => response.status)"),
-    200,
-    "the request-driven teardown scheduler must remain available after revocation",
-  );
-  const pendingOwnerCleanupAfterProbe = pendingOwnerCleanupCount();
-  assert.equal(await evaluate(sessionId, "fetch('/health').then((response) => response.status)"), 200);
-  assert.equal(
-    pendingOwnerCleanupCount(),
-    pendingOwnerCleanupAfterProbe,
-    "owner cleanup must converge instead of logging an unbounded request-driven retry loop",
-  );
   assert.match(
     hubAddress.output(),
-    /^relay-hub liveness listening on 127\.0\.0\.1:\d+\n(?:relay Claude PTY owner cleanup remains pending for retry\n)*$/,
+    /^relay-hub liveness listening on 127\.0\.0\.1:\d+\n$/,
     "the real WebAuthn enrollment, assertion, session, and revoke path must not append credential or session material to hub logs",
   );
 
