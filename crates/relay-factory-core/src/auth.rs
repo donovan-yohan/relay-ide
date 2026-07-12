@@ -62,6 +62,7 @@ struct AuthState {
     passkeys: Vec<Passkey>,
     ceremonies: HashMap<[u8; 32], PendingCeremony>,
     sessions: HashMap<[u8; 32], StoredSession>,
+    invalidated_device_ids: Vec<String>,
 }
 
 impl AuthState {
@@ -70,13 +71,33 @@ impl AuthState {
             passkeys: Vec::new(),
             ceremonies: HashMap::new(),
             sessions: HashMap::new(),
+            invalidated_device_ids: Vec::new(),
         }
     }
 
     fn discard_expired(&mut self, now: Instant) {
         self.ceremonies
             .retain(|_, ceremony| ceremony.expires_at() > now);
+        let expired_devices = self
+            .sessions
+            .values()
+            .filter(|session| session.expires_at <= now)
+            .map(|session| session.device_id.clone())
+            .collect::<Vec<_>>();
         self.sessions.retain(|_, session| session.expires_at > now);
+        for device_id in expired_devices {
+            self.invalidate_device(device_id);
+        }
+    }
+
+    fn invalidate_device(&mut self, device_id: String) {
+        if !self.invalidated_device_ids.contains(&device_id) {
+            self.invalidated_device_ids.push(device_id);
+        }
+    }
+
+    fn take_invalidated_device_ids(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.invalidated_device_ids)
     }
 }
 
@@ -298,6 +319,16 @@ impl AuthBoundary {
             .ok_or(AuthError::SessionMissing)
     }
 
+    /// Return device identities whose browser authority was removed by TTL,
+    /// explicit revocation, or oldest-session eviction. Resource owners can
+    /// reap their handles without receiving an opaque browser session token.
+    pub fn take_invalidated_device_ids(&self) -> Result<Vec<String>, AuthError> {
+        self.state
+            .lock()
+            .map(|mut state| state.take_invalidated_device_ids())
+            .map_err(|_| AuthError::Internal)
+    }
+
     pub fn require_csrf(&self, session_token: &str, csrf_token: &str) -> Result<(), AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
         state.discard_expired(Instant::now());
@@ -351,6 +382,7 @@ impl AuthBoundary {
         if state.sessions.len() == before {
             Err(AuthError::SessionMissing)
         } else {
+            state.invalidate_device(device_id.to_owned());
             Ok(())
         }
     }
@@ -419,7 +451,9 @@ fn issue_session(state: &mut AuthState) -> Result<SessionGrant, AuthError> {
             .min_by_key(|(_, session)| session.created_at)
             .map(|(key, _)| *key)
             .ok_or(AuthError::Internal)?;
-        state.sessions.remove(&oldest);
+        if let Some(evicted) = state.sessions.remove(&oldest) {
+            state.invalidate_device(evicted.device_id);
+        }
     }
 
     let session_token = random_token(32)?;
@@ -523,6 +557,85 @@ mod tests {
                 .finish_registration(&ceremony.ceremony_id, "{}")
                 .unwrap_err(),
             AuthError::UnknownCeremony
+        );
+    }
+
+    #[test]
+    fn session_invalidations_record_ttl_expiry_and_capacity_eviction() {
+        let boundary = boundary();
+        let expired_token = "expired-session";
+        {
+            let mut state = boundary.state.lock().expect("auth state");
+            state.sessions.insert(
+                hash_secret(expired_token.as_bytes()),
+                StoredSession {
+                    csrf_hash: hash_secret(b"expired-csrf"),
+                    device_id: "expired-device".into(),
+                    created_at: Instant::now() - Duration::from_secs(2),
+                    expires_at: Instant::now() - Duration::from_secs(1),
+                },
+            );
+        }
+        assert_eq!(
+            boundary.require_session(expired_token),
+            Err(AuthError::SessionMissing)
+        );
+        assert_eq!(
+            boundary.take_invalidated_device_ids().unwrap(),
+            vec!["expired-device"]
+        );
+
+        {
+            let mut state = boundary.state.lock().expect("auth state");
+            let now = Instant::now();
+            state.sessions.insert(
+                hash_secret(b"requester"),
+                StoredSession {
+                    csrf_hash: hash_secret(b"requester-csrf"),
+                    device_id: "requester-device".into(),
+                    created_at: now,
+                    expires_at: now + SESSION_TTL,
+                },
+            );
+            state.sessions.insert(
+                hash_secret(b"revoked"),
+                StoredSession {
+                    csrf_hash: hash_secret(b"revoked-csrf"),
+                    device_id: "revoked-device".into(),
+                    created_at: now,
+                    expires_at: now + SESSION_TTL,
+                },
+            );
+        }
+        boundary
+            .revoke_session("requester", "requester-csrf", "revoked-device")
+            .expect("live session can revoke the target device");
+        assert_eq!(
+            boundary.take_invalidated_device_ids().unwrap(),
+            vec!["revoked-device"]
+        );
+
+        let capacity_boundary = self::boundary();
+        {
+            let mut state = capacity_boundary.state.lock().expect("auth state");
+            let now = Instant::now();
+            for index in 0..MAX_SESSIONS {
+                let token = format!("session-{index}");
+                state.sessions.insert(
+                    hash_secret(token.as_bytes()),
+                    StoredSession {
+                        csrf_hash: hash_secret(token.as_bytes()),
+                        device_id: format!("device-{index}"),
+                        created_at: now + Duration::from_secs(index as u64),
+                        expires_at: now + SESSION_TTL,
+                    },
+                );
+            }
+            issue_session(&mut state).expect("capacity eviction issues a replacement");
+        }
+        assert_eq!(
+            capacity_boundary.take_invalidated_device_ids().unwrap(),
+            vec!["device-0"]
         );
     }
 }

@@ -353,7 +353,7 @@ fn route_request(
     runtime: &HubRuntime,
 ) -> String {
     let auth = runtime.auth.as_deref();
-    match (request.method, request.path) {
+    let response = match (request.method, request.path) {
         ("GET", "/health") => health_http_response(identity),
         ("POST", "/auth/passkeys/enroll/options") => start_enrollment_response(request, auth),
         ("POST", "/auth/passkeys/enroll/verify") => finish_enrollment_response(request, auth),
@@ -380,7 +380,9 @@ fn route_request(
             close_claude_session_response(request, runtime)
         }
         _ => not_found_http_response(),
-    }
+    };
+    reap_invalidated_owner_sessions(runtime);
+    response
 }
 
 fn start_enrollment_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>) -> String {
@@ -522,12 +524,37 @@ fn revoke_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> S
         Some(device_id) => device_id,
         None => return auth_error_response(400, "invalid_request", &[]),
     };
-    match auth.revoke_session(session, csrf, &device_id) {
-        Ok(()) => {
-            pty.close_owner_sessions(&device_id);
-            json_response(200, "{\"status\":\"revoked\"}", &[])
-        }
+    let result = auth.revoke_session(session, csrf, &device_id);
+    reap_invalidated_owner_sessions_locked(&mut pty, auth);
+    match result {
+        Ok(()) => json_response(200, "{\"status\":\"revoked\"}", &[]),
         Err(error) => auth_error_response(auth_error_status(&error), error.code(), &[]),
+    }
+}
+
+fn reap_invalidated_owner_sessions(runtime: &HubRuntime) {
+    let Some(auth) = runtime.auth.as_deref() else {
+        return;
+    };
+    let owner_ids = match auth.take_invalidated_device_ids() {
+        Ok(owner_ids) => owner_ids,
+        Err(_) => return,
+    };
+    if owner_ids.is_empty() {
+        return;
+    }
+    if let Ok(mut pty) = runtime.pty.lock() {
+        for owner_id in owner_ids {
+            pty.close_owner_sessions(&owner_id);
+        }
+    }
+}
+
+fn reap_invalidated_owner_sessions_locked(pty: &mut NodePtyRuntime, auth: &AuthBoundary) {
+    if let Ok(owner_ids) = auth.take_invalidated_device_ids() {
+        for owner_id in owner_ids {
+            pty.close_owner_sessions(&owner_id);
+        }
     }
 }
 
@@ -551,7 +578,11 @@ fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntim
         Ok(pty) => pty,
         Err(_) => return auth_error_response(500, "internal", &[]),
     };
-    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
+    let owner = terminal_owner(request, runtime.auth.as_deref(), true);
+    if let Some(auth) = runtime.auth.as_deref() {
+        reap_invalidated_owner_sessions_locked(&mut pty, auth);
+    }
+    let owner = match owner {
         Ok(owner) => owner,
         Err(response) => return response,
     };
@@ -772,7 +803,9 @@ fn claude_pty_error_response(error: ClaudePtyError) -> String {
         ClaudePtyError::Forbidden => 403,
         ClaudePtyError::InvalidInput | ClaudePtyError::InvalidResize => 400,
         ClaudePtyError::Capacity | ClaudePtyError::StaleHandle => 409,
-        ClaudePtyError::Unavailable | ClaudePtyError::Transport => 503,
+        ClaudePtyError::Backpressure | ClaudePtyError::Unavailable | ClaudePtyError::Transport => {
+            503
+        }
     };
     auth_error_response(status, error.code(), &[])
 }

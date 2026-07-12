@@ -144,10 +144,31 @@ test("terminal input bounds queued bytes without reordering accepted input", asy
   queue.enqueue("one");
   await eventually(() => sent.length === 1);
   queue.enqueue("abc");
-  queue.enqueue("de");
   assert.deepEqual(errors, [{ code: "input_backpressure" }]);
 
   first.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  queue.enqueue("de");
   await eventually(() => sent.length === 2);
-  assert.deepEqual(sent, ["one", "abc"]);
+  assert.deepEqual(sent, ["one", "de"]);
+});
+
+test("terminal input retains an unaccepted server-backpressure batch", async () => {
+  const sent = [];
+  const errors = [];
+  let attempts = 0;
+  const queue = createTerminalInputQueue({
+    isActive: () => true,
+    send: async (data) => {
+      sent.push(data);
+      attempts += 1;
+      if (attempts === 1) throw { code: "input_backpressure" };
+    },
+    onError: (error) => errors.push(error),
+  });
+
+  queue.enqueue("first");
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.deepEqual(sent, ["first", "first"]);
+  assert.deepEqual(errors, []);
 });

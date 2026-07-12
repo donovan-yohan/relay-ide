@@ -34,20 +34,30 @@ export function createTerminalInputQueue({
   let pendingBytes = 0;
   let sending = false;
   let disposed = false;
+  let retryTimer = null;
 
   async function flush() {
     if (disposed || sending || !isActive() || !pending) return;
     const [data, remaining] = takeTerminalInputBatch(pending, maxBytes);
     pending = remaining;
-    pendingBytes -= encoder.encode(data).byteLength;
     sending = true;
     try {
       await send(data);
+      pendingBytes -= encoder.encode(data).byteLength;
     } catch (error) {
-      if (!disposed && isActive()) onError(error);
+      if (!disposed && isActive() && error?.code === "input_backpressure") {
+        pending = data + pending;
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          void flush();
+        }, 50);
+      } else if (!disposed && isActive()) {
+        pendingBytes -= encoder.encode(data).byteLength;
+        onError(error);
+      }
     } finally {
       sending = false;
-      if (!disposed && isActive() && pending) void flush();
+      if (!disposed && isActive() && pending && retryTimer === null) void flush();
     }
   }
 
@@ -65,6 +75,8 @@ export function createTerminalInputQueue({
     },
     dispose() {
       disposed = true;
+      clearTimeout(retryTimer);
+      retryTimer = null;
       pending = "";
       pendingBytes = 0;
     },

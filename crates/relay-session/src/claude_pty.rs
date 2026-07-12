@@ -20,7 +20,7 @@ use nix::{errno::Errno, sys::signal::kill};
 #[cfg(unix)]
 use nix::{
     sys::signal::{Signal, killpg},
-    unistd::{Pid, getpgid},
+    unistd::Pid,
 };
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
@@ -51,6 +51,8 @@ pub const PTY_SCROLLBACK_BYTES: usize = 256 * 1024;
 pub const PTY_DELIVERY_BYTES: usize = 4 * 1024;
 /// Input is a keystroke payload, not an unbounded upload channel.
 pub const PTY_INPUT_BYTES: usize = 8 * 1024;
+/// Input is staged before it reaches the potentially blocking PTY writer.
+pub const PTY_INPUT_QUEUE_CAP: usize = 8;
 /// One small node runtime is deliberately capped before it becomes a terminal
 /// platform or a hidden process farm.
 pub const MAX_PTY_SESSIONS: usize = 8;
@@ -110,6 +112,7 @@ pub enum ClaudePtyError {
     Forbidden,
     InvalidInput,
     InvalidResize,
+    Backpressure,
     Transport,
 }
 
@@ -122,6 +125,7 @@ impl ClaudePtyError {
             Self::Forbidden => "session_forbidden",
             Self::InvalidInput => "invalid_input",
             Self::InvalidResize => "invalid_resize",
+            Self::Backpressure => "input_backpressure",
             Self::Transport => "pty_transport",
         }
     }
@@ -165,13 +169,34 @@ struct ScrollbackChunk {
     bytes: usize,
 }
 
+struct PtyInput {
+    sender: mpsc::SyncSender<Vec<u8>>,
+    worker: JoinHandle<()>,
+}
+
+impl PtyInput {
+    fn enqueue(&self, data: &[u8]) -> Result<(), ClaudePtyError> {
+        match self.sender.try_send(data.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(ClaudePtyError::Backpressure),
+            Err(TrySendError::Disconnected(_)) => Err(ClaudePtyError::Transport),
+        }
+    }
+
+    fn finish(self) {
+        let Self { sender, worker } = self;
+        drop(sender);
+        let _ = worker.join();
+    }
+}
+
 struct ManagedSession {
     owner_device_id: String,
     status: ClaudePtyStatus,
     child: Option<Box<dyn Child + Send + Sync>>,
     process_group: Option<i32>,
     master: Option<Box<dyn MasterPty + Send>>,
-    writer: Option<Box<dyn Write + Send>>,
+    input: Option<PtyInput>,
     reader: Option<JoinHandle<()>>,
     reader_rx: Receiver<ReaderEvent>,
     reader_stop: Arc<AtomicBool>,
@@ -272,18 +297,34 @@ impl NodePtyRuntime {
             .map_err(|_| ClaudePtyError::Unavailable)?;
         drop(pair.slave);
         let process_group = child.process_id().and_then(session_process_group);
+        #[cfg(unix)]
+        if process_group.is_none() {
+            // Do not admit a Session whose descendants could not be reaped as
+            // a Relay-owned group. portable-pty supplies this on Unix; a
+            // missing identity is a fail-closed transport setup failure.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ClaudePtyError::Transport);
+        }
         let reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(_) => {
-                terminate_child(&mut child, process_group);
+                terminate_child(&mut child, Some(pair.master.as_ref()), process_group);
                 return Err(ClaudePtyError::Transport);
             }
         };
         let writer = match pair.master.take_writer() {
             Ok(writer) => writer,
             Err(_) => {
-                terminate_child(&mut child, process_group);
+                terminate_child(&mut child, Some(pair.master.as_ref()), process_group);
                 return Err(ClaudePtyError::Transport);
+            }
+        };
+        let input = match spawn_input_writer(writer) {
+            Ok(input) => input,
+            Err(error) => {
+                terminate_child(&mut child, Some(pair.master.as_ref()), process_group);
+                return Err(error);
             }
         };
         let (reader_tx, reader_rx) = mpsc::sync_channel(PTY_INBOUND_CAP);
@@ -297,8 +338,8 @@ impl NodePtyRuntime {
         ) {
             Ok(reader_thread) => reader_thread,
             Err(error) => {
-                drop(writer);
-                terminate_child(&mut child, process_group);
+                input.finish();
+                terminate_child(&mut child, Some(pair.master.as_ref()), process_group);
                 return Err(error);
             }
         };
@@ -313,7 +354,7 @@ impl NodePtyRuntime {
                 child: Some(child),
                 process_group,
                 master: Some(pair.master),
-                writer: Some(writer),
+                input: Some(input),
                 reader: Some(reader_thread),
                 reader_rx,
                 reader_stop,
@@ -388,11 +429,11 @@ impl NodePtyRuntime {
         if session.status == ClaudePtyStatus::Closed || session.status == ClaudePtyStatus::Exited {
             return Err(ClaudePtyError::StaleHandle);
         }
-        let writer = session.writer.as_mut().ok_or(ClaudePtyError::StaleHandle)?;
-        writer
-            .write_all(data.as_bytes())
-            .and_then(|()| writer.flush())
-            .map_err(|_| ClaudePtyError::Transport)
+        session
+            .input
+            .as_ref()
+            .ok_or(ClaudePtyError::StaleHandle)?
+            .enqueue(data.as_bytes())
     }
 
     pub fn resize(
@@ -576,12 +617,15 @@ impl ManagedSession {
             return;
         }
         self.reader_stop.store(true, Ordering::Release);
-        self.writer.take();
+        let input = self.input.take();
         if let Some(child) = self.child.as_mut() {
-            terminate_child(child, self.process_group);
+            terminate_child(child, self.master.as_deref(), self.process_group);
         }
         self.child.take();
         self.master.take();
+        if let Some(input) = input {
+            input.finish();
+        }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -692,14 +736,33 @@ fn spawn_reader(
         .map_err(|_| ClaudePtyError::Transport)
 }
 
+fn spawn_input_writer(mut writer: Box<dyn Write + Send>) -> Result<PtyInput, ClaudePtyError> {
+    let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(PTY_INPUT_QUEUE_CAP);
+    let worker = thread::Builder::new()
+        .name("relay-claude-pty-writer".into())
+        .spawn(move || {
+            while let Ok(data) = receiver.recv() {
+                if writer
+                    .write_all(&data)
+                    .and_then(|()| writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .map_err(|_| ClaudePtyError::Transport)?;
+    Ok(PtyInput { sender, worker })
+}
+
 fn session_process_group(process_id: u32) -> Option<i32> {
     #[cfg(unix)]
     {
-        let process_id = i32::try_from(process_id).ok()?;
-        // portable-pty creates the child as a new session leader. Require its
-        // process group to match the leader PID before ever signalling a group.
-        let process_group = getpgid(Some(Pid::from_raw(process_id))).ok()?.as_raw();
-        (process_group == process_id).then_some(process_group)
+        // portable-pty establishes a new session before exec, so the child PID
+        // is its process-group ID even if the leader exits before Relay closes
+        // the Session. Close verifies the PTY's foreground group before
+        // signalling it, preventing stale numeric PID reuse from escaping.
+        i32::try_from(process_id).ok()
     }
     #[cfg(not(unix))]
     {
@@ -708,12 +771,19 @@ fn session_process_group(process_id: u32) -> Option<i32> {
     }
 }
 
-fn terminate_child(child: &mut Box<dyn Child + Send + Sync>, process_group: Option<i32>) {
+fn terminate_child(
+    child: &mut Box<dyn Child + Send + Sync>,
+    master: Option<&(dyn MasterPty + Send)>,
+    process_group: Option<i32>,
+) {
     #[cfg(unix)]
-    if let Some(process_group) = process_group {
+    if let Some(process_group) = process_group.filter(|process_group| {
+        master.and_then(|master| master.process_group_leader()) == Some(*process_group)
+    }) {
         // Terminate both the session leader and its PTY descendants. Give a
         // cooperative TUI a bounded chance to handle SIGTERM before the final
-        // group kill guarantees Relay does not orphan descendants.
+        // group kill guarantees Relay does not orphan descendants. Checking
+        // the PTY-local foreground group avoids signalling a reused numeric ID.
         let process_group = Pid::from_raw(process_group);
         let _ = killpg(process_group, Signal::SIGTERM);
         thread::sleep(PTY_TERMINATION_GRACE);
@@ -843,6 +913,23 @@ mod tests {
         runtime
             .input(session.as_str(), "device-a", "ping\n")
             .unwrap();
+        loop {
+            let snapshot = runtime
+                .poll(session.as_str(), "device-a", first.next_cursor)
+                .unwrap();
+            if snapshot
+                .output
+                .iter()
+                .any(|chunk| chunk.text.contains("ping"))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "accepted terminal input did not reach the PTY"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
         runtime
             .resize(session.as_str(), "device-a", 100, 40)
             .unwrap();
@@ -1062,5 +1149,113 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delayed_close_after_leader_exit_reaps_the_remaining_pty_group() {
+        let mut runtime = NodePtyRuntime::test_runtime(
+            "/bin/sh",
+            &[
+                "-c",
+                "sh -c 'trap \"\" TERM; while :; do sleep 1; done' & child=$!; printf 'CHILD:%s\\n' \"$child\"; exit 0",
+            ],
+        );
+        let session = runtime.create("device-a").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let child_pid = loop {
+            let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+            if let Some(pid) = snapshot.output.iter().find_map(|chunk| {
+                chunk
+                    .text
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix("CHILD:")?.parse::<i32>().ok())
+            }) {
+                break pid;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "test PTY did not report descendant PID"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        loop {
+            let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+            if snapshot.status == ClaudePtyStatus::Exited {
+                break;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "leader did not exit while its PTY descendant remained alive"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        thread::sleep(Duration::from_millis(50));
+        runtime.close(session.as_str(), "device-a").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if kill(Pid::from_raw(child_pid), None) == Err(Errno::ESRCH) {
+                break;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "delayed Relay close left a descendant or blocked PTY reader alive"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn non_reader_input_backpressure_does_not_wedge_close() {
+        let mut runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "sleep 30"]);
+        let session = runtime.create("device-a").unwrap();
+        let input = "x".repeat(PTY_INPUT_BYTES);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if runtime.input(session.as_str(), "device-a", &input)
+                == Err(ClaudePtyError::Backpressure)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "non-reading PTY never applied bounded input backpressure"
+            );
+        }
+
+        let started = Instant::now();
+        runtime.close(session.as_str(), "device-a").unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a blocked PTY writer must not wedge terminal close"
+        );
+    }
+
+    #[test]
+    fn non_reader_input_backpressure_does_not_wedge_owner_revoke() {
+        let mut runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "sleep 30"]);
+        let session = runtime.create("device-revoked").unwrap();
+        let input = "x".repeat(PTY_INPUT_BYTES);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if runtime.input(session.as_str(), "device-revoked", &input)
+                == Err(ClaudePtyError::Backpressure)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "non-reading PTY never applied bounded input backpressure"
+            );
+        }
+
+        let started = Instant::now();
+        runtime.close_owner_sessions("device-revoked");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a blocked PTY writer must not wedge owner-session reaping"
+        );
+        assert!(!runtime.sessions.contains_key(session.as_str()));
     }
 }
