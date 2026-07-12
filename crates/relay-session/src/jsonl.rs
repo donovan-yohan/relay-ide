@@ -182,49 +182,71 @@ pub fn redact_secrets(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'"' {
-            if let Some((key_end, key)) = read_json_key(bytes, i) {
+            if let Some(key_end) = string_end(bytes, i) {
                 let after_key = skip_ws(bytes, key_end);
                 let value_start = skip_ws(bytes, after_key.saturating_add(1));
                 if after_key < bytes.len()
                     && bytes[after_key] == b':'
                     && value_start < bytes.len()
                     && bytes[value_start] == b'"'
-                    && SECRET_KEYS.contains(&key.to_ascii_lowercase().as_str())
+                    && SECRET_KEYS.contains(
+                        &unescape_ascii(&bytes[i + 1..key_end - 1])
+                            .to_ascii_lowercase()
+                            .as_str(),
+                    )
                     && let Some(value_end) = string_end(bytes, value_start)
                 {
-                    output.push('"');
-                    output.push_str(&key);
-                    output.push('"');
-                    output.push_str(&input[key_end..after_key + 1]);
+                    output.push_str(&input[i..value_start]);
                     output.push_str("\"[redacted]\"");
                     i = value_end;
                     continue;
                 }
+
+                output.push('"');
+                append_redacted_tokens(input, i + 1, key_end - 1, &mut output);
+                output.push('"');
+                i = key_end;
+                continue;
             }
         }
-        if starts_with_ci(&bytes[i..], b"bearer ") {
-            output.push_str("Bearer [redacted]");
-            i += 7;
-            while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'"' {
-                i += 1;
-            }
-            continue;
+        let end = bytes[i..]
+            .iter()
+            .position(|byte| *byte == b'"')
+            .map_or(bytes.len(), |offset| i + offset);
+        if end == i {
+            output.push('"');
+            i += 1;
+        } else {
+            append_redacted_tokens(input, i, end, &mut output);
+            i = end;
         }
-        if starts_with_ci(&bytes[i..], b"sk-") && is_token_boundary(bytes, i) {
-            output.push_str("sk-[redacted]");
-            i += 3;
-            while i < bytes.len()
-                && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'-' | b'_'))
-            {
-                i += 1;
-            }
-            continue;
-        }
-        let end = (i + utf8_len(bytes[i])).min(bytes.len());
-        output.push_str(&input[i..end]);
-        i = end;
     }
     output
+}
+
+fn append_redacted_tokens(input: &str, mut i: usize, end: usize, output: &mut String) {
+    let bytes = input.as_bytes();
+    while i < end {
+        if starts_with_ci(&bytes[i..end], b"bearer ") {
+            output.push_str("Bearer [redacted]");
+            i += 7;
+            while i < end && !bytes[i].is_ascii_whitespace() && bytes[i] != b'"' {
+                i += 1;
+            }
+            continue;
+        }
+        if starts_with_ci(&bytes[i..end], b"sk-") && is_token_boundary(bytes, i) {
+            output.push_str("sk-[redacted]");
+            i += 3;
+            while i < end && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'-' | b'_')) {
+                i += 1;
+            }
+            continue;
+        }
+        let character_end = (i + utf8_len(bytes[i])).min(end);
+        output.push_str(&input[i..character_end]);
+        i = character_end;
+    }
 }
 
 fn string_end(bytes: &[u8], start: usize) -> Option<usize> {
@@ -237,11 +259,6 @@ fn string_end(bytes: &[u8], start: usize) -> Option<usize> {
         }
     }
     None
-}
-
-fn read_json_key(bytes: &[u8], start: usize) -> Option<(usize, String)> {
-    let end = string_end(bytes, start)?;
-    Some((end, unescape_ascii(&bytes[start + 1..end - 1])))
 }
 
 fn unescape_ascii(bytes: &[u8]) -> String {
@@ -315,6 +332,7 @@ const fn utf8_len(first: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn classifies_notification_response_and_server_request() {
@@ -341,6 +359,40 @@ mod tests {
         let frame = scan_line(br#"{"method":"item/completed","params":{"text":"a } { \" nested","obj":{"k":[1,2,{"z":"}"}]}}}"#).unwrap();
         assert_eq!(frame.class, FrameClass::Notification);
         assert_eq!(frame.method.as_deref(), Some("item/completed"));
+    }
+
+    #[test]
+    fn escaped_quotes_in_non_secret_notifications_scale_linearly() {
+        fn notification(escaped_quotes: usize) -> Vec<u8> {
+            let mut line = b"{\"method\":\"item/completed\",\"params\":{\"note\":\"".to_vec();
+            for _ in 0..escaped_quotes {
+                line.push(b'\\');
+                line.push(b'\"');
+            }
+            line.extend_from_slice(b"\"}}");
+            line
+        }
+
+        let small = notification(15_000);
+        let large = notification(30_000);
+        assert!(large.len() < MAX_LINE_BYTES);
+
+        let started = Instant::now();
+        let small_frame = scan_line(&small).unwrap();
+        let small_elapsed = started.elapsed();
+        assert_eq!(small_frame.class, FrameClass::Notification);
+
+        let started = Instant::now();
+        let large_frame = scan_line(&large).unwrap();
+        let large_elapsed = started.elapsed();
+        assert_eq!(large_frame.class, FrameClass::Notification);
+
+        assert!(
+            large_elapsed <= small_elapsed.saturating_mul(3) + Duration::from_millis(50),
+            "expected linear scaling, got {small_elapsed:?} for {} bytes and {large_elapsed:?} for {} bytes",
+            small.len(),
+            large.len(),
+        );
     }
 
     #[test]
