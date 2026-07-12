@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TrySendError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use filedescriptor::FileDescriptor;
@@ -25,12 +25,6 @@ use nix::{
     unistd::{Pid, getpgid, getsid},
 };
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
-#[cfg(target_os = "linux")]
-use rustix::{
-    event::{PollFd, PollFlags, Timespec, poll},
-    fd::OwnedFd,
-    process::{Pid as LinuxPid, PidfdFlags, pidfd_open},
-};
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, RawFd};
 
@@ -76,6 +70,8 @@ const MIN_COLS: u16 = 20;
 const MAX_COLS: u16 = 500;
 const PTY_TERMINATION_GRACE: Duration = Duration::from_millis(250);
 const PTY_REAPER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const PTY_REAPER_DEADLINE: Duration = Duration::from_secs(1);
+const PTY_REAPER_MAX_ATTEMPTS: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeOwnerContext {
@@ -255,24 +251,6 @@ impl AsRawFd for MasterFd {
     }
 }
 
-#[cfg(target_os = "linux")]
-struct PtyForegroundGroup {
-    process_group: i32,
-    leader_pidfd: OwnedFd,
-}
-
-#[cfg(target_os = "linux")]
-impl PtyForegroundGroup {
-    fn is_live(&self) -> bool {
-        let mut fds = [PollFd::new(&self.leader_pidfd, PollFlags::IN)];
-        poll(&mut fds, Some(&Timespec::default())).is_ok_and(|ready| ready == 0)
-    }
-
-    fn is_signalable(&self) -> bool {
-        self.is_live()
-    }
-}
-
 #[cfg(not(target_os = "linux"))]
 struct PtyOwnership {
     process_group: i32,
@@ -295,6 +273,20 @@ struct ManagedSession {
     next_sequence: u64,
     pending_utf8: Vec<u8>,
     terminal_seen: bool,
+    foreign_foreground_seen: bool,
+}
+
+/// A session removed from the runtime mutex before its bounded termination
+/// grace begins. The hub finishes this outside the runtime lock so one slow
+/// close cannot serialize unrelated terminal control requests.
+pub struct PtyTermination {
+    session_id: SessionId,
+    child: Option<Box<dyn Child + Send + Sync>>,
+    process_group: Option<PtyOwnership>,
+    master: Option<Box<dyn MasterPty + Send>>,
+    reader: Option<JoinHandle<()>>,
+    next_cursor: u64,
+    dropped_chunks: u64,
 }
 
 /// The node-local source of truth for Relay-owned Claude PTY Session handles.
@@ -400,7 +392,7 @@ impl NodePtyRuntime {
         let reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(_) => {
-                terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
+                let _ = terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
                 return Err(ClaudePtyError::Transport);
             }
         };
@@ -411,7 +403,7 @@ impl NodePtyRuntime {
         {
             Ok(input) => input,
             Err(error) => {
-                terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
+                let _ = terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
                 return Err(error);
             }
         };
@@ -429,7 +421,7 @@ impl NodePtyRuntime {
             Ok(reader_thread) => reader_thread,
             Err(error) => {
                 input.finish();
-                terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
+                let _ = terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
                 return Err(error);
             }
         };
@@ -455,6 +447,7 @@ impl NodePtyRuntime {
                 next_sequence: 1,
                 pending_utf8: Vec::new(),
                 terminal_seen: false,
+                foreign_foreground_seen: false,
             },
         );
         Ok(SessionId::new(id))
@@ -566,17 +559,32 @@ impl NodePtyRuntime {
         session_id: &str,
         owner_device_id: &str,
     ) -> Result<TerminalSnapshot, ClaudePtyError> {
-        let session = self.session_mut(session_id, owner_device_id)?;
-        session.close();
-        Ok(TerminalSnapshot {
-            session_id: SessionId::new(session_id),
-            status: session.status,
-            output: Vec::new(),
-            next_cursor: session.next_sequence.saturating_sub(1),
-            has_more: false,
-            truncated: false,
-            dropped_chunks: session.reader_dropped.load(Ordering::Acquire),
-        })
+        self.begin_close(session_id, owner_device_id)?.finish()
+    }
+
+    /// Remove a Session under the runtime lock, then let the caller finish its
+    /// bounded TERM/KILL teardown without serializing other terminal controls.
+    pub fn begin_close(
+        &mut self,
+        session_id: &str,
+        owner_device_id: &str,
+    ) -> Result<PtyTermination, ClaudePtyError> {
+        let session = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or(ClaudePtyError::StaleHandle)?;
+        if session.owner_device_id != owner_device_id {
+            return Err(ClaudePtyError::Forbidden);
+        }
+        session.pump();
+        if !session.foreground_is_owned() {
+            return Err(ClaudePtyError::Transport);
+        }
+        let session = self
+            .sessions
+            .remove(session_id)
+            .expect("checked session remains present until this mutable operation");
+        Ok(session.into_termination(session_id))
     }
 
     fn session_mut(
@@ -601,10 +609,11 @@ impl NodePtyRuntime {
     fn prune_finished_sessions(&mut self) {
         self.sessions.retain(|_, session| {
             session.pump();
-            !matches!(
-                session.status,
-                ClaudePtyStatus::Closed | ClaudePtyStatus::Exited
-            )
+            !session.foreground_is_owned()
+                || !matches!(
+                    session.status,
+                    ClaudePtyStatus::Closed | ClaudePtyStatus::Exited
+                )
         });
     }
 
@@ -612,15 +621,36 @@ impl NodePtyRuntime {
     /// session is revoked. The opaque browser session token never crosses the
     /// auth boundary; this runtime only receives its already-authenticated
     /// device identity.
+    pub fn begin_owner_session_closes(&mut self, owner_device_id: &str) -> Vec<PtyTermination> {
+        let session_ids = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.owner_device_id == owner_device_id)
+            .map(|(session_id, _)| session_id.clone())
+            .collect::<Vec<_>>();
+        session_ids
+            .into_iter()
+            .filter_map(|session_id| {
+                let session = self
+                    .sessions
+                    .get_mut(&session_id)
+                    .expect("collected session remains present until this mutable operation");
+                session.pump();
+                if !session.foreground_is_owned() {
+                    eprintln!("relay Claude PTY teardown refused an unowned foreground group");
+                    return None;
+                }
+                self.sessions
+                    .remove(&session_id)
+                    .map(|session| session.into_termination(&session_id))
+            })
+            .collect()
+    }
+
     pub fn close_owner_sessions(&mut self, owner_device_id: &str) {
-        self.sessions.retain(|_, session| {
-            if session.owner_device_id == owner_device_id {
-                session.close();
-                false
-            } else {
-                true
-            }
-        });
+        for termination in self.begin_owner_session_closes(owner_device_id) {
+            let _ = termination.finish();
+        }
     }
 
     #[cfg(test)]
@@ -648,6 +678,7 @@ impl NodePtyRuntime {
 
 impl ManagedSession {
     fn pump(&mut self) {
+        self.observe_foreground_group();
         while let Ok(ReaderEvent::Output(bytes)) = self.reader_rx.try_recv() {
             self.append_output(bytes);
         }
@@ -698,18 +729,71 @@ impl ManagedSession {
         }
     }
 
+    fn observe_foreground_group(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            if self
+                .process_group
+                .as_ref()
+                .is_some_and(|ownership| !ownership.foreground_is_owned(self.master.as_deref()))
+            {
+                self.foreign_foreground_seen = true;
+            }
+        }
+    }
+
+    fn foreground_is_owned(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            !self.foreign_foreground_seen
+                && self
+                    .process_group
+                    .as_ref()
+                    .is_none_or(|ownership| ownership.foreground_is_owned(self.master.as_deref()))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            true
+        }
+    }
+
+    fn into_termination(mut self, session_id: &str) -> PtyTermination {
+        self.reader_stop.store(true, Ordering::Release);
+        if let Some(input) = self.input.take() {
+            input.finish();
+        }
+        let termination = PtyTermination {
+            session_id: SessionId::new(session_id),
+            child: self.child.take(),
+            process_group: self.process_group.take(),
+            master: self.master.take(),
+            reader: self.reader.take(),
+            next_cursor: self.next_sequence.saturating_sub(1),
+            dropped_chunks: self.reader_dropped.load(Ordering::Acquire),
+        };
+        self.status = ClaudePtyStatus::Closed;
+        termination
+    }
+
     fn close(&mut self) {
         if self.status == ClaudePtyStatus::Closed {
             return;
         }
         self.reader_stop.store(true, Ordering::Release);
         let input = self.input.take();
+        if !self.foreground_is_owned() {
+            eprintln!("relay Claude PTY teardown refused an unowned foreground group");
+            if let Some(input) = input {
+                input.finish();
+            }
+            return;
+        }
         let process_group = self.process_group.take();
         if let Some(input) = input {
             input.finish();
         }
         if let Some(child) = self.child.take() {
-            terminate_child(child, self.master.as_deref(), process_group.as_ref());
+            let _ = terminate_child(child, self.master.as_deref(), process_group.as_ref());
         }
         self.master.take();
         drop(process_group);
@@ -730,6 +814,49 @@ impl ManagedSession {
 impl Drop for ManagedSession {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+impl PtyTermination {
+    /// Finish the bounded teardown after the caller has released the runtime
+    /// mutex. A terminal signalling failure is returned rather than pretending
+    /// that an unverified foreground descendant was reaped.
+    pub fn finish(mut self) -> Result<TerminalSnapshot, ClaudePtyError> {
+        self.finish_inner()?;
+        Ok(TerminalSnapshot {
+            session_id: self.session_id.clone(),
+            status: ClaudePtyStatus::Closed,
+            output: Vec::new(),
+            next_cursor: self.next_cursor,
+            has_more: false,
+            truncated: false,
+            dropped_chunks: self.dropped_chunks,
+        })
+    }
+
+    fn finish_inner(&mut self) -> Result<(), ClaudePtyError> {
+        let result = match self.child.take() {
+            Some(child) => {
+                terminate_child(child, self.master.as_deref(), self.process_group.as_ref())
+            }
+            None => Ok(()),
+        };
+        self.master.take();
+        self.process_group.take();
+        if let Some(reader) = self.reader.take() {
+            // The reader owns a cloned master FD. It may still be blocked in a
+            // driver read, so joining remains opportunistic outside the mutex.
+            if reader.is_finished() {
+                let _ = reader.join();
+            }
+        }
+        result
+    }
+}
+
+impl Drop for PtyTermination {
+    fn drop(&mut self) {
+        let _ = self.finish_inner();
     }
 }
 
@@ -912,31 +1039,29 @@ fn delivery_error(written: usize) -> ClaudePtyError {
 
 #[cfg(target_os = "linux")]
 impl PtyOwnership {
-    fn capture_foreground(
-        &self,
-        master: Option<&(dyn MasterPty + Send)>,
-    ) -> Option<PtyForegroundGroup> {
-        let process_group = master?.process_group_leader()?;
-        if process_group == self.process_group {
-            return None;
-        }
-        let leader = LinuxPid::from_raw(process_group)?;
-        let leader_pidfd = pidfd_open(leader, PidfdFlags::empty()).ok()?;
-        (master?.process_group_leader() == Some(process_group)).then_some(PtyForegroundGroup {
-            process_group,
-            leader_pidfd,
-        })
+    fn foreground_is_owned(&self, master: Option<&(dyn MasterPty + Send)>) -> bool {
+        master
+            .and_then(MasterPty::process_group_leader)
+            .is_none_or(|foreground| foreground == self.process_group)
     }
 
-    fn signal_groups(&self, foreground: Option<&PtyForegroundGroup>, signal: Signal) {
-        // The direct child remains waitable until close finishes, keeping the
-        // original Relay-owned group identifier reserved throughout. Never
-        // re-authorize a foreground group by its numeric PGID after its pidfd
-        // reports leader exit: that number can be stale or reused.
-        if let Some(foreground) = foreground.filter(|foreground| foreground.is_signalable()) {
-            let _ = killpg(Pid::from_raw(foreground.process_group), signal);
+    fn signal_groups(
+        &self,
+        master: Option<&(dyn MasterPty + Send)>,
+        signal: Signal,
+    ) -> Result<(), ClaudePtyError> {
+        // Relay holds a lifetime-safe identity only for the original group: its
+        // direct leader remains unreaped until teardown finishes. A PTY
+        // foreground group can outlive its leader, so never convert the numeric
+        // `tcgetpgrp` result into `killpg`. Refuse the close instead of risking
+        // an unrelated/reused group or claiming to have reaped an unowned one.
+        if !self.foreground_is_owned(master) {
+            return Err(ClaudePtyError::Transport);
         }
+        // The direct child remains unreaped until this teardown completes, so
+        // this numeric group identifier remains Relay-owned and identity-safe.
         let _ = killpg(Pid::from_raw(self.process_group), signal);
+        Ok(())
     }
 }
 
@@ -969,29 +1094,66 @@ fn terminate_child(
     mut child: Box<dyn Child + Send + Sync>,
     master: Option<&(dyn MasterPty + Send)>,
     ownership: Option<&PtyOwnership>,
-) {
-    #[cfg(target_os = "linux")]
-    if let Some(ownership) = ownership {
-        let foreground = ownership.capture_foreground(master);
-        ownership.signal_groups(foreground.as_ref(), Signal::SIGTERM);
-        thread::sleep(PTY_TERMINATION_GRACE);
-        ownership.signal_groups(foreground.as_ref(), Signal::SIGKILL);
-    }
+) -> Result<(), ClaudePtyError> {
+    let result = {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(ownership) = ownership {
+                ownership.signal_groups(master, Signal::SIGTERM)?;
+                thread::sleep(PTY_TERMINATION_GRACE);
+                ownership.signal_groups(master, Signal::SIGKILL)?;
+            }
+            Ok(())
+        }
+    };
     let _ = child.kill();
     reap_child(child);
+    result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReapDisposition {
+    Reaped,
+    Deadline,
+    AttemptsExhausted,
+    TryWaitError,
 }
 
 fn reap_child(mut child: Box<dyn Child + Send + Sync>) {
     let _ = thread::Builder::new()
         .name("relay-claude-pty-reaper".into())
         .spawn(move || {
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) | Err(_) => thread::sleep(PTY_REAPER_POLL_INTERVAL),
-                }
+            let disposition = reap_child_until(
+                child.as_mut(),
+                Instant::now() + PTY_REAPER_DEADLINE,
+                PTY_REAPER_MAX_ATTEMPTS,
+                PTY_REAPER_POLL_INTERVAL,
+            );
+            if disposition != ReapDisposition::Reaped {
+                eprintln!("relay Claude PTY reaper stopped: {disposition:?}");
             }
         });
+}
+
+fn reap_child_until(
+    child: &mut dyn Child,
+    deadline: Instant,
+    max_attempts: usize,
+    poll_interval: Duration,
+) -> ReapDisposition {
+    if max_attempts == 0 {
+        return ReapDisposition::AttemptsExhausted;
+    }
+    for attempt in 1..=max_attempts {
+        match child.try_wait() {
+            Ok(Some(_)) => return ReapDisposition::Reaped,
+            Err(_) => return ReapDisposition::TryWaitError,
+            Ok(None) if Instant::now() >= deadline => return ReapDisposition::Deadline,
+            Ok(None) if attempt == max_attempts => return ReapDisposition::AttemptsExhausted,
+            Ok(None) => thread::sleep(poll_interval),
+        }
+    }
+    ReapDisposition::AttemptsExhausted
 }
 
 #[cfg(test)]
@@ -1005,6 +1167,11 @@ mod tests {
         release: Arc<AtomicBool>,
         poll_started: Arc<AtomicBool>,
         reaped: Arc<AtomicBool>,
+    }
+
+    #[derive(Debug)]
+    struct ErrorChild {
+        attempts: Arc<AtomicU64>,
     }
 
     #[derive(Debug)]
@@ -1030,6 +1197,16 @@ mod tests {
         }
     }
 
+    impl ChildKiller for ErrorChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(NoopChildKiller)
+        }
+    }
+
     impl Child for BlockingChild {
         fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
             self.poll_started.store(true, Ordering::Release);
@@ -1043,6 +1220,21 @@ mod tests {
 
         fn wait(&mut self) -> std::io::Result<ExitStatus> {
             panic!("the reaper must poll try_wait instead of blocking on wait")
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    impl Child for ErrorChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            self.attempts.fetch_add(1, Ordering::AcqRel);
+            Err(std::io::Error::other("persistent wait failure"))
+        }
+
+        fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            panic!("the reaper must never fall back to blocking wait")
         }
 
         fn process_id(&self) -> Option<u32> {
@@ -1195,7 +1387,25 @@ mod tests {
         );
         let closed = runtime.close(session.as_str(), "device-a").unwrap();
         assert_eq!(closed.status, ClaudePtyStatus::Closed);
-        assert!(runtime.sessions[session.as_str()].child.is_none());
+        assert!(!runtime.sessions.contains_key(session.as_str()));
+    }
+
+    #[test]
+    fn begin_close_detaches_the_term_grace_from_the_runtime_mutex_path() {
+        let mut runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "sleep 30"]);
+        let session = runtime.create("device-a").unwrap();
+
+        let started = Instant::now();
+        let termination = runtime.begin_close(session.as_str(), "device-a").unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "the runtime lock path must remove the Session before TERM grace"
+        );
+        assert!(!runtime.sessions.contains_key(session.as_str()));
+        assert_eq!(
+            termination.finish().unwrap().status,
+            ClaudePtyStatus::Closed
+        );
     }
 
     #[test]
@@ -1561,12 +1771,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn close_reaps_a_descendant_after_it_takes_the_pty_foreground_group() {
+    fn close_fails_closed_for_an_unowned_foreground_group_without_pidfd_fallback() {
         let mut runtime = NodePtyRuntime::test_runtime(
             "/bin/sh",
             &[
                 "-c",
-                "set -m; sh -c 'trap \"\" HUP TERM; while :; do sleep 1; done' & child=$!; printf 'CHILD:%s\\n' \"$child\"; fg %1",
+                "set -m; sh -c \"sh -c 'trap \\\"\\\" HUP TERM; while :; do sleep 1; done' & child=\\$!; printf 'CHILD:%s\\n' \\\"\\$child\\\"; sleep 0.2; exit 0\" & fg %1",
             ],
         );
         let session = runtime.create("device-a").unwrap();
@@ -1610,42 +1820,28 @@ mod tests {
             "fixture foreground group must belong to the reported descendant"
         );
 
-        let (closed_tx, closed_rx) = mpsc::sync_channel(1);
-        thread::spawn(move || {
-            let started = Instant::now();
-            let result = runtime.close(session.as_str(), "device-a");
-            let _ = closed_tx.send((result, started.elapsed()));
-        });
-
-        let closed = match closed_rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(closed) => closed,
-            Err(_) => {
-                // Keep the red test self-cleaning on the broken implementation:
-                // its foreground-group check skips the descendant and leaves
-                // close waiting for the reader forever.
-                let _ = killpg(Pid::from_raw(child_pid), Signal::SIGKILL);
-                closed_rx
-                    .recv_timeout(Duration::from_secs(2))
-                    .expect("cleanup signal must release the blocked close")
-            }
-        };
-        assert!(closed.0.is_ok());
-        assert!(
-            closed.1 < Duration::from_millis(500),
-            "close must reap a foreground-group descendant without external cleanup"
+        // The foreground group leader exits while its TERM-ignoring descendant
+        // remains alive. The prior pidfd/poll approach could become readable
+        // here and silently skip KILL. Relay remembers that it observed an
+        // unowned foreground group, so it never authorizes a numeric fallback.
+        thread::sleep(Duration::from_millis(300));
+        assert!(runtime.sessions[session.as_str()].foreign_foreground_seen);
+        assert!(runtime.begin_owner_session_closes("device-a").is_empty());
+        assert!(runtime.sessions.contains_key(session.as_str()));
+        assert_eq!(
+            runtime.close(session.as_str(), "device-a"),
+            Err(ClaudePtyError::Transport)
         );
-        let reap_deadline = Instant::now() + Duration::from_secs(2);
-        let child_reaped = loop {
-            if kill(Pid::from_raw(child_pid), None) == Err(Errno::ESRCH) {
-                break true;
-            }
-            if Instant::now() > reap_deadline {
-                let _ = killpg(Pid::from_raw(child_pid), Signal::SIGKILL);
-                break false;
-            }
-            thread::sleep(Duration::from_millis(10));
-        };
-        assert!(child_reaped, "close left the foreground descendant alive");
+        assert!(runtime.sessions.contains_key(session.as_str()));
+        runtime.prune_finished_sessions();
+        assert!(
+            runtime.sessions.contains_key(session.as_str()),
+            "automatic cleanup must preserve an unsafe terminal record instead of dropping it"
+        );
+
+        // The test fixture owns this child PID and cleans it up explicitly; a
+        // production close deliberately has no equivalent unsafe numeric path.
+        let _ = killpg(Pid::from_raw(child_pid), Signal::SIGKILL);
     }
 
     #[test]
@@ -1739,21 +1935,49 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn dead_foreground_leader_is_not_signalable_from_numeric_group_identity() {
-        use std::os::unix::net::UnixStream;
-
-        let (mut writer, reader) = UnixStream::pair().unwrap();
-        writer.write_all(&[1]).unwrap();
-        let foreground = PtyForegroundGroup {
-            process_group: 1,
-            leader_pidfd: reader.into(),
+    fn reaper_stops_after_a_persistent_try_wait_error() {
+        let attempts = Arc::new(AtomicU64::new(0));
+        let mut child = ErrorChild {
+            attempts: Arc::clone(&attempts),
         };
 
-        assert!(
-            !foreground.is_signalable(),
-            "a readable pidfd must not authorize a fallback numeric killpg"
+        assert_eq!(
+            reap_child_until(
+                &mut child,
+                Instant::now() + Duration::from_secs(1),
+                4,
+                Duration::ZERO,
+            ),
+            ReapDisposition::TryWaitError
+        );
+        assert_eq!(
+            attempts.load(Ordering::Acquire),
+            1,
+            "a persistent wait error must not leak an unbounded reaper loop"
+        );
+    }
+
+    #[test]
+    fn reaper_reports_attempt_and_deadline_dispositions() {
+        let mut child = BlockingChild {
+            release: Arc::new(AtomicBool::new(false)),
+            poll_started: Arc::new(AtomicBool::new(false)),
+            reaped: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert_eq!(
+            reap_child_until(
+                &mut child,
+                Instant::now() + Duration::from_secs(1),
+                2,
+                Duration::ZERO,
+            ),
+            ReapDisposition::AttemptsExhausted
+        );
+        assert_eq!(
+            reap_child_until(&mut child, Instant::now(), 4, Duration::ZERO),
+            ReapDisposition::Deadline
         );
     }
 }

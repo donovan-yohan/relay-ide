@@ -38,6 +38,8 @@ test("the PWA shell combines passkey controls with a presentation-only Workspace
   assert.match(app, /\/node\/claude\/sessions/);
   assert.match(app, /function canOpenClaudeTerminal/);
   assert.match(app, /claudeCreateInFlight/);
+  assert.match(app, /MAX_RESOLVED_CLAUDE_SESSION_IDS = MAX_TAB_COUNT/);
+  assert.match(app, /function rememberResolvedClaudeSession/);
   assert.match(app, /terminalInputRecovery/);
   assert.match(app, /Retry saved input/);
   assert.match(app, /Discard saved input/);

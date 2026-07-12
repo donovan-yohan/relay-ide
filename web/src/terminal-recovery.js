@@ -11,6 +11,21 @@ function isNetworkTypeError(error) {
 export function terminalErrorPresentation(error) {
   const code = errorCode(error);
   switch (code) {
+    case "session_missing":
+      return {
+        code,
+        message: "Your Relay browser session is no longer active. Sign in again before opening or controlling a terminal.",
+      };
+    case "csrf_denied":
+      return {
+        code,
+        message: "Relay rejected this terminal control request because its browser-session proof is stale. Refresh your sign-in before retrying.",
+      };
+    case "session_forbidden":
+      return {
+        code,
+        message: "This terminal belongs to a different Relay browser device. Open a new terminal from this device instead.",
+      };
     case "stale_session":
       return {
         code,
@@ -25,6 +40,16 @@ export function terminalErrorPresentation(error) {
       return {
         code,
         message: "Relay has reached its terminal-session capacity. Close an unused terminal, then try again.",
+      };
+    case "invalid_resize":
+      return {
+        code,
+        message: "Relay rejected this terminal size. Keep the terminal open, resize the view, then retry the action.",
+      };
+    case "invalid_input":
+      return {
+        code,
+        message: "Relay rejected this terminal input before delivery. Adjust the input and re-enter it explicitly.",
       };
     case "input_backpressure":
       return {

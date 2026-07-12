@@ -12,7 +12,7 @@ use relay_factory_core::{
     AuthBoundary, AuthError, AuthOrigin, EnrollmentAuthority, ServiceIdentity, configured_identity,
     health_http_response, health_json, not_found_http_response,
 };
-use relay_session::claude_pty::{ClaudePtyError, NodePtyRuntime, TerminalSnapshot};
+use relay_session::claude_pty::{ClaudePtyError, NodePtyRuntime, PtyTermination, TerminalSnapshot};
 use serde_json::Value;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
@@ -501,31 +501,36 @@ fn list_sessions_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
 }
 
 fn revoke_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
-    // Serialize revocation against PTY creation. A request authenticated just
-    // before revocation must not create a new owner-bound process after the
-    // revoked owner's existing sessions have been reaped.
-    let mut pty = match runtime.pty.lock() {
-        Ok(pty) => pty,
-        Err(_) => return auth_error_response(500, "internal", &[]),
+    // Remove revoked-owner PTYs while holding the runtime lock, then finish
+    // their bounded TERM/KILL grace after releasing it. This still prevents a
+    // revoked identity from retaining a runtime handle without serializing the
+    // hub's unrelated terminal controls behind every close.
+    let (result, terminations) = {
+        let mut pty = match runtime.pty.lock() {
+            Ok(pty) => pty,
+            Err(_) => return auth_error_response(500, "internal", &[]),
+        };
+        let auth = match state_change_auth(request, runtime.auth.as_deref()) {
+            Ok(auth) => auth,
+            Err(response) => return response,
+        };
+        let session = match request.cookie("__Host-relay_session") {
+            Some(session) => session,
+            None => return auth_error_response(401, "session_missing", &[]),
+        };
+        let csrf = match request.header("x-relay-csrf") {
+            Some(csrf) => csrf,
+            None => return auth_error_response(403, "csrf_denied", &[]),
+        };
+        let device_id = match device_id_from_body(request.body) {
+            Some(device_id) => device_id,
+            None => return auth_error_response(400, "invalid_request", &[]),
+        };
+        let result = auth.revoke_session(session, csrf, &device_id);
+        let terminations = take_invalidated_owner_sessions_locked(&mut pty, auth);
+        (result, terminations)
     };
-    let auth = match state_change_auth(request, runtime.auth.as_deref()) {
-        Ok(auth) => auth,
-        Err(response) => return response,
-    };
-    let session = match request.cookie("__Host-relay_session") {
-        Some(session) => session,
-        None => return auth_error_response(401, "session_missing", &[]),
-    };
-    let csrf = match request.header("x-relay-csrf") {
-        Some(csrf) => csrf,
-        None => return auth_error_response(403, "csrf_denied", &[]),
-    };
-    let device_id = match device_id_from_body(request.body) {
-        Some(device_id) => device_id,
-        None => return auth_error_response(400, "invalid_request", &[]),
-    };
-    let result = auth.revoke_session(session, csrf, &device_id);
-    reap_invalidated_owner_sessions_locked(&mut pty, auth);
+    finish_terminations(terminations);
     match result {
         Ok(()) => json_response(200, "{\"status\":\"revoked\"}", &[]),
         Err(error) => auth_error_response(auth_error_status(&error), error.code(), &[]),
@@ -543,17 +548,39 @@ fn reap_invalidated_owner_sessions(runtime: &HubRuntime) {
     if owner_ids.is_empty() {
         return;
     }
-    if let Ok(mut pty) = runtime.pty.lock() {
-        for owner_id in owner_ids {
-            pty.close_owner_sessions(&owner_id);
+    let terminations = match runtime.pty.lock() {
+        Ok(mut pty) => {
+            let mut terminations = Vec::new();
+            for owner_id in owner_ids {
+                terminations.extend(pty.begin_owner_session_closes(&owner_id));
+            }
+            terminations
         }
+        Err(_) => return,
+    };
+    finish_terminations(terminations);
+}
+
+fn take_invalidated_owner_sessions_locked(
+    pty: &mut NodePtyRuntime,
+    auth: &AuthBoundary,
+) -> Vec<PtyTermination> {
+    match auth.take_invalidated_device_ids() {
+        Ok(owner_ids) => {
+            let mut terminations = Vec::new();
+            for owner_id in owner_ids {
+                terminations.extend(pty.begin_owner_session_closes(&owner_id));
+            }
+            terminations
+        }
+        Err(_) => Vec::new(),
     }
 }
 
-fn reap_invalidated_owner_sessions_locked(pty: &mut NodePtyRuntime, auth: &AuthBoundary) {
-    if let Ok(owner_ids) = auth.take_invalidated_device_ids() {
-        for owner_id in owner_ids {
-            pty.close_owner_sessions(&owner_id);
+fn finish_terminations(terminations: Vec<PtyTermination>) {
+    for termination in terminations {
+        if termination.finish().is_err() {
+            eprintln!("relay Claude PTY teardown could not verify foreground cleanup");
         }
     }
 }
@@ -574,14 +601,14 @@ fn protected_hub_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
 }
 
 fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    // Terminations may include a bounded grace. Drain invalidated owners before
+    // taking the lock needed for this create request.
+    reap_invalidated_owner_sessions(runtime);
     let mut pty = match runtime.pty.lock() {
         Ok(pty) => pty,
         Err(_) => return auth_error_response(500, "internal", &[]),
     };
     let owner = terminal_owner(request, runtime.auth.as_deref(), true);
-    if let Some(auth) = runtime.auth.as_deref() {
-        reap_invalidated_owner_sessions_locked(&mut pty, auth);
-    }
     let owner = match owner {
         Ok(owner) => owner,
         Err(response) => return response,
@@ -697,12 +724,12 @@ fn close_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime
         Some(session_id) => session_id,
         None => return not_found_http_response(),
     };
-    match runtime
+    let termination = runtime
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.close(session_id, &owner))
-    {
+        .and_then(|mut pty| pty.begin_close(session_id, &owner));
+    match termination.and_then(PtyTermination::finish) {
         Ok(snapshot) => terminal_snapshot_response(snapshot),
         Err(error) => claude_pty_error_response(error),
     }

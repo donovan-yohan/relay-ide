@@ -7,6 +7,11 @@ test("terminal transport and capacity errors stay out of passkey presentation", 
   for (const [code, expected] of [
     ["pty_transport", "terminal transport"],
     ["session_capacity", "terminal-session capacity"],
+    ["session_missing", "browser session"],
+    ["csrf_denied", "terminal control request"],
+    ["session_forbidden", "different Relay browser device"],
+    ["invalid_resize", "terminal size"],
+    ["invalid_input", "terminal input"],
   ]) {
     const presentation = terminalErrorPresentation({ code });
     assert.equal(presentation.code, code);

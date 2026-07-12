@@ -54,6 +54,7 @@ let terminalRuntime = null;
 const retainedTerminalInput = new Map();
 let claudeCreateInFlight = false;
 const resolvedClaudeSessionIds = new Set();
+const MAX_RESOLVED_CLAUDE_SESSION_IDS = MAX_TAB_COUNT;
 let state = loadLayout();
 let transientNotice = null;
 
@@ -366,7 +367,7 @@ async function closeClaudeTerminal() {
       headers: { "X-Relay-CSRF": csrfToken() },
       body: "{}",
     });
-    resolvedClaudeSessionIds.add(active.content.sessionId);
+    rememberResolvedClaudeSession(active.content.sessionId);
     disposeTerminal();
     transientNotice = { kind: "warning", title: "Claude terminal", message: "The Relay-owned process was closed and reaped. This tab keeps the closed Session reference for an honest reattach state." };
     render();
@@ -498,7 +499,7 @@ async function pollTerminal(runtime) {
     runtime.cursor = snapshot.nextCursor;
     runtime.status.textContent = `Relay-owned terminal · ${snapshot.status} · dropped chunks ${snapshot.droppedChunks}`;
     if (["closed", "exited"].includes(snapshot.status)) {
-      resolvedClaudeSessionIds.add(runtime.sessionId);
+      rememberResolvedClaudeSession(runtime.sessionId);
       openClaude.disabled = !canOpenClaudeTerminal();
       sessionAuthority.textContent = sessionAuthorityMessage();
       return;
@@ -516,6 +517,14 @@ async function pollTerminal(runtime) {
 
 function shouldRetryTerminalPoll(error) {
   return !error?.code || error.code === "pty_transport";
+}
+
+function rememberResolvedClaudeSession(sessionId) {
+  resolvedClaudeSessionIds.delete(sessionId);
+  resolvedClaudeSessionIds.add(sessionId);
+  while (resolvedClaudeSessionIds.size > MAX_RESOLVED_CLAUDE_SESSION_IDS) {
+    resolvedClaudeSessionIds.delete(resolvedClaudeSessionIds.values().next().value);
+  }
 }
 
 function canOpenClaudeTerminal() {
