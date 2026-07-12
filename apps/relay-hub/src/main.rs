@@ -4,7 +4,7 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
     process::ExitCode,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, TryLockError},
     thread,
     time::{Duration, Instant},
 };
@@ -523,10 +523,19 @@ fn workbench_response(
         _ => serde_json::from_str(request.body).map_err(|_| WorkbenchError::new("invalid_request")),
     };
     let result = body.and_then(|body| {
-        let mut workbench = workbench
-            .lock()
-            .map_err(|_| WorkbenchError::new("internal"))?;
-        workbench.authorize(session)?;
+        let mut workbench = workbench.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => WorkbenchError::new("workbench_busy"),
+            TryLockError::Poisoned(_) => WorkbenchError::new("internal"),
+        })?;
+        let owner_session_is_active = match workbench.owner_session() {
+            Some(owner) => match auth.require_session(owner) {
+                Ok(()) => true,
+                Err(AuthError::SessionMissing) => false,
+                Err(_) => return Err(WorkbenchError::new("internal")),
+            },
+            None => false,
+        };
+        workbench.authorize(session, owner_session_is_active)?;
         match (request.method, request.path) {
             ("GET", "/api/workbench") => Ok(workbench.snapshot()),
             ("GET", "/api/sessions") => Ok(workbench.sessions_snapshot()),
@@ -536,6 +545,7 @@ fn workbench_response(
             ("POST", "/api/sessions/resume") => workbench.resume_session(&body),
             ("POST", "/api/sessions/message") => workbench.send_message(&body),
             ("POST", "/api/sessions/interrupt") => workbench.interrupt_session(&body),
+            ("POST", "/api/sessions/close") => workbench.close_session(&body),
             _ => Err(WorkbenchError::new("not_found")),
         }
     });
@@ -558,7 +568,9 @@ fn workbench_error_status(error: WorkbenchError) -> u16 {
         | "workspace_cwd_not_approved" => 400,
         "unknown_workspace" | "unknown_session" | "unknown_provider_session" => 404,
         "workbench_owner_mismatch" => 403,
-        "hermes_not_configured" | "unavailable" | "executable_unavailable" => 503,
+        "hermes_not_configured" | "unavailable" | "executable_unavailable" | "workbench_busy" => {
+            503
+        }
         "internal" => 500,
         _ => 409,
     }

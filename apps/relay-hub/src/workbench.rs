@@ -129,9 +129,24 @@ impl Workbench {
 
     /// Bind this in-memory workbench to the first authenticated browser session.
     /// The opaque session value remains local-only and is never serialized.
-    pub fn authorize(&mut self, session: &str) -> Result<(), WorkbenchError> {
+    pub fn owner_session(&self) -> Option<&str> {
+        self.owner_session.as_deref()
+    }
+
+    pub fn authorize(
+        &mut self,
+        session: &str,
+        owner_session_is_active: bool,
+    ) -> Result<(), WorkbenchError> {
         match self.owner_session.as_deref() {
             Some(owner) if owner == session => Ok(()),
+            Some(_) if !owner_session_is_active => {
+                self.owner_session = Some(session.to_owned());
+                self.workspaces.clear();
+                self.selected_workspace_id = None;
+                self.sessions.clear();
+                Ok(())
+            }
             Some(_) => Err(WorkbenchError::new("workbench_owner_mismatch")),
             None => {
                 self.owner_session = Some(session.to_owned());
@@ -224,9 +239,7 @@ impl Workbench {
         let workspace = self.workspace_from_body(body)?.clone();
         let provider = Provider::parse(&body_string(body, "provider", 16)?)?;
         let stored_id = body_string(body, "providerSessionId", MAX_STORED_SESSION_ID_LENGTH)?;
-        if provider == Provider::Hermes
-            && !self.has_provider_session(&workspace.id, provider, &stored_id)
-        {
+        if !self.has_provider_session(&workspace.id, provider, &stored_id) {
             return Err(WorkbenchError::new("unknown_provider_session"));
         }
         let session = self.create_provider_session(provider, &workspace, Some(&stored_id))?;
@@ -310,6 +323,18 @@ impl Workbench {
         Ok(session_json(session))
     }
 
+    pub fn close_session(&mut self, body: &Value) -> Result<Value, WorkbenchError> {
+        let session_id = body_string(body, "sessionId", MAX_STORED_SESSION_ID_LENGTH)?;
+        let mut session = self
+            .sessions
+            .remove(&session_id)
+            .ok_or(WorkbenchError::new("unknown_session"))?;
+        if let LiveSession::Codex { supervisor, .. } = &mut session.live {
+            supervisor.close();
+        }
+        Ok(json!({"id": session.id, "status": "closed"}))
+    }
+
     fn workspace_from_body(&self, body: &Value) -> Result<&Workspace, WorkbenchError> {
         let workspace_id = body_string(body, "workspaceId", MAX_STORED_SESSION_ID_LENGTH)?;
         self.workspaces
@@ -354,6 +379,7 @@ impl Workbench {
         workspace: &Workspace,
         resume: Option<&str>,
     ) -> Result<StoredSession, WorkbenchError> {
+        self.reap_terminal_sessions();
         ensure_session_capacity(self.sessions.len())?;
         let (provider_session_id, status, live) = match provider {
             Provider::Hermes => {
@@ -435,6 +461,16 @@ impl Workbench {
         for session in self.sessions.values_mut() {
             pump_session(session);
         }
+    }
+
+    fn reap_terminal_sessions(&mut self) {
+        self.sessions.retain(|_, session| match &session.live {
+            LiveSession::Hermes { adapter, .. } => !matches!(
+                adapter.status(),
+                relay_hermes_session::SessionStatus::Failed
+            ),
+            LiveSession::Codex { supervisor, .. } => !supervisor.status().is_terminal(),
+        });
     }
 }
 
@@ -664,11 +700,31 @@ mod tests {
     fn workbench_rejects_a_second_authenticated_browser_session() {
         let root = temp_root("owner");
         let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
-        assert_eq!(workbench.authorize("owner-session"), Ok(()));
-        assert_eq!(workbench.authorize("owner-session"), Ok(()));
+        assert_eq!(workbench.authorize("owner-session", true), Ok(()));
+        assert_eq!(workbench.authorize("owner-session", true), Ok(()));
         assert_eq!(
-            workbench.authorize("different-session"),
+            workbench.authorize("different-session", true),
             Err(WorkbenchError::new("workbench_owner_mismatch"))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expired_owner_is_rebound_after_its_workbench_state_is_cleared() {
+        let root = temp_root("owner-rebind");
+        let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
+        workbench.authorize("expired-owner", true).unwrap();
+        workbench
+            .add_workspace(&json!({"cwd": root.to_string_lossy()}))
+            .unwrap();
+
+        assert_eq!(workbench.authorize("replacement-owner", false), Ok(()));
+        assert_eq!(workbench.owner_session(), Some("replacement-owner"));
+        assert!(
+            workbench.snapshot()["workspaces"]
+                .as_array()
+                .unwrap()
+                .is_empty()
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -758,21 +814,23 @@ mod tests {
     }
 
     #[test]
-    fn hermes_resume_rejects_a_client_supplied_unknown_provider_session() {
+    fn resume_rejects_a_client_supplied_unknown_provider_session() {
         let root = temp_root("hermes-resume");
         let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
         let workspace = workbench
             .add_workspace(&json!({"cwd": root.to_string_lossy()}))
             .unwrap();
 
-        assert_eq!(
-            workbench.resume_session(&json!({
-                "workspaceId": workspace["id"],
-                "provider": "hermes",
-                "providerSessionId": "untrusted",
-            })),
-            Err(WorkbenchError::new("unknown_provider_session"))
-        );
+        for provider in ["hermes", "codex"] {
+            assert_eq!(
+                workbench.resume_session(&json!({
+                    "workspaceId": workspace["id"],
+                    "provider": provider,
+                    "providerSessionId": "untrusted",
+                })),
+                Err(WorkbenchError::new("unknown_provider_session"))
+            );
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
