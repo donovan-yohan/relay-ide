@@ -8,6 +8,8 @@ import { access, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, resolve, sep } from "node:path";
 
+import { devToolsEndpointFromOutput } from "./cdp-endpoint.mjs";
+
 
 const chromium = "/usr/bin/chromium";
 const recoveryCode = "browser-virtual-authenticator-recovery";
@@ -375,8 +377,8 @@ function captureProcessOutput(process_) {
 async function connectBrowser(process_, output) {
   const debuggerUrl = await waitFor(
     () => {
-      const match = output().match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) return match[1];
+      const endpoint = devToolsEndpointFromOutput(output());
+      if (endpoint) return endpoint;
       if (process_.exitCode !== null || process_.signalCode !== null) {
         throw new Error(`Chromium exited before exposing a DevTools endpoint: ${processOutputSummary(process_, output())}`);
       }
