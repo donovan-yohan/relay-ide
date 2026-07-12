@@ -163,20 +163,6 @@ pub fn redacted_preview(line: &[u8]) -> String {
 
 /// Mask secret-looking JSON values, bare Bearer values, and `sk-` tokens.
 pub fn redact_secrets(input: &str) -> String {
-    const SECRET_KEYS: &[&str] = &[
-        "token",
-        "secret",
-        "password",
-        "authorization",
-        "apikey",
-        "api_key",
-        "bearer",
-        "access_token",
-        "refresh_token",
-        "id_token",
-        "client_secret",
-    ];
-
     let bytes = input.as_bytes();
     let mut output = String::with_capacity(input.len());
     let mut i = 0;
@@ -189,11 +175,7 @@ pub fn redact_secrets(input: &str) -> String {
                     && bytes[after_key] == b':'
                     && value_start < bytes.len()
                     && bytes[value_start] == b'"'
-                    && SECRET_KEYS.contains(
-                        &unescape_ascii(&bytes[i + 1..key_end - 1])
-                            .to_ascii_lowercase()
-                            .as_str(),
-                    )
+                    && is_secret_json_key(&bytes[i + 1..key_end - 1])
                     && let Some(value_end) = string_end(bytes, value_start)
                 {
                     output.push_str(&input[i..value_start]);
@@ -222,6 +204,94 @@ pub fn redact_secrets(input: &str) -> String {
         }
     }
     output
+}
+
+/// Recognize secret JSON keys after decoding ASCII JSON escapes, folding ASCII
+/// case, and removing underscores. This keeps snake_case and camelCase forms
+/// equivalent without broadening matching beyond the known credential fields.
+fn is_secret_json_key(bytes: &[u8]) -> bool {
+    const SECRET_KEYS: &[&[u8]] = &[
+        b"token",
+        b"secret",
+        b"password",
+        b"authorization",
+        b"apikey",
+        b"bearer",
+        b"accesstoken",
+        b"refreshtoken",
+        b"idtoken",
+        b"clientsecret",
+    ];
+
+    let mut canonical = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = if bytes[i] == b'\\' {
+            let Some(&escape) = bytes.get(i + 1) else {
+                return false;
+            };
+            match escape {
+                b'"' | b'\\' | b'/' => {
+                    i += 2;
+                    escape
+                }
+                b'b' => {
+                    i += 2;
+                    b'\x08'
+                }
+                b'f' => {
+                    i += 2;
+                    b'\x0c'
+                }
+                b'n' => {
+                    i += 2;
+                    b'\n'
+                }
+                b'r' => {
+                    i += 2;
+                    b'\r'
+                }
+                b't' => {
+                    i += 2;
+                    b'\t'
+                }
+                b'u' => {
+                    let Some(escape_bytes) = bytes.get(i + 2..i + 6) else {
+                        return false;
+                    };
+                    let Some(byte) = decode_ascii_unicode_escape(escape_bytes) else {
+                        return false;
+                    };
+                    i += 6;
+                    byte
+                }
+                _ => return false,
+            }
+        } else {
+            let byte = bytes[i];
+            i += 1;
+            byte
+        };
+
+        if byte != b'_' {
+            canonical.push(byte.to_ascii_lowercase());
+        }
+    }
+
+    SECRET_KEYS.contains(&canonical.as_slice())
+}
+
+fn decode_ascii_unicode_escape(bytes: &[u8]) -> Option<u8> {
+    let codepoint = bytes.iter().try_fold(0_u16, |value, byte| {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return None,
+        };
+        Some(value * 16 + u16::from(digit))
+    })?;
+    u8::try_from(codepoint).ok()
 }
 
 fn append_redacted_tokens(input: &str, mut i: usize, end: usize, output: &mut String) {
@@ -259,33 +329,6 @@ fn string_end(bytes: &[u8], start: usize) -> Option<usize> {
         }
     }
     None
-}
-
-fn unescape_ascii(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            match bytes[i + 1] {
-                b'n' => output.push('\n'),
-                b't' => output.push('\t'),
-                b'r' => output.push('\r'),
-                b'"' => output.push('"'),
-                b'\\' => output.push('\\'),
-                b'/' => output.push('/'),
-                other => {
-                    output.push('\\');
-                    output.push(other as char);
-                }
-            }
-            i += 2;
-        } else {
-            let end = (i + utf8_len(bytes[i])).min(bytes.len());
-            output.push_str(&String::from_utf8_lossy(&bytes[i..end]));
-            i = end;
-        }
-    }
-    output
 }
 
 fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
@@ -432,6 +475,18 @@ mod tests {
         assert!(!preview.contains("XYZ123"));
         assert!(preview.contains("Bearer [redacted]"));
         assert!(preview.contains("sk-[redacted]"));
+    }
+
+    #[test]
+    fn frame_preview_masks_camel_case_credential_keys_and_escaped_forms() {
+        let frame = scan_line(
+            br#"{"method":"auth","params":{"accessToken":"mask-me-a","refreshToken":"mask-me-b","idToken":"mask-me-c","client\u0053ecret":"mask-me-\u0064"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(frame.preview.matches("\"[redacted]\"").count(), 4);
+        assert!(!frame.preview.contains("mask-me"));
+        assert!(serde_json::from_str::<Value>(&frame.preview).is_ok());
     }
 
     #[test]
