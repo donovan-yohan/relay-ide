@@ -742,6 +742,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.17",
+ "relay-session",
  "serde_json",
  "sha1",
 ]
@@ -751,6 +752,7 @@ name = "relay-hub"
 version = "0.1.0"
 dependencies = [
  "relay-factory-core",
+ "relay-hermes-session",
  "relay-session",
  "serde_json",
 ]

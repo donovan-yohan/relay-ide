@@ -13,7 +13,7 @@ const mimeTypes = new Map([
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
-  if (["/health", "/auth/", "/node/", "/protected/"].some((prefix) => url.pathname === prefix || url.pathname.startsWith(prefix))) {
+  if (["/health", "/auth/", "/api/", "/node/", "/protected/"].some((prefix) => url.pathname === prefix || url.pathname.startsWith(prefix))) {
     const upstream = httpRequest({
       host: "127.0.0.1",
       port: 8787,

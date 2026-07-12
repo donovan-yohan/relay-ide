@@ -2,8 +2,9 @@ use std::{
     env, fmt,
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
+    path::PathBuf,
     process::ExitCode,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, TryLockError},
     thread,
     time::{Duration, Instant},
 };
@@ -12,11 +13,16 @@ use relay_factory_core::{
     AuthBoundary, AuthError, AuthOrigin, EnrollmentAuthority, ServiceIdentity, configured_identity,
     health_http_response, health_json, not_found_http_response,
 };
+use relay_hermes_session::GatewayEndpoint;
 use relay_session::claude_pty::{
     ClaudePtyError, NodePtyRuntime, OwnerSessionCloseDisposition, PtyTermination,
     PtyTerminationOutcome, TerminalSnapshot,
 };
 use serde_json::Value;
+
+mod workbench;
+
+use workbench::{Workbench, WorkbenchError};
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REQUEST_BYTES: usize = 65_536;
@@ -36,6 +42,7 @@ struct HubRuntime {
     owner_lifecycle: Mutex<()>,
     pty: Mutex<NodePtyRuntime>,
     retry_driver: Mutex<PtyRetryDriver>,
+    workbench: Mutex<Workbench>,
 }
 
 fn main() -> ExitCode {
@@ -51,7 +58,7 @@ fn main() -> ExitCode {
         }
         Err(RunError::Usage) => {
             eprintln!(
-                "usage: relay-hub <probe|serve --bind <address> [--identity hub] [--origin https://relay.example] [--recovery-code-hash sha256hex]>"
+                "usage: relay-hub <probe|serve --bind <address> [--identity hub] [--origin https://relay.example] [--recovery-code-hash sha256hex] [--workspace-root PATH] [--hermes-gateway-url ws://127.0.0.1:PORT/api/ws?token=...] [--test-claude-fixture cat]>"
             );
             ExitCode::from(64)
         }
@@ -135,6 +142,7 @@ fn serve(arguments: &[String]) -> Result<(), RunError> {
         owner_lifecycle: Mutex::new(()),
         pty: Mutex::new(pty),
         retry_driver: Mutex::new(PtyRetryDriver::default()),
+        workbench: options.workbench,
     });
 
     println!(
@@ -150,6 +158,7 @@ struct ServeOptions {
     address: SocketAddr,
     identity: ServiceIdentity,
     auth: Option<Arc<AuthBoundary>>,
+    workbench: Mutex<Workbench>,
     #[cfg(debug_assertions)]
     test_claude_fixture: bool,
 }
@@ -160,6 +169,8 @@ impl ServeOptions {
         let mut identity_arguments = None;
         let mut origin = None;
         let mut recovery_hash = None;
+        let mut workspace_roots = Vec::new();
+        let mut hermes_gateway_url = None;
         #[cfg(debug_assertions)]
         let mut test_claude_fixture = false;
         let mut index = 0;
@@ -175,6 +186,10 @@ impl ServeOptions {
                 "--origin" if origin.is_none() => origin = Some(value.clone()),
                 "--recovery-code-hash" if recovery_hash.is_none() => {
                     recovery_hash = Some(value.clone());
+                }
+                "--workspace-root" => workspace_roots.push(PathBuf::from(value)),
+                "--hermes-gateway-url" if hermes_gateway_url.is_none() => {
+                    hermes_gateway_url = Some(value.clone());
                 }
                 "--test-claude-fixture" if value == "cat" => {
                     #[cfg(debug_assertions)]
@@ -212,11 +227,20 @@ impl ServeOptions {
             )),
             _ => return Err(RunError::Usage),
         };
+        if workspace_roots.is_empty() {
+            workspace_roots.push(env::current_dir().map_err(|_| RunError::Io)?);
+        }
+        let hermes_endpoint = hermes_gateway_url
+            .map(|url| GatewayEndpoint::parse(&url).map_err(|_| RunError::Usage))
+            .transpose()?;
+        let workbench =
+            Workbench::new(workspace_roots, hermes_endpoint).map_err(|_| RunError::Usage)?;
 
         Ok(Self {
             address,
             identity,
             auth,
+            workbench: Mutex::new(workbench),
             #[cfg(debug_assertions)]
             test_claude_fixture,
         })
@@ -236,8 +260,20 @@ fn serve_connections_with_auth(
             owner_lifecycle: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::default()),
             retry_driver: Mutex::new(PtyRetryDriver::default()),
+            workbench: test_workbench(),
         }),
         accept,
+    )
+}
+
+#[cfg(test)]
+fn test_workbench() -> Mutex<Workbench> {
+    Mutex::new(
+        Workbench::new(
+            vec![env::current_dir().expect("test current directory")],
+            None,
+        )
+        .expect("test workbench"),
     )
 }
 
@@ -387,6 +423,9 @@ fn route_request(
         ("POST", "/auth/sessions/revoke") => revoke_session_response(request, runtime),
         ("GET", "/protected/hub") => protected_hub_response(request, auth),
         (_, "/protected/node") => auth_error_response(403, "node_authority_required", &[]),
+        (_, path) if path.starts_with("/api/") => {
+            workbench_response(request, auth, &runtime.workbench)
+        }
         ("POST", "/node/claude/sessions") => create_claude_session_response(request, runtime),
         ("GET", path) if claude_session_id(path, "").is_some() => {
             poll_claude_session_response(request, runtime)
@@ -745,6 +784,93 @@ fn protected_hub_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
     {
         Ok(()) => json_response(200, "{\"status\":\"operator_authorized\"}", &[]),
         Err(error) => auth_error_response(auth_error_status(&error), error.code(), &[]),
+    }
+}
+
+fn workbench_response(
+    request: &HttpRequest<'_>,
+    auth: Option<&AuthBoundary>,
+    workbench: &Mutex<Workbench>,
+) -> String {
+    let auth = match auth {
+        Some(auth) => auth,
+        None => return auth_error_response(404, "auth_unavailable", &[]),
+    };
+    let session = match request.cookie("__Host-relay_session") {
+        Some(session) => session,
+        None => return auth_error_response(401, "session_missing", &[]),
+    };
+    if let Err(error) = auth.require_session(session) {
+        return auth_error_response(auth_error_status(&error), error.code(), &[]);
+    }
+    if request.method != "GET" {
+        if let Err(error) = auth.enforce_origin(request.header("origin")) {
+            return auth_error_response(auth_error_status(&error), error.code(), &[]);
+        }
+        let csrf = match request.header("x-relay-csrf") {
+            Some(csrf) => csrf,
+            None => return auth_error_response(403, "csrf_denied", &[]),
+        };
+        if let Err(error) = auth.require_csrf(session, csrf) {
+            return auth_error_response(auth_error_status(&error), error.code(), &[]);
+        }
+    }
+
+    let body = match request.method {
+        "GET" => Ok(Value::Null),
+        _ => serde_json::from_str(request.body).map_err(|_| WorkbenchError::new("invalid_request")),
+    };
+    let result = body.and_then(|body| {
+        let mut workbench = workbench.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => WorkbenchError::new("workbench_busy"),
+            TryLockError::Poisoned(_) => WorkbenchError::new("internal"),
+        })?;
+        let owner_session_is_active = match workbench.owner_session() {
+            Some(owner) => match auth.require_session(owner) {
+                Ok(()) => true,
+                Err(AuthError::SessionMissing) => false,
+                Err(_) => return Err(WorkbenchError::new("internal")),
+            },
+            None => false,
+        };
+        workbench.authorize(session, owner_session_is_active)?;
+        match (request.method, request.path) {
+            ("GET", "/api/workbench") => Ok(workbench.snapshot()),
+            ("GET", "/api/sessions") => Ok(workbench.sessions_snapshot()),
+            ("POST", "/api/workspaces") => workbench.add_workspace(&body),
+            ("POST", "/api/workspaces/select") => workbench.select_workspace(&body),
+            ("POST", "/api/sessions") => workbench.start_session(&body),
+            ("POST", "/api/sessions/resume") => workbench.resume_session(&body),
+            ("POST", "/api/sessions/message") => workbench.send_message(&body),
+            ("POST", "/api/sessions/interrupt") => workbench.interrupt_session(&body),
+            ("POST", "/api/sessions/close") => workbench.close_session(&body),
+            _ => Err(WorkbenchError::new("not_found")),
+        }
+    });
+
+    match result {
+        Ok(value) => match serde_json::to_string(&value) {
+            Ok(body) => json_response(200, &body, &[]),
+            Err(_) => auth_error_response(500, "internal", &[]),
+        },
+        Err(error) if error.code() == "not_found" => not_found_http_response(),
+        Err(error) => auth_error_response(workbench_error_status(error), error.code(), &[]),
+    }
+}
+
+fn workbench_error_status(error: WorkbenchError) -> u16 {
+    match error.code() {
+        "invalid_request"
+        | "workspace_cwd_invalid"
+        | "workspace_cwd_not_absolute"
+        | "workspace_cwd_not_approved" => 400,
+        "unknown_workspace" | "unknown_session" | "unknown_provider_session" => 404,
+        "workbench_owner_mismatch" => 403,
+        "hermes_not_configured" | "unavailable" | "executable_unavailable" | "workbench_busy" => {
+            503
+        }
+        "internal" => 500,
+        _ => 409,
     }
 }
 
@@ -1205,6 +1331,7 @@ mod tests {
             owner_lifecycle: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
             retry_driver: Mutex::new(PtyRetryDriver::default()),
+            workbench: test_workbench(),
         });
         let session = runtime
             .pty
@@ -1241,6 +1368,7 @@ mod tests {
             owner_lifecycle: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
             retry_driver: Mutex::new(PtyRetryDriver::default()),
+            workbench: test_workbench(),
         });
         let session = runtime
             .pty
@@ -1310,6 +1438,7 @@ mod tests {
             owner_lifecycle: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
             retry_driver: Mutex::new(PtyRetryDriver::default()),
+            workbench: test_workbench(),
         };
         let closing = runtime
             .pty
@@ -1360,6 +1489,7 @@ mod tests {
             owner_lifecycle: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
             retry_driver: Mutex::new(PtyRetryDriver::default()),
+            workbench: test_workbench(),
         };
         let owners = ["device-a".to_owned()];
         runtime

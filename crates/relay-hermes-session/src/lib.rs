@@ -14,6 +14,8 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use relay_session::jsonl::redact_and_bound_display;
+use relay_session::{ChatCategory, ChatRole, ChatSignal, RichChatEvent};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
@@ -238,6 +240,7 @@ pub struct SessionEvent {
     pub kind: EventKind,
     pub label: &'static str,
     pub preview: String,
+    pub rich: RichChatEvent,
     /// Opaque provider correlation for a clarification response. Present only
     /// when the gateway emitted one; no clarification payload is retained.
     pub clarification_id: Option<String>,
@@ -679,18 +682,24 @@ impl HermesSessionAdapter {
                     "message started".to_owned(),
                 )
             }
-            "message.delta" => (
-                EventKind::Status,
-                "message_delta",
-                "redacted message delta".to_owned(),
-            ),
+            "message.delta" => match assistant_message_text(payload) {
+                Some(text) => (EventKind::Status, "assistant_message", text),
+                None => (
+                    EventKind::Status,
+                    "message_delta",
+                    "message update".to_owned(),
+                ),
+            },
             "message.complete" => {
                 self.status = SessionStatus::Idle;
-                (
-                    EventKind::Status,
-                    "message_complete",
-                    "message complete".to_owned(),
-                )
+                match assistant_message_text(payload) {
+                    Some(text) => (EventKind::Status, "assistant_message", text),
+                    None => (
+                        EventKind::Status,
+                        "message_complete",
+                        "message complete".to_owned(),
+                    ),
+                }
             }
             "thinking.delta" | "reasoning.delta" | "reasoning.available" => (
                 EventKind::Status,
@@ -824,12 +833,15 @@ impl HermesSessionAdapter {
         clarification_id: Option<String>,
     ) {
         self.next_sequence += 1;
-        let event = SessionEvent {
+        let preview = truncate_preview(preview);
+        let rich = hermes_rich_event(self.next_sequence, kind, label, &preview);
+        let mut event = SessionEvent {
             sequence: self.next_sequence,
             session_id: session_id.to_owned(),
             kind,
             label,
-            preview: truncate_preview(preview),
+            preview,
+            rich,
             clarification_id,
         };
         if self.queue.len() == self.queue_limit {
@@ -837,6 +849,7 @@ impl HermesSessionAdapter {
             self.signals.dropped += 1;
             self.signals.replay_gap = true;
             self.status = SessionStatus::Degraded;
+            event.rich.signal = Some(ChatSignal::QueuePressure);
         }
         self.queue.push_back(event.clone());
         self.replay.push_back(event);
@@ -941,6 +954,36 @@ fn tool_preview(payload: Option<&serde_json::Map<String, Value>>) -> String {
         Some(name) => format!("tool {name}"),
         None => "tool activity".to_owned(),
     }
+}
+
+fn assistant_message_text(payload: Option<&serde_json::Map<String, Value>>) -> Option<String> {
+    let payload = payload?;
+    ["text", "delta", "content"]
+        .into_iter()
+        .find_map(|field| payload.get(field).and_then(Value::as_str))
+        .filter(|text| !text.is_empty())
+        .map(redact_and_bound_display)
+}
+
+fn hermes_rich_event(sequence: u64, kind: EventKind, label: &str, preview: &str) -> RichChatEvent {
+    if label == "assistant_message" {
+        return RichChatEvent::new(
+            sequence,
+            ChatRole::Assistant,
+            ChatCategory::Message,
+            label,
+            preview,
+            None,
+        );
+    }
+    let (category, signal) = match kind {
+        EventKind::Tool => (ChatCategory::Tool, None),
+        EventKind::Diagnostic | EventKind::Unsupported => {
+            (ChatCategory::Error, Some(ChatSignal::Degraded))
+        }
+        _ => (ChatCategory::Status, None),
+    };
+    RichChatEvent::new(sequence, ChatRole::System, category, label, preview, signal)
 }
 
 fn truncate_preview(mut preview: String) -> String {
@@ -1506,4 +1549,47 @@ mod tests {
         let mut payload = vec![0_u8; length];
         stream.read_exact(&mut payload)
     }
+}
+#[test]
+fn assistant_message_is_typed_redacted_and_reasoning_is_not_retained() {
+    let mut adapter = HermesSessionAdapter::scripted();
+    adapter.ingest_json(
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"live-1","payload":{"text":"answer sk-SECRET"}}}"#,
+        ).unwrap();
+    adapter.ingest_json(
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"reasoning.delta","session_id":"live-1","payload":{"text":"private chain"}}}"#,
+        ).unwrap();
+    let events = adapter.drain_events();
+    assert_eq!(events[0].rich.role, ChatRole::Assistant);
+    assert_eq!(events[0].rich.text, "answer sk-[redacted]");
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.rich.text.contains("private chain"))
+    );
+}
+
+#[test]
+fn foreign_session_event_does_not_surface() {
+    let mut adapter = HermesSessionAdapter::scripted();
+    adapter.enforce_session_scope = true;
+    adapter.owned_live_sessions.insert("owned".to_owned());
+    adapter.ingest_json(
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"foreign","payload":{"text":"must drop"}}}"#,
+        ).unwrap();
+    assert!(adapter.drain_events().is_empty());
+    assert_eq!(adapter.stream_signals().foreign, 1);
+}
+
+#[test]
+fn queue_pressure_marks_surviving_event_truthfully() {
+    let mut adapter = HermesSessionAdapter::scripted_with_queue_limit(1);
+    for name in ["one", "two"] {
+        adapter.ingest_json(&format!(
+                r#"{{"jsonrpc":"2.0","method":"event","params":{{"type":"tool.start","session_id":"live-1","payload":{{"name":"{name}"}}}}}}"#,
+            )).unwrap();
+    }
+    let event = adapter.drain_events().pop().unwrap();
+    assert_eq!(event.rich.signal, Some(ChatSignal::QueuePressure));
+    assert_eq!(adapter.stream_signals().dropped, 1);
 }

@@ -28,7 +28,7 @@ pub enum FrameClass {
 }
 
 /// A successfully classified frame. Holds only what the neutral contract needs
-/// plus a bounded redacted preview — never the raw structured payload.
+/// plus safe text/metadata — never the raw structured payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     pub class: FrameClass,
@@ -45,7 +45,10 @@ pub struct Frame {
     pub has_params: bool,
     /// For a turn notification, the `params.turn.id` string, if present.
     pub event_turn_id: Option<String>,
-    /// Bounded, secret-redacted diagnostic preview of the line.
+    /// Displayable assistant text extracted only from known agent-message
+    /// notification shapes before the parsed provider payload is dropped.
+    pub display_text: Option<String>,
+    /// Safe display text or generic diagnostic metadata; never a raw frame.
     pub preview: String,
 }
 
@@ -164,6 +167,12 @@ pub fn scan_line(line: &[u8]) -> Result<Frame, ScanError> {
     } else {
         None
     };
+    let display_text = if matches!(class, FrameClass::Notification) {
+        extract_agent_message(method.as_deref(), params)
+    } else {
+        None
+    };
+    let preview = safe_preview(&class, display_text.as_deref());
 
     Ok(Frame {
         class,
@@ -173,8 +182,50 @@ pub fn scan_line(line: &[u8]) -> Result<Frame, ScanError> {
         result_turn_id,
         has_params,
         event_turn_id,
-        preview: redacted_preview(trimmed),
+        display_text,
+        preview,
     })
+}
+
+fn safe_preview(class: &FrameClass, display_text: Option<&str>) -> String {
+    if let Some(display_text) = display_text {
+        return display_text.to_owned();
+    }
+    match class {
+        FrameClass::Response { ok: true } => "provider response".to_owned(),
+        FrameClass::Response { ok: false } => "provider error response".to_owned(),
+        FrameClass::Notification => "provider event".to_owned(),
+        FrameClass::ServerRequest => "provider interaction request".to_owned(),
+    }
+}
+
+fn extract_agent_message(method: Option<&str>, params: Option<&Value>) -> Option<String> {
+    let params = params?.as_object()?;
+    let text = match method? {
+        "item/agentMessage/delta" => params.get("delta")?.as_str()?,
+        "item/completed" => {
+            let item = params.get("item")?.as_object()?;
+            if item.get("type")?.as_str()? != "agentMessage" {
+                return None;
+            }
+            item.get("text")?.as_str()?
+        }
+        _ => return None,
+    };
+    Some(redact_and_bound_display(text))
+}
+
+pub fn redact_and_bound_display(text: &str) -> String {
+    let mut text = redact_secrets(text);
+    if text.len() > crate::contract::MAX_CHAT_TEXT_BYTES {
+        let mut end = crate::contract::MAX_CHAT_TEXT_BYTES;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("…[truncated]");
+    }
+    text
 }
 
 /// Extract `result.<outer>.id` without retaining the result object.
@@ -416,6 +467,21 @@ const fn utf8_len(first: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_only_bounded_redacted_agent_message_text() {
+        let frame = scan_line(
+            br#"{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"hello sk-SECRET"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(frame.display_text.as_deref(), Some("hello sk-[redacted]"));
+
+        let reasoning = scan_line(
+            br#"{"method":"item/completed","params":{"item":{"type":"reasoning","text":"private chain"}}}"#,
+        )
+        .unwrap();
+        assert!(reasoning.display_text.is_none());
+    }
     use std::time::{Duration, Instant};
 
     #[test]
@@ -550,8 +616,8 @@ mod tests {
             scan_line(br#"{"method":"auth","params":{"access_token":"sk-DEADBEEF","note":"ok"}}"#)
                 .unwrap();
         assert!(!frame.preview.contains("DEADBEEF"));
-        assert!(frame.preview.contains("[redacted]"));
-        assert!(frame.preview.contains("\"note\":\"ok\""));
+        assert!(!frame.preview.contains("note"));
+        assert_eq!(frame.preview, "provider event");
 
         let preview = redact_secrets("Authorization: Bearer abc.def.ghi and key sk-XYZ123");
         assert!(!preview.contains("abc.def.ghi"));
@@ -561,15 +627,21 @@ mod tests {
     }
 
     #[test]
-    fn frame_preview_masks_camel_case_credential_keys_and_escaped_forms() {
+    fn frame_preview_never_retains_raw_payloads_or_reasoning() {
         let frame = scan_line(
             br#"{"method":"auth","params":{"accessToken":"mask-me-a","refreshToken":"mask-me-b","idToken":"mask-me-c","client\u0053ecret":"mask-me-\u0064"}}"#,
         )
         .unwrap();
 
-        assert_eq!(frame.preview.matches("\"[redacted]\"").count(), 4);
+        assert_eq!(frame.preview, "provider event");
         assert!(!frame.preview.contains("mask-me"));
-        assert!(serde_json::from_str::<Value>(&frame.preview).is_ok());
+
+        let reasoning = scan_line(
+            br#"{"method":"item/completed","params":{"item":{"type":"reasoning","text":"do-not-retain"}}}"#,
+        )
+        .unwrap();
+        assert!(reasoning.display_text.is_none());
+        assert_eq!(reasoning.preview, "provider event");
     }
 
     #[test]

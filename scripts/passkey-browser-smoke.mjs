@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { access, mkdtemp, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, resolve, sep } from "node:path";
 
@@ -18,10 +18,6 @@ const chromium = "/usr/bin/chromium";
 const recoveryCode = "browser-virtual-authenticator-recovery";
 const root = resolve("web/src");
 const publicRoot = resolve("web/public");
-const vendorFiles = new Map([
-  ["/vendor/xterm.js", resolve("node_modules/@xterm/xterm/lib/xterm.js")],
-  ["/vendor/xterm.css", resolve("node_modules/@xterm/xterm/css/xterm.css")],
-]);
 const scratch = await mkdtemp(`${tmpdir()}/relay-passkey-browser-`);
 const chromeProfile = resolve(scratch, "chrome-profile");
 const recoveryHash = createHash("sha256").update(recoveryCode).digest("hex");
@@ -46,10 +42,14 @@ class Cdp {
     this.socket = socket;
     this.nextId = 1;
     this.pending = new Map();
+    this.events = [];
     socket.addEventListener("message", (message) => {
       const response = JSON.parse(message.data);
       const pending = this.pending.get(response.id);
-      if (!pending) return;
+      if (!pending) {
+        this.events.push(response);
+        return;
+      }
       this.pending.delete(response.id);
       if (response.error) pending.reject(new Error(response.error.message));
       else pending.resolve(response.result);
@@ -70,14 +70,6 @@ class Cdp {
 if (spawnSync(chromium, ["--version"], { encoding: "utf8" }).status !== 0) {
   console.log("passkey browser matrix skipped: Chromium is unavailable");
   process.exit(0);
-}
-
-for (const [path, file] of vendorFiles) {
-  try {
-    await access(file);
-  } catch (error) {
-    throw new Error(`passkey browser matrix requires ${path}; run npm ci`, { cause: error });
-  }
 }
 
 try {
@@ -102,6 +94,7 @@ try {
   const { targetId } = await browser.command("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await browser.command("Target.attachToTarget", { targetId, flatten: true });
   await browser.command("Page.enable", {}, sessionId);
+  await browser.command("Runtime.enable", {}, sessionId);
   await browser.command("WebAuthn.enable", {}, sessionId);
   await browser.command(
     "WebAuthn.addVirtualAuthenticator",
@@ -119,15 +112,6 @@ try {
   );
   await browser.command("Page.navigate", { url: `${origin}/` }, sessionId);
   await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
-  assert.equal(
-    await evaluate(sessionId, "typeof window.Terminal"),
-    "function",
-    "the xterm browser fixture must expose a Terminal constructor",
-  );
-  await evaluate(
-    sessionId,
-    "window.relayPageErrors = []; addEventListener('error', (event) => window.relayPageErrors.push(event.message)); addEventListener('unhandledrejection', (event) => window.relayPageErrors.push(String(event.reason)));",
-  );
 
   await evaluate(
     sessionId,
@@ -167,11 +151,8 @@ try {
   await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Passkey enrolled"));
 
   await evaluate(sessionId, "document.querySelector('#sign-in').click()");
-  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Passkey verified"));
-  await waitFor(
-    async () => (await evaluate(sessionId, "document.querySelector('#open-claude').disabled")) === false,
-    "authenticated Claude terminal affordance",
-  );
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Browser access verified"));
+  await browser.command("Log.enable", {}, sessionId);
   assert.equal(
     await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
     200,
@@ -186,171 +167,66 @@ try {
     "a valueless unrelated Cookie segment must not invalidate a valid browser session",
   );
 
-  await evaluate(
-    sessionId,
-    `window.relayOriginalTerminalCreateFetch = window.fetch; window.relayTerminalCreateRequests = 0; window.fetch = async (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, window.location.href); const method = init?.method ?? (typeof input === 'string' ? 'GET' : input.method); if (method === 'POST' && url.pathname === '/node/claude/sessions') { window.relayTerminalCreateRequests += 1; await new Promise((resolve) => setTimeout(resolve, 25)); } return window.relayOriginalTerminalCreateFetch(input, init); }; const open = document.querySelector('#open-claude'); open.click(); open.click();`,
-  );
-  await waitFor(async () => {
-    const status = await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent");
-    return status?.includes("Relay-owned terminal · running");
-  }, "Relay-owned Claude terminal render");
-  assert.equal(
-    await evaluate(sessionId, "window.relayTerminalCreateRequests"),
-    1,
-    "double-clicked terminal creation must serialize to one Relay-owned PTY",
-  );
-  assert.equal(
-    await evaluate(sessionId, "document.querySelector('#open-claude').disabled"),
-    true,
-    "a live terminal cannot overwrite its only opaque Session reference",
-  );
-  await evaluate(sessionId, "window.fetch = window.relayOriginalTerminalCreateFetch; delete window.relayOriginalTerminalCreateFetch; delete window.relayTerminalCreateRequests");
-  const terminal = await evaluate(
-    sessionId,
-    `(() => {
-      const sessionId = document.querySelector('.session-card code')?.textContent;
-      const csrf = document.cookie.split('; ').find((cookie) => cookie.startsWith('__Host-relay_csrf='))?.slice('__Host-relay_csrf='.length);
-      return { hasTerminal: Boolean(document.querySelector('.terminal-host .xterm')), sessionId, csrf };
-    })()`,
-  );
-  assert.equal(terminal.hasTerminal, true, "the workbench must render an interactive xterm surface");
-  assert.match(terminal.sessionId, /^claude-pty-\d+$/, "the browser receives only an opaque Relay Session ID");
-  assert.ok(terminal.csrf, "the browser keeps a CSRF token distinct from the HttpOnly session cookie");
-  await evaluate(
-    sessionId,
-    `window.relayOriginalTerminalFetch = window.fetch; window.relayTerminalPollFailed = false; window.fetch = async (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, window.location.href); const method = init?.method ?? (typeof input === 'string' ? 'GET' : input.method); if (!window.relayTerminalPollFailed && method === 'GET' && url.pathname.startsWith('/node/claude/sessions/')) { window.relayTerminalPollFailed = true; throw new TypeError('transient terminal poll failure'); } return window.relayOriginalTerminalFetch(input, init); };`,
-  );
-  await waitFor(
-    async () => (await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent"))?.startsWith("Terminal unavailable:"),
-    "transient terminal polling failure",
-  );
-  await waitFor(
-    async () => (await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent"))?.includes("Relay-owned terminal · running"),
-    "terminal polling recovery",
-  );
-  await evaluate(sessionId, "window.fetch = window.relayOriginalTerminalFetch; delete window.relayOriginalTerminalFetch; delete window.relayTerminalPollFailed");
-  await evaluate(
-    sessionId,
-    `window.relayOriginalTerminalInputFetch = window.fetch; window.relayTerminalInputFailed = false; window.fetch = async (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, window.location.href); const method = init?.method ?? (typeof input === 'string' ? 'GET' : input.method); if (!window.relayTerminalInputFailed && method === 'POST' && url.pathname.endsWith('/input')) { window.relayTerminalInputFailed = true; throw new TypeError('uncertain terminal input delivery'); } return window.relayOriginalTerminalInputFetch(input, init); };`,
-  );
-  await evaluate(sessionId, "document.querySelector('.xterm-helper-textarea').focus()");
-  await browser.command("Input.insertText", { text: "saved-across-layout-render\n" }, sessionId);
-  await waitFor(
-    async () => await evaluate(sessionId, `(() => {
-      const recovery = document.querySelector('.terminal-input-recovery');
-      return recovery && !recovery.hidden && recovery.textContent.includes('input is saved');
-    })()`),
-    "saved uncertain terminal input",
-  );
-  await evaluate(sessionId, "window.fetch = window.relayOriginalTerminalInputFetch; delete window.relayOriginalTerminalInputFetch; delete window.relayTerminalInputFailed");
-  const recoveryAfterLayout = await evaluate(
-    sessionId,
-    `(() => {
-      document.querySelector('[data-action="split"]').click();
-      const recovery = document.querySelector('.pane[data-selected="true"] .terminal-input-recovery');
-      return {
-        visible: Boolean(recovery && !recovery.hidden),
-        message: recovery?.textContent,
-        controls: [...recovery?.querySelectorAll('button') ?? []].map((button) => button.textContent),
-      };
-    })()`,
-  );
-  assert.equal(recoveryAfterLayout.visible, true, "a layout render must preserve paused uncertain terminal input");
-  assert.match(recoveryAfterLayout.message, /input is saved/i);
-  assert.deepEqual(recoveryAfterLayout.controls, ["Retry saved input", "Discard saved input"]);
-  const retryStatus = await evaluate(
-    sessionId,
-    `(() => {
-      document.querySelector('.pane[data-selected="true"] .terminal-input-recovery button').click();
-      return document.querySelector('.pane[data-selected="true"] .terminal-status')?.textContent;
-    })()`,
-  );
-  assert.match(retryStatus, /Retrying saved terminal input/);
-  await waitFor(
-    async () => await evaluate(sessionId, "document.querySelector('.pane[data-selected=\"true\"] .terminal-input-recovery')?.hidden === true"),
-    "saved terminal input retry after a layout render",
-  );
-  await evaluate(
-    sessionId,
-    `window.relayOriginalInFlightInputFetch = window.fetch; window.relayInFlightInputStarted = false; window.fetch = async (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, window.location.href); const method = init?.method ?? (typeof input === 'string' ? 'GET' : input.method); if (!window.relayInFlightInputStarted && method === 'POST' && url.pathname.endsWith('/input')) { window.relayInFlightInputStarted = true; await new Promise(() => {}); } return window.relayOriginalInFlightInputFetch(input, init); };`,
-  );
-  await evaluate(sessionId, "document.querySelector('.xterm-helper-textarea').focus()");
-  await browser.command("Input.insertText", { text: "in-flight-across-layout-render\\n" }, sessionId);
-  await waitFor(
-    async () => await evaluate(sessionId, "window.relayInFlightInputStarted"),
-    "in-flight terminal input request",
-  );
-  const inFlightRecoveryAfterLayout = await evaluate(
-    sessionId,
-    `(() => {
-      document.querySelector('[data-action="split"]').click();
-      const recovery = document.querySelector('.pane[data-selected="true"] .terminal-input-recovery');
-      return {
-        visible: Boolean(recovery && !recovery.hidden),
-        message: recovery?.textContent,
-        controls: [...recovery?.querySelectorAll('button') ?? []].map((button) => button.textContent),
-      };
-    })()`,
-  );
-  assert.equal(inFlightRecoveryAfterLayout.visible, true, "a layout render must preserve in-flight terminal input for an explicit operator decision");
-  assert.match(inFlightRecoveryAfterLayout.message, /delivery was in progress/i);
-  assert.deepEqual(inFlightRecoveryAfterLayout.controls, ["Retry saved input", "Discard saved input"]);
-  await evaluate(sessionId, "document.querySelector('.pane[data-selected=\"true\"] .terminal-input-recovery button:nth-of-type(2)').click(); window.fetch = window.relayOriginalInFlightInputFetch; delete window.relayOriginalInFlightInputFetch; delete window.relayInFlightInputStarted");
-  await evaluate(sessionId, "document.querySelector('.xterm-helper-textarea').focus()");
-  await browser.command("Input.insertText", { text: "browser-keyboard\n" }, sessionId);
-  const terminalOperations = await evaluate(
+  const terminalApi = await evaluate(
     sessionId,
     `(async () => {
-      const sessionId = document.querySelector('.session-card code').textContent;
-      const csrf = document.cookie.split('; ').find((cookie) => cookie.startsWith('__Host-relay_csrf='))?.slice('__Host-relay_csrf='.length);
-      const post = (suffix, body) => fetch('/node/claude/sessions/' + sessionId + suffix, {
-        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Relay-CSRF': csrf }, body: JSON.stringify(body),
-      }).then((response) => response.status);
-      const resize = await post('/resize', { cols: 92, rows: 28 });
-      let poll = { output: [] };
-      for (let attempt = 0; attempt < 25; attempt += 1) {
-        poll = await fetch('/node/claude/sessions/' + sessionId + '?trace=browser-smoke&cursor=0', { credentials: 'same-origin' }).then((response) => response.json());
-        if (poll.output.some((chunk) => chunk.text.includes('browser-keyboard'))) break;
+      const csrf = document.cookie.split("; ").find((cookie) => cookie.startsWith("__Host-relay_csrf="))?.slice("__Host-relay_csrf=".length);
+      const request = async (path, body) => {
+        const response = await fetch(path, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", "X-Relay-CSRF": csrf },
+          body: JSON.stringify(body),
+        });
+        return { status: response.status, body: await response.json() };
+      };
+      const created = await request("/node/claude/sessions", {});
+      const terminalId = created.body.sessionId;
+      const resize = await request("/node/claude/sessions/" + terminalId + "/resize", { cols: 92, rows: 28 });
+      const input = await request("/node/claude/sessions/" + terminalId + "/input", { data: "browser-api\\n" });
+      let poll = { status: 0, body: { output: [] } };
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const response = await fetch("/node/claude/sessions/" + terminalId + "?trace=browser-smoke&cursor=0", { credentials: "same-origin" });
+        poll = { status: response.status, body: await response.json() };
+        if (poll.body.output.some((chunk) => chunk.text.includes("browser-api"))) break;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      const mirrored = [...document.querySelectorAll('.session-card code')].map((node) => node.textContent);
-      return { resize, poll, mirrored };
+      const interrupt = await request("/node/claude/sessions/" + terminalId + "/interrupt", {});
+      const close = await request("/node/claude/sessions/" + terminalId + "/close", {});
+      let closed = close;
+      for (let attempt = 0; !["closed", "exited"].includes(closed.body.status) && attempt < 50; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const response = await fetch("/node/claude/sessions/" + terminalId + "?cursor=0", { credentials: "same-origin" });
+        closed = { status: response.status, body: await response.json() };
+      }
+      const replacement = await request("/node/claude/sessions", {});
+      return { created, resize, input, poll, interrupt, close, closed, replacement };
     })()`,
   );
-  assert.equal(terminalOperations.resize, 200, "the visible terminal must resize through the authenticated node boundary");
+  assert.equal(terminalApi.created.status, 200, "authenticated browser authority must create the bounded PTY through the node route");
+  assert.match(terminalApi.created.body.sessionId, /^claude-pty-\d+$/, "the browser receives only an opaque PTY Session ID");
+  assert.equal(terminalApi.resize.status, 200, "authenticated resize must reach the owned PTY");
+  assert.equal(terminalApi.input.status, 200, "authenticated input must reach the owned PTY");
   assert.ok(
-    terminalOperations.poll.output.some((chunk) => chunk.text.includes("browser-keyboard")),
-    "keyboard input through xterm must reach the Relay-owned PTY and return as terminal output",
+    terminalApi.poll.body.output.some((chunk) => chunk.text.includes("browser-api")),
+    "the direct browser API seam must return bounded PTY output",
   );
-  assert.ok(
-    terminalOperations.mirrored.length >= 2
-      && terminalOperations.mirrored.every((sessionId) => sessionId === terminal.sessionId),
-    "split panes must retain one Session identity while the browser detaches and reattaches its terminal view",
-  );
-  await evaluate(sessionId, "document.querySelector('#interrupt-session').click()");
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const interruptStatus = await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent");
-  assert.doesNotMatch(
-    interruptStatus,
-    /rejected|unavailable/i,
-    "browser interrupt must be accepted without turning Ctrl-C into implicit terminal close",
-  );
-  await evaluate(sessionId, "document.querySelector('#end-session').click()");
-  await waitFor(
-    async () => (await evaluate(sessionId, "document.querySelector('[data-layout-notice]')?.textContent"))?.includes("closed and reaped"),
-    "explicit Relay close state",
-  );
-  assert.equal(
-    await evaluate(sessionId, "document.querySelector('#open-claude').disabled"),
-    false,
-    "explicit close must permit replacing the terminal Session reference",
-  );
-  await evaluate(sessionId, "document.querySelector('#open-claude').click()");
-  await waitFor(
-    async () => (await evaluate(sessionId, "document.querySelector('.pane[data-selected=\"true\"] .terminal-status')?.textContent"))?.includes("Relay-owned terminal · running"),
-    "replacement terminal before browser-session revocation",
-  );
-  assert.deepEqual(await evaluate(sessionId, "window.relayPageErrors"), [], "the terminal flow must not raise page errors");
+  assert.equal(terminalApi.interrupt.status, 200, "interrupt must not imply terminal close");
+  assert.ok([200, 202].includes(terminalApi.close.status), "explicit close must enter the retained teardown lifecycle");
+  assert.equal(terminalApi.closed.body.status, "closed", "autonomous retries must make terminal closure observable without another mutation");
+  assert.equal(terminalApi.replacement.status, 200, "reaped capacity must admit a replacement PTY before auth revocation");
+  assert.notEqual(terminalApi.replacement.body.sessionId, terminalApi.created.body.sessionId);
+
+  if (process.env.RELAY_WORKBENCH_LIVE === "1") {
+    const liveEventOffset = browser.events.length;
+    await exerciseLiveWorkbench(sessionId, process.cwd());
+    const pageErrors = browser.events.slice(liveEventOffset).filter((event) => (
+      event.method === "Runtime.exceptionThrown"
+      || (event.method === "Runtime.consoleAPICalled" && event.params.type === "error")
+      || (event.method === "Log.entryAdded" && event.params.entry.level === "error")
+    ));
+    assert.deepEqual(pageErrors, [], "the live workbench path must not emit page or console errors");
+  }
 
   const revokeStatuses = await evaluate(
     sessionId,
@@ -468,6 +344,102 @@ async function recoveryValueAfterFailedEnrollment(sessionId) {
   return evaluate(sessionId, "document.querySelector('#recovery-code').value");
 }
 
+async function exerciseLiveWorkbench(sessionId, cwd) {
+  await evaluate(
+    sessionId,
+    `document.querySelector("#show-workspace-add").click(); document.querySelector("#workspace-cwd").value = ${JSON.stringify(cwd)}; document.querySelector("#workspace-form").requestSubmit();`,
+  );
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length")) === 1,
+    async () => evaluate(sessionId, "({ list: document.querySelector('#workspace-list').innerText, error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, title: document.querySelector('#session-title').textContent })"),
+  );
+  assert.equal(
+    await evaluate(sessionId, "document.querySelector('[data-provider=\"hermes\"]').disabled"),
+    true,
+    "an unavailable Hermes adapter must remain visibly unavailable instead of presenting a fake conversation",
+  );
+  await evaluate(sessionId, "document.querySelector('[data-provider=\"codex\"]').click()");
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) === 1,
+    async () => evaluate(sessionId, "({ error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, state: document.querySelector('#session-status').dataset.state })"),
+  );
+  const composerState = await evaluate(
+    sessionId,
+    "({ inputDisabled: document.querySelector('#message-input').disabled, sendDisabled: document.querySelector('#send-message').disabled, sendType: document.querySelector('#send-message').type, formId: document.querySelector('#send-message').form?.id })",
+  );
+  assert.deepEqual(composerState, { inputDisabled: false, sendDisabled: false, sendType: "submit", formId: "composer" });
+  await evaluate(
+    sessionId,
+    `window.relaySubmitObserved = false; document.querySelector("#composer").addEventListener("submit", () => { window.relaySubmitObserved = true; }, { once: true }); document.querySelector("#message-input").value = "Reply with one word: relay"; document.querySelector("#send-message").click();`,
+  );
+  assert.equal(await evaluate(sessionId, "window.relaySubmitObserved"), true, "Send must submit the shared composer");
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelectorAll('.chat-event--user').length")) === 1,
+    async () => ({
+      dom: await evaluate(sessionId, "({ disabled: document.querySelector('#message-input').disabled, error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, timeline: document.querySelector('.chat-timeline')?.innerText, state: document.querySelector('#session-status').dataset.state })"),
+      runtimeEvents: browser.events.filter((event) => event.method === "Runtime.exceptionThrown"),
+    }),
+  );
+  await waitFor(
+    async () => evaluate(sessionId, "[...document.querySelectorAll('.chat-event code')].some((label) => label.textContent === 'turn.started')"),
+    async () => evaluate(sessionId, "({ error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, state: document.querySelector('#session-status').dataset.state, timeline: document.querySelector('.chat-timeline')?.innerText })"),
+  );
+  await evaluate(sessionId, "document.querySelector('[data-layout-action=\"new-tab\"]').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.session-tab').length")) === 2);
+  await evaluate(sessionId, "document.querySelector('[data-layout-action=\"split-pane\"]').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.workbench-pane').length")) === 2);
+  const divider = await evaluate(
+    sessionId,
+    "(() => { const box = document.querySelector('.pane-divider').getBoundingClientRect(); const split = document.querySelector('.workspace-split').getBoundingClientRect(); return { compact: window.matchMedia('(max-width: 64rem)').matches, x: box.x + box.width / 2, y: box.y + box.height / 2, width: split.width, height: split.height }; })()",
+  );
+  const targetX = divider.x + Math.min(80, divider.width / 5);
+  const targetY = divider.y + Math.min(80, divider.height / 5);
+  await evaluate(
+    sessionId,
+    `(() => {
+      const handle = document.querySelector('.pane-divider');
+      handle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: ${divider.x}, clientY: ${divider.y}, pointerId: 1 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, button: 0, clientX: ${divider.compact ? divider.x : targetX}, clientY: ${divider.compact ? targetY : divider.y}, pointerId: 1 }));
+      window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, clientX: ${divider.compact ? divider.x : targetX}, clientY: ${divider.compact ? targetY : divider.y}, pointerId: 1 }));
+    })()`,
+  );
+  await waitFor(async () => Number(await evaluate(sessionId, "document.querySelector('.pane-divider').getAttribute('aria-valuenow')")) > 50, "a resized pane divider");
+  await evaluate(
+    sessionId,
+    `(() => {
+      const source = document.querySelector('[data-pane-id="pane-1"][data-tab-index="0"]');
+      const target = document.querySelector('[data-pane-id="pane-2"][data-tab-index="0"]');
+      const data = new DataTransfer();
+      source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: data }));
+      target.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer: data }));
+    })()`,
+  );
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('[data-pane-id=\"pane-2\"].session-tab').length")) === 2, "a tab moved across panes");
+  const viewport = await evaluate(
+    sessionId,
+    "(() => { const split = document.querySelector('.workspace-split'); return { innerWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth, shellWidth: document.querySelector('.workbench-shell').getBoundingClientRect().width, splitWidth: split.getBoundingClientRect().width, mainWidth: document.querySelector('.main-panel').getBoundingClientRect().width, paneRootWidth: document.querySelector('.pane-root').getBoundingClientRect().width, columns: getComputedStyle(split).gridTemplateColumns, inlineColumns: split.style.gridTemplateColumns, paneWidths: [...document.querySelectorAll('.workbench-pane')].map((pane) => pane.getBoundingClientRect().width), tabScrollWidths: [...document.querySelectorAll('.tab-strip')].map((tabs) => tabs.scrollWidth) }; })()",
+  );
+  assert.equal(viewport.scrollWidth > viewport.innerWidth, false, `split workbench overflow: ${JSON.stringify(viewport)}`);
+  if (process.env.RELAY_WORKBENCH_SCREENSHOT_PATH) {
+    const screenshot = await browser.command("Page.captureScreenshot", { format: "png" }, sessionId);
+    await writeFile(process.env.RELAY_WORKBENCH_SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
+  }
+  await browser.command("Page.reload", { ignoreCache: true }, sessionId);
+  await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) >= 1);
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.workbench-pane').length")) === 2, "a restored pane layout");
+  await evaluate(sessionId, "document.querySelector('#session-list button[aria-label=\"Resume session\"]').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) >= 2, "a resumed Codex session");
+  const restored = await evaluate(
+    sessionId,
+    "({ workspaceCount: document.querySelectorAll('#workspace-list button').length, userEvents: document.querySelectorAll('.chat-event--user').length, panes: document.querySelectorAll('.workbench-pane').length, sessionState: document.querySelector('#session-status').dataset.state })",
+  );
+  assert.equal(restored.workspaceCount, 1, "browser refresh must restore the selected CWD Workspace");
+  assert.ok(restored.userEvents >= 1, "submitted user text must remain in the restored shared timeline");
+  assert.equal(restored.panes, 2, "browser refresh must restore the direct-manipulation layout");
+  assert.notEqual(restored.sessionState, "unknown", "restored session must report an honest provider state");
+}
+
 async function createCertificate() {
   const result = spawnSync(
     "openssl",
@@ -497,7 +469,7 @@ async function startProxy(hubPort) {
   const [key, cert] = await Promise.all([readFile(`${scratch}/key.pem`), readFile(`${scratch}/cert.pem`)]);
   const server = createHttpsServer({ key, cert }, (request, response) => {
     const path = new URL(request.url ?? "/", origin).pathname;
-    if (path === "/health" || path.startsWith("/auth/") || path.startsWith("/node/") || path.startsWith("/protected/")) {
+    if (path === "/health" || path.startsWith("/auth/") || path.startsWith("/api/") || path.startsWith("/node/") || path.startsWith("/protected/")) {
       const upstream = httpRequest(
         {
           host: "127.0.0.1",
@@ -523,20 +495,6 @@ async function startProxy(hubPort) {
 }
 
 async function serveStatic(path, response) {
-  const vendor = vendorFiles.get(path);
-  if (vendor) {
-    try {
-      const content = await readFile(vendor);
-      response.writeHead(200, {
-        "Cache-Control": "no-store",
-        "Content-Type": contentType(extname(vendor)),
-      });
-      response.end(content);
-    } catch {
-      response.writeHead(404).end();
-    }
-    return;
-  }
   const relative = path === "/" ? "index.html" : path.slice(1);
   const base = relative === "manifest.webmanifest" ? publicRoot : root;
   const file = resolve(base, relative);
@@ -642,5 +600,6 @@ async function waitFor(predicate, timeoutDescription = "browser matrix state") {
     if (result) return result;
     await new Promise((resolve_) => setTimeout(resolve_, 50));
   }
-  throw new Error(`timed out waiting for ${typeof timeoutDescription === "function" ? timeoutDescription() : timeoutDescription}`);
+  const description = typeof timeoutDescription === "function" ? await timeoutDescription() : timeoutDescription;
+  throw new Error(`timed out waiting for ${typeof description === "string" ? description : JSON.stringify(description)}`);
 }

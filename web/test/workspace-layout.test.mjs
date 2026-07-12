@@ -9,14 +9,20 @@ import {
   MAX_TAB_COUNT,
   LayoutLimitError,
   addSessionTab,
+  activeSessionTab,
+  attachSessionToSelectedTab,
   canUseLiveSessionActions,
   closeSelectedPane,
   createWorkspaceLayout,
+  moveTab,
   moveSelectedPane,
+  openSessionTab,
+  removeSessionFromLayout,
   resetWorkspaceLayout,
   restoreWorkspaceLayout,
   selectTab,
   serializeWorkspaceLayout,
+  setSplitRatio,
   setNodeAvailability,
   sessionIds,
   splitSelectedPane,
@@ -150,4 +156,47 @@ test("resetting a valid Workspace layout keeps its opaque Session reference and 
   assert.equal(reset.recovery, null);
   assert.equal(reset.workspace.node.id, "node-local");
   assert.equal(reset.workspace.root.path, "/home/relay/non-repo");
+});
+
+test("opening, dragging, and resizing Session tabs remains a bounded presentation-only mutation", () => {
+  let state = createWorkspaceLayout({ sessionId: "session-opaque-12" });
+  state = openSessionTab(state, "session-opaque-13", "Codex session");
+  const withTwoTabs = state;
+  state = splitSelectedPane(state);
+  const splitId = state.layout.id;
+  const sourcePaneId = state.layout.first.id;
+  const targetPaneId = state.layout.second.id;
+  const sourceTabId = state.layout.first.tabs[0].id;
+
+  state = moveTab(state, sourcePaneId, sourceTabId, targetPaneId, 0);
+  state = setSplitRatio(state, splitId, 0.72);
+
+  assert.equal(activeSessionTab(state).paneId, targetPaneId);
+  assert.equal(state.layout.ratio, 0.72);
+  assert.deepEqual(uniqueSessionIds(state).sort(), uniqueSessionIds(withTwoTabs).sort());
+  assert.throws(
+    () => moveTab(state, sourcePaneId, state.layout.first.tabs[0].id, targetPaneId, 0),
+    (error) => error instanceof LayoutLimitError && error.code === "move-tab-unavailable",
+  );
+});
+
+test("attaching an already-owned Session replaces only the selected opaque layout reference", () => {
+  const initial = createWorkspaceLayout({ sessionId: "session-opaque-14" });
+  const attached = attachSessionToSelectedTab(initial, "session-opaque-15", "Attached session");
+
+  assert.equal(activeSessionTab(attached).tab.content.sessionId, "session-opaque-15");
+  assert.equal(activeSessionTab(attached).tab.title, "Attached session");
+  assert.equal("runtime" in attached, false);
+});
+
+test("closing a provider Session removes only its presentation references", () => {
+  let state = createWorkspaceLayout({ sessionId: "session-opaque-12" });
+  state = openSessionTab(state, "session-opaque-13", "Codex session");
+  state = splitSelectedPane(state);
+
+  state = removeSessionFromLayout(state, "session-opaque-13");
+
+  assert.deepEqual(sessionIds(state), ["session-opaque-12"]);
+  assert.equal(state.layout.kind, "tabs");
+  assert.equal(activeSessionTab(state).tab.content.sessionId, "session-opaque-12");
 });

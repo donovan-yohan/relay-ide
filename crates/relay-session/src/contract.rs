@@ -9,6 +9,103 @@
 
 use std::fmt;
 
+/// Maximum UTF-8 bytes retained for browser-displayable event text.
+pub const MAX_CHAT_TEXT_BYTES: usize = 4 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRole {
+    Assistant,
+    User,
+    System,
+}
+
+impl ChatRole {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Assistant => "assistant",
+            Self::User => "user",
+            Self::System => "system",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatCategory {
+    Message,
+    Tool,
+    Status,
+    Error,
+}
+
+impl ChatCategory {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Tool => "tool",
+            Self::Status => "status",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatSignal {
+    QueuePressure,
+    Disconnected,
+    Degraded,
+}
+
+impl ChatSignal {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::QueuePressure => "queue_pressure",
+            Self::Disconnected => "disconnected",
+            Self::Degraded => "degraded",
+        }
+    }
+}
+
+/// Transient, provider-neutral rich-chat event. Text must already be redacted;
+/// construction enforces the common storage/display bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RichChatEvent {
+    pub sequence: u64,
+    pub role: ChatRole,
+    pub category: ChatCategory,
+    pub label: String,
+    pub text: String,
+    pub signal: Option<ChatSignal>,
+}
+
+impl RichChatEvent {
+    pub fn new(
+        sequence: u64,
+        role: ChatRole,
+        category: ChatCategory,
+        label: impl Into<String>,
+        text: impl Into<String>,
+        signal: Option<ChatSignal>,
+    ) -> Self {
+        let mut text = text.into();
+        if text.len() > MAX_CHAT_TEXT_BYTES {
+            let mut end = MAX_CHAT_TEXT_BYTES;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            text.push_str("…[truncated]");
+        }
+        Self {
+            sequence,
+            role,
+            category,
+            label: label.into(),
+            text,
+            signal,
+        }
+    }
+}
+
 /// Opaque, provider-neutral session identity.
 ///
 /// The inner string is an adapter-assigned handle. Callers must treat it as
@@ -226,6 +323,7 @@ pub struct SessionEvent {
     pub kind: EventKind,
     pub label: String,
     pub preview: String,
+    pub rich: RichChatEvent,
 }
 
 impl SessionEvent {
@@ -235,11 +333,27 @@ impl SessionEvent {
         label: impl Into<String>,
         preview: impl Into<String>,
     ) -> Self {
+        let label = label.into();
+        let preview = preview.into();
+        let category = match kind {
+            EventKind::ApprovalRequest | EventKind::Lifecycle => ChatCategory::Status,
+            EventKind::Progress => ChatCategory::Status,
+            EventKind::Diagnostic | EventKind::Unsupported => ChatCategory::Error,
+        };
         Self {
             seq,
             kind,
-            label: label.into(),
-            preview: preview.into(),
+            label: label.clone(),
+            preview: preview.clone(),
+            rich: RichChatEvent::new(
+                seq.0,
+                ChatRole::System,
+                category,
+                label,
+                preview,
+                matches!(kind, EventKind::Diagnostic | EventKind::Unsupported)
+                    .then_some(ChatSignal::Degraded),
+            ),
         }
     }
 }

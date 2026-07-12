@@ -48,14 +48,18 @@ export function createWorkspaceLayout({
   return state;
 }
 
-export function addSessionTab(state) {
+export function addSessionTab(state, { sessionId, title } = {}) {
   const metrics = layoutMetrics(state);
   if (metrics.tabCount >= MAX_TAB_COUNT) {
     throw new LayoutLimitError("tab-cap", `This Workspace is limited to ${MAX_TAB_COUNT} tabs.`);
   }
 
   const pane = selectedPane(state);
-  const tab = createSessionTab(nextId(state.layout, "tab"), activeSessionId(pane), "Session view");
+  const tab = createSessionTab(
+    nextId(state.layout, "tab"),
+    sessionId ?? activeSessionId(pane),
+    title ?? "Session view",
+  );
   return withLayout(state, replacePane(state.layout, pane.id, {
     ...pane,
     activeTabId: tab.id,
@@ -63,10 +67,24 @@ export function addSessionTab(state) {
   }), pane.id);
 }
 
+export function activeSessionTab(state) {
+  const pane = selectedPane(state);
+  const tab = pane.tabs.find((candidate) => candidate.id === pane.activeTabId);
+  if (!tab) throw new TypeError("Selected pane has no active Session tab.");
+  return { paneId: pane.id, tab: clone(tab) };
+}
+
+export function openSessionTab(state, sessionId, title = "Session") {
+  assertText(sessionId, "Session reference", MAX_SESSION_REFERENCE_LENGTH);
+  const existing = findTab(state.layout, sessionId);
+  if (existing) return selectTab(state, existing.paneId, existing.tabId);
+  return addSessionTab(state, { sessionId, title });
+}
+
 // Session lifecycle remains outside this presentation model. The caller has
 // already created or reattached a node-owned opaque Session and only records
 // that reference on the currently selected tab.
-export function attachSessionToSelectedTab(state, sessionId, title = "Claude terminal") {
+export function attachSessionToSelectedTab(state, sessionId, title = "Session") {
   assertText(sessionId, "Session reference", MAX_SESSION_REFERENCE_LENGTH);
   assertText(title, "tab title");
   const pane = selectedPane(state);
@@ -108,6 +126,7 @@ export function splitSelectedPane(state) {
     kind: "split",
     id: nextId(state.layout, "split"),
     direction: "row",
+    ratio: 0.5,
     first: clone(pane),
     second: mirrorPane,
   });
@@ -142,6 +161,68 @@ export function closeSelectedPane(state) {
     throw new LayoutLimitError("root-pane", "Keep one pane open to preserve the Workspace view.");
   }
   return withLayout(state, layout, firstPaneId(layout));
+}
+
+export function removeSessionFromLayout(state, sessionId) {
+  assertText(sessionId, "Session reference", MAX_SESSION_REFERENCE_LENGTH);
+  const layout = removeSessionTabs(state.layout, sessionId);
+  if (!layout) return null;
+  const selectedPaneId = findPane(layout, state.selectedPaneId) ? state.selectedPaneId : firstPaneId(layout);
+  return withLayout(state, layout, selectedPaneId);
+}
+
+export function moveTab(state, sourcePaneId, tabId, targetPaneId, targetIndex) {
+  const source = findPane(state.layout, sourcePaneId);
+  const target = findPane(state.layout, targetPaneId);
+  if (!source || !target) throw new TypeError("Tab move references a missing pane.");
+  const sourceIndex = source.tabs.findIndex((tab) => tab.id === tabId);
+  if (sourceIndex < 0) throw new TypeError("Tab move references a missing tab.");
+  const requestedIndex = Number.isInteger(targetIndex) ? targetIndex : target.tabs.length;
+  if (requestedIndex < 0 || requestedIndex > target.tabs.length) {
+    throw new TypeError("Tab move index is invalid.");
+  }
+
+  if (sourcePaneId === targetPaneId) {
+    const tabs = [...source.tabs];
+    const [tab] = tabs.splice(sourceIndex, 1);
+    const insertionIndex = sourceIndex < requestedIndex ? requestedIndex - 1 : requestedIndex;
+    tabs.splice(insertionIndex, 0, tab);
+    return withLayout(state, replacePane(state.layout, source.id, {
+      ...source,
+      activeTabId: tab.id,
+      tabs,
+    }), source.id);
+  }
+
+  if (source.tabs.length === 1) {
+    throw new LayoutLimitError("move-tab-unavailable", "Keep one Session tab in each pane.");
+  }
+  const tab = source.tabs[sourceIndex];
+  const sourceTabs = source.tabs.filter((candidate) => candidate.id !== tabId);
+  const targetTabs = [...target.tabs];
+  targetTabs.splice(requestedIndex, 0, tab);
+  const withoutSource = replacePane(state.layout, source.id, {
+    ...source,
+    activeTabId: sourceTabs[Math.min(sourceIndex, sourceTabs.length - 1)].id,
+    tabs: sourceTabs,
+  });
+  return withLayout(state, replacePane(withoutSource, target.id, {
+    ...target,
+    activeTabId: tab.id,
+    tabs: targetTabs,
+  }), target.id);
+}
+
+export function setSplitRatio(state, splitId, ratio) {
+  if (typeof ratio !== "number" || !Number.isFinite(ratio)) {
+    throw new TypeError("Split ratio is invalid.");
+  }
+  const split = findSplit(state.layout, splitId);
+  if (!split) throw new TypeError("Split does not exist in the Workspace layout.");
+  return withLayout(state, replaceLayoutNode(state.layout, split.id, {
+    ...split,
+    ratio: clampRatio(ratio),
+  }), state.selectedPaneId);
 }
 
 export function resetWorkspaceLayout(state) {
@@ -193,11 +274,13 @@ export function restoreWorkspaceLayout(serialized) {
     return recovery(fallback, "unsupported-version", "Saved layout uses an unsupported version.");
   }
   try {
-    assertSnapshot(snapshot);
+    const normalized = clone(snapshot);
+    normalizeSplitRatios(normalized.layout);
+    assertSnapshot(normalized);
+    return { state: { ...normalized, nodeAvailability: "unknown", recovery: null }, recovered: false };
   } catch {
     return recovery(fallback, "invalid-layout", "Saved layout is invalid or exceeds current limits.");
   }
-  return { state: { ...clone(snapshot), nodeAvailability: "unknown", recovery: null }, recovered: false };
 }
 
 export function sessionIds(state) {
@@ -306,7 +389,7 @@ function assertLayout(node, depth, context) {
     return;
   }
 
-  if (node.kind !== "split" || node.direction !== "row") {
+  if (node.kind !== "split" || node.direction !== "row" || !isValidRatio(node.ratio)) {
     throw new TypeError("Layout node is invalid.");
   }
   assertLayout(node.first, depth + 1, context);
@@ -334,6 +417,20 @@ function findPane(node, paneId) {
   return findPane(node.first, paneId) ?? findPane(node.second, paneId);
 }
 
+function findSplit(node, splitId) {
+  if (node.kind === "tabs") return null;
+  if (node.id === splitId) return node;
+  return findSplit(node.first, splitId) ?? findSplit(node.second, splitId);
+}
+
+function findTab(node, sessionId) {
+  if (node.kind === "tabs") {
+    const tab = node.tabs.find((candidate) => candidate.content.sessionId === sessionId);
+    return tab ? { paneId: node.id, tabId: tab.id } : null;
+  }
+  return findTab(node.first, sessionId) ?? findTab(node.second, sessionId);
+}
+
 function paneDepth(node, paneId, depth = 0) {
   if (node.kind === "tabs") return node.id === paneId ? depth : -1;
   return Math.max(paneDepth(node.first, paneId, depth + 1), paneDepth(node.second, paneId, depth + 1));
@@ -342,6 +439,16 @@ function paneDepth(node, paneId, depth = 0) {
 function replacePane(node, paneId, replacement) {
   if (node.kind === "tabs") return node.id === paneId ? replacement : node;
   return { ...node, first: replacePane(node.first, paneId, replacement), second: replacePane(node.second, paneId, replacement) };
+}
+
+function replaceLayoutNode(node, nodeId, replacement) {
+  if (node.id === nodeId) return replacement;
+  if (node.kind === "tabs") return node;
+  return {
+    ...node,
+    first: replaceLayoutNode(node.first, nodeId, replacement),
+    second: replaceLayoutNode(node.second, nodeId, replacement),
+  };
 }
 
 function swapPaneWithSibling(node, paneId) {
@@ -366,6 +473,20 @@ function removePane(node, paneId) {
 
 function firstPaneId(node) {
   return node.kind === "tabs" ? node.id : firstPaneId(node.first);
+}
+
+function removeSessionTabs(node, sessionId) {
+  if (node.kind === "tabs") {
+    const tabs = node.tabs.filter((tab) => tab.content.sessionId !== sessionId);
+    if (tabs.length === 0) return null;
+    const activeTabId = tabs.some((tab) => tab.id === node.activeTabId) ? node.activeTabId : tabs[0].id;
+    return { ...node, activeTabId, tabs };
+  }
+  const first = removeSessionTabs(node.first, sessionId);
+  const second = removeSessionTabs(node.second, sessionId);
+  if (!first) return second;
+  if (!second) return first;
+  return { ...node, first, second };
 }
 
 function nextId(layout, prefix) {
@@ -394,6 +515,21 @@ function visitLayout(node, depth, visit) {
     visitLayout(node.first, depth + 1, visit);
     visitLayout(node.second, depth + 1, visit);
   }
+}
+
+function normalizeSplitRatios(node) {
+  if (node.kind !== "split") return;
+  if (node.ratio === undefined) node.ratio = 0.5;
+  normalizeSplitRatios(node.first);
+  normalizeSplitRatios(node.second);
+}
+
+function clampRatio(value) {
+  return Math.max(0.2, Math.min(0.8, value));
+}
+
+function isValidRatio(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0.2 && value <= 0.8;
 }
 
 function clone(value) {

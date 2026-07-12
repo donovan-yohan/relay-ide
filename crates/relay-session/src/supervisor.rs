@@ -17,8 +17,9 @@ use std::time::{Duration, Instant};
 
 use crate::codex::{Mapped, approval_kind_for_method, codex_command_args, map_frame};
 use crate::contract::{
-    ApprovalDecision, ApprovalId, ApprovalRequest, DegradedReason, EventKind, FailureKind,
-    Sequence, SessionError, SessionEvent, SessionId, SessionStatus, StreamSignals,
+    ApprovalDecision, ApprovalId, ApprovalRequest, ChatCategory, ChatRole, ChatSignal,
+    DegradedReason, EventKind, FailureKind, RichChatEvent, Sequence, SessionError, SessionEvent,
+    SessionId, SessionStatus, StreamSignals,
 };
 use crate::jsonl::{Frame, FrameClass, MAX_LINE_BYTES, ResultField, ScanError, scan_line};
 
@@ -533,12 +534,39 @@ impl<T: Transport> Supervisor<T> {
         thread_id: &str,
         deadline: Duration,
     ) -> Result<SessionId, SessionError> {
+        self.resume_at_cwd(thread_id, None, deadline)
+    }
+
+    /// Resume a persisted Codex thread while explicitly overriding its working
+    /// directory with a hub-approved canonical CWD.
+    pub fn resume_in_cwd(
+        &mut self,
+        thread_id: &str,
+        cwd: &str,
+        deadline: Duration,
+    ) -> Result<SessionId, SessionError> {
+        self.resume_at_cwd(thread_id, Some(cwd), deadline)
+    }
+
+    fn resume_at_cwd(
+        &mut self,
+        thread_id: &str,
+        cwd: Option<&str>,
+        deadline: Duration,
+    ) -> Result<SessionId, SessionError> {
         self.ensure_live()?;
         let overall = self.deadline_after(deadline)?;
         let initialize = self.send_request("initialize", INITIALIZE_PARAMS, overall)?;
         self.await_response(&initialize, overall)?;
         self.send_notification("initialized", overall)?;
-        let params = format!("{{\"threadId\":{}}}", json_string_bounded(thread_id)?);
+        let params = match cwd {
+            Some(cwd) => format!(
+                "{{\"threadId\":{},\"cwd\":{}}}",
+                json_string_bounded(thread_id)?,
+                json_string_bounded(cwd)?,
+            ),
+            None => format!("{{\"threadId\":{}}}", json_string_bounded(thread_id)?),
+        };
         let resume = self.send_request("thread/resume", &params, overall)?;
         let resumed_id = self.await_result_thread_id(&resume, overall)?;
         if resumed_id != thread_id {
@@ -774,6 +802,26 @@ impl<T: Transport> Supervisor<T> {
     }
 
     fn process_terminated(&mut self) -> SessionError {
+        if !matches!(
+            self.status,
+            SessionStatus::Failed(FailureKind::ProcessTerminated)
+        ) {
+            let mut event = SessionEvent::new(
+                Sequence(self.next_seq),
+                EventKind::Diagnostic,
+                "provider.disconnected",
+                "Provider process disconnected.",
+            );
+            event.rich.signal = Some(ChatSignal::Disconnected);
+            self.next_seq += 1;
+            if self.queue.len() >= EVENT_QUEUE_CAP {
+                self.queue.pop_front();
+                self.signals.dropped += 1;
+                self.signals.backpressured = true;
+                event.rich.signal = Some(ChatSignal::QueuePressure);
+            }
+            self.queue.push_back(event);
+        }
         self.status = SessionStatus::Failed(FailureKind::ProcessTerminated);
         SessionError::Terminal(FailureKind::ProcessTerminated)
     }
@@ -879,17 +927,19 @@ impl<T: Transport> Supervisor<T> {
     }
 
     fn enqueue_event(&mut self, kind: EventKind, label: &str, frame: &Frame) {
-        let event = SessionEvent::new(
+        let mut event = SessionEvent::new(
             Sequence(self.next_seq),
             kind,
             label.to_owned(),
             frame.preview.clone(),
         );
+        event.rich = codex_rich_event(self.next_seq, kind, label, frame);
         self.next_seq += 1;
         if self.queue.len() >= EVENT_QUEUE_CAP {
             self.queue.pop_front();
             self.signals.dropped += 1;
             self.signals.backpressured = true;
+            event.rich.signal = Some(ChatSignal::QueuePressure);
             if self.signals.dropped > DROP_TOLERANCE {
                 self.status = SessionStatus::Failed(FailureKind::QueueOverflow);
             } else {
@@ -924,6 +974,37 @@ impl<T: Transport> Supervisor<T> {
             None
         }
     }
+}
+
+fn codex_rich_event(sequence: u64, kind: EventKind, label: &str, frame: &Frame) -> RichChatEvent {
+    if let Some(text) = frame.display_text.as_deref() {
+        return RichChatEvent::new(
+            sequence,
+            ChatRole::Assistant,
+            ChatCategory::Message,
+            "assistant.message",
+            text,
+            None,
+        );
+    }
+    let (category, text, signal) = match kind {
+        EventKind::Diagnostic | EventKind::Unsupported => (
+            ChatCategory::Error,
+            format!("Provider reported {}.", label.replace('_', " ")),
+            Some(ChatSignal::Degraded),
+        ),
+        EventKind::ApprovalRequest => (
+            ChatCategory::Status,
+            "Provider requested approval.".to_owned(),
+            None,
+        ),
+        EventKind::Lifecycle | EventKind::Progress => (
+            ChatCategory::Status,
+            format!("{}.", label.replace(['.', '_'], " ")),
+            None,
+        ),
+    };
+    RichChatEvent::new(sequence, ChatRole::System, category, label, text, signal)
 }
 
 fn is_response_for(frame: &Frame, id: &str) -> bool {
@@ -1097,6 +1178,21 @@ mod tests {
     }
 
     #[test]
+    fn resume_in_cwd_sends_the_approved_cwd_override() {
+        let lines = vec![
+            response(1, "{}"),
+            response(2, "{\"thread\":{\"id\":\"requested\"}}"),
+        ];
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_lines(lines));
+
+        assert_eq!(
+            supervisor.resume_in_cwd("requested", "/approved/workspace", DEFAULT_DEADLINE),
+            Ok(SessionId::new("requested"))
+        );
+        assert!(supervisor.transport().writes()[2].contains("\"cwd\":\"/approved/workspace\""));
+    }
+
+    #[test]
     fn resume_requires_provider_to_confirm_same_thread() {
         let lines = vec![
             response(1, "{}"),
@@ -1120,7 +1216,19 @@ mod tests {
         supervisor.pump();
         let sequence: Vec<_> =
             std::iter::from_fn(|| supervisor.next_event().map(|event| event.seq.0)).collect();
-        assert_eq!(sequence, vec![0, 1, 2]);
+        assert_eq!(sequence, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn known_agent_message_surfaces_typed_safe_assistant_text() {
+        let line = r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"answer Bearer private-token"}}}"#;
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_lines([line]));
+        supervisor.pump();
+        let event = supervisor.next_event().unwrap();
+        assert_eq!(event.rich.role, ChatRole::Assistant);
+        assert_eq!(event.rich.category, ChatCategory::Message);
+        assert_eq!(event.rich.text, "answer Bearer [redacted]");
+        assert!(!event.rich.text.contains("private-token"));
     }
 
     #[test]
@@ -1265,6 +1373,9 @@ mod tests {
             exited.create(DEFAULT_DEADLINE),
             Err(SessionError::Terminal(FailureKind::ProcessTerminated))
         );
+        let disconnected = exited.next_event().expect("disconnect event");
+        assert_eq!(disconnected.rich.signal, Some(ChatSignal::Disconnected));
+        assert_eq!(disconnected.rich.text, "Provider process disconnected.");
 
         let (sender, receiver) = mpsc::channel();
         let transport = ScriptedTransport {
