@@ -15,14 +15,23 @@ use std::sync::mpsc::{self, Receiver, TryRecvError, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use filedescriptor::FileDescriptor;
 #[cfg(all(unix, test))]
 use nix::{errno::Errno, sys::signal::kill};
 #[cfg(unix)]
 use nix::{
     sys::signal::{Signal, killpg},
-    unistd::Pid,
+    unistd::{Pid, getpgid, getsid},
 };
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+#[cfg(target_os = "linux")]
+use rustix::{
+    fd::OwnedFd,
+    process::{Pid as LinuxPid, PidfdFlags, pidfd_open},
+};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, RawFd};
 
 use crate::contract::SessionId;
 
@@ -53,6 +62,10 @@ pub const PTY_DELIVERY_BYTES: usize = 4 * 1024;
 pub const PTY_INPUT_BYTES: usize = 8 * 1024;
 /// Input is staged before it reaches the potentially blocking PTY writer.
 pub const PTY_INPUT_QUEUE_CAP: usize = 8;
+/// Input is acknowledged only after it occupies the bounded Relay queue. A
+/// full queue returns retryable backpressure rather than retaining unbounded
+/// browser data in the hub request path.
+const PTY_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// One small node runtime is deliberately capped before it becomes a terminal
 /// platform or a hidden process farm.
 pub const MAX_PTY_SESSIONS: usize = 8;
@@ -113,6 +126,7 @@ pub enum ClaudePtyError {
     InvalidInput,
     InvalidResize,
     Backpressure,
+    InputLost,
     Transport,
 }
 
@@ -126,6 +140,7 @@ impl ClaudePtyError {
             Self::InvalidInput => "invalid_input",
             Self::InvalidResize => "invalid_resize",
             Self::Backpressure => "input_backpressure",
+            Self::InputLost => "input_delivery_lost",
             Self::Transport => "pty_transport",
         }
     }
@@ -169,32 +184,90 @@ struct ScrollbackChunk {
     bytes: usize,
 }
 
+struct InputRequest {
+    data: Vec<u8>,
+}
+
 struct PtyInput {
-    sender: mpsc::SyncSender<Vec<u8>>,
+    sender: mpsc::SyncSender<InputRequest>,
+    stop: Arc<AtomicBool>,
+    delivery_failed: Arc<AtomicBool>,
     worker: JoinHandle<()>,
 }
 
 impl PtyInput {
     fn enqueue(&self, data: &[u8]) -> Result<(), ClaudePtyError> {
-        match self.sender.try_send(data.to_vec()) {
+        if self.delivery_failed.load(Ordering::Acquire) {
+            return Err(ClaudePtyError::InputLost);
+        }
+        let request = InputRequest {
+            data: data.to_vec(),
+        };
+        match self.sender.try_send(request) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(ClaudePtyError::Backpressure),
+            Err(TrySendError::Disconnected(_)) if self.delivery_failed.load(Ordering::Acquire) => {
+                Err(ClaudePtyError::InputLost)
+            }
             Err(TrySendError::Disconnected(_)) => Err(ClaudePtyError::Transport),
         }
     }
 
     fn finish(self) {
-        let Self { sender, worker } = self;
+        let Self {
+            sender,
+            stop,
+            worker,
+            ..
+        } = self;
+        stop.store(true, Ordering::Release);
         drop(sender);
-        let _ = worker.join();
+        // A nonblocking writer observes `stop` between every retry. Never join
+        // it on the runtime mutex path: a kernel or driver regression must not
+        // turn close/revoke into an unbounded global PTY outage.
+        if worker.is_finished() {
+            let _ = worker.join();
+        }
     }
+}
+
+/// Lifetime-safe Linux ownership for the PTY session created by portable-pty.
+/// The pidfd pins the leader identity so its process-group number cannot be
+/// reused while Relay may signal it. A nonblocking duplicate of the master FD
+/// gives the input worker a cancellable writer without consuming the reader.
+#[cfg(target_os = "linux")]
+struct PtyOwnership {
+    process_group: i32,
+    writer: FileDescriptor,
+    _leader_pidfd: OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+struct MasterFd(RawFd);
+
+#[cfg(target_os = "linux")]
+impl AsRawFd for MasterFd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct PtyForegroundGroup {
+    process_group: i32,
+    _leader_pidfd: OwnedFd,
+}
+
+#[cfg(not(target_os = "linux"))]
+struct PtyOwnership {
+    process_group: i32,
 }
 
 struct ManagedSession {
     owner_device_id: String,
     status: ClaudePtyStatus,
     child: Option<Box<dyn Child + Send + Sync>>,
-    process_group: Option<i32>,
+    process_group: Option<PtyOwnership>,
     master: Option<Box<dyn MasterPty + Send>>,
     input: Option<PtyInput>,
     reader: Option<JoinHandle<()>>,
@@ -296,7 +369,9 @@ impl NodePtyRuntime {
             .spawn_command(command)
             .map_err(|_| ClaudePtyError::Unavailable)?;
         drop(pair.slave);
-        let process_group = child.process_id().and_then(session_process_group);
+        let process_group = child
+            .process_id()
+            .and_then(|process_id| session_process_group(process_id, pair.master.as_ref()));
         #[cfg(unix)]
         if process_group.is_none() {
             // Do not admit a Session whose descendants could not be reaped as
@@ -309,21 +384,26 @@ impl NodePtyRuntime {
         let reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(_) => {
-                terminate_child(&mut child, Some(pair.master.as_ref()), process_group);
+                terminate_child(
+                    &mut child,
+                    Some(pair.master.as_ref()),
+                    process_group.as_ref(),
+                );
                 return Err(ClaudePtyError::Transport);
             }
         };
-        let writer = match pair.master.take_writer() {
-            Ok(writer) => writer,
-            Err(_) => {
-                terminate_child(&mut child, Some(pair.master.as_ref()), process_group);
-                return Err(ClaudePtyError::Transport);
-            }
-        };
-        let input = match spawn_input_writer(writer) {
+        let input = match process_group
+            .as_ref()
+            .ok_or(ClaudePtyError::Transport)
+            .and_then(spawn_input_writer)
+        {
             Ok(input) => input,
             Err(error) => {
-                terminate_child(&mut child, Some(pair.master.as_ref()), process_group);
+                terminate_child(
+                    &mut child,
+                    Some(pair.master.as_ref()),
+                    process_group.as_ref(),
+                );
                 return Err(error);
             }
         };
@@ -339,7 +419,11 @@ impl NodePtyRuntime {
             Ok(reader_thread) => reader_thread,
             Err(error) => {
                 input.finish();
-                terminate_child(&mut child, Some(pair.master.as_ref()), process_group);
+                terminate_child(
+                    &mut child,
+                    Some(pair.master.as_ref()),
+                    process_group.as_ref(),
+                );
                 return Err(error);
             }
         };
@@ -618,16 +702,23 @@ impl ManagedSession {
         }
         self.reader_stop.store(true, Ordering::Release);
         let input = self.input.take();
-        if let Some(child) = self.child.as_mut() {
-            terminate_child(child, self.master.as_deref(), self.process_group);
-        }
-        self.child.take();
-        self.master.take();
+        let process_group = self.process_group.take();
         if let Some(input) = input {
             input.finish();
         }
+        if let Some(child) = self.child.as_mut() {
+            terminate_child(child, self.master.as_deref(), process_group.as_ref());
+        }
+        self.child.take();
+        self.master.take();
+        drop(process_group);
         if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+            // The reader owns a cloned master FD and can only observe EOF after
+            // every slave closes. Do not let an unexpected kernel/driver stall
+            // hold the global runtime mutex during close or owner revocation.
+            if reader.is_finished() {
+                let _ = reader.join();
+            }
         }
         self.pump();
         self.flush_pending_output();
@@ -717,6 +808,9 @@ fn spawn_reader(
                         break;
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(PTY_INPUT_POLL_INTERVAL);
+                    }
                     Err(_) => {
                         let _ = sender.try_send(ReaderEvent::Exit);
                         break;
@@ -736,37 +830,141 @@ fn spawn_reader(
         .map_err(|_| ClaudePtyError::Transport)
 }
 
-fn spawn_input_writer(mut writer: Box<dyn Write + Send>) -> Result<PtyInput, ClaudePtyError> {
-    let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(PTY_INPUT_QUEUE_CAP);
-    let worker = thread::Builder::new()
-        .name("relay-claude-pty-writer".into())
-        .spawn(move || {
-            while let Ok(data) = receiver.recv() {
-                if writer
-                    .write_all(&data)
-                    .and_then(|()| writer.flush())
-                    .is_err()
-                {
-                    break;
+fn spawn_input_writer(ownership: &PtyOwnership) -> Result<PtyInput, ClaudePtyError> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut writer = ownership
+            .writer
+            .try_clone()
+            .map_err(|_| ClaudePtyError::Transport)?;
+        let (sender, receiver) = mpsc::sync_channel::<InputRequest>(PTY_INPUT_QUEUE_CAP);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let delivery_failed = Arc::new(AtomicBool::new(false));
+        let worker_delivery_failed = Arc::clone(&delivery_failed);
+        let worker = thread::Builder::new()
+            .name("relay-claude-pty-writer".into())
+            .spawn(move || {
+                while let Ok(request) = receiver.recv() {
+                    if deliver_input(&mut writer, request.data, &worker_stop).is_err() {
+                        if !worker_stop.load(Ordering::Acquire) {
+                            worker_delivery_failed.store(true, Ordering::Release);
+                        }
+                        break;
+                    }
+                    if worker_stop.load(Ordering::Acquire) {
+                        break;
+                    }
                 }
-            }
+            })
+            .map_err(|_| ClaudePtyError::Transport)?;
+        Ok(PtyInput {
+            sender,
+            stop,
+            delivery_failed,
+            worker,
         })
-        .map_err(|_| ClaudePtyError::Transport)?;
-    Ok(PtyInput { sender, worker })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = ownership;
+        Err(ClaudePtyError::Transport)
+    }
 }
 
-fn session_process_group(process_id: u32) -> Option<i32> {
-    #[cfg(unix)]
-    {
-        // portable-pty establishes a new session before exec, so the child PID
-        // is its process-group ID even if the leader exits before Relay closes
-        // the Session. Close verifies the PTY's foreground group before
-        // signalling it, preventing stale numeric PID reuse from escaping.
-        i32::try_from(process_id).ok()
+#[cfg(target_os = "linux")]
+fn deliver_input(
+    writer: &mut FileDescriptor,
+    data: Vec<u8>,
+    stop: &AtomicBool,
+) -> Result<(), ClaudePtyError> {
+    let mut written = 0;
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Err(ClaudePtyError::Transport);
+        }
+        match writer.write(&data[written..]) {
+            Ok(0) => return Err(delivery_error(written)),
+            Ok(count) => {
+                written = written.saturating_add(count);
+                if written == data.len() {
+                    return Ok(());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(PTY_INPUT_POLL_INTERVAL);
+            }
+            Err(_) => return Err(delivery_error(written)),
+        }
     }
-    #[cfg(not(unix))]
+}
+
+fn delivery_error(written: usize) -> ClaudePtyError {
+    if written == 0 {
+        ClaudePtyError::Transport
+    } else {
+        ClaudePtyError::InputLost
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl PtyOwnership {
+    fn capture_foreground(
+        &self,
+        master: Option<&(dyn MasterPty + Send)>,
+    ) -> Option<PtyForegroundGroup> {
+        let process_group = master?.process_group_leader()?;
+        if process_group == self.process_group {
+            return None;
+        }
+        let leader = LinuxPid::from_raw(process_group)?;
+        let leader_pidfd = pidfd_open(leader, PidfdFlags::empty()).ok()?;
+        (master?.process_group_leader() == Some(process_group)).then_some(PtyForegroundGroup {
+            process_group,
+            _leader_pidfd: leader_pidfd,
+        })
+    }
+
+    fn signal_groups(&self, foreground: Option<&PtyForegroundGroup>, signal: Signal) {
+        // A pidfd pins the original session leader's identity for this whole
+        // object lifetime. Therefore its process-group number cannot turn into
+        // an unrelated target after leader exit. Capture the live foreground
+        // group before signalling the leader, pin it with its own pidfd, and
+        // reuse that pinned identity for the TERM→KILL sequence.
+        if let Some(foreground) = foreground {
+            let _ = killpg(Pid::from_raw(foreground.process_group), signal);
+        }
+        let _ = killpg(Pid::from_raw(self.process_group), signal);
+    }
+}
+
+fn session_process_group(process_id: u32, master: &(dyn MasterPty + Send)) -> Option<PtyOwnership> {
+    #[cfg(target_os = "linux")]
     {
-        let _ = process_id;
+        let process_id = i32::try_from(process_id).ok()?;
+        let leader = LinuxPid::from_raw(process_id)?;
+        // The direct child remains waitable until this runtime reaps it, so
+        // opening this pidfd cannot race an already-reused leader PID.
+        let leader_pidfd = pidfd_open(leader, PidfdFlags::empty()).ok()?;
+        // Clone the actual master descriptor—not its /proc symlink target,
+        // which would allocate an unrelated PTY. FileDescriptor provides the
+        // safe dup/FIONBIO wrapper, so no raw-FD ownership conversion escapes
+        // into Relay.
+        let mut writer = FileDescriptor::dup(&MasterFd(master.as_raw_fd()?)).ok()?;
+        writer.set_non_blocking(true).ok()?;
+        let leader_pid = Pid::from_raw(process_id);
+        let process_group = getpgid(Some(leader_pid)).ok()?.as_raw();
+        let session_id = getsid(Some(leader_pid)).ok()?.as_raw();
+        (process_group == process_id && session_id == process_id).then_some(PtyOwnership {
+            process_group,
+            writer,
+            _leader_pidfd: leader_pidfd,
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (process_id, master);
         None
     }
 }
@@ -774,20 +972,14 @@ fn session_process_group(process_id: u32) -> Option<i32> {
 fn terminate_child(
     child: &mut Box<dyn Child + Send + Sync>,
     master: Option<&(dyn MasterPty + Send)>,
-    process_group: Option<i32>,
+    ownership: Option<&PtyOwnership>,
 ) {
-    #[cfg(unix)]
-    if let Some(process_group) = process_group.filter(|process_group| {
-        master.and_then(|master| master.process_group_leader()) == Some(*process_group)
-    }) {
-        // Terminate both the session leader and its PTY descendants. Give a
-        // cooperative TUI a bounded chance to handle SIGTERM before the final
-        // group kill guarantees Relay does not orphan descendants. Checking
-        // the PTY-local foreground group avoids signalling a reused numeric ID.
-        let process_group = Pid::from_raw(process_group);
-        let _ = killpg(process_group, Signal::SIGTERM);
+    #[cfg(target_os = "linux")]
+    if let Some(ownership) = ownership {
+        let foreground = ownership.capture_foreground(master);
+        ownership.signal_groups(foreground.as_ref(), Signal::SIGTERM);
         thread::sleep(PTY_TERMINATION_GRACE);
-        let _ = killpg(process_group, Signal::SIGKILL);
+        ownership.signal_groups(foreground.as_ref(), Signal::SIGKILL);
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -1204,6 +1396,95 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn close_reaps_a_descendant_after_it_takes_the_pty_foreground_group() {
+        let mut runtime = NodePtyRuntime::test_runtime(
+            "/bin/sh",
+            &[
+                "-c",
+                "set -m; sh -c 'trap \"\" HUP TERM; while :; do sleep 1; done' & child=$!; printf 'CHILD:%s\\n' \"$child\"; fg %1",
+            ],
+        );
+        let session = runtime.create("device-a").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let child_pid = loop {
+            let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+            if let Some(pid) = snapshot.output.iter().find_map(|chunk| {
+                chunk
+                    .text
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix("CHILD:")?.parse::<i32>().ok())
+            }) {
+                break pid;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "test PTY did not report the foreground descendant PID"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        let original_group = runtime.sessions[session.as_str()]
+            .process_group
+            .as_ref()
+            .expect("Unix test session records its leader process group")
+            .process_group;
+        let foreground_group = runtime.sessions[session.as_str()]
+            .master
+            .as_deref()
+            .and_then(MasterPty::process_group_leader)
+            .expect("PTY reports the foreground process group");
+        assert_ne!(
+            foreground_group, original_group,
+            "fixture must hand the terminal to the descendant group before close"
+        );
+        assert_eq!(
+            foreground_group,
+            getpgid(Some(Pid::from_raw(child_pid)))
+                .expect("foreground descendant remains inspectable")
+                .as_raw(),
+            "fixture foreground group must belong to the reported descendant"
+        );
+
+        let (closed_tx, closed_rx) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let started = Instant::now();
+            let result = runtime.close(session.as_str(), "device-a");
+            let _ = closed_tx.send((result, started.elapsed()));
+        });
+
+        let closed = match closed_rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(closed) => closed,
+            Err(_) => {
+                // Keep the red test self-cleaning on the broken implementation:
+                // its foreground-group check skips the descendant and leaves
+                // close waiting for the reader forever.
+                let _ = killpg(Pid::from_raw(child_pid), Signal::SIGKILL);
+                closed_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("cleanup signal must release the blocked close")
+            }
+        };
+        assert!(closed.0.is_ok());
+        assert!(
+            closed.1 < Duration::from_millis(500),
+            "close must reap a foreground-group descendant without external cleanup"
+        );
+        let reap_deadline = Instant::now() + Duration::from_secs(2);
+        let child_reaped = loop {
+            if kill(Pid::from_raw(child_pid), None) == Err(Errno::ESRCH) {
+                break true;
+            }
+            if Instant::now() > reap_deadline {
+                let _ = killpg(Pid::from_raw(child_pid), Signal::SIGKILL);
+                break false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(child_reaped, "close left the foreground descendant alive");
     }
 
     #[test]

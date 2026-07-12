@@ -127,6 +127,24 @@ test("terminal input reports a failed batch and continues with later input", asy
   assert.deepEqual(errors, [{ code: "pty_transport" }]);
 });
 
+test("terminal input exposes delivery loss without retrying the batch", async () => {
+  const sent = [];
+  const errors = [];
+  const queue = createTerminalInputQueue({
+    isActive: () => true,
+    send: async (data) => {
+      sent.push(data);
+      throw { code: "input_delivery_lost" };
+    },
+    onError: (error) => errors.push(error),
+  });
+
+  queue.enqueue("first");
+  await eventually(() => errors.length === 1);
+  assert.deepEqual(sent, ["first"]);
+  assert.deepEqual(errors, [{ code: "input_delivery_lost" }]);
+});
+
 test("terminal input bounds queued bytes without reordering accepted input", async () => {
   const first = deferred();
   const sent = [];

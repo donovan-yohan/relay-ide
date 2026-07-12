@@ -481,6 +481,7 @@ function terminalErrorMessage(error) {
   if (code === "stale_session") return "This Session belongs to a prior node runtime. Open a new terminal explicitly.";
   if (code === "claude_unavailable") return "Claude Code could not start in the node-owner context.";
   if (code === "input_backpressure") return "Terminal input is temporarily backlogged. Wait for Relay to catch up.";
+  if (code === "input_delivery_lost") return "Relay could not finish a queued input batch. Re-enter the command; it was not retried automatically.";
   return presentationForAuthError(error).message;
 }
 

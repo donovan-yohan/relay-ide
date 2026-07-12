@@ -639,7 +639,7 @@ fn input_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime
         .map_err(|_| ClaudePtyError::Transport)
         .and_then(|mut pty| pty.input(session_id, &owner, &data))
     {
-        Ok(()) => json_response(200, "{\"status\":\"accepted\"}", &[]),
+        Ok(()) => json_response(200, "{\"status\":\"queued\"}", &[]),
         Err(error) => claude_pty_error_response(error),
     }
 }
@@ -802,7 +802,7 @@ fn claude_pty_error_response(error: ClaudePtyError) -> String {
     let status = match error {
         ClaudePtyError::Forbidden => 403,
         ClaudePtyError::InvalidInput | ClaudePtyError::InvalidResize => 400,
-        ClaudePtyError::Capacity | ClaudePtyError::StaleHandle => 409,
+        ClaudePtyError::Capacity | ClaudePtyError::StaleHandle | ClaudePtyError::InputLost => 409,
         ClaudePtyError::Backpressure | ClaudePtyError::Unavailable | ClaudePtyError::Transport => {
             503
         }
@@ -1028,5 +1028,13 @@ mod tests {
         assert_eq!(terminal_cursor(Some("trace=browser")), Some(0));
         assert_eq!(terminal_cursor(Some("cursor=not-a-number")), None);
         assert_eq!(terminal_cursor(Some("cursor=1&cursor=2")), None);
+    }
+
+    #[test]
+    fn input_delivery_loss_is_an_explicit_nonretryable_conflict() {
+        let response = claude_pty_error_response(ClaudePtyError::InputLost);
+
+        assert!(response.starts_with("HTTP/1.1 409 Conflict"));
+        assert!(response.contains("input_delivery_lost"));
     }
 }
