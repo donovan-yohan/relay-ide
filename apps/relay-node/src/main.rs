@@ -9,7 +9,9 @@ use relay_factory_core::{ServiceIdentity, configured_identity, health_json};
 use relay_hermes_session::{
     AdapterError, EventKind, GatewayEndpoint, HermesSessionAdapter, SessionStatus,
 };
-use relay_session::claude_pty::{ClaudePtyStatus, NodePtyRuntime};
+use relay_session::claude_pty::{
+    ClaudePtyError, ClaudePtyStatus, NodePtyRuntime, OwnerSessionCloseDisposition,
+};
 use relay_session::{
     DEFAULT_DEADLINE, ProcessTransport, SessionError, Supervisor,
     codex::{assert_local_stdio_only, codex_command_args},
@@ -63,7 +65,10 @@ fn claude_pty_probe() -> ExitCode {
     let mut runtime = NodePtyRuntime::default();
     let session = match runtime.create("relay-node-probe") {
         Ok(session) => session,
-        Err(error) => return claude_pty_probe_error(error.code()),
+        Err(error) => {
+            let code = error.code();
+            return claude_pty_probe_error_after_drain(&mut runtime, code);
+        }
     };
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
@@ -71,27 +76,69 @@ fn claude_pty_probe() -> ExitCode {
             Ok(snapshot) if snapshot.status != ClaudePtyStatus::Starting => break snapshot.status,
             Ok(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
             Ok(_) => {
-                let _ = runtime.close(session.as_str(), "relay-node-probe");
-                return claude_pty_probe_error("startup_timeout");
+                return claude_pty_probe_error_after_drain(&mut runtime, "startup_timeout");
             }
-            Err(error) => return claude_pty_probe_error(error.code()),
+            Err(error) => {
+                let code = error.code();
+                return claude_pty_probe_error_after_drain(&mut runtime, code);
+            }
         }
     };
     let resize = runtime.resize(session.as_str(), "relay-node-probe", 100, 40);
     let interrupt = runtime.interrupt(session.as_str(), "relay-node-probe");
-    let close = runtime.close(session.as_str(), "relay-node-probe");
-    match (resize, interrupt, close) {
-        (Ok(()), Ok(()), Ok(closed)) if closed.status == ClaudePtyStatus::Closed => {
+    let close = runtime.request_close(session.as_str(), "relay-node-probe");
+    let operation_error = resize
+        .err()
+        .or_else(|| interrupt.err())
+        .or_else(|| close.err());
+    if !drain_claude_pty_runtime(&mut runtime) {
+        return claude_pty_probe_error(ClaudePtyError::TeardownFailed.code());
+    }
+    if let Some(error) = operation_error {
+        return claude_pty_probe_error(error.code());
+    }
+    match runtime.poll(session.as_str(), "relay-node-probe", 0) {
+        Ok(closed) if closed.status == ClaudePtyStatus::Closed => {
             println!(
                 r#"{{"adapter":"claude-pty","operations":["spawn","resize","interrupt","close"],"ownerHome":"/home/donovanyohan","startup":"{}","status":"ok"}}"#,
                 status.code()
             );
             ExitCode::SUCCESS
         }
-        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
-            claude_pty_probe_error(error.code())
+        Ok(_) => claude_pty_probe_error("close_failed"),
+        Err(error) => claude_pty_probe_error(error.code()),
+    }
+}
+
+fn claude_pty_probe_error_after_drain(runtime: &mut NodePtyRuntime, code: &str) -> ExitCode {
+    if drain_claude_pty_runtime(runtime) {
+        claude_pty_probe_error(code)
+    } else {
+        claude_pty_probe_error(ClaudePtyError::TeardownFailed.code())
+    }
+}
+
+fn drain_claude_pty_runtime(runtime: &mut NodePtyRuntime) -> bool {
+    const BUDGET: Duration = Duration::from_secs(5);
+    const POLL: Duration = Duration::from_millis(10);
+
+    let deadline = Instant::now() + BUDGET;
+    runtime.begin_shutdown();
+    loop {
+        for termination in runtime.claim_due_terminations() {
+            let outcome = termination.finish();
+            runtime.complete_termination(outcome);
         }
-        _ => claude_pty_probe_error("close_failed"),
+        if runtime.shutdown_disposition() == OwnerSessionCloseDisposition::Complete {
+            return true;
+        }
+        if runtime.has_terminal_failures() {
+            return false;
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        thread::sleep(remaining.min(POLL));
     }
 }
 
@@ -292,5 +339,33 @@ impl HermesSmokeOptions {
             prompt,
             observe_ms,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_drain_reaps_the_fixture_and_latches_admission() {
+        let mut runtime = NodePtyRuntime::test_fixture_cat();
+        let session = runtime
+            .begin_create("relay-node-probe")
+            .into_result()
+            .expect("the fixed probe fixture starts");
+
+        assert!(drain_claude_pty_runtime(&mut runtime));
+        assert_eq!(
+            runtime
+                .poll(session.as_str(), "relay-node-probe", 0)
+                .expect("the drained terminal truth remains observable")
+                .status,
+            ClaudePtyStatus::Closed
+        );
+        assert_eq!(
+            runtime.begin_create("relay-node-probe").into_result(),
+            Err(ClaudePtyError::Unavailable),
+            "the controlled drain must reject later admission"
+        );
     }
 }

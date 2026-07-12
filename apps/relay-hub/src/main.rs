@@ -13,23 +13,29 @@ use relay_factory_core::{
     health_http_response, health_json, not_found_http_response,
 };
 use relay_session::claude_pty::{
-    ClaudePtyError, NodePtyRuntime, OwnerSessionCloseDisposition, PtyTermination, TerminalSnapshot,
+    ClaudePtyError, NodePtyRuntime, OwnerSessionCloseDisposition, PtyTermination,
+    PtyTerminationOutcome, TerminalSnapshot,
 };
 use serde_json::Value;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REQUEST_BYTES: usize = 65_536;
 const MAX_BODY_BYTES: usize = 48_000;
+// Eight capacity-consuming records, three bounded attempts, and the accepted
+// TERM/reap windows fit below this single controlled-shutdown ceiling.
+const PTY_SHUTDOWN_BUDGET: Duration = Duration::from_secs(35);
+const PTY_LIFECYCLE_POLL: Duration = Duration::from_millis(10);
+
+#[derive(Default)]
+struct PtyRetryDriver {
+    running: bool,
+}
 
 struct HubRuntime {
     auth: Option<Arc<AuthBoundary>>,
+    owner_lifecycle: Mutex<()>,
     pty: Mutex<NodePtyRuntime>,
-}
-
-struct InvalidatedOwnerReap {
-    owner_ids: Vec<String>,
-    terminations: Vec<PtyTermination>,
-    retry: bool,
+    retry_driver: Mutex<PtyRetryDriver>,
 }
 
 fn main() -> ExitCode {
@@ -126,7 +132,9 @@ fn serve(arguments: &[String]) -> Result<(), RunError> {
     let pty = NodePtyRuntime::default();
     let runtime = Arc::new(HubRuntime {
         auth: options.auth,
+        owner_lifecycle: Mutex::new(()),
         pty: Mutex::new(pty),
+        retry_driver: Mutex::new(PtyRetryDriver::default()),
     });
 
     println!(
@@ -225,7 +233,9 @@ fn serve_connections_with_auth(
         identity,
         Arc::new(HubRuntime {
             auth,
+            owner_lifecycle: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::default()),
+            retry_driver: Mutex::new(PtyRetryDriver::default()),
         }),
         accept,
     )
@@ -236,32 +246,35 @@ fn serve_connections(
     runtime: Arc<HubRuntime>,
     mut accept: impl FnMut() -> io::Result<TcpStream>,
 ) -> Result<(), RunError> {
-    loop {
+    let result = loop {
         let stream = match accept() {
             Ok(stream) => stream,
             Err(error) => {
                 eprintln!("relay-hub accept error: {error}");
-                return Err(RunError::Io);
+                break Err(RunError::Io);
             }
         };
         let runtime = Arc::clone(&runtime);
-        thread::Builder::new()
-            .spawn(move || {
-                if let Err(error) = handle_connection(stream, identity, &runtime) {
-                    eprintln!("relay-hub connection error: {error}");
-                }
-            })
-            .map_err(|error| {
-                eprintln!("relay-hub connection handler error: {error}");
-                RunError::Io
-            })?;
+        if let Err(error) = thread::Builder::new().spawn(move || {
+            if let Err(error) = handle_connection(stream, identity, runtime) {
+                eprintln!("relay-hub connection error: {error}");
+            }
+        }) {
+            eprintln!("relay-hub connection handler error: {error}");
+            break Err(RunError::Io);
+        }
+    };
+
+    if !shutdown_pty_runtime(&runtime) {
+        eprintln!("relay Claude PTY shutdown incomplete; retained resources did not reach Closed");
     }
+    result
 }
 
 fn handle_connection(
     mut stream: TcpStream,
     identity: ServiceIdentity,
-    runtime: &HubRuntime,
+    runtime: Arc<HubRuntime>,
 ) -> Result<(), ConnectionError> {
     stream
         .set_write_timeout(Some(CONNECTION_TIMEOUT))
@@ -269,7 +282,7 @@ fn handle_connection(
     let mut request = [0_u8; MAX_REQUEST_BYTES];
     let response = match read_request(&mut stream, &mut request) {
         Ok(length) => HttpRequest::parse(&request[..length])
-            .map(|request| route_request(&request, identity, runtime))
+            .map(|request| route_request(&request, identity, &runtime))
             .unwrap_or_else(not_found_http_response),
         Err(RequestReadError::TooLarge) => not_found_http_response(),
         Err(error) => return Err(ConnectionError::Request(error)),
@@ -358,8 +371,11 @@ impl<'a> HttpRequest<'a> {
 fn route_request(
     request: &HttpRequest<'_>,
     identity: ServiceIdentity,
-    runtime: &HubRuntime,
+    runtime: &Arc<HubRuntime>,
 ) -> String {
+    // A request is also the bounded retry driver: lease selection and result
+    // reinsertion hold the mutex briefly, while TERM/KILL/reap run outside it.
+    drive_pty_terminations(runtime);
     let auth = runtime.auth.as_deref();
     let response = match (request.method, request.path) {
         ("GET", "/health") => health_http_response(identity),
@@ -390,6 +406,7 @@ fn route_request(
         _ => not_found_http_response(),
     };
     reap_invalidated_owner_sessions(runtime);
+    ensure_pty_retry_driver(runtime);
     response
 }
 
@@ -526,8 +543,10 @@ fn revoke_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> S
         None => return auth_error_response(400, "invalid_request", &[]),
     };
     let result = auth.revoke_session(session, csrf, &device_id);
-    let cleanup_pending = begin_invalidated_owner_reap(runtime, auth)
-        .map(|reap| finish_invalidated_owner_reap(auth, reap))
+    reap_invalidated_owner_sessions(runtime);
+    let cleanup_pending = auth
+        .invalidated_device_ids()
+        .map(|owners| owners.contains(&device_id))
         .unwrap_or(true);
     match result {
         Ok(()) if cleanup_pending => {
@@ -542,52 +561,176 @@ fn reap_invalidated_owner_sessions(runtime: &HubRuntime) {
     let Some(auth) = runtime.auth.as_deref() else {
         return;
     };
-    let Ok(reap) = begin_invalidated_owner_reap(runtime, auth) else {
+    {
+        let _owner_lifecycle = owner_lifecycle_lock(runtime);
+        let Ok(owner_ids) = auth.invalidated_device_ids() else {
+            return;
+        };
+        if owner_ids.is_empty() {
+            return;
+        }
+        let mut pty = pty_lifecycle_lock(runtime);
+        for owner_id in &owner_ids {
+            pty.begin_owner_session_closes(owner_id);
+        }
+    }
+
+    drive_pty_terminations(runtime);
+    acknowledge_ready_invalidated_owners(runtime);
+}
+
+fn acknowledge_ready_invalidated_owners(runtime: &HubRuntime) {
+    let Some(auth) = runtime.auth.as_deref() else {
         return;
     };
-    if finish_invalidated_owner_reap(auth, reap) {
-        eprintln!("relay Claude PTY owner cleanup remains pending for retry");
+    let _owner_lifecycle = owner_lifecycle_lock(runtime);
+    let Ok(owner_ids) = auth.invalidated_device_ids() else {
+        return;
+    };
+    let ready = {
+        let pty = pty_lifecycle_lock(runtime);
+        owner_ids
+            .iter()
+            .filter(|owner_id| invalidated_owner_ready_for_acknowledgement(&pty, owner_id))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if !ready.is_empty() {
+        let _ = auth.acknowledge_invalidated_device_ids(&ready);
     }
 }
 
-fn begin_invalidated_owner_reap(
-    runtime: &HubRuntime,
-    auth: &AuthBoundary,
-) -> Result<InvalidatedOwnerReap, ()> {
-    let owner_ids = auth.invalidated_device_ids().map_err(|_| ())?;
-    let mut pty = runtime.pty.lock().map_err(|_| ())?;
-    let mut terminations = Vec::new();
-    let mut retry = false;
-    for owner_id in &owner_ids {
-        let closures = pty.begin_owner_session_closes(owner_id);
-        terminations.extend(closures.terminations);
-        retry |= closures.disposition == OwnerSessionCloseDisposition::Retry;
-    }
-    Ok(InvalidatedOwnerReap {
-        owner_ids,
-        terminations,
-        retry,
+fn invalidated_owner_ready_for_acknowledgement(pty: &NodePtyRuntime, owner_id: &str) -> bool {
+    pty.owner_close_disposition(owner_id) == OwnerSessionCloseDisposition::Complete
+}
+
+fn pty_lifecycle_lock(runtime: &HubRuntime) -> std::sync::MutexGuard<'_, NodePtyRuntime> {
+    runtime.pty.lock().unwrap_or_else(|poisoned| {
+        eprintln!("relay Claude PTY lifecycle recovered its poisoned owner lock");
+        poisoned.into_inner()
     })
 }
 
-fn finish_invalidated_owner_reap(auth: &AuthBoundary, reap: InvalidatedOwnerReap) -> bool {
-    let finished = finish_terminations(reap.terminations);
-    if reap.retry || !finished {
-        return true;
-    }
-    auth.acknowledge_invalidated_device_ids(&reap.owner_ids)
-        .is_err()
+fn owner_lifecycle_lock(runtime: &HubRuntime) -> std::sync::MutexGuard<'_, ()> {
+    runtime.owner_lifecycle.lock().unwrap_or_else(|poisoned| {
+        eprintln!("relay Claude PTY owner lifecycle recovered its poisoned gate");
+        poisoned.into_inner()
+    })
 }
 
-fn finish_terminations(terminations: Vec<PtyTermination>) -> bool {
-    let mut finished = true;
-    for termination in terminations {
-        if termination.finish().is_err() {
-            eprintln!("relay Claude PTY teardown could not verify foreground cleanup");
-            finished = false;
+fn retry_driver_lock(runtime: &HubRuntime) -> std::sync::MutexGuard<'_, PtyRetryDriver> {
+    runtime.retry_driver.lock().unwrap_or_else(|poisoned| {
+        eprintln!("relay Claude PTY retry driver recovered its poisoned state");
+        poisoned.into_inner()
+    })
+}
+
+fn drive_pty_terminations(runtime: &HubRuntime) {
+    drive_pty_terminations_with(runtime, PtyTermination::finish);
+}
+
+fn drive_pty_terminations_with(
+    runtime: &HubRuntime,
+    mut finish: impl FnMut(PtyTermination) -> PtyTerminationOutcome,
+) {
+    let leases = pty_lifecycle_lock(runtime).claim_due_terminations();
+    for termination in leases {
+        let outcome = finish(termination);
+        pty_lifecycle_lock(runtime).complete_termination(outcome);
+    }
+}
+
+fn ensure_pty_retry_driver(runtime: &Arc<HubRuntime>) {
+    if !pty_lifecycle_lock(runtime).has_pending_terminations() {
+        return;
+    }
+    let mut state = retry_driver_lock(runtime);
+    if state.running {
+        return;
+    }
+    state.running = true;
+    let worker_runtime = Arc::clone(runtime);
+    match thread::Builder::new()
+        .name("relay-claude-pty-retry".into())
+        .spawn(move || run_pty_retry_driver(worker_runtime))
+    {
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("relay Claude PTY retry worker spawn failed: {error}; running inline");
+            drop(state);
+            run_pty_retry_driver(Arc::clone(runtime));
         }
     }
-    finished
+}
+
+fn run_pty_retry_driver(runtime: Arc<HubRuntime>) {
+    run_retry_loop(
+        || {
+            drive_pty_terminations(&runtime);
+            acknowledge_ready_invalidated_owners(&runtime);
+        },
+        || {
+            let mut state = retry_driver_lock(&runtime);
+            if pty_lifecycle_lock(&runtime).has_pending_terminations() {
+                true
+            } else {
+                state.running = false;
+                false
+            }
+        },
+        || thread::sleep(PTY_LIFECYCLE_POLL),
+    );
+}
+
+fn run_retry_loop(
+    mut drive: impl FnMut(),
+    mut still_pending: impl FnMut() -> bool,
+    mut wait: impl FnMut(),
+) {
+    loop {
+        drive();
+        if !still_pending() {
+            return;
+        }
+        wait();
+    }
+}
+
+/// Drain the one-node PTY owner when the server loop exits normally through a
+/// controlled error path. Abrupt process termination remains explicitly
+/// outside this in-memory guarantee.
+fn shutdown_pty_runtime(runtime: &HubRuntime) -> bool {
+    let deadline = Instant::now() + PTY_SHUTDOWN_BUDGET;
+    let scheduled = {
+        let _owner_lifecycle = owner_lifecycle_lock(runtime);
+        pty_lifecycle_lock(runtime).begin_shutdown()
+    };
+    acknowledge_ready_invalidated_owners(runtime);
+    if scheduled == OwnerSessionCloseDisposition::Complete && !retry_driver_lock(runtime).running {
+        return true;
+    }
+
+    loop {
+        drive_pty_terminations(runtime);
+        acknowledge_ready_invalidated_owners(runtime);
+        let disposition = {
+            let pty = pty_lifecycle_lock(runtime);
+            (pty.shutdown_disposition(), pty.has_terminal_failures())
+        };
+        let driver_running = retry_driver_lock(runtime).running;
+        match disposition {
+            (OwnerSessionCloseDisposition::Complete, _) if !driver_running => return true,
+            (_, true) if !driver_running => return false,
+            (OwnerSessionCloseDisposition::Complete, _)
+            | (_, true)
+            | (OwnerSessionCloseDisposition::Retry, false) => {}
+        }
+
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        thread::sleep(remaining.min(PTY_LIFECYCLE_POLL));
+    }
 }
 
 fn protected_hub_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>) -> String {
@@ -606,19 +749,36 @@ fn protected_hub_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
 }
 
 fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
-    // Terminations may include a bounded grace. Drain invalidated owners before
-    // taking the lock needed for this create request.
     reap_invalidated_owner_sessions(runtime);
-    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
-        Ok(owner) => owner,
-        Err(response) => return response,
+    let (owner, mut session) = {
+        // Serialize auth resolution plus admission with invalidation
+        // acknowledgement. Outside-lock teardown is deliberately not inside
+        // this gate, so unrelated owner operations still make progress.
+        let _owner_lifecycle = owner_lifecycle_lock(runtime);
+        let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
+            Ok(owner) => owner,
+            Err(response) => return response,
+        };
+        let session = match runtime.pty.lock() {
+            Ok(mut pty) => pty.begin_create(&owner).into_result(),
+            Err(_) => return auth_error_response(500, "internal", &[]),
+        };
+        (owner, session)
     };
-    let creation = match runtime.pty.lock() {
-        Ok(mut pty) => pty.begin_create(&owner),
-        Err(_) => return auth_error_response(500, "internal", &[]),
-    };
-    let (session, terminations) = creation.into_parts();
-    let _ = finish_terminations(terminations);
+    drive_pty_terminations(runtime);
+    if session == Err(ClaudePtyError::Capacity) {
+        session = {
+            let _owner_lifecycle = owner_lifecycle_lock(runtime);
+            if let Err(response) = terminal_owner(request, runtime.auth.as_deref(), true) {
+                return response;
+            }
+            match runtime.pty.lock() {
+                Ok(mut pty) => pty.begin_create(&owner).into_result(),
+                Err(_) => return auth_error_response(500, "internal", &[]),
+            }
+        };
+        drive_pty_terminations(runtime);
+    }
     let session = match session {
         Ok(session) => session,
         Err(error) => return claude_pty_error_response(error),
@@ -735,12 +895,21 @@ fn close_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime
         Some(session_id) => session_id,
         None => return not_found_http_response(),
     };
-    let termination = runtime
+    let requested = runtime
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.begin_close(session_id, &owner));
-    match termination.and_then(PtyTermination::finish) {
+        .and_then(|mut pty| pty.request_close(session_id, &owner));
+    if let Err(error) = requested {
+        return claude_pty_error_response(error);
+    }
+    drive_pty_terminations(runtime);
+    match runtime
+        .pty
+        .lock()
+        .map_err(|_| ClaudePtyError::Transport)
+        .and_then(|mut pty| pty.poll(session_id, &owner, 0))
+    {
         Ok(snapshot) => terminal_snapshot_response(snapshot),
         Err(error) => claude_pty_error_response(error),
     }
@@ -822,6 +991,11 @@ fn terminal_snapshot_response(snapshot: TerminalSnapshot) -> String {
         .into_iter()
         .map(|chunk| serde_json::json!({ "sequence": chunk.sequence, "text": chunk.text }))
         .collect::<Vec<_>>();
+    let status = if snapshot.status == relay_session::claude_pty::ClaudePtyStatus::Closing {
+        202
+    } else {
+        200
+    };
     match serde_json::to_string(&serde_json::json!({
         "sessionId": snapshot.session_id.as_str(),
         "status": snapshot.status.code(),
@@ -831,7 +1005,7 @@ fn terminal_snapshot_response(snapshot: TerminalSnapshot) -> String {
         "truncated": snapshot.truncated,
         "droppedChunks": snapshot.dropped_chunks,
     })) {
-        Ok(body) => json_response(200, &body, &[]),
+        Ok(body) => json_response(status, &body, &[]),
         Err(_) => auth_error_response(500, "internal", &[]),
     }
 }
@@ -841,9 +1015,10 @@ fn claude_pty_error_response(error: ClaudePtyError) -> String {
         ClaudePtyError::Forbidden => 403,
         ClaudePtyError::InvalidInput | ClaudePtyError::InvalidResize => 400,
         ClaudePtyError::Capacity | ClaudePtyError::StaleHandle | ClaudePtyError::InputLost => 409,
-        ClaudePtyError::Backpressure | ClaudePtyError::Unavailable | ClaudePtyError::Transport => {
-            503
-        }
+        ClaudePtyError::Backpressure
+        | ClaudePtyError::Unavailable
+        | ClaudePtyError::Transport
+        | ClaudePtyError::TeardownFailed => 503,
     };
     auth_error_response(status, error.code(), &[])
 }
@@ -987,6 +1162,7 @@ fn auth_error_response(status: u16, code: &str, extra_headers: &[String]) -> Str
 fn json_response(status: u16, body: &str, extra_headers: &[String]) -> String {
     let reason = match status {
         200 => "200 OK",
+        202 => "202 Accepted",
         400 => "400 Bad Request",
         401 => "401 Unauthorized",
         403 => "403 Forbidden",
@@ -1020,6 +1196,193 @@ mod tests {
         });
 
         assert!(matches!(result, Err(RunError::Io)));
+    }
+
+    #[test]
+    fn listener_exit_drains_and_latches_the_pty_runtime() {
+        let runtime = Arc::new(HubRuntime {
+            auth: None,
+            owner_lifecycle: Mutex::new(()),
+            pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
+            retry_driver: Mutex::new(PtyRetryDriver::default()),
+        });
+        let session = runtime
+            .pty
+            .lock()
+            .unwrap()
+            .begin_create("device-a")
+            .into_result()
+            .expect("the fixed test PTY starts");
+        let observed = Arc::clone(&runtime);
+
+        let result = serve_connections(ServiceIdentity::Hub, runtime, || {
+            Err(io::Error::other("injected listener failure"))
+        });
+
+        assert!(matches!(result, Err(RunError::Io)));
+        let mut pty = observed.pty.lock().unwrap();
+        assert_eq!(
+            pty.poll(session.as_str(), "device-a", 0)
+                .expect("controlled shutdown retains terminal truth")
+                .status,
+            relay_session::claude_pty::ClaudePtyStatus::Closed
+        );
+        assert_eq!(
+            pty.begin_create("device-a").into_result(),
+            Err(ClaudePtyError::Unavailable),
+            "controlled shutdown must latch against concurrent admission"
+        );
+    }
+
+    #[test]
+    fn close_is_accepted_then_reaped_without_another_request() {
+        let runtime = Arc::new(HubRuntime {
+            auth: None,
+            owner_lifecycle: Mutex::new(()),
+            pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
+            retry_driver: Mutex::new(PtyRetryDriver::default()),
+        });
+        let session = runtime
+            .pty
+            .lock()
+            .unwrap()
+            .begin_create("device-a")
+            .into_result()
+            .expect("the fixed test PTY starts");
+        let closing = {
+            let mut pty = runtime.pty.lock().unwrap();
+            pty.request_close(session.as_str(), "device-a")
+                .expect("explicit close enters the lifecycle");
+            pty.poll(session.as_str(), "device-a", 0)
+                .expect("Closing remains observable")
+        };
+
+        let response = terminal_snapshot_response(closing);
+        assert!(response.starts_with("HTTP/1.1 202 Accepted"));
+        assert!(response.contains("\"status\":\"closing\""));
+
+        ensure_pty_retry_driver(&runtime);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let closed = loop {
+            let snapshot = runtime
+                .pty
+                .lock()
+                .unwrap()
+                .poll(session.as_str(), "device-a", 0)
+                .expect("terminal truth remains observable");
+            if snapshot.status == relay_session::claude_pty::ClaudePtyStatus::Closed {
+                break snapshot;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the autonomous retry driver did not finish the close"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        let response = terminal_snapshot_response(closed);
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"status\":\"closed\""));
+        while retry_driver_lock(&runtime).running {
+            assert!(Instant::now() < deadline, "the retry worker did not exit");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn retry_loop_runs_all_bounded_attempts_without_a_client_request() {
+        let attempts = std::cell::Cell::new(0_usize);
+        let waits = std::cell::Cell::new(0_usize);
+
+        run_retry_loop(
+            || attempts.set(attempts.get().saturating_add(1)),
+            || attempts.get() < 3,
+            || waits.set(waits.get().saturating_add(1)),
+        );
+
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(waits.get(), 2);
+    }
+
+    #[test]
+    fn teardown_lease_allows_unrelated_admission_progress() {
+        let runtime = HubRuntime {
+            auth: None,
+            owner_lifecycle: Mutex::new(()),
+            pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
+            retry_driver: Mutex::new(PtyRetryDriver::default()),
+        };
+        let closing = runtime
+            .pty
+            .lock()
+            .unwrap()
+            .begin_create("device-a")
+            .into_result()
+            .expect("the closing fixture starts");
+        runtime
+            .pty
+            .lock()
+            .unwrap()
+            .request_close(closing.as_str(), "device-a")
+            .unwrap();
+        let mut unrelated = None;
+
+        drive_pty_terminations_with(&runtime, |termination| {
+            let owner_lifecycle = runtime
+                .owner_lifecycle
+                .try_lock()
+                .expect("teardown does not retain the owner lifecycle gate");
+            let session = runtime
+                .pty
+                .try_lock()
+                .expect("teardown does not retain the PTY mutex")
+                .begin_create("device-b")
+                .into_result()
+                .expect("an unrelated owner can make admission progress");
+            unrelated = Some(session);
+            drop(owner_lifecycle);
+            termination.finish()
+        });
+
+        let unrelated = unrelated.expect("the outside-lock callback ran");
+        runtime
+            .pty
+            .lock()
+            .unwrap()
+            .request_close(unrelated.as_str(), "device-b")
+            .unwrap();
+        drive_pty_terminations(&runtime);
+    }
+
+    #[test]
+    fn invalidated_owner_acknowledgement_waits_for_verified_closed() {
+        let runtime = HubRuntime {
+            auth: None,
+            owner_lifecycle: Mutex::new(()),
+            pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
+            retry_driver: Mutex::new(PtyRetryDriver::default()),
+        };
+        let owners = ["device-a".to_owned()];
+        runtime
+            .pty
+            .lock()
+            .unwrap()
+            .begin_create(&owners[0])
+            .into_result()
+            .expect("the fixed test PTY starts");
+        {
+            let mut pty = runtime.pty.lock().unwrap();
+            pty.begin_owner_session_closes(&owners[0]);
+            assert!(
+                !invalidated_owner_ready_for_acknowledgement(&pty, &owners[0]),
+                "Closing must retain the auth invalidation"
+            );
+        }
+
+        drive_pty_terminations(&runtime);
+        assert!(invalidated_owner_ready_for_acknowledgement(
+            &runtime.pty.lock().unwrap(),
+            &owners[0]
+        ));
     }
 
     #[test]
@@ -1077,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_capacity_and_transport_remain_typed_api_failures() {
+    fn terminal_capacity_transport_and_teardown_failure_remain_typed_api_failures() {
         for (error, status, code) in [
             (
                 ClaudePtyError::Capacity,
@@ -1088,6 +1451,11 @@ mod tests {
                 ClaudePtyError::Transport,
                 "HTTP/1.1 503 Service Unavailable",
                 "pty_transport",
+            ),
+            (
+                ClaudePtyError::TeardownFailed,
+                "HTTP/1.1 503 Service Unavailable",
+                "pty_teardown_failed",
             ),
         ] {
             let response = claude_pty_error_response(error);

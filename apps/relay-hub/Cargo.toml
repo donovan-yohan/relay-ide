@@ -10,5 +10,8 @@ relay-factory-core = { path = "../../crates/relay-factory-core" }
 relay-session = { path = "../../crates/relay-session" }
 serde_json = "1.0.149"
 
+[dev-dependencies]
+relay-session = { path = "../../crates/relay-session", features = ["test-fixtures"] }
+
 [lints]
 workspace = true

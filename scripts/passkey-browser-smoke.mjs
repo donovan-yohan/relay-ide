@@ -72,6 +72,14 @@ if (spawnSync(chromium, ["--version"], { encoding: "utf8" }).status !== 0) {
   process.exit(0);
 }
 
+for (const [path, file] of vendorFiles) {
+  try {
+    await access(file);
+  } catch (error) {
+    throw new Error(`passkey browser matrix requires ${path}; run npm ci`, { cause: error });
+  }
+}
+
 try {
   await createCertificate();
   hub = startHub();
@@ -111,6 +119,11 @@ try {
   );
   await browser.command("Page.navigate", { url: `${origin}/` }, sessionId);
   await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
+  assert.equal(
+    await evaluate(sessionId, "typeof window.Terminal"),
+    "function",
+    "the xterm browser fixture must expose a Terminal constructor",
+  );
   await evaluate(
     sessionId,
     "window.relayPageErrors = []; addEventListener('error', (event) => window.relayPageErrors.push(event.message)); addEventListener('unhandledrejection', (event) => window.relayPageErrors.push(String(event.reason)));",
@@ -368,9 +381,23 @@ try {
     403,
     "a browser session must never become node authority",
   );
+  const pendingOwnerCleanupLine = "relay Claude PTY owner cleanup remains pending for retry";
+  const pendingOwnerCleanupCount = () => hubAddress.output().split(`${pendingOwnerCleanupLine}\n`).length - 1;
+  assert.equal(
+    await evaluate(sessionId, "fetch('/health').then((response) => response.status)"),
+    200,
+    "the request-driven teardown scheduler must remain available after revocation",
+  );
+  const pendingOwnerCleanupAfterProbe = pendingOwnerCleanupCount();
+  assert.equal(await evaluate(sessionId, "fetch('/health').then((response) => response.status)"), 200);
+  assert.equal(
+    pendingOwnerCleanupCount(),
+    pendingOwnerCleanupAfterProbe,
+    "owner cleanup must converge instead of logging an unbounded request-driven retry loop",
+  );
   assert.match(
     hubAddress.output(),
-    /^relay-hub liveness listening on 127\.0\.0\.1:\d+\n$/,
+    /^relay-hub liveness listening on 127\.0\.0\.1:\d+\n(?:relay Claude PTY owner cleanup remains pending for retry\n)*$/,
     "the real WebAuthn enrollment, assertion, session, and revoke path must not append credential or session material to hub logs",
   );
 

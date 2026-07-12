@@ -12,6 +12,7 @@ relay-hermes-session = { path = "../../crates/relay-hermes-session" }
 
 [dev-dependencies]
 base64 = "0.22"
+relay-session = { path = "../../crates/relay-session", features = ["test-fixtures"] }
 serde_json = "1.0"
 sha1 = "0.10"
 
