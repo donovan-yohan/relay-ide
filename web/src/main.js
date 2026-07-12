@@ -52,6 +52,7 @@ revokeCurrent.addEventListener("click", () => void revokeCurrentSession());
 
 async function enroll() {
   const recovery = recoveryCode.value;
+  recoveryCode.value = "";
   const headers = {};
   if (recovery) {
     headers["X-Relay-Recovery-Code"] = recovery;
@@ -61,7 +62,6 @@ async function enroll() {
   if (!(await runCeremony("/auth/passkeys/enroll/options", "/auth/passkeys/enroll/verify", "create", headers))) {
     return;
   }
-  recoveryCode.value = "";
   authStatus.textContent = "Passkey enrolled. Sign in with that passkey to create a browser session.";
 }
 

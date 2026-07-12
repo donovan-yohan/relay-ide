@@ -105,6 +105,37 @@ try {
 
   await evaluate(
     sessionId,
+    `Object.defineProperty(navigator.credentials, "create", { configurable: true, value: async () => null });`,
+  );
+  assert.equal(
+    await recoveryValueAfterFailedEnrollment(sessionId),
+    "",
+    "recovery code must clear when WebAuthn enrollment returns no credential",
+  );
+  await evaluate(sessionId, "delete navigator.credentials.create");
+  await evaluate(
+    sessionId,
+    `Object.defineProperty(navigator.credentials, "create", { configurable: true, value: async () => { throw new DOMException("denied", "NotAllowedError"); } });`,
+  );
+  assert.equal(
+    await recoveryValueAfterFailedEnrollment(sessionId),
+    "",
+    "recovery code must clear when WebAuthn enrollment rejects",
+  );
+  await evaluate(sessionId, "delete navigator.credentials.create");
+  await evaluate(
+    sessionId,
+    `window.relayOriginalFetch = window.fetch; window.fetch = async (input, init) => { if (new URL(typeof input === "string" ? input : input.url, window.location.href).pathname === "/auth/passkeys/enroll/options") throw new TypeError("network unavailable"); return window.relayOriginalFetch(input, init); };`,
+  );
+  assert.equal(
+    await recoveryValueAfterFailedEnrollment(sessionId),
+    "",
+    "recovery code must clear when enrollment options fail over the network",
+  );
+  await evaluate(sessionId, "window.fetch = window.relayOriginalFetch; delete window.relayOriginalFetch");
+
+  await evaluate(
+    sessionId,
     `document.querySelector("#recovery-code").value = ${JSON.stringify(recoveryCode)}; document.querySelector("#enroll-passkey").click();`,
   );
   await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Passkey enrolled"));
@@ -115,6 +146,14 @@ try {
     await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
     200,
     "a verified passkey must authorize the protected hub route",
+  );
+  const { cookies } = await browser.command("Network.getAllCookies", {}, sessionId);
+  const sessionCookie = cookies.find((cookie) => cookie.name === "__Host-relay_session")?.value;
+  assert.ok(sessionCookie, "a verified passkey must create an HttpOnly browser session cookie");
+  assert.equal(
+    await protectedHubStatus(hubAddress.port, sessionCookie),
+    200,
+    "a valueless unrelated Cookie segment must not invalidate a valid browser session",
   );
 
   const revokeStatuses = await evaluate(
@@ -201,6 +240,34 @@ async function waitForHub(process_) {
     output: () => output,
     port: Number(output.match(/relay-hub liveness listening on 127\.0\.0\.1:(\d+)/)[1]),
   };
+}
+
+async function protectedHubStatus(port, sessionCookie) {
+  return new Promise((resolve_, reject) => {
+    const request = httpRequest(
+      {
+        host: "127.0.0.1",
+        port,
+        path: "/protected/hub",
+        headers: { Cookie: `__Host-relay_session=${sessionCookie}; legacy` },
+      },
+      (response) => {
+        response.resume();
+        response.once("end", () => resolve_(response.statusCode));
+      },
+    );
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+async function recoveryValueAfterFailedEnrollment(sessionId) {
+  await evaluate(
+    sessionId,
+    `document.querySelector("#auth-status").textContent = ""; document.querySelector("#recovery-code").value = ${JSON.stringify(recoveryCode)}; document.querySelector("#enroll-passkey").click();`,
+  );
+  await waitFor(async () => Boolean(await evaluate(sessionId, "document.querySelector('#auth-status').textContent")));
+  return evaluate(sessionId, "document.querySelector('#recovery-code').value");
 }
 
 async function createCertificate() {

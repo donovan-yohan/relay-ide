@@ -271,7 +271,13 @@ impl<'a> HttpRequest<'a> {
         let cookies = self.header("cookie")?;
         let mut result = None;
         for cookie in cookies.split(';') {
-            let (candidate, value) = cookie.trim().split_once('=')?;
+            let cookie = cookie.trim();
+            let Some((candidate, value)) = cookie.split_once('=') else {
+                if cookie == name {
+                    return None;
+                }
+                continue;
+            };
             if candidate == name {
                 if result.is_some() || value.is_empty() || value.len() > 256 {
                     return None;
@@ -625,5 +631,41 @@ mod tests {
         });
 
         assert!(matches!(result, Err(RunError::Io)));
+    }
+
+    #[test]
+    fn cookie_skips_valueless_unrelated_segments() {
+        let request = HttpRequest::parse(
+            b"GET /protected/hub HTTP/1.1\r\nHost: relay.example.test\r\nCookie: __Host-relay_session=valid-session; legacy\r\n\r\n",
+        )
+        .expect("the request is well formed");
+
+        assert_eq!(
+            request.cookie("__Host-relay_session"),
+            Some("valid-session")
+        );
+    }
+
+    #[test]
+    fn cookie_rejects_invalid_or_ambiguous_target_segments() {
+        let oversized = format!("__Host-relay_session={}", "a".repeat(257));
+        for cookie in [
+            "__Host-relay_session",
+            "__Host-relay_session=",
+            "__Host-relay_session=first; __Host-relay_session=second",
+            oversized.as_str(),
+        ] {
+            let request = format!(
+                "GET /protected/hub HTTP/1.1\r\nHost: relay.example.test\r\nCookie: {cookie}\r\n\r\n"
+            );
+            let request =
+                HttpRequest::parse(request.as_bytes()).expect("the request is well formed");
+
+            assert_eq!(
+                request.cookie("__Host-relay_session"),
+                None,
+                "cookie: {cookie}"
+            );
+        }
     }
 }
