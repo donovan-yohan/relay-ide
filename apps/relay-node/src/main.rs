@@ -161,7 +161,7 @@ fn run_hermes_smoke(arguments: &[String]) -> Result<String, AdapterError> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match adapter.pump(remaining.min(Duration::from_millis(250))) {
             Ok(()) | Err(AdapterError::Timeout) => {}
-            Err(AdapterError::GatewayLost) => break,
+            Err(AdapterError::GatewayLost) => return Err(AdapterError::GatewayLost),
             Err(error) => return Err(error),
         }
     }
@@ -189,7 +189,7 @@ fn run_hermes_smoke(arguments: &[String]) -> Result<String, AdapterError> {
     };
 
     Ok(format!(
-        "{{\"adapter\":\"hermes-rich-client\",\"create\":true,\"list_count\":{},\"resume\":{},\"prompt\":true,\"observed_events\":{},\"tool_events\":{},\"interaction_events\":{},\"unsupported_events\":{},\"foreign_events\":{},\"dropped_events\":{},\"status\":\"{}\"}}",
+        "{{\"adapter\":\"hermes-rich-client\",\"create\":true,\"list_count\":{},\"resume\":{},\"prompt\":true,\"observed_events\":{},\"tool_events\":{},\"interaction_events\":{},\"unsupported_events\":{},\"foreign_events\":{},\"dropped_events\":{},\"interaction_limited\":{},\"status\":\"{}\"}}",
         listed.len(),
         !resumed.live_id.is_empty(),
         event_count,
@@ -198,6 +198,7 @@ fn run_hermes_smoke(arguments: &[String]) -> Result<String, AdapterError> {
         signals.unsupported,
         signals.foreign,
         signals.dropped,
+        signals.interaction_limited,
         status,
     ))
 }

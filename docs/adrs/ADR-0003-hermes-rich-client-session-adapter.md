@@ -11,7 +11,7 @@ Hermes exposes several unrelated integration surfaces. Its messaging/API gateway
 
 Relay owns a native Hermes adapter that accepts only `ws://` loopback dashboard `/api/ws` endpoints authenticated by the local dashboard's ephemeral token. It creates, lists, resumes, prompts, interrupts, and observes only the documented rich-client event subset. Events are mapped into neutral lifecycle/status/tool/approval/diagnostic categories with bounded, redacted previews. Hermes 0.18.2 injects an opaque request id into `clarify.request` before emission, and Relay uses that id for exactly one `clarify.respond` without retaining the question, choices, or answer.
 
-The adapter has bounded request/frame/event/replay limits and typed responses for auth failure, connection loss, malformed frames, timeout, retry exhaustion, replay gaps, pressure, unsupported contract elements, and interaction races. Unknown events remain visible diagnostics rather than being silently dropped or mapped to a generic Relay fallback.
+The adapter has bounded request/frame/event/replay and pending-interaction limits. It returns typed responses for auth failure, connection loss, malformed frames, timeout, retry exhaustion, replay gaps, unsupported contract elements, and interaction races; excess pending interactions become visible redacted diagnostics without retaining another response target. Unknown events remain visible diagnostics rather than being silently dropped or mapped to a generic Relay fallback.
 
 ## Consequences
 

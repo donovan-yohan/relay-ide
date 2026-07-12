@@ -10,7 +10,7 @@ use std::{
     io::{self, Read, Write},
     net::{TcpStream, ToSocketAddrs},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -19,6 +19,7 @@ use sha1::{Digest, Sha1};
 
 pub const DEFAULT_EVENT_QUEUE_LIMIT: usize = 128;
 pub const DEFAULT_REPLAY_WINDOW: usize = 64;
+pub const MAX_PENDING_INTERACTIONS: usize = DEFAULT_EVENT_QUEUE_LIMIT;
 pub const MAX_RPC_BYTES: usize = 8 * 1024;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_CONNECT_ATTEMPTS: usize = 3;
@@ -26,6 +27,36 @@ const CONNECT_BACKOFFS: [Duration; MAX_CONNECT_ATTEMPTS - 1] =
     [Duration::from_millis(50), Duration::from_millis(100)];
 pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const GLOBAL_UNSCOPED_EVENTS: &[&str] = &["gateway.ready"];
+
+#[derive(Debug, Clone, Copy)]
+struct Deadline(Instant);
+
+impl Deadline {
+    fn after(timeout: Duration) -> Self {
+        Self(Instant::now() + timeout)
+    }
+
+    fn remaining(self) -> Result<Duration, AdapterError> {
+        let remaining = self.0.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Err(AdapterError::Timeout)
+        } else {
+            Ok(remaining)
+        }
+    }
+
+    fn set_read_timeout(self, stream: &TcpStream) -> Result<(), AdapterError> {
+        stream
+            .set_read_timeout(Some(self.remaining()?))
+            .map_err(map_io_error)
+    }
+
+    fn set_write_timeout(self, stream: &TcpStream) -> Result<(), AdapterError> {
+        stream
+            .set_write_timeout(Some(self.remaining()?))
+            .map_err(map_io_error)
+    }
+}
 
 /// A loopback dashboard URL with an already-present dashboard credential.
 ///
@@ -144,7 +175,6 @@ pub enum AdapterError {
     Timeout,
     RetryExhausted,
     ReplayGap,
-    QueuePressure,
     PayloadTooLarge,
     Unsupported,
     UnknownSession,
@@ -163,7 +193,6 @@ impl AdapterError {
             Self::Timeout => "timeout",
             Self::RetryExhausted => "retry_exhausted",
             Self::ReplayGap => "replay_gap",
-            Self::QueuePressure => "queue_pressure",
             Self::PayloadTooLarge => "payload_too_large",
             Self::Unsupported => "unsupported",
             Self::UnknownSession => "unknown_session",
@@ -217,6 +246,7 @@ pub struct SessionEvent {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StreamSignals {
     pub dropped: u64,
+    pub interaction_limited: u64,
     pub malformed: u64,
     pub unsupported: u64,
     pub foreign: u64,
@@ -233,38 +263,6 @@ pub struct CreatedSession {
 pub struct SessionSummary {
     pub stored_id: String,
 }
-
-/// The public ledger is intentionally narrow. Any event not in this set becomes
-/// an `Unsupported` event; it is never guessed, normalized through another
-/// provider, or silently dropped. `clarify.request` is supported only when it
-/// carries the opaque response id injected by the installed gateway.
-pub const GUARANTEED_EVENTS: &[&str] = &[
-    "gateway.ready",
-    "session.info",
-    "message.start",
-    "message.delta",
-    "message.complete",
-    "thinking.delta",
-    "reasoning.delta",
-    "reasoning.available",
-    "status.update",
-    "tool.start",
-    "tool.progress",
-    "tool.generating",
-    "tool.complete",
-    "tool.output_risk",
-    "approval.request",
-    "clarify.request",
-    "error",
-];
-
-pub const UNSUPPORTED_EVENTS: &[&str] = &[
-    "sudo.request",
-    "secret.request",
-    "terminal.read.request",
-    "background.complete",
-    "skin.changed",
-];
 
 pub const UNSUPPORTED_METHODS: &[&str] = &[
     "config.set",
@@ -533,7 +531,7 @@ impl HermesSessionAdapter {
 
     pub fn pump(&mut self, timeout: Duration) -> Result<(), AdapterError> {
         let status_before_wait = self.status;
-        match self.receive_frame(timeout) {
+        match self.receive_frame(Deadline::after(timeout), false) {
             Err(AdapterError::Timeout) => {
                 // A bounded observation window is allowed to be quiet. Preserve
                 // the previous state so callers can distinguish that idle wait
@@ -562,10 +560,11 @@ impl HermesSessionAdapter {
         if wire.len() > MAX_RPC_BYTES {
             return Err(AdapterError::PayloadTooLarge);
         }
-        self.send_frame(&wire)?;
+        let deadline = Deadline::after(self.rpc_timeout);
+        self.send_frame(&wire, deadline)?;
 
         loop {
-            let raw = match self.receive_frame(self.rpc_timeout) {
+            let raw = match self.receive_frame(deadline, true) {
                 Ok(raw) => raw,
                 Err(AdapterError::Timeout) => {
                     self.quarantine_transport();
@@ -709,15 +708,20 @@ impl HermesSessionAdapter {
                 "tool output risk updated".to_owned(),
             ),
             "approval.request" => {
-                *self
-                    .pending_approvals
-                    .entry(session_id.to_owned())
-                    .or_default() += 1;
-                (
-                    EventKind::ApprovalRequest,
-                    "approval_request",
-                    "approval requested".to_owned(),
-                )
+                if self.reserve_approval(session_id) {
+                    (
+                        EventKind::ApprovalRequest,
+                        "approval_request",
+                        "approval requested".to_owned(),
+                    )
+                } else {
+                    self.record_interaction_pressure();
+                    (
+                        EventKind::Diagnostic,
+                        "interaction_limit_reached",
+                        "interaction request capacity reached".to_owned(),
+                    )
+                }
             }
             "clarify.request" => {
                 let request_id = payload
@@ -725,13 +729,21 @@ impl HermesSessionAdapter {
                     .and_then(Value::as_str)
                     .filter(|id| id.len() <= 256);
                 if let Some(request_id) = request_id.filter(|id| !id.is_empty()) {
-                    self.pending_clarifications.insert(request_id.to_owned());
-                    clarification_id = Some(request_id.to_owned());
-                    (
-                        EventKind::ClarificationRequest,
-                        "clarification_request",
-                        "clarification requested".to_owned(),
-                    )
+                    if self.reserve_clarification(request_id) {
+                        clarification_id = Some(request_id.to_owned());
+                        (
+                            EventKind::ClarificationRequest,
+                            "clarification_request",
+                            "clarification requested".to_owned(),
+                        )
+                    } else {
+                        self.record_interaction_pressure();
+                        (
+                            EventKind::Diagnostic,
+                            "interaction_limit_reached",
+                            "interaction request capacity reached".to_owned(),
+                        )
+                    }
                 } else {
                     self.record_unsupported();
                     (
@@ -766,6 +778,38 @@ impl HermesSessionAdapter {
         self.status = SessionStatus::Degraded;
     }
 
+    fn reserve_approval(&mut self, session_id: &str) -> bool {
+        if !self.has_pending_interaction_capacity() {
+            return false;
+        }
+        *self
+            .pending_approvals
+            .entry(session_id.to_owned())
+            .or_default() += 1;
+        true
+    }
+
+    fn reserve_clarification(&mut self, request_id: &str) -> bool {
+        if self.pending_clarifications.contains(request_id) {
+            return true;
+        }
+        if !self.has_pending_interaction_capacity() {
+            return false;
+        }
+        self.pending_clarifications.insert(request_id.to_owned());
+        true
+    }
+
+    fn has_pending_interaction_capacity(&self) -> bool {
+        self.pending_approvals.values().sum::<usize>() + self.pending_clarifications.len()
+            < MAX_PENDING_INTERACTIONS
+    }
+
+    fn record_interaction_pressure(&mut self) {
+        self.signals.interaction_limited += 1;
+        self.status = SessionStatus::Degraded;
+    }
+
     fn enqueue(
         &mut self,
         session_id: &str,
@@ -796,36 +840,30 @@ impl HermesSessionAdapter {
         }
     }
 
-    fn send_frame(&mut self, text: &str) -> Result<(), AdapterError> {
+    fn send_frame(&mut self, text: &str, deadline: Deadline) -> Result<(), AdapterError> {
         let result = {
             let stream = self.socket.as_mut().ok_or(AdapterError::GatewayLost)?;
-            write_websocket_frame(stream, 0x1, text.as_bytes()).map_err(map_io_error)
+            write_websocket_frame(stream, 0x1, text.as_bytes(), deadline)
         };
-        if let Err(error) = &result {
-            self.record_transport_failure(error);
-        }
-        result
+        self.finish_send(result)
     }
 
-    fn receive_frame(&mut self, timeout: Duration) -> Result<String, AdapterError> {
-        let timeout_result = {
-            let stream = self.socket.as_mut().ok_or(AdapterError::GatewayLost)?;
-            stream.set_read_timeout(Some(timeout)).map_err(map_io_error)
-        };
-        if let Err(error) = timeout_result {
-            self.record_transport_failure(&error);
-            return Err(error);
-        }
-
+    fn receive_frame(
+        &mut self,
+        deadline: Deadline,
+        quarantine_on_timeout: bool,
+    ) -> Result<String, AdapterError> {
         loop {
             let frame = {
                 let stream = self.socket.as_mut().ok_or(AdapterError::GatewayLost)?;
-                read_websocket_frame(stream)
+                read_websocket_frame(stream, deadline)
             };
             let (opcode, bytes) = match frame {
                 Ok(frame) => frame,
                 Err(error) => {
-                    self.record_transport_failure(&error);
+                    if quarantine_on_timeout || !matches!(error, AdapterError::Timeout) {
+                        self.quarantine_transport();
+                    }
                     return Err(error);
                 }
             };
@@ -839,17 +877,16 @@ impl HermesSessionAdapter {
                     }
                 },
                 0x8 => {
-                    self.status = SessionStatus::Failed;
+                    self.quarantine_transport();
                     return Err(AdapterError::GatewayLost);
                 }
                 0x9 => {
                     let result = {
                         let stream = self.socket.as_mut().ok_or(AdapterError::GatewayLost)?;
-                        write_websocket_frame(stream, 0xA, &bytes).map_err(map_io_error)
+                        write_websocket_frame(stream, 0xA, &bytes, deadline)
                     };
                     if let Err(error) = result {
-                        self.record_transport_failure(&error);
-                        return Err(error);
+                        return self.finish_send(Err(error));
                     }
                 }
                 0xA => continue,
@@ -862,16 +899,11 @@ impl HermesSessionAdapter {
         }
     }
 
-    fn record_transport_failure(&mut self, error: &AdapterError) {
-        match error {
-            AdapterError::GatewayLost | AdapterError::RetryExhausted => {
-                self.status = SessionStatus::Failed;
-            }
-            AdapterError::Timeout | AdapterError::PayloadTooLarge | AdapterError::MalformedRpc => {
-                self.status = SessionStatus::Degraded;
-            }
-            _ => {}
+    fn finish_send<T>(&mut self, result: Result<T, AdapterError>) -> Result<T, AdapterError> {
+        if result.is_err() {
+            self.quarantine_transport();
         }
+        result
     }
 }
 
@@ -933,19 +965,21 @@ fn classify_rpc_error(error: &Value) -> AdapterError {
 }
 
 fn connect_once(endpoint: &GatewayEndpoint) -> Result<TcpStream, AdapterError> {
+    connect_once_with_timeout(endpoint, DEFAULT_RPC_TIMEOUT)
+}
+
+fn connect_once_with_timeout(
+    endpoint: &GatewayEndpoint,
+    timeout: Duration,
+) -> Result<TcpStream, AdapterError> {
+    let deadline = Deadline::after(timeout);
     let address = (endpoint.host.as_str(), endpoint.port)
         .to_socket_addrs()
         .map_err(map_io_error)?
         .find(|address| address.ip().is_loopback())
         .ok_or(AdapterError::GatewayLost)?;
     let mut stream =
-        TcpStream::connect_timeout(&address, DEFAULT_RPC_TIMEOUT).map_err(map_io_error)?;
-    stream
-        .set_read_timeout(Some(DEFAULT_RPC_TIMEOUT))
-        .map_err(map_io_error)?;
-    stream
-        .set_write_timeout(Some(DEFAULT_RPC_TIMEOUT))
-        .map_err(map_io_error)?;
+        TcpStream::connect_timeout(&address, deadline.remaining()?).map_err(map_io_error)?;
 
     let key = websocket_key()?;
     let request = format!(
@@ -954,10 +988,10 @@ fn connect_once(endpoint: &GatewayEndpoint) -> Result<TcpStream, AdapterError> {
         endpoint.host_header(),
         key
     );
-    stream.write_all(request.as_bytes()).map_err(map_io_error)?;
-    stream.flush().map_err(map_io_error)?;
+    write_all_until(&mut stream, request.as_bytes(), deadline)?;
+    flush_until(&mut stream, deadline)?;
 
-    let response = read_http_headers(&mut stream)?;
+    let response = read_http_headers(&mut stream, deadline)?;
     let status = response.lines().next().unwrap_or_default();
     if status.contains(" 401 ") || status.contains(" 403 ") {
         return Err(AdapterError::AuthFailed);
@@ -994,11 +1028,11 @@ fn websocket_accept(key: &str) -> String {
     STANDARD.encode(digest.finalize())
 }
 
-fn read_http_headers(stream: &mut TcpStream) -> Result<String, AdapterError> {
+fn read_http_headers(stream: &mut TcpStream, deadline: Deadline) -> Result<String, AdapterError> {
     let mut bytes = Vec::with_capacity(1024);
     let mut byte = [0_u8; 1];
     while bytes.len() < MAX_RPC_BYTES {
-        stream.read_exact(&mut byte).map_err(map_io_error)?;
+        read_exact_until(stream, &mut byte, deadline)?;
         bytes.push(byte[0]);
         if bytes.ends_with(b"\r\n\r\n") {
             return String::from_utf8(bytes).map_err(|_| AdapterError::MalformedRpc);
@@ -1007,15 +1041,20 @@ fn read_http_headers(stream: &mut TcpStream) -> Result<String, AdapterError> {
     Err(AdapterError::PayloadTooLarge)
 }
 
-fn write_websocket_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> io::Result<()> {
+fn write_websocket_frame(
+    stream: &mut TcpStream,
+    opcode: u8,
+    payload: &[u8],
+    deadline: Deadline,
+) -> Result<(), AdapterError> {
     if payload.len() > MAX_FRAME_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "frame too large",
-        ));
+        return Err(AdapterError::PayloadTooLarge);
+    }
+    if opcode & 0x08 != 0 && payload.len() > 125 {
+        return Err(AdapterError::MalformedRpc);
     }
     let mut mask = [0_u8; 4];
-    fill_random(&mut mask).map_err(|_| io::Error::other("secure randomness unavailable"))?;
+    fill_random(&mut mask)?;
     let mut header = vec![0x80 | opcode, 0x80];
     if payload.len() <= 125 {
         header[1] |= payload.len() as u8;
@@ -1034,13 +1073,16 @@ fn write_websocket_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> 
             .enumerate()
             .map(|(index, byte)| byte ^ mask[index % mask.len()]),
     );
-    stream.write_all(&header)?;
-    stream.flush()
+    write_all_until(stream, &header, deadline)?;
+    flush_until(stream, deadline)
 }
 
-fn read_websocket_frame(stream: &mut TcpStream) -> Result<(u8, Vec<u8>), AdapterError> {
+fn read_websocket_frame(
+    stream: &mut TcpStream,
+    deadline: Deadline,
+) -> Result<(u8, Vec<u8>), AdapterError> {
     let mut header = [0_u8; 2];
-    stream.read_exact(&mut header).map_err(map_io_error)?;
+    read_exact_until(stream, &mut header, deadline)?;
     if header[0] & 0xF0 != 0x80 || header[1] & 0x80 != 0 {
         return Err(AdapterError::MalformedRpc);
     }
@@ -1048,19 +1090,62 @@ fn read_websocket_frame(stream: &mut TcpStream) -> Result<(u8, Vec<u8>), Adapter
     let mut length = u64::from(header[1] & 0x7F);
     if length == 126 {
         let mut bytes = [0_u8; 2];
-        stream.read_exact(&mut bytes).map_err(map_io_error)?;
+        read_exact_until(stream, &mut bytes, deadline)?;
         length = u64::from(u16::from_be_bytes(bytes));
     } else if length == 127 {
         let mut bytes = [0_u8; 8];
-        stream.read_exact(&mut bytes).map_err(map_io_error)?;
+        read_exact_until(stream, &mut bytes, deadline)?;
         length = u64::from_be_bytes(bytes);
     }
-    if length as usize > MAX_FRAME_BYTES {
+    if opcode & 0x08 != 0 && length > 125 {
+        return Err(AdapterError::MalformedRpc);
+    }
+    if length > MAX_FRAME_BYTES as u64 {
         return Err(AdapterError::PayloadTooLarge);
     }
-    let mut payload = vec![0_u8; length as usize];
-    stream.read_exact(&mut payload).map_err(map_io_error)?;
+    let length = usize::try_from(length).map_err(|_| AdapterError::PayloadTooLarge)?;
+    let mut payload = vec![0_u8; length];
+    read_exact_until(stream, &mut payload, deadline)?;
     Ok((opcode, payload))
+}
+
+fn read_exact_until(
+    stream: &mut TcpStream,
+    buffer: &mut [u8],
+    deadline: Deadline,
+) -> Result<(), AdapterError> {
+    let mut offset = 0;
+    while offset < buffer.len() {
+        deadline.set_read_timeout(stream)?;
+        match stream.read(&mut buffer[offset..]) {
+            Ok(0) => return Err(AdapterError::GatewayLost),
+            Ok(read) => offset += read,
+            Err(error) => return Err(map_io_error(error)),
+        }
+    }
+    Ok(())
+}
+
+fn write_all_until(
+    stream: &mut TcpStream,
+    buffer: &[u8],
+    deadline: Deadline,
+) -> Result<(), AdapterError> {
+    let mut offset = 0;
+    while offset < buffer.len() {
+        deadline.set_write_timeout(stream)?;
+        match stream.write(&buffer[offset..]) {
+            Ok(0) => return Err(AdapterError::GatewayLost),
+            Ok(written) => offset += written,
+            Err(error) => return Err(map_io_error(error)),
+        }
+    }
+    Ok(())
+}
+
+fn flush_until(stream: &mut TcpStream, deadline: Deadline) -> Result<(), AdapterError> {
+    deadline.set_write_timeout(stream)?;
+    stream.flush().map_err(map_io_error)
 }
 
 fn map_io_error(error: io::Error) -> AdapterError {
@@ -1122,12 +1207,194 @@ mod tests {
     }
 
     #[test]
+    fn pending_interactions_are_bounded_and_excess_is_visible() {
+        let mut adapter = HermesSessionAdapter::scripted();
+        for _ in 0..=MAX_PENDING_INTERACTIONS {
+            adapter
+                .ingest_json(
+                    r#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"live-session","payload":{}}}"#,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            adapter.pending_approvals.get("live-session"),
+            Some(&MAX_PENDING_INTERACTIONS)
+        );
+        assert_eq!(adapter.stream_signals().interaction_limited, 1);
+        assert_eq!(
+            adapter.drain_events().last().unwrap().label,
+            "interaction_limit_reached"
+        );
+    }
+
+    #[test]
+    fn handshake_read_deadline_is_absolute_while_peer_drips_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_http_headers(&mut stream, Deadline::after(Duration::from_secs(1)));
+            for byte in b"HTTP/1.1 101 Switching Protocols\r\n" {
+                if stream.write_all(&[*byte]).is_err() || stream.flush().is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        let endpoint =
+            GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+                .unwrap();
+        let started = Instant::now();
+        assert!(matches!(
+            connect_once_with_timeout(&endpoint, Duration::from_millis(20)),
+            Err(AdapterError::Timeout)
+        ));
+        assert!(started.elapsed() < Duration::from_millis(100));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_rpc_deadline_is_absolute_while_frame_payload_drips() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            accept_upgrade(&mut stream);
+            read_client_frame(&mut stream).unwrap();
+            write_server_text_frame_drip(
+                &mut stream,
+                r#"{"jsonrpc":"2.0","id":1,"result":{"session_id":"live-session","stored_session_id":"stored-session"}}"#,
+            );
+        });
+
+        let endpoint =
+            GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+                .unwrap();
+        let mut adapter = HermesSessionAdapter::connect(endpoint).unwrap();
+        adapter.rpc_timeout = Duration::from_millis(20);
+
+        let started = Instant::now();
+        assert_eq!(adapter.create(None), Err(AdapterError::Timeout));
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert_eq!(adapter.status(), SessionStatus::Failed);
+        assert!(adapter.socket.is_none());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn oversized_u64_frame_length_is_rejected_before_usize_conversion() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            accept_upgrade(&mut stream);
+            stream.write_all(&[0x81, 127]).unwrap();
+            stream.write_all(&u64::MAX.to_be_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let endpoint =
+            GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+                .unwrap();
+        let mut adapter = HermesSessionAdapter::connect(endpoint).unwrap();
+
+        assert_eq!(
+            adapter.pump(Duration::from_millis(100)),
+            Err(AdapterError::PayloadTooLarge)
+        );
+        assert_eq!(adapter.status(), SessionStatus::Failed);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn outbound_control_frames_are_limited_to_125_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+
+        assert_eq!(
+            write_websocket_frame(
+                &mut client,
+                0xA,
+                &[0_u8; 126],
+                Deadline::after(Duration::from_millis(100)),
+            ),
+            Err(AdapterError::MalformedRpc)
+        );
+    }
+
+    #[test]
+    fn control_frames_cannot_use_extended_lengths() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            accept_upgrade(&mut stream);
+            stream.write_all(&[0x89, 126, 0, 126]).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let endpoint =
+            GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+                .unwrap();
+        let mut adapter = HermesSessionAdapter::connect(endpoint).unwrap();
+
+        assert_eq!(
+            adapter.pump(Duration::from_millis(100)),
+            Err(AdapterError::MalformedRpc)
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn partial_send_failure_quarantines_the_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        let mut adapter = HermesSessionAdapter::scripted();
+        adapter.socket = Some(client);
+        let mut writer = PartialWriteFailure::default();
+        let result = writer.write_all(b"frame").map_err(map_io_error);
+
+        assert_eq!(adapter.finish_send(result), Err(AdapterError::GatewayLost));
+        assert!(adapter.socket.is_none());
+        assert_eq!(adapter.status(), SessionStatus::Failed);
+    }
+
+    #[test]
+    fn passive_observation_timeout_keeps_the_socket_for_later_pumps() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            accept_upgrade(&mut stream);
+            thread::sleep(Duration::from_millis(50));
+        });
+
+        let endpoint =
+            GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+                .unwrap();
+        let mut adapter = HermesSessionAdapter::connect(endpoint).unwrap();
+
+        assert_eq!(
+            adapter.pump(Duration::from_millis(5)),
+            Err(AdapterError::Timeout)
+        );
+        assert_eq!(adapter.status(), SessionStatus::Idle);
+        assert!(adapter.socket.is_some());
+        server.join().unwrap();
+    }
+
+    #[test]
     fn control_timeout_quarantines_the_socket_before_a_late_response_can_be_reused() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let request = read_http_headers(&mut stream).unwrap();
+            let request =
+                read_http_headers(&mut stream, Deadline::after(Duration::from_secs(1))).unwrap();
             let key = request
                 .lines()
                 .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
@@ -1166,6 +1433,51 @@ mod tests {
             Err(AdapterError::GatewayLost)
         );
         server.join().unwrap();
+    }
+
+    fn accept_upgrade(stream: &mut TcpStream) {
+        let request = read_http_headers(stream, Deadline::after(Duration::from_secs(1))).unwrap();
+        let key = request
+            .lines()
+            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+            .unwrap();
+        let accept = websocket_accept(key);
+        write!(
+            stream,
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        )
+        .unwrap();
+    }
+
+    fn write_server_text_frame_drip(stream: &mut TcpStream, text: &str) {
+        stream.write_all(&[0x81, text.len() as u8]).unwrap();
+        stream.flush().unwrap();
+        for byte in text.as_bytes() {
+            if stream.write_all(&[*byte]).is_err() || stream.flush().is_err() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[derive(Default)]
+    struct PartialWriteFailure {
+        wrote_once: bool,
+    }
+
+    impl Write for PartialWriteFailure {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.wrote_once {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "write failed"))
+            } else {
+                self.wrote_once = true;
+                Ok(bytes.len().min(1))
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     fn write_server_text_frame(stream: &mut TcpStream, text: &str) -> io::Result<()> {

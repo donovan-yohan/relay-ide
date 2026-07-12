@@ -684,9 +684,12 @@ dependencies = [
 name = "relay-node"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "relay-factory-core",
  "relay-hermes-session",
  "relay-session",
+ "serde_json",
+ "sha1",
 ]
 
 [[package]]

@@ -70,6 +70,10 @@ a shared-gateway event to the wrong Session.
 The table records event types the installed gateway can emit, not a promise that
 every turn emits every type: tool rows depend on the Hermes progress display
 mode, and reasoning/interaction rows depend on the active provider and turn.
+Pending approvals and clarification correlations share a hard limit of 128.
+When that capacity is full, Relay emits the redacted
+`interaction_limit_reached` diagnostic, increments `interaction_limited`, and
+does not retain another response target.
 
 ## Provider-neutral compatibility seam
 
@@ -101,16 +105,17 @@ method returns typed `unsupported` before it touches the transport.
 | Auth upgrade rejected | typed `auth_failed`; no retry and no credential echo |
 | Connection or dashboard restart | typed `gateway_lost`; connection setup retries at most three times, then reports `retry_exhausted` |
 | Malformed RPC or non-text frame | typed `malformed_rpc`, cumulative signal, Session becomes degraded |
-| Control-RPC deadline | typed `timeout`; Relay quarantines and closes that socket, marks the Session failed, and requires a new adapter so a late response cannot be misattributed to a later control RPC |
+| Control-RPC deadline | typed `timeout` after one monotonic absolute deadline across writes, partial reads, and frames; Relay quarantines and closes that socket, marks the Session failed, and requires a new adapter so a late response cannot be misattributed to a later control RPC |
 | Passive observation deadline | typed `timeout` but retains the prior Session state; a quiet bounded observation window is normal |
 | Queue pressure | queue holds at most 128 events; oldest event is dropped, `dropped` increments, `replay_gap=true`, Session becomes degraded |
+| Pending interaction pressure | at most 128 approval/clarification response targets are retained together; excess is visible as `interaction_limit_reached`, increments `interaction_limited`, and never creates a hidden response target |
 | Foreign session event | not queued or allowed to alter this adapter's status; `foreign` increments without retaining a provider payload |
 | Replay request before retained history | typed `replay_gap`; replay retention is at most 64 events |
-| Oversize RPC/frame | 8 KiB request and 64 KiB frame limits; typed `payload_too_large` |
+| Oversize RPC/frame | 8 KiB request and 64 KiB frame limits; typed `payload_too_large`; an inbound framing rejection closes the socket before unread payload bytes can desynchronize a later RPC |
 | Interrupt/approval response races | a `4009` server race, `approval.respond` result with `resolved: 0`, or missing pending request becomes typed `raced`; only a positive `resolved` acknowledgement decrements Relay's per-session pending count, so another request received during the call remains pending; other RPC failures retain the count and become typed `remote_failure`/transport errors |
 | Clarification correlation | Hermes 0.18.2 supplies an opaque `request_id`; Relay permits one matching response and retains no prompt content. A frame without a usable id becomes visible `clarification_without_id`; no response is sent |
 
-The adapter emits no normal logs. `relay-node hermes-smoke` prints only booleans, counts, and a coarse status; it does not print endpoint URLs, tokens, session IDs, prompts, event payloads, transcripts, or private reasoning.
+The adapter emits no normal logs. `relay-node hermes-smoke` prints only booleans, counts, and a coarse status; it does not print endpoint URLs, tokens, session IDs, prompts, event payloads, transcripts, or private reasoning. A gateway loss during its requested observation window is typed `gateway_lost` and exits nonzero rather than producing a successful smoke result.
 
 ## Local contract smoke
 
