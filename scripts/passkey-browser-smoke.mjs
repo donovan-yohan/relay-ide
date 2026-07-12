@@ -173,11 +173,25 @@ try {
     "a valueless unrelated Cookie segment must not invalidate a valid browser session",
   );
 
-  await evaluate(sessionId, "document.querySelector('#open-claude').click()");
+  await evaluate(
+    sessionId,
+    `window.relayOriginalTerminalCreateFetch = window.fetch; window.relayTerminalCreateRequests = 0; window.fetch = async (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, window.location.href); const method = init?.method ?? (typeof input === 'string' ? 'GET' : input.method); if (method === 'POST' && url.pathname === '/node/claude/sessions') { window.relayTerminalCreateRequests += 1; await new Promise((resolve) => setTimeout(resolve, 25)); } return window.relayOriginalTerminalCreateFetch(input, init); }; const open = document.querySelector('#open-claude'); open.click(); open.click();`,
+  );
   await waitFor(async () => {
     const status = await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent");
     return status?.includes("Relay-owned terminal · running");
   }, "Relay-owned Claude terminal render");
+  assert.equal(
+    await evaluate(sessionId, "window.relayTerminalCreateRequests"),
+    1,
+    "double-clicked terminal creation must serialize to one Relay-owned PTY",
+  );
+  assert.equal(
+    await evaluate(sessionId, "document.querySelector('#open-claude').disabled"),
+    true,
+    "a live terminal cannot overwrite its only opaque Session reference",
+  );
+  await evaluate(sessionId, "window.fetch = window.relayOriginalTerminalCreateFetch; delete window.relayOriginalTerminalCreateFetch; delete window.relayTerminalCreateRequests");
   const terminal = await evaluate(
     sessionId,
     `(() => {
@@ -246,6 +260,16 @@ try {
   await waitFor(
     async () => (await evaluate(sessionId, "document.querySelector('[data-layout-notice]')?.textContent"))?.includes("closed and reaped"),
     "explicit Relay close state",
+  );
+  assert.equal(
+    await evaluate(sessionId, "document.querySelector('#open-claude').disabled"),
+    false,
+    "explicit close must permit replacing the terminal Session reference",
+  );
+  await evaluate(sessionId, "document.querySelector('#open-claude').click()");
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('.pane[data-selected=\"true\"] .terminal-status')?.textContent"))?.includes("Relay-owned terminal · running"),
+    "replacement terminal before browser-session revocation",
   );
   assert.deepEqual(await evaluate(sessionId, "window.relayPageErrors"), [], "the terminal flow must not raise page errors");
 

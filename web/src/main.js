@@ -50,6 +50,8 @@ const sessionStatus = document.querySelector("#session-status");
 const trustedDevices = document.querySelector("#trusted-devices");
 let currentDeviceId = null;
 let terminalRuntime = null;
+let claudeCreateInFlight = false;
+const resolvedClaudeSessionIds = new Set();
 let state = loadLayout();
 let transientNotice = null;
 
@@ -168,7 +170,7 @@ function render() {
   }
 
   const activeClaudeSession = activeTab?.content.sessionId.startsWith("claude-pty-");
-  openClaude.disabled = state.nodeAvailability !== "available" || !currentDeviceId;
+  openClaude.disabled = !canOpenClaudeTerminal();
   interruptSession.disabled = !activeClaudeSession || !currentDeviceId;
   endSession.disabled = !activeClaudeSession || !currentDeviceId;
   sessionAuthority.textContent = sessionAuthorityMessage();
@@ -299,7 +301,9 @@ function renderLayoutNode(node) {
 }
 
 async function openClaudeTerminal() {
-  if (openClaude.disabled) return;
+  if (!canOpenClaudeTerminal()) return;
+  claudeCreateInFlight = true;
+  openClaude.disabled = true;
   try {
     const snapshot = await request("/node/claude/sessions", {
       method: "POST",
@@ -308,9 +312,10 @@ async function openClaudeTerminal() {
     });
     state = attachSessionToSelectedTab(state, snapshot.sessionId, "Claude terminal");
     persistLayout();
-    render();
   } catch (error) {
     transientNotice = { kind: "error", title: "Claude terminal", message: terminalErrorMessage(error) };
+  } finally {
+    claudeCreateInFlight = false;
     render();
   }
 }
@@ -339,6 +344,7 @@ async function closeClaudeTerminal() {
       headers: { "X-Relay-CSRF": csrfToken() },
       body: "{}",
     });
+    resolvedClaudeSessionIds.add(active.content.sessionId);
     disposeTerminal();
     transientNotice = { kind: "warning", title: "Claude terminal", message: "The Relay-owned process was closed and reaped. This tab keeps the closed Session reference for an honest reattach state." };
     render();
@@ -420,7 +426,12 @@ async function pollTerminal(runtime) {
     for (const chunk of snapshot.output) runtime.terminal.write(chunk.text);
     runtime.cursor = snapshot.nextCursor;
     runtime.status.textContent = `Relay-owned terminal · ${snapshot.status} · dropped chunks ${snapshot.droppedChunks}`;
-    if (["closed", "exited"].includes(snapshot.status)) return;
+    if (["closed", "exited"].includes(snapshot.status)) {
+      resolvedClaudeSessionIds.add(runtime.sessionId);
+      openClaude.disabled = !canOpenClaudeTerminal();
+      sessionAuthority.textContent = sessionAuthorityMessage();
+      return;
+    }
     runtime.timer = window.setTimeout(() => void pollTerminal(runtime), snapshot.hasMore ? 0 : 100);
   } catch (error) {
     if (terminalRuntime === runtime) {
@@ -434,6 +445,16 @@ async function pollTerminal(runtime) {
 
 function shouldRetryTerminalPoll(error) {
   return !error?.code || error.code === "pty_transport";
+}
+
+function canOpenClaudeTerminal() {
+  if (claudeCreateInFlight || state.nodeAvailability !== "available" || !currentDeviceId) return false;
+  const pane = selectedPane(state);
+  const active = pane.tabs.find((tab) => tab.id === pane.activeTabId);
+  const sessionId = active?.content.sessionId;
+  if (!sessionId?.startsWith("claude-pty-")) return true;
+  if (resolvedClaudeSessionIds.has(sessionId)) return true;
+  return sessionIds(state).filter((candidate) => candidate === sessionId).length > 1;
 }
 
 async function resizeTerminal(runtime) {
@@ -472,6 +493,17 @@ function sessionAuthorityMessage() {
   }
   if (!currentDeviceId) {
     return "Sign in with a passkey before requesting a Relay-owned Claude terminal. Browser authority gates the node runtime; it never exposes a process handle.";
+  }
+  if (claudeCreateInFlight) {
+    return "Relay is creating one node-owned PTY Session. Wait for that request to settle before opening another terminal.";
+  }
+  const pane = selectedPane(state);
+  const active = pane.tabs.find((tab) => tab.id === pane.activeTabId);
+  if (active?.content.sessionId.startsWith("claude-pty-") && !resolvedClaudeSessionIds.has(active.content.sessionId)) {
+    if (sessionIds(state).filter((candidate) => candidate === active.content.sessionId).length > 1) {
+      return "This tab mirrors a live Relay-owned terminal. Opening here preserves the existing Session reference in another tab.";
+    }
+    return "This tab already owns a live Relay terminal. End it explicitly or open a new tab before replacing this Session reference.";
   }
   return "The node is available. Open a Claude terminal to create one authenticated, node-owned PTY Session; layout changes remain presentation-only.";
 }

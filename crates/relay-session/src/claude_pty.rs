@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError, TrySendError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(all(unix, test))]
 use nix::{errno::Errno, sys::signal::kill};
@@ -243,7 +243,7 @@ impl NodePtyRuntime {
         if owner_device_id.is_empty() || owner_device_id.len() > 64 {
             return Err(ClaudePtyError::Forbidden);
         }
-        self.prune_closed();
+        self.prune_finished_sessions();
         if self.sessions.len() >= MAX_PTY_SESSIONS {
             return Err(ClaudePtyError::Capacity);
         }
@@ -462,9 +462,33 @@ impl NodePtyRuntime {
         Ok(session)
     }
 
-    fn prune_closed(&mut self) {
-        self.sessions
-            .retain(|_, session| session.status != ClaudePtyStatus::Closed);
+    /// Tear down terminal records that have already reached a terminal state
+    /// before they can consume another live-session slot. Keeping an exited
+    /// record until the next create lets a browser observe the terminal result,
+    /// while the next create deterministically releases its PTY resources.
+    fn prune_finished_sessions(&mut self) {
+        self.sessions.retain(|_, session| {
+            session.pump();
+            !matches!(
+                session.status,
+                ClaudePtyStatus::Closed | ClaudePtyStatus::Exited
+            )
+        });
+    }
+
+    /// Reap every PTY bound to a browser-device identity after that browser
+    /// session is revoked. The opaque browser session token never crosses the
+    /// auth boundary; this runtime only receives its already-authenticated
+    /// device identity.
+    pub fn close_owner_sessions(&mut self, owner_device_id: &str) {
+        self.sessions.retain(|_, session| {
+            if session.owner_device_id == owner_device_id {
+                session.close();
+                false
+            } else {
+                true
+            }
+        });
     }
 
     #[cfg(test)]
@@ -692,13 +716,7 @@ fn terminate_child(child: &mut Box<dyn Child + Send + Sync>, process_group: Opti
         // group kill guarantees Relay does not orphan descendants.
         let process_group = Pid::from_raw(process_group);
         let _ = killpg(process_group, Signal::SIGTERM);
-        let deadline = Instant::now() + PTY_TERMINATION_GRACE;
-        while Instant::now() < deadline {
-            if child.try_wait().ok().flatten().is_some() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
+        thread::sleep(PTY_TERMINATION_GRACE);
         let _ = killpg(process_group, Signal::SIGKILL);
     }
     let _ = child.kill();
@@ -965,6 +983,44 @@ mod tests {
         runtime.close(session.as_str(), "device-a").unwrap();
     }
 
+    #[test]
+    fn naturally_exited_sessions_do_not_exhaust_live_capacity() {
+        let mut runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "exit 0"]);
+
+        for _ in 0..(MAX_PTY_SESSIONS * 2) {
+            let session = runtime.create("device-a").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+                if snapshot.status == ClaudePtyStatus::Exited {
+                    break;
+                }
+                assert!(
+                    Instant::now() <= deadline,
+                    "short-lived PTY did not report terminal exit"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        let replacement = runtime.create("device-a").unwrap();
+        assert_eq!(runtime.sessions.len(), 1);
+        runtime.close(replacement.as_str(), "device-a").unwrap();
+    }
+
+    #[test]
+    fn revoking_an_owner_reaps_only_that_owners_pty_sessions() {
+        let mut runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "printf READY; cat"]);
+        let revoked = runtime.create("device-revoked").unwrap();
+        let retained = runtime.create("device-retained").unwrap();
+
+        runtime.close_owner_sessions("device-revoked");
+
+        assert!(!runtime.sessions.contains_key(revoked.as_str()));
+        assert!(runtime.sessions.contains_key(retained.as_str()));
+        runtime.close(retained.as_str(), "device-retained").unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn close_reaps_a_descendant_in_the_relay_owned_process_group() {
@@ -972,7 +1028,7 @@ mod tests {
             "/bin/sh",
             &[
                 "-c",
-                "sleep 30 & child=$!; printf 'CHILD:%s\\n' \"$child\"; wait \"$child\"",
+                "sh -c 'trap \"\" TERM; while :; do sleep 1; done' & child=$!; printf 'CHILD:%s\\n' \"$child\"; wait \"$child\"",
             ],
         );
         let session = runtime.create("device-a").unwrap();

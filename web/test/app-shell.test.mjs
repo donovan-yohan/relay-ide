@@ -35,6 +35,8 @@ test("the PWA shell combines passkey controls with a presentation-only Workspace
   assert.match(page, /src="\.\/vendor\/xterm\.js"/);
   assert.match(app, /new window\.Terminal/);
   assert.match(app, /\/node\/claude\/sessions/);
+  assert.match(app, /function canOpenClaudeTerminal/);
+  assert.match(app, /claudeCreateInFlight/);
   assert.match(app, /snapshot\.hasMore \? 0 : 100/);
   assert.match(auth, /recovery_required/);
   assert.doesNotMatch(app, /WebSocket|Authorization/);

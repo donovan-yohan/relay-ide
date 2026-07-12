@@ -360,7 +360,7 @@ fn route_request(
         ("POST", "/auth/passkeys/sign-in/options") => start_sign_in_response(request, auth),
         ("POST", "/auth/passkeys/sign-in/verify") => finish_sign_in_response(request, auth),
         ("GET", "/auth/sessions") => list_sessions_response(request, auth),
-        ("POST", "/auth/sessions/revoke") => revoke_session_response(request, auth),
+        ("POST", "/auth/sessions/revoke") => revoke_session_response(request, runtime),
         ("GET", "/protected/hub") => protected_hub_response(request, auth),
         (_, "/protected/node") => auth_error_response(403, "node_authority_required", &[]),
         ("POST", "/node/claude/sessions") => create_claude_session_response(request, runtime),
@@ -498,8 +498,15 @@ fn list_sessions_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
     }
 }
 
-fn revoke_session_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>) -> String {
-    let auth = match state_change_auth(request, auth) {
+fn revoke_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    // Serialize revocation against PTY creation. A request authenticated just
+    // before revocation must not create a new owner-bound process after the
+    // revoked owner's existing sessions have been reaped.
+    let mut pty = match runtime.pty.lock() {
+        Ok(pty) => pty,
+        Err(_) => return auth_error_response(500, "internal", &[]),
+    };
+    let auth = match state_change_auth(request, runtime.auth.as_deref()) {
         Ok(auth) => auth,
         Err(response) => return response,
     };
@@ -516,7 +523,10 @@ fn revoke_session_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary
         None => return auth_error_response(400, "invalid_request", &[]),
     };
     match auth.revoke_session(session, csrf, &device_id) {
-        Ok(()) => json_response(200, "{\"status\":\"revoked\"}", &[]),
+        Ok(()) => {
+            pty.close_owner_sessions(&device_id);
+            json_response(200, "{\"status\":\"revoked\"}", &[])
+        }
         Err(error) => auth_error_response(auth_error_status(&error), error.code(), &[]),
     }
 }
@@ -537,13 +547,13 @@ fn protected_hub_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
 }
 
 fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
-    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
-        Ok(owner) => owner,
-        Err(response) => return response,
-    };
     let mut pty = match runtime.pty.lock() {
         Ok(pty) => pty,
         Err(_) => return auth_error_response(500, "internal", &[]),
+    };
+    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
+        Ok(owner) => owner,
+        Err(response) => return response,
     };
     let session = match pty.create(&owner) {
         Ok(session) => session,
