@@ -15,6 +15,10 @@ const chromium = "/usr/bin/chromium";
 const recoveryCode = "browser-virtual-authenticator-recovery";
 const root = resolve("web/src");
 const publicRoot = resolve("web/public");
+const vendorFiles = new Map([
+  ["/vendor/xterm.js", resolve("node_modules/@xterm/xterm/lib/xterm.js")],
+  ["/vendor/xterm.css", resolve("node_modules/@xterm/xterm/css/xterm.css")],
+]);
 const scratch = await mkdtemp(`${tmpdir()}/relay-passkey-browser-`);
 const recoveryHash = createHash("sha256").update(recoveryCode).digest("hex");
 const httpsPort = await reservePort();
@@ -103,6 +107,10 @@ try {
   );
   await browser.command("Page.navigate", { url: `${origin}/` }, sessionId);
   await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
+  await evaluate(
+    sessionId,
+    "window.relayPageErrors = []; addEventListener('error', (event) => window.relayPageErrors.push(event.message)); addEventListener('unhandledrejection', (event) => window.relayPageErrors.push(String(event.reason)));",
+  );
 
   await evaluate(
     sessionId,
@@ -143,6 +151,10 @@ try {
 
   await evaluate(sessionId, "document.querySelector('#sign-in').click()");
   await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Passkey verified"));
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('#open-claude').disabled")) === false,
+    "authenticated Claude terminal affordance",
+  );
   assert.equal(
     await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
     200,
@@ -156,6 +168,69 @@ try {
     200,
     "a valueless unrelated Cookie segment must not invalidate a valid browser session",
   );
+
+  await evaluate(sessionId, "document.querySelector('#open-claude').click()");
+  await waitFor(async () => {
+    const status = await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent");
+    return status?.includes("Relay-owned terminal · running");
+  }, "Relay-owned Claude terminal render");
+  const terminal = await evaluate(
+    sessionId,
+    `(() => {
+      const sessionId = document.querySelector('.session-card code')?.textContent;
+      const csrf = document.cookie.split('; ').find((cookie) => cookie.startsWith('__Host-relay_csrf='))?.slice('__Host-relay_csrf='.length);
+      return { hasTerminal: Boolean(document.querySelector('.terminal-host .xterm')), sessionId, csrf };
+    })()`,
+  );
+  assert.equal(terminal.hasTerminal, true, "the workbench must render an interactive xterm surface");
+  assert.match(terminal.sessionId, /^claude-pty-\d+$/, "the browser receives only an opaque Relay Session ID");
+  assert.ok(terminal.csrf, "the browser keeps a CSRF token distinct from the HttpOnly session cookie");
+  await evaluate(sessionId, "document.querySelector('.xterm-helper-textarea').focus()");
+  await browser.command("Input.insertText", { text: "browser-keyboard\n" }, sessionId);
+  const terminalOperations = await evaluate(
+    sessionId,
+    `(async () => {
+      const sessionId = document.querySelector('.session-card code').textContent;
+      const csrf = document.cookie.split('; ').find((cookie) => cookie.startsWith('__Host-relay_csrf='))?.slice('__Host-relay_csrf='.length);
+      const post = (suffix, body) => fetch('/node/claude/sessions/' + sessionId + suffix, {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Relay-CSRF': csrf }, body: JSON.stringify(body),
+      }).then((response) => response.status);
+      const resize = await post('/resize', { cols: 92, rows: 28 });
+      let poll = { output: [] };
+      for (let attempt = 0; attempt < 25; attempt += 1) {
+        poll = await fetch('/node/claude/sessions/' + sessionId + '?cursor=0', { credentials: 'same-origin' }).then((response) => response.json());
+        if (poll.output.some((chunk) => chunk.text.includes('browser-keyboard'))) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      document.querySelector('[data-action="split"]').click();
+      const mirrored = [...document.querySelectorAll('.session-card code')].map((node) => node.textContent);
+      return { resize, poll, mirrored };
+    })()`,
+  );
+  assert.equal(terminalOperations.resize, 200, "the visible terminal must resize through the authenticated node boundary");
+  assert.ok(
+    terminalOperations.poll.output.some((chunk) => chunk.text.includes("browser-keyboard")),
+    "keyboard input through xterm must reach the Relay-owned PTY and return as terminal output",
+  );
+  assert.deepEqual(
+    terminalOperations.mirrored,
+    [terminal.sessionId, terminal.sessionId],
+    "split panes must retain one Session identity while the browser detaches and reattaches its terminal view",
+  );
+  await evaluate(sessionId, "document.querySelector('#interrupt-session').click()");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const interruptStatus = await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent");
+  assert.doesNotMatch(
+    interruptStatus,
+    /rejected|unavailable/i,
+    "browser interrupt must be accepted without turning Ctrl-C into implicit terminal close",
+  );
+  await evaluate(sessionId, "document.querySelector('#end-session').click()");
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('[data-layout-notice]')?.textContent"))?.includes("closed and reaped"),
+    "explicit Relay close state",
+  );
+  assert.deepEqual(await evaluate(sessionId, "window.relayPageErrors"), [], "the terminal flow must not raise page errors");
 
   const revokeStatuses = await evaluate(
     sessionId,
@@ -216,6 +291,8 @@ function startHub() {
       origin,
       "--recovery-code-hash",
       recoveryHash,
+      "--test-claude-fixture",
+      "cat",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -300,7 +377,7 @@ async function startProxy(hubPort) {
   const [key, cert] = await Promise.all([readFile(`${scratch}/key.pem`), readFile(`${scratch}/cert.pem`)]);
   const server = createHttpsServer({ key, cert }, (request, response) => {
     const path = new URL(request.url ?? "/", origin).pathname;
-    if (path.startsWith("/auth/") || path.startsWith("/protected/")) {
+    if (path === "/health" || path.startsWith("/auth/") || path.startsWith("/node/") || path.startsWith("/protected/")) {
       const upstream = httpRequest(
         {
           host: "127.0.0.1",
@@ -326,6 +403,20 @@ async function startProxy(hubPort) {
 }
 
 async function serveStatic(path, response) {
+  const vendor = vendorFiles.get(path);
+  if (vendor) {
+    try {
+      const content = await readFile(vendor);
+      response.writeHead(200, {
+        "Cache-Control": "no-store",
+        "Content-Type": contentType(extname(vendor)),
+      });
+      response.end(content);
+    } catch {
+      response.writeHead(404).end();
+    }
+    return;
+  }
   const relative = path === "/" ? "index.html" : path.slice(1);
   const base = relative === "manifest.webmanifest" ? publicRoot : root;
   const file = resolve(base, relative);

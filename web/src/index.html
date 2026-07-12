@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#111827" />
     <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./vendor/xterm.css" />
     <title>Relay workspace</title>
     <style>
       :root {
@@ -166,6 +167,16 @@
       }
 
       .session-note { color: #c5d1ed; font-size: 0.85rem; margin: 0; }
+      .terminal-status { color: #aab8d8; font-size: 0.78rem; margin: 0; }
+      .terminal-host {
+        background: #050914;
+        border: 1px solid #43537b;
+        border-radius: 0.45rem;
+        min-height: 18rem;
+        overflow: hidden;
+        padding: 0.35rem;
+      }
+      .terminal-host .xterm { height: 100%; }
       .identity-list { color: #c5d1ed; font-size: 0.85rem; margin: 1rem 0 0; }
       .authority { border-top: 1px solid #273553; margin-top: 1rem; padding-top: 1rem; }
       .authority p { color: #c5d1ed; font-size: 0.85rem; margin-bottom: 0.65rem; }
@@ -263,6 +274,7 @@
           </div>
 
           <div class="toolbar" role="toolbar" aria-label="Layout controls">
+            <button type="button" id="open-claude" disabled>Open Claude terminal</button>
             <button type="button" data-action="new-tab">New Session tab</button>
             <button type="button" data-action="split">Split pane</button>
             <button type="button" data-action="move">Move pane</button>
@@ -274,13 +286,15 @@
           <div class="layout" data-layout aria-label="Workspace layout"></div>
 
           <section class="authority" aria-label="Session authority boundary">
-            <p>Pane and tab changes only alter local presentation references. Session input and end actions require a separate Node/runtime authority and are not exposed by this layout slice.</p>
-            <button type="button" id="end-session" disabled aria-describedby="session-authority-note">End Session (Node authority required)</button>
+            <p>Pane and tab changes only alter local presentation references. A signed-in operator may open one Relay-owned Claude PTY; closing a pane detaches presentation while explicit close reaps the owned process.</p>
+            <button type="button" id="interrupt-session" disabled>Interrupt Claude terminal</button>
+            <button type="button" id="end-session" disabled aria-describedby="session-authority-note">Close Claude terminal</button>
             <p id="session-authority-note" class="session-note" data-session-authority></p>
           </section>
         </section>
       </div>
     </main>
+    <script src="./vendor/xterm.js"></script>
     <script type="module" src="./main.js"></script>
   </body>
 </html>

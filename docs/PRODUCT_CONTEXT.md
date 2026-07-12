@@ -20,13 +20,14 @@ Later issues may introduce these terms only with explicit ownership and storage 
 - The PWA shell renders liveness plus passkey enrollment, sign-in, typed unsupported/denied/recovery, and trusted-browser revoke controls.
 - The hub validates WebAuthn at one configured HTTPS origin, issues revocable browser sessions for protected hub actions, and denies browser sessions at the node boundary.
 - `relay-node codex-stdio-probe` owns a one-node, local `codex app-server --stdio` Session seam. Its explicit exercise mode creates, resumes, prompts, and cancels native Codex threads through bounded JSONL; it exposes neither a network transport nor raw provider transcripts.
+- The #1151 Claude terminal slice owns one bounded, local PTY per opaque Session. It launches only the fixed Claude Code executable in the explicit node-owner home, binds controls to an authenticated browser-device identity, and retains bounded output/scrollback. Browser layout storage retains only the opaque Session reference; explicit terminal routes own input, resize, interrupt, and close.
 
 ## Authority and data path
 
 The passkey client path is limited to server-side passkey ceremonies and browser-session revocation at the configured origin. Credentials, ceremonies, and session/device records are bounded in-memory state; no browser session becomes node authority.
 
-The node owns the child-process identity and lifecycle for the Codex stdio seam. The adapter bounds and redacts event previews and does not persist raw provider transcripts, credentials, approval grants, or thread data. The PWA's Workspace layout is presentation-only: split, move, tab, hide, close, reopen, and recovery mutations never launch, duplicate, input to, or end a Session. Node liveness is checked afresh through `/health`; an unavailable or unknown state disables live-session affordances without historical/local fallback.
+The node owns the child-process identity and lifecycle for the Codex stdio seam and the fixed Claude PTY seam. Neither adapter persists raw provider transcripts, credentials, approval grants, or thread data. The PWA's Workspace layout is presentation-only: split, move, tab, hide, close, reopen, and recovery mutations never launch, duplicate, input to, or end a Session. The separate authenticated Claude terminal route resolves the opaque browser-device identity server-side and is the sole control path. Node liveness is checked afresh through `/health`; an unavailable or unknown state disables live-session affordances without historical/local fallback.
 
 ## Deferred scope
 
-PTY/RMUX, Hermes, other provider adapters, mailbox, files, Session-control API wiring, browser-control grants, node credential rotation, cross-node behavior, approval-grant persistence, and legacy API compatibility remain deferred.
+RMUX, Hermes, other provider adapters, mailbox, files, generic Session-control APIs, browser-control grants, node credential rotation, cross-node behavior, approval-grant persistence, and legacy API compatibility remain deferred.

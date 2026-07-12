@@ -3,7 +3,7 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     process::ExitCode,
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -12,11 +12,17 @@ use relay_factory_core::{
     AuthBoundary, AuthError, AuthOrigin, EnrollmentAuthority, ServiceIdentity, configured_identity,
     health_http_response, health_json, not_found_http_response,
 };
+use relay_session::claude_pty::{ClaudePtyError, NodePtyRuntime, TerminalSnapshot};
 use serde_json::Value;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REQUEST_BYTES: usize = 65_536;
 const MAX_BODY_BYTES: usize = 48_000;
+
+struct HubRuntime {
+    auth: Option<Arc<AuthBoundary>>,
+    pty: Mutex<NodePtyRuntime>,
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -102,12 +108,24 @@ fn run() -> Result<(), RunError> {
 fn serve(arguments: &[String]) -> Result<(), RunError> {
     let options = ServeOptions::parse(arguments)?;
     let listener = TcpListener::bind(options.address).map_err(|_| RunError::Io)?;
+    #[cfg(debug_assertions)]
+    let pty = if options.test_claude_fixture {
+        NodePtyRuntime::test_fixture_cat()
+    } else {
+        NodePtyRuntime::default()
+    };
+    #[cfg(not(debug_assertions))]
+    let pty = NodePtyRuntime::default();
+    let runtime = Arc::new(HubRuntime {
+        auth: options.auth,
+        pty: Mutex::new(pty),
+    });
 
     println!(
         "relay-hub liveness listening on {}",
         listener.local_addr().map_err(|_| RunError::Io)?
     );
-    serve_connections_with_auth(options.identity, options.auth, || {
+    serve_connections(options.identity, runtime, || {
         listener.accept().map(|(stream, _)| stream)
     })
 }
@@ -116,6 +134,8 @@ struct ServeOptions {
     address: SocketAddr,
     identity: ServiceIdentity,
     auth: Option<Arc<AuthBoundary>>,
+    #[cfg(debug_assertions)]
+    test_claude_fixture: bool,
 }
 
 impl ServeOptions {
@@ -124,6 +144,8 @@ impl ServeOptions {
         let mut identity_arguments = None;
         let mut origin = None;
         let mut recovery_hash = None;
+        #[cfg(debug_assertions)]
+        let mut test_claude_fixture = false;
         let mut index = 0;
 
         while index < arguments.len() {
@@ -137,6 +159,19 @@ impl ServeOptions {
                 "--origin" if origin.is_none() => origin = Some(value.clone()),
                 "--recovery-code-hash" if recovery_hash.is_none() => {
                     recovery_hash = Some(value.clone());
+                }
+                "--test-claude-fixture" if value == "cat" => {
+                    #[cfg(debug_assertions)]
+                    {
+                        if test_claude_fixture {
+                            return Err(RunError::Usage);
+                        }
+                        test_claude_fixture = true;
+                    }
+                    #[cfg(not(debug_assertions))]
+                    {
+                        return Err(RunError::Usage);
+                    }
                 }
                 _ => return Err(RunError::Usage),
             }
@@ -166,13 +201,31 @@ impl ServeOptions {
             address,
             identity,
             auth,
+            #[cfg(debug_assertions)]
+            test_claude_fixture,
         })
     }
 }
 
+#[cfg(test)]
 fn serve_connections_with_auth(
     identity: ServiceIdentity,
     auth: Option<Arc<AuthBoundary>>,
+    accept: impl FnMut() -> io::Result<TcpStream>,
+) -> Result<(), RunError> {
+    serve_connections(
+        identity,
+        Arc::new(HubRuntime {
+            auth,
+            pty: Mutex::new(NodePtyRuntime::default()),
+        }),
+        accept,
+    )
+}
+
+fn serve_connections(
+    identity: ServiceIdentity,
+    runtime: Arc<HubRuntime>,
     mut accept: impl FnMut() -> io::Result<TcpStream>,
 ) -> Result<(), RunError> {
     loop {
@@ -183,10 +236,10 @@ fn serve_connections_with_auth(
                 return Err(RunError::Io);
             }
         };
-        let auth = auth.clone();
+        let runtime = Arc::clone(&runtime);
         thread::Builder::new()
             .spawn(move || {
-                if let Err(error) = handle_connection(stream, identity, auth.as_deref()) {
+                if let Err(error) = handle_connection(stream, identity, &runtime) {
                     eprintln!("relay-hub connection error: {error}");
                 }
             })
@@ -200,7 +253,7 @@ fn serve_connections_with_auth(
 fn handle_connection(
     mut stream: TcpStream,
     identity: ServiceIdentity,
-    auth: Option<&AuthBoundary>,
+    runtime: &HubRuntime,
 ) -> Result<(), ConnectionError> {
     stream
         .set_write_timeout(Some(CONNECTION_TIMEOUT))
@@ -208,7 +261,7 @@ fn handle_connection(
     let mut request = [0_u8; MAX_REQUEST_BYTES];
     let response = match read_request(&mut stream, &mut request) {
         Ok(length) => HttpRequest::parse(&request[..length])
-            .map(|request| route_request(&request, identity, auth))
+            .map(|request| route_request(&request, identity, runtime))
             .unwrap_or_else(not_found_http_response),
         Err(RequestReadError::TooLarge) => not_found_http_response(),
         Err(error) => return Err(ConnectionError::Request(error)),
@@ -222,6 +275,7 @@ fn handle_connection(
 struct HttpRequest<'a> {
     method: &'a str,
     path: &'a str,
+    query: Option<&'a str>,
     headers: Vec<(&'a str, &'a str)>,
     body: &'a str,
 }
@@ -234,10 +288,13 @@ impl<'a> HttpRequest<'a> {
         let request_line = lines.next()?;
         let mut request_parts = request_line.split_ascii_whitespace();
         let method = request_parts.next()?;
-        let path = request_parts.next()?;
-        if request_parts.next()? != "HTTP/1.1" || path.len() > 256 {
+        let target = request_parts.next()?;
+        if request_parts.next()? != "HTTP/1.1" || target.len() > 256 {
             return None;
         }
+        let (path, query) = target
+            .split_once('?')
+            .map_or((target, None), |(path, query)| (path, Some(query)));
         let mut headers = Vec::new();
         for line in lines {
             let (name, value) = line.split_once(':')?;
@@ -249,6 +306,7 @@ impl<'a> HttpRequest<'a> {
         Some(Self {
             method,
             path,
+            query,
             headers,
             body,
         })
@@ -292,8 +350,9 @@ impl<'a> HttpRequest<'a> {
 fn route_request(
     request: &HttpRequest<'_>,
     identity: ServiceIdentity,
-    auth: Option<&AuthBoundary>,
+    runtime: &HubRuntime,
 ) -> String {
+    let auth = runtime.auth.as_deref();
     match (request.method, request.path) {
         ("GET", "/health") => health_http_response(identity),
         ("POST", "/auth/passkeys/enroll/options") => start_enrollment_response(request, auth),
@@ -304,6 +363,22 @@ fn route_request(
         ("POST", "/auth/sessions/revoke") => revoke_session_response(request, auth),
         ("GET", "/protected/hub") => protected_hub_response(request, auth),
         (_, "/protected/node") => auth_error_response(403, "node_authority_required", &[]),
+        ("POST", "/node/claude/sessions") => create_claude_session_response(request, runtime),
+        ("GET", path) if claude_session_id(path, "").is_some() => {
+            poll_claude_session_response(request, runtime)
+        }
+        ("POST", path) if claude_session_id(path, "/input").is_some() => {
+            input_claude_session_response(request, runtime)
+        }
+        ("POST", path) if claude_session_id(path, "/resize").is_some() => {
+            resize_claude_session_response(request, runtime)
+        }
+        ("POST", path) if claude_session_id(path, "/interrupt").is_some() => {
+            interrupt_claude_session_response(request, runtime)
+        }
+        ("POST", path) if claude_session_id(path, "/close").is_some() => {
+            close_claude_session_response(request, runtime)
+        }
         _ => not_found_http_response(),
     }
 }
@@ -461,6 +536,225 @@ fn protected_hub_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
     }
 }
 
+fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
+    let mut pty = match runtime.pty.lock() {
+        Ok(pty) => pty,
+        Err(_) => return auth_error_response(500, "internal", &[]),
+    };
+    let session = match pty.create(&owner) {
+        Ok(session) => session,
+        Err(error) => return claude_pty_error_response(error),
+    };
+    match pty.poll(session.as_str(), &owner, 0) {
+        Ok(snapshot) => terminal_snapshot_response(snapshot),
+        Err(error) => claude_pty_error_response(error),
+    }
+}
+
+fn poll_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let owner = match terminal_owner(request, runtime.auth.as_deref(), false) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
+    let session_id = match claude_session_id(request.path, "") {
+        Some(session_id) => session_id,
+        None => return not_found_http_response(),
+    };
+    let cursor = match terminal_cursor(request.query) {
+        Some(cursor) => cursor,
+        None => return auth_error_response(400, "invalid_request", &[]),
+    };
+    match runtime
+        .pty
+        .lock()
+        .map_err(|_| ClaudePtyError::Transport)
+        .and_then(|mut pty| pty.poll(session_id, &owner, cursor))
+    {
+        Ok(snapshot) => terminal_snapshot_response(snapshot),
+        Err(error) => claude_pty_error_response(error),
+    }
+}
+
+fn input_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
+    let session_id = match claude_session_id(request.path, "/input") {
+        Some(session_id) => session_id,
+        None => return not_found_http_response(),
+    };
+    let data = match terminal_input(request.body) {
+        Some(data) => data,
+        None => return auth_error_response(400, "invalid_request", &[]),
+    };
+    match runtime
+        .pty
+        .lock()
+        .map_err(|_| ClaudePtyError::Transport)
+        .and_then(|mut pty| pty.input(session_id, &owner, &data))
+    {
+        Ok(()) => json_response(200, "{\"status\":\"accepted\"}", &[]),
+        Err(error) => claude_pty_error_response(error),
+    }
+}
+
+fn resize_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
+    let session_id = match claude_session_id(request.path, "/resize") {
+        Some(session_id) => session_id,
+        None => return not_found_http_response(),
+    };
+    let (cols, rows) = match terminal_size(request.body) {
+        Some(size) => size,
+        None => return auth_error_response(400, "invalid_request", &[]),
+    };
+    match runtime
+        .pty
+        .lock()
+        .map_err(|_| ClaudePtyError::Transport)
+        .and_then(|mut pty| pty.resize(session_id, &owner, cols, rows))
+    {
+        Ok(()) => json_response(200, "{\"status\":\"accepted\"}", &[]),
+        Err(error) => claude_pty_error_response(error),
+    }
+}
+
+fn interrupt_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
+    let session_id = match claude_session_id(request.path, "/interrupt") {
+        Some(session_id) => session_id,
+        None => return not_found_http_response(),
+    };
+    match runtime
+        .pty
+        .lock()
+        .map_err(|_| ClaudePtyError::Transport)
+        .and_then(|mut pty| pty.interrupt(session_id, &owner))
+    {
+        Ok(()) => json_response(200, "{\"status\":\"interrupted\"}", &[]),
+        Err(error) => claude_pty_error_response(error),
+    }
+}
+
+fn close_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
+    let session_id = match claude_session_id(request.path, "/close") {
+        Some(session_id) => session_id,
+        None => return not_found_http_response(),
+    };
+    match runtime
+        .pty
+        .lock()
+        .map_err(|_| ClaudePtyError::Transport)
+        .and_then(|mut pty| pty.close(session_id, &owner))
+    {
+        Ok(snapshot) => terminal_snapshot_response(snapshot),
+        Err(error) => claude_pty_error_response(error),
+    }
+}
+
+fn terminal_owner(
+    request: &HttpRequest<'_>,
+    auth: Option<&AuthBoundary>,
+    state_change: bool,
+) -> Result<String, String> {
+    let auth = if state_change {
+        state_change_auth(request, auth)?
+    } else {
+        auth.ok_or_else(|| auth_error_response(404, "auth_unavailable", &[]))?
+    };
+    let session = request
+        .cookie("__Host-relay_session")
+        .ok_or_else(|| auth_error_response(401, "session_missing", &[]))?;
+    if state_change {
+        let csrf = request
+            .header("x-relay-csrf")
+            .ok_or_else(|| auth_error_response(403, "csrf_denied", &[]))?;
+        auth.require_csrf(session, csrf)
+            .map_err(|error| auth_error_response(auth_error_status(&error), error.code(), &[]))?;
+    }
+    auth.current_device_id(session)
+        .map_err(|error| auth_error_response(auth_error_status(&error), error.code(), &[]))
+}
+
+fn claude_session_id<'a>(path: &'a str, suffix: &str) -> Option<&'a str> {
+    let session_id = path
+        .strip_prefix("/node/claude/sessions/")?
+        .strip_suffix(suffix)?;
+    if session_id.is_empty()
+        || session_id.len() > 64
+        || !session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return None;
+    }
+    Some(session_id)
+}
+
+fn terminal_cursor(query: Option<&str>) -> Option<u64> {
+    match query {
+        None => Some(0),
+        Some(query) => query.strip_prefix("cursor=")?.parse().ok(),
+    }
+}
+
+fn terminal_input(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    value.get("data")?.as_str().map(str::to_owned)
+}
+
+fn terminal_size(body: &str) -> Option<(u16, u16)> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    let cols = u16::try_from(value.get("cols")?.as_u64()?).ok()?;
+    let rows = u16::try_from(value.get("rows")?.as_u64()?).ok()?;
+    Some((cols, rows))
+}
+
+fn terminal_snapshot_response(snapshot: TerminalSnapshot) -> String {
+    let output = snapshot
+        .output
+        .into_iter()
+        .map(|chunk| serde_json::json!({ "sequence": chunk.sequence, "text": chunk.text }))
+        .collect::<Vec<_>>();
+    match serde_json::to_string(&serde_json::json!({
+        "sessionId": snapshot.session_id.as_str(),
+        "status": snapshot.status.code(),
+        "output": output,
+        "nextCursor": snapshot.next_cursor,
+        "hasMore": snapshot.has_more,
+        "truncated": snapshot.truncated,
+        "droppedChunks": snapshot.dropped_chunks,
+    })) {
+        Ok(body) => json_response(200, &body, &[]),
+        Err(_) => auth_error_response(500, "internal", &[]),
+    }
+}
+
+fn claude_pty_error_response(error: ClaudePtyError) -> String {
+    let status = match error {
+        ClaudePtyError::Forbidden => 403,
+        ClaudePtyError::InvalidInput | ClaudePtyError::InvalidResize => 400,
+        ClaudePtyError::Capacity | ClaudePtyError::StaleHandle => 409,
+        ClaudePtyError::Unavailable | ClaudePtyError::Transport => 503,
+    };
+    auth_error_response(status, error.code(), &[])
+}
+
 fn state_change_auth<'a>(
     request: &HttpRequest<'_>,
     auth: Option<&'a AuthBoundary>,
@@ -604,6 +898,8 @@ fn json_response(status: u16, body: &str, extra_headers: &[String]) -> String {
         401 => "401 Unauthorized",
         403 => "403 Forbidden",
         404 => "404 Not Found",
+        409 => "409 Conflict",
+        503 => "503 Service Unavailable",
         _ => "500 Internal Server Error",
     };
     let mut headers = vec![

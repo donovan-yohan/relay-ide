@@ -15,4 +15,4 @@ Malformed, unsupported-version, invalid/cap-exceeding, and overlong saved trees 
 
 ## Consequences
 
-The PWA can prove stable Session identity before and after layout changes without creating a Session API, terminal implementation, file browser, cross-node Workspace, provider adapter, or browser-control surface. A later accepted Session-control issue must add its own Node-bound authority contract; it must not reuse the layout persistence path as a capability channel.
+The PWA can prove stable Session identity before and after layout changes without making layout persistence a capability channel. #1151 later adds a separate, authenticated node-bound Claude PTY control route; it resolves the opaque Session reference server-side and keeps input, resize, interrupt, and explicit close outside this layout model. File browser, cross-node Workspace, generic provider adapters, and browser-control surfaces remain outside this ADR.

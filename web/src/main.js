@@ -21,9 +21,10 @@ import {
   setNodeAvailability,
   splitSelectedPane,
   toggleSelectedTabStrip,
+  attachSessionToSelectedTab,
 } from "./workspace-layout.js";
 
-const HEALTH_URL = "http://127.0.0.1:8787/health";
+const HEALTH_URL = "/health";
 const STORAGE_KEY = "relay-factory/workspace-layout/v1";
 const nodeStatus = document.querySelector("#status");
 const workspaceName = document.querySelector("[data-workspace-name]");
@@ -41,9 +42,13 @@ const enrollPasskey = document.querySelector("#enroll-passkey");
 const signIn = document.querySelector("#sign-in");
 const refreshSessions = document.querySelector("#refresh-sessions");
 const revokeCurrent = document.querySelector("#revoke-current");
+const openClaude = document.querySelector("#open-claude");
+const interruptSession = document.querySelector("#interrupt-session");
+const endSession = document.querySelector("#end-session");
 const sessionStatus = document.querySelector("#session-status");
 const trustedDevices = document.querySelector("#trusted-devices");
 let currentDeviceId = null;
+let terminalRuntime = null;
 let state = loadLayout();
 let transientNotice = null;
 
@@ -63,6 +68,10 @@ layoutRoot.addEventListener("click", (event) => {
     apply(() => ({ ...state, selectedPaneId: pane.dataset.selectPane }));
   }
 });
+
+openClaude.addEventListener("click", () => void openClaudeTerminal());
+interruptSession.addEventListener("click", () => void interruptClaudeTerminal());
+endSession.addEventListener("click", () => void closeClaudeTerminal());
 
 function loadLayout() {
   try {
@@ -134,6 +143,7 @@ async function refreshNodeAvailability() {
 function render() {
   const metrics = layoutMetrics(state);
   const activePane = selectedPane(state);
+  const activeTab = activePane.tabs.find((tab) => tab.id === activePane.activeTabId);
 
   workspaceName.textContent = state.workspace.name;
   nodeBinding.textContent = `${state.workspace.node.label} · ${state.workspace.node.id}`;
@@ -144,6 +154,7 @@ function render() {
   renderNodeStatus();
   renderNotice();
   renderSessionIdentity();
+  disposeTerminal();
   renderLayout(state.layout, layoutRoot);
 
   for (const button of document.querySelectorAll("[data-action]")) {
@@ -155,6 +166,10 @@ function render() {
       (action === "close" && metrics.paneCount === 1 && activePane.tabs.length === 1);
   }
 
+  const activeClaudeSession = activeTab?.content.sessionId.startsWith("claude-pty-");
+  openClaude.disabled = state.nodeAvailability !== "available" || !currentDeviceId;
+  interruptSession.disabled = !activeClaudeSession || !currentDeviceId;
+  endSession.disabled = !activeClaudeSession || !currentDeviceId;
   sessionAuthority.textContent = sessionAuthorityMessage();
 }
 
@@ -259,15 +274,182 @@ function renderLayoutNode(node) {
   session.append(
     textElement("p", "Session reference", "meta-label"),
     textElement("code", activeTab.content.sessionId),
-    textElement(
+  );
+  if (activeTab.content.sessionId.startsWith("claude-pty-")) {
+    const status = textElement("p", "Attaching Relay-owned Claude terminal…", "terminal-status");
+    const host = document.createElement("div");
+    host.className = "terminal-host";
+    session.append(
+      status,
+      host,
+      textElement("p", "Pane moves and close detach this browser view; only the explicit terminal close reaps the node-owned process.", "session-note"),
+    );
+    if (node.id === state.selectedPaneId) mountTerminal(activeTab.content.sessionId, host, status);
+  } else {
+    session.append(textElement(
       "p",
       "This tab references the same opaque Session ID. Layout actions do not start, duplicate, input to, or end it.",
       "session-note",
-    ),
-  );
+    ));
+  }
   pane.append(session);
 
   return pane;
+}
+
+async function openClaudeTerminal() {
+  if (openClaude.disabled) return;
+  try {
+    const snapshot = await request("/node/claude/sessions", {
+      method: "POST",
+      headers: { "X-Relay-CSRF": csrfToken() },
+      body: "{}",
+    });
+    state = attachSessionToSelectedTab(state, snapshot.sessionId, "Claude terminal");
+    persistLayout();
+    render();
+  } catch (error) {
+    transientNotice = { kind: "error", title: "Claude terminal", message: terminalErrorMessage(error) };
+    render();
+  }
+}
+
+async function interruptClaudeTerminal() {
+  const active = selectedPane(state).tabs.find((tab) => tab.id === selectedPane(state).activeTabId);
+  if (!active?.content.sessionId.startsWith("claude-pty-")) return;
+  try {
+    await request(`/node/claude/sessions/${active.content.sessionId}/interrupt`, {
+      method: "POST",
+      headers: { "X-Relay-CSRF": csrfToken() },
+      body: "{}",
+    });
+  } catch (error) {
+    transientNotice = { kind: "error", title: "Claude terminal", message: terminalErrorMessage(error) };
+    render();
+  }
+}
+
+async function closeClaudeTerminal() {
+  const active = selectedPane(state).tabs.find((tab) => tab.id === selectedPane(state).activeTabId);
+  if (!active?.content.sessionId.startsWith("claude-pty-")) return;
+  try {
+    await request(`/node/claude/sessions/${active.content.sessionId}/close`, {
+      method: "POST",
+      headers: { "X-Relay-CSRF": csrfToken() },
+      body: "{}",
+    });
+    disposeTerminal();
+    transientNotice = { kind: "warning", title: "Claude terminal", message: "The Relay-owned process was closed and reaped. This tab keeps the closed Session reference for an honest reattach state." };
+    render();
+  } catch (error) {
+    transientNotice = { kind: "error", title: "Claude terminal", message: terminalErrorMessage(error) };
+    render();
+  }
+}
+
+function mountTerminal(sessionId, host, status) {
+  const terminal = new window.Terminal({
+    cols: 120,
+    rows: 36,
+    cursorBlink: true,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    fontSize: 13,
+    scrollback: 2_000,
+    theme: { background: "#050914", foreground: "#edf2ff", cursor: "#82aaff" },
+  });
+  terminal.open(host);
+  terminal.focus();
+  const runtime = {
+    sessionId,
+    terminal,
+    status,
+    host,
+    cursor: 0,
+    timer: null,
+    resizeTimer: null,
+    resizeObserver: null,
+    inputSubscription: null,
+    cols: 0,
+    rows: 0,
+  };
+  terminalRuntime = runtime;
+  runtime.inputSubscription = terminal.onData((data) => void sendTerminalInput(runtime, data));
+  if (typeof ResizeObserver === "function") {
+    runtime.resizeObserver = new ResizeObserver(() => {
+      if (runtime.resizeTimer !== null) return;
+      runtime.resizeTimer = window.setTimeout(() => {
+        runtime.resizeTimer = null;
+        void resizeTerminal(runtime);
+      }, 50);
+    });
+    runtime.resizeObserver.observe(host);
+  }
+  void resizeTerminal(runtime);
+  void pollTerminal(runtime);
+}
+
+function disposeTerminal() {
+  if (!terminalRuntime) return;
+  clearTimeout(terminalRuntime.timer);
+  clearTimeout(terminalRuntime.resizeTimer);
+  terminalRuntime.resizeObserver?.disconnect();
+  terminalRuntime.inputSubscription?.dispose();
+  terminalRuntime.terminal.dispose();
+  terminalRuntime = null;
+}
+
+async function pollTerminal(runtime) {
+  try {
+    const snapshot = await request(`/node/claude/sessions/${runtime.sessionId}?cursor=${runtime.cursor}`);
+    if (terminalRuntime !== runtime) return;
+    if (snapshot.truncated) runtime.terminal.writeln("\r\n[Relay: earlier terminal output was truncated]\r\n");
+    for (const chunk of snapshot.output) runtime.terminal.write(chunk.text);
+    runtime.cursor = snapshot.nextCursor;
+    runtime.status.textContent = `Relay-owned terminal · ${snapshot.status} · dropped chunks ${snapshot.droppedChunks}`;
+    if (["closed", "exited"].includes(snapshot.status)) return;
+    runtime.timer = window.setTimeout(() => void pollTerminal(runtime), snapshot.hasMore ? 0 : 100);
+  } catch (error) {
+    if (terminalRuntime === runtime) runtime.status.textContent = `Terminal unavailable: ${terminalErrorMessage(error)}`;
+  }
+}
+
+async function sendTerminalInput(runtime, data) {
+  if (terminalRuntime !== runtime || !data) return;
+  try {
+    await request(`/node/claude/sessions/${runtime.sessionId}/input`, {
+      method: "POST",
+      headers: { "X-Relay-CSRF": csrfToken() },
+      body: JSON.stringify({ data }),
+    });
+  } catch (error) {
+    if (terminalRuntime === runtime) runtime.status.textContent = `Input rejected: ${terminalErrorMessage(error)}`;
+  }
+}
+
+async function resizeTerminal(runtime) {
+  if (terminalRuntime !== runtime) return;
+  const cols = Math.max(20, Math.min(500, Math.floor(runtime.host.clientWidth / 8.2) || 120));
+  const rows = Math.max(4, Math.min(300, Math.floor(runtime.host.clientHeight / 16) || 36));
+  if (runtime.cols === cols && runtime.rows === rows) return;
+  runtime.cols = cols;
+  runtime.rows = rows;
+  runtime.terminal.resize(cols, rows);
+  try {
+    await request(`/node/claude/sessions/${runtime.sessionId}/resize`, {
+      method: "POST",
+      headers: { "X-Relay-CSRF": csrfToken() },
+      body: JSON.stringify({ cols, rows }),
+    });
+  } catch (error) {
+    if (terminalRuntime === runtime) runtime.status.textContent = `Resize rejected: ${terminalErrorMessage(error)}`;
+  }
+}
+
+function terminalErrorMessage(error) {
+  const code = error?.code;
+  if (code === "stale_session") return "This Session belongs to a prior node runtime. Open a new terminal explicitly.";
+  if (code === "claude_unavailable") return "Claude Code could not start in the node-owner context.";
+  return presentationForAuthError(error).message;
 }
 
 function sessionAuthorityMessage() {
@@ -277,7 +459,10 @@ function sessionAuthorityMessage() {
   if (state.nodeAvailability === "unknown") {
     return "Node status is unknown: live Session actions stay disabled until the one-node liveness check completes.";
   }
-  return "The one-node liveness check passed. This presentation surface still has no Session control endpoint.";
+  if (!currentDeviceId) {
+    return "Sign in with a passkey before requesting a Relay-owned Claude terminal. Browser authority gates the node runtime; it never exposes a process handle.";
+  }
+  return "The node is available. Open a Claude terminal to create one authenticated, node-owned PTY Session; layout changes remain presentation-only.";
 }
 
 function textElement(tag, text, className) {
@@ -357,11 +542,14 @@ async function refreshTrustedDevices() {
     sessionStatus.textContent = currentDeviceId
       ? `${response.sessions.length} trusted browser session(s).`
       : "No active browser session.";
+    render();
   } catch (error) {
+    currentDeviceId = null;
     const presentation = presentationForAuthError(error);
     sessionStatus.textContent = presentation.code === "unsupported" ? "No active browser session." : presentation.message;
     revokeCurrent.disabled = true;
     trustedDevices.replaceChildren();
+    render();
   }
 }
 
@@ -399,6 +587,7 @@ async function revokeSession(deviceId) {
       revokeCurrent.disabled = true;
       trustedDevices.replaceChildren();
       sessionStatus.textContent = "This browser session was revoked. Protected hub calls now fail closed.";
+      render();
     } else {
       await refreshTrustedDevices();
     }

@@ -1,6 +1,12 @@
-use std::{env, process::ExitCode};
+use std::{
+    env,
+    process::ExitCode,
+    thread,
+    time::{Duration, Instant},
+};
 
 use relay_factory_core::{ServiceIdentity, configured_identity, health_json};
+use relay_session::claude_pty::{ClaudePtyStatus, NodePtyRuntime};
 use relay_session::{
     DEFAULT_DEADLINE, ProcessTransport, SessionError, Supervisor,
     codex::{assert_local_stdio_only, codex_command_args},
@@ -25,13 +31,58 @@ fn main() -> ExitCode {
         [command, probe_arguments @ ..] if command == "codex-stdio-probe" => {
             codex_stdio_probe(probe_arguments)
         }
+        [command] if command == "claude-pty-probe" => claude_pty_probe(),
         _ => {
             eprintln!(
-                "usage: relay-node <probe [--identity node]|codex-stdio-probe [--negative-transport|--handshake|--exercise]>"
+                "usage: relay-node <probe [--identity node]|codex-stdio-probe [--negative-transport|--handshake|--exercise]|claude-pty-probe>"
             );
             ExitCode::from(64)
         }
     }
+}
+
+/// Opt-in owner-context smoke for the fixed Claude PTY runtime. The probe
+/// deliberately emits lifecycle facts only: never terminal bytes, OAuth data,
+/// or a Session handle.
+fn claude_pty_probe() -> ExitCode {
+    let mut runtime = NodePtyRuntime::default();
+    let session = match runtime.create("relay-node-probe") {
+        Ok(session) => session,
+        Err(error) => return claude_pty_probe_error(error.code()),
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        match runtime.poll(session.as_str(), "relay-node-probe", 0) {
+            Ok(snapshot) if snapshot.status != ClaudePtyStatus::Starting => break snapshot.status,
+            Ok(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
+            Ok(_) => {
+                let _ = runtime.close(session.as_str(), "relay-node-probe");
+                return claude_pty_probe_error("startup_timeout");
+            }
+            Err(error) => return claude_pty_probe_error(error.code()),
+        }
+    };
+    let resize = runtime.resize(session.as_str(), "relay-node-probe", 100, 40);
+    let interrupt = runtime.interrupt(session.as_str(), "relay-node-probe");
+    let close = runtime.close(session.as_str(), "relay-node-probe");
+    match (resize, interrupt, close) {
+        (Ok(()), Ok(()), Ok(closed)) if closed.status == ClaudePtyStatus::Closed => {
+            println!(
+                r#"{{"adapter":"claude-pty","operations":["spawn","resize","interrupt","close"],"ownerHome":"/home/donovanyohan","startup":"{}","status":"ok"}}"#,
+                status.code()
+            );
+            ExitCode::SUCCESS
+        }
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+            claude_pty_probe_error(error.code())
+        }
+        _ => claude_pty_probe_error("close_failed"),
+    }
+}
+
+fn claude_pty_probe_error(code: &str) -> ExitCode {
+    eprintln!("{{\"error\":{{\"code\":\"{code}\"}}}}");
+    ExitCode::FAILURE
 }
 
 /// An executable guard that proves the adapter only constructs local stdio

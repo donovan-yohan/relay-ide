@@ -1,17 +1,33 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { extname, resolve, sep } from "node:path";
 
 const root = resolve("web/dist");
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
+  [".css", "text/css; charset=utf-8"],
   [".webmanifest", "application/manifest+json"],
 ]);
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (["/health", "/auth/", "/node/", "/protected/"].some((prefix) => url.pathname === prefix || url.pathname.startsWith(prefix))) {
+    const upstream = httpRequest({
+      host: "127.0.0.1",
+      port: 8787,
+      method: request.method,
+      path: `${url.pathname}${url.search}`,
+      headers: { ...request.headers, host: "127.0.0.1:8787" },
+    }, (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+      upstreamResponse.pipe(response);
+    });
+    upstream.on("error", () => response.writeHead(502).end());
+    request.pipe(upstream);
+    return;
+  }
   const relativePath = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
   const file = resolve(root, relativePath);
 

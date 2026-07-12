@@ -282,6 +282,22 @@ impl AuthBoundary {
         }
     }
 
+    /// Return the opaque authenticated-browser identity for a live session.
+    ///
+    /// Node-owned Session handles bind to this value rather than accepting a
+    /// browser-supplied owner field. The raw browser session token remains
+    /// confined to this authentication boundary.
+    pub fn current_device_id(&self, session_token: &str) -> Result<String, AuthError> {
+        let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.discard_expired(Instant::now());
+        let key = hash_secret(session_token.as_bytes());
+        state
+            .sessions
+            .get(&key)
+            .map(|session| session.device_id.clone())
+            .ok_or(AuthError::SessionMissing)
+    }
+
     pub fn require_csrf(&self, session_token: &str, csrf_token: &str) -> Result<(), AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
         state.discard_expired(Instant::now());

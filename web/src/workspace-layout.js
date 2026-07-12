@@ -63,6 +63,19 @@ export function addSessionTab(state) {
   }), pane.id);
 }
 
+// Session lifecycle remains outside this presentation model. The caller has
+// already created or reattached a node-owned opaque Session and only records
+// that reference on the currently selected tab.
+export function attachSessionToSelectedTab(state, sessionId, title = "Claude terminal") {
+  assertText(sessionId, "Session reference", MAX_SESSION_REFERENCE_LENGTH);
+  assertText(title, "tab title");
+  const pane = selectedPane(state);
+  const tabs = pane.tabs.map((tab) => (
+    tab.id === pane.activeTabId ? { ...tab, title, content: { kind: "session", sessionId } } : tab
+  ));
+  return withLayout(state, replacePane(state.layout, pane.id, { ...pane, tabs }), pane.id);
+}
+
 export function selectTab(state, paneId, tabId) {
   const pane = findPane(state.layout, paneId);
   if (!pane || !pane.tabs.some((tab) => tab.id === tabId)) {
