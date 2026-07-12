@@ -1,8 +1,10 @@
 //! Bounded JSONL framing for the Codex app-server stdio transport.
 //!
 //! The Codex `app-server --stdio` transport speaks newline-delimited JSON
-//! (JSONL): exactly one JSON-RPC object per `\n`-terminated stdout line. A
-//! bounded frame is classified as a response, notification, or server request.
+//! (JSONL): exactly one bounded object per `\n`-terminated stdout line. Codex
+//! 0.144.1 omits `jsonrpc` from its response and notification envelopes, while
+//! server requests retain the JSON-RPC 2.0 marker. A bounded frame is
+//! classified as a response, notification, or server request.
 //! The parser retains only a method, JSON-RPC id, two non-secret result handles,
 //! and a bounded redacted preview. It never retains raw provider payloads.
 
@@ -116,17 +118,32 @@ pub fn scan_line(line: &[u8]) -> Result<Frame, ScanError> {
     };
     let has_result = object.contains_key("result");
     let has_error = object.contains_key("error");
+    let error_is_structured = object.get("error").is_none_or(Value::is_object);
     let params = object.get("params");
     let has_params = params.is_some();
     let params_are_structured = params.is_none_or(|params| params.is_object() || params.is_array());
     let json_rpc_2 =
         matches!(object.get("jsonrpc"), Some(Value::String(version)) if version == "2.0");
+    let codex_envelope = object.get("jsonrpc").is_none() || json_rpc_2;
     let class = match (&method, &id) {
         (Some(_), Some(_)) if json_rpc_2 && !has_result && !has_error && params_are_structured => {
             FrameClass::ServerRequest
         }
-        (Some(_), None) if !has_result && !has_error => FrameClass::Notification,
-        (None, Some(_)) if json_rpc_2 && (has_result != has_error) => {
+        (Some(_), None)
+            if codex_envelope
+                && !has_result
+                && !has_error
+                && has_params
+                && params_are_structured =>
+        {
+            FrameClass::Notification
+        }
+        (None, Some(_))
+            if codex_envelope
+                && !has_params
+                && error_is_structured
+                && (has_result != has_error) =>
+        {
             FrameClass::Response { ok: has_result }
         }
         _ => return Err(ScanError::Malformed),
@@ -422,6 +439,32 @@ mod tests {
     }
 
     #[test]
+    fn classifies_observed_codex_response_without_jsonrpc() {
+        let frame = scan_line(
+            br#"{"id":1,"result":{"userAgent":"relay-node/0.144.1","platformFamily":"unix"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(frame.class, FrameClass::Response { ok: true });
+        assert_eq!(frame.id.as_deref(), Some("1"));
+
+        let error = scan_line(br#"{"id":2,"error":{"code":-32600}}"#).unwrap();
+        assert_eq!(error.class, FrameClass::Response { ok: false });
+        assert_eq!(error.id.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn rejects_incomplete_or_malformed_codex_notifications() {
+        for line in [
+            br#"{"method":"thread/started"}"# as &[u8],
+            br#"{"method":"thread/started","params":"not-structured"}"#,
+            br#"{"jsonrpc":"1.0","method":"thread/started","params":{}}"#,
+        ] {
+            assert_eq!(scan_line(line), Err(ScanError::Malformed));
+        }
+    }
+
+    #[test]
     fn nested_values_and_escaped_strings_are_valid_json() {
         let frame = scan_line(br#"{"method":"item/completed","params":{"text":"a } { \" nested","obj":{"k":[1,2,{"z":"}"}]}}}"#).unwrap();
         assert_eq!(frame.class, FrameClass::Notification);
@@ -480,7 +523,8 @@ mod tests {
     #[test]
     fn unsupported_json_rpc_request_and_response_shapes_are_rejected() {
         let invalid: &[&[u8]] = &[
-            br#"{"id":1,"result":{}}"#,
+            br#"{"jsonrpc":"1.0","id":1,"result":{}}"#,
+            br#"{"id":1,"error":"not-structured"}"#,
             br#"{"jsonrpc":"2.0","id":1.5,"result":{}}"#,
             br#"{"jsonrpc":"2.0","id":1,"result":{},"error":{}}"#,
             br#"{"jsonrpc":"2.0","id":1.5,"method":"item/fileChange/requestApproval","params":{}}"#,
