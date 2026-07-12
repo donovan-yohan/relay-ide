@@ -6,6 +6,15 @@ import {
 } from "./auth.js";
 import { renderChatTimeline } from "./chat.js";
 import {
+  claudeMetadata,
+  mergeRecentClaudeSessions,
+  restoreRecentClaudeSessions,
+  serializeRecentClaudeSessions,
+  sessionSurface,
+} from "./claude-workbench.js";
+import { createTerminalInputQueue } from "./terminal-input.js";
+import { terminalErrorPresentation, terminalInputRecovery } from "./terminal-recovery.js";
+import {
   LayoutLimitError,
   activeSessionTab,
   addSessionTab,
@@ -26,17 +35,39 @@ import {
 const WORKBENCH_URL = "/api/workbench";
 const STORAGE_KEY = "relay-factory/workbench/v1";
 const LAYOUT_STORAGE_KEY = "relay-factory/workbench-layouts/v1";
+const PROVIDER_LABELS = new Map([
+  ["claude", "Claude Code"],
+  ["codex", "Codex"],
+  ["hermes", "Hermes"],
+]);
+const TERMINAL_ERROR_CODES = new Set([
+  "claude_unavailable",
+  "csrf_denied",
+  "input_backpressure",
+  "input_delivery_lost",
+  "invalid_input",
+  "invalid_resize",
+  "pty_teardown_failed",
+  "pty_transport",
+  "session_capacity",
+  "session_forbidden",
+  "session_missing",
+  "stale_session",
+]);
 const workspaceList = document.querySelector("#workspace-list");
 const workspaceEmpty = document.querySelector("#workspace-empty");
 const workspaceAdd = document.querySelector("#workspace-add");
-const workspaceForm = document.querySelector("#workspace-form");
-const workspaceCwd = document.querySelector("#workspace-cwd");
+const directoryPath = document.querySelector("#directory-path");
+const directoryList = document.querySelector("#directory-list");
+const directoryUp = document.querySelector("#directory-up");
+const selectDirectory = document.querySelector("#select-directory");
 const sessionList = document.querySelector("#session-list");
 const sessionEmpty = document.querySelector("#session-empty");
 const sessionTitle = document.querySelector("#session-title");
 const sessionSubtitle = document.querySelector("#session-subtitle");
 const sessionStatus = document.querySelector("#session-status");
 const interruptSession = document.querySelector("#interrupt-session");
+const closeTerminal = document.querySelector("#close-terminal");
 const paneRoot = document.querySelector("#pane-root");
 const composer = document.querySelector("#composer");
 const messageInput = document.querySelector("#message-input");
@@ -47,9 +78,10 @@ const recoveryCode = document.querySelector("#recovery-code");
 const enrollPasskey = document.querySelector("#enroll-passkey");
 const signIn = document.querySelector("#sign-in");
 
-let workbench = { providers: { codex: false, hermes: false }, sessions: [], workspaces: [] };
+let workbench = { providers: { claude: false, codex: false, hermes: false }, sessions: [], workspaces: [] };
 let saved = loadSavedState();
 let savedLayouts = loadSavedLayouts();
+let recentClaudeSessions = restoreRecentClaudeSessions(JSON.stringify(saved.claudeSessions ?? []));
 let mayHaveSession = saved.mayHaveSession === true;
 let selectedWorkspaceCwd = saved.selectedWorkspaceCwd ?? null;
 let selectedSessionId = saved.selectedSessionId ?? null;
@@ -63,24 +95,26 @@ let draggedTab = null;
 const resumingSessionIds = new Set();
 let visibleError = "";
 let layoutResizeTimer = null;
+let directorySnapshot = null;
+const terminalRuntimes = new Map();
+const retainedTerminalInput = new Map();
 
 document.querySelector("#show-workspace-add").addEventListener("click", () => {
   workspaceAdd.hidden = false;
-  workspaceCwd.focus();
+  void browseDirectory();
 });
 document.querySelector("#cancel-workspace-add").addEventListener("click", () => {
   workspaceAdd.hidden = true;
-  workspaceForm.reset();
+  directorySnapshot = null;
 });
-workspaceForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  void addWorkspace();
-});
+directoryUp.addEventListener("click", () => void browseDirectory(directorySnapshot?.parent ?? undefined));
+selectDirectory.addEventListener("click", () => void addWorkspace(directorySnapshot?.path));
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
   void submitMessage();
 });
 interruptSession.addEventListener("click", () => void interrupt());
+closeTerminal.addEventListener("click", () => void closeClaudeTerminal(activeSession()));
 for (const button of document.querySelectorAll("[data-provider]")) {
   button.addEventListener("click", () => void startSession(button.dataset.provider));
 }
@@ -121,7 +155,9 @@ function selectedWorkspace() {
 
 function sessionsForSelectedWorkspace() {
   const workspace = selectedWorkspace();
-  return workspace ? workbench.sessions.filter((session) => session.workspaceId === workspace.id) : [];
+  if (!workspace) return [];
+  const live = workbench.sessions.filter((session) => session.workspaceId === workspace.id);
+  return mergeRecentClaudeSessions(live, recentClaudeSessions, workspace);
 }
 
 function activeSession() {
@@ -183,6 +219,7 @@ function render() {
   normalizeSelection();
   const workspace = selectedWorkspace();
   const session = activeSession();
+  const terminalSelected = sessionSurface(session) === "terminal";
   renderWorkspaceList();
   renderSessionList();
   renderPaneRoot(workspace);
@@ -206,9 +243,14 @@ function render() {
     setSessionState(session.status, session.status);
   }
 
-  messageInput.disabled = !session;
-  sendMessage.disabled = !session;
-  interruptSession.disabled = !session || !["working", "idle"].includes(session.status);
+  messageInput.parentElement.hidden = terminalSelected;
+  messageInput.disabled = !session || terminalSelected;
+  sendMessage.disabled = !session || terminalSelected;
+  interruptSession.disabled = !session || (terminalSelected
+    ? !["starting", "running"].includes(session.status)
+    : !["working", "idle"].includes(session.status));
+  closeTerminal.hidden = !terminalSelected;
+  closeTerminal.disabled = !terminalSelected || ["closing", "closed"].includes(session?.status);
   for (const button of document.querySelectorAll("[data-provider]")) {
     button.disabled = !workspace || !authorized || !workbench.providers[button.dataset.provider];
   }
@@ -269,16 +311,19 @@ function renderSessionList() {
 function sessionRow(session) {
   const row = document.createElement("div");
   row.className = "session-row";
-  const button = sidebarButton(sessionTabTitle(session), session.providerSessionId);
+  const button = sidebarButton(sessionTabTitle(session), session.provider === "claude" ? "terminal" : "chat");
   button.setAttribute("aria-current", session.id === activeSession()?.id ? "page" : "false");
   button.addEventListener("click", () => openExistingSession(session));
   const resume = iconButton("Resume session", "Resume session", "M6 12a6 6 0 1 0 2-4.2M6 5v4h4");
   resume.classList.add("session-row__action");
   resume.disabled = resumingSessionIds.has(session.id);
+  resume.hidden = session.provider === "claude";
   resume.addEventListener("click", () => void resumeSession(session));
-  const close = iconButton("Close provider session", "Close provider session", "M7 7l10 10M17 7 7 17");
+  const closeLabel = session.provider === "claude" ? "Close terminal process" : "Close Session";
+  const close = iconButton(closeLabel, closeLabel, "M7 7l10 10M17 7 7 17");
   close.classList.add("session-row__action");
-  close.addEventListener("click", () => void closeSession(session));
+  close.disabled = session.provider === "claude" && ["closing", "closed"].includes(session.status);
+  close.addEventListener("click", () => void (session.provider === "claude" ? closeClaudeTerminal(session) : closeSession(session)));
   row.append(button, resume, close);
   return row;
 }
@@ -301,6 +346,7 @@ function sidebarButton(label, meta) {
 }
 
 function renderPaneRoot(workspace) {
+  disposeTerminals({ preservePausedInput: true });
   paneRoot.replaceChildren();
   if (!authorized) {
     paneRoot.append(emptyCanvas("Sign in to continue."));
@@ -311,7 +357,7 @@ function renderPaneRoot(workspace) {
     return;
   }
   if (!activeLayout) {
-    paneRoot.append(emptyCanvas("Start Hermes or Codex for this Workspace."));
+    paneRoot.append(emptyCanvas("Start Claude Code, Hermes, or Codex for this Project."));
     return;
   }
   paneRoot.append(renderLayoutNode(activeLayout.layout));
@@ -345,6 +391,12 @@ function renderLayoutNode(node) {
   const session = active ? sessionsForSelectedWorkspace().find((candidate) => candidate.id === active.content.sessionId) : null;
   const body = document.createElement("div");
   body.className = "pane-body";
+  if (sessionSurface(session) === "terminal") {
+    body.classList.add("pane-body--terminal");
+    body.append(renderTerminalSurface(node.id, session));
+    pane.append(body);
+    return pane;
+  }
   const timeline = document.createElement("div");
   timeline.className = "chat-timeline";
   timeline.setAttribute("aria-live", "polite");
@@ -352,6 +404,230 @@ function renderLayoutNode(node) {
   body.append(timeline);
   pane.append(body);
   return pane;
+}
+
+function renderTerminalSurface(paneId, session) {
+  const surface = document.createElement("section");
+  surface.className = "terminal-surface";
+  surface.dataset.terminalSessionId = session.providerSessionId;
+  const status = document.createElement("p");
+  status.className = "terminal-status";
+  status.setAttribute("aria-live", "polite");
+  status.textContent = `Claude Code · ${session.status}`;
+  const host = document.createElement("div");
+  host.className = "terminal-host";
+  const recovery = document.createElement("div");
+  recovery.className = "terminal-recovery";
+  recovery.hidden = true;
+  const message = document.createElement("p");
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "Retry saved input";
+  const discard = document.createElement("button");
+  discard.type = "button";
+  discard.textContent = "Discard saved input";
+  const newSession = document.createElement("button");
+  newSession.type = "button";
+  newSession.textContent = "New Claude Session";
+  newSession.hidden = true;
+  recovery.append(message, retry, discard, newSession);
+  surface.append(status, host, recovery);
+  queueMicrotask(() => {
+    if (host.isConnected) {
+      mountTerminal(paneId, session, host, status, { root: recovery, message, retry, discard, newSession });
+    }
+  });
+  return surface;
+}
+
+function mountTerminal(paneId, session, host, status, recovery) {
+  if (typeof window.Terminal !== "function") {
+    status.textContent = "Claude Code terminal assets are unavailable. Refresh Relay.";
+    return;
+  }
+  const retained = retainedTerminalInput.get(session.providerSessionId);
+  retainedTerminalInput.delete(session.providerSessionId);
+  const terminal = new window.Terminal({
+    cols: 120,
+    rows: 36,
+    cursorBlink: true,
+    fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+    fontSize: 13,
+    scrollback: 2_000,
+    theme: {
+      background: "#000000",
+      foreground: "#d8d2cd",
+      cursor: "#d97855",
+      selectionBackground: "#4b3026",
+    },
+  });
+  terminal.open(host);
+  if (paneId === activeLayout?.selectedPaneId) terminal.focus();
+  const runtime = {
+    paneId,
+    sessionId: session.providerSessionId,
+    terminal,
+    host,
+    status,
+    recovery,
+    cursor: 0,
+    timer: null,
+    resizeTimer: null,
+    resizeObserver: null,
+    inputSubscription: null,
+    inputQueue: null,
+    inputRecoveryMessage: "",
+    polled: false,
+    interactive: !session.staleCandidate && ["starting", "running"].includes(session.status),
+    cols: 0,
+    rows: 0,
+    sentCols: 0,
+    sentRows: 0,
+  };
+  terminalRuntimes.set(paneId, runtime);
+  runtime.inputQueue = createTerminalInputQueue({
+    isActive: () => terminalRuntimes.get(paneId) === runtime,
+    send: (data) => request(`/node/claude/sessions/${runtime.sessionId}/input`, {
+      method: "POST",
+      body: JSON.stringify({ data }),
+    }),
+    onError: (error) => {
+      if (terminalRuntimes.get(paneId) !== runtime) return;
+      const presentation = terminalInputRecovery(error);
+      const paused = runtime.inputQueue?.isPaused();
+      runtime.status.textContent = `${paused ? "Input paused" : "Input not queued"}: ${presentation.message}`;
+      if (paused) showTerminalRecovery(runtime, presentation.message);
+      else hideTerminalRecovery(runtime);
+    },
+    initialPausedInput: retained?.pending,
+  });
+  if (retained) {
+    status.textContent = `Input paused: ${retained.message}`;
+    showTerminalRecovery(runtime, retained.message);
+  }
+  recovery.retry.addEventListener("click", () => {
+    if (!runtime.inputQueue?.resume()) return;
+    hideTerminalRecovery(runtime);
+    runtime.status.textContent = "Retrying saved input. Inspect output for possible prior delivery.";
+  });
+  recovery.discard.addEventListener("click", () => {
+    if (!runtime.inputQueue?.discard()) return;
+    hideTerminalRecovery(runtime);
+    runtime.status.textContent = "Saved terminal input discarded.";
+  });
+  recovery.newSession.addEventListener("click", () => void startSession("claude"));
+  runtime.inputSubscription = terminal.onData((data) => {
+    if (runtime.interactive && runtime.paneId === activeLayout?.selectedPaneId) {
+      runtime.inputQueue.enqueue(data);
+    }
+  });
+  if (typeof ResizeObserver === "function") {
+    runtime.resizeObserver = new ResizeObserver(() => {
+      if (runtime.resizeTimer !== null) return;
+      runtime.resizeTimer = window.setTimeout(() => {
+        runtime.resizeTimer = null;
+        void resizeTerminal(runtime);
+      }, 50);
+    });
+    runtime.resizeObserver.observe(host);
+  }
+  void resizeTerminal(runtime);
+  void pollTerminal(runtime);
+}
+
+function disposeTerminals({ preservePausedInput = false } = {}) {
+  for (const runtime of terminalRuntimes.values()) {
+    const recoverableInput = preservePausedInput ? runtime.inputQueue?.recoverableInput() : null;
+    if (recoverableInput) {
+      retainedTerminalInput.set(runtime.sessionId, {
+        pending: recoverableInput,
+        message: runtime.inputRecoveryMessage || "Delivery was in progress when this view changed. Inspect output before retrying.",
+      });
+    } else {
+      retainedTerminalInput.delete(runtime.sessionId);
+    }
+    window.clearTimeout(runtime.timer);
+    window.clearTimeout(runtime.resizeTimer);
+    runtime.resizeObserver?.disconnect();
+    runtime.inputSubscription?.dispose();
+    runtime.inputQueue?.dispose();
+    runtime.terminal.dispose();
+  }
+  terminalRuntimes.clear();
+}
+
+function showTerminalRecovery(runtime, message, { stale = false } = {}) {
+  runtime.inputRecoveryMessage = message;
+  runtime.recovery.message.textContent = message;
+  runtime.recovery.retry.hidden = stale;
+  runtime.recovery.discard.hidden = stale;
+  runtime.recovery.newSession.hidden = !stale;
+  runtime.recovery.root.hidden = false;
+}
+
+function hideTerminalRecovery(runtime) {
+  runtime.inputRecoveryMessage = "";
+  runtime.recovery.message.textContent = "";
+  runtime.recovery.root.hidden = true;
+}
+
+async function pollTerminal(runtime) {
+  try {
+    const snapshot = await request(`/node/claude/sessions/${runtime.sessionId}?cursor=${runtime.cursor}`);
+    if (terminalRuntimes.get(runtime.paneId) !== runtime) return;
+    if (snapshot.truncated) runtime.terminal.writeln("\r\n[Relay: earlier terminal output was truncated]\r\n");
+    for (const chunk of snapshot.output) {
+      if (chunk.sequence > runtime.cursor) runtime.terminal.write(chunk.text);
+    }
+    runtime.cursor = snapshot.nextCursor;
+    runtime.polled = true;
+    runtime.interactive = ["starting", "running"].includes(snapshot.status);
+    runtime.status.textContent = `Claude Code · ${snapshot.status}`;
+    updateClaudeSessionStatus(runtime.sessionId, snapshot.status);
+    if (runtime.interactive) void resizeTerminal(runtime);
+    if (["closed", "exited"].includes(snapshot.status)) return;
+    runtime.timer = window.setTimeout(() => void pollTerminal(runtime), snapshot.hasMore ? 0 : 100);
+  } catch (error) {
+    if (terminalRuntimes.get(runtime.paneId) !== runtime) return;
+    const presentation = terminalErrorPresentation(error);
+    runtime.status.textContent = presentation.message;
+    if (presentation.code === "stale_session") {
+      showTerminalRecovery(runtime, presentation.message, { stale: true });
+    } else if (!error?.code || error.code === "pty_transport") {
+      runtime.timer = window.setTimeout(() => void pollTerminal(runtime), 1_000);
+    }
+  }
+}
+
+async function resizeTerminal(runtime) {
+  if (terminalRuntimes.get(runtime.paneId) !== runtime) return;
+  const cols = Math.max(20, Math.min(500, Math.floor(runtime.host.clientWidth / 8.2) || 120));
+  const rows = Math.max(4, Math.min(300, Math.floor(runtime.host.clientHeight / 16) || 36));
+  if (runtime.cols !== cols || runtime.rows !== rows) {
+    runtime.cols = cols;
+    runtime.rows = rows;
+    runtime.terminal.resize(cols, rows);
+  }
+  if (
+    !runtime.polled
+    || !runtime.interactive
+    || runtime.paneId !== activeLayout?.selectedPaneId
+    || (runtime.sentCols === cols && runtime.sentRows === rows)
+  ) return;
+  runtime.sentCols = cols;
+  runtime.sentRows = rows;
+  try {
+    await request(`/node/claude/sessions/${runtime.sessionId}/resize`, {
+      method: "POST",
+      body: JSON.stringify({ cols, rows }),
+    });
+  } catch (error) {
+    if (terminalRuntimes.get(runtime.paneId) === runtime) {
+      runtime.sentCols = 0;
+      runtime.sentRows = 0;
+      runtime.status.textContent = terminalErrorPresentation(error).message;
+    }
+  }
 }
 
 function renderTab(pane, tab, index) {
@@ -533,7 +809,8 @@ function showLayoutError(error) {
 }
 
 function sessionTabTitle(session) {
-  return `${session.provider} · ${session.status}`;
+  const provider = PROVIDER_LABELS.get(session.provider) ?? session.provider;
+  return `${provider} · ${session.status}`;
 }
 
 async function refreshWorkbench({ restore = true } = {}) {
@@ -561,16 +838,51 @@ function beginWorkbenchMutation() {
   workbenchEpoch += 1;
 }
 
-async function addWorkspace() {
+async function browseDirectory(path) {
+  clearError();
+  directoryPath.textContent = "Loading…";
+  directoryList.replaceChildren();
+  directoryUp.disabled = true;
+  selectDirectory.disabled = true;
+  try {
+    directorySnapshot = await request("/api/directories", {
+      method: "POST",
+      body: JSON.stringify(path ? { path } : {}),
+    });
+    directoryPath.textContent = directorySnapshot.path ?? "Approved roots";
+    directoryUp.disabled = directorySnapshot.path === null;
+    selectDirectory.disabled = directorySnapshot.path === null;
+    for (const directory of directorySnapshot.directories) {
+      const button = sidebarButton(directory.name, directory.path);
+      button.type = "button";
+      button.dataset.directoryPath = directory.path;
+      button.addEventListener("click", () => void browseDirectory(directory.path));
+      directoryList.append(button);
+    }
+    if (directoryList.childElementCount === 0) {
+      const empty = document.createElement("p");
+      empty.className = "sidebar-empty";
+      empty.textContent = "No approved subdirectories.";
+      directoryList.append(empty);
+    }
+  } catch (error) {
+    directorySnapshot = null;
+    directoryPath.textContent = "Directory unavailable";
+    showError(error);
+  }
+}
+
+async function addWorkspace(cwd) {
+  if (!cwd) return;
   clearError();
   beginWorkbenchMutation();
   try {
     const workspace = await request("/api/workspaces", {
       method: "POST",
-      body: JSON.stringify({ cwd: workspaceCwd.value.trim() }),
+      body: JSON.stringify({ cwd }),
     });
     workspaceAdd.hidden = true;
-    workspaceForm.reset();
+    directorySnapshot = null;
     await selectWorkspace(workspace, { refresh: true });
   } catch (error) {
     showError(error);
@@ -624,11 +936,17 @@ async function startSession(provider) {
   clearError();
   beginWorkbenchMutation();
   try {
-    const session = await request("/api/sessions", {
-      method: "POST",
-      body: JSON.stringify({ workspaceId: workspace.id, provider }),
-    });
-    workbench.sessions = [...workbench.sessions, session];
+    const created = provider === "claude"
+      ? await request("/node/claude/sessions", {
+        method: "POST",
+        body: JSON.stringify({ workspaceId: workspace.id }),
+      })
+      : await request("/api/sessions", {
+        method: "POST",
+        body: JSON.stringify({ workspaceId: workspace.id, provider }),
+      });
+    const session = provider === "claude" ? created.workbenchSession : created;
+    workbench.sessions = [session, ...workbench.sessions];
     if (!activeLayout) activeLayout = createLayout(workspace, session.id);
     else activeLayout = openSessionTab(activeLayout, session.id, sessionTabTitle(session));
     activeLayoutWorkspaceCwd = workspace.cwd;
@@ -656,7 +974,7 @@ async function resumeSession(source) {
         providerSessionId: source.providerSessionId,
       }),
     });
-    workbench.sessions = [...workbench.sessions, session];
+    workbench.sessions = [session, ...workbench.sessions];
     openExistingSession(session);
   } catch (error) {
     showError(error);
@@ -685,6 +1003,22 @@ async function closeSession(session) {
   } catch (error) {
     showError(error);
   }
+}
+
+async function closeClaudeTerminal(session) {
+  if (session?.provider !== "claude") return;
+  clearError();
+  beginWorkbenchMutation();
+  try {
+    const snapshot = await request(`/node/claude/sessions/${session.providerSessionId}/close`, {
+      method: "POST",
+      body: "{}",
+    });
+    updateClaudeSessionStatus(session.providerSessionId, snapshot.status);
+  } catch (error) {
+    showError(error);
+  }
+  render();
 }
 
 async function submitMessage() {
@@ -718,10 +1052,17 @@ async function interrupt() {
   clearError();
   beginWorkbenchMutation();
   try {
-    replaceSession(await request("/api/sessions/interrupt", {
-      method: "POST",
-      body: JSON.stringify({ sessionId: session.id }),
-    }));
+    if (session.provider === "claude") {
+      await request(`/node/claude/sessions/${session.providerSessionId}/interrupt`, {
+        method: "POST",
+        body: "{}",
+      });
+    } else {
+      replaceSession(await request("/api/sessions/interrupt", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: session.id }),
+      }));
+    }
   } catch (error) {
     showError(error);
   }
@@ -730,6 +1071,30 @@ async function interrupt() {
 
 function replaceSession(updated) {
   workbench.sessions = workbench.sessions.map((session) => session.id === updated.id ? updated : session);
+}
+
+function updateClaudeSessionStatus(providerSessionId, status) {
+  const changed = workbench.sessions.some((session) => (
+    session.provider === "claude"
+    && session.providerSessionId === providerSessionId
+    && session.status !== status
+  )) || recentClaudeSessions.some((session) => (
+    session.providerSessionId === providerSessionId && session.status !== status
+  ));
+  workbench.sessions = workbench.sessions.map((session) => (
+    session.provider === "claude" && session.providerSessionId === providerSessionId
+      ? { ...session, status }
+      : session
+  ));
+  recentClaudeSessions = recentClaudeSessions.map((session) => (
+    session.providerSessionId === providerSessionId ? { ...session, status } : session
+  ));
+  if (!changed) return;
+  const session = sessionsForSelectedWorkspace().find((candidate) => candidate.providerSessionId === providerSessionId);
+  if (session && activeSession()?.providerSessionId === providerSessionId) {
+    setSessionState(status, status);
+  }
+  persistState();
 }
 
 function scheduleRefresh() {
@@ -755,7 +1120,9 @@ function showError(error) {
     executable_unavailable: "The provider executable is unavailable on this node.",
     unavailable: "The provider is unavailable right now. Retry when it is ready.",
   };
-  visibleError = messages[code] ?? "Relay could not complete that action. Retry or choose another session.";
+  visibleError = TERMINAL_ERROR_CODES.has(code)
+    ? terminalErrorPresentation(error).message
+    : messages[code] ?? "Relay could not complete that action. Retry or choose another session.";
   workbenchError.dataset.code = code;
   workbenchError.textContent = visibleError;
 }
@@ -768,21 +1135,32 @@ function clearError() {
 function loadSavedState() {
   try {
     const state = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "null");
-    if (state?.version === 1 && Array.isArray(state.workspaces)) return state;
+    if ([1, 2].includes(state?.version) && Array.isArray(state.workspaces)) return state;
   } catch {
     // Browser storage is convenience-only; live workbench state remains hub-owned.
   }
-  return { version: 1, mayHaveSession: false, selectedSessionId: null, selectedWorkspaceCwd: null, workspaces: [] };
+  return { version: 2, mayHaveSession: false, selectedSessionId: null, selectedWorkspaceCwd: null, workspaces: [], claudeSessions: [] };
 }
 
 function persistState() {
   if (!authorized || !hasWorkbenchSnapshot) return;
+  const liveClaude = workbench.sessions.flatMap((session) => {
+    if (session.provider !== "claude") return [];
+    const workspace = workbench.workspaces.find((candidate) => candidate.id === session.workspaceId);
+    const metadata = claudeMetadata({ ...session, title: "Claude Code" }, workspace?.cwd);
+    return metadata ? [metadata] : [];
+  });
+  recentClaudeSessions = restoreRecentClaudeSessions(serializeRecentClaudeSessions([
+    ...liveClaude,
+    ...recentClaudeSessions.filter((recent) => !liveClaude.some((live) => live.providerSessionId === recent.providerSessionId)),
+  ]));
   saved = {
-    version: 1,
+    version: 2,
     mayHaveSession,
     selectedSessionId,
     selectedWorkspaceCwd,
     workspaces: workbench.workspaces.map((workspace) => ({ cwd: workspace.cwd, name: workspace.name })),
+    claudeSessions: recentClaudeSessions,
   };
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));

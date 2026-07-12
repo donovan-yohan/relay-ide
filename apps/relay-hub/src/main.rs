@@ -837,6 +837,7 @@ fn workbench_response(
         match (request.method, request.path) {
             ("GET", "/api/workbench") => Ok(workbench.snapshot()),
             ("GET", "/api/sessions") => Ok(workbench.sessions_snapshot()),
+            ("POST", "/api/directories") => workbench.browse_directories(&body),
             ("POST", "/api/workspaces") => workbench.add_workspace(&body),
             ("POST", "/api/workspaces/select") => workbench.select_workspace(&body),
             ("POST", "/api/sessions") => workbench.start_session(&body),
@@ -876,17 +877,53 @@ fn workbench_error_status(error: WorkbenchError) -> u16 {
 
 fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
     reap_invalidated_owner_sessions(runtime);
+    let body = match serde_json::from_str::<Value>(request.body) {
+        Ok(body) => body,
+        Err(_) => return auth_error_response(400, "invalid_request", &[]),
+    };
+    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
+    let browser_session = match request.cookie("__Host-relay_session") {
+        Some(session) => session,
+        None => return auth_error_response(401, "session_missing", &[]),
+    };
+    let auth = match runtime.auth.as_deref() {
+        Some(auth) => auth,
+        None => return auth_error_response(404, "auth_unavailable", &[]),
+    };
+    let mut workbench = match runtime.workbench.try_lock() {
+        Ok(workbench) => workbench,
+        Err(TryLockError::WouldBlock) => {
+            return auth_error_response(503, "workbench_busy", &[]);
+        }
+        Err(TryLockError::Poisoned(_)) => return auth_error_response(500, "internal", &[]),
+    };
+    let owner_session_is_active = match workbench.owner_session() {
+        Some(owner_session) => match auth.require_session(owner_session) {
+            Ok(()) => true,
+            Err(AuthError::SessionMissing) => false,
+            Err(_) => return auth_error_response(500, "internal", &[]),
+        },
+        None => false,
+    };
+    if let Err(error) = workbench.authorize(browser_session, owner_session_is_active) {
+        return auth_error_response(workbench_error_status(error), error.code(), &[]);
+    }
+    let (workspace_id, cwd) = match workbench.trusted_claude_workspace(&body) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            return auth_error_response(workbench_error_status(error), error.code(), &[]);
+        }
+    };
     let (owner, mut session) = {
         // Serialize auth resolution plus admission with invalidation
         // acknowledgement. Outside-lock teardown is deliberately not inside
         // this gate, so unrelated owner operations still make progress.
         let _owner_lifecycle = owner_lifecycle_lock(runtime);
-        let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
-            Ok(owner) => owner,
-            Err(response) => return response,
-        };
         let session = match runtime.pty.lock() {
-            Ok(mut pty) => pty.begin_create(&owner).into_result(),
+            Ok(mut pty) => pty.begin_create_in_directory(&owner, &cwd).into_result(),
             Err(_) => return auth_error_response(500, "internal", &[]),
         };
         (owner, session)
@@ -899,7 +936,7 @@ fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntim
                 return response;
             }
             match runtime.pty.lock() {
-                Ok(mut pty) => pty.begin_create(&owner).into_result(),
+                Ok(mut pty) => pty.begin_create_in_directory(&owner, &cwd).into_result(),
                 Err(_) => return auth_error_response(500, "internal", &[]),
             }
         };
@@ -909,15 +946,24 @@ fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntim
         Ok(session) => session,
         Err(error) => return claude_pty_error_response(error),
     };
-    match runtime
+    let snapshot = match runtime
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
         .and_then(|mut pty| pty.poll(session.as_str(), &owner, 0))
     {
-        Ok(snapshot) => terminal_snapshot_response(snapshot),
-        Err(error) => claude_pty_error_response(error),
-    }
+        Ok(snapshot) => snapshot,
+        Err(error) => return claude_pty_error_response(error),
+    };
+    let metadata = match workbench.register_claude_session(
+        &workspace_id,
+        snapshot.session_id.as_str(),
+        snapshot.status.code(),
+    ) {
+        Ok(metadata) => metadata,
+        Err(error) => return auth_error_response(workbench_error_status(error), error.code(), &[]),
+    };
+    terminal_snapshot_response_with_metadata(snapshot, Some(metadata))
 }
 
 fn poll_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
@@ -933,13 +979,16 @@ fn poll_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime)
         Some(cursor) => cursor,
         None => return auth_error_response(400, "invalid_request", &[]),
     };
-    match runtime
+    let result = runtime
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.poll(session_id, &owner, cursor))
-    {
-        Ok(snapshot) => terminal_snapshot_response(snapshot),
+        .and_then(|mut pty| pty.poll(session_id, &owner, cursor));
+    match result {
+        Ok(snapshot) => {
+            update_claude_workbench_status(runtime, session_id, snapshot.status.code());
+            terminal_snapshot_response(snapshot)
+        }
         Err(error) => claude_pty_error_response(error),
     }
 }
@@ -1030,13 +1079,16 @@ fn close_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime
         return claude_pty_error_response(error);
     }
     drive_pty_terminations(runtime);
-    match runtime
+    let result = runtime
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.poll(session_id, &owner, 0))
-    {
-        Ok(snapshot) => terminal_snapshot_response(snapshot),
+        .and_then(|mut pty| pty.poll(session_id, &owner, 0));
+    match result {
+        Ok(snapshot) => {
+            update_claude_workbench_status(runtime, session_id, snapshot.status.code());
+            terminal_snapshot_response(snapshot)
+        }
         Err(error) => claude_pty_error_response(error),
     }
 }
@@ -1112,6 +1164,13 @@ fn terminal_size(body: &str) -> Option<(u16, u16)> {
 }
 
 fn terminal_snapshot_response(snapshot: TerminalSnapshot) -> String {
+    terminal_snapshot_response_with_metadata(snapshot, None)
+}
+
+fn terminal_snapshot_response_with_metadata(
+    snapshot: TerminalSnapshot,
+    workbench_session: Option<Value>,
+) -> String {
     let output = snapshot
         .output
         .into_iter()
@@ -1122,7 +1181,7 @@ fn terminal_snapshot_response(snapshot: TerminalSnapshot) -> String {
     } else {
         200
     };
-    match serde_json::to_string(&serde_json::json!({
+    let mut body = serde_json::json!({
         "sessionId": snapshot.session_id.as_str(),
         "status": snapshot.status.code(),
         "output": output,
@@ -1130,9 +1189,19 @@ fn terminal_snapshot_response(snapshot: TerminalSnapshot) -> String {
         "hasMore": snapshot.has_more,
         "truncated": snapshot.truncated,
         "droppedChunks": snapshot.dropped_chunks,
-    })) {
+    });
+    if let Some(workbench_session) = workbench_session {
+        body["workbenchSession"] = workbench_session;
+    }
+    match serde_json::to_string(&body) {
         Ok(body) => json_response(status, &body, &[]),
         Err(_) => auth_error_response(500, "internal", &[]),
+    }
+}
+
+fn update_claude_workbench_status(runtime: &HubRuntime, session_id: &str, status: &str) {
+    if let Ok(mut workbench) = runtime.workbench.try_lock() {
+        workbench.update_claude_status(session_id, status);
     }
 }
 

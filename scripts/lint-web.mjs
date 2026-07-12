@@ -4,6 +4,7 @@ const requiredFiles = [
   "web/src/index.html",
   "web/src/main.js",
   "web/src/chat.js",
+  "web/src/claude-workbench.js",
   "web/src/workspace-layout.js",
   "web/src/auth.js",
   "web/src/terminal-recovery.js",
@@ -14,7 +15,9 @@ for (const file of requiredFiles) {
   await access(file, constants.R_OK);
 }
 
-const [page, app, chat, layout, auth, terminalRecovery, manifest] = await Promise.all(requiredFiles.map((file) => readFile(file, "utf8")));
+const [page, app, chat, claudeWorkbench, layout, auth, terminalRecovery, manifest] = await Promise.all(
+  requiredFiles.map((file) => readFile(file, "utf8")),
+);
 const errors = [];
 
 if (!page.includes("manifest.webmanifest") || !page.includes("data-workspace-shell")) {
@@ -41,8 +44,14 @@ if (!app.includes("__Host-relay_csrf") || !app.includes("navigator.credentials")
 if (!chat.includes("eventPresentation") || !chat.includes("renderChatTimeline")) {
   errors.push("shared chat component must handle provider-neutral timeline events");
 }
-if (/vendor\/xterm|open-claude|terminal-host/.test(page) || /new window\.Terminal|\/node\/claude\/sessions/.test(app)) {
-  errors.push("Claude terminal UI must remain outside the CWD chat workbench reconciliation");
+if (!/vendor\/xterm/.test(page) || !/new window\.Terminal|\/node\/claude\/sessions/.test(app)) {
+  errors.push("Claude terminal UI must use the bounded Relay PTY path and packaged xterm assets");
+}
+if (!claudeWorkbench.includes("serializeRecentClaudeSessions") || /events: session|output: session/.test(claudeWorkbench)) {
+  errors.push("Claude recents must persist bounded metadata without terminal output or provider events");
+}
+if (/workspace-cwd|showDirectoryPicker|webkitdirectory/.test(page) || !app.includes('"/api/directories"')) {
+  errors.push("Project selection must use Relay's approved node-directory picker without browser filesystem handles");
 }
 if (/fetch|localStorage|document\.cookie|WebSocket|terminate|sendInput/.test(layout)) {
   errors.push("Workspace layout contract must stay presentation-only and transport-free");

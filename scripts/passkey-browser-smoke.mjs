@@ -18,6 +18,7 @@ const chromium = "/usr/bin/chromium";
 const recoveryCode = "browser-virtual-authenticator-recovery";
 const root = resolve("web/src");
 const publicRoot = resolve("web/public");
+const xtermRoot = resolve("node_modules/@xterm/xterm");
 const scratch = await mkdtemp(`${tmpdir()}/relay-passkey-browser-`);
 const chromeProfile = resolve(scratch, "chrome-profile");
 const recoveryHash = createHash("sha256").update(recoveryCode).digest("hex");
@@ -167,9 +168,12 @@ try {
     "a valueless unrelated Cookie segment must not invalidate a valid browser session",
   );
 
+  const workspaceId = await addProjectThroughPicker(sessionId, process.cwd());
+
   const terminalApi = await evaluate(
     sessionId,
     `(async () => {
+      const workspaceId = ${JSON.stringify(workspaceId)};
       const csrf = document.cookie.split("; ").find((cookie) => cookie.startsWith("__Host-relay_csrf="))?.slice("__Host-relay_csrf=".length);
       const request = async (path, body) => {
         const response = await fetch(path, {
@@ -180,7 +184,8 @@ try {
         });
         return { status: response.status, body: await response.json() };
       };
-      const created = await request("/node/claude/sessions", {});
+      const unknownWorkspace = await request("/node/claude/sessions", { workspaceId: "workspace-unknown" });
+      const created = await request("/node/claude/sessions", { workspaceId });
       const terminalId = created.body.sessionId;
       const resize = await request("/node/claude/sessions/" + terminalId + "/resize", { cols: 92, rows: 28 });
       const input = await request("/node/claude/sessions/" + terminalId + "/input", { data: "browser-api\\n" });
@@ -199,12 +204,17 @@ try {
         const response = await fetch("/node/claude/sessions/" + terminalId + "?cursor=0", { credentials: "same-origin" });
         closed = { status: response.status, body: await response.json() };
       }
-      const replacement = await request("/node/claude/sessions", {});
-      return { created, resize, input, poll, interrupt, close, closed, replacement };
+      const replacement = await request("/node/claude/sessions", { workspaceId });
+      const replacementClose = await request("/node/claude/sessions/" + replacement.body.sessionId + "/close", {});
+      return { unknownWorkspace, created, resize, input, poll, interrupt, close, closed, replacement, replacementClose };
     })()`,
   );
+  assert.equal(terminalApi.unknownWorkspace.status, 404, "unknown Workspace ids must fail before PTY spawn");
+  assert.equal(terminalApi.unknownWorkspace.body.error.code, "unknown_workspace");
   assert.equal(terminalApi.created.status, 200, "authenticated browser authority must create the bounded PTY through the node route");
   assert.match(terminalApi.created.body.sessionId, /^claude-pty-\d+$/, "the browser receives only an opaque PTY Session ID");
+  assert.equal(terminalApi.created.body.workbenchSession.provider, "claude");
+  assert.equal(terminalApi.created.body.workbenchSession.workspaceId, workspaceId);
   assert.equal(terminalApi.resize.status, 200, "authenticated resize must reach the owned PTY");
   assert.equal(terminalApi.input.status, 200, "authenticated input must reach the owned PTY");
   assert.ok(
@@ -216,10 +226,13 @@ try {
   assert.equal(terminalApi.closed.body.status, "closed", "autonomous retries must make terminal closure observable without another mutation");
   assert.equal(terminalApi.replacement.status, 200, "reaped capacity must admit a replacement PTY before auth revocation");
   assert.notEqual(terminalApi.replacement.body.sessionId, terminalApi.created.body.sessionId);
+  assert.ok([200, 202].includes(terminalApi.replacementClose.status), "replacement PTY must be explicitly closed");
+
+  await exerciseVisibleClaudeWorkbench(sessionId);
 
   if (process.env.RELAY_WORKBENCH_LIVE === "1") {
     const liveEventOffset = browser.events.length;
-    await exerciseLiveWorkbench(sessionId, process.cwd());
+    await exerciseLiveWorkbench(sessionId);
     const pageErrors = browser.events.slice(liveEventOffset).filter((event) => (
       event.method === "Runtime.exceptionThrown"
       || (event.method === "Runtime.consoleAPICalled" && event.params.type === "error")
@@ -289,6 +302,8 @@ function startHub() {
       recoveryHash,
       "--test-claude-fixture",
       "cat",
+      "--workspace-root",
+      process.cwd(),
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -344,23 +359,110 @@ async function recoveryValueAfterFailedEnrollment(sessionId) {
   return evaluate(sessionId, "document.querySelector('#recovery-code').value");
 }
 
-async function exerciseLiveWorkbench(sessionId, cwd) {
+async function addProjectThroughPicker(sessionId, cwd) {
+  await evaluate(sessionId, "document.querySelector('#show-workspace-add').click()");
+  await waitFor(
+    async () => evaluate(
+      sessionId,
+      `[...document.querySelectorAll('#directory-list [data-directory-path]')].some((button) => button.dataset.directoryPath === ${JSON.stringify(cwd)})`,
+    ),
+    async () => evaluate(sessionId, "({ path: document.querySelector('#directory-path').textContent, error: document.querySelector('#workbench-error').textContent, directories: [...document.querySelectorAll('#directory-list [data-directory-path]')].map((button) => button.dataset.directoryPath) })"),
+  );
   await evaluate(
     sessionId,
-    `document.querySelector("#show-workspace-add").click(); document.querySelector("#workspace-cwd").value = ${JSON.stringify(cwd)}; document.querySelector("#workspace-form").requestSubmit();`,
+    `[...document.querySelectorAll('#directory-list [data-directory-path]')].find((button) => button.dataset.directoryPath === ${JSON.stringify(cwd)}).click()`,
+  );
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#directory-path').textContent")) === cwd);
+  await evaluate(sessionId, "document.querySelector('#select-directory').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length")) === 1);
+  return evaluate(
+    sessionId,
+    "fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.selectedWorkspaceId)",
+  );
+}
+
+async function exerciseVisibleClaudeWorkbench(sessionId) {
+  await evaluate(
+    sessionId,
+    `window.relayClaudeRequests = []; window.relayOriginalWorkbenchFetch = window.fetch; window.fetch = async (input, init) => { const path = new URL(typeof input === "string" ? input : input.url, window.location.href).pathname; if (path.startsWith("/node/claude/")) window.relayClaudeRequests.push({ path, method: init?.method ?? "GET" }); return window.relayOriginalWorkbenchFetch(input, init); }; document.querySelector('[data-provider="claude"]').click();`,
   );
   await waitFor(
-    async () => (await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length")) === 1,
-    async () => evaluate(sessionId, "({ list: document.querySelector('#workspace-list').innerText, error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, title: document.querySelector('#session-title').textContent })"),
+    async () => Boolean(await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-helper-textarea')")),
+    async () => evaluate(sessionId, "({ error: document.querySelector('#workbench-error').textContent, code: document.querySelector('#workbench-error').dataset.code, sessions: document.querySelector('#session-list').innerText, pane: document.querySelector('#pane-root').innerText })"),
   );
+  await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-helper-textarea').focus()");
+  await browser.command("Input.insertText", { text: "browser-ui" }, sessionId);
+  await browser.command("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  }, sessionId);
+  await browser.command("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  }, sessionId);
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-rows')?.textContent"))?.includes("browser-ui"),
+    async () => evaluate(sessionId, "({ status: document.querySelector('.terminal-status')?.textContent, rows: document.querySelector('.terminal-host .xterm-rows')?.textContent, requests: window.relayClaudeRequests })"),
+  );
+  const actions = await evaluate(sessionId, "window.relayClaudeRequests");
+  assert.ok(actions.some((action) => action.path.endsWith("/resize")), "visible xterm must resize the owned PTY from its pane bounds");
+  assert.ok(actions.some((action) => action.path.endsWith("/input")), "visible xterm input must use the owned PTY API");
+  const beforeRefreshOutput = await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-rows').textContent");
+  const beforeRefreshEchoes = beforeRefreshOutput.split("browser-ui").length - 1;
+  assert.ok(beforeRefreshEchoes >= 1, "visible xterm must render real fixture output before refresh");
+  await evaluate(sessionId, "document.querySelector('#interrupt-session').click()");
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent"))?.includes("exited"),
+    async () => evaluate(sessionId, "({ status: document.querySelector('.terminal-status')?.textContent, requests: window.relayClaudeRequests })"),
+  );
+  assert.ok(
+    (await evaluate(sessionId, "window.relayClaudeRequests")).some((action) => action.path.endsWith("/interrupt")),
+    "visible interrupt must target the selected Claude Session",
+  );
+
+  await browser.command("Page.reload", { ignoreCache: true }, sessionId);
+  await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
+  await waitFor(async () => Boolean(await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-rows')?.textContent.includes('browser-ui')")));
+  const restoredOutput = await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-rows').textContent");
+  assert.equal(
+    restoredOutput.split("browser-ui").length - 1,
+    beforeRefreshEchoes,
+    "refresh restoration must not duplicate terminal output",
+  );
+  assert.match(
+    await evaluate(sessionId, "document.querySelector('.terminal-status').textContent"),
+    /exited/,
+    "refresh must restore an honest runtime terminal status",
+  );
+  await evaluate(sessionId, "document.querySelector('#close-terminal').click()");
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent"))?.includes("closed"),
+    async () => evaluate(sessionId, "({ status: document.querySelector('.terminal-status')?.textContent, error: document.querySelector('#workbench-error').textContent })"),
+  );
+  assert.equal(
+    await evaluate(sessionId, "getComputedStyle(document.querySelector('#session-list .session-row__action[hidden]')).display"),
+    "none",
+    "Claude history must not expose the chat-only Resume action",
+  );
+}
+
+async function exerciseLiveWorkbench(sessionId) {
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length")) === 1);
   assert.equal(
     await evaluate(sessionId, "document.querySelector('[data-provider=\"hermes\"]').disabled"),
     true,
     "an unavailable Hermes adapter must remain visibly unavailable instead of presenting a fake conversation",
   );
+  const previousSessionCount = await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length");
   await evaluate(sessionId, "document.querySelector('[data-provider=\"codex\"]').click()");
   await waitFor(
-    async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) === 1,
+    async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) >= previousSessionCount + 1,
     async () => evaluate(sessionId, "({ error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, state: document.querySelector('#session-status').dataset.state })"),
   );
   const composerState = await evaluate(
@@ -384,8 +486,12 @@ async function exerciseLiveWorkbench(sessionId, cwd) {
     async () => evaluate(sessionId, "[...document.querySelectorAll('.chat-event code')].some((label) => label.textContent === 'turn.started')"),
     async () => evaluate(sessionId, "({ error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, state: document.querySelector('#session-status').dataset.state, timeline: document.querySelector('.chat-timeline')?.innerText })"),
   );
+  const previousTabCount = await evaluate(sessionId, "document.querySelectorAll('.session-tab').length");
   await evaluate(sessionId, "document.querySelector('[data-layout-action=\"new-tab\"]').click()");
-  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.session-tab').length")) === 2);
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelectorAll('.session-tab').length")) === previousTabCount + 1,
+    "a new presentation tab",
+  );
   await evaluate(sessionId, "document.querySelector('[data-layout-action=\"split-pane\"]').click()");
   await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.workbench-pane').length")) === 2);
   const divider = await evaluate(
@@ -496,8 +602,14 @@ async function startProxy(hubPort) {
 
 async function serveStatic(path, response) {
   const relative = path === "/" ? "index.html" : path.slice(1);
-  const base = relative === "manifest.webmanifest" ? publicRoot : root;
-  const file = resolve(base, relative);
+  const [base, baseRelative] = relative === "vendor/xterm.js"
+    ? [xtermRoot, "lib/xterm.js"]
+    : relative === "vendor/xterm.css"
+      ? [xtermRoot, "css/xterm.css"]
+      : relative === "manifest.webmanifest"
+        ? [publicRoot, relative]
+        : [root, relative];
+  const file = resolve(base, baseRelative);
   if (!file.startsWith(`${base}${sep}`) && file !== base) {
     response.writeHead(404).end();
     return;
@@ -518,6 +630,7 @@ async function serveStatic(path, response) {
 function contentType(extension) {
   return new Map([
     [".html", "text/html; charset=utf-8"],
+    [".css", "text/css; charset=utf-8"],
     [".js", "text/javascript; charset=utf-8"],
     [".webmanifest", "application/manifest+json"],
   ]).get(extension) ?? "application/octet-stream";

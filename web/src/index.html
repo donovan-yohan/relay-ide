@@ -6,6 +6,7 @@
     <meta name="theme-color" content="#000000" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3C/svg%3E" />
     <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./vendor/xterm.css" />
     <title>Relay</title>
     <style>
       :root {
@@ -16,6 +17,7 @@
       }
 
       * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
       html, body { height: 100%; overflow: hidden; }
       body { margin: 0; min-width: 320px; background: #000; }
       button, input, textarea { color: inherit; font: inherit; }
@@ -36,7 +38,9 @@
       .icon-button svg { fill: none; height: 1.1rem; stroke: currentColor; stroke-linecap: square; stroke-linejoin: miter; stroke-width: 1.6; width: 1.1rem; }
       .workspace-add { border-bottom: 1px solid #302b28; display: grid; gap: 0.55rem; padding: 0.75rem 0; }
       .workspace-add[hidden] { display: none; }
-      .workspace-add__form { display: grid; gap: 0.45rem; }
+      .directory-browser { display: grid; gap: 0.45rem; min-height: 0; }
+      .directory-path { color: #9b918a; font-size: 0.72rem; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .directory-list { display: grid; gap: 0.18rem; max-height: 14rem; overflow: auto; }
       .workspace-add__actions { display: flex; gap: 0.45rem; }
       .workspace-list, .session-list { display: grid; gap: 0.18rem; list-style: none; margin: 0; padding: 0; }
       .workspace-list { margin: 0.65rem 0 0; }
@@ -79,6 +83,15 @@
       .pane-divider:hover { background: #593526; }
       .pane-divider::after { background: #52433b; content: ""; inset: 0.6rem 0.18rem; position: absolute; }
       .pane-body { min-height: 0; min-width: 0; overflow: auto; padding: clamp(0.8rem, 2vw, 1.5rem); }
+      .pane-body--terminal { overflow: hidden; padding: 0.45rem; }
+      .terminal-surface { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; min-height: 0; }
+      .terminal-status { color: #8d847d; font-size: 0.72rem; margin: 0; padding: 0.15rem 0.25rem 0.5rem; }
+      .terminal-host { background: #000; min-height: 0; overflow: hidden; }
+      .terminal-host .xterm { height: 100%; }
+      .terminal-recovery { align-items: center; border-top: 1px solid #7d4836; display: flex; flex-wrap: wrap; gap: 0.45rem; padding: 0.5rem 0.25rem 0.1rem; }
+      .terminal-recovery[hidden] { display: none; }
+      .terminal-recovery p { color: #df8a69; flex: 1 1 18rem; font-size: 0.72rem; margin: 0; }
+      .terminal-recovery button { min-height: 2rem; }
       .chat-timeline { display: grid; gap: 0.8rem; margin: 0 auto; max-width: 54rem; min-height: 100%; }
       .chat-event { border-left: 2px solid #3a332e; display: grid; gap: 0.35rem; padding: 0.4rem 0 0.4rem 0.75rem; }
       .chat-event header { align-items: center; display: flex; gap: 0.55rem; }
@@ -94,6 +107,7 @@
       .composer { border-top: 1px solid #302b28; padding: 0.75rem 1rem 1rem; }
       .composer__inner { display: grid; gap: 0.55rem; margin: 0 auto; max-width: 54rem; }
       .composer__row { align-items: end; display: flex; gap: 0.55rem; }
+      .composer__row[hidden] { display: none; }
       .composer__row textarea { flex: 1; }
       .provider-picker { align-items: center; display: flex; flex-wrap: wrap; gap: 0.5rem; }
       .provider-picker__label { color: #827971; font-size: 0.72rem; margin-right: 0.1rem; }
@@ -124,36 +138,37 @@
   </head>
   <body>
     <main class="workbench-shell" data-workspace-shell>
-      <aside class="sidebar" aria-label="Workspaces and recent conversations">
+      <aside class="sidebar" aria-label="Projects and recent Sessions">
         <header class="brand">
           <p class="brand__mark">Relay</p>
-          <button id="show-workspace-add" class="icon-button" type="button" aria-label="Add workspace" title="Add workspace">
+          <button id="show-workspace-add" class="icon-button" type="button" aria-label="Add Project" title="Add Project">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
           </button>
         </header>
 
-        <section id="workspace-add" class="workspace-add" hidden aria-label="Add workspace">
-          <p class="section-label">Workspace CWD</p>
-          <form id="workspace-form" class="workspace-add__form">
-            <label for="workspace-cwd" class="sidebar-empty">Approved local directory</label>
-            <input id="workspace-cwd" name="cwd" type="text" autocomplete="off" required />
+        <section id="workspace-add" class="workspace-add" hidden aria-label="Choose Project folder">
+          <p class="section-label">Project folder</p>
+          <div class="directory-browser">
+            <p id="directory-path" class="directory-path">Approved roots</p>
+            <nav id="directory-list" class="directory-list" aria-label="Approved node directories"></nav>
             <div class="workspace-add__actions">
-              <button type="submit">Open</button>
+              <button id="directory-up" type="button" disabled>Up</button>
+              <button id="select-directory" type="button" disabled>Select folder</button>
               <button id="cancel-workspace-add" type="button">Cancel</button>
             </div>
-          </form>
+          </div>
         </section>
 
         <section class="workspace-section" aria-labelledby="workspaces-heading">
-          <p id="workspaces-heading" class="section-label">Workspaces</p>
-          <nav id="workspace-list" class="workspace-list" aria-label="Workspaces"></nav>
-          <p id="workspace-empty" class="sidebar-empty">Sign in, then open an approved local directory.</p>
+          <p id="workspaces-heading" class="section-label">Projects</p>
+          <nav id="workspace-list" class="workspace-list" aria-label="Projects"></nav>
+          <p id="workspace-empty" class="sidebar-empty">Sign in, then choose an approved Project folder.</p>
         </section>
 
         <section class="session-section" aria-labelledby="sessions-heading">
           <p id="sessions-heading" class="section-label">Recent</p>
           <nav id="session-list" class="session-list" aria-label="Recent conversations"></nav>
-          <p id="session-empty" class="sidebar-empty">No conversations in this Workspace.</p>
+          <p id="session-empty" class="sidebar-empty">No Sessions in this Project.</p>
         </section>
 
         <details class="auth-compact">
@@ -193,6 +208,9 @@
             <button id="interrupt-session" class="icon-button" type="button" aria-label="Interrupt session" title="Interrupt session" disabled>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z" /></svg>
             </button>
+            <button id="close-terminal" class="icon-button" type="button" aria-label="Close terminal process" title="Close terminal process" hidden disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" /></svg>
+            </button>
           </div>
         </header>
 
@@ -201,8 +219,9 @@
         <footer class="composer">
           <form id="composer" class="composer__inner">
             <p id="workbench-error" class="workspace-error" aria-live="polite"></p>
-            <div class="provider-picker" aria-label="Start a provider conversation">
+            <div class="provider-picker" aria-label="Start a Session">
               <span class="provider-picker__label">Start</span>
+              <button class="provider-button" type="button" data-provider="claude">Claude Code</button>
               <button class="provider-button" type="button" data-provider="hermes">Hermes</button>
               <button class="provider-button" type="button" data-provider="codex">Codex</button>
             </div>
@@ -214,6 +233,7 @@
         </footer>
       </section>
     </main>
+    <script src="./vendor/xterm.js"></script>
     <script type="module" src="./main.js"></script>
   </body>
 </html>
