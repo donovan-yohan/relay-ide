@@ -664,6 +664,14 @@ name = "relay-node"
 version = "0.1.0"
 dependencies = [
  "relay-factory-core",
+ "relay-session",
+]
+
+[[package]]
+name = "relay-session"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

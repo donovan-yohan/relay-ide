@@ -17,11 +17,26 @@ Later issues may introduce these terms only with explicit ownership and storage 
 - `relay-node probe` prints the same record for the node identity.
 - The PWA shell renders liveness plus passkey enrollment, sign-in, typed unsupported/denied/recovery, and trusted-browser revoke controls.
 - The hub validates WebAuthn at one configured HTTPS origin, issues revocable browser sessions for protected hub actions, and denies browser sessions at the node boundary.
+- `relay-node codex-stdio-probe` owns a one-node, local `codex app-server
+  --stdio` Session seam. Its explicit exercise mode creates, resumes, prompts,
+  and cancels native Codex threads through bounded JSONL; it exposes neither a
+  network transport nor raw provider transcripts.
 
 ## Authority and data path
 
-The factory owns no process, provider, browser-control grant, cross-node, or product-state authority. The #1143 client write path is limited to server-side passkey ceremonies and browser-session revocation at the configured origin. Credentials, ceremonies, and session/device records are bounded in-memory state; no browser session becomes node authority.
+The #1143 client write path is limited to server-side passkey ceremonies and
+browser-session revocation at the configured origin. Credentials, ceremonies,
+and session/device records are bounded in-memory state; no browser session
+becomes node authority.
+
+The node owns the child-process identity and lifecycle for the Codex stdio
+seam. The adapter bounds and redacts event previews and does not persist raw
+provider transcripts, credentials, approval grants, or thread data. The PWA
+does not expose Codex control or persistence.
 
 ## Deferred scope
 
-PTY/RMUX, Codex, Hermes, provider adapters, mailbox, files, durable Workspace persistence, layout, browser-control grants, node credential rotation, cross-node behavior, and legacy API compatibility remain deferred.
+PTY/RMUX, Hermes, other provider adapters, mailbox, files, durable Workspace
+persistence, layout, browser-control grants, node credential rotation,
+cross-node behavior, approval-grant persistence, and legacy API compatibility
+remain deferred.
