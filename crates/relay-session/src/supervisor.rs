@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -63,6 +63,12 @@ struct OutboundWrite {
     complete: SyncSender<io::Result<()>>,
 }
 
+struct ReapTask {
+    child: Child,
+    writer: JoinHandle<()>,
+    reader: JoinHandle<()>,
+}
+
 /// The real, fixed-command local process transport.
 pub struct ProcessTransport {
     child: Option<Child>,
@@ -70,6 +76,8 @@ pub struct ProcessTransport {
     rx: Receiver<TransportItem>,
     writer: Option<JoinHandle<()>>,
     reader: Option<JoinHandle<()>>,
+    reap_tx: Option<Sender<ReapTask>>,
+    reaper: Option<JoinHandle<()>>,
     stopping: Arc<AtomicBool>,
 }
 
@@ -96,6 +104,18 @@ impl ProcessTransport {
         let (tx, rx) = mpsc::sync_channel(INBOUND_QUEUE_CAP);
         let (write_tx, write_rx) = mpsc::sync_channel(OUTBOUND_QUEUE_CAP);
         let stopping = Arc::new(AtomicBool::new(false));
+        let (reap_tx, reap_rx) = mpsc::channel();
+        let reaper = match thread::Builder::new()
+            .name("relay-codex-reaper".into())
+            .spawn(move || reaper_loop(reap_rx))
+        {
+            Ok(reaper) => reaper,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SessionError::Transport);
+            }
+        };
         let writer_stopping = Arc::clone(&stopping);
         let writer = match thread::Builder::new()
             .name("relay-codex-writer".into())
@@ -103,8 +123,10 @@ impl ProcessTransport {
         {
             Ok(writer) => writer,
             Err(_) => {
+                drop(reap_tx);
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = reaper.join();
                 return Err(SessionError::Transport);
             }
         };
@@ -117,9 +139,11 @@ impl ProcessTransport {
             Err(_) => {
                 stopping.store(true, Ordering::Release);
                 drop(write_tx);
+                drop(reap_tx);
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = writer.join();
+                let _ = reaper.join();
                 return Err(SessionError::Transport);
             }
         };
@@ -129,6 +153,8 @@ impl ProcessTransport {
             rx,
             writer: Some(writer),
             reader: Some(reader),
+            reap_tx: Some(reap_tx),
+            reaper: Some(reaper),
             stopping,
         })
     }
@@ -200,6 +226,17 @@ fn writer_loop(mut stdin: ChildStdin, rx: Receiver<OutboundWrite>, stopping: Arc
     }
 }
 
+/// Reap a killed child and join its IO workers without delaying the supervisor
+/// past the control operation's deadline.
+fn reaper_loop(rx: Receiver<ReapTask>) {
+    while let Ok(task) = rx.recv() {
+        let mut child = task.child;
+        let _ = child.wait();
+        let _ = task.writer.join();
+        let _ = task.reader.join();
+    }
+}
+
 /// Read one line while retaining no more than `MAX_LINE_BYTES + 1` bytes. The
 /// rest of an over-limit line is drained before the next frame is read.
 fn read_bounded_line<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> io::Result<usize> {
@@ -257,9 +294,34 @@ impl Transport for ProcessTransport {
     fn abort_write(&mut self) {
         self.stopping.store(true, Ordering::Release);
         self.write_tx.take();
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.kill();
-        }
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = child.kill();
+        let task = ReapTask {
+            child,
+            writer: self
+                .writer
+                .take()
+                .expect("live process transport has a writer"),
+            reader: self
+                .reader
+                .take()
+                .expect("live process transport has a reader"),
+        };
+        let reap_tx = self
+            .reap_tx
+            .take()
+            .expect("live process transport has a reaper");
+        let reaper = self
+            .reaper
+            .take()
+            .expect("live process transport has a reaper handle");
+        reap_tx
+            .send(task)
+            .expect("live process transport reaper is receiving");
+        drop(reap_tx);
+        drop(reaper);
     }
 
     fn items(&self) -> &Receiver<TransportItem> {
@@ -269,6 +331,7 @@ impl Transport for ProcessTransport {
     fn shutdown(&mut self) {
         self.stopping.store(true, Ordering::Release);
         self.write_tx.take();
+        self.reap_tx.take();
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -278,6 +341,9 @@ impl Transport for ProcessTransport {
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
+        }
+        if let Some(reaper) = self.reaper.take() {
+            let _ = reaper.join();
         }
     }
 }
@@ -428,7 +494,7 @@ impl<T: Transport> Supervisor<T> {
         decision: ApprovalDecision,
     ) -> Result<(), SessionError> {
         self.ensure_live()?;
-        let deadline = Instant::now() + DEFAULT_DEADLINE;
+        let deadline = self.deadline_after(DEFAULT_DEADLINE)?;
         let index = self
             .approvals
             .iter()
@@ -450,7 +516,7 @@ impl<T: Transport> Supervisor<T> {
 
     pub fn create(&mut self, deadline: Duration) -> Result<SessionId, SessionError> {
         self.ensure_live()?;
-        let overall = Instant::now() + deadline;
+        let overall = self.deadline_after(deadline)?;
         let initialize = self.send_request("initialize", INITIALIZE_PARAMS, overall)?;
         self.await_response(&initialize, overall)?;
         self.send_notification("initialized", overall)?;
@@ -468,7 +534,7 @@ impl<T: Transport> Supervisor<T> {
         deadline: Duration,
     ) -> Result<SessionId, SessionError> {
         self.ensure_live()?;
-        let overall = Instant::now() + deadline;
+        let overall = self.deadline_after(deadline)?;
         let initialize = self.send_request("initialize", INITIALIZE_PARAMS, overall)?;
         self.await_response(&initialize, overall)?;
         self.send_notification("initialized", overall)?;
@@ -487,7 +553,7 @@ impl<T: Transport> Supervisor<T> {
 
     pub fn prompt(&mut self, text: &str, deadline: Duration) -> Result<String, SessionError> {
         self.ensure_live()?;
-        let overall = Instant::now() + deadline;
+        let overall = self.deadline_after(deadline)?;
         let session = self
             .session
             .clone()
@@ -511,7 +577,7 @@ impl<T: Transport> Supervisor<T> {
 
     pub fn cancel(&mut self, turn_id: &str, deadline: Duration) -> Result<(), SessionError> {
         self.ensure_live()?;
-        let overall = Instant::now() + deadline;
+        let overall = self.deadline_after(deadline)?;
         let session = self
             .session
             .clone()
@@ -569,6 +635,12 @@ impl<T: Transport> Supervisor<T> {
             SessionStatus::Closed => Err(SessionError::Terminal(FailureKind::ProcessTerminated)),
             _ => Ok(()),
         }
+    }
+
+    fn deadline_after(&mut self, duration: Duration) -> Result<Instant, SessionError> {
+        Instant::now()
+            .checked_add(duration)
+            .ok_or_else(|| self.timeout())
     }
 
     fn send_request(
@@ -1007,6 +1079,18 @@ mod tests {
         assert_eq!(
             supervisor.prompt(&"x".repeat(MAX_LINE_BYTES - 2), DEFAULT_DEADLINE),
             Err(SessionError::Unsupported(OUTBOUND_CONTROL_LINE_TOO_LARGE))
+        );
+        assert!(supervisor.transport().writes().is_empty());
+    }
+
+    #[test]
+    fn overflowing_deadline_fails_typed_before_transport_submission() {
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_items(vec![]));
+
+        assert_eq!(supervisor.create(Duration::MAX), Err(SessionError::Timeout));
+        assert_eq!(
+            supervisor.status(),
+            &SessionStatus::Failed(FailureKind::Timeout)
         );
         assert!(supervisor.transport().writes().is_empty());
     }
