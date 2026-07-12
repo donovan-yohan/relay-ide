@@ -8,7 +8,10 @@ import { access, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, resolve, sep } from "node:path";
 
-import { devToolsEndpointFromOutput } from "./cdp-endpoint.mjs";
+import {
+  devToolsEndpointFromActivePort,
+  devToolsEndpointFromOutput,
+} from "./cdp-endpoint.mjs";
 
 
 const chromium = "/usr/bin/chromium";
@@ -20,6 +23,7 @@ const vendorFiles = new Map([
   ["/vendor/xterm.css", resolve("node_modules/@xterm/xterm/css/xterm.css")],
 ]);
 const scratch = await mkdtemp(`${tmpdir()}/relay-passkey-browser-`);
+const chromeProfile = resolve(scratch, "chrome-profile");
 const recoveryHash = createHash("sha256").update(recoveryCode).digest("hex");
 const httpsPort = await reservePort();
 const origin = `https://relay.test:${httpsPort}`;
@@ -80,13 +84,13 @@ try {
       "--no-sandbox",
       "--disable-gpu",
       "--remote-debugging-port=0",
-      `--user-data-dir=${scratch}/chrome-profile`,
+      `--user-data-dir=${chromeProfile}`,
       "--ignore-certificate-errors",
       "--host-resolver-rules=MAP relay.test 127.0.0.1",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
-  browser = await connectBrowser(chromiumProcess, captureProcessOutput(chromiumProcess));
+  browser = await connectBrowser(chromiumProcess, captureProcessOutput(chromiumProcess), chromeProfile);
   const { targetId } = await browser.command("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await browser.command("Target.attachToTarget", { targetId, flatten: true });
   await browser.command("Page.enable", {}, sessionId);
@@ -478,10 +482,10 @@ function captureProcessOutput(process_) {
   return () => output;
 }
 
-async function connectBrowser(process_, output) {
+async function connectBrowser(process_, output, profile) {
   const debuggerUrl = await waitFor(
-    () => {
-      const endpoint = devToolsEndpointFromOutput(output());
+    async () => {
+      const endpoint = (await devToolsEndpointFromProfile(profile)) ?? devToolsEndpointFromOutput(output());
       if (endpoint) return endpoint;
       if (process_.exitCode !== null || process_.signalCode !== null) {
         throw new Error(`Chromium exited before exposing a DevTools endpoint: ${processOutputSummary(process_, output())}`);
@@ -496,6 +500,14 @@ async function connectBrowser(process_, output) {
     throw new Error(`could not connect to Chromium DevTools at ${debuggerUrl}: ${processOutputSummary(process_, output())}`, {
       cause: error,
     });
+  }
+}
+
+async function devToolsEndpointFromProfile(profile) {
+  try {
+    return devToolsEndpointFromActivePort(await readFile(resolve(profile, "DevToolsActivePort"), "utf8"));
+  } catch {
+    return undefined;
   }
 }
 
