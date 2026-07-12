@@ -2,6 +2,7 @@
 members = [
   "crates/relay-factory-core",
   "crates/relay-session",
+  "crates/relay-hermes-session",
   "apps/relay-hub",
   "apps/relay-node",
 ]

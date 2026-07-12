@@ -8,6 +8,12 @@ license.workspace = true
 [dependencies]
 relay-factory-core = { path = "../../crates/relay-factory-core" }
 relay-session = { path = "../../crates/relay-session" }
+relay-hermes-session = { path = "../../crates/relay-hermes-session" }
+
+[dev-dependencies]
+base64 = "0.22"
+serde_json = "1.0"
+sha1 = "0.10"
 
 [lints]
 workspace = true
