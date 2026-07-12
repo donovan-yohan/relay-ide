@@ -29,12 +29,14 @@ export function createTerminalInputQueue({
   onError,
   maxBytes = MAX_TERMINAL_INPUT_BYTES,
   maxPendingBytes = MAX_TERMINAL_PENDING_BYTES,
+  initialPausedInput = "",
 }) {
-  let pending = "";
-  let pendingBytes = 0;
+  const restoredInput = typeof initialPausedInput === "string" ? initialPausedInput : "";
+  let pending = restoredInput;
+  let pendingBytes = encoder.encode(restoredInput).byteLength;
   let sending = false;
   let disposed = false;
-  let paused = false;
+  let paused = Boolean(restoredInput);
   let retryTimer = null;
 
   async function flush() {
@@ -93,6 +95,9 @@ export function createTerminalInputQueue({
     },
     isPaused() {
       return paused;
+    },
+    pausedInput() {
+      return paused && pending ? pending : null;
     },
     dispose() {
       disposed = true;

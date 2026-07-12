@@ -216,6 +216,47 @@ try {
     "terminal polling recovery",
   );
   await evaluate(sessionId, "window.fetch = window.relayOriginalTerminalFetch; delete window.relayOriginalTerminalFetch; delete window.relayTerminalPollFailed");
+  await evaluate(
+    sessionId,
+    `window.relayOriginalTerminalInputFetch = window.fetch; window.relayTerminalInputFailed = false; window.fetch = async (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, window.location.href); const method = init?.method ?? (typeof input === 'string' ? 'GET' : input.method); if (!window.relayTerminalInputFailed && method === 'POST' && url.pathname.endsWith('/input')) { window.relayTerminalInputFailed = true; throw new TypeError('uncertain terminal input delivery'); } return window.relayOriginalTerminalInputFetch(input, init); };`,
+  );
+  await evaluate(sessionId, "document.querySelector('.xterm-helper-textarea').focus()");
+  await browser.command("Input.insertText", { text: "saved-across-layout-render\n" }, sessionId);
+  await waitFor(
+    async () => await evaluate(sessionId, `(() => {
+      const recovery = document.querySelector('.terminal-input-recovery');
+      return recovery && !recovery.hidden && recovery.textContent.includes('input is saved');
+    })()`),
+    "saved uncertain terminal input",
+  );
+  await evaluate(sessionId, "window.fetch = window.relayOriginalTerminalInputFetch; delete window.relayOriginalTerminalInputFetch; delete window.relayTerminalInputFailed");
+  const recoveryAfterLayout = await evaluate(
+    sessionId,
+    `(() => {
+      document.querySelector('[data-action="split"]').click();
+      const recovery = document.querySelector('.pane[data-selected="true"] .terminal-input-recovery');
+      return {
+        visible: Boolean(recovery && !recovery.hidden),
+        message: recovery?.textContent,
+        controls: [...recovery?.querySelectorAll('button') ?? []].map((button) => button.textContent),
+      };
+    })()`,
+  );
+  assert.equal(recoveryAfterLayout.visible, true, "a layout render must preserve paused uncertain terminal input");
+  assert.match(recoveryAfterLayout.message, /input is saved/i);
+  assert.deepEqual(recoveryAfterLayout.controls, ["Retry saved input", "Discard saved input"]);
+  const retryStatus = await evaluate(
+    sessionId,
+    `(() => {
+      document.querySelector('.pane[data-selected="true"] .terminal-input-recovery button').click();
+      return document.querySelector('.pane[data-selected="true"] .terminal-status')?.textContent;
+    })()`,
+  );
+  assert.match(retryStatus, /Retrying saved terminal input/);
+  await waitFor(
+    async () => await evaluate(sessionId, "document.querySelector('.pane[data-selected=\"true\"] .terminal-input-recovery')?.hidden === true"),
+    "saved terminal input retry after a layout render",
+  );
   await evaluate(sessionId, "document.querySelector('.xterm-helper-textarea').focus()");
   await browser.command("Input.insertText", { text: "browser-keyboard\n" }, sessionId);
   const terminalOperations = await evaluate(
@@ -233,7 +274,6 @@ try {
         if (poll.output.some((chunk) => chunk.text.includes('browser-keyboard'))) break;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      document.querySelector('[data-action="split"]').click();
       const mirrored = [...document.querySelectorAll('.session-card code')].map((node) => node.textContent);
       return { resize, poll, mirrored };
     })()`,

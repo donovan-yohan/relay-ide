@@ -51,6 +51,7 @@ const sessionStatus = document.querySelector("#session-status");
 const trustedDevices = document.querySelector("#trusted-devices");
 let currentDeviceId = null;
 let terminalRuntime = null;
+const retainedTerminalInput = new Map();
 let claudeCreateInFlight = false;
 const resolvedClaudeSessionIds = new Set();
 let state = loadLayout();
@@ -158,7 +159,7 @@ function render() {
   renderNodeStatus();
   renderNotice();
   renderSessionIdentity();
-  disposeTerminal();
+  disposeTerminal({ preservePausedInput: true });
   renderLayout(state.layout, layoutRoot);
 
   for (const button of document.querySelectorAll("[data-action]")) {
@@ -376,6 +377,8 @@ async function closeClaudeTerminal() {
 }
 
 function mountTerminal(sessionId, host, status, inputRecovery) {
+  const retainedInput = retainedTerminalInput.get(sessionId);
+  retainedTerminalInput.delete(sessionId);
   const terminal = new window.Terminal({
     cols: 120,
     rows: 36,
@@ -399,6 +402,7 @@ function mountTerminal(sessionId, host, status, inputRecovery) {
     inputSubscription: null,
     inputQueue: null,
     inputRecovery,
+    inputRecoveryMessage: "",
     cols: 0,
     rows: 0,
   };
@@ -421,7 +425,12 @@ function mountTerminal(sessionId, host, status, inputRecovery) {
         hideTerminalInputRecovery(runtime);
       }
     },
+    initialPausedInput: retainedInput?.pending,
   });
+  if (retainedInput) {
+    runtime.status.textContent = `Input paused: ${retainedInput.message}`;
+    showTerminalInputRecovery(runtime, retainedInput.message);
+  }
   inputRecovery.retry.addEventListener("click", () => {
     if (!runtime.inputQueue?.resume()) return;
     hideTerminalInputRecovery(runtime);
@@ -447,8 +456,15 @@ function mountTerminal(sessionId, host, status, inputRecovery) {
   void pollTerminal(runtime);
 }
 
-function disposeTerminal() {
+function disposeTerminal({ preservePausedInput = false } = {}) {
   if (!terminalRuntime) return;
+  const { sessionId, inputQueue, inputRecoveryMessage } = terminalRuntime;
+  const pausedInput = preservePausedInput ? inputQueue?.pausedInput() : null;
+  if (pausedInput && sessionIds(state).includes(sessionId)) {
+    retainedTerminalInput.set(sessionId, { pending: pausedInput, message: inputRecoveryMessage });
+  } else {
+    retainedTerminalInput.delete(sessionId);
+  }
   clearTimeout(terminalRuntime.timer);
   clearTimeout(terminalRuntime.resizeTimer);
   terminalRuntime.resizeObserver?.disconnect();
@@ -459,11 +475,13 @@ function disposeTerminal() {
 }
 
 function showTerminalInputRecovery(runtime, message) {
+  runtime.inputRecoveryMessage = message;
   runtime.inputRecovery.message.textContent = message;
   runtime.inputRecovery.root.hidden = false;
 }
 
 function hideTerminalInputRecovery(runtime) {
+  runtime.inputRecoveryMessage = "";
   runtime.inputRecovery.message.textContent = "";
   runtime.inputRecovery.root.hidden = true;
 }
