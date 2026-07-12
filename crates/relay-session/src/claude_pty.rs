@@ -75,6 +75,7 @@ const MAX_ROWS: u16 = 300;
 const MIN_COLS: u16 = 20;
 const MAX_COLS: u16 = 500;
 const PTY_TERMINATION_GRACE: Duration = Duration::from_millis(250);
+const PTY_REAPER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeOwnerContext {
@@ -266,6 +267,10 @@ impl PtyForegroundGroup {
         let mut fds = [PollFd::new(&self.leader_pidfd, PollFlags::IN)];
         poll(&mut fds, Some(&Timespec::default())).is_ok_and(|ready| ready == 0)
     }
+
+    fn is_signalable(&self) -> bool {
+        self.is_live()
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -389,17 +394,13 @@ impl NodePtyRuntime {
             // a Relay-owned group. portable-pty supplies this on Unix; a
             // missing identity is a fail-closed transport setup failure.
             let _ = child.kill();
-            let _ = child.wait();
+            reap_child(child);
             return Err(ClaudePtyError::Transport);
         }
         let reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(_) => {
-                terminate_child(
-                    &mut child,
-                    Some(pair.master.as_ref()),
-                    process_group.as_ref(),
-                );
+                terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
                 return Err(ClaudePtyError::Transport);
             }
         };
@@ -410,11 +411,7 @@ impl NodePtyRuntime {
         {
             Ok(input) => input,
             Err(error) => {
-                terminate_child(
-                    &mut child,
-                    Some(pair.master.as_ref()),
-                    process_group.as_ref(),
-                );
+                terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
                 return Err(error);
             }
         };
@@ -432,11 +429,7 @@ impl NodePtyRuntime {
             Ok(reader_thread) => reader_thread,
             Err(error) => {
                 input.finish();
-                terminate_child(
-                    &mut child,
-                    Some(pair.master.as_ref()),
-                    process_group.as_ref(),
-                );
+                terminate_child(child, Some(pair.master.as_ref()), process_group.as_ref());
                 return Err(error);
             }
         };
@@ -715,10 +708,9 @@ impl ManagedSession {
         if let Some(input) = input {
             input.finish();
         }
-        if let Some(child) = self.child.as_mut() {
+        if let Some(child) = self.child.take() {
             terminate_child(child, self.master.as_deref(), process_group.as_ref());
         }
-        self.child.take();
         self.master.take();
         drop(process_group);
         if let Some(reader) = self.reader.take() {
@@ -936,23 +928,12 @@ impl PtyOwnership {
         })
     }
 
-    fn signal_groups(
-        &self,
-        master: Option<&(dyn MasterPty + Send)>,
-        foreground: Option<&PtyForegroundGroup>,
-        signal: Signal,
-    ) {
+    fn signal_groups(&self, foreground: Option<&PtyForegroundGroup>, signal: Signal) {
         // The direct child remains waitable until close finishes, keeping the
-        // original Relay-owned group identifier reserved throughout. A
-        // foreground leader can exit independently, so do not signal its
-        // cached numeric group after its pidfd reports exit unless the PTY
-        // still resolves that exact group as foreground.
-        if let Some(foreground) = foreground.filter(|foreground| {
-            foreground.is_live()
-                || master
-                    .and_then(MasterPty::process_group_leader)
-                    .is_some_and(|current| current == foreground.process_group)
-        }) {
+        // original Relay-owned group identifier reserved throughout. Never
+        // re-authorize a foreground group by its numeric PGID after its pidfd
+        // reports leader exit: that number can be stale or reused.
+        if let Some(foreground) = foreground.filter(|foreground| foreground.is_signalable()) {
             let _ = killpg(Pid::from_raw(foreground.process_group), signal);
         }
         let _ = killpg(Pid::from_raw(self.process_group), signal);
@@ -985,25 +966,89 @@ fn session_process_group(process_id: u32, master: &(dyn MasterPty + Send)) -> Op
 }
 
 fn terminate_child(
-    child: &mut Box<dyn Child + Send + Sync>,
+    mut child: Box<dyn Child + Send + Sync>,
     master: Option<&(dyn MasterPty + Send)>,
     ownership: Option<&PtyOwnership>,
 ) {
     #[cfg(target_os = "linux")]
     if let Some(ownership) = ownership {
         let foreground = ownership.capture_foreground(master);
-        ownership.signal_groups(master, foreground.as_ref(), Signal::SIGTERM);
+        ownership.signal_groups(foreground.as_ref(), Signal::SIGTERM);
         thread::sleep(PTY_TERMINATION_GRACE);
-        ownership.signal_groups(master, foreground.as_ref(), Signal::SIGKILL);
+        ownership.signal_groups(foreground.as_ref(), Signal::SIGKILL);
     }
     let _ = child.kill();
-    let _ = child.wait();
+    reap_child(child);
+}
+
+fn reap_child(mut child: Box<dyn Child + Send + Sync>) {
+    let _ = thread::Builder::new()
+        .name("relay-claude-pty-reaper".into())
+        .spawn(move || {
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) | Err(_) => thread::sleep(PTY_REAPER_POLL_INTERVAL),
+                }
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portable_pty::{ChildKiller, ExitStatus};
     use std::time::{Duration, Instant};
+
+    #[derive(Debug)]
+    struct BlockingChild {
+        release: Arc<AtomicBool>,
+        poll_started: Arc<AtomicBool>,
+        reaped: Arc<AtomicBool>,
+    }
+
+    #[derive(Debug)]
+    struct NoopChildKiller;
+
+    impl ChildKiller for NoopChildKiller {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(Self)
+        }
+    }
+
+    impl ChildKiller for BlockingChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(NoopChildKiller)
+        }
+    }
+
+    impl Child for BlockingChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            self.poll_started.store(true, Ordering::Release);
+            if self.release.load(Ordering::Acquire) {
+                self.reaped.store(true, Ordering::Release);
+                Ok(Some(ExitStatus::with_exit_code(0)))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            panic!("the reaper must poll try_wait instead of blocking on wait")
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
 
     #[test]
     fn owner_context_is_explicit_and_not_process_home() {
@@ -1644,5 +1689,61 @@ mod tests {
             "a blocked PTY writer must not wedge owner-session reaping"
         );
         assert!(!runtime.sessions.contains_key(session.as_str()));
+    }
+
+    #[test]
+    fn reaper_polls_a_blocked_child_without_waiting() {
+        let release = Arc::new(AtomicBool::new(false));
+        let poll_started = Arc::new(AtomicBool::new(false));
+        let reaped = Arc::new(AtomicBool::new(false));
+        let child = Box::new(BlockingChild {
+            release: Arc::clone(&release),
+            poll_started: Arc::clone(&poll_started),
+            reaped: Arc::clone(&reaped),
+        });
+
+        let started = Instant::now();
+        reap_child(child);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "the caller must not wait for a blocked child reap"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !poll_started.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() <= deadline,
+                "the detached reaper never started child.try_wait"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        release.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !reaped.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() <= deadline,
+                "the detached reaper never observed child termination"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dead_foreground_leader_is_not_signalable_from_numeric_group_identity() {
+        use std::os::unix::net::UnixStream;
+
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        writer.write_all(&[1]).unwrap();
+        let foreground = PtyForegroundGroup {
+            process_group: 1,
+            leader_pidfd: reader.into(),
+        };
+
+        assert!(
+            !foreground.is_signalable(),
+            "a readable pidfd must not authorize a fallback numeric killpg"
+        );
     }
 }
