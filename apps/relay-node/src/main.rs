@@ -1,12 +1,16 @@
 use std::{
     env,
     process::ExitCode,
+    thread,
     time::{Duration, Instant},
 };
 
 use relay_factory_core::{ServiceIdentity, configured_identity, health_json};
 use relay_hermes_session::{
     AdapterError, EventKind, GatewayEndpoint, HermesSessionAdapter, SessionStatus,
+};
+use relay_session::claude_pty::{
+    ClaudePtyError, ClaudePtyStatus, NodePtyRuntime, OwnerSessionCloseDisposition,
 };
 use relay_session::{
     DEFAULT_DEADLINE, ProcessTransport, SessionError, Supervisor,
@@ -32,6 +36,7 @@ fn main() -> ExitCode {
         [command, probe_arguments @ ..] if command == "codex-stdio-probe" => {
             codex_stdio_probe(probe_arguments)
         }
+        [command] if command == "claude-pty-probe" => claude_pty_probe(),
         [command, smoke_arguments @ ..] if command == "hermes-smoke" => {
             match run_hermes_smoke(smoke_arguments) {
                 Ok(summary) => {
@@ -46,11 +51,100 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: relay-node <probe [--identity node]|codex-stdio-probe [--negative-transport|--handshake|--exercise]|hermes-smoke --gateway-url ws://127.0.0.1:PORT/api/ws?token=... [--cwd PATH] [--prompt TEXT] [--observe-ms 0..30000]>"
+                "usage: relay-node <probe [--identity node]|codex-stdio-probe [--negative-transport|--handshake|--exercise]|claude-pty-probe|hermes-smoke --gateway-url ws://127.0.0.1:PORT/api/ws?token=... [--cwd PATH] [--prompt TEXT] [--observe-ms 0..30000]>"
             );
             ExitCode::from(64)
         }
     }
+}
+
+/// Opt-in owner-context smoke for the fixed Claude PTY runtime. The probe
+/// deliberately emits lifecycle facts only: never terminal bytes, OAuth data,
+/// or a Session handle.
+fn claude_pty_probe() -> ExitCode {
+    let mut runtime = NodePtyRuntime::default();
+    let session = match runtime.create("relay-node-probe") {
+        Ok(session) => session,
+        Err(error) => {
+            let code = error.code();
+            return claude_pty_probe_error_after_drain(&mut runtime, code);
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        match runtime.poll(session.as_str(), "relay-node-probe", 0) {
+            Ok(snapshot) if snapshot.status != ClaudePtyStatus::Starting => break snapshot.status,
+            Ok(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
+            Ok(_) => {
+                return claude_pty_probe_error_after_drain(&mut runtime, "startup_timeout");
+            }
+            Err(error) => {
+                let code = error.code();
+                return claude_pty_probe_error_after_drain(&mut runtime, code);
+            }
+        }
+    };
+    let resize = runtime.resize(session.as_str(), "relay-node-probe", 100, 40);
+    let interrupt = runtime.interrupt(session.as_str(), "relay-node-probe");
+    let close = runtime.request_close(session.as_str(), "relay-node-probe");
+    let operation_error = resize
+        .err()
+        .or_else(|| interrupt.err())
+        .or_else(|| close.err());
+    if !drain_claude_pty_runtime(&mut runtime) {
+        return claude_pty_probe_error(ClaudePtyError::TeardownFailed.code());
+    }
+    if let Some(error) = operation_error {
+        return claude_pty_probe_error(error.code());
+    }
+    match runtime.poll(session.as_str(), "relay-node-probe", 0) {
+        Ok(closed) if closed.status == ClaudePtyStatus::Closed => {
+            println!(
+                r#"{{"adapter":"claude-pty","operations":["spawn","resize","interrupt","close"],"ownerHome":"/home/donovanyohan","startup":"{}","status":"ok"}}"#,
+                status.code()
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(_) => claude_pty_probe_error("close_failed"),
+        Err(error) => claude_pty_probe_error(error.code()),
+    }
+}
+
+fn claude_pty_probe_error_after_drain(runtime: &mut NodePtyRuntime, code: &str) -> ExitCode {
+    if drain_claude_pty_runtime(runtime) {
+        claude_pty_probe_error(code)
+    } else {
+        claude_pty_probe_error(ClaudePtyError::TeardownFailed.code())
+    }
+}
+
+fn drain_claude_pty_runtime(runtime: &mut NodePtyRuntime) -> bool {
+    const BUDGET: Duration = Duration::from_secs(5);
+    const POLL: Duration = Duration::from_millis(10);
+
+    let deadline = Instant::now() + BUDGET;
+    runtime.begin_shutdown();
+    loop {
+        for termination in runtime.claim_due_terminations() {
+            let outcome = termination.finish();
+            runtime.complete_termination(outcome);
+        }
+        if runtime.shutdown_disposition() == OwnerSessionCloseDisposition::Complete {
+            return true;
+        }
+        if runtime.has_terminal_failures() {
+            return false;
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        thread::sleep(remaining.min(POLL));
+    }
+}
+
+fn claude_pty_probe_error(code: &str) -> ExitCode {
+    eprintln!("{{\"error\":{{\"code\":\"{code}\"}}}}");
+    ExitCode::FAILURE
 }
 
 /// An executable guard that proves the adapter only constructs local stdio
@@ -245,5 +339,33 @@ impl HermesSmokeOptions {
             prompt,
             observe_ms,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_drain_reaps_the_fixture_and_latches_admission() {
+        let mut runtime = NodePtyRuntime::test_fixture_cat();
+        let session = runtime
+            .begin_create("relay-node-probe")
+            .into_result()
+            .expect("the fixed probe fixture starts");
+
+        assert!(drain_claude_pty_runtime(&mut runtime));
+        assert_eq!(
+            runtime
+                .poll(session.as_str(), "relay-node-probe", 0)
+                .expect("the drained terminal truth remains observable")
+                .status,
+            ClaudePtyStatus::Closed
+        );
+        assert_eq!(
+            runtime.begin_create("relay-node-probe").into_result(),
+            Err(ClaudePtyError::Unavailable),
+            "the controlled drain must reject later admission"
+        );
     }
 }

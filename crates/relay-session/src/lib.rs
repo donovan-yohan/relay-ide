@@ -1,5 +1,4 @@
-//! `relay-session`: a minimal, one-node **supervised Codex app-server session
-//! adapter** (Relay issue #1140).
+//! `relay-session`: minimal, one-node supervised Session adapters.
 //!
 //! ## What this crate is
 //!
@@ -16,6 +15,8 @@
 //!   prompt / cancel / close lifecycle, with monotonic arrival sequencing,
 //!   bounded queues, backpressure/lag signals, and typed degraded/failed states
 //!   with bounded recovery.
+//! - [`claude_pty`] — the fixed node-owner Claude Code PTY runtime with bounded
+//!   output, opaque handles, resize/interrupt control, and explicit close.
 //!
 //! ## What this crate is not
 //!
@@ -24,6 +25,7 @@
 //! persist raw provider transcripts. Diagnostic previews are bounded and
 //! redacted.
 
+pub mod claude_pty;
 pub mod codex;
 pub mod contract;
 pub mod jsonl;
