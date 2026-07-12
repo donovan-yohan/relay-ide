@@ -49,7 +49,7 @@ The adapter assigns monotonic arrival sequences and emits only provider-neutral 
 
 | Hermes rich-client event | Neutral category | Stable label | Preview policy |
 | --- | --- | --- | --- |
-| `gateway.ready`, `session.info` | lifecycle | `gateway_ready`, `session_info` | fixed text |
+| `gateway.ready`, `session.info`, `session.title` | lifecycle | `gateway_ready`, `session_info`, `session_title` | fixed text; titles are not retained |
 | `message.start`, `message.delta`, `message.complete` | status | `message_started`, `message_delta`, `message_complete` | fixed text; no transcript |
 | `thinking.delta`, `reasoning.delta`, `reasoning.available` | status | `reasoning` | always `redacted reasoning` |
 | `status.update` | status | `status_update` | fixed text |

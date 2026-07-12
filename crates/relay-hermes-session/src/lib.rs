@@ -666,6 +666,11 @@ impl HermesSessionAdapter {
                 "session_info",
                 "session information".to_owned(),
             ),
+            "session.title" => (
+                EventKind::Lifecycle,
+                "session_title",
+                "session title updated".to_owned(),
+            ),
             "message.start" => {
                 self.status = SessionStatus::Working;
                 (
@@ -1087,18 +1092,19 @@ fn read_websocket_frame(
         return Err(AdapterError::MalformedRpc);
     }
     let opcode = header[0] & 0x0F;
-    let mut length = u64::from(header[1] & 0x7F);
-    if length == 126 {
+    let length_marker = header[1] & 0x7F;
+    if opcode & 0x08 != 0 && length_marker >= 126 {
+        return Err(AdapterError::MalformedRpc);
+    }
+    let mut length = u64::from(length_marker);
+    if length_marker == 126 {
         let mut bytes = [0_u8; 2];
         read_exact_until(stream, &mut bytes, deadline)?;
         length = u64::from(u16::from_be_bytes(bytes));
-    } else if length == 127 {
+    } else if length_marker == 127 {
         let mut bytes = [0_u8; 8];
         read_exact_until(stream, &mut bytes, deadline)?;
         length = u64::from_be_bytes(bytes);
-    }
-    if opcode & 0x08 != 0 && length > 125 {
-        return Err(AdapterError::MalformedRpc);
     }
     if length > MAX_FRAME_BYTES as u64 {
         return Err(AdapterError::PayloadTooLarge);
@@ -1326,26 +1332,29 @@ mod tests {
     }
 
     #[test]
-    fn control_frames_cannot_use_extended_lengths() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            accept_upgrade(&mut stream);
-            stream.write_all(&[0x89, 126, 0, 126]).unwrap();
-            stream.flush().unwrap();
-        });
+    fn control_frames_reject_extended_length_markers_before_length_decode() {
+        for (opcode, marker) in [(0x89, 126), (0x8A, 127), (0x8B, 126)] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                accept_upgrade(&mut stream);
+                stream.write_all(&[opcode, marker]).unwrap();
+                stream.flush().unwrap();
+            });
 
-        let endpoint =
-            GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
-                .unwrap();
-        let mut adapter = HermesSessionAdapter::connect(endpoint).unwrap();
+            let endpoint =
+                GatewayEndpoint::parse(&format!("ws://127.0.0.1:{port}/api/ws?token=test-token"))
+                    .unwrap();
+            let mut adapter = HermesSessionAdapter::connect(endpoint).unwrap();
 
-        assert_eq!(
-            adapter.pump(Duration::from_millis(100)),
-            Err(AdapterError::MalformedRpc)
-        );
-        server.join().unwrap();
+            assert_eq!(
+                adapter.pump(Duration::from_millis(100)),
+                Err(AdapterError::MalformedRpc),
+                "opcode {opcode:#x} with marker {marker} must fail before an extended-length read"
+            );
+            server.join().unwrap();
+        }
     }
 
     #[test]

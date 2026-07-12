@@ -31,6 +31,26 @@ fn unsupported_gateway_events_are_visible_and_never_silently_dropped() {
 }
 
 #[test]
+fn session_title_is_a_supported_lifecycle_event_without_title_retention() {
+    let mut adapter = HermesSessionAdapter::scripted();
+
+    adapter
+        .ingest_json(
+            r#"{"jsonrpc":"2.0","method":"event","params":{"type":"session.title","session_id":"live-1","payload":{"title":"do-not-retain"}}}"#,
+        )
+        .expect("session title is a supported lifecycle event");
+
+    let events = adapter.drain_events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].session_id, "live-1");
+    assert_eq!(events[0].kind, EventKind::Lifecycle);
+    assert_eq!(events[0].label, "session_title");
+    assert_eq!(events[0].preview, "session title updated");
+    assert_eq!(adapter.stream_signals().unsupported, 0);
+    assert_eq!(adapter.status(), SessionStatus::Idle);
+}
+
+#[test]
 fn bounded_queue_reports_replay_gap_instead_of_lying_about_complete_history() {
     let mut adapter = HermesSessionAdapter::scripted_with_queue_limit(2);
 
