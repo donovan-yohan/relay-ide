@@ -39,6 +39,10 @@ pub struct Frame {
     pub result_thread_id: Option<String>,
     /// For a successful response, the `result.turn.id` string, if present.
     pub result_turn_id: Option<String>,
+    /// Whether this frame carries a structured top-level `params` member.
+    pub has_params: bool,
+    /// For a turn notification, the `params.turn.id` string, if present.
+    pub event_turn_id: Option<String>,
     /// Bounded, secret-redacted diagnostic preview of the line.
     pub preview: String,
 }
@@ -101,18 +105,30 @@ pub fn scan_line(line: &[u8]) -> Result<Frame, ScanError> {
         Some(_) => return Err(ScanError::Malformed),
     };
     let id = match object.get("id") {
-        None | Some(Value::Null) => None,
-        Some(id @ (Value::String(_) | Value::Number(_))) => {
+        None => None,
+        Some(Value::String(id)) => {
+            Some(serde_json::to_string(id).map_err(|_| ScanError::Malformed)?)
+        }
+        Some(Value::Number(id)) if id.is_i64() || id.is_u64() => {
             Some(serde_json::to_string(id).map_err(|_| ScanError::Malformed)?)
         }
         Some(_) => return Err(ScanError::Malformed),
     };
     let has_result = object.contains_key("result");
     let has_error = object.contains_key("error");
+    let params = object.get("params");
+    let has_params = params.is_some();
+    let params_are_structured = params.is_none_or(|params| params.is_object() || params.is_array());
+    let json_rpc_2 =
+        matches!(object.get("jsonrpc"), Some(Value::String(version)) if version == "2.0");
     let class = match (&method, &id) {
-        (Some(_), Some(_)) => FrameClass::ServerRequest,
-        (Some(_), None) => FrameClass::Notification,
-        (None, Some(_)) if has_result || has_error => FrameClass::Response { ok: has_result },
+        (Some(_), Some(_)) if json_rpc_2 && !has_result && !has_error && params_are_structured => {
+            FrameClass::ServerRequest
+        }
+        (Some(_), None) if !has_result && !has_error => FrameClass::Notification,
+        (None, Some(_)) if json_rpc_2 && (has_result != has_error) => {
+            FrameClass::Response { ok: has_result }
+        }
         _ => return Err(ScanError::Malformed),
     };
 
@@ -126,12 +142,20 @@ pub fn scan_line(line: &[u8]) -> Result<Frame, ScanError> {
         (None, None)
     };
 
+    let event_turn_id = if matches!(class, FrameClass::Notification) {
+        nested_result_id(params, "turn")
+    } else {
+        None
+    };
+
     Ok(Frame {
         class,
         method,
         id,
         result_thread_id,
         result_turn_id,
+        has_params,
+        event_turn_id,
         preview: redacted_preview(trimmed),
     })
 }
@@ -451,6 +475,21 @@ mod tests {
             scan_line(br#"{"id":{},"result":{}}"#),
             Err(ScanError::Malformed)
         );
+    }
+
+    #[test]
+    fn unsupported_json_rpc_request_and_response_shapes_are_rejected() {
+        let invalid: &[&[u8]] = &[
+            br#"{"id":1,"result":{}}"#,
+            br#"{"jsonrpc":"2.0","id":1.5,"result":{}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"result":{},"error":{}}"#,
+            br#"{"jsonrpc":"2.0","id":1.5,"method":"item/fileChange/requestApproval","params":{}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"item/fileChange/requestApproval","params":"not-structured"}"#,
+        ];
+
+        for line in invalid {
+            assert_eq!(scan_line(line), Err(ScanError::Malformed));
+        }
     }
 
     #[test]

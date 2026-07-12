@@ -281,6 +281,7 @@ pub struct Supervisor<T: Transport> {
     degraded_count: u64,
     session: Option<SessionId>,
     active_turn: Option<String>,
+    completed_turns: VecDeque<String>,
 }
 
 impl<T: Transport> Supervisor<T> {
@@ -296,6 +297,7 @@ impl<T: Transport> Supervisor<T> {
             degraded_count: 0,
             session: None,
             active_turn: None,
+            completed_turns: VecDeque::with_capacity(EVENT_QUEUE_CAP),
         }
     }
 
@@ -406,8 +408,13 @@ impl<T: Transport> Supervisor<T> {
         );
         let turn = self.send_request("turn/start", &params)?;
         let turn_id = self.await_result_turn_id(&turn, Instant::now() + deadline)?;
-        self.active_turn = Some(turn_id.clone());
-        self.status = SessionStatus::Working;
+        if self.take_completed_turn(&turn_id) {
+            self.active_turn = None;
+            self.status = SessionStatus::Idle;
+        } else {
+            self.active_turn = Some(turn_id.clone());
+            self.status = SessionStatus::Working;
+        }
         Ok(turn_id)
     }
 
@@ -418,7 +425,9 @@ impl<T: Transport> Supervisor<T> {
             .clone()
             .ok_or(SessionError::Unsupported("no active session"))?;
         if self.active_turn.as_deref() != Some(turn_id) {
-            self.record_degraded(DegradedReason::CancellationRace);
+            if let Some(error) = self.record_degraded(DegradedReason::CancellationRace) {
+                return Err(error);
+            }
             return Err(SessionError::Raced(DegradedReason::CancellationRace));
         }
         let params = format!(
@@ -438,7 +447,9 @@ impl<T: Transport> Supervisor<T> {
             // a reason to fabricate successful cancellation.
             Err(SessionError::Unsupported(_)) => {
                 self.active_turn = None;
-                self.record_degraded(DegradedReason::CancellationRace);
+                if let Some(error) = self.record_degraded(DegradedReason::CancellationRace) {
+                    return Err(error);
+                }
                 Err(SessionError::Raced(DegradedReason::CancellationRace))
             }
             Err(error) => Err(error),
@@ -490,6 +501,7 @@ impl<T: Transport> Supervisor<T> {
 
     fn await_response(&mut self, id: &str, deadline: Instant) -> Result<(), SessionError> {
         loop {
+            self.ensure_live()?;
             match self.next_response_or_event(id, deadline)? {
                 Some(true) => return Ok(()),
                 Some(false) => return Err(SessionError::Unsupported("provider error response")),
@@ -521,6 +533,7 @@ impl<T: Transport> Supervisor<T> {
         field: ResultField,
     ) -> Result<String, SessionError> {
         loop {
+            self.ensure_live()?;
             let remaining = self.remaining(deadline)?;
             match self.transport.items().recv_timeout(remaining) {
                 Ok(TransportItem::Line(Ok(frame))) if is_response_for(&frame, id) => {
@@ -578,17 +591,18 @@ impl<T: Transport> Supervisor<T> {
     }
 
     fn absorb(&mut self, item: TransportItem) -> Option<SessionError> {
+        if self.status.is_terminal() {
+            return self.ensure_live().err();
+        }
         match item {
             TransportItem::Exit => Some(self.process_terminated()),
             TransportItem::Line(Err(ScanError::OverLimit { .. })) => {
                 self.signals.over_limit += 1;
-                self.record_degraded(DegradedReason::OverLimitFrame);
-                None
+                self.record_degraded(DegradedReason::OverLimitFrame)
             }
             TransportItem::Line(Err(ScanError::Malformed)) => {
                 self.signals.malformed += 1;
-                self.record_degraded(DegradedReason::MalformedFrame);
-                None
+                self.record_degraded(DegradedReason::MalformedFrame)
             }
             TransportItem::Line(Err(ScanError::Empty)) => None,
             TransportItem::Line(Ok(frame)) => {
@@ -598,6 +612,14 @@ impl<T: Transport> Supervisor<T> {
                         frame.method.as_deref().and_then(approval_kind_for_method),
                     )
                 {
+                    if !frame.has_params {
+                        self.enqueue_event(
+                            EventKind::Diagnostic,
+                            DegradedReason::UnsupportedApproval.code(),
+                            &frame,
+                        );
+                        return self.record_degraded(DegradedReason::UnsupportedApproval);
+                    }
                     self.enqueue_approval(
                         ApprovalRequest {
                             id: ApprovalId::new(id),
@@ -611,10 +633,7 @@ impl<T: Transport> Supervisor<T> {
                     Mapped::Event { kind, label } => {
                         self.enqueue_event(kind, label, &frame);
                         if label == "turn.completed" {
-                            self.active_turn = None;
-                            if !self.status.is_terminal() {
-                                self.status = SessionStatus::Idle;
-                            }
+                            return self.record_turn_completed(frame.event_turn_id.as_deref());
                         }
                     }
                     Mapped::Response { .. } => {}
@@ -628,12 +647,47 @@ impl<T: Transport> Supervisor<T> {
                             EventKind::Unsupported
                         };
                         self.enqueue_event(kind, reason.code(), &frame);
-                        self.record_degraded(reason);
+                        return self.record_degraded(reason);
                     }
                 }
                 None
             }
         }
+    }
+
+    fn record_turn_completed(&mut self, turn_id: Option<&str>) -> Option<SessionError> {
+        let Some(turn_id) = turn_id else {
+            return self.record_degraded(DegradedReason::UnsupportedEvent);
+        };
+        if self.active_turn.as_deref() == Some(turn_id) {
+            self.active_turn = None;
+            if !self.status.is_terminal() {
+                self.status = SessionStatus::Idle;
+            }
+            return None;
+        }
+        if self.completed_turns.len() >= EVENT_QUEUE_CAP {
+            self.completed_turns.pop_front();
+            self.signals.dropped += 1;
+            self.signals.backpressured = true;
+            if self.signals.dropped > DROP_TOLERANCE {
+                self.status = SessionStatus::Failed(FailureKind::QueueOverflow);
+                return Some(SessionError::Terminal(FailureKind::QueueOverflow));
+            }
+            if let Some(error) = self.record_degraded(DegradedReason::Backpressure) {
+                return Some(error);
+            }
+        }
+        self.completed_turns.push_back(turn_id.to_owned());
+        None
+    }
+
+    fn take_completed_turn(&mut self, turn_id: &str) -> bool {
+        self.completed_turns
+            .iter()
+            .position(|completed| completed == turn_id)
+            .and_then(|index| self.completed_turns.remove(index))
+            .is_some()
     }
 
     fn enqueue_event(&mut self, kind: EventKind, label: &str, frame: &Frame) {
@@ -670,12 +724,16 @@ impl<T: Transport> Supervisor<T> {
         self.enqueue_event(EventKind::ApprovalRequest, "approval.request", frame);
     }
 
-    fn record_degraded(&mut self, reason: DegradedReason) {
+    fn record_degraded(&mut self, reason: DegradedReason) -> Option<SessionError> {
         self.degraded_count += 1;
         if self.degraded_count > DEGRADED_TOLERANCE {
             self.status = SessionStatus::Failed(FailureKind::ProtocolViolation);
+            Some(SessionError::Terminal(FailureKind::ProtocolViolation))
         } else if !self.status.is_terminal() {
             self.status = SessionStatus::Degraded(reason);
+            None
+        } else {
+            None
         }
     }
 }
@@ -779,6 +837,43 @@ mod tests {
     }
 
     #[test]
+    fn degraded_frames_past_tolerance_abort_active_await_without_later_idle() {
+        let mut items: Vec<_> = (0..=DEGRADED_TOLERANCE)
+            .map(|_| TransportItem::Line(Err(ScanError::Malformed)))
+            .collect();
+        items.push(TransportItem::Line(scan_line(response(1, "{}").as_bytes())));
+        items.push(TransportItem::Line(scan_line(
+            response(2, "{\"thread\":{\"id\":\"thread-1\"}}").as_bytes(),
+        )));
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_items(items));
+
+        assert_eq!(
+            supervisor.create(DEFAULT_DEADLINE),
+            Err(SessionError::Terminal(FailureKind::ProtocolViolation))
+        );
+        assert_eq!(
+            supervisor.status(),
+            &SessionStatus::Failed(FailureKind::ProtocolViolation)
+        );
+    }
+
+    #[test]
+    fn terminal_protocol_violation_survives_followup_transport_exit() {
+        let mut items: Vec<_> = (0..=DEGRADED_TOLERANCE)
+            .map(|_| TransportItem::Line(Err(ScanError::Malformed)))
+            .collect();
+        items.push(TransportItem::Exit);
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_items(items));
+
+        supervisor.pump();
+
+        assert_eq!(
+            supervisor.status(),
+            &SessionStatus::Failed(FailureKind::ProtocolViolation)
+        );
+    }
+
+    #[test]
     fn output_flood_sheds_oldest_and_signals_backpressure() {
         let items = (0..EVENT_QUEUE_CAP + 10).map(|_| {
             TransportItem::Line(Ok(scan_line(
@@ -810,8 +905,25 @@ mod tests {
     }
 
     #[test]
+    fn approval_without_params_is_rejected_before_approval_handling() {
+        let request =
+            b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"item/fileChange/requestApproval\"}";
+        let mut supervisor =
+            Supervisor::new(ScriptedTransport::from_items(vec![TransportItem::Line(
+                scan_line(request),
+            )]));
+
+        supervisor.pump();
+
+        assert!(supervisor.next_approval().is_none());
+        let event = supervisor.next_event().unwrap();
+        assert_eq!(event.kind, EventKind::Diagnostic);
+        assert_eq!(event.label, DegradedReason::UnsupportedApproval.code());
+    }
+
+    #[test]
     fn unsupported_server_request_is_diagnostic_not_auto_approved() {
-        let request = b"{\"id\":9,\"method\":\"item/permissions/requestApproval\",\"params\":{}}";
+        let request = b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"item/permissions/requestApproval\",\"params\":{}}";
         let mut supervisor =
             Supervisor::new(ScriptedTransport::from_items(vec![TransportItem::Line(
                 scan_line(request),
@@ -821,6 +933,27 @@ mod tests {
         assert_eq!(event.kind, EventKind::Diagnostic);
         assert_eq!(event.label, DegradedReason::UnsupportedApproval.code());
         assert!(supervisor.next_approval().is_none());
+    }
+
+    #[test]
+    fn completion_before_turn_start_response_is_not_cancellable() {
+        let completion = "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"turn\":{\"id\":\"turn-1\"}}}";
+        let start_response = response(1, "{\"turn\":{\"id\":\"turn-1\"}}");
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_lines([
+            completion,
+            start_response.as_str(),
+        ]));
+        supervisor.session = Some(SessionId::new("thread-1"));
+
+        assert_eq!(
+            supervisor.prompt("hello", DEFAULT_DEADLINE).unwrap(),
+            "turn-1"
+        );
+        assert_eq!(supervisor.status(), &SessionStatus::Idle);
+        assert_eq!(
+            supervisor.cancel("turn-1", DEFAULT_DEADLINE),
+            Err(SessionError::Raced(DegradedReason::CancellationRace))
+        );
     }
 
     #[test]

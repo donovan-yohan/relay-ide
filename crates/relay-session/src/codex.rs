@@ -294,9 +294,10 @@ mod tests {
 
     #[test]
     fn only_documented_server_requests_surface_as_approvals() {
-        let frame =
-            scan_line(br#"{"id":5,"method":"item/fileChange/requestApproval","params":{}}"#)
-                .unwrap();
+        let frame = scan_line(
+            br#"{"jsonrpc":"2.0","id":5,"method":"item/fileChange/requestApproval","params":{}}"#,
+        )
+        .unwrap();
         assert_eq!(
             map_frame(&frame),
             Mapped::Event {
