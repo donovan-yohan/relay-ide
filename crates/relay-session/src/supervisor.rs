@@ -600,11 +600,12 @@ impl<T: Transport> Supervisor<T> {
                 self.status = SessionStatus::Idle;
                 Ok(())
             }
-            // The real app-server rejects an interrupt that loses to terminal
-            // completion. This is observable as a provider error response, not
-            // a reason to fabricate successful cancellation.
-            Err(SessionError::Unsupported(_)) => {
-                self.active_turn = None;
+            // During response waiting, only a matching completion clears the
+            // active turn. That validates this race; other provider errors
+            // preserve their typed error and active-turn state.
+            Err(SessionError::Unsupported("provider error response"))
+                if self.active_turn.is_none() =>
+            {
                 if let Some(error) = self.record_degraded(DegradedReason::CancellationRace) {
                     return Err(error);
                 }
@@ -1295,24 +1296,53 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_races_are_typed() {
-        let mut inactive = Supervisor::new(ScriptedTransport::from_items(vec![]));
-        inactive.session = Some(SessionId::new("thread"));
+    fn cancel_preserves_provider_error_without_matching_completion() {
+        let start = response(3, "{\"turn\":{\"id\":\"turn-1\"}}");
+        let interrupt_error = "{\"jsonrpc\":\"2.0\",\"id\":4,\"error\":{\"code\":-32600}}";
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_lines([
+            start.as_str(),
+            interrupt_error,
+        ]));
+        supervisor.session = Some(SessionId::new("thread-1"));
+        supervisor.next_id = 3;
+
         assert_eq!(
-            inactive.cancel("turn", DEFAULT_DEADLINE),
+            supervisor.prompt("hello", DEFAULT_DEADLINE).unwrap(),
+            "turn-1"
+        );
+        assert_eq!(
+            supervisor.cancel("turn-1", DEFAULT_DEADLINE),
+            Err(SessionError::Unsupported("provider error response"))
+        );
+        assert_eq!(supervisor.active_turn.as_deref(), Some("turn-1"));
+        assert_eq!(supervisor.status(), &SessionStatus::Working);
+    }
+
+    #[test]
+    fn cancel_after_matching_completion_error_is_a_typed_race() {
+        let start = response(3, "{\"turn\":{\"id\":\"turn-1\"}}");
+        let completion = "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"turn\":{\"id\":\"turn-1\"}}}";
+        let interrupt_error = "{\"jsonrpc\":\"2.0\",\"id\":4,\"error\":{\"code\":-32600}}";
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_lines([
+            start.as_str(),
+            completion,
+            interrupt_error,
+        ]));
+        supervisor.session = Some(SessionId::new("thread-1"));
+        supervisor.next_id = 3;
+
+        assert_eq!(
+            supervisor.prompt("hello", DEFAULT_DEADLINE).unwrap(),
+            "turn-1"
+        );
+        assert_eq!(
+            supervisor.cancel("turn-1", DEFAULT_DEADLINE),
             Err(SessionError::Raced(DegradedReason::CancellationRace))
         );
-
-        let error = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32600}}";
-        let mut rejected =
-            Supervisor::new(ScriptedTransport::from_items(vec![TransportItem::Line(
-                scan_line(error),
-            )]));
-        rejected.session = Some(SessionId::new("thread"));
-        rejected.active_turn = Some("turn".into());
+        assert!(supervisor.active_turn.is_none());
         assert_eq!(
-            rejected.cancel("turn", DEFAULT_DEADLINE),
-            Err(SessionError::Raced(DegradedReason::CancellationRace))
+            supervisor.status(),
+            &SessionStatus::Degraded(DegradedReason::CancellationRace)
         );
     }
 }
