@@ -459,9 +459,12 @@ function mountTerminal(sessionId, host, status, inputRecovery) {
 function disposeTerminal({ preservePausedInput = false } = {}) {
   if (!terminalRuntime) return;
   const { sessionId, inputQueue, inputRecoveryMessage } = terminalRuntime;
-  const pausedInput = preservePausedInput ? inputQueue?.pausedInput() : null;
-  if (pausedInput && sessionIds(state).includes(sessionId)) {
-    retainedTerminalInput.set(sessionId, { pending: pausedInput, message: inputRecoveryMessage });
+  const recoverableInput = preservePausedInput ? inputQueue?.recoverableInput() : null;
+  if (recoverableInput && sessionIds(state).includes(sessionId)) {
+    retainedTerminalInput.set(sessionId, {
+      pending: recoverableInput,
+      message: inputRecoveryMessage || "Terminal delivery was in progress when this view changed. Relay may already have received the saved input; inspect terminal output before retrying.",
+    });
   } else {
     retainedTerminalInput.delete(sessionId);
   }

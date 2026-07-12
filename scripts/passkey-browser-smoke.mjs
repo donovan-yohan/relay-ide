@@ -257,6 +257,32 @@ try {
     async () => await evaluate(sessionId, "document.querySelector('.pane[data-selected=\"true\"] .terminal-input-recovery')?.hidden === true"),
     "saved terminal input retry after a layout render",
   );
+  await evaluate(
+    sessionId,
+    `window.relayOriginalInFlightInputFetch = window.fetch; window.relayInFlightInputStarted = false; window.fetch = async (input, init) => { const url = new URL(typeof input === 'string' ? input : input.url, window.location.href); const method = init?.method ?? (typeof input === 'string' ? 'GET' : input.method); if (!window.relayInFlightInputStarted && method === 'POST' && url.pathname.endsWith('/input')) { window.relayInFlightInputStarted = true; await new Promise(() => {}); } return window.relayOriginalInFlightInputFetch(input, init); };`,
+  );
+  await evaluate(sessionId, "document.querySelector('.xterm-helper-textarea').focus()");
+  await browser.command("Input.insertText", { text: "in-flight-across-layout-render\\n" }, sessionId);
+  await waitFor(
+    async () => await evaluate(sessionId, "window.relayInFlightInputStarted"),
+    "in-flight terminal input request",
+  );
+  const inFlightRecoveryAfterLayout = await evaluate(
+    sessionId,
+    `(() => {
+      document.querySelector('[data-action="split"]').click();
+      const recovery = document.querySelector('.pane[data-selected="true"] .terminal-input-recovery');
+      return {
+        visible: Boolean(recovery && !recovery.hidden),
+        message: recovery?.textContent,
+        controls: [...recovery?.querySelectorAll('button') ?? []].map((button) => button.textContent),
+      };
+    })()`,
+  );
+  assert.equal(inFlightRecoveryAfterLayout.visible, true, "a layout render must preserve in-flight terminal input for an explicit operator decision");
+  assert.match(inFlightRecoveryAfterLayout.message, /delivery was in progress/i);
+  assert.deepEqual(inFlightRecoveryAfterLayout.controls, ["Retry saved input", "Discard saved input"]);
+  await evaluate(sessionId, "document.querySelector('.pane[data-selected=\"true\"] .terminal-input-recovery button:nth-of-type(2)').click(); window.fetch = window.relayOriginalInFlightInputFetch; delete window.relayOriginalInFlightInputFetch; delete window.relayInFlightInputStarted");
   await evaluate(sessionId, "document.querySelector('.xterm-helper-textarea').focus()");
   await browser.command("Input.insertText", { text: "browser-keyboard\n" }, sessionId);
   const terminalOperations = await evaluate(
@@ -283,9 +309,9 @@ try {
     terminalOperations.poll.output.some((chunk) => chunk.text.includes("browser-keyboard")),
     "keyboard input through xterm must reach the Relay-owned PTY and return as terminal output",
   );
-  assert.deepEqual(
-    terminalOperations.mirrored,
-    [terminal.sessionId, terminal.sessionId],
+  assert.ok(
+    terminalOperations.mirrored.length >= 2
+      && terminalOperations.mirrored.every((sessionId) => sessionId === terminal.sessionId),
     "split panes must retain one Session identity while the browser detaches and reattaches its terminal view",
   );
   await evaluate(sessionId, "document.querySelector('#interrupt-session').click()");

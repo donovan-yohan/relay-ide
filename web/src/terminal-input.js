@@ -34,6 +34,7 @@ export function createTerminalInputQueue({
   const restoredInput = typeof initialPausedInput === "string" ? initialPausedInput : "";
   let pending = restoredInput;
   let pendingBytes = encoder.encode(restoredInput).byteLength;
+  let inFlight = "";
   let sending = false;
   let disposed = false;
   let paused = Boolean(restoredInput);
@@ -43,10 +44,11 @@ export function createTerminalInputQueue({
     if (disposed || paused || sending || !isActive() || !pending) return;
     const [data, remaining] = takeTerminalInputBatch(pending, maxBytes);
     pending = remaining;
+    inFlight = data;
     sending = true;
     try {
       await send(data);
-      pendingBytes -= encoder.encode(data).byteLength;
+      if (!disposed && isActive()) pendingBytes -= encoder.encode(data).byteLength;
     } catch (error) {
       if (!disposed && isActive() && error?.code === "input_backpressure") {
         pending = data + pending;
@@ -63,6 +65,7 @@ export function createTerminalInputQueue({
         onError(error);
       }
     } finally {
+      inFlight = "";
       sending = false;
       if (!disposed && !paused && isActive() && pending && retryTimer === null) void flush();
     }
@@ -98,6 +101,9 @@ export function createTerminalInputQueue({
     },
     pausedInput() {
       return paused && pending ? pending : null;
+    },
+    recoverableInput() {
+      return inFlight + pending || null;
     },
     dispose() {
       disposed = true;

@@ -60,6 +60,27 @@ test("terminal input sends one in-flight request and preserves queue ordering", 
   assert.deepEqual(sent, ["first", "-second-third"]);
 });
 
+test("terminal input exposes an in-flight batch for a render snapshot", async () => {
+  const first = deferred();
+  const sent = [];
+  const queue = createTerminalInputQueue({
+    isActive: () => true,
+    send: async (data) => {
+      sent.push(data);
+      await first.promise;
+    },
+    onError: assert.fail,
+  });
+
+  queue.enqueue("first");
+  await eventually(() => sent.length === 1);
+  queue.enqueue("second");
+
+  assert.equal(queue.recoverableInput(), "firstsecond");
+  queue.dispose();
+  first.resolve();
+});
+
 test("terminal input clears pending work when the terminal closes", async () => {
   const first = deferred();
   const sent = [];
