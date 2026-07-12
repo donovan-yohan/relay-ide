@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/relay-factory-core",
+  "crates/relay-session",
   "apps/relay-hub",
   "apps/relay-node",
 ]
