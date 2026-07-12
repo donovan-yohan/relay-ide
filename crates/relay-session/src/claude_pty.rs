@@ -27,6 +27,7 @@ use nix::{
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 #[cfg(target_os = "linux")]
 use rustix::{
+    event::{PollFd, PollFlags, Timespec, poll},
     fd::OwnedFd,
     process::{Pid as LinuxPid, PidfdFlags, pidfd_open},
 };
@@ -231,15 +232,17 @@ impl PtyInput {
     }
 }
 
-/// Lifetime-safe Linux ownership for the PTY session created by portable-pty.
-/// The pidfd pins the leader identity so its process-group number cannot be
-/// reused while Relay may signal it. A nonblocking duplicate of the master FD
-/// gives the input worker a cancellable writer without consuming the reader.
+/// Linux ownership for the PTY session created by portable-pty.
+///
+/// The direct child remains waitable until `ManagedSession::close` has
+/// terminated its group, so its PID continues to reserve the original
+/// process-group identity for the entire period Relay may call `killpg`. A
+/// nonblocking duplicate of the master FD gives the input worker a cancellable
+/// writer without consuming the reader.
 #[cfg(target_os = "linux")]
 struct PtyOwnership {
     process_group: i32,
     writer: FileDescriptor,
-    _leader_pidfd: OwnedFd,
 }
 
 #[cfg(target_os = "linux")]
@@ -255,7 +258,15 @@ impl AsRawFd for MasterFd {
 #[cfg(target_os = "linux")]
 struct PtyForegroundGroup {
     process_group: i32,
-    _leader_pidfd: OwnedFd,
+    leader_pidfd: OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+impl PtyForegroundGroup {
+    fn is_live(&self) -> bool {
+        let mut fds = [PollFd::new(&self.leader_pidfd, PollFlags::IN)];
+        poll(&mut fds, Some(&Timespec::default())).is_ok_and(|ready| ready == 0)
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -654,13 +665,11 @@ impl ManagedSession {
         if self.status == ClaudePtyStatus::Closed {
             return;
         }
-        if self.terminal_seen
-            || self
-                .child
-                .as_mut()
-                .and_then(|child| child.try_wait().ok().flatten())
-                .is_some()
-        {
+        // Do not call `Child::try_wait` here. It reaps the direct PTY leader
+        // and releases its numeric process-group identity before explicit
+        // close/revoke has finished signalling that group. Reader EOF is the
+        // non-reaping terminal observation that is safe to surface to clients.
+        if self.terminal_seen {
             self.status = ClaudePtyStatus::Exited;
         } else if self.status == ClaudePtyStatus::Starting {
             self.status = ClaudePtyStatus::Running;
@@ -922,17 +931,27 @@ impl PtyOwnership {
         let leader_pidfd = pidfd_open(leader, PidfdFlags::empty()).ok()?;
         (master?.process_group_leader() == Some(process_group)).then_some(PtyForegroundGroup {
             process_group,
-            _leader_pidfd: leader_pidfd,
+            leader_pidfd,
         })
     }
 
-    fn signal_groups(&self, foreground: Option<&PtyForegroundGroup>, signal: Signal) {
-        // A pidfd pins the original session leader's identity for this whole
-        // object lifetime. Therefore its process-group number cannot turn into
-        // an unrelated target after leader exit. Capture the live foreground
-        // group before signalling the leader, pin it with its own pidfd, and
-        // reuse that pinned identity for the TERM→KILL sequence.
-        if let Some(foreground) = foreground {
+    fn signal_groups(
+        &self,
+        master: Option<&(dyn MasterPty + Send)>,
+        foreground: Option<&PtyForegroundGroup>,
+        signal: Signal,
+    ) {
+        // The direct child remains waitable until close finishes, keeping the
+        // original Relay-owned group identifier reserved throughout. A
+        // foreground leader can exit independently, so do not signal its
+        // cached numeric group after its pidfd reports exit unless the PTY
+        // still resolves that exact group as foreground.
+        if let Some(foreground) = foreground.filter(|foreground| {
+            foreground.is_live()
+                || master
+                    .and_then(MasterPty::process_group_leader)
+                    .is_some_and(|current| current == foreground.process_group)
+        }) {
             let _ = killpg(Pid::from_raw(foreground.process_group), signal);
         }
         let _ = killpg(Pid::from_raw(self.process_group), signal);
@@ -943,10 +962,6 @@ fn session_process_group(process_id: u32, master: &(dyn MasterPty + Send)) -> Op
     #[cfg(target_os = "linux")]
     {
         let process_id = i32::try_from(process_id).ok()?;
-        let leader = LinuxPid::from_raw(process_id)?;
-        // The direct child remains waitable until this runtime reaps it, so
-        // opening this pidfd cannot race an already-reused leader PID.
-        let leader_pidfd = pidfd_open(leader, PidfdFlags::empty()).ok()?;
         // Clone the actual master descriptor—not its /proc symlink target,
         // which would allocate an unrelated PTY. FileDescriptor provides the
         // safe dup/FIONBIO wrapper, so no raw-FD ownership conversion escapes
@@ -959,7 +974,6 @@ fn session_process_group(process_id: u32, master: &(dyn MasterPty + Send)) -> Op
         (process_group == process_id && session_id == process_id).then_some(PtyOwnership {
             process_group,
             writer,
-            _leader_pidfd: leader_pidfd,
         })
     }
     #[cfg(not(target_os = "linux"))]
@@ -977,9 +991,9 @@ fn terminate_child(
     #[cfg(target_os = "linux")]
     if let Some(ownership) = ownership {
         let foreground = ownership.capture_foreground(master);
-        ownership.signal_groups(foreground.as_ref(), Signal::SIGTERM);
+        ownership.signal_groups(master, foreground.as_ref(), Signal::SIGTERM);
         thread::sleep(PTY_TERMINATION_GRACE);
-        ownership.signal_groups(foreground.as_ref(), Signal::SIGKILL);
+        ownership.signal_groups(master, foreground.as_ref(), Signal::SIGKILL);
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -1371,18 +1385,6 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         };
-        loop {
-            let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
-            if snapshot.status == ClaudePtyStatus::Exited {
-                break;
-            }
-            assert!(
-                Instant::now() <= deadline,
-                "leader did not exit while its PTY descendant remained alive"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
-
         thread::sleep(Duration::from_millis(50));
         runtime.close(session.as_str(), "device-a").unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -1396,6 +1398,72 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn leader_exit_does_not_release_the_original_process_group_before_close() {
+        let mut runtime = NodePtyRuntime::test_runtime(
+            "/bin/sh",
+            &[
+                "-c",
+                "sh -c 'trap \"\" HUP TERM; while :; do sleep 1; done' & child=$!; printf 'CHILD:%s\\n' \"$child\"; exit 0",
+            ],
+        );
+        let session = runtime.create("device-a").unwrap();
+        let leader_pid = runtime.sessions[session.as_str()]
+            .child
+            .as_ref()
+            .and_then(|child| child.process_id())
+            .and_then(|pid| i32::try_from(pid).ok())
+            .expect("test PTY exposes its direct leader PID");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let child_pid = loop {
+            let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+            if let Some(pid) = snapshot.output.iter().find_map(|chunk| {
+                chunk
+                    .text
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix("CHILD:")?.parse::<i32>().ok())
+            }) {
+                break pid;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "test PTY did not report descendant PID"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        // The direct shell exits after reporting the child. The reader may
+        // report terminal EOF, but that status probe must not reap the shell
+        // and release its process-group ID before close can safely signal it.
+        thread::sleep(Duration::from_millis(50));
+        let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+        assert_eq!(snapshot.status, ClaudePtyStatus::Exited);
+        assert_eq!(
+            kill(Pid::from_raw(leader_pid), None),
+            Ok(()),
+            "direct PTY leader must remain waitable until explicit close"
+        );
+
+        runtime.close(session.as_str(), "device-a").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if kill(Pid::from_raw(child_pid), None) == Err(Errno::ESRCH) {
+                break;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "close left a descendant in the original PTY group alive"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            kill(Pid::from_raw(leader_pid), None),
+            Err(Errno::ESRCH),
+            "close must reap the retained direct PTY leader"
+        );
     }
 
     #[cfg(unix)]
