@@ -2,8 +2,9 @@ use std::{
     env, fmt,
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
+    path::PathBuf,
     process::ExitCode,
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -12,7 +13,12 @@ use relay_factory_core::{
     AuthBoundary, AuthError, AuthOrigin, EnrollmentAuthority, ServiceIdentity, configured_identity,
     health_http_response, health_json, not_found_http_response,
 };
+use relay_hermes_session::GatewayEndpoint;
 use serde_json::Value;
+
+mod workbench;
+
+use workbench::{Workbench, WorkbenchError};
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REQUEST_BYTES: usize = 65_536;
@@ -107,7 +113,7 @@ fn serve(arguments: &[String]) -> Result<(), RunError> {
         "relay-hub liveness listening on {}",
         listener.local_addr().map_err(|_| RunError::Io)?
     );
-    serve_connections_with_auth(options.identity, options.auth, || {
+    serve_connections_with_auth(options.identity, options.auth, options.workbench, || {
         listener.accept().map(|(stream, _)| stream)
     })
 }
@@ -116,6 +122,7 @@ struct ServeOptions {
     address: SocketAddr,
     identity: ServiceIdentity,
     auth: Option<Arc<AuthBoundary>>,
+    workbench: Arc<Mutex<Workbench>>,
 }
 
 impl ServeOptions {
@@ -124,6 +131,8 @@ impl ServeOptions {
         let mut identity_arguments = None;
         let mut origin = None;
         let mut recovery_hash = None;
+        let mut workspace_roots = Vec::new();
+        let mut hermes_gateway_url = None;
         let mut index = 0;
 
         while index < arguments.len() {
@@ -137,6 +146,10 @@ impl ServeOptions {
                 "--origin" if origin.is_none() => origin = Some(value.clone()),
                 "--recovery-code-hash" if recovery_hash.is_none() => {
                     recovery_hash = Some(value.clone());
+                }
+                "--workspace-root" => workspace_roots.push(PathBuf::from(value)),
+                "--hermes-gateway-url" if hermes_gateway_url.is_none() => {
+                    hermes_gateway_url = Some(value.clone());
                 }
                 _ => return Err(RunError::Usage),
             }
@@ -161,11 +174,20 @@ impl ServeOptions {
             )),
             _ => return Err(RunError::Usage),
         };
+        if workspace_roots.is_empty() {
+            workspace_roots.push(env::current_dir().map_err(|_| RunError::Io)?);
+        }
+        let hermes_endpoint = hermes_gateway_url
+            .map(|url| GatewayEndpoint::parse(&url).map_err(|_| RunError::Usage))
+            .transpose()?;
+        let workbench =
+            Workbench::new(workspace_roots, hermes_endpoint).map_err(|_| RunError::Usage)?;
 
         Ok(Self {
             address,
             identity,
             auth,
+            workbench: Arc::new(Mutex::new(workbench)),
         })
     }
 }
@@ -173,6 +195,7 @@ impl ServeOptions {
 fn serve_connections_with_auth(
     identity: ServiceIdentity,
     auth: Option<Arc<AuthBoundary>>,
+    workbench: Arc<Mutex<Workbench>>,
     mut accept: impl FnMut() -> io::Result<TcpStream>,
 ) -> Result<(), RunError> {
     loop {
@@ -184,9 +207,11 @@ fn serve_connections_with_auth(
             }
         };
         let auth = auth.clone();
+        let workbench = workbench.clone();
         thread::Builder::new()
             .spawn(move || {
-                if let Err(error) = handle_connection(stream, identity, auth.as_deref()) {
+                if let Err(error) = handle_connection(stream, identity, auth.as_deref(), &workbench)
+                {
                     eprintln!("relay-hub connection error: {error}");
                 }
             })
@@ -201,6 +226,7 @@ fn handle_connection(
     mut stream: TcpStream,
     identity: ServiceIdentity,
     auth: Option<&AuthBoundary>,
+    workbench: &Arc<Mutex<Workbench>>,
 ) -> Result<(), ConnectionError> {
     stream
         .set_write_timeout(Some(CONNECTION_TIMEOUT))
@@ -208,7 +234,7 @@ fn handle_connection(
     let mut request = [0_u8; MAX_REQUEST_BYTES];
     let response = match read_request(&mut stream, &mut request) {
         Ok(length) => HttpRequest::parse(&request[..length])
-            .map(|request| route_request(&request, identity, auth))
+            .map(|request| route_request(&request, identity, auth, workbench))
             .unwrap_or_else(not_found_http_response),
         Err(RequestReadError::TooLarge) => not_found_http_response(),
         Err(error) => return Err(ConnectionError::Request(error)),
@@ -293,6 +319,7 @@ fn route_request(
     request: &HttpRequest<'_>,
     identity: ServiceIdentity,
     auth: Option<&AuthBoundary>,
+    workbench: &Arc<Mutex<Workbench>>,
 ) -> String {
     match (request.method, request.path) {
         ("GET", "/health") => health_http_response(identity),
@@ -304,6 +331,7 @@ fn route_request(
         ("POST", "/auth/sessions/revoke") => revoke_session_response(request, auth),
         ("GET", "/protected/hub") => protected_hub_response(request, auth),
         (_, "/protected/node") => auth_error_response(403, "node_authority_required", &[]),
+        (_, path) if path.starts_with("/api/") => workbench_response(request, auth, workbench),
         _ => not_found_http_response(),
     }
 }
@@ -461,6 +489,81 @@ fn protected_hub_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
     }
 }
 
+fn workbench_response(
+    request: &HttpRequest<'_>,
+    auth: Option<&AuthBoundary>,
+    workbench: &Arc<Mutex<Workbench>>,
+) -> String {
+    let auth = match auth {
+        Some(auth) => auth,
+        None => return auth_error_response(404, "auth_unavailable", &[]),
+    };
+    let session = match request.cookie("__Host-relay_session") {
+        Some(session) => session,
+        None => return auth_error_response(401, "session_missing", &[]),
+    };
+    if let Err(error) = auth.require_session(session) {
+        return auth_error_response(auth_error_status(&error), error.code(), &[]);
+    }
+    if request.method != "GET" {
+        if let Err(error) = auth.enforce_origin(request.header("origin")) {
+            return auth_error_response(auth_error_status(&error), error.code(), &[]);
+        }
+        let csrf = match request.header("x-relay-csrf") {
+            Some(csrf) => csrf,
+            None => return auth_error_response(403, "csrf_denied", &[]),
+        };
+        if let Err(error) = auth.require_csrf(session, csrf) {
+            return auth_error_response(auth_error_status(&error), error.code(), &[]);
+        }
+    }
+
+    let body = match request.method {
+        "GET" => Ok(Value::Null),
+        _ => serde_json::from_str(request.body).map_err(|_| WorkbenchError::new("invalid_request")),
+    };
+    let result = body.and_then(|body| {
+        let mut workbench = workbench
+            .lock()
+            .map_err(|_| WorkbenchError::new("internal"))?;
+        workbench.authorize(session)?;
+        match (request.method, request.path) {
+            ("GET", "/api/workbench") => Ok(workbench.snapshot()),
+            ("GET", "/api/sessions") => Ok(workbench.sessions_snapshot()),
+            ("POST", "/api/workspaces") => workbench.add_workspace(&body),
+            ("POST", "/api/workspaces/select") => workbench.select_workspace(&body),
+            ("POST", "/api/sessions") => workbench.start_session(&body),
+            ("POST", "/api/sessions/resume") => workbench.resume_session(&body),
+            ("POST", "/api/sessions/message") => workbench.send_message(&body),
+            ("POST", "/api/sessions/interrupt") => workbench.interrupt_session(&body),
+            _ => Err(WorkbenchError::new("not_found")),
+        }
+    });
+
+    match result {
+        Ok(value) => match serde_json::to_string(&value) {
+            Ok(body) => json_response(200, &body, &[]),
+            Err(_) => auth_error_response(500, "internal", &[]),
+        },
+        Err(error) if error.code() == "not_found" => not_found_http_response(),
+        Err(error) => auth_error_response(workbench_error_status(error), error.code(), &[]),
+    }
+}
+
+fn workbench_error_status(error: WorkbenchError) -> u16 {
+    match error.code() {
+        "invalid_request"
+        | "workspace_cwd_invalid"
+        | "workspace_cwd_not_absolute"
+        | "workspace_cwd_not_approved" => 400,
+        "unknown_workspace" | "unknown_session" | "unknown_provider_session" => 404,
+        "workbench_owner_mismatch" => 403,
+        "hermes_not_configured" | "unavailable" | "executable_unavailable" => 503,
+        "internal" => 500,
+        _ => 409,
+    }
+}
+
 fn state_change_auth<'a>(
     request: &HttpRequest<'_>,
     auth: Option<&'a AuthBoundary>,
@@ -604,6 +707,8 @@ fn json_response(status: u16, body: &str, extra_headers: &[String]) -> String {
         401 => "401 Unauthorized",
         403 => "403 Forbidden",
         404 => "404 Not Found",
+        409 => "409 Conflict",
+        503 => "503 Service Unavailable",
         _ => "500 Internal Server Error",
     };
     let mut headers = vec![
@@ -620,13 +725,16 @@ fn json_response(status: u16, body: &str, extra_headers: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
+    use std::{env, io};
 
     use super::*;
 
     #[test]
     fn listener_accept_failure_stops_serving() {
-        let result = serve_connections_with_auth(ServiceIdentity::Hub, None, || {
+        let workbench = Arc::new(Mutex::new(
+            Workbench::new(vec![env::current_dir().unwrap()], None).unwrap(),
+        ));
+        let result = serve_connections_with_auth(ServiceIdentity::Hub, None, workbench, || {
             Err(io::Error::other("injected listener failure"))
         });
 

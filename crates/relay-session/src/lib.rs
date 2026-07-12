@@ -30,8 +30,9 @@ pub mod jsonl;
 pub mod supervisor;
 
 pub use contract::{
-    ApprovalDecision, ApprovalId, ApprovalKind, ApprovalRequest, DegradedReason, EventKind,
-    FailureKind, Sequence, SessionError, SessionEvent, SessionId, SessionStatus, StreamSignals,
+    ApprovalDecision, ApprovalId, ApprovalKind, ApprovalRequest, ChatCategory, ChatRole,
+    ChatSignal, DegradedReason, EventKind, FailureKind, RichChatEvent, Sequence, SessionError,
+    SessionEvent, SessionId, SessionStatus, StreamSignals,
 };
 pub use supervisor::{
     DEFAULT_DEADLINE, ProcessTransport, ScriptedTransport, Supervisor, Transport,

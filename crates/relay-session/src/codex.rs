@@ -138,6 +138,12 @@ pub const EVENT_LEDGER: &[LedgerEntry] = &[
         observed: false,
     },
     LedgerEntry {
+        method: "item/agentMessage/delta",
+        kind: EventKind::Progress,
+        label: "assistant.message",
+        observed: false,
+    },
+    LedgerEntry {
         method: "item/started",
         kind: EventKind::Progress,
         label: "item.started",
