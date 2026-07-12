@@ -1521,8 +1521,18 @@ mod tests {
         // The direct shell exits after reporting the child. The reader may
         // report terminal EOF, but that status probe must not reap the shell
         // and release its process-group ID before close can safely signal it.
-        thread::sleep(Duration::from_millis(50));
-        let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let snapshot = loop {
+            let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+            if snapshot.status == ClaudePtyStatus::Exited {
+                break snapshot;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "test PTY did not report reader EOF after its direct leader exited"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
         assert_eq!(snapshot.status, ClaudePtyStatus::Exited);
         assert_eq!(
             kill(Pid::from_raw(leader_pid), None),
