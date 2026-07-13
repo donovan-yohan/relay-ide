@@ -4,7 +4,10 @@ use url::Url;
 
 mod auth;
 
-pub use auth::{AuthBoundary, CeremonyStart, EnrollmentAuthority, SessionDevice, SessionGrant};
+pub use auth::{
+    AuthAuditEvent, AuthBoundary, CeremonyStart, CredentialDevice, EnrollmentAuthority,
+    SecuritySnapshot, SessionDevice, SessionGrant,
+};
 
 pub const API_VERSION: &str = "relay-factory/v1";
 pub const MAX_CONFIG_INPUT_BYTES: usize = 32;
@@ -22,6 +25,8 @@ pub enum AuthError {
     CeremonyExpired,
     CeremonyLimit,
     CredentialLimit,
+    CredentialMissing,
+    LastCredential,
     SessionMissing,
     CsrfDenied,
     Internal,
@@ -41,6 +46,8 @@ impl AuthError {
             Self::CeremonyExpired => "ceremony_expired",
             Self::CeremonyLimit => "ceremony_limit",
             Self::CredentialLimit => "credential_limit",
+            Self::CredentialMissing => "credential_missing",
+            Self::LastCredential => "last_credential",
             Self::SessionMissing => "session_missing",
             Self::CsrfDenied => "csrf_denied",
             Self::Internal => "internal",

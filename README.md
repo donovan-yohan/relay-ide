@@ -8,7 +8,7 @@ A small, verifiable factory for the Relay reboot. The current slice is a one-nod
 - A bounded, unauthenticated liveness contract: `GET /health` and `relay-node probe`.
 - A PWA Project workbench with a bounded node-backed picker for approved local roots and subdirectories, including valid non-repo roots.
 - A versioned, bounded browser-persisted layout tree with tab/pane/recovery controls that only reference stable opaque Session IDs.
-- A passkey-first operator flow with typed unsupported/denied/recovery states and session-device revoke controls.
+- A passkey-first operator flow with typed unsupported/denied/recovery states plus bounded browser-session and passkey revocation.
 - A stable-origin WebAuthn boundary that issues revocable Secure/HttpOnly browser sessions for hub-only protected actions.
 - A one-node supervised Codex `app-server --stdio` Session seam with no network transport or raw provider transcript storage.
 - A real xterm Claude Code surface backed by the authenticated Relay-owned PTY API, with bounded incremental output, queued input recovery, resize, interrupt, refresh reattach, and explicit process close.

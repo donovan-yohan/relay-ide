@@ -10,7 +10,7 @@ use relay_hermes_session::{
     AdapterError, EventKind, GatewayEndpoint, HermesSessionAdapter, SessionStatus,
 };
 use relay_session::claude_pty::{
-    ClaudePtyError, ClaudePtyStatus, NodePtyRuntime, OwnerSessionCloseDisposition,
+    ClaudePtyError, ClaudePtyStatus, NodePtyRuntime, PtyShutdownDisposition,
 };
 use relay_session::{
     DEFAULT_DEADLINE, ProcessTransport, SessionError, Supervisor,
@@ -129,7 +129,7 @@ fn drain_claude_pty_runtime(runtime: &mut NodePtyRuntime) -> bool {
             let outcome = termination.finish();
             runtime.complete_termination(outcome);
         }
-        if runtime.shutdown_disposition() == OwnerSessionCloseDisposition::Complete {
+        if runtime.shutdown_disposition() == PtyShutdownDisposition::Complete {
             return true;
         }
         if runtime.has_terminal_failures() {

@@ -59,6 +59,11 @@
       .auth-compact summary { color: #b8b0aa; cursor: pointer; }
       .auth-compact__body { display: grid; gap: 0.5rem; margin-top: 0.7rem; }
       .auth-compact__body label { font-size: 0.72rem; }
+      .security-list { display: grid; gap: 0.3rem; }
+      .security-row { align-items: center; display: flex; gap: 0.35rem; justify-content: space-between; }
+      .security-row code { color: #b8b0aa; font-size: 0.65rem; overflow: hidden; text-overflow: ellipsis; }
+      .security-audit { margin: 0; max-height: 6rem; overflow: auto; padding-left: 1rem; }
+      .security-audit li { margin-bottom: 0.2rem; }
 
       .main-panel { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; min-width: 0; }
       .session-header { align-items: center; border-bottom: 1px solid #302b28; display: flex; gap: 0.8rem; justify-content: space-between; min-height: 3.85rem; padding: 0.75rem 1rem; }
@@ -171,6 +176,7 @@
           <p id="session-empty" class="sidebar-empty">No Sessions in this Project.</p>
         </section>
 
+        <button id="sign-out" type="button" hidden>Sign out this browser</button>
         <details class="auth-compact">
           <summary>Browser access</summary>
           <div class="auth-compact__body">
@@ -179,6 +185,14 @@
             <input id="recovery-code" type="password" autocomplete="off" />
             <button id="enroll-passkey" type="button">Enroll passkey</button>
             <button id="sign-in" type="button">Sign in with passkey</button>
+            <section id="security-management" hidden aria-label="Browser and passkey security">
+              <p class="section-label">Trusted browsers</p>
+              <div id="trusted-browsers" class="security-list"></div>
+              <p class="section-label">Passkeys</p>
+              <div id="passkeys" class="security-list"></div>
+              <p class="section-label">Recent security activity</p>
+              <ol id="security-audit" class="security-audit"></ol>
+            </section>
           </div>
         </details>
       </aside>

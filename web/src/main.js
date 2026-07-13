@@ -77,7 +77,12 @@ const authStatus = document.querySelector("#auth-status");
 const recoveryCode = document.querySelector("#recovery-code");
 const enrollPasskey = document.querySelector("#enroll-passkey");
 const signIn = document.querySelector("#sign-in");
+const signOut = document.querySelector("#sign-out");
 const browserAccess = document.querySelector(".auth-compact");
+const securityManagement = document.querySelector("#security-management");
+const trustedBrowsers = document.querySelector("#trusted-browsers");
+const passkeys = document.querySelector("#passkeys");
+const securityAudit = document.querySelector("#security-audit");
 
 let workbench = { providers: { claude: false, codex: false, hermes: false }, sessions: [], workspaces: [] };
 let saved = loadSavedState();
@@ -89,6 +94,7 @@ let selectedSessionId = saved.selectedSessionId ?? null;
 let activeLayout = null;
 let activeLayoutWorkspaceCwd = null;
 let authorized = false;
+let security = { sessions: [], credentials: [], audit: [] };
 let hasWorkbenchSnapshot = false;
 let workbenchEpoch = 0;
 let refreshTimer = null;
@@ -150,6 +156,7 @@ if (isPasskeySupported(window)) {
 }
 enrollPasskey.addEventListener("click", () => void enroll().catch(() => {}));
 signIn.addEventListener("click", () => void signInWithPasskey().catch(() => {}));
+signOut.addEventListener("click", () => void signOutThisBrowser());
 
 function selectedWorkspace() {
   return workbench.workspaces.find((workspace) => workspace.cwd === selectedWorkspaceCwd) ?? null;
@@ -174,8 +181,7 @@ function activeSession() {
 
 function normalizeSelection() {
   if (!selectedWorkspace() && workbench.workspaces.length > 0) {
-    const selected = workbench.workspaces.find((workspace) => workspace.id === workbench.selectedWorkspaceId);
-    selectedWorkspaceCwd = selected?.cwd ?? workbench.workspaces[0].cwd;
+    selectedWorkspaceCwd = workbench.workspaces[0].cwd;
   }
   const workspace = selectedWorkspace();
   const sessions = sessionsForSelectedWorkspace();
@@ -224,6 +230,7 @@ function render() {
   const terminalSelected = sessionSurface(session) === "terminal";
   renderWorkspaceList();
   renderSessionList();
+  renderSecurityManagement();
   renderPaneRoot(workspace);
 
   workbenchError.textContent = visibleError;
@@ -308,6 +315,112 @@ function renderSessionList() {
     sessionList.append(sessionRow(session));
   }
   sessionEmpty.hidden = sessionList.childElementCount > 0;
+}
+
+function renderSecurityManagement() {
+  signOut.hidden = !authorized;
+  securityManagement.hidden = !authorized;
+  trustedBrowsers.replaceChildren();
+  passkeys.replaceChildren();
+  securityAudit.replaceChildren();
+  if (!authorized) return;
+
+  for (const browser of security.sessions) {
+    const row = securityRow(
+      `${browser.current ? "This browser" : "Trusted browser"} · signed in ${ageLabel(browser.signedInSecondsAgo)}`,
+      browser.deviceId,
+    );
+    if (!browser.current) {
+      row.append(securityAction("Revoke browser", () => void revokeBrowser(browser.deviceId)));
+    }
+    trustedBrowsers.append(row);
+  }
+  const currentCredentialId = security.sessions.find((browser) => browser.current)?.credentialId;
+  for (const credential of security.credentials) {
+    const row = securityRow(
+      `${credential.credentialId === currentCredentialId ? "Current passkey" : "Passkey"} · enrolled ${ageLabel(credential.enrolledSecondsAgo)} · ${credential.activeSessions} active`,
+      credential.credentialId,
+    );
+    const revoke = securityAction("Revoke passkey", () => void revokeCredential(credential.credentialId));
+    revoke.disabled = credential.credentialId === currentCredentialId;
+    revoke.title = revoke.disabled
+      ? "Use another trusted browser to revoke the passkey active here."
+      : "Revoke this passkey and all browser sessions signed in with it.";
+    row.append(revoke);
+    passkeys.append(row);
+  }
+  for (const event of security.audit.slice(-8).reverse()) {
+    const item = document.createElement("li");
+    item.textContent = `${event.action}: ${event.targetId}`;
+    securityAudit.append(item);
+  }
+}
+
+function ageLabel(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 60) return "moments ago";
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3_600)}h ago`;
+}
+
+function securityRow(label, id) {
+  const row = document.createElement("div");
+  row.className = "security-row";
+  const identity = document.createElement("code");
+  identity.textContent = `${label} · ${id}`;
+  row.append(identity);
+  return row;
+}
+
+function securityAction(label, action) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", action);
+  return button;
+}
+
+async function signOutThisBrowser() {
+  clearError();
+  try {
+    await request("/auth/sign-out", { method: "POST", body: "{}" });
+    authorized = false;
+    mayHaveSession = false;
+    hasWorkbenchSnapshot = false;
+    security = { sessions: [], credentials: [], audit: [] };
+    authStatus.textContent = "This browser is signed out. Shared Workspaces remain available to other trusted browsers.";
+    saveSignedOutState();
+  } catch (error) {
+    showError(error);
+  }
+  render();
+}
+
+async function revokeBrowser(deviceId) {
+  clearError();
+  try {
+    await request("/auth/sessions/revoke", {
+      method: "POST",
+      body: JSON.stringify({ deviceId }),
+    });
+    security = await request("/auth/sessions");
+  } catch (error) {
+    showError(error);
+  }
+  render();
+}
+
+async function revokeCredential(credentialId) {
+  clearError();
+  try {
+    await request("/auth/credentials/revoke", {
+      method: "POST",
+      body: JSON.stringify({ credentialId }),
+    });
+    security = await request("/auth/sessions");
+  } catch (error) {
+    showError(error);
+  }
+  render();
 }
 
 function sessionRow(session) {
@@ -819,8 +932,10 @@ async function refreshWorkbench({ restore = true } = {}) {
   const refreshEpoch = workbenchEpoch;
   try {
     const snapshot = await request(WORKBENCH_URL);
+    const securitySnapshot = await request("/auth/sessions");
     if (refreshEpoch !== workbenchEpoch) return;
     workbench = snapshot;
+    security = securitySnapshot;
     authorized = true;
     hasWorkbenchSnapshot = true;
     if (restore && workbench.workspaces.length === 0 && saved.workspaces.length > 0) {
@@ -830,6 +945,7 @@ async function refreshWorkbench({ restore = true } = {}) {
   } catch (error) {
     if (refreshEpoch !== workbenchEpoch) return;
     authorized = false;
+    security = { sessions: [], credentials: [], audit: [] };
     mayHaveSession = false;
     if (error?.code && error.code !== "session_missing") showError(error);
   }
@@ -939,20 +1055,12 @@ async function restoreWorkspace(workspace) {
 async function selectWorkspace(workspace, { refresh = false } = {}) {
   clearError();
   beginWorkbenchMutation();
-  try {
-    await request("/api/workspaces/select", {
-      method: "POST",
-      body: JSON.stringify({ workspaceId: workspace.id }),
-    });
-    selectedWorkspaceCwd = workspace.cwd;
-    selectedSessionId = null;
-    activeLayout = null;
-    activeLayoutWorkspaceCwd = null;
-    if (refresh) await refreshWorkbench({ restore: false });
-    else render();
-  } catch (error) {
-    showError(error);
-  }
+  selectedWorkspaceCwd = workspace.cwd;
+  selectedSessionId = null;
+  activeLayout = null;
+  activeLayoutWorkspaceCwd = null;
+  if (refresh) await refreshWorkbench({ restore: false });
+  else render();
 }
 
 function openExistingSession(session) {
@@ -1144,7 +1252,6 @@ function showError(error) {
     hermes_not_configured: "Hermes is not available on this Relay hub.",
     workbench_busy: "Relay is busy. Retry this action.",
     csrf_denied: "Your browser security check expired. Sign in again.",
-    workbench_owner_mismatch: "This Workbench is open in another browser session. Close or sign out there first.",
     unknown_session: "That session is no longer available. Reopen a recent session or start a new one.",
     unknown_workspace: "That Workspace is no longer available. Open it again.",
     unknown_provider_session: "That recent provider session is no longer available. Start a new session.",
@@ -1199,6 +1306,15 @@ function persistState() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
   } catch {
     // Do not downgrade a live provider Session when browser storage is blocked.
+  }
+}
+
+function saveSignedOutState() {
+  saved = { ...saved, mayHaveSession: false };
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+  } catch {
+    // Server-side revocation already completed; local persistence is convenience-only.
   }
 }
 

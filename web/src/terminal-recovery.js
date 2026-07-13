@@ -24,7 +24,7 @@ export function terminalErrorPresentation(error) {
     case "session_forbidden":
       return {
         code,
-        message: "This terminal belongs to a different Relay browser device. Open a new terminal from this device instead.",
+        message: "Relay could not attribute this terminal request to a valid browser device. Sign in again before retrying.",
       };
     case "stale_session":
       return {
