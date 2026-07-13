@@ -97,7 +97,7 @@ try {
   assert.deepEqual(
     await evaluate(
       sessionId,
-      "({ title: document.querySelector('#auth-onboarding-title')?.textContent, setup: document.querySelector('#auth-onboarding-enroll')?.textContent, signIn: document.querySelector('#auth-onboarding-sign-in')?.textContent, recoveryType: document.querySelector('#auth-onboarding-recovery')?.type, composerHidden: document.querySelector('.composer').hidden })",
+      "({ title: document.querySelector('#auth-onboarding-title')?.textContent, setup: document.querySelector('#auth-onboarding-enroll')?.textContent, signIn: document.querySelector('#auth-onboarding-sign-in')?.textContent, recoveryType: document.querySelector('#auth-onboarding-recovery')?.type, composerHidden: document.querySelector('.composer').hidden, onboardingFits: document.querySelector('#pane-root').scrollHeight <= document.querySelector('#pane-root').clientHeight })",
     ),
     {
       title: "Set up this browser",
@@ -105,6 +105,7 @@ try {
       signIn: "Sign in with passkey",
       recoveryType: "password",
       composerHidden: true,
+      onboardingFits: true,
     },
     "an unauthenticated browser must get primary-canvas setup and sign-in controls",
   );

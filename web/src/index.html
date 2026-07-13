@@ -59,13 +59,14 @@
       .auth-compact summary { color: #b8b0aa; cursor: pointer; }
       .auth-compact__body { display: grid; gap: 0.5rem; margin-top: 0.7rem; }
       .auth-compact__body label { font-size: 0.72rem; }
-      .auth-onboarding { background: #090807; border: 1px solid #302b28; display: grid; gap: 0.85rem; margin: clamp(1rem, 7vh, 4rem) auto 0; max-width: 32rem; padding: clamp(1rem, 3vw, 1.5rem); }
+      .auth-onboarding { background: #090807; border: 1px solid #302b28; display: grid; gap: 0.55rem; margin: 0 auto; max-width: 32rem; padding: 1rem; }
       .auth-onboarding h2 { font-size: 1rem; margin: 0; }
       .auth-onboarding p { color: #9b928b; line-height: 1.5; margin: 0; }
       .auth-onboarding ol { color: #b8b0aa; display: grid; gap: 0.45rem; line-height: 1.45; margin: 0; padding-left: 1.25rem; }
       .auth-onboarding label { color: #b8b0aa; font-size: 0.75rem; }
       .auth-onboarding__actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-      .auth-onboarding__status { border-top: 1px solid #302b28; padding-top: 0.75rem; }
+      .auth-onboarding__actions button { font-size: 0.88rem; }
+      .auth-onboarding__status { border-top: 1px solid #302b28; padding-top: 0.5rem; }
       .security-list { display: grid; gap: 0.3rem; }
       .security-row { align-items: center; display: flex; gap: 0.35rem; justify-content: space-between; }
       .security-row code { color: #b8b0aa; font-size: 0.65rem; overflow: hidden; text-overflow: ellipsis; }
@@ -84,6 +85,7 @@
       .session-state[data-state="idle"] { color: #9ca78b; }
 
       .pane-root { background: #050403; min-height: 0; min-width: 0; overflow: hidden; padding: clamp(0.75rem, 2vw, 1.5rem); }
+      .pane-root--onboarding { overflow: auto; padding: 0.75rem; }
       .pane-root > .workbench-pane, .pane-root > .workspace-split { height: 100%; min-height: 0; }
       .workspace-split { display: grid; max-width: 100%; min-width: 0; width: 100%; }
       .workbench-pane { background: #090807; border: 1px solid #302b28; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; min-width: 0; overflow: hidden; }

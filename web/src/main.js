@@ -234,6 +234,7 @@ function render() {
   renderSessionList();
   renderSecurityManagement();
   composerShell.hidden = !authorized;
+  paneRoot.classList.toggle("pane-root--onboarding", !authorized);
   renderPaneRoot(workspace);
 
   workbenchError.textContent = visibleError;
