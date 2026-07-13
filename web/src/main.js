@@ -70,6 +70,7 @@ const interruptSession = document.querySelector("#interrupt-session");
 const closeTerminal = document.querySelector("#close-terminal");
 const paneRoot = document.querySelector("#pane-root");
 const composer = document.querySelector("#composer");
+const composerShell = composer.closest(".composer");
 const messageInput = document.querySelector("#message-input");
 const sendMessage = document.querySelector("#send-message");
 const workbenchError = document.querySelector("#workbench-error");
@@ -232,6 +233,7 @@ function render() {
   renderWorkspaceList();
   renderSessionList();
   renderSecurityManagement();
+  composerShell.hidden = !authorized;
   renderPaneRoot(workspace);
 
   workbenchError.textContent = visibleError;

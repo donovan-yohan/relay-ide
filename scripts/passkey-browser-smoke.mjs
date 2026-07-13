@@ -97,13 +97,14 @@ try {
   assert.deepEqual(
     await evaluate(
       sessionId,
-      "({ title: document.querySelector('#auth-onboarding-title')?.textContent, setup: document.querySelector('#auth-onboarding-enroll')?.textContent, signIn: document.querySelector('#auth-onboarding-sign-in')?.textContent, recoveryType: document.querySelector('#auth-onboarding-recovery')?.type })",
+      "({ title: document.querySelector('#auth-onboarding-title')?.textContent, setup: document.querySelector('#auth-onboarding-enroll')?.textContent, signIn: document.querySelector('#auth-onboarding-sign-in')?.textContent, recoveryType: document.querySelector('#auth-onboarding-recovery')?.type, composerHidden: document.querySelector('.composer').hidden })",
     ),
     {
       title: "Set up this browser",
       setup: "Set up this browser",
       signIn: "Sign in with passkey",
       recoveryType: "password",
+      composerHidden: true,
     },
     "an unauthenticated browser must get primary-canvas setup and sign-in controls",
   );
@@ -163,6 +164,7 @@ try {
 
   await evaluate(sessionId, "document.querySelector('#auth-onboarding-sign-in').click()");
   await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Browser access verified"));
+  assert.equal(await evaluate(sessionId, "document.querySelector('.composer').hidden"), false, "authenticated workbench must restore the Session composer");
   await browser.command("Log.enable", {}, sessionId);
   assert.equal(
     await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
@@ -641,12 +643,12 @@ async function recoverExpiredProjectBrowse(sessionId, cwd) {
   );
   const lockedState = await evaluate(
     sessionId,
-    "({ pickerHidden: document.querySelector('#workspace-add').hidden, accessOpen: document.querySelector('.auth-compact').open, onboardingTitle: document.querySelector('#auth-onboarding-title')?.textContent, focused: document.activeElement?.id, state: document.querySelector('#session-status').dataset.state, auth: document.querySelector('#auth-status').textContent })",
+    "({ pickerHidden: document.querySelector('#workspace-add').hidden, accessOpen: document.querySelector('.auth-compact').open, onboardingTitle: document.querySelector('#auth-onboarding-title')?.textContent, composerHidden: document.querySelector('.composer').hidden, focused: document.activeElement?.id, state: document.querySelector('#session-status').dataset.state, auth: document.querySelector('#auth-status').textContent })",
   );
   const { auth, ...lockedUi } = lockedState;
   assert.deepEqual(
     lockedUi,
-    { pickerHidden: true, accessOpen: true, onboardingTitle: "Sign in to continue adding this Project", focused: "auth-onboarding-sign-in", state: "unknown" },
+    { pickerHidden: true, accessOpen: true, onboardingTitle: "Sign in to continue adding this Project", composerHidden: true, focused: "auth-onboarding-sign-in", state: "unknown" },
     "expired Project browse must lock the workbench and expose focused passkey recovery",
   );
   assert.match(auth, /Sign in again to continue adding this Project\./);

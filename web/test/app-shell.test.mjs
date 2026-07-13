@@ -62,6 +62,7 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(app, /setup\.textContent = "Set up this browser"/);
   assert.match(app, /authenticate\.textContent = "Sign in with passkey"/);
   assert.match(app, /enroll\(recoveryCode\)/);
+  assert.match(app, /composerShell\.hidden = !authorized/);
   assert.doesNotMatch(app, /WebSocket|Authorization/);
   assert.doesNotMatch(app, /showDirectoryPicker|webkitdirectory/);
 
