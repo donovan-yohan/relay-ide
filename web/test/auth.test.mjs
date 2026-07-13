@@ -66,7 +66,7 @@ test("classifies browser capability, ceremony failures, and recovery without aut
   assert.deepEqual(passkeyCapability({ isSecureContext: true, navigator: { credentials: {} } }), {
     supported: false,
     code: "passkey_browser_unsupported",
-    message: "This browser context cannot use passkeys. Open the secure Relay URL in Safari or Chrome outside Discord or another in-app browser.",
+    message: "Passkeys are unavailable here. Copy the URL and open Relay directly in Safari or Chrome.",
   });
   assert.deepEqual(presentationForAuthError({ name: "NotAllowedError" }), {
     code: "passkey_denied",
@@ -74,7 +74,7 @@ test("classifies browser capability, ceremony failures, and recovery without aut
   });
   assert.deepEqual(presentationForAuthError({ name: "NotSupportedError" }), {
     code: "passkey_browser_unsupported",
-    message: "This browser context cannot use passkeys. Open the secure Relay URL in Safari or Chrome outside Discord or another in-app browser.",
+    message: "Passkeys are unavailable here. Copy the URL and open Relay directly in Safari or Chrome.",
   });
   assert.deepEqual(presentationForAuthError({ name: "SecurityError" }), {
     code: "passkey_security_error",
