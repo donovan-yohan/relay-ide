@@ -144,12 +144,29 @@ impl OwnerStore {
     }
 
     pub fn open(path: &Path, origin: &AuthOrigin) -> Result<Self, AuthError> {
+        Self::open_with_before_file_open(path, origin, || {})
+    }
+
+    #[cfg(test)]
+    fn open_after_lock_before_file_open(
+        path: &Path,
+        origin: &AuthOrigin,
+        before_file_open: impl FnOnce(),
+    ) -> Result<Self, AuthError> {
+        Self::open_with_before_file_open(path, origin, before_file_open)
+    }
+
+    fn open_with_before_file_open(
+        path: &Path,
+        origin: &AuthOrigin,
+        before_file_open: impl FnOnce(),
+    ) -> Result<Self, AuthError> {
         validate_absolute_path(path)?;
         validate_private_parent(path)?;
         let lock = open_lock(path)?;
         lock.try_lock_exclusive()
             .map_err(|_| AuthError::OwnerStoreUnavailable)?;
-        validate_private_file(path)?;
+        before_file_open();
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -158,9 +175,7 @@ impl OwnerStore {
         let metadata = file
             .metadata()
             .map_err(|_| AuthError::OwnerStoreUnavailable)?;
-        if metadata.len() == 0 || metadata.len() > MAX_STORE_BYTES {
-            return Err(AuthError::OwnerStoreUnavailable);
-        }
+        validate_private_file_metadata(&metadata)?;
         let record: OwnerRecord =
             serde_json::from_reader(file).map_err(|_| AuthError::OwnerStoreUnavailable)?;
         record.validate(origin)?;
@@ -321,12 +336,13 @@ fn validate_private_parent(path: &Path) -> Result<(), AuthError> {
     Ok(())
 }
 
-fn validate_private_file(path: &Path) -> Result<(), AuthError> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| AuthError::OwnerStoreUnavailable)?;
+fn validate_private_file_metadata(metadata: &fs::Metadata) -> Result<(), AuthError> {
     if !metadata.is_file()
         || metadata.permissions().mode() & 0o777 != 0o600
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.nlink() != 1
+        || metadata.len() == 0
+        || metadata.len() > MAX_STORE_BYTES
     {
         return Err(AuthError::OwnerStoreUnavailable);
     }
@@ -437,6 +453,27 @@ mod tests {
         fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o750)).unwrap();
         assert_eq!(
             OwnerStore::open(&path, &origin()).err().unwrap(),
+            AuthError::OwnerStoreUnavailable
+        );
+    }
+
+    #[test]
+    fn owner_state_swap_before_open_fails_closed() {
+        let scratch = Scratch::new();
+        let path = scratch.store();
+        OwnerStore::init(&path, &origin()).unwrap();
+
+        let replacement = scratch.0.join("replacement.json");
+        fs::copy(&path, &replacement).unwrap();
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(
+            OwnerStore::open_after_lock_before_file_open(&path, &origin(), || {
+                fs::rename(&path, scratch.0.join("original.json")).unwrap();
+                fs::rename(&replacement, &path).unwrap();
+            })
+            .err()
+            .unwrap(),
             AuthError::OwnerStoreUnavailable
         );
     }
