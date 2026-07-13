@@ -103,7 +103,6 @@ pub struct SecuritySnapshot {
 struct StoredCredential {
     id: String,
     passkey: Passkey,
-    enrolled_at: Instant,
     enrolled_at_unix_seconds: u64,
 }
 
@@ -229,19 +228,12 @@ impl AuthBoundary {
     ) -> Result<Self, AuthError> {
         let recovery_hash = decode_sha256_hex(recovery_hash_hex)?;
         let record = owner_store.record().clone();
-        let now_unix = unix_seconds()?;
-        let now = Instant::now();
         let passkeys = record
             .passkeys
             .iter()
             .map(|credential| StoredCredential {
                 id: credential.credential_id.clone(),
                 passkey: credential.passkey.clone(),
-                enrolled_at: now
-                    .checked_sub(Duration::from_secs(
-                        now_unix.saturating_sub(credential.enrolled_at_unix_seconds),
-                    ))
-                    .unwrap_or(now),
                 enrolled_at_unix_seconds: credential.enrolled_at_unix_seconds,
             })
             .collect();
@@ -417,7 +409,6 @@ impl AuthBoundary {
         let credential = StoredCredential {
             id,
             passkey,
-            enrolled_at: Instant::now(),
             enrolled_at_unix_seconds: unix_seconds()?,
         };
         let mut next_passkeys = state.passkeys.clone();
@@ -550,37 +541,17 @@ impl AuthBoundary {
         if !state.sessions.contains_key(&current) {
             return Err(AuthError::SessionMissing);
         }
-        let now = Instant::now();
-        let sessions = state
-            .sessions
-            .iter()
-            .map(|(key, session)| SessionDevice {
-                device_id: session.device_id.clone(),
-                credential_id: session.credential_id.clone(),
-                signed_in_seconds_ago: now.saturating_duration_since(session.created_at).as_secs(),
-                current: key.ct_eq(&current).into(),
-            })
-            .collect();
-        let credentials = state
-            .passkeys
-            .iter()
-            .map(|credential| CredentialDevice {
-                credential_id: credential.id.clone(),
-                active_sessions: state
-                    .sessions
-                    .values()
-                    .filter(|session| session.credential_id == credential.id)
-                    .count(),
-                enrolled_seconds_ago: now
-                    .saturating_duration_since(credential.enrolled_at)
-                    .as_secs(),
-            })
-            .collect();
-        Ok(SecuritySnapshot {
-            sessions,
-            credentials,
-            audit: state.audit.clone(),
-        })
+        Ok(build_security_snapshot(
+            &current,
+            &state.sessions,
+            state
+                .passkeys
+                .iter()
+                .map(|credential| (credential.id.as_str(), credential.enrolled_at_unix_seconds)),
+            &state.audit,
+            Instant::now(),
+            unix_seconds().unwrap_or_default(),
+        ))
     }
 
     pub fn revoke_session(
@@ -835,6 +806,40 @@ fn persist_credentials(
     store.persist(&record)
 }
 
+fn build_security_snapshot<'a>(
+    current: &[u8; 32],
+    sessions: &HashMap<[u8; 32], StoredSession>,
+    credentials: impl Iterator<Item = (&'a str, u64)>,
+    audit: &[AuthAuditEvent],
+    now: Instant,
+    now_unix_seconds: u64,
+) -> SecuritySnapshot {
+    SecuritySnapshot {
+        sessions: sessions
+            .iter()
+            .map(|(key, session)| SessionDevice {
+                device_id: session.device_id.clone(),
+                credential_id: session.credential_id.clone(),
+                signed_in_seconds_ago: now.saturating_duration_since(session.created_at).as_secs(),
+                current: key.ct_eq(current).into(),
+            })
+            .collect(),
+        credentials: credentials
+            .map(
+                |(credential_id, enrolled_at_unix_seconds)| CredentialDevice {
+                    credential_id: credential_id.to_owned(),
+                    active_sessions: sessions
+                        .values()
+                        .filter(|session| session.credential_id == credential_id)
+                        .count(),
+                    enrolled_seconds_ago: now_unix_seconds.saturating_sub(enrolled_at_unix_seconds),
+                },
+            )
+            .collect(),
+        audit: audit.to_vec(),
+    }
+}
+
 fn unix_seconds() -> Result<u64, AuthError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -876,6 +881,22 @@ mod tests {
             "recovery-test-secret",
         )
         .expect("auth boundary")
+    }
+
+    #[test]
+    fn security_snapshot_uses_persisted_enrollment_age_after_reboot() {
+        let persisted_before_reboot = 1_000_000;
+        let security = build_security_snapshot(
+            &hash_secret(b"requester"),
+            &HashMap::new(),
+            [("persisted-passkey", persisted_before_reboot)].into_iter(),
+            &[],
+            Instant::now(),
+            persisted_before_reboot + 3_600,
+        );
+
+        assert_eq!(security.credentials[0].credential_id, "persisted-passkey");
+        assert_eq!(security.credentials[0].enrolled_seconds_ago, 3_600);
     }
 
     #[test]
