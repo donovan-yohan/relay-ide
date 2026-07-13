@@ -72,7 +72,7 @@ export function passkeyCapability(environment) {
     return {
       supported: false,
       code: "passkey_browser_unsupported",
-      message: "This browser context cannot use passkeys. Open the secure Relay URL in Safari or Chrome outside Discord or another in-app browser.",
+      message: "Passkeys are unavailable here. Copy the URL and open Relay directly in Safari or Chrome.",
     };
   }
   return {
@@ -137,7 +137,7 @@ export function presentationForAuthError(error) {
     case "passkey_browser_unsupported":
       return {
         code,
-        message: "This browser context cannot use passkeys. Open the secure Relay URL in Safari or Chrome outside Discord or another in-app browser.",
+        message: "Passkeys are unavailable here. Copy the URL and open Relay directly in Safari or Chrome.",
       };
     case "authenticator_unavailable":
       return {
