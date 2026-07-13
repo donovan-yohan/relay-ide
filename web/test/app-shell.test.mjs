@@ -47,6 +47,7 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(app, /new window\.Terminal/);
   assert.match(app, /\/node\/claude\/sessions/);
   assert.match(app, /createTerminalInputQueue/);
+  assert.match(app, /if \(updateClaudeSessionStatus\(runtime\.sessionId, snapshot\.status\)\) \{\s*render\(\);\s*return;/);
   assert.match(app, /events: \[\.\.\.\(session\.events \?\? \[\]\), \{ role: "user"/);
   assert.match(app, /moveTab\(/);
   assert.match(app, /setSplitRatio\(/);

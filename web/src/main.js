@@ -698,7 +698,10 @@ async function pollTerminal(runtime) {
     runtime.polled = true;
     runtime.interactive = ["starting", "running"].includes(snapshot.status);
     runtime.status.textContent = `Claude Code · ${snapshot.status}`;
-    updateClaudeSessionStatus(runtime.sessionId, snapshot.status);
+    if (updateClaudeSessionStatus(runtime.sessionId, snapshot.status)) {
+      render();
+      return;
+    }
     if (runtime.interactive) void resizeTerminal(runtime);
     if (["closed", "exited"].includes(snapshot.status)) return;
     runtime.timer = window.setTimeout(() => void pollTerminal(runtime), snapshot.hasMore ? 0 : 100);
@@ -1230,12 +1233,13 @@ function updateClaudeSessionStatus(providerSessionId, status) {
   recentClaudeSessions = recentClaudeSessions.map((session) => (
     session.providerSessionId === providerSessionId ? { ...session, status } : session
   ));
-  if (!changed) return;
+  if (!changed) return false;
   const session = sessionsForSelectedWorkspace().find((candidate) => candidate.providerSessionId === providerSessionId);
   if (session && activeSession()?.providerSessionId === providerSessionId) {
     setSessionState(status, status);
   }
   persistState();
+  return true;
 }
 
 function scheduleRefresh() {
