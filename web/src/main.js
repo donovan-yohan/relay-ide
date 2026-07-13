@@ -925,6 +925,7 @@ function authOnboarding() {
   input.id = "auth-onboarding-recovery";
   input.type = "password";
   input.autocomplete = "off";
+  input.required = true;
   const actions = document.createElement("div");
   actions.className = "auth-onboarding__actions";
   const setup = document.createElement("button");
@@ -1438,7 +1439,13 @@ function iconButton(label, title, path) {
 }
 
 async function enroll(recoveryInput) {
-  const recovery = recoveryInput.value;
+  const recovery = recoveryInput.value.trim();
+  if (!recovery && !authorized) {
+    authStatus.textContent = "Enter the current deployment recovery code before setting up this browser.";
+    syncAuthOnboardingStatus();
+    recoveryInput.focus();
+    return;
+  }
   recoveryInput.value = "";
   const headers = recovery ? { "X-Relay-Recovery-Code": recovery } : { "X-Relay-CSRF": csrfToken() };
   if (await runCeremony("/auth/passkeys/enroll/options", "/auth/passkeys/enroll/verify", "create", headers)) {

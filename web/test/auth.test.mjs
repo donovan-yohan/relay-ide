@@ -88,6 +88,10 @@ test("classifies browser capability, ceremony failures, and recovery without aut
     code: "recovery_required",
     message: "No enrolled passkey is available. Recovery can enroll a replacement passkey but cannot sign you in.",
   });
+  assert.deepEqual(presentationForAuthError({ code: "session_missing" }), {
+    code: "session_missing",
+    message: "Browser access is not active. Enter the deployment recovery code to set up this browser, or sign in with an existing passkey.",
+  });
   assert.deepEqual(presentationForAuthError({ code: "recovery_denied" }), {
     code: "recovery_denied",
     message: "That recovery code is invalid for this Relay deployment. Obtain the current code privately, then try again. No PIN or anonymous session was enabled.",

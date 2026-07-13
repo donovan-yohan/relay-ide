@@ -112,6 +112,27 @@ try {
 
   await evaluate(
     sessionId,
+    `window.relayOriginalFetch = window.fetch; window.relayEnrollmentFetches = []; window.fetch = (...args) => { window.relayEnrollmentFetches.push(args[0]); return window.relayOriginalFetch(...args); }; document.querySelector("#auth-onboarding-enroll").click();`,
+  );
+  assert.deepEqual(
+    await evaluate(
+      sessionId,
+      `({ status: document.querySelector("#auth-onboarding-status").textContent, focused: document.activeElement?.id, fetches: window.relayEnrollmentFetches })`,
+    ),
+    {
+      status: "Enter the current deployment recovery code before setting up this browser.",
+      focused: "auth-onboarding-recovery",
+      fetches: [],
+    },
+    "empty first-device setup must require recovery before any enrollment request",
+  );
+  await evaluate(
+    sessionId,
+    `window.fetch = window.relayOriginalFetch; delete window.relayOriginalFetch; delete window.relayEnrollmentFetches;`,
+  );
+
+  await evaluate(
+    sessionId,
     `Object.defineProperty(navigator.credentials, "create", { configurable: true, value: async () => null });`,
   );
   assert.equal(
