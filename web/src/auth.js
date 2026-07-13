@@ -81,7 +81,7 @@ export function presentationForAuthError(error) {
     case "recovery_denied":
       return {
         code,
-        message: "Recovery was denied. It never falls back to a PIN or anonymous session.",
+        message: "That recovery code is invalid for this Relay deployment. Obtain the current code privately, then try again. No PIN or anonymous session was enabled.",
       };
     default:
       return {

@@ -146,7 +146,8 @@ window.addEventListener("resize", () => {
   layoutResizeTimer = window.setTimeout(() => render(), 80);
 });
 
-if (isPasskeySupported(window)) {
+const passkeySupported = isPasskeySupported(window);
+if (passkeySupported) {
   authStatus.textContent = "Sign in with an enrolled passkey to open this workbench.";
 } else {
   const presentation = presentationForAuthError();
@@ -154,7 +155,7 @@ if (isPasskeySupported(window)) {
   enrollPasskey.disabled = true;
   signIn.disabled = true;
 }
-enrollPasskey.addEventListener("click", () => void enroll().catch(() => {}));
+enrollPasskey.addEventListener("click", () => void enroll(recoveryCode).catch(() => {}));
 signIn.addEventListener("click", () => void signInWithPasskey().catch(() => {}));
 signOut.addEventListener("click", () => void signOutThisBrowser());
 
@@ -464,7 +465,7 @@ function renderPaneRoot(workspace) {
   disposeTerminals({ preservePausedInput: true });
   paneRoot.replaceChildren();
   if (!authorized) {
-    paneRoot.append(emptyCanvas("Sign in to continue."));
+    paneRoot.append(authOnboarding());
     return;
   }
   if (!workspace) {
@@ -893,6 +894,64 @@ function emptyCanvas(text) {
   return empty;
 }
 
+function authOnboarding() {
+  const onboarding = document.createElement("section");
+  onboarding.id = "auth-onboarding";
+  onboarding.className = "auth-onboarding";
+  onboarding.setAttribute("aria-labelledby", "auth-onboarding-title");
+
+  const title = document.createElement("h2");
+  title.id = "auth-onboarding-title";
+  title.textContent = pendingDirectoryBrowse
+    ? "Sign in to continue adding this Project"
+    : "Set up this browser";
+  const introduction = document.createElement("p");
+  introduction.textContent = "Relay uses a platform passkey for private browser access.";
+  const steps = document.createElement("ol");
+  for (const text of [
+    "Enter the current deployment recovery code and enroll a passkey.",
+    "Then sign in with that passkey to open the workbench.",
+  ]) {
+    const step = document.createElement("li");
+    step.textContent = text;
+    steps.append(step);
+  }
+  const label = document.createElement("label");
+  label.htmlFor = "auth-onboarding-recovery";
+  label.textContent = "Current deployment recovery code";
+  const input = document.createElement("input");
+  input.id = "auth-onboarding-recovery";
+  input.type = "password";
+  input.autocomplete = "off";
+  const actions = document.createElement("div");
+  actions.className = "auth-onboarding__actions";
+  const setup = document.createElement("button");
+  setup.id = "auth-onboarding-enroll";
+  setup.type = "button";
+  setup.textContent = "Set up this browser";
+  setup.disabled = !passkeySupported;
+  setup.addEventListener("click", () => void enroll(input).catch(() => {}));
+  const authenticate = document.createElement("button");
+  authenticate.id = "auth-onboarding-sign-in";
+  authenticate.type = "button";
+  authenticate.textContent = "Sign in with passkey";
+  authenticate.disabled = !passkeySupported;
+  authenticate.addEventListener("click", () => void signInWithPasskey().catch(() => {}));
+  actions.append(setup, authenticate);
+  const status = document.createElement("p");
+  status.id = "auth-onboarding-status";
+  status.className = "auth-onboarding__status";
+  status.setAttribute("aria-live", "polite");
+  status.textContent = authStatus.textContent;
+  onboarding.append(title, introduction, steps, label, input, actions, status);
+  return onboarding;
+}
+
+function syncAuthOnboardingStatus() {
+  const status = document.querySelector("#auth-onboarding-status");
+  if (status) status.textContent = authStatus.textContent;
+}
+
 function runLayoutAction(action) {
   const session = activeSession();
   if (!activeLayout || !session) return;
@@ -1012,7 +1071,7 @@ function recoverExpiredDirectoryBrowse(error, path) {
   workbenchError.dataset.code = error.code;
   render();
   browserAccess.open = true;
-  signIn.focus();
+  document.querySelector("#auth-onboarding-sign-in")?.focus();
   return true;
 }
 
@@ -1357,12 +1416,13 @@ function iconButton(label, title, path) {
   return button;
 }
 
-async function enroll() {
-  const recovery = recoveryCode.value;
-  recoveryCode.value = "";
+async function enroll(recoveryInput) {
+  const recovery = recoveryInput.value;
+  recoveryInput.value = "";
   const headers = recovery ? { "X-Relay-Recovery-Code": recovery } : { "X-Relay-CSRF": csrfToken() };
   if (await runCeremony("/auth/passkeys/enroll/options", "/auth/passkeys/enroll/verify", "create", headers)) {
-    authStatus.textContent = "Passkey enrolled. Sign in to open Workspaces.";
+    authStatus.textContent = "Passkey enrolled. Continue with Sign in with passkey to open the workbench.";
+    syncAuthOnboardingStatus();
   }
 }
 
@@ -1384,6 +1444,7 @@ async function runCeremony(optionsPath, verifyPath, operation, headers = {}) {
     return true;
   } catch (error) {
     authStatus.textContent = presentationForAuthError(error).message;
+    syncAuthOnboardingStatus();
     return false;
   }
 }

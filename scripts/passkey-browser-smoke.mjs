@@ -94,6 +94,20 @@ try {
   browser = await connectBrowser(chromiumProcess, captureProcessOutput(chromiumProcess), chromeProfile);
   const { sessionId } = await createIndependentBrowser();
 
+  assert.deepEqual(
+    await evaluate(
+      sessionId,
+      "({ title: document.querySelector('#auth-onboarding-title')?.textContent, setup: document.querySelector('#auth-onboarding-enroll')?.textContent, signIn: document.querySelector('#auth-onboarding-sign-in')?.textContent, recoveryType: document.querySelector('#auth-onboarding-recovery')?.type })",
+    ),
+    {
+      title: "Set up this browser",
+      setup: "Set up this browser",
+      signIn: "Sign in with passkey",
+      recoveryType: "password",
+    },
+    "an unauthenticated browser must get primary-canvas setup and sign-in controls",
+  );
+
   await evaluate(
     sessionId,
     `Object.defineProperty(navigator.credentials, "create", { configurable: true, value: async () => null });`,
@@ -127,11 +141,27 @@ try {
 
   await evaluate(
     sessionId,
-    `document.querySelector("#recovery-code").value = ${JSON.stringify(recoveryCode)}; document.querySelector("#enroll-passkey").click();`,
+    `document.querySelector("#auth-onboarding-recovery").value = "invalid-for-this-deployment"; document.querySelector("#auth-onboarding-enroll").click();`,
   );
-  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Passkey enrolled"));
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-onboarding-status').textContent"))?.includes("invalid for this Relay deployment"));
+  assert.match(
+    await evaluate(sessionId, "document.querySelector('#auth-onboarding-status').textContent"),
+    /Obtain the current code privately.*No PIN or anonymous session was enabled/,
+    "denied recovery must direct the operator to the current private code without weakening authentication",
+  );
 
-  await evaluate(sessionId, "document.querySelector('#sign-in').click()");
+  await evaluate(
+    sessionId,
+    `document.querySelector("#auth-onboarding-recovery").value = ${JSON.stringify(recoveryCode)}; document.querySelector("#auth-onboarding-enroll").click();`,
+  );
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-onboarding-status').textContent"))?.includes("Passkey enrolled"));
+  assert.match(
+    await evaluate(sessionId, "document.querySelector('#auth-onboarding-status').textContent"),
+    /Continue with Sign in with passkey/,
+    "recovery enrollment must lead explicitly to the second passkey sign-in ceremony",
+  );
+
+  await evaluate(sessionId, "document.querySelector('#auth-onboarding-sign-in').click()");
   await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Browser access verified"));
   await browser.command("Log.enable", {}, sessionId);
   assert.equal(
@@ -611,17 +641,17 @@ async function recoverExpiredProjectBrowse(sessionId, cwd) {
   );
   const lockedState = await evaluate(
     sessionId,
-    "({ pickerHidden: document.querySelector('#workspace-add').hidden, accessOpen: document.querySelector('.auth-compact').open, focused: document.activeElement?.id, state: document.querySelector('#session-status').dataset.state, auth: document.querySelector('#auth-status').textContent })",
+    "({ pickerHidden: document.querySelector('#workspace-add').hidden, accessOpen: document.querySelector('.auth-compact').open, onboardingTitle: document.querySelector('#auth-onboarding-title')?.textContent, focused: document.activeElement?.id, state: document.querySelector('#session-status').dataset.state, auth: document.querySelector('#auth-status').textContent })",
   );
   const { auth, ...lockedUi } = lockedState;
   assert.deepEqual(
     lockedUi,
-    { pickerHidden: true, accessOpen: true, focused: "sign-in", state: "unknown" },
+    { pickerHidden: true, accessOpen: true, onboardingTitle: "Sign in to continue adding this Project", focused: "auth-onboarding-sign-in", state: "unknown" },
     "expired Project browse must lock the workbench and expose focused passkey recovery",
   );
   assert.match(auth, /Sign in again to continue adding this Project\./);
 
-  await evaluate(sessionId, "document.querySelector('#sign-in').click()");
+  await evaluate(sessionId, "document.querySelector('#auth-onboarding-sign-in').click()");
   await waitFor(
     async () => evaluate(
       sessionId,

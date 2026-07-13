@@ -61,4 +61,8 @@ test("classifies unsupported, denied, and recovery flows without PIN fallback", 
     code: "recovery_required",
     message: "No enrolled passkey is available. Recovery can enroll a replacement passkey but cannot sign you in.",
   });
+  assert.deepEqual(presentationForAuthError({ code: "recovery_denied" }), {
+    code: "recovery_denied",
+    message: "That recovery code is invalid for this Relay deployment. Obtain the current code privately, then try again. No PIN or anonymous session was enabled.",
+  });
 });
