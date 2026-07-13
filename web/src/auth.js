@@ -118,6 +118,11 @@ export function presentationForAuthError(error) {
         code,
         message: "No enrolled passkey is available. Recovery can enroll a replacement passkey but cannot sign you in.",
       };
+    case "session_missing":
+      return {
+        code,
+        message: "Browser access is not active. Enter the deployment recovery code to set up this browser, or sign in with an existing passkey.",
+      };
     case "origin_mismatch":
     case "passkey_security_error":
       return {
