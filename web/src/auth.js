@@ -118,10 +118,30 @@ export function presentationForAuthError(error) {
         code,
         message: "No enrolled passkey is available. Recovery can enroll a replacement passkey but cannot sign you in.",
       };
+    case "owner_unclaimed":
+      return {
+        code,
+        message: "This Relay has no owner yet. Set up the owner passkey from its private exposure, then sign in.",
+      };
+    case "already_claimed":
+      return {
+        code,
+        message: "Another browser completed owner setup first. Reload, then sign in with the owner passkey.",
+      };
+    case "claim_exposure_denied":
+      return {
+        code,
+        message: "Owner setup is allowed only through Relay's private exposure. Reopen the private Relay URL and retry.",
+      };
+    case "owner_store_unavailable":
+      return {
+        code,
+        message: "Relay's owner state is unavailable. Ask the deployment administrator to restore the private owner store, then retry.",
+      };
     case "session_missing":
       return {
         code,
-        message: "Browser access is not active. Enter the deployment recovery code to set up this browser, or sign in with an existing passkey.",
+        message: "Browser access is not active. Sign in with an owner passkey, or use Lost passkey access to enroll a replacement.",
       };
     case "origin_mismatch":
     case "passkey_security_error":

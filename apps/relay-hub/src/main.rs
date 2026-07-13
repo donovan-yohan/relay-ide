@@ -10,8 +10,9 @@ use std::{
 };
 
 use relay_factory_core::{
-    AuthBoundary, AuthError, AuthOrigin, EnrollmentAuthority, ServiceIdentity, configured_identity,
-    health_http_response, health_json, not_found_http_response,
+    AuthBoundary, AuthError, AuthOrigin, EnrollmentAuthority, FirstOwnerExposure, OwnerStore,
+    RegistrationOutcome, ServiceIdentity, configured_identity, health_http_response, health_json,
+    not_found_http_response,
 };
 use relay_hermes_session::GatewayEndpoint;
 use relay_session::claude_pty::{
@@ -58,7 +59,7 @@ fn main() -> ExitCode {
         }
         Err(RunError::Usage) => {
             eprintln!(
-                "usage: relay-hub <probe|serve --bind <address> [--identity hub] [--origin https://relay.example] [--recovery-code-hash sha256hex] [--workspace-root PATH] [--hermes-gateway-url ws://127.0.0.1:PORT/api/ws?token=...] [--test-claude-fixture cat]>"
+                "usage: relay-hub <probe|owner-store init --owner-store ABSOLUTE_PATH --origin HTTPS_ORIGIN|owner-store reset --owner-store ABSOLUTE_PATH --origin HTTPS_ORIGIN --confirm-reset-owner|serve --bind <address> [--identity hub] [--origin HTTPS_ORIGIN --recovery-code-hash SHA256HEX --owner-store ABSOLUTE_PATH --first-owner-exposure private|public|funnel|unknown] [--workspace-root PATH] [--hermes-gateway-url URL] [--test-claude-fixture cat]>"
             );
             ExitCode::from(64)
         }
@@ -122,8 +123,68 @@ fn run() -> Result<(), RunError> {
             Ok(())
         }
         [command, rest @ ..] if command == "serve" => serve(rest),
+        [command, action, rest @ ..] if command == "owner-store" && action == "init" => {
+            owner_store_init(rest)
+        }
+        [command, action, rest @ ..] if command == "owner-store" && action == "reset" => {
+            owner_store_reset(rest)
+        }
         _ => Err(RunError::Usage),
     }
+}
+
+fn owner_store_init(arguments: &[String]) -> Result<(), RunError> {
+    let (path, origin, confirm) = owner_store_arguments(arguments)?;
+    if confirm {
+        return Err(RunError::Usage);
+    }
+    OwnerStore::init(&path, &origin).map_err(RunError::Auth)?;
+    println!("{{\"status\":\"owner_store_initialized\"}}");
+    Ok(())
+}
+
+fn owner_store_reset(arguments: &[String]) -> Result<(), RunError> {
+    let (path, origin, confirm) = owner_store_arguments(arguments)?;
+    if !confirm {
+        return Err(RunError::Usage);
+    }
+    OwnerStore::reset(&path, &origin).map_err(RunError::Auth)?;
+    println!("{{\"status\":\"owner_store_reset\"}}");
+    Ok(())
+}
+
+fn owner_store_arguments(arguments: &[String]) -> Result<(PathBuf, AuthOrigin, bool), RunError> {
+    let mut path = None;
+    let mut origin = None;
+    let mut confirm = false;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--owner-store" if path.is_none() => {
+                path = Some(PathBuf::from(
+                    arguments.get(index + 1).ok_or(RunError::Usage)?,
+                ));
+                index += 2;
+            }
+            "--origin" if origin.is_none() => {
+                origin = Some(
+                    AuthOrigin::parse(arguments.get(index + 1).ok_or(RunError::Usage)?)
+                        .map_err(RunError::Auth)?,
+                );
+                index += 2;
+            }
+            "--confirm-reset-owner" if !confirm => {
+                confirm = true;
+                index += 1;
+            }
+            _ => return Err(RunError::Usage),
+        }
+    }
+    Ok((
+        path.ok_or(RunError::Usage)?,
+        origin.ok_or(RunError::Usage)?,
+        confirm,
+    ))
 }
 
 fn serve(arguments: &[String]) -> Result<(), RunError> {
@@ -169,6 +230,8 @@ impl ServeOptions {
         let mut identity_arguments = None;
         let mut origin = None;
         let mut recovery_hash = None;
+        let mut owner_store = None;
+        let mut first_owner_exposure = None;
         let mut workspace_roots = Vec::new();
         let mut hermes_gateway_url = None;
         #[cfg(debug_assertions)]
@@ -186,6 +249,13 @@ impl ServeOptions {
                 "--origin" if origin.is_none() => origin = Some(value.clone()),
                 "--recovery-code-hash" if recovery_hash.is_none() => {
                     recovery_hash = Some(value.clone());
+                }
+                "--owner-store" if owner_store.is_none() => {
+                    owner_store = Some(PathBuf::from(value));
+                }
+                "--first-owner-exposure" if first_owner_exposure.is_none() => {
+                    first_owner_exposure =
+                        Some(FirstOwnerExposure::parse(value).map_err(RunError::Auth)?);
                 }
                 "--workspace-root" => workspace_roots.push(PathBuf::from(value)),
                 "--hermes-gateway-url" if hermes_gateway_url.is_none() => {
@@ -216,15 +286,16 @@ impl ServeOptions {
             ServiceIdentity::Hub,
         )
         .map_err(RunError::Config)?;
-        let auth = match (origin, recovery_hash) {
-            (None, None) => None,
-            (Some(origin), Some(recovery_hash)) => Some(Arc::new(
-                AuthBoundary::from_recovery_hash_hex(
-                    AuthOrigin::parse(&origin).map_err(RunError::Auth)?,
-                    &recovery_hash,
-                )
-                .map_err(RunError::Auth)?,
-            )),
+        let auth = match (origin, recovery_hash, owner_store, first_owner_exposure) {
+            (None, None, None, None) => None,
+            (Some(origin), Some(recovery_hash), Some(path), Some(exposure)) => {
+                let origin = AuthOrigin::parse(&origin).map_err(RunError::Auth)?;
+                let store = OwnerStore::open(&path, &origin).map_err(RunError::Auth)?;
+                Some(Arc::new(
+                    AuthBoundary::from_owner_store(origin, &recovery_hash, store, exposure)
+                        .map_err(RunError::Auth)?,
+                ))
+            }
             _ => return Err(RunError::Usage),
         };
         if workspace_roots.is_empty() {
@@ -415,6 +486,7 @@ fn route_request(
     let auth = runtime.auth.as_deref();
     let response = match (request.method, request.path) {
         ("GET", "/health") => health_http_response(identity),
+        ("GET", "/auth/status") => auth_status_response(auth),
         ("POST", "/auth/passkeys/enroll/options") => start_enrollment_response(request, auth),
         ("POST", "/auth/passkeys/enroll/verify") => finish_enrollment_response(request, auth),
         ("POST", "/auth/passkeys/sign-in/options") => start_sign_in_response(request, auth),
@@ -456,9 +528,15 @@ fn start_enrollment_response(request: &HttpRequest<'_>, auth: Option<&AuthBounda
     let authority = match request.header("x-relay-recovery-code") {
         Some(code) => EnrollmentAuthority::RecoveryCode(code),
         None => {
-            let session = match request.cookie("__Host-relay_session") {
-                Some(session) => session,
-                None => return auth_error_response(401, "session_missing", &[]),
+            let Some(session) = request.cookie("__Host-relay_session") else {
+                return match auth.start_registration(EnrollmentAuthority::FirstOwner) {
+                    Ok(ceremony) => json_response(
+                        200,
+                        &ceremony.options_json,
+                        &[ceremony_cookie(&ceremony.ceremony_id)],
+                    ),
+                    Err(error) => auth_error_response(auth_error_status(&error), error.code(), &[]),
+                };
             };
             let csrf = match request.header("x-relay-csrf") {
                 Some(csrf) => csrf,
@@ -490,9 +568,14 @@ fn finish_enrollment_response(request: &HttpRequest<'_>, auth: Option<&AuthBound
         None => return auth_error_response(403, "unknown_ceremony", &[]),
     };
     match auth.finish_registration(ceremony, request.body) {
-        Ok(()) => json_response(
+        Ok(RegistrationOutcome::PasskeyEnrolled) => json_response(
             200,
             "{\"status\":\"passkey_enrolled\"}",
+            &[clear_ceremony_cookie()],
+        ),
+        Ok(RegistrationOutcome::OwnerClaimed) => json_response(
+            200,
+            "{\"status\":\"owner_claimed\"}",
             &[clear_ceremony_cookie()],
         ),
         Err(error) => auth_error_response(
@@ -500,6 +583,17 @@ fn finish_enrollment_response(request: &HttpRequest<'_>, auth: Option<&AuthBound
             error.code(),
             &[clear_ceremony_cookie()],
         ),
+    }
+}
+
+fn auth_status_response(auth: Option<&AuthBoundary>) -> String {
+    let Some(auth) = auth else {
+        return auth_error_response(404, "auth_unavailable", &[]);
+    };
+    match auth.owner_claimed() {
+        Ok(true) => json_response(200, "{\"status\":\"claimed\"}", &[]),
+        Ok(false) => json_response(200, "{\"status\":\"unclaimed\"}", &[]),
+        Err(error) => auth_error_response(auth_error_status(&error), error.code(), &[]),
     }
 }
 
@@ -1290,6 +1384,8 @@ fn content_length(headers: &[u8]) -> Result<usize, RequestReadError> {
 fn auth_error_status(error: &AuthError) -> u16 {
     match error {
         AuthError::SessionMissing => 401,
+        AuthError::AlreadyClaimed => 409,
+        AuthError::OwnerStoreUnavailable => 503,
         AuthError::Internal => 500,
         _ => 403,
     }

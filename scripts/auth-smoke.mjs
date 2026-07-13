@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createConnection } from "node:net";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 const recoveryCode = "test-recovery-code";
 const recoveryHash = createHash("sha256").update(recoveryCode).digest("hex");
 const origin = "https://relay.example.test";
+const scratch = await mkdtemp(`${tmpdir()}/relay-auth-smoke-`);
+const ownerStore = `${scratch}/state/owner.json`;
+const initialized = spawnSync("cargo", [
+  "run", "--quiet", "-p", "relay-hub", "--", "owner-store", "init",
+  "--owner-store", ownerStore, "--origin", origin,
+], { encoding: "utf8" });
+assert.equal(initialized.status, 0, initialized.stderr);
 const hub = spawn(
   "cargo",
   [
@@ -22,6 +31,10 @@ const hub = spawn(
     origin,
     "--recovery-code-hash",
     recoveryHash,
+    "--owner-store",
+    ownerStore,
+    "--first-owner-exposure",
+    "private",
   ],
   { stdio: ["ignore", "pipe", "pipe"] },
 );
@@ -42,7 +55,7 @@ try {
   await assertError(address, "GET /protected/hub HTTP/1.1\r\nHost: relay.example.test\r\n\r\n", 401, "session_missing");
   await assertError(
     address,
-    post("/auth/passkeys/enroll/options", { "x-relay-recovery-code": recoveryCode }),
+    post("/auth/passkeys/enroll/options"),
     403,
     "origin_mismatch",
   );
@@ -50,7 +63,6 @@ try {
     address,
     post("/auth/passkeys/enroll/options", {
       origin: "https://wrong.example.test",
-      "x-relay-recovery-code": recoveryCode,
     }),
     403,
     "origin_mismatch",
@@ -69,7 +81,6 @@ try {
     address,
     post("/auth/passkeys/enroll/options", {
       origin,
-      "x-relay-recovery-code": recoveryCode,
     }),
   );
   assert.equal(enrollment.status, 200);
@@ -97,7 +108,6 @@ try {
     address,
     post("/auth/passkeys/enroll/options", {
       origin,
-      "x-relay-recovery-code": recoveryCode,
     }),
   );
   const concurrentCookie = concurrentEnrollment.headers["set-cookie"].split(";", 1)[0];
@@ -129,6 +139,7 @@ try {
     hub.kill("SIGTERM");
   }
   await exited;
+  await rm(scratch, { recursive: true, force: true });
 }
 
 async function waitForListener() {

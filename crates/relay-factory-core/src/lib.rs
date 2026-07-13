@@ -3,11 +3,13 @@ use std::fmt;
 use url::Url;
 
 mod auth;
+mod owner_store;
 
 pub use auth::{
     AuthAuditEvent, AuthBoundary, CeremonyStart, CredentialDevice, EnrollmentAuthority,
-    SecuritySnapshot, SessionDevice, SessionGrant,
+    RegistrationOutcome, SecuritySnapshot, SessionDevice, SessionGrant,
 };
+pub use owner_store::{FirstOwnerExposure, OwnerStore};
 
 pub const API_VERSION: &str = "relay-factory/v1";
 pub const MAX_CONFIG_INPUT_BYTES: usize = 32;
@@ -18,6 +20,10 @@ pub enum AuthError {
     InvalidOrigin,
     OriginMismatch,
     InvalidRecoveryConfig,
+    OwnerStoreUnavailable,
+    OwnerUnclaimed,
+    AlreadyClaimed,
+    ClaimExposureDenied,
     RecoveryRequired,
     RecoveryDenied,
     PasskeyDenied,
@@ -39,6 +45,10 @@ impl AuthError {
             Self::InvalidOrigin => "invalid_origin",
             Self::OriginMismatch => "origin_mismatch",
             Self::InvalidRecoveryConfig => "invalid_recovery_config",
+            Self::OwnerStoreUnavailable => "owner_store_unavailable",
+            Self::OwnerUnclaimed => "owner_unclaimed",
+            Self::AlreadyClaimed => "already_claimed",
+            Self::ClaimExposureDenied => "claim_exposure_denied",
             Self::RecoveryRequired => "recovery_required",
             Self::RecoveryDenied => "recovery_denied",
             Self::PasskeyDenied => "passkey_denied",
