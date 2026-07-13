@@ -1,7 +1,7 @@
 import {
   credentialToJson,
   decodePublicKeyOptions,
-  isPasskeySupported,
+  passkeyCapability,
   presentationForAuthError,
 } from "./auth.js";
 import { renderChatTimeline, sessionMayHaveMoreEvents } from "./chat.js";
@@ -147,12 +147,11 @@ window.addEventListener("resize", () => {
   layoutResizeTimer = window.setTimeout(() => render(), 80);
 });
 
-const passkeySupported = isPasskeySupported(window);
-if (passkeySupported) {
-  authStatus.textContent = "Sign in with an enrolled passkey to open this workbench.";
-} else {
-  const presentation = presentationForAuthError();
-  authStatus.textContent = presentation.message;
+const passkeyClient = passkeyCapability(window);
+const passkeySupported = passkeyClient.supported;
+authStatus.textContent = passkeyClient.message;
+if (!passkeySupported) {
+  authStatus.dataset.code = passkeyClient.code;
   enrollPasskey.disabled = true;
   signIn.disabled = true;
 }
@@ -946,8 +945,27 @@ function authOnboarding() {
   status.className = "auth-onboarding__status";
   status.setAttribute("aria-live", "polite");
   status.textContent = authStatus.textContent;
-  onboarding.append(title, introduction, steps, label, input, actions, status);
+  const copyUrl = document.createElement("button");
+  copyUrl.id = "auth-onboarding-copy-url";
+  copyUrl.type = "button";
+  copyUrl.textContent = "Copy URL";
+  copyUrl.className = "auth-onboarding__copy";
+  copyUrl.title = "Copy the secure Relay URL to open directly in Safari or Chrome";
+  copyUrl.addEventListener("click", () => void copySecureRelayUrl(status));
+  onboarding.dataset.secureOrigin = window.isSecureContext ? "yes" : "no";
+  onboarding.dataset.passkeyApi = passkeySupported ? "yes" : "no";
+  onboarding.append(title, introduction, steps, label, input, actions, status, copyUrl);
   return onboarding;
+}
+
+async function copySecureRelayUrl(status) {
+  const url = window.location.href;
+  try {
+    await navigator.clipboard.writeText(url);
+    status.textContent = "Secure Relay URL copied. Open it directly in Safari or Chrome, then retry passkey setup.";
+  } catch {
+    status.textContent = `Copy this URL and open it directly in Safari or Chrome: ${url}`;
+  }
 }
 
 function syncAuthOnboardingStatus() {

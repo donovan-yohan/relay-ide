@@ -61,6 +61,10 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(app, /onboarding\.id = "auth-onboarding"/);
   assert.match(app, /setup\.textContent = "Set up this browser"/);
   assert.match(app, /authenticate\.textContent = "Sign in with passkey"/);
+  assert.match(app, /copyUrl\.textContent = "Copy URL"/);
+  assert.match(auth, /outside Discord or another in-app browser/);
+  assert.match(app, /onboarding\.dataset\.secureOrigin/);
+  assert.match(app, /onboarding\.dataset\.passkeyApi/);
   assert.match(app, /enroll\(recoveryCode\)/);
   assert.match(app, /composerShell\.hidden = !authorized/);
   assert.match(app, /paneRoot\.classList\.toggle\("pane-root--onboarding", !authorized\)/);
