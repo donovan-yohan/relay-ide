@@ -17,7 +17,7 @@ Later issues may introduce these terms only with explicit ownership and storage 
 - `relay-node probe` prints the same record for the node identity.
 - The PWA renders one local Workspace bound to one Node and an approved local root. Non-repo roots are valid.
 - The PWA persists a versioned, bounded layout tree in browser storage. Its tabs and panes contain only opaque Session references. Bounded recent Claude metadata may retain a status hint, but runtime polling remains authoritative and no terminal bytes or commands enter persisted metadata.
-- The PWA shell renders liveness plus passkey enrollment, sign-in, typed unsupported/denied/recovery, and trusted-browser revoke controls.
+- The PWA shell renders liveness plus passkey enrollment, sign-in/sign-out, typed unsupported/denied/recovery, and bounded trusted-browser/passkey revocation controls.
 - The hub validates WebAuthn at one configured HTTPS origin, issues revocable browser sessions for protected hub actions, and denies browser sessions at the node boundary.
 - `relay-node codex-stdio-probe` owns a one-node, local `codex app-server --stdio` Session seam. Its explicit exercise mode creates, resumes, prompts, and cancels native Codex threads through bounded JSONL; it exposes neither a network transport nor raw provider transcripts.
 - The authenticated CWD workbench browses only canonical approved node directories, binds a selected folder to a Project, and runs native Hermes and Codex provider Sessions from that CWD.

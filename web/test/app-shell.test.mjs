@@ -23,6 +23,9 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(page, /data-layout-action="new-tab"/);
   assert.match(page, /data-layout-action="split-pane"/);
   assert.match(page, /aria-label="Add Project"/);
+  assert.match(page, /Sign out this browser/);
+  assert.match(page, /id="trusted-browsers"/);
+  assert.match(page, /id="passkeys"/);
   assert.match(page, /<svg viewBox="0 0 24 24"/);
   assert.match(page, /font-family: "SFMono-Regular"/);
   assert.doesNotMatch(page, />New tab<|>Split pane<|Presentation is separate/);
@@ -37,7 +40,7 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(app, /relay-factory\/workbench-layouts\/v1/);
   assert.match(app, /"\/api\/workspaces"/);
   assert.match(app, /"\/api\/directories"/);
-  assert.match(app, /"\/api\/workspaces\/select"/);
+  assert.doesNotMatch(app, /"\/api\/workspaces\/select"/);
   assert.match(app, /"\/api\/sessions\/resume"/);
   assert.match(app, /"\/api\/sessions\/close"/);
   assert.match(app, /renderChatTimeline/);
@@ -52,6 +55,8 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(app, /navigator\.credentials\[operation\]/);
   assert.match(app, /recoverExpiredDirectoryBrowse\(error, path\)/);
   assert.match(app, /resumeDirectoryBrowseAfterSignIn\(\)/);
+  assert.match(app, /"\/auth\/sign-out"/);
+  assert.match(app, /"\/auth\/credentials\/revoke"/);
   assert.doesNotMatch(app, /WebSocket|Authorization/);
   assert.doesNotMatch(app, /showDirectoryPicker|webkitdirectory/);
 

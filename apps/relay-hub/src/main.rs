@@ -15,8 +15,8 @@ use relay_factory_core::{
 };
 use relay_hermes_session::GatewayEndpoint;
 use relay_session::claude_pty::{
-    ClaudePtyError, NodePtyRuntime, OwnerSessionCloseDisposition, PtyTermination,
-    PtyTerminationOutcome, TerminalSnapshot,
+    ClaudePtyError, NodePtyRuntime, PtyShutdownDisposition, PtyTermination, PtyTerminationOutcome,
+    TerminalSnapshot,
 };
 use serde_json::Value;
 
@@ -39,7 +39,7 @@ struct PtyRetryDriver {
 
 struct HubRuntime {
     auth: Option<Arc<AuthBoundary>>,
-    owner_lifecycle: Mutex<()>,
+    authority_gate: Mutex<()>,
     pty: Mutex<NodePtyRuntime>,
     retry_driver: Mutex<PtyRetryDriver>,
     workbench: Mutex<Workbench>,
@@ -139,7 +139,7 @@ fn serve(arguments: &[String]) -> Result<(), RunError> {
     let pty = NodePtyRuntime::default();
     let runtime = Arc::new(HubRuntime {
         auth: options.auth,
-        owner_lifecycle: Mutex::new(()),
+        authority_gate: Mutex::new(()),
         pty: Mutex::new(pty),
         retry_driver: Mutex::new(PtyRetryDriver::default()),
         workbench: options.workbench,
@@ -257,7 +257,7 @@ fn serve_connections_with_auth(
         identity,
         Arc::new(HubRuntime {
             auth,
-            owner_lifecycle: Mutex::new(()),
+            authority_gate: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::default()),
             retry_driver: Mutex::new(PtyRetryDriver::default()),
             workbench: test_workbench(),
@@ -420,12 +420,12 @@ fn route_request(
         ("POST", "/auth/passkeys/sign-in/options") => start_sign_in_response(request, auth),
         ("POST", "/auth/passkeys/sign-in/verify") => finish_sign_in_response(request, auth),
         ("GET", "/auth/sessions") => list_sessions_response(request, auth),
+        ("POST", "/auth/sign-out") => sign_out_response(request, runtime),
         ("POST", "/auth/sessions/revoke") => revoke_session_response(request, runtime),
+        ("POST", "/auth/credentials/revoke") => revoke_credential_response(request, runtime),
         ("GET", "/protected/hub") => protected_hub_response(request, auth),
         (_, "/protected/node") => auth_error_response(403, "node_authority_required", &[]),
-        (_, path) if path.starts_with("/api/") => {
-            workbench_response(request, auth, &runtime.workbench)
-        }
+        (_, path) if path.starts_with("/api/") => workbench_response(request, runtime),
         ("POST", "/node/claude/sessions") => create_claude_session_response(request, runtime),
         ("GET", path) if claude_session_id(path, "").is_some() => {
             poll_claude_session_response(request, runtime)
@@ -444,7 +444,6 @@ fn route_request(
         }
         _ => not_found_http_response(),
     };
-    reap_invalidated_owner_sessions(runtime);
     ensure_pty_retry_driver(runtime);
     response
 }
@@ -555,8 +554,8 @@ fn list_sessions_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
         Some(session) => session,
         None => return auth_error_response(401, "session_missing", &[]),
     };
-    match auth.list_sessions(session) {
-        Ok(sessions) => match serde_json::to_string(&serde_json::json!({ "sessions": sessions })) {
+    match auth.security_snapshot(session) {
+        Ok(snapshot) => match serde_json::to_string(&snapshot) {
             Ok(body) => json_response(200, &body, &[]),
             Err(_) => auth_error_response(500, "internal", &[]),
         },
@@ -565,6 +564,7 @@ fn list_sessions_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
 }
 
 fn revoke_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let _authority = authority_gate_lock(runtime);
     let auth = match state_change_auth(request, runtime.auth.as_deref()) {
         Ok(auth) => auth,
         Err(response) => return response,
@@ -582,77 +582,74 @@ fn revoke_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> S
         None => return auth_error_response(400, "invalid_request", &[]),
     };
     let result = auth.revoke_session(session, csrf, &device_id);
-    reap_invalidated_owner_sessions(runtime);
-    let cleanup_pending = auth
-        .invalidated_device_ids()
-        .map(|owners| owners.contains(&device_id))
-        .unwrap_or(true);
     match result {
-        Ok(()) if cleanup_pending => {
-            json_response(200, "{\"status\":\"revoked\",\"cleanup\":\"pending\"}", &[])
-        }
         Ok(()) => json_response(200, "{\"status\":\"revoked\"}", &[]),
         Err(error) => auth_error_response(auth_error_status(&error), error.code(), &[]),
     }
 }
 
-fn reap_invalidated_owner_sessions(runtime: &HubRuntime) {
-    let Some(auth) = runtime.auth.as_deref() else {
-        return;
+fn sign_out_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let _authority = authority_gate_lock(runtime);
+    let auth = match state_change_auth(request, runtime.auth.as_deref()) {
+        Ok(auth) => auth,
+        Err(response) => return response,
     };
-    {
-        let _owner_lifecycle = owner_lifecycle_lock(runtime);
-        let Ok(owner_ids) = auth.invalidated_device_ids() else {
-            return;
-        };
-        if owner_ids.is_empty() {
-            return;
-        }
-        let mut pty = pty_lifecycle_lock(runtime);
-        for owner_id in &owner_ids {
-            pty.begin_owner_session_closes(owner_id);
-        }
-    }
-
-    drive_pty_terminations(runtime);
-    acknowledge_ready_invalidated_owners(runtime);
-}
-
-fn acknowledge_ready_invalidated_owners(runtime: &HubRuntime) {
-    let Some(auth) = runtime.auth.as_deref() else {
-        return;
+    let session = match request.cookie("__Host-relay_session") {
+        Some(session) => session,
+        None => return auth_error_response(401, "session_missing", &[]),
     };
-    let _owner_lifecycle = owner_lifecycle_lock(runtime);
-    let Ok(owner_ids) = auth.invalidated_device_ids() else {
-        return;
+    let csrf = match request.header("x-relay-csrf") {
+        Some(csrf) => csrf,
+        None => return auth_error_response(403, "csrf_denied", &[]),
     };
-    let ready = {
-        let pty = pty_lifecycle_lock(runtime);
-        owner_ids
-            .iter()
-            .filter(|owner_id| invalidated_owner_ready_for_acknowledgement(&pty, owner_id))
-            .cloned()
-            .collect::<Vec<_>>()
+    let device_id = match auth.current_device_id(session) {
+        Ok(device_id) => device_id,
+        Err(error) => return auth_error_response(auth_error_status(&error), error.code(), &[]),
     };
-    if !ready.is_empty() {
-        let _ = auth.acknowledge_invalidated_device_ids(&ready);
+    match auth.revoke_session(session, csrf, &device_id) {
+        Ok(()) => json_response(
+            200,
+            "{\"status\":\"signed_out\"}",
+            &[clear_session_cookie(), clear_csrf_cookie()],
+        ),
+        Err(error) => auth_error_response(auth_error_status(&error), error.code(), &[]),
     }
 }
 
-fn invalidated_owner_ready_for_acknowledgement(pty: &NodePtyRuntime, owner_id: &str) -> bool {
-    pty.owner_close_disposition(owner_id) == OwnerSessionCloseDisposition::Complete
+fn revoke_credential_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let _authority = authority_gate_lock(runtime);
+    let auth = match state_change_auth(request, runtime.auth.as_deref()) {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
+    let session = match request.cookie("__Host-relay_session") {
+        Some(session) => session,
+        None => return auth_error_response(401, "session_missing", &[]),
+    };
+    let csrf = match request.header("x-relay-csrf") {
+        Some(csrf) => csrf,
+        None => return auth_error_response(403, "csrf_denied", &[]),
+    };
+    let credential_id = match identifier_from_body(request.body, "credentialId") {
+        Some(credential_id) => credential_id,
+        None => return auth_error_response(400, "invalid_request", &[]),
+    };
+    match auth.revoke_credential(session, csrf, &credential_id) {
+        Ok(()) => json_response(200, "{\"status\":\"revoked\"}", &[]),
+        Err(error) => auth_error_response(auth_error_status(&error), error.code(), &[]),
+    }
 }
 
 fn pty_lifecycle_lock(runtime: &HubRuntime) -> std::sync::MutexGuard<'_, NodePtyRuntime> {
     runtime.pty.lock().unwrap_or_else(|poisoned| {
-        eprintln!("relay Claude PTY lifecycle recovered its poisoned owner lock");
+        eprintln!("relay Claude PTY lifecycle recovered its poisoned lock");
         poisoned.into_inner()
     })
 }
 
-fn owner_lifecycle_lock(runtime: &HubRuntime) -> std::sync::MutexGuard<'_, ()> {
-    runtime.owner_lifecycle.lock().unwrap_or_else(|poisoned| {
-        eprintln!("relay Claude PTY owner lifecycle recovered its poisoned gate");
+fn authority_gate_lock(runtime: &HubRuntime) -> std::sync::MutexGuard<'_, ()> {
+    runtime.authority_gate.lock().unwrap_or_else(|poisoned| {
+        eprintln!("relay browser authority gate recovered after mutex poisoning");
         poisoned.into_inner()
     })
 }
@@ -706,7 +703,6 @@ fn run_pty_retry_driver(runtime: Arc<HubRuntime>) {
     run_retry_loop(
         || {
             drive_pty_terminations(&runtime);
-            acknowledge_ready_invalidated_owners(&runtime);
         },
         || {
             let mut state = retry_driver_lock(&runtime);
@@ -735,34 +731,32 @@ fn run_retry_loop(
     }
 }
 
-/// Drain the one-node PTY owner when the server loop exits normally through a
+/// Drain the one-node PTY runtime when the server loop exits normally through a
 /// controlled error path. Abrupt process termination remains explicitly
 /// outside this in-memory guarantee.
 fn shutdown_pty_runtime(runtime: &HubRuntime) -> bool {
     let deadline = Instant::now() + PTY_SHUTDOWN_BUDGET;
     let scheduled = {
-        let _owner_lifecycle = owner_lifecycle_lock(runtime);
+        let _authority = authority_gate_lock(runtime);
         pty_lifecycle_lock(runtime).begin_shutdown()
     };
-    acknowledge_ready_invalidated_owners(runtime);
-    if scheduled == OwnerSessionCloseDisposition::Complete && !retry_driver_lock(runtime).running {
+    if scheduled == PtyShutdownDisposition::Complete && !retry_driver_lock(runtime).running {
         return true;
     }
 
     loop {
         drive_pty_terminations(runtime);
-        acknowledge_ready_invalidated_owners(runtime);
         let disposition = {
             let pty = pty_lifecycle_lock(runtime);
             (pty.shutdown_disposition(), pty.has_terminal_failures())
         };
         let driver_running = retry_driver_lock(runtime).running;
         match disposition {
-            (OwnerSessionCloseDisposition::Complete, _) if !driver_running => return true,
+            (PtyShutdownDisposition::Complete, _) if !driver_running => return true,
             (_, true) if !driver_running => return false,
-            (OwnerSessionCloseDisposition::Complete, _)
+            (PtyShutdownDisposition::Complete, _)
             | (_, true)
-            | (OwnerSessionCloseDisposition::Retry, false) => {}
+            | (PtyShutdownDisposition::Retry, false) => {}
         }
 
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
@@ -787,12 +781,9 @@ fn protected_hub_response(request: &HttpRequest<'_>, auth: Option<&AuthBoundary>
     }
 }
 
-fn workbench_response(
-    request: &HttpRequest<'_>,
-    auth: Option<&AuthBoundary>,
-    workbench: &Mutex<Workbench>,
-) -> String {
-    let auth = match auth {
+fn workbench_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
+    let _authority = authority_gate_lock(runtime);
+    let auth = match runtime.auth.as_deref() {
         Some(auth) => auth,
         None => return auth_error_response(404, "auth_unavailable", &[]),
     };
@@ -821,25 +812,17 @@ fn workbench_response(
         _ => serde_json::from_str(request.body).map_err(|_| WorkbenchError::new("invalid_request")),
     };
     let result = body.and_then(|body| {
-        let mut workbench = workbench.try_lock().map_err(|error| match error {
+        let mut workbench = runtime.workbench.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => WorkbenchError::new("workbench_busy"),
             TryLockError::Poisoned(_) => WorkbenchError::new("internal"),
         })?;
-        let owner_session_is_active = match workbench.owner_session() {
-            Some(owner) => match auth.require_session(owner) {
-                Ok(()) => true,
-                Err(AuthError::SessionMissing) => false,
-                Err(_) => return Err(WorkbenchError::new("internal")),
-            },
-            None => false,
-        };
-        workbench.authorize(session, owner_session_is_active)?;
         match (request.method, request.path) {
             ("GET", "/api/workbench") => Ok(workbench.snapshot()),
             ("GET", "/api/sessions") => Ok(workbench.sessions_snapshot()),
             ("POST", "/api/directories") => workbench.browse_directories(&body),
             ("POST", "/api/workspaces") => workbench.add_workspace(&body),
-            ("POST", "/api/workspaces/select") => workbench.select_workspace(&body),
+            // Compatibility-only validation. Browser-local selection is never stored here.
+            ("POST", "/api/workspaces/select") => workbench.validate_workspace(&body),
             ("POST", "/api/sessions") => workbench.start_session(&body),
             ("POST", "/api/sessions/resume") => workbench.resume_session(&body),
             ("POST", "/api/sessions/message") => workbench.send_message(&body),
@@ -866,7 +849,6 @@ fn workbench_error_status(error: WorkbenchError) -> u16 {
         | "workspace_cwd_not_absolute"
         | "workspace_cwd_not_approved" => 400,
         "unknown_workspace" | "unknown_session" | "unknown_provider_session" => 404,
-        "workbench_owner_mismatch" => 403,
         "hermes_not_configured" | "unavailable" | "executable_unavailable" | "workbench_busy" => {
             503
         }
@@ -876,22 +858,14 @@ fn workbench_error_status(error: WorkbenchError) -> u16 {
 }
 
 fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
-    reap_invalidated_owner_sessions(runtime);
     let body = match serde_json::from_str::<Value>(request.body) {
         Ok(body) => body,
         Err(_) => return auth_error_response(400, "invalid_request", &[]),
     };
-    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
-        Ok(owner) => owner,
+    let _authority = authority_gate_lock(runtime);
+    let actor_device_id = match authenticated_device_id(request, runtime.auth.as_deref(), true) {
+        Ok(device_id) => device_id,
         Err(response) => return response,
-    };
-    let browser_session = match request.cookie("__Host-relay_session") {
-        Some(session) => session,
-        None => return auth_error_response(401, "session_missing", &[]),
-    };
-    let auth = match runtime.auth.as_deref() {
-        Some(auth) => auth,
-        None => return auth_error_response(404, "auth_unavailable", &[]),
     };
     let mut workbench = match runtime.workbench.try_lock() {
         Ok(workbench) => workbench,
@@ -900,43 +874,30 @@ fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntim
         }
         Err(TryLockError::Poisoned(_)) => return auth_error_response(500, "internal", &[]),
     };
-    let owner_session_is_active = match workbench.owner_session() {
-        Some(owner_session) => match auth.require_session(owner_session) {
-            Ok(()) => true,
-            Err(AuthError::SessionMissing) => false,
-            Err(_) => return auth_error_response(500, "internal", &[]),
-        },
-        None => false,
-    };
-    if let Err(error) = workbench.authorize(browser_session, owner_session_is_active) {
-        return auth_error_response(workbench_error_status(error), error.code(), &[]);
-    }
     let (workspace_id, cwd) = match workbench.trusted_claude_workspace(&body) {
         Ok(workspace) => workspace,
         Err(error) => {
             return auth_error_response(workbench_error_status(error), error.code(), &[]);
         }
     };
-    let (owner, mut session) = {
-        // Serialize auth resolution plus admission with invalidation
-        // acknowledgement. Outside-lock teardown is deliberately not inside
-        // this gate, so unrelated owner operations still make progress.
-        let _owner_lifecycle = owner_lifecycle_lock(runtime);
-        let session = match runtime.pty.lock() {
-            Ok(mut pty) => pty.begin_create_in_directory(&owner, &cwd).into_result(),
-            Err(_) => return auth_error_response(500, "internal", &[]),
-        };
-        (owner, session)
+    let mut session = match runtime.pty.lock() {
+        Ok(mut pty) => pty
+            .begin_create_in_directory(&actor_device_id, &cwd)
+            .into_result(),
+        Err(_) => return auth_error_response(500, "internal", &[]),
     };
     drive_pty_terminations(runtime);
     if session == Err(ClaudePtyError::Capacity) {
         session = {
-            let _owner_lifecycle = owner_lifecycle_lock(runtime);
-            if let Err(response) = terminal_owner(request, runtime.auth.as_deref(), true) {
-                return response;
-            }
+            let actor_device_id =
+                match authenticated_device_id(request, runtime.auth.as_deref(), true) {
+                    Ok(device_id) => device_id,
+                    Err(response) => return response,
+                };
             match runtime.pty.lock() {
-                Ok(mut pty) => pty.begin_create_in_directory(&owner, &cwd).into_result(),
+                Ok(mut pty) => pty
+                    .begin_create_in_directory(&actor_device_id, &cwd)
+                    .into_result(),
                 Err(_) => return auth_error_response(500, "internal", &[]),
             }
         };
@@ -950,7 +911,7 @@ fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntim
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.poll(session.as_str(), &owner, 0))
+        .and_then(|mut pty| pty.poll(session.as_str(), &actor_device_id, 0))
     {
         Ok(snapshot) => snapshot,
         Err(error) => return claude_pty_error_response(error),
@@ -967,8 +928,9 @@ fn create_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntim
 }
 
 fn poll_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
-    let owner = match terminal_owner(request, runtime.auth.as_deref(), false) {
-        Ok(owner) => owner,
+    let _authority = authority_gate_lock(runtime);
+    let actor_device_id = match authenticated_device_id(request, runtime.auth.as_deref(), false) {
+        Ok(device_id) => device_id,
         Err(response) => return response,
     };
     let session_id = match claude_session_id(request.path, "") {
@@ -983,7 +945,7 @@ fn poll_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime)
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.poll(session_id, &owner, cursor));
+        .and_then(|mut pty| pty.poll(session_id, &actor_device_id, cursor));
     match result {
         Ok(snapshot) => {
             update_claude_workbench_status(runtime, session_id, snapshot.status.code());
@@ -994,8 +956,9 @@ fn poll_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime)
 }
 
 fn input_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
-    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
-        Ok(owner) => owner,
+    let _authority = authority_gate_lock(runtime);
+    let actor_device_id = match authenticated_device_id(request, runtime.auth.as_deref(), true) {
+        Ok(device_id) => device_id,
         Err(response) => return response,
     };
     let session_id = match claude_session_id(request.path, "/input") {
@@ -1010,7 +973,7 @@ fn input_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.input(session_id, &owner, &data))
+        .and_then(|mut pty| pty.input(session_id, &actor_device_id, &data))
     {
         Ok(()) => json_response(200, "{\"status\":\"queued\"}", &[]),
         Err(error) => claude_pty_error_response(error),
@@ -1018,8 +981,9 @@ fn input_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime
 }
 
 fn resize_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
-    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
-        Ok(owner) => owner,
+    let _authority = authority_gate_lock(runtime);
+    let actor_device_id = match authenticated_device_id(request, runtime.auth.as_deref(), true) {
+        Ok(device_id) => device_id,
         Err(response) => return response,
     };
     let session_id = match claude_session_id(request.path, "/resize") {
@@ -1034,7 +998,7 @@ fn resize_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntim
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.resize(session_id, &owner, cols, rows))
+        .and_then(|mut pty| pty.resize(session_id, &actor_device_id, cols, rows))
     {
         Ok(()) => json_response(200, "{\"status\":\"accepted\"}", &[]),
         Err(error) => claude_pty_error_response(error),
@@ -1042,8 +1006,9 @@ fn resize_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntim
 }
 
 fn interrupt_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
-    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
-        Ok(owner) => owner,
+    let _authority = authority_gate_lock(runtime);
+    let actor_device_id = match authenticated_device_id(request, runtime.auth.as_deref(), true) {
+        Ok(device_id) => device_id,
         Err(response) => return response,
     };
     let session_id = match claude_session_id(request.path, "/interrupt") {
@@ -1054,7 +1019,7 @@ fn interrupt_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRun
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.interrupt(session_id, &owner))
+        .and_then(|mut pty| pty.interrupt(session_id, &actor_device_id))
     {
         Ok(()) => json_response(200, "{\"status\":\"interrupted\"}", &[]),
         Err(error) => claude_pty_error_response(error),
@@ -1062,8 +1027,9 @@ fn interrupt_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRun
 }
 
 fn close_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime) -> String {
-    let owner = match terminal_owner(request, runtime.auth.as_deref(), true) {
-        Ok(owner) => owner,
+    let _authority = authority_gate_lock(runtime);
+    let actor_device_id = match authenticated_device_id(request, runtime.auth.as_deref(), true) {
+        Ok(device_id) => device_id,
         Err(response) => return response,
     };
     let session_id = match claude_session_id(request.path, "/close") {
@@ -1074,7 +1040,7 @@ fn close_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.request_close(session_id, &owner));
+        .and_then(|mut pty| pty.request_close(session_id, &actor_device_id));
     if let Err(error) = requested {
         return claude_pty_error_response(error);
     }
@@ -1083,7 +1049,7 @@ fn close_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime
         .pty
         .lock()
         .map_err(|_| ClaudePtyError::Transport)
-        .and_then(|mut pty| pty.poll(session_id, &owner, 0));
+        .and_then(|mut pty| pty.poll(session_id, &actor_device_id, 0));
     match result {
         Ok(snapshot) => {
             update_claude_workbench_status(runtime, session_id, snapshot.status.code());
@@ -1093,7 +1059,7 @@ fn close_claude_session_response(request: &HttpRequest<'_>, runtime: &HubRuntime
     }
 }
 
-fn terminal_owner(
+fn authenticated_device_id(
     request: &HttpRequest<'_>,
     auth: Option<&AuthBoundary>,
     state_change: bool,
@@ -1229,12 +1195,16 @@ fn state_change_auth<'a>(
 }
 
 fn device_id_from_body(body: &str) -> Option<String> {
+    identifier_from_body(body, "deviceId")
+}
+
+fn identifier_from_body(body: &str, field: &str) -> Option<String> {
     let value = serde_json::from_str::<Value>(body).ok()?;
-    let device_id = value.get("deviceId")?.as_str()?;
-    if device_id.is_empty() || device_id.len() > 64 || !device_id.is_ascii() {
+    let identifier = value.get(field)?.as_str()?;
+    if identifier.is_empty() || identifier.len() > 64 || !identifier.is_ascii() {
         return None;
     }
-    Some(device_id.to_owned())
+    Some(identifier.to_owned())
 }
 
 fn read_request(stream: &mut TcpStream, request: &mut [u8]) -> Result<usize, RequestReadError> {
@@ -1346,6 +1316,15 @@ fn csrf_cookie(value: &str) -> String {
     format!("Set-Cookie: __Host-relay_csrf={value}; Path=/; Max-Age=1800; Secure; SameSite=Strict")
 }
 
+fn clear_session_cookie() -> String {
+    "Set-Cookie: __Host-relay_session=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"
+        .to_owned()
+}
+
+fn clear_csrf_cookie() -> String {
+    "Set-Cookie: __Host-relay_csrf=; Path=/; Max-Age=0; Secure; SameSite=Strict".to_owned()
+}
+
 fn auth_error_json(code: &str) -> String {
     format!("{{\"error\":{{\"code\":\"{code}\"}}}}")
 }
@@ -1397,7 +1376,7 @@ mod tests {
     fn listener_exit_drains_and_latches_the_pty_runtime() {
         let runtime = Arc::new(HubRuntime {
             auth: None,
-            owner_lifecycle: Mutex::new(()),
+            authority_gate: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
             retry_driver: Mutex::new(PtyRetryDriver::default()),
             workbench: test_workbench(),
@@ -1434,7 +1413,7 @@ mod tests {
     fn close_is_accepted_then_reaped_without_another_request() {
         let runtime = Arc::new(HubRuntime {
             auth: None,
-            owner_lifecycle: Mutex::new(()),
+            authority_gate: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
             retry_driver: Mutex::new(PtyRetryDriver::default()),
             workbench: test_workbench(),
@@ -1504,7 +1483,7 @@ mod tests {
     fn teardown_lease_allows_unrelated_admission_progress() {
         let runtime = HubRuntime {
             auth: None,
-            owner_lifecycle: Mutex::new(()),
+            authority_gate: Mutex::new(()),
             pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
             retry_driver: Mutex::new(PtyRetryDriver::default()),
             workbench: test_workbench(),
@@ -1525,8 +1504,8 @@ mod tests {
         let mut unrelated = None;
 
         drive_pty_terminations_with(&runtime, |termination| {
-            let owner_lifecycle = runtime
-                .owner_lifecycle
+            let authority_gate = runtime
+                .authority_gate
                 .try_lock()
                 .expect("teardown does not retain the owner lifecycle gate");
             let session = runtime
@@ -1537,7 +1516,7 @@ mod tests {
                 .into_result()
                 .expect("an unrelated owner can make admission progress");
             unrelated = Some(session);
-            drop(owner_lifecycle);
+            drop(authority_gate);
             termination.finish()
         });
 
@@ -1549,39 +1528,6 @@ mod tests {
             .request_close(unrelated.as_str(), "device-b")
             .unwrap();
         drive_pty_terminations(&runtime);
-    }
-
-    #[test]
-    fn invalidated_owner_acknowledgement_waits_for_verified_closed() {
-        let runtime = HubRuntime {
-            auth: None,
-            owner_lifecycle: Mutex::new(()),
-            pty: Mutex::new(NodePtyRuntime::test_fixture_cat()),
-            retry_driver: Mutex::new(PtyRetryDriver::default()),
-            workbench: test_workbench(),
-        };
-        let owners = ["device-a".to_owned()];
-        runtime
-            .pty
-            .lock()
-            .unwrap()
-            .begin_create(&owners[0])
-            .into_result()
-            .expect("the fixed test PTY starts");
-        {
-            let mut pty = runtime.pty.lock().unwrap();
-            pty.begin_owner_session_closes(&owners[0]);
-            assert!(
-                !invalidated_owner_ready_for_acknowledgement(&pty, &owners[0]),
-                "Closing must retain the auth invalidation"
-            );
-        }
-
-        drive_pty_terminations(&runtime);
-        assert!(invalidated_owner_ready_for_acknowledgement(
-            &runtime.pty.lock().unwrap(),
-            &owners[0]
-        ));
     }
 
     #[test]

@@ -103,9 +103,7 @@ enum LiveSession {
 pub struct Workbench {
     approved_roots: Vec<PathBuf>,
     hermes_endpoint: Option<GatewayEndpoint>,
-    owner_session: Option<String>,
     workspaces: Vec<Workspace>,
-    selected_workspace_id: Option<String>,
     sessions: HashMap<String, StoredSession>,
     next_workspace_id: u64,
     next_session_id: u64,
@@ -126,41 +124,11 @@ impl Workbench {
         Ok(Self {
             approved_roots,
             hermes_endpoint,
-            owner_session: None,
             workspaces: Vec::new(),
-            selected_workspace_id: None,
             sessions: HashMap::new(),
             next_workspace_id: 1,
             next_session_id: 1,
         })
-    }
-
-    /// Bind this in-memory workbench to the first authenticated browser session.
-    /// The opaque session value remains local-only and is never serialized.
-    pub fn owner_session(&self) -> Option<&str> {
-        self.owner_session.as_deref()
-    }
-
-    pub fn authorize(
-        &mut self,
-        session: &str,
-        owner_session_is_active: bool,
-    ) -> Result<(), WorkbenchError> {
-        match self.owner_session.as_deref() {
-            Some(owner) if owner == session => Ok(()),
-            Some(_) if !owner_session_is_active => {
-                self.owner_session = Some(session.to_owned());
-                self.workspaces.clear();
-                self.selected_workspace_id = None;
-                self.sessions.clear();
-                Ok(())
-            }
-            Some(_) => Err(WorkbenchError::new("workbench_owner_mismatch")),
-            None => {
-                self.owner_session = Some(session.to_owned());
-                Ok(())
-            }
-        }
     }
 
     pub fn snapshot(&mut self) -> Value {
@@ -172,7 +140,8 @@ impl Workbench {
         let sessions = self.sessions_snapshot();
         json!({
             "workspaces": workspaces,
-            "selectedWorkspaceId": self.selected_workspace_id,
+            // Compatibility field only. Selection is browser-local presentation state.
+            "selectedWorkspaceId": Value::Null,
             "sessions": sessions,
             "providers": {
                 "hermes": self.hermes_endpoint.is_some(),
@@ -287,14 +256,13 @@ impl Workbench {
         Ok(response)
     }
 
-    pub fn select_workspace(&mut self, body: &Value) -> Result<Value, WorkbenchError> {
+    pub fn validate_workspace(&self, body: &Value) -> Result<Value, WorkbenchError> {
         let workspace_id = body_string(body, "workspaceId", MAX_STORED_SESSION_ID_LENGTH)?;
         let workspace = self
             .workspaces
             .iter()
             .find(|workspace| workspace.id == workspace_id)
             .ok_or(WorkbenchError::new("unknown_workspace"))?;
-        self.selected_workspace_id = Some(workspace.id.clone());
         Ok(workspace_json(workspace))
     }
 
@@ -925,35 +893,38 @@ mod tests {
     }
 
     #[test]
-    fn workbench_rejects_a_second_authenticated_browser_session() {
-        let root = temp_root("owner");
+    fn two_authenticated_browsers_share_workspaces_and_session_history() {
+        let root = temp_root("multi-browser");
         let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
-        assert_eq!(workbench.authorize("owner-session", true), Ok(()));
-        assert_eq!(workbench.authorize("owner-session", true), Ok(()));
-        assert_eq!(
-            workbench.authorize("different-session", true),
-            Err(WorkbenchError::new("workbench_owner_mismatch"))
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn expired_owner_is_rebound_after_its_workbench_state_is_cleared() {
-        let root = temp_root("owner-rebind");
-        let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
-        workbench.authorize("expired-owner", true).unwrap();
-        workbench
+        let workspace = workbench
             .add_workspace(&json!({"cwd": root.to_string_lossy()}))
             .unwrap();
-
-        assert_eq!(workbench.authorize("replacement-owner", false), Ok(()));
-        assert_eq!(workbench.owner_session(), Some("replacement-owner"));
-        assert!(
-            workbench.snapshot()["workspaces"]
-                .as_array()
-                .unwrap()
-                .is_empty()
+        let nested = workbench
+            .add_workspace(&json!({"cwd": root.join("nested").to_string_lossy()}))
+            .unwrap();
+        let mut session = retained_terminal_session(1);
+        session.workspace_id = workspace["id"].as_str().unwrap().to_owned();
+        push_session_event(
+            &mut session,
+            ChatRole::Assistant,
+            ChatCategory::Message,
+            "message.received",
+            "shared history".to_owned(),
+            None,
         );
+        workbench.sessions.insert(session.id.clone(), session);
+
+        let first = workbench.snapshot();
+        assert_eq!(
+            workbench.validate_workspace(&json!({"workspaceId": nested["id"]})),
+            Ok(nested)
+        );
+        let second = workbench.snapshot();
+        assert_eq!(first["workspaces"], second["workspaces"]);
+        assert_eq!(first["sessions"], second["sessions"]);
+        assert_eq!(first["workspaces"][0], workspace);
+        assert_eq!(first["sessions"][0]["events"][0]["text"], "shared history");
+        assert_eq!(first["selectedWorkspaceId"], Value::Null);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1133,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_selection_is_explicit_and_cannot_select_unknown_ids() {
+    fn workspace_selection_validation_never_stores_global_presentation_state() {
         let root = temp_root("selection");
         let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
         let workspace = workbench
@@ -1141,12 +1112,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            workbench.select_workspace(&json!({"workspaceId": workspace["id"]})),
+            workbench.validate_workspace(&json!({"workspaceId": workspace["id"]})),
             Ok(workspace.clone())
         );
-        assert_eq!(workbench.snapshot()["selectedWorkspaceId"], workspace["id"]);
+        assert_eq!(workbench.snapshot()["selectedWorkspaceId"], Value::Null);
         assert_eq!(
-            workbench.select_workspace(&json!({"workspaceId": "not-owned"})),
+            workbench.validate_workspace(&json!({"workspaceId": "not-owned"})),
             Err(WorkbenchError::new("unknown_workspace"))
         );
         fs::remove_dir_all(root).unwrap();

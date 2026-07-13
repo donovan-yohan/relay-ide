@@ -92,27 +92,7 @@ try {
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   browser = await connectBrowser(chromiumProcess, captureProcessOutput(chromiumProcess), chromeProfile);
-  const { targetId } = await browser.command("Target.createTarget", { url: "about:blank" });
-  const { sessionId } = await browser.command("Target.attachToTarget", { targetId, flatten: true });
-  await browser.command("Page.enable", {}, sessionId);
-  await browser.command("Runtime.enable", {}, sessionId);
-  await browser.command("WebAuthn.enable", {}, sessionId);
-  await browser.command(
-    "WebAuthn.addVirtualAuthenticator",
-    {
-      options: {
-        protocol: "ctap2",
-        transport: "internal",
-        hasResidentKey: true,
-        hasUserVerification: true,
-        isUserVerified: true,
-        automaticPresenceSimulation: true,
-      },
-    },
-    sessionId,
-  );
-  await browser.command("Page.navigate", { url: `${origin}/` }, sessionId);
-  await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
+  const { sessionId } = await createIndependentBrowser();
 
   await evaluate(
     sessionId,
@@ -169,6 +149,25 @@ try {
   );
 
   const workspaceId = await addProjectThroughPicker(sessionId, process.cwd());
+  const { sessionId: secondSessionId } = await createIndependentBrowser();
+  await enrollAndSignIn(secondSessionId);
+  await waitFor(async () => (await evaluate(secondSessionId, "document.querySelectorAll('#workspace-list button').length")) === 1);
+  assert.equal(
+    await evaluate(secondSessionId, "fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.workspaces[0].id)"),
+    workspaceId,
+    "an independent authenticated browser context must see the same Project catalog",
+  );
+
+  const nestedCwd = resolve("web");
+  const nestedWorkspaceId = await postJson(sessionId, "/api/workspaces", { cwd: nestedCwd })
+    .then((response) => response.body.id);
+  assert.match(nestedWorkspaceId, /^workspace-\d+$/);
+  await reloadWorkbench(secondSessionId, 2);
+  assert.equal(
+    await evaluate(secondSessionId, "document.querySelectorAll('#workspace-list button').length"),
+    2,
+    "a Project added by browser A must appear for browser B",
+  );
 
   const terminalApi = await evaluate(
     sessionId,
@@ -215,8 +214,8 @@ try {
   assert.match(terminalApi.created.body.sessionId, /^claude-pty-\d+$/, "the browser receives only an opaque PTY Session ID");
   assert.equal(terminalApi.created.body.workbenchSession.provider, "claude");
   assert.equal(terminalApi.created.body.workbenchSession.workspaceId, workspaceId);
-  assert.equal(terminalApi.resize.status, 200, "authenticated resize must reach the owned PTY");
-  assert.equal(terminalApi.input.status, 200, "authenticated input must reach the owned PTY");
+  assert.equal(terminalApi.resize.status, 200, "authenticated resize must reach the shared PTY");
+  assert.equal(terminalApi.input.status, 200, "authenticated input must reach the shared PTY");
   assert.ok(
     terminalApi.poll.body.output.some((chunk) => chunk.text.includes("browser-api")),
     "the direct browser API seam must return bounded PTY output",
@@ -241,32 +240,116 @@ try {
     assert.deepEqual(pageErrors, [], "the live workbench path must not emit page or console errors");
   }
 
-  const revokeStatuses = await evaluate(
-    sessionId,
-    `Promise.all(["first", "second"].map(async () => {
-      const sessions = await fetch("/auth/sessions", { credentials: "same-origin" }).then((response) => response.json());
-      const deviceId = sessions.sessions.find((session) => session.current).deviceId;
-      const csrf = document.cookie.split("; ").find((cookie) => cookie.startsWith("__Host-relay_csrf=")).slice("__Host-relay_csrf=".length);
-      return fetch("/auth/sessions/revoke", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "X-Relay-CSRF": csrf },
-        body: JSON.stringify({ deviceId }),
-      }).then((response) => response.status);
-    }))`,
+  await exerciseCrossBrowserTerminal(secondSessionId, sessionId, workspaceId, "browser-a-operated");
+  const retainedTerminal = await createTerminal(sessionId, workspaceId);
+  const concurrentInputs = await Promise.all([
+    postJson(sessionId, `/node/claude/sessions/${retainedTerminal}/input`, { data: "from-browser-a\n" }),
+    postJson(secondSessionId, `/node/claude/sessions/${retainedTerminal}/input`, { data: "from-browser-b\n" }),
+  ]);
+  assert.deepEqual(concurrentInputs.map((response) => response.status), [200, 200]);
+  const sharedOutput = await pollTerminal(secondSessionId, retainedTerminal, ["from-browser-a", "from-browser-b"]);
+  assert.ok(sharedOutput.includes("from-browser-a") && sharedOutput.includes("from-browser-b"));
+  const secondCookies = (await browser.command("Network.getCookies", { urls: [origin] }, secondSessionId)).cookies;
+  const secondSessionCookie = secondCookies.find((cookie) => cookie.name === "__Host-relay_session")?.value;
+  const secondCsrf = secondCookies.find((cookie) => cookie.name === "__Host-relay_csrf")?.value;
+  assert.ok(secondSessionCookie && secondCsrf, "browser B must retain bounded session and CSRF cookies");
+  for (const [path, body] of [
+    ["/auth/sign-out", {}],
+    ["/auth/sessions/revoke", { deviceId: "unknown-device" }],
+    ["/api/workspaces/select", { workspaceId }],
+    [`/node/claude/sessions/${retainedTerminal}/input`, { data: "denied\n" }],
+  ]) {
+    assert.equal(
+      await hubMutationStatus(hubAddress.port, path, secondSessionCookie, secondCsrf, "https://wrong.example.test", body),
+      403,
+      `${path} must reject a wrong mutation Origin`,
+    );
+  }
+  assert.equal(
+    await hubMutationStatus(hubAddress.port, `/node/claude/sessions/${retainedTerminal}/input`, secondSessionCookie, "wrong-csrf", origin, { data: "denied\n" }),
+    403,
+    "PTY mutation must reject stale CSRF",
+  );
+
+  await reloadWorkbench(sessionId, 2);
+  await reloadWorkbench(secondSessionId, 2);
+  await evaluate(sessionId, "document.querySelector('#workspace-list button').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.workbench-pane').length")) === 1);
+  await evaluate(sessionId, "document.querySelector('[data-layout-action=\"split-pane\"]').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('.workbench-pane').length")) === 2);
+  await evaluate(
+    secondSessionId,
+    `[...document.querySelectorAll('#workspace-list button')].find((button) => button.querySelector('.sidebar-item__meta')?.textContent === ${JSON.stringify(nestedCwd)}).click()`,
+  );
+  await waitFor(async () => (await evaluate(secondSessionId, "document.querySelectorAll('.workbench-pane').length")) === 0);
+  await Promise.all([reloadWorkbench(sessionId, 2), reloadWorkbench(secondSessionId, 2)]);
+  assert.deepEqual(
+    await evaluate(sessionId, "({ selected: document.querySelector('#workspace-list [aria-current=\"page\"] .sidebar-item__meta')?.textContent, panes: document.querySelectorAll('.workbench-pane').length })"),
+    { selected: process.cwd(), panes: 2 },
+    "browser A selection and split layout must restore from only browser A storage",
   );
   assert.deepEqual(
-    revokeStatuses.sort(),
-    [200, 401],
-    "exactly one concurrent revoke must consume the session",
+    await evaluate(secondSessionId, "({ selected: document.querySelector('#workspace-list [aria-current=\"page\"] .sidebar-item__meta')?.textContent, panes: document.querySelectorAll('.workbench-pane').length })"),
+    { selected: nestedCwd, panes: 0 },
+    "browser B selection must remain independent from browser A layout",
   );
+
+  const firstCredentialId = await evaluate(
+    sessionId,
+    "fetch('/auth/sessions', { credentials: 'same-origin' }).then((response) => response.json()).then((security) => security.sessions.find((browser) => browser.current).credentialId)",
+  );
+  await evaluate(sessionId, "document.querySelector('#sign-out').click()");
+  await waitFor(async () => (await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)")) === 401);
+  assert.equal(
+    await evaluate(sessionId, "fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.status)"),
+    401,
+    "signed-out browser A must fail closed on shared catalog reads",
+  );
+  assert.equal(
+    (await postJson(sessionId, `/node/claude/sessions/${retainedTerminal}/input`, { data: "revoked-input\n" })).status,
+    401,
+    "signed-out browser A must fail closed on shared PTY mutations",
+  );
+  assert.equal(
+    await evaluate(secondSessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
+    200,
+    "signing out browser A must leave browser B authenticated",
+  );
+  const retainedCatalog = await evaluate(
+    secondSessionId,
+    "fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json())",
+  );
+  assert.equal(retainedCatalog.workspaces.length, 2, "browser sign-out must retain shared Projects");
+  assert.ok(
+    retainedCatalog.sessions.some((session) => session.providerSessionId === retainedTerminal),
+    "browser sign-out must retain shared terminal metadata",
+  );
+  await postJson(secondSessionId, `/node/claude/sessions/${retainedTerminal}/resize`, { cols: 88, rows: 26 });
+  await postJson(secondSessionId, `/node/claude/sessions/${retainedTerminal}/input`, { data: "after-sign-out\n" });
+  await pollTerminal(secondSessionId, retainedTerminal, ["after-sign-out"]);
+  await postJson(secondSessionId, `/node/claude/sessions/${retainedTerminal}/interrupt`, {});
+  await closeTerminal(secondSessionId, retainedTerminal);
+
+  await recoverExpiredProjectBrowse(sessionId, process.cwd());
+  const credentialRevoke = await postJson(secondSessionId, "/auth/credentials/revoke", {
+    credentialId: firstCredentialId,
+  });
+  assert.equal(credentialRevoke.status, 200, "browser B must revoke browser A's compromised passkey");
   assert.equal(
     await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
     401,
-    "a concurrently revoked browser session must fail closed",
+    "credential revocation must immediately fail closed for browser A",
   );
+  const secondSecurity = await evaluate(
+    secondSessionId,
+    "fetch('/auth/sessions', { credentials: 'same-origin' }).then((response) => response.json())",
+  );
+  assert.equal(secondSecurity.sessions.length, 1, "credential revocation must retain browser B only");
+  assert.equal(secondSecurity.credentials.length, 1, "credential revocation must retain browser B's passkey");
+  assert.ok(secondSecurity.audit.some((event) => event.action === "session.revoked"));
+  assert.ok(secondSecurity.audit.some((event) => event.action === "credential.revoked" && event.targetId === firstCredentialId));
   assert.equal(
-    await evaluate(sessionId, "fetch('/protected/node', { credentials: 'same-origin' }).then((response) => response.status)"),
+    await evaluate(secondSessionId, "fetch('/protected/node', { credentials: 'same-origin' }).then((response) => response.status)"),
     403,
     "a browser session must never become node authority",
   );
@@ -275,8 +358,6 @@ try {
     /^relay-hub liveness listening on 127\.0\.0\.1:\d+\n$/,
     "the real WebAuthn enrollment, assertion, session, and revoke path must not append credential or session material to hub logs",
   );
-  await recoverExpiredProjectBrowse(sessionId, process.cwd());
-
   console.log("passkey browser matrix passed with Chromium CDP virtual authenticator");
 } finally {
   browser?.close();
@@ -308,6 +389,35 @@ function startHub() {
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
+}
+
+async function createIndependentBrowser() {
+  const { browserContextId } = await browser.command("Target.createBrowserContext");
+  const { targetId } = await browser.command("Target.createTarget", {
+    url: "about:blank",
+    browserContextId,
+  });
+  const { sessionId } = await browser.command("Target.attachToTarget", { targetId, flatten: true });
+  await browser.command("Page.enable", {}, sessionId);
+  await browser.command("Runtime.enable", {}, sessionId);
+  await browser.command("WebAuthn.enable", {}, sessionId);
+  await browser.command(
+    "WebAuthn.addVirtualAuthenticator",
+    {
+      options: {
+        protocol: "ctap2",
+        transport: "internal",
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true,
+      },
+    },
+    sessionId,
+  );
+  await browser.command("Page.navigate", { url: `${origin}/` }, sessionId);
+  await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
+  return { browserContextId, sessionId };
 }
 
 async function waitForHub(process_) {
@@ -351,6 +461,33 @@ async function protectedHubStatus(port, sessionCookie) {
   });
 }
 
+async function hubMutationStatus(port, path, sessionCookie, csrf, requestOrigin, body) {
+  const payload = JSON.stringify(body);
+  return new Promise((resolve_, reject) => {
+    const request = httpRequest(
+      {
+        host: "127.0.0.1",
+        port,
+        path,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+          Cookie: `__Host-relay_session=${sessionCookie}; __Host-relay_csrf=${csrf}`,
+          Origin: requestOrigin,
+          "X-Relay-CSRF": csrf,
+        },
+      },
+      (response) => {
+        response.resume();
+        response.once("end", () => resolve_(response.statusCode));
+      },
+    );
+    request.once("error", reject);
+    request.end(payload);
+  });
+}
+
 async function recoveryValueAfterFailedEnrollment(sessionId) {
   await evaluate(
     sessionId,
@@ -360,7 +497,89 @@ async function recoveryValueAfterFailedEnrollment(sessionId) {
   return evaluate(sessionId, "document.querySelector('#recovery-code').value");
 }
 
+async function enrollAndSignIn(sessionId) {
+  await evaluate(
+    sessionId,
+    `document.querySelector("#recovery-code").value = ${JSON.stringify(recoveryCode)}; document.querySelector("#enroll-passkey").click();`,
+  );
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Passkey enrolled"));
+  await evaluate(sessionId, "document.querySelector('#sign-in').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Browser access verified"));
+}
+
+async function postJson(sessionId, path, body) {
+  return evaluate(
+    sessionId,
+    `(async () => {
+      const csrf = document.cookie.split("; ").find((cookie) => cookie.startsWith("__Host-relay_csrf="))?.slice("__Host-relay_csrf=".length);
+      const response = await fetch(${JSON.stringify(path)}, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-Relay-CSRF": csrf },
+        body: ${JSON.stringify(JSON.stringify(body))},
+      });
+      return { status: response.status, body: await response.json() };
+    })()`,
+  );
+}
+
+async function reloadWorkbench(sessionId, workspaceCount) {
+  await browser.command("Page.reload", { ignoreCache: true }, sessionId);
+  await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length")) === workspaceCount,
+    async () => evaluate(sessionId, "({ auth: document.querySelector('#auth-status').textContent, error: document.querySelector('#workbench-error').textContent, workspaces: document.querySelectorAll('#workspace-list button').length })"),
+  );
+}
+
+async function createTerminal(sessionId, workspaceId) {
+  const created = await postJson(sessionId, "/node/claude/sessions", { workspaceId });
+  assert.equal(created.status, 200, "authenticated browser must create a shared terminal");
+  return created.body.sessionId;
+}
+
+async function pollTerminal(sessionId, terminalId, expectedText) {
+  return waitFor(
+    async () => {
+      const result = await evaluate(
+        sessionId,
+        `fetch(${JSON.stringify(`/node/claude/sessions/${terminalId}?cursor=0`)}, { credentials: "same-origin" }).then(async (response) => ({ status: response.status, body: await response.json() }))`,
+      );
+      const output = (result.body.output ?? []).map((chunk) => chunk.text).join("");
+      return result.status === 200 && expectedText.every((text) => output.includes(text)) ? output : false;
+    },
+    `terminal output containing ${expectedText.join(", ")}`,
+  );
+}
+
+async function closeTerminal(sessionId, terminalId) {
+  const requested = await postJson(sessionId, `/node/claude/sessions/${terminalId}/close`, {});
+  assert.ok([200, 202].includes(requested.status), "shared terminal close must be accepted");
+  await waitFor(async () => {
+    const snapshot = await evaluate(
+      sessionId,
+      `fetch(${JSON.stringify(`/node/claude/sessions/${terminalId}?cursor=0`)}, { credentials: "same-origin" }).then((response) => response.json())`,
+    );
+    return ["closed", "exited"].includes(snapshot.status);
+  }, "shared terminal closure");
+}
+
+async function exerciseCrossBrowserTerminal(creatorSessionId, operatorSessionId, workspaceId, input) {
+  const terminalId = await createTerminal(creatorSessionId, workspaceId);
+  const shared = await evaluate(
+    operatorSessionId,
+    `fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.sessions.some((session) => session.providerSessionId === ${JSON.stringify(terminalId)}))`,
+  );
+  assert.equal(shared, true, "another authenticated browser must observe the shared terminal Session");
+  assert.equal((await postJson(operatorSessionId, `/node/claude/sessions/${terminalId}/resize`, { cols: 90, rows: 25 })).status, 200);
+  assert.equal((await postJson(operatorSessionId, `/node/claude/sessions/${terminalId}/input`, { data: `${input}\n` })).status, 200);
+  await pollTerminal(operatorSessionId, terminalId, [input]);
+  assert.equal((await postJson(operatorSessionId, `/node/claude/sessions/${terminalId}/interrupt`, {})).status, 200);
+  await closeTerminal(operatorSessionId, terminalId);
+}
+
 async function addProjectThroughPicker(sessionId, cwd) {
+  const previousCount = await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length");
   await evaluate(sessionId, "document.querySelector('#show-workspace-add').click()");
   await waitFor(
     async () => evaluate(
@@ -375,10 +594,10 @@ async function addProjectThroughPicker(sessionId, cwd) {
   );
   await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#directory-path').textContent")) === cwd);
   await evaluate(sessionId, "document.querySelector('#select-directory').click()");
-  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length")) === 1);
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length")) === previousCount + 1);
   return evaluate(
     sessionId,
-    "fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.selectedWorkspaceId)",
+    `fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.workspaces.find((workspace) => workspace.cwd === ${JSON.stringify(cwd)})?.id)`,
   );
 }
 
@@ -448,8 +667,8 @@ async function exerciseVisibleClaudeWorkbench(sessionId) {
     async () => evaluate(sessionId, "({ status: document.querySelector('.terminal-status')?.textContent, rows: document.querySelector('.terminal-host .xterm-rows')?.textContent, requests: window.relayClaudeRequests })"),
   );
   const actions = await evaluate(sessionId, "window.relayClaudeRequests");
-  assert.ok(actions.some((action) => action.path.endsWith("/resize")), "visible xterm must resize the owned PTY from its pane bounds");
-  assert.ok(actions.some((action) => action.path.endsWith("/input")), "visible xterm input must use the owned PTY API");
+  assert.ok(actions.some((action) => action.path.endsWith("/resize")), "visible xterm must resize the shared PTY from its pane bounds");
+  assert.ok(actions.some((action) => action.path.endsWith("/input")), "visible xterm input must use the shared PTY API");
   const beforeRefreshOutput = await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-rows').textContent");
   const beforeRefreshEchoes = beforeRefreshOutput.split("browser-ui").length - 1;
   assert.ok(beforeRefreshEchoes >= 1, "visible xterm must render real fixture output before refresh");

@@ -21,6 +21,7 @@ const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 const MAX_CEREMONIES: usize = 16;
 const MAX_PASSKEYS: usize = 8;
 const MAX_SESSIONS: usize = 8;
+const MAX_AUDIT_EVENTS: usize = 64;
 const MAX_RECOVERY_CODE_BYTES: usize = 256;
 const OPERATOR_NAME: &str = "operator";
 const OPERATOR_DISPLAY_NAME: &str = "Relay operator";
@@ -33,6 +34,7 @@ pub struct AuthBoundary {
     state: Mutex<AuthState>,
 }
 
+#[derive(Clone, Copy)]
 pub enum EnrollmentAuthority<'a> {
     RecoveryCode(&'a str),
     ExistingSession(&'a str),
@@ -55,14 +57,49 @@ pub struct SessionGrant {
 #[serde(rename_all = "camelCase")]
 pub struct SessionDevice {
     pub device_id: String,
+    pub credential_id: String,
+    pub signed_in_seconds_ago: u64,
     pub current: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialDevice {
+    pub credential_id: String,
+    pub active_sessions: usize,
+    pub enrolled_seconds_ago: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthAuditEvent {
+    pub sequence: u64,
+    pub action: String,
+    pub target_kind: String,
+    pub target_id: String,
+    pub actor_device_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SecuritySnapshot {
+    pub sessions: Vec<SessionDevice>,
+    pub credentials: Vec<CredentialDevice>,
+    pub audit: Vec<AuthAuditEvent>,
+}
+
+struct StoredCredential {
+    id: String,
+    passkey: Passkey,
+    enrolled_at: Instant,
+}
+
 struct AuthState {
-    passkeys: Vec<Passkey>,
+    passkeys: Vec<StoredCredential>,
     ceremonies: HashMap<[u8; 32], PendingCeremony>,
     sessions: HashMap<[u8; 32], StoredSession>,
-    invalidated_device_ids: Vec<String>,
+    audit: Vec<AuthAuditEvent>,
+    next_audit_sequence: u64,
 }
 
 impl AuthState {
@@ -71,46 +108,46 @@ impl AuthState {
             passkeys: Vec::new(),
             ceremonies: HashMap::new(),
             sessions: HashMap::new(),
-            invalidated_device_ids: Vec::new(),
+            audit: Vec::new(),
+            next_audit_sequence: 1,
         }
     }
 
     fn discard_expired(&mut self, now: Instant) {
         self.ceremonies
             .retain(|_, ceremony| ceremony.expires_at() > now);
-        let expired_devices = self
-            .sessions
-            .values()
-            .filter(|session| session.expires_at <= now)
-            .map(|session| session.device_id.clone())
-            .collect::<Vec<_>>();
         self.sessions.retain(|_, session| session.expires_at > now);
-        for device_id in expired_devices {
-            self.invalidate_device(device_id);
-        }
+        self.discard_unauthorized_registrations();
     }
 
-    fn invalidate_device(&mut self, device_id: String) {
-        if !self.invalidated_device_ids.contains(&device_id) {
-            self.invalidated_device_ids.push(device_id);
-        }
-    }
-
-    fn acknowledge_invalidated_device_ids(&mut self, device_ids: &[String]) {
-        self.invalidated_device_ids
-            .retain(|device_id| !device_ids.contains(device_id));
+    fn discard_unauthorized_registrations(&mut self) {
+        let sessions = &self.sessions;
+        self.ceremonies.retain(|_, ceremony| match ceremony {
+            PendingCeremony::Registration {
+                authority: RegistrationAuthority::Session(session_key),
+                ..
+            } => sessions.contains_key(session_key),
+            _ => true,
+        });
     }
 }
 
 enum PendingCeremony {
     Registration {
         state: PasskeyRegistration,
+        authority: RegistrationAuthority,
         expires_at: Instant,
     },
     Authentication {
         state: PasskeyAuthentication,
         expires_at: Instant,
     },
+}
+
+#[derive(Clone, Copy)]
+enum RegistrationAuthority {
+    Recovery,
+    Session([u8; 32]),
 }
 
 impl PendingCeremony {
@@ -126,6 +163,7 @@ impl PendingCeremony {
 struct StoredSession {
     csrf_hash: [u8; 32],
     device_id: String,
+    credential_id: String,
     created_at: Instant,
     expires_at: Instant,
 }
@@ -174,14 +212,25 @@ impl AuthBoundary {
         &self,
         authority: EnrollmentAuthority<'_>,
     ) -> Result<CeremonyStart, AuthError> {
-        let passkeys = {
+        let (passkeys, registration_authority) = {
             let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
             state.discard_expired(Instant::now());
             self.enrollment_is_authorized(&state, authority)?;
             if state.passkeys.len() >= MAX_PASSKEYS {
                 return Err(AuthError::CredentialLimit);
             }
-            state.passkeys.clone()
+            let passkeys = state
+                .passkeys
+                .iter()
+                .map(|credential| credential.passkey.clone())
+                .collect::<Vec<_>>();
+            let authority = match authority {
+                EnrollmentAuthority::RecoveryCode(_) => RegistrationAuthority::Recovery,
+                EnrollmentAuthority::ExistingSession(session_token) => {
+                    RegistrationAuthority::Session(hash_secret(session_token.as_bytes()))
+                }
+            };
+            (passkeys, authority)
         };
 
         let excluded_credentials = passkeys
@@ -201,6 +250,7 @@ impl AuthBoundary {
 
         self.store_ceremony(PendingCeremony::Registration {
             state: registration,
+            authority: registration_authority,
             expires_at: Instant::now() + CEREMONY_TTL,
         })
         .map(|ceremony_id| CeremonyStart {
@@ -210,8 +260,10 @@ impl AuthBoundary {
     }
 
     pub fn finish_registration(&self, ceremony_id: &str, response: &str) -> Result<(), AuthError> {
-        let registration = match self.take_ceremony(ceremony_id)? {
-            PendingCeremony::Registration { state, .. } => state,
+        let (registration, authority) = match self.take_ceremony(ceremony_id)? {
+            PendingCeremony::Registration {
+                state, authority, ..
+            } => (state, authority),
             PendingCeremony::Authentication { .. } => return Err(AuthError::PasskeyDenied),
         };
         let response = serde_json::from_str::<RegisterPublicKeyCredential>(response)
@@ -223,17 +275,27 @@ impl AuthBoundary {
 
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
         state.discard_expired(Instant::now());
+        if let RegistrationAuthority::Session(session_key) = authority
+            && !state.sessions.contains_key(&session_key)
+        {
+            return Err(AuthError::SessionMissing);
+        }
         if state.passkeys.len() >= MAX_PASSKEYS {
             return Err(AuthError::CredentialLimit);
         }
         if state
             .passkeys
             .iter()
-            .any(|existing| existing.cred_id() == passkey.cred_id())
+            .any(|existing| existing.passkey.cred_id() == passkey.cred_id())
         {
             return Err(AuthError::PasskeyDenied);
         }
-        state.passkeys.push(passkey);
+        let id = credential_id(&passkey);
+        state.passkeys.push(StoredCredential {
+            id,
+            passkey,
+            enrolled_at: Instant::now(),
+        });
         Ok(())
     }
 
@@ -244,7 +306,11 @@ impl AuthBoundary {
             if state.passkeys.is_empty() {
                 return Err(AuthError::RecoveryRequired);
             }
-            state.passkeys.clone()
+            state
+                .passkeys
+                .iter()
+                .map(|credential| credential.passkey.clone())
+                .collect::<Vec<_>>()
         };
         let (options, authentication) = self
             .webauthn
@@ -280,17 +346,17 @@ impl AuthBoundary {
 
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
         state.discard_expired(Instant::now());
-        let mut matched_credential = false;
-        for passkey in &mut state.passkeys {
-            if passkey.update_credential(&result).is_some() {
-                matched_credential = true;
+        let mut credential_id = None;
+        for credential in &mut state.passkeys {
+            if credential.passkey.update_credential(&result).is_some() {
+                credential_id = Some(credential.id.clone());
                 break;
             }
         }
-        if !matched_credential {
+        let Some(credential_id) = credential_id else {
             return Err(AuthError::PasskeyDenied);
-        }
-        issue_session(&mut state)
+        };
+        issue_session(&mut state, &credential_id)
     }
 
     pub fn require_session(&self, session_token: &str) -> Result<(), AuthError> {
@@ -305,10 +371,8 @@ impl AuthBoundary {
     }
 
     /// Return the opaque authenticated-browser identity for a live session.
-    ///
-    /// Node-owned Session handles bind to this value rather than accepting a
-    /// browser-supplied owner field. The raw browser session token remains
-    /// confined to this authentication boundary.
+    /// Request handlers use this server-resolved value for actor attribution;
+    /// the raw browser session token remains confined to this boundary.
     pub fn current_device_id(&self, session_token: &str) -> Result<String, AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
         state.discard_expired(Instant::now());
@@ -320,62 +384,50 @@ impl AuthBoundary {
             .ok_or(AuthError::SessionMissing)
     }
 
-    /// Return device identities whose browser authority was removed by TTL,
-    /// explicit revocation, or oldest-session eviction. Resource owners must
-    /// acknowledge only identities whose owned resources were actually reaped,
-    /// so a fail-closed teardown refusal remains eligible for retry.
-    pub fn invalidated_device_ids(&self) -> Result<Vec<String>, AuthError> {
-        self.state
-            .lock()
-            .map(|state| state.invalidated_device_ids.clone())
-            .map_err(|_| AuthError::Internal)
-    }
-
-    pub fn acknowledge_invalidated_device_ids(
-        &self,
-        device_ids: &[String],
-    ) -> Result<(), AuthError> {
-        self.state
-            .lock()
-            .map(|mut state| state.acknowledge_invalidated_device_ids(device_ids))
-            .map_err(|_| AuthError::Internal)
-    }
-
     pub fn require_csrf(&self, session_token: &str, csrf_token: &str) -> Result<(), AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
         state.discard_expired(Instant::now());
-        let session_key = hash_secret(session_token.as_bytes());
-        let session = state
-            .sessions
-            .get(&session_key)
-            .ok_or(AuthError::SessionMissing)?;
-        if session
-            .csrf_hash
-            .ct_eq(&hash_secret(csrf_token.as_bytes()))
-            .into()
-        {
-            Ok(())
-        } else {
-            Err(AuthError::CsrfDenied)
-        }
+        require_csrf_in_state(&state, session_token, csrf_token)
     }
 
-    pub fn list_sessions(&self, session_token: &str) -> Result<Vec<SessionDevice>, AuthError> {
+    pub fn security_snapshot(&self, session_token: &str) -> Result<SecuritySnapshot, AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
         state.discard_expired(Instant::now());
         let current = hash_secret(session_token.as_bytes());
         if !state.sessions.contains_key(&current) {
             return Err(AuthError::SessionMissing);
         }
-
-        Ok(state
+        let now = Instant::now();
+        let sessions = state
             .sessions
             .iter()
             .map(|(key, session)| SessionDevice {
                 device_id: session.device_id.clone(),
+                credential_id: session.credential_id.clone(),
+                signed_in_seconds_ago: now.saturating_duration_since(session.created_at).as_secs(),
                 current: key.ct_eq(&current).into(),
             })
-            .collect())
+            .collect();
+        let credentials = state
+            .passkeys
+            .iter()
+            .map(|credential| CredentialDevice {
+                credential_id: credential.id.clone(),
+                active_sessions: state
+                    .sessions
+                    .values()
+                    .filter(|session| session.credential_id == credential.id)
+                    .count(),
+                enrolled_seconds_ago: now
+                    .saturating_duration_since(credential.enrolled_at)
+                    .as_secs(),
+            })
+            .collect();
+        Ok(SecuritySnapshot {
+            sessions,
+            credentials,
+            audit: state.audit.clone(),
+        })
     }
 
     pub fn revoke_session(
@@ -384,19 +436,74 @@ impl AuthBoundary {
         csrf_token: &str,
         device_id: &str,
     ) -> Result<(), AuthError> {
-        self.require_csrf(session_token, csrf_token)?;
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
         state.discard_expired(Instant::now());
+        require_csrf_in_state(&state, session_token, csrf_token)?;
         let before = state.sessions.len();
+        let actor_device_id = state
+            .sessions
+            .get(&hash_secret(session_token.as_bytes()))
+            .map(|session| session.device_id.clone())
+            .ok_or(AuthError::SessionMissing)?;
         state
             .sessions
             .retain(|_, session| session.device_id != device_id);
+        state.discard_unauthorized_registrations();
         if state.sessions.len() == before {
             Err(AuthError::SessionMissing)
         } else {
-            state.invalidate_device(device_id.to_owned());
+            push_audit(
+                &mut state,
+                "session.revoked",
+                "session",
+                device_id,
+                &actor_device_id,
+            );
             Ok(())
         }
+    }
+
+    pub fn revoke_credential(
+        &self,
+        session_token: &str,
+        csrf_token: &str,
+        credential_id: &str,
+    ) -> Result<(), AuthError> {
+        let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.discard_expired(Instant::now());
+        require_csrf_in_state(&state, session_token, csrf_token)?;
+        let actor_device_id = state
+            .sessions
+            .get(&hash_secret(session_token.as_bytes()))
+            .map(|session| session.device_id.clone())
+            .ok_or(AuthError::SessionMissing)?;
+        if !state
+            .passkeys
+            .iter()
+            .any(|credential| credential.id == credential_id)
+        {
+            return Err(AuthError::CredentialMissing);
+        }
+        if state.passkeys.len() <= 1 {
+            return Err(AuthError::LastCredential);
+        }
+        let before = state.passkeys.len();
+        state
+            .passkeys
+            .retain(|credential| credential.id != credential_id);
+        if state.passkeys.len() == before {
+            return Err(AuthError::CredentialMissing);
+        }
+        remove_sessions_for_credential(&mut state, credential_id);
+        state.discard_unauthorized_registrations();
+        push_audit(
+            &mut state,
+            "credential.revoked",
+            "credential",
+            credential_id,
+            &actor_device_id,
+        );
+        Ok(())
     }
 
     fn enrollment_is_authorized(
@@ -455,7 +562,7 @@ impl AuthBoundary {
     }
 }
 
-fn issue_session(state: &mut AuthState) -> Result<SessionGrant, AuthError> {
+fn issue_session(state: &mut AuthState, credential_id: &str) -> Result<SessionGrant, AuthError> {
     while state.sessions.len() >= MAX_SESSIONS {
         let oldest = state
             .sessions
@@ -463,9 +570,8 @@ fn issue_session(state: &mut AuthState) -> Result<SessionGrant, AuthError> {
             .min_by_key(|(_, session)| session.created_at)
             .map(|(key, _)| *key)
             .ok_or(AuthError::Internal)?;
-        if let Some(evicted) = state.sessions.remove(&oldest) {
-            state.invalidate_device(evicted.device_id);
-        }
+        state.sessions.remove(&oldest);
+        state.discard_unauthorized_registrations();
     }
 
     let session_token = random_token(32)?;
@@ -477,6 +583,7 @@ fn issue_session(state: &mut AuthState) -> Result<SessionGrant, AuthError> {
         StoredSession {
             csrf_hash: hash_secret(csrf_token.as_bytes()),
             device_id: device_id.clone(),
+            credential_id: credential_id.to_owned(),
             created_at: now,
             expires_at: now + SESSION_TTL,
         },
@@ -487,6 +594,57 @@ fn issue_session(state: &mut AuthState) -> Result<SessionGrant, AuthError> {
         csrf_token,
         device_id,
     })
+}
+
+fn credential_id(passkey: &Passkey) -> String {
+    let digest = hash_secret(passkey.cred_id().as_ref());
+    format!("passkey-{}", URL_SAFE_NO_PAD.encode(&digest[..9]))
+}
+
+fn require_csrf_in_state(
+    state: &AuthState,
+    session_token: &str,
+    csrf_token: &str,
+) -> Result<(), AuthError> {
+    let session = state
+        .sessions
+        .get(&hash_secret(session_token.as_bytes()))
+        .ok_or(AuthError::SessionMissing)?;
+    if session
+        .csrf_hash
+        .ct_eq(&hash_secret(csrf_token.as_bytes()))
+        .into()
+    {
+        Ok(())
+    } else {
+        Err(AuthError::CsrfDenied)
+    }
+}
+
+fn remove_sessions_for_credential(state: &mut AuthState, credential_id: &str) {
+    state
+        .sessions
+        .retain(|_, session| session.credential_id != credential_id);
+}
+
+fn push_audit(
+    state: &mut AuthState,
+    action: &str,
+    target_kind: &str,
+    target_id: &str,
+    actor_device_id: &str,
+) {
+    if state.audit.len() >= MAX_AUDIT_EVENTS {
+        state.audit.remove(0);
+    }
+    state.audit.push(AuthAuditEvent {
+        sequence: state.next_audit_sequence,
+        action: action.to_owned(),
+        target_kind: target_kind.to_owned(),
+        target_id: target_id.to_owned(),
+        actor_device_id: actor_device_id.to_owned(),
+    });
+    state.next_audit_sequence = state.next_audit_sequence.saturating_add(1);
 }
 
 fn random_token(bytes: usize) -> Result<String, AuthError> {
@@ -573,38 +731,8 @@ mod tests {
     }
 
     #[test]
-    fn session_invalidations_record_ttl_expiry_and_capacity_eviction() {
+    fn revoking_a_browser_invalidates_its_pending_passkey_enrollment() {
         let boundary = boundary();
-        let expired_token = "expired-session";
-        {
-            let mut state = boundary.state.lock().expect("auth state");
-            state.sessions.insert(
-                hash_secret(expired_token.as_bytes()),
-                StoredSession {
-                    csrf_hash: hash_secret(b"expired-csrf"),
-                    device_id: "expired-device".into(),
-                    created_at: Instant::now() - Duration::from_secs(2),
-                    expires_at: Instant::now() - Duration::from_secs(1),
-                },
-            );
-        }
-        assert_eq!(
-            boundary.require_session(expired_token),
-            Err(AuthError::SessionMissing)
-        );
-        assert_eq!(
-            boundary.invalidated_device_ids().unwrap(),
-            vec!["expired-device"]
-        );
-        assert_eq!(
-            boundary.invalidated_device_ids().unwrap(),
-            vec!["expired-device"],
-            "a failed owner teardown must leave invalidation pending for retry"
-        );
-        boundary
-            .acknowledge_invalidated_device_ids(&["expired-device".into()])
-            .unwrap();
-
         {
             let mut state = boundary.state.lock().expect("auth state");
             let now = Instant::now();
@@ -613,31 +741,99 @@ mod tests {
                 StoredSession {
                     csrf_hash: hash_secret(b"requester-csrf"),
                     device_id: "requester-device".into(),
-                    created_at: now,
-                    expires_at: now + SESSION_TTL,
-                },
-            );
-            state.sessions.insert(
-                hash_secret(b"revoked"),
-                StoredSession {
-                    csrf_hash: hash_secret(b"revoked-csrf"),
-                    device_id: "revoked-device".into(),
+                    credential_id: "passkey-requester".into(),
                     created_at: now,
                     expires_at: now + SESSION_TTL,
                 },
             );
         }
+        let ceremony = boundary
+            .start_registration(EnrollmentAuthority::ExistingSession("requester"))
+            .expect("live browser can begin enrollment");
+
         boundary
-            .revoke_session("requester", "requester-csrf", "revoked-device")
+            .revoke_session("requester", "requester-csrf", "requester-device")
+            .expect("browser revocation");
+
+        assert_eq!(
+            boundary
+                .finish_registration(&ceremony.ceremony_id, "{}")
+                .unwrap_err(),
+            AuthError::UnknownCeremony
+        );
+    }
+
+    #[test]
+    fn session_expiry_and_revocation_fail_closed_without_affecting_other_browsers() {
+        let boundary = boundary();
+        {
+            let mut state = boundary.state.lock().expect("auth state");
+            let now = Instant::now();
+            state.sessions.insert(
+                hash_secret(b"expired"),
+                StoredSession {
+                    csrf_hash: hash_secret(b"expired-csrf"),
+                    device_id: "expired-device".into(),
+                    credential_id: "passkey-expired".into(),
+                    created_at: now - Duration::from_secs(2),
+                    expires_at: now - Duration::from_secs(1),
+                },
+            );
+            state.sessions.insert(
+                hash_secret(b"requester"),
+                StoredSession {
+                    csrf_hash: hash_secret(b"requester-csrf"),
+                    device_id: "requester-device".into(),
+                    credential_id: "passkey-requester".into(),
+                    created_at: now,
+                    expires_at: now + SESSION_TTL,
+                },
+            );
+            state.sessions.insert(
+                hash_secret(b"target"),
+                StoredSession {
+                    csrf_hash: hash_secret(b"target-csrf"),
+                    device_id: "target-device".into(),
+                    credential_id: "passkey-target".into(),
+                    created_at: now,
+                    expires_at: now + SESSION_TTL,
+                },
+            );
+            state.sessions.insert(
+                hash_secret(b"retained"),
+                StoredSession {
+                    csrf_hash: hash_secret(b"retained-csrf"),
+                    device_id: "retained-device".into(),
+                    credential_id: "passkey-retained".into(),
+                    created_at: now,
+                    expires_at: now + SESSION_TTL,
+                },
+            );
+        }
+        assert_eq!(
+            boundary.require_session("expired"),
+            Err(AuthError::SessionMissing)
+        );
+        assert_eq!(boundary.require_session("retained"), Ok(()));
+        boundary
+            .revoke_session("requester", "requester-csrf", "target-device")
             .expect("live session can revoke the target device");
         assert_eq!(
-            boundary.invalidated_device_ids().unwrap(),
-            vec!["revoked-device"]
+            boundary.require_session("target"),
+            Err(AuthError::SessionMissing)
         );
-        boundary
-            .acknowledge_invalidated_device_ids(&["revoked-device".into()])
-            .unwrap();
+        assert_eq!(boundary.require_session("requester"), Ok(()));
+        assert_eq!(boundary.require_session("retained"), Ok(()));
+        let security = boundary.security_snapshot("requester").unwrap();
+        assert_eq!(security.sessions.len(), 2);
+        assert_eq!(security.audit.len(), 1);
+        assert_eq!(security.audit[0].action, "session.revoked");
+        assert_eq!(security.audit[0].target_id, "target-device");
+        assert_eq!(security.audit[0].actor_device_id, "requester-device");
+    }
 
+    #[test]
+    fn session_capacity_evicts_only_the_oldest_browser() {
         let capacity_boundary = self::boundary();
         {
             let mut state = capacity_boundary.state.lock().expect("auth state");
@@ -649,16 +845,49 @@ mod tests {
                     StoredSession {
                         csrf_hash: hash_secret(token.as_bytes()),
                         device_id: format!("device-{index}"),
+                        credential_id: "passkey-capacity".into(),
                         created_at: now + Duration::from_secs(index as u64),
                         expires_at: now + SESSION_TTL,
                     },
                 );
             }
-            issue_session(&mut state).expect("capacity eviction issues a replacement");
+            issue_session(&mut state, "passkey-capacity")
+                .expect("capacity eviction issues a replacement");
         }
         assert_eq!(
-            capacity_boundary.invalidated_device_ids().unwrap(),
-            vec!["device-0"]
+            capacity_boundary.require_session("session-0"),
+            Err(AuthError::SessionMissing)
+        );
+        assert_eq!(capacity_boundary.require_session("session-1"), Ok(()));
+    }
+
+    #[test]
+    fn credential_revocation_removes_only_sessions_bound_to_that_passkey() {
+        let mut state = AuthState::new();
+        let now = Instant::now();
+        for (token, device_id, credential_id) in [
+            ("target-a", "device-a", "passkey-target"),
+            ("target-b", "device-b", "passkey-target"),
+            ("retained", "device-c", "passkey-retained"),
+        ] {
+            state.sessions.insert(
+                hash_secret(token.as_bytes()),
+                StoredSession {
+                    csrf_hash: hash_secret(token.as_bytes()),
+                    device_id: device_id.into(),
+                    credential_id: credential_id.into(),
+                    created_at: now,
+                    expires_at: now + SESSION_TTL,
+                },
+            );
+        }
+
+        remove_sessions_for_credential(&mut state, "passkey-target");
+
+        assert_eq!(state.sessions.len(), 1);
+        assert_eq!(
+            state.sessions.values().next().unwrap().credential_id,
+            "passkey-retained"
         );
     }
 }

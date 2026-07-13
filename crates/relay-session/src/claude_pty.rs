@@ -307,7 +307,6 @@ const PTY_CLOSE_BACKOFF: [Duration; PTY_CLOSE_ATTEMPTS] = [
 #[derive(Clone, Copy)]
 enum CloseCause {
     Explicit = 1,
-    OwnerInvalidated = 2,
     Prune = 4,
     Startup = 8,
     Shutdown = 16,
@@ -346,7 +345,6 @@ struct SignallingSession {
 }
 
 struct ClosedSession {
-    owner_device_id: String,
     next_cursor: u64,
     dropped_chunks: u64,
     order: u64,
@@ -393,15 +391,11 @@ impl PtyCreate {
     }
 }
 
-/// The outcome of selecting PTYs for owner invalidation cleanup.
+/// Whether bounded runtime shutdown has fully verified terminal teardown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OwnerSessionCloseDisposition {
+pub enum PtyShutdownDisposition {
     Complete,
     Retry,
-}
-
-pub struct OwnerSessionClosures {
-    pub disposition: OwnerSessionCloseDisposition,
 }
 
 /// The node-local source of truth for Relay-owned Claude PTY Session handles.
@@ -663,27 +657,21 @@ impl NodePtyRuntime {
     pub fn poll(
         &mut self,
         session_id: &str,
-        owner_device_id: &str,
+        actor_device_id: &str,
         cursor: u64,
     ) -> Result<TerminalSnapshot, ClaudePtyError> {
+        validate_actor_device_id(actor_device_id)?;
         if let Some(session) = self.sessions.get_mut(session_id) {
-            if session.owner_device_id != owner_device_id {
-                return Err(ClaudePtyError::Forbidden);
-            }
             session.pump();
             return Ok(session_snapshot(session, session_id, cursor));
         }
-        if let Some(closing) = self.closing.get(session_id) {
-            let session = lock_shared_session(&closing.session);
-            return closing_snapshot(session_id, owner_device_id, &session.owner_device_id);
+        if self.closing.contains_key(session_id) {
+            return Ok(closing_snapshot(session_id));
         }
-        if let Some(signalling) = self.signalling.get(session_id) {
-            return closing_snapshot(session_id, owner_device_id, &signalling.owner_device_id);
+        if self.signalling.contains_key(session_id) {
+            return Ok(closing_snapshot(session_id));
         }
         if let Some(closed) = self.closed.get(session_id) {
-            if closed.owner_device_id != owner_device_id {
-                return Err(ClaudePtyError::Forbidden);
-            }
             return Ok(terminal_snapshot(
                 session_id,
                 ClaudePtyStatus::Closed,
@@ -691,10 +679,7 @@ impl NodePtyRuntime {
                 closed.dropped_chunks,
             ));
         }
-        if let Some(failure) = self.terminal_failures.get(session_id) {
-            if lock_shared_session(&failure.closing.session).owner_device_id != owner_device_id {
-                return Err(ClaudePtyError::Forbidden);
-            }
+        if self.terminal_failures.contains_key(session_id) {
             return Err(ClaudePtyError::TeardownFailed);
         }
         Err(ClaudePtyError::StaleHandle)
@@ -703,13 +688,13 @@ impl NodePtyRuntime {
     pub fn input(
         &mut self,
         session_id: &str,
-        owner_device_id: &str,
+        actor_device_id: &str,
         data: &str,
     ) -> Result<(), ClaudePtyError> {
         if data.is_empty() || data.len() > PTY_INPUT_BYTES || data.contains('\0') {
             return Err(ClaudePtyError::InvalidInput);
         }
-        let session = self.active_session_mut(session_id, owner_device_id)?;
+        let session = self.active_session_mut(session_id, actor_device_id)?;
         session.pump();
         if session.status == ClaudePtyStatus::Closed || session.status == ClaudePtyStatus::Exited {
             return Err(ClaudePtyError::StaleHandle);
@@ -724,14 +709,14 @@ impl NodePtyRuntime {
     pub fn resize(
         &mut self,
         session_id: &str,
-        owner_device_id: &str,
+        actor_device_id: &str,
         cols: u16,
         rows: u16,
     ) -> Result<(), ClaudePtyError> {
         if !(MIN_COLS..=MAX_COLS).contains(&cols) || !(MIN_ROWS..=MAX_ROWS).contains(&rows) {
             return Err(ClaudePtyError::InvalidResize);
         }
-        let session = self.active_session_mut(session_id, owner_device_id)?;
+        let session = self.active_session_mut(session_id, actor_device_id)?;
         session.pump();
         let master = session.master.as_mut().ok_or(ClaudePtyError::StaleHandle)?;
         master
@@ -748,9 +733,9 @@ impl NodePtyRuntime {
     pub fn interrupt(
         &mut self,
         session_id: &str,
-        owner_device_id: &str,
+        actor_device_id: &str,
     ) -> Result<(), ClaudePtyError> {
-        self.input(session_id, owner_device_id, "\u{3}")
+        self.input(session_id, actor_device_id, "\u{3}")
     }
 
     /// Direct runtime convenience for unit tests and the node probe. Hub code
@@ -758,11 +743,11 @@ impl NodePtyRuntime {
     pub fn close(
         &mut self,
         session_id: &str,
-        owner_device_id: &str,
+        actor_device_id: &str,
     ) -> Result<TerminalSnapshot, ClaudePtyError> {
-        self.request_close(session_id, owner_device_id)?;
+        self.request_close(session_id, actor_device_id)?;
         self.finish_due_terminations();
-        self.poll(session_id, owner_device_id, 0)
+        self.poll(session_id, actor_device_id, 0)
     }
 
     /// Enter Closing without foreground probing or resource consumption. The
@@ -770,57 +755,42 @@ impl NodePtyRuntime {
     pub fn request_close(
         &mut self,
         session_id: &str,
-        owner_device_id: &str,
+        actor_device_id: &str,
     ) -> Result<(), ClaudePtyError> {
-        self.schedule_close(session_id, owner_device_id, CloseCause::Explicit)
+        self.schedule_close(session_id, actor_device_id, CloseCause::Explicit)
     }
 
     fn active_session_mut(
         &mut self,
         session_id: &str,
-        owner_device_id: &str,
+        actor_device_id: &str,
     ) -> Result<&mut ManagedSession, ClaudePtyError> {
+        validate_actor_device_id(actor_device_id)?;
         let session = self
             .sessions
             .get_mut(session_id)
             .ok_or(ClaudePtyError::StaleHandle)?;
-        if session.owner_device_id != owner_device_id {
-            return Err(ClaudePtyError::Forbidden);
-        }
         Ok(session)
     }
 
     fn schedule_close(
         &mut self,
         session_id: &str,
-        owner_device_id: &str,
+        actor_device_id: &str,
         cause: CloseCause,
     ) -> Result<(), ClaudePtyError> {
+        validate_actor_device_id(actor_device_id)?;
         if let Some(session) = self.sessions.get_mut(session_id) {
-            if session.owner_device_id != owner_device_id {
-                return Err(ClaudePtyError::Forbidden);
-            }
             session.pump();
         } else if let Some(closing) = self.closing.get_mut(session_id) {
-            if lock_shared_session(&closing.session).owner_device_id != owner_device_id {
-                return Err(ClaudePtyError::Forbidden);
-            }
             closing.causes |= cause as u8;
             return Ok(());
         } else if let Some(signalling) = self.signalling.get_mut(session_id) {
-            if signalling.owner_device_id != owner_device_id {
-                return Err(ClaudePtyError::Forbidden);
-            }
             signalling.causes |= cause as u8;
             return Ok(());
-        } else if let Some(closed) = self.closed.get(session_id) {
-            return (closed.owner_device_id == owner_device_id)
-                .then_some(())
-                .ok_or(ClaudePtyError::Forbidden);
+        } else if self.closed.contains_key(session_id) {
+            return Ok(());
         } else if let Some(failure) = self.terminal_failures.get_mut(session_id) {
-            if lock_shared_session(&failure.closing.session).owner_device_id != owner_device_id {
-                return Err(ClaudePtyError::Forbidden);
-            }
             failure.closing.causes |= cause as u8;
             return Err(ClaudePtyError::TeardownFailed);
         } else {
@@ -865,52 +835,6 @@ impl NodePtyRuntime {
     #[cfg(test)]
     fn prune_finished_sessions(&mut self) {
         self.schedule_prune_finished_sessions();
-        self.finish_due_terminations();
-    }
-
-    /// Schedule every record owned by an invalidated browser device. Auth is
-    /// acknowledged only when `owner_close_disposition` reaches Complete.
-    pub fn begin_owner_session_closes(&mut self, owner_device_id: &str) -> OwnerSessionClosures {
-        let mut session_ids = self
-            .sessions
-            .iter()
-            .filter(|(_, session)| session.owner_device_id == owner_device_id)
-            .map(|(session_id, _)| session_id.clone())
-            .collect::<Vec<_>>();
-        session_ids.extend(
-            self.closing
-                .iter()
-                .filter(|(_, closing)| {
-                    lock_shared_session(&closing.session).owner_device_id == owner_device_id
-                })
-                .map(|(session_id, _)| session_id.clone()),
-        );
-        session_ids.extend(
-            self.signalling
-                .iter()
-                .filter(|(_, signalling)| signalling.owner_device_id == owner_device_id)
-                .map(|(session_id, _)| session_id.clone()),
-        );
-        session_ids.extend(
-            self.terminal_failures
-                .iter()
-                .filter(|(_, failure)| {
-                    lock_shared_session(&failure.closing.session).owner_device_id == owner_device_id
-                })
-                .map(|(session_id, _)| session_id.clone()),
-        );
-        session_ids.sort();
-        session_ids.dedup();
-        for session_id in session_ids {
-            let _ = self.schedule_close(&session_id, owner_device_id, CloseCause::OwnerInvalidated);
-        }
-        OwnerSessionClosures {
-            disposition: self.owner_close_disposition(owner_device_id),
-        }
-    }
-
-    pub fn close_owner_sessions(&mut self, owner_device_id: &str) {
-        self.begin_owner_session_closes(owner_device_id);
         self.finish_due_terminations();
     }
 
@@ -1075,7 +999,6 @@ impl NodePtyRuntime {
         self.insert_closed(
             claimed_session_id,
             ClosedSession {
-                owner_device_id: termination.owner_device_id,
                 next_cursor,
                 dropped_chunks,
                 order: 0,
@@ -1089,28 +1012,6 @@ impl NodePtyRuntime {
         let terminations = self.claim_due_terminations();
         for termination in terminations {
             self.complete_termination(termination.finish());
-        }
-    }
-
-    pub fn owner_close_disposition(&self, owner_device_id: &str) -> OwnerSessionCloseDisposition {
-        let pending = self
-            .sessions
-            .values()
-            .any(|session| session.owner_device_id == owner_device_id)
-            || self.closing.values().any(|closing| {
-                lock_shared_session(&closing.session).owner_device_id == owner_device_id
-            })
-            || self
-                .signalling
-                .values()
-                .any(|signalling| signalling.owner_device_id == owner_device_id)
-            || self.terminal_failures.values().any(|failure| {
-                lock_shared_session(&failure.closing.session).owner_device_id == owner_device_id
-            });
-        if pending {
-            OwnerSessionCloseDisposition::Retry
-        } else {
-            OwnerSessionCloseDisposition::Complete
         }
     }
 
@@ -1138,7 +1039,7 @@ impl NodePtyRuntime {
         }
     }
 
-    pub fn begin_shutdown(&mut self) -> OwnerSessionCloseDisposition {
+    pub fn begin_shutdown(&mut self) -> PtyShutdownDisposition {
         self.shutdown_requested = true;
         let session_ids = self.sessions.keys().cloned().collect::<Vec<_>>();
         for session_id in session_ids {
@@ -1157,15 +1058,15 @@ impl NodePtyRuntime {
         self.shutdown_disposition()
     }
 
-    pub fn shutdown_disposition(&self) -> OwnerSessionCloseDisposition {
+    pub fn shutdown_disposition(&self) -> PtyShutdownDisposition {
         if self.sessions.is_empty()
             && self.closing.is_empty()
             && self.signalling.is_empty()
             && self.terminal_failures.is_empty()
         {
-            OwnerSessionCloseDisposition::Complete
+            PtyShutdownDisposition::Complete
         } else {
-            OwnerSessionCloseDisposition::Retry
+            PtyShutdownDisposition::Retry
         }
     }
 
@@ -1602,20 +1503,16 @@ fn terminal_snapshot(
     }
 }
 
-fn closing_snapshot(
-    session_id: &str,
-    owner_device_id: &str,
-    record_owner_device_id: &str,
-) -> Result<TerminalSnapshot, ClaudePtyError> {
-    if record_owner_device_id != owner_device_id {
-        return Err(ClaudePtyError::Forbidden);
+fn closing_snapshot(session_id: &str) -> TerminalSnapshot {
+    terminal_snapshot(session_id, ClaudePtyStatus::Closing, 0, 0)
+}
+
+fn validate_actor_device_id(actor_device_id: &str) -> Result<(), ClaudePtyError> {
+    if actor_device_id.is_empty() || actor_device_id.len() > 64 {
+        Err(ClaudePtyError::Forbidden)
+    } else {
+        Ok(())
     }
-    Ok(terminal_snapshot(
-        session_id,
-        ClaudePtyStatus::Closing,
-        0,
-        0,
-    ))
 }
 
 fn default_size() -> PtySize {
@@ -2238,14 +2135,13 @@ mod tests {
             .resize(session.as_str(), "device-a", 100, 40)
             .unwrap();
         assert_eq!(
-            runtime.poll(session.as_str(), "device-b", first.next_cursor),
-            Err(ClaudePtyError::Forbidden)
+            runtime
+                .poll(session.as_str(), "device-b", first.next_cursor)
+                .unwrap()
+                .session_id,
+            session
         );
-        assert_eq!(
-            runtime.close(session.as_str(), "other"),
-            Err(ClaudePtyError::Forbidden)
-        );
-        let closed = runtime.close(session.as_str(), "device-a").unwrap();
+        let closed = runtime.close(session.as_str(), "device-b").unwrap();
         assert_eq!(closed.status, ClaudePtyStatus::Closed);
         assert!(!runtime.sessions.contains_key(session.as_str()));
     }
@@ -2458,21 +2354,21 @@ mod tests {
         runtime.request_close(session.as_str(), "device-a").unwrap();
         runtime.set_test_foreground_identity(session.as_str(), ForegroundIdentity::Unavailable);
         let lease = runtime.claim_due_terminations().pop().unwrap();
-        runtime.begin_owner_session_closes("device-a");
+        runtime.begin_shutdown();
         assert_ne!(
-            runtime.signalling[session.as_str()].causes & CloseCause::OwnerInvalidated as u8,
+            runtime.signalling[session.as_str()].causes & CloseCause::Shutdown as u8,
             0,
-            "an invalidation coalesces while the exclusive lease is outside the mutex"
+            "shutdown coalesces while the exclusive lease is outside the mutex"
         );
         runtime.complete_termination(lease.finish());
         let first_not_before = runtime.closing[session.as_str()].not_before;
         assert!(first_not_before >= Instant::now());
 
-        runtime.begin_owner_session_closes("device-a");
+        runtime.begin_shutdown();
         let closing = &runtime.closing[session.as_str()];
         assert_eq!(closing.attempts, 1);
         assert_ne!(closing.causes & CloseCause::Explicit as u8, 0);
-        assert_ne!(closing.causes & CloseCause::OwnerInvalidated as u8, 0);
+        assert_ne!(closing.causes & CloseCause::Shutdown as u8, 0);
 
         runtime.force_due_terminations_for_test();
         runtime.finish_due_terminations();
@@ -2485,10 +2381,7 @@ mod tests {
     fn shutdown_latches_admission_and_closed_truth_is_bounded() {
         let mut runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "sleep 30"]);
         let session = runtime.create("device-a").unwrap();
-        assert_eq!(
-            runtime.begin_shutdown(),
-            OwnerSessionCloseDisposition::Retry
-        );
+        assert_eq!(runtime.begin_shutdown(), PtyShutdownDisposition::Retry);
         assert_eq!(
             runtime.begin_create("device-a").into_result(),
             Err(ClaudePtyError::Unavailable)
@@ -2505,14 +2398,13 @@ mod tests {
         );
         assert_eq!(
             runtime.shutdown_disposition(),
-            OwnerSessionCloseDisposition::Complete
+            PtyShutdownDisposition::Complete
         );
 
         for index in 0..=MAX_CLOSED_PTY_SESSIONS {
             runtime.insert_closed(
                 format!("closed-{index}"),
                 ClosedSession {
-                    owner_device_id: "device-a".into(),
                     next_cursor: 0,
                     dropped_chunks: 0,
                     order: 0,
@@ -2552,10 +2444,10 @@ mod tests {
             Err(ClaudePtyError::TeardownFailed),
             "retry exhaustion must not lie with a Closed result"
         );
+        runtime.begin_shutdown();
         assert_eq!(
-            runtime.owner_close_disposition("device-a"),
-            OwnerSessionCloseDisposition::Retry,
-            "terminal teardown failure must prevent auth invalidation acknowledgement"
+            runtime.shutdown_disposition(),
+            PtyShutdownDisposition::Retry
         );
     }
 
@@ -2892,6 +2784,48 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_devices_share_terminal_control_with_serialized_requests() {
+        let mut runtime = NodePtyRuntime::test_runtime(
+            "/bin/sh",
+            &[
+                "-c",
+                "trap 'printf INTERRUPTED' INT; while IFS= read -r line; do printf '%s\\n' \"$line\"; done",
+            ],
+        );
+        let session = runtime.create("device-a").unwrap();
+
+        runtime
+            .resize(session.as_str(), "device-b", 91, 27)
+            .unwrap();
+        runtime
+            .input(session.as_str(), "device-b", "shared-input\n")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+            if snapshot
+                .output
+                .iter()
+                .any(|chunk| chunk.text.contains("shared-input"))
+            {
+                break;
+            }
+            assert!(Instant::now() <= deadline, "shared input was not observed");
+            thread::sleep(Duration::from_millis(10));
+        }
+        runtime.interrupt(session.as_str(), "device-b").unwrap();
+        runtime.request_close(session.as_str(), "device-a").unwrap();
+        runtime.finish_due_terminations();
+        assert_eq!(
+            runtime
+                .poll(session.as_str(), "device-b", 0)
+                .unwrap()
+                .status,
+            ClaudePtyStatus::Closed
+        );
+    }
+
+    #[test]
     fn slow_consumer_delivery_is_bounded_and_recoverable_by_cursor() {
         let mut runtime = NodePtyRuntime::test_runtime("/usr/bin/yes", &["terminal output"]);
         let session = runtime.create("device-a").unwrap();
@@ -2993,19 +2927,6 @@ mod tests {
         let replacement = runtime.create("device-a").unwrap();
         assert_eq!(runtime.sessions.len(), 1);
         runtime.close(replacement.as_str(), "device-a").unwrap();
-    }
-
-    #[test]
-    fn revoking_an_owner_reaps_only_that_owners_pty_sessions() {
-        let mut runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "printf READY; cat"]);
-        let revoked = runtime.create("device-revoked").unwrap();
-        let retained = runtime.create("device-retained").unwrap();
-
-        runtime.close_owner_sessions("device-revoked");
-
-        assert!(!runtime.sessions.contains_key(revoked.as_str()));
-        assert!(runtime.sessions.contains_key(retained.as_str()));
-        runtime.close(retained.as_str(), "device-retained").unwrap();
     }
 
     #[cfg(unix)]
@@ -3227,8 +3148,7 @@ mod tests {
         // unowned foreground group, so it never authorizes a numeric fallback.
         thread::sleep(Duration::from_millis(300));
         assert!(runtime.sessions[session.as_str()].foreign_foreground_seen);
-        let closures = runtime.begin_owner_session_closes("device-a");
-        assert_eq!(closures.disposition, OwnerSessionCloseDisposition::Retry);
+        runtime.request_close(session.as_str(), "device-a").unwrap();
         assert!(runtime.closing.contains_key(session.as_str()));
         assert_eq!(
             runtime.close(session.as_str(), "device-a").unwrap().status,
@@ -3270,33 +3190,6 @@ mod tests {
             started.elapsed() < Duration::from_secs(2),
             "a blocked PTY writer must not wedge terminal close"
         );
-    }
-
-    #[test]
-    fn non_reader_input_backpressure_does_not_wedge_owner_revoke() {
-        let mut runtime = NodePtyRuntime::test_runtime("/bin/sh", &["-c", "sleep 30"]);
-        let session = runtime.create("device-revoked").unwrap();
-        let input = "x".repeat(PTY_INPUT_BYTES);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if runtime.input(session.as_str(), "device-revoked", &input)
-                == Err(ClaudePtyError::Backpressure)
-            {
-                break;
-            }
-            assert!(
-                Instant::now() <= deadline,
-                "non-reading PTY never applied bounded input backpressure"
-            );
-        }
-
-        let started = Instant::now();
-        runtime.close_owner_sessions("device-revoked");
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "a blocked PTY writer must not wedge owner-session reaping"
-        );
-        assert!(!runtime.sessions.contains_key(session.as_str()));
     }
 
     #[test]
