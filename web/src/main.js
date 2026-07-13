@@ -4,7 +4,7 @@ import {
   isPasskeySupported,
   presentationForAuthError,
 } from "./auth.js";
-import { renderChatTimeline } from "./chat.js";
+import { renderChatTimeline, sessionMayHaveMoreEvents } from "./chat.js";
 import {
   claudeMetadata,
   mergeRecentClaudeSessions,
@@ -1099,7 +1099,7 @@ function updateClaudeSessionStatus(providerSessionId, status) {
 
 function scheduleRefresh() {
   window.clearTimeout(refreshTimer);
-  const hasPendingSession = sessionsForSelectedWorkspace().some((session) => ["working", "starting"].includes(session.status));
+  const hasPendingSession = sessionsForSelectedWorkspace().some(sessionMayHaveMoreEvents);
   if (authorized && hasPendingSession) {
     refreshTimer = window.setTimeout(() => void refreshWorkbench({ restore: false }), 900);
   }
