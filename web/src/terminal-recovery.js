@@ -66,6 +66,11 @@ export function terminalErrorPresentation(error) {
         code,
         message: "Relay's terminal transport is unavailable. Keep this terminal open while it recovers, then retry the action.",
       };
+    case "pty_teardown_failed":
+      return {
+        code,
+        message: "Relay could not verify terminal shutdown. Keep this Session visible and retry explicit close after the node recovers.",
+      };
     default:
       if (isNetworkTypeError(error)) {
         return {

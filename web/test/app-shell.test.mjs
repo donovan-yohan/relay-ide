@@ -5,36 +5,45 @@ import test from "node:test";
 const source = new URL("../src/", import.meta.url);
 
 test("the PWA shell is an authenticated CWD workbench, not a layout harness", async () => {
-  const [page, app, chat, auth] = await Promise.all([
+  const [page, app, chat, auth, claude] = await Promise.all([
     readFile(new URL("index.html", source), "utf8"),
     readFile(new URL("main.js", source), "utf8"),
     readFile(new URL("chat.js", source), "utf8"),
     readFile(new URL("auth.js", source), "utf8"),
+    readFile(new URL("claude-workbench.js", source), "utf8"),
   ]);
 
   assert.match(page, /manifest\.webmanifest/);
   assert.match(page, /data-workspace-shell/);
-  assert.match(page, /id="workspace-cwd"/);
+  assert.match(page, /id="directory-list"/);
+  assert.match(page, /id="select-directory"/);
   assert.match(page, /id="workspace-list"/);
   assert.match(page, /id="session-list"/);
   assert.match(page, /id="pane-root"/);
   assert.match(page, /data-layout-action="new-tab"/);
   assert.match(page, /data-layout-action="split-pane"/);
-  assert.match(page, /aria-label="Add workspace"/);
+  assert.match(page, /aria-label="Add Project"/);
   assert.match(page, /<svg viewBox="0 0 24 24"/);
   assert.match(page, /font-family: "SFMono-Regular"/);
   assert.doesNotMatch(page, />New tab<|>Split pane<|Presentation is separate/);
   assert.doesNotMatch(page, /border-radius: 999px/);
-  assert.doesNotMatch(page, /vendor\/xterm|open-claude|terminal-host/);
+  assert.match(page, /vendor\/xterm\.js/);
+  assert.match(page, /vendor\/xterm\.css/);
+  assert.match(page, /terminal-host/);
+  assert.doesNotMatch(page, /id="workspace-cwd"|type="file"|showDirectoryPicker/);
 
   assert.match(app, /const WORKBENCH_URL = "\/api\/workbench"/);
   assert.match(app, /relay-factory\/workbench\/v1/);
   assert.match(app, /relay-factory\/workbench-layouts\/v1/);
   assert.match(app, /"\/api\/workspaces"/);
+  assert.match(app, /"\/api\/directories"/);
   assert.match(app, /"\/api\/workspaces\/select"/);
   assert.match(app, /"\/api\/sessions\/resume"/);
   assert.match(app, /"\/api\/sessions\/close"/);
   assert.match(app, /renderChatTimeline/);
+  assert.match(app, /new window\.Terminal/);
+  assert.match(app, /\/node\/claude\/sessions/);
+  assert.match(app, /createTerminalInputQueue/);
   assert.match(app, /events: \[\.\.\.\(session\.events \?\? \[\]\), \{ role: "user"/);
   assert.match(app, /moveTab\(/);
   assert.match(app, /setSplitRatio\(/);
@@ -42,11 +51,13 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(app, /__Host-relay_csrf/);
   assert.match(app, /navigator\.credentials\[operation\]/);
   assert.doesNotMatch(app, /WebSocket|Authorization/);
-  assert.doesNotMatch(app, /new window\.Terminal|\/node\/claude\/sessions/);
+  assert.doesNotMatch(app, /showDirectoryPicker|webkitdirectory/);
 
   assert.match(chat, /function eventPresentation/);
   assert.match(chat, /function renderChatTimeline/);
   assert.match(auth, /recovery_required/);
+  assert.match(claude, /serializeRecentClaudeSessions/);
+  assert.doesNotMatch(claude, /events: session|output: session/);
 });
 
 test("successful malformed or empty JSON responses fail with invalid_response", async () => {

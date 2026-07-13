@@ -6,6 +6,12 @@ const PRESENTATIONS = {
   user: { label: "You", tone: "user" },
 };
 
+const REFRESHABLE_SESSION_STATUSES = new Set(["starting", "working", "degraded"]);
+
+export function sessionMayHaveMoreEvents(session) {
+  return REFRESHABLE_SESSION_STATUSES.has(session?.status);
+}
+
 export function eventPresentation(event) {
   const presentation = PRESENTATIONS[event?.role] ?? PRESENTATIONS.status;
   return {

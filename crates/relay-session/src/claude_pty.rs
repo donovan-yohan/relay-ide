@@ -477,10 +477,22 @@ impl NodePtyRuntime {
     /// Start the fixed Claude Code TUI in a real PTY. No caller-controlled
     /// command, arguments, HOME, PATH, or working directory enter this path.
     pub fn create(&mut self, owner_device_id: &str) -> Result<SessionId, ClaudePtyError> {
+        let launch_directory = self.launch_directory.clone();
+        self.create_in_directory(owner_device_id, &launch_directory)
+    }
+
+    /// Start the fixed Claude executable in a trusted node-selected directory.
+    /// This changes only CWD; executable, arguments, HOME, PATH, and auth
+    /// context remain fixed by the runtime.
+    pub fn create_in_directory(
+        &mut self,
+        owner_device_id: &str,
+        launch_directory: &Path,
+    ) -> Result<SessionId, ClaudePtyError> {
         self.finish_due_terminations();
         self.schedule_prune_finished_sessions();
         self.finish_due_terminations();
-        let result = self.try_create(owner_device_id);
+        let result = self.try_create(owner_device_id, launch_directory);
         self.finish_due_terminations();
         result
     }
@@ -489,13 +501,28 @@ impl NodePtyRuntime {
     /// automatic cleanup; callers must claim and finish those leases after
     /// releasing the hub mutex, then retry admission if capacity was freed.
     pub fn begin_create(&mut self, owner_device_id: &str) -> PtyCreate {
+        let launch_directory = self.launch_directory.clone();
+        self.begin_create_in_directory(owner_device_id, &launch_directory)
+    }
+
+    /// Begin creation in a hub-validated Workspace CWD while preserving the
+    /// exact fixed executable and node-owner environment.
+    pub fn begin_create_in_directory(
+        &mut self,
+        owner_device_id: &str,
+        launch_directory: &Path,
+    ) -> PtyCreate {
         self.schedule_prune_finished_sessions();
         PtyCreate {
-            result: self.try_create(owner_device_id),
+            result: self.try_create(owner_device_id, launch_directory),
         }
     }
 
-    fn try_create(&mut self, owner_device_id: &str) -> Result<SessionId, ClaudePtyError> {
+    fn try_create(
+        &mut self,
+        owner_device_id: &str,
+        launch_directory: &Path,
+    ) -> Result<SessionId, ClaudePtyError> {
         if self.shutdown_requested {
             return Err(ClaudePtyError::Unavailable);
         }
@@ -516,7 +543,7 @@ impl NodePtyRuntime {
         for argument in &self.arguments {
             command.arg(argument);
         }
-        command.cwd(&self.launch_directory);
+        command.cwd(launch_directory);
         command.env("HOME", self.owner.home());
         command.env("USER", "donovanyohan");
         command.env("LOGNAME", "donovanyohan");
@@ -2076,6 +2103,47 @@ mod tests {
             ]
         );
         runtime.close(session.as_str(), "device-a").unwrap();
+    }
+
+    #[test]
+    fn requested_launch_directory_changes_only_cwd_and_keeps_owner_environment() {
+        let launch_directory =
+            std::env::temp_dir().join(format!("relay-claude-requested-cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&launch_directory);
+        std::fs::create_dir_all(&launch_directory).unwrap();
+        let mut runtime = NodePtyRuntime::test_runtime(
+            "/bin/sh",
+            &[
+                "-c",
+                "printf 'PWD=%s\\nHOME=%s\\nPATH=%s\\n' \"$PWD\" \"$HOME\" \"$PATH\"; cat",
+            ],
+        );
+
+        let session = runtime
+            .create_in_directory("device-a", &launch_directory)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let output = loop {
+            let snapshot = runtime.poll(session.as_str(), "device-a", 0).unwrap();
+            let output = snapshot
+                .output
+                .iter()
+                .map(|chunk| chunk.text.as_str())
+                .collect::<String>();
+            if output.contains("PATH=") {
+                break output;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "test PTY produced no launch context"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(output.contains(&format!("PWD={}", launch_directory.display())));
+        assert!(output.contains(&format!("HOME={NODE_OWNER_HOME}")));
+        assert!(output.contains(&format!("PATH={NODE_OWNER_PATH}")));
+        runtime.close(session.as_str(), "device-a").unwrap();
+        std::fs::remove_dir_all(launch_directory).unwrap();
     }
 
     #[test]

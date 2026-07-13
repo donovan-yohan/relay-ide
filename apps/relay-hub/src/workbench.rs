@@ -19,6 +19,9 @@ const MAX_MESSAGE_LENGTH: usize = 8_192;
 const MAX_STORED_EVENTS: usize = 128;
 const MAX_STORED_SESSIONS: usize = 32;
 const MAX_STORED_SESSION_ID_LENGTH: usize = 256;
+const MAX_RECENT_CLAUDE_SESSIONS: usize = 16;
+const MAX_DIRECTORY_ENTRIES: usize = 128;
+const MAX_DIRECTORY_SCAN: usize = 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkbenchError {
@@ -39,6 +42,7 @@ impl WorkbenchError {
 enum Provider {
     Hermes,
     Codex,
+    Claude,
 }
 
 impl Provider {
@@ -54,6 +58,7 @@ impl Provider {
         match self {
             Self::Hermes => "hermes",
             Self::Codex => "codex",
+            Self::Claude => "claude",
         }
     }
 }
@@ -86,6 +91,7 @@ enum LiveSession {
         supervisor: Supervisor<ProcessTransport>,
         active_turn: Option<String>,
     },
+    Claude,
     #[cfg(test)]
     RetainedTerminalFixture,
 }
@@ -171,8 +177,79 @@ impl Workbench {
             "providers": {
                 "hermes": self.hermes_endpoint.is_some(),
                 "codex": true,
+                "claude": true,
             },
         })
+    }
+
+    /// List approved roots or one approved directory without ever returning an
+    /// entry whose canonical target escapes the configured node-local roots.
+    pub fn browse_directories(&self, body: &Value) -> Result<Value, WorkbenchError> {
+        let Some(raw_path) = body.get("path") else {
+            let directories = self
+                .approved_roots
+                .iter()
+                .take(MAX_DIRECTORY_ENTRIES)
+                .map(directory_json)
+                .collect::<Vec<_>>();
+            return Ok(json!({
+                "path": Value::Null,
+                "parent": Value::Null,
+                "directories": directories,
+            }));
+        };
+        let raw_path = raw_path
+            .as_str()
+            .filter(|path| !path.is_empty() && path.len() <= MAX_CWD_LENGTH)
+            .ok_or(WorkbenchError::new("invalid_request"))?;
+        let directory = self.approved_cwd(raw_path)?;
+        let entries =
+            fs::read_dir(&directory).map_err(|_| WorkbenchError::new("workspace_cwd_invalid"))?;
+        let mut directories = Vec::with_capacity(MAX_DIRECTORY_ENTRIES);
+        for entry in entries.take(MAX_DIRECTORY_SCAN) {
+            let Ok(entry) = entry else { continue };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() && !file_type.is_symlink() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+                continue;
+            };
+            if name.is_empty() || name.len() > MAX_NAME_LENGTH {
+                continue;
+            }
+            let Ok(path) = canonical_directory(&entry.path()) else {
+                continue;
+            };
+            if !self.is_approved_cwd(&path) {
+                continue;
+            }
+            let insertion = directories
+                .binary_search_by(|candidate: &Value| {
+                    candidate["name"].as_str().unwrap_or_default().cmp(&name)
+                })
+                .unwrap_or_else(|index| index);
+            directories.insert(insertion, json!({"name": name, "path": path}));
+            if directories.len() > MAX_DIRECTORY_ENTRIES {
+                directories.pop();
+            }
+        }
+        let parent = if self.approved_roots.iter().any(|root| root == &directory) {
+            Value::Null
+        } else {
+            directory
+                .parent()
+                .filter(|parent| self.is_approved_cwd(parent))
+                .map(|parent| json!(parent))
+                .unwrap_or(Value::Null)
+        };
+        Ok(json!({
+            "path": directory,
+            "parent": parent,
+            "directories": directories,
+        }))
     }
 
     pub fn add_workspace(&mut self, body: &Value) -> Result<Value, WorkbenchError> {
@@ -221,10 +298,82 @@ impl Workbench {
         Ok(workspace_json(workspace))
     }
 
+    /// Resolve a browser-supplied opaque Workspace id to the current trusted
+    /// canonical CWD. The raw path never enters the Claude launch request.
+    pub fn trusted_claude_workspace(
+        &mut self,
+        body: &Value,
+    ) -> Result<(String, PathBuf), WorkbenchError> {
+        let workspace = self.workspace_from_body(body)?;
+        let cwd = canonical_directory(&workspace.cwd)?;
+        if !self.is_approved_cwd(&cwd) {
+            return Err(WorkbenchError::new("workspace_cwd_not_approved"));
+        }
+        if cwd != workspace.cwd {
+            return Err(WorkbenchError::new("workspace_cwd_invalid"));
+        }
+        let workspace_id = workspace.id.clone();
+        self.prune_closed_claude_history();
+        self.ensure_provider_session_capacity()?;
+        Ok((workspace_id, cwd))
+    }
+
+    pub fn register_claude_session(
+        &mut self,
+        workspace_id: &str,
+        provider_session_id: &str,
+        status: &str,
+    ) -> Result<Value, WorkbenchError> {
+        self.ensure_provider_session_capacity()?;
+        if !valid_claude_session_id(provider_session_id) || !valid_claude_status(status) {
+            return Err(WorkbenchError::new("invalid_request"));
+        }
+        if !self
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == workspace_id)
+        {
+            return Err(WorkbenchError::new("unknown_workspace"));
+        }
+        if let Some(existing) = self.sessions.values().find(|session| {
+            session.provider == Provider::Claude
+                && session.provider_session_id == provider_session_id
+        }) {
+            return Ok(session_json(existing));
+        }
+        let session = StoredSession {
+            id: format!("claude-session-{}", self.next_session_id),
+            workspace_id: workspace_id.to_owned(),
+            provider: Provider::Claude,
+            provider_session_id: provider_session_id.to_owned(),
+            status: status.to_owned(),
+            events: VecDeque::new(),
+            next_event_sequence: 1,
+            reported_dropped: 0,
+            live: LiveSession::Claude,
+        };
+        self.next_session_id += 1;
+        let response = session_json(&session);
+        self.sessions.insert(session.id.clone(), session);
+        Ok(response)
+    }
+
+    pub fn update_claude_status(&mut self, provider_session_id: &str, status: &str) {
+        if !valid_claude_status(status) {
+            return;
+        }
+        if let Some(session) = self.sessions.values_mut().find(|session| {
+            session.provider == Provider::Claude
+                && session.provider_session_id == provider_session_id
+        }) {
+            session.status = status.to_owned();
+        }
+    }
+
     pub fn sessions_snapshot(&mut self) -> Value {
         self.pump_all();
         let mut sessions = self.sessions.values().collect::<Vec<_>>();
-        sessions.sort_by(|left, right| left.id.cmp(&right.id));
+        sessions.sort_by_key(|session| std::cmp::Reverse(stored_session_order(&session.id)));
         Value::Array(sessions.into_iter().map(session_json).collect())
     }
 
@@ -280,6 +429,7 @@ impl Workbench {
                     *active_turn = Some(turn_id);
                 })
                 .map_err(map_codex_error),
+            LiveSession::Claude => Err(WorkbenchError::new("session_terminal")),
             #[cfg(test)]
             LiveSession::RetainedTerminalFixture => Err(WorkbenchError::new("session_terminal")),
         };
@@ -316,6 +466,7 @@ impl Workbench {
                 *active_turn = None;
                 Ok(())
             }
+            LiveSession::Claude => Err(WorkbenchError::new("session_terminal")),
             #[cfg(test)]
             LiveSession::RetainedTerminalFixture => Err(WorkbenchError::new("session_terminal")),
         };
@@ -331,6 +482,13 @@ impl Workbench {
 
     pub fn close_session(&mut self, body: &Value) -> Result<Value, WorkbenchError> {
         let session_id = body_string(body, "sessionId", MAX_STORED_SESSION_ID_LENGTH)?;
+        if self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|session| session.provider == Provider::Claude)
+        {
+            return Err(WorkbenchError::new("session_terminal"));
+        }
         let mut session = self
             .sessions
             .remove(&session_id)
@@ -368,15 +526,17 @@ impl Workbench {
             return Err(WorkbenchError::new("workspace_cwd_not_absolute"));
         }
         let cwd = canonical_directory(candidate)?;
-        if self
-            .approved_roots
-            .iter()
-            .any(|approved_root| cwd.starts_with(approved_root))
-        {
+        if self.is_approved_cwd(&cwd) {
             Ok(cwd)
         } else {
             Err(WorkbenchError::new("workspace_cwd_not_approved"))
         }
+    }
+
+    fn is_approved_cwd(&self, cwd: &Path) -> bool {
+        self.approved_roots
+            .iter()
+            .any(|approved_root| cwd.starts_with(approved_root))
     }
 
     fn create_provider_session(
@@ -433,6 +593,7 @@ impl Workbench {
                     },
                 )
             }
+            Provider::Claude => return Err(WorkbenchError::new("session_terminal")),
         };
 
         let mut session = StoredSession {
@@ -470,6 +631,27 @@ impl Workbench {
 
     fn ensure_provider_session_capacity(&self) -> Result<(), WorkbenchError> {
         ensure_session_capacity(self.sessions.len())
+    }
+
+    fn prune_closed_claude_history(&mut self) {
+        while self
+            .sessions
+            .values()
+            .filter(|session| session.provider == Provider::Claude)
+            .count()
+            >= MAX_RECENT_CLAUDE_SESSIONS
+        {
+            let oldest = self
+                .sessions
+                .iter()
+                .filter(|(_, session)| {
+                    session.provider == Provider::Claude && session.status == "closed"
+                })
+                .min_by_key(|(_, session)| stored_session_order(&session.id))
+                .map(|(id, _)| id.clone());
+            let Some(oldest) = oldest else { return };
+            self.sessions.remove(&oldest);
+        }
     }
 }
 
@@ -567,6 +749,7 @@ fn pump_session(session: &mut StoredSession) {
                 *active_turn = None;
             }
         }
+        LiveSession::Claude => {}
         #[cfg(test)]
         LiveSession::RetainedTerminalFixture => {}
     }
@@ -593,6 +776,36 @@ fn workspace_json(workspace: &Workspace) -> Value {
         "name": workspace.name,
         "cwd": workspace.cwd,
     })
+}
+
+fn directory_json(path: &PathBuf) -> Value {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path.to_str().unwrap_or("/"));
+    json!({"name": name, "path": path})
+}
+
+fn valid_claude_session_id(value: &str) -> bool {
+    value.starts_with("claude-pty-")
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn valid_claude_status(value: &str) -> bool {
+    matches!(
+        value,
+        "starting" | "running" | "exited" | "closing" | "closed"
+    )
+}
+
+fn stored_session_order(id: &str) -> u64 {
+    id.rsplit_once('-')
+        .and_then(|(_, suffix)| suffix.parse().ok())
+        .unwrap_or(u64::MAX)
 }
 
 fn session_json(session: &StoredSession) -> Value {
@@ -766,6 +979,137 @@ mod tests {
             WorkbenchError::new("workspace_cwd_not_approved")
         );
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn directory_browsing_is_bounded_canonical_and_filters_symlink_escapes() {
+        let root = temp_root("browse");
+        let outside = temp_root("browse-outside");
+        fs::create_dir_all(root.join("alpha")).unwrap();
+        fs::create_dir_all(root.join("zeta")).unwrap();
+        for index in 0..MAX_DIRECTORY_ENTRIES + 8 {
+            fs::create_dir_all(root.join(format!("bounded-{index:03}"))).unwrap();
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+        let workbench = Workbench::new(vec![root.clone()], None).unwrap();
+
+        let roots = workbench.browse_directories(&json!({})).unwrap();
+        assert_eq!(roots["path"], Value::Null);
+        assert_eq!(roots["directories"].as_array().unwrap().len(), 1);
+
+        let listing = workbench
+            .browse_directories(&json!({"path": root.to_string_lossy()}))
+            .unwrap();
+        let names = listing["directories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), MAX_DIRECTORY_ENTRIES);
+        assert!(names.windows(2).all(|pair| pair[0] <= pair[1]));
+        #[cfg(unix)]
+        assert!(!names.contains(&"escape"));
+        assert_eq!(listing["parent"], Value::Null);
+
+        #[cfg(unix)]
+        assert_eq!(
+            workbench.browse_directories(&json!({
+                "path": root.join("escape").to_string_lossy()
+            })),
+            Err(WorkbenchError::new("workspace_cwd_not_approved"))
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn claude_launch_resolves_only_a_current_approved_workspace_binding() {
+        let root = temp_root("claude-launch");
+        let outside = temp_root("claude-launch-outside");
+        let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
+        let workspace = workbench
+            .add_workspace(&json!({"cwd": root.join("nested").to_string_lossy()}))
+            .unwrap();
+
+        let (workspace_id, cwd) = workbench
+            .trusted_claude_workspace(&json!({
+                "workspaceId": workspace["id"],
+                "cwd": outside.to_string_lossy(),
+                "command": "/bin/sh",
+                "HOME": "/tmp/browser-home",
+                "PATH": "/tmp/browser-bin"
+            }))
+            .unwrap();
+        assert_eq!(workspace_id, workspace["id"]);
+        assert_eq!(cwd, fs::canonicalize(root.join("nested")).unwrap());
+        assert_eq!(
+            workbench.trusted_claude_workspace(&json!({"workspaceId": "unknown"})),
+            Err(WorkbenchError::new("unknown_workspace"))
+        );
+
+        workbench.workspaces[0].cwd = outside.clone();
+        assert_eq!(
+            workbench.trusted_claude_workspace(&json!({"workspaceId": workspace["id"]})),
+            Err(WorkbenchError::new("workspace_cwd_not_approved"))
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn claude_session_metadata_is_bounded_and_terminal_control_stays_outside_workbench() {
+        let root = temp_root("claude-metadata");
+        let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
+        let workspace = workbench
+            .add_workspace(&json!({"cwd": root.to_string_lossy()}))
+            .unwrap();
+        let session = workbench
+            .register_claude_session(
+                workspace["id"].as_str().unwrap(),
+                "claude-pty-42",
+                "running",
+            )
+            .unwrap();
+
+        assert_eq!(session["provider"], "claude");
+        assert_eq!(session["providerSessionId"], "claude-pty-42");
+        assert_eq!(session["events"], json!([]));
+        assert_eq!(
+            workbench.close_session(&json!({"sessionId": session["id"]})),
+            Err(WorkbenchError::new("session_terminal"))
+        );
+        workbench.update_claude_status("claude-pty-42", "closed");
+        assert_eq!(workbench.sessions_snapshot()[0]["status"], "closed");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn closed_claude_history_is_pruned_without_evicting_live_or_chat_sessions() {
+        let root = temp_root("claude-history");
+        let mut workbench = Workbench::new(vec![root.clone()], None).unwrap();
+        let workspace = workbench
+            .add_workspace(&json!({"cwd": root.to_string_lossy()}))
+            .unwrap();
+        for index in 0..MAX_RECENT_CLAUDE_SESSIONS {
+            workbench
+                .register_claude_session(
+                    workspace["id"].as_str().unwrap(),
+                    &format!("claude-pty-{index}"),
+                    "closed",
+                )
+                .unwrap();
+        }
+
+        workbench
+            .trusted_claude_workspace(&json!({"workspaceId": workspace["id"]}))
+            .unwrap();
+        assert_eq!(workbench.sessions.len(), MAX_RECENT_CLAUDE_SESSIONS - 1);
+        assert!(!workbench.sessions.values().any(|session| {
+            session.provider == Provider::Claude && session.provider_session_id == "claude-pty-0"
+        }));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
