@@ -50,6 +50,8 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(app, /aria-label", "Resize panes"/);
   assert.match(app, /__Host-relay_csrf/);
   assert.match(app, /navigator\.credentials\[operation\]/);
+  assert.match(app, /recoverExpiredDirectoryBrowse\(error, path\)/);
+  assert.match(app, /resumeDirectoryBrowseAfterSignIn\(\)/);
   assert.doesNotMatch(app, /WebSocket|Authorization/);
   assert.doesNotMatch(app, /showDirectoryPicker|webkitdirectory/);
 

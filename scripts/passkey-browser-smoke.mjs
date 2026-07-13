@@ -275,6 +275,7 @@ try {
     /^relay-hub liveness listening on 127\.0\.0\.1:\d+\n$/,
     "the real WebAuthn enrollment, assertion, session, and revoke path must not append credential or session material to hub logs",
   );
+  await recoverExpiredProjectBrowse(sessionId, process.cwd());
 
   console.log("passkey browser matrix passed with Chromium CDP virtual authenticator");
 } finally {
@@ -379,6 +380,42 @@ async function addProjectThroughPicker(sessionId, cwd) {
     sessionId,
     "fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.selectedWorkspaceId)",
   );
+}
+
+async function recoverExpiredProjectBrowse(sessionId, cwd) {
+  await evaluate(sessionId, "document.querySelector('#show-workspace-add').click()");
+  await waitFor(
+    async () => ["session_missing", "csrf_denied"].includes(
+      await evaluate(sessionId, "document.querySelector('#workbench-error').dataset.code"),
+    ),
+    async () => evaluate(sessionId, "({ auth: document.querySelector('#auth-status').textContent, error: document.querySelector('#workbench-error').textContent, code: document.querySelector('#workbench-error').dataset.code })"),
+  );
+  const lockedState = await evaluate(
+    sessionId,
+    "({ pickerHidden: document.querySelector('#workspace-add').hidden, accessOpen: document.querySelector('.auth-compact').open, focused: document.activeElement?.id, state: document.querySelector('#session-status').dataset.state, auth: document.querySelector('#auth-status').textContent })",
+  );
+  const { auth, ...lockedUi } = lockedState;
+  assert.deepEqual(
+    lockedUi,
+    { pickerHidden: true, accessOpen: true, focused: "sign-in", state: "unknown" },
+    "expired Project browse must lock the workbench and expose focused passkey recovery",
+  );
+  assert.match(auth, /Sign in again to continue adding this Project\./);
+
+  await evaluate(sessionId, "document.querySelector('#sign-in').click()");
+  await waitFor(
+    async () => evaluate(
+      sessionId,
+      `!document.querySelector('#workspace-add').hidden && [...document.querySelectorAll('#directory-list [data-directory-path]')].some((button) => button.dataset.directoryPath === ${JSON.stringify(cwd)})`,
+    ),
+    async () => evaluate(sessionId, "({ auth: document.querySelector('#auth-status').textContent, pickerHidden: document.querySelector('#workspace-add').hidden, path: document.querySelector('#directory-path').textContent, directories: [...document.querySelectorAll('#directory-list [data-directory-path]')].map((button) => button.dataset.directoryPath), error: document.querySelector('#workbench-error').textContent })"),
+  );
+  assert.equal(
+    await evaluate(sessionId, "document.querySelector('#auth-status').textContent"),
+    "Browser access verified.",
+    "successful passkey sign-in must return to the preserved Add Project intent",
+  );
+  await evaluate(sessionId, "document.querySelector('#cancel-workspace-add').click()");
 }
 
 async function exerciseVisibleClaudeWorkbench(sessionId) {

@@ -77,6 +77,7 @@ const authStatus = document.querySelector("#auth-status");
 const recoveryCode = document.querySelector("#recovery-code");
 const enrollPasskey = document.querySelector("#enroll-passkey");
 const signIn = document.querySelector("#sign-in");
+const browserAccess = document.querySelector(".auth-compact");
 
 let workbench = { providers: { claude: false, codex: false, hermes: false }, sessions: [], workspaces: [] };
 let saved = loadSavedState();
@@ -96,6 +97,7 @@ const resumingSessionIds = new Set();
 let visibleError = "";
 let layoutResizeTimer = null;
 let directorySnapshot = null;
+let pendingDirectoryBrowse = null;
 const terminalRuntimes = new Map();
 const retainedTerminalInput = new Map();
 
@@ -866,10 +868,41 @@ async function browseDirectory(path) {
       directoryList.append(empty);
     }
   } catch (error) {
+    if (recoverExpiredDirectoryBrowse(error, path)) return;
     directorySnapshot = null;
     directoryPath.textContent = "Directory unavailable";
     showError(error);
   }
+}
+
+function recoverExpiredDirectoryBrowse(error, path) {
+  if (!["session_missing", "csrf_denied"].includes(error?.code)) return false;
+  pendingDirectoryBrowse = { path };
+  authorized = false;
+  mayHaveSession = false;
+  directorySnapshot = null;
+  workspaceAdd.hidden = true;
+  directoryPath.textContent = "Sign in to continue";
+  directoryList.replaceChildren();
+  directoryUp.disabled = true;
+  selectDirectory.disabled = true;
+  authStatus.textContent = error.code === "csrf_denied"
+    ? "Browser access expired. Sign in again to continue adding this Project."
+    : "Browser access is no longer active. Sign in again to continue adding this Project.";
+  visibleError = "Sign in with your passkey to continue adding this Project.";
+  workbenchError.dataset.code = error.code;
+  render();
+  browserAccess.open = true;
+  signIn.focus();
+  return true;
+}
+
+async function resumeDirectoryBrowseAfterSignIn() {
+  if (!pendingDirectoryBrowse) return;
+  const retry = pendingDirectoryBrowse;
+  pendingDirectoryBrowse = null;
+  workspaceAdd.hidden = false;
+  await browseDirectory(retry.path);
 }
 
 async function addWorkspace(cwd) {
@@ -1218,6 +1251,7 @@ async function signInWithPasskey() {
     mayHaveSession = true;
     authStatus.textContent = "Browser access verified.";
     await refreshWorkbench();
+    if (authorized) await resumeDirectoryBrowseAfterSignIn();
   }
 }
 
