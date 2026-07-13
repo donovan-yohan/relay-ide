@@ -56,12 +56,57 @@ export function credentialToJson(credential) {
   };
 }
 
+export function passkeyCapability(environment) {
+  if (!environment.isSecureContext) {
+    return {
+      supported: false,
+      code: "insecure_context",
+      message: "Passkeys require Relay's exact HTTPS address. Reopen this page using the secure URL shown below.",
+    };
+  }
+  if (
+    !environment.PublicKeyCredential
+    || !environment.navigator?.credentials?.create
+    || !environment.navigator?.credentials?.get
+  ) {
+    return {
+      supported: false,
+      code: "passkey_browser_unsupported",
+      message: "This browser context cannot use passkeys. Open the secure Relay URL in Safari or Chrome outside Discord or another in-app browser.",
+    };
+  }
+  return {
+    supported: true,
+    code: "passkey_ready",
+    message: "Sign in with an enrolled passkey to open this workbench.",
+  };
+}
+
 export function isPasskeySupported(environment) {
-  return Boolean(environment.isSecureContext && environment.navigator?.credentials?.create && environment.navigator?.credentials?.get);
+  return passkeyCapability(environment).supported;
+}
+
+function authErrorCode(error) {
+  if (error?.code) return error.code;
+  switch (error?.name) {
+    case "NotAllowedError":
+    case "AbortError":
+      return "passkey_denied";
+    case "SecurityError":
+      return "passkey_security_error";
+    case "NotSupportedError":
+      return "passkey_browser_unsupported";
+    case "ConstraintError":
+    case "InvalidStateError":
+    case "UnknownError":
+      return "authenticator_unavailable";
+    default:
+      return "passkey_failed";
+  }
 }
 
 export function presentationForAuthError(error) {
-  const code = error?.code ?? (error?.name === "NotAllowedError" ? "passkey_denied" : "unsupported");
+  const code = authErrorCode(error);
   switch (code) {
     case "passkey_denied":
       return {
@@ -74,19 +119,35 @@ export function presentationForAuthError(error) {
         message: "No enrolled passkey is available. Recovery can enroll a replacement passkey but cannot sign you in.",
       };
     case "origin_mismatch":
+    case "passkey_security_error":
       return {
         code,
-        message: "This page is not at Relay's configured secure origin, so passkey requests are blocked.",
+        message: "Relay could not verify this page as its configured secure origin. Open the exact HTTPS Relay URL in Safari or Chrome.",
       };
     case "recovery_denied":
       return {
         code,
         message: "That recovery code is invalid for this Relay deployment. Obtain the current code privately, then try again. No PIN or anonymous session was enabled.",
       };
+    case "insecure_context":
+      return {
+        code,
+        message: "Passkeys require Relay's exact HTTPS address. Reopen this page using the secure URL shown below.",
+      };
+    case "passkey_browser_unsupported":
+      return {
+        code,
+        message: "This browser context cannot use passkeys. Open the secure Relay URL in Safari or Chrome outside Discord or another in-app browser.",
+      };
+    case "authenticator_unavailable":
+      return {
+        code,
+        message: "No compatible device passkey authenticator was available. Enable device screen lock and passkey sync, then retry in Safari or Chrome.",
+      };
     default:
       return {
-        code: "unsupported",
-        message: "This browser or origin cannot run a secure passkey ceremony.",
+        code: "passkey_failed",
+        message: "Passkey setup failed in this browser. Copy the secure Relay URL below, open it in Safari or Chrome, and retry.",
       };
   }
 }

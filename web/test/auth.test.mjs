@@ -5,6 +5,7 @@ import {
   credentialToJson,
   decodePublicKeyOptions,
   isPasskeySupported,
+  passkeyCapability,
   presentationForAuthError,
 } from "../src/auth.js";
 
@@ -50,12 +51,38 @@ test("serializes a credential response without retaining browser secrets", () =>
   });
 });
 
-test("classifies unsupported, denied, and recovery flows without PIN fallback", () => {
-  assert.equal(isPasskeySupported({ isSecureContext: false, navigator: {} }), false);
-  assert.equal(isPasskeySupported({ isSecureContext: true, navigator: { credentials: {} } }), false);
+test("classifies browser capability, ceremony failures, and recovery without auth downgrade", () => {
+  const supported = {
+    isSecureContext: true,
+    PublicKeyCredential: class PublicKeyCredential {},
+    navigator: { credentials: { create() {}, get() {} } },
+  };
+  assert.equal(isPasskeySupported(supported), true);
+  assert.deepEqual(passkeyCapability({ isSecureContext: false, navigator: {} }), {
+    supported: false,
+    code: "insecure_context",
+    message: "Passkeys require Relay's exact HTTPS address. Reopen this page using the secure URL shown below.",
+  });
+  assert.deepEqual(passkeyCapability({ isSecureContext: true, navigator: { credentials: {} } }), {
+    supported: false,
+    code: "passkey_browser_unsupported",
+    message: "This browser context cannot use passkeys. Open the secure Relay URL in Safari or Chrome outside Discord or another in-app browser.",
+  });
   assert.deepEqual(presentationForAuthError({ name: "NotAllowedError" }), {
     code: "passkey_denied",
     message: "The passkey ceremony was cancelled or denied. No weaker sign-in method was used.",
+  });
+  assert.deepEqual(presentationForAuthError({ name: "NotSupportedError" }), {
+    code: "passkey_browser_unsupported",
+    message: "This browser context cannot use passkeys. Open the secure Relay URL in Safari or Chrome outside Discord or another in-app browser.",
+  });
+  assert.deepEqual(presentationForAuthError({ name: "SecurityError" }), {
+    code: "passkey_security_error",
+    message: "Relay could not verify this page as its configured secure origin. Open the exact HTTPS Relay URL in Safari or Chrome.",
+  });
+  assert.deepEqual(presentationForAuthError({ name: "InvalidStateError" }), {
+    code: "authenticator_unavailable",
+    message: "No compatible device passkey authenticator was available. Enable device screen lock and passkey sync, then retry in Safari or Chrome.",
   });
   assert.deepEqual(presentationForAuthError({ code: "recovery_required" }), {
     code: "recovery_required",
