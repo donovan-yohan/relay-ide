@@ -861,10 +861,9 @@ async function exerciseVisibleClaudeWorkbench(sessionId) {
   );
   const actions = await evaluate(sessionId, "window.relayClaudeRequests");
   assert.ok(actions.some((action) => action.path.endsWith("/resize")), "visible xterm must resize the shared PTY from its pane bounds");
-  assert.ok(actions.some((action) => action.path.endsWith("/input")), "visible xterm input must use the shared PTY API");
-  const beforeRefreshOutput = await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-rows').textContent");
-  const beforeRefreshEchoes = beforeRefreshOutput.split("browser-ui").length - 1;
-  assert.ok(beforeRefreshEchoes >= 1, "visible xterm must render real fixture output before refresh");
+  const inputAction = actions.find((action) => action.path.endsWith("/input"));
+  assert.ok(inputAction, "visible xterm input must use the shared PTY API");
+  const terminalSessionPath = inputAction.path.slice(0, -"/input".length);
   await evaluate(sessionId, "document.querySelector('#interrupt-session').click()");
   await waitFor(
     async () => (await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent"))?.includes("exited"),
@@ -874,14 +873,32 @@ async function exerciseVisibleClaudeWorkbench(sessionId) {
     (await evaluate(sessionId, "window.relayClaudeRequests")).some((action) => action.path.endsWith("/interrupt")),
     "visible interrupt must target the selected Claude Session",
   );
+  const authoritativeOutput = await drainTerminalOutput(sessionId, terminalSessionPath);
+  const expectedEchoes = markerCount(authoritativeOutput.text, "browser-ui");
+  assert.ok(expectedEchoes > 0, "the exited PTY snapshot must retain real fixture output before refresh");
+  await waitForVisibleTerminalMarkerCount(sessionId, {
+    authoritativeOutput,
+    expected: expectedEchoes,
+    label: "before refresh",
+    marker: "browser-ui",
+  });
 
   await browser.command("Page.reload", { ignoreCache: true }, sessionId);
   await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
-  await waitFor(async () => Boolean(await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-rows')?.textContent.includes('browser-ui')")));
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('.terminal-status')?.textContent ?? ''")).includes("exited"),
+    async () => evaluate(sessionId, "({ status: document.querySelector('.terminal-status')?.textContent, rows: document.querySelector('.terminal-host .xterm-rows')?.textContent })"),
+  );
+  await waitForVisibleTerminalMarkerCount(sessionId, {
+    authoritativeOutput,
+    expected: expectedEchoes,
+    label: "after refresh",
+    marker: "browser-ui",
+  });
   const restoredOutput = await evaluate(sessionId, "document.querySelector('.terminal-host .xterm-rows').textContent");
   assert.equal(
-    restoredOutput.split("browser-ui").length - 1,
-    beforeRefreshEchoes,
+    markerCount(restoredOutput, "browser-ui"),
+    expectedEchoes,
     "refresh restoration must not duplicate terminal output",
   );
   assert.match(
@@ -1223,6 +1240,113 @@ async function evaluate(sessionId, expression) {
   );
   if (response.exceptionDetails) throw new Error(response.exceptionDetails.text);
   return response.result.value;
+}
+
+async function drainTerminalOutput(sessionId, terminalSessionPath) {
+  return evaluate(
+    sessionId,
+    `(async () => {
+      let cursor = 0;
+      let pages = 0;
+      let status = "unknown";
+      let text = "";
+      while (pages < 128) {
+        const response = await fetch(${JSON.stringify(terminalSessionPath)} + "?cursor=" + cursor, { credentials: "same-origin" });
+        if (!response.ok) throw new Error("terminal snapshot failed with HTTP " + response.status);
+        const snapshot = await response.json();
+        if (snapshot.truncated) throw new Error("terminal snapshot was truncated before authoritative comparison");
+        for (const chunk of snapshot.output) {
+          if (chunk.sequence > cursor) text += chunk.text;
+        }
+        const previousCursor = cursor;
+        cursor = snapshot.nextCursor;
+        status = snapshot.status;
+        pages += 1;
+        if (!snapshot.hasMore) return { cursor, pages, status, text };
+        if (cursor <= previousCursor) throw new Error("terminal snapshot pagination did not advance");
+      }
+      throw new Error("terminal snapshot pagination exceeded 128 pages");
+    })()`,
+  );
+}
+
+function markerCount(text, marker) {
+  return text.split(marker).length - 1;
+}
+
+async function waitForVisibleTerminalMarkerCount(sessionId, {
+  authoritativeOutput,
+  expected,
+  label,
+  marker,
+}) {
+  let latest;
+  await waitFor(
+    async () => {
+      latest = await terminalMarkerRenderState(sessionId, marker, expected);
+      if (latest.count > expected) {
+        throw new Error(`${label}: visible terminal output exceeded the authoritative marker count: ${JSON.stringify({
+          authoritativeOutput,
+          expected,
+          visible: latest,
+        })}`);
+      }
+      return latest.ready;
+    },
+    async () => ({ authoritativeOutput, expected, label, visible: latest }),
+  );
+}
+
+async function terminalMarkerRenderState(sessionId, marker, expected) {
+  return evaluate(
+    sessionId,
+    `(async () => {
+      const marker = ${JSON.stringify(marker)};
+      const expected = ${JSON.stringify(expected)};
+      const rows = document.querySelector(".terminal-host .xterm-rows");
+      const status = () => document.querySelector(".terminal-status")?.textContent ?? "";
+      const count = () => (rows?.textContent ?? "").split(marker).length - 1;
+      if (!rows || count() !== expected) {
+        return { count: count(), frames: 0, mutations: 0, ready: false, rows: rows?.textContent ?? "", status: status() };
+      }
+
+      let frames = 0;
+      let mutationVersion = 0;
+      let observedMutationVersion = 0;
+      let quietFrames = 0;
+      const observer = new MutationObserver(() => { mutationVersion += 1; });
+      observer.observe(rows, { characterData: true, childList: true, subtree: true });
+      return new Promise((resolve_) => {
+        const finish = (ready) => {
+          observer.disconnect();
+          resolve_({ count: count(), frames, mutations: mutationVersion, ready, rows: rows.textContent ?? "", status: status() });
+        };
+        const inspectFrame = () => {
+          frames += 1;
+          const visibleCount = count();
+          if (visibleCount > expected || visibleCount < expected) {
+            finish(false);
+            return;
+          }
+          if (mutationVersion === observedMutationVersion) quietFrames += 1;
+          else {
+            observedMutationVersion = mutationVersion;
+            quietFrames = 0;
+          }
+          if (quietFrames >= 3) {
+            finish(true);
+            return;
+          }
+          if (frames >= 12) {
+            finish(false);
+            return;
+          }
+          requestAnimationFrame(inspectFrame);
+        };
+        requestAnimationFrame(inspectFrame);
+      });
+    })()`,
+  );
 }
 
 async function workbenchLayoutGeometry(sessionId) {
