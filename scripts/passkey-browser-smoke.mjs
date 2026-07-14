@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, resolve, sep } from "node:path";
 
@@ -12,6 +12,7 @@ import {
   devToolsEndpointFromActivePort,
   devToolsEndpointFromOutput,
 } from "./cdp-endpoint.mjs";
+import { removeTreeWithRetry } from "./remove-tree-retry.mjs";
 
 
 const chromium = "/usr/bin/chromium";
@@ -29,6 +30,8 @@ let hub;
 let proxy;
 let chromiumProcess;
 let browser;
+let matrixError;
+let cleanupError;
 
 class Cdp {
   static async connect(url) {
@@ -64,8 +67,16 @@ class Cdp {
     return new Promise((resolve_, reject) => this.pending.set(id, { resolve: resolve_, reject }));
   }
 
-  close() {
-    this.socket.close();
+  async close() {
+    if (this.socket.readyState === WebSocket.CLOSED) return;
+    await new Promise((resolve_) => {
+      const timeout = setTimeout(resolve_, 1_000);
+      this.socket.addEventListener("close", () => {
+        clearTimeout(timeout);
+        resolve_();
+      }, { once: true });
+      this.socket.close();
+    });
   }
 }
 
@@ -105,14 +116,14 @@ try {
   assert.deepEqual(
     await evaluate(
       sessionId,
-      "({ title: document.querySelector('#auth-onboarding-title')?.textContent, setup: document.querySelector('#auth-onboarding-enroll')?.textContent, signIn: document.querySelector('#auth-onboarding-sign-in')?.textContent, recoveryType: document.querySelector('#auth-onboarding-recovery')?.type, composerHidden: document.querySelector('.composer').hidden, onboardingFits: document.querySelector('#pane-root').scrollHeight <= document.querySelector('#pane-root').clientHeight })",
+      "({ title: document.querySelector('#auth-onboarding-title')?.textContent, setup: document.querySelector('#auth-onboarding-enroll')?.textContent, signIn: document.querySelector('#auth-onboarding-sign-in')?.textContent, recoveryType: document.querySelector('#auth-onboarding-recovery')?.type, composerCount: document.querySelectorAll('[data-chat-composer]').length, onboardingFits: document.querySelector('#pane-root').scrollHeight <= document.querySelector('#pane-root').clientHeight })",
     ),
     {
       title: "Set up Relay owner",
       setup: "Set up Relay owner",
       signIn: "Sign in with passkey",
       recoveryType: "password",
-      composerHidden: true,
+      composerCount: 0,
       onboardingFits: true,
     },
     "an unclaimed Relay must get code-free owner setup and explicit sign-in controls",
@@ -168,7 +179,15 @@ try {
 
   await evaluate(sessionId, "document.querySelector('#auth-onboarding-sign-in').click()");
   await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Browser access verified"));
-  assert.equal(await evaluate(sessionId, "document.querySelector('.composer').hidden"), false, "authenticated workbench must restore the Session composer");
+  await waitFor(
+    async () => evaluate(sessionId, "!document.querySelector('#auth-onboarding') && Boolean(document.querySelector('.session-launcher'))"),
+    "the authenticated workbench shell",
+  );
+  assert.deepEqual(
+    await evaluate(sessionId, "({ onboardingPresent: Boolean(document.querySelector('#auth-onboarding')), launcherPresent: Boolean(document.querySelector('.session-launcher')), composerCount: document.querySelectorAll('[data-chat-composer]').length })"),
+    { onboardingPresent: false, launcherPresent: true, composerCount: 0 },
+    "authenticated workbench must expose Session launch controls without a universal composer",
+  );
   await browser.command("Log.enable", {}, sessionId);
   assert.equal(
     await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
@@ -202,8 +221,8 @@ try {
   await browser.command("Page.reload", { ignoreCache: true }, sessionId);
   await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
   await waitFor(
-    async () => await evaluate(sessionId, "typeof window.Terminal === 'function' && !document.querySelector('.composer').hidden"),
-    async () => evaluate(sessionId, "({ terminal: typeof window.Terminal, composerHidden: document.querySelector('.composer').hidden, auth: document.querySelector('#auth-status').textContent })"),
+    async () => await evaluate(sessionId, "typeof window.Terminal === 'function' && !document.querySelector('#auth-onboarding')"),
+    async () => evaluate(sessionId, "({ terminal: typeof window.Terminal, onboardingPresent: Boolean(document.querySelector('#auth-onboarding')), composerCount: document.querySelectorAll('[data-chat-composer]').length, auth: document.querySelector('#auth-status').textContent })"),
   );
 
   const workspaceId = await addProjectThroughPicker(sessionId, process.cwd());
@@ -288,13 +307,18 @@ try {
 
   if (process.env.RELAY_WORKBENCH_LIVE === "1") {
     const liveEventOffset = browser.events.length;
-    await exerciseLiveWorkbench(sessionId);
+    const liveEvidence = await exerciseLiveWorkbench(sessionId, {
+      expectedWorkspaceCount: 2,
+      workspaceCwd: process.cwd(),
+      workspaceId,
+    });
     const pageErrors = browser.events.slice(liveEventOffset).filter((event) => (
       event.method === "Runtime.exceptionThrown"
       || (event.method === "Runtime.consoleAPICalled" && event.params.type === "error")
       || (event.method === "Log.entryAdded" && event.params.entry.level === "error")
     ));
     assert.deepEqual(pageErrors, [], "the live workbench path must not emit page or console errors");
+    console.log(`live Codex workbench evidence: ${JSON.stringify({ ...liveEvidence, pageErrors: pageErrors.length })}`);
   }
 
   await exerciseCrossBrowserTerminal(secondSessionId, sessionId, workspaceId, "browser-a-operated");
@@ -436,20 +460,62 @@ try {
     "non-private exposure must deny first-owner options without a fallback",
   );
   console.log("passkey browser matrix passed with Chromium CDP virtual authenticator");
+} catch (error) {
+  matrixError = error;
 } finally {
-  browser?.close();
-  proxy?.close();
-  const exits = [];
-  if (hub?.exitCode === null) {
-    exits.push(once(hub, "exit"));
-    hub.kill("SIGTERM");
+  const cleanupFailures = [];
+  for (const cleanup of [
+    () => browser?.close(),
+    () => stopChildProcess(chromiumProcess, "Chromium"),
+    () => Promise.all([stopChildProcess(hub, "Relay hub"), closeServer(proxy)]),
+    () => removeTreeWithRetry(scratch),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
   }
-  if (chromiumProcess?.exitCode === null) {
-    exits.push(once(chromiumProcess, "exit"));
-    chromiumProcess.kill("SIGTERM");
-  }
-  await Promise.all(exits);
-  await rm(scratch, { recursive: true, force: true });
+  if (cleanupFailures.length === 1) cleanupError = cleanupFailures[0];
+  else if (cleanupFailures.length > 1) cleanupError = new AggregateError(cleanupFailures, "Browser matrix cleanup failed");
+}
+
+if (matrixError) {
+  if (cleanupError) console.error(`browser matrix cleanup also failed: ${cleanupError.stack ?? cleanupError}`);
+  throw matrixError;
+}
+if (cleanupError) throw cleanupError;
+
+async function stopChildProcess(process_, label) {
+  if (!process_ || process_.exitCode !== null || process_.signalCode !== null) return;
+  const gracefulExit = waitForChildExit(process_, 2_000);
+  process_.kill("SIGTERM");
+  if (await gracefulExit) return;
+  const forcedExit = waitForChildExit(process_, 2_000);
+  process_.kill("SIGKILL");
+  if (await forcedExit) return;
+  throw new Error(`${label} did not exit after SIGTERM and SIGKILL`);
+}
+
+function waitForChildExit(process_, timeoutMs) {
+  if (process_.exitCode !== null || process_.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve_) => {
+    const onExit = () => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    const finish = (exited) => {
+      clearTimeout(timeout);
+      process_.removeListener("exit", onExit);
+      resolve_(exited);
+    };
+    process_.once("exit", onExit);
+  });
+}
+
+function closeServer(server) {
+  if (!server?.listening) return Promise.resolve();
+  return new Promise((resolve_, reject) => {
+    server.close((error) => error ? reject(error) : resolve_());
+  });
 }
 
 function startHub(port = 0, exposure = "private") {
@@ -701,12 +767,12 @@ async function recoverExpiredProjectBrowse(sessionId, cwd) {
   );
   const lockedState = await evaluate(
     sessionId,
-    "({ pickerHidden: document.querySelector('#workspace-add').hidden, accessOpen: document.querySelector('.auth-compact').open, onboardingTitle: document.querySelector('#auth-onboarding-title')?.textContent, composerHidden: document.querySelector('.composer').hidden, focused: document.activeElement?.id, state: document.querySelector('#session-status').dataset.state, auth: document.querySelector('#auth-status').textContent })",
+    "({ pickerHidden: document.querySelector('#workspace-add').hidden, accessOpen: document.querySelector('.auth-compact').open, onboardingTitle: document.querySelector('#auth-onboarding-title')?.textContent, composerCount: document.querySelectorAll('[data-chat-composer]').length, focused: document.activeElement?.id, state: document.querySelector('#session-status').dataset.state, auth: document.querySelector('#auth-status').textContent })",
   );
   const { auth, ...lockedUi } = lockedState;
   assert.deepEqual(
     lockedUi,
-    { pickerHidden: true, accessOpen: true, onboardingTitle: "Sign in to continue adding this Project", composerHidden: true, focused: "auth-onboarding-sign-in", state: "unknown" },
+    { pickerHidden: true, accessOpen: true, onboardingTitle: "Sign in to continue adding this Project", composerCount: 0, focused: "auth-onboarding-sign-in", state: "unknown" },
     "expired Project browse must lock the workbench and expose focused passkey recovery",
   );
   assert.match(auth, /Sign in again to continue adding this Project\./);
@@ -798,12 +864,38 @@ async function exerciseVisibleClaudeWorkbench(sessionId) {
   );
 }
 
-async function exerciseLiveWorkbench(sessionId) {
-  await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#workspace-list button').length")) === 1);
+async function exerciseLiveWorkbench(sessionId, { expectedWorkspaceCount, workspaceCwd, workspaceId }) {
+  await waitFor(
+    async () => evaluate(
+      sessionId,
+      `document.querySelectorAll('#workspace-list button').length >= ${expectedWorkspaceCount} && [...document.querySelectorAll('#workspace-list button')].some((button) => button.querySelector('.sidebar-item__meta')?.textContent === ${JSON.stringify(workspaceCwd)})`,
+    ),
+    `the original Project among ${expectedWorkspaceCount} catalog entries`,
+  );
+  await evaluate(
+    sessionId,
+    `[...document.querySelectorAll('#workspace-list button')].find((button) => button.querySelector('.sidebar-item__meta')?.textContent === ${JSON.stringify(workspaceCwd)}).click()`,
+  );
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('#workspace-list [aria-current=\"page\"] .sidebar-item__meta')?.textContent")) === workspaceCwd,
+    "the original Project selection",
+  );
+  assert.equal(
+    await evaluate(
+      sessionId,
+      `fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.workspaces.find((workspace) => workspace.cwd === ${JSON.stringify(workspaceCwd)})?.id)`,
+    ),
+    workspaceId,
+    "live Codex QA must target the intended original Project",
+  );
   assert.equal(
     await evaluate(sessionId, "document.querySelector('[data-provider=\"hermes\"]').disabled"),
     true,
     "an unavailable Hermes adapter must remain visibly unavailable instead of presenting a fake conversation",
+  );
+  const previousSessionIds = await evaluate(
+    sessionId,
+    "fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.sessions.map((session) => session.id))",
   );
   const previousSessionCount = await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length");
   await evaluate(sessionId, "document.querySelector('[data-provider=\"codex\"]').click()");
@@ -811,26 +903,32 @@ async function exerciseLiveWorkbench(sessionId) {
     async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) >= previousSessionCount + 1,
     async () => evaluate(sessionId, "({ error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, state: document.querySelector('#session-status').dataset.state })"),
   );
+  const liveSessionId = await evaluate(
+    sessionId,
+    `fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.sessions.find((session) => session.provider === 'codex' && session.workspaceId === ${JSON.stringify(workspaceId)} && !${JSON.stringify(previousSessionIds)}.includes(session.id))?.id)`,
+  );
+  assert.ok(liveSessionId, "live Codex QA must identify the newly created Session in the intended Project");
   const composerState = await evaluate(
     sessionId,
-    "({ inputDisabled: document.querySelector('#message-input').disabled, sendDisabled: document.querySelector('#send-message').disabled, sendType: document.querySelector('#send-message').type, formId: document.querySelector('#send-message').form?.id })",
+    "(() => { const form = document.querySelector('[data-chat-composer]'); const input = form?.querySelector('textarea'); const send = form?.querySelector('[type=submit]'); return { composerCount: document.querySelectorAll('[data-chat-composer]').length, inputDisabled: input?.disabled, sendDisabled: send?.disabled, sendType: send?.type, sameForm: input?.form === send?.form }; })()",
   );
-  assert.deepEqual(composerState, { inputDisabled: false, sendDisabled: false, sendType: "submit", formId: "composer" });
+  assert.deepEqual(composerState, { composerCount: 1, inputDisabled: false, sendDisabled: true, sendType: "submit", sameForm: true });
   await evaluate(
     sessionId,
-    `window.relaySubmitObserved = false; document.querySelector("#composer").addEventListener("submit", () => { window.relaySubmitObserved = true; }, { once: true }); document.querySelector("#message-input").value = "Reply with one word: relay"; document.querySelector("#send-message").click();`,
+    `(() => { const form = document.querySelector("[data-chat-composer]"); const input = form.querySelector("textarea"); const send = form.querySelector("[type=submit]"); window.relaySubmitObserved = false; form.addEventListener("submit", () => { window.relaySubmitObserved = true; }, { once: true }); input.value = "Reply with one word: relay"; input.dispatchEvent(new Event("input", { bubbles: true })); send.click(); })()`,
   );
-  assert.equal(await evaluate(sessionId, "window.relaySubmitObserved"), true, "Send must submit the shared composer");
+  assert.equal(await evaluate(sessionId, "window.relaySubmitObserved"), true, "Send must submit the active chat tab composer");
   await waitFor(
     async () => (await evaluate(sessionId, "document.querySelectorAll('.chat-event--user').length")) === 1,
     async () => ({
-      dom: await evaluate(sessionId, "({ disabled: document.querySelector('#message-input').disabled, error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, timeline: document.querySelector('.chat-timeline')?.innerText, state: document.querySelector('#session-status').dataset.state })"),
+      dom: await evaluate(sessionId, "({ disabled: document.querySelector('[data-chat-composer] textarea')?.disabled, error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, timeline: document.querySelector('.chat-timeline')?.innerText, state: document.querySelector('#session-status').dataset.state })"),
       runtimeEvents: browser.events.filter((event) => event.method === "Runtime.exceptionThrown"),
     }),
   );
   await waitFor(
-    async () => evaluate(sessionId, "[...document.querySelectorAll('.chat-event code')].some((label) => label.textContent === 'turn.started')"),
-    async () => evaluate(sessionId, "({ error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, state: document.querySelector('#session-status').dataset.state, timeline: document.querySelector('.chat-timeline')?.innerText })"),
+    async () => evaluate(sessionId, `fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.sessions.find((session) => session.id === ${JSON.stringify(liveSessionId)})?.events?.some((event) => event.role === 'assistant' && event.kind === 'message' && event.label === 'assistant.message' && event.text.toLowerCase().includes('relay')))`),
+    async () => evaluate(sessionId, `fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => { const session = snapshot.sessions.find((candidate) => candidate.id === ${JSON.stringify(liveSessionId)}); return { status: session?.status, events: session?.events?.map((event) => ({ role: event.role, kind: event.kind, label: event.label, text: event.text })) }; })`),
+    45_000,
   );
   const previousTabCount = await evaluate(sessionId, "document.querySelectorAll('.session-tab').length");
   await evaluate(sessionId, "document.querySelector('[data-layout-action=\"new-tab\"]').click()");
@@ -872,10 +970,6 @@ async function exerciseLiveWorkbench(sessionId) {
     "(() => { const split = document.querySelector('.workspace-split'); return { innerWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth, shellWidth: document.querySelector('.workbench-shell').getBoundingClientRect().width, splitWidth: split.getBoundingClientRect().width, mainWidth: document.querySelector('.main-panel').getBoundingClientRect().width, paneRootWidth: document.querySelector('.pane-root').getBoundingClientRect().width, columns: getComputedStyle(split).gridTemplateColumns, inlineColumns: split.style.gridTemplateColumns, paneWidths: [...document.querySelectorAll('.workbench-pane')].map((pane) => pane.getBoundingClientRect().width), tabScrollWidths: [...document.querySelectorAll('.tab-strip')].map((tabs) => tabs.scrollWidth) }; })()",
   );
   assert.equal(viewport.scrollWidth > viewport.innerWidth, false, `split workbench overflow: ${JSON.stringify(viewport)}`);
-  if (process.env.RELAY_WORKBENCH_SCREENSHOT_PATH) {
-    const screenshot = await browser.command("Page.captureScreenshot", { format: "png" }, sessionId);
-    await writeFile(process.env.RELAY_WORKBENCH_SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
-  }
   await browser.command("Page.reload", { ignoreCache: true }, sessionId);
   await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
   await waitFor(async () => (await evaluate(sessionId, "document.querySelectorAll('#session-list .sidebar-item').length")) >= 1);
@@ -886,10 +980,51 @@ async function exerciseLiveWorkbench(sessionId) {
     sessionId,
     "({ workspaceCount: document.querySelectorAll('#workspace-list button').length, userEvents: document.querySelectorAll('.chat-event--user').length, panes: document.querySelectorAll('.workbench-pane').length, sessionState: document.querySelector('#session-status').dataset.state })",
   );
-  assert.equal(restored.workspaceCount, 1, "browser refresh must restore the selected CWD Workspace");
+  assert.equal(restored.workspaceCount, expectedWorkspaceCount, "browser refresh must retain the complete Project catalog");
   assert.ok(restored.userEvents >= 1, "submitted user text must remain in the restored shared timeline");
   assert.equal(restored.panes, 2, "browser refresh must restore the direct-manipulation layout");
   assert.notEqual(restored.sessionState, "unknown", "restored session must report an honest provider state");
+  const evidence = await evaluate(
+    sessionId,
+    `fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => { const session = snapshot.sessions.find((candidate) => candidate.id === ${JSON.stringify(liveSessionId)}); return { workspaceId: session?.workspaceId, sessionId: session?.id, status: session?.status, eventLabels: session?.events?.map((event) => event.label), assistantMessages: session?.events?.filter((event) => event.role === 'assistant' && event.kind === 'message').map((event) => event.text) }; })`,
+  );
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const paneCount = await evaluate(sessionId, "document.querySelectorAll('.workbench-pane').length");
+    if (paneCount <= 1) break;
+    await evaluate(sessionId, "document.querySelector('[data-layout-action=\"close-pane\"]').click()");
+  }
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelectorAll('.workbench-pane').length")) === 1,
+    "live QA presentation cleanup to one pane",
+  );
+  await waitFor(
+    async () => (await evaluate(sessionId, "document.querySelector('#session-status').dataset.state")) === "idle",
+    "the completed live Codex Session to render idle",
+  );
+  const presentation = await evaluate(
+    sessionId,
+    `(() => { const pane = document.querySelector('.workbench-pane'); const body = pane?.querySelector('.pane-body--chat'); return { paneCount: document.querySelectorAll('.workbench-pane').length, terminalSurfaceCount: document.querySelectorAll('.terminal-surface').length, composerCount: document.querySelectorAll('[data-chat-composer]').length, composerInsideChatPane: Boolean(pane?.matches('.workbench-pane--chat') && pane.querySelector(':scope > [data-chat-composer]')), userMessages: document.querySelectorAll('.chat-event--user').length, assistantMessages: [...document.querySelectorAll('.chat-event--assistant p')].map((message) => message.textContent), genericEvents: document.querySelectorAll('.chat-event--error, .chat-event--tool, .chat-event--status').length, nearBottom: body ? body.scrollHeight - body.clientHeight - body.scrollTop <= 80 : false, state: document.querySelector('#session-status').dataset.state }; })()`,
+  );
+  assert.deepEqual(
+    presentation,
+    {
+      paneCount: 1,
+      terminalSurfaceCount: 0,
+      composerCount: 1,
+      composerInsideChatPane: true,
+      userMessages: 1,
+      assistantMessages: ["relay"],
+      genericEvents: 0,
+      nearBottom: true,
+      state: "idle",
+    },
+    "the final live chat view must be normalized, current, quiet, and composer-owned",
+  );
+  if (process.env.RELAY_WORKBENCH_SCREENSHOT_PATH) {
+    const screenshot = await browser.command("Page.captureScreenshot", { format: "png" }, sessionId);
+    await writeFile(process.env.RELAY_WORKBENCH_SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
+  }
+  return { ...evidence, presentation };
 }
 
 async function createCertificate() {

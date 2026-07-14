@@ -120,10 +120,28 @@ pub const EVENT_LEDGER: &[LedgerEntry] = &[
         observed: false,
     },
     LedgerEntry {
+        method: "thread/status/changed",
+        kind: EventKind::Lifecycle,
+        label: "session.status",
+        observed: true,
+    },
+    LedgerEntry {
+        method: "thread/tokenUsage/updated",
+        kind: EventKind::Progress,
+        label: "session.token_usage",
+        observed: true,
+    },
+    LedgerEntry {
         method: "mcpServer/startupStatus/updated",
         kind: EventKind::Diagnostic,
         label: "mcp.startup_status",
         observed: false,
+    },
+    LedgerEntry {
+        method: "account/rateLimits/updated",
+        kind: EventKind::Progress,
+        label: "account.rate_limits",
+        observed: true,
     },
     LedgerEntry {
         method: "turn/started",
@@ -140,7 +158,7 @@ pub const EVENT_LEDGER: &[LedgerEntry] = &[
     LedgerEntry {
         method: "item/agentMessage/delta",
         kind: EventKind::Progress,
-        label: "assistant.message",
+        label: "assistant.message.delta",
         observed: false,
     },
     LedgerEntry {
@@ -327,6 +345,31 @@ mod tests {
             .find(|e| e.method == "turn/started")
             .unwrap();
         assert!(!turn.observed);
+    }
+
+    #[test]
+    fn observed_current_turn_plumbing_maps_to_neutral_events() {
+        for (method, kind, label) in [
+            (
+                "thread/status/changed",
+                EventKind::Lifecycle,
+                "session.status",
+            ),
+            (
+                "thread/tokenUsage/updated",
+                EventKind::Progress,
+                "session.token_usage",
+            ),
+            (
+                "account/rateLimits/updated",
+                EventKind::Progress,
+                "account.rate_limits",
+            ),
+        ] {
+            let frame =
+                scan_line(format!(r#"{{"method":"{method}","params":{{}}}}"#).as_bytes()).unwrap();
+            assert_eq!(map_frame(&frame), Mapped::Event { kind, label });
+        }
     }
 
     #[test]

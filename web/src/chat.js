@@ -7,13 +7,33 @@ const PRESENTATIONS = {
 };
 
 const REFRESHABLE_SESSION_STATUSES = new Set(["starting", "working", "degraded"]);
+const ROUTINE_STATUS_LABELS = new Set([
+  "gateway_ready",
+  "item.completed",
+  "item.started",
+  "mcp.startup_status",
+  "message_complete",
+  "message_delta",
+  "message_started",
+  "reasoning",
+  "remote_control.status",
+  "session.started",
+  "session.resumed",
+  "session_info",
+  "session_title",
+  "status_update",
+  "turn.completed",
+  "turn.started",
+]);
 
 export function sessionMayHaveMoreEvents(session) {
   return REFRESHABLE_SESSION_STATUSES.has(session?.status);
 }
 
 export function eventPresentation(event) {
-  const presentation = PRESENTATIONS[event?.role] ?? PRESENTATIONS.status;
+  const presentation = event?.role === "assistant" || event?.role === "user"
+    ? PRESENTATIONS[event.role]
+    : PRESENTATIONS[event?.kind] ?? PRESENTATIONS[event?.role] ?? PRESENTATIONS.status;
   return {
     tone: presentation.tone,
     roleLabel: presentation.label,
@@ -22,18 +42,45 @@ export function eventPresentation(event) {
   };
 }
 
+export function normalizeChatEvents(events) {
+  const normalized = [];
+  for (const source of Array.isArray(events) ? events : []) {
+    if (!source || typeof source !== "object" || isRoutineStatus(source)) continue;
+    const event = { ...source };
+    if (event.role === "assistant" && event.kind === "message" && typeof event.text === "string") {
+      const previous = normalized.at(-1);
+      if (previous?.role === "assistant" && previous.kind === "message") {
+        if (event.label === "assistant.message.delta" && previous.label === "assistant.message.delta") {
+          previous.text += event.text;
+          continue;
+        }
+        if (event.label === "assistant.message" && previous.label === "assistant.message.delta") {
+          previous.label = event.label;
+          previous.text = event.text;
+          previous.sequence = event.sequence ?? previous.sequence;
+          continue;
+        }
+        if (event.label === previous.label && event.text === previous.text) continue;
+      }
+    }
+    normalized.push(event);
+  }
+  return normalized;
+}
+
 export function renderChatTimeline(container, session) {
   container.replaceChildren();
   if (!session) {
     container.append(emptyState("Choose a conversation or start one from this Workspace."));
     return;
   }
-  if (!Array.isArray(session.events) || session.events.length === 0) {
+  const events = normalizeChatEvents(session.events);
+  if (events.length === 0) {
     container.append(emptyState("Connected. Send the first message when you are ready."));
     return;
   }
 
-  for (const event of session.events) {
+  for (const event of events) {
     const presentation = eventPresentation(event);
     const item = document.createElement("article");
     item.className = `chat-event chat-event--${presentation.tone}`;
@@ -43,13 +90,19 @@ export function renderChatTimeline(container, session) {
     role.textContent = presentation.roleLabel;
     const kind = document.createElement("code");
     kind.textContent = presentation.eventLabel;
-    heading.append(role, kind);
+    heading.append(role);
+    if (!["assistant", "user"].includes(presentation.tone)) heading.append(kind);
     const text = document.createElement("p");
     text.textContent = presentation.text;
     item.append(heading, text);
     container.append(item);
   }
-  container.scrollTop = container.scrollHeight;
+}
+
+function isRoutineStatus(event) {
+  if (!ROUTINE_STATUS_LABELS.has(event.label)) return false;
+  if (event.role === "assistant" || event.role === "user") return false;
+  return event.signal == null && event.kind !== "error" && event.kind !== "tool";
 }
 
 function emptyState(text) {

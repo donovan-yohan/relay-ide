@@ -576,17 +576,6 @@ impl Workbench {
             live,
         };
         self.next_session_id += 1;
-        push_session_event(
-            &mut session,
-            ChatRole::System,
-            ChatCategory::Status,
-            match resume {
-                Some(_) => "session.resumed",
-                None => "session.started",
-            },
-            "Provider session connected.",
-            None,
-        );
         pump_session(&mut session);
         Ok(session)
     }
@@ -826,9 +815,73 @@ fn push_provider_event(
     next_sequence: &mut u64,
     mut event: RichChatEvent,
 ) {
+    // Session status already carries routine lifecycle/progress state. Keeping
+    // those events in the transcript produces a wall of provider plumbing
+    // rather than useful conversation. Approval prompts, errors, and tool
+    // activity use distinct categories and remain visible.
+    if event.role == ChatRole::System
+        && event.category == ChatCategory::Status
+        && event.signal.is_none()
+        && is_routine_status_label(&event.label)
+    {
+        return;
+    }
+
+    if event.role == ChatRole::Assistant && event.category == ChatCategory::Message {
+        if event.label == "assistant.message.delta" {
+            if let Some(previous) = events.back_mut().filter(|previous| {
+                previous.role == ChatRole::Assistant
+                    && previous.category == ChatCategory::Message
+                    && previous.label == "assistant.message.delta"
+            }) {
+                previous.text =
+                    redact_and_bound_display(&format!("{}{}", previous.text, event.text));
+                return;
+            }
+        } else if event.label == "assistant.message"
+            && let Some(previous) = events.back_mut().filter(|previous| {
+                previous.role == ChatRole::Assistant
+                    && previous.category == ChatCategory::Message
+                    && previous.label == "assistant.message.delta"
+            })
+        {
+            // The completion is an authoritative cumulative snapshot, not an
+            // additional chat message. Replace the assembled deltas in place.
+            previous.label = event.label;
+            previous.text = event.text;
+            previous.signal = event.signal;
+            return;
+        }
+    }
+
     event.sequence = *next_sequence;
     *next_sequence += 1;
     push_event(events, event);
+}
+
+fn is_routine_status_label(label: &str) -> bool {
+    matches!(
+        label,
+        "gateway_ready"
+            | "account.rate_limits"
+            | "item.completed"
+            | "item.started"
+            | "mcp.startup_status"
+            | "message_complete"
+            | "message_delta"
+            | "message_started"
+            | "reasoning"
+            | "remote_control.status"
+            | "session.started"
+            | "session.resumed"
+            | "session.status"
+            | "session.token_usage"
+            | "session_info"
+            | "session_title"
+            | "status_update"
+            | "turn.completed"
+            | "turn.started"
+    )
 }
 
 fn push_pressure_if_new(
@@ -926,6 +979,239 @@ mod tests {
         assert_eq!(first["sessions"][0]["events"][0]["text"], "shared history");
         assert_eq!(first["selectedWorkspaceId"], Value::Null);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn provider_event_boundary_coalesces_deltas_and_replaces_them_with_final_snapshot() {
+        let mut events = VecDeque::new();
+        let mut next_sequence = 1;
+        for text in ["Hel", "lo", " ", "world"] {
+            push_provider_event(
+                &mut events,
+                &mut next_sequence,
+                RichChatEvent::new(
+                    0,
+                    ChatRole::Assistant,
+                    ChatCategory::Message,
+                    "assistant.message.delta",
+                    text,
+                    None,
+                ),
+            );
+        }
+        push_provider_event(
+            &mut events,
+            &mut next_sequence,
+            RichChatEvent::new(
+                0,
+                ChatRole::Assistant,
+                ChatCategory::Message,
+                "assistant.message",
+                "Hello world",
+                None,
+            ),
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].label, "assistant.message");
+        assert_eq!(events[0].text, "Hello world");
+        assert_eq!(next_sequence, 2);
+
+        let mut completion_only = VecDeque::new();
+        let mut completion_sequence = 1;
+        push_provider_event(
+            &mut completion_only,
+            &mut completion_sequence,
+            RichChatEvent::new(
+                0,
+                ChatRole::Assistant,
+                ChatCategory::Message,
+                "assistant.message",
+                "A non-streamed answer",
+                None,
+            ),
+        );
+        assert_eq!(completion_only.len(), 1);
+        assert_eq!(completion_only[0].text, "A non-streamed answer");
+    }
+
+    #[test]
+    fn shared_provider_event_boundary_re_redacts_secrets_split_across_deltas() {
+        for (chunks, expected) in [
+            (["Bear", "er private-token"], "Bearer [redacted]"),
+            (["sk", "-private-token"], "sk-[redacted]"),
+        ] {
+            let mut events = VecDeque::new();
+            let mut next_sequence = 1;
+            for chunk in chunks {
+                push_provider_event(
+                    &mut events,
+                    &mut next_sequence,
+                    RichChatEvent::new(
+                        0,
+                        ChatRole::Assistant,
+                        ChatCategory::Message,
+                        "assistant.message.delta",
+                        redact_and_bound_display(chunk),
+                        None,
+                    ),
+                );
+            }
+
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].text, expected);
+            assert!(!events[0].text.contains("private-token"));
+        }
+    }
+
+    #[test]
+    fn repeated_delta_redaction_keeps_existing_marker_stable() {
+        let mut events = VecDeque::new();
+        let mut next_sequence = 1;
+        for (chunk, expected) in [
+            ("sk-SECRET", "sk-[redacted]"),
+            (" after", "sk-[redacted] after"),
+            (" more", "sk-[redacted] after more"),
+        ] {
+            push_provider_event(
+                &mut events,
+                &mut next_sequence,
+                RichChatEvent::new(
+                    0,
+                    ChatRole::Assistant,
+                    ChatCategory::Message,
+                    "assistant.message.delta",
+                    redact_and_bound_display(chunk),
+                    None,
+                ),
+            );
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].text, expected);
+            assert!(!events[0].text.contains("…[truncated]"));
+        }
+        assert_eq!(next_sequence, 2);
+    }
+
+    #[test]
+    fn provider_event_boundary_drops_routine_status_but_keeps_actionable_activity() {
+        let mut events = VecDeque::new();
+        let mut next_sequence = 1;
+        for label in [
+            "account.rate_limits",
+            "session.started",
+            "remote_control.status",
+            "mcp.startup_status",
+            "session.status",
+            "session.token_usage",
+            "turn.started",
+        ] {
+            push_provider_event(
+                &mut events,
+                &mut next_sequence,
+                RichChatEvent::new(
+                    0,
+                    ChatRole::System,
+                    ChatCategory::Status,
+                    label,
+                    "routine provider activity",
+                    None,
+                ),
+            );
+        }
+        push_provider_event(
+            &mut events,
+            &mut next_sequence,
+            RichChatEvent::new(
+                0,
+                ChatRole::System,
+                ChatCategory::Status,
+                "approval.request",
+                "Approval required",
+                None,
+            ),
+        );
+        push_provider_event(
+            &mut events,
+            &mut next_sequence,
+            RichChatEvent::new(
+                0,
+                ChatRole::System,
+                ChatCategory::Error,
+                "session.status",
+                "Provider session reported a system error",
+                Some(ChatSignal::Degraded),
+            ),
+        );
+        push_provider_event(
+            &mut events,
+            &mut next_sequence,
+            RichChatEvent::new(
+                0,
+                ChatRole::System,
+                ChatCategory::Error,
+                "unsupported_event",
+                "Provider reported unsupported event.",
+                Some(ChatSignal::Degraded),
+            ),
+        );
+        push_provider_event(
+            &mut events,
+            &mut next_sequence,
+            RichChatEvent::new(
+                0,
+                ChatRole::System,
+                ChatCategory::Error,
+                "mcp.startup_status",
+                "MCP server failed to start: authentication failed",
+                Some(ChatSignal::Degraded),
+            ),
+        );
+        push_provider_event(
+            &mut events,
+            &mut next_sequence,
+            RichChatEvent::new(
+                0,
+                ChatRole::System,
+                ChatCategory::Status,
+                "clarification_request",
+                "Clarification required",
+                None,
+            ),
+        );
+        push_provider_event(
+            &mut events,
+            &mut next_sequence,
+            RichChatEvent::new(
+                0,
+                ChatRole::System,
+                ChatCategory::Error,
+                "provider.error",
+                "Provider failed",
+                Some(ChatSignal::Degraded),
+            ),
+        );
+        push_provider_event(
+            &mut events,
+            &mut next_sequence,
+            RichChatEvent::new(
+                0,
+                ChatRole::System,
+                ChatCategory::Tool,
+                "tool.started",
+                "tool search",
+                None,
+            ),
+        );
+
+        assert_eq!(events.len(), 7);
+        assert_eq!(events[0].label, "approval.request");
+        assert_eq!(events[1].label, "session.status");
+        assert_eq!(events[1].category, ChatCategory::Error);
+        assert_eq!(events[2].label, "unsupported_event");
+        assert_eq!(events[3].label, "mcp.startup_status");
+        assert_eq!(events[3].category, ChatCategory::Error);
+        assert_eq!(events[4].label, "clarification_request");
+        assert_eq!(events[5].category, ChatCategory::Error);
+        assert_eq!(events[6].category, ChatCategory::Tool);
     }
 
     #[test]

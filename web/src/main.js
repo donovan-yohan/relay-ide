@@ -4,7 +4,12 @@ import {
   passkeyCapability,
   presentationForAuthError,
 } from "./auth.js";
-import { renderChatTimeline, sessionMayHaveMoreEvents } from "./chat.js";
+import {
+  eventPresentation,
+  normalizeChatEvents,
+  renderChatTimeline,
+  sessionMayHaveMoreEvents,
+} from "./chat.js";
 import {
   claudeMetadata,
   mergeRecentClaudeSessions,
@@ -20,6 +25,7 @@ import {
   addSessionTab,
   closeSelectedPane,
   createWorkspaceLayout,
+  detachTabToNewPane,
   moveSelectedPane,
   moveTab,
   openSessionTab,
@@ -35,6 +41,8 @@ import {
 const WORKBENCH_URL = "/api/workbench";
 const STORAGE_KEY = "relay-factory/workbench/v1";
 const LAYOUT_STORAGE_KEY = "relay-factory/workbench-layouts/v1";
+const MAX_DISMISSED_CLAUDE_SESSIONS = 64;
+const MAX_PROVIDER_SESSION_ID_LENGTH = 128;
 const PROVIDER_LABELS = new Map([
   ["claude", "Claude Code"],
   ["codex", "Codex"],
@@ -69,10 +77,7 @@ const sessionStatus = document.querySelector("#session-status");
 const interruptSession = document.querySelector("#interrupt-session");
 const closeTerminal = document.querySelector("#close-terminal");
 const paneRoot = document.querySelector("#pane-root");
-const composer = document.querySelector("#composer");
-const composerShell = composer.closest(".composer");
-const messageInput = document.querySelector("#message-input");
-const sendMessage = document.querySelector("#send-message");
+const chatComposerTemplate = document.querySelector("#chat-composer-template");
 const workbenchError = document.querySelector("#workbench-error");
 const authStatus = document.querySelector("#auth-status");
 const recoveryCode = document.querySelector("#recovery-code");
@@ -87,8 +92,10 @@ const securityAudit = document.querySelector("#security-audit");
 
 let workbench = { providers: { claude: false, codex: false, hermes: false }, sessions: [], workspaces: [] };
 let saved = loadSavedState();
+const dismissedClaudeSessionIds = new Set(saved.dismissedClaudeSessionIds);
 let savedLayouts = loadSavedLayouts();
-let recentClaudeSessions = restoreRecentClaudeSessions(JSON.stringify(saved.claudeSessions ?? []));
+let recentClaudeSessions = restoreRecentClaudeSessions(JSON.stringify(saved.claudeSessions ?? []))
+  .filter((session) => !dismissedClaudeSessionIds.has(session.providerSessionId));
 let mayHaveSession = saved.mayHaveSession === true;
 let selectedWorkspaceCwd = saved.selectedWorkspaceCwd ?? null;
 let selectedSessionId = saved.selectedSessionId ?? null;
@@ -108,6 +115,10 @@ let directorySnapshot = null;
 let pendingDirectoryBrowse = null;
 const terminalRuntimes = new Map();
 const retainedTerminalInput = new Map();
+const chatDrafts = new Map();
+const chatScrollStates = new Map();
+const chatAnnouncementFingerprints = new Map();
+const terminalsPendingRemoval = new Set();
 
 document.querySelector("#show-workspace-add").addEventListener("click", () => {
   workspaceAdd.hidden = false;
@@ -119,12 +130,8 @@ document.querySelector("#cancel-workspace-add").addEventListener("click", () => 
 });
 directoryUp.addEventListener("click", () => void browseDirectory(directorySnapshot?.parent ?? undefined));
 selectDirectory.addEventListener("click", () => void addWorkspace(directorySnapshot?.path));
-composer.addEventListener("submit", (event) => {
-  event.preventDefault();
-  void submitMessage();
-});
 interruptSession.addEventListener("click", () => void interrupt());
-closeTerminal.addEventListener("click", () => void closeClaudeTerminal(activeSession()));
+closeTerminal.addEventListener("click", () => void closeOrRemoveClaudeTerminal(activeSession()));
 for (const button of document.querySelectorAll("[data-provider]")) {
   button.addEventListener("click", () => void startSession(button.dataset.provider));
 }
@@ -167,8 +174,16 @@ function selectedWorkspace() {
 function sessionsForSelectedWorkspace() {
   const workspace = selectedWorkspace();
   if (!workspace) return [];
-  const live = workbench.sessions.filter((session) => session.workspaceId === workspace.id);
-  return mergeRecentClaudeSessions(live, recentClaudeSessions, workspace);
+  const live = workbench.sessions.filter((session) => (
+    session.workspaceId === workspace.id
+    && !isDismissedClaudeSession(session)
+  ));
+  return mergeRecentClaudeSessions(live, recentClaudeSessions, workspace)
+    .filter((session) => !isDismissedClaudeSession(session));
+}
+
+function isDismissedClaudeSession(session, dismissed = dismissedClaudeSessionIds) {
+  return session?.provider === "claude" && dismissed.has(session.providerSessionId);
 }
 
 function activeSession() {
@@ -237,7 +252,6 @@ function render() {
   recoveryCode.hidden = firstClaim;
   recoveryCode.previousElementSibling.hidden = firstClaim;
   enrollPasskey.textContent = firstClaim ? "Set up Relay owner" : "Enroll replacement passkey";
-  composerShell.hidden = !authorized;
   paneRoot.classList.toggle("pane-root--onboarding", !authorized);
   renderPaneRoot(workspace);
 
@@ -260,14 +274,16 @@ function render() {
     setSessionState(session.status, session.status);
   }
 
-  messageInput.parentElement.hidden = terminalSelected;
-  messageInput.disabled = !session || terminalSelected;
-  sendMessage.disabled = !session || terminalSelected;
   interruptSession.disabled = !session || (terminalSelected
     ? !["starting", "running"].includes(session.status)
     : !["working", "idle"].includes(session.status));
   closeTerminal.hidden = !terminalSelected;
-  closeTerminal.disabled = !terminalSelected || ["closing", "closed"].includes(session?.status);
+  closeTerminal.disabled = !terminalSelected || session?.status === "closing";
+  const terminalCloseLabel = ["closed", "exited"].includes(session?.status)
+    ? "Remove closed terminal"
+    : "Close terminal process";
+  closeTerminal.setAttribute("aria-label", terminalCloseLabel);
+  closeTerminal.title = terminalCloseLabel;
   for (const button of document.querySelectorAll("[data-provider]")) {
     button.disabled = !workspace || !authorized || !workbench.providers[button.dataset.provider];
   }
@@ -442,11 +458,14 @@ function sessionRow(session) {
   resume.disabled = resumingSessionIds.has(session.id);
   resume.hidden = session.provider === "claude";
   resume.addEventListener("click", () => void resumeSession(session));
-  const closeLabel = session.provider === "claude" ? "Close terminal process" : "Close Session";
+  const closedTerminal = session.provider === "claude" && ["closed", "exited"].includes(session.status);
+  const closeLabel = session.provider === "claude"
+    ? closedTerminal ? "Remove closed terminal" : "Close terminal process"
+    : "Close Session";
   const close = iconButton(closeLabel, closeLabel, "M7 7l10 10M17 7 7 17");
   close.classList.add("session-row__action");
-  close.disabled = session.provider === "claude" && ["closing", "closed"].includes(session.status);
-  close.addEventListener("click", () => void (session.provider === "claude" ? closeClaudeTerminal(session) : closeSession(session)));
+  close.disabled = session.provider === "claude" && session.status === "closing";
+  close.addEventListener("click", () => void (session.provider === "claude" ? closeOrRemoveClaudeTerminal(session) : closeSession(session)));
   row.append(button, resume, close);
   return row;
 }
@@ -469,6 +488,9 @@ function sidebarButton(label, meta) {
 }
 
 function renderPaneRoot(workspace) {
+  const focusedComposer = captureComposerFocus(paneRoot);
+  if (focusedComposer) chatDrafts.set(focusedComposer.tabId, focusedComposer.value);
+  captureChatScrollStates();
   disposeTerminals({ preservePausedInput: true });
   paneRoot.replaceChildren();
   if (!authorized) {
@@ -484,6 +506,7 @@ function renderPaneRoot(workspace) {
     return;
   }
   paneRoot.append(renderLayoutNode(activeLayout.layout));
+  restoreComposerFocus(paneRoot, focusedComposer);
 }
 
 function renderLayoutNode(node) {
@@ -515,18 +538,168 @@ function renderLayoutNode(node) {
   const body = document.createElement("div");
   body.className = "pane-body";
   if (sessionSurface(session) === "terminal") {
+    pane.classList.add("workbench-pane--terminal");
     body.classList.add("pane-body--terminal");
     body.append(renderTerminalSurface(node.id, session));
-    pane.append(body);
+    pane.append(body, ...tabDetachDropZones(node.id));
     return pane;
   }
+  pane.classList.add("workbench-pane--chat");
+  body.classList.add("pane-body--chat");
+  const scrollKey = active?.id ?? node.id;
+  body.dataset.chatScrollKey = scrollKey;
   const timeline = document.createElement("div");
   timeline.className = "chat-timeline";
-  timeline.setAttribute("aria-live", "polite");
+  timeline.setAttribute("role", "log");
+  timeline.setAttribute("aria-live", "off");
+  timeline.setAttribute("aria-atomic", "false");
   renderChatTimeline(timeline, session);
   body.append(timeline);
+  trackChatScroll(body, scrollKey);
   pane.append(body);
+  if (session && active) pane.append(renderChatAnnouncement(active.id, session));
+  if (session && active) pane.append(renderChatComposer(node.id, active.id, session));
+  pane.append(...tabDetachDropZones(node.id));
   return pane;
+}
+
+function captureComposerFocus(root) {
+  const active = root.ownerDocument?.activeElement;
+  if (!active || !root.contains(active) || !active.matches("[data-chat-composer] textarea")) return null;
+  const form = active.closest("[data-chat-composer]");
+  if (!form?.dataset.tabId) return null;
+  return {
+    tabId: form.dataset.tabId,
+    value: active.value,
+    selectionStart: active.selectionStart,
+    selectionEnd: active.selectionEnd,
+    selectionDirection: active.selectionDirection,
+  };
+}
+
+function restoreComposerFocus(root, state) {
+  if (!state) return;
+  queueMicrotask(() => {
+    const textarea = [...root.querySelectorAll("[data-chat-composer] textarea")]
+      .find((candidate) => candidate.closest("[data-chat-composer]")?.dataset.tabId === state.tabId);
+    if (!textarea || textarea.disabled || !textarea.isConnected) return;
+    textarea.focus({ preventScroll: true });
+    const start = Math.min(state.selectionStart ?? textarea.value.length, textarea.value.length);
+    const end = Math.min(state.selectionEnd ?? start, textarea.value.length);
+    textarea.setSelectionRange(start, end, state.selectionDirection ?? "none");
+  });
+}
+
+function renderChatAnnouncement(tabId, session) {
+  const live = document.createElement("div");
+  live.className = "sr-only";
+  live.setAttribute("role", "status");
+  live.setAttribute("aria-live", "polite");
+  live.setAttribute("aria-atomic", "false");
+  const event = normalizeChatEvents(session.events).at(-1);
+  if (!event) return live;
+  const presentation = eventPresentation(event);
+  const fingerprint = `${presentation.tone}\u0000${presentation.eventLabel}\u0000${presentation.text}`;
+  const previous = chatAnnouncementFingerprints.get(tabId);
+  chatAnnouncementFingerprints.set(tabId, fingerprint);
+  const isStreamDelta = presentation.eventLabel.endsWith(".delta");
+  if (previous && previous !== fingerprint && presentation.tone !== "user" && !isStreamDelta) {
+    queueMicrotask(() => {
+      if (live.isConnected) live.textContent = `${presentation.roleLabel}: ${presentation.text}`;
+    });
+  }
+  return live;
+}
+
+function renderChatComposer(paneId, tabId, session) {
+  const fragment = chatComposerTemplate.content.cloneNode(true);
+  const form = fragment.querySelector("[data-chat-composer]");
+  const label = fragment.querySelector("[data-composer-label]");
+  const textarea = fragment.querySelector("textarea");
+  const send = fragment.querySelector("button[type='submit']");
+  const hint = fragment.querySelector(".sr-only:last-child");
+  const fieldId = `message-${paneId}-${tabId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+  const hintId = `${fieldId}-hint`;
+  form.dataset.paneId = paneId;
+  form.dataset.tabId = tabId;
+  label.htmlFor = fieldId;
+  label.textContent = `Message ${sessionTabTitle(session)}`;
+  textarea.id = fieldId;
+  textarea.setAttribute("aria-describedby", hintId);
+  textarea.value = chatDrafts.get(tabId) ?? "";
+  hint.id = hintId;
+  const disabled = ["closed", "exited"].includes(session.status);
+  textarea.disabled = disabled;
+  send.disabled = disabled || textarea.value.trim().length === 0;
+  resizeComposerTextarea(textarea);
+  textarea.addEventListener("input", () => {
+    chatDrafts.set(tabId, textarea.value);
+    send.disabled = textarea.value.trim().length === 0;
+    resizeComposerTextarea(textarea);
+  });
+  textarea.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    form.requestSubmit(send);
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = textarea.value.trim();
+    if (!text) return;
+    void submitMessage(session, text, tabId);
+  });
+  return form;
+}
+
+function resizeComposerTextarea(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
+}
+
+function captureChatScrollStates() {
+  for (const body of paneRoot.querySelectorAll("[data-chat-scroll-key]")) {
+    const distanceFromBottom = body.scrollHeight - body.clientHeight - body.scrollTop;
+    chatScrollStates.set(body.dataset.chatScrollKey, {
+      nearBottom: distanceFromBottom <= 80,
+      scrollTop: body.scrollTop,
+    });
+  }
+}
+
+function trackChatScroll(body, scrollKey) {
+  const restore = () => {
+    if (!body.isConnected) return;
+    const state = chatScrollStates.get(scrollKey);
+    if (!state || state.nearBottom) body.scrollTop = body.scrollHeight;
+    else body.scrollTop = state.scrollTop;
+  };
+  queueMicrotask(restore);
+  body.addEventListener("scroll", () => {
+    const distanceFromBottom = body.scrollHeight - body.clientHeight - body.scrollTop;
+    chatScrollStates.set(scrollKey, {
+      nearBottom: distanceFromBottom <= 80,
+      scrollTop: body.scrollTop,
+    });
+  }, { passive: true });
+}
+
+function tabDetachDropZones(paneId) {
+  return ["before", "after"].map((placement) => {
+    const zone = document.createElement("div");
+    zone.className = `tab-drop-zone tab-drop-zone--${placement}`;
+    zone.dataset.placement = placement;
+    zone.setAttribute("aria-hidden", "true");
+    zone.addEventListener("dragover", (event) => {
+      if (draggedTab?.paneId !== paneId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      zone.dataset.dragOver = "true";
+    });
+    zone.addEventListener("dragleave", () => { delete zone.dataset.dragOver; });
+    zone.addEventListener("drop", (event) => handleTabDetach(event, placement));
+    return zone;
+  });
 }
 
 function renderTerminalSurface(paneId, session) {
@@ -706,6 +879,12 @@ async function pollTerminal(runtime) {
     runtime.polled = true;
     runtime.interactive = ["starting", "running"].includes(snapshot.status);
     runtime.status.textContent = `Claude Code · ${snapshot.status}`;
+    if (["closed", "exited"].includes(snapshot.status) && terminalsPendingRemoval.has(runtime.sessionId)) {
+      const closedSession = sessionsForSelectedWorkspace()
+        .find((candidate) => candidate.providerSessionId === runtime.sessionId);
+      if (closedSession) removeClaudeSessionPresentation(closedSession);
+      return;
+    }
     if (updateClaudeSessionStatus(runtime.sessionId, snapshot.status)) {
       render();
       return;
@@ -777,10 +956,16 @@ function renderTab(pane, tab, index) {
     draggedTab = { paneId: pane.id, tabId: tab.id };
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", tab.id);
+    for (const candidate of paneRoot.querySelectorAll("[data-pane-id]")) {
+      if (candidate.dataset.paneId === pane.id) candidate.dataset.tabDragActive = "true";
+    }
   });
   button.addEventListener("dragover", (event) => event.preventDefault());
   button.addEventListener("drop", (event) => handleTabDrop(event, pane.id, index));
-  button.addEventListener("dragend", () => { draggedTab = null; });
+  button.addEventListener("dragend", () => {
+    clearTabDragState();
+    draggedTab = null;
+  });
   return button;
 }
 
@@ -870,7 +1055,37 @@ function handleTabDrop(event, targetPaneId, targetIndex) {
   } catch (error) {
     showLayoutError(error);
   } finally {
+    clearTabDragState();
     draggedTab = null;
+  }
+}
+
+function handleTabDetach(event, placement) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!draggedTab) return;
+  try {
+    activeLayout = detachTabToNewPane(activeLayout, {
+      sourcePaneId: draggedTab.paneId,
+      tabId: draggedTab.tabId,
+      placement,
+    });
+    selectedSessionId = activeSession()?.id ?? selectedSessionId;
+    render();
+  } catch (error) {
+    showLayoutError(error);
+  } finally {
+    clearTabDragState();
+    draggedTab = null;
+  }
+}
+
+function clearTabDragState() {
+  for (const pane of paneRoot.querySelectorAll("[data-tab-drag-active]")) {
+    delete pane.dataset.tabDragActive;
+  }
+  for (const zone of paneRoot.querySelectorAll("[data-drag-over]")) {
+    delete zone.dataset.dragOver;
   }
 }
 
@@ -1182,6 +1397,7 @@ async function startSession(provider) {
         body: JSON.stringify({ workspaceId: workspace.id, provider }),
       });
     const session = provider === "claude" ? created.workbenchSession : created;
+    if (session.provider === "claude") dismissedClaudeSessionIds.delete(session.providerSessionId);
     workbench.sessions = [session, ...workbench.sessions];
     if (!activeLayout) activeLayout = createLayout(workspace, session.id);
     else activeLayout = openSessionTab(activeLayout, session.id, sessionTabTitle(session));
@@ -1245,25 +1461,53 @@ async function closeClaudeTerminal(session) {
   if (session?.provider !== "claude") return;
   clearError();
   beginWorkbenchMutation();
+  terminalsPendingRemoval.add(session.providerSessionId);
   try {
     const snapshot = await request(`/node/claude/sessions/${session.providerSessionId}/close`, {
       method: "POST",
       body: "{}",
     });
+    if (["closed", "exited"].includes(snapshot.status)) {
+      removeClaudeSessionPresentation(session);
+      return;
+    }
     updateClaudeSessionStatus(session.providerSessionId, snapshot.status);
   } catch (error) {
+    terminalsPendingRemoval.delete(session.providerSessionId);
     showError(error);
   }
   render();
 }
 
-async function submitMessage() {
-  const session = activeSession();
-  const text = messageInput.value.trim();
+async function closeOrRemoveClaudeTerminal(session) {
+  if (!session || session.provider !== "claude") return;
+  if (["closed", "exited"].includes(session.status)) {
+    removeClaudeSessionPresentation(session);
+    return;
+  }
+  await closeClaudeTerminal(session);
+}
+
+function removeClaudeSessionPresentation(session) {
+  rememberDismissedClaudeSession(session.providerSessionId);
+  terminalsPendingRemoval.delete(session.providerSessionId);
+  activeLayout = activeLayout ? removeSessionFromLayout(activeLayout, session.id) : null;
+  workbench.sessions = workbench.sessions.filter((candidate) => candidate.id !== session.id);
+  recentClaudeSessions = recentClaudeSessions.filter((candidate) => candidate.providerSessionId !== session.providerSessionId);
+  const nextSession = sessionsForSelectedWorkspace()[0] ?? null;
+  selectedSessionId = nextSession?.id ?? null;
+  if (!activeLayout && nextSession) {
+    activeLayout = createLayout(selectedWorkspace(), nextSession.id);
+    activeLayoutWorkspaceCwd = selectedWorkspaceCwd;
+  }
+  render();
+}
+
+async function submitMessage(session, text, draftKey) {
   if (!session || !text) return;
   clearError();
   beginWorkbenchMutation();
-  messageInput.value = "";
+  chatDrafts.delete(draftKey);
   replaceSession({
     ...session,
     events: [...(session.events ?? []), { role: "user", kind: "message", label: "message.sent", text }],
@@ -1275,6 +1519,7 @@ async function submitMessage() {
       body: JSON.stringify({ sessionId: session.id, text }),
     }));
   } catch (error) {
+    chatDrafts.set(draftKey, text);
     showError(error);
     await refreshWorkbench({ restore: false });
     return;
@@ -1369,26 +1614,67 @@ function clearError() {
 }
 
 function loadSavedState() {
+  return savedStateFromStorage(window.localStorage.getItem(STORAGE_KEY));
+}
+
+function savedStateFromStorage(serialized) {
   try {
-    const state = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "null");
-    if ([1, 2].includes(state?.version) && Array.isArray(state.workspaces)) return state;
+    const state = JSON.parse(serialized ?? "null");
+    if ([1, 2].includes(state?.version) && Array.isArray(state.workspaces)) {
+      return {
+        ...state,
+        dismissedClaudeSessionIds: normalizeDismissedClaudeSessionIds(state.dismissedClaudeSessionIds),
+      };
+    }
   } catch {
     // Browser storage is convenience-only; live workbench state remains hub-owned.
   }
-  return { version: 2, mayHaveSession: false, selectedSessionId: null, selectedWorkspaceCwd: null, workspaces: [], claudeSessions: [] };
+  return {
+    version: 2,
+    mayHaveSession: false,
+    selectedSessionId: null,
+    selectedWorkspaceCwd: null,
+    workspaces: [],
+    claudeSessions: [],
+    dismissedClaudeSessionIds: [],
+  };
+}
+
+function normalizeDismissedClaudeSessionIds(value) {
+  const normalized = [];
+  for (const candidate of Array.isArray(value) ? value : []) {
+    if (typeof candidate !== "string" || candidate.length === 0 || candidate.length > MAX_PROVIDER_SESSION_ID_LENGTH) continue;
+    const duplicate = normalized.indexOf(candidate);
+    if (duplicate >= 0) normalized.splice(duplicate, 1);
+    normalized.push(candidate);
+    if (normalized.length > MAX_DISMISSED_CLAUDE_SESSIONS) normalized.shift();
+  }
+  return normalized;
+}
+
+function rememberDismissedClaudeSession(providerSessionId) {
+  const normalized = normalizeDismissedClaudeSessionIds([
+    ...dismissedClaudeSessionIds,
+    providerSessionId,
+  ]);
+  dismissedClaudeSessionIds.clear();
+  for (const candidate of normalized) dismissedClaudeSessionIds.add(candidate);
 }
 
 function persistState() {
   if (!authorized || !hasWorkbenchSnapshot) return;
   const liveClaude = workbench.sessions.flatMap((session) => {
-    if (session.provider !== "claude") return [];
+    if (session.provider !== "claude" || isDismissedClaudeSession(session)) return [];
     const workspace = workbench.workspaces.find((candidate) => candidate.id === session.workspaceId);
     const metadata = claudeMetadata({ ...session, title: "Claude Code" }, workspace?.cwd);
     return metadata ? [metadata] : [];
   });
   recentClaudeSessions = restoreRecentClaudeSessions(serializeRecentClaudeSessions([
     ...liveClaude,
-    ...recentClaudeSessions.filter((recent) => !liveClaude.some((live) => live.providerSessionId === recent.providerSessionId)),
+    ...recentClaudeSessions.filter((recent) => (
+      !dismissedClaudeSessionIds.has(recent.providerSessionId)
+      && !liveClaude.some((live) => live.providerSessionId === recent.providerSessionId)
+    )),
   ]));
   saved = {
     version: 2,
@@ -1397,6 +1683,7 @@ function persistState() {
     selectedWorkspaceCwd,
     workspaces: workbench.workspaces.map((workspace) => ({ cwd: workspace.cwd, name: workspace.name })),
     claudeSessions: recentClaudeSessions,
+    dismissedClaudeSessionIds: normalizeDismissedClaudeSessionIds([...dismissedClaudeSessionIds]),
   };
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));

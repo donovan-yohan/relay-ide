@@ -48,6 +48,10 @@ pub struct Frame {
     /// Displayable assistant text extracted only from known agent-message
     /// notification shapes before the parsed provider payload is dropped.
     pub display_text: Option<String>,
+    /// Whether a known diagnostic notification reports a failure that must not
+    /// be compacted as routine provider status. Only the boolean and bounded
+    /// redacted [`Frame::preview`] cross the framing boundary.
+    pub diagnostic_failure: bool,
     /// Safe display text or generic diagnostic metadata; never a raw frame.
     pub preview: String,
 }
@@ -172,7 +176,16 @@ pub fn scan_line(line: &[u8]) -> Result<Frame, ScanError> {
     } else {
         None
     };
-    let preview = safe_preview(&class, display_text.as_deref());
+    let diagnostic_preview = if matches!(class, FrameClass::Notification) {
+        extract_known_notification_failure(method.as_deref(), params)
+    } else {
+        None
+    };
+    let diagnostic_failure = diagnostic_preview.is_some();
+    let preview = safe_preview(
+        &class,
+        display_text.as_deref().or(diagnostic_preview.as_deref()),
+    );
 
     Ok(Frame {
         class,
@@ -183,6 +196,7 @@ pub fn scan_line(line: &[u8]) -> Result<Frame, ScanError> {
         has_params,
         event_turn_id,
         display_text,
+        diagnostic_failure,
         preview,
     })
 }
@@ -215,6 +229,50 @@ fn extract_agent_message(method: Option<&str>, params: Option<&Value>) -> Option
     Some(redact_and_bound_display(text))
 }
 
+fn extract_known_notification_failure(
+    method: Option<&str>,
+    params: Option<&Value>,
+) -> Option<String> {
+    match method? {
+        "mcpServer/startupStatus/updated" => extract_mcp_startup_failure(params),
+        "thread/status/changed" => extract_thread_status_failure(params),
+        _ => None,
+    }
+}
+
+fn extract_mcp_startup_failure(params: Option<&Value>) -> Option<String> {
+    let params = params?.as_object()?;
+    let status = params.get("status").and_then(Value::as_str);
+    let error = params
+        .get("error")
+        .and_then(Value::as_str)
+        .filter(|error| !error.is_empty());
+    if status != Some("failed") && error.is_none() {
+        return None;
+    }
+
+    let text = if let Some(error) = error {
+        format!("MCP server failed to start: {error}")
+    } else if params.get("failureReason").and_then(Value::as_str)
+        == Some("reauthenticationRequired")
+    {
+        "MCP server failed to start: reauthentication required".to_owned()
+    } else {
+        "MCP server failed to start".to_owned()
+    };
+    Some(redact_and_bound_preview(&text))
+}
+
+fn extract_thread_status_failure(params: Option<&Value>) -> Option<String> {
+    let status = params?
+        .as_object()?
+        .get("status")?
+        .as_object()?
+        .get("type")?
+        .as_str()?;
+    (status == "systemError").then(|| "Provider session reported a system error".to_owned())
+}
+
 pub fn redact_and_bound_display(text: &str) -> String {
     let mut text = redact_secrets(text);
     if text.len() > crate::contract::MAX_CHAT_TEXT_BYTES {
@@ -241,14 +299,19 @@ fn nested_result_id(result: Option<&Value>, outer: &str) -> Option<String> {
 
 /// Redact obvious secrets, then bound the string to [`MAX_PREVIEW_BYTES`].
 pub fn redacted_preview(line: &[u8]) -> String {
-    let mut text = redact_secrets(&String::from_utf8_lossy(line));
+    redact_and_bound_preview(&String::from_utf8_lossy(line))
+}
+
+fn redact_and_bound_preview(text: &str) -> String {
+    const TRUNCATED: &str = "…[truncated]";
+    let mut text = redact_secrets(text);
     if text.len() > MAX_PREVIEW_BYTES {
-        let mut end = MAX_PREVIEW_BYTES;
+        let mut end = MAX_PREVIEW_BYTES.saturating_sub(TRUNCATED.len());
         while end > 0 && !text.is_char_boundary(end) {
             end -= 1;
         }
         text.truncate(end);
-        text.push_str("…[truncated]");
+        text.push_str(TRUNCATED);
     }
     text
 }
@@ -387,6 +450,7 @@ fn decode_ascii_unicode_escape(bytes: &[u8]) -> Option<u8> {
 }
 
 fn append_redacted_tokens(input: &str, mut i: usize, end: usize, output: &mut String) {
+    const REDACTED_MARKER: &[u8] = b"[redacted]";
     let bytes = input.as_bytes();
     while i < end {
         if starts_with_ci(&bytes[i..end], b"bearer ") {
@@ -400,6 +464,9 @@ fn append_redacted_tokens(input: &str, mut i: usize, end: usize, output: &mut St
         if starts_with_ci(&bytes[i..end], b"sk-") && is_token_boundary(bytes, i) {
             output.push_str("sk-[redacted]");
             i += 3;
+            if bytes[i..end].starts_with(REDACTED_MARKER) {
+                i += REDACTED_MARKER.len();
+            }
             while i < end && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'-' | b'_')) {
                 i += 1;
             }
@@ -481,6 +548,78 @@ mod tests {
         )
         .unwrap();
         assert!(reasoning.display_text.is_none());
+    }
+
+    #[test]
+    fn extracts_only_bounded_redacted_mcp_startup_failures() {
+        for status in ["starting", "ready"] {
+            let line = serde_json::to_vec(&serde_json::json!({
+                "method": "mcpServer/startupStatus/updated",
+                "params": {"name": "private-name", "status": status, "error": null},
+            }))
+            .unwrap();
+            let frame = scan_line(&line).unwrap();
+            assert!(!frame.diagnostic_failure);
+            assert_eq!(frame.preview, "provider event");
+        }
+
+        let failed = scan_line(
+            br#"{"method":"mcpServer/startupStatus/updated","params":{"name":"private-name","status":"failed","error":"Bearer private-token"}}"#,
+        )
+        .unwrap();
+        assert!(failed.diagnostic_failure);
+        assert_eq!(
+            failed.preview,
+            "MCP server failed to start: Bearer [redacted]"
+        );
+        assert!(!failed.preview.contains("private-token"));
+        assert!(!failed.preview.contains("private-name"));
+
+        let long_line = serde_json::to_vec(&serde_json::json!({
+            "method": "mcpServer/startupStatus/updated",
+            "params": {
+                "name": "private-name",
+                "status": "failed",
+                "error": format!("sk-SECRET {}", "x".repeat(MAX_PREVIEW_BYTES * 2)),
+            },
+        }))
+        .unwrap();
+        let long_failure = scan_line(&long_line).unwrap();
+        assert!(long_failure.diagnostic_failure);
+        assert!(long_failure.preview.len() <= MAX_PREVIEW_BYTES);
+        assert!(long_failure.preview.contains("sk-[redacted]"));
+        assert!(!long_failure.preview.contains("SECRET"));
+
+        let reauth = scan_line(
+            br#"{"method":"mcpServer/startupStatus/updated","params":{"name":"private-name","status":"failed","error":null,"failureReason":"reauthenticationRequired"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            reauth.preview,
+            "MCP server failed to start: reauthentication required"
+        );
+    }
+
+    #[test]
+    fn extracts_only_thread_system_error_state() {
+        for status in ["notLoaded", "idle", "active"] {
+            let line = serde_json::to_vec(&serde_json::json!({
+                "method": "thread/status/changed",
+                "params": {"threadId": "private-id", "status": {"type": status}},
+            }))
+            .unwrap();
+            let frame = scan_line(&line).unwrap();
+            assert!(!frame.diagnostic_failure);
+            assert_eq!(frame.preview, "provider event");
+        }
+
+        let failed = scan_line(
+            br#"{"method":"thread/status/changed","params":{"threadId":"private-id","status":{"type":"systemError"}}}"#,
+        )
+        .unwrap();
+        assert!(failed.diagnostic_failure);
+        assert_eq!(failed.preview, "Provider session reported a system error");
+        assert!(!failed.preview.contains("private-id"));
     }
     use std::time::{Duration, Instant};
 
@@ -627,6 +766,24 @@ mod tests {
     }
 
     #[test]
+    fn exact_redaction_markers_are_idempotent() {
+        for input in [
+            "sk-[redacted]",
+            "Bearer [redacted]",
+            "prefix [redacted] suffix",
+            r#"{"access_token":"[redacted]"}"#,
+        ] {
+            let once = redact_secrets(input);
+            assert_eq!(redact_secrets(&once), once, "input: {input}");
+        }
+
+        assert_eq!(
+            redact_secrets("sk-[redacted]SECRET after"),
+            "sk-[redacted] after"
+        );
+    }
+
+    #[test]
     fn frame_preview_never_retains_raw_payloads_or_reasoning() {
         let frame = scan_line(
             br#"{"method":"auth","params":{"accessToken":"mask-me-a","refreshToken":"mask-me-b","idToken":"mask-me-c","client\u0053ecret":"mask-me-\u0064"}}"#,
@@ -650,7 +807,7 @@ mod tests {
         line.extend(std::iter::repeat_n(b'z', MAX_PREVIEW_BYTES * 4));
         line.extend_from_slice(b"\"}");
         let preview = redacted_preview(&line);
-        assert!(preview.len() <= MAX_PREVIEW_BYTES + "…[truncated]".len());
+        assert!(preview.len() <= MAX_PREVIEW_BYTES);
         assert!(preview.ends_with("…[truncated]"));
     }
 }

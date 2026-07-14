@@ -71,7 +71,8 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(app, /onboarding\.dataset\.secureOrigin/);
   assert.match(app, /onboarding\.dataset\.passkeyApi/);
   assert.match(app, /enroll\(recoveryCode\)/);
-  assert.match(app, /composerShell\.hidden = !authorized/);
+  assert.match(page, /id="chat-composer-template"/);
+  assert.match(app, /pane\.append\(renderChatComposer\(node\.id, active\.id, session\)\)/);
   assert.match(app, /paneRoot\.classList\.toggle\("pane-root--onboarding", !authorized\)/);
   assert.doesNotMatch(app, /WebSocket|Authorization/);
   assert.doesNotMatch(app, /showDirectoryPicker|webkitdirectory/);

@@ -213,6 +213,76 @@ export function moveTab(state, sourcePaneId, tabId, targetPaneId, targetIndex) {
   }), target.id);
 }
 
+export function detachTabToNewPane(state, {
+  sourcePaneId,
+  tabId,
+  placement = "after",
+} = {}) {
+  if (!["before", "after"].includes(placement)) {
+    throw new TypeError("Detached tab placement must be before or after its source pane.");
+  }
+
+  const metrics = layoutMetrics(state);
+  if (metrics.paneCount >= MAX_PANE_COUNT) {
+    throw new LayoutLimitError("pane-cap", `This Workspace is limited to ${MAX_PANE_COUNT} panes.`);
+  }
+
+  const source = findPane(state.layout, sourcePaneId);
+  if (!source) throw new TypeError("Detached tab references a missing pane.");
+  const sourceIndex = source.tabs.findIndex((tab) => tab.id === tabId);
+  if (sourceIndex < 0) throw new TypeError("Detached tab references a missing tab.");
+  if (source.tabs.length === 1 && metrics.tabCount >= MAX_TAB_COUNT) {
+    throw new LayoutLimitError("tab-cap", `This Workspace is limited to ${MAX_TAB_COUNT} tabs.`);
+  }
+  if (paneDepth(state.layout, source.id) >= MAX_LAYOUT_DEPTH) {
+    throw new LayoutLimitError("depth-cap", `This Workspace is limited to ${MAX_LAYOUT_DEPTH} layout splits.`);
+  }
+
+  const sourceTab = source.tabs[sourceIndex];
+  const mirrorsOnlyTab = source.tabs.length === 1;
+  const detachedTab = mirrorsOnlyTab
+    ? {
+        ...clone(sourceTab),
+        id: nextId(state.layout, "tab"),
+        title: `${sourceTab.title} mirror`,
+      }
+    : sourceTab;
+  const sourceTabs = mirrorsOnlyTab
+    ? source.tabs
+    : source.tabs.filter((candidate) => candidate.id !== tabId);
+  const remainingSource = mirrorsOnlyTab
+    ? clone(source)
+    : {
+        ...source,
+        activeTabId: source.activeTabId === tabId
+          ? sourceTabs[Math.min(sourceIndex, sourceTabs.length - 1)].id
+          : source.activeTabId,
+        tabs: sourceTabs,
+      };
+  const detachedPane = {
+    kind: "tabs",
+    id: nextId(state.layout, "pane"),
+    showTabStrip: true,
+    activeTabId: detachedTab.id,
+    tabs: [detachedTab],
+  };
+  const children = placement === "before"
+    ? { first: detachedPane, second: remainingSource }
+    : { first: remainingSource, second: detachedPane };
+  const split = {
+    kind: "split",
+    id: nextId(state.layout, "split"),
+    direction: "row",
+    ratio: 0.5,
+    ...children,
+  };
+  return withLayout(
+    state,
+    replacePane(state.layout, source.id, split),
+    detachedPane.id,
+  );
+}
+
 export function setSplitRatio(state, splitId, ratio) {
   if (typeof ratio !== "number" || !Number.isFinite(ratio)) {
     throw new TypeError("Split ratio is invalid.");

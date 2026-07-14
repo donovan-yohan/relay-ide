@@ -14,6 +14,8 @@ import {
   canUseLiveSessionActions,
   closeSelectedPane,
   createWorkspaceLayout,
+  detachTabToNewPane,
+  layoutMetrics,
   moveTab,
   moveSelectedPane,
   openSessionTab,
@@ -180,6 +182,105 @@ test("opening, dragging, and resizing Session tabs remains a bounded presentatio
   );
 });
 
+test("detaching a tab creates a selected sibling split without cloning Session references", () => {
+  let state = createWorkspaceLayout({ sessionId: "session-opaque-20" });
+  state = openSessionTab(state, "session-opaque-21", "Codex session");
+  state = openSessionTab(state, "session-opaque-22", "Hermes session");
+  const sourcePaneId = state.layout.id;
+  const detachedTabId = state.layout.tabs[1].id;
+  const sourceActiveTabId = state.layout.tabs[2].id;
+
+  state = detachTabToNewPane(state, {
+    sourcePaneId,
+    tabId: detachedTabId,
+    placement: "before",
+  });
+
+  assert.equal(state.layout.kind, "split");
+  assert.equal(state.layout.first.id, state.selectedPaneId);
+  assert.equal(state.layout.first.tabs[0].id, detachedTabId);
+  assert.equal(state.layout.first.tabs[0].content.sessionId, "session-opaque-21");
+  assert.equal(state.layout.second.id, sourcePaneId);
+  assert.equal(state.layout.second.activeTabId, sourceActiveTabId);
+  assert.deepEqual(sessionIds(state), ["session-opaque-21", "session-opaque-20", "session-opaque-22"]);
+  assert.deepEqual(layoutMetrics(state), { paneCount: 2, tabCount: 3, maxDepth: 1 });
+});
+
+test("detaching a sole tab mirrors its Session reference into a selected sibling pane", () => {
+  const singleTab = createWorkspaceLayout({ sessionId: "session-opaque-22" });
+  const sourceTab = singleTab.layout.tabs[0];
+  const detached = detachTabToNewPane(singleTab, {
+    sourcePaneId: singleTab.layout.id,
+    tabId: sourceTab.id,
+  });
+
+  assert.equal(detached.layout.kind, "split");
+  assert.equal(detached.layout.first.tabs[0].id, sourceTab.id);
+  assert.equal(detached.layout.second.id, detached.selectedPaneId);
+  assert.notEqual(detached.layout.second.tabs[0].id, sourceTab.id);
+  assert.equal(detached.layout.second.tabs[0].title, `${sourceTab.title} mirror`);
+  assert.deepEqual(sessionIds(detached), ["session-opaque-22", "session-opaque-22"]);
+  assert.deepEqual(layoutMetrics(detached), { paneCount: 2, tabCount: 2, maxDepth: 1 });
+});
+
+test("detaching a tab enforces placement, pane-count, and tab-count invariants", () => {
+  const singleTab = createWorkspaceLayout({ sessionId: "session-opaque-23" });
+  assert.throws(
+    () => detachTabToNewPane(singleTab, {
+      sourcePaneId: singleTab.layout.id,
+      tabId: singleTab.layout.tabs[0].id,
+      placement: "sideways",
+    }),
+    /placement must be before or after/,
+  );
+
+  let capped = singleTab;
+  capped = detachTabToNewPane(capped, {
+    sourcePaneId: capped.layout.id,
+    tabId: capped.layout.tabs[0].id,
+  });
+  capped = detachTabToNewPane(capped, {
+    sourcePaneId: capped.selectedPaneId,
+    tabId: activeSessionTab(capped).tab.id,
+  });
+  capped = detachTabToNewPane(capped, {
+    sourcePaneId: capped.selectedPaneId,
+    tabId: activeSessionTab(capped).tab.id,
+  });
+  assert.throws(
+    () => detachTabToNewPane(capped, {
+      sourcePaneId: capped.selectedPaneId,
+      tabId: activeSessionTab(capped).tab.id,
+    }),
+    (error) => error instanceof LayoutLimitError && error.code === "pane-cap",
+  );
+
+  let tabCapped = createWorkspaceLayout({ sessionId: "session-opaque-tab-cap" });
+  for (let count = 1; count < 4; count += 1) tabCapped = addSessionTab(tabCapped);
+  const rootPaneId = tabCapped.layout.id;
+  tabCapped = detachTabToNewPane(tabCapped, {
+    sourcePaneId: rootPaneId,
+    tabId: activeSessionTab(tabCapped).tab.id,
+  });
+  const firstMirrorPaneId = tabCapped.selectedPaneId;
+  tabCapped = selectTab(tabCapped, rootPaneId, tabCapped.layout.first.activeTabId);
+  tabCapped = addSessionTab(tabCapped);
+  tabCapped = detachTabToNewPane(tabCapped, {
+    sourcePaneId: rootPaneId,
+    tabId: activeSessionTab(tabCapped).tab.id,
+  });
+  tabCapped = selectTab(tabCapped, rootPaneId, tabCapped.layout.first.first.activeTabId);
+  tabCapped = addSessionTab(tabCapped);
+  assert.equal(layoutMetrics(tabCapped).tabCount, MAX_TAB_COUNT);
+  assert.throws(
+    () => detachTabToNewPane(tabCapped, {
+      sourcePaneId: firstMirrorPaneId,
+      tabId: tabCapped.layout.second.tabs[0].id,
+    }),
+    (error) => error instanceof LayoutLimitError && error.code === "tab-cap",
+  );
+});
+
 test("attaching an already-owned Session replaces only the selected opaque layout reference", () => {
   const initial = createWorkspaceLayout({ sessionId: "session-opaque-14" });
   const attached = attachSessionToSelectedTab(initial, "session-opaque-15", "Attached session");
@@ -199,4 +300,13 @@ test("closing a provider Session removes only its presentation references", () =
   assert.deepEqual(sessionIds(state), ["session-opaque-12"]);
   assert.equal(state.layout.kind, "tabs");
   assert.equal(activeSessionTab(state).tab.content.sessionId, "session-opaque-12");
+});
+
+test("closing the final provider Session removes its last tab and pane instead of retaining a shadow layout", () => {
+  let state = createWorkspaceLayout({ sessionId: "session-opaque-final" });
+  state = splitSelectedPane(state);
+
+  const removed = removeSessionFromLayout(state, "session-opaque-final");
+
+  assert.equal(removed, null);
 });

@@ -683,7 +683,7 @@ impl HermesSessionAdapter {
                 )
             }
             "message.delta" => match assistant_message_text(payload) {
-                Some(text) => (EventKind::Status, "assistant_message", text),
+                Some(text) => (EventKind::Status, "assistant.message.delta", text),
                 None => (
                     EventKind::Status,
                     "message_delta",
@@ -693,7 +693,7 @@ impl HermesSessionAdapter {
             "message.complete" => {
                 self.status = SessionStatus::Idle;
                 match assistant_message_text(payload) {
-                    Some(text) => (EventKind::Status, "assistant_message", text),
+                    Some(text) => (EventKind::Status, "assistant.message", text),
                     None => (
                         EventKind::Status,
                         "message_complete",
@@ -966,7 +966,7 @@ fn assistant_message_text(payload: Option<&serde_json::Map<String, Value>>) -> O
 }
 
 fn hermes_rich_event(sequence: u64, kind: EventKind, label: &str, preview: &str) -> RichChatEvent {
-    if label == "assistant_message" {
+    if label.starts_with("assistant.message") {
         return RichChatEvent::new(
             sequence,
             ChatRole::Assistant,

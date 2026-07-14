@@ -978,17 +978,50 @@ impl<T: Transport> Supervisor<T> {
 
 fn codex_rich_event(sequence: u64, kind: EventKind, label: &str, frame: &Frame) -> RichChatEvent {
     if let Some(text) = frame.display_text.as_deref() {
+        // Delta notifications are incremental chunks while an agent-message
+        // item completion is the authoritative cumulative snapshot. Preserve
+        // that distinction at the neutral boundary so consumers can coalesce
+        // a streamed answer without displaying the completed text twice.
+        let message_label = if label == "assistant.message.delta" {
+            label
+        } else {
+            "assistant.message"
+        };
         return RichChatEvent::new(
             sequence,
             ChatRole::Assistant,
             ChatCategory::Message,
-            "assistant.message",
+            message_label,
             text,
             None,
         );
     }
+    if frame.diagnostic_failure {
+        return RichChatEvent::new(
+            sequence,
+            ChatRole::System,
+            ChatCategory::Error,
+            label,
+            frame.preview.clone(),
+            Some(ChatSignal::Degraded),
+        );
+    }
     let (category, text, signal) = match kind {
-        EventKind::Diagnostic | EventKind::Unsupported => (
+        EventKind::Unsupported => (
+            ChatCategory::Error,
+            format!("Provider reported {}.", label.replace('_', " ")),
+            Some(ChatSignal::Degraded),
+        ),
+        EventKind::Diagnostic
+            if matches!(label, "remote_control.status" | "mcp.startup_status") =>
+        {
+            (
+                ChatCategory::Status,
+                format!("{}.", label.replace(['.', '_'], " ")),
+                None,
+            )
+        }
+        EventKind::Diagnostic => (
             ChatCategory::Error,
             format!("Provider reported {}.", label.replace('_', " ")),
             Some(ChatSignal::Degraded),
@@ -1227,8 +1260,92 @@ mod tests {
         let event = supervisor.next_event().unwrap();
         assert_eq!(event.rich.role, ChatRole::Assistant);
         assert_eq!(event.rich.category, ChatCategory::Message);
+        assert_eq!(event.rich.label, "assistant.message");
         assert_eq!(event.rich.text, "answer Bearer [redacted]");
         assert!(!event.rich.text.contains("private-token"));
+    }
+
+    #[test]
+    fn streamed_agent_message_distinguishes_deltas_from_completed_snapshot() {
+        let lines = [
+            r#"{"method":"item/agentMessage/delta","params":{"delta":"Hel"}}"#,
+            r#"{"method":"item/agentMessage/delta","params":{"delta":"lo"}}"#,
+            r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"Hello"}}}"#,
+        ];
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_lines(lines));
+        supervisor.pump();
+        let assistant = std::iter::from_fn(|| supervisor.next_event())
+            .filter(|event| event.rich.role == ChatRole::Assistant)
+            .map(|event| (event.rich.label, event.rich.text))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            assistant,
+            vec![
+                ("assistant.message.delta".to_owned(), "Hel".to_owned()),
+                ("assistant.message.delta".to_owned(), "lo".to_owned()),
+                ("assistant.message".to_owned(), "Hello".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn mcp_startup_failure_is_visible_while_ready_status_stays_routine() {
+        let lines = [
+            r#"{"method":"mcpServer/startupStatus/updated","params":{"name":"safe","status":"ready","error":null}}"#,
+            r#"{"method":"mcpServer/startupStatus/updated","params":{"name":"safe","status":"failed","error":"Bearer private-token"}}"#,
+        ];
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_lines(lines));
+        supervisor.pump();
+        let events = std::iter::from_fn(|| supervisor.next_event())
+            .filter(|event| event.rich.label == "mcp.startup_status")
+            .map(|event| event.rich)
+            .collect::<Vec<_>>();
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].category, ChatCategory::Status);
+        assert_eq!(events[0].signal, None);
+        assert_eq!(events[1].category, ChatCategory::Error);
+        assert_eq!(events[1].signal, Some(ChatSignal::Degraded));
+        assert_eq!(
+            events[1].text,
+            "MCP server failed to start: Bearer [redacted]"
+        );
+        assert!(!events[1].text.contains("private-token"));
+    }
+
+    #[test]
+    fn observed_turn_plumbing_is_supported_and_thread_system_error_stays_visible() {
+        let lines = [
+            r#"{"method":"thread/status/changed","params":{"threadId":"private","status":{"type":"active","activeFlags":[]}}}"#,
+            r#"{"method":"thread/tokenUsage/updated","params":{}}"#,
+            r#"{"method":"account/rateLimits/updated","params":{}}"#,
+            r#"{"method":"thread/status/changed","params":{"threadId":"private","status":{"type":"systemError"}}}"#,
+        ];
+        let mut supervisor = Supervisor::new(ScriptedTransport::from_lines(lines));
+        supervisor.pump();
+        let events = std::iter::from_fn(|| supervisor.next_event())
+            .filter(|event| {
+                matches!(
+                    event.rich.label.as_str(),
+                    "session.status" | "session.token_usage" | "account.rate_limits"
+                )
+            })
+            .map(|event| event.rich)
+            .collect::<Vec<_>>();
+
+        assert_eq!(supervisor.signals().unsupported, 0);
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].category, ChatCategory::Status);
+        assert_eq!(events[1].label, "session.token_usage");
+        assert_eq!(events[1].category, ChatCategory::Status);
+        assert_eq!(events[2].label, "account.rate_limits");
+        assert_eq!(events[2].category, ChatCategory::Status);
+        assert_eq!(events[3].label, "session.status");
+        assert_eq!(events[3].category, ChatCategory::Error);
+        assert_eq!(events[3].signal, Some(ChatSignal::Degraded));
+        assert_eq!(events[3].text, "Provider session reported a system error");
+        assert!(!events[3].text.contains("private"));
     }
 
     #[test]
@@ -1244,6 +1361,11 @@ mod tests {
         assert_eq!(supervisor.signals().malformed, 1);
         assert_eq!(supervisor.signals().over_limit, 1);
         assert_eq!(supervisor.signals().unsupported, 1);
+        let unsupported = std::iter::from_fn(|| supervisor.next_event())
+            .find(|event| event.rich.label == "unsupported_event")
+            .expect("unknown provider notification remains visible");
+        assert_eq!(unsupported.rich.category, ChatCategory::Error);
+        assert_eq!(unsupported.rich.signal, Some(ChatSignal::Degraded));
     }
 
     #[test]
