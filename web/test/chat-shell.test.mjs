@@ -104,6 +104,27 @@ test("account sign-out is nested behind compact settings", async () => {
   assert.doesNotMatch(page.replace(settings, ""), /id="sign-out"/);
 });
 
+test("hidden optional controls cannot displace pane content or bottom-left settings", async () => {
+  const page = await readFile(new URL("index.html", source), "utf8");
+
+  assert.match(page, /\.main-panel \{[^}]*grid-template-areas: "header" "notice" "panes";/);
+  assert.match(page, /\.session-header \{[^}]*grid-area: header;/);
+  assert.match(page, /\.workspace-error \{[^}]*grid-area: notice;/);
+  assert.match(page, /\.pane-root \{[^}]*grid-area: panes;/);
+  assert.match(page, /\.workspace-error:empty \{ display: none; \}/);
+
+  assert.match(page, /\.sidebar \{[^}]*grid-template-areas: "brand" "picker" "projects" "recent" "settings";/);
+  assert.match(page, /\.brand \{[^}]*grid-area: brand;/);
+  assert.match(page, /\.workspace-add \{[^}]*grid-area: picker;/);
+  assert.match(page, /\.workspace-section \{[^}]*grid-area: projects;/);
+  assert.match(page, /\.session-section \{[^}]*grid-area: recent;/);
+  assert.match(page, /\.auth-compact \{[^}]*grid-area: settings;/);
+  assert.match(
+    page,
+    /@media \(max-width: 48rem\) \{[\s\S]*?\.sidebar \{[^}]*grid-template-areas: "brand" "picker" "projects" "recent" "settings";[^}]*grid-template-rows: repeat\(5, auto\);/,
+  );
+});
+
 test("closed Claude tombstones survive reload, stay bounded, and filter only matching terminals", async () => {
   const app = await readFile(new URL("main.js", source), "utf8");
   const savedStateSource = app.slice(

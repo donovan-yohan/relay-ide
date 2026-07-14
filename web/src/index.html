@@ -31,12 +31,12 @@
       code { color: #b8aaa1; font: inherit; }
 
       .workbench-shell { display: grid; grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr); height: 100dvh; min-height: 0; }
-      .sidebar { border-right: 1px solid #302b28; display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; min-height: 0; min-width: 0; padding: 0.75rem; }
-      .brand { align-items: center; border-bottom: 1px solid #302b28; display: flex; justify-content: space-between; padding: 0 0 0.75rem; }
+      .sidebar { border-right: 1px solid #302b28; display: grid; grid-template-areas: "brand" "picker" "projects" "recent" "settings"; grid-template-rows: auto auto auto minmax(0, 1fr) auto; min-height: 0; min-width: 0; padding: 0.75rem; }
+      .brand { align-items: center; border-bottom: 1px solid #302b28; display: flex; grid-area: brand; justify-content: space-between; padding: 0 0 0.75rem; }
       .brand__mark, .section-label { color: #d97855; font-size: 0.73rem; font-weight: 700; letter-spacing: 0.12em; margin: 0; text-transform: lowercase; }
       .icon-button { flex: 0 0 2.25rem; padding: 0.35rem; width: 2.25rem; }
       .icon-button svg { fill: none; height: 1.1rem; stroke: currentColor; stroke-linecap: square; stroke-linejoin: miter; stroke-width: 1.6; width: 1.1rem; }
-      .workspace-add { border-bottom: 1px solid #302b28; display: grid; gap: 0.55rem; padding: 0.75rem 0; }
+      .workspace-add { border-bottom: 1px solid #302b28; display: grid; gap: 0.55rem; grid-area: picker; padding: 0.75rem 0; }
       .workspace-add[hidden] { display: none; }
       .directory-browser { display: grid; gap: 0.45rem; min-height: 0; }
       .directory-path { color: #9b918a; font-size: 0.72rem; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -44,8 +44,8 @@
       .workspace-add__actions { display: flex; gap: 0.45rem; }
       .workspace-list, .session-list { display: grid; gap: 0.18rem; list-style: none; margin: 0; padding: 0; }
       .workspace-list { margin: 0.65rem 0 0; }
-      .workspace-section { padding-top: 0.8rem; }
-      .session-section { min-height: 0; overflow: auto; padding-top: 1rem; }
+      .workspace-section { grid-area: projects; padding-top: 0.8rem; }
+      .session-section { grid-area: recent; min-height: 0; overflow: auto; padding-top: 1rem; }
       .session-list { margin-top: 0.65rem; }
       .sidebar-item { align-items: center; background: transparent; border: 0; color: #b8b0aa; display: flex; gap: 0.55rem; justify-content: flex-start; min-width: 0; text-align: left; width: 100%; }
       .sidebar-item[aria-current="page"] { background: #19120f; color: #f2e8e1; box-shadow: inset 2px 0 #d97855; }
@@ -55,12 +55,12 @@
       .sidebar-empty { color: #716a64; font-size: 0.78rem; line-height: 1.5; margin: 0.65rem 0 0; }
       .session-row { align-items: stretch; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0.18rem; }
       .session-row__action { min-height: 2rem; opacity: 0.82; width: 2rem; }
-      .auth-compact { border-top: 1px solid #302b28; color: #8d847d; font-size: 0.74rem; padding-top: 0.5rem; position: relative; }
+      .auth-compact { --settings-top-padding: 0.5rem; border-top: 1px solid #302b28; color: #8d847d; font-size: 0.74rem; grid-area: settings; padding-top: var(--settings-top-padding); position: relative; }
       .auth-compact summary { align-items: center; color: #8d847d; cursor: pointer; display: inline-flex; gap: 0.45rem; list-style: none; min-height: 2.25rem; padding: 0.35rem; }
       .auth-compact summary::-webkit-details-marker { display: none; }
       .auth-compact summary:hover { color: #e0e0e0; }
       .auth-compact summary svg { fill: none; height: 1rem; stroke: currentColor; stroke-linecap: square; stroke-linejoin: miter; stroke-width: 1.5; width: 1rem; }
-      .auth-compact__body { background: #0a0a0a; border: 1px solid #302b28; bottom: calc(100% + 0.35rem); display: grid; gap: 0.5rem; left: 0; max-height: min(70dvh, 34rem); overflow: auto; padding: 0.75rem; position: absolute; width: min(24rem, calc(100vw - 1.5rem)); z-index: 20; }
+      .auth-compact__body { background: #0a0a0a; border: 1px solid #302b28; bottom: calc(100% - var(--settings-top-padding) + 0.35rem); display: grid; gap: 0.5rem; left: 0; max-height: min(70dvh, 34rem); overflow: auto; padding: 0.75rem; position: absolute; width: min(24rem, calc(100vw - 1.5rem)); z-index: 20; }
       .auth-compact__body label { font-size: 0.72rem; }
       .auth-onboarding { background: #090807; border: 1px solid #302b28; display: grid; gap: 0.55rem; margin: 0 auto; max-width: 32rem; padding: 1rem; position: relative; }
       .auth-onboarding h2 { font-size: 1rem; margin: 0; padding-right: 4.75rem; }
@@ -77,8 +77,8 @@
       .security-audit { margin: 0; max-height: 6rem; overflow: auto; padding-left: 1rem; }
       .security-audit li { margin-bottom: 0.2rem; }
 
-      .main-panel { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); min-height: 0; min-width: 0; }
-      .session-header { align-items: center; border-bottom: 1px solid #302b28; display: flex; gap: 0.8rem; justify-content: space-between; min-height: 3.85rem; padding: 0.75rem 1rem; }
+      .main-panel { display: grid; grid-template-areas: "header" "notice" "panes"; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); min-height: 0; min-width: 0; }
+      .session-header { align-items: center; border-bottom: 1px solid #302b28; display: flex; gap: 0.8rem; grid-area: header; justify-content: space-between; min-height: 3.85rem; padding: 0.75rem 1rem; }
       .session-header__title { min-width: 0; }
       .session-header h1 { font-size: 0.95rem; font-weight: 600; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .session-header p { color: #877e77; font-size: 0.72rem; margin: 0.25rem 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -96,7 +96,7 @@
       .session-state[data-state="error"], .session-state[data-state="degraded"] { color: #df8a69; }
       .session-state[data-state="idle"] { color: #9ca78b; }
 
-      .pane-root { background: #000; min-height: 0; min-width: 0; overflow: hidden; }
+      .pane-root { background: #000; grid-area: panes; min-height: 0; min-width: 0; overflow: hidden; }
       .pane-root--onboarding { overflow: auto; padding: 0.75rem; }
       .pane-root > .workbench-pane, .pane-root > .workspace-split { height: 100%; min-height: 0; }
       .workspace-split { display: grid; max-width: 100%; min-width: 0; width: 100%; }
@@ -153,7 +153,7 @@
       .provider-picker__label { color: #827971; font-size: 0.72rem; margin-right: 0.1rem; }
       .provider-button { color: #b8b0aa; font-size: 0.75rem; min-height: 2rem; }
       .provider-button[data-provider="hermes"] { border-color: #4c3a34; }
-      .workspace-error { border-bottom: 1px solid #5a3025; color: #df8a69; font-size: 0.76rem; margin: 0; padding: 0.45rem 1rem; }
+      .workspace-error { border-bottom: 1px solid #5a3025; color: #df8a69; font-size: 0.76rem; grid-area: notice; margin: 0; padding: 0.45rem 1rem; }
       .workspace-error:empty { display: none; }
       .sr-only { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
@@ -165,7 +165,7 @@
       @media (max-width: 48rem) {
         html, body { height: auto; overflow: auto; }
         .workbench-shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: auto; min-height: 100dvh; }
-        .sidebar { border-bottom: 1px solid #302b28; border-right: 0; grid-template-rows: auto auto auto auto; }
+        .sidebar { border-bottom: 1px solid #302b28; border-right: 0; grid-template-areas: "brand" "picker" "projects" "recent" "settings"; grid-template-rows: repeat(5, auto); }
         .session-section { max-height: 8.5rem; padding-top: 0.75rem; }
         .workspace-list, .session-list { display: flex; overflow-x: auto; }
         .sidebar-item { flex: 0 0 auto; max-width: 14rem; }

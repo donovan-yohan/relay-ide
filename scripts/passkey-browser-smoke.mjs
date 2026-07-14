@@ -32,6 +32,7 @@ let chromiumProcess;
 let browser;
 let matrixError;
 let cleanupError;
+let layoutGeometryEvidence;
 
 class Cdp {
   static async connect(url) {
@@ -188,6 +189,34 @@ try {
     { onboardingPresent: false, launcherPresent: true, composerCount: 0 },
     "authenticated workbench must expose Session launch controls without a universal composer",
   );
+  const initialClosedGeometry = await workbenchLayoutGeometry(sessionId);
+  assertWorkbenchLayoutGeometry(initialClosedGeometry, "authenticated shell with Settings closed");
+  await evaluate(sessionId, "document.querySelector('.auth-compact').open = true");
+  const initialOpenGeometry = await workbenchLayoutGeometry(sessionId);
+  assertWorkbenchLayoutGeometry(initialOpenGeometry, "authenticated shell with Settings open");
+  assertSettingsPopupGeometry(initialOpenGeometry, "authenticated shell with Settings open");
+  await evaluate(sessionId, "document.querySelector('.auth-compact').open = false");
+  const initialReclosedGeometry = await workbenchLayoutGeometry(sessionId);
+  assertWorkbenchLayoutGeometry(initialReclosedGeometry, "authenticated shell after Settings closes");
+  assert.deepEqual(
+    {
+      left: initialOpenGeometry.settingsLeftInset,
+      bottom: initialOpenGeometry.settingsBottomInset,
+      paneBottomGap: initialOpenGeometry.paneBottomGap,
+    },
+    {
+      left: initialClosedGeometry.settingsLeftInset,
+      bottom: initialClosedGeometry.settingsBottomInset,
+      paneBottomGap: initialClosedGeometry.paneBottomGap,
+    },
+    "opening Settings must not move its bottom-left anchor or the pane row",
+  );
+  assert.deepEqual(
+    initialReclosedGeometry,
+    initialClosedGeometry,
+    "closing Settings must restore identical workbench geometry",
+  );
+  layoutGeometryEvidence = { initialClosedGeometry, initialOpenGeometry, initialReclosedGeometry };
   await browser.command("Log.enable", {}, sessionId);
   assert.equal(
     await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
@@ -226,6 +255,13 @@ try {
   );
 
   const workspaceId = await addProjectThroughPicker(sessionId, process.cwd());
+  const workspaceGeometry = await workbenchLayoutGeometry(sessionId);
+  assertWorkbenchLayoutGeometry(workspaceGeometry, "selected Project after a workbench render");
+  assert.ok(
+    Math.abs(workspaceGeometry.paneHeight - initialClosedGeometry.paneHeight) <= 1,
+    `a render-triggering Project selection must preserve pane height: ${JSON.stringify({ initialClosedGeometry, workspaceGeometry })}`,
+  );
+  layoutGeometryEvidence.workspaceGeometry = workspaceGeometry;
   await enrollAndSignIn(secondSessionId);
   await waitFor(async () => (await evaluate(secondSessionId, "document.querySelectorAll('#workspace-list button').length")) === 1);
   assert.equal(
@@ -459,6 +495,7 @@ try {
     { status: 403, body: { error: { code: "claim_exposure_denied" } } },
     "non-private exposure must deny first-owner options without a fallback",
   );
+  console.log(`workbench layout geometry passed: ${JSON.stringify(layoutGeometryEvidence)}`);
   console.log("passkey browser matrix passed with Chromium CDP virtual authenticator");
 } catch (error) {
   matrixError = error;
@@ -1186,6 +1223,76 @@ async function evaluate(sessionId, expression) {
   );
   if (response.exceptionDetails) throw new Error(response.exceptionDetails.text);
   return response.result.value;
+}
+
+async function workbenchLayoutGeometry(sessionId) {
+  return evaluate(
+    sessionId,
+    `(() => {
+      const main = document.querySelector('.main-panel').getBoundingClientRect();
+      const panes = document.querySelector('#pane-root').getBoundingClientRect();
+      const sidebar = document.querySelector('.sidebar');
+      const sidebarBounds = sidebar.getBoundingClientRect();
+      const sidebarStyle = getComputedStyle(sidebar);
+      const settings = document.querySelector('.auth-compact');
+      const summary = settings.querySelector('summary').getBoundingClientRect();
+      const popup = settings.querySelector('.auth-compact__body').getBoundingClientRect();
+      const rootFontSize = parseFloat(getComputedStyle(document.documentElement).fontSize);
+      const round = (value) => Math.round(value * 100) / 100;
+      return {
+        errorDisplay: getComputedStyle(document.querySelector('#workbench-error')).display,
+        pickerHidden: document.querySelector('#workspace-add').hidden,
+        settingsOpen: settings.open,
+        paneBottomGap: round(main.bottom - panes.bottom),
+        paneHeight: round(panes.height),
+        settingsLeftInset: round(summary.left - sidebarBounds.left),
+        settingsBottomInset: round(sidebarBounds.bottom - summary.bottom),
+        sidebarPaddingLeft: round(parseFloat(sidebarStyle.paddingLeft)),
+        sidebarPaddingBottom: round(parseFloat(sidebarStyle.paddingBottom)),
+        settingsPopup: settings.open ? {
+          leftOffset: round(popup.left - summary.left),
+          gapAboveSummary: round(summary.top - popup.bottom),
+          expectedGap: round(rootFontSize * 0.35),
+          viewportLeftInset: round(popup.left),
+          viewportTopInset: round(popup.top),
+          viewportRightInset: round(window.innerWidth - popup.right),
+          viewportBottomInset: round(window.innerHeight - popup.bottom),
+        } : null,
+      };
+    })()`,
+  );
+}
+
+function assertWorkbenchLayoutGeometry(geometry, label) {
+  assert.equal(geometry.errorDisplay, "none", `${label}: the empty error banner must remain hidden`);
+  assert.equal(geometry.pickerHidden, true, `${label}: the optional Project picker must remain hidden`);
+  assert.ok(Math.abs(geometry.paneBottomGap) <= 1, `${label}: pane root must fill the main panel: ${JSON.stringify(geometry)}`);
+  assert.ok(
+    Math.abs(geometry.settingsLeftInset - geometry.sidebarPaddingLeft) <= 1,
+    `${label}: Settings must retain the sidebar left inset: ${JSON.stringify(geometry)}`,
+  );
+  assert.ok(
+    Math.abs(geometry.settingsBottomInset - geometry.sidebarPaddingBottom) <= 1,
+    `${label}: Settings must retain the sidebar bottom inset: ${JSON.stringify(geometry)}`,
+  );
+}
+
+function assertSettingsPopupGeometry(geometry, label) {
+  const popup = geometry.settingsPopup;
+  assert.ok(popup, `${label}: Settings popup geometry must be observable`);
+  assert.ok(Math.abs(popup.leftOffset) <= 1, `${label}: popup must align with the Settings summary: ${JSON.stringify(geometry)}`);
+  assert.ok(
+    Math.abs(popup.gapAboveSummary - popup.expectedGap) <= 1,
+    `${label}: popup gap must equal 0.35rem: ${JSON.stringify(geometry)}`,
+  );
+  for (const [edge, inset] of Object.entries({
+    left: popup.viewportLeftInset,
+    top: popup.viewportTopInset,
+    right: popup.viewportRightInset,
+    bottom: popup.viewportBottomInset,
+  })) {
+    assert.ok(inset >= -1, `${label}: popup ${edge} edge must stay inside the viewport: ${JSON.stringify(geometry)}`);
+  }
 }
 
 async function waitFor(predicate, timeoutDescription = "browser matrix state", timeoutMs = 15_000) {
