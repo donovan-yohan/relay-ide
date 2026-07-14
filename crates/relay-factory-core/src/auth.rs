@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -14,7 +14,10 @@ use webauthn_rs::prelude::{
     RegisterPublicKeyCredential, Webauthn, WebauthnBuilder,
 };
 
-use crate::{AuthError, AuthOrigin};
+use crate::{
+    AuthError, AuthOrigin, FirstOwnerExposure,
+    owner_store::{DurableCredential, OwnerStore},
+};
 
 const CEREMONY_TTL: Duration = Duration::from_secs(5 * 60);
 const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
@@ -30,14 +33,22 @@ pub struct AuthBoundary {
     origin: AuthOrigin,
     recovery_hash: [u8; 32],
     operator_id: Uuid,
+    first_owner_exposure: FirstOwnerExposure,
     webauthn: Webauthn,
     state: Mutex<AuthState>,
 }
 
 #[derive(Clone, Copy)]
 pub enum EnrollmentAuthority<'a> {
+    FirstOwner,
     RecoveryCode(&'a str),
     ExistingSession(&'a str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationOutcome {
+    OwnerClaimed,
+    PasskeyEnrolled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,13 +99,16 @@ pub struct SecuritySnapshot {
     pub audit: Vec<AuthAuditEvent>,
 }
 
+#[derive(Clone)]
 struct StoredCredential {
     id: String,
     passkey: Passkey,
-    enrolled_at: Instant,
+    enrolled_at_unix_seconds: u64,
 }
 
 struct AuthState {
+    owner_store: Option<OwnerStore>,
+    claimed: bool,
     passkeys: Vec<StoredCredential>,
     ceremonies: HashMap<[u8; 32], PendingCeremony>,
     sessions: HashMap<[u8; 32], StoredSession>,
@@ -105,6 +119,8 @@ struct AuthState {
 impl AuthState {
     fn new() -> Self {
         Self {
+            owner_store: None,
+            claimed: true,
             passkeys: Vec::new(),
             ceremonies: HashMap::new(),
             sessions: HashMap::new(),
@@ -118,6 +134,18 @@ impl AuthState {
             .retain(|_, ceremony| ceremony.expires_at() > now);
         self.sessions.retain(|_, session| session.expires_at > now);
         self.discard_unauthorized_registrations();
+    }
+
+    fn ensure_available(&self) -> Result<(), AuthError> {
+        if self
+            .owner_store
+            .as_ref()
+            .is_some_and(|store| !store.is_available())
+        {
+            Err(AuthError::OwnerStoreUnavailable)
+        } else {
+            Ok(())
+        }
     }
 
     fn discard_unauthorized_registrations(&mut self) {
@@ -146,6 +174,7 @@ enum PendingCeremony {
 
 #[derive(Clone, Copy)]
 enum RegistrationAuthority {
+    FirstOwner,
     Recovery,
     Session([u8; 32]),
 }
@@ -182,6 +211,58 @@ impl AuthBoundary {
     }
 
     fn with_recovery_hash(origin: AuthOrigin, recovery_hash: [u8; 32]) -> Result<Self, AuthError> {
+        Self::build(
+            origin,
+            recovery_hash,
+            FirstOwnerExposure::Unknown,
+            Uuid::new_v4(),
+            AuthState::new(),
+        )
+    }
+
+    pub fn from_owner_store(
+        origin: AuthOrigin,
+        recovery_hash_hex: &str,
+        owner_store: OwnerStore,
+        first_owner_exposure: FirstOwnerExposure,
+    ) -> Result<Self, AuthError> {
+        let recovery_hash = decode_sha256_hex(recovery_hash_hex)?;
+        let record = owner_store.record().clone();
+        let passkeys = record
+            .passkeys
+            .iter()
+            .map(|credential| StoredCredential {
+                id: credential.credential_id.clone(),
+                passkey: credential.passkey.clone(),
+                enrolled_at_unix_seconds: credential.enrolled_at_unix_seconds,
+            })
+            .collect();
+        let operator_id = record.owner_id.unwrap_or_else(Uuid::new_v4);
+        let state = AuthState {
+            owner_store: Some(owner_store),
+            claimed: record.is_claimed(),
+            passkeys,
+            ceremonies: HashMap::new(),
+            sessions: HashMap::new(),
+            audit: Vec::new(),
+            next_audit_sequence: 1,
+        };
+        Self::build(
+            origin,
+            recovery_hash,
+            first_owner_exposure,
+            operator_id,
+            state,
+        )
+    }
+
+    fn build(
+        origin: AuthOrigin,
+        recovery_hash: [u8; 32],
+        first_owner_exposure: FirstOwnerExposure,
+        operator_id: Uuid,
+        state: AuthState,
+    ) -> Result<Self, AuthError> {
         let webauthn = WebauthnBuilder::new(origin.rp_id(), origin.as_url())
             .map_err(|_| AuthError::InvalidOrigin)?
             .rp_name("Relay")
@@ -192,9 +273,10 @@ impl AuthBoundary {
         Ok(Self {
             origin,
             recovery_hash,
-            operator_id: Uuid::new_v4(),
+            operator_id,
+            first_owner_exposure,
             webauthn,
-            state: Mutex::new(AuthState::new()),
+            state: Mutex::new(state),
         })
     }
 
@@ -208,12 +290,19 @@ impl AuthBoundary {
         }
     }
 
+    pub fn owner_claimed(&self) -> Result<bool, AuthError> {
+        let state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
+        Ok(state.claimed)
+    }
+
     pub fn start_registration(
         &self,
         authority: EnrollmentAuthority<'_>,
     ) -> Result<CeremonyStart, AuthError> {
         let (passkeys, registration_authority) = {
             let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+            state.ensure_available()?;
             state.discard_expired(Instant::now());
             self.enrollment_is_authorized(&state, authority)?;
             if state.passkeys.len() >= MAX_PASSKEYS {
@@ -225,6 +314,7 @@ impl AuthBoundary {
                 .map(|credential| credential.passkey.clone())
                 .collect::<Vec<_>>();
             let authority = match authority {
+                EnrollmentAuthority::FirstOwner => RegistrationAuthority::FirstOwner,
                 EnrollmentAuthority::RecoveryCode(_) => RegistrationAuthority::Recovery,
                 EnrollmentAuthority::ExistingSession(session_token) => {
                     RegistrationAuthority::Session(hash_secret(session_token.as_bytes()))
@@ -259,13 +349,29 @@ impl AuthBoundary {
         })
     }
 
-    pub fn finish_registration(&self, ceremony_id: &str, response: &str) -> Result<(), AuthError> {
+    pub fn finish_registration(
+        &self,
+        ceremony_id: &str,
+        response: &str,
+    ) -> Result<RegistrationOutcome, AuthError> {
+        {
+            let state = self.state.lock().map_err(|_| AuthError::Internal)?;
+            state.ensure_available()?;
+            if !state.claimed && !self.first_owner_exposure.permits_claim() {
+                return Err(AuthError::ClaimExposureDenied);
+            }
+        }
         let (registration, authority) = match self.take_ceremony(ceremony_id)? {
             PendingCeremony::Registration {
                 state, authority, ..
             } => (state, authority),
             PendingCeremony::Authentication { .. } => return Err(AuthError::PasskeyDenied),
         };
+        if matches!(authority, RegistrationAuthority::FirstOwner)
+            && !self.first_owner_exposure.permits_claim()
+        {
+            return Err(AuthError::ClaimExposureDenied);
+        }
         let response = serde_json::from_str::<RegisterPublicKeyCredential>(response)
             .map_err(|_| AuthError::PasskeyDenied)?;
         let passkey = self
@@ -274,7 +380,16 @@ impl AuthBoundary {
             .map_err(|_| AuthError::PasskeyDenied)?;
 
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         state.discard_expired(Instant::now());
+        if matches!(authority, RegistrationAuthority::FirstOwner) {
+            if state.claimed {
+                return Err(AuthError::AlreadyClaimed);
+            }
+            if !self.first_owner_exposure.permits_claim() {
+                return Err(AuthError::ClaimExposureDenied);
+            }
+        }
         if let RegistrationAuthority::Session(session_key) = authority
             && !state.sessions.contains_key(&session_key)
         {
@@ -291,18 +406,36 @@ impl AuthBoundary {
             return Err(AuthError::PasskeyDenied);
         }
         let id = credential_id(&passkey);
-        state.passkeys.push(StoredCredential {
+        let credential = StoredCredential {
             id,
             passkey,
-            enrolled_at: Instant::now(),
-        });
-        Ok(())
+            enrolled_at_unix_seconds: unix_seconds()?,
+        };
+        let mut next_passkeys = state.passkeys.clone();
+        next_passkeys.push(credential);
+        let is_claim = matches!(authority, RegistrationAuthority::FirstOwner);
+        persist_credentials(
+            &mut state,
+            &next_passkeys,
+            is_claim.then_some(self.operator_id),
+        )?;
+        state.passkeys = next_passkeys;
+        if is_claim {
+            state.claimed = true;
+            Ok(RegistrationOutcome::OwnerClaimed)
+        } else {
+            Ok(RegistrationOutcome::PasskeyEnrolled)
+        }
     }
 
     pub fn start_authentication(&self) -> Result<CeremonyStart, AuthError> {
         let passkeys = {
             let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+            state.ensure_available()?;
             state.discard_expired(Instant::now());
+            if !state.claimed {
+                return Err(AuthError::OwnerUnclaimed);
+            }
             if state.passkeys.is_empty() {
                 return Err(AuthError::RecoveryRequired);
             }
@@ -345,9 +478,14 @@ impl AuthBoundary {
             .map_err(|_| AuthError::PasskeyDenied)?;
 
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         state.discard_expired(Instant::now());
+        if !state.claimed {
+            return Err(AuthError::OwnerUnclaimed);
+        }
+        let mut next_passkeys = state.passkeys.clone();
         let mut credential_id = None;
-        for credential in &mut state.passkeys {
+        for credential in &mut next_passkeys {
             if credential.passkey.update_credential(&result).is_some() {
                 credential_id = Some(credential.id.clone());
                 break;
@@ -356,11 +494,14 @@ impl AuthBoundary {
         let Some(credential_id) = credential_id else {
             return Err(AuthError::PasskeyDenied);
         };
+        persist_credentials(&mut state, &next_passkeys, None)?;
+        state.passkeys = next_passkeys;
         issue_session(&mut state, &credential_id)
     }
 
     pub fn require_session(&self, session_token: &str) -> Result<(), AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         state.discard_expired(Instant::now());
         let key = hash_secret(session_token.as_bytes());
         if state.sessions.contains_key(&key) {
@@ -375,6 +516,7 @@ impl AuthBoundary {
     /// the raw browser session token remains confined to this boundary.
     pub fn current_device_id(&self, session_token: &str) -> Result<String, AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         state.discard_expired(Instant::now());
         let key = hash_secret(session_token.as_bytes());
         state
@@ -386,48 +528,30 @@ impl AuthBoundary {
 
     pub fn require_csrf(&self, session_token: &str, csrf_token: &str) -> Result<(), AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         state.discard_expired(Instant::now());
         require_csrf_in_state(&state, session_token, csrf_token)
     }
 
     pub fn security_snapshot(&self, session_token: &str) -> Result<SecuritySnapshot, AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         state.discard_expired(Instant::now());
         let current = hash_secret(session_token.as_bytes());
         if !state.sessions.contains_key(&current) {
             return Err(AuthError::SessionMissing);
         }
-        let now = Instant::now();
-        let sessions = state
-            .sessions
-            .iter()
-            .map(|(key, session)| SessionDevice {
-                device_id: session.device_id.clone(),
-                credential_id: session.credential_id.clone(),
-                signed_in_seconds_ago: now.saturating_duration_since(session.created_at).as_secs(),
-                current: key.ct_eq(&current).into(),
-            })
-            .collect();
-        let credentials = state
-            .passkeys
-            .iter()
-            .map(|credential| CredentialDevice {
-                credential_id: credential.id.clone(),
-                active_sessions: state
-                    .sessions
-                    .values()
-                    .filter(|session| session.credential_id == credential.id)
-                    .count(),
-                enrolled_seconds_ago: now
-                    .saturating_duration_since(credential.enrolled_at)
-                    .as_secs(),
-            })
-            .collect();
-        Ok(SecuritySnapshot {
-            sessions,
-            credentials,
-            audit: state.audit.clone(),
-        })
+        Ok(build_security_snapshot(
+            &current,
+            &state.sessions,
+            state
+                .passkeys
+                .iter()
+                .map(|credential| (credential.id.as_str(), credential.enrolled_at_unix_seconds)),
+            &state.audit,
+            Instant::now(),
+            unix_seconds().unwrap_or_default(),
+        ))
     }
 
     pub fn revoke_session(
@@ -437,6 +561,7 @@ impl AuthBoundary {
         device_id: &str,
     ) -> Result<(), AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         state.discard_expired(Instant::now());
         require_csrf_in_state(&state, session_token, csrf_token)?;
         let before = state.sessions.len();
@@ -470,6 +595,7 @@ impl AuthBoundary {
         credential_id: &str,
     ) -> Result<(), AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         state.discard_expired(Instant::now());
         require_csrf_in_state(&state, session_token, csrf_token)?;
         let actor_device_id = state
@@ -487,13 +613,13 @@ impl AuthBoundary {
         if state.passkeys.len() <= 1 {
             return Err(AuthError::LastCredential);
         }
-        let before = state.passkeys.len();
-        state
-            .passkeys
-            .retain(|credential| credential.id != credential_id);
-        if state.passkeys.len() == before {
+        let mut next_passkeys = state.passkeys.clone();
+        next_passkeys.retain(|credential| credential.id != credential_id);
+        if next_passkeys.len() == state.passkeys.len() {
             return Err(AuthError::CredentialMissing);
         }
+        persist_credentials(&mut state, &next_passkeys, None)?;
+        state.passkeys = next_passkeys;
         remove_sessions_for_credential(&mut state, credential_id);
         state.discard_unauthorized_registrations();
         push_audit(
@@ -512,8 +638,16 @@ impl AuthBoundary {
         authority: EnrollmentAuthority<'_>,
     ) -> Result<(), AuthError> {
         match authority {
+            EnrollmentAuthority::FirstOwner
+                if !state.claimed && self.first_owner_exposure.permits_claim() =>
+            {
+                Ok(())
+            }
+            EnrollmentAuthority::FirstOwner if state.claimed => Err(AuthError::AlreadyClaimed),
+            EnrollmentAuthority::FirstOwner => Err(AuthError::ClaimExposureDenied),
             EnrollmentAuthority::RecoveryCode(recovery_code)
-                if recovery_code.len() <= MAX_RECOVERY_CODE_BYTES
+                if state.claimed
+                    && recovery_code.len() <= MAX_RECOVERY_CODE_BYTES
                     && self
                         .recovery_hash
                         .ct_eq(&hash_secret(recovery_code.as_bytes()))
@@ -537,6 +671,7 @@ impl AuthBoundary {
         let id = random_token(32)?;
         let key = hash_secret(id.as_bytes());
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         state.discard_expired(Instant::now());
         if state.ceremonies.len() >= MAX_CEREMONIES {
             return Err(AuthError::CeremonyLimit);
@@ -547,6 +682,7 @@ impl AuthBoundary {
 
     fn take_ceremony(&self, ceremony_id: &str) -> Result<PendingCeremony, AuthError> {
         let mut state = self.state.lock().map_err(|_| AuthError::Internal)?;
+        state.ensure_available()?;
         let now = Instant::now();
         let key = hash_secret(ceremony_id.as_bytes());
         let ceremony = state
@@ -647,6 +783,70 @@ fn push_audit(
     state.next_audit_sequence = state.next_audit_sequence.saturating_add(1);
 }
 
+fn persist_credentials(
+    state: &mut AuthState,
+    credentials: &[StoredCredential],
+    claim_owner: Option<Uuid>,
+) -> Result<(), AuthError> {
+    let Some(store) = state.owner_store.as_mut() else {
+        return Ok(());
+    };
+    let mut record = store.record().clone();
+    record.passkeys = credentials
+        .iter()
+        .map(|credential| DurableCredential {
+            credential_id: credential.id.clone(),
+            enrolled_at_unix_seconds: credential.enrolled_at_unix_seconds,
+            passkey: credential.passkey.clone(),
+        })
+        .collect();
+    if let Some(owner_id) = claim_owner {
+        record.claim(owner_id);
+    }
+    store.persist(&record)
+}
+
+fn build_security_snapshot<'a>(
+    current: &[u8; 32],
+    sessions: &HashMap<[u8; 32], StoredSession>,
+    credentials: impl Iterator<Item = (&'a str, u64)>,
+    audit: &[AuthAuditEvent],
+    now: Instant,
+    now_unix_seconds: u64,
+) -> SecuritySnapshot {
+    SecuritySnapshot {
+        sessions: sessions
+            .iter()
+            .map(|(key, session)| SessionDevice {
+                device_id: session.device_id.clone(),
+                credential_id: session.credential_id.clone(),
+                signed_in_seconds_ago: now.saturating_duration_since(session.created_at).as_secs(),
+                current: key.ct_eq(current).into(),
+            })
+            .collect(),
+        credentials: credentials
+            .map(
+                |(credential_id, enrolled_at_unix_seconds)| CredentialDevice {
+                    credential_id: credential_id.to_owned(),
+                    active_sessions: sessions
+                        .values()
+                        .filter(|session| session.credential_id == credential_id)
+                        .count(),
+                    enrolled_seconds_ago: now_unix_seconds.saturating_sub(enrolled_at_unix_seconds),
+                },
+            )
+            .collect(),
+        audit: audit.to_vec(),
+    }
+}
+
+fn unix_seconds() -> Result<u64, AuthError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| AuthError::Internal)
+}
+
 fn random_token(bytes: usize) -> Result<String, AuthError> {
     let mut token = vec![0_u8; bytes];
     getrandom::fill(&mut token).map_err(|_| AuthError::Internal)?;
@@ -681,6 +881,22 @@ mod tests {
             "recovery-test-secret",
         )
         .expect("auth boundary")
+    }
+
+    #[test]
+    fn security_snapshot_uses_persisted_enrollment_age_after_reboot() {
+        let persisted_before_reboot = 1_000_000;
+        let security = build_security_snapshot(
+            &hash_secret(b"requester"),
+            &HashMap::new(),
+            [("persisted-passkey", persisted_before_reboot)].into_iter(),
+            &[],
+            Instant::now(),
+            persisted_before_reboot + 3_600,
+        );
+
+        assert_eq!(security.credentials[0].credential_id, "persisted-passkey");
+        assert_eq!(security.credentials[0].enrolled_seconds_ago, 3_600);
     }
 
     #[test]

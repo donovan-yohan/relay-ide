@@ -59,11 +59,13 @@ test("the PWA shell is an authenticated CWD workbench, not a layout harness", as
   assert.match(app, /"\/auth\/sign-out"/);
   assert.match(app, /"\/auth\/credentials\/revoke"/);
   assert.match(app, /onboarding\.id = "auth-onboarding"/);
-  assert.match(app, /setup\.textContent = "Set up this browser"/);
+  assert.match(app, /setup\.textContent = firstClaim \? "Set up Relay owner" : "Enroll replacement passkey"/);
   assert.match(app, /authenticate\.textContent = "Sign in with passkey"/);
   assert.match(app, /input\.required = true/);
-  assert.match(app, /if \(!recovery && !authorized\)/);
-  assert.match(app, /Enter the current deployment recovery code before setting up this browser/);
+  assert.match(app, /ownerState !== "unclaimed"/);
+  assert.match(app, /No recovery code or session is required/);
+  assert.match(app, /"\/auth\/status"/);
+  assert.match(app, /result\.status === "owner_claimed"/);
   assert.match(app, /copyUrl\.textContent = "Copy URL"/);
   assert.match(auth, /Passkeys are unavailable here/);
   assert.match(app, /onboarding\.dataset\.secureOrigin/);

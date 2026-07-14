@@ -17,8 +17,8 @@ Later issues may introduce these terms only with explicit ownership and storage 
 - `relay-node probe` prints the same record for the node identity.
 - The PWA renders one local Workspace bound to one Node and an approved local root. Non-repo roots are valid.
 - The PWA persists a versioned, bounded layout tree in browser storage. Its tabs and panes contain only opaque Session references. Bounded recent Claude metadata may retain a status hint, but runtime polling remains authoritative and no terminal bytes or commands enter persisted metadata.
-- The PWA shell renders primary-canvas first-device passkey setup, sign-in/sign-out, typed unsupported/denied/recovery, and bounded trusted-browser/passkey revocation controls.
-- The hub validates WebAuthn at one configured HTTPS origin, issues revocable browser sessions for protected hub actions, and denies browser sessions at the node boundary.
+- The PWA shell renders code-free private first-owner passkey claim, explicit follow-up sign-in, claimed-state recovery/replacement, sign-out, typed failures, and bounded trusted-browser/passkey revocation controls.
+- The hub validates WebAuthn at one configured HTTPS origin, durably stores the owner generation and passkeys, issues revocable process-local browser sessions for protected hub actions, and denies browser sessions at the node boundary.
 - `relay-node codex-stdio-probe` owns a one-node, local `codex app-server --stdio` Session seam. Its explicit exercise mode creates, resumes, prompts, and cancels native Codex threads through bounded JSONL; it exposes neither a network transport nor raw provider transcripts.
 - The authenticated CWD workbench browses only canonical approved node directories, binds a selected folder to a Project, and runs native Hermes and Codex provider Sessions from that CWD.
 - Claude Code uses the same recent-Session and tab/pane workbench, but renders real xterm instead of chat. Creation accepts only an opaque Workspace id; the hub resolves and revalidates its approved CWD before the fixed executable is spawned with the node-owner HOME/PATH/auth context.
@@ -26,7 +26,7 @@ Later issues may introduce these terms only with explicit ownership and storage 
 
 ## Authority and data path
 
-The passkey client path is limited to server-side passkey ceremonies and browser-session revocation at the configured origin. Credentials, ceremonies, and session/device records are bounded in-memory state; no browser session becomes node authority.
+The passkey client path is limited to server-side passkey ceremonies and browser-session revocation at the configured origin. The V1 owner store durably holds only its schema/generation, exact origin, claim state, opaque owner UUID, and bounded passkeys with enrollment timestamps. The recovery-code digest remains separately configured launcher state. Ceremony, browser-session/device, CSRF, and audit records remain bounded in-memory state; restart invalidates browser cookies, and no browser session becomes node authority.
 
 The node owns the child-process identity and lifecycle for the Codex stdio seam and fixed Claude PTY seam; the hub owns approved Workspace bindings, bounded Hermes/Codex adapters, provider-neutral chat events, and bounded Claude Session metadata. None of these seams persists raw provider transcripts, terminal bytes, credentials, approval grants, or unbounded thread data. Workspace layout persistence remains presentation-only: split, move, tab, and view close never create, input to, interrupt, or end a Session. Explicit Claude process close remains a separate labeled action. Workbench operations use authenticated `/api/` routes, while Claude PTY routes resolve browser-device ownership and Workspace CWD server-side.
 

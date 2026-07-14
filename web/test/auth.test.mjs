@@ -90,10 +90,17 @@ test("classifies browser capability, ceremony failures, and recovery without aut
   });
   assert.deepEqual(presentationForAuthError({ code: "session_missing" }), {
     code: "session_missing",
-    message: "Browser access is not active. Enter the deployment recovery code to set up this browser, or sign in with an existing passkey.",
+    message: "Browser access is not active. Sign in with an owner passkey, or use Lost passkey access to enroll a replacement.",
   });
   assert.deepEqual(presentationForAuthError({ code: "recovery_denied" }), {
     code: "recovery_denied",
     message: "That recovery code is invalid for this Relay deployment. Obtain the current code privately, then try again. No PIN or anonymous session was enabled.",
   });
+  assert.match(presentationForAuthError({ code: "already_claimed" }).message, /sign in/i);
+  assert.match(presentationForAuthError({ code: "claim_exposure_denied" }).message, /private exposure/i);
+  assert.doesNotMatch(
+    presentationForAuthError({ code: "owner_store_unavailable" }).message,
+    /\/|\\|\.json/,
+  );
+  assert.match(presentationForAuthError({ code: "owner_unclaimed" }).message, /no owner/i);
 });

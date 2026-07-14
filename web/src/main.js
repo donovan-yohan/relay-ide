@@ -95,6 +95,7 @@ let selectedSessionId = saved.selectedSessionId ?? null;
 let activeLayout = null;
 let activeLayoutWorkspaceCwd = null;
 let authorized = false;
+let ownerState = "unknown";
 let security = { sessions: [], credentials: [], audit: [] };
 let hasWorkbenchSnapshot = false;
 let workbenchEpoch = 0;
@@ -232,6 +233,10 @@ function render() {
   renderWorkspaceList();
   renderSessionList();
   renderSecurityManagement();
+  const firstClaim = ownerState === "unclaimed";
+  recoveryCode.hidden = firstClaim;
+  recoveryCode.previousElementSibling.hidden = firstClaim;
+  enrollPasskey.textContent = firstClaim ? "Set up Relay owner" : "Enroll replacement passkey";
   composerShell.hidden = !authorized;
   paneRoot.classList.toggle("pane-root--onboarding", !authorized);
   renderPaneRoot(workspace);
@@ -904,34 +909,40 @@ function authOnboarding() {
 
   const title = document.createElement("h2");
   title.id = "auth-onboarding-title";
-  title.textContent = pendingDirectoryBrowse
-    ? "Sign in to continue adding this Project"
-    : "Set up this browser";
+  const firstClaim = ownerState === "unclaimed";
+  title.textContent = firstClaim
+    ? "Set up Relay owner"
+    : pendingDirectoryBrowse
+      ? "Sign in to continue adding this Project"
+      : "Sign in to Relay";
   const introduction = document.createElement("p");
-  introduction.textContent = "Relay uses a platform passkey for private browser access.";
+  introduction.textContent = firstClaim
+    ? "Create the first owner passkey from this private Relay address. No recovery code is needed."
+    : "Relay uses an enrolled owner passkey for private browser access.";
   const steps = document.createElement("ol");
-  for (const text of [
-    "Enter the current deployment recovery code and enroll a passkey.",
-    "Then sign in with that passkey to open the workbench.",
-  ]) {
+  for (const text of (firstClaim
+    ? ["Create the owner passkey.", "Then explicitly sign in with it to open the workbench."]
+    : ["Sign in with an owner passkey.", "Lost access? Use the recovery code only to enroll a replacement, then sign in."])) {
     const step = document.createElement("li");
     step.textContent = text;
     steps.append(step);
   }
   const label = document.createElement("label");
   label.htmlFor = "auth-onboarding-recovery";
-  label.textContent = "Current deployment recovery code";
+  label.textContent = "Lost passkey access? Recovery code for replacement enrollment";
+  label.hidden = firstClaim;
   const input = document.createElement("input");
   input.id = "auth-onboarding-recovery";
   input.type = "password";
   input.autocomplete = "off";
   input.required = true;
+  input.hidden = firstClaim;
   const actions = document.createElement("div");
   actions.className = "auth-onboarding__actions";
   const setup = document.createElement("button");
   setup.id = "auth-onboarding-enroll";
   setup.type = "button";
-  setup.textContent = "Set up this browser";
+  setup.textContent = firstClaim ? "Set up Relay owner" : "Enroll replacement passkey";
   setup.disabled = !passkeySupported;
   setup.addEventListener("click", () => void enroll(input).catch(() => {}));
   const authenticate = document.createElement("button");
@@ -1440,17 +1451,26 @@ function iconButton(label, title, path) {
 
 async function enroll(recoveryInput) {
   const recovery = recoveryInput.value.trim();
-  if (!recovery && !authorized) {
-    authStatus.textContent = "Enter the current deployment recovery code before setting up this browser.";
+  if (!recovery && !authorized && ownerState !== "unclaimed") {
+    authStatus.textContent = "Use the private recovery code to enroll a replacement passkey, or sign in with an existing passkey.";
     syncAuthOnboardingStatus();
     recoveryInput.focus();
     return;
   }
   recoveryInput.value = "";
-  const headers = recovery ? { "X-Relay-Recovery-Code": recovery } : { "X-Relay-CSRF": csrfToken() };
-  if (await runCeremony("/auth/passkeys/enroll/options", "/auth/passkeys/enroll/verify", "create", headers)) {
-    authStatus.textContent = "Passkey enrolled. Continue with Sign in with passkey to open the workbench.";
+  const headers = recovery
+    ? { "X-Relay-Recovery-Code": recovery }
+    : authorized
+      ? { "X-Relay-CSRF": csrfToken() }
+      : {};
+  const result = await runCeremony("/auth/passkeys/enroll/options", "/auth/passkeys/enroll/verify", "create", headers);
+  if (result) {
+    if (result.status === "owner_claimed") ownerState = "claimed";
+    authStatus.textContent = result.status === "owner_claimed"
+      ? "Relay owner created. Continue with Sign in with passkey; owner setup does not sign this browser in."
+      : "Passkey enrolled. Continue with Sign in with passkey to open the workbench.";
     syncAuthOnboardingStatus();
+    render();
   }
 }
 
@@ -1468,13 +1488,26 @@ async function runCeremony(optionsPath, verifyPath, operation, headers = {}) {
     const options = await request(optionsPath, { method: "POST", headers });
     const credential = await navigator.credentials[operation]({ publicKey: decodePublicKeyOptions(options) });
     if (!credential) throw { name: "NotAllowedError" };
-    await request(verifyPath, { method: "POST", body: JSON.stringify(credentialToJson(credential)) });
-    return true;
+    return await request(verifyPath, { method: "POST", body: JSON.stringify(credentialToJson(credential)) });
   } catch (error) {
     authStatus.textContent = presentationForAuthError(error).message;
     syncAuthOnboardingStatus();
     return false;
   }
+}
+
+async function loadOwnerStatus() {
+  try {
+    const result = await request("/auth/status");
+    ownerState = result.status;
+    authStatus.textContent = ownerState === "unclaimed"
+      ? "Set up the Relay owner with a passkey. No recovery code or session is required."
+      : passkeyClient.message;
+  } catch (error) {
+    ownerState = "unknown";
+    authStatus.textContent = presentationForAuthError(error).message;
+  }
+  render();
 }
 
 async function request(path, options = {}) {
@@ -1506,4 +1539,5 @@ function csrfToken() {
 }
 
 render();
+void loadOwnerStatus();
 if (mayHaveSession) void refreshWorkbench();

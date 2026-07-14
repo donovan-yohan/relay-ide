@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, resolve, sep } from "node:path";
 
@@ -24,6 +24,7 @@ const chromeProfile = resolve(scratch, "chrome-profile");
 const recoveryHash = createHash("sha256").update(recoveryCode).digest("hex");
 const httpsPort = await reservePort();
 const origin = `https://relay.test:${httpsPort}`;
+const ownerStore = resolve(scratch, "owner-state", "owner.json");
 let hub;
 let proxy;
 let chromiumProcess;
@@ -75,8 +76,13 @@ if (spawnSync(chromium, ["--version"], { encoding: "utf8" }).status !== 0) {
 
 try {
   await createCertificate();
+  const initialized = spawnSync("cargo", [
+    "run", "--quiet", "-p", "relay-hub", "--", "owner-store", "init",
+    "--owner-store", ownerStore, "--origin", origin,
+  ], { encoding: "utf8" });
+  assert.equal(initialized.status, 0, initialized.stderr);
   hub = startHub();
-  const hubAddress = await waitForHub(hub);
+  let hubAddress = await waitForHub(hub);
   proxy = await startProxy(hubAddress.port);
   chromiumProcess = spawn(
     chromium,
@@ -92,7 +98,9 @@ try {
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   browser = await connectBrowser(chromiumProcess, captureProcessOutput(chromiumProcess), chromeProfile);
-  const { sessionId } = await createIndependentBrowser();
+  let { sessionId } = await createIndependentBrowser();
+  let { sessionId: secondSessionId } = await createIndependentBrowser();
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-onboarding-title')?.textContent")) === "Set up Relay owner");
 
   assert.deepEqual(
     await evaluate(
@@ -100,35 +108,14 @@ try {
       "({ title: document.querySelector('#auth-onboarding-title')?.textContent, setup: document.querySelector('#auth-onboarding-enroll')?.textContent, signIn: document.querySelector('#auth-onboarding-sign-in')?.textContent, recoveryType: document.querySelector('#auth-onboarding-recovery')?.type, composerHidden: document.querySelector('.composer').hidden, onboardingFits: document.querySelector('#pane-root').scrollHeight <= document.querySelector('#pane-root').clientHeight })",
     ),
     {
-      title: "Set up this browser",
-      setup: "Set up this browser",
+      title: "Set up Relay owner",
+      setup: "Set up Relay owner",
       signIn: "Sign in with passkey",
       recoveryType: "password",
       composerHidden: true,
       onboardingFits: true,
     },
-    "an unauthenticated browser must get primary-canvas setup and sign-in controls",
-  );
-
-  await evaluate(
-    sessionId,
-    `window.relayOriginalFetch = window.fetch; window.relayEnrollmentFetches = []; window.fetch = (...args) => { window.relayEnrollmentFetches.push(args[0]); return window.relayOriginalFetch(...args); }; document.querySelector("#auth-onboarding-enroll").click();`,
-  );
-  assert.deepEqual(
-    await evaluate(
-      sessionId,
-      `({ status: document.querySelector("#auth-onboarding-status").textContent, focused: document.activeElement?.id, fetches: window.relayEnrollmentFetches })`,
-    ),
-    {
-      status: "Enter the current deployment recovery code before setting up this browser.",
-      focused: "auth-onboarding-recovery",
-      fetches: [],
-    },
-    "empty first-device setup must require recovery before any enrollment request",
-  );
-  await evaluate(
-    sessionId,
-    `window.fetch = window.relayOriginalFetch; delete window.relayOriginalFetch; delete window.relayEnrollmentFetches;`,
+    "an unclaimed Relay must get code-free owner setup and explicit sign-in controls",
   );
 
   await evaluate(
@@ -162,27 +149,22 @@ try {
   );
   await evaluate(sessionId, "window.fetch = window.relayOriginalFetch; delete window.relayOriginalFetch");
 
-  await evaluate(
-    sessionId,
-    `document.querySelector("#auth-onboarding-recovery").value = "invalid-for-this-deployment"; document.querySelector("#auth-onboarding-enroll").click();`,
-  );
-  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-onboarding-status').textContent"))?.includes("invalid for this Relay deployment"));
-  assert.match(
-    await evaluate(sessionId, "document.querySelector('#auth-onboarding-status').textContent"),
-    /Obtain the current code privately.*No PIN or anonymous session was enabled/,
-    "denied recovery must direct the operator to the current private code without weakening authentication",
-  );
-
-  await evaluate(
-    sessionId,
-    `document.querySelector("#auth-onboarding-recovery").value = ${JSON.stringify(recoveryCode)}; document.querySelector("#auth-onboarding-enroll").click();`,
-  );
-  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-onboarding-status').textContent"))?.includes("Passkey enrolled"));
-  assert.match(
-    await evaluate(sessionId, "document.querySelector('#auth-onboarding-status').textContent"),
-    /Continue with Sign in with passkey/,
-    "recovery enrollment must lead explicitly to the second passkey sign-in ceremony",
-  );
+  await Promise.all([
+    evaluate(sessionId, "document.querySelector('#auth-onboarding-enroll').click()"),
+    evaluate(secondSessionId, "document.querySelector('#auth-onboarding-enroll').click()"),
+  ]);
+  await waitFor(async () => {
+    const statuses = await Promise.all([
+      evaluate(sessionId, "document.querySelector('#auth-status').textContent"),
+      evaluate(secondSessionId, "document.querySelector('#auth-status').textContent"),
+    ]);
+    return statuses.some((status) => status.includes("Relay owner created"))
+      && statuses.some((status) => status.includes("Another browser completed owner setup"));
+  });
+  const firstStatus = await evaluate(sessionId, "document.querySelector('#auth-status').textContent");
+  if (!firstStatus.includes("Relay owner created")) {
+    [sessionId, secondSessionId] = [secondSessionId, sessionId];
+  }
 
   await evaluate(sessionId, "document.querySelector('#auth-onboarding-sign-in').click()");
   await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Browser access verified"));
@@ -201,9 +183,30 @@ try {
     200,
     "a valueless unrelated Cookie segment must not invalidate a valid browser session",
   );
+  hub.kill("SIGTERM");
+  await once(hub, "exit");
+  hub = startHub(hubAddress.port);
+  hubAddress = await waitForHub(hub);
+  assert.equal(
+    await protectedHubStatus(hubAddress.port, sessionCookie),
+    401,
+    "hub restart must invalidate process-local session cookies",
+  );
+  await evaluate(sessionId, "document.querySelector('#auth-status').textContent = ''; document.querySelector('#sign-in').click()");
+  await waitFor(async () => (await evaluate(sessionId, "document.querySelector('#auth-status').textContent"))?.includes("Browser access verified"));
+  assert.equal(
+    await evaluate(sessionId, "fetch('/protected/hub', { credentials: 'same-origin' }).then((response) => response.status)"),
+    200,
+    "the persisted owner passkey must sign in after restart",
+  );
+  await browser.command("Page.reload", { ignoreCache: true }, sessionId);
+  await waitFor(async () => (await evaluate(sessionId, "document.readyState")) === "complete");
+  await waitFor(
+    async () => await evaluate(sessionId, "typeof window.Terminal === 'function' && !document.querySelector('.composer').hidden"),
+    async () => evaluate(sessionId, "({ terminal: typeof window.Terminal, composerHidden: document.querySelector('.composer').hidden, auth: document.querySelector('#auth-status').textContent })"),
+  );
 
   const workspaceId = await addProjectThroughPicker(sessionId, process.cwd());
-  const { sessionId: secondSessionId } = await createIndependentBrowser();
   await enrollAndSignIn(secondSessionId);
   await waitFor(async () => (await evaluate(secondSessionId, "document.querySelectorAll('#workspace-list button').length")) === 1);
   assert.equal(
@@ -412,15 +415,44 @@ try {
     /^relay-hub liveness listening on 127\.0\.0\.1:\d+\n$/,
     "the real WebAuthn enrollment, assertion, session, and revoke path must not append credential or session material to hub logs",
   );
+  hub.kill("SIGTERM");
+  await once(hub, "exit");
+  const reset = spawnSync("cargo", [
+    "run", "--quiet", "-p", "relay-hub", "--", "owner-store", "reset",
+    "--owner-store", ownerStore, "--origin", origin, "--confirm-reset-owner",
+  ], { encoding: "utf8" });
+  assert.equal(reset.status, 0, reset.stderr);
+  hub = startHub(hubAddress.port, "public");
+  hubAddress = await waitForHub(hub);
+  const { sessionId: resetSessionId } = await createIndependentBrowser();
+  assert.deepEqual(
+    await evaluate(resetSessionId, "fetch('/auth/passkeys/sign-in/options', { method: 'POST' }).then(async (response) => ({ status: response.status, body: await response.json() }))"),
+    { status: 403, body: { error: { code: "owner_unclaimed" } } },
+    "reset must invalidate old credentials and return the store to typed unclaimed state",
+  );
+  assert.deepEqual(
+    await evaluate(resetSessionId, "fetch('/auth/passkeys/enroll/options', { method: 'POST' }).then(async (response) => ({ status: response.status, body: await response.json() }))"),
+    { status: 403, body: { error: { code: "claim_exposure_denied" } } },
+    "non-private exposure must deny first-owner options without a fallback",
+  );
   console.log("passkey browser matrix passed with Chromium CDP virtual authenticator");
 } finally {
   browser?.close();
   proxy?.close();
-  if (hub?.exitCode === null) hub.kill("SIGTERM");
-  if (chromiumProcess?.exitCode === null) chromiumProcess.kill("SIGTERM");
+  const exits = [];
+  if (hub?.exitCode === null) {
+    exits.push(once(hub, "exit"));
+    hub.kill("SIGTERM");
+  }
+  if (chromiumProcess?.exitCode === null) {
+    exits.push(once(chromiumProcess, "exit"));
+    chromiumProcess.kill("SIGTERM");
+  }
+  await Promise.all(exits);
+  await rm(scratch, { recursive: true, force: true });
 }
 
-function startHub() {
+function startHub(port = 0, exposure = "private") {
   return spawn(
     "cargo",
     [
@@ -431,11 +463,15 @@ function startHub() {
       "--",
       "serve",
       "--bind",
-      "127.0.0.1:0",
+      `127.0.0.1:${port}`,
       "--origin",
       origin,
       "--recovery-code-hash",
       recoveryHash,
+      "--owner-store",
+      ownerStore,
+      "--first-owner-exposure",
+      exposure,
       "--test-claude-fixture",
       "cat",
       "--workspace-root",
@@ -545,7 +581,7 @@ async function hubMutationStatus(port, path, sessionCookie, csrf, requestOrigin,
 async function recoveryValueAfterFailedEnrollment(sessionId) {
   await evaluate(
     sessionId,
-    `document.querySelector("#auth-status").textContent = ""; document.querySelector("#recovery-code").value = ${JSON.stringify(recoveryCode)}; document.querySelector("#enroll-passkey").click();`,
+    `document.querySelector("#auth-status").textContent = ""; document.querySelector("#recovery-code").value = ""; document.querySelector("#enroll-passkey").click();`,
   );
   await waitFor(async () => Boolean(await evaluate(sessionId, "document.querySelector('#auth-status').textContent")));
   return evaluate(sessionId, "document.querySelector('#recovery-code').value");
