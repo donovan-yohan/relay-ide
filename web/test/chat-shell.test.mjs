@@ -21,6 +21,204 @@ test("each chat tab owns an integrated keyboard-first composer", async () => {
   assert.match(app, /const chatDrafts = new Map\(\)/);
 });
 
+test("per-tab submission clears, locks duplicate sends, and recovers before newer typing", async () => {
+  const app = await readFile(new URL("main.js", source), "utf8");
+  const helpers = app.slice(
+    app.indexOf("function updateChatComposerSendState"),
+    app.indexOf("function captureChatScrollStates"),
+  );
+  const chatDrafts = new Map([["tab-1", "hello"]]);
+  const pendingChatSubmissions = new Set();
+  const send = { disabled: false };
+  const form = { dataset: { tabId: "tab-1" }, querySelector: () => send };
+  const textarea = {
+    closest: () => form,
+    scrollHeight: 64,
+    style: {},
+    value: "hello",
+  };
+  const { clearSubmittedChatDraft, recoverChatDraft, updateChatComposerSendState } = Function(
+    "chatDrafts",
+    "pendingChatSubmissions",
+    "paneRoot",
+    `"use strict"; ${helpers}; return { clearSubmittedChatDraft, recoverChatDraft, updateChatComposerSendState };`,
+  )(chatDrafts, pendingChatSubmissions, { querySelectorAll: () => [textarea] });
+
+  pendingChatSubmissions.add("tab-1");
+  clearSubmittedChatDraft("tab-1", textarea, send);
+  assert.equal(textarea.value, "");
+  assert.equal(send.disabled, true);
+  assert.equal(chatDrafts.has("tab-1"), false);
+  assert.equal(textarea.style.height, "64px");
+  assert.equal(textarea.disabled, undefined, "a pending request must not disable newer typing");
+
+  textarea.value = "new text typed while sending";
+  chatDrafts.set("tab-1", "new text typed while sending");
+  updateChatComposerSendState("tab-1", textarea, send);
+  assert.equal(send.disabled, true, "a pending tab must block a second send");
+  recoverChatDraft("tab-1", "hello");
+  assert.equal(textarea.value, "hello\nnew text typed while sending");
+  assert.equal(chatDrafts.get("tab-1"), textarea.value);
+  assert.equal(send.disabled, true, "failure recovery stays locked until the request settles");
+  pendingChatSubmissions.delete("tab-1");
+  updateChatComposerSendState("tab-1", textarea, send);
+  assert.equal(send.disabled, false, "a settled request unlocks the recovered draft");
+
+  textarea.value = "hello";
+  chatDrafts.set("tab-1", "hello");
+  pendingChatSubmissions.add("tab-1");
+  recoverChatDraft("tab-1", "hello");
+  assert.equal(
+    textarea.value,
+    "hello\nhello",
+    "identical non-empty text is still independent newer typing and must not be deduplicated",
+  );
+  pendingChatSubmissions.delete("tab-1");
+  assert.match(app, /const pendingChatSubmissions = new Set\(\)/);
+  assert.match(app, /if \(!text \|\| pendingChatSubmissions\.has\(tabId\)\) return;/);
+  assert.match(app, /clearSubmittedChatDraft\(tabId, textarea, send\);\s*void submitMessage/);
+  assert.match(app, /catch \(error\) \{\s*recoverChatDraft\(draftKey, text\);/);
+  assert.match(app, /finally \{\s*pendingChatSubmissions\.delete\(draftKey\);\s*render\(\);/);
+});
+
+test("pending submission unlocks after both request success and ordered failure recovery", async () => {
+  const app = await readFile(new URL("main.js", source), "utf8");
+  const submitSource = app.slice(
+    app.indexOf("async function submitMessage"),
+    app.indexOf("async function interrupt"),
+  );
+  const session = { id: "session-1", events: [], provider: "codex" };
+
+  async function exercise(request) {
+    const pending = new Set(["tab-1"]);
+    const order = [];
+    const submitMessage = Function(
+      "chatDrafts",
+      "pendingChatSubmissions",
+      "clearError",
+      "beginWorkbenchMutation",
+      "replaceSession",
+      "render",
+      "request",
+      "recoverChatDraft",
+      "showError",
+      "refreshWorkbench",
+      `"use strict"; ${submitSource}; return submitMessage;`,
+    )(
+      new Map(),
+      pending,
+      () => order.push("clear"),
+      () => order.push("begin"),
+      () => order.push("replace"),
+      () => order.push(`render:${pending.has("tab-1") ? "pending" : "settled"}`),
+      request,
+      () => order.push("recover"),
+      () => order.push("error"),
+      async () => order.push("refresh"),
+    );
+    await submitMessage(session, "hello", "tab-1");
+    return { order, pending };
+  }
+
+  const success = await exercise(async () => ({ ...session, events: [{ role: "user" }] }));
+  assert.equal(success.pending.has("tab-1"), false);
+  assert.deepEqual(success.order, ["clear", "begin", "replace", "render:pending", "replace", "render:settled"]);
+
+  const failure = await exercise(async () => { throw new Error("offline"); });
+  assert.equal(failure.pending.has("tab-1"), false);
+  assert.deepEqual(
+    failure.order,
+    ["clear", "begin", "replace", "render:pending", "recover", "error", "refresh", "render:settled"],
+    "failed text must recover before the pending lock is released",
+  );
+});
+
+test("message rows omit visible role labels and expose resilient copy actions", async () => {
+  const [page, app] = await Promise.all([
+    readFile(new URL("index.html", source), "utf8"),
+    readFile(new URL("main.js", source), "utf8"),
+  ]);
+  const copySource = app.slice(
+    app.indexOf("async function copyChatMessage"),
+    app.indexOf("function renderChatComposer"),
+  );
+  const copied = [];
+  const copyChatMessage = Function(
+    "navigator",
+    `"use strict"; ${copySource}; return copyChatMessage;`,
+  )({ clipboard: { writeText: async (text) => copied.push(text) } });
+  const button = { dataset: {} };
+  const status = { textContent: "" };
+  await copyChatMessage(button, status, "answer text");
+  assert.deepEqual(copied, ["answer text"]);
+  assert.equal(button.dataset.copyState, "copied");
+  assert.equal(status.textContent, "Message copied.");
+
+  const failedCopy = Function(
+    "navigator",
+    `"use strict"; ${copySource}; return copyChatMessage;`,
+  )({ clipboard: { writeText: async () => { throw new Error("denied"); } } });
+  await failedCopy(button, status, "preserved answer");
+  assert.equal(button.dataset.copyState, "unavailable");
+  assert.match(status.textContent, /conversation is unchanged/);
+
+  assert.match(app, /item\.querySelector\("header"\)\?\.remove\(\)/);
+  assert.match(app, /item\.setAttribute\("aria-label", item\.classList\.contains\("chat-event--user"\) \? "Your message" : "Assistant message"\)/);
+  assert.match(app, /iconButton\("Copy message", "Copy message",/);
+  assert.match(app, /copy\.dataset\.chatCopyKey = `\$\{tabId\}:\$\{messageIndex\}`/);
+  assert.match(app, /status\.setAttribute\("aria-live", "polite"\)/);
+  assert.match(page, /\.chat-event--message:hover \.chat-event__copy/);
+  assert.match(page, /@media \(hover: none\), \(pointer: coarse\) \{[\s\S]*?\.chat-event__copy \{[^}]*min-height: 2\.75rem;[^}]*opacity: 1;[^}]*pointer-events: auto;[^}]*width: 2\.75rem;/);
+  assert.doesNotMatch(page, /chat-event--thinking/);
+  assert.doesNotMatch(page, /\.chat-event__role/);
+});
+
+test("copy focus and feedback survive a pane replacement by stable message key", async () => {
+  const app = await readFile(new URL("main.js", source), "utf8");
+  const helpers = app.slice(
+    app.indexOf("function captureChatCopyState"),
+    app.indexOf("async function copyChatMessage"),
+  );
+  const originalStatus = { textContent: "Message copied." };
+  const original = {
+    dataset: { chatCopyKey: "tab-2:1", copyState: "copied" },
+    matches: (selector) => selector === "[data-chat-copy-key]",
+    parentElement: { querySelector: () => originalStatus },
+  };
+  const sourceRoot = {
+    ownerDocument: { activeElement: original },
+    querySelectorAll: () => [original],
+  };
+  const queued = [];
+  const { captureChatCopyState, restoreChatCopyState } = Function(
+    "queueMicrotask",
+    `"use strict"; ${helpers}; return { captureChatCopyState, restoreChatCopyState };`,
+  )((callback) => queued.push(callback));
+  const state = captureChatCopyState(sourceRoot);
+  assert.equal(state.focusedKey, "tab-2:1");
+  assert.deepEqual(state.feedback.get("tab-2:1"), {
+    copyState: "copied",
+    status: "Message copied.",
+  });
+
+  const replacementStatus = { textContent: "" };
+  let focusOptions;
+  const replacement = {
+    dataset: { chatCopyKey: "tab-2:1" },
+    focus: (options) => { focusOptions = options; },
+    isConnected: true,
+    parentElement: { querySelector: () => replacementStatus },
+  };
+  restoreChatCopyState({ querySelectorAll: () => [replacement] }, state);
+  assert.equal(replacement.dataset.copyState, "copied");
+  assert.equal(replacementStatus.textContent, "Message copied.");
+  assert.equal(queued.length, 1);
+  queued.shift()();
+  assert.deepEqual(focusOptions, { preventScroll: true });
+  assert.match(app, /const chatCopyState = captureChatCopyState\(paneRoot\)/);
+  assert.match(app, /restoreChatCopyState\(paneRoot, chatCopyState\)/);
+});
+
 test("chat refresh follows only readers already near the bottom", async () => {
   const app = await readFile(new URL("main.js", source), "utf8");
 

@@ -131,12 +131,16 @@
       .chat-timeline { align-content: start; display: grid; gap: 0.25rem; margin: 0 auto; max-width: 50rem; min-height: 100%; width: 100%; }
       .chat-event { display: grid; gap: 0.35rem; max-width: 100%; padding: 0.8rem 0; }
       .chat-event header { align-items: center; display: flex; gap: 0.55rem; }
-      .chat-event__role { color: #e2d8d1; font-size: 0.72rem; font-weight: 700; }
       .chat-event code { color: #776f69; font-size: 0.68rem; }
       .chat-event p { color: #d3cbc5; line-height: 1.55; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-      .chat-event--user { background: #100c0a; border: 1px solid #30231e; justify-self: end; margin: 0.45rem 0; max-width: min(88%, 42rem); padding: 0.65rem 0.75rem; }
-      .chat-event--user header { justify-content: flex-end; }
-      .chat-event--assistant { justify-self: stretch; }
+      .chat-event--message { position: relative; }
+      .chat-event--user { background: #100c0a; border: 1px solid #30231e; justify-self: end; margin: 0.45rem 0; max-width: min(88%, 42rem); padding: 0.65rem 2.8rem 0.65rem 0.75rem; }
+      .chat-event--assistant { justify-self: stretch; padding-right: 2.4rem; }
+      .chat-event__copy { background: #000; border: 1px solid #302b28; color: #8d847d; height: 1.8rem; min-height: 1.8rem; opacity: 0; padding: 0.3rem; pointer-events: none; position: absolute; right: 0.25rem; top: 0.45rem; width: 1.8rem; }
+      .chat-event__copy svg { fill: none; height: 0.9rem; stroke: currentColor; stroke-linecap: square; stroke-linejoin: miter; stroke-width: 1.5; width: 0.9rem; }
+      .chat-event--message:hover .chat-event__copy, .chat-event--message:focus-within .chat-event__copy, .chat-event__copy:focus-visible { opacity: 1; pointer-events: auto; }
+      .chat-event__copy[data-copy-state="copied"] { color: #9ca78b; }
+      .chat-event__copy[data-copy-state="unavailable"] { color: #df8a69; }
       .chat-event--tool, .chat-event--status { border-left: 1px solid #3a332e; margin: 0.25rem 0; padding: 0.45rem 0.75rem; }
       .chat-event--tool p, .chat-event--status p { color: #9f958e; font-size: 0.76rem; line-height: 1.4; }
       .chat-event--error { border-left: 2px solid #df8a69; padding-left: 0.75rem; }
@@ -160,6 +164,12 @@
       @media (max-width: 64rem) {
         .pane-divider { cursor: row-resize; min-height: 0.5rem; min-width: 0; }
         .pane-divider::after { inset: 0.18rem 0.6rem; }
+      }
+
+      @media (hover: none), (pointer: coarse) {
+        .chat-event--user { padding-right: 3.6rem; }
+        .chat-event--assistant { padding-right: 3.25rem; }
+        .chat-event__copy { height: 2.75rem; min-height: 2.75rem; opacity: 1; pointer-events: auto; width: 2.75rem; }
       }
 
       @media (max-width: 48rem) {

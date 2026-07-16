@@ -969,15 +969,34 @@ async function exerciseLiveWorkbench(sessionId, { expectedWorkspaceCount, worksp
   assert.deepEqual(composerState, { composerCount: 1, inputDisabled: false, sendDisabled: true, sendType: "submit", sameForm: true });
   await evaluate(
     sessionId,
-    `(() => { const form = document.querySelector("[data-chat-composer]"); const input = form.querySelector("textarea"); const send = form.querySelector("[type=submit]"); window.relaySubmitObserved = false; form.addEventListener("submit", () => { window.relaySubmitObserved = true; }, { once: true }); input.value = "Reply with one word: relay"; input.dispatchEvent(new Event("input", { bubbles: true })); send.click(); })()`,
+    `(() => { const form = document.querySelector("[data-chat-composer]"); const input = form.querySelector("textarea"); window.relaySubmitObserved = false; form.addEventListener("submit", () => { window.relaySubmitObserved = true; }, { once: true }); input.value = "Reply with one word: relay"; input.dispatchEvent(new Event("input", { bubbles: true })); input.focus(); input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); })()`,
   );
-  assert.equal(await evaluate(sessionId, "window.relaySubmitObserved"), true, "Send must submit the active chat tab composer");
+  assert.equal(await evaluate(sessionId, "window.relaySubmitObserved"), true, "Enter must submit the active chat tab composer");
+  assert.deepEqual(
+    await evaluate(sessionId, "(() => { const form = document.querySelector('[data-chat-composer]'); return { value: form.querySelector('textarea').value, sendDisabled: form.querySelector('[type=submit]').disabled }; })()"),
+    { value: "", sendDisabled: true },
+    "successful keyboard-first submission must clear the active draft immediately",
+  );
+  await waitFor(
+    async () => evaluate(sessionId, "document.activeElement === document.querySelector('[data-chat-composer] textarea')"),
+    "composer focus restoration after its optimistic render microtask",
+  );
+  await evaluate(sessionId, "window.relayComposerBeforeRefresh = document.querySelector('[data-chat-composer] textarea')");
   await waitFor(
     async () => (await evaluate(sessionId, "document.querySelectorAll('.chat-event--user').length")) === 1,
     async () => ({
       dom: await evaluate(sessionId, "({ disabled: document.querySelector('[data-chat-composer] textarea')?.disabled, error: document.querySelector('#workbench-error').textContent, errorCode: document.querySelector('#workbench-error').dataset.code, timeline: document.querySelector('.chat-timeline')?.innerText, state: document.querySelector('#session-status').dataset.state })"),
       runtimeEvents: browser.events.filter((event) => event.method === "Runtime.exceptionThrown"),
     }),
+  );
+  await waitFor(
+    async () => evaluate(sessionId, "document.querySelector('[data-chat-composer] textarea') !== window.relayComposerBeforeRefresh"),
+    "an actual composer node replacement during the scheduled Session refresh",
+  );
+  assert.deepEqual(
+    await evaluate(sessionId, "(() => { const input = document.querySelector('[data-chat-composer] textarea'); return { value: input?.value, focused: document.activeElement === input }; })()"),
+    { value: "", focused: true },
+    "the cleared draft and focus must survive the actual composer node replacement",
   );
   await waitFor(
     async () => evaluate(sessionId, `fetch('/api/workbench', { credentials: 'same-origin' }).then((response) => response.json()).then((snapshot) => snapshot.sessions.find((session) => session.id === ${JSON.stringify(liveSessionId)})?.events?.some((event) => event.role === 'assistant' && event.kind === 'message' && event.label === 'assistant.message' && event.text.toLowerCase().includes('relay')))`),
@@ -1057,7 +1076,7 @@ async function exerciseLiveWorkbench(sessionId, { expectedWorkspaceCount, worksp
   );
   const presentation = await evaluate(
     sessionId,
-    `(() => { const pane = document.querySelector('.workbench-pane'); const body = pane?.querySelector('.pane-body--chat'); return { paneCount: document.querySelectorAll('.workbench-pane').length, terminalSurfaceCount: document.querySelectorAll('.terminal-surface').length, composerCount: document.querySelectorAll('[data-chat-composer]').length, composerInsideChatPane: Boolean(pane?.matches('.workbench-pane--chat') && pane.querySelector(':scope > [data-chat-composer]')), userMessages: document.querySelectorAll('.chat-event--user').length, assistantMessages: [...document.querySelectorAll('.chat-event--assistant p')].map((message) => message.textContent), genericEvents: document.querySelectorAll('.chat-event--error, .chat-event--tool, .chat-event--status').length, nearBottom: body ? body.scrollHeight - body.clientHeight - body.scrollTop <= 80 : false, state: document.querySelector('#session-status').dataset.state }; })()`,
+    `(() => { const pane = document.querySelector('.workbench-pane'); const body = pane?.querySelector('.pane-body--chat'); return { paneCount: document.querySelectorAll('.workbench-pane').length, terminalSurfaceCount: document.querySelectorAll('.terminal-surface').length, composerCount: document.querySelectorAll('[data-chat-composer]').length, composerValue: document.querySelector('[data-chat-composer] textarea')?.value, composerInsideChatPane: Boolean(pane?.matches('.workbench-pane--chat') && pane.querySelector(':scope > [data-chat-composer]')), userMessages: document.querySelectorAll('.chat-event--user').length, userArticleNames: [...document.querySelectorAll('.chat-event--user')].map((message) => message.getAttribute('aria-label')), assistantMessages: [...document.querySelectorAll('.chat-event--assistant p')].map((message) => message.textContent), assistantArticleNames: [...document.querySelectorAll('.chat-event--assistant')].map((message) => message.getAttribute('aria-label')), visibleRoleLabels: document.querySelectorAll('.chat-event--user .chat-event__role, .chat-event--assistant .chat-event__role').length, messageCopyActions: document.querySelectorAll('.chat-event--message .chat-event__copy[aria-label="Copy message"]').length, genericEvents: document.querySelectorAll('.chat-event--error, .chat-event--tool, .chat-event--status').length, nearBottom: body ? body.scrollHeight - body.clientHeight - body.scrollTop <= 80 : false, state: document.querySelector('#session-status').dataset.state }; })()`,
   );
   assert.deepEqual(
     presentation,
@@ -1065,14 +1084,38 @@ async function exerciseLiveWorkbench(sessionId, { expectedWorkspaceCount, worksp
       paneCount: 1,
       terminalSurfaceCount: 0,
       composerCount: 1,
+      composerValue: "",
       composerInsideChatPane: true,
       userMessages: 1,
+      userArticleNames: ["Your message"],
       assistantMessages: ["relay"],
+      assistantArticleNames: ["Assistant message"],
+      visibleRoleLabels: 0,
+      messageCopyActions: 2,
       genericEvents: 0,
       nearBottom: true,
       state: "idle",
     },
     "the final live chat view must be normalized, current, quiet, and composer-owned",
+  );
+  const focusedCopyKey = await evaluate(
+    sessionId,
+    "(() => { const button = document.querySelector('.chat-event--assistant .chat-event__copy'); button.focus(); const key = button.dataset.chatCopyKey; button.click(); return key; })()",
+  );
+  await waitFor(
+    async () => evaluate(sessionId, `Boolean(document.querySelector('[data-chat-copy-key="${focusedCopyKey}"]')?.dataset.copyState)`),
+    "keyboard copy feedback",
+  );
+  const copyFeedback = await evaluate(
+    sessionId,
+    `(() => { const button = document.querySelector('[data-chat-copy-key="${focusedCopyKey}"]'); return { state: button.dataset.copyState, status: button.parentElement.querySelector('.chat-event__copy-status').textContent }; })()`,
+  );
+  assert.ok(["copied", "unavailable"].includes(copyFeedback.state), `copy state: ${JSON.stringify(copyFeedback)}`);
+  assert.ok(copyFeedback.status.length > 0, "copy must expose an accessible status without changing chat content");
+  await evaluate(sessionId, "window.relayCopyBeforeResize = document.activeElement; window.dispatchEvent(new Event('resize'))");
+  await waitFor(
+    async () => evaluate(sessionId, `(() => { const button = document.querySelector('[data-chat-copy-key="${focusedCopyKey}"]'); const status = button?.parentElement.querySelector('.chat-event__copy-status'); return button !== window.relayCopyBeforeResize && document.activeElement === button && button?.dataset.copyState === ${JSON.stringify(copyFeedback.state)} && status?.textContent === ${JSON.stringify(copyFeedback.status)}; })()`),
+    "copy node replacement with focus and feedback restoration after a pane rerender",
   );
   if (process.env.RELAY_WORKBENCH_SCREENSHOT_PATH) {
     const screenshot = await browser.command("Page.captureScreenshot", { format: "png" }, sessionId);

@@ -116,6 +116,7 @@ let pendingDirectoryBrowse = null;
 const terminalRuntimes = new Map();
 const retainedTerminalInput = new Map();
 const chatDrafts = new Map();
+const pendingChatSubmissions = new Set();
 const chatScrollStates = new Map();
 const chatAnnouncementFingerprints = new Map();
 const terminalsPendingRemoval = new Set();
@@ -489,6 +490,7 @@ function sidebarButton(label, meta) {
 
 function renderPaneRoot(workspace) {
   const focusedComposer = captureComposerFocus(paneRoot);
+  const chatCopyState = captureChatCopyState(paneRoot);
   if (focusedComposer) chatDrafts.set(focusedComposer.tabId, focusedComposer.value);
   captureChatScrollStates();
   disposeTerminals({ preservePausedInput: true });
@@ -507,6 +509,7 @@ function renderPaneRoot(workspace) {
   }
   paneRoot.append(renderLayoutNode(activeLayout.layout));
   restoreComposerFocus(paneRoot, focusedComposer);
+  restoreChatCopyState(paneRoot, chatCopyState);
 }
 
 function renderLayoutNode(node) {
@@ -554,6 +557,7 @@ function renderLayoutNode(node) {
   timeline.setAttribute("aria-live", "off");
   timeline.setAttribute("aria-atomic", "false");
   renderChatTimeline(timeline, session);
+  decorateChatMessages(timeline, scrollKey);
   body.append(timeline);
   trackChatScroll(body, scrollKey);
   pane.append(body);
@@ -611,6 +615,73 @@ function renderChatAnnouncement(tabId, session) {
   return live;
 }
 
+function decorateChatMessages(timeline, tabId) {
+  for (const [messageIndex, item] of [...timeline.querySelectorAll(".chat-event--user, .chat-event--assistant")].entries()) {
+    const text = item.querySelector("p");
+    if (!text) continue;
+    item.classList.add("chat-event--message");
+    item.setAttribute("aria-label", item.classList.contains("chat-event--user") ? "Your message" : "Assistant message");
+    item.querySelector("header")?.remove();
+    const status = document.createElement("span");
+    status.className = "sr-only chat-event__copy-status";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    const copy = iconButton("Copy message", "Copy message", "M8 8h10v10H8zM6 16H4V4h12v2");
+    copy.classList.add("chat-event__copy");
+    copy.dataset.chatCopyKey = `${tabId}:${messageIndex}`;
+    copy.addEventListener("click", () => void copyChatMessage(copy, status, text.textContent ?? ""));
+    item.append(copy, status);
+  }
+}
+
+function captureChatCopyState(root) {
+  const focused = root.ownerDocument?.activeElement;
+  const feedback = new Map();
+  for (const button of root.querySelectorAll("[data-chat-copy-key]")) {
+    const status = button.parentElement?.querySelector(".chat-event__copy-status");
+    if (button.dataset.copyState || status?.textContent) {
+      feedback.set(button.dataset.chatCopyKey, {
+        copyState: button.dataset.copyState ?? "",
+        status: status?.textContent ?? "",
+      });
+    }
+  }
+  return {
+    feedback,
+    focusedKey: focused?.matches?.("[data-chat-copy-key]") ? focused.dataset.chatCopyKey : null,
+  };
+}
+
+function restoreChatCopyState(root, state) {
+  if (!state) return;
+  for (const button of root.querySelectorAll("[data-chat-copy-key]")) {
+    const feedback = state.feedback.get(button.dataset.chatCopyKey);
+    if (feedback) {
+      if (feedback.copyState) button.dataset.copyState = feedback.copyState;
+      const status = button.parentElement?.querySelector(".chat-event__copy-status");
+      if (status) status.textContent = feedback.status;
+    }
+  }
+  if (!state.focusedKey) return;
+  queueMicrotask(() => {
+    const button = [...root.querySelectorAll("[data-chat-copy-key]")]
+      .find((candidate) => candidate.dataset.chatCopyKey === state.focusedKey);
+    if (button?.isConnected) button.focus({ preventScroll: true });
+  });
+}
+
+async function copyChatMessage(button, status, text) {
+  try {
+    if (typeof navigator.clipboard?.writeText !== "function") throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(text);
+    button.dataset.copyState = "copied";
+    status.textContent = "Message copied.";
+  } catch {
+    button.dataset.copyState = "unavailable";
+    status.textContent = "Copy unavailable. The conversation is unchanged.";
+  }
+}
+
 function renderChatComposer(paneId, tabId, session) {
   const fragment = chatComposerTemplate.content.cloneNode(true);
   const form = fragment.querySelector("[data-chat-composer]");
@@ -630,11 +701,11 @@ function renderChatComposer(paneId, tabId, session) {
   hint.id = hintId;
   const disabled = ["closed", "exited"].includes(session.status);
   textarea.disabled = disabled;
-  send.disabled = disabled || textarea.value.trim().length === 0;
+  updateChatComposerSendState(tabId, textarea, send, disabled);
   resizeComposerTextarea(textarea);
   textarea.addEventListener("input", () => {
     chatDrafts.set(tabId, textarea.value);
-    send.disabled = textarea.value.trim().length === 0;
+    updateChatComposerSendState(tabId, textarea, send, disabled);
     resizeComposerTextarea(textarea);
   });
   textarea.addEventListener("keydown", (event) => {
@@ -645,10 +716,38 @@ function renderChatComposer(paneId, tabId, session) {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const text = textarea.value.trim();
-    if (!text) return;
+    if (!text || pendingChatSubmissions.has(tabId)) return;
+    pendingChatSubmissions.add(tabId);
+    clearSubmittedChatDraft(tabId, textarea, send);
     void submitMessage(session, text, tabId);
   });
   return form;
+}
+
+function updateChatComposerSendState(tabId, textarea, send, disabled = false) {
+  send.disabled = disabled || pendingChatSubmissions.has(tabId) || textarea.value.trim().length === 0;
+}
+
+function clearSubmittedChatDraft(tabId, textarea, send) {
+  chatDrafts.delete(tabId);
+  textarea.value = "";
+  send.disabled = true;
+  resizeComposerTextarea(textarea);
+}
+
+function recoverChatDraft(tabId, failedText) {
+  const currentText = chatDrafts.get(tabId) ?? "";
+  const recoveredText = currentText
+    ? `${failedText}\n${currentText}`
+    : failedText;
+  chatDrafts.set(tabId, recoveredText);
+  const textarea = [...paneRoot.querySelectorAll("[data-chat-composer] textarea")]
+    .find((candidate) => candidate.closest("[data-chat-composer]")?.dataset.tabId === tabId);
+  if (!textarea) return;
+  textarea.value = recoveredText;
+  const send = textarea.closest("[data-chat-composer]")?.querySelector("button[type='submit']");
+  if (send) updateChatComposerSendState(tabId, textarea, send);
+  resizeComposerTextarea(textarea);
 }
 
 function resizeComposerTextarea(textarea) {
@@ -1519,12 +1618,13 @@ async function submitMessage(session, text, draftKey) {
       body: JSON.stringify({ sessionId: session.id, text }),
     }));
   } catch (error) {
-    chatDrafts.set(draftKey, text);
+    recoverChatDraft(draftKey, text);
     showError(error);
     await refreshWorkbench({ restore: false });
-    return;
+  } finally {
+    pendingChatSubmissions.delete(draftKey);
+    render();
   }
-  render();
 }
 
 async function interrupt() {
