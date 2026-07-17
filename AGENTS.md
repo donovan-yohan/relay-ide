@@ -52,7 +52,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Federated Relay      | `docs/federated-relay.md`                    | Hub/node architecture, pairing, routing, ADRs                                                                            |
 | CLI gateway          | `docs/CLI_GATEWAY.md`                        | Versioned `relay-ide v1 ... --json` contract for external agent adapters                                                 |
 | Agent view artifacts | `docs/AGENT_VIEW_ARTIFACTS.md`               | Agent-authored static HTML/CSS WorkContext artifact contract, viewer package route, security model                       |
-| Web chat             | `docs/WEB_CHAT.md`                           | Experimental adapter-shaped web chat surface for agent CLIs (status, scope, limits)                                      |
+| Channel chat         | `docs/CHANNEL_CHAT.md`                       | Slack-style workspace chat vision (epic #1163): channel=conversation, agents-as-participants, native Claude subprocess    |
 | Provider guide       | `docs/provider-guide.md`                     | Authoring/configuring agent framework providers (Claude/Codex/OpenCode/Hermes/custom)                                    |
 | Handoff template     | `docs/pipeline-handoff-artifact-template.md` | PipelineHandoffArtifact authoring template: stages, evidence dispositions, exact-head fields                             |
 | ADRs                 | `docs/adrs/`                                 | Accepted ADRs (latest: ADR-017 brain-as-peer, ADR-018 command-mediated handoff, ADR-019 context-packet storage)          |
