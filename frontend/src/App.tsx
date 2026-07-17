@@ -1020,7 +1020,6 @@ export default function App() {
     handleRenameActiveSession,
     handleSelectSession,
     handleQuickAgent,
-    handleViewSpineCreateTab,
     handleQuickTerminal,
     handleOpenSettings,
     handleNewWorktree,
@@ -1337,7 +1336,6 @@ export default function App() {
           onResumeWorktree={handleResumeWorktree}
           onLaunchWorkspaceSession={handleLaunchWorkspaceSession}
           onLaunchRepoSession={handleLaunchRepoSession}
-          onViewSpineCreateTab={handleViewSpineCreateTab}
           onOpenAnalytics={openAnalytics}
         />
 

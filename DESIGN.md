@@ -70,6 +70,7 @@ Each color has a muted variant for workspace group backgrounds: `color-mix(in sr
 ### Dark Mode
 
 - **Strategy:** Dark-only. No light mode. This is a dev tool used alongside terminals.
+- There is no theme toggle, light-theme CSS, or stored theme preference. The app renders the all-dark palette (`:root` in `frontend/src/App.css`) unconditionally.
 
 ## Spacing
 

@@ -66,7 +66,6 @@ function resetStore() {
     sendToTargetSessionId: null,
     lastChangedFiles: [],
     collapsedWorkspaces: new Set(),
-    viewSpineEnabled: false,
     advancedMode: false,
     orgDashboardTab: 'prs',
   });

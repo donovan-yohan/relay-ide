@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  pushToBuffer,
   createWebSession,
   reconnectWebSession,
   continueHereWebSession,
@@ -8,18 +7,14 @@ import {
 import { MockProtocolAdapter } from '../server/protocol-adapters/mock-adapter.js';
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import type { Session, WebSession } from '../server/types.js';
-import type { ChatEvent, ApprovalRequestEvent } from '../shared/chat-events.js';
+import type { ChatEvent } from '../shared/chat-events.js';
 import type {
   AgentCapabilitySetV2,
   AgentSessionV2,
 } from '../shared/agent-chat-protocol-v2.js';
 import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { AdapterConfig } from '../server/protocol-adapter.js';
-import {
-  makeWebSession,
-  makeBaseEvent,
-  makeApproval,
-} from './helpers/web-chat-fixtures.js';
+import { makeWebSession } from './helpers/web-chat-fixtures.js';
 
 vi.mock('../server/logger.js', () => ({
   createLogger: () => ({
@@ -35,83 +30,6 @@ vi.mock('../server/logger.js', () => ({
 vi.mock('../server/sessions.js', () => ({
   fireBackendStateIfChanged: vi.fn(),
 }));
-
-// ── pushToBuffer ──────────────────────────────────────────────────────────────
-
-describe('pushToBuffer', () => {
-  it('pushes events into the messages array', () => {
-    const session = makeWebSession();
-    const event = makeBaseEvent();
-    pushToBuffer(session, event);
-    expect(session.messages).toHaveLength(1);
-    expect(session.messages[0]).toBe(event);
-  });
-
-  it('evicts oldest non-approval event when at cap (1000)', () => {
-    const session = makeWebSession();
-    // Fill to 999 with text-delta events
-    for (let i = 0; i < 999; i++) {
-      session.messages.push(makeBaseEvent({ delta: `chunk-${i}` }));
-    }
-    // Push one approval event (should not be evicted)
-    const approval = makeApproval('req-evict-test');
-    session.messages.push(approval);
-    expect(session.messages).toHaveLength(1000);
-
-    // Now push one more — should evict the FIRST text-delta (index 0), not the approval
-    const newEvent = makeBaseEvent({ delta: 'new' });
-    pushToBuffer(session, newEvent);
-
-    expect(session.messages).toHaveLength(1000);
-    // chunk-0 (index 0) was evicted; chunk-1 is now at index 0
-    expect(session.messages[0]?.type).toBe('chat:text-delta');
-    // The approval (was at index 999) is now at index 998
-    expect(session.messages[998]).toBe(approval);
-    // New event is at the end
-    expect(session.messages[session.messages.length - 1]).toBe(newEvent);
-  });
-
-  it('evicts oldest non-approval event (first non-approval wins)', () => {
-    const session = makeWebSession();
-    // Approval first, then text events to fill to 1000
-    const approval = makeApproval('req-1');
-    session.messages.push(approval);
-    for (let i = 0; i < 999; i++) {
-      session.messages.push(makeBaseEvent({ delta: `chunk-${i}` }));
-    }
-    expect(session.messages).toHaveLength(1000);
-
-    // Push another event — evict first non-approval (chunk-0 at index 1)
-    const newEvent = makeBaseEvent({ delta: 'new' });
-    pushToBuffer(session, newEvent);
-
-    expect(session.messages).toHaveLength(1000);
-    // Approval at index 0 should survive
-    expect(session.messages[0]).toBe(approval);
-    // New event at end
-    expect(session.messages[session.messages.length - 1]).toBe(newEvent);
-  });
-
-  it('shifts from front when all events are approvals', () => {
-    const session = makeWebSession();
-    // Fill with 1000 approval events
-    for (let i = 0; i < 1000; i++) {
-      session.messages.push(makeApproval(`req-${i}`));
-    }
-    const newEvent = makeApproval('req-overflow');
-    pushToBuffer(session, newEvent);
-
-    expect(session.messages).toHaveLength(1000);
-    // First approval (req-0) should be gone, new one at end
-    expect((session.messages[0] as ApprovalRequestEvent).requestId).toBe(
-      'req-1'
-    );
-    expect(
-      (session.messages[session.messages.length - 1] as ApprovalRequestEvent)
-        .requestId
-    ).toBe('req-overflow');
-  });
-});
 
 // ── MockProtocolAdapter ───────────────────────────────────────────────────────
 

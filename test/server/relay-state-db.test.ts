@@ -44,9 +44,6 @@ function fakeWebSession(overrides: Partial<WebSession> = {}): WebSession {
     status: 'active' as const,
     needsBranchRename: false,
     agentState: 'initializing' as const,
-    adapter: {
-      disconnect: () => Promise.resolve(),
-    } as unknown as WebSession['adapter'],
     adapterV2: {
       disconnect: () => Promise.resolve(),
     } as unknown as WebSession['adapterV2'],
@@ -60,7 +57,6 @@ function fakeWebSession(overrides: Partial<WebSession> = {}): WebSession {
     }),
     agentPatchesV2: [],
     protocolVersion: 2 as const,
-    messages: [],
     currentTurnId: null,
     runtimeOwnership: 'spawned' as const,
     hookToken: 'tok',

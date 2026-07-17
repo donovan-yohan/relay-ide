@@ -9,8 +9,6 @@ import {
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import type { Repo, WorktreeInfo } from '../lib/types.js';
 import { TopicSidebarShell } from './TopicSidebarShell.js';
-import { ViewSpineTree } from './ViewSpineTree.js';
-import type { BenchCreatePayload } from '../lib/state/view-tree.js';
 import { TuiButton } from './TuiButton.js';
 import './Sidebar.css';
 
@@ -65,10 +63,6 @@ export interface SidebarProps {
   onResumeWorktree?: (wt: WorktreeInfo) => void;
   onLaunchWorkspaceSession?: (workspaceId: string) => void;
   onLaunchRepoSession?: (repoPath: string) => void;
-  /** #731: create an agent Tab anchored to a view-spine Bench. Payload carries
-   *  the node anchor + the configured repo/worktree context the backend
-   *  validates (`BenchCreatePayload`). */
-  onViewSpineCreateTab?: (payload: BenchCreatePayload) => void;
   onOpenAnalytics: () => void;
 }
 
@@ -76,14 +70,12 @@ export function Sidebar({
   onSelectSession,
   onOpenSettings,
   onAddWorkspace,
-  onViewSpineCreateTab,
   onOpenAnalytics,
 }: SidebarProps) {
   const sidebarOpen = useUiStore((s) => s.sidebarOpen);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const sidebarWidth = useUiStore((s) => s.sidebarWidth);
   const analyticsView = useUiStore((s) => s.analyticsView);
-  const viewSpineEnabled = useUiStore((s) => s.viewSpineEnabled);
   const advancedMode = useUiStore((s) => s.advancedMode);
   const closeSidebar = useUiStore((s) => s.closeSidebar);
   const toggleSidebarCollapsed = useUiStore((s) => s.toggleSidebarCollapsed);
@@ -167,21 +159,9 @@ export function Sidebar({
       </div>
       {!sidebarCollapsed && (
         <>
-          {viewSpineEnabled ? (
-            // Preserved opt-in six-layer navigation tree. The repo/worktree
-            // compatibility sidebar fallback was removed after topic-shell
-            // parity/dogfood cleared #1027/#1032.
-            <div className="sidebar-workspace-list">
-              <ViewSpineTree
-                onCreateTab={onViewSpineCreateTab}
-                onSelectTab={onSelectSession}
-              />
-            </div>
-          ) : (
-            <div className="sidebar-workspace-list">
-              <TopicSidebarShell onSelectSession={onSelectSession} />
-            </div>
-          )}
+          <div className="sidebar-workspace-list">
+            <TopicSidebarShell onSelectSession={onSelectSession} />
+          </div>
           <div className="sidebar-footer-row">
             <TuiButton
               variant="primary"

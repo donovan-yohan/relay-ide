@@ -22,11 +22,8 @@ const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
 // substrate surfaces (nodes/active-work tabs, analytics icon) from primary
 // chrome by default; each surface stays reachable one-off via a palette action.
 const ADVANCED_MODE_KEY = 'relay-advanced-mode';
-// Flag-gated six-layer navigation surface. Set
-// `localStorage.relay-view-spine = '1'` and reload to opt into the tree.
-const VIEW_SPINE_KEY = 'relay-view-spine';
 // #738: persistent View layer (FE-only, localStorage). All three ride the same
-// `ls`/`lsSave`/`lsRemove` helpers + fail-soft pattern as the flag above.
+// `ls`/`lsSave`/`lsRemove` helpers + fail-soft pattern.
 //   - active lens, restored across reload (the #727 lens was ephemeral).
 //   - pinned ids (mixed Project/Bench/Workspace stable ids) — pinned-to-top.
 //   - saved/named Views (an array of {id,name,lens}).
@@ -191,11 +188,6 @@ function loadDiffViewMode(): DiffViewMode {
   const stored = ls(DIFF_VIEW_MODE_KEY);
   if (stored === 'unified' || stored === 'side-by-side') return stored;
   return 'unified';
-}
-
-function loadViewSpineEnabled(): boolean {
-  // Truthy only for the explicit opt-in value so a stale '0'/'false' reads OFF.
-  return ls(VIEW_SPINE_KEY) === '1';
 }
 
 function loadAdvancedMode(): boolean {
@@ -662,8 +654,6 @@ export interface UiState {
   topicComposerOpen: boolean;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
-  /** Six-layer navigation surface flag. Default false; backed by localStorage. */
-  viewSpineEnabled: boolean;
   /**
    * #1058: hides mechanics-heavy substrate surfaces (nodes/active-work tabs
    * in the work cockpit, sidebar analytics icon) from primary chrome.
@@ -718,8 +708,6 @@ export interface UiState {
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
-  setViewSpineEnabled: (enabled: boolean) => void;
-  toggleViewSpineEnabled: () => void;
   setAdvancedMode: (enabled: boolean) => void;
   toggleAdvancedMode: () => void;
 
@@ -770,7 +758,6 @@ export const useUiStore = create<UiState>()((set, get) => ({
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
-  viewSpineEnabled: loadViewSpineEnabled(),
   advancedMode: loadAdvancedMode(),
 
   viewSpineLens: loadViewSpineLens(),
@@ -1381,14 +1368,6 @@ export const useUiStore = create<UiState>()((set, get) => ({
 
   isWorkspaceCollapsed: (path) => get().collapsedWorkspaces.has(path),
 
-  setViewSpineEnabled: (enabled) => {
-    if (enabled) lsSave(VIEW_SPINE_KEY, '1');
-    else lsRemove(VIEW_SPINE_KEY);
-    set({ viewSpineEnabled: enabled });
-  },
-  toggleViewSpineEnabled: () => {
-    get().setViewSpineEnabled(!get().viewSpineEnabled);
-  },
   setAdvancedMode: (enabled) => {
     if (enabled) lsSave(ADVANCED_MODE_KEY, '1');
     else lsRemove(ADVANCED_MODE_KEY);

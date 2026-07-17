@@ -6,11 +6,9 @@ import type {
   AgentApprovalItemV2,
   AgentApprovalSupportV2,
 } from '../../../../shared/agent-chat-protocol-v2.js';
-import type { ApprovalRequestEvent } from '../../../../shared/chat-events.js';
 
 interface ApprovalCardProps {
-  item?: AgentApprovalItemV2;
-  event?: ApprovalRequestEvent;
+  item: AgentApprovalItemV2;
   onApprove: (requestId: string, decision: AgentApprovalDecisionV2) => void;
 }
 
@@ -24,7 +22,12 @@ function decisionLabel(decision: AgentApprovalDecisionV2): string {
   return 'allowed';
 }
 
-function renderDetails(details: AgentApprovalDetailsV2 | undefined, description: string, target: string, detail: string | undefined): React.ReactNode {
+function renderDetails(
+  details: AgentApprovalDetailsV2 | undefined,
+  description: string,
+  target: string,
+  detail: string | undefined
+): React.ReactNode {
   if (!details) {
     return (
       <>
@@ -55,14 +58,18 @@ function renderDetails(details: AgentApprovalDetailsV2 | undefined, description:
               ))}
             </ul>
           )}
-          {details.diff && <pre className="acard__code acard__code--diff">{details.diff}</pre>}
+          {details.diff && (
+            <pre className="acard__code acard__code--diff">{details.diff}</pre>
+          )}
         </div>
       );
     case 'permissionsGrant':
       return (
         <ul className="acard__permissions">
           {details.permissions.map((perm, i) => (
-            <li key={i} className="acard__permission">{perm}</li>
+            <li key={i} className="acard__permission">
+              {perm}
+            </li>
           ))}
         </ul>
       );
@@ -102,34 +109,17 @@ const DEFAULT_SUPPORT: AgentApprovalSupportV2 = {
   canCancel: false,
 };
 
-function getApprovalView(
-  item: AgentApprovalItemV2 | undefined,
-  event: ApprovalRequestEvent | undefined
-): ApprovalView {
-  if (item) {
-    return {
-      requestId: item.requestId,
-      tool: item.kind,
-      description: item.description,
-      target: item.target,
-      detail: item.detail,
-      details: item.details,
-      supported: item.supported ?? DEFAULT_SUPPORT,
-      responded: item.decision !== undefined || item.status === 'completed',
-      decision: item.decision,
-    };
-  }
-
+function getApprovalView(item: AgentApprovalItemV2): ApprovalView {
   return {
-    requestId: event?.requestId ?? '',
-    tool: event?.toolName.toLowerCase() ?? 'approval',
-    description: event?.description ?? '',
-    target: event?.target ?? '',
-    detail: event?.detail,
-    details: undefined,
-    supported: DEFAULT_SUPPORT,
-    responded: false,
-    decision: undefined,
+    requestId: item.requestId,
+    tool: item.kind,
+    description: item.description,
+    target: item.target,
+    detail: item.detail,
+    details: item.details,
+    supported: item.supported ?? DEFAULT_SUPPORT,
+    responded: item.decision !== undefined || item.status === 'completed',
+    decision: item.decision,
   };
 }
 
@@ -147,10 +137,9 @@ const AMENDMENT_LABELS: Record<string, string> = {
 
 export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   item,
-  event,
   onApprove,
 }) => {
-  const view = getApprovalView(item, event);
+  const view = getApprovalView(item);
 
   return (
     <div
@@ -168,13 +157,17 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
       {renderDetails(view.details, view.target, view.target, view.detail)}
       <div className="acard__actions">
         {view.responded && view.decision ? (
-          <span className="acard__responded">{decisionLabel(view.decision)}</span>
+          <span className="acard__responded">
+            {decisionLabel(view.decision)}
+          </span>
         ) : (
           <>
             <button
               className="acard__btn acard__btn--allow"
               type="button"
-              onClick={() => onApprove(view.requestId, { kind: 'accept', scope: 'once' })}
+              onClick={() =>
+                onApprove(view.requestId, { kind: 'accept', scope: 'once' })
+              }
               aria-label="allow command"
             >
               allow
@@ -186,7 +179,9 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
                   key={scope}
                   className={`acard__btn ${scope === 'permanent' ? 'acard__btn--always' : 'acard__btn--scope'}`}
                   type="button"
-                  onClick={() => onApprove(view.requestId, { kind: 'accept', scope })}
+                  onClick={() =>
+                    onApprove(view.requestId, { kind: 'accept', scope })
+                  }
                   aria-label={SCOPE_LABELS[scope] ?? `allow ${scope}`}
                 >
                   {SCOPE_LABELS[scope] ?? `allow ${scope}`}
@@ -208,9 +203,13 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
                     ],
                   })
                 }
-                aria-label={AMENDMENT_LABELS[amendmentType] ?? `allow with ${amendmentType}`}
+                aria-label={
+                  AMENDMENT_LABELS[amendmentType] ??
+                  `allow with ${amendmentType}`
+                }
               >
-                {AMENDMENT_LABELS[amendmentType] ?? `allow with ${amendmentType}`}
+                {AMENDMENT_LABELS[amendmentType] ??
+                  `allow with ${amendmentType}`}
               </button>
             ))}
             <button

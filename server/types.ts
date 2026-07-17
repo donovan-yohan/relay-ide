@@ -17,9 +17,7 @@ import type {
   ResolvedRemoteIdentity,
 } from '../shared/repo-identity.js';
 import type { OutputParser } from './output-parsers/index.js';
-import type { ProtocolAdapter } from './protocol-adapter.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
-import type { ChatEvent } from '../shared/chat-events.js';
 import type {
   AgentPatchV2,
   AgentSessionV2,
@@ -412,8 +410,6 @@ export interface PtySession extends BaseSession {
 
 export interface WebSession extends BaseSession {
   mode: 'web';
-  /** Active protocol adapter for this agent backend */
-  adapter: ProtocolAdapter;
   /** Native v2 protocol adapter for web-chat sessions. */
   adapterV2: ProtocolAdapterV2;
   /** Canonical v2 web-chat state. */
@@ -428,13 +424,6 @@ export interface WebSession extends BaseSession {
    * can reference it without dereferencing the adapter object.
    */
   adapterType: string;
-  /**
-   * In-memory event buffer for replay on reconnect.
-   * Cap: 1000 events, FIFO eviction (approval events never dropped).
-   * TODO(PR#213): Enforce the cap when adapters start pushing events — use a bounded
-   * buffer helper rather than raw array push to guarantee the eviction policy.
-   */
-  messages: ChatEvent[];
   /** Currently active turn ID, or null when idle */
   currentTurnId: string | null;
   /** Who owns the agent runtime process */

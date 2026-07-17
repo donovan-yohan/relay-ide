@@ -41,9 +41,7 @@ export function makeWebSession(
     status: 'active',
     needsBranchRename: false,
     agentState: 'idle',
-    adapter: new MockProtocolAdapter(ZERO_DELAYS),
     adapterType: 'mock',
-    messages: [],
     currentTurnId: null,
     ...overrides,
   } as WebSession;
