@@ -70,8 +70,9 @@ TypeScript backend**. No Python sidecar, no OpenAI-shaped shim.
 - **Later:** MCP loopback so the subprocess gets channel-native tools — read
   channel history, read the roster, post back into the thread.
 
-This replaces the current `ClaudeProtocolAdapter` (`claude-adapter.ts`), the
-hook-backed spawned-CLI path de-advertised under #300.
+This replaces the current `ClaudeProtocolAdapter` (`claude-adapter.ts`), which
+drives Claude through the Anthropic Agent SDK (`@anthropic-ai/claude-agent-sdk`
+`query()`) and is de-advertised for web sessions under #300.
 
 ## Live proof gate (PLANNED)
 
