@@ -48,6 +48,10 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-pr-row-long.html'
   );
+  buildInputs['test-channel-timeline'] = resolve(
+    import.meta.dirname,
+    'test-channel-timeline.html'
+  );
 }
 
 export default defineConfig({

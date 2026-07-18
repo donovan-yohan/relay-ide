@@ -48,6 +48,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     hasMoreOlder,
     loadingOlder,
     loadOlder,
+    fullSnapshotRevision,
     post,
     postPending,
     postError,
@@ -380,6 +381,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
           hasMoreOlder={hasMoreOlder}
           loadingOlder={loadingOlder}
           loadOlder={loadOlder}
+          fullSnapshotRevision={fullSnapshotRevision}
           needsCatchup={reducer.needsCatchup}
           onResync={resync}
         />

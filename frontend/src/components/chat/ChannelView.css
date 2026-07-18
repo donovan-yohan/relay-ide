@@ -168,10 +168,19 @@
   color: var(--accent);
 }
 
+/* Timeline shell owns floating scroll affordances without making them part of
+   the scrollable geometry. */
+.ch-tl-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
 /* timeline scroll container — mirrors .tl */
 .ch-tl {
-  flex: 1;
+  height: 100%;
   overflow-y: auto;
+  overflow-anchor: none;
   padding: 18px 24px;
   display: flex;
   flex-direction: column;
@@ -191,6 +200,31 @@
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+}
+
+/* Square, outline-only floating affordance per DESIGN.md. Info matches the
+   unread-divider semantics. */
+.ch-new-messages {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  z-index: 6;
+  transform: translateX(-50%);
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--status-info);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--status-info);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ch-new-messages:hover {
+  background: color-mix(in srgb, var(--status-info) 10%, var(--surface));
 }
 
 /* day divider — mirrors .tl-session-break, centered muted label + rule */

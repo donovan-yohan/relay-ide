@@ -73,6 +73,8 @@ jobs:
 
       - run: npm run build
         if: steps.changes.outputs.e2e_required == 'true'
+        env:
+          RELAY_IDE_E2E_FIXTURES: '1'
 
       - name: Verify hosted Chrome
         if: steps.changes.outputs.e2e_required == 'true'

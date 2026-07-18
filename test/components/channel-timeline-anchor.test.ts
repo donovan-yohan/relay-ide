@@ -44,6 +44,7 @@ async function renderTimeline(loadOlder: () => Promise<void>): Promise<void> {
         hasMoreOlder: true,
         loadingOlder: false,
         loadOlder,
+        fullSnapshotRevision: 0,
         needsCatchup: false,
         onResync: () => {},
       })

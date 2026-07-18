@@ -62,6 +62,8 @@ export interface UseChannelChatSocketState {
   hasMoreOlder: boolean;
   loadingOlder: boolean;
   loadOlder: () => Promise<void>;
+  /** Increments whenever an authoritative full snapshot replaces the window. */
+  fullSnapshotRevision: number;
   post: (
     text: string,
     opts?: { clientMessageId?: string }
@@ -84,6 +86,7 @@ export function useChannelChatSocket(
   const [notFound, setNotFound] = useState(false);
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [fullSnapshotRevision, setFullSnapshotRevision] = useState(0);
   const [postPending, setPostPending] = useState(false);
   const [postError, setPostError] = useState<HttpError | null>(null);
 
@@ -181,6 +184,7 @@ export function useChannelChatSocket(
           channelEvent.type === 'channel-snapshot-v1' &&
           channelEvent.mode === 'full'
         ) {
+          setFullSnapshotRevision((revision) => revision + 1);
           // full-snapshot `truncated` === "older history exists before seq 1's
           // reach"; a catchup's `truncated` is byte-budget only, so never touch
           // older-history availability on catchup.
@@ -342,6 +346,7 @@ export function useChannelChatSocket(
     setNotFound(false);
     setHasMoreOlder(false);
     setLoadingOlder(false);
+    setFullSnapshotRevision(0);
     setPostError(null);
 
     clearReconnectTimer();
@@ -431,6 +436,7 @@ export function useChannelChatSocket(
     hasMoreOlder,
     loadingOlder,
     loadOlder,
+    fullSnapshotRevision,
     post,
     postPending,
     postError,
