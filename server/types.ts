@@ -144,13 +144,16 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       supportsYolo: true,
       supportsTelemetry: false,
       supportsAttachedRuntime: false,
-      // De-advertised pending full web-session implementation. See issue #301:
-      // the Codex protocol adapter maps lifecycle/tool events but does not
-      // stream assistant text deltas as `chat:text-delta`, so the web mode
-      // appeared installed but produced no chat output. Flip back to true
-      // only after (1) assistant text streaming is mapped end-to-end and
-      // (2) an e2e round-trip test covers prompt → text-delta → completion.
-      supportsWebSessions: false,
+      // Web sessions run the native `codex app-server` JSON-RPC adapter
+      // (server/protocol-adapters/codex-native-adapter.ts +
+      // server/codex-app-server-client.ts). Re-advertised by #1169 (closes
+      // #301): the adapter maps assistant text end-to-end
+      // (`item/agentMessage/delta` → `agent-item-delta-v2`, plus item
+      // started/completed and `turn/completed`), the fake-app-server unit suite
+      // asserts the prompt → text-delta → completion round-trip, and one live
+      // hello-world proof drove the built adapter through a real thread. The
+      // old `chat:text-delta` gap belonged to the retired hook-based adapter.
+      supportsWebSessions: true,
     },
   },
   opencode: {
