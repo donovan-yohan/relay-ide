@@ -9,7 +9,13 @@ import './components/chat/ChannelView.css';
 import './test-channel-timeline.css';
 import { ChannelTimeline } from './components/chat/ChannelTimeline.js';
 
-function message(seq: number, text = `timeline row ${seq}`): ChannelMessage {
+function message(
+  seq: number,
+  text = `timeline row ${seq}`,
+  sender: ChannelMessage['sender'] = seq % 2 === 0
+    ? { kind: 'human', id: 'human:operator' }
+    : { kind: 'agent', id: 'agent:codex', providerId: 'codex' }
+): ChannelMessage {
   const createdAt = new Date(Date.UTC(2026, 6, 18, 10, seq)).toISOString();
   return {
     schemaVersion: 1,
@@ -18,10 +24,7 @@ function message(seq: number, text = `timeline row ${seq}`): ChannelMessage {
     seq,
     kind: 'message',
     status: 'complete',
-    sender:
-      seq % 2 === 0
-        ? { kind: 'human', id: 'human:operator' }
-        : { kind: 'agent', id: 'agent:codex', providerId: 'codex' },
+    sender,
     body: { text, format: 'text' },
     threadId: null,
     parentMessageId: null,
@@ -37,6 +40,8 @@ const INITIAL_MESSAGES = Array.from({ length: 50 }, (_, index) =>
 function Fixture(): React.ReactElement {
   const [messages, setMessages] = useState(INITIAL_MESSAGES);
   const [hasMoreOlder, setHasMoreOlder] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [fullSnapshotRevision, setFullSnapshotRevision] = useState(0);
 
   const append = useCallback((count: number, large = false) => {
     setMessages((current) => {
@@ -52,6 +57,29 @@ function Fixture(): React.ReactElement {
         }),
       ];
     });
+  }, []);
+
+  const appendOwn = useCallback(() => {
+    setMessages((current) => {
+      const seq = (current[current.length - 1]?.seq ?? 0) + 1;
+      return [
+        ...current,
+        message(seq, 'my new message', {
+          kind: 'human',
+          id: 'human:operator',
+        }),
+      ];
+    });
+  }, []);
+
+  const replaceSnapshot = useCallback((anchorSurvives: boolean) => {
+    setMessages(
+      anchorSurvives
+        ? Array.from({ length: 530 }, (_, index) => message(index + 41))
+        : Array.from({ length: 50 }, (_, index) => message(index + 600))
+    );
+    setHasMoreOlder(false);
+    setFullSnapshotRevision((revision) => revision + 1);
   }, []);
 
   const growStream = useCallback(() => {
@@ -74,7 +102,8 @@ function Fixture(): React.ReactElement {
 
   const loadOlder = useCallback(async () => {
     if (!hasMoreOlder) return;
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    setLoadingOlder(true);
+    await new Promise((resolve) => setTimeout(resolve, 250));
     setMessages((current) => {
       const earliest = current[0]?.seq ?? 21;
       const latest = current[current.length - 1]?.seq ?? 70;
@@ -83,9 +112,18 @@ function Fixture(): React.ReactElement {
       );
       // Deliberately append a catch-up row in the same commit. A total-height
       // delta anchor would incorrectly include its height and move the reader.
-      return [...older, ...current, message(latest + 1, 'concurrent catch-up')];
+      return [
+        ...older,
+        ...current,
+        message(latest + 1, 'concurrent catch-up', {
+          kind: 'agent',
+          id: 'agent:codex',
+          providerId: 'codex',
+        }),
+      ];
     });
     setHasMoreOlder(false);
+    setLoadingOlder(false);
   }, [hasMoreOlder]);
 
   return (
@@ -100,8 +138,23 @@ function Fixture(): React.ReactElement {
         <button data-testid="append-burst" onClick={() => append(3)}>
           append burst
         </button>
+        <button data-testid="append-own" onClick={appendOwn}>
+          append own
+        </button>
         <button data-testid="grow-stream" onClick={growStream}>
           grow stream
+        </button>
+        <button
+          data-testid="snapshot-overlap"
+          onClick={() => replaceSnapshot(true)}
+        >
+          snapshot overlap
+        </button>
+        <button
+          data-testid="snapshot-gap"
+          onClick={() => replaceSnapshot(false)}
+        >
+          snapshot gap
         </button>
       </div>
       <div className="ch-scroll-fixture__stage">
@@ -111,8 +164,9 @@ function Fixture(): React.ReactElement {
           channelId="topic:scroll-fixture"
           channelTitle="scroll-fixture"
           hasMoreOlder={hasMoreOlder}
-          loadingOlder={false}
+          loadingOlder={loadingOlder}
           loadOlder={loadOlder}
+          fullSnapshotRevision={fullSnapshotRevision}
           needsCatchup={false}
           onResync={() => {}}
         />

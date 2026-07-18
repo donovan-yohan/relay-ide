@@ -273,4 +273,16 @@ describe('useChannelChatSocket liveness + recovery (#1178)', () => {
     expect(state.latestSeqByChannel[CID]).toBe(5);
     expect(state.lastReadByChannel[CID]).toBe(5);
   });
+
+  it('increments the explicit replacement revision for every full snapshot', async () => {
+    await render(CID);
+    await openCurrent();
+    expect(latest.fullSnapshotRevision).toBe(0);
+
+    await sendSnapshot(5);
+    expect(latest.fullSnapshotRevision).toBe(1);
+
+    await sendSnapshot(8);
+    expect(latest.fullSnapshotRevision).toBe(2);
+  });
 });

@@ -214,7 +214,7 @@
   padding: 4px 12px;
   border: 1px solid var(--status-info);
   border-radius: 0;
-  background: transparent;
+  background: var(--surface);
   color: var(--status-info);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
@@ -224,7 +224,7 @@
 }
 
 .ch-new-messages:hover {
-  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+  background: color-mix(in srgb, var(--status-info) 10%, var(--surface));
 }
 
 /* day divider — mirrors .tl-session-break, centered muted label + rule */

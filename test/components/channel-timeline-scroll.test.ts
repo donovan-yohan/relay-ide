@@ -21,7 +21,11 @@ import type {
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-function message(seq: number, text = `message ${seq}`): ChannelMessage {
+function message(
+  seq: number,
+  text = `message ${seq}`,
+  own = false
+): ChannelMessage {
   return {
     schemaVersion: 1,
     id: `chm:${seq}` as ChannelMessageId,
@@ -29,7 +33,9 @@ function message(seq: number, text = `message ${seq}`): ChannelMessage {
     seq,
     kind: 'message',
     status: 'complete',
-    sender: { kind: 'human', id: 'human:operator' },
+    sender: own
+      ? { kind: 'human', id: 'human:operator' }
+      : { kind: 'agent', id: 'agent:codex', providerId: 'codex' },
     body: { text, format: 'text' },
     threadId: null,
     parentMessageId: null,
@@ -101,17 +107,27 @@ afterAll(() => {
   globalThis.ResizeObserver = OriginalResizeObserver;
 });
 
-async function render(messages: ChannelMessage[]): Promise<void> {
+async function render(
+  messages: ChannelMessage[],
+  options: {
+    hasMoreOlder?: boolean;
+    loadingOlder?: boolean;
+    loadOlder?: () => Promise<void>;
+    fullSnapshotRevision?: number;
+    lastReadSeq?: number | null;
+  } = {}
+): Promise<void> {
   await act(async () => {
     root.render(
       React.createElement(ChannelTimeline, {
         messages,
-        lastReadSeq: null,
+        lastReadSeq: options.lastReadSeq ?? null,
         channelId: 'topic:general',
         channelTitle: 'general',
-        hasMoreOlder: false,
-        loadingOlder: false,
-        loadOlder: async () => {},
+        hasMoreOlder: options.hasMoreOlder ?? false,
+        loadingOlder: options.loadingOlder ?? false,
+        loadOlder: options.loadOlder ?? (async () => {}),
+        fullSnapshotRevision: options.fullSnapshotRevision ?? 0,
         needsCatchup: false,
         onResync: () => {},
       })
@@ -174,6 +190,17 @@ describe('ChannelTimeline scroll model (#1193)', () => {
     expect(host.querySelector('.ch-new-messages')).toBeNull();
   });
 
+  it('returns to the bottom for an own human append while scrolled up', async () => {
+    await render([message(1), message(2)]);
+    await userScroll(200);
+
+    timelineScrollHeight = 1_300;
+    await render([message(1), message(2), message(3, 'mine', true)]);
+
+    expect(timeline().scrollTop).toBe(1_300);
+    expect(host.querySelector('.ch-new-messages')).toBeNull();
+  });
+
   it('uses the saved follow intent for streaming and viewport resizes', async () => {
     await render([message(1), message(2)]);
     await userScroll(700);
@@ -187,6 +214,19 @@ describe('ChannelTimeline scroll model (#1193)', () => {
     timelineClientHeight = 180;
     await act(async () => resizeCallback?.([], {} as ResizeObserver));
     expect(timeline().scrollTop).toBe(200);
+  });
+
+  it('disengages follow when scrolling to the top of a low-overflow timeline before prepend growth', async () => {
+    timelineScrollHeight = 400;
+    timelineClientHeight = 300;
+    await render([message(3), message(4)]);
+
+    await userScroll(0);
+    timelineScrollHeight = 480;
+    await render([message(1), message(2), message(3), message(4)]);
+    await act(async () => resizeCallback?.([], {} as ResizeObserver));
+
+    expect(timeline().scrollTop).toBe(0);
   });
 
   it('keeps a follower bottomed across an authoritative lower-seq snapshot', async () => {

@@ -25,7 +25,25 @@ async function scrollAwayFromBottom(timeline: Locator): Promise<number> {
   });
 }
 
-test.describe('channel timeline scroll UX (#1193)', () => {
+async function firstVisibleAnchor(
+  timeline: Locator
+): Promise<{ seq: string; top: number }> {
+  return timeline.evaluate((element) => {
+    const containerTop = element.getBoundingClientRect().top;
+    const row = Array.from(
+      element.querySelectorAll<HTMLElement>('[data-channel-message-seq]')
+    ).find(
+      (candidate) => candidate.getBoundingClientRect().bottom >= containerTop
+    );
+    if (!row) throw new Error('missing visible anchor row');
+    return {
+      seq: row.dataset.channelMessageSeq ?? '',
+      top: row.getBoundingClientRect().top - containerTop,
+    };
+  });
+}
+
+test.describe('smoke channel timeline scroll UX (#1193)', () => {
   test('opens at the newest message', async ({ page }) => {
     const timeline = await openFixture(page);
     await expect.poll(() => bottomDistance(timeline)).toBeLessThanOrEqual(1);
@@ -69,6 +87,38 @@ test.describe('channel timeline scroll UX (#1193)', () => {
     ).toBeVisible();
   });
 
+  test('refreshes the prepend anchor when the reader scrolls during a delayed history load', async ({
+    page,
+  }) => {
+    const timeline = await openFixture(page);
+    await timeline.evaluate((element) => {
+      element.scrollTop = 40;
+      element.dispatchEvent(new Event('scroll'));
+    });
+    await expect(timeline.locator('.ch-loading-older')).toBeVisible();
+
+    await timeline.evaluate((element) => {
+      element.scrollTop = 70;
+      element.dispatchEvent(new Event('scroll'));
+    });
+    const readerAnchor = await firstVisibleAnchor(timeline);
+
+    await expect(
+      timeline.locator('[data-channel-message-seq="1"]')
+    ).toBeAttached();
+    const restored = timeline.locator(
+      `[data-channel-message-seq="${readerAnchor.seq}"]`
+    );
+    await expect
+      .poll(async () => {
+        const container = await timeline.boundingBox();
+        const row = await restored.boundingBox();
+        if (!container || !row) throw new Error('missing anchor geometry');
+        return row.y - container.y;
+      })
+      .toBeCloseTo(readerAnchor.top, 0);
+  });
+
   test('new-message affordance jumps to present and clears', async ({
     page,
   }) => {
@@ -87,13 +137,72 @@ test.describe('channel timeline scroll UX (#1193)', () => {
       };
     });
     expect(style).toEqual({
-      backgroundColor: 'rgba(0, 0, 0, 0)',
+      backgroundColor: 'rgb(10, 10, 10)',
       borderRadius: '0px',
       borderStyle: 'solid',
     });
     await jump.click();
     await expect(jump).toBeHidden();
     await expect.poll(() => bottomDistance(timeline)).toBeLessThanOrEqual(1);
+  });
+
+  test('posting an own message cancels a pending prepend and returns to the present', async ({
+    page,
+  }) => {
+    const timeline = await openFixture(page);
+    await timeline.evaluate((element) => {
+      element.scrollTop = 40;
+      element.dispatchEvent(new Event('scroll'));
+    });
+    await expect(timeline.locator('.ch-loading-older')).toBeVisible();
+
+    await page.getByTestId('append-own').click();
+    await expect.poll(() => bottomDistance(timeline)).toBeLessThanOrEqual(1);
+    await expect(page.locator('.ch-new-messages')).toHaveCount(0);
+
+    // The delayed prepend settlement must not restore the cancelled anchor.
+    await expect(
+      timeline.locator('[data-channel-message-seq="1"]')
+    ).toBeAttached();
+    await expect.poll(() => bottomDistance(timeline)).toBeLessThanOrEqual(1);
+    await expect(page.locator('.ch-new-messages')).toHaveCount(0);
+  });
+
+  test('full snapshots preserve a surviving row and fall back to the unread divider across a gap', async ({
+    page,
+  }) => {
+    const timeline = await openFixture(page);
+    await scrollAwayFromBottom(timeline);
+    const overlapAnchor = await firstVisibleAnchor(timeline);
+
+    await page.getByTestId('snapshot-overlap').click();
+    await expect(
+      timeline.locator(`[data-channel-message-seq="${overlapAnchor.seq}"]`)
+    ).toBeAttached();
+    await expect
+      .poll(async () => {
+        const container = await timeline.boundingBox();
+        const row = await timeline
+          .locator(`[data-channel-message-seq="${overlapAnchor.seq}"]`)
+          .boundingBox();
+        if (!container || !row) throw new Error('missing overlap geometry');
+        return row.y - container.y;
+      })
+      .toBeCloseTo(overlapAnchor.top, 0);
+    await expect(page.locator('.ch-new-messages')).toHaveCount(0);
+
+    await page.getByTestId('snapshot-gap').click();
+    const unreadDivider = timeline.locator('[data-channel-unread-divider]');
+    await expect(unreadDivider).toBeVisible();
+    await expect
+      .poll(async () => {
+        const container = await timeline.boundingBox();
+        const divider = await unreadDivider.boundingBox();
+        if (!container || !divider) throw new Error('missing divider geometry');
+        return divider.y - container.y;
+      })
+      .toBeCloseTo(0, 0);
+    await expect(page.locator('.ch-new-messages')).toHaveCount(0);
   });
 
   test('preserves the visible row across prepend plus concurrent catch-up and keeps the unread divider', async ({

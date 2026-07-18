@@ -61,6 +61,7 @@ interface ChannelTimelineProps {
   hasMoreOlder: boolean;
   loadingOlder: boolean;
   loadOlder: () => Promise<void>;
+  fullSnapshotRevision: number;
   needsCatchup: boolean;
   onResync: () => void;
 }
@@ -73,15 +74,19 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   hasMoreOlder,
   loadingOlder,
   loadOlder,
+  fullSnapshotRevision,
   needsCatchup,
   onResync,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<ViewportAnchor | null>(null);
+  const readerAnchorRef = useRef<ViewportAnchor | null>(null);
   const shouldFollowRef = useRef(true);
   const initializedRef = useRef(false);
   const previousLatestSeqRef = useRef(0);
+  const previousFullSnapshotRevisionRef = useRef(fullSnapshotRevision);
+  const lastScrollTopRef = useRef(0);
   // Bumped on every loadOlder() settlement (success-with-prepend, empty page,
   // reached-beginning page, OR a swallowed fetch error) so the anchor is always
   // released even when earliestSeq never changes (#1178).
@@ -102,9 +107,44 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
     const container = containerRef.current;
     if (!container) return;
     container.scrollTop = container.scrollHeight;
+    lastScrollTopRef.current = container.scrollTop;
     shouldFollowRef.current = true;
     setNewMessageCount(0);
   }, []);
+
+  // A full snapshot replaces the whole rendered window. The reader anchor is
+  // cached by scroll/resize handling before this commit; a layout-effect
+  // cleanup on a function component is too late because child DOM mutations
+  // have already landed. Restore the cached row after the replacement, then
+  // refresh it from the resulting viewport. If the row fell outside the new
+  // window, the unread divider is the deterministic semantic fallback.
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    const anchor = readerAnchorRef.current;
+    // An authoritative replacement supersedes an in-flight history prepend,
+    // whether the reader is following or browsing history.
+    anchorRef.current = null;
+    if (container && anchor && !shouldFollowRef.current) {
+      const row = container.querySelector<HTMLElement>(
+        `[data-channel-message-seq="${anchor.seq}"]`
+      );
+      const target =
+        row ??
+        container.querySelector<HTMLElement>('[data-channel-unread-divider]');
+      if (target) {
+        const offsetTop =
+          target.getBoundingClientRect().top -
+          container.getBoundingClientRect().top;
+        container.scrollTop +=
+          row === target ? offsetTop - anchor.offsetTop : offsetTop;
+        lastScrollTopRef.current = container.scrollTop;
+      }
+    }
+    readerAnchorRef.current =
+      container && !shouldFollowRef.current
+        ? captureViewportAnchor(container)
+        : null;
+  }, [fullSnapshotRevision]);
 
   // Capture follow intent independently of post-mutation geometry. Rechecking
   // `isNearBottom` only after a large append can turn a previously-bottomed
@@ -120,6 +160,13 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
     }
 
     const previousLatestSeq = previousLatestSeqRef.current;
+    if (fullSnapshotRevision !== previousFullSnapshotRevisionRef.current) {
+      previousFullSnapshotRevisionRef.current = fullSnapshotRevision;
+      previousLatestSeqRef.current = latestSeq;
+      setNewMessageCount(0);
+      if (shouldFollowRef.current) scrollToBottom();
+      return;
+    }
     if (latestSeq < previousLatestSeq) {
       // An authoritative full snapshot can legitimately reset seq after a
       // channel is recreated under the same id. Reset the append baseline but
@@ -130,17 +177,31 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
       return;
     }
     if (latestSeq > previousLatestSeq) {
-      const appendedCount = messages.filter(
-        (message) => message.seq > previousLatestSeq
-      ).length;
-      if (shouldFollowRef.current && !anchorRef.current) {
+      let appendedCount = 0;
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index]!.seq <= previousLatestSeq) break;
+        appendedCount += 1;
+      }
+      const latestMessage = messages[messages.length - 1];
+      const isOwnMessage =
+        latestMessage !== undefined &&
+        latestMessage.seq > previousLatestSeq &&
+        latestMessage.sender.kind === 'human';
+      if (isOwnMessage) {
+        // Slack parity: sending while reading history returns to the present.
+        // Cancel a pending prepend so its eventual settlement cannot pull the
+        // viewport away from the just-posted message.
+        anchorRef.current = null;
+        readerAnchorRef.current = null;
+        scrollToBottom();
+      } else if (shouldFollowRef.current && !anchorRef.current) {
         scrollToBottom();
       } else if (appendedCount > 0) {
         setNewMessageCount((count) => count + appendedCount);
       }
     }
     previousLatestSeqRef.current = latestSeq;
-  }, [latestSeq, messages, scrollToBottom]);
+  }, [fullSnapshotRevision, latestSeq, messages, scrollToBottom]);
 
   // Streaming text, responsive layout, viewport rotation, and virtual-keyboard
   // changes all surface as content/container resizes. Preserve bottom anchoring
@@ -151,7 +212,11 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
     if (!container || !content) return;
 
     const preserveFollow = (): void => {
-      if (anchorRef.current || !shouldFollowRef.current) return;
+      if (anchorRef.current) return;
+      if (!shouldFollowRef.current) {
+        readerAnchorRef.current = captureViewportAnchor(container);
+        return;
+      }
       scrollToBottom();
     };
 
@@ -182,6 +247,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
           row.getBoundingClientRect().top -
           container.getBoundingClientRect().top;
         container.scrollTop += offsetTop - anchor.offsetTop;
+        lastScrollTopRef.current = container.scrollTop;
       }
     }
     anchorRef.current = null;
@@ -190,9 +256,36 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
-    const nearBottom = isNearBottom(scrollMetrics(container));
-    shouldFollowRef.current = nearBottom;
-    if (nearBottom) setNewMessageCount(0);
+    const metrics = scrollMetrics(container);
+    const scrollTopChanged =
+      Math.abs(metrics.scrollTop - lastScrollTopRef.current) > 1;
+    const pendingAnchor = anchorRef.current;
+    if (pendingAnchor && loadingOlder && scrollTopChanged) {
+      const refreshed = captureViewportAnchor(container);
+      if (refreshed) {
+        anchorRef.current = {
+          ...refreshed,
+          earliestSeqBefore: pendingAnchor.earliestSeqBefore,
+        };
+      }
+    }
+
+    const maxScrollTop = Math.max(
+      0,
+      metrics.scrollHeight - metrics.clientHeight
+    );
+    const movingUp = metrics.scrollTop < lastScrollTopRef.current - 1;
+    const atBottom =
+      maxScrollTop === 0 || maxScrollTop - metrics.scrollTop <= 1;
+    const follow = atBottom || (!movingUp && isNearBottom(metrics));
+    shouldFollowRef.current = follow;
+    lastScrollTopRef.current = metrics.scrollTop;
+    if (follow) {
+      readerAnchorRef.current = null;
+      setNewMessageCount(0);
+    } else {
+      readerAnchorRef.current = captureViewportAnchor(container);
+    }
     if (
       container.scrollTop < LOAD_OLDER_SCROLL_THRESHOLD_PX &&
       hasMoreOlder &&
@@ -284,6 +377,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                   className="ch-unread-line"
                   role="separator"
                   aria-label="new messages"
+                  data-channel-unread-divider
                 >
                   <span className="ch-unread-line__label">new</span>
                 </div>
