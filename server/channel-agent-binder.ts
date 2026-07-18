@@ -157,6 +157,8 @@ export interface LiveBinding {
   patchUnlisten: (() => void) | null;
   status: ChannelAgentStatus;
   activeTurnId: string | null;
+  /** Immediate parent for the active turn's streamed reply. */
+  activeParentMessageId: string | null;
   /** Context packet for the active turn (kept so a retry re-sends identical content). */
   activeContent: string | null;
   sawStream: boolean;
@@ -340,6 +342,7 @@ export function createChannelAgentBinder(
       patchUnlisten: null,
       status: 'idle',
       activeTurnId: null,
+      activeParentMessageId: null,
       activeContent: null,
       sawStream: false,
       waitingOn: null,
@@ -373,6 +376,10 @@ export function createChannelAgentBinder(
       store,
       hub,
       displayName,
+      parentMessageIdForTurn: (turnId) =>
+        binding.activeTurnId === turnId
+          ? (binding.activeParentMessageId ?? undefined)
+          : undefined,
       onAssistantMessageFinalized: (message) =>
         handleAssistantFinalized(message),
     });
@@ -567,6 +574,8 @@ export function createChannelAgentBinder(
       return;
     }
     binding.activeTurnId = turnId;
+    binding.activeParentMessageId =
+      trigger.threadId !== null ? trigger.id : null;
     binding.sawStream = false;
     binding.waitingOn = null;
     binding.activeContent = content;
@@ -662,6 +671,7 @@ export function createChannelAgentBinder(
   function finishTurn(binding: LiveBinding): void {
     if (binding.activeTurnId === null) return;
     binding.activeTurnId = null;
+    binding.activeParentMessageId = null;
     binding.activeContent = null;
     binding.waitingOn = null;
     binding.sawStream = false;
@@ -938,6 +948,7 @@ export function createChannelAgentBinder(
       binding.unbind = null;
       binding.patchUnlisten = null;
       binding.activeTurnId = null;
+      binding.activeParentMessageId = null;
       binding.activeContent = null;
       binding.waitingOn = null;
       binding.announcedApprovals.clear();

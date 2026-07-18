@@ -378,6 +378,31 @@ describe('mention routing — end-to-end via the router', () => {
     expect(agentReply(h.store, h.channelId)[0]!.sender.id).toBe('agent:mock');
   });
 
+  it('a mock agent reply to a threaded mention stays in that thread', async () => {
+    const h = await harness();
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const root = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'root discussion' },
+    });
+    const trigger = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: '@mock answer in thread', threadId: root.body.message.id },
+    });
+    expect(trigger.status).toBe(201);
+    expect(trigger.body.message.threadId).toBe(root.body.message.id);
+
+    await waitFor(() => agentReply(h.store, h.channelId).length === 1);
+    const reply = agentReply(h.store, h.channelId)[0]!;
+    expect(reply.sender.id).toBe('agent:mock');
+    expect(reply.threadId).toBe(root.body.message.id);
+    expect(reply.parentMessageId).toBe(trigger.body.message.id);
+  });
+
   it("the next turn's packet includes interim human rows but not the agent's own reply", async () => {
     const h = await harness(
       (agentType) => new RecordingAdapter(agentType, 'ack')

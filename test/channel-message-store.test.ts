@@ -217,7 +217,7 @@ describe('channel-message-store posts, threads, idempotency', () => {
     expect(s.history('topic:c')).toHaveLength(1);
   });
 
-  it('inherits thread_id from parent and rejects a cross-channel parent', () => {
+  it('inherits thread_id from parent and validates parent identity/channel', () => {
     const s = store();
     const root = s.appendComplete({
       channelId: 'topic:c',
@@ -239,14 +239,44 @@ describe('channel-message-store posts, threads, idempotency', () => {
       parentMessageId: reply.id,
     });
     expect(nested.threadId).toBe(root.id);
-    expect(() =>
+    try {
       s.appendComplete({
         channelId: 'topic:other',
         sender: HUMAN,
         text: 'x',
         parentMessageId: root.id,
-      })
-    ).toThrow(ChannelMessageStoreError);
+      });
+      throw new Error('expected cross-channel parent rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ChannelMessageStoreError);
+      expect((error as ChannelMessageStoreError).status).toBe(409);
+      expect((error as ChannelMessageStoreError).code).toBe(
+        'parent_channel_mismatch'
+      );
+    }
+    try {
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: HUMAN,
+        text: 'x',
+        parentMessageId: 'chm:missing',
+      });
+      throw new Error('expected missing parent rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ChannelMessageStoreError);
+      expect((error as ChannelMessageStoreError).status).toBe(404);
+      expect((error as ChannelMessageStoreError).code).toBe(
+        'parent_message_not_found'
+      );
+    }
+
+    const history = s.history('topic:c');
+    expect(history.find((message) => message.id === root.id)?.replyCount).toBe(
+      2
+    );
+    expect(
+      s.threadHistory('topic:c', root.id).map((message) => message.id)
+    ).toEqual([root.id, reply.id, nested.id]);
   });
 
   it('rejects a body over the 256KB cap', () => {

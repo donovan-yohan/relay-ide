@@ -318,11 +318,203 @@ describe('channel routes — read / write contract', () => {
   });
 });
 
+describe('channel routes — threads', () => {
+  it('writes nested replies, pages root-inclusive history, and reports replyCount', async () => {
+    const h = await harness();
+    const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const root = await req<{ message: { id: string; seq: number } }>({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'root' },
+    });
+    let parentId = root.body.message.id;
+    for (let i = 1; i <= 4; i++) {
+      const reply = await req<{
+        message: {
+          id: string;
+          seq: number;
+          threadId: string;
+          parentMessageId: string;
+        };
+      }>({
+        port: h.port,
+        method: 'POST',
+        url: messageUrl,
+        body: { text: `reply ${i}`, threadId: parentId },
+      });
+      expect(reply.status).toBe(201);
+      expect(reply.body.message.threadId).toBe(root.body.message.id);
+      expect(reply.body.message.parentMessageId).toBe(parentId);
+      parentId = reply.body.message.id;
+    }
+
+    const timeline = await req<{
+      messages: Array<{ id: string; replyCount?: number }>;
+    }>({ port: h.port, method: 'GET', url: messageUrl });
+    expect(
+      timeline.body.messages.find(
+        (message) => message.id === root.body.message.id
+      )?.replyCount
+    ).toBe(4);
+
+    const threadUrl = `/channels/${encodeURIComponent(h.channelId)}/threads/${encodeURIComponent(root.body.message.id)}`;
+    const page1 = await req<{
+      messages: Array<{ seq: number }>;
+      hasMore?: boolean;
+      nextCursor?: { afterSeq?: number };
+    }>({
+      port: h.port,
+      method: 'GET',
+      url: `${threadUrl}?afterSeq=0&limit=2`,
+    });
+    expect(page1.status).toBe(200);
+    expect(page1.body.messages.map((message) => message.seq)).toEqual([1, 2]);
+    expect(page1.body.hasMore).toBe(true);
+    expect(page1.body.nextCursor).toEqual({ afterSeq: 2 });
+
+    const page2 = await req<{
+      messages: Array<{ seq: number }>;
+      hasMore?: boolean;
+      nextCursor?: { afterSeq?: number };
+    }>({
+      port: h.port,
+      method: 'GET',
+      url: `${threadUrl}?afterSeq=${page1.body.nextCursor!.afterSeq}&limit=2`,
+    });
+    expect(page2.body.messages.map((message) => message.seq)).toEqual([3, 4]);
+    expect(page2.body.hasMore).toBe(true);
+    expect(page2.body.nextCursor).toEqual({ afterSeq: 4 });
+  });
+
+  it('returns 404 for an unknown parent and 409 for a cross-channel parent', async () => {
+    const h = await harness();
+    const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const missing = await req({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'reply', threadId: 'chm:missing' },
+    });
+    expect(missing.status).toBe(404);
+
+    const root = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'root' },
+    });
+    const other = h.topicStore.create({ workspaceId: 'ws', title: 'Other' });
+    const mismatch = await req({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(other.id)}/messages`,
+      body: { text: 'cross channel', threadId: root.body.message.id },
+    });
+    expect(mismatch.status).toBe(409);
+
+    const invalid = await req({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'invalid', threadId: '' },
+    });
+    expect(invalid.status).toBe(400);
+  });
+
+  it('preserves parentMessageId writes and rejects conflicting dual fields', async () => {
+    const h = await harness();
+    const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const firstRoot = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'first root' },
+    });
+    const secondRoot = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'second root' },
+    });
+
+    const legacy = await req<{
+      message: { threadId: string; parentMessageId: string };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: {
+        text: 'legacy reply',
+        parentMessageId: firstRoot.body.message.id,
+      },
+    });
+    expect(legacy.status).toBe(201);
+    expect(legacy.body.message.threadId).toBe(firstRoot.body.message.id);
+    expect(legacy.body.message.parentMessageId).toBe(firstRoot.body.message.id);
+
+    const legacyEmpty = await req<{
+      message: { threadId: string | null; parentMessageId: string | null };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'legacy empty is root', parentMessageId: '' },
+    });
+    expect(legacyEmpty.status).toBe(201);
+    expect(legacyEmpty.body.message.threadId).toBeNull();
+    expect(legacyEmpty.body.message.parentMessageId).toBeNull();
+
+    const conflict = await req({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: {
+        text: 'ambiguous reply',
+        threadId: firstRoot.body.message.id,
+        parentMessageId: secondRoot.body.message.id,
+      },
+    });
+    expect(conflict.status).toBe(400);
+  });
+
+  it('broadcasts a threaded reply on the normal channel created-event lane', async () => {
+    const h = await harness();
+    const messageUrl = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const root = await req<{ message: { id: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'root' },
+    });
+    const sock = fakeSocket();
+    h.hub.handleConnection(sock, { channelId: h.channelId, sinceSeq: null });
+    await req({
+      port: h.port,
+      method: 'POST',
+      url: messageUrl,
+      body: { text: 'threaded', threadId: root.body.message.id },
+    });
+    const created = sock.sent.find(
+      (event) =>
+        event.type === 'channel-message-created-v1' &&
+        event.message.body.text === 'threaded'
+    );
+    expect(created?.type).toBe('channel-message-created-v1');
+    if (created?.type === 'channel-message-created-v1') {
+      expect(created.message.threadId).toBe(root.body.message.id);
+    }
+  });
+});
+
 describe('channel routes — gateway capability mapping', () => {
   it('registers channels verbs in the actor command sets', () => {
     expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.list');
     expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.get');
     expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain('channels.history');
+    expect(CLI_GATEWAY_ACTOR_READ_COMMANDS).toContain(
+      'channels.threads.history'
+    );
     expect(CLI_GATEWAY_ACTOR_WRITE_COMMANDS).toContain('channels.post');
   });
 
@@ -336,6 +528,9 @@ describe('channel routes — gateway capability mapping', () => {
     expect(cliGatewayActorCommandCapabilities('channels.history')).toEqual([
       'context:read',
     ]);
+    expect(
+      cliGatewayActorCommandCapabilities('channels.threads.history')
+    ).toEqual(['context:read']);
     expect(cliGatewayActorCommandCapabilities('channels.post')).toEqual([
       'context:write',
     ]);

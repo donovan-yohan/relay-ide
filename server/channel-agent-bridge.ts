@@ -47,6 +47,8 @@ export interface BindSessionToChannelInput {
   store: ChannelMessageStore;
   hub: ChannelHub;
   displayName?: string;
+  /** Resolve the immediate parent for a routed turn, if it began in a thread. */
+  parentMessageIdForTurn?: (turnId: string) => string | undefined;
   /**
    * Invoked in `finalize()` after `completeStreamBroadcast` for `status ===
    * 'complete'` rows ONLY (#1167 §8). Bridge-authored replies bypass
@@ -93,11 +95,13 @@ export function bindSessionToChannel(
     const existing = streams.get(itemId);
     if (existing) return existing;
     turnsWithRows.add(turnId);
+    const parentMessageId = input.parentMessageIdForTurn?.(turnId);
     const message = store.beginStream({
       channelId,
       sender,
       source: { sessionId, turnId, itemId },
       ...(initialText ? { text: initialText } : {}),
+      ...(parentMessageId ? { parentMessageId } : {}),
     });
     const stream: BridgeStream = {
       messageId: message.id,
