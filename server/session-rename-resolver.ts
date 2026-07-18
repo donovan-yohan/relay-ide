@@ -11,7 +11,7 @@
  *   5. default              — ISO timestamp + repo path fragment
  *
  * Phase 3 (per-Workspace overrides, blocked by #444) and Phase 4 (web-interface
- * metadata, blocked by #300/#301) are explicitly deferred.
+ * metadata, blocked by #301) are explicitly deferred.
  */
 
 import path from 'node:path';

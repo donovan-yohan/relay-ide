@@ -70,9 +70,12 @@ TypeScript backend**. No Python sidecar, no OpenAI-shaped shim.
 - **Later:** MCP loopback so the subprocess gets channel-native tools — read
   channel history, read the roster, post back into the thread.
 
-This replaces the current `ClaudeProtocolAdapter` (`claude-adapter.ts`), which
-drives Claude through the Anthropic Agent SDK (`@anthropic-ai/claude-agent-sdk`
-`query()`) and is de-advertised for web sessions under #300.
+The current `ClaudeProtocolAdapter` (`claude-adapter.ts`) already implements this
+shape: a persistent `claude` subprocess driven over stream-json (no
+`@anthropic-ai/claude-agent-sdk`), with web sessions advertised
+(`supportsWebSessions: true`) as of #1168 (closes #300). (Historically it drove
+Claude through the Agent SDK `query()` and was de-advertised for web sessions
+under #300.)
 
 ## Slice 2 — Channel core (SHIPPED, #1165)
 
