@@ -54,6 +54,8 @@ import {
   policyDecisionToRelayError,
 } from './hub-policy-evaluator.js';
 import { sourceTupleFromIncomingMessage } from './node-source-diagnostics.js';
+import type { ChannelHub } from './channel-hub.js';
+import { isWorkspaceTopicId } from '../shared/workspace-topics.js';
 
 const logger = createLogger('ws');
 
@@ -574,7 +576,8 @@ function setupWebSocket(
   nodeLinks?: HubNodeLinkManager,
   sessionEnvelopes: InMemorySessionEnvelopeRegistry = sessionEnvelopeRegistry,
   auditSink?: RoutedSessionAuditSink,
-  sourceDiagnostics?: NodeLinkSourceDiagnosticsOptions
+  sourceDiagnostics?: NodeLinkSourceDiagnosticsOptions,
+  channelHub?: ChannelHub
 ): {
   wss: WebSocketServer;
   broadcastEvent: (type: string, data?: Record<string, unknown>) => void;
@@ -658,6 +661,11 @@ function setupWebSocket(
       }
     }
   }
+
+  // Sidebar badges ride the existing /ws/events broadcast as coarse
+  // `channel-activity` notifications (never deltas — that lane has no
+  // subscription filter and would flood all tabs).
+  channelHub?.setBadgeBroadcaster(broadcastEvent);
 
   function broadcastBranchChanged(cwdPath: string, branchName: string): void {
     const matchingSessions = sessions
@@ -884,6 +892,34 @@ function setupWebSocket(
         });
         ws.on('close', cleanup);
         ws.on('error', cleanup);
+      });
+      return;
+    }
+
+    // Channel fan-out lane: /ws/channels/:channelId?sinceSeq=N (server→client
+    // only; all writes are REST). Checked before the /ws/:sessionId fallback.
+    const channelMatch = requestPath.match(/^\/ws\/channels\/([^/]+)$/);
+    if (channelMatch) {
+      let channelId: string;
+      try {
+        channelId = decodeURIComponent(channelMatch[1]!);
+      } catch {
+        socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      if (!channelHub || !isWorkspaceTopicId(channelId)) {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      const sinceSeq = parseReplayCursor(
+        requestUrl.searchParams.get('sinceSeq')
+      );
+      // Upgrade first, then let the hub validate channel existence and close
+      // with app code 4404 if unknown (app close codes are only valid post-upgrade).
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        channelHub.handleConnection(ws, { channelId, sinceSeq });
       });
       return;
     }
