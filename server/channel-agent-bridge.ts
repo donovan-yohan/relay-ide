@@ -72,6 +72,10 @@ export function bindSessionToChannel(
   // (e.g. the codex-native plan item `plan-<turnId>`), and §6.3 mirrors ONLY
   // assistantMessage text — so a delta for any other item type is dropped.
   const assistantItemIds = new Set<string>();
+  // Turn ids that opened at least one channel-message stream. A `turn-completed`
+  // for a turn absent here produced ZERO message rows — a silent finalization
+  // that gets a warn log (#1181, defect 4) rather than passing unnoticed.
+  const turnsWithRows = new Set<string>();
 
   const sender: ChannelSenderRef = {
     kind: 'agent',
@@ -88,6 +92,7 @@ export function bindSessionToChannel(
   ): BridgeStream {
     const existing = streams.get(itemId);
     if (existing) return existing;
+    turnsWithRows.add(turnId);
     const message = store.beginStream({
       channelId,
       sender,
@@ -195,6 +200,22 @@ export function bindSessionToChannel(
       if (turnId !== undefined && stream.turnId !== turnId) continue;
       finalize(stream, status, stream.text);
     }
+    // #1181 defect 4: a cleanly-completed bound-agent turn that produced no
+    // channel message row is a silent failure (the reply never reached the
+    // channel). Log it — but never post a system row — so the gap is diagnosable
+    // instead of invisible. Interrupted/failed turns are expected to be able to
+    // finish empty, so they are not flagged.
+    if (
+      status === 'complete' &&
+      turnId !== undefined &&
+      !turnsWithRows.has(turnId)
+    ) {
+      logger.warn('channel bridge turn finalized with no message rows', {
+        channelId,
+        agentFramework,
+        turnId,
+      });
+    }
   }
 
   function handlePatch(patch: AgentPatchV2): void {
@@ -227,8 +248,22 @@ export function bindSessionToChannel(
       }
       case 'agent-item-updated-v2': {
         if (patch.item.type !== 'assistantMessage') break;
-        const stream = streams.get(patch.item.id);
-        if (stream) finalize(stream, 'complete', patch.item.text);
+        let stream = streams.get(patch.item.id);
+        if (!stream) {
+          // A completed assistantMessage that never opened a stream — no
+          // `started`, no text delta — is a non-streamed reply delivered as a
+          // single message-complete (e.g. a hermes v0.18.2 message output-item,
+          // #1181). Materialize the row directly so the reply is not silently
+          // dropped; openStream seeds it with the final text and finalize closes
+          // it in the same tick.
+          stream = openStream(
+            patch.turnId,
+            patch.item.id,
+            patch.sessionId,
+            patch.item.text ?? ''
+          );
+        }
+        finalize(stream, 'complete', patch.item.text ?? '');
         break;
       }
       case 'agent-turn-completed-v2': {

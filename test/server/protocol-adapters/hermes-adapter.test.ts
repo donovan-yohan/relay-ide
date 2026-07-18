@@ -601,3 +601,176 @@ describe('Hermes Responses SSE hardening', () => {
     });
   });
 });
+
+// #1181 defect 1: hermes replies must always finalize to exactly one assistant
+// `chat:message-complete`, whichever wire shape the reply arrives in.
+describe('Hermes assistant reply finalization (#1181)', () => {
+  let gateway: InlineGateway | undefined;
+  let adapter: HermesProtocolAdapter | undefined;
+
+  afterEach(async () => {
+    if (adapter) {
+      await adapter.disconnect().catch(() => {});
+      adapter = undefined;
+    }
+    if (gateway) {
+      await new Promise<void>((resolve) =>
+        gateway!.server.close(() => resolve())
+      );
+      gateway = undefined;
+    }
+  });
+
+  function assistantCompletes(events: ChatEvent[]): ChatEvent[] {
+    return events.filter(
+      (event) =>
+        event.type === 'chat:message-complete' && event.role === 'assistant'
+    );
+  }
+
+  it('maps a v0.18.2 message output-item to exactly one assistant message-complete', async () => {
+    // v0.18.2 delivers the reply as a `message` output-item via
+    // output_item.done, with NO streamed output_text.done.
+    gateway = await startInlineGateway((send, res) => {
+      send({ type: 'response.created', response: { id: 'resp_v0182' } });
+      send({
+        type: 'response.output_item.done',
+        item: {
+          id: 'msg_out_1',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'ok', annotations: [] }],
+        },
+      });
+      send({
+        type: 'response.completed',
+        response: { id: 'resp_v0182', status: 'completed' },
+      });
+      res.end();
+    });
+    adapter = new HermesProtocolAdapter();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+
+    await adapter.connect(configFor(gateway.endpoint, 'sess-v0182'));
+    await adapter.sendMessage('turn-1', 'say ok');
+
+    const completes = assistantCompletes(events);
+    expect(completes).toHaveLength(1);
+    expect(completes[0]).toMatchObject({
+      role: 'assistant',
+      content: 'ok',
+      turnId: 'turn-1',
+    });
+  });
+
+  it('emits exactly one assistant message-complete on the streamed output_text.done shape', async () => {
+    gateway = await startInlineGateway((send, res) => {
+      send({ type: 'response.created', response: { id: 'resp_stream' } });
+      send({ type: 'response.output_text.delta', delta: 'o' });
+      send({ type: 'response.output_text.delta', delta: 'k' });
+      send({ type: 'response.output_text.done', text: 'ok' });
+      send({
+        type: 'response.completed',
+        response: {
+          id: 'resp_stream',
+          status: 'completed',
+          output: [
+            {
+              id: 'msg_stream_1',
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'ok' }],
+            },
+          ],
+        },
+      });
+      res.end();
+    });
+    adapter = new HermesProtocolAdapter();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+
+    await adapter.connect(configFor(gateway.endpoint, 'sess-stream'));
+    await adapter.sendMessage('turn-1', 'say ok');
+
+    const completes = assistantCompletes(events);
+    expect(completes).toHaveLength(1);
+    expect(completes[0]).toMatchObject({ content: 'ok' });
+  });
+
+  it('does not double-emit when BOTH output_text.done and the message output-item arrive', async () => {
+    gateway = await startInlineGateway((send, res) => {
+      send({ type: 'response.created', response: { id: 'resp_both' } });
+      send({ type: 'response.output_text.delta', delta: 'ok' });
+      send({ type: 'response.output_text.done', text: 'ok' });
+      send({
+        type: 'response.output_item.done',
+        item: {
+          id: 'msg_both_1',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'ok' }],
+        },
+      });
+      send({
+        type: 'response.completed',
+        response: {
+          id: 'resp_both',
+          status: 'completed',
+          output: [
+            {
+              id: 'msg_both_1',
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'ok' }],
+            },
+          ],
+        },
+      });
+      res.end();
+    });
+    adapter = new HermesProtocolAdapter();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+
+    await adapter.connect(configFor(gateway.endpoint, 'sess-both'));
+    await adapter.sendMessage('turn-1', 'say ok');
+
+    expect(assistantCompletes(events)).toHaveLength(1);
+  });
+
+  it('recovers the reply from response.completed output[] when no item.done/text.done arrives', async () => {
+    gateway = await startInlineGateway((send, res) => {
+      send({ type: 'response.created', response: { id: 'resp_fallback' } });
+      send({
+        type: 'response.completed',
+        response: {
+          id: 'resp_fallback',
+          status: 'completed',
+          output: [
+            {
+              id: 'msg_fallback_1',
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'ok' }],
+            },
+          ],
+        },
+      });
+      res.end();
+    });
+    adapter = new HermesProtocolAdapter();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+
+    await adapter.connect(configFor(gateway.endpoint, 'sess-fallback'));
+    await adapter.sendMessage('turn-1', 'say ok');
+
+    const completes = assistantCompletes(events);
+    expect(completes).toHaveLength(1);
+    expect(completes[0]).toMatchObject({ content: 'ok' });
+  });
+});

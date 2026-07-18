@@ -294,6 +294,24 @@ class ApprovalAdapter extends BaseProtocolAdapterV2 {
       timestamp: 't',
       live: { waitingOn: 'approval' },
     });
+    // Real hermes shape (#1181 re-review): hermes fires
+    // `session-status {status:'idle', waitingOn:'approval'}` alongside the
+    // permission prompt, and the legacy compat mapping strips the waitingOn for
+    // the `idle` case — so the binder sees a BARE idle mid-approval. It must
+    // ignore it: never finalize (which would let pump dispatch a concurrent
+    // turn) and never clobber the waiting state / re-arm the watchdog.
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: {
+        status: 'idle',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: null,
+      },
+    });
   }
 
   async interrupt(input: AgentInterruptInputV2): Promise<void> {
@@ -463,6 +481,74 @@ class DeferredAdapter extends BaseProtocolAdapterV2 {
       timestamp: 't',
       turnId,
       status: 'completed',
+    });
+  }
+}
+
+// ── idle-without-turn-completed adapter (#1181 defect 3) ─────────────────────
+// Emits `working` then a trailing `idle` live-state but NO agent-turn-completed-v2
+// (and no assistant item) — the shape a hermes turn produces when it signals
+// session-status idle without a paired turn-completed. Reproduces the presence
+// wedge: the binder must fall back to idle instead of flipping to 'thinking'.
+class IdleWithoutTurnCompletedAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'attached' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    interrupt: true,
+    streaming: true,
+  };
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'idle-nc';
+  constructor(readonly agentType: string) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async interrupt(_i: AgentInterruptInputV2): Promise<void> {}
+  async respondToApproval(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: { status: 'working', error: null },
+    });
+    this.emitPatch({
+      type: 'agent-turn-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turn: {
+        id: input.turnId,
+        status: 'running',
+        inputMessageId: `user-${input.turnId}`,
+        items: [],
+        startedAt: 't',
+      },
+    });
+    // No assistant item, and crucially NO agent-turn-completed-v2 — only a
+    // trailing idle live-state, as a hermes turn can emit.
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: {
+        status: 'idle',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: null,
+      },
     });
   }
 }
@@ -828,6 +914,36 @@ describe('channel-agent-binder — roster + availability', () => {
     roster = await binder.rosterForChannel(CH);
     expect(roster.find((r) => r.id === 'mock')!.binding).not.toBeNull();
     expect(roster.find((r) => r.id === 'mock')!.binding?.status).toBe('idle');
+  });
+
+  it('clears presence to idle when a turn finalizes with an idle live-state and no turn-completed (#1181)', async () => {
+    const { binder, store } = makeBinder({
+      build: (agentType) => new IdleWithoutTurnCompletedAdapter(agentType),
+      targets: [
+        {
+          id: 'hermes',
+          displayName: 'Hermes',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['hermes'],
+    });
+    const statuses: string[] = [];
+    binder.setStatusBroadcaster((_type, data) => {
+      if (data['agentId'] === 'hermes') statuses.push(String(data['status']));
+    });
+    post(store, binder, '@hermes hi', ['hermes']);
+    // The turn must reach 'thinking' (proving it was delivered) and then settle
+    // back to 'idle' — NOT wedge on 'thinking' — even though no
+    // agent-turn-completed-v2 fired; the trailing idle live-state finalizes it.
+    await waitFor(
+      () => statuses.includes('thinking') && statuses.at(-1) === 'idle',
+      3000
+    );
+    expect(statuses).toContain('thinking');
+    expect(statuses.at(-1)).toBe('idle');
   });
 
   it('an unavailable framework posts a de-advertise row, rate-limited', async () => {
@@ -1276,6 +1392,48 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     await binder.interrupt(CH, 'mock'); // operator recovery
     await waitFor(() => a.sendCalls.length === 2, 4000); // parked turn drained
     expect(a.interruptCalls).toHaveLength(1);
+    expect(a.sendCalls).toHaveLength(2);
+  });
+
+  it('the trailing idle live-state during an approval never finalizes the turn (#1181 re-review)', async () => {
+    const built: ApprovalAdapter[] = [];
+    const { binder, store } = makeBinder({
+      build: (t) => {
+        const a = new ApprovalAdapter(t);
+        built.push(a);
+        return a;
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 25,
+    });
+    const t1 = post(store, binder, '@mock please approve', ['mock']);
+    await waitFor(() => built.length === 1 && built[0]!.sendCalls.length === 1);
+    const a = built[0]!;
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('requests approval'))
+    );
+    // Queue a second turn behind the parked (approval-pending) turn.
+    post(store, binder, '@mock two', ['mock']);
+
+    // Well past the 25ms watchdog: the trailing bare `idle` live-state must NOT
+    // have finalized the turn (which would pump T2) nor re-armed the watchdog
+    // (which would force-drain the parked turn and pump T2). Without the guard
+    // this is where the concurrent turn leaks.
+    await new Promise((r) => setTimeout(r, 90));
+    expect(a.sendCalls).toHaveLength(1); // T2 NOT pumped — turn stayed parked
+    // Presence stayed 'waiting' — never flipped to idle/thinking mid-approval.
+    expect(
+      (await binder.rosterForChannel(CH)).find((r) => r.id === 'mock')!.binding
+        ?.status
+    ).toBe('waiting');
+
+    // Resolving the approval resumes the turn: it completes normally, then T2 drains.
+    const requestId = `appr-chturn-${t1.id}-mock`;
+    await binder.respondToApproval(CH, 'mock', requestId, { kind: 'accept' });
+    await waitFor(() => agentReplies(store, 'mock').length === 1, 4000);
+    expect(agentReplies(store, 'mock')[0]!.body.text).toBe('approved and done');
+    await waitFor(() => a.sendCalls.length === 2, 4000); // queued turn drained
     expect(a.sendCalls).toHaveLength(2);
   });
 });

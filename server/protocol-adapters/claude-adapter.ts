@@ -1481,6 +1481,28 @@ export class ClaudeProtocolAdapter
       : `${prefix}-${turnId}-${index}`;
   }
 
+  /**
+   * Echo-drop guard for `handleAssistantMessage`: has this content block already
+   * been streamed? Checks the provider-id-keyed id AND the bare `${prefix}-
+   * ${turnId}-${index}` id. The bare form matters when the streamed item's
+   * `message_start` carried no message id (`streamProviderMessageId` null): the
+   * streamed item is keyed bare while this echo carries the message's real id,
+   * so the two ids diverge and — without the bare check — the echo would open a
+   * SECOND channel row for one assistant message (bridge opens per item id;
+   * store dedupes per source-triple), the #1181 duplicate-row defect.
+   */
+  private echoAlreadyStreamed(
+    streamed: Set<string>,
+    prefix: 'msg' | 'thinking',
+    turnId: string,
+    id: string,
+    index: number
+  ): boolean {
+    if (streamed.has(id)) return true;
+    const bareId = this.streamItemId(prefix, turnId, null, index);
+    return streamed.has(bareId);
+  }
+
   private handleStreamEvent(
     turnId: string,
     message: Record<string, unknown>
@@ -1676,7 +1698,15 @@ export class ClaudeProtocolAdapter
           providerMessageId,
           itemIndex
         );
-        if (this.streamedTextItems.has(id)) {
+        if (
+          this.echoAlreadyStreamed(
+            this.streamedTextItems,
+            'msg',
+            turnId,
+            id,
+            itemIndex
+          )
+        ) {
           // Stream already emitted start/deltas/stop — echo-drop the duplicate.
           continue;
         }
@@ -1725,7 +1755,15 @@ export class ClaudeProtocolAdapter
           providerMessageId,
           itemIndex
         );
-        if (this.streamedReasoningItems.has(id)) {
+        if (
+          this.echoAlreadyStreamed(
+            this.streamedReasoningItems,
+            'thinking',
+            turnId,
+            id,
+            itemIndex
+          )
+        ) {
           continue;
         }
         this.emitPatch({
