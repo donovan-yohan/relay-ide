@@ -232,6 +232,60 @@ describe('channel-agent-bridge lifecycle', () => {
     });
   });
 
+  it('materializes a non-streamed complete assistantMessage as one row (#1181)', () => {
+    // A completed assistantMessage that never opened a stream (no started, no
+    // delta) — the shape a hermes v0.18.2 message output-item maps to. Without
+    // the bridge materializing it, the reply is silently dropped.
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:ns',
+      agentFramework: 'hermes',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch(assistantUpdated('s', 'turn', 'msg-turn', 'ok'));
+
+    const messages = store.history('topic:ns');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      status: 'complete',
+      body: { text: 'ok' },
+    });
+    expect(messages[0]!.sender).toMatchObject({
+      kind: 'agent',
+      id: 'agent:hermes',
+    });
+  });
+
+  it('does not double-commit a non-streamed complete followed by turn-completed (#1181)', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:ns2',
+      agentFramework: 'hermes',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch(assistantUpdated('s', 'turn', 'msg-turn', 'ok'));
+    adapter.broadcastPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      status: 'completed',
+    });
+
+    const messages = store.history('topic:ns2');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      status: 'complete',
+      body: { text: 'ok' },
+    });
+  });
+
   it('does not mirror plan-item (or unknown-item) text deltas', () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2();
@@ -251,7 +305,9 @@ describe('channel-agent-bridge lifecycle', () => {
       turnId: 'turn',
       item: { type: 'plan', id: 'plan-turn', text: '' },
     });
-    adapter.broadcastPatch(textDelta('s', 'turn', 'plan-turn', 'Step 1: do it'));
+    adapter.broadcastPatch(
+      textDelta('s', 'turn', 'plan-turn', 'Step 1: do it')
+    );
     // A delta for an itemId never started at all is likewise dropped.
     adapter.broadcastPatch(textDelta('s', 'turn', 'ghost-item', 'stray text'));
 
