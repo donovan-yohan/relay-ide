@@ -352,6 +352,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'channels.list',
     'channels.get',
     'channels.history',
+    'channels.roster',
     'context.get',
     'context.list',
     'inbox.list',
@@ -567,6 +568,8 @@ test('classifies explicitly scoped CLI gateway actor write routes into the actor
     'workspace-topics.archive',
     'workspace-topics.restore',
     'channels.post',
+    'channels.interrupt',
+    'channels.respond-approval',
   ]);
 
   for (const command of CLI_GATEWAY_ACTOR_WRITE_COMMANDS) {

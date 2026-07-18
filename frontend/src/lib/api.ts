@@ -1808,6 +1808,96 @@ export async function postChannelMessage(
   return data.message;
 }
 
+// ── Channel agent roster + control (#1167, slice 4) ─────────────────────────
+// The roster lists the frameworks that can be @-mentioned in a channel, with
+// their live binding/status. Interrupt + approval are per-agent control writes.
+
+/** Live agent status within a channel (framework-id keyed). */
+export type ChannelAgentStatus =
+  | 'spawning'
+  | 'thinking'
+  | 'streaming'
+  | 'waiting'
+  | 'idle';
+
+/** One row of the channel @-mention roster (GET /channels/:id/roster). */
+export interface RosterEntry {
+  /** Framework id (e.g. `claude`, `codex`, `mock`) — what a mention resolves to. */
+  id: string;
+  displayName: string;
+  kind: 'framework';
+  /** False when the framework cannot currently be routed to (see `reason`). */
+  available: boolean;
+  reason: string | null;
+  /** Present when a live session is bound to this agent in the channel. */
+  binding: { sessionId: string; status: ChannelAgentStatus } | null;
+}
+
+export async function fetchChannelRoster(
+  channelId: string
+): Promise<RosterEntry[]> {
+  const data = await json<{ roster: RosterEntry[] }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}/roster`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return Array.isArray(data.roster) ? data.roster : [];
+}
+
+/**
+ * Interrupt the given agent's active turn in a channel. Lets `HttpError`
+ * propagate: callers ignore 404 (no live binding) / 409 (NO_ACTIVE_TURN, agent
+ * idle) since both mean "nothing to interrupt".
+ */
+export async function interruptChannelAgent(
+  channelId: string,
+  agentId: string
+): Promise<void> {
+  await json<{ ok: true }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(
+        agentId
+      )}/interrupt`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({}),
+      }
+    )
+  );
+}
+
+/**
+ * Respond to a channel agent's pending approval request. `decision` is an
+ * `AgentApprovalDecisionV2` (accept/decline/cancel) — kept `unknown` here so the
+ * caller owns the exact shape.
+ */
+export async function respondChannelApproval(
+  channelId: string,
+  agentId: string,
+  requestId: string,
+  decision: unknown
+): Promise<void> {
+  await json<{ ok: true }>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(
+        agentId
+      )}/approvals`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-capabilities': 'context:write',
+        },
+        body: JSON.stringify({ requestId, decision }),
+      }
+    )
+  );
+}
+
 export interface WorkContextCreateBody {
   title?: string;
   source?: string;

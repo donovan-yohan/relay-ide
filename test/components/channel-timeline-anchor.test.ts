@@ -39,6 +39,7 @@ async function renderTimeline(loadOlder: () => Promise<void>): Promise<void> {
       React.createElement(ChannelTimeline, {
         messages: [msg(5), msg(6)],
         lastReadSeq: null,
+        channelId: 'topic:general',
         channelTitle: 'general',
         hasMoreOlder: true,
         loadingOlder: false,

@@ -125,6 +125,13 @@ export type EventMessage =
     }
   | { type: 'server-restarting'; reason?: string }
   | { type: 'channel-activity'; channelId: string; latestSeq: number }
+  | {
+      type: 'channel-agent-status';
+      channelId: string;
+      agentId: string;
+      status: 'spawning' | 'thinking' | 'streaming' | 'waiting' | 'idle';
+      sessionId: string | null;
+    }
   | ({
       type: 'session-durability-changed';
       sessionId: string;

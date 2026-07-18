@@ -109,8 +109,36 @@ agent mail, and every adapter are untouched):
   the verbs are wired into the CLI-gateway capability map. `channels.history`
   responses are byte-bounded (~4MB); on overflow they return `hasMore: true` and a
   `nextCursor` (`afterSeq`/`beforeSeq`) so the client fetches the remainder in pages.
-- **Slice-4 seam** `server/channel-agent-bridge.ts`: `AgentPatchV2` → channel
-  lifecycle translation, shipped and contract-tested but unwired until #1167.
+- **Adapter→channel bridge** `server/channel-agent-bridge.ts`: `AgentPatchV2` →
+  channel lifecycle translation. Now wired by #1167; `agent-turn-completed-v2`
+  finalizes the row with the turn's real status (`interrupted`/`failed`, not always
+  `complete`), and an optional `onAssistantMessageFinalized` hook fires on cleanly
+  completed rows to drive agent-to-agent mentions.
+- **@-mention routing (#1167)** `server/channel-agent-binder.ts`: one module owns
+  the loop — subscribe `hub.onMessagePosted` → resolve mentions (`providerId` only)
+  → single-flight ensure a `(channel, framework)` web session (spawn | reuse |
+  rebind) → wire the bridge → build a context packet (`server/channel-context-packet.ts`,
+  pure) → `adapter.sendMessage`. Browser posts and CLI-gateway-actor posts route
+  identically. Spawns default to **yolo/permission-bypass** (MVP constant
+  `CHANNEL_BINDING_YOLO_DEFAULT`) so routing never wedges on an approval; the
+  approval-render path stays wired. Per-binding FIFO turn queue (cap 8), a per-turn
+  watchdog that pauses on `waitingOn` (never force-drains a human approval), a
+  single-node cross-node guard, deterministic `turnId = chturn-<messageId>-<framework>`
+  (retry reuses it), an at-least-once delivery cursor
+  (`binding.providerSession.lastDeliveredSeq`, advanced only on send acceptance),
+  and a per-channel **consecutive-agent-turn brake** (`MAX_CONSECUTIVE_AGENT_TURNS=4`,
+  reset on any human/gateway post) bounding agent-to-agent fan-out.
+  - **Context packet** (`buildMentionContextPacket`): header addressing the agent
+    - up to 20 recent rows after the cursor and before the trigger (own rows
+      skipped, `[…earlier messages omitted]` when capped, 2 000-char/row + 24 KB caps)
+    - a footer restating the trigger. A reused session with no interim rows collapses
+      to header + footer only.
+  - **Verbs** `server/channel-chat-router.ts`: `GET /channels/:id/roster`
+    (`channels.roster`, `context:read`) — per-request framework availability +
+    live binding status; `POST /channels/:id/agents/:agentId/interrupt`
+    (`channels.interrupt`) and `POST .../approvals` (`channels.respond-approval`),
+    both `context:write`. Status transitions ride `/ws/events` as
+    `channel-agent-status`.
 
 **Privacy note:** channel message bodies are stored **raw**, with no redaction
 pipeline (unlike the `work_context_messages` sanitizer,
@@ -129,17 +157,17 @@ prompts only, no burn. Proof matrix:
 
 ## Ladder (epic #1163)
 
-| Slice | Scope                                                                      |
-| ----- | -------------------------------------------------------------------------- |
-| #1164 | Debt clear — retire v1 chat surface / kill-list items below.               |
-| #1165 | Channel core — channel = conversation model over the substrate.            |
-| #1166 | Channel UI + DM-as-channel.                                                |
-| #1167 | `@`-mentions — route mention → `(channel, agent)` session, spawn-on-first. |
-| #1168 | Claude subprocess adapter (native stream-json, warm pool, `--resume`).     |
-| #1169 | Multi-agent live proof + Codex revive.                                     |
-| #1170 | Threads (`parent_message_id` / `thread_id`).                               |
-| #1171 | Mobile cockpit (mission control).                                          |
-| #1172 | Tauri desktop suite (backlog).                                             |
+| Slice | Scope                                                                                                                                                                             |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #1164 | Debt clear — retire v1 chat surface / kill-list items below.                                                                                                                      |
+| #1165 | Channel core — channel = conversation model over the substrate.                                                                                                                   |
+| #1166 | Channel UI + DM-as-channel.                                                                                                                                                       |
+| #1167 | `@`-mentions — route mention → `(channel, agent)` session, spawn-on-first. **SHIPPED** — roster autocomplete, spawn-on-first-mention, streamed replies, interrupt/approval verbs. |
+| #1168 | Claude subprocess adapter (native stream-json, warm pool, `--resume`).                                                                                                            |
+| #1169 | Multi-agent live proof + Codex revive.                                                                                                                                            |
+| #1170 | Threads (`parent_message_id` / `thread_id`).                                                                                                                                      |
+| #1171 | Mobile cockpit (mission control).                                                                                                                                                 |
+| #1172 | Tauri desktop suite (backlog).                                                                                                                                                    |
 
 ## Kill list (PLANNED removal)
 
