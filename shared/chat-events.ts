@@ -1,10 +1,17 @@
-// Canonical ChatEvent type system for the unified web chat interface.
+// @deprecated v1 chat protocol — bridge/legacy-adapter use only.
+//
+// The canonical web-chat surface is the v2 protocol in
+// `shared/agent-chat-protocol-v2.ts`. This v1 ChatEvent type system survives
+// solely because the legacy protocol adapters (opencode, hermes,
+// attached-runtime, mock) still emit ChatEvents, and
+// `LegacyProtocolAdapterV2Bridge` translates them to v2 patches via
+// `shared/agent-chat-v1-compat.ts`. Do NOT wire ChatEvent into new UI or
+// session state — use the v2 protocol instead. Once every adapter emits v2
+// natively, this file and the v1 compat shim can be deleted.
+//
 // ChatEvent is a SIBLING to AgentEvent — not a subtype. AgentEvent handles
 // session lifecycle; ChatEvent handles streaming content, tool calls, approvals,
 // and protocol-specific semantics.
-//
-// All agent backends (Codex, OpenCode, Claude Code) map their native protocol
-// messages into this canonical type system via ProtocolAdapters.
 
 export type ChatEventSource =
   | 'codex'

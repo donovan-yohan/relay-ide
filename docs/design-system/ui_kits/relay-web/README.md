@@ -26,4 +26,4 @@ The Relay IDE web app — the only product surface. This kit shows the design sy
 
 - Fonts: `JetBrains Mono` is loaded from Google Fonts as a cross-platform fallback; SF Mono is preferred when available (macOS).
 - The "claude" agent badge in the breadcrumb is text-only — see `preview/brand-iconography.html` for the proper SVG version that the production app uses.
-- This is an HTML mock, not a React build. The component split (TuiButton, TuiCheckbox, StatusDot, TopicSidebarShell/ViewSpineTree) lives in `_reference/relay-ide/frontend/src/components/`.
+- This is an HTML mock, not a React build. The component split (TuiButton, TuiCheckbox, StatusDot, TopicSidebarShell) lives in `_reference/relay-ide/frontend/src/components/`.

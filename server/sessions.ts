@@ -1153,9 +1153,6 @@ function kill(id: string): void {
     session.adapterV2?.disconnect().catch(() => {
       // Adapter may already be disconnected — still proceed with cleanup
     });
-    session.adapter.disconnect().catch(() => {
-      // Adapter may already be disconnected — still proceed with cleanup
-    });
   }
   const durationS = Math.round(
     (Date.now() - new Date(session.createdAt).getTime()) / 1000
@@ -1206,9 +1203,6 @@ function detachForRestart(id: string): void {
     }
   } else {
     session.adapterV2?.disconnect().catch(() => {
-      // Adapter may already be disconnected during shutdown.
-    });
-    session.adapter.disconnect().catch(() => {
       // Adapter may already be disconnected during shutdown.
     });
   }

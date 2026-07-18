@@ -1,14 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { MockProtocolAdapter } from '../server/protocol-adapters/mock-adapter.js';
-import { pushToBuffer } from '../server/web-session-handler.js';
 import { isChatEvent } from '../shared/chat-events.js';
 import type { ChatEvent } from '../shared/chat-events.js';
 import {
   ZERO_DELAYS,
   BASE_CONFIG,
-  makeWebSession,
-  makeBaseEvent,
-  makeApproval,
   connectAndClear,
 } from './helpers/web-chat-fixtures.js';
 
@@ -333,102 +329,3 @@ describe('isChatEvent type guard - all mock adapter events pass', () => {
     ).toBe(false);
   });
 });
-
-// ── 3. Buffer contract tests ──────────────────────────────────────────────────
-
-describe('pushToBuffer - integration with real event sequences', () => {
-  it('buffers all events from happy-path run', async () => {
-    const adapter = new MockProtocolAdapter(ZERO_DELAYS);
-    const session = makeWebSession({ adapter });
-    adapter.on((e) => pushToBuffer(session, e));
-
-    await adapter.connect(BASE_CONFIG);
-    await adapter.sendMessage('turn-1', 'scenario:happy-path');
-
-    expect(session.messages.length).toBeGreaterThan(0);
-    // connect emits session-started + session-status(idle)
-    // sendMessage emits: session-status(active), turn-started, N text-deltas, message-complete, turn-completed, session-status(idle)
-    expect(
-      session.messages.some((e) => e.type === 'chat:session-started')
-    ).toBe(true);
-    expect(session.messages.some((e) => e.type === 'chat:turn-started')).toBe(
-      true
-    );
-    expect(session.messages.some((e) => e.type === 'chat:text-delta')).toBe(
-      true
-    );
-    expect(
-      session.messages.some((e) => e.type === 'chat:message-complete')
-    ).toBe(true);
-    expect(session.messages.some((e) => e.type === 'chat:turn-completed')).toBe(
-      true
-    );
-  });
-
-  it('maintains cap at 1000 when events exceed limit', () => {
-    const session = makeWebSession();
-
-    // Fill to exactly 1000
-    for (let i = 0; i < 1000; i++) {
-      session.messages.push(makeBaseEvent({ delta: `chunk-${i}` }));
-    }
-    expect(session.messages).toHaveLength(1000);
-
-    // Push 10 more — should evict oldest each time, staying at 1000
-    for (let i = 0; i < 10; i++) {
-      pushToBuffer(session, makeBaseEvent({ delta: `overflow-${i}` }));
-    }
-    expect(session.messages).toHaveLength(1000);
-  });
-
-  it('preserves approval events during eviction', () => {
-    const session = makeWebSession();
-
-    // Fill to 999 with text-delta events then add one approval
-    for (let i = 0; i < 999; i++) {
-      session.messages.push(makeBaseEvent({ delta: `chunk-${i}` }));
-    }
-    const approval = makeApproval('req-preserved');
-    session.messages.push(approval);
-    expect(session.messages).toHaveLength(1000);
-
-    // Push more events — non-approval should be evicted, approval preserved
-    for (let i = 0; i < 5; i++) {
-      pushToBuffer(session, makeBaseEvent({ delta: `new-${i}` }));
-    }
-
-    expect(session.messages).toHaveLength(1000);
-    // The approval must still be in the buffer
-    expect(session.messages.some((e) => e === approval)).toBe(true);
-    // Text deltas at end are the new ones
-    const lastFive = session.messages.slice(-5);
-    for (let i = 0; i < 5; i++) {
-      expect(lastFive[i]?.type).toBe('chat:text-delta');
-    }
-  });
-
-  it('buffers approval events from approval-flow scenario without loss', async () => {
-    const adapter = new MockProtocolAdapter(ZERO_DELAYS);
-    const session = makeWebSession({ adapter });
-    adapter.on((e) => pushToBuffer(session, e));
-
-    await adapter.connect(BASE_CONFIG);
-
-    const sendPromise = adapter.sendMessage('turn-1', 'scenario:approval-flow');
-    await vi.waitFor(() =>
-      expect(
-        session.messages.some((e) => e.type === 'chat:approval-request')
-      ).toBe(true)
-    );
-    await adapter.respondToApproval('req-1', 'allow');
-    await sendPromise;
-
-    expect(
-      session.messages.some((e) => e.type === 'chat:approval-request')
-    ).toBe(true);
-    expect(
-      session.messages.some((e) => e.type === 'chat:approval-response')
-    ).toBe(true);
-  });
-});
-

@@ -9,7 +9,6 @@ import { estimateTerminalDimensions } from '../lib/utils.js';
 import type { WorktreeInfo, Repo, PullRequest } from '../lib/types.js';
 import {
   ConflictError,
-  fetchIaBenches,
   fetchWorkspaceSettings,
   fetchWorktreeStatus,
 } from '../lib/api.js';
@@ -24,7 +23,6 @@ import {
   executeWorktreeDeleteAction,
 } from '../lib/actions/workspace-lifecycle.js';
 import { executeBranchOpenSessionAction } from '../lib/actions/start-work-lifecycle.js';
-import type { BenchCreatePayload } from '../lib/state/view-tree.js';
 import {
   derivePrAction,
   buildPrStateInput,
@@ -248,75 +246,6 @@ export function useSessionHandlers({
     }
   }, []);
 
-  // #731: "+ tab" anchored to a view-spine Bench. Reuses the EXISTING
-  // node-aware create entrypoint (`createAgentSession` → `createSession`, the
-  // #473 local/remote/free flow). The bench resolves to the agent-session repo
-  // context the backend requires (`repoPath` ∈ config.repos, worktree → cwd) —
-  // mirroring the dialog's local-git create. #740: the new Tab also inherits the
-  // anchoring Bench's persisted `envOverrides` overlay (looked up by benchId),
-  // applied additively to the PTY env by the backend (reserved `PATH`/`RELAY_*`
-  // keys are refused). The overlay lookup is best-effort — a fetch failure or
-  // missing overlay just creates with no extra env (unchanged behavior), never
-  // blocking the tab. Offline/remote-unavailable benches fail through the same
-  // toast path as every other create; no bespoke error UI.
-  const handleViewSpineCreateTab = useCallback(
-    async (payload: BenchCreatePayload) => {
-      const loadingKey = `view-spine-tab:${payload.nodeId}:${payload.cwd}`;
-      if (useSessionsStore.getState().isItemLoading(loadingKey)) return;
-      useSessionsStore.getState().setLoading(loadingKey);
-      try {
-        const { cols, rows } = estimateTerminalDimensions(
-          useUiStore.getState().terminalFontSize
-        );
-        // Resolve the anchoring Bench's persisted env overlay (#740). Match by
-        // the deterministic benchId; best-effort so create never blocks on it.
-        let envOverrides: Record<string, string> | undefined;
-        try {
-          const benches = await fetchIaBenches(payload.instanceId);
-          const overlay = benches.find((b) => b.id === payload.benchId);
-          if (overlay && Object.keys(overlay.envOverrides).length > 0) {
-            envOverrides = overlay.envOverrides;
-          }
-        } catch (overlayError) {
-          logger.warn(
-            'view-spine tab: bench env-overlay lookup failed; creating with no inherited env',
-            overlayError
-          );
-        }
-        const { session, error } = await createAgentSession({
-          nodeId: payload.nodeId,
-          repoPath: payload.repoPath,
-          worktreePath: payload.worktreePath,
-          cwd: payload.cwd,
-          type: 'agent',
-          cols,
-          rows,
-          ...(envOverrides ? { envOverrides } : {}),
-        });
-        if (session?.id && !(error instanceof ConflictError)) {
-          useSessionsStore
-            .getState()
-            .initSessionNotification(
-              session.id,
-              useConfigStore.getState().defaultNotifications
-            );
-        }
-        if (session?.id) useUiStore.getState().closeSidebar();
-        if (error && !(error instanceof ConflictError)) {
-          logger.error('Failed to create view-spine tab:', error);
-          useToastStore
-            .getState()
-            .showToast(
-              error instanceof Error ? error.message : 'failed to create tab'
-            );
-        }
-      } finally {
-        useSessionsStore.getState().clearLoading(loadingKey);
-      }
-    },
-    []
-  );
-
   const handleQuickTerminal = useCallback(async () => {
     const { currentActiveWorkspace, currentWorktreePath } =
       getCurrentSessionContext();
@@ -450,7 +379,9 @@ export function useSessionHandlers({
         // #870: route launch through the stable workspaces.launch descriptor/
         // executor. Errors surface on the envelope (!ok) rather than as a throw,
         // so the existing alert path keys off result.error here.
-        const launchResult = await executeWorkspaceLaunchAction({ workspaceId });
+        const launchResult = await executeWorkspaceLaunchAction({
+          workspaceId,
+        });
         if (!launchResult.ok) {
           logger.error(
             '[workspace-session] launch failed:',
@@ -545,7 +476,9 @@ export function useSessionHandlers({
       logger.error('Failed to start conflict resolution:', result.error);
       useToastStore
         .getState()
-        .showToast(result.error.message || 'failed to start conflict resolution');
+        .showToast(
+          result.error.message || 'failed to start conflict resolution'
+        );
       return;
     }
 
@@ -595,7 +528,9 @@ export function useSessionHandlers({
         branch: { name: pr.headRefName },
         worktree: { mode: 'create-if-missing' },
         ...(existingWorktreePath ? { existingWorktreePath } : {}),
-        ...(prPrompt ? { prompt: { mode: 'initial-prompt', prompt: prPrompt } } : {}),
+        ...(prPrompt
+          ? { prompt: { mode: 'initial-prompt', prompt: prPrompt } }
+          : {}),
       });
 
       if (!result.ok) {
@@ -970,7 +905,10 @@ export function useSessionHandlers({
       // sessions.kill executor with the resolved owning node, then refresh
       // regardless of outcome. Tab selection below stays synchronous so the UI
       // advances without waiting on the kill.
-      void executeSessionKillAction({ id: localSessionId, nodeId: targetNodeId })
+      void executeSessionKillAction({
+        id: localSessionId,
+        nodeId: targetNodeId,
+      })
         .then((result) => {
           if (!result.ok) {
             logger.error('Failed to close session:', result.error);
@@ -1009,7 +947,6 @@ export function useSessionHandlers({
     handleSelectSession,
     handleSelectWorkspace,
     handleQuickAgent,
-    handleViewSpineCreateTab,
     handleQuickTerminal,
     handleCustomize,
     handleOpenSettings,

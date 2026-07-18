@@ -5,11 +5,6 @@ import type {
   AgentDynamicToolCallItemV2,
   AgentMcpToolCallItemV2,
 } from '../../../../shared/agent-chat-protocol-v2.js';
-import type {
-  ToolCallEvent,
-  ToolCallStatus,
-  ToolResultEvent,
-} from '../../../../shared/chat-events.js';
 
 type ToolItemV2 =
   | AgentCommandExecutionItemV2
@@ -17,9 +12,7 @@ type ToolItemV2 =
   | AgentMcpToolCallItemV2;
 
 interface ToolCardProps {
-  item?: ToolItemV2;
-  event?: ToolCallEvent;
-  result?: ToolResultEvent | undefined;
+  item: ToolItemV2;
 }
 
 const EXPANDED_BY_DEFAULT = new Set([
@@ -48,21 +41,13 @@ function statusClass(status: string | undefined): string {
   }
 }
 
-function legacyStatus(status: ToolCallStatus): string {
-  return status;
-}
-
 function stringify(value: unknown): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
   return JSON.stringify(value, null, 2);
 }
 
-function getToolView(
-  item: ToolItemV2 | undefined,
-  event: ToolCallEvent | undefined,
-  result: ToolResultEvent | undefined
-): {
+function getToolView(item: ToolItemV2): {
   name: string;
   description: string;
   status: string;
@@ -71,7 +56,7 @@ function getToolView(
   output: string;
   error: string;
 } {
-  if (item?.type === 'commandExecution') {
+  if (item.type === 'commandExecution') {
     return {
       name: 'command',
       description: item.command,
@@ -83,7 +68,7 @@ function getToolView(
     };
   }
 
-  if (item?.type === 'dynamicToolCall') {
+  if (item.type === 'dynamicToolCall') {
     return {
       name: item.tool,
       description: item.namespace,
@@ -95,7 +80,7 @@ function getToolView(
     };
   }
 
-  if (item?.type === 'mcpToolCall') {
+  if (item.type === 'mcpToolCall') {
     return {
       name: item.tool,
       description: item.server,
@@ -104,19 +89,6 @@ function getToolView(
       input: stringify(item.arguments),
       output: item.progress || stringify(item.result),
       error: item.error ?? '',
-    };
-  }
-
-  if (event) {
-    return {
-      name: event.toolName.toLowerCase(),
-      description: event.description ?? '',
-      status: legacyStatus(event.status),
-      durationLabel:
-        result?.durationMs != null ? `${result.durationMs}ms` : null,
-      input: Object.keys(event.input).length > 0 ? stringify(event.input) : '',
-      output: result?.output ?? '',
-      error: result?.error ?? '',
     };
   }
 
@@ -131,11 +103,8 @@ function getToolView(
   };
 }
 
-export const ToolCard: React.FC<ToolCardProps> = ({ item, event, result }) => {
-  const view = useMemo(
-    () => getToolView(item, event, result),
-    [event, item, result]
-  );
+export const ToolCard: React.FC<ToolCardProps> = ({ item }) => {
+  const view = useMemo(() => getToolView(item), [item]);
   const defaultExpanded = EXPANDED_BY_DEFAULT.has(view.name.toLowerCase());
   const [expanded, setExpanded] = useState(defaultExpanded);
   const hasBody = Boolean(view.input || view.output || view.error);

@@ -1,9 +1,8 @@
 import crypto from 'node:crypto';
 import type { WebSession, Session } from './types.js';
 import type { AgentType } from './types.js';
-import type { ChatEvent } from '../shared/chat-events.js';
 import { createAdapterV2 } from './protocol-adapters/index.js';
-import type { AdapterConfig, ProtocolAdapter } from './protocol-adapter.js';
+import type { AdapterConfig } from './protocol-adapter.js';
 import type {
   AgentPatchV2,
   AgentSessionBreakItemV2,
@@ -24,7 +23,6 @@ import {
 import { createLocalCompatibilitySessionEnvelope } from '../shared/session-envelope.js';
 
 const logger = createLogger('web-session');
-const MESSAGE_BUFFER_MAX = 1000;
 
 export interface CreateWebParams {
   id?: string;
@@ -49,25 +47,6 @@ export interface CreateWebParams {
   extra?: Record<string, unknown>;
 }
 
-export function pushToBuffer(session: WebSession, event: ChatEvent): void {
-  if (session.messages.length >= MESSAGE_BUFFER_MAX) {
-    // Prefer evicting non-approval events so approval state is preserved for reconnecting clients.
-    // If the entire buffer is approvals (pathological case), fall back to FIFO eviction of the
-    // oldest approval to prevent unbounded growth — losing a stale approval is better than OOM.
-    const evictIdx = session.messages.findIndex(
-      (e) =>
-        e.type !== 'chat:approval-request' &&
-        e.type !== 'chat:approval-response'
-    );
-    if (evictIdx !== -1) {
-      session.messages.splice(evictIdx, 1);
-    } else {
-      session.messages.shift();
-    }
-  }
-  session.messages.push(event);
-}
-
 export async function createWebSession(
   params: CreateWebParams,
   sessionsMap: Map<string, Session>,
@@ -76,10 +55,6 @@ export async function createWebSession(
 ): Promise<{ session: WebSession }> {
   const id = params.id ?? crypto.randomBytes(8).toString('hex');
   const adapterV2 = createAdapterV2(params.agentType);
-  const adapter = createV2OnlyLegacyAdapter(
-    params.agentType,
-    adapterV2.runtimeOwnership
-  );
   const activeRuntime = adapterV2;
   const hookToken = params.hookToken ?? crypto.randomBytes(16).toString('hex');
   const createdAt = new Date().toISOString();
@@ -112,7 +87,6 @@ export async function createWebSession(
     ...(params.additionalDirs !== undefined
       ? { additionalDirs: params.additionalDirs }
       : {}),
-    adapter,
     adapterV2,
     adapterType: params.agentType,
     agentSessionV2: createInitialAgentSessionV2({
@@ -131,7 +105,6 @@ export async function createWebSession(
     }),
     agentPatchesV2: [],
     protocolVersion: 2,
-    messages: [],
     currentTurnId: null,
     runtimeOwnership: params.runtimeOwnership ?? activeRuntime.runtimeOwnership,
     hookToken,
@@ -174,7 +147,6 @@ export async function createWebSession(
     // Clean up zombie: remove from map and disconnect adapter to clear handlers
     sessionsMap.delete(id);
     await adapterV2.disconnect().catch(() => {});
-    await adapter.disconnect().catch(() => {});
     session.agentState = 'error';
     throw err;
   }
@@ -369,36 +341,6 @@ export async function continueHereWebSession(
   // ensure the cleared vendor ID hits the DB before the new one arrives.
   upsertWebSessionNow(session);
   return true;
-}
-
-function createV2OnlyLegacyAdapter(
-  agentType: string,
-  runtimeOwnership: 'spawned' | 'attached'
-): ProtocolAdapter {
-  return {
-    agentType,
-    runtimeOwnership,
-    status: 'connected',
-    async connect() {},
-    async disconnect() {},
-    async reconnect() {},
-    async createSession() {
-      return '';
-    },
-    async resumeSession() {},
-    async forkSession() {
-      return '';
-    },
-    async sendMessage() {
-      throw new Error(`${agentType} web sessions use ProtocolAdapterV2`);
-    },
-    async interrupt() {},
-    async respondToApproval() {},
-    async respondToInput() {},
-    on() {
-      return () => {};
-    },
-  };
 }
 
 function handleAgentPatchV2(
