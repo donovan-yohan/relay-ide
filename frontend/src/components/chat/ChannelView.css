@@ -63,6 +63,28 @@
   background: var(--status-success);
 }
 
+.ch-conn-dot--off {
+  background: var(--status-error, var(--text-muted));
+}
+
+/* manual reconnect affordance shown when reconnect backoff has given up */
+.ch-reconnect-btn {
+  margin-right: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-reconnect-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* timeline scroll container — mirrors .tl */
 .ch-tl {
   flex: 1;

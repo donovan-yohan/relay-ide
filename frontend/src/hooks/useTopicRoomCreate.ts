@@ -296,9 +296,12 @@ export function useTopicRoomCreate({
           ui.setTopicComposerOpen(false);
           ui.setForceOrgCockpit(false);
           setDraft(TOPIC_ROOM_DRAFT_EMPTY);
-          // onLaunched closes the composer; ChatHome ignores whether the id is a
-          // session key or a channel id.
-          onLaunched?.(topic.id);
+          // #1178: open the channel via the channel path ONLY. Do NOT pass the
+          // topic id to onLaunched — in the mounted app that resolves to
+          // handleSelectSession → setActiveSessionId, and the channel↔session
+          // mutual-exclusion effect would clear the activeChannelId we just set
+          // (flash-and-close) and persist a bogus 'topic:...' session key.
+          // setActiveChannelId above is sufficient to render ChannelView.
         } catch (error) {
           setLaunchFailure({
             stage: 'session',
@@ -402,7 +405,6 @@ export function useTopicRoomCreate({
       effectiveTitle,
       frameworks,
       launchMode,
-      onLaunched,
       previewCreate,
       queryClient,
       selectedProviderId,

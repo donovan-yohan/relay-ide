@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   buildTimelineNodes,
   formatDayLabel,
@@ -12,6 +12,20 @@ import type {
 import fixtureData from '../fixtures/channel-chat/mixed-timeline.json';
 
 const fixture = fixtureData as unknown as ChannelMessage[];
+
+// Grouping/day-divider layout is LOCAL-calendar sensitive: the fixture's day
+// boundary (10:22Z on 07-17 → 09:00Z on 07-18) collapses into one local day at
+// UTC-10 or beyond, so the asserted node sequence and divider dates flip under
+// those offsets. Pin TZ=UTC for this file (restored after) so the assertions are
+// deterministic on any machine (#1178). Runtime TZ mutation is honored by V8.
+const originalTz = process.env.TZ;
+beforeAll(() => {
+  process.env.TZ = 'UTC';
+});
+afterAll(() => {
+  if (originalTz === undefined) delete process.env.TZ;
+  else process.env.TZ = originalTz;
+});
 
 function kinds(nodes: TimelineNode[]): string[] {
   return nodes.map((node) => node.kind);
@@ -138,6 +152,36 @@ describe('buildTimelineNodes — grouping rules', () => {
       null
     );
     expect(kinds(nodes)).toEqual(['day-divider', 'group', 'group']);
+  });
+
+  it('breaks a same-sender group across a day boundary within the window (§5.1)', () => {
+    // Same sender, only 3 minutes apart (well inside GROUP_WINDOW_MS), but they
+    // straddle local midnight — the day boundary MUST still split the group and
+    // emit a fresh day divider. TZ is pinned to UTC so these instants are
+    // 07-18 and 07-19 locally.
+    const nodes = buildTimelineNodes(
+      [
+        msg({
+          id: 'chm:1' as ChannelMessageId,
+          seq: 1,
+          createdAt: '2026-07-18T23:58:00.000Z',
+        }),
+        msg({
+          id: 'chm:2' as ChannelMessageId,
+          seq: 2,
+          createdAt: '2026-07-19T00:01:00.000Z',
+        }),
+      ],
+      null
+    );
+    expect(kinds(nodes)).toEqual([
+      'day-divider',
+      'group',
+      'day-divider',
+      'group',
+    ]);
+    expect(groupSeqs(nodes[1]!)).toEqual([1]);
+    expect(groupSeqs(nodes[3]!)).toEqual([2]);
   });
 
   it('returns an empty node list for no messages', () => {

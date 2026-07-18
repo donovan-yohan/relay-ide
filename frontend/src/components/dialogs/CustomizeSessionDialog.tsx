@@ -1450,9 +1450,13 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
             providerDisplayName: framework?.displayName ?? form.selectedAgent,
             workspaceId: useUiStore.getState().activeWorkspaceId,
           });
+          // #1178: open the channel via the channel path ONLY. Do NOT feed the
+          // topic id into onSessionCreated/activeSessionId — App wires that to
+          // setActiveSessionId, and the channel↔session mutual-exclusion effect
+          // would then clear the activeChannelId we just set (flash-and-close),
+          // while persisting an unresolvable 'topic:...' active-session key.
           useUiStore.getState().setActiveChannelId(topic.id);
           shellRef.current?.close();
-          onSessionCreated?.(topic.id);
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Failed to open chat');
         } finally {

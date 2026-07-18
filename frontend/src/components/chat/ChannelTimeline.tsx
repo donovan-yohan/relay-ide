@@ -42,9 +42,15 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const anchorRef = useRef<{ heightBefore: number; topBefore: number } | null>(
-    null
-  );
+  const anchorRef = useRef<{
+    heightBefore: number;
+    topBefore: number;
+    earliestSeqBefore: number | undefined;
+  } | null>(null);
+  // Bumped on every loadOlder() settlement (success-with-prepend, empty page,
+  // reached-beginning page, OR a swallowed fetch error) so the anchor is always
+  // released even when earliestSeq never changes (#1178).
+  const [loadSettleTick, setLoadSettleTick] = useState(0);
   const [showResyncButton, setShowResyncButton] = useState(false);
 
   const nodes = useMemo(
@@ -88,16 +94,23 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
     return () => observer.disconnect();
   }, [followSignal]);
 
-  // Anchor preservation: after older messages prepend (earliest seq drops),
-  // restore scrollTop so the viewport never jumps.
+  // Anchor lifecycle: set before loadOlder(), consumed on the next settlement.
+  // Restore scrollTop ONLY when a prepend actually landed (earliestSeq dropped)
+  // so the viewport never jumps; but ALWAYS release the anchor afterward. If it
+  // is not released on the no-prepend paths (empty page, oldest page already
+  // reaching seq 1, or a swallowed fetch error), auto-follow (line ~73) and all
+  // further older-history loads (handleScroll's `!anchorRef.current` gate) stay
+  // permanently locked until a channel switch (#1178).
   useLayoutEffect(() => {
     const container = containerRef.current;
     const anchor = anchorRef.current;
     if (!container || !anchor) return;
-    container.scrollTop =
-      container.scrollHeight - anchor.heightBefore + anchor.topBefore;
+    if (earliestSeq !== anchor.earliestSeqBefore) {
+      container.scrollTop =
+        container.scrollHeight - anchor.heightBefore + anchor.topBefore;
+    }
     anchorRef.current = null;
-  }, [earliestSeq]);
+  }, [earliestSeq, loadSettleTick]);
 
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
@@ -112,10 +125,16 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
       anchorRef.current = {
         heightBefore: container.scrollHeight,
         topBefore: container.scrollTop,
+        earliestSeqBefore: earliestSeq,
       };
-      void loadOlder();
+      // The hook swallows its own fetch errors (loadOlder resolves even on a
+      // transient failure), but guard against any future reject too so the
+      // settle tick — and thus the anchor release — always runs (#1178).
+      void loadOlder()
+        .catch(() => {})
+        .finally(() => setLoadSettleTick((tick) => tick + 1));
     }
-  }, [hasMoreOlder, loadingOlder, loadOlder, messages.length]);
+  }, [hasMoreOlder, loadingOlder, loadOlder, messages.length, earliestSeq]);
 
   // Surface a manual "resync now" button only if catch-up is still stuck after
   // a grace period (the hook auto-reconnects in the common case).

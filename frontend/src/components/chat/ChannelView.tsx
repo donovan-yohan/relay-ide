@@ -15,7 +15,10 @@ import {
 } from '../../lib/api.js';
 import { isDmChannel } from '../../lib/dm-channels.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
-import { channelLastReadKey } from '../../lib/stores/channel-activity.js';
+import {
+  channelLastReadKey,
+  useChannelActivityStore,
+} from '../../lib/stores/channel-activity.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import { AgentBadge } from '../AgentBadge.js';
 import { ChannelTimeline } from './ChannelTimeline.js';
@@ -32,6 +35,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     channel,
     reducer,
     connected,
+    disconnected,
     notFound,
     hasMoreOlder,
     loadingOlder,
@@ -87,14 +91,12 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       typeof performance !== 'undefined' ? performance.now() : Date.now();
     const write = (): void => {
       if (lastSeqRef.current <= 0) return;
-      try {
-        localStorage.setItem(
-          channelLastReadKey(channelId),
-          String(lastSeqRef.current)
-        );
-      } catch {
-        /* localStorage unavailable */
-      }
+      // Reactive store write (not a raw localStorage set) so the sidebar's
+      // unread dot recomputes the moment this channel is read (#1178). The store
+      // mirrors the value to localStorage for cross-reload persistence.
+      useChannelActivityStore
+        .getState()
+        .markChannelRead(channelId, lastSeqRef.current);
     };
     const onVisibility = (): void => {
       if (document.hidden && now() - mountedAt > READ_WRITE_VISIBLE_GRACE_MS) {
@@ -187,10 +189,37 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
           </span>
         ) : null}
         <span className="ch-header__spacer" />
+        {disconnected ? (
+          // Reconnect gave up (server outage/deploy > backoff budget). Surface a
+          // manual affordance — NOT gated on needsCatchup, which can never flip
+          // true while the socket is dead (#1178).
+          <button
+            type="button"
+            className="ch-reconnect-btn"
+            onClick={resync}
+            title="disconnected — reconnect"
+          >
+            reconnect
+          </button>
+        ) : null}
         <span
-          className={`ch-conn-dot${connected ? ' ch-conn-dot--on' : ''}`}
-          title={connected ? 'connected' : 'reconnecting'}
-          aria-label={connected ? 'connected' : 'reconnecting'}
+          className={`ch-conn-dot${connected ? ' ch-conn-dot--on' : ''}${
+            disconnected ? ' ch-conn-dot--off' : ''
+          }`}
+          title={
+            connected
+              ? 'connected'
+              : disconnected
+                ? 'disconnected'
+                : 'reconnecting'
+          }
+          aria-label={
+            connected
+              ? 'connected'
+              : disconnected
+                ? 'disconnected'
+                : 'reconnecting'
+          }
         />
       </div>
 

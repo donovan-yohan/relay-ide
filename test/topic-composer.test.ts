@@ -49,6 +49,7 @@ import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import type { FrameworkInfo } from '../frontend/src/lib/types.js';
 import TopicComposer from '../frontend/src/components/TopicComposer.js';
 import ChatHome from '../frontend/src/components/ChatHome.js';
+import { scopedSessionKey } from '../frontend/src/lib/session-keys.js';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -698,6 +699,102 @@ describe('TopicComposer', () => {
     expect(createArg?.id).toBe(dmId);
     expect(createArg?.routingDefaults).toEqual({ providerId: 'hermes' });
     expect(useUiStore.getState().activeChannelId).toBe(dmId);
+  });
+
+  it('opens the DM via the channel path only — never the session-selection callback (#1178)', async () => {
+    // Regression for the flash-and-close bug: routing the topic id through
+    // onSelectSession (→ handleSelectSession → setActiveSessionId in the app)
+    // triggers the channel↔session mutual-exclusion effect, which clears the
+    // channel we just opened AND persists a bogus 'topic:...' active-session key.
+    const dmId = dmChannelTopicId('hermes', null);
+    vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
+      id: dmId,
+      workspaceId: 'workspace:local',
+      routingDefaults: { providerId: 'hermes' },
+      display: { title: 'Hermes' },
+    } as never);
+    vi.mocked(postChannelMessage).mockResolvedValue({} as never);
+    const onSelectSession = vi.fn();
+    renderComposer(onSelectSession);
+    const ta = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    const provider = container.querySelector(
+      '.topic-composer__provider-select'
+    ) as HTMLSelectElement;
+    act(() => {
+      setNativeValue(ta, 'via hermes');
+      setSelectValue(provider, 'hermes');
+    });
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+
+    // Channel opened, and NO session key was routed/persisted.
+    expect(useUiStore.getState().activeChannelId).toBe(dmId);
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(useSessionsStore.getState().activeSessionId).toBeNull();
+  });
+
+  it("resume never targets a mode:'web' session, even when it is the most recent (#1178)", async () => {
+    // The retired per-session web-chat surface must not be resurrected by the
+    // one-tap resume affordance — resume iterates the web-excluded live set.
+    const webSession = {
+      id: 'sess-web',
+      type: 'agent',
+      agent: 'hermes',
+      mode: 'web',
+      repoPath: '/repo/relay-ide',
+      cwd: '/repo/relay-ide',
+      displayName: 'web chat (newer)',
+      createdAt: '2026-07-10T00:00:00.000Z',
+      lastActivity: '2026-07-10T00:00:00.000Z',
+      idle: false,
+    } as const;
+    const ptySession = {
+      id: 'sess-pty',
+      type: 'agent',
+      agent: 'claude',
+      mode: 'pty',
+      repoPath: '/repo/relay-ide',
+      cwd: '/repo/relay-ide',
+      displayName: 'claude tui (older)',
+      createdAt: '2026-07-05T00:00:00.000Z',
+      lastActivity: '2026-07-05T00:00:00.000Z',
+      idle: false,
+    } as const;
+    useSessionsStore.setState({
+      sessions: [webSession, ptySession] as never,
+      activeSessionId: null,
+      refreshAll: vi.fn(async () => {}),
+    });
+    useUiStore.setState({
+      activeRepoPath: null,
+      forceOrgCockpit: false,
+      topicComposerOpen: false,
+      activeChannelId: null,
+    });
+
+    const onSelectSession = vi.fn();
+    renderChatHome(onSelectSession);
+
+    const resumeBtn = Array.from(
+      container.querySelectorAll('.topic-composer__footer button')
+    ).find((b) => b.textContent?.startsWith('resume')) as
+      | HTMLButtonElement
+      | undefined;
+    // Resume points at the older pty session, not the newer web one.
+    expect(resumeBtn?.textContent).toContain('claude tui (older)');
+    expect(resumeBtn?.textContent).not.toContain('web chat');
+
+    await act(async () => resumeBtn?.click());
+    expect(onSelectSession).toHaveBeenCalledWith(scopedSessionKey(ptySession));
+    expect(onSelectSession).not.toHaveBeenCalledWith(
+      scopedSessionKey(webSession)
+    );
   });
 
   it('keeps a launched chat in the chat shell while the sessions feed catches up', async () => {

@@ -39,7 +39,23 @@ describe('dmChannelTopicId', () => {
     const a = dmChannelTopicId('claude', 'workspace:local');
     const b = dmChannelTopicId('claude', 'workspace:local');
     expect(a).toBe(b);
-    expect(a).toBe(createWorkspaceTopicId('dm-claude', 'workspace:local'));
+    // Namespaced with `~` so it lives in an id sub-namespace no title can reach.
+    expect(a).toBe('topic:dm~claude~workspace-local');
+  });
+
+  it('cannot collide with a title-derived id of an ordinary topic (#1178)', () => {
+    // The server mints ordinary topic ids from the user title via
+    // createWorkspaceTopicId. A user topic titled "dm claude" / "DM-Claude"
+    // would previously mint the exact old DM id; the `~` namespace forbids it.
+    const workspaceId = 'workspace:local';
+    for (const title of ['dm claude', 'DM-Claude', 'dm-claude', 'dm.claude']) {
+      expect(dmChannelTopicId('claude', workspaceId)).not.toBe(
+        createWorkspaceTopicId(title, workspaceId)
+      );
+    }
+    // The DM id contains a `~`; a title-derived id provably never can.
+    expect(dmChannelTopicId('claude', workspaceId)).toContain('~');
+    expect(createWorkspaceTopicId('dm claude', workspaceId)).not.toContain('~');
   });
 
   it('defaults a null workspace to the local sentinel', () => {

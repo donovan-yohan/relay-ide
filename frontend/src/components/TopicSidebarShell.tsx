@@ -1473,14 +1473,19 @@ function TopicRow({
   const expanded = expandedIds.has(item.id);
   const selected = selectedId === item.id;
   // Presence-only activity dot (#1166): re-render when this channel's latest-seq
-  // changes; hasUnseenActivity compares it against the client-local last-read.
+  // OR its reactive last-read marker changes (#1178 — the read marker is now in
+  // the store, so reading a channel hides the dot immediately instead of leaving
+  // a stale localStorage read on screen). hasUnseenActivity compares the two.
   const latestSeq = useChannelActivityStore(
     (s) => s.latestSeqByChannel[item.id]
+  );
+  const lastReadSeq = useChannelActivityStore(
+    (s) => s.lastReadByChannel[item.id]
   );
   const showActivityDot = useMemo(
     () =>
       latestSeq !== undefined && hasUnseenActivity(item.id, activeChannelId),
-    [item.id, activeChannelId, latestSeq]
+    [item.id, activeChannelId, latestSeq, lastReadSeq]
   );
 
   const activate = () => {
