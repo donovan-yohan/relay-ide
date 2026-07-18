@@ -706,6 +706,16 @@ export function createChannelAgentBinder(
         }
         break;
       case 'agent-live-state-updated-v2':
+        // A session that reports `idle` has no active turn. Finalize ours even
+        // when a matching `agent-turn-completed-v2` never fired (or arrives
+        // after this idle live-state): hermes can emit `session-status idle`
+        // without a paired turn-completed when its turn id was already cleared,
+        // and the plain `waitingOn: null` branch below would otherwise flip the
+        // binding back to 'thinking' and wedge presence forever (#1181 defect 3).
+        if (patch.live.status === 'idle' && binding.activeTurnId !== null) {
+          finishTurn(binding);
+          break;
+        }
         if (patch.live.waitingOn !== undefined) {
           updateWaiting(binding, patch.live.waitingOn);
         }

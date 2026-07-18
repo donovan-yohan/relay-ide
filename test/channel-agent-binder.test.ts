@@ -467,6 +467,74 @@ class DeferredAdapter extends BaseProtocolAdapterV2 {
   }
 }
 
+// ── idle-without-turn-completed adapter (#1181 defect 3) ─────────────────────
+// Emits `working` then a trailing `idle` live-state but NO agent-turn-completed-v2
+// (and no assistant item) — the shape a hermes turn produces when it signals
+// session-status idle without a paired turn-completed. Reproduces the presence
+// wedge: the binder must fall back to idle instead of flipping to 'thinking'.
+class IdleWithoutTurnCompletedAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'attached' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    interrupt: true,
+    streaming: true,
+  };
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'idle-nc';
+  constructor(readonly agentType: string) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async interrupt(_i: AgentInterruptInputV2): Promise<void> {}
+  async respondToApproval(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: { status: 'working', error: null },
+    });
+    this.emitPatch({
+      type: 'agent-turn-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turn: {
+        id: input.turnId,
+        status: 'running',
+        inputMessageId: `user-${input.turnId}`,
+        items: [],
+        startedAt: 't',
+      },
+    });
+    // No assistant item, and crucially NO agent-turn-completed-v2 — only a
+    // trailing idle live-state, as a hermes turn can emit.
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: {
+        status: 'idle',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: null,
+      },
+    });
+  }
+}
+
 // ── sessions harness ─────────────────────────────────────────────────────────
 
 interface SessionsHarness {
@@ -828,6 +896,36 @@ describe('channel-agent-binder — roster + availability', () => {
     roster = await binder.rosterForChannel(CH);
     expect(roster.find((r) => r.id === 'mock')!.binding).not.toBeNull();
     expect(roster.find((r) => r.id === 'mock')!.binding?.status).toBe('idle');
+  });
+
+  it('clears presence to idle when a turn finalizes with an idle live-state and no turn-completed (#1181)', async () => {
+    const { binder, store } = makeBinder({
+      build: (agentType) => new IdleWithoutTurnCompletedAdapter(agentType),
+      targets: [
+        {
+          id: 'hermes',
+          displayName: 'Hermes',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['hermes'],
+    });
+    const statuses: string[] = [];
+    binder.setStatusBroadcaster((_type, data) => {
+      if (data['agentId'] === 'hermes') statuses.push(String(data['status']));
+    });
+    post(store, binder, '@hermes hi', ['hermes']);
+    // The turn must reach 'thinking' (proving it was delivered) and then settle
+    // back to 'idle' — NOT wedge on 'thinking' — even though no
+    // agent-turn-completed-v2 fired; the trailing idle live-state finalizes it.
+    await waitFor(
+      () => statuses.includes('thinking') && statuses.at(-1) === 'idle',
+      3000
+    );
+    expect(statuses).toContain('thinking');
+    expect(statuses.at(-1)).toBe('idle');
   });
 
   it('an unavailable framework posts a de-advertise row, rate-limited', async () => {
