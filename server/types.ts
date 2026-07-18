@@ -122,14 +122,12 @@ export const BUILTIN_FRAMEWORKS: Record<BuiltinFrameworkId, AgentFramework> = {
       // gateway at launch (#955). Other providers stay opted out until their
       // own append-prompt mechanism is verified (see provider-guide §12).
       supportsCollaborationPrompt: true,
-      // De-advertised pending end-to-end verification of the Claude web
-      // session protocol. See issue #300. The ClaudeProtocolAdapter exists
-      // in server/protocol-adapters/claude-adapter.ts but has not been
-      // verified for real assistant text streaming and round-trip behavior.
-      // Re-enable only after: real protocol verification (no synthetic
-      // event sources), assistant text streaming, and an end-to-end
-      // round-trip test all pass.
-      supportsWebSessions: false,
+      // Web sessions run the persistent-subprocess adapter over stream-json
+      // (server/protocol-adapters/claude-adapter.ts + server/claude-stream-client.ts).
+      // Re-enabled by #1168 (closes #300): no Agent SDK, real assistant-text
+      // streaming, fixture-replayed end-to-end round-trip, and one live
+      // hello-world proof. See the #1168 PR for verification evidence.
+      supportsWebSessions: true,
     },
   },
   codex: {

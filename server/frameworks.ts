@@ -133,8 +133,6 @@ export async function getFrameworkClientInfoWithRuntime(
 // false. Keep entries here keyed by framework id; the fallback below covers
 // any framework that simply doesn't declare web support yet.
 const WEB_DEADVERTISE_REASONS: Record<string, string> = {
-  claude:
-    'Claude web sessions are not yet verified end-to-end (see issue #300). Use the tui (PTY) mode instead.',
   codex:
     'Codex web sessions do not yet stream chat responses (see issue #301). Use the tui (PTY) mode instead.',
 };
