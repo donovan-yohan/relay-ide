@@ -230,6 +230,19 @@ export interface ChannelMessageStore {
     clientMessageId: string
   ): ChannelMessage | null;
   history(channelId: string, filter?: ChannelHistoryFilter): ChannelMessage[];
+  /**
+   * Rows a reconnecting client may still hold as stale `streaming` copies:
+   * agent-origin rows (source triple set) at or below the reconnect cursor, in
+   * their CURRENT state, nearest the cursor first. Only agent streams mutate in
+   * place (streaming → complete/interrupted/failed without a new seq), so this is
+   * the exact set catch-up must re-send to heal a stream that finalized while the
+   * client was disconnected. Bounded by `limit`.
+   */
+  listResyncRows(
+    channelId: string,
+    uptoSeq: number,
+    limit: number
+  ): ChannelMessage[];
   latestSeq(channelId: string): number;
   listChannelSummaries(): ChannelSummary[];
   getChannelSummary(channelId: string): ChannelSummary | null;
@@ -681,6 +694,19 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
            ORDER BY seq DESC LIMIT @limit`
         )
         .all(params) as ChannelMessageRow[];
+      return rows.reverse().map(rowToMessage);
+    },
+
+    listResyncRows(channelId, uptoSeq, limit) {
+      const bounded = Math.max(1, Math.min(1000, Math.floor(limit)));
+      const rows = db
+        .prepare(
+          `SELECT * FROM channel_messages
+           WHERE channel_id = @channelId AND seq <= @uptoSeq
+             AND source_session_id IS NOT NULL
+           ORDER BY seq DESC LIMIT @limit`
+        )
+        .all({ channelId, uptoSeq, limit: bounded }) as ChannelMessageRow[];
       return rows.reverse().map(rowToMessage);
     },
 

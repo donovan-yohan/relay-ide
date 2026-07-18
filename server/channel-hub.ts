@@ -34,6 +34,14 @@ const HARD_LIMIT_BYTES = 4 * 1024 * 1024; // close 4409 above this
 const SNAPSHOT_FULL_LIMIT = 100;
 /** catch-up beyond this gap falls back to a full snapshot. */
 const CATCHUP_MAX_ROWS = 500;
+/**
+ * Byte budget for a single WS snapshot / catch-up assembly. Rows are row-bounded
+ * (SNAPSHOT_FULL_LIMIT / CATCHUP_MAX_ROWS) but each body is capped at 256KB, so a
+ * transcript-heavy channel could otherwise serialize tens of MB into one
+ * `ws.send`. We stop accumulating past this budget and flag `truncated` so the
+ * client paginates the remainder via `channels.history`.
+ */
+const DEFAULT_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * Minimal socket surface the hub needs. The real `ws` WebSocket satisfies it;
@@ -88,6 +96,8 @@ export interface ChannelHubOptions {
   channelExists?: (channelId: string) => boolean;
   coalesceMs?: number;
   badgeBroadcaster?: ChannelBadgeBroadcaster;
+  /** byte budget for one snapshot/catch-up assembly (defaults to 4MB). */
+  snapshotMaxBytes?: number;
 }
 
 export interface ChannelHub {
@@ -110,6 +120,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
   const store = options.store;
   const coalesceMs = options.coalesceMs ?? DEFAULT_COALESCE_MS;
   const channelExists = options.channelExists ?? (() => true);
+  const snapshotMaxBytes = options.snapshotMaxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES;
   let badgeBroadcaster = options.badgeBroadcaster ?? null;
 
   const subscribers = new Map<string, Set<Subscriber>>();
@@ -219,6 +230,35 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
     });
   }
 
+  /**
+   * Assemble rows under the byte budget. `keepEnd` chooses which side to keep
+   * when the candidate set overflows: `'tail'` keeps the newest rows (full
+   * snapshot — older rows scroll back), `'head'` keeps the oldest-first rows
+   * (catch-up — forward pagination fills the remainder). Always keeps ≥1 row
+   * (a single row is ≤256KB < 4MB), returning `truncated` when it stopped early.
+   */
+  function assembleWithBudget(
+    candidate: ChannelMessage[],
+    keepEnd: 'head' | 'tail'
+  ): { rows: ChannelMessage[]; truncated: boolean } {
+    if (candidate.length === 0) return { rows: [], truncated: false };
+    const order = keepEnd === 'tail' ? [...candidate].reverse() : candidate;
+    const kept: ChannelMessage[] = [];
+    let bytes = 0;
+    let truncated = false;
+    for (const row of order) {
+      const size = Buffer.byteLength(JSON.stringify(row), 'utf8') + 1;
+      if (kept.length > 0 && bytes + size > snapshotMaxBytes) {
+        truncated = true;
+        break;
+      }
+      bytes += size;
+      kept.push(row);
+    }
+    if (keepEnd === 'tail') kept.reverse();
+    return { rows: kept, truncated };
+  }
+
   function buildSnapshot(
     channelId: string,
     sinceSeq: number | null
@@ -228,30 +268,66 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       ? store.listMembers(channelId)
       : [];
     let mode: 'full' | 'catchup';
-    let rows: ChannelMessage[];
-    let truncated = false;
+    let assembled: { rows: ChannelMessage[]; truncated: boolean };
+    // The head advertised to the client. Normally the true channel head; capped
+    // to the last row actually delivered when a catch-up is byte-truncated, so
+    // the reducer's `lastSeq` never skips undelivered rows.
+    let snapshotLatestSeq = latestSeq;
 
-    if (sinceSeq === null || latestSeq - sinceSeq > CATCHUP_MAX_ROWS) {
+    // A cursor ahead of the server head (rollback / topic recreated under the
+    // same deterministic slug) must reset the client, not silently drop every
+    // future message — force a full snapshot so `lastSeq` is pulled back to head.
+    const staleAhead = sinceSeq !== null && sinceSeq > latestSeq;
+
+    if (
+      sinceSeq === null ||
+      staleAhead ||
+      latestSeq - sinceSeq > CATCHUP_MAX_ROWS
+    ) {
       mode = 'full';
-      rows = store
+      const fullRows = store
         ? store.history(channelId, { limit: SNAPSHOT_FULL_LIMIT })
         : [];
-      truncated = rows.length > 0 && (rows[0]?.seq ?? 1) > 1;
+      assembled = assembleWithBudget(fullRows, 'tail');
+      if (!assembled.truncated) {
+        assembled.truncated =
+          assembled.rows.length > 0 && (assembled.rows[0]?.seq ?? 1) > 1;
+      }
     } else {
       mode = 'catchup';
-      rows = [];
+      // Reconnect catch-up must also refresh rows at or below the cursor whose
+      // status changed while the client was disconnected — specifically a stream
+      // that finalized (streaming → complete/interrupted/failed) without adding a
+      // new seq. `history({ afterSeq })` alone never resends those, leaving a
+      // permanently stuck streaming row. Agent-origin rows are the only ones that
+      // mutate in place, so re-send their CURRENT state; the reducer replaces the
+      // stale copy by id. This heals every reconnect path (incl. backpressure
+      // resync and post-restart, since it is a pure DB read).
+      const resync = store
+        ? store.listResyncRows(channelId, sinceSeq, CATCHUP_MAX_ROWS)
+        : [];
+      const fresh: ChannelMessage[] = [];
       let cursor = sinceSeq;
-      while (store && rows.length < CATCHUP_MAX_ROWS) {
+      while (store && fresh.length < CATCHUP_MAX_ROWS) {
         const page = store.history(channelId, { afterSeq: cursor, limit: 200 });
         if (page.length === 0) break;
-        rows.push(...page);
+        fresh.push(...page);
         cursor = page[page.length - 1]!.seq;
         if (page.length < 200) break;
       }
+      assembled = assembleWithBudget([...resync, ...fresh], 'head');
+      if (assembled.truncated && assembled.rows.length > 0) {
+        snapshotLatestSeq = assembled.rows[assembled.rows.length - 1]!.seq;
+      }
     }
+
+    const rows = assembled.rows;
 
     // Overlay the hub's in-memory accumulated text onto streaming rows — it is
     // authoritative over the DB flush lag — and record each open stream's index.
+    // Any pending (accumulated-but-unemitted) delta text was flushed before this
+    // read (see flushPendingForChannel), so `acc.deltaIndex` is the exact index
+    // whose text is already reflected in `acc.text`.
     const inFlight: ChannelInFlightRef[] = [];
     const messages = rows.map((message) => {
       const acc = accumulators.get(message.id);
@@ -269,9 +345,9 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       mode,
       messages,
       members,
-      latestSeq,
+      latestSeq: snapshotLatestSeq,
       inFlight,
-      truncated,
+      truncated: assembled.truncated,
     };
   }
 
@@ -291,6 +367,29 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       deltaIndex: acc.deltaIndex,
       delta: { text },
     });
+  }
+
+  /**
+   * Flush any pending (accumulated-but-unemitted) delta text for a channel's
+   * streaming rows synchronously, before a connecting socket reads its snapshot.
+   *
+   * Without this, `buildSnapshot` would overlay `acc.text` (which includes the
+   * unflushed `pendingText`) while recording only the last EMITTED `deltaIndex`;
+   * the subsequent coalesce flush would then re-deliver that same text as
+   * `deltaIndex + 1` and the reducer would append it a SECOND time (duplicated
+   * render). Flushing here — while the new socket is already registered and still
+   * buffering — routes the flush delta through the connect-time queue where the
+   * deltaIndex dedupe drops it, so the snapshot and the live stream agree exactly.
+   */
+  function flushPendingForChannel(channelId: string): void {
+    for (const acc of accumulators.values()) {
+      if (acc.channelId !== channelId || acc.pendingText.length === 0) continue;
+      if (acc.coalesceTimer) {
+        clearTimeout(acc.coalesceTimer);
+        acc.coalesceTimer = null;
+      }
+      flushAccumulator(acc.messageId);
+    }
   }
 
   return {
@@ -316,6 +415,11 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       // race; better-sqlite3 reads are synchronous, so the queue + dedupe below
       // is defense in depth.
       addSubscriber(channelId, sub);
+
+      // Flush any pending accumulator text BEFORE reading the snapshot so the
+      // snapshot's recorded deltaIndex matches the overlaid text exactly; the
+      // flush delta queues on this buffering socket and is deduped below.
+      flushPendingForChannel(channelId);
 
       const snapshot = buildSnapshot(channelId, sinceSeq);
       if (snapshot.type === 'channel-snapshot-v1') {

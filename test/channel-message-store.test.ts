@@ -169,6 +169,32 @@ describe('channel-message-store streaming lifecycle', () => {
     expect(final?.truncated).toBe(true);
     expect(s.getMessage(begun.id)?.truncated).toBe(true);
   });
+
+  it('listResyncRows returns agent-origin rows at/below the cursor in current state', () => {
+    const s = store();
+    s.appendComplete({ channelId: 'topic:c', sender: HUMAN, text: 'human' }); // seq 1, no source
+    const stream = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: { sessionId: 'x', turnId: 't', itemId: 'i' },
+    }); // seq 2, agent-origin
+    s.appendComplete({ channelId: 'topic:c', sender: HUMAN, text: 'later' }); // seq 3
+
+    // Only the agent stream row is a resync candidate (human posts never go stale).
+    const before = s.listResyncRows('topic:c', 3, 500);
+    expect(before.map((m) => m.seq)).toEqual([2]);
+    expect(before[0]?.status).toBe('streaming');
+
+    // After it finalizes, the SAME query returns its final state — this is what
+    // lets reconnect catch-up heal a stream that finalized while disconnected.
+    s.finalizeStream(stream.id, { text: 'done', status: 'complete' });
+    const after = s.listResyncRows('topic:c', 3, 500);
+    expect(after[0]?.status).toBe('complete');
+    expect(after[0]?.body.text).toBe('done');
+
+    // A cursor below the agent row excludes it.
+    expect(s.listResyncRows('topic:c', 1, 500)).toHaveLength(0);
+  });
 });
 
 describe('channel-message-store posts, threads, idempotency', () => {

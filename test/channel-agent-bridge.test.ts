@@ -232,6 +232,32 @@ describe('channel-agent-bridge lifecycle', () => {
     });
   });
 
+  it('does not mirror plan-item (or unknown-item) text deltas', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:plan',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+    });
+    // A plan item is started as a non-assistantMessage, then streams text deltas
+    // (real codex-native adapters emit plan updates this way on `plan-<turnId>`).
+    adapter.broadcastPatch({
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      item: { type: 'plan', id: 'plan-turn', text: '' },
+    });
+    adapter.broadcastPatch(textDelta('s', 'turn', 'plan-turn', 'Step 1: do it'));
+    // A delta for an itemId never started at all is likewise dropped.
+    adapter.broadcastPatch(textDelta('s', 'turn', 'ghost-item', 'stray text'));
+
+    expect(store.history('topic:plan')).toHaveLength(0);
+  });
+
   it('does not mirror non-text items', () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2();

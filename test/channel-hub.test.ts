@@ -13,9 +13,11 @@ import {
   type ChannelHub,
   type ChannelSocket,
 } from '../server/channel-hub.js';
-import type {
-  ChannelEventV1,
-  ChannelSenderRef,
+import {
+  applyChannelEventV1,
+  initialChannelReducerState,
+  type ChannelEventV1,
+  type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 
 const cleanup: Array<() => void> = [];
@@ -209,6 +211,156 @@ describe('channel-hub fan-out', () => {
       .filter((e) => e.type === 'channel-message-delta-v1')
       .map((d) => (d.type === 'channel-message-delta-v1' ? d.deltaIndex : -1));
     expect(deltas).toEqual([1]); // idx 0 was in the snapshot, never re-sent live
+  });
+});
+
+describe('channel-hub snapshot correctness', () => {
+  it('does not duplicate pending accumulator text for a subscriber that connects mid-coalesce window', () => {
+    vi.useFakeTimers();
+    const s = store();
+    const hub = hubWith(s, { coalesceMs: 50 });
+    const streaming = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: { sessionId: 'sess' },
+    });
+    hub.beginStreamBroadcast(streaming);
+
+    // idx 0 flushed with no subscribers connected.
+    hub.pushDelta(streaming.id, 'Hello ');
+    vi.advanceTimersByTime(50);
+
+    // Second delta is PENDING (timer armed, not yet fired) when the subscriber
+    // connects — this is the coalesce window the finding exploits.
+    hub.pushDelta(streaming.id, 'world');
+    const sock = fakeSocket();
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq: null });
+
+    let applied = 0;
+    let state = initialChannelReducerState('topic:c');
+    const drain = (): void => {
+      while (applied < sock.sent.length) {
+        state = applyChannelEventV1(state, sock.sent[applied++]!);
+      }
+    };
+    drain(); // snapshot (the queued flush delta is deduped away at connect)
+
+    // Fire the pending window. Without the fix a duplicate 'world' delta lands
+    // here and the reducer appends it a second time.
+    vi.advanceTimersByTime(50);
+    drain();
+
+    const row = state.byId[streaming.id];
+    expect(row?.body.text).toBe('Hello world'); // exact, not 'Hello worldworld'
+    expect(state.needsCatchup).toBe(false);
+    expect(state.quarantined[streaming.id]).toBeUndefined();
+  });
+
+  it('heals a stream that finalized while the client was disconnected on reconnect', () => {
+    const s = store();
+    const hub = hubWith(s);
+    const streaming = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: { sessionId: 'sess', turnId: 't1', itemId: 'a1' },
+      text: 'partial',
+    });
+    hub.beginStreamBroadcast(streaming);
+
+    // Client sees the streaming row, then disconnects.
+    const first = fakeSocket();
+    hub.handleConnection(first, { channelId: 'topic:c', sinceSeq: null });
+    let state = initialChannelReducerState('topic:c');
+    for (const e of first.sent) state = applyChannelEventV1(state, e);
+    expect(state.byId[streaming.id]?.status).toBe('streaming');
+    first.emit('close');
+
+    // Stream finalizes WHILE the client is gone (no new seq allocated).
+    const finalMsg = s.finalizeStream(streaming.id, {
+      text: 'final answer',
+      status: 'complete',
+    });
+    hub.completeStreamBroadcast(finalMsg!);
+
+    // Reconnect with the stale cursor (== latestSeq → catch-up, gap 0).
+    const reconnect = fakeSocket();
+    hub.handleConnection(reconnect, {
+      channelId: 'topic:c',
+      sinceSeq: state.lastSeq,
+    });
+    for (const e of reconnect.sent) state = applyChannelEventV1(state, e);
+
+    const row = state.byId[streaming.id];
+    expect(row?.status).toBe('complete'); // no permanently stuck streaming row
+    expect(row?.body.text).toBe('final answer');
+    expect(state.needsCatchup).toBe(false);
+  });
+
+  it('forces a full snapshot (client reset) when the cursor is ahead of the server head', () => {
+    const s = store();
+    for (let i = 1; i <= 3; i++) {
+      s.appendComplete({ channelId: 'topic:c', sender: HUMAN, text: `m${i}` });
+    }
+    const hub = hubWith(s);
+
+    // Simulate a client that synced far ahead (seq 999) before a rollback shrank
+    // the server head back to 3.
+    let state = initialChannelReducerState('topic:c');
+    state = applyChannelEventV1(state, {
+      type: 'channel-snapshot-v1',
+      channelId: 'topic:c',
+      timestamp: 't',
+      mode: 'full',
+      messages: [],
+      members: [],
+      latestSeq: 999,
+      inFlight: [],
+      truncated: false,
+    });
+    expect(state.lastSeq).toBe(999);
+
+    const sock = fakeSocket();
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq: 999 });
+    const snap = sock.sent[0];
+    if (snap?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+    expect(snap.mode).toBe('full'); // reset, not a silent empty catch-up
+    expect(snap.latestSeq).toBe(3);
+
+    // Reducer resets to head; a subsequent message is no longer dropped as replay.
+    state = applyChannelEventV1(state, snap);
+    expect(state.lastSeq).toBe(3);
+    const m4 = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'm4',
+    });
+    hub.broadcastCreated(m4);
+    for (const e of sock.sent.slice(1)) state = applyChannelEventV1(state, e);
+    expect(state.byId[m4.id]).toBeDefined();
+    expect(state.lastSeq).toBe(4);
+  });
+
+  it('byte-budgets a full snapshot and flags truncated', () => {
+    const s = store();
+    const body = 'x'.repeat(2000);
+    for (let i = 0; i < 20; i++) {
+      s.appendComplete({ channelId: 'topic:c', sender: HUMAN, text: body });
+    }
+    // ~8KB budget → only a few of the 2KB+ rows fit.
+    const hub = hubWith(s, { snapshotMaxBytes: 8 * 1000 });
+    const sock = fakeSocket();
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq: null });
+    const snap = sock.sent[0];
+    if (snap?.type !== 'channel-snapshot-v1')
+      throw new Error('expected snapshot');
+    expect(snap.truncated).toBe(true);
+    expect(snap.messages.length).toBeGreaterThan(0);
+    expect(snap.messages.length).toBeLessThan(20); // stopped before all rows
+    const bytes = Buffer.byteLength(JSON.stringify(snap.messages), 'utf8');
+    expect(bytes).toBeLessThanOrEqual(8 * 1000 + 2500);
+    // Full snapshot keeps the newest rows (tail).
+    expect(snap.messages[snap.messages.length - 1]?.seq).toBe(20);
   });
 });
 

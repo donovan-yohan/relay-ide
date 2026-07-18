@@ -27,12 +27,58 @@ const CONTEXT_WRITE = 'context:write';
 
 const DEFAULT_KNOWN_PROVIDER_IDS = ['claude', 'codex', 'opencode', 'hermes'];
 
+/**
+ * Byte budget for one REST history response. Rows are row-bounded (max 200) but
+ * each body is capped at 256KB, so an unbudgeted page could reach ~51MB. We stop
+ * at the budget and return a `nextCursor` so the client fetches the rest in pages.
+ */
+const DEFAULT_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Trim a history page to the byte budget. `forward` (afterSeq) keeps the
+ * oldest-first rows and continues via `afterSeq`; `backward` (default/beforeSeq)
+ * keeps the newest rows and continues via `beforeSeq`. Always keeps ≥1 row.
+ */
+function budgetHistoryRows(
+  messages: ChannelMessage[],
+  direction: 'forward' | 'backward',
+  maxBytes: number
+): {
+  rows: ChannelMessage[];
+  hasMore: boolean;
+  nextCursor?: Record<string, number>;
+} {
+  if (messages.length === 0) return { rows: [], hasMore: false };
+  const order = direction === 'backward' ? [...messages].reverse() : messages;
+  const kept: ChannelMessage[] = [];
+  let bytes = 0;
+  let truncated = false;
+  for (const message of order) {
+    const size = Buffer.byteLength(JSON.stringify(message), 'utf8') + 1;
+    if (kept.length > 0 && bytes + size > maxBytes) {
+      truncated = true;
+      break;
+    }
+    bytes += size;
+    kept.push(message);
+  }
+  if (direction === 'backward') kept.reverse();
+  if (!truncated) return { rows: kept, hasMore: false };
+  const nextCursor =
+    direction === 'forward'
+      ? { afterSeq: kept[kept.length - 1]!.seq }
+      : { beforeSeq: kept[0]!.seq };
+  return { rows: kept, hasMore: true, nextCursor };
+}
+
 export interface ChannelChatRouterDeps {
   store: ChannelMessageStore | null;
   hub: ChannelHub;
   topicStore: WorkspaceTopicStore | null;
   /** framework ids for @-mention resolution (v2 adapter registry + topic default). */
   knownProviderIds?: readonly string[];
+  /** byte budget for one history response body (defaults to 4MB). */
+  historyMaxBytes?: number;
   requireAuth?: RequestHandler;
   requireReadActorAuth?: (
     command: CliGatewayActorReadCommand,
@@ -363,7 +409,20 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         : undefined;
     if (threadId) filter.threadId = threadId;
     try {
-      res.json({ messages: store.history(id, filter) });
+      const all = store.history(id, filter);
+      const direction =
+        filter.afterSeq !== undefined ? 'forward' : 'backward';
+      const budgeted = budgetHistoryRows(
+        all,
+        direction,
+        deps.historyMaxBytes ?? DEFAULT_HISTORY_MAX_BYTES
+      );
+      res.json({
+        messages: budgeted.rows,
+        ...(budgeted.hasMore
+          ? { hasMore: true, nextCursor: budgeted.nextCursor }
+          : {}),
+      });
     } catch (error) {
       mapStoreError(res, error);
     }

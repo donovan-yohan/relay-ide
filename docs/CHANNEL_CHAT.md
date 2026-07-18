@@ -94,11 +94,18 @@ agent mail, and every adapter are untouched):
 - **Fan-out** `server/channel-hub.ts` + `GET /ws/channels/:channelId?sinceSeq=N`:
   server→client only, register-before-snapshot connect with snapshot/live dedupe,
   50ms delta coalescing, per-socket backpressure (suppress deltas → resync → 4409),
-  and coarse `channel-activity` sidebar badges on `/ws/events`.
+  and coarse `channel-activity` sidebar badges on `/ws/events`. Connect flushes
+  pending accumulator text before the snapshot (so a mid-stream connector never
+  double-renders); catch-up also re-sends any streaming row that finalized while
+  the client was disconnected; a cursor ahead of the server head forces a full
+  snapshot (client reset); snapshot/catch-up assembly is byte-bounded (~4MB →
+  `truncated`, client pages the rest via `channels.history`).
 - **Verbs** `server/channel-chat-router.ts`: `channels.list/get/history/post`
   (REST-only writes, one internal `postToChannel`). **Sender is server-derived from
   the auth lane, never the request body**; derived/archived topics are rejected;
-  the verbs are wired into the CLI-gateway capability map.
+  the verbs are wired into the CLI-gateway capability map. `channels.history`
+  responses are byte-bounded (~4MB); on overflow they return `hasMore: true` and a
+  `nextCursor` (`afterSeq`/`beforeSeq`) so the client fetches the remainder in pages.
 - **Slice-4 seam** `server/channel-agent-bridge.ts`: `AgentPatchV2` → channel
   lifecycle translation, shipped and contract-tested but unwired until #1167.
 

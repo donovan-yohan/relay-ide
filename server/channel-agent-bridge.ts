@@ -58,6 +58,11 @@ export function bindSessionToChannel(
 ): () => void {
   const { channelId, agentFramework, adapter, store, hub } = input;
   const streams = new Map<string, BridgeStream>();
+  // Item ids started as `assistantMessage`. Only these may open/mirror a channel
+  // stream. Plan/reasoning/tool items also carry `delta.text` on real adapters
+  // (e.g. the codex-native plan item `plan-<turnId>`), and §6.3 mirrors ONLY
+  // assistantMessage text — so a delta for any other item type is dropped.
+  const assistantItemIds = new Set<string>();
 
   const sender: ChannelSenderRef = {
     kind: 'agent',
@@ -178,6 +183,7 @@ export function bindSessionToChannel(
     switch (patch.type) {
       case 'agent-item-started-v2': {
         if (patch.item.type === 'assistantMessage') {
+          assistantItemIds.add(patch.item.id);
           openStream(
             patch.turnId,
             patch.item.id,
@@ -189,10 +195,15 @@ export function bindSessionToChannel(
       }
       case 'agent-item-delta-v2': {
         if (typeof patch.delta.text !== 'string') break;
-        // Lazy-open when an adapter emits text deltas without a started event.
-        const stream =
-          streams.get(patch.itemId) ??
-          openStream(patch.turnId, patch.itemId, patch.sessionId, '');
+        let stream = streams.get(patch.itemId);
+        if (!stream) {
+          // Lazy-open ONLY for an item started as an assistantMessage — never for
+          // plan/reasoning/tool items (whose text is not mirrored, §6.3) nor for
+          // an item whose type we have not seen. Mirroring a plan-item delta here
+          // would persist plan text as an agent-authored channel message.
+          if (!assistantItemIds.has(patch.itemId)) break;
+          stream = openStream(patch.turnId, patch.itemId, patch.sessionId, '');
+        }
         appendDelta(stream, patch.delta.text);
         break;
       }

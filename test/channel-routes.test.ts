@@ -50,7 +50,7 @@ interface Harness {
 }
 
 async function harness(
-  options: { withStore?: boolean } = {}
+  options: { withStore?: boolean; historyMaxBytes?: number } = {}
 ): Promise<Harness> {
   const dir = tmpDir();
   const topicStore = createWorkspaceTopicStore({
@@ -86,6 +86,9 @@ async function harness(
       store: options.withStore === false ? null : store,
       hub,
       topicStore,
+      ...(options.historyMaxBytes !== undefined
+        ? { historyMaxBytes: options.historyMaxBytes }
+        : {}),
     })
   );
   const server = http.createServer(app);
@@ -261,6 +264,32 @@ describe('channel routes — read / write contract', () => {
       url: `${url}?afterSeq=3&limit=10`,
     });
     expect(page.body.messages.map((m) => m.seq)).toEqual([4, 5]);
+  });
+
+  it('byte-budgets a history response and returns a continuation cursor', async () => {
+    const h = await harness({ historyMaxBytes: 4000 });
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const body = 'y'.repeat(1000);
+    for (let i = 0; i < 12; i++) {
+      await req({ port: h.port, method: 'POST', url, body: { text: body } });
+    }
+    // Forward pagination (afterSeq): keeps oldest-first, continues via afterSeq.
+    const page = await req<{
+      messages: Array<{ seq: number }>;
+      hasMore?: boolean;
+      nextCursor?: { afterSeq?: number };
+    }>({
+      port: h.port,
+      method: 'GET',
+      url: `${url}?afterSeq=0&limit=200`,
+    });
+    expect(page.body.hasMore).toBe(true);
+    expect(page.body.messages.length).toBeGreaterThan(0);
+    expect(page.body.messages.length).toBeLessThan(12); // stopped before the full page
+    const lastSeq = page.body.messages[page.body.messages.length - 1]!.seq;
+    expect(page.body.nextCursor?.afterSeq).toBe(lastSeq);
+    const bytes = Buffer.byteLength(JSON.stringify(page.body.messages), 'utf8');
+    expect(bytes).toBeLessThanOrEqual(4000 + 1200);
   });
 
   it('echoes a posted message to a live channel subscriber (REST → WS round-trip)', async () => {

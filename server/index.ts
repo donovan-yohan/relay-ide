@@ -1995,10 +1995,13 @@ async function main(): Promise<void> {
     try {
       channelMessageStore.sweepStaleStreaming();
       if (workspaceTopicStore) {
+        // Enumerate ALL stored topic ids uncapped — NOT via `list()`, which caps
+        // at 200 while the store retains up to 500. Feeding the capped list to
+        // sweepOrphans would delete every channel whose topic ranks beyond the
+        // top-200-by-updated_at (silent, unrecoverable data loss) once >200
+        // topics exist.
         const persistedTopicIds = new Set(
-          workspaceTopicStore
-            .list({ includeArchived: true })
-            .map((topic) => topic.id)
+          workspaceTopicStore.listAllTopicIds()
         );
         channelMessageStore.sweepOrphans(persistedTopicIds);
       }
