@@ -40,7 +40,10 @@ import type {
   WorkspaceTopicListResponse,
   WorkspaceTopicSearchResponse,
 } from '../../../shared/workspace-topics.js';
-import type { ChannelMessage } from '../../../shared/channel-chat-protocol.js';
+import type {
+  ChannelMessage,
+  ChannelMessageId,
+} from '../../../shared/channel-chat-protocol.js';
 import type {
   WorkflowRunProjection,
   WorkflowRunState,
@@ -1786,11 +1789,46 @@ export async function fetchChannelHistory(
   };
 }
 
+/**
+ * Fetch one root-inclusive thread page. This intentionally uses the dedicated
+ * thread-history route rather than the unrelated `threadId` filter on channel
+ * history: the server validates the root and preserves its cursor semantics.
+ */
+export async function fetchChannelThreadHistory(
+  channelId: string,
+  rootMessageId: ChannelMessageId,
+  filter: {
+    beforeSeq?: number;
+    afterSeq?: number;
+    limit?: number;
+  } = {}
+): Promise<ChannelHistoryPage> {
+  const params = new URLSearchParams();
+  if (filter.beforeSeq !== undefined)
+    params.set('beforeSeq', String(filter.beforeSeq));
+  if (filter.afterSeq !== undefined)
+    params.set('afterSeq', String(filter.afterSeq));
+  if (filter.limit !== undefined) params.set('limit', String(filter.limit));
+  const query = params.toString();
+  const data = await json<ChannelHistoryPage>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/threads/${encodeURIComponent(rootMessageId)}${query ? `?${query}` : ''}`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    )
+  );
+  return {
+    messages: Array.isArray(data.messages) ? data.messages : [],
+    hasMore: Boolean(data.hasMore),
+    ...(data.nextCursor ? { nextCursor: data.nextCursor } : {}),
+  };
+}
+
 export async function postChannelMessage(
   channelId: string,
   input: {
     text: string;
     format?: 'markdown' | 'text';
+    threadId?: string;
     parentMessageId?: string;
     clientMessageId: string;
   }

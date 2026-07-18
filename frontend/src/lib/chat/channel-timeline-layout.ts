@@ -10,11 +10,62 @@
 // running group exceeds GROUP_WINDOW_MS.
 import type {
   ChannelMessage,
+  ChannelMessageId,
   ChannelSenderRef,
 } from '../../../../shared/channel-chat-protocol.js';
 
 /** Slack-standard grouping window: same-sender messages within 5 minutes group. */
 export const GROUP_WINDOW_MS = 5 * 60 * 1000;
+
+/** Main-lane projection. Replies remain in reducer state for gap accounting. */
+export function selectTopLevel(messages: ChannelMessage[]): ChannelMessage[] {
+  return messages.filter((message) => message.threadId === null);
+}
+
+export interface DerivedReplyCount {
+  /** Number of reply rows currently loaded in the reducer/backfill projection. */
+  count: number;
+  /** Newest loaded reply timestamp, if it parses later than earlier replies. */
+  lastReplyAt?: string;
+}
+
+/** Derive live reply activity from loaded child rows without mutating roots. */
+export function deriveReplyCounts(
+  messages: ChannelMessage[]
+): Map<ChannelMessageId, DerivedReplyCount> {
+  const counts = new Map<ChannelMessageId, DerivedReplyCount>();
+  for (const message of messages) {
+    if (message.threadId === null) continue;
+    const current = counts.get(message.threadId);
+    const count = (current?.count ?? 0) + 1;
+    let lastReplyAt = current?.lastReplyAt;
+    if (
+      lastReplyAt === undefined ||
+      timestampOrder(message.createdAt) > timestampOrder(lastReplyAt)
+    ) {
+      lastReplyAt = message.createdAt;
+    }
+    counts.set(message.threadId, {
+      count,
+      ...(lastReplyAt !== undefined ? { lastReplyAt } : {}),
+    });
+  }
+  return counts;
+}
+
+/** Persisted count is a floor because older replies may not be loaded. */
+export function displayedReplyCount(
+  root: ChannelMessage,
+  loaded: DerivedReplyCount | undefined,
+  liveGrowth = 0
+): number {
+  return Math.max((root.replyCount ?? 0) + liveGrowth, loaded?.count ?? 0);
+}
+
+function timestampOrder(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+}
 
 export type TimelineNode =
   | { kind: 'day-divider'; date: string /* YYYY-MM-DD local */ }

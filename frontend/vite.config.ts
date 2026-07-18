@@ -52,6 +52,10 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-channel-timeline.html'
   );
+  buildInputs['test-channel-thread'] = resolve(
+    import.meta.dirname,
+    'test-channel-thread.html'
+  );
 }
 
 export default defineConfig({
