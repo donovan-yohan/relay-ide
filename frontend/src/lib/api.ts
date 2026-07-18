@@ -1269,65 +1269,6 @@ export async function deleteIaWorkspace(id: string): Promise<void> {
   }
 }
 
-// ── #735 Bench overlay CRUD (`/hub/ia/benches`) ──────────────────────────────
-// The PERSISTED, user-authored overlay layer (cwd + env + optional label) on
-// top of the DERIVED bench. C1 (from #735 review): a bench `cwd` is sent and
-// displayed VERBATIM — never `decodeURIComponent`-ed — so the raw absolute path
-// the caller chose is the path the hub mints the BenchId from.
-
-/** Persisted bench overlay row, as returned by `/hub/ia/benches`. Mirrors the
- *  server `BenchOverlay` (ia-store.ts). `label === null` means "use derived". */
-export interface IaBench {
-  id: string;
-  instanceId: string;
-  cwd: string;
-  label: string | null;
-  envOverrides: Record<string, string>;
-  createdAt: string;
-  updatedAt: string;
-}
-
-const IA_BENCHES_PATH = '/hub/ia/benches';
-
-/** List bench overlays, optionally filtered to a single instance. Returns []
- *  (never throws on empty) for an instance with no overlays. */
-export async function fetchIaBenches(instanceId?: string): Promise<IaBench[]> {
-  const url =
-    instanceId && instanceId.length > 0
-      ? `${IA_BENCHES_PATH}?instanceId=${encodeURIComponent(instanceId)}`
-      : IA_BENCHES_PATH;
-  const data = await json<{ benches?: IaBench[] }>(await fetch(url));
-  return Array.isArray(data.benches) ? data.benches : [];
-}
-
-/** Create a bench overlay. `cwd` MUST be the raw absolute path (C1: not
- *  decoded). The hub mints the BenchId from `instanceId` + `cwd`. */
-export async function createIaBench(input: {
-  instanceId: string;
-  cwd: string;
-  label?: string;
-  envOverrides?: Record<string, string>;
-}): Promise<IaBench> {
-  const data = await json<{ bench: IaBench }>(
-    await fetch(IA_BENCHES_PATH, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    })
-  );
-  return data.bench;
-}
-
-/** Delete a bench overlay by its (opaque) id. */
-export async function deleteIaBench(id: string): Promise<void> {
-  const res = await fetch(`${IA_BENCHES_PATH}/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) {
-    throw await httpErrorFromResponse(res, 'Failed to delete bench');
-  }
-}
-
 function normalizeTelemetryMapEntry(
   mapKey: string,
   raw: Record<string, unknown>

@@ -1,10 +1,4 @@
 import { create } from 'zustand';
-import {
-  DEFAULT_VIEW_LENS,
-  type SavedView,
-  type ViewLens,
-} from '../state/view-tree.js';
-import { createBrowserId } from '../browserId.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const SIDEBAR_WIDTH_KEY = 'claude-remote-sidebar-width';
@@ -22,14 +16,6 @@ const COLLAPSED_WORKSPACES_KEY = 'claude-remote-collapsed-workspaces';
 // substrate surfaces (nodes/active-work tabs, analytics icon) from primary
 // chrome by default; each surface stays reachable one-off via a palette action.
 const ADVANCED_MODE_KEY = 'relay-advanced-mode';
-// #738: persistent View layer (FE-only, localStorage). All three ride the same
-// `ls`/`lsSave`/`lsRemove` helpers + fail-soft pattern.
-//   - active lens, restored across reload (the #727 lens was ephemeral).
-//   - pinned ids (mixed Project/Bench/Workspace stable ids) — pinned-to-top.
-//   - saved/named Views (an array of {id,name,lens}).
-const VIEW_SPINE_LENS_KEY = 'relay-view-spine-lens';
-const VIEW_SPINE_PINS_KEY = 'relay-view-spine-pins';
-const VIEW_SPINE_SAVED_VIEWS_KEY = 'relay-view-spine-saved-views';
 
 export const DEFAULT_SIDEBAR_WIDTH = 240;
 export const MIN_SIDEBAR_WIDTH = 180;
@@ -193,73 +179,6 @@ function loadDiffViewMode(): DiffViewMode {
 function loadAdvancedMode(): boolean {
   // Truthy only for the explicit opt-in value so a stale '0'/'false' reads OFF.
   return ls(ADVANCED_MODE_KEY) === '1';
-}
-
-// ── #738: View-layer persistence (lens / pins / saved Views) ─────────────────
-// All fail soft: missing/corrupt localStorage → safe defaults, never throw.
-
-const VIEW_LENSES: ReadonlyArray<ViewLens> = ['recent', 'all', 'this-host'];
-
-function isViewLens(value: unknown): value is ViewLens {
-  return typeof value === 'string' && VIEW_LENSES.includes(value as ViewLens);
-}
-
-/** Restore the persisted active lens; default `recent` on missing/unknown. */
-export function loadViewSpineLens(): ViewLens {
-  const stored = ls(VIEW_SPINE_LENS_KEY);
-  return isViewLens(stored) ? stored : DEFAULT_VIEW_LENS;
-}
-
-/** Restore the persisted pinned-id set; empty on missing/corrupt. Drops any
- *  non-string / blank entry so a malformed record can't poison the set. */
-export function loadViewSpinePins(): Set<string> {
-  try {
-    const stored = ls(VIEW_SPINE_PINS_KEY);
-    if (!stored) return new Set();
-    const parsed = JSON.parse(stored) as unknown;
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(
-      parsed.filter(
-        (id): id is string => typeof id === 'string' && id.length > 0
-      )
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-/** A persisted saved View is well-formed only when it has a non-blank id + name
- *  and a recognized lens. Anything else is dropped (fail soft). */
-function normalizeSavedView(value: unknown): SavedView | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-  const id = typeof record.id === 'string' ? record.id.trim() : '';
-  const name = typeof record.name === 'string' ? record.name.trim() : '';
-  if (!id || !name) return null;
-  if (!isViewLens(record.lens)) return null;
-  return { id, name, lens: record.lens };
-}
-
-/** Restore the persisted saved Views; empty on missing/corrupt. Drops malformed
- *  entries and de-dupes by id (first wins). */
-export function loadViewSpineSavedViews(): SavedView[] {
-  try {
-    const stored = ls(VIEW_SPINE_SAVED_VIEWS_KEY);
-    if (!stored) return [];
-    const parsed = JSON.parse(stored) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const seen = new Set<string>();
-    const views: SavedView[] = [];
-    for (const raw of parsed) {
-      const view = normalizeSavedView(raw);
-      if (!view || seen.has(view.id)) continue;
-      seen.add(view.id);
-      views.push(view);
-    }
-    return views;
-  } catch {
-    return [];
-  }
 }
 
 function loadTerminalFontSize(): number {
@@ -662,12 +581,6 @@ export interface UiState {
    */
   advancedMode: boolean;
 
-  /** #738: active Views lens, persisted across reload (default `recent`). */
-  viewSpineLens: ViewLens;
-  /** #738: pinned Project/Bench/Workspace stable ids (pinned-to-top). */
-  viewSpinePins: Set<string>;
-  /** #738: user-saved, named Views (each captures a lens). */
-  viewSpineSavedViews: SavedView[];
   // Actions
   openSidebar: () => void;
   closeSidebar: () => void;
@@ -710,18 +623,6 @@ export interface UiState {
   isWorkspaceCollapsed: (path: string) => boolean;
   setAdvancedMode: (enabled: boolean) => void;
   toggleAdvancedMode: () => void;
-
-  /** #738: persist + set the active lens. */
-  setViewSpineLens: (lens: ViewLens) => void;
-  /** #738: toggle a pin by stable id (Project/Bench/Workspace); persists. */
-  toggleViewSpinePin: (id: string) => void;
-  /** #738: save the current lens as a named View; persists. No-op on a blank
-   *  name (trimmed). Returns the created View, or null when the name was blank. */
-  saveViewSpineView: (name: string) => SavedView | null;
-  /** #738: delete a saved View by id; persists. */
-  deleteViewSpineView: (id: string) => void;
-  /** #738: apply a saved View (restores its lens). No-op on an unknown id. */
-  applyViewSpineSavedView: (id: string) => void;
 }
 
 export const useUiStore = create<UiState>()((set, get) => ({
@@ -759,10 +660,6 @@ export const useUiStore = create<UiState>()((set, get) => ({
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
   advancedMode: loadAdvancedMode(),
-
-  viewSpineLens: loadViewSpineLens(),
-  viewSpinePins: loadViewSpinePins(),
-  viewSpineSavedViews: loadViewSpineSavedViews(),
 
   openSidebar: () => set({ sidebarOpen: true }),
   closeSidebar: () => set({ sidebarOpen: false }),
@@ -1384,47 +1281,5 @@ export const useUiStore = create<UiState>()((set, get) => ({
   },
   toggleAdvancedMode: () => {
     get().setAdvancedMode(!get().advancedMode);
-  },
-  setViewSpineLens: (lens) => {
-    lsSave(VIEW_SPINE_LENS_KEY, lens);
-    set({ viewSpineLens: lens });
-  },
-
-  toggleViewSpinePin: (id) => {
-    if (!id) return;
-    const next = new Set(get().viewSpinePins);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    if (next.size === 0) lsRemove(VIEW_SPINE_PINS_KEY);
-    else lsSave(VIEW_SPINE_PINS_KEY, JSON.stringify([...next]));
-    set({ viewSpinePins: next });
-  },
-
-  saveViewSpineView: (name) => {
-    const trimmed = name.trim();
-    if (!trimmed) return null;
-    const view: SavedView = {
-      id: createBrowserId('sv'),
-      name: trimmed,
-      lens: get().viewSpineLens,
-    };
-    const next = [...get().viewSpineSavedViews, view];
-    lsSave(VIEW_SPINE_SAVED_VIEWS_KEY, JSON.stringify(next));
-    set({ viewSpineSavedViews: next });
-    return view;
-  },
-
-  deleteViewSpineView: (id) => {
-    const next = get().viewSpineSavedViews.filter((v) => v.id !== id);
-    if (next.length === get().viewSpineSavedViews.length) return;
-    if (next.length === 0) lsRemove(VIEW_SPINE_SAVED_VIEWS_KEY);
-    else lsSave(VIEW_SPINE_SAVED_VIEWS_KEY, JSON.stringify(next));
-    set({ viewSpineSavedViews: next });
-  },
-
-  applyViewSpineSavedView: (id) => {
-    const match = get().viewSpineSavedViews.find((v) => v.id === id);
-    if (!match) return;
-    get().setViewSpineLens(match.lens);
   },
 }));
