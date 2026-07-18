@@ -64,6 +64,8 @@ export interface ChannelMessage {
   body: { text: string; format: ChannelBodyFormat };
   threadId: ChannelMessageId | null;
   parentMessageId: ChannelMessageId | null;
+  /** Number of replies whose canonical thread root is this message. */
+  replyCount?: number;
   mentions?: ChannelMention[];
   source?: ChannelMessageSource;
   /**
@@ -199,6 +201,13 @@ export function isChannelMessage(value: unknown): value is ChannelMessage {
   if (
     value.parentMessageId !== null &&
     typeof value.parentMessageId !== 'string'
+  )
+    return false;
+  if (
+    value.replyCount !== undefined &&
+    (typeof value.replyCount !== 'number' ||
+      !Number.isSafeInteger(value.replyCount) ||
+      value.replyCount < 0)
   )
     return false;
   if (

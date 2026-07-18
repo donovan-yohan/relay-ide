@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  buildChannelThreadHistorySql,
   createChannelMessageStore,
   ChannelMessageStoreError,
   type ChannelMessageStore,
@@ -195,6 +196,58 @@ describe('channel-message-store streaming lifecycle', () => {
     // A cursor below the agent row excludes it.
     expect(s.listResyncRows('topic:c', 1, 500)).toHaveLength(0);
   });
+
+  it('keeps replyCount on point reads, finalization rows, and resync replacements', () => {
+    const s = store();
+    const root = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: {
+        sessionId: 'root-session',
+        turnId: 'root-turn',
+        itemId: 'root',
+      },
+    });
+    s.finalizeStream(root.id, { text: 'root', status: 'complete' });
+    const statuses = ['complete', 'failed', 'interrupted'] as const;
+    for (const [index, status] of statuses.entries()) {
+      const reply = s.beginStream({
+        channelId: 'topic:c',
+        sender: AGENT,
+        source: {
+          sessionId: `reply-session-${index}`,
+          turnId: `reply-turn-${index}`,
+          itemId: `reply-${index}`,
+        },
+        parentMessageId: root.id,
+      });
+      s.finalizeStream(reply.id, { text: status, status });
+    }
+    const streaming = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: {
+        sessionId: 'reply-session-stream',
+        turnId: 'reply-turn-stream',
+        itemId: 'reply-stream',
+      },
+      parentMessageId: root.id,
+    });
+    expect(streaming.status).toBe('streaming');
+
+    // replyCount intentionally includes every persisted reply status: a thread
+    // badge counts rows, not only cleanly completed agent output.
+    expect(s.getMessage(root.id)?.replyCount).toBe(4);
+    expect(
+      s.finalizeStream(root.id, { text: 'ignored', status: 'failed' })
+        ?.replyCount
+    ).toBe(4);
+    expect(
+      s
+        .listResyncRows('topic:c', Number.MAX_SAFE_INTEGER, 500)
+        .find((message) => message.id === root.id)?.replyCount
+    ).toBe(4);
+  });
 });
 
 describe('channel-message-store posts, threads, idempotency', () => {
@@ -217,7 +270,7 @@ describe('channel-message-store posts, threads, idempotency', () => {
     expect(s.history('topic:c')).toHaveLength(1);
   });
 
-  it('inherits thread_id from parent and rejects a cross-channel parent', () => {
+  it('inherits thread_id from parent and validates parent identity/channel', () => {
     const s = store();
     const root = s.appendComplete({
       channelId: 'topic:c',
@@ -239,14 +292,80 @@ describe('channel-message-store posts, threads, idempotency', () => {
       parentMessageId: reply.id,
     });
     expect(nested.threadId).toBe(root.id);
-    expect(() =>
+    try {
       s.appendComplete({
         channelId: 'topic:other',
         sender: HUMAN,
         text: 'x',
         parentMessageId: root.id,
-      })
-    ).toThrow(ChannelMessageStoreError);
+      });
+      throw new Error('expected cross-channel parent rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ChannelMessageStoreError);
+      expect((error as ChannelMessageStoreError).status).toBe(409);
+      expect((error as ChannelMessageStoreError).code).toBe(
+        'parent_channel_mismatch'
+      );
+    }
+    try {
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: HUMAN,
+        text: 'x',
+        parentMessageId: 'chm:missing',
+      });
+      throw new Error('expected missing parent rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ChannelMessageStoreError);
+      expect((error as ChannelMessageStoreError).status).toBe(404);
+      expect((error as ChannelMessageStoreError).code).toBe(
+        'parent_message_not_found'
+      );
+    }
+
+    const history = s.history('topic:c');
+    expect(history.find((message) => message.id === root.id)?.replyCount).toBe(
+      2
+    );
+    expect(
+      s.threadHistory('topic:c', root.id).map((message) => message.id)
+    ).toEqual([root.id, reply.id, nested.id]);
+  });
+
+  it('plans thread history as a root PK probe plus thread-index range', () => {
+    const p = dbPath();
+    const s = store(p);
+    const root = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'root',
+    });
+    s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'reply',
+      parentMessageId: root.id,
+    });
+
+    const raw = new Database(p, { readonly: true });
+    cleanup.push(() => raw.close());
+    // EXPLAIN the exact production query: one root-id lookup plus a range over
+    // idx_chm_thread, never a hand-copied approximation or channel walk.
+    const plan = raw
+      .prepare(`EXPLAIN QUERY PLAN ${buildChannelThreadHistorySql('after')}`)
+      .all({
+        rootMessageId: root.id,
+        channelId: 'topic:c',
+        afterSeq: 0,
+        limit: 51,
+      }) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail).join('\n');
+    expect(details).toMatch(/SEARCH root USING INDEX .*\(id=\?\)/);
+    expect(details).toMatch(
+      /SEARCH thread_reply USING INDEX idx_chm_thread \(thread_id=\? AND seq>\?\)/
+    );
+    expect(details).not.toContain('idx_chm_channel_seq');
+    expect(details).not.toMatch(/SCAN (?:root|thread_reply)/);
   });
 
   it('rejects a body over the 256KB cap', () => {

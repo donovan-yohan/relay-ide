@@ -157,6 +157,10 @@ export interface LiveBinding {
   patchUnlisten: (() => void) | null;
   status: ChannelAgentStatus;
   activeTurnId: string | null;
+  /** Immediate thread parent keyed by routed turn; retained past binder idle. */
+  parentMessageIdByTurn: Map<string, string | null>;
+  /** Anonymous turn-0 cannot be associated safely after retained generations overlap. */
+  turnZeroFallbackUnsafe: boolean;
   /** Context packet for the active turn (kept so a retry re-sends identical content). */
   activeContent: string | null;
   sawStream: boolean;
@@ -238,7 +242,10 @@ export function createChannelAgentBinder(
   function postSystemRow(
     channelId: string,
     text: string,
-    meta?: Record<string, unknown>
+    options: {
+      meta?: Record<string, unknown>;
+      parentMessageId?: string | undefined;
+    } = {}
   ): void {
     try {
       const message = store.appendComplete({
@@ -246,7 +253,10 @@ export function createChannelAgentBinder(
         kind: 'system',
         sender: { ...SYSTEM_SENDER },
         text,
-        ...(meta ? { meta } : {}),
+        ...(options.meta ? { meta: options.meta } : {}),
+        ...(options.parentMessageId
+          ? { parentMessageId: options.parentMessageId }
+          : {}),
       });
       hub.broadcastCreated(message);
     } catch (err) {
@@ -257,13 +267,52 @@ export function createChannelAgentBinder(
   function postUnavailableRow(
     channelId: string,
     framework: string,
-    text: string
+    text: string,
+    parentMessageId?: string
   ): void {
-    const key = `${bindingKey(channelId, framework)}\u0000${text}`;
+    const key = `${bindingKey(channelId, framework)}\u0000${text}\u0000${parentMessageId ?? ''}`;
     const last = unavailableRowAt.get(key);
     if (last !== undefined && now() - last < UNAVAILABLE_ROW_TTL_MS) return;
     unavailableRowAt.set(key, now());
-    postSystemRow(channelId, text);
+    postSystemRow(channelId, text, { parentMessageId });
+  }
+
+  function parentForTrigger(trigger: ChannelMessage): string | undefined {
+    return trigger.threadId !== null ? trigger.id : undefined;
+  }
+
+  function parentKeyForTurn(
+    binding: LiveBinding,
+    turnId: string
+  ): string | undefined {
+    if (binding.parentMessageIdByTurn.has(turnId)) return turnId;
+    // Hermes can label a late output item `turn-0` after clearing its current
+    // turn. Use the retained parent only when there is exactly one possible
+    // routed turn; ambiguity must fail closed rather than borrow a wrong thread.
+    if (
+      turnId === 'turn-0' &&
+      binding.activeTurnId === null &&
+      !binding.turnZeroFallbackUnsafe &&
+      binding.parentMessageIdByTurn.size === 1
+    ) {
+      return binding.parentMessageIdByTurn.keys().next().value;
+    }
+    return undefined;
+  }
+
+  function parentForTurn(
+    binding: LiveBinding,
+    turnId: string
+  ): string | undefined {
+    const key = parentKeyForTurn(binding, turnId);
+    return key === undefined
+      ? undefined
+      : (binding.parentMessageIdByTurn.get(key) ?? undefined);
+  }
+
+  function releaseTurnParent(binding: LiveBinding, turnId: string): void {
+    const key = parentKeyForTurn(binding, turnId);
+    if (key !== undefined) binding.parentMessageIdByTurn.delete(key);
   }
 
   // ── availability targets ────────────────────────────────────────────────────
@@ -340,6 +389,8 @@ export function createChannelAgentBinder(
       patchUnlisten: null,
       status: 'idle',
       activeTurnId: null,
+      parentMessageIdByTurn: new Map(),
+      turnZeroFallbackUnsafe: false,
       activeContent: null,
       sawStream: false,
       waitingOn: null,
@@ -361,6 +412,19 @@ export function createChannelAgentBinder(
     // Tear down any prior wiring before re-binding a fresh adapter.
     existing?.unbind?.();
     existing?.patchUnlisten?.();
+    if (existing) {
+      // A rejected send can discover a dead transport, attach a replacement
+      // session, then redeliver the SAME active turn. Preserve that turn's
+      // parent across the rebind; discard only idle/older retained entries.
+      for (const turnId of existing.parentMessageIdByTurn.keys()) {
+        if (turnId !== existing.activeTurnId) {
+          existing.parentMessageIdByTurn.delete(turnId);
+        }
+      }
+      // Removing the old adapter listeners establishes a hard boundary for
+      // anonymous provider turn ids while retaining an exact active retry.
+      existing.turnZeroFallbackUnsafe = false;
+    }
     const binding =
       existing ?? newLiveBinding(channelId, framework, displayName);
     binding.displayName = displayName;
@@ -373,6 +437,7 @@ export function createChannelAgentBinder(
       store,
       hub,
       displayName,
+      parentMessageIdForTurn: (turnId) => parentForTurn(binding, turnId),
       onAssistantMessageFinalized: (message) =>
         handleAssistantFinalized(message),
     });
@@ -506,7 +571,8 @@ export function createChannelAgentBinder(
     if (binding.queue.length >= QUEUE_CAP) {
       postSystemRow(
         binding.channelId,
-        `@${binding.framework} has ${QUEUE_CAP} turns queued — message dropped`
+        `@${binding.framework} has ${QUEUE_CAP} turns queued — message dropped`,
+        { parentMessageId: parentForTrigger(trigger) }
       );
       return;
     }
@@ -561,12 +627,27 @@ export function createChannelAgentBinder(
       logger.warn('channel binder packet build failed:', err);
       postSystemRow(
         binding.channelId,
-        `@${binding.framework} could not build the message context: ${errText(err)}`
+        `@${binding.framework} could not build the message context: ${errText(err)}`,
+        { parentMessageId: parentForTrigger(trigger) }
       );
       pump(binding); // activeTurnId is still null — keep the queue draining
       return;
     }
+    // Retained parents exist solely for output that opens shortly after a bare
+    // idle finalized its turn. Once a successor starts, the old association is
+    // no longer safe for a turn-0 fallback and must not accumulate forever.
+    if (binding.parentMessageIdByTurn.size > 0) {
+      // A successor started while its predecessor was retained after bare idle.
+      // Future anonymous turn-0 patches cannot be assigned to either generation
+      // safely; exact turn ids continue to work.
+      binding.turnZeroFallbackUnsafe = true;
+    }
+    binding.parentMessageIdByTurn.clear();
     binding.activeTurnId = turnId;
+    binding.parentMessageIdByTurn.set(
+      turnId,
+      parentForTrigger(trigger) ?? null
+    );
     binding.sawStream = false;
     binding.waitingOn = null;
     binding.activeContent = content;
@@ -654,8 +735,10 @@ export function createChannelAgentBinder(
     }
     postSystemRow(
       binding.channelId,
-      `@${binding.framework} could not receive the message: ${errText(err)}`
+      `@${binding.framework} could not receive the message: ${errText(err)}`,
+      { parentMessageId: parentForTrigger(trigger) }
     );
+    releaseTurnParent(binding, turnId);
     finishTurn(binding);
   }
 
@@ -737,20 +820,77 @@ export function createChannelAgentBinder(
           updateWaiting(binding, patch.live.waitingOn);
         }
         break;
-      case 'agent-turn-completed-v2':
-        if (patch.turnId === binding.activeTurnId) finishTurn(binding);
-        break;
-      case 'agent-error-v2':
-        if ((patch.turnId ?? binding.activeTurnId) === binding.activeTurnId) {
-          // Only surface a system row when NO assistant row opened — otherwise the
-          // bridge's `failed` finalize is the visible artifact (§7, no duplicate).
-          if (!binding.sawStream) {
-            postSystemRow(
-              binding.channelId,
-              `@${binding.framework} errored: ${patch.message}`
-            );
-          }
+      case 'agent-turn-completed-v2': {
+        // The bridge listener runs first, so any terminally-opened row has
+        // already resolved its parent. Prune before finishTurn pumps a queued
+        // turn, so a Hermes fallback cannot become ambiguous with its successor.
+        const completedByExactTurnId = binding.parentMessageIdByTurn.has(
+          patch.turnId
+        );
+        const completedParentKey = parentKeyForTurn(binding, patch.turnId);
+        releaseTurnParent(binding, patch.turnId);
+        if (completedByExactTurnId) {
+          // An exact terminal establishes which retained generation ended, so
+          // a later isolated turn may safely use the anonymous fallback again.
+          binding.turnZeroFallbackUnsafe = false;
+        }
+        if (
+          patch.turnId === binding.activeTurnId ||
+          completedParentKey === binding.activeTurnId
+        ) {
           finishTurn(binding);
+        }
+        break;
+      }
+      case 'agent-error-v2':
+        {
+          const activeTurnId = binding.activeTurnId;
+          if (activeTurnId !== null && patch.turnId === undefined) {
+            // Legacy chat:error dispatches its paired turn-0 completion only
+            // after this handler returns. The queued successor can bare-idle
+            // synchronously while finishTurn pumps it, so mark the anonymous
+            // namespace unsafe before that successor starts.
+            binding.turnZeroFallbackUnsafe = true;
+          }
+          const terminalTurnId = patch.turnId ?? binding.activeTurnId;
+          const terminalByExactTurnId =
+            patch.turnId !== undefined &&
+            binding.parentMessageIdByTurn.has(patch.turnId);
+          const terminalParentKey =
+            terminalTurnId === null
+              ? undefined
+              : parentKeyForTurn(binding, terminalTurnId);
+          const targetsActiveTurn =
+            activeTurnId !== null &&
+            (patch.turnId === activeTurnId ||
+              terminalParentKey === activeTurnId);
+          const targetsIdleBinding =
+            activeTurnId === null && patch.turnId === undefined;
+          if (targetsActiveTurn || targetsIdleBinding) {
+            // Only surface a system row when NO assistant row opened — otherwise the
+            // bridge's `failed` finalize is the visible artifact (§7, no duplicate).
+            if (!binding.sawStream) {
+              postSystemRow(
+                binding.channelId,
+                `@${binding.framework} errored: ${patch.message}`,
+                {
+                  parentMessageId:
+                    activeTurnId === null
+                      ? undefined
+                      : parentForTurn(binding, activeTurnId),
+                }
+              );
+            }
+          }
+          if (terminalTurnId !== null) {
+            releaseTurnParent(binding, terminalTurnId);
+          }
+          if (terminalByExactTurnId) {
+            binding.turnZeroFallbackUnsafe = false;
+          }
+          if (targetsActiveTurn) {
+            finishTurn(binding);
+          }
         }
         break;
       default:
@@ -780,9 +920,15 @@ export function createChannelAgentBinder(
       binding.channelId,
       `@${binding.framework} requests approval: ${item.description} (${item.target})`,
       {
-        approvalRequestId: item.requestId,
-        agentId: binding.framework,
-        sessionId: binding.sessionId,
+        parentMessageId:
+          binding.activeTurnId === null
+            ? undefined
+            : parentForTurn(binding, binding.activeTurnId),
+        meta: {
+          approvalRequestId: item.requestId,
+          agentId: binding.framework,
+          sessionId: binding.sessionId,
+        },
       }
     );
   }
@@ -794,7 +940,12 @@ export function createChannelAgentBinder(
     if (!binding.announcedApprovals.has(item.requestId)) return;
     binding.announcedApprovals.delete(item.requestId);
     const kind = item.decision?.kind ?? 'resolved';
-    postSystemRow(binding.channelId, `@${binding.framework} approval ${kind}`);
+    postSystemRow(binding.channelId, `@${binding.framework} approval ${kind}`, {
+      parentMessageId:
+        binding.activeTurnId === null
+          ? undefined
+          : parentForTurn(binding, binding.activeTurnId),
+    });
   }
 
   // ── routing ─────────────────────────────────────────────────────────────────
@@ -809,7 +960,8 @@ export function createChannelAgentBinder(
           postUnavailableRow(
             trigger.channelId,
             framework,
-            `@${framework} is not available in channels yet — ${target.reason ?? 'web sessions unavailable.'}`
+            `@${framework} is not available in channels yet — ${target.reason ?? 'web sessions unavailable.'}`,
+            parentForTrigger(trigger)
           );
           return;
         }
@@ -823,10 +975,13 @@ export function createChannelAgentBinder(
               postUnavailableRow(
                 trigger.channelId,
                 framework,
-                err.systemMessage
+                err.systemMessage,
+                parentForTrigger(trigger)
               );
             } else {
-              postSystemRow(trigger.channelId, err.systemMessage);
+              postSystemRow(trigger.channelId, err.systemMessage, {
+                parentMessageId: parentForTrigger(trigger),
+              });
             }
             return;
           }
@@ -874,7 +1029,8 @@ export function createChannelAgentBinder(
         // the next human (browser / gateway-human) post.
         postSystemRow(
           message.channelId,
-          `Mention chain paused — ${count} agent turns without a human.`
+          `Mention chain paused — ${count} agent turns without a human.`,
+          { parentMessageId: parentForTrigger(message) }
         );
         break;
       }
@@ -929,15 +1085,16 @@ export function createChannelAgentBinder(
       for (const queued of binding.queue) {
         postSystemRow(
           binding.channelId,
-          `@${binding.framework} session ended before delivering a queued message.`
+          `@${binding.framework} session ended before delivering a queued message.`,
+          { parentMessageId: parentForTrigger(queued.trigger) }
         );
-        void queued;
       }
       binding.queue = [];
       binding.adapter = null;
       binding.unbind = null;
       binding.patchUnlisten = null;
       binding.activeTurnId = null;
+      binding.parentMessageIdByTurn.clear();
       binding.activeContent = null;
       binding.waitingOn = null;
       binding.announcedApprovals.clear();
@@ -1013,6 +1170,7 @@ export function createChannelAgentBinder(
         disarmWatchdog(binding);
         binding.unbind?.();
         binding.patchUnlisten?.();
+        binding.parentMessageIdByTurn.clear();
       }
       live.clear();
       inflight.clear();

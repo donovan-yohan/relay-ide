@@ -100,7 +100,8 @@ function post(
   binder: ChannelAgentBinder,
   text: string,
   knownIds: string[],
-  sender: ChannelSenderRef = OPERATOR
+  sender: ChannelSenderRef = OPERATOR,
+  parentMessageId?: string
 ): ChannelMessage {
   const mentions = parseMentions(text, knownIds);
   const message = store.appendComplete({
@@ -108,6 +109,7 @@ function post(
     sender,
     text,
     ...(mentions.length ? { mentions } : {}),
+    ...(parentMessageId ? { parentMessageId } : {}),
   });
   binder.handleMessagePosted(message, message.mentions ?? []);
   return message;
@@ -118,6 +120,7 @@ function post(
 type ScriptMode =
   | { mode: 'stall' }
   | { mode: 'reply'; text: string }
+  | { mode: 'reject' }
   | { mode: 'reject-once-then-reply'; text: string };
 
 class ScriptedAdapter extends BaseProtocolAdapterV2 {
@@ -162,6 +165,7 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
       this.rejected = true;
       throw new Error('transport down');
     }
+    if (this.script.mode === 'reject') throw new Error('transport down');
     if (this.script.mode === 'stall') return; // resolve, never complete
     this.runReply(input.turnId, this.script.text);
   }
@@ -553,6 +557,168 @@ class IdleWithoutTurnCompletedAdapter extends BaseProtocolAdapterV2 {
   }
 }
 
+// Bare-idle harness with explicit late/error terminals. It keeps lifecycle
+// ordering deterministic for retained-parent pruning and legacy error-pair
+// regressions without relying on timers.
+class ManualBareIdleAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'attached' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    interrupt: true,
+    streaming: true,
+  };
+  readonly sendCalls: string[] = [];
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'manual-idle';
+  private itemNumber = 0;
+  private idleOneSend = false;
+
+  constructor(
+    readonly agentType: string,
+    private readonly autoIdle = true
+  ) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async interrupt(_i: AgentInterruptInputV2): Promise<void> {}
+  async respondToApproval(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.sendCalls.push(input.turnId);
+    if (this.autoIdle || this.idleOneSend) {
+      this.idleOneSend = false;
+      this.emitPatch({
+        type: 'agent-live-state-updated-v2',
+        sessionId: this.sid,
+        timestamp: 't',
+        live: { status: 'idle', activeTurnId: null },
+      });
+    }
+  }
+
+  idleNextSend(): void {
+    this.idleOneSend = true;
+  }
+
+  emitLate(turnId: string, text = 'late reply'): void {
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'assistantMessage',
+        id: `manual-late-${++this.itemNumber}`,
+        text,
+        status: 'completed',
+      },
+    });
+  }
+
+  emitCompleted(turnId: string): void {
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      status: 'completed',
+    });
+  }
+
+  emitError(message: string): void {
+    this.emitPatch({
+      type: 'agent-error-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      message,
+    });
+  }
+
+  emitLegacyErrorPair(message: string): void {
+    this.emitError(message);
+    this.emitCompleted('turn-0');
+  }
+}
+
+// Emits bare idle before its first assistant row. This reproduces late-opening
+// output after binder finishTurn, including Hermes' `turn-0` fallback label.
+class LateOpeningReplyAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'attached' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    interrupt: true,
+    streaming: true,
+  };
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'late';
+  private outputNumber = 0;
+
+  constructor(
+    readonly agentType: string,
+    private readonly fallbackTurnId: boolean
+  ) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async interrupt(_i: AgentInterruptInputV2): Promise<void> {}
+  async respondToApproval(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    const outputNumber = ++this.outputNumber;
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: { status: 'idle', activeTurnId: null },
+    });
+    const turnId = this.fallbackTurnId ? 'turn-0' : input.turnId;
+    setTimeout(() => {
+      this.emitPatch({
+        type: 'agent-item-updated-v2',
+        sessionId: this.sid,
+        timestamp: 't',
+        turnId,
+        item: {
+          type: 'assistantMessage',
+          id: `late-${turnId}-${outputNumber}`,
+          text: 'late reply',
+          status: 'completed',
+        },
+      });
+      this.emitPatch({
+        type: 'agent-turn-completed-v2',
+        sessionId: this.sid,
+        timestamp: 't',
+        turnId,
+        status: 'completed',
+      });
+    }, 5).unref?.();
+  }
+}
+
 // ── sessions harness ─────────────────────────────────────────────────────────
 
 interface SessionsHarness {
@@ -561,6 +727,7 @@ interface SessionsHarness {
   firstSessionId: () => string;
   adapterFor: (sessionId: string) => ProtocolAdapterV2;
   fireEnd: (sessionId: string) => void;
+  forgetWithoutEnd: (sessionId: string) => void;
   lastCreateParams: () => CreateWebParams | undefined;
 }
 
@@ -620,6 +787,9 @@ function makeSessions(
     fireEnd: (id) => {
       created.delete(id);
       for (const cb of [...endCbs]) cb(id, '/tmp');
+    },
+    forgetWithoutEnd: (id) => {
+      created.delete(id);
     },
     lastCreateParams: () => lastParams,
   };
@@ -686,6 +856,292 @@ describe('channel-agent-binder — lifecycle', () => {
     const reply = agentReplies(store, 'mock')[0]!;
     expect(reply.sender.id).toBe('agent:mock');
     expect(reply.body.text).toBe('Mock v2 response complete.');
+    expect(reply.threadId).toBeNull();
+    expect(reply.parentMessageId).toBeNull();
+  });
+
+  it.each([
+    ['the routed turn id', false],
+    ['the unambiguous Hermes turn-0 fallback', true],
+  ])(
+    'retains the exact thread parent for a late-opening row using %s',
+    async (_label, fallbackTurnId) => {
+      const { binder, store } = makeBinder({
+        build: (agentType) =>
+          new LateOpeningReplyAdapter(agentType, fallbackTurnId),
+        targets: MOCK_TARGETS,
+        knownProviderIds: ['mock'],
+      });
+      const root = store.appendComplete({
+        channelId: CH,
+        sender: OPERATOR,
+        text: 'root',
+      });
+      const trigger = post(
+        store,
+        binder,
+        '@mock threaded',
+        ['mock'],
+        OPERATOR,
+        root.id
+      );
+      await waitFor(() => agentReplies(store, 'mock').length === 1);
+      const reply = agentReplies(store, 'mock')[0]!;
+      expect(trigger.threadId).toBe(root.id);
+      expect(reply.threadId).toBe(root.id);
+      expect(reply.parentMessageId).toBe(trigger.id);
+    }
+  );
+
+  it('releases each Hermes fallback association before the next threaded turn', async () => {
+    const { binder, store } = makeBinder({
+      build: (agentType) => new LateOpeningReplyAdapter(agentType, true),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const rootOne = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root one',
+    });
+    const rootTwo = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root two',
+    });
+    const triggerOne = post(
+      store,
+      binder,
+      '@mock one',
+      ['mock'],
+      OPERATOR,
+      rootOne.id
+    );
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    const triggerTwo = post(
+      store,
+      binder,
+      '@mock two',
+      ['mock'],
+      OPERATOR,
+      rootTwo.id
+    );
+    await waitFor(() => agentReplies(store, 'mock').length === 2);
+    const replies = agentReplies(store, 'mock');
+    expect(replies[0]).toMatchObject({
+      threadId: rootOne.id,
+      parentMessageId: triggerOne.id,
+    });
+    expect(replies[1]).toMatchObject({
+      threadId: rootTwo.id,
+      parentMessageId: triggerTwo.id,
+    });
+  });
+
+  it('fails closed when a turn-0 fallback could belong to multiple turns', async () => {
+    const { binder, store } = makeBinder({
+      build: (agentType) => new LateOpeningReplyAdapter(agentType, true),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const rootOne = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root one',
+    });
+    const rootTwo = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root two',
+    });
+    post(store, binder, '@mock one', ['mock'], OPERATOR, rootOne.id);
+    post(store, binder, '@mock two', ['mock'], OPERATOR, rootTwo.id);
+    await waitFor(() => agentReplies(store, 'mock').length === 2);
+    for (const reply of agentReplies(store, 'mock')) {
+      expect(reply.threadId).toBeNull();
+      expect(reply.parentMessageId).toBeNull();
+    }
+  });
+
+  it('bounds retained parents across many bare-idle turns', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new ManualBareIdleAdapter(agentType),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    for (let i = 0; i < 20; i++) {
+      post(store, binder, `@mock idle ${i}`, ['mock']);
+    }
+    await waitFor(() => {
+      if (sessions.spawns() !== 1) return false;
+      return (
+        (
+          sessions.adapterFor(
+            sessions.firstSessionId()
+          ) as ManualBareIdleAdapter
+        ).sendCalls.length === 20
+      );
+    });
+    const binding = await binder.ensureBinding(CH, 'mock');
+    expect(binding.activeTurnId).toBeNull();
+    expect(binding.parentMessageIdByTurn.size).toBeLessThanOrEqual(1);
+  });
+
+  it('prunes predecessors so an exact late successor recovers from fallback poisoning', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new ManualBareIdleAdapter(agentType),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const rootOne = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root one',
+    });
+    const rootTwo = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root two',
+    });
+    const rootThree = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root three',
+    });
+    post(store, binder, '@mock one', ['mock'], OPERATOR, rootOne.id);
+    const triggerTwo = post(
+      store,
+      binder,
+      '@mock two',
+      ['mock'],
+      OPERATOR,
+      rootTwo.id
+    );
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ManualBareIdleAdapter;
+    await waitFor(() => adapter.sendCalls.length === 2);
+    adapter.emitLate(adapter.sendCalls[1]!);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(agentReplies(store, 'mock')[0]).toMatchObject({
+      threadId: rootTwo.id,
+      parentMessageId: triggerTwo.id,
+    });
+    // Exact terminal evidence identifies and releases B, clearing the overlap
+    // ambiguity. A later isolated C may safely use a genuine turn-0 fallback.
+    adapter.emitCompleted(adapter.sendCalls[1]!);
+    const triggerThree = post(
+      store,
+      binder,
+      '@mock three',
+      ['mock'],
+      OPERATOR,
+      rootThree.id
+    );
+    await waitFor(() => adapter.sendCalls.length === 3);
+    adapter.emitLate('turn-0', 'valid fallback');
+    await waitFor(() => agentReplies(store, 'mock').length === 2);
+    expect(agentReplies(store, 'mock')[1]).toMatchObject({
+      threadId: rootThree.id,
+      parentMessageId: triggerThree.id,
+    });
+  });
+
+  it('never resurrects a stale turn-0 against a newer retained successor', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new ManualBareIdleAdapter(agentType),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const rootOne = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root one',
+    });
+    const rootTwo = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root two',
+    });
+    post(store, binder, '@mock one', ['mock'], OPERATOR, rootOne.id);
+    post(store, binder, '@mock two', ['mock'], OPERATOR, rootTwo.id);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ManualBareIdleAdapter;
+    await waitFor(() => adapter.sendCalls.length === 2);
+    // Both turns have bare-idled; this anonymous row may belong to the older
+    // generation and therefore must not borrow the newer turn's parent.
+    adapter.emitLate('turn-0', 'stale reply');
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(agentReplies(store, 'mock')[0]).toMatchObject({
+      threadId: null,
+      parentMessageId: null,
+    });
+  });
+
+  it('does not let a legacy error pair finish a freshly pumped successor', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new ManualBareIdleAdapter(agentType, false),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    post(store, binder, '@mock first', ['mock']);
+    const successor = post(
+      store,
+      binder,
+      '@mock successor',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ManualBareIdleAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    // Patch 1 of the pair pumps U; model U synchronously bare-idling before
+    // patch 2 (turn-0 completed) is dispatched.
+    adapter.idleNextSend();
+    adapter.emitLegacyErrorPair('legacy failure');
+    await waitFor(() => adapter.sendCalls.length === 2);
+    const binding = await binder.ensureBinding(CH, 'mock');
+    expect(binding.activeTurnId).toBeNull();
+    expect(binding.parentMessageIdByTurn.has(adapter.sendCalls[1]!)).toBe(true);
+    adapter.emitLate(adapter.sendCalls[1]!, 'successor late reply');
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(agentReplies(store, 'mock')[0]).toMatchObject({
+      threadId: root.id,
+      parentMessageId: successor.id,
+    });
+    adapter.emitCompleted(adapter.sendCalls[1]!);
+    expect(binding.parentMessageIdByTurn.size).toBe(0);
+  });
+
+  it('surfaces an agent error received while the binding is idle', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new ManualBareIdleAdapter(agentType),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    post(store, binder, '@mock idle', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ManualBareIdleAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    adapter.emitError('idle failure');
+    await waitFor(() =>
+      systemRows(store).some((row) =>
+        row.body.text.includes('@mock errored: idle failure')
+      )
+    );
   });
 
   it('two concurrent mentions single-flight to exactly one spawn', async () => {
@@ -741,7 +1197,17 @@ describe('channel-agent-binder — lifecycle', () => {
       ],
       knownProviderIds: ['stall'],
     });
-    for (let i = 0; i < 10; i++) post(store, binder, `@stall ${i}`, ['stall']);
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const triggers: ChannelMessage[] = [];
+    for (let i = 0; i < 10; i++) {
+      triggers.push(
+        post(store, binder, `@stall ${i}`, ['stall'], OPERATOR, root.id)
+      );
+    }
     await waitFor(() =>
       systemRows(store).some((m) => m.body.text.includes('turns queued'))
     );
@@ -750,6 +1216,8 @@ describe('channel-agent-binder — lifecycle', () => {
     );
     expect(dropped).toHaveLength(1);
     expect(dropped[0]!.body.text).toContain('has 8 turns queued');
+    expect(dropped[0]!.threadId).toBe(root.id);
+    expect(dropped[0]!.parentMessageId).toBe(triggers.at(-1)!.id);
   });
 
   it('session death unbinds, nulls the row session id, and respawns on next mention', async () => {
@@ -768,6 +1236,42 @@ describe('channel-agent-binder — lifecycle', () => {
     expect(sessions.spawns()).toBe(2);
   });
 
+  it('threads session-ended rows for queued trigger messages', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => new DeferredAdapter(agentType),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    post(store, binder, '@mock active', ['mock'], OPERATOR, root.id);
+    const queued = post(
+      store,
+      binder,
+      '@mock queued',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(() => sessions.spawns() === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as DeferredAdapter;
+    await waitFor(() => adapter.sendCalls.length === 1);
+    sessions.fireEnd(sessions.firstSessionId());
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('session ended'))
+    );
+    const ended = systemRows(store).find((m) =>
+      m.body.text.includes('session ended')
+    )!;
+    expect(ended.threadId).toBe(root.id);
+    expect(ended.parentMessageId).toBe(queued.id);
+  });
+
   it('spawn failure posts a system row and leaves no stuck single-flight', async () => {
     const { binder, store, sessions } = makeBinder({
       build: () => new MockProtocolAdapterV2(),
@@ -775,19 +1279,117 @@ describe('channel-agent-binder — lifecycle', () => {
       knownProviderIds: ['mock'],
       throwOnCreate: true,
     });
-    post(store, binder, '@mock one', ['mock']);
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const first = post(store, binder, '@mock one', ['mock'], OPERATOR, root.id);
     await waitFor(() =>
       systemRows(store).some((m) => m.body.text.includes('failed to start'))
     );
-    post(store, binder, '@mock two', ['mock']);
+    const second = post(
+      store,
+      binder,
+      '@mock two',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
     await waitFor(() => sessions.spawns() === 2); // single-flight cleared, retried
-    expect(
-      systemRows(store).filter((m) => m.body.text.includes('failed to start'))
-    ).toHaveLength(2);
+    const failures = systemRows(store).filter((m) =>
+      m.body.text.includes('failed to start')
+    );
+    expect(failures).toHaveLength(2);
+    expect(failures.map((m) => m.parentMessageId)).toEqual([
+      first.id,
+      second.id,
+    ]);
   });
 });
 
 describe('channel-agent-binder — delivery + idempotency', () => {
+  it('preserves an active threaded turn across transport rebind and finishes promptly', async () => {
+    let spawnNumber = 0;
+    let firstAdapter: DeferredAdapter | null = null;
+    const { binder, store, sessions } = makeBinder({
+      build: (agentType) => {
+        spawnNumber++;
+        if (spawnNumber === 1) {
+          firstAdapter = new DeferredAdapter(agentType);
+          return firstAdapter;
+        }
+        return new ScriptedAdapter(agentType, {
+          mode: 'reply',
+          text: 'rebound reply',
+        });
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const trigger = post(
+      store,
+      binder,
+      '@mock retry',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
+    await waitFor(
+      () => firstAdapter !== null && firstAdapter.sendCalls.length === 1
+    );
+    const turnId = firstAdapter!.sendCalls[0]!;
+    // Model a dead transport discovered by send rejection before the normal
+    // session-end callback has removed the live binding.
+    sessions.forgetWithoutEnd(sessions.firstSessionId());
+    firstAdapter!.rejectSend(turnId);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    const reply = agentReplies(store, 'mock')[0]!;
+    expect(reply).toMatchObject({
+      threadId: root.id,
+      parentMessageId: trigger.id,
+    });
+    expect(sessions.spawns()).toBe(2);
+    const rebound = await binder.ensureBinding(CH, 'mock');
+    expect(rebound.activeTurnId).toBeNull();
+    expect(rebound.status).toBe('idle');
+  });
+
+  it('threads a terminal send-failure row to its triggering reply', async () => {
+    const { binder, store } = makeBinder({
+      build: () => new ScriptedAdapter('x', { mode: 'reject' }),
+      targets: [
+        {
+          id: 'x',
+          displayName: 'X',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['x'],
+    });
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const trigger = post(store, binder, '@x go', ['x'], OPERATOR, root.id);
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('could not receive'))
+    );
+    const failure = systemRows(store).find((m) =>
+      m.body.text.includes('could not receive')
+    )!;
+    expect(failure.threadId).toBe(root.id);
+    expect(failure.parentMessageId).toBe(trigger.id);
+  });
+
   it('uses a deterministic turnId and a retry reuses the same turn identity', async () => {
     const { binder, store, sessions } = makeBinder({
       build: () =>
@@ -864,7 +1466,12 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
       ],
       knownProviderIds: ['a', 'b'],
     });
-    post(store, binder, '@a go', ['a', 'b']);
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    post(store, binder, '@a go', ['a', 'b'], OPERATOR, root.id);
     await waitFor(() =>
       systemRows(store).some((m) =>
         m.body.text.includes('Mention chain paused')
@@ -874,6 +1481,8 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
       m.body.text.includes('Mention chain paused')
     );
     expect(pausedRows).toHaveLength(1);
+    expect(pausedRows[0]!.threadId).toBe(root.id);
+    expect(pausedRows[0]!.parentMessageId).not.toBeNull();
     // Human-initiated a reply is not counted; the brake bounds the autonomous
     // fan-out at MAX_CONSECUTIVE_AGENT_TURNS agent turns.
     const beforeReset = agentReplies(store).length;
@@ -961,16 +1570,49 @@ describe('channel-agent-binder — roster + availability', () => {
       ],
       knownProviderIds: ['codex'],
     });
-    post(store, binder, '@codex fix it', ['codex']);
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const trigger = post(
+      store,
+      binder,
+      '@codex fix it',
+      ['codex'],
+      OPERATOR,
+      root.id
+    );
     await waitFor(() =>
       systemRows(store).some((m) => m.body.text.includes('#301'))
     );
-    post(store, binder, '@codex fix it again', ['codex']);
+    const secondTrigger = post(
+      store,
+      binder,
+      '@codex fix it again',
+      ['codex'],
+      OPERATOR,
+      root.id
+    );
     // brief settle
     await new Promise((r) => setTimeout(r, 40));
     expect(
       systemRows(store).filter((m) => m.body.text.includes('not available'))
-    ).toHaveLength(1); // rate-limited: only one identical row
+    ).toHaveLength(2); // distinct trigger parents must not suppress each other
+    const unavailable = systemRows(store).find(
+      (m) =>
+        m.body.text.includes('not available') &&
+        m.parentMessageId === trigger.id
+    )!;
+    expect(unavailable.threadId).toBe(root.id);
+    expect(unavailable.parentMessageId).toBe(trigger.id);
+    expect(
+      systemRows(store).some(
+        (m) =>
+          m.body.text.includes('not available') &&
+          m.parentMessageId === secondTrigger.id
+      )
+    ).toBe(true);
     expect(sessions.spawns()).toBe(0);
   });
 });
@@ -1147,12 +1789,29 @@ describe('channel-agent-binder — buildPacket failure recovery (P2 #1180)', () 
         return realHistory(id, filter);
       }) as ChannelMessageStore['history'];
 
-    post(store, binder, '@mock one', ['mock']);
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const failedTrigger = post(
+      store,
+      binder,
+      '@mock one',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
     await waitFor(() =>
       systemRows(store).some((m) =>
         m.body.text.includes('could not build the message context')
       )
     );
+    const failure = systemRows(store).find((m) =>
+      m.body.text.includes('could not build the message context')
+    )!;
+    expect(failure.threadId).toBe(root.id);
+    expect(failure.parentMessageId).toBe(failedTrigger.id);
     // Binding recovered (not stuck turn-active): the next mention delivers.
     post(store, binder, '@mock two', ['mock']);
     await waitFor(() => agentReplies(store, 'mock').length === 1);
@@ -1307,7 +1966,19 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
       targets: MOCK_TARGETS,
       knownProviderIds: ['mock'],
     });
-    const trigger = post(store, binder, '@mock please approve', ['mock']);
+    const root = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: 'root',
+    });
+    const trigger = post(
+      store,
+      binder,
+      '@mock please approve',
+      ['mock'],
+      OPERATOR,
+      root.id
+    );
     await waitFor(() =>
       systemRows(store).some((m) => m.body.text.includes('requests approval'))
     );
@@ -1321,6 +1992,8 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
       agentId: 'mock',
     });
     expect(approvalRow.meta?.['sessionId']).toBe(sessions.firstSessionId());
+    expect(approvalRow.threadId).toBe(root.id);
+    expect(approvalRow.parentMessageId).toBe(trigger.id);
 
     const a = built[0]!;
     await binder.respondToApproval(CH, 'mock', requestId, { kind: 'accept' });
@@ -1334,6 +2007,11 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     await waitFor(() =>
       systemRows(store).some((m) => m.body.text.includes('approval accept'))
     );
+    const resolvedRow = systemRows(store).find((m) =>
+      m.body.text.includes('approval accept')
+    )!;
+    expect(resolvedRow.threadId).toBe(root.id);
+    expect(resolvedRow.parentMessageId).toBe(trigger.id);
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     expect(agentReplies(store, 'mock')[0]!.body.text).toBe('approved and done');
   });

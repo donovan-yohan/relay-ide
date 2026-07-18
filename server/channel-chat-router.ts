@@ -8,6 +8,8 @@ import {
   type CliGatewayActorWriteCommand,
 } from './cli-gateway-actor-auth.js';
 import {
+  CHANNEL_HISTORY_DEFAULT_LIMIT,
+  CHANNEL_HISTORY_MAX_LIMIT,
   ChannelMessageStoreError,
   type ChannelHistoryFilter,
   type ChannelMessageStore,
@@ -75,6 +77,32 @@ function budgetHistoryRows(
       ? { afterSeq: kept[kept.length - 1]!.seq }
       : { beforeSeq: kept[0]!.seq };
   return { rows: kept, hasMore: true, nextCursor };
+}
+
+/** Apply a public row limit plus the existing byte budget to a lookahead page. */
+function budgetHistoryPage(
+  messages: ChannelMessage[],
+  direction: 'forward' | 'backward',
+  limit: number,
+  maxBytes: number
+): {
+  rows: ChannelMessage[];
+  hasMore: boolean;
+  nextCursor?: Record<string, number>;
+} {
+  const rowTruncated = messages.length > limit;
+  const rowPage = rowTruncated
+    ? direction === 'forward'
+      ? messages.slice(0, limit)
+      : messages.slice(messages.length - limit)
+    : messages;
+  const budgeted = budgetHistoryRows(rowPage, direction, maxBytes);
+  if (budgeted.hasMore || !rowTruncated) return budgeted;
+  const nextCursor =
+    direction === 'forward'
+      ? { afterSeq: budgeted.rows[budgeted.rows.length - 1]!.seq }
+      : { beforeSeq: budgeted.rows[0]!.seq };
+  return { ...budgeted, hasMore: true, nextCursor };
 }
 
 export interface ChannelChatRouterDeps {
@@ -304,6 +332,12 @@ function parseSeqQuery(value: unknown): number | undefined {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
+function parseHistoryLimit(value: unknown): number {
+  const parsed = parseSeqQuery(value);
+  if (parsed === undefined) return CHANNEL_HISTORY_DEFAULT_LIMIT;
+  return Math.max(1, Math.min(CHANNEL_HISTORY_MAX_LIMIT, parsed));
+}
+
 function channelSummaryView(
   store: ChannelMessageStore,
   topic: WorkspaceTopic
@@ -371,6 +405,8 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   const listAuth = deps.requireReadActorAuth?.('channels.list') ?? auth;
   const getAuth = deps.requireReadActorAuth?.('channels.get') ?? auth;
   const historyAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
+  const threadHistoryAuth =
+    deps.requireReadActorAuth?.('channels.threads.history') ?? auth;
   const postAuth = deps.requireWriteActorAuth?.('channels.post') ?? auth;
   const rosterAuth = deps.requireReadActorAuth?.('channels.roster') ?? auth;
   const interruptAuth =
@@ -475,6 +511,47 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     }
   });
 
+  router.get(
+    '/channels/:id/threads/:rootMessageId',
+    threadHistoryAuth,
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+      const store = storeOr503(res, deps.store);
+      if (!store) return;
+      const id = req.params['id'] ?? '';
+      const rootMessageId = req.params['rootMessageId'] ?? '';
+      const filter: ChannelHistoryFilter = {};
+      const beforeSeq = parseSeqQuery(req.query['beforeSeq']);
+      const afterSeq = parseSeqQuery(req.query['afterSeq']);
+      // Match the established history precedence: when both cursors are
+      // supplied, afterSeq selects forward pagination and beforeSeq is ignored.
+      if (afterSeq !== undefined) filter.afterSeq = afterSeq;
+      else if (beforeSeq !== undefined) filter.beforeSeq = beforeSeq;
+      const limit = parseHistoryLimit(req.query['limit']);
+      // One extra row makes row-limit pagination observable without a COUNT.
+      filter.limit = limit + 1;
+      try {
+        const all = store.threadHistory(id, rootMessageId, filter);
+        const direction =
+          filter.afterSeq !== undefined ? 'forward' : 'backward';
+        const budgeted = budgetHistoryPage(
+          all,
+          direction,
+          limit,
+          deps.historyMaxBytes ?? DEFAULT_HISTORY_MAX_BYTES
+        );
+        res.json({
+          messages: budgeted.rows,
+          ...(budgeted.hasMore
+            ? { hasMore: true, nextCursor: budgeted.nextCursor }
+            : {}),
+        });
+      } catch (error) {
+        mapStoreError(res, error);
+      }
+    }
+  );
+
   router.post('/channels/:id/messages', postAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
     const store = storeOr503(res, deps.store);
@@ -525,10 +602,50 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       body['format'] === 'text' || body['format'] === 'markdown'
         ? (body['format'] as ChannelBodyFormat)
         : undefined;
-    const parentMessageId =
+    // Public thread writes identify the message being replied to as `threadId`.
+    // The store derives the canonical root and persists this supplied id as the
+    // immediate parent; callers cannot forge a root id.
+    const suppliedThreadId = body['threadId'];
+    const threadId =
+      typeof suppliedThreadId === 'string' && suppliedThreadId.length > 0
+        ? suppliedThreadId
+        : undefined;
+    // JSON null is the protocol's explicit no-thread value and is equivalent
+    // to omitting the field. Empty strings and other non-strings are malformed.
+    if (
+      'threadId' in body &&
+      suppliedThreadId !== null &&
+      threadId === undefined
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'threadId must be a non-empty message id',
+        false,
+        { field: 'threadId' }
+      );
+      return;
+    }
+    const legacyParentMessageId =
       typeof body['parentMessageId'] === 'string'
         ? body['parentMessageId']
         : undefined;
+    const resolvedLegacyParentMessageId = legacyParentMessageId || undefined;
+    if (
+      threadId !== undefined &&
+      resolvedLegacyParentMessageId !== undefined &&
+      threadId !== resolvedLegacyParentMessageId
+    ) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'threadId and parentMessageId must identify the same message',
+        false,
+        { fields: ['threadId', 'parentMessageId'] }
+      );
+      return;
+    }
+    const parentMessageId = threadId ?? resolvedLegacyParentMessageId;
     const clientMessageId =
       typeof body['clientMessageId'] === 'string'
         ? body['clientMessageId']

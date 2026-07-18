@@ -352,6 +352,7 @@ test('classifies only server-bound read-only CLI gateway actor routes into the a
     'channels.list',
     'channels.get',
     'channels.history',
+    'channels.threads.history',
     'channels.roster',
     'context.get',
     'context.list',

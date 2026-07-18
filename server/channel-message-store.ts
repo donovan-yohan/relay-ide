@@ -36,6 +36,35 @@ export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
 const CHANNEL_SUMMARY_PREVIEW_MAX_CHARS = 200;
 
+export type ChannelThreadHistoryQueryMode = 'default' | 'after' | 'before';
+
+/** Production query builder exported so query-plan tests exercise exact SQL. */
+export function buildChannelThreadHistorySql(
+  mode: ChannelThreadHistoryQueryMode
+): string {
+  const seqClause =
+    mode === 'after'
+      ? 'AND seq > @afterSeq'
+      : mode === 'before'
+        ? 'AND seq < @beforeSeq'
+        : '';
+  const order = mode === 'after' ? 'ASC' : 'DESC';
+  return `SELECT m.*,
+                  (SELECT COUNT(*) FROM channel_messages replies
+                   WHERE replies.thread_id = m.id) AS reply_count
+           FROM (
+             SELECT root.* FROM channel_messages root
+              WHERE root.id = @rootMessageId
+                AND root.channel_id = @channelId ${seqClause}
+             UNION ALL
+             SELECT thread_reply.*
+               FROM channel_messages thread_reply INDEXED BY idx_chm_thread
+              WHERE thread_reply.thread_id = @rootMessageId
+                AND thread_reply.channel_id = @channelId ${seqClause}
+           ) m
+           ORDER BY m.seq ${order} LIMIT @limit`;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS channel_messages (
   id                TEXT PRIMARY KEY,
@@ -114,6 +143,7 @@ interface ChannelMessageRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  reply_count?: number;
 }
 
 interface MemberRow {
@@ -230,6 +260,12 @@ export interface ChannelMessageStore {
     clientMessageId: string
   ): ChannelMessage | null;
   history(channelId: string, filter?: ChannelHistoryFilter): ChannelMessage[];
+  /** Root-inclusive history for one canonical thread. */
+  threadHistory(
+    channelId: string,
+    rootMessageId: string,
+    filter?: ChannelHistoryFilter
+  ): ChannelMessage[];
   /**
    * Rows a reconnecting client may still hold as stale `streaming` copies:
    * agent-origin rows (source triple set) at or below the reconnect cursor, in
@@ -288,11 +324,14 @@ function assertBodySize(text: string): void {
   }
 }
 
-function cleanLimit(limit: unknown): number {
+function cleanLimit(
+  limit: unknown,
+  maxLimit = CHANNEL_HISTORY_MAX_LIMIT
+): number {
   if (typeof limit !== 'number' || !Number.isFinite(limit)) {
     return CHANNEL_HISTORY_DEFAULT_LIMIT;
   }
-  return Math.max(1, Math.min(CHANNEL_HISTORY_MAX_LIMIT, Math.floor(limit)));
+  return Math.max(1, Math.min(maxLimit, Math.floor(limit)));
 }
 
 function parseMeta(raw: string | null): ChannelMessageMeta | undefined {
@@ -338,6 +377,7 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+  if (row.reply_count !== undefined) message.replyCount = row.reply_count;
   if (meta?.mentions && Array.isArray(meta.mentions)) {
     message.mentions = meta.mentions;
   }
@@ -414,7 +454,16 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
     throw error;
   }
 
-  const selectById = db.prepare('SELECT * FROM channel_messages WHERE id = ?');
+  // Point reads can be emitted directly on the WS lane (stream finalization and
+  // catch-up replacement), so they must carry the same derived replyCount as a
+  // timeline history row. Otherwise a replace-by-id reducer can erase a count
+  // that was already visible to the client.
+  const selectById = db.prepare(
+    `SELECT m.*,
+            (SELECT COUNT(*) FROM channel_messages replies
+             WHERE replies.thread_id = m.id) AS reply_count
+     FROM channel_messages m WHERE m.id = ?`
+  );
   const selectBySource = db.prepare(
     `SELECT * FROM channel_messages
      WHERE source_session_id IS @sessionId
@@ -673,45 +722,110 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
 
     history(channelId, filter = {}) {
       const limit = cleanLimit(filter.limit);
-      const clauses = ['channel_id = @channelId'];
+      const clauses = ['m.channel_id = @channelId'];
       const params: Record<string, unknown> = { channelId, limit };
       if (filter.threadId) {
-        clauses.push('thread_id = @threadId');
+        clauses.push('m.thread_id = @threadId');
         params['threadId'] = filter.threadId;
       }
       if (typeof filter.afterSeq === 'number') {
-        clauses.push('seq > @afterSeq');
+        clauses.push('m.seq > @afterSeq');
         params['afterSeq'] = filter.afterSeq;
         const rows = db
           .prepare(
-            `SELECT * FROM channel_messages WHERE ${clauses.join(' AND ')}
-             ORDER BY seq ASC LIMIT @limit`
+            `SELECT m.*,
+                    (SELECT COUNT(*) FROM channel_messages replies
+                     WHERE replies.thread_id = m.id) AS reply_count
+             FROM channel_messages m WHERE ${clauses.join(' AND ')}
+             ORDER BY m.seq ASC LIMIT @limit`
           )
           .all(params) as ChannelMessageRow[];
         return rows.map(rowToMessage);
       }
       if (typeof filter.beforeSeq === 'number') {
-        clauses.push('seq < @beforeSeq');
+        clauses.push('m.seq < @beforeSeq');
         params['beforeSeq'] = filter.beforeSeq;
       }
       // Default + beforeSeq: newest `limit` rows, returned seq-ascending.
       const rows = db
         .prepare(
-          `SELECT * FROM channel_messages WHERE ${clauses.join(' AND ')}
-           ORDER BY seq DESC LIMIT @limit`
+          `SELECT m.*,
+                  (SELECT COUNT(*) FROM channel_messages replies
+                   WHERE replies.thread_id = m.id) AS reply_count
+           FROM channel_messages m WHERE ${clauses.join(' AND ')}
+           ORDER BY m.seq DESC LIMIT @limit`
         )
         .all(params) as ChannelMessageRow[];
       return rows.reverse().map(rowToMessage);
+    },
+
+    threadHistory(channelId, rootMessageId, filter = {}) {
+      const root = selectById.get(rootMessageId) as
+        | ChannelMessageRow
+        | undefined;
+      if (!root) {
+        throw new ChannelMessageStoreError(
+          404,
+          'thread_root_not_found',
+          'thread root message not found',
+          { rootMessageId }
+        );
+      }
+      if (root.channel_id !== channelId) {
+        throw new ChannelMessageStoreError(
+          409,
+          'thread_root_channel_mismatch',
+          'thread root message belongs to another channel',
+          { rootMessageId, rootChannelId: root.channel_id, channelId }
+        );
+      }
+      if (root.thread_id !== null) {
+        throw new ChannelMessageStoreError(
+          400,
+          'thread_root_required',
+          'rootMessageId must identify a thread root',
+          { rootMessageId, canonicalRootMessageId: root.thread_id }
+        );
+      }
+
+      // Router pagination asks for one lookahead row, hence MAX + 1 here while
+      // the public page size remains capped at CHANNEL_HISTORY_MAX_LIMIT.
+      const limit = cleanLimit(filter.limit, CHANNEL_HISTORY_MAX_LIMIT + 1);
+      const params: Record<string, unknown> = {
+        channelId,
+        rootMessageId,
+        limit,
+      };
+      let queryMode: ChannelThreadHistoryQueryMode = 'default';
+      if (typeof filter.afterSeq === 'number') {
+        params['afterSeq'] = filter.afterSeq;
+        queryMode = 'after';
+      } else if (typeof filter.beforeSeq === 'number') {
+        params['beforeSeq'] = filter.beforeSeq;
+        queryMode = 'before';
+      }
+
+      // Keep the root-inclusive contract without an OR predicate. The root is
+      // a single primary-key probe and replies are an idx_chm_thread range;
+      // thread reads therefore scale with thread size, not channel size.
+      const rows = db
+        .prepare(buildChannelThreadHistorySql(queryMode))
+        .all(params) as ChannelMessageRow[];
+      if (queryMode !== 'after') rows.reverse();
+      return rows.map(rowToMessage);
     },
 
     listResyncRows(channelId, uptoSeq, limit) {
       const bounded = Math.max(1, Math.min(1000, Math.floor(limit)));
       const rows = db
         .prepare(
-          `SELECT * FROM channel_messages
-           WHERE channel_id = @channelId AND seq <= @uptoSeq
-             AND source_session_id IS NOT NULL
-           ORDER BY seq DESC LIMIT @limit`
+          `SELECT m.*,
+                  (SELECT COUNT(*) FROM channel_messages replies
+                   WHERE replies.thread_id = m.id) AS reply_count
+             FROM channel_messages m
+            WHERE m.channel_id = @channelId AND m.seq <= @uptoSeq
+              AND m.source_session_id IS NOT NULL
+            ORDER BY m.seq DESC LIMIT @limit`
         )
         .all({ channelId, uptoSeq, limit: bounded }) as ChannelMessageRow[];
       return rows.reverse().map(rowToMessage);
