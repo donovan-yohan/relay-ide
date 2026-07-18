@@ -456,6 +456,34 @@ function parseToolArguments(value: unknown): Record<string, unknown> {
   }
 }
 
+/**
+ * Concatenate the text of a Responses API `message` output-item. The item shape
+ * is `{ type: 'message', role, content: [{ type: 'output_text', text }, …] }`;
+ * some builds inline `text` directly on the item. Non-text parts (refusals,
+ * tool references) contribute nothing. Used to recover the assistant reply that
+ * hermes v0.18.2 delivers as a message output-item rather than a streamed
+ * `output_text.done` (#1181).
+ */
+function extractResponsesMessageText(item: Record<string, unknown>): string {
+  if (typeof item['text'] === 'string') return item['text'];
+  const content = item['content'];
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const part of content) {
+    if (part && typeof part === 'object') {
+      const p = part as Record<string, unknown>;
+      const type = p['type'];
+      if (
+        (type === undefined || type === 'output_text' || type === 'text') &&
+        typeof p['text'] === 'string'
+      ) {
+        parts.push(p['text']);
+      }
+    }
+  }
+  return parts.join('');
+}
+
 const RESPONSES_METADATA_MAX_KEYS = 16;
 const RESPONSES_METADATA_KEY_MAX = 64;
 const RESPONSES_METADATA_VALUE_MAX = 512;
@@ -648,6 +676,15 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
   >();
   /** Accumulated reasoning summary text for the turn currently streaming. */
   private _reasoningBuffer = '';
+  /**
+   * True once an assistant `chat:message-complete` has been emitted for the turn
+   * currently streaming. Guards the three assistant-text delivery paths so a
+   * hermes build that streams text (`output_text.done`) never double-emits with
+   * the message output-item (`output_item.done` type `message`) or the
+   * `response.completed` `output[]` fallback that cover v0.18.2, which delivers
+   * the reply as a message output-item only (#1181).
+   */
+  private _assistantEmittedThisTurn = false;
 
   get status(): AdapterStatus {
     return this._status;
@@ -665,6 +702,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._initialInstructionsSent = false;
     this._pendingToolCalls.clear();
     this._reasoningBuffer = '';
+    this._assistantEmittedThisTurn = false;
 
     const settings = resolveHermesGatewaySettings(config.extra);
     this._endpoint = settings.endpoint;
@@ -689,6 +727,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._lastResponseId = null;
     this._pendingToolCalls.clear();
     this._reasoningBuffer = '';
+    this._assistantEmittedThisTurn = false;
     this._status = 'disconnected';
   }
 
@@ -713,6 +752,7 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     this._messageAbortController = new AbortController();
     this._currentTurnId = turnId;
     this._reasoningBuffer = '';
+    this._assistantEmittedThisTurn = false;
     this._pendingToolCalls.clear();
 
     this.fire({ type: 'chat:session-status', status: 'active' });
@@ -1075,6 +1115,40 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       role: 'assistant',
       content: typeof text === 'string' ? text : '',
     });
+    // Streamed-text path is authoritative: mark the turn's assistant reply as
+    // emitted so the message output-item and response.completed fallback
+    // (#1181) do not re-emit the same reply.
+    this._assistantEmittedThisTurn = true;
+  }
+
+  /**
+   * Emit a completed assistant `chat:message-complete` from a Responses API
+   * `message` output-item. Hermes v0.18.2 delivers the reply as a message
+   * output-item (via `output_item.done` or the completed response's `output[]`)
+   * instead of streaming `output_text.done` (#1181). No-op — returning false —
+   * when an assistant reply was already emitted this turn (dedupe vs the
+   * streamed path), the item is not an assistant message, or it carries no
+   * text. Reuses the streamed path's `msg-<turnId>` id so any residual
+   * double-emit collapses at the store's source-triple dedupe.
+   */
+  private emitAssistantMessageItem(
+    item: Record<string, unknown>,
+    turnId: string
+  ): boolean {
+    if (this._assistantEmittedThisTurn) return false;
+    const role = item['role'];
+    if (typeof role === 'string' && role !== 'assistant') return false;
+    const text = extractResponsesMessageText(item);
+    if (!text) return false;
+    this._assistantEmittedThisTurn = true;
+    this.fire({
+      type: 'chat:message-complete',
+      turnId,
+      messageId: `msg-${turnId}`,
+      role: 'assistant',
+      content: text,
+    });
+    return true;
   }
 
   private handleOutputItemAdded(event: SseEvent, turnId: string): void {
@@ -1120,6 +1194,12 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
 
   private handleOutputItemDone(event: SseEvent, turnId: string): void {
     const item = event.data['item'] as Record<string, unknown> | undefined;
+    if (item?.['type'] === 'message') {
+      // v0.18.2 assistant reply shape: a completed `message` output-item. Map
+      // it to a message-complete so the reply becomes a channel row (#1181).
+      this.emitAssistantMessageItem(item, turnId);
+      return;
+    }
     if (item?.['type'] !== 'function_call') return;
     const itemId = String(item['id'] ?? '');
     const pending = this._pendingToolCalls.get(itemId);
@@ -1197,6 +1277,11 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
       });
     }
     this.emitTelemetryFromResponse(response, turnId);
+    // Fallback finalization: if neither the streamed `output_text.done` path nor
+    // a `message` output-item emitted the assistant reply this turn, recover it
+    // from the completed response's `output[]` so a hermes turn never finalizes
+    // with an invisible reply (#1181).
+    this.emitAssistantFallbackFromResponse(response, turnId);
     if (this._currentTurnId) {
       this.fire({
         type: 'chat:turn-completed',
@@ -1210,6 +1295,32 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     }
     this._pendingToolCalls.clear();
     this.fire({ type: 'chat:session-status', status: 'idle' });
+  }
+
+  /**
+   * Emit the assistant reply from a completed response's `output[]` when no
+   * assistant message was emitted this turn (#1181). Scans for the first
+   * assistant `message` item carrying text; `emitAssistantMessageItem` sets the
+   * dedupe flag, so at most one row is produced per turn.
+   */
+  private emitAssistantFallbackFromResponse(
+    response: Record<string, unknown> | undefined,
+    turnId: string
+  ): void {
+    if (this._assistantEmittedThisTurn) return;
+    const output = response?.['output'];
+    if (!Array.isArray(output)) return;
+    for (const candidate of output) {
+      if (candidate && typeof candidate === 'object') {
+        const item = candidate as Record<string, unknown>;
+        if (
+          item['type'] === 'message' &&
+          this.emitAssistantMessageItem(item, turnId)
+        ) {
+          return;
+        }
+      }
+    }
   }
 
   private handleResponseFailed(event: SseEvent): void {
