@@ -41,7 +41,11 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
     const approvalRequestId = message.meta?.approvalRequestId;
     const hasApproval = typeof approvalRequestId === 'string';
     return (
-      <div className="ch-system-msg" role="note">
+      <div
+        className="ch-system-msg"
+        role="note"
+        data-channel-message-seq={message.seq}
+      >
         <span className="ch-system-msg__label">{message.body.text}</span>
         {hasApproval ? (
           <span className="ch-system-msg__actions">
@@ -107,7 +111,11 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
     );
 
   return (
-    <div className={rowClasses} style={streamStyle}>
+    <div
+      className={rowClasses}
+      style={streamStyle}
+      data-channel-message-seq={message.seq}
+    >
       {message.parentMessageId ? (
         <div className="ch-msg__reply" aria-hidden="true">
           ↳ reply
