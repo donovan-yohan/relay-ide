@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  buildChannelThreadHistorySql,
   createChannelMessageStore,
   ChannelMessageStoreError,
   type ChannelMessageStore,
@@ -348,27 +349,10 @@ describe('channel-message-store posts, threads, idempotency', () => {
 
     const raw = new Database(p, { readonly: true });
     cleanup.push(() => raw.close());
-    // Keep this SQL structurally identical to threadHistory's forward query so
-    // the regression test proves the defining invariant behind the UNION: one
-    // root-id lookup plus a range over idx_chm_thread, never a channel walk.
+    // EXPLAIN the exact production query: one root-id lookup plus a range over
+    // idx_chm_thread, never a hand-copied approximation or channel walk.
     const plan = raw
-      .prepare(
-        `EXPLAIN QUERY PLAN
-         SELECT m.*,
-                (SELECT COUNT(*) FROM channel_messages replies
-                 WHERE replies.thread_id = m.id) AS reply_count
-           FROM (
-             SELECT root.* FROM channel_messages root
-              WHERE root.id = @rootMessageId
-                AND root.channel_id = @channelId AND seq > @afterSeq
-             UNION ALL
-             SELECT thread_reply.*
-               FROM channel_messages thread_reply INDEXED BY idx_chm_thread
-              WHERE thread_reply.thread_id = @rootMessageId
-                AND thread_reply.channel_id = @channelId AND seq > @afterSeq
-           ) m
-          ORDER BY m.seq ASC LIMIT @limit`
-      )
+      .prepare(`EXPLAIN QUERY PLAN ${buildChannelThreadHistorySql('after')}`)
       .all({
         rootMessageId: root.id,
         channelId: 'topic:c',

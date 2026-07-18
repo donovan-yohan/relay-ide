@@ -36,6 +36,35 @@ export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
 const CHANNEL_SUMMARY_PREVIEW_MAX_CHARS = 200;
 
+export type ChannelThreadHistoryQueryMode = 'default' | 'after' | 'before';
+
+/** Production query builder exported so query-plan tests exercise exact SQL. */
+export function buildChannelThreadHistorySql(
+  mode: ChannelThreadHistoryQueryMode
+): string {
+  const seqClause =
+    mode === 'after'
+      ? 'AND seq > @afterSeq'
+      : mode === 'before'
+        ? 'AND seq < @beforeSeq'
+        : '';
+  const order = mode === 'after' ? 'ASC' : 'DESC';
+  return `SELECT m.*,
+                  (SELECT COUNT(*) FROM channel_messages replies
+                   WHERE replies.thread_id = m.id) AS reply_count
+           FROM (
+             SELECT root.* FROM channel_messages root
+              WHERE root.id = @rootMessageId
+                AND root.channel_id = @channelId ${seqClause}
+             UNION ALL
+             SELECT thread_reply.*
+               FROM channel_messages thread_reply INDEXED BY idx_chm_thread
+              WHERE thread_reply.thread_id = @rootMessageId
+                AND thread_reply.channel_id = @channelId ${seqClause}
+           ) m
+           ORDER BY m.seq ${order} LIMIT @limit`;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS channel_messages (
   id                TEXT PRIMARY KEY,
@@ -767,39 +796,22 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         rootMessageId,
         limit,
       };
-      let seqClause = '';
-      let order = 'DESC';
+      let queryMode: ChannelThreadHistoryQueryMode = 'default';
       if (typeof filter.afterSeq === 'number') {
         params['afterSeq'] = filter.afterSeq;
-        seqClause = 'AND seq > @afterSeq';
-        order = 'ASC';
+        queryMode = 'after';
       } else if (typeof filter.beforeSeq === 'number') {
         params['beforeSeq'] = filter.beforeSeq;
-        seqClause = 'AND seq < @beforeSeq';
+        queryMode = 'before';
       }
 
       // Keep the root-inclusive contract without an OR predicate. The root is
       // a single primary-key probe and replies are an idx_chm_thread range;
       // thread reads therefore scale with thread size, not channel size.
       const rows = db
-        .prepare(
-          `SELECT m.*,
-                  (SELECT COUNT(*) FROM channel_messages replies
-                   WHERE replies.thread_id = m.id) AS reply_count
-           FROM (
-             SELECT root.* FROM channel_messages root
-              WHERE root.id = @rootMessageId
-                AND root.channel_id = @channelId ${seqClause}
-             UNION ALL
-             SELECT thread_reply.*
-               FROM channel_messages thread_reply INDEXED BY idx_chm_thread
-              WHERE thread_reply.thread_id = @rootMessageId
-                AND thread_reply.channel_id = @channelId ${seqClause}
-           ) m
-           ORDER BY m.seq ${order} LIMIT @limit`
-        )
+        .prepare(buildChannelThreadHistorySql(queryMode))
         .all(params) as ChannelMessageRow[];
-      if (order === 'DESC') rows.reverse();
+      if (queryMode !== 'after') rows.reverse();
       return rows.map(rowToMessage);
     },
 
