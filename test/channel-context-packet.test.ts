@@ -52,6 +52,18 @@ function msg(
   };
 }
 
+function inThread(
+  message: ChannelMessage,
+  rootMessageId: string,
+  parentMessageId: string
+): ChannelMessage {
+  return {
+    ...message,
+    threadId: rootMessageId,
+    parentMessageId,
+  };
+}
+
 describe('buildMentionContextPacket', () => {
   it('renders the exact golden packet (own rows skipped, sender labels, footer)', () => {
     const rows = [
@@ -84,6 +96,126 @@ describe('buildMentionContextPacket', () => {
         '@claude please fix the flaky channel-hub test',
       ].join('\n')
     );
+  });
+
+  it('renders an exact thread-scoped packet and excludes unrelated channel rows', () => {
+    const root = msg(1, OPERATOR, 'root question');
+    const reply = inThread(msg(2, HERMES, 'thread detail'), root.id, root.id);
+    const system = inThread(
+      msg(3, SYSTEM, 'thread system notice', 'system'),
+      root.id,
+      reply.id
+    );
+    const streaming = {
+      ...inThread(
+        msg(4, OPERATOR, 'thread row still streaming'),
+        root.id,
+        system.id
+      ),
+      status: 'streaming' as const,
+    };
+    const unrelated = msg(5, OPERATOR, 'unrelated top-level update');
+    const trigger = inThread(
+      msg(6, OPERATOR, '@claude answer this thread'),
+      root.id,
+      streaming.id
+    );
+    const packet = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows: [root, reply, system, streaming, unrelated],
+      trigger,
+      lastDeliveredSeq: 999,
+    });
+    expect(packet).toBe(
+      [
+        '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '[Thread scope — only this thread is shown; its root message is always included]',
+        'Recent messages, oldest first. Lines are "sender: text"; agents tagged [agent], system rows tagged [system].',
+        'operator: root question',
+        'hermes [agent]: thread detail',
+        '[system]: thread system notice',
+        'operator: thread row still streaming',
+        '',
+        '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
+        '@claude answer this thread',
+      ].join('\n')
+    );
+  });
+
+  it('keeps an own-agent root despite a high cursor and retains only newest replies', () => {
+    const root = { ...msg(1, CLAUDE, 'load-bearing root'), id: 'chm:root' };
+    const rows = [root];
+    for (let seq = 2; seq <= 25; seq++) {
+      rows.push(
+        inThread(msg(seq, OPERATOR, `thread line ${seq}`), root.id, root.id)
+      );
+    }
+    const trigger = inThread(
+      msg(26, OPERATOR, '@claude continue'),
+      root.id,
+      rows.at(-1)!.id
+    );
+    const packet = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger,
+      lastDeliveredSeq: 999,
+    });
+    expect(packet).toContain('claude [agent]: load-bearing root');
+    expect(packet).toContain('[…earlier messages omitted]');
+    expect(packet).not.toContain('operator: thread line 6\n');
+    expect(packet).toContain('operator: thread line 7');
+    expect(packet).toContain('operator: thread line 25');
+    expect(packet.indexOf('claude [agent]: load-bearing root')).toBeLessThan(
+      packet.indexOf('[…earlier messages omitted]')
+    );
+    expect(packet.indexOf('[…earlier messages omitted]')).toBeLessThan(
+      packet.indexOf('operator: thread line 7')
+    );
+    const contextLines = packet
+      .split('\n')
+      .filter(
+        (line) =>
+          line.startsWith('operator: thread line') ||
+          line === 'claude [agent]: load-bearing root'
+      );
+    expect(contextLines).toHaveLength(PACKET_MAX_ROWS);
+  });
+
+  it('drops oldest thread replies to meet the byte cap but never drops the root', () => {
+    const root = { ...msg(1, OPERATOR, 'load-bearing root'), id: 'chm:root' };
+    const rows = [root];
+    for (let seq = 2; seq <= 20; seq++) {
+      rows.push(
+        inThread(
+          msg(seq, OPERATOR, `${seq}:` + 'z'.repeat(1900)),
+          root.id,
+          root.id
+        )
+      );
+    }
+    const trigger = inThread(
+      msg(21, OPERATOR, '@claude continue'),
+      root.id,
+      rows.at(-1)!.id
+    );
+    const packet = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger,
+      lastDeliveredSeq: 0,
+    });
+    expect(Buffer.byteLength(packet, 'utf8')).toBeLessThanOrEqual(
+      PACKET_MAX_BYTES
+    );
+    expect(packet).toContain('operator: load-bearing root');
+    expect(packet).toContain('[…earlier messages omitted]');
+    expect(packet).not.toContain('operator: 2:');
+    expect(packet).toContain('operator: 20:');
+    expect(packet).toContain('@claude continue');
   });
 
   it('tags an AGENT-authored trigger in the footer (attribution, not impersonation)', () => {
