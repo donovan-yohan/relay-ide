@@ -25,7 +25,7 @@ here).
 The old model was **session = conversation** (one chat bound to one agent
 process). The pivot inverts it:
 
-- **Channel = conversation.** Agents are *participants* in a channel, not the
+- **Channel = conversation.** Agents are _participants_ in a channel, not the
   channel itself.
 - **DM = a 2-member channel** (one human, one agent). No separate DM primitive.
 - **@-mention routes** a message into an adapter session bound to
@@ -39,15 +39,15 @@ process). The pivot inverts it:
 The substrate below already exists in code; the channel-chat product is new
 wiring over it. Verified 2026-07-17 against source:
 
-| Concept          | Primitive (SHIPPED)                                                    | Notes                                                                                                    |
-| ---------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Workspace        | `ia_workspaces` (`server/ia-store.ts`, epic #1021)                     | Rail entries: `status`, `pinned`, `color`, `icon`, `default_repo_path`, `default_node_id`.               |
-| Channel          | `workspace_topics` (`server/workspace-topics.ts`)                     | Record carries `routingDefaults`, `promptDefaults`, and channel `kind` = repo/product-area/journal/ops/research/topic. |
-| Message store    | `work_context_messages` (`server/work-context-messages.ts`)          | Columns include `thread_id`, `parent_message_id`, `sender_kind`/`sender_id`, `audience_json`, `visibility`. |
-| Mention targets  | Agent roster (`shared/agent-roster.ts`, #952/#953)                    | `RosterEntry.provider` = framework id (`claude`/`codex`/`hermes`); derived per live session.              |
-| Agent transport  | `ProtocolAdapterV2` (`server/protocol-adapter-v2.ts`, `protocol-adapters/index.ts`) | v2 registry: `mock`, `claude`, `codex` (native), `opencode`/`hermes` via legacy bridge.                  |
+| Concept         | Primitive (SHIPPED)                                                                 | Notes                                                                                                                                                                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace       | `ia_workspaces` (`server/ia-store.ts`, epic #1021)                                  | Rail entries: `status`, `pinned`, `color`, `icon`, `default_repo_path`, `default_node_id`.                                                                                                                                                                 |
+| Channel         | `workspace_topics` (`server/workspace-topics.ts`)                                   | Record carries `routingDefaults`, `promptDefaults`, and channel `kind` = repo/product-area/journal/ops/research/topic. Channel identity = topic id.                                                                                                        |
+| Message store   | `channel_messages` (`server/channel-message-store.ts`, #1165 SHIPPED)               | New durable `channel-chat.db`: per-channel gap-free `seq`, streaming lifecycle, `sender_kind`/`sender_id`, `thread_id`/`parent_message_id`, `source_*` bridge provenance. `work_context_messages` is agent-mail (#945), a deliberately separate substrate. |
+| Mention targets | Agent roster (`shared/agent-roster.ts`, #952/#953)                                  | `RosterEntry.provider` = framework id (`claude`/`codex`/`hermes`); derived per live session.                                                                                                                                                               |
+| Agent transport | `ProtocolAdapterV2` (`server/protocol-adapter-v2.ts`, `protocol-adapters/index.ts`) | v2 registry: `mock`, `claude`, `codex` (native), `opencode`/`hermes` via legacy bridge.                                                                                                                                                                    |
 
-**Verification nuance:** the roster is *derived from live sessions* and keyed by
+**Verification nuance:** the roster is _derived from live sessions_ and keyed by
 `sessionId` + `provider`, not a persistent per-agent handle registry. So
 `@claude` resolves to a framework/provider id, and spawn-on-first-mention must
 bind `(channel, agent-framework)` and create the session — it cannot assume a
@@ -74,6 +74,47 @@ This replaces the current `ClaudeProtocolAdapter` (`claude-adapter.ts`), which
 drives Claude through the Anthropic Agent SDK (`@anthropic-ai/claude-agent-sdk`
 `query()`) and is de-advertised for web sessions under #300.
 
+## Slice 2 — Channel core (SHIPPED, #1165)
+
+The conversation substrate is live and fully additive (`web_sessions`, `/ws/:sessionId`,
+agent mail, and every adapter are untouched):
+
+- **Durable store** `server/channel-message-store.ts` (`channel-chat.db`): atomic
+  single-statement `seq` allocation with a `UNIQUE(channel_id, seq)` backstop,
+  streaming rows (begin → debounced partial-text flush → finalize in place),
+  boot sweep of stale `streaming` → `interrupted` (+ system message), orphan GC
+  against the topic store, source-triple and `clientMessageId` idempotency, 256KB
+  per-message cap. **Unread arithmetic must count by seq range; catch-up is always
+  DB-backed** (the durable seq log is the replay buffer — there is no event ring).
+- **Wire protocol** `shared/channel-chat-protocol.ts`: `ChannelEventV1` (snapshot /
+  created / delta / completed / resync-required), a runtime validator, a pure
+  self-diagnosing reducer (gap → `needsCatchup`, `deltaIndex` + quarantine per
+  message), and `parseMentions`. **`AgentPatchV2` is not extended** — a server-side
+  bridge translates instead, so no adapter changes.
+- **Fan-out** `server/channel-hub.ts` + `GET /ws/channels/:channelId?sinceSeq=N`:
+  server→client only, register-before-snapshot connect with snapshot/live dedupe,
+  50ms delta coalescing, per-socket backpressure (suppress deltas → resync → 4409),
+  and coarse `channel-activity` sidebar badges on `/ws/events`. Connect flushes
+  pending accumulator text before the snapshot (so a mid-stream connector never
+  double-renders); catch-up also re-sends any streaming row that finalized while
+  the client was disconnected; a cursor ahead of the server head forces a full
+  snapshot (client reset); snapshot/catch-up assembly is byte-bounded (~4MB →
+  `truncated`, client pages the rest via `channels.history`).
+- **Verbs** `server/channel-chat-router.ts`: `channels.list/get/history/post`
+  (REST-only writes, one internal `postToChannel`). **Sender is server-derived from
+  the auth lane, never the request body**; derived/archived topics are rejected;
+  the verbs are wired into the CLI-gateway capability map. `channels.history`
+  responses are byte-bounded (~4MB); on overflow they return `hasMore: true` and a
+  `nextCursor` (`afterSeq`/`beforeSeq`) so the client fetches the remainder in pages.
+- **Slice-4 seam** `server/channel-agent-bridge.ts`: `AgentPatchV2` → channel
+  lifecycle translation, shipped and contract-tested but unwired until #1167.
+
+**Privacy note:** channel message bodies are stored **raw**, with no redaction
+pipeline (unlike the `work_context_messages` sanitizer,
+`shared/work-context-message.ts`). This is consistent with `agent_session_v2_json`
+today, but is a standing privacy posture decision to revisit before any
+`visibility:'shared'` / multi-user channel.
+
 ## Live proof gate (PLANNED)
 
 Token-frugal testing against **real** Claude / Codex accounts — hello-world
@@ -85,17 +126,17 @@ prompts only, no burn. Proof matrix:
 
 ## Ladder (epic #1163)
 
-| Slice   | Scope                                                                 |
-| ------- | --------------------------------------------------------------------- |
-| #1164   | Debt clear — retire v1 chat surface / kill-list items below.          |
-| #1165   | Channel core — channel = conversation model over the substrate.       |
-| #1166   | Channel UI + DM-as-channel.                                           |
-| #1167   | `@`-mentions — route mention → `(channel, agent)` session, spawn-on-first. |
-| #1168   | Claude subprocess adapter (native stream-json, warm pool, `--resume`).|
-| #1169   | Multi-agent live proof + Codex revive.                                |
-| #1170   | Threads (`parent_message_id` / `thread_id`).                          |
-| #1171   | Mobile cockpit (mission control).                                     |
-| #1172   | Tauri desktop suite (backlog).                                        |
+| Slice | Scope                                                                      |
+| ----- | -------------------------------------------------------------------------- |
+| #1164 | Debt clear — retire v1 chat surface / kill-list items below.               |
+| #1165 | Channel core — channel = conversation model over the substrate.            |
+| #1166 | Channel UI + DM-as-channel.                                                |
+| #1167 | `@`-mentions — route mention → `(channel, agent)` session, spawn-on-first. |
+| #1168 | Claude subprocess adapter (native stream-json, warm pool, `--resume`).     |
+| #1169 | Multi-agent live proof + Codex revive.                                     |
+| #1170 | Threads (`parent_message_id` / `thread_id`).                               |
+| #1171 | Mobile cockpit (mission control).                                          |
+| #1172 | Tauri desktop suite (backlog).                                             |
 
 ## Kill list (PLANNED removal)
 

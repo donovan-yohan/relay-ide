@@ -96,6 +96,14 @@ export interface WorkspaceTopicStore {
   restore(id: string): WorkspaceTopic | null;
   get(id: string): WorkspaceTopic | null;
   list(filter?: WorkspaceTopicListFilter): WorkspaceTopic[];
+  /**
+   * Every stored topic id, uncapped — a direct id query, NOT the `list()` read
+   * model (which caps at WORKSPACE_TOPICS_MAX_LIST_ENTRIES=200 while the store
+   * retains up to 500). Callers that must enumerate the complete id set — e.g.
+   * the channel-store orphan GC — MUST use this, or channels whose topic ranks
+   * beyond the top-200-by-`updated_at` get their messages wrongly swept.
+   */
+  listAllTopicIds(): string[];
 }
 
 function defaultClock(): string {
@@ -261,6 +269,13 @@ export function createWorkspaceTopicStore(input: {
       return rows
         .map((row) => parseRow(row))
         .filter((topic): topic is WorkspaceTopic => Boolean(topic));
+    },
+
+    listAllTopicIds() {
+      const rows = db
+        .prepare('SELECT id FROM workspace_topics')
+        .all() as Array<{ id: string }>;
+      return rows.map((row) => row.id);
     },
   };
 }

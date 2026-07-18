@@ -228,6 +228,13 @@ import { createAgentRosterRouter } from './features/agent-roster-router.js';
 import { buildAttentionEventInput } from '../shared/agent-roster.js';
 import { createWorkContextMessageRouter } from './features/work-context-message-router.js';
 import {
+  initChannelMessageStore,
+  type ChannelMessageStore,
+} from './channel-message-store.js';
+import { createChannelHub, type ChannelHub } from './channel-hub.js';
+import { createChannelChatRouter } from './channel-chat-router.js';
+import { v2Adapters } from './protocol-adapters/index.js';
+import {
   initWorkContextArtifactStore,
   type WorkContextArtifactStore,
 } from './work-context-artifacts.js';
@@ -1694,6 +1701,20 @@ function initWorkContextMessageStoreBestEffort(
   }
 }
 
+function initChannelMessageStoreBestEffort(
+  configDir: string
+): ChannelMessageStore | null {
+  try {
+    return initChannelMessageStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Channel message store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 async function ensureStartupTerminalBackendAvailable(
   _startupConfig: Config
 ): Promise<void> {}
@@ -1965,6 +1986,36 @@ async function main(): Promise<void> {
   const prOverseerStore = initPrOverseerStoreBestEffort(configDir);
   const workContextMessageStore =
     initWorkContextMessageStoreBestEffort(configDir);
+  // Channel conversation core (#1165). Own SQLite (`channel-chat.db`); routes and
+  // the /ws/channels lane degrade when init fails — a failed channel store never
+  // takes down the hub or the untouched /ws/:sessionId lane. Boot order: init →
+  // sweep stale streaming → sweep orphans → hub → mount router → wire ws.
+  const channelMessageStore = initChannelMessageStoreBestEffort(configDir);
+  if (channelMessageStore) {
+    try {
+      channelMessageStore.sweepStaleStreaming();
+      if (workspaceTopicStore) {
+        // Enumerate ALL stored topic ids uncapped — NOT via `list()`, which caps
+        // at 200 while the store retains up to 500. Feeding the capped list to
+        // sweepOrphans would delete every channel whose topic ranks beyond the
+        // top-200-by-updated_at (silent, unrecoverable data loss) once >200
+        // topics exist.
+        const persistedTopicIds = new Set(
+          workspaceTopicStore.listAllTopicIds()
+        );
+        channelMessageStore.sweepOrphans(persistedTopicIds);
+      }
+    } catch (err) {
+      logger.warn(
+        'Channel store boot sweep failed:',
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+  const channelHub: ChannelHub = createChannelHub({
+    store: channelMessageStore,
+    channelExists: (channelId) => Boolean(workspaceTopicStore?.get(channelId)),
+  });
   const cliGatewayEventBus = createCliGatewayEventBus();
 
   try {
@@ -2666,6 +2717,20 @@ async function main(): Promise<void> {
       requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
     })
   );
+  // channel conversation core (#1165): channels.* verbs over channel-chat.db.
+  // Topic CRUD stays on the workspace-topics routes above; channels are a read/
+  // write conversation surface keyed by workspace_topics id. Single write path.
+  app.use(
+    createChannelChatRouter({
+      store: channelMessageStore,
+      hub: channelHub,
+      topicStore: workspaceTopicStore,
+      knownProviderIds: Object.keys(v2Adapters),
+      requireAuth: requireCliGatewayAuth,
+      requireReadActorAuth: requireCliGatewayAuthForActorCommand,
+      requireWriteActorAuth: requireCliGatewayAuthForActorCommand,
+    })
+  );
   // #765 / ADR-019: context.* / inbox.* gateway verbs. #759 wires the router
   // to the concrete #758 `ContextPacketStore` via the integration adapter
   // (method renames, throw→result-union remap, PULL-as-delivery flip). When the
@@ -3131,7 +3196,8 @@ async function main(): Promise<void> {
     hubNodeLinks,
     sessionEnvelopeRegistry,
     securityAuditLog,
-    { strictDeny: process.env.RELAY_NODE_SOURCE_STRICT_DENY === '1' }
+    { strictDeny: process.env.RELAY_NODE_SOURCE_STRICT_DENY === '1' },
+    channelHub
   );
 
   const browserScopedToken = generateScopedToken();
@@ -5767,6 +5833,8 @@ async function main(): Promise<void> {
         workspaceTopicStore?.close();
         prOverseerStore?.close();
         workContextMessageStore?.close();
+        channelHub.close();
+        channelMessageStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -5851,6 +5919,8 @@ async function main(): Promise<void> {
     workspaceTopicStore?.close();
     prOverseerStore?.close();
     workContextMessageStore?.close();
+    channelHub.close();
+    channelMessageStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {
