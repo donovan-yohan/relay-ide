@@ -80,10 +80,40 @@ describe('buildMentionContextPacket', () => {
         'hermes [agent]: bisecting now',
         '[system]: codex is not available in channels yet',
         '',
-        '[operator mentioned you — reply to this message; your reply is posted to the channel]',
+        '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
         '@claude please fix the flaky channel-hub test',
       ].join('\n')
     );
+  });
+
+  it('tags an AGENT-authored trigger in the footer (attribution, not impersonation)', () => {
+    const trigger = msg(5, HERMES, '@claude take a look at my bisect');
+    const packet = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows: [],
+      trigger,
+      lastDeliveredSeq: 4,
+    });
+    expect(packet).toBe(
+      [
+        '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '',
+        '[hermes [agent:hermes] mentioned you — reply to this message; your reply is posted to the channel]',
+        '@claude take a look at my bisect',
+      ].join('\n')
+    );
+    // A human mention is unambiguously distinguishable from the agent one above.
+    const humanTrigger = msg(6, OPERATOR, '@claude and you look too');
+    const humanPacket = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows: [],
+      trigger: humanTrigger,
+      lastDeliveredSeq: 5,
+    });
+    expect(humanPacket).toContain('[operator [human] mentioned you —');
+    expect(humanPacket).not.toContain('[agent:');
   });
 
   it('caps to the newest N rows and prepends the omitted marker', () => {
@@ -177,7 +207,7 @@ describe('buildMentionContextPacket', () => {
       [
         '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
         '',
-        '[operator mentioned you — reply to this message; your reply is posted to the channel]',
+        '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
         '@claude go',
       ].join('\n')
     );

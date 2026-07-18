@@ -9,6 +9,7 @@ import {
   BaseProtocolAdapterV2,
   type AdapterConfig,
   type AdapterStatus,
+  type AgentApprovalResponseInputV2,
   type AgentInterruptInputV2,
   type AgentSendMessageInputV2,
   type ProtocolAdapterV2,
@@ -20,6 +21,7 @@ import {
 } from '../server/channel-message-store.js';
 import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
 import {
+  CHANNEL_BINDING_YOLO_DEFAULT,
   createChannelAgentBinder,
   MAX_CONSECUTIVE_AGENT_TURNS,
   type BinderSessions,
@@ -27,6 +29,8 @@ import {
   type MentionTarget,
 } from '../server/channel-agent-binder.js';
 import type { Session, WebSession } from '../server/types.js';
+import type { CreateWebParams } from '../server/web-session-handler.js';
+import { createWebSession } from '../server/web-session-handler.js';
 import type { WorkspaceTopicStore } from '../server/workspace-topics.js';
 import {
   parseMentions,
@@ -44,6 +48,13 @@ const OPERATOR: ChannelSenderRef = {
   kind: 'human',
   id: 'human:operator',
   displayName: 'operator',
+};
+/** A CLI-gateway actor post (deriveSender kind 'agent') — subject to the brake. */
+const AGENT_SENDER: ChannelSenderRef = {
+  kind: 'agent',
+  id: 'agent:orchestrator',
+  providerId: 'orchestrator',
+  displayName: 'orchestrator',
 };
 
 function makeStore(): { store: ChannelMessageStore; hub: ChannelHub } {
@@ -206,6 +217,256 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
   }
 }
 
+// ── approval-driving adapter (waitingOn handshake, no timers) ─────────────────
+// Emits an approval item + `waitingOn:'approval'` on send, parks the turn, and
+// resolves it only on respondToApproval / interrupt. Records send/respond/
+// interrupt calls so the brake, watchdog-pause, and round-trip can be asserted.
+class ApprovalAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'spawned' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    approvals: true,
+    interrupt: true,
+    streaming: true,
+    queue: false,
+  };
+  readonly sendCalls: string[] = [];
+  readonly respondCalls: AgentApprovalResponseInputV2[] = [];
+  readonly interruptCalls: string[] = [];
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'appr';
+  private activeTurn: string | null = null;
+  private pendingApprovalId: string | null = null;
+
+  constructor(readonly agentType: string) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+
+  async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.sendCalls.push(input.turnId);
+    this.activeTurn = input.turnId;
+    const approvalId = `appr-${input.turnId}`;
+    this.pendingApprovalId = approvalId;
+    this.emitPatch({
+      type: 'agent-turn-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turn: {
+        id: input.turnId,
+        status: 'running',
+        inputMessageId: `u-${input.turnId}`,
+        items: [],
+        startedAt: 't',
+      },
+    });
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      item: {
+        type: 'approval',
+        id: approvalId,
+        requestId: approvalId,
+        kind: 'command',
+        description: 'Run mock command',
+        target: 'npm test',
+        status: 'pending',
+        startedAt: 't',
+      },
+    });
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: { waitingOn: 'approval' },
+    });
+  }
+
+  async interrupt(input: AgentInterruptInputV2): Promise<void> {
+    this.interruptCalls.push(input.turnId ?? this.activeTurn ?? '');
+    const turnId = this.activeTurn;
+    if (turnId === null) return;
+    this.activeTurn = null;
+    this.pendingApprovalId = null;
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      status: 'interrupted',
+    });
+  }
+
+  async respondToApproval(input: AgentApprovalResponseInputV2): Promise<void> {
+    this.respondCalls.push(input);
+    if (input.requestId !== this.pendingApprovalId) return;
+    const turnId = this.activeTurn;
+    if (turnId === null) return;
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'approval',
+        id: input.requestId,
+        requestId: input.requestId,
+        kind: 'command',
+        description: 'Run mock command',
+        target: 'npm test',
+        status: 'completed',
+        decision: input.decision,
+      },
+    });
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: { waitingOn: null },
+    });
+    const itemId = `a-${turnId}`;
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: { type: 'assistantMessage', id: itemId, text: '' },
+    });
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      itemId,
+      delta: { text: 'approved and done' },
+    });
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: {
+        type: 'assistantMessage',
+        id: itemId,
+        text: 'approved and done',
+        status: 'completed',
+      },
+    });
+    this.activeTurn = null;
+    this.pendingApprovalId = null;
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      status: 'completed',
+    });
+  }
+}
+
+// ── deferred-send adapter (send acceptance resolved/rejected on command) ──────
+// sendMessage returns a promise the test resolves (accept) or rejects (transport
+// failure) explicitly, so the send-failure/rebind interleaving is deterministic.
+class DeferredAdapter extends BaseProtocolAdapterV2 {
+  readonly runtimeOwnership = 'spawned' as const;
+  readonly capabilities: AgentCapabilitySetV2 = {
+    text: true,
+    streaming: true,
+    interrupt: true,
+    queue: false,
+  };
+  readonly sendCalls: string[] = [];
+  private _status: AdapterStatus = 'disconnected';
+  private sid = 'deferred';
+  private readonly pending = new Map<
+    string,
+    { resolve: () => void; reject: (err: unknown) => void }
+  >();
+
+  constructor(readonly agentType: string) {
+    super();
+  }
+  get status(): AdapterStatus {
+    return this._status;
+  }
+  async connect(config: AdapterConfig): Promise<void> {
+    this._status = 'connected';
+    this.sid = config.sessionId;
+  }
+  protected async onDisconnect(): Promise<void> {
+    this._status = 'disconnected';
+  }
+  async reconnect(): Promise<void> {}
+  async resumeSession(): Promise<void> {}
+  async interrupt(): Promise<void> {}
+  async respondToApproval(): Promise<void> {}
+  async respondToInput(): Promise<void> {}
+
+  sendMessage(input: AgentSendMessageInputV2): Promise<void> {
+    this.sendCalls.push(input.turnId);
+    return new Promise<void>((resolve, reject) => {
+      this.pending.set(input.turnId, { resolve, reject });
+    });
+  }
+
+  rejectSend(turnId: string): void {
+    const d = this.pending.get(turnId);
+    this.pending.delete(turnId);
+    d?.reject(new Error('transport down'));
+  }
+
+  /** Accept the send AND stream a completing reply for the turn. */
+  completeReply(turnId: string, text: string): void {
+    const d = this.pending.get(turnId);
+    this.pending.delete(turnId);
+    d?.resolve();
+    const itemId = `a-${turnId}`;
+    this.emitPatch({
+      type: 'agent-item-started-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: { type: 'assistantMessage', id: itemId, text: '' },
+    });
+    this.emitPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      itemId,
+      delta: { text },
+    });
+    this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      item: { type: 'assistantMessage', id: itemId, text, status: 'completed' },
+    });
+    this.emitPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId,
+      status: 'completed',
+    });
+  }
+}
+
 // ── sessions harness ─────────────────────────────────────────────────────────
 
 interface SessionsHarness {
@@ -214,20 +475,26 @@ interface SessionsHarness {
   firstSessionId: () => string;
   adapterFor: (sessionId: string) => ProtocolAdapterV2;
   fireEnd: (sessionId: string) => void;
+  lastCreateParams: () => CreateWebParams | undefined;
 }
 
 function makeSessions(
   build: (agentType: string) => ProtocolAdapterV2,
-  opts: { throwOnCreate?: boolean } = {}
+  opts: { throwOnCreate?: boolean; gate?: Promise<void> } = {}
 ): SessionsHarness {
   const created = new Map<string, { session: WebSession }>();
   const order: string[] = [];
   const endCbs: Array<(id: string, cwd: string, br?: string) => void> = [];
   let spawns = 0;
+  let lastParams: CreateWebParams | undefined;
   const sessions: BinderSessions = {
     async createWeb(params) {
       spawns++;
+      lastParams = params;
       if (opts.throwOnCreate) throw new Error('boom: spawn failed');
+      // Optional gate: park the spawn so a test can drive a close()/reorder race
+      // between createWeb being invoked and its continuation resuming.
+      if (opts.gate) await opts.gate;
       const id = `sess-${spawns}-${params.agentType}`;
       const adapter = build(params.agentType);
       await adapter.connect({
@@ -268,6 +535,7 @@ function makeSessions(
       created.delete(id);
       for (const cb of [...endCbs]) cb(id, '/tmp');
     },
+    lastCreateParams: () => lastParams,
   };
 }
 
@@ -288,6 +556,8 @@ function makeBinder(cfg: {
   topicStore?: WorkspaceTopicStore | null;
   watchdogMs?: number;
   throwOnCreate?: boolean;
+  yolo?: boolean;
+  gate?: Promise<void>;
 }): {
   binder: ChannelAgentBinder;
   store: ChannelMessageStore;
@@ -297,6 +567,7 @@ function makeBinder(cfg: {
   const { store, hub } = makeStore();
   const sessions = makeSessions(cfg.build, {
     ...(cfg.throwOnCreate ? { throwOnCreate: true } : {}),
+    ...(cfg.gate ? { gate: cfg.gate } : {}),
   });
   const binder = createChannelAgentBinder({
     store,
@@ -308,6 +579,7 @@ function makeBinder(cfg: {
     port: 0,
     configDir: '/tmp',
     ...(cfg.watchdogMs !== undefined ? { watchdogMs: cfg.watchdogMs } : {}),
+    ...(cfg.yolo !== undefined ? { yolo: cfg.yolo } : {}),
   });
   cleanup.push(() => binder.close());
   return { binder, store, hub, sessions };
@@ -673,5 +945,337 @@ describe('channel-agent-binder — watchdog + cross-node + interrupt', () => {
     post(store, binder, '@mock hi', ['mock']);
     await waitFor(() => agentReplies(store, 'mock').length === 1);
     await expect(binder.interrupt(CH, 'mock')).rejects.toThrow(); // idle
+  });
+});
+
+// ── #1180 review findings ─────────────────────────────────────────────────────
+
+describe('channel-agent-binder — gateway agent-sender loop brake (P1 #1180)', () => {
+  it('agent-sender posts count toward the cap and pause; a human post resets', async () => {
+    const { binder, store } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    // MAX+1 gateway agent-sender posts: MAX route, the last one pauses. The mock
+    // reply carries no @mention, so ONLY the gateway posts move the counter.
+    for (let i = 0; i < MAX_CONSECUTIVE_AGENT_TURNS + 1; i++) {
+      post(store, binder, `@mock ${i}`, ['mock'], AGENT_SENDER);
+    }
+    await waitFor(() =>
+      systemRows(store).some((m) =>
+        m.body.text.includes('Mention chain paused')
+      )
+    );
+    await waitFor(
+      () => agentReplies(store, 'mock').length === MAX_CONSECUTIVE_AGENT_TURNS
+    );
+    await new Promise((r) => setTimeout(r, 40)); // settle: no capped turn slips
+    expect(agentReplies(store, 'mock')).toHaveLength(
+      MAX_CONSECUTIVE_AGENT_TURNS
+    );
+    expect(
+      systemRows(store).filter((m) =>
+        m.body.text.includes('Mention chain paused')
+      )
+    ).toHaveLength(1);
+
+    // A fresh HUMAN post resets the brake → the chain resumes.
+    const before = agentReplies(store, 'mock').length;
+    post(store, binder, '@mock human', ['mock'], OPERATOR);
+    await waitFor(() => agentReplies(store, 'mock').length === before + 1);
+    expect(agentReplies(store, 'mock').length).toBe(before + 1);
+  });
+
+  it('a mixed human/agent chain only brakes on consecutive agent turns', async () => {
+    const { binder, store } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    // Two agent posts (counter 1,2), then a human post resets, then two more
+    // agent posts (counter 1,2) — never reaches the cap, so no pause row.
+    post(store, binder, '@mock a1', ['mock'], AGENT_SENDER);
+    post(store, binder, '@mock a2', ['mock'], AGENT_SENDER);
+    post(store, binder, '@mock h1', ['mock'], OPERATOR);
+    post(store, binder, '@mock a3', ['mock'], AGENT_SENDER);
+    post(store, binder, '@mock a4', ['mock'], AGENT_SENDER);
+    await waitFor(() => agentReplies(store, 'mock').length === 5);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(agentReplies(store, 'mock')).toHaveLength(5);
+    expect(
+      systemRows(store).filter((m) =>
+        m.body.text.includes('Mention chain paused')
+      )
+    ).toHaveLength(0);
+  });
+});
+
+describe('channel-agent-binder — buildPacket failure recovery (P2 #1180)', () => {
+  it('a store.history throw does not wedge the binding; the next mention routes', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    // Throw once from the packet-fetch history call (the one with `beforeSeq`);
+    // the row helpers (no beforeSeq) pass through so waitFor stays usable.
+    const realHistory = store.history.bind(store);
+    let thrown = false;
+    (store as unknown as { history: ChannelMessageStore['history'] }).history =
+      ((id: string, filter?: Parameters<ChannelMessageStore['history']>[1]) => {
+        if (!thrown && filter && 'beforeSeq' in filter) {
+          thrown = true;
+          throw new Error('db boom');
+        }
+        return realHistory(id, filter);
+      }) as ChannelMessageStore['history'];
+
+    post(store, binder, '@mock one', ['mock']);
+    await waitFor(() =>
+      systemRows(store).some((m) =>
+        m.body.text.includes('could not build the message context')
+      )
+    );
+    // Binding recovered (not stuck turn-active): the next mention delivers.
+    post(store, binder, '@mock two', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(sessions.spawns()).toBe(1); // reused, not respawned/wedged
+    expect(agentReplies(store, 'mock')).toHaveLength(1);
+  });
+});
+
+describe('channel-agent-binder — send-failure rebind clobber guard (P2 #1180)', () => {
+  it('re-enqueues the failed turn instead of clobbering a newer active turn', async () => {
+    const built: DeferredAdapter[] = [];
+    const { binder, store, sessions } = makeBinder({
+      build: (t) => {
+        const a = new DeferredAdapter(t);
+        built.push(a);
+        return a;
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    // M1 → session 1, turn T1 delivered, send parked (pending).
+    const m1 = post(store, binder, '@mock one', ['mock']);
+    await waitFor(() => built.length === 1 && built[0]!.sendCalls.length === 1);
+    const a1 = built[0]!;
+    const t1 = `chturn-${m1.id}-mock`;
+    expect(a1.sendCalls).toEqual([t1]);
+    const sid1 = sessions.firstSessionId();
+
+    // Session dies → binder clears the live entry (activeTurnId reset, row null).
+    sessions.fireEnd(sid1);
+
+    // M2 → fresh session 2, turn T2 delivered, send parked.
+    const m2 = post(store, binder, '@mock two', ['mock']);
+    await waitFor(() => built.length === 2 && built[1]!.sendCalls.length === 1);
+    const a2 = built[1]!;
+    const t2 = `chturn-${m2.id}-mock`;
+    expect(a2.sendCalls).toEqual([t2]);
+
+    // Reject T1's original send: handleSendFailure rebinds → binding with T2
+    // active. The failed turn must NOT clobber T2 with a concurrent send.
+    a1.rejectSend(t1);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(a2.sendCalls).toEqual([t2]); // T1 re-enqueued, not redelivered
+
+    // T2 completes → the re-enqueued T1 drains to the SAME (live) session.
+    a2.completeReply(t2, 'reply two');
+    await waitFor(() => a2.sendCalls.length === 2, 4000);
+    expect(a2.sendCalls[1]).toBe(t1);
+    a2.completeReply(t1, 'reply one');
+    await waitFor(() => agentReplies(store, 'mock').length === 2, 4000);
+  });
+});
+
+describe('channel-agent-binder — close() gates in-flight spawns (P2 #1180)', () => {
+  it('close() racing an in-flight ensureBinding leaves no binding and no store write', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      gate,
+    });
+    const pending = binder.ensureBinding(CH, 'mock');
+    await waitFor(() => sessions.spawns() === 1); // createWeb parked at the gate
+    binder.close();
+    releaseGate(); // spawn resolves AFTER close
+    await expect(pending).rejects.toThrow(); // BinderClosedError — no attach
+    expect(store.getBinding(CH, 'mock')?.sessionId ?? null).toBeNull();
+    expect(systemRows(store)).toHaveLength(0); // no post-close store writes
+  });
+});
+
+describe('channel-agent-binder — YOLO spawn permission mode (locked decision #1167)', () => {
+  it('binder spawns pass permissionMode bypassPermissions when the yolo default is on', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      // yolo omitted → defaults to CHANNEL_BINDING_YOLO_DEFAULT.
+    });
+    post(store, binder, '@mock hi', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    expect(CHANNEL_BINDING_YOLO_DEFAULT).toBe(true);
+    expect(sessions.lastCreateParams()?.permissionMode).toBe(
+      'bypassPermissions'
+    );
+  });
+
+  it('binder spawns omit permissionMode when yolo is disabled (framework default)', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      yolo: false,
+    });
+    post(store, binder, '@mock hi', ['mock']);
+    await waitFor(() => sessions.spawns() === 1);
+    expect(sessions.lastCreateParams()).toBeDefined();
+    expect(sessions.lastCreateParams()!.permissionMode).toBeUndefined();
+  });
+
+  it('the shared createWebSession path does NOT default permissionMode (no yolo leak)', async () => {
+    const map = new Map<string, Session>();
+    const { session } = await createWebSession(
+      {
+        agentType: 'mock',
+        cwd: '/tmp',
+        displayName: 'normal',
+        port: 0,
+        configDir: '/tmp',
+      },
+      map,
+      () => {},
+      { skipInitialPersist: true }
+    );
+    expect(session.agentSessionV2.config.permissionMode).toBeUndefined();
+  });
+
+  it('the shared createWebSession path plumbs bypassPermissions through when passed', async () => {
+    const map = new Map<string, Session>();
+    const { session } = await createWebSession(
+      {
+        agentType: 'mock',
+        cwd: '/tmp',
+        displayName: 'yolo',
+        port: 0,
+        configDir: '/tmp',
+        permissionMode: 'bypassPermissions',
+      },
+      map,
+      () => {},
+      { skipInitialPersist: true }
+    );
+    expect(session.agentSessionV2.config.permissionMode).toBe(
+      'bypassPermissions'
+    );
+  });
+});
+
+describe('channel-agent-binder — approval round-trip + watchdog pause (Amendment 2 #1180)', () => {
+  it('approval item posts a meta-tagged system row; the respond verb maps the decision and resolves', async () => {
+    const built: ApprovalAdapter[] = [];
+    const { binder, store, sessions } = makeBinder({
+      build: (t) => {
+        const a = new ApprovalAdapter(t);
+        built.push(a);
+        return a;
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    const trigger = post(store, binder, '@mock please approve', ['mock']);
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('requests approval'))
+    );
+    const turnId = `chturn-${trigger.id}-mock`;
+    const requestId = `appr-${turnId}`;
+    const approvalRow = systemRows(store).find((m) =>
+      m.body.text.includes('requests approval')
+    )!;
+    expect(approvalRow.meta).toMatchObject({
+      approvalRequestId: requestId,
+      agentId: 'mock',
+    });
+    expect(approvalRow.meta?.['sessionId']).toBe(sessions.firstSessionId());
+
+    const a = built[0]!;
+    await binder.respondToApproval(CH, 'mock', requestId, { kind: 'accept' });
+    // Adapter received the mapped decision.
+    expect(a.respondCalls).toHaveLength(1);
+    expect(a.respondCalls[0]).toMatchObject({
+      requestId,
+      decision: { kind: 'accept' },
+    });
+    // Row updated (resolved-approval system row) + the streamed reply.
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('approval accept'))
+    );
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(agentReplies(store, 'mock')[0]!.body.text).toBe('approved and done');
+  });
+
+  it('the watchdog is PAUSED while waitingOn is set (turn not force-drained) and resumes on approval', async () => {
+    const built: ApprovalAdapter[] = [];
+    const { binder, store } = makeBinder({
+      build: (t) => {
+        const a = new ApprovalAdapter(t);
+        built.push(a);
+        return a;
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 25,
+    });
+    const t1msg = post(store, binder, '@mock approve one', ['mock']);
+    await waitFor(() => built.length === 1 && built[0]!.sendCalls.length === 1);
+    const a = built[0]!;
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('requests approval'))
+    );
+    post(store, binder, '@mock two', ['mock']); // queues behind the parked turn
+    // Well past the 25ms watchdog: a fired watchdog would finishTurn → pump → T2.
+    await new Promise((r) => setTimeout(r, 90));
+    expect(a.sendCalls).toHaveLength(1); // PAUSED: T2 not pumped
+
+    const requestId = `appr-chturn-${t1msg.id}-mock`;
+    await binder.respondToApproval(CH, 'mock', requestId, { kind: 'accept' });
+    await waitFor(() => a.sendCalls.length === 2, 4000); // resumes → T2 drains
+    expect(a.sendCalls).toHaveLength(2);
+  });
+
+  it('an approval that never resolves is still recoverable via interrupt', async () => {
+    const built: ApprovalAdapter[] = [];
+    const { binder, store } = makeBinder({
+      build: (t) => {
+        const a = new ApprovalAdapter(t);
+        built.push(a);
+        return a;
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 10_000, // watchdog never fires in-window: recovery is via interrupt
+    });
+    post(store, binder, '@mock approve stuck', ['mock']);
+    await waitFor(() => built.length === 1 && built[0]!.sendCalls.length === 1);
+    const a = built[0]!;
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('requests approval'))
+    );
+    post(store, binder, '@mock next', ['mock']); // queues behind the stuck turn
+    await new Promise((r) => setTimeout(r, 30));
+    expect(a.sendCalls).toHaveLength(1);
+
+    await binder.interrupt(CH, 'mock'); // operator recovery
+    await waitFor(() => a.sendCalls.length === 2, 4000); // parked turn drained
+    expect(a.interruptCalls).toHaveLength(1);
+    expect(a.sendCalls).toHaveLength(2);
   });
 });

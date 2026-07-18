@@ -39,6 +39,24 @@ function senderLabel(message: ChannelMessage): string {
   return message.sender.displayName ?? message.sender.id;
 }
 
+/**
+ * Trigger-footer attribution: unambiguously marks whether the mention was
+ * authored by a human or another agent (and which one). A bare display name is
+ * forgeable/ambiguous — a human named "claude" reads identically to the claude
+ * agent — so the receiving agent cannot tell a human mention from an
+ * agent-authored one without this tag (§4/§5 attribution promise, #1167 P2).
+ */
+function triggerAttribution(message: ChannelMessage): string {
+  const label = senderLabel(message);
+  if (message.sender.kind === 'agent') {
+    return `${label} [agent:${message.sender.providerId ?? message.sender.id}]`;
+  }
+  if (message.sender.kind === 'system') {
+    return `${label} [system]`;
+  }
+  return `${label} [human]`;
+}
+
 /** Render one row as `label: text`, agent-tagged, with multi-line bodies indented. */
 function renderRow(message: ChannelMessage): string {
   const truncated =
@@ -106,7 +124,7 @@ export function buildMentionContextPacket(
     contextRows = contextRows.slice(contextRows.length - PACKET_MAX_ROWS);
   }
 
-  const triggerLabel = senderLabel(input.trigger);
+  const triggerLabel = triggerAttribution(input.trigger);
   const triggerText =
     input.trigger.body.text.length > PACKET_ROW_MAX_CHARS
       ? input.trigger.body.text.slice(0, PACKET_ROW_MAX_CHARS) +

@@ -4,15 +4,28 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import express from 'express';
+import type { RequestHandler } from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   attachAuthenticatedCliGatewayActorCredential,
+  bearerActorToken,
+  classifyCliGatewayCredentialLane,
   cliGatewayActorCommandCapabilities,
+  cliGatewayActorFailure,
+  createCliGatewayActorRegistry,
+  isCliGatewayActorTokenRequest,
+  issueCliGatewayActorCredential,
+  sendCliGatewayActorFailure,
+  validateCliGatewayActorCredential,
   CLI_GATEWAY_ACTOR_READ_COMMANDS,
   CLI_GATEWAY_ACTOR_WRITE_COMMANDS,
+  type CliGatewayActorCommand,
 } from '../server/cli-gateway-actor-auth.js';
-import type { ScopedActorCredentialRecord } from '../shared/scoped-actor-credentials.js';
+import type {
+  ScopedActorCredentialRecord,
+  ScopedActorCredentialRegistry,
+} from '../shared/scoped-actor-credentials.js';
 import {
   createChannelMessageStore,
   type ChannelMessageStore,
@@ -164,9 +177,57 @@ function makeSessions(
   };
 }
 
+/**
+ * The REAL scoped-actor auth composition (bearer token → lane classify →
+ * validate → attach), mirroring `requireCliGatewayActorAuth` in server/index.ts.
+ * No fabricated credential: the router only sees a credential the registry
+ * actually minted and validated.
+ */
+function realActorAuthDeps(registry: ScopedActorCredentialRegistry): {
+  requireReadActorAuth: (command: CliGatewayActorCommand) => RequestHandler;
+  requireWriteActorAuth: (command: CliGatewayActorCommand) => RequestHandler;
+} {
+  const make =
+    (expectedCommand: CliGatewayActorCommand): RequestHandler =>
+    (req, res, next) => {
+      if (!isCliGatewayActorTokenRequest(req)) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED' } });
+        return;
+      }
+      const lane = classifyCliGatewayCredentialLane(req, expectedCommand);
+      if (lane !== 'scoped-actor-credential') {
+        sendCliGatewayActorFailure(res, cliGatewayActorFailure({ lane }));
+        return;
+      }
+      const validation = validateCliGatewayActorCredential(registry, {
+        token: bearerActorToken(req),
+        capabilities: cliGatewayActorCommandCapabilities(expectedCommand),
+      });
+      if ('reason' in validation) {
+        sendCliGatewayActorFailure(
+          res,
+          cliGatewayActorFailure({
+            reason: validation.reason,
+            ...(validation.deniedBits
+              ? { deniedBits: validation.deniedBits }
+              : {}),
+          })
+        );
+        return;
+      }
+      attachAuthenticatedCliGatewayActorCredential(req, validation.credential);
+      next();
+    };
+  return {
+    requireReadActorAuth: (command) => make(command),
+    requireWriteActorAuth: (command) => make(command),
+  };
+}
+
 async function harness(
   build: (agentType: string) => ProtocolAdapterV2 = () =>
-    new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 })
+    new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+  opts: { actorRegistry?: ScopedActorCredentialRegistry } = {}
 ): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-mention-e2e-'));
   cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -200,17 +261,20 @@ async function harness(
 
   const app = express();
   app.use(express.json());
-  app.use((req, _res, next) => {
-    const actorId = req.header('x-test-actor-id');
-    if (actorId) {
-      attachAuthenticatedCliGatewayActorCredential(req, {
-        id: 'cred-1',
-        actor: { type: 'agent', id: actorId, displayName: actorId },
-        capabilities: ['context:read', 'context:write'],
-      } as unknown as ScopedActorCredentialRecord);
-    }
-    next();
-  });
+  if (!opts.actorRegistry) {
+    // Fabricated-credential fast path used by the routing-parity tests.
+    app.use((req, _res, next) => {
+      const actorId = req.header('x-test-actor-id');
+      if (actorId) {
+        attachAuthenticatedCliGatewayActorCredential(req, {
+          id: 'cred-1',
+          actor: { type: 'agent', id: actorId, displayName: actorId },
+          capabilities: ['context:read', 'context:write'],
+        } as unknown as ScopedActorCredentialRecord);
+      }
+      next();
+    });
+  }
   app.use(
     createChannelChatRouter({
       store,
@@ -218,6 +282,7 @@ async function harness(
       topicStore,
       binder,
       knownProviderIds: ['mock', 'claude', 'codex', 'opencode', 'hermes'],
+      ...(opts.actorRegistry ? realActorAuthDeps(opts.actorRegistry) : {}),
     })
   );
   const server = http.createServer(app);
@@ -385,6 +450,88 @@ describe('mention routing — end-to-end via the router', () => {
     });
     expect(res.status).toBe(409);
     expect(res.body.error.details?.reasonCode).toBe('NO_ACTIVE_TURN');
+  });
+});
+
+describe('mention routing — real scoped-actor auth composition (P2 #1180)', () => {
+  it('a real minted actor token authenticates, routes @mock, and is braked as an agent sender', async () => {
+    // Mint a REAL credential in the registry the auth middleware validates
+    // against — no fabricated record, the full bearer→validate→attach path runs.
+    const registry = createCliGatewayActorRegistry();
+    // Mirrors the shipped mail-loop credential: session:read stamps the read
+    // task-ref (giving a non-empty scope), context:write authorizes channels.post.
+    const issued = issueCliGatewayActorCredential(registry, {
+      actor: { type: 'agent', id: 'orchestrator', displayName: 'orchestrator' },
+      capabilities: ['session:read', 'context:read', 'context:write'],
+    });
+    const h = await harness(undefined, { actorRegistry: registry });
+    const actorHeaders = {
+      authorization: `Bearer ${issued.token}`,
+      'x-relay-cli-actor-token': 'v1',
+      'x-relay-cli-command': 'channels.post',
+    };
+    const postOnce = (text: string) =>
+      req<{ message: ChannelMessage }>({
+        port: h.port,
+        method: 'POST',
+        url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+        body: { text },
+        headers: actorHeaders,
+      });
+
+    // First post: server-derived agent attribution from the validated credential.
+    const first = await postOnce('@mock brief 0');
+    expect(first.status).toBe(201);
+    expect(first.body.message.sender).toMatchObject({
+      kind: 'agent',
+      id: 'agent:orchestrator',
+    });
+    // Routing works through the real auth lane.
+    await waitFor(() => agentReply(h.store, h.channelId).length >= 1);
+    expect(agentReply(h.store, h.channelId)[0]!.sender.id).toBe('agent:mock');
+
+    // Brake accounting: further agent-sender posts count toward the cap. Posting
+    // past MAX trips the pause row — a browser (human) sender never would, proving
+    // the actor post is accounted as an agent turn end-to-end.
+    for (let i = 1; i <= 4; i++) {
+      const res = await postOnce(`@mock brief ${i}`);
+      expect(res.status).toBe(201);
+    }
+    await waitFor(() =>
+      h.store
+        .history(h.channelId, { limit: 200 })
+        .some(
+          (m) =>
+            m.kind === 'system' && m.body.text.includes('Mention chain paused')
+        )
+    );
+    const paused = h.store
+      .history(h.channelId, { limit: 200 })
+      .filter(
+        (m) =>
+          m.kind === 'system' && m.body.text.includes('Mention chain paused')
+      );
+    expect(paused).toHaveLength(1);
+  });
+
+  it('rejects a bogus bearer token (no fabricated credential accepted)', async () => {
+    const registry = createCliGatewayActorRegistry();
+    const h = await harness(undefined, { actorRegistry: registry });
+    const res = await req<{ error: { code: string } }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      body: { text: '@mock hello' },
+      headers: {
+        authorization: 'Bearer relay-sac-v1.not-a-real-token',
+        'x-relay-cli-actor-token': 'v1',
+        'x-relay-cli-command': 'channels.post',
+      },
+    });
+    expect(res.status).toBeGreaterThanOrEqual(401);
+    expect(res.status).toBeLessThan(404);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(agentReply(h.store, h.channelId)).toHaveLength(0); // never routed
   });
 });
 

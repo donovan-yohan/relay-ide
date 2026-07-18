@@ -193,6 +193,19 @@ export class ChannelAgentNoActiveTurnError extends Error {
   }
 }
 
+/**
+ * Thrown from an in-flight `doEnsureBinding` continuation that resumes AFTER
+ * `close()`. It aborts the spawn/attach/store-write path so shutdown never
+ * re-populates the cleared maps, arms a fresh watchdog, or writes to a closing
+ * store. Callers swallow it silently (no system row) — it is a shutdown signal.
+ */
+class BinderClosedError extends Error {
+  constructor() {
+    super('channel agent binder is closed');
+    this.name = 'BinderClosedError';
+  }
+}
+
 const SYSTEM_SENDER = { kind: 'system', id: 'system' } as const;
 
 function bindingKey(channelId: string, framework: string): string {
@@ -396,6 +409,7 @@ export function createChannelAgentBinder(
     channelId: string,
     framework: string
   ): Promise<LiveBinding> {
+    if (closed) throw new BinderClosedError();
     const key = bindingKey(channelId, framework);
     const displayName = displayNameFor(channelId, framework);
 
@@ -452,6 +466,9 @@ export function createChannelAgentBinder(
         `@${framework} failed to start: ${errText(err)}`
       );
     }
+    // close() may have raced the spawn await: abort before we attach a bridge,
+    // arm listeners, or write to a closing store (Amendment: shutdown contract).
+    if (closed) throw new BinderClosedError();
     const binding = attachSession(
       channelId,
       framework,
@@ -532,10 +549,27 @@ export function createChannelAgentBinder(
     const adapter = binding.adapter;
     if (!adapter) return;
     const turnId = `chturn-${trigger.id}-${binding.framework}`;
+    // Build the packet BEFORE mutating any binding state: buildPacket does
+    // synchronous SQLite work (getBinding/history) that can throw. If it did so
+    // AFTER activeTurnId was set (and before the watchdog armed), the binding
+    // wedged 'turn-active' forever with no in-flight turn — the queue filled and
+    // every later mention dropped. On a throw we surface a row and keep draining.
+    let content: string;
+    try {
+      content = buildPacket(binding, trigger);
+    } catch (err) {
+      logger.warn('channel binder packet build failed:', err);
+      postSystemRow(
+        binding.channelId,
+        `@${binding.framework} could not build the message context: ${errText(err)}`
+      );
+      pump(binding); // activeTurnId is still null — keep the queue draining
+      return;
+    }
     binding.activeTurnId = turnId;
     binding.sawStream = false;
     binding.waitingOn = null;
-    binding.activeContent = buildPacket(binding, trigger);
+    binding.activeContent = content;
     setStatus(binding, 'thinking');
     armWatchdog(binding);
     deliver(binding, adapter, turnId, trigger);
@@ -561,6 +595,7 @@ export function createChannelAgentBinder(
   }
 
   function advanceCursor(binding: LiveBinding, triggerSeq: number): void {
+    if (closed) return; // never write to a closing store from an in-flight send
     // Cursor advances only on send acceptance (§4): a failed send re-offers the
     // rows next mention (at-least-once). Never lower the cursor.
     try {
@@ -587,6 +622,7 @@ export function createChannelAgentBinder(
     turnId: string,
     err: unknown
   ): Promise<void> {
+    if (closed) return; // shutdown in progress — no rows, no re-delivery
     // A rejected sendMessage means the turn was NEVER accepted (Amendment 3), so
     // a single retry-after-rebind is safe — covers dead legacy-bridge transports.
     if (!binding.retriedTurns.has(turnId)) {
@@ -596,15 +632,20 @@ export function createChannelAgentBinder(
           binding.channelId,
           binding.framework
         );
+        if (closed) return;
         if (rebound.adapter && rebound.activeTurnId === turnId) {
+          // Same binding still owns this turn — redeliver identical content.
           deliver(rebound, rebound.adapter, turnId, trigger);
           return;
         }
         if (rebound.adapter) {
-          rebound.activeTurnId = turnId;
-          rebound.activeContent = binding.activeContent;
-          armWatchdog(rebound);
-          deliver(rebound, rebound.adapter, turnId, trigger);
+          // The binding was rebound to a fresh/different session (e.g. after the
+          // failed send tore the session down). A NEWER turn may already be
+          // active on it — never clobber it. Re-enqueue (cap-respecting): pump
+          // delivers when the binding is free, and sendTurn re-establishes the
+          // status/sawStream/watchdog for the retried turn instead of the
+          // fallback overwriting an in-flight turn's lifecycle tracking.
+          enqueueTurn(rebound, trigger);
           return;
         }
       } catch {
@@ -735,6 +776,7 @@ export function createChannelAgentBinder(
     void (async () => {
       try {
         const target = await resolveTarget(framework);
+        if (closed) return; // close() raced the availability probe
         if (!target) return; // not a known framework — ignore silently
         if (!target.available) {
           postUnavailableRow(
@@ -748,6 +790,7 @@ export function createChannelAgentBinder(
         try {
           binding = await ensureBinding(trigger.channelId, framework);
         } catch (err) {
+          if (err instanceof BinderClosedError) return; // shutdown — silent
           if (err instanceof ChannelBindingError) {
             if (err.unavailable) {
               postUnavailableRow(
@@ -762,8 +805,10 @@ export function createChannelAgentBinder(
           }
           throw err;
         }
+        if (closed) return; // never enqueue/spawn a turn after close()
         enqueueTurn(binding, trigger);
       } catch (err) {
+        if (closed || err instanceof BinderClosedError) return;
         logger.warn('channel binder route failed:', err);
       }
     })();
@@ -787,32 +832,19 @@ export function createChannelAgentBinder(
     return out;
   }
 
-  function handleMessagePosted(
-    message: ChannelMessage,
-    mentions: ChannelMention[]
-  ): void {
-    if (closed) return;
-    if (message.kind !== 'message') return; // system rows never route (§1)
-    // Both browser-human and CLI-gateway-actor posts arrive here (postToChannel
-    // fires onMessagePosted for both). Treat every externally-injected post as a
-    // human turn for the loop brake: it resets the consecutive-agent counter and
-    // routes identically — the dogfood requirement (@claude via gateway ==
-    // browser). Only bound-session replies (handleAssistantFinalized) count.
-    consecutiveAgentTurns.set(message.channelId, 0);
-    for (const framework of eligibleFrameworks(message, mentions)) {
-      routeOne(message, framework);
-    }
-  }
-
-  function handleAssistantFinalized(message: ChannelMessage): void {
-    if (closed) return;
-    const mentions = parseMentions(message.body.text, deps.knownProviderIds);
-    const frameworks = eligibleFrameworks(message, mentions);
+  /**
+   * Route an AGENT-authored turn's mentions under the consecutive-agent brake
+   * (Amendment 5): each routed mention counts toward MAX_CONSECUTIVE_AGENT_TURNS
+   * and the chain pauses (with a system row) once the cap is reached. Shared by
+   * bound-session replies AND gateway-agent posts so neither can escape the
+   * token-spend guard between human turns.
+   */
+  function routeWithBrake(message: ChannelMessage, frameworks: string[]): void {
     for (const framework of frameworks) {
       const count = consecutiveAgentTurns.get(message.channelId) ?? 0;
       if (count >= MAX_CONSECUTIVE_AGENT_TURNS) {
-        // Consecutive-agent-turn brake (Amendment 5): bounds total agent-token
-        // spend between human turns. Reset happens on the next human/gateway post.
+        // Bounds total agent-token spend between human turns. Reset happens on
+        // the next human (browser / gateway-human) post.
         postSystemRow(
           message.channelId,
           `Mention chain paused — ${count} agent turns without a human.`
@@ -822,6 +854,41 @@ export function createChannelAgentBinder(
       consecutiveAgentTurns.set(message.channelId, count + 1);
       routeOne(message, framework);
     }
+  }
+
+  function handleMessagePosted(
+    message: ChannelMessage,
+    mentions: ChannelMention[]
+  ): void {
+    if (closed) return;
+    if (message.kind !== 'message') return; // system rows never route (§1)
+    // Both browser-human and CLI-gateway-actor posts arrive here (postToChannel
+    // fires onMessagePosted for both). Routing is IDENTICAL for both (locked
+    // decision: @claude via gateway == browser). The loop brake, however, keys
+    // off the server-derived sender kind — never the transport:
+    //   • human sender (browser cookie lane, or a gateway actor that maps to a
+    //     human operator) → resets the consecutive-agent counter, routes freely.
+    //   • agent sender (deriveSender kind 'agent', incl. CLI-gateway actor posts
+    //     — the shipped agent-mail loop) → an agent-authored turn: it INCREMENTS
+    //     the counter and is subject to the cap, exactly like a bound reply.
+    // Without this a bound agent posting via `relay-ide v1 channels.post` would
+    // both bypass the increment AND reset the brake, defeating the sole
+    // token-spend guard between human turns (#1167 P1).
+    const frameworks = eligibleFrameworks(message, mentions);
+    if (message.sender.kind === 'agent') {
+      routeWithBrake(message, frameworks);
+      return;
+    }
+    consecutiveAgentTurns.set(message.channelId, 0);
+    for (const framework of frameworks) {
+      routeOne(message, framework);
+    }
+  }
+
+  function handleAssistantFinalized(message: ChannelMessage): void {
+    if (closed) return;
+    const mentions = parseMentions(message.body.text, deps.knownProviderIds);
+    routeWithBrake(message, eligibleFrameworks(message, mentions));
   }
 
   // ── session death ───────────────────────────────────────────────────────────

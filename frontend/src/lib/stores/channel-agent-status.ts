@@ -19,6 +19,13 @@ interface ChannelAgentStatusState {
   statusByChannelAgent: Record<string, ChannelAgentStatus>;
   /** Backing session id per `${channelId} ${agentId}` (null when unbound). */
   sessionByChannelAgent: Record<string, string | null>;
+  /**
+   * Wall-clock time (ms) of the last live transition per `${channelId}
+   * ${agentId}`. Compared against the roster query's `dataUpdatedAt` so a fresh
+   * roster snapshot can win over a stale socket status the client never saw go
+   * idle (reconnect / tab-sleep dropped the terminal transition — #1167).
+   */
+  updatedAtByChannelAgent: Record<string, number>;
   /** Record a live status transition for an agent in a channel. */
   recordStatus: (
     channelId: string,
@@ -30,10 +37,15 @@ interface ChannelAgentStatusState {
   clearChannel: (channelId: string) => void;
 }
 
+/** Injectable clock (overridable in tests). */
+const nowMs = (): number =>
+  typeof Date.now === 'function' ? Date.now() : new Date().getTime();
+
 export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
   (set) => ({
     statusByChannelAgent: {},
     sessionByChannelAgent: {},
+    updatedAtByChannelAgent: {},
     recordStatus: (channelId, agentId, status, sessionId) =>
       set((state) => {
         const key = channelAgentStatusKey(channelId, agentId);
@@ -52,6 +64,10 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
             ...state.sessionByChannelAgent,
             [key]: sessionId,
           },
+          updatedAtByChannelAgent: {
+            ...state.updatedAtByChannelAgent,
+            [key]: nowMs(),
+          },
         };
       }),
     clearChannel: (channelId) =>
@@ -59,6 +75,7 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
         const prefix = `${channelId} `;
         const status: Record<string, ChannelAgentStatus> = {};
         const session: Record<string, string | null> = {};
+        const updatedAt: Record<string, number> = {};
         let changed = false;
         for (const [key, value] of Object.entries(state.statusByChannelAgent)) {
           if (key.startsWith(prefix)) changed = true;
@@ -69,11 +86,51 @@ export const useChannelAgentStatusStore = create<ChannelAgentStatusState>(
         )) {
           if (!key.startsWith(prefix)) session[key] = value;
         }
+        for (const [key, value] of Object.entries(
+          state.updatedAtByChannelAgent
+        )) {
+          if (!key.startsWith(prefix)) updatedAt[key] = value;
+        }
         if (!changed) return state;
         return {
           statusByChannelAgent: status,
           sessionByChannelAgent: session,
+          updatedAtByChannelAgent: updatedAt,
         };
       }),
   })
 );
+
+/**
+ * Reconcile a live socket status with a freshly-fetched roster snapshot. The
+ * socket carries transition-only events (no replay on `/ws/events` reconnect),
+ * so a missed terminal 'idle' would otherwise pin the header chip at
+ * thinking/streaming/waiting forever. Resolution:
+ *   • socket wins ONLY when its last transition is at least as new as the roster
+ *     snapshot (a genuine live update the roster hasn't observed yet);
+ *   • otherwise the roster snapshot is authoritative (fixes the stuck-busy case);
+ *   • reducer-derived streaming still upgrades a resolved idle (graceful degrade
+ *     when the events socket lags), never downgrades.
+ */
+export function resolveEffectiveAgentStatus(input: {
+  socketStatus: ChannelAgentStatus | undefined;
+  socketUpdatedAt: number | undefined;
+  rosterStatus: ChannelAgentStatus | undefined;
+  rosterUpdatedAt: number;
+  streaming: boolean;
+}): ChannelAgentStatus {
+  const { socketStatus, socketUpdatedAt, rosterStatus, rosterUpdatedAt } =
+    input;
+  let status: ChannelAgentStatus;
+  if (
+    socketStatus !== undefined &&
+    socketUpdatedAt !== undefined &&
+    socketUpdatedAt >= rosterUpdatedAt
+  ) {
+    status = socketStatus;
+  } else {
+    status = rosterStatus ?? 'idle';
+  }
+  if (status === 'idle' && input.streaming) status = 'streaming';
+  return status;
+}

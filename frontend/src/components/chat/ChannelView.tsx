@@ -24,6 +24,7 @@ import {
 } from '../../lib/stores/channel-activity.js';
 import {
   channelAgentStatusKey,
+  resolveEffectiveAgentStatus,
   useChannelAgentStatusStore,
 } from '../../lib/stores/channel-agent-status.js';
 import { useUiStore } from '../../lib/stores/ui.js';
@@ -156,6 +157,20 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     retry: false,
   });
   const statusMap = useChannelAgentStatusStore((s) => s.statusByChannelAgent);
+  const statusUpdatedAtMap = useChannelAgentStatusStore(
+    (s) => s.updatedAtByChannelAgent
+  );
+
+  // On channel switch, drop this channel's per-agent socket statuses so the
+  // freshly-fetched roster is authoritative on open; live transitions repopulate
+  // as they arrive. Without this the previously dead `clearChannel` reconciliation
+  // never ran and a stale busy chip could survive a channel round-trip (#1167).
+  useEffect(() => {
+    const { clearChannel } = useChannelAgentStatusStore.getState();
+    clearChannel(channelId);
+    return () => clearChannel(channelId);
+  }, [channelId]);
+
   const streamingProviderIds = useMemo(() => {
     const ids = new Set<string>();
     for (const message of reducer.messages) {
@@ -168,39 +183,57 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     return ids;
   }, [reducer.messages]);
 
+  const rosterUpdatedAt = rosterChipsQuery.dataUpdatedAt;
   const agentChips = useMemo(() => {
     const roster = rosterChipsQuery.data ?? [];
     const rosterById = new Map(roster.map((entry) => [entry.id, entry]));
-    const agentIds = new Set<string>();
+    const candidateIds = new Set<string>();
     for (const entry of roster) {
-      if (entry.binding != null) agentIds.add(entry.id);
+      if (entry.binding != null) candidateIds.add(entry.id);
     }
     const prefix = `${channelId} `;
-    for (const [key, status] of Object.entries(statusMap)) {
-      if (key.startsWith(prefix) && status !== 'idle') {
-        agentIds.add(key.slice(prefix.length));
-      }
+    for (const key of Object.keys(statusMap)) {
+      if (key.startsWith(prefix)) candidateIds.add(key.slice(prefix.length));
     }
-    for (const providerId of streamingProviderIds) agentIds.add(providerId);
+    for (const providerId of streamingProviderIds) candidateIds.add(providerId);
 
-    return [...agentIds].map((agentId) => {
+    const chips: Array<{
+      agentId: string;
+      status: ChannelAgentStatus;
+      identity: ReturnType<typeof resolveSenderIdentity>;
+    }> = [];
+    for (const agentId of candidateIds) {
       const entry = rosterById.get(agentId);
-      let status: ChannelAgentStatus =
-        statusMap[channelAgentStatusKey(channelId, agentId)] ??
-        entry?.binding?.status ??
-        'idle';
-      // Reducer-derived streaming beats a stale idle/missing socket status.
-      if (status === 'idle' && streamingProviderIds.has(agentId))
-        status = 'streaming';
+      const key = channelAgentStatusKey(channelId, agentId);
+      const streaming = streamingProviderIds.has(agentId);
+      const status = resolveEffectiveAgentStatus({
+        socketStatus: statusMap[key],
+        socketUpdatedAt: statusUpdatedAtMap[key],
+        rosterStatus: entry?.binding?.status,
+        rosterUpdatedAt,
+        streaming,
+      });
+      // Show a chip for a bound agent (even when idle) or one that is currently
+      // active/streaming — but drop an unbound agent whose only signal is a stale
+      // socket status the roster has since superseded to idle.
+      if (entry?.binding == null && status === 'idle' && !streaming) continue;
       const identity = resolveSenderIdentity({
         kind: 'agent',
         id: `agent:${agentId}`,
         providerId: agentId,
         ...(entry?.displayName ? { displayName: entry.displayName } : {}),
       });
-      return { agentId, status, identity };
-    });
-  }, [rosterChipsQuery.data, statusMap, streamingProviderIds, channelId]);
+      chips.push({ agentId, status, identity });
+    }
+    return chips;
+  }, [
+    rosterChipsQuery.data,
+    rosterUpdatedAt,
+    statusMap,
+    statusUpdatedAtMap,
+    streamingProviderIds,
+    channelId,
+  ]);
 
   const handleInterruptAgent = useCallback(
     (agentId: string) => {
