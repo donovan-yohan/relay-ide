@@ -596,12 +596,28 @@ export function createChannelAgentBinder(
       typeof row?.providerSession['lastDeliveredSeq'] === 'number'
         ? (row.providerSession['lastDeliveredSeq'] as number)
         : 0;
-    const rows = store
-      .history(binding.channelId, {
+    let rows: ChannelMessage[];
+    if (trigger.threadId !== null) {
+      rows = store.threadHistory(binding.channelId, trigger.threadId, {
         beforeSeq: trigger.seq,
         limit: PACKET_FETCH_WINDOW,
-      })
-      .filter((r) => r.seq < trigger.seq);
+      });
+      // A bounded newest-first page may omit the load-bearing root. Reinsert it
+      // through the existing point-read lane; the builder preserves it through
+      // row and byte trimming.
+      const root = store.getMessage(trigger.threadId);
+      if (root) rows.push(root);
+      rows = [...new Map(rows.map((message) => [message.id, message])).values()]
+        .filter((message) => message.seq < trigger.seq)
+        .sort((a, b) => a.seq - b.seq);
+    } else {
+      rows = store
+        .history(binding.channelId, {
+          beforeSeq: trigger.seq,
+          limit: PACKET_FETCH_WINDOW,
+        })
+        .filter((r) => r.seq < trigger.seq);
+    }
     return buildMentionContextPacket({
       channelTitle: title,
       framework: binding.framework,
@@ -671,12 +687,16 @@ export function createChannelAgentBinder(
         // only — no adapter dedupes on it today.
         clientMessageId: `${trigger.id}:${binding.framework}`,
       })
-      .then(() => advanceCursor(binding, trigger.seq))
+      .then(() => advanceCursor(binding, trigger))
       .catch((err) => handleSendFailure(binding, trigger, turnId, err));
   }
 
-  function advanceCursor(binding: LiveBinding, triggerSeq: number): void {
+  function advanceCursor(binding: LiveBinding, trigger: ChannelMessage): void {
     if (closed) return; // never write to a closing store from an in-flight send
+    // Thread packets deliberately ignore the channel-global cursor. Advancing it
+    // here would make a later top-level mention skip intervening channel rows.
+    if (trigger.threadId !== null) return;
+    const triggerSeq = trigger.seq;
     // Cursor advances only on send acceptance (§4): a failed send re-offers the
     // rows next mention (at-least-once). Never lower the cursor.
     try {

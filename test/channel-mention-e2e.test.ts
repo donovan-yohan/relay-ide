@@ -380,14 +380,28 @@ describe('mention routing — end-to-end via the router', () => {
     expect(agentReply(h.store, h.channelId)[0]!.sender.id).toBe('agent:mock');
   });
 
-  it('a mock agent reply to a threaded mention stays in that thread', async () => {
-    const h = await harness();
+  it('a threaded mention receives only thread context and replies in that thread', async () => {
+    const h = await harness(
+      (agentType) => new RecordingAdapter(agentType, 'thread ack')
+    );
     const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
     const root = await req<{ message: ChannelMessage }>({
       port: h.port,
       method: 'POST',
       url,
       body: { text: 'root discussion' },
+    });
+    await req({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'unrelated top-level update' },
+    });
+    await req({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'prior thread detail', threadId: root.body.message.id },
     });
     const trigger = await req<{ message: ChannelMessage }>({
       port: h.port,
@@ -399,10 +413,84 @@ describe('mention routing — end-to-end via the router', () => {
     expect(trigger.body.message.threadId).toBe(root.body.message.id);
 
     await waitFor(() => agentReply(h.store, h.channelId).length === 1);
+    const adapter = h.adapters()[0] as RecordingAdapter;
+    expect(adapter.contents).toHaveLength(1);
+    expect(adapter.contents[0]).toContain(
+      '[Thread scope — only this thread is shown; its root message is always included]'
+    );
+    expect(adapter.contents[0]).toContain('root discussion');
+    expect(adapter.contents[0]).toContain('prior thread detail');
+    expect(adapter.contents[0]).not.toContain('unrelated top-level update');
     const reply = agentReply(h.store, h.channelId)[0]!;
     expect(reply.sender.id).toBe('agent:mock');
+    expect(reply.body.text).toBe('thread ack');
     expect(reply.threadId).toBe(root.body.message.id);
     expect(reply.parentMessageId).toBe(trigger.body.message.id);
+
+    // Thread delivery must not advance the channel-global cursor. Otherwise a
+    // later top-level mention would silently skip intervening channel rows.
+    expect(
+      h.store.getBinding(h.channelId, 'mock')?.providerSession[
+        'lastDeliveredSeq'
+      ]
+    ).toBeUndefined();
+    await req({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: '@mock now answer at top level' },
+    });
+    await waitFor(() => adapter.contents.length === 2);
+    expect(adapter.contents[1]).toContain('unrelated top-level update');
+    expect(adapter.contents[1]).not.toContain('[Thread scope —');
+    await waitFor(() => agentReply(h.store, h.channelId).length === 2);
+    expect(agentReply(h.store, h.channelId)[1]!.threadId).toBeNull();
+  });
+
+  it('a long thread packet reinserts its root and keeps the newest replies', async () => {
+    const h = await harness(
+      (agentType) => new RecordingAdapter(agentType, 'long thread ack')
+    );
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const root = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'load-bearing long-thread root' },
+    });
+    for (let i = 1; i <= 65; i++) {
+      await req({
+        port: h.port,
+        method: 'POST',
+        url,
+        body: {
+          text: `long-thread reply ${i}`,
+          threadId: root.body.message.id,
+        },
+      });
+    }
+    await req({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: {
+        text: '@mock summarize the long thread',
+        threadId: root.body.message.id,
+      },
+    });
+
+    await waitFor(() => h.adapters().length === 1);
+    const adapter = h.adapters()[0] as RecordingAdapter;
+    await waitFor(() => adapter.contents.length === 1);
+    const packet = adapter.contents[0]!;
+    expect(packet).toContain('Operator: load-bearing long-thread root');
+    expect(packet).toContain('Operator: long-thread reply 47');
+    expect(packet).toContain('Operator: long-thread reply 65');
+    expect(packet).not.toContain('Operator: long-thread reply 46\n');
+    await waitFor(() => agentReply(h.store, h.channelId).length === 1);
+    expect(agentReply(h.store, h.channelId)[0]).toMatchObject({
+      threadId: root.body.message.id,
+    });
   });
 
   it("the next turn's packet includes interim human rows but not the agent's own reply", async () => {

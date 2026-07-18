@@ -1776,8 +1776,8 @@ describe('channel-agent-binder — buildPacket failure recovery (P2 #1180)', () 
       targets: MOCK_TARGETS,
       knownProviderIds: ['mock'],
     });
-    // Throw once from the packet-fetch history call (the one with `beforeSeq`);
-    // the row helpers (no beforeSeq) pass through so waitFor stays usable.
+    // Throw once from the top-level packet-fetch history call (the one with
+    // `beforeSeq`); row helpers without beforeSeq continue to work.
     const realHistory = store.history.bind(store);
     let thrown = false;
     (store as unknown as { history: ChannelMessageStore['history'] }).history =
@@ -1788,6 +1788,44 @@ describe('channel-agent-binder — buildPacket failure recovery (P2 #1180)', () 
         }
         return realHistory(id, filter);
       }) as ChannelMessageStore['history'];
+
+    post(store, binder, '@mock one', ['mock']);
+    await waitFor(() =>
+      systemRows(store).some((m) =>
+        m.body.text.includes('could not build the message context')
+      )
+    );
+    post(store, binder, '@mock two', ['mock']);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
+    expect(sessions.spawns()).toBe(1);
+    expect(agentReplies(store, 'mock')).toHaveLength(1);
+  });
+
+  it('a store.threadHistory throw does not wedge the binding; the next mention routes', async () => {
+    const { binder, store, sessions } = makeBinder({
+      build: () => new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 }),
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+    });
+    // Throw once from the threaded packet-fetch lane. The next top-level turn
+    // uses ordinary history and proves the queue did not wedge.
+    const realThreadHistory = store.threadHistory.bind(store);
+    let thrown = false;
+    (
+      store as unknown as {
+        threadHistory: ChannelMessageStore['threadHistory'];
+      }
+    ).threadHistory = ((
+      id: string,
+      rootMessageId: string,
+      filter?: Parameters<ChannelMessageStore['threadHistory']>[2]
+    ) => {
+      if (!thrown) {
+        thrown = true;
+        throw new Error('db boom');
+      }
+      return realThreadHistory(id, rootMessageId, filter);
+    }) as ChannelMessageStore['threadHistory'];
 
     const root = store.appendComplete({
       channelId: CH,

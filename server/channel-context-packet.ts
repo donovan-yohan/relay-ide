@@ -2,8 +2,7 @@ import type { ChannelMessage } from '../shared/channel-chat-protocol.js';
 
 // Pure context-packet builder for @-mention routing (#1167, slice 4). No I/O:
 // store rows in, prompt string out — fully unit-testable. The binder fetches the
-// eligible rows (`store.history(channelId, { afterSeq: lastDeliveredSeq })`
-// filtered to `seq < trigger.seq`) and hands them here; this module owns ONLY the
+// eligible channel or thread rows and hands them here; this module owns ONLY the
 // deterministic string shape (§4 of the spec). It never touches the network, the
 // store, or the adapter, so the golden test pins the exact bytes an agent sees.
 
@@ -16,6 +15,8 @@ export const PACKET_MAX_BYTES = 24 * 1024;
 
 const OMITTED_MARKER = '[…earlier messages omitted]';
 const ROW_TRUNCATED_SUFFIX = '…[truncated]';
+const THREAD_SCOPE_MARKER =
+  '[Thread scope — only this thread is shown; its root message is always included]';
 
 export interface BuildMentionContextPacketInput {
   /** Human-facing channel title (topic display title), rendered as `#<title>`. */
@@ -23,10 +24,11 @@ export interface BuildMentionContextPacketInput {
   /** Framework id the packet is addressed to (`you are @<framework>`). */
   framework: string;
   /**
-   * Eligible prior rows, oldest-first: every row with
-   * `lastDeliveredSeq < seq < trigger.seq`. The agent's own prior rows are
-   * skipped HERE (they already live in the reused provider conversation), so the
-   * binder may pass the raw window untrimmed.
+   * Eligible prior rows, oldest-first. For a channel trigger this is every row
+   * with `lastDeliveredSeq < seq < trigger.seq`. For a threaded trigger this is
+   * the thread root plus prior replies; the channel delivery cursor is ignored.
+   * The agent's own prior rows are skipped HERE (they already live in the reused
+   * provider conversation), except that a thread root is always retained.
    */
   rows: ChannelMessage[];
   /** The mention row itself — always rendered in the footer, never dropped. */
@@ -101,6 +103,7 @@ export function buildMentionContextPacket(
   input: BuildMentionContextPacketInput
 ): string {
   const header = `[Relay channel #${input.channelTitle} — you are @${input.framework}, one participant in a multi-party chat]`;
+  const threadRootId = input.trigger.threadId;
 
   // Eligible = rows strictly after the delivery cursor and strictly before the
   // trigger, minus the agent's OWN prior rows (already in its reused provider
@@ -108,20 +111,35 @@ export function buildMentionContextPacket(
   // session with no interim rows therefore yields an empty window → header +
   // footer only; a first-ever mention (cursor 0) yields the full orientation
   // window.
-  const eligible = input.rows.filter(
-    (row) =>
-      row.seq > input.lastDeliveredSeq &&
-      row.seq < input.trigger.seq &&
-      !(
-        row.sender.kind === 'agent' && row.sender.providerId === input.framework
-      )
-  );
+  const isOwnAgentRow = (row: ChannelMessage): boolean =>
+    row.sender.kind === 'agent' && row.sender.providerId === input.framework;
+  const eligible = input.rows.filter((row) => {
+    if (row.seq >= input.trigger.seq) return false;
+    if (threadRootId !== null) {
+      const isRoot = row.id === threadRootId;
+      if (!isRoot && row.threadId !== threadRootId) return false;
+      return isRoot || !isOwnAgentRow(row);
+    }
+    return row.seq > input.lastDeliveredSeq && !isOwnAgentRow(row);
+  });
 
-  let contextRows = eligible;
+  let contextRows: ChannelMessage[];
   let omittedEarlier = false;
-  if (contextRows.length > PACKET_MAX_ROWS) {
-    omittedEarlier = true;
-    contextRows = contextRows.slice(contextRows.length - PACKET_MAX_ROWS);
+  if (threadRootId !== null) {
+    const root = eligible.find((row) => row.id === threadRootId);
+    if (!root) {
+      throw new Error(`thread context root missing: ${threadRootId}`);
+    }
+    const replies = eligible.filter((row) => row.id !== threadRootId);
+    const replyLimit = Math.max(0, PACKET_MAX_ROWS - 1);
+    if (replies.length > replyLimit) omittedEarlier = true;
+    contextRows = [root, ...replies.slice(-replyLimit)];
+  } else {
+    contextRows = eligible;
+    if (contextRows.length > PACKET_MAX_ROWS) {
+      omittedEarlier = true;
+      contextRows = contextRows.slice(contextRows.length - PACKET_MAX_ROWS);
+    }
   }
 
   const triggerLabel = triggerAttribution(input.trigger);
@@ -136,26 +154,33 @@ export function buildMentionContextPacket(
   ].join('\n');
 
   const assemble = (rows: ChannelMessage[], omitted: boolean): string => {
+    const scopeLines = threadRootId !== null ? [THREAD_SCOPE_MARKER] : [];
     if (rows.length === 0) {
-      return `${header}\n\n${footer}`;
+      return [header, ...scopeLines, '', footer].join('\n');
     }
     const contextBlock = [
+      ...scopeLines,
       'Recent messages, oldest first. Lines are "sender: text"; agents tagged [agent], system rows tagged [system].',
-      ...(omitted ? [OMITTED_MARKER] : []),
-      ...rows.map(renderRow),
+      ...(threadRootId !== null && omitted
+        ? [renderRow(rows[0]!), OMITTED_MARKER, ...rows.slice(1).map(renderRow)]
+        : [...(omitted ? [OMITTED_MARKER] : []), ...rows.map(renderRow)]),
     ].join('\n');
     return `${header}\n${contextBlock}\n\n${footer}`;
   };
 
-  // Whole-packet byte budget: drop oldest context rows until under (never the
-  // trigger/footer). A single over-budget footer is still delivered — losing the
-  // mention is worse than a slightly oversized packet.
+  // Whole-packet byte budget: drop oldest context rows until under. Thread mode
+  // never drops its load-bearing root; the trigger/footer is never dropped in
+  // either mode. A root/footer-only packet may exceed the budget — losing either
+  // is worse than a slightly oversized packet.
   let packet = assemble(contextRows, omittedEarlier);
   while (
-    contextRows.length > 0 &&
+    contextRows.length > (threadRootId !== null ? 1 : 0) &&
     Buffer.byteLength(packet, 'utf8') > PACKET_MAX_BYTES
   ) {
-    contextRows = contextRows.slice(1);
+    contextRows =
+      threadRootId !== null
+        ? [contextRows[0]!, ...contextRows.slice(2)]
+        : contextRows.slice(1);
     omittedEarlier = true;
     packet = assemble(contextRows, omittedEarlier);
   }
