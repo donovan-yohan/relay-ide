@@ -15,6 +15,31 @@
   --status-merged: #a78bfa;
   --status-info: #60a5fa;
 
+  /* Repo / Project identity colors — DESIGN.md "Repo / Project Identity
+     Colors" palette, materialized as CSS custom properties (previously only
+     documented + inlined in lib/colors.ts). Hash-derived badge backgrounds and
+     the sender-identity tokens below reference these. */
+  --color-red: #d97757;
+  --color-green: #4ade80;
+  --color-blue: #60a5fa;
+  --color-purple: #a78bfa;
+  --color-pink: #f472b6;
+  --color-orange: #fb923c;
+  --color-teal: #34d399;
+  --color-coral: #f87171;
+  --color-yellow: #fbbf24;
+  --color-sky: #38bdf8;
+  --color-lime: #a3e635;
+  --color-indigo: #818cf8;
+
+  /* Sender identity — channel timeline (#1166). Reuses existing DESIGN.md
+     tokens; no new hex values. */
+  --sender-claude: var(--accent); /* terracotta — Relay's own accent */
+  --sender-codex: var(--color-teal); /* distinct green from --status-success */
+  --sender-hermes: var(--color-sky);
+  --sender-opencode: var(--color-indigo);
+  --sender-system: var(--text-muted);
+
   /* Typography */
   --font-mono:
     'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas',

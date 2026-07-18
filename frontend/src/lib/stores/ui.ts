@@ -571,6 +571,14 @@ export interface UiState {
    * sidebar selection). Session-transient; never persisted.
    */
   topicComposerOpen: boolean;
+  /**
+   * #1166: the id of the channel (persisted workspace_topic) currently open in
+   * the main chat pane. Takes priority over topicComposerOpen and the legacy
+   * web-mode session surface in `resolveAppViewMode`. Mutually exclusive with an
+   * active session (App.tsx clears one when the other is set). Session-transient;
+   * never persisted (a fresh reload lands on the chat home, not a stale channel).
+   */
+  activeChannelId: string | null;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
   /**
@@ -618,6 +626,7 @@ export interface UiState {
   setOrgDashboardTab: (tab: OrgDashboardTab) => void;
   setForceOrgCockpit: (v: boolean) => void;
   setTopicComposerOpen: (v: boolean) => void;
+  setActiveChannelId: (v: string | null) => void;
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
@@ -656,6 +665,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   orgDashboardTab: loadAdvancedMode() ? 'active-work' : 'prs',
   forceOrgCockpit: false,
   topicComposerOpen: false,
+  activeChannelId: null,
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
@@ -1079,6 +1089,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setOrgDashboardTab: (tab) => set({ orgDashboardTab: tab }),
   setForceOrgCockpit: (v) => set({ forceOrgCockpit: v }),
   setTopicComposerOpen: (v) => set({ topicComposerOpen: v }),
+  setActiveChannelId: (v) => set({ activeChannelId: v }),
   setActiveModal: (v) => set({ activeModal: v }),
 
   saveRightSidebarWidth: () =>

@@ -59,3 +59,17 @@ export function defaultSessionModeForAgent(
   );
   return selectedAgent === 'hermes' && supportsWeb ? 'web' : 'pty';
 }
+
+/**
+ * #1166: an agent launch in `web` mode now routes to a DM channel
+ * (`ChannelView`) instead of spawning a `mode:'web'` session (`ChatView`).
+ * Shared by every UI creation entry point (TopicComposer, CustomizeSessionDialog)
+ * so "web session" can never be produced from a creation path. PTY/terminal
+ * launches are unaffected.
+ */
+export function shouldRouteToChannel(
+  type: 'agent' | 'terminal' | null | undefined,
+  mode: SessionLaunchMode | null | undefined
+): boolean {
+  return type === 'agent' && mode === 'web';
+}

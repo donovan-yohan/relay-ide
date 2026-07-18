@@ -26,6 +26,13 @@ export interface ResolveAppViewModeInput {
    */
   topicComposerOpen?: boolean;
   /**
+   * #1166: a channel (persisted workspace_topic) is open in the main chat pane.
+   * Channel view is part of the chat shell and takes priority over the composer
+   * and any active session — selecting a channel row always shows the channel,
+   * never a stale composer or a leftover session surface.
+   */
+  hasActiveChannel?: boolean;
+  /**
    * Transport mode of the active session. Web-mode chat sessions stay in the
    * chat shell (`ChatView`); live PTY agent/terminal sessions surface their
    * real terminal (viewMode 'session') so the user can watch and drive the
@@ -41,9 +48,13 @@ export function resolveAppViewMode({
   activeRepoPath,
   forceOrgCockpit = false,
   topicComposerOpen = false,
+  hasActiveChannel = false,
   activeSessionMode,
 }: ResolveAppViewModeInput): AppViewMode {
   if (analyticsView !== null) return 'analytics';
+  // Channel takes priority within 'chat' mode — checked before topicComposerOpen
+  // and any active session so a channel selection always wins.
+  if (hasActiveChannel) return 'chat';
   if (topicComposerOpen) return 'chat';
   if (hasActiveSession) {
     // Explicit legacy cockpit escape hatch still wins.

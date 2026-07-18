@@ -40,6 +40,7 @@ import type {
   WorkspaceTopicListResponse,
   WorkspaceTopicSearchResponse,
 } from '../../../shared/workspace-topics.js';
+import type { ChannelMessage } from '../../../shared/channel-chat-protocol.js';
 import type {
   WorkflowRunProjection,
   WorkflowRunState,
@@ -1678,6 +1679,133 @@ export async function restoreWorkspaceTopic(
     })
   );
   return data.topic;
+}
+
+/** Fetch a single workspace topic by id (GET /workspace-topics/:id). */
+export async function fetchWorkspaceTopic(id: string): Promise<WorkspaceTopic> {
+  const data = await json<{ topic: WorkspaceTopic }>(
+    await fetch(`/workspace-topics/${encodeURIComponent(id)}`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return data.topic;
+}
+
+/**
+ * Create a bare workspace topic (POST /workspace-topics) with no attached
+ * WorkContext — used by the DM-as-channel flow (#1166), which needs only the
+ * topic/channel identity, not the full room + WorkContext of a session launch.
+ */
+export async function createWorkspaceTopic(
+  input: WorkspaceTopicCreateInput
+): Promise<WorkspaceTopic> {
+  const data = await json<{ topic?: WorkspaceTopic }>(
+    await fetch('/workspace-topics', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify(input),
+    })
+  );
+  if (!data.topic) throw new Error('workspace topic response missing topic');
+  return data.topic;
+}
+
+// ── Channel chat (#1166, epic #1163) ────────────────────────────────────────
+// REST client over the already-shipped channel core. Channel identity == topic
+// id. All writes go through POST /channels/:id/messages; the socket
+// (`useChannelChatSocket`) is read-only. Sender is always server-derived — never
+// send a `sender` field.
+
+export interface ChannelSummaryView {
+  id: string;
+  title: string;
+  kind?: string;
+  visibility: 'default' | 'private' | 'shared';
+  archived: boolean;
+  latestSeq: number;
+  messageCount: number;
+  lastMessage: {
+    id: string;
+    seq: number;
+    preview: string;
+    senderId: string;
+    senderKind: 'human' | 'agent' | 'system';
+    status: string;
+    createdAt: string;
+  } | null;
+  members: { kind: 'human' | 'agent'; id: string; joinedAt: string }[];
+}
+
+export async function fetchChannel(
+  channelId: string
+): Promise<ChannelSummaryView> {
+  const data = await json<{ channel: ChannelSummaryView }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}`, {
+      headers: { 'x-relay-capabilities': 'context:read' },
+    })
+  );
+  return data.channel;
+}
+
+export interface ChannelHistoryPage {
+  messages: ChannelMessage[];
+  hasMore: boolean;
+  nextCursor?: { afterSeq?: number; beforeSeq?: number };
+}
+
+export async function fetchChannelHistory(
+  channelId: string,
+  filter: {
+    beforeSeq?: number;
+    afterSeq?: number;
+    limit?: number;
+    threadId?: string;
+  } = {}
+): Promise<ChannelHistoryPage> {
+  const params = new URLSearchParams();
+  if (filter.beforeSeq !== undefined)
+    params.set('beforeSeq', String(filter.beforeSeq));
+  if (filter.afterSeq !== undefined)
+    params.set('afterSeq', String(filter.afterSeq));
+  if (filter.limit !== undefined) params.set('limit', String(filter.limit));
+  if (filter.threadId !== undefined) params.set('threadId', filter.threadId);
+  const query = params.toString();
+  const data = await json<ChannelHistoryPage>(
+    await fetch(
+      `/channels/${encodeURIComponent(channelId)}/messages${query ? `?${query}` : ''}`,
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    )
+  );
+  return {
+    messages: Array.isArray(data.messages) ? data.messages : [],
+    hasMore: Boolean(data.hasMore),
+    ...(data.nextCursor ? { nextCursor: data.nextCursor } : {}),
+  };
+}
+
+export async function postChannelMessage(
+  channelId: string,
+  input: {
+    text: string;
+    format?: 'markdown' | 'text';
+    parentMessageId?: string;
+    clientMessageId: string;
+  }
+): Promise<ChannelMessage> {
+  const data = await json<{ message: ChannelMessage }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-relay-capabilities': 'context:write',
+      },
+      body: JSON.stringify(input),
+    })
+  );
+  return data.message;
 }
 
 export interface WorkContextCreateBody {

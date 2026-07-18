@@ -21,6 +21,10 @@ vi.mock('../frontend/src/lib/api.js', async (importOriginal) => {
     fetchHubNodes: vi.fn().mockResolvedValue([]),
     createWorkspaceTopicRoomAndMaybeLaunch: vi.fn(),
     launchWorkspaceTopicRoom: vi.fn(),
+    // #1166: DM-as-channel entry point (web-mode agent launches route here).
+    fetchWorkspaceTopic: vi.fn(),
+    createWorkspaceTopic: vi.fn(),
+    postChannelMessage: vi.fn(),
   };
 });
 
@@ -33,8 +37,12 @@ vi.mock('../frontend/src/components/chat/ChatView.js', () => ({
 
 import {
   createWorkspaceTopicRoomAndMaybeLaunch,
+  createWorkspaceTopic,
+  fetchWorkspaceTopic,
   launchWorkspaceTopicRoom,
+  postChannelMessage,
 } from '../frontend/src/lib/api.js';
+import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 import { useConfigStore } from '../frontend/src/lib/stores/config.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
@@ -361,6 +369,7 @@ describe('TopicComposer', () => {
       activeRepoPath: null,
       forceOrgCockpit: false,
       topicComposerOpen: false,
+      activeChannelId: null,
     });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -609,12 +618,17 @@ describe('TopicComposer', () => {
     expect(call.launch).toBeDefined();
   });
 
-  it('uses a one-off provider override without mutating settings', async () => {
-    vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mockResolvedValue({
-      status: 'created',
-      topic: { id: 'topic:1' },
-      workContext: { id: 'wc:1' },
+  it('routes a one-off web-mode override to a DM channel, not a web session (#1166)', async () => {
+    // Hermes selected + web launch mode now opens the deterministic DM channel
+    // and posts the first message, instead of spawning a mode:'web' session.
+    const dmId = dmChannelTopicId('hermes', null);
+    vi.mocked(fetchWorkspaceTopic).mockResolvedValue({
+      id: dmId,
+      workspaceId: 'workspace:local',
+      routingDefaults: { providerId: 'hermes' },
+      display: { title: 'Hermes' },
     } as never);
+    vi.mocked(postChannelMessage).mockResolvedValue({} as never);
     renderComposer();
     const ta = container.querySelector(
       '.topic-composer__ta'
@@ -637,14 +651,53 @@ describe('TopicComposer', () => {
     await act(async () => {
       form.dispatchEvent(new Event('submit', { bubbles: true }));
     });
-    const call = vi.mocked(createWorkspaceTopicRoomAndMaybeLaunch).mock
-      .calls[0]?.[0] as {
-      room: { topic: { routingDefaults?: { providerId?: string } } };
-      launch?: { mode?: string; agent?: string };
-    };
-    expect(call.room.topic.routingDefaults?.providerId).toBe('hermes');
-    expect(call.launch).toMatchObject({ mode: 'web', agent: 'hermes' });
+
+    // No web session is created.
+    expect(createWorkspaceTopicRoomAndMaybeLaunch).not.toHaveBeenCalled();
+    // The DM channel is opened and the first message posted into it.
+    expect(postChannelMessage).toHaveBeenCalledWith(
+      dmId,
+      expect.objectContaining({ text: 'ship through hermes' })
+    );
+    expect(useUiStore.getState().activeChannelId).toBe(dmId);
+    expect(useUiStore.getState().topicComposerOpen).toBe(false);
+    // Settings default is untouched by the one-off override.
     expect(useConfigStore.getState().defaultAgent).toBe('claude');
+  });
+
+  it('creates the DM channel when it does not exist yet, reusing its id (#1166)', async () => {
+    const dmId = dmChannelTopicId('hermes', null);
+    const { HttpError } = await import('../frontend/src/lib/api.js');
+    vi.mocked(fetchWorkspaceTopic).mockRejectedValue(new HttpError(404));
+    vi.mocked(createWorkspaceTopic).mockResolvedValue({
+      id: dmId,
+      workspaceId: 'workspace:local',
+      routingDefaults: { providerId: 'hermes' },
+      display: { title: 'Hermes' },
+    } as never);
+    vi.mocked(postChannelMessage).mockResolvedValue({} as never);
+    renderComposer();
+    const ta = container.querySelector(
+      '.topic-composer__ta'
+    ) as HTMLTextAreaElement;
+    const provider = container.querySelector(
+      '.topic-composer__provider-select'
+    ) as HTMLSelectElement;
+    act(() => {
+      setNativeValue(ta, 'first hermes message');
+      setSelectValue(provider, 'hermes');
+    });
+    const form = container.querySelector(
+      '.topic-composer__form'
+    ) as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true }));
+    });
+    // Created with the SAME deterministic id fetchWorkspaceTopic looked up.
+    const createArg = vi.mocked(createWorkspaceTopic).mock.calls[0]?.[0];
+    expect(createArg?.id).toBe(dmId);
+    expect(createArg?.routingDefaults).toEqual({ providerId: 'hermes' });
+    expect(useUiStore.getState().activeChannelId).toBe(dmId);
   });
 
   it('keeps a launched chat in the chat shell while the sessions feed catches up', async () => {
@@ -792,12 +845,11 @@ describe('TopicComposer', () => {
     const ta = container.querySelector(
       '.topic-composer__ta'
     ) as HTMLTextAreaElement;
-    const provider = container.querySelector(
-      '.topic-composer__provider-select'
-    ) as HTMLSelectElement;
+    // Default provider (claude) → pty session launch, which keeps the
+    // create-and-launch retry path this test covers. (Web-mode agent launches
+    // now route to a DM channel instead — see the #1166 DM tests above.)
     act(() => {
       setNativeValue(ta, 'retry this launch');
-      setSelectValue(provider, 'hermes');
     });
     const form = container.querySelector(
       '.topic-composer__form'
@@ -817,7 +869,7 @@ describe('TopicComposer', () => {
         topic: { id: 'topic:retry' },
         workContext: { id: 'wc:retry' },
       },
-      launch: expect.objectContaining({ mode: 'web', agent: 'hermes' }),
+      launch: expect.objectContaining({ mode: 'pty', agent: 'claude' }),
     });
   });
 });

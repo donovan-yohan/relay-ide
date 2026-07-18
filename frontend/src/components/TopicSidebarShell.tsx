@@ -41,6 +41,12 @@ import {
   sendSessionInput,
 } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
+import { resolveSenderIdentity } from '../lib/chat/sender-identity.js';
+import {
+  hasUnseenActivity,
+  useChannelActivityStore,
+} from '../lib/stores/channel-activity.js';
+import { AgentBadge } from './AgentBadge.js';
 import { openTopicTaskRoom } from '../lib/topic-task-room.js';
 import type { SessionSummary } from '../lib/types.js';
 import { formatRelativeTimeCompact } from '../lib/utils.js';
@@ -242,6 +248,37 @@ function topicLatestStatus(item: TopicNavItem): string {
 }
 
 function TopicBadge({ item }: { item: TopicNavItem }) {
+  // #1166: DM rows show the agent's colored glyph on a muted-variant background
+  // (the same color-mix recipe repo-identity badges use), not a generic icon.
+  if (item.isDirectMessage && item.dmProviderId) {
+    const identity = resolveSenderIdentity({
+      kind: 'agent',
+      id: `agent:${item.dmProviderId}`,
+      providerId: item.dmProviderId,
+    });
+    return (
+      <span
+        className="topic-row__badge topic-row__badge--dm"
+        style={{
+          background: `color-mix(in srgb, ${identity.colorVar} 15%, transparent)`,
+        }}
+        aria-label={`direct message with ${identity.label}`}
+        title={`direct message with ${identity.label}`}
+      >
+        {identity.glyph ? (
+          <span
+            className="topic-row__dm-glyph"
+            style={{ color: identity.colorVar }}
+            aria-hidden="true"
+          >
+            <AgentBadge agent={identity.glyph} />
+          </span>
+        ) : (
+          <TopicKindIcon kind={item.kind} />
+        )}
+      </span>
+    );
+  }
   const background = item.color ?? deriveColor(item.badgeSeed);
   const label = item.channelKind
     ? `${item.channelKind} channel`
@@ -1417,6 +1454,7 @@ function TopicRow({
   model,
   expandedIds,
   selectedId,
+  activeChannelId,
   onToggle,
   onSelect,
   onSelectSession,
@@ -1426,6 +1464,7 @@ function TopicRow({
   model: TopicNavModel;
   expandedIds: Set<string>;
   selectedId: string | null;
+  activeChannelId: string | null;
   onToggle: (id: string) => void;
   onSelect: (id: string) => void;
   onSelectSession?: ((id: string) => void) | undefined;
@@ -1433,6 +1472,16 @@ function TopicRow({
   const hasNested = item.childIds.length > 0 || item.participants.length > 0;
   const expanded = expandedIds.has(item.id);
   const selected = selectedId === item.id;
+  // Presence-only activity dot (#1166): re-render when this channel's latest-seq
+  // changes; hasUnseenActivity compares it against the client-local last-read.
+  const latestSeq = useChannelActivityStore(
+    (s) => s.latestSeqByChannel[item.id]
+  );
+  const showActivityDot = useMemo(
+    () =>
+      latestSeq !== undefined && hasUnseenActivity(item.id, activeChannelId),
+    [item.id, activeChannelId, latestSeq]
+  );
 
   const activate = () => {
     onSelect(item.id);
@@ -1480,6 +1529,13 @@ function TopicRow({
           </span>
         </button>
         <span className="topic-row__trail" aria-label={item.statusLabel}>
+          {showActivityDot ? (
+            <span
+              className="topic-row__activity-dot"
+              aria-label="unread activity"
+              title="unread activity"
+            />
+          ) : null}
           <StatusGlyph tone={item.tone} />
         </span>
       </div>
@@ -1508,6 +1564,7 @@ function TopicRow({
                     model={model}
                     expandedIds={expandedIds}
                     selectedId={selectedId}
+                    activeChannelId={activeChannelId}
                     onToggle={onToggle}
                     onSelect={onSelect}
                     onSelectSession={onSelectSession}
@@ -1842,11 +1899,55 @@ function ArchivedToggle({
 }
 
 /** The workspace-grouped chat tree: a section per workspace + an orphan lane. */
+function partitionChannelsAndDms(
+  ids: string[],
+  model: TopicNavModel
+): { channels: string[]; dms: string[] } {
+  const channels: string[] = [];
+  const dms: string[] = [];
+  for (const id of ids) {
+    (model.byId.get(id)?.isDirectMessage ? dms : channels).push(id);
+  }
+  return { channels, dms };
+}
+
+/** Regular channels then, if any, a `direct messages` sub-section (#1166). */
+function ChannelsAndDmsLists({
+  ids,
+  model,
+  renderRow,
+}: {
+  ids: string[];
+  model: TopicNavModel;
+  renderRow: (id: string) => ReactNode;
+}) {
+  const { channels, dms } = partitionChannelsAndDms(ids, model);
+  return (
+    <>
+      <ul className="topic-tree__list">
+        {channels.map((id) => renderRow(id))}
+      </ul>
+      {dms.length > 0 ? (
+        <>
+          <div className="topic-workspace-group__dm-header">
+            direct messages
+          </div>
+          <ul className="topic-tree__list topic-tree__list--dm">
+            {dms.map((id) => renderRow(id))}
+          </ul>
+        </>
+      ) : null}
+    </>
+  );
+}
+
 function GroupedTopicTree({
   grouped,
+  model,
   renderRow,
 }: {
   grouped: GroupedTopicNav;
+  model: TopicNavModel;
   renderRow: (id: string) => ReactNode;
 }) {
   return (
@@ -1865,9 +1966,11 @@ function GroupedTopicTree({
             ) : null}
             <span className="topic-workspace-group__name">{group.title}</span>
           </div>
-          <ul className="topic-tree__list">
-            {group.rootIds.map((id) => renderRow(id))}
-          </ul>
+          <ChannelsAndDmsLists
+            ids={group.rootIds}
+            model={model}
+            renderRow={renderRow}
+          />
         </section>
       ))}
       {grouped.orphanRootIds.length > 0 ? (
@@ -1880,9 +1983,11 @@ function GroupedTopicTree({
               <span className="topic-workspace-group__name">no workspace</span>
             </div>
           ) : null}
-          <ul className="topic-tree__list">
-            {grouped.orphanRootIds.map((id) => renderRow(id))}
-          </ul>
+          <ChannelsAndDmsLists
+            ids={grouped.orphanRootIds}
+            model={model}
+            renderRow={renderRow}
+          />
         </section>
       ) : null}
     </div>
@@ -1996,6 +2101,7 @@ export function TopicSidebarView({
     () => new Map(topics.map((topic) => [topic.id, topic])),
     [topics]
   );
+  const activeChannelId = useUiStore((s) => s.activeChannelId);
   const workspaceNameById = useMemo(
     () =>
       new Map(workspaces.map((workspace) => [workspace.id, workspace.name])),
@@ -2038,10 +2144,20 @@ export function TopicSidebarView({
   // and the workspace pane operate in the topic's node/repo. Only fires on an
   // explicit user selection — the initial/auto-selection sets `selectedId`
   // directly and never clobbers the active repo.
+  // #1166: for a persisted channel (anything backed by GET /channels), clicking
+  // the row also opens it in the main pane (activeChannelId) and closes the
+  // composer — "selected in sidebar" and "open in main pane" become one state
+  // for channels. Derived (non-persisted) topics never route to a channel.
   const select = useCallback(
     (id: string) => {
       setSelectedId(id);
-      applyTopicActiveContext(topicsById.get(id));
+      const topic = topicsById.get(id);
+      applyTopicActiveContext(topic);
+      if (topic?.source === 'persisted') {
+        const ui = useUiStore.getState();
+        ui.setActiveChannelId(id);
+        ui.setTopicComposerOpen(false);
+      }
     },
     [topicsById]
   );
@@ -2061,6 +2177,7 @@ export function TopicSidebarView({
         model={model}
         expandedIds={expandedIds}
         selectedId={selectedId}
+        activeChannelId={activeChannelId}
         onToggle={toggle}
         onSelect={select}
         onSelectSession={onSelectSession}
@@ -2164,7 +2281,11 @@ export function TopicSidebarView({
         canScope={activeWorkspaceId != null}
       />
       <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
-      <GroupedTopicTree grouped={grouped} renderRow={renderTopicRow} />
+      <GroupedTopicTree
+        grouped={grouped}
+        model={model}
+        renderRow={renderTopicRow}
+      />
       <TopicAdvancedDetailGate
         item={selectedItem}
         show={showAdvancedDetail}

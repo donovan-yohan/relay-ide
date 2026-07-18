@@ -184,6 +184,8 @@ function useTerminalDerivedState() {
   const forceOrgCockpit = useUiStore((s) => s.forceOrgCockpit);
   const topicComposerOpen = useUiStore((s) => s.topicComposerOpen);
   const setTopicComposerOpen = useUiStore((s) => s.setTopicComposerOpen);
+  const activeChannelId = useUiStore((s) => s.activeChannelId);
+  const setActiveChannelId = useUiStore((s) => s.setActiveChannelId);
   const sessions = useSessionsStore((s) => s.sessions);
   const repos = useSessionsStore((s) => s.repos);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
@@ -256,6 +258,7 @@ function useTerminalDerivedState() {
         activeRepoPath,
         forceOrgCockpit,
         topicComposerOpen,
+        hasActiveChannel: activeChannelId !== null,
         activeSessionMode: activeSession?.mode,
       }),
     [
@@ -264,6 +267,7 @@ function useTerminalDerivedState() {
       activeRepoPath,
       forceOrgCockpit,
       topicComposerOpen,
+      activeChannelId,
       activeSession?.mode,
     ]
   );
@@ -272,13 +276,24 @@ function useTerminalDerivedState() {
   // a launch from the composer or a sidebar selection navigates to that
   // session. (The composer can open while a session is still active, so a
   // mere "session is active" check would close it immediately.)
+  // #1166: selecting/launching a session also wins over a previously open
+  // channel — clear activeChannelId so the two never render at once.
   const composerPrevSessionRef = useRef(activeSessionId);
   useEffect(() => {
     if (composerPrevSessionRef.current !== activeSessionId) {
       composerPrevSessionRef.current = activeSessionId;
       if (topicComposerOpen) setTopicComposerOpen(false);
+      if (activeSessionId !== null && activeChannelId !== null) {
+        setActiveChannelId(null);
+      }
     }
-  }, [activeSessionId, topicComposerOpen, setTopicComposerOpen]);
+  }, [
+    activeSessionId,
+    topicComposerOpen,
+    setTopicComposerOpen,
+    activeChannelId,
+    setActiveChannelId,
+  ]);
 
   return {
     activeRepoPath,

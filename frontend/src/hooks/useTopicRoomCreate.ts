@@ -1,13 +1,18 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  WorkspaceTopic,
   WorkspaceTopicCreateInput,
   WorkspaceTopicLaunchIntent,
 } from '../../../shared/workspace-topics.js';
 import {
+  createWorkspaceTopic,
   createWorkspaceTopicRoomAndMaybeLaunch,
   fetchHubNodes,
+  fetchWorkspaceTopic,
   launchWorkspaceTopicRoom,
+  postChannelMessage,
+  HttpError,
   type WorkspaceTopicLaunchFailure,
   type WorkspaceTopicRoomCreateResult,
 } from '../lib/api.js';
@@ -21,6 +26,8 @@ import {
   TOPIC_ROOM_DRAFT_EMPTY,
   type TopicRoomDraft,
 } from '../lib/topic-create.js';
+import { dmChannelCreateInput, dmChannelTopicId } from '../lib/dm-channels.js';
+import { createBrowserId } from '../lib/browserId.js';
 import { taskRefFromDraft } from '../lib/topic-task-ref.js';
 import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
@@ -28,6 +35,29 @@ import { useUiStore } from '../lib/stores/ui.js';
 import { useToastStore } from '../lib/stores/toasts.js';
 import { useConfigStore } from '../lib/stores/config.js';
 import type { SessionSummary } from '../lib/types.js';
+
+/**
+ * Get-or-create the deterministic per-(workspace, framework) DM channel (#1166).
+ * Does I/O (so it lives here, not in the pure `dm-channels` module): a GET, and
+ * on 404 a bare-topic create. Shared by every DM entry point (TopicComposer,
+ * CustomizeSessionDialog). Re-opening the same DM reuses the same channel id, so
+ * no duplicate DM channels are ever created.
+ */
+export async function getOrCreateDmChannel(input: {
+  providerId: string;
+  providerDisplayName: string;
+  workspaceId: string | null;
+}): Promise<WorkspaceTopic> {
+  const id = dmChannelTopicId(input.providerId, input.workspaceId);
+  try {
+    return await fetchWorkspaceTopic(id);
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 404) {
+      return createWorkspaceTopic(dmChannelCreateInput(input));
+    }
+    throw err;
+  }
+}
 
 /**
  * #1058: stateful draft + create/launch plumbing for codex-style topic
@@ -233,6 +263,58 @@ export function useTopicRoomCreate({
   const submit = useCallback(
     async (intent: WorkspaceTopicLaunchIntent) => {
       if (!effectiveTitle) return;
+
+      // #1166: a web-mode agent launch is now a DM channel, not a mode:'web'
+      // session. Get-or-create the deterministic DM channel, post the first
+      // message into it, and open ChannelView — never spawn a web session.
+      const willLaunchToChannel =
+        intent === 'create-and-launch' &&
+        draft.templateKind === 'agent-task' &&
+        launchMode === 'web';
+      if (willLaunchToChannel) {
+        setSubmittingIntent('create-and-launch');
+        setLaunchFailure(null);
+        try {
+          const framework = frameworks.find((f) => f.id === selectedProviderId);
+          const topic = await getOrCreateDmChannel({
+            providerId: selectedProviderId,
+            providerDisplayName: framework?.displayName ?? selectedProviderId,
+            workspaceId: activeWorkspaceId,
+          });
+          const prompt = draft.prompt.trim();
+          if (prompt) {
+            await postChannelMessage(topic.id, {
+              text: prompt,
+              clientMessageId: createBrowserId('chm'),
+            });
+          }
+          await queryClient.invalidateQueries({
+            queryKey: ['workspace-topics'],
+          });
+          const ui = useUiStore.getState();
+          ui.setActiveChannelId(topic.id);
+          ui.setTopicComposerOpen(false);
+          ui.setForceOrgCockpit(false);
+          setDraft(TOPIC_ROOM_DRAFT_EMPTY);
+          // onLaunched closes the composer; ChatHome ignores whether the id is a
+          // session key or a channel id.
+          onLaunched?.(topic.id);
+        } catch (error) {
+          setLaunchFailure({
+            stage: 'session',
+            message: error instanceof Error ? error.message : String(error),
+            retryable: true,
+            ...(error instanceof HttpError && error.code
+              ? { code: error.code }
+              : {}),
+            ...(error instanceof HttpError ? { status: error.status } : {}),
+          });
+        } finally {
+          setSubmittingIntent(null);
+        }
+        return;
+      }
+
       const launch = buildTopicRoomLaunchBody(
         previewCreate,
         draft.templateKind,
@@ -313,12 +395,17 @@ export function useTopicRoomCreate({
       }
     },
     [
+      activeWorkspaceId,
       createdRoom,
+      draft.prompt,
       draft.templateKind,
       effectiveTitle,
       frameworks,
+      launchMode,
+      onLaunched,
       previewCreate,
       queryClient,
+      selectedProviderId,
       selectLaunchedSession,
       taskRef,
     ]

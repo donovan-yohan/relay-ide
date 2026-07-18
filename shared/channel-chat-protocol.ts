@@ -426,6 +426,34 @@ export function applyChannelEventV1(
   }
 }
 
+/**
+ * Merge a page of history (`channels.history` REST response) into an existing
+ * reducer state. Pure + additive: dedupes by id via `sortedInsert` (so a
+ * re-merge of overlapping pages is idempotent), keeps `messages` seq-ascending,
+ * and never lowers `lastSeq` (older pages carry lower seqs; `lastSeq` stays the
+ * max). Used by the reverse-infinite-scroll `loadOlder()` path in
+ * `useChannelChatSocket`, which reads history via REST rather than the socket.
+ */
+export function mergeHistoryPage(
+  state: ChannelReducerState,
+  page: ChannelMessage[]
+): ChannelReducerState {
+  if (page.length === 0) return state;
+  let messages = state.messages;
+  for (const message of [...page].sort((a, b) => a.seq - b.seq)) {
+    messages = sortedInsert(messages, message);
+  }
+  const highestSeq = messages.length
+    ? messages[messages.length - 1]!.seq
+    : state.lastSeq;
+  return {
+    ...state,
+    messages,
+    byId: rebuildById(messages),
+    lastSeq: Math.max(state.lastSeq, highestSeq),
+  };
+}
+
 // ── mention parser (stored, not routed in slice 2) ──────────────────────────
 
 /**

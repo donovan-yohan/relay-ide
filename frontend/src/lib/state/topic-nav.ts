@@ -8,6 +8,7 @@ import type { SessionSummary } from '../types.js';
 import { isAttentionState, type DisplayState } from './display-state.js';
 import { highestPriorityState } from './attention.js';
 import { scopedSessionKey, sessionKeyMatches } from '../session-keys.js';
+import { isDmChannel } from '../dm-channels.js';
 
 export type TopicNavTone = 'active' | 'attention' | 'idle' | 'empty' | 'error';
 export type TopicNavKind = 'repo' | 'folder' | 'thread';
@@ -86,6 +87,10 @@ export interface TopicNavItem {
   kindLabel: string;
   /** User-chosen Discord-style channel taxonomy (repo/product-area/…). */
   channelKind: WorkspaceTopicChannelKind | null;
+  /** #1166: true when this topic is a DM channel (deterministic-id derivation). */
+  isDirectMessage: boolean;
+  /** Provider id of the DM partner, or null for a regular channel. */
+  dmProviderId: string | null;
   icon: string | null;
   color: string | null;
   pinned: boolean;
@@ -668,6 +673,7 @@ export function buildTopicNavModel(input: {
       });
     const kind = topicKind(topic);
     const order = topic.grouping.order ?? Number.MAX_SAFE_INTEGER;
+    const dmProviderId = isDmChannel(topic);
     return {
       id: topic.id,
       workspaceId: topic.workspaceId,
@@ -678,6 +684,8 @@ export function buildTopicNavModel(input: {
       kind: kind.kind,
       kindLabel: kind.label,
       channelKind: topic.display.kind ?? null,
+      isDirectMessage: dmProviderId !== null,
+      dmProviderId,
       icon: topic.display.icon ?? null,
       color: topic.display.color ?? null,
       pinned: topic.state.pinned,

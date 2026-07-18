@@ -1,0 +1,390 @@
+/* Channel timeline view (#1166). A near-1:1 density/type match to ChatView.css
+   so the channel surface reads as the same product — same font sizes, spacing
+   scale, and tokens — over a different (multi-sender) data model. No new spacing
+   values; all pulled from DESIGN.md's 4px scale and existing tokens. */
+
+.ch-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* header — title + kind/DM glyph + member/partner label + connection dot */
+.ch-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.ch-header__glyph {
+  display: inline-flex;
+  align-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+
+.ch-header__title {
+  color: var(--text);
+  font-weight: 700;
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ch-header__meta {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-header__spacer {
+  margin-left: auto;
+}
+
+.ch-conn-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.ch-conn-dot--on {
+  background: var(--status-success);
+}
+
+/* timeline scroll container — mirrors .tl */
+.ch-tl {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.ch-tl::-webkit-scrollbar {
+  width: 4px;
+}
+.ch-tl::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+.ch-tl-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* day divider — mirrors .tl-session-break, centered muted label + rule */
+.ch-day-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-day-divider::before,
+.ch-day-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.ch-day-divider__label {
+  white-space: nowrap;
+}
+
+/* unread line — 1px info rule + right-aligned "new" label */
+.ch-unread-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  color: var(--status-info);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-unread-line::before {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--status-info);
+}
+
+.ch-unread-line__label {
+  white-space: nowrap;
+}
+
+/* system message — full-width centered muted, own row (never in a group) */
+.ch-system-msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+/* message group — one sender header + tightly-stacked bodies */
+.ch-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ch-group__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.ch-group__badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  width: 14px;
+  height: 14px;
+}
+
+.ch-group__name {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.ch-group__time {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.ch-group__messages {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* single message row */
+.ch-msg {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 2px solid transparent;
+  padding-left: 8px;
+  margin-left: -8px;
+}
+
+.ch-msg--streaming,
+.ch-msg--interrupted,
+.ch-msg--failed {
+  border-left-width: 2px;
+  border-left-style: solid;
+}
+
+.ch-msg--interrupted {
+  border-left-color: var(--status-warning);
+}
+
+.ch-msg--failed {
+  border-left-color: var(--status-error);
+}
+
+/* message body text — matches .tl-text scale */
+.ch-msg__text {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* human message bubble — reuses .tl-text--user treatment (right-aligned) */
+.ch-msg--user .ch-msg__body {
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  margin: 0 0 0 auto;
+  max-width: 75%;
+  width: fit-content;
+  align-self: flex-end;
+}
+
+.ch-msg--user {
+  align-items: flex-end;
+  border-left: none;
+  padding-left: 0;
+  margin-left: 0;
+}
+
+/* streaming block cursor — DESIGN.md motion effect 4 (solid while active,
+   blinks after 530ms idle, opacity 0.7 when visible) */
+.ch-msg__cursor {
+  display: inline-block;
+  margin-left: 1px;
+  opacity: 0.7;
+}
+
+.ch-msg__cursor--blinking {
+  animation: ch-cursor-blink 1s step-end infinite;
+}
+
+@keyframes ch-cursor-blink {
+  0%,
+  50% {
+    opacity: 0.7;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* trailing status tags — interrupted / failed / truncated */
+.ch-msg__tag {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: lowercase;
+  margin-left: 6px;
+  opacity: 0.85;
+}
+
+.ch-msg__tag--interrupted {
+  color: var(--status-warning);
+}
+
+.ch-msg__tag--failed {
+  color: var(--status-error);
+}
+
+.ch-msg__tag--truncated {
+  color: var(--text-muted);
+}
+
+/* inline reply breadcrumb (#1170 owns the real thread UI; slice 3 is inline) */
+.ch-msg__reply {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-bottom: 2px;
+}
+
+/* empty / unavailable / paging chrome */
+.ch-empty,
+.ch-unavailable {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.ch-back-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-back-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ch-loading-older,
+.ch-top-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+/* catch-up banner — mirrors .tl-resume-banner, sticky at top of scroll area */
+.ch-catchup-banner {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.ch-catchup-banner__btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-catchup-banner__btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 767px) {
+  .ch-header {
+    padding: 8px 10px;
+  }
+
+  .ch-tl {
+    padding: 10px 6px;
+    gap: 12px;
+  }
+
+  .ch-tl-content {
+    gap: 12px;
+  }
+
+  .ch-msg--user .ch-msg__body {
+    max-width: 92%;
+  }
+}

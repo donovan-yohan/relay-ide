@@ -32,9 +32,11 @@ import {
   isFrameworkAvailable,
   isFrameworkWebAvailable,
   selectLaunchAgent,
+  shouldRouteToChannel,
   type SessionLaunchMode,
   type SessionModeOption,
 } from '../../lib/session-launch-mode.js';
+import { getOrCreateDmChannel } from '../../hooks/useTopicRoomCreate.js';
 import type {
   AgentType,
   AggregatedRepoInventoryGroup,
@@ -727,7 +729,14 @@ function CustomizeSessionBody({
     ? ([{ value: 'pty', label: 'shell' }] satisfies SessionModeOption[])
     : remoteNodeSelected
       ? ([{ value: 'pty', label: 'tui' }] satisfies SessionModeOption[])
-      : getSessionModeOptions(frameworkOptions, form.selectedAgent);
+      : // #1166: a web agent launch now opens as a DM channel, not a distinct
+        // "web session" — relabel so the picker copy matches the behavior.
+        getSessionModeOptions(frameworkOptions, form.selectedAgent).map(
+          (option) =>
+            option.value === 'web' && !option.disabled
+              ? { ...option, label: 'web (opens as chat)' }
+              : option
+        );
   const selectedFramework = frameworkOptions.find(
     (framework) => framework.id === form.selectedAgent
   );
@@ -1420,6 +1429,35 @@ const CustomizeSessionDialog = forwardRef<CustomizeSessionDialogHandle, Props>(
       // and require the user to pick another option (or wait for recovery).
       if (selectedOptionDegradedMessage) {
         setError(selectedOptionDegradedMessage);
+        return;
+      }
+      // #1166: an agent launch in web mode routes to a DM channel, never a
+      // mode:'web' session. (Remote nodes force pty above, so this is local +
+      // agent + web only.) Same getOrCreateDmChannel + setActiveChannelId flow
+      // as TopicComposer — this closes the last UI-driven web-session path.
+      if (
+        shouldRouteToChannel(
+          form.dialogSessionType === 'agent' ? 'agent' : 'terminal',
+          remoteNodeSelected ? 'pty' : form.sessionMode
+        )
+      ) {
+        setCreating(true);
+        setError(null);
+        try {
+          const framework = frameworks.find((f) => f.id === form.selectedAgent);
+          const topic = await getOrCreateDmChannel({
+            providerId: form.selectedAgent,
+            providerDisplayName: framework?.displayName ?? form.selectedAgent,
+            workspaceId: useUiStore.getState().activeWorkspaceId,
+          });
+          useUiStore.getState().setActiveChannelId(topic.id);
+          shellRef.current?.close();
+          onSessionCreated?.(topic.id);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to open chat');
+        } finally {
+          setCreating(false);
+        }
         return;
       }
       const cwdForRemote = remoteNodeSelected
