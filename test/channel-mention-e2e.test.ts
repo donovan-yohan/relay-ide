@@ -447,6 +447,52 @@ describe('mention routing — end-to-end via the router', () => {
     expect(agentReply(h.store, h.channelId)[1]!.threadId).toBeNull();
   });
 
+  it('a long thread packet reinserts its root and keeps the newest replies', async () => {
+    const h = await harness(
+      (agentType) => new RecordingAdapter(agentType, 'long thread ack')
+    );
+    const url = `/channels/${encodeURIComponent(h.channelId)}/messages`;
+    const root = await req<{ message: ChannelMessage }>({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: { text: 'load-bearing long-thread root' },
+    });
+    for (let i = 1; i <= 65; i++) {
+      await req({
+        port: h.port,
+        method: 'POST',
+        url,
+        body: {
+          text: `long-thread reply ${i}`,
+          threadId: root.body.message.id,
+        },
+      });
+    }
+    await req({
+      port: h.port,
+      method: 'POST',
+      url,
+      body: {
+        text: '@mock summarize the long thread',
+        threadId: root.body.message.id,
+      },
+    });
+
+    await waitFor(() => h.adapters().length === 1);
+    const adapter = h.adapters()[0] as RecordingAdapter;
+    await waitFor(() => adapter.contents.length === 1);
+    const packet = adapter.contents[0]!;
+    expect(packet).toContain('Operator: load-bearing long-thread root');
+    expect(packet).toContain('Operator: long-thread reply 47');
+    expect(packet).toContain('Operator: long-thread reply 65');
+    expect(packet).not.toContain('Operator: long-thread reply 46\n');
+    await waitFor(() => agentReply(h.store, h.channelId).length === 1);
+    expect(agentReply(h.store, h.channelId)[0]).toMatchObject({
+      threadId: root.body.message.id,
+    });
+  });
+
   it("the next turn's packet includes interim human rows but not the agent's own reply", async () => {
     const h = await harness(
       (agentType) => new RecordingAdapter(agentType, 'ack')

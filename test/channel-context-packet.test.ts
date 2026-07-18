@@ -143,6 +143,72 @@ describe('buildMentionContextPacket', () => {
     );
   });
 
+  it('keeps an own-agent root but excludes same-framework reply rows', () => {
+    const root = { ...msg(1, CLAUDE, 'claude-authored root'), id: 'chm:root' };
+    const ownReply = inThread(
+      msg(2, CLAUDE, 'already retained by provider context'),
+      root.id,
+      root.id
+    );
+    const humanReply = inThread(
+      msg(3, OPERATOR, 'new human detail'),
+      root.id,
+      ownReply.id
+    );
+    const trigger = inThread(
+      msg(4, OPERATOR, '@claude continue'),
+      root.id,
+      humanReply.id
+    );
+    const packet = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows: [root, ownReply, humanReply],
+      trigger,
+      lastDeliveredSeq: 999,
+    });
+    expect(packet).toBe(
+      [
+        '[Relay channel #general — you are @claude, one participant in a multi-party chat]',
+        '[Thread scope — only this thread is shown; its root message is always included]',
+        'Recent messages, oldest first. Lines are "sender: text"; agents tagged [agent], system rows tagged [system].',
+        'claude [agent]: claude-authored root',
+        'operator: new human detail',
+        '',
+        '[operator [human] mentioned you — reply to this message; your reply is posted to the channel]',
+        '@claude continue',
+      ].join('\n')
+    );
+  });
+
+  it('excludes a reply row belonging to a different thread', () => {
+    const root = { ...msg(1, OPERATOR, 'target root'), id: 'chm:root' };
+    const targetReply = inThread(
+      msg(2, OPERATOR, 'target detail'),
+      root.id,
+      root.id
+    );
+    const otherReply = inThread(
+      msg(3, OPERATOR, 'different-thread detail'),
+      'chm:other-root',
+      'chm:other-root'
+    );
+    const trigger = inThread(
+      msg(4, OPERATOR, '@claude answer target'),
+      root.id,
+      targetReply.id
+    );
+    const packet = buildMentionContextPacket({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows: [root, targetReply, otherReply],
+      trigger,
+      lastDeliveredSeq: 0,
+    });
+    expect(packet).toContain('operator: target detail');
+    expect(packet).not.toContain('different-thread detail');
+  });
+
   it('keeps an own-agent root despite a high cursor and retains only newest replies', () => {
     const root = { ...msg(1, CLAUDE, 'load-bearing root'), id: 'chm:root' };
     const rows = [root];
