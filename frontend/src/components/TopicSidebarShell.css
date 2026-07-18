@@ -1274,6 +1274,59 @@
   padding: 0;
 }
 
+/* #1166: DM sub-section header under a workspace group. Matches the muted,
+   lowercase participants-header treatment with a top border to separate it
+   from the channel list above. */
+.topic-workspace-group__dm-header {
+  padding: 6px 10px 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: lowercase;
+  opacity: 0.7;
+}
+
+.topic-tree__list--dm {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* #1166: DM row badge — agent glyph in its sender color on a muted-variant
+   background. Override the default badge svg stroke/fill so the AgentBadge
+   currentColor glyph renders (default .topic-row__badge svg strokes with --bg). */
+.topic-row__badge--dm {
+  box-shadow: none;
+  color: var(--text);
+}
+
+.topic-row__dm-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.topic-row__badge--dm .topic-row__dm-glyph svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* #1166: presence-only unread-activity dot (not a count badge). */
+.topic-row__activity-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--status-info);
+  flex: 0 0 6px;
+}
+
 /* #1084: search scope toggle */
 .topic-search__scope {
   background: transparent;

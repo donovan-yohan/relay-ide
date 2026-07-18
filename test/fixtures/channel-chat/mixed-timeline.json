@@ -1,0 +1,161 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "chm:1",
+    "channelId": "topic:general",
+    "seq": 1,
+    "kind": "message",
+    "status": "complete",
+    "sender": { "kind": "human", "id": "human:operator", "displayName": "you" },
+    "body": { "text": "first human message", "format": "markdown" },
+    "threadId": null,
+    "parentMessageId": null,
+    "createdAt": "2026-07-17T10:00:00.000Z",
+    "updatedAt": "2026-07-17T10:00:00.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "chm:2",
+    "channelId": "topic:general",
+    "seq": 2,
+    "kind": "message",
+    "status": "complete",
+    "sender": { "kind": "human", "id": "human:operator", "displayName": "you" },
+    "body": {
+      "text": "second human message (same group)",
+      "format": "markdown"
+    },
+    "threadId": null,
+    "parentMessageId": null,
+    "createdAt": "2026-07-17T10:01:00.000Z",
+    "updatedAt": "2026-07-17T10:01:00.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "chm:3",
+    "channelId": "topic:general",
+    "seq": 3,
+    "kind": "message",
+    "status": "streaming",
+    "sender": {
+      "kind": "agent",
+      "id": "agent:claude",
+      "providerId": "claude",
+      "displayName": "claude"
+    },
+    "body": { "text": "streaming partial output", "format": "markdown" },
+    "threadId": null,
+    "parentMessageId": null,
+    "createdAt": "2026-07-17T10:02:00.000Z",
+    "updatedAt": "2026-07-17T10:02:00.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "chm:4",
+    "channelId": "topic:general",
+    "seq": 4,
+    "kind": "message",
+    "status": "complete",
+    "sender": {
+      "kind": "agent",
+      "id": "agent:claude",
+      "providerId": "claude",
+      "displayName": "claude"
+    },
+    "body": {
+      "text": "completed agent message (group continuation)",
+      "format": "markdown"
+    },
+    "threadId": null,
+    "parentMessageId": null,
+    "createdAt": "2026-07-17T10:03:00.000Z",
+    "updatedAt": "2026-07-17T10:03:00.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "chm:5",
+    "channelId": "topic:general",
+    "seq": 5,
+    "kind": "message",
+    "status": "interrupted",
+    "sender": {
+      "kind": "agent",
+      "id": "agent:claude",
+      "providerId": "claude",
+      "displayName": "claude"
+    },
+    "body": { "text": "this reply was interrupted", "format": "markdown" },
+    "threadId": null,
+    "parentMessageId": null,
+    "createdAt": "2026-07-17T10:20:00.000Z",
+    "updatedAt": "2026-07-17T10:20:00.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "chm:6",
+    "channelId": "topic:general",
+    "seq": 6,
+    "kind": "message",
+    "status": "failed",
+    "sender": {
+      "kind": "agent",
+      "id": "agent:claude",
+      "providerId": "claude",
+      "displayName": "claude"
+    },
+    "body": { "text": "this reply failed", "format": "markdown" },
+    "threadId": null,
+    "parentMessageId": null,
+    "createdAt": "2026-07-17T10:21:00.000Z",
+    "updatedAt": "2026-07-17T10:21:00.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "chm:7",
+    "channelId": "topic:general",
+    "seq": 7,
+    "kind": "system",
+    "status": "complete",
+    "sender": { "kind": "system", "id": "system" },
+    "body": {
+      "text": "stream interrupted by server restart",
+      "format": "text"
+    },
+    "threadId": null,
+    "parentMessageId": null,
+    "createdAt": "2026-07-17T10:22:00.000Z",
+    "updatedAt": "2026-07-17T10:22:00.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "chm:8",
+    "channelId": "topic:general",
+    "seq": 8,
+    "kind": "message",
+    "status": "complete",
+    "sender": { "kind": "human", "id": "human:operator", "displayName": "you" },
+    "body": { "text": "a very large truncated message", "format": "markdown" },
+    "threadId": null,
+    "parentMessageId": null,
+    "truncated": true,
+    "createdAt": "2026-07-18T09:00:00.000Z",
+    "updatedAt": "2026-07-18T09:00:00.000Z"
+  },
+  {
+    "schemaVersion": 1,
+    "id": "chm:9",
+    "channelId": "topic:general",
+    "seq": 9,
+    "kind": "message",
+    "status": "complete",
+    "sender": { "kind": "human", "id": "human:operator", "displayName": "you" },
+    "body": {
+      "text": "reply referencing an earlier message",
+      "format": "markdown"
+    },
+    "threadId": "chm:4",
+    "parentMessageId": "chm:4",
+    "createdAt": "2026-07-18T09:01:00.000Z",
+    "updatedAt": "2026-07-18T09:01:00.000Z"
+  }
+]

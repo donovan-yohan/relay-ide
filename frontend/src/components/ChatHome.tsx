@@ -4,6 +4,7 @@ import { resolveSessionByKey, scopedSessionKey } from '../lib/session-keys.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import TopicComposer from './TopicComposer.js';
 import ChatView from './chat/ChatView.js';
+import ChannelView from './chat/ChannelView.js';
 import LiveSessionsPanel from './LiveSessionsPanel.js';
 import './ChatHome.css';
 
@@ -23,19 +24,12 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
   const sessions = useSessionsStore((s) => s.sessions);
   const activeSessionId = useSessionsStore((s) => s.activeSessionId);
   const topicComposerOpen = useUiStore((s) => s.topicComposerOpen);
+  const activeChannelId = useUiStore((s) => s.activeChannelId);
   const activeSession = useMemo(
     () =>
       activeSessionId ? resolveSessionByKey(sessions, activeSessionId) : null,
     [activeSessionId, sessions]
   );
-
-  const mostRecentSession = useMemo(() => {
-    let best: (typeof sessions)[number] | undefined;
-    for (const session of sessions) {
-      if (!best || session.lastActivity > best.lastActivity) best = session;
-    }
-    return best;
-  }, [sessions]);
 
   // Live PTY agent/terminal sessions (Claude/Codex/Hermes TUIs, bare
   // terminals). Web-mode chat sessions live in the composer/ChatView flow, so
@@ -46,6 +40,16 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
     [sessions]
   );
 
+  // "Resume" must never resurrect the retired per-session web-chat surface, so
+  // it iterates the same web-excluded set LiveSessionsPanel shows (#1166).
+  const mostRecentSession = useMemo(() => {
+    let best: (typeof liveSessions)[number] | undefined;
+    for (const session of liveSessions) {
+      if (!best || session.lastActivity > best.lastActivity) best = session;
+    }
+    return best;
+  }, [liveSessions]);
+
   const resume = mostRecentSession
     ? {
         label: `resume "${mostRecentSession.displayName}"`,
@@ -55,7 +59,14 @@ export default function ChatHome({ onSelectSession }: ChatHomeProps) {
 
   return (
     <div className="chat-home" aria-label="chat home">
-      {activeSession?.mode === 'web' && !topicComposerOpen ? (
+      {activeChannelId ? (
+        // #1166: an open channel (DM or regular) is the primary chat surface.
+        // Keyed by id so unread-capture/last-read-write run per channel-open.
+        <ChannelView key={activeChannelId} channelId={activeChannelId} />
+      ) : activeSession?.mode === 'web' && !topicComposerOpen ? (
+        // Legacy per-session web chat: reachable only for pre-existing web-mode
+        // session rows (read-only compat). No creation path produces one after
+        // the #1166 entry-point rewires; provably unreachable from every launch.
         <ChatView sessionId={scopedSessionKey(activeSession)} />
       ) : (
         <>

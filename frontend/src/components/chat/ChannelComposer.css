@@ -1,0 +1,121 @@
+/* Channel composer (#1166). Reuses Composer.css rules (textarea, bar, hint,
+   attach) at the same type/spacing scale — no slash palette, no queue chips, no
+   context popover (turn/session concepts that don't exist on ChannelMessage). */
+
+.ch-composer {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.ch-composer__banner {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--status-error);
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-composer__ta {
+  flex: 1;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  padding: 10px 12px;
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+  overflow-y: auto;
+}
+
+.ch-composer__ta::placeholder {
+  color: var(--text-muted);
+}
+
+.ch-composer__ta:focus {
+  border-bottom-color: var(--accent);
+}
+
+/* pending POST round-trip: dim the affordance subtly, but never block typing */
+.ch-composer__ta[data-pending='true'] {
+  opacity: 0.85;
+}
+
+.ch-composer__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-composer__attach {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 2px 6px;
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.ch-composer__hint kbd {
+  border: 1px solid var(--border);
+  padding: 0 4px;
+  font-size: 0.65rem;
+  opacity: 0.7;
+  margin-right: 4px;
+}
+
+/* archived state — composer replaced by a single-row restore bar */
+.ch-composer__archived-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.ch-composer__restore {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-composer__restore:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ch-composer__restore:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+@media (max-width: 767px) {
+  .ch-composer__ta {
+    padding: 6px 4px;
+  }
+
+  .ch-composer__bar {
+    gap: 4px;
+    padding: 3px 4px;
+  }
+}

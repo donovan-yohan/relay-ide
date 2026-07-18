@@ -1,0 +1,108 @@
+import React, { useEffect, useState } from 'react';
+import type { ChannelMessage } from '../../../../shared/channel-chat-protocol.js';
+import { AssistantMarkdown } from './AssistantMarkdown.js';
+import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
+
+/** DESIGN.md motion effect 4: solid while text is actively arriving, blinks
+ * after 530ms of no change. Returns true when the cursor should blink. */
+function useIdleBlink(signal: string, active: boolean): boolean {
+  const [blinking, setBlinking] = useState(false);
+  useEffect(() => {
+    if (!active) {
+      setBlinking(false);
+      return;
+    }
+    setBlinking(false);
+    const timer = setTimeout(() => setBlinking(true), 530);
+    return () => clearTimeout(timer);
+  }, [signal, active]);
+  return blinking;
+}
+
+interface ChannelMessageRowProps {
+  message: ChannelMessage;
+  variant?: 'default' | 'system';
+}
+
+export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
+  message,
+  variant = 'default',
+}) => {
+  const streaming = message.status === 'streaming';
+  const blinking = useIdleBlink(message.body.text, streaming);
+
+  if (variant === 'system' || message.kind === 'system') {
+    return (
+      <div className="ch-system-msg" role="note">
+        <span className="ch-system-msg__label">{message.body.text}</span>
+      </div>
+    );
+  }
+
+  const isHuman = message.sender.kind === 'human';
+  const rowClasses = [
+    'ch-msg',
+    isHuman ? 'ch-msg--user' : null,
+    message.status === 'streaming' ? 'ch-msg--streaming' : null,
+    message.status === 'interrupted' ? 'ch-msg--interrupted' : null,
+    message.status === 'failed' ? 'ch-msg--failed' : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const streamStyle =
+    streaming && !isHuman
+      ? ({
+          borderLeftColor: resolveSenderIdentity(message.sender).colorVar,
+        } as React.CSSProperties)
+      : undefined;
+
+  const body =
+    message.body.format === 'markdown' ? (
+      <div className="ch-msg__body">
+        <AssistantMarkdown text={message.body.text} keyPrefix={message.id} />
+      </div>
+    ) : (
+      <pre className="ch-msg__text ch-msg__body">{message.body.text}</pre>
+    );
+
+  return (
+    <div className={rowClasses} style={streamStyle}>
+      {message.parentMessageId ? (
+        <div className="ch-msg__reply" aria-hidden="true">
+          ↳ reply
+        </div>
+      ) : null}
+      {message.body.format === 'markdown' ? (
+        <div className="ch-msg__body-wrap">
+          {body}
+          {streaming ? (
+            <span
+              className={`ch-msg__cursor${blinking ? ' ch-msg__cursor--blinking' : ''}`}
+              aria-hidden="true"
+            >
+              █
+            </span>
+          ) : null}
+        </div>
+      ) : (
+        body
+      )}
+      {message.status === 'interrupted' ? (
+        <span className="ch-msg__tag ch-msg__tag--interrupted">
+          interrupted
+        </span>
+      ) : null}
+      {message.status === 'failed' ? (
+        <span className="ch-msg__tag ch-msg__tag--failed">failed</span>
+      ) : null}
+      {message.truncated ? (
+        <span className="ch-msg__tag ch-msg__tag--truncated">
+          truncated · 256kb limit
+        </span>
+      ) : null}
+    </div>
+  );
+};
+
+export default ChannelMessageRow;

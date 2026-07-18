@@ -124,6 +124,7 @@ export type EventMessage =
       manifest?: NodeManifest;
     }
   | { type: 'server-restarting'; reason?: string }
+  | { type: 'channel-activity'; channelId: string; latestSeq: number }
   | ({
       type: 'session-durability-changed';
       sessionId: string;
