@@ -144,6 +144,7 @@ import {
   getFrameworkAvailability,
   getFrameworkClientInfoWithRuntime,
   getFrameworkWebAvailability,
+  listConfiguredFrameworks,
 } from './frameworks.js';
 import {
   createOpenAiCompatibleCommandCenterIntentProvider,
@@ -233,6 +234,11 @@ import {
 } from './channel-message-store.js';
 import { createChannelHub, type ChannelHub } from './channel-hub.js';
 import { createChannelChatRouter } from './channel-chat-router.js';
+import {
+  createChannelAgentBinder,
+  type ChannelAgentBinder,
+  type MentionTarget,
+} from './channel-agent-binder.js';
 import { v2Adapters } from './protocol-adapters/index.js';
 import {
   initWorkContextArtifactStore,
@@ -1715,6 +1721,36 @@ function initChannelMessageStoreBestEffort(
   }
 }
 
+/**
+ * Routable framework targets for @-mention routing (#1167): builtin/configured
+ * frameworks gated on `supportsWebSessions` + web availability, plus `mock` when
+ * `RELAY_MOCK_AGENT=1` (dev/tests). Unavailable frameworks are INCLUDED with
+ * `available:false` so the palette can render them greyed with the reason.
+ */
+async function channelMentionTargets(config: Config): Promise<MentionTarget[]> {
+  const targets: MentionTarget[] = [];
+  for (const framework of listConfiguredFrameworks(config.frameworks)) {
+    const web = await getFrameworkWebAvailability(framework);
+    targets.push({
+      id: framework.id,
+      displayName: framework.displayName,
+      kind: 'framework',
+      available: web.available,
+      reason: web.available ? null : (web.reason ?? null),
+    });
+  }
+  if (process.env['RELAY_MOCK_AGENT'] === '1') {
+    targets.push({
+      id: 'mock',
+      displayName: 'Mock Agent',
+      kind: 'framework',
+      available: true,
+      reason: null,
+    });
+  }
+  return targets;
+}
+
 async function ensureStartupTerminalBackendAvailable(
   _startupConfig: Config
 ): Promise<void> {}
@@ -2016,6 +2052,31 @@ async function main(): Promise<void> {
     store: channelMessageStore,
     channelExists: (channelId) => Boolean(workspaceTopicStore?.get(channelId)),
   });
+  // @-mention routing binder (#1167): spawns/reuses (channel, framework) web
+  // sessions on mention and streams replies back through the slice-2 bridge.
+  // Null when the channel store failed to init (routes degrade to 503).
+  const channelAgentBinder: ChannelAgentBinder | null = channelMessageStore
+    ? createChannelAgentBinder({
+        store: channelMessageStore,
+        hub: channelHub,
+        topicStore: workspaceTopicStore,
+        sessions: {
+          createWeb: sessions.createWeb,
+          get: sessions.get,
+          onSessionEnd: sessions.onSessionEnd,
+        },
+        knownProviderIds: Object.keys(v2Adapters),
+        mentionTargets: () => channelMentionTargets(getConfig()),
+        port: startupConfig.port,
+        configDir,
+        localNodeId: DEFAULT_LOCAL_NODE_ID,
+      })
+    : null;
+  if (channelAgentBinder) {
+    channelHub.onMessagePosted((message, mentions) =>
+      channelAgentBinder.handleMessagePosted(message, mentions)
+    );
+  }
   const cliGatewayEventBus = createCliGatewayEventBus();
 
   try {
@@ -2725,6 +2786,7 @@ async function main(): Promise<void> {
       store: channelMessageStore,
       hub: channelHub,
       topicStore: workspaceTopicStore,
+      binder: channelAgentBinder,
       knownProviderIds: Object.keys(v2Adapters),
       requireAuth: requireCliGatewayAuth,
       requireReadActorAuth: requireCliGatewayAuthForActorCommand,
@@ -3199,6 +3261,9 @@ async function main(): Promise<void> {
     { strictDeny: process.env.RELAY_NODE_SOURCE_STRICT_DENY === '1' },
     channelHub
   );
+  // Coarse per-agent status rides the existing /ws/events lane (#1167 §6),
+  // mirroring the sidebar-badge broadcaster pattern.
+  channelAgentBinder?.setStatusBroadcaster(broadcastEvent);
 
   const browserScopedToken = generateScopedToken();
   process.env['RELAY_IDE_BROWSER'] = '1';
@@ -5833,6 +5898,7 @@ async function main(): Promise<void> {
         workspaceTopicStore?.close();
         prOverseerStore?.close();
         workContextMessageStore?.close();
+        channelAgentBinder?.close();
         channelHub.close();
         channelMessageStore?.close();
         closeInterventionLog();
@@ -5919,6 +5985,7 @@ async function main(): Promise<void> {
     workspaceTopicStore?.close();
     prOverseerStore?.close();
     workContextMessageStore?.close();
+    channelAgentBinder?.close();
     channelHub.close();
     channelMessageStore?.close();
     closeInterventionLog();

@@ -5,6 +5,7 @@ import type { ChannelHub } from './channel-hub.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
 import {
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
+  type ChannelMessage,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 
@@ -46,6 +47,14 @@ export interface BindSessionToChannelInput {
   store: ChannelMessageStore;
   hub: ChannelHub;
   displayName?: string;
+  /**
+   * Invoked in `finalize()` after `completeStreamBroadcast` for `status ===
+   * 'complete'` rows ONLY (#1167 §8). Bridge-authored replies bypass
+   * `postToChannel`, so `onMessagePosted` never fires for them — this is the sole
+   * hook that lets a spawned channel agent's reply trigger another agent
+   * (agent-to-agent mentions). Interrupted/failed rows never fire it.
+   */
+  onAssistantMessageFinalized?: (message: ChannelMessage) => void;
 }
 
 /**
@@ -166,11 +175,20 @@ export function bindSessionToChannel(
     } catch (err) {
       logger.warn('channel bridge member upsert failed:', err);
     }
+    // #1167 §8: only a cleanly-completed assistant reply may trigger downstream
+    // agent-to-agent mentions. Interrupted/failed rows never fan out.
+    if (status === 'complete' && input.onAssistantMessageFinalized) {
+      try {
+        input.onAssistantMessageFinalized(message);
+      } catch (err) {
+        logger.warn('channel bridge onAssistantMessageFinalized failed:', err);
+      }
+    }
   }
 
   function finalizeTurn(
     turnId: string | undefined,
-    status: 'complete' | 'failed'
+    status: 'complete' | 'interrupted' | 'failed'
   ): void {
     for (const stream of streams.values()) {
       if (stream.closed) continue;
@@ -214,7 +232,16 @@ export function bindSessionToChannel(
         break;
       }
       case 'agent-turn-completed-v2': {
-        finalizeTurn(patch.turnId, 'complete');
+        // #1167 §5: honor the turn's terminal status instead of hard-coding
+        // 'complete' so an interrupted/failed turn produces an honestly-labeled
+        // row (drives the interrupt affordance + error surfacing).
+        const status =
+          patch.status === 'interrupted'
+            ? 'interrupted'
+            : patch.status === 'failed'
+              ? 'failed'
+              : 'complete';
+        finalizeTurn(patch.turnId, status);
         break;
       }
       case 'agent-error-v2': {

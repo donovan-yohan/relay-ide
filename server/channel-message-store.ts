@@ -341,6 +341,13 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
   if (meta?.mentions && Array.isArray(meta.mentions)) {
     message.mentions = meta.mentions;
   }
+  // Surface app-level meta (e.g. #1167 approval payloads) while keeping the
+  // internal routing keys off the wire — providerId rides `sender.providerId`,
+  // mentions/truncated have dedicated fields above.
+  if (meta) {
+    const { providerId: _pid, mentions: _m, truncated: _t, ...rest } = meta;
+    if (Object.keys(rest).length > 0) message.meta = rest;
+  }
   if (row.source_session_id) {
     message.source = {
       sessionId: row.source_session_id,

@@ -22,11 +22,13 @@ function formatGroupTime(iso: string): string {
 interface ChannelMessageGroupProps {
   sender: ChannelSenderRef;
   messages: ChannelMessage[];
+  channelId: string;
 }
 
 export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
   sender,
   messages,
+  channelId,
 }) => {
   const identity = resolveSenderIdentity(sender);
   const first = messages[0];
@@ -57,7 +59,11 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
       ) : null}
       <div className="ch-group__messages">
         {messages.map((message) => (
-          <ChannelMessageRow key={message.id} message={message} />
+          <ChannelMessageRow
+            key={message.id}
+            message={message}
+            channelId={channelId}
+          />
         ))}
       </div>
     </div>

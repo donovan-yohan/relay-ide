@@ -11,7 +11,10 @@ import { useChannelChatSocket } from '../../hooks/useChannelChatSocket.js';
 import {
   fetchWorkspaceTopic,
   restoreWorkspaceTopic,
+  fetchChannelRoster,
+  interruptChannelAgent,
   HttpError,
+  type ChannelAgentStatus,
 } from '../../lib/api.js';
 import { isDmChannel } from '../../lib/dm-channels.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
@@ -19,6 +22,11 @@ import {
   channelLastReadKey,
   useChannelActivityStore,
 } from '../../lib/stores/channel-activity.js';
+import {
+  channelAgentStatusKey,
+  resolveEffectiveAgentStatus,
+  useChannelAgentStatusStore,
+} from '../../lib/stores/channel-agent-status.js';
 import { useUiStore } from '../../lib/stores/ui.js';
 import { AgentBadge } from '../AgentBadge.js';
 import { ChannelTimeline } from './ChannelTimeline.js';
@@ -138,6 +146,104 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     [post]
   );
 
+  // Agent presence chips (#1167). One chip per agent that is bound (roster
+  // binding) OR currently non-idle in the live status store, with a `streaming`
+  // fallback derived from the timeline reducer so the header degrades gracefully
+  // if the events socket lags.
+  const rosterChipsQuery = useQuery({
+    queryKey: ['channel-roster', channelId],
+    queryFn: () => fetchChannelRoster(channelId),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const statusMap = useChannelAgentStatusStore((s) => s.statusByChannelAgent);
+  const statusUpdatedAtMap = useChannelAgentStatusStore(
+    (s) => s.updatedAtByChannelAgent
+  );
+
+  // On channel switch, drop this channel's per-agent socket statuses so the
+  // freshly-fetched roster is authoritative on open; live transitions repopulate
+  // as they arrive. Without this the previously dead `clearChannel` reconciliation
+  // never ran and a stale busy chip could survive a channel round-trip (#1167).
+  useEffect(() => {
+    const { clearChannel } = useChannelAgentStatusStore.getState();
+    clearChannel(channelId);
+    return () => clearChannel(channelId);
+  }, [channelId]);
+
+  const streamingProviderIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const message of reducer.messages) {
+      if (message.status !== 'streaming' || message.sender.kind !== 'agent')
+        continue;
+      const providerId =
+        message.sender.providerId ?? message.sender.id.replace(/^agent:/, '');
+      if (providerId) ids.add(providerId);
+    }
+    return ids;
+  }, [reducer.messages]);
+
+  const rosterUpdatedAt = rosterChipsQuery.dataUpdatedAt;
+  const agentChips = useMemo(() => {
+    const roster = rosterChipsQuery.data ?? [];
+    const rosterById = new Map(roster.map((entry) => [entry.id, entry]));
+    const candidateIds = new Set<string>();
+    for (const entry of roster) {
+      if (entry.binding != null) candidateIds.add(entry.id);
+    }
+    const prefix = `${channelId} `;
+    for (const key of Object.keys(statusMap)) {
+      if (key.startsWith(prefix)) candidateIds.add(key.slice(prefix.length));
+    }
+    for (const providerId of streamingProviderIds) candidateIds.add(providerId);
+
+    const chips: Array<{
+      agentId: string;
+      status: ChannelAgentStatus;
+      identity: ReturnType<typeof resolveSenderIdentity>;
+    }> = [];
+    for (const agentId of candidateIds) {
+      const entry = rosterById.get(agentId);
+      const key = channelAgentStatusKey(channelId, agentId);
+      const streaming = streamingProviderIds.has(agentId);
+      const status = resolveEffectiveAgentStatus({
+        socketStatus: statusMap[key],
+        socketUpdatedAt: statusUpdatedAtMap[key],
+        rosterStatus: entry?.binding?.status,
+        rosterUpdatedAt,
+        streaming,
+      });
+      // Show a chip for a bound agent (even when idle) or one that is currently
+      // active/streaming — but drop an unbound agent whose only signal is a stale
+      // socket status the roster has since superseded to idle.
+      if (entry?.binding == null && status === 'idle' && !streaming) continue;
+      const identity = resolveSenderIdentity({
+        kind: 'agent',
+        id: `agent:${agentId}`,
+        providerId: agentId,
+        ...(entry?.displayName ? { displayName: entry.displayName } : {}),
+      });
+      chips.push({ agentId, status, identity });
+    }
+    return chips;
+  }, [
+    rosterChipsQuery.data,
+    rosterUpdatedAt,
+    statusMap,
+    statusUpdatedAtMap,
+    streamingProviderIds,
+    channelId,
+  ]);
+
+  const handleInterruptAgent = useCallback(
+    (agentId: string) => {
+      // 404 (no live binding) / 409 (NO_ACTIVE_TURN) both mean "already idle" —
+      // swallow so a race between the click and the agent finishing is silent.
+      void interruptChannelAgent(channelId, agentId).catch(() => {});
+    },
+    [channelId]
+  );
+
   const channelNotFound =
     notFound ||
     (topicQuery.error instanceof HttpError && topicQuery.error.status === 404);
@@ -188,6 +294,48 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             {channel.members.length === 1 ? '' : 's'}
           </span>
         ) : null}
+        {agentChips.length > 0 ? (
+          <span className="ch-header__agents" aria-label="active agents">
+            {agentChips.map((chip) => {
+              const canInterrupt =
+                chip.status === 'streaming' ||
+                chip.status === 'thinking' ||
+                chip.status === 'waiting';
+              return (
+                <span
+                  key={chip.agentId}
+                  className={`ch-agent-chip ch-agent-chip--${chip.status}`}
+                  title={`${chip.identity.label} · ${chip.status}`}
+                >
+                  {chip.identity.glyph ? (
+                    <span
+                      className="ch-agent-chip__glyph"
+                      style={{ color: chip.identity.colorVar }}
+                      aria-hidden="true"
+                    >
+                      <AgentBadge agent={chip.identity.glyph} />
+                    </span>
+                  ) : null}
+                  <span className="ch-agent-chip__dot" aria-hidden="true" />
+                  <span className="ch-agent-chip__name">
+                    {chip.identity.label}
+                  </span>
+                  {canInterrupt ? (
+                    <button
+                      type="button"
+                      className="ch-agent-chip__stop"
+                      aria-label={`interrupt ${chip.identity.label}`}
+                      title="interrupt"
+                      onClick={() => handleInterruptAgent(chip.agentId)}
+                    >
+                      ■
+                    </button>
+                  ) : null}
+                </span>
+              );
+            })}
+          </span>
+        ) : null}
         <span className="ch-header__spacer" />
         {disconnected ? (
           // Reconnect gave up (server outage/deploy > backoff budget). Surface a
@@ -227,6 +375,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         <ChannelTimeline
           messages={reducer.messages}
           lastReadSeq={lastReadSeq}
+          channelId={channelId}
           channelTitle={title}
           hasMoreOlder={hasMoreOlder}
           loadingOlder={loadingOlder}
@@ -241,6 +390,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       )}
 
       <ChannelComposer
+        channelId={channelId}
         channelTitle={title}
         onSend={handleSend}
         postPending={postPending}

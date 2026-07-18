@@ -51,6 +51,89 @@
   margin-left: auto;
 }
 
+/* agent presence chips (#1167) — one per bound/active agent, glyph + status dot
+   + optional interrupt button. Status color: grey idle, pulsing amber busy,
+   green streaming. Only DESIGN.md tokens. */
+.ch-header__agents {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ch-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.ch-agent-chip__glyph {
+  display: inline-flex;
+  align-items: center;
+  width: 12px;
+  height: 12px;
+}
+
+.ch-agent-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ch-agent-chip--streaming .ch-agent-chip__dot {
+  background: var(--status-success);
+}
+
+.ch-agent-chip--thinking .ch-agent-chip__dot,
+.ch-agent-chip--spawning .ch-agent-chip__dot,
+.ch-agent-chip--waiting .ch-agent-chip__dot {
+  background: var(--status-warning);
+  animation: ch-agent-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ch-agent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.ch-agent-chip__name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 12ch;
+}
+
+.ch-agent-chip__stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.6rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ch-agent-chip__stop:hover {
+  color: var(--status-error, var(--accent));
+}
+
 .ch-conn-dot {
   display: inline-block;
   width: 8px;
@@ -166,6 +249,34 @@
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   text-align: center;
+}
+
+/* approval controls on an actionable system row (#1167) */
+.ch-system-msg__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ch-system-msg__btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-system-msg__btn--approve:hover {
+  border-color: var(--status-success);
+  color: var(--status-success);
+}
+
+.ch-system-msg__btn--deny:hover {
+  border-color: var(--status-error, var(--accent));
+  color: var(--status-error, var(--accent));
 }
 
 /* message group — one sender header + tightly-stacked bodies */

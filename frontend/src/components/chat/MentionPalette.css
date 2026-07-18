@@ -1,0 +1,87 @@
+/* @mention palette (#1167). Structural + visual sibling of `.slash*`
+   (Composer.css): same absolute float above the composer, same surface/border
+   tokens, same active-row `>` marker. Only DESIGN.md tokens — no new colors. */
+
+.mention-palette {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 8px);
+  z-index: 10;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.mention-palette__row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 18px;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.mention-palette__row:not(.mention-palette__row--unavailable):hover,
+.mention-palette__row--active:not(.mention-palette__row--unavailable) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.mention-palette__row--active:not(.mention-palette__row--unavailable)::before {
+  content: '>';
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  line-height: 1;
+  color: var(--accent);
+}
+
+/* Unavailable rows stay visible but read as inert (greyed, no highlight). */
+.mention-palette__row--unavailable {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mention-palette__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.mention-palette__name {
+  color: var(--text);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: lowercase;
+  min-width: 0;
+}
+
+.mention-palette__id {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.mention-palette__reason {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

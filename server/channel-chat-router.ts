@@ -13,8 +13,14 @@ import {
   type ChannelMessageStore,
 } from './channel-message-store.js';
 import type { ChannelHub } from './channel-hub.js';
+import {
+  ChannelAgentNoActiveTurnError,
+  ChannelAgentNotFoundError,
+  type ChannelAgentBinder,
+} from './channel-agent-binder.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
 import type { WorkspaceTopic } from '../shared/workspace-topics.js';
+import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
   parseMentions,
   type ChannelBodyFormat,
@@ -75,6 +81,8 @@ export interface ChannelChatRouterDeps {
   store: ChannelMessageStore | null;
   hub: ChannelHub;
   topicStore: WorkspaceTopicStore | null;
+  /** @-mention routing binder (#1167); roster/interrupt/approval routes 503 without it. */
+  binder?: ChannelAgentBinder | null;
   /** framework ids for @-mention resolution (v2 adapter registry + topic default). */
   knownProviderIds?: readonly string[];
   /** byte budget for one history response body (defaults to 4MB). */
@@ -217,6 +225,23 @@ function topicStoreOr503(
   return null;
 }
 
+function binderOr503(
+  res: Response,
+  binder: ChannelAgentBinder | null | undefined
+): ChannelAgentBinder | null {
+  if (binder) return binder;
+  sendGatewayError(
+    res,
+    'SERVER_UNAVAILABLE',
+    'channel agent binder unavailable',
+    true,
+    {
+      reasonCode: 'CHANNEL_BINDER_UNAVAILABLE',
+    }
+  );
+  return null;
+}
+
 /**
  * Server-derived sender attribution from the authenticated lane — NEVER from the
  * request body ([MF]: attribution is the core product promise). Browser cookie
@@ -347,6 +372,29 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
   const getAuth = deps.requireReadActorAuth?.('channels.get') ?? auth;
   const historyAuth = deps.requireReadActorAuth?.('channels.history') ?? auth;
   const postAuth = deps.requireWriteActorAuth?.('channels.post') ?? auth;
+  const rosterAuth = deps.requireReadActorAuth?.('channels.roster') ?? auth;
+  const interruptAuth =
+    deps.requireWriteActorAuth?.('channels.interrupt') ?? auth;
+  const approvalAuth =
+    deps.requireWriteActorAuth?.('channels.respond-approval') ?? auth;
+
+  /** Persisted, non-derived channel guard shared by the #1167 agent routes. */
+  function requirePersistedChannel(
+    req: Request,
+    res: Response
+  ): WorkspaceTopic | null {
+    const topicStore = topicStoreOr503(res, deps.topicStore);
+    if (!topicStore) return null;
+    const id = req.params['id'] ?? '';
+    const topic = topicStore.get(id);
+    if (!topic || topic.source !== 'persisted') {
+      sendGatewayError(res, 'NOT_FOUND', 'channel not found', false, {
+        channelId: id,
+      });
+      return null;
+    }
+    return topic;
+  }
 
   router.get('/channels', listAuth, (req, res) => {
     if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
@@ -410,8 +458,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     if (threadId) filter.threadId = threadId;
     try {
       const all = store.history(id, filter);
-      const direction =
-        filter.afterSeq !== undefined ? 'forward' : 'backward';
+      const direction = filter.afterSeq !== undefined ? 'forward' : 'backward';
       const budgeted = budgetHistoryRows(
         all,
         direction,
@@ -525,6 +572,122 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       mapStoreError(res, error);
     }
   });
+
+  // #1167 §2: per-request agent roster (framework availability + live binding
+  // status). Derived per request — no persistent handle registry.
+  router.get('/channels/:id/roster', rosterAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+    if (!storeOr503(res, deps.store)) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    const binder = binderOr503(res, deps.binder);
+    if (!binder) return;
+    binder
+      .rosterForChannel(topic.id)
+      .then((roster) => res.json({ roster }))
+      .catch((error) => mapStoreError(res, error));
+  });
+
+  // #1167 §7: interrupt the agent's active turn.
+  router.post(
+    '/channels/:id/agents/:agentId/interrupt',
+    interruptAuth,
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      const topic = requirePersistedChannel(req, res);
+      if (!topic) return;
+      const binder = binderOr503(res, deps.binder);
+      if (!binder) return;
+      const agentId = req.params['agentId'] ?? '';
+      binder
+        .interrupt(topic.id, agentId)
+        .then(() => res.json({ ok: true }))
+        .catch((error) => {
+          if (error instanceof ChannelAgentNotFoundError) {
+            sendGatewayError(res, 'NOT_FOUND', 'no live agent binding', false, {
+              channelId: topic.id,
+              agentId,
+              reasonCode: 'CHANNEL_AGENT_NOT_BOUND',
+            });
+            return;
+          }
+          if (error instanceof ChannelAgentNoActiveTurnError) {
+            sendGatewayError(
+              res,
+              'SESSION_CONFLICT',
+              'agent has no active turn to interrupt',
+              false,
+              { channelId: topic.id, agentId, reasonCode: 'NO_ACTIVE_TURN' }
+            );
+            return;
+          }
+          mapStoreError(res, error);
+        });
+    }
+  );
+
+  // #1167 §7: respond to an in-channel approval request.
+  router.post(
+    '/channels/:id/agents/:agentId/approvals',
+    approvalAuth,
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+      const topic = requirePersistedChannel(req, res);
+      if (!topic) return;
+      const binder = binderOr503(res, deps.binder);
+      if (!binder) return;
+      const agentId = req.params['agentId'] ?? '';
+      const body = bodyRecord(req);
+      const requestId = body['requestId'];
+      if (typeof requestId !== 'string' || requestId.length === 0) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          'requestId is required',
+          false,
+          {
+            field: 'requestId',
+          }
+        );
+        return;
+      }
+      const decision = body['decision'];
+      if (
+        !isRecord(decision) ||
+        (decision['kind'] !== 'accept' &&
+          decision['kind'] !== 'decline' &&
+          decision['kind'] !== 'cancel')
+      ) {
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          'decision.kind must be accept|decline|cancel',
+          false,
+          { field: 'decision' }
+        );
+        return;
+      }
+      binder
+        .respondToApproval(
+          topic.id,
+          agentId,
+          requestId,
+          decision as unknown as AgentApprovalDecisionV2
+        )
+        .then(() => res.json({ ok: true }))
+        .catch((error) => {
+          if (error instanceof ChannelAgentNotFoundError) {
+            sendGatewayError(res, 'NOT_FOUND', 'no live agent binding', false, {
+              channelId: topic.id,
+              agentId,
+              reasonCode: 'CHANNEL_AGENT_NOT_BOUND',
+            });
+            return;
+          }
+          mapStoreError(res, error);
+        });
+    }
+  );
 
   return router;
 }

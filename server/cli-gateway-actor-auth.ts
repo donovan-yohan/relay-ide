@@ -71,6 +71,7 @@ export const CLI_GATEWAY_ACTOR_READ_COMMANDS = [
   'channels.list',
   'channels.get',
   'channels.history',
+  'channels.roster',
   'context.get',
   'context.list',
   'inbox.list',
@@ -108,6 +109,8 @@ export const CLI_GATEWAY_ACTOR_WRITE_COMMANDS = [
   'workspace-topics.archive',
   'workspace-topics.restore',
   'channels.post',
+  'channels.interrupt',
+  'channels.respond-approval',
 ] as const;
 export type CliGatewayActorWriteCommand =
   (typeof CLI_GATEWAY_ACTOR_WRITE_COMMANDS)[number];
@@ -343,10 +346,16 @@ export function cliGatewayActorCommandCapabilities(
   if (
     command === 'channels.list' ||
     command === 'channels.get' ||
-    command === 'channels.history'
+    command === 'channels.history' ||
+    command === 'channels.roster'
   )
     return ['context:read'];
-  if (command === 'channels.post') return ['context:write'];
+  if (
+    command === 'channels.post' ||
+    command === 'channels.interrupt' ||
+    command === 'channels.respond-approval'
+  )
+    return ['context:write'];
   if (
     command === 'workflow-runs.list' ||
     command === 'workflow-runs.get' ||

@@ -21,6 +21,7 @@ const RESYNC_BUTTON_DELAY_MS = 5_000;
 interface ChannelTimelineProps {
   messages: ChannelMessage[];
   lastReadSeq: number | null;
+  channelId: string;
   channelTitle: string;
   hasMoreOlder: boolean;
   loadingOlder: boolean;
@@ -32,6 +33,7 @@ interface ChannelTimelineProps {
 export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   messages,
   lastReadSeq,
+  channelId,
   channelTitle,
   hasMoreOlder,
   loadingOlder,
@@ -210,6 +212,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
               <ChannelMessageRow
                 key={node.message.id}
                 message={node.message}
+                channelId={channelId}
                 variant="system"
               />
             );
@@ -220,6 +223,7 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
               key={firstId}
               sender={node.sender}
               messages={node.messages}
+              channelId={channelId}
             />
           );
         })}

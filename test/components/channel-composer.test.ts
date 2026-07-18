@@ -3,6 +3,7 @@
 import React, { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChannelComposer } from '../../frontend/src/components/chat/ChannelComposer.js';
 
 (
@@ -31,17 +32,27 @@ interface RenderOpts {
 }
 
 async function renderComposer(opts: RenderOpts = {}): Promise<void> {
+  // ChannelComposer lazily fetches the @mention roster via useQuery, so it must
+  // render under a QueryClientProvider even when the palette never opens.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   await act(async () => {
     root.render(
-      React.createElement(ChannelComposer, {
-        channelTitle: 'general',
-        onSend: opts.onSend ?? (() => Promise.resolve()),
-        postPending: opts.postPending ?? false,
-        storeDown: opts.storeDown ?? false,
-        archived: opts.archived ?? false,
-        onRestore: opts.onRestore ?? (() => {}),
-        restorePending: opts.restorePending ?? false,
-      })
+      React.createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        React.createElement(ChannelComposer, {
+          channelId: 'topic:general',
+          channelTitle: 'general',
+          onSend: opts.onSend ?? (() => Promise.resolve()),
+          postPending: opts.postPending ?? false,
+          storeDown: opts.storeDown ?? false,
+          archived: opts.archived ?? false,
+          onRestore: opts.onRestore ?? (() => {}),
+          restorePending: opts.restorePending ?? false,
+        })
+      )
     );
   });
 }

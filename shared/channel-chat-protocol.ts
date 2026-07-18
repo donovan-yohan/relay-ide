@@ -66,6 +66,13 @@ export interface ChannelMessage {
   parentMessageId: ChannelMessageId | null;
   mentions?: ChannelMention[];
   source?: ChannelMessageSource;
+  /**
+   * Opaque row metadata surfaced to clients (#1167). System rows carry actionable
+   * payloads here — e.g. an approval request `{ approvalRequestId, agentId,
+   * sessionId }` the timeline renders approve/deny controls for. Additive and
+   * optional: rows without meta are unaffected.
+   */
+  meta?: Record<string, unknown>;
   truncated?: boolean;
   clientMessageId?: string;
   createdAt: string;

@@ -1,6 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import './ChannelComposer.css';
+import { useQuery } from '@tanstack/react-query';
 import { createBrowserId } from '../../lib/browserId.js';
+import { fetchChannelRoster } from '../../lib/api.js';
+import { detectTrigger } from './slashTrigger.js';
+import { MentionPalette, filterRoster } from './MentionPalette.js';
 
 const LINE_BREAK_INPUT_TYPES = new Set(['insertLineBreak', 'insertParagraph']);
 const LINE_BREAK_BEFOREINPUT_SKIP_WINDOW_MS = 500;
@@ -8,6 +18,7 @@ const IMAGE_ATTACH_TOOLTIP =
   'image attachments are coming in a future update — the channel API does not accept them yet';
 
 interface ChannelComposerProps {
+  channelId: string;
   channelTitle: string;
   /** Idempotent send: the SAME clientMessageId is reused across manual retries. */
   onSend: (text: string, clientMessageId: string) => Promise<void>;
@@ -21,6 +32,7 @@ interface ChannelComposerProps {
 }
 
 export const ChannelComposer: React.FC<ChannelComposerProps> = ({
+  channelId,
   channelTitle,
   onSend,
   postPending,
@@ -36,6 +48,32 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   const clientIdRef = useRef<string | null>(null);
   const sendingRef = useRef(false);
   const [draft, setDraft] = useState('');
+  const [caret, setCaret] = useState(0);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [paletteDismissed, setPaletteDismissed] = useState(false);
+
+  // @mention trigger (#1167). Broader boundary than slash (`(@x`, `hey,@x` are
+  // mentions) — see slashTrigger.detectTrigger. Roster is fetched lazily on the
+  // first @ per channel and cached 30s; TanStack dedupes with the header query.
+  const trigger = detectTrigger(draft, caret, ['@']);
+  const rosterQuery = useQuery({
+    queryKey: ['channel-roster', channelId],
+    queryFn: () => fetchChannelRoster(channelId),
+    staleTime: 30_000,
+    enabled: trigger !== null,
+    retry: false,
+  });
+  // Memoize on the query string + roster data (stable primitives) so palette
+  // navigation callbacks don't churn on every keystroke that leaves both intact.
+  const triggerQuery = trigger?.query ?? null;
+  const rosterData = rosterQuery.data;
+  const entries = useMemo(
+    () =>
+      triggerQuery === null ? [] : filterRoster(rosterData ?? [], triggerQuery),
+    [triggerQuery, rosterData]
+  );
+  const paletteVisible =
+    trigger !== null && !paletteDismissed && entries.length > 0;
 
   const resize = useCallback(() => {
     const el = textareaRef.current;
@@ -50,6 +88,18 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
     resize();
   }, [draft, resize]);
 
+  // Reset palette selection + reopen it whenever the draft changes (typing after
+  // an Escape dismissal re-surfaces the palette).
+  useEffect(() => {
+    setActiveIndex(0);
+    setPaletteDismissed(false);
+  }, [draft]);
+
+  const updateCaret = useCallback(() => {
+    const el = textareaRef.current;
+    if (el) setCaret(el.selectionStart ?? 0);
+  }, []);
+
   const submit = useCallback(() => {
     const content = draft.trim();
     if (!content || sendingRef.current) return;
@@ -62,6 +112,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         // draft and idempotency key so the next message is a fresh attempt.
         clientIdRef.current = null;
         setDraft('');
+        setCaret(0);
       })
       .catch(() => {
         // Keep the draft AND the same clientMessageId so a retry (press enter
@@ -72,10 +123,63 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       });
   }, [draft, onSend]);
 
+  // Splice the selected AVAILABLE agent into the draft as plain `@<id> ` text
+  // (no rich pill), replacing the active trigger span.
+  const applyMention = useCallback(() => {
+    if (!trigger) return;
+    const entry = entries[activeIndex];
+    if (!entry || !entry.available) return;
+    const replacement = `@${entry.id} `;
+    const newDraft =
+      draft.slice(0, trigger.span[0]) +
+      replacement +
+      draft.slice(trigger.span[1]);
+    const newCaret = trigger.span[0] + replacement.length;
+    setDraft(newDraft);
+    setCaret(newCaret);
+    setActiveIndex(0);
+    setPaletteDismissed(false);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.selectionStart = newCaret;
+        el.selectionEnd = newCaret;
+        el.focus();
+      }
+    });
+  }, [trigger, entries, activeIndex, draft]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       const nativeEvent = e.nativeEvent as KeyboardEvent;
       if (e.key === 'Enter' && nativeEvent.isComposing) return;
+
+      if (paletteVisible) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setActiveIndex((i) => Math.min(i + 1, entries.length - 1));
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setActiveIndex((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setPaletteDismissed(true);
+          return;
+        }
+        if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+          e.preventDefault();
+          const entry = entries[activeIndex];
+          if (entry && entry.available) applyMention();
+          // Unavailable/none → no-op: swallow the key so Enter neither sends
+          // nor inserts and Tab does not move focus out of the composer.
+          return;
+        }
+      }
+
       if (e.key === 'Enter' && e.shiftKey) {
         skipNextLineBreakUntilRef.current =
           performance.now() + LINE_BREAK_BEFOREINPUT_SKIP_WINDOW_MS;
@@ -87,12 +191,12 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         submit();
       }
     },
-    [submit]
+    [paletteVisible, entries, activeIndex, applyMention, submit]
   );
 
   // Mobile IME parity: some IMEs only report a beforeinput line-break intent for
-  // the send key, no reliable keydown. Treat it as send before it mutates the
-  // controlled draft. Copied from Composer.tsx (LINE_BREAK_INPUT_TYPES handling).
+  // the send key, no reliable keydown. Treat it as send (or, with the palette
+  // open, a mention pick) before it mutates the controlled draft.
   const handleBeforeInput = useCallback(
     (inputEvent: InputEvent) => {
       if (!LINE_BREAK_INPUT_TYPES.has(inputEvent.inputType)) return;
@@ -106,9 +210,14 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       }
       skipNextLineBreakUntilRef.current = 0;
       inputEvent.preventDefault();
+      if (paletteVisible) {
+        const entry = entries[activeIndex];
+        if (entry && entry.available) applyMention();
+        return;
+      }
       submit();
     },
-    [submit]
+    [paletteVisible, entries, activeIndex, applyMention, submit]
   );
 
   useEffect(() => {
@@ -172,21 +281,34 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
           channel store unavailable — retry shortly
         </div>
       ) : null}
-      <textarea
-        ref={textareaRef}
-        className="ch-composer__ta"
-        placeholder={`message #${channelTitle}…  ·  shift+enter for newline`}
-        value={draft}
-        rows={1}
-        enterKeyHint="send"
-        aria-label="message input"
-        data-pending={postPending ? 'true' : 'false'}
-        onChange={(event) => setDraft(event.currentTarget.value)}
-        onKeyDown={handleKeyDown}
-        onPaste={swallowImagePaste}
-        onDrop={swallowImageDrop}
-        onDragOver={(e) => e.preventDefault()}
-      />
+      <div className="ch-composer__mention-anchor">
+        <MentionPalette
+          entries={entries}
+          activeIndex={activeIndex}
+          visible={paletteVisible}
+        />
+        <textarea
+          ref={textareaRef}
+          className="ch-composer__ta"
+          placeholder={`message #${channelTitle}…  ·  @ to mention · shift+enter for newline`}
+          value={draft}
+          rows={1}
+          enterKeyHint="send"
+          aria-label="message input"
+          data-pending={postPending ? 'true' : 'false'}
+          onChange={(event) => {
+            setDraft(event.currentTarget.value);
+            setCaret(event.currentTarget.selectionStart ?? 0);
+          }}
+          onKeyDown={handleKeyDown}
+          onKeyUp={updateCaret}
+          onClick={updateCaret}
+          onSelect={updateCaret}
+          onPaste={swallowImagePaste}
+          onDrop={swallowImageDrop}
+          onDragOver={(e) => e.preventDefault()}
+        />
+      </div>
       <div className="ch-composer__bar">
         <button
           type="button"
@@ -198,7 +320,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
           +img
         </button>
         <span className="ch-composer__hint">
-          <kbd>↵</kbd>send <kbd>⇧↵</kbd>newline
+          <kbd>↵</kbd>send <kbd>⇧↵</kbd>newline <kbd>@</kbd>mention
         </span>
       </div>
     </div>
