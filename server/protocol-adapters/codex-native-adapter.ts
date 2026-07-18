@@ -29,26 +29,22 @@ const logger = createLogger('codex-native-adapter');
 
 // ── Web-session capability status ──────────────────────────────────────────
 //
-// The Codex framework is currently advertised with `supportsWebSessions: false`
-// in `server/types.ts`. The adapter maps lifecycle events (turn started/ended,
-// tool calls, command execution, file changes) and reasoning deltas, but the
-// browser chat surface never receives assistant text as `chat:text-delta`
-// events, so a user typing a prompt sees no response in web mode.
+// Codex web sessions are advertised (`supportsWebSessions: true` in
+// `server/types.ts`) as of #1169 (closes #301). This adapter drives the native
+// `codex app-server` JSON-RPC transport (server/codex-app-server-client.ts) and
+// maps assistant text end-to-end into the V2 chat protocol:
+//   - `item/started` (agentMessage) → `agent-item-started-v2` (assistantMessage)
+//   - `item/agentMessage/delta`     → `agent-item-delta-v2` `{ delta: { text } }`
+//   - `item/completed` (agentMessage) → `agent-item-updated-v2` (final text)
+//   - `turn/completed`              → `agent-turn-completed-v2`
+// alongside reasoning deltas, tool/command/file-change items, and approvals.
 //
-// Issue: https://github.com/donovan-yohan/relay-ide/issues/301
-//
-// To re-advertise web sessions, both criteria must be met:
-//   1. Assistant text streaming is mapped end-to-end:
-//      `item/agentMessage/delta` → `chat:text-delta` (with matching
-//      `chat:text-start` / `chat:text-end` lifecycle events) so the UI can
-//      render incremental assistant output the same way it does for Claude.
-//   2. An e2e round-trip test (test/protocol-adapters/codex-*.test.ts or
-//      test/web-session-*.test.ts) asserts: prompt submitted → text-delta
-//      stream observed → completion patch emitted.
-//
-// The adapter is intentionally retained — only the capability advertisement
-// is flipped — so future work can pick up from here instead of re-deriving
-// the JSON-RPC plumbing.
+// The round-trip (prompt submitted → text-delta stream → completion patch) is
+// covered by the fake-app-server unit suite in
+// test/server/protocol-adapters/codex-native-adapter.test.ts (no real codex
+// invocations), and was validated once against the real logged-in `codex` CLI
+// via test/manual/codex-live-proof.mjs. The old `chat:text-delta` gap belonged
+// to the retired hook-based `codex-adapter.ts`, not this native adapter.
 
 // ── Capability set ─────────────────────────────────────────────────────────
 

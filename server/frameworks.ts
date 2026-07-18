@@ -131,11 +131,9 @@ export async function getFrameworkClientInfoWithRuntime(
 
 // Reasons surfaced when a framework's `supportsWebSessions` capability is
 // false. Keep entries here keyed by framework id; the fallback below covers
-// any framework that simply doesn't declare web support yet.
-const WEB_DEADVERTISE_REASONS: Record<string, string> = {
-  codex:
-    'Codex web sessions do not yet stream chat responses (see issue #301). Use the tui (PTY) mode instead.',
-};
+// any framework that simply doesn't declare web support yet. Codex's #301
+// entry was removed when #1169 re-advertised the native app-server adapter.
+const WEB_DEADVERTISE_REASONS: Record<string, string> = {};
 
 export async function getFrameworkWebAvailability(
   framework: AgentFramework

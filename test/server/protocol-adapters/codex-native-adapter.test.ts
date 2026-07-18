@@ -5,6 +5,7 @@ import type { CodexClientFactory } from '../../../server/protocol-adapters/codex
 import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
 import type {
   CodexAppServerClient,
+  CodexAppServerClientOptions,
   CodexNotification,
   CodexServerRequest,
 } from '../../../server/codex-app-server-client.js';
@@ -1799,5 +1800,166 @@ describe('CodexNativeProtocolAdapter — relay-control dispatch', () => {
     );
 
     await adapter.disconnect();
+  });
+});
+
+// ── Spawn hygiene (claudeArgs-leak class) ─────────────────────────────────────
+
+describe('CodexNativeProtocolAdapter — spawn hygiene', () => {
+  /**
+   * Regression guard for the claudeArgs-leak bug class (#1169 / codex memory):
+   * operator flags such as claude's `--model` / `--effort` must never reach the
+   * `codex app-server` spawn. The adapter only forwards `command` / `args` /
+   * `spawn` from `config.extra`; when `extra` is absent it forwards nothing, so
+   * the client falls back to its default `codex app-server --listen stdio://`.
+   */
+  it('forwards nothing to the client when config.extra is absent (no operator-arg leak)', async () => {
+    const capturedOpts: CodexAppServerClientOptions[] = [];
+    const stub = new StubCodexClient();
+    stub.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    const factory: CodexClientFactory = (opts) => {
+      capturedOpts.push(opts);
+      return stub as unknown as CodexAppServerClient;
+    };
+    const adapter = new CodexNativeProtocolAdapter(factory);
+
+    await adapter.connect(config); // config has no `extra`
+
+    expect(capturedOpts).toHaveLength(1);
+    const opts = capturedOpts[0]!;
+    // No command/args override → client uses its default codex app-server spawn.
+    expect(opts.command).toBeUndefined();
+    expect(opts.args).toBeUndefined();
+    expect(opts.spawn).toBeUndefined();
+    // cwd still flows through from the adapter config.
+    expect(opts.cwd).toBe(config.cwd);
+
+    await adapter.disconnect();
+  });
+
+  it('forwards only command/args/spawn from config.extra and ignores unrelated keys', async () => {
+    const capturedOpts: CodexAppServerClientOptions[] = [];
+    const stub = new StubCodexClient();
+    stub.serverResponses.set('thread/start', { thread: { id: 'thread-1' } });
+    const factory: CodexClientFactory = (opts) => {
+      capturedOpts.push(opts);
+      return stub as unknown as CodexAppServerClient;
+    };
+    const injectedSpawn = () => {
+      throw new Error('spawn should not be invoked by the stub factory');
+    };
+    const adapter = new CodexNativeProtocolAdapter(factory);
+
+    await adapter.connect({
+      ...config,
+      extra: {
+        command: 'codex',
+        args: ['app-server', '--listen', 'stdio://'],
+        spawn: injectedSpawn,
+        // Unrelated keys (e.g. a leaked claudeArgs bag) must be dropped.
+        claudeArgs: ['--model', 'o4-mini', '--effort', 'high'],
+        model: 'gpt-4',
+      },
+    });
+
+    expect(capturedOpts).toHaveLength(1);
+    const opts = capturedOpts[0]!;
+    expect(opts.command).toBe('codex');
+    expect(opts.args).toEqual(['app-server', '--listen', 'stdio://']);
+    expect(opts.spawn).toBe(injectedSpawn);
+    // The stray claudeArgs/model keys never become client options.
+    expect(opts).not.toHaveProperty('claudeArgs');
+    expect((opts as Record<string, unknown>)['model']).toBeUndefined();
+
+    await adapter.disconnect();
+  });
+});
+
+// ── Independent concurrent sessions (second-session regression) ───────────────
+
+describe('CodexNativeProtocolAdapter — independent concurrent sessions', () => {
+  /**
+   * Regression guard for the historical "codex 2nd session stuck initializing"
+   * concern (which lived in the PTY path, not here): two native adapters each
+   * own an independent client + turn lifecycle and must run concurrently
+   * without cross-interference or shared state. A real-transport version of
+   * this (two concurrent `codex app-server` handshakes) was verified manually.
+   */
+  it('two adapters run turns concurrently without cross-interference', async () => {
+    const fa = makeStubFactory();
+    fa.lastClient.serverResponses.set('thread/start', {
+      thread: { id: 'thA' },
+    });
+    const fb = makeStubFactory();
+    fb.lastClient.serverResponses.set('thread/start', {
+      thread: { id: 'thB' },
+    });
+
+    const a = new CodexNativeProtocolAdapter(fa);
+    const b = new CodexNativeProtocolAdapter(fb);
+    const pa = collectPatches(a);
+    const pb = collectPatches(b);
+
+    await Promise.all([
+      a.connect({ ...config, sessionId: 'A' }),
+      b.connect({ ...config, sessionId: 'B' }),
+    ]);
+    const ca = fa.lastClient;
+    const cb = fb.lastClient;
+
+    await Promise.all([
+      a.sendMessage({ turnId: 'ta', content: 'hi-A' }),
+      b.sendMessage({ turnId: 'tb', content: 'hi-B' }),
+    ]);
+
+    ca.feedNotification('turn/started', { turn: { id: 'na' } });
+    cb.feedNotification('turn/started', { turn: { id: 'nb' } });
+    ca.feedNotification('item/started', {
+      item: { type: 'agentMessage', id: 'ia' },
+    });
+    ca.feedNotification('item/agentMessage/delta', {
+      itemId: 'ia',
+      delta: 'A-reply',
+    });
+    cb.feedNotification('item/started', {
+      item: { type: 'agentMessage', id: 'ib' },
+    });
+    cb.feedNotification('item/agentMessage/delta', {
+      itemId: 'ib',
+      delta: 'B-reply',
+    });
+    ca.feedNotification('turn/completed', {
+      turn: { id: 'na', status: 'completed' },
+    });
+    cb.feedNotification('turn/completed', {
+      turn: { id: 'nb', status: 'completed' },
+    });
+
+    // Each adapter only sees its own text; no cross-leak between sessions.
+    const aDeltas = pa
+      .filter((p) => p.type === 'agent-item-delta-v2')
+      .map((p) => (p.type === 'agent-item-delta-v2' ? p.delta : null));
+    expect(aDeltas).toContainEqual({ text: 'A-reply' });
+    expect(JSON.stringify(pa)).not.toContain('B-reply');
+    expect(JSON.stringify(pb)).not.toContain('A-reply');
+
+    // Patches carry the right session id.
+    expect(pa.every((p) => p.sessionId === 'A')).toBe(true);
+    expect(pb.every((p) => p.sessionId === 'B')).toBe(true);
+
+    // Both turns complete independently.
+    expect(
+      pa.some(
+        (p) => p.type === 'agent-turn-completed-v2' && p.status === 'completed'
+      )
+    ).toBe(true);
+    expect(
+      pb.some(
+        (p) => p.type === 'agent-turn-completed-v2' && p.status === 'completed'
+      )
+    ).toBe(true);
+
+    await a.disconnect();
+    await b.disconnect();
   });
 });
