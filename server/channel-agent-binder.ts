@@ -706,14 +706,31 @@ export function createChannelAgentBinder(
         }
         break;
       case 'agent-live-state-updated-v2':
-        // A session that reports `idle` has no active turn. Finalize ours even
-        // when a matching `agent-turn-completed-v2` never fired (or arrives
-        // after this idle live-state): hermes can emit `session-status idle`
-        // without a paired turn-completed when its turn id was already cleared,
-        // and the plain `waitingOn: null` branch below would otherwise flip the
-        // binding back to 'thinking' and wedge presence forever (#1181 defect 3).
-        if (patch.live.status === 'idle' && binding.activeTurnId !== null) {
-          finishTurn(binding);
+        if (patch.live.status === 'idle') {
+          // A session that reports `idle` has no active turn. Finalize ours even
+          // when a matching `agent-turn-completed-v2` never fired (or arrives
+          // after this idle live-state): hermes can emit `session-status idle`
+          // without a paired turn-completed when its turn id was already
+          // cleared, and the `waitingOn` branch below would otherwise flip the
+          // binding back to 'thinking' and wedge presence forever (#1181 defect
+          // 3).
+          //
+          // BUT while an approval is outstanding (or the binding is otherwise
+          // waiting) the idle is a lie: hermes fires `session-status
+          // {status:'idle', waitingOn:'approval'}` alongside a permission
+          // prompt, and the legacy compat mapping strips the `waitingOn` for the
+          // idle case (agent-chat-v1-compat.ts), so a BARE idle arrives
+          // mid-approval. Ignore it entirely then — finalizing would abandon the
+          // approval and let `pump` dispatch a concurrent turn to the same
+          // session, and falling through to `updateWaiting(null)` would clobber
+          // the waiting state and re-arm the watchdog against the parked turn.
+          if (
+            binding.activeTurnId !== null &&
+            binding.announcedApprovals.size === 0 &&
+            binding.waitingOn === null
+          ) {
+            finishTurn(binding);
+          }
           break;
         }
         if (patch.live.waitingOn !== undefined) {

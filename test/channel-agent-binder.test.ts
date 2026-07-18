@@ -294,6 +294,24 @@ class ApprovalAdapter extends BaseProtocolAdapterV2 {
       timestamp: 't',
       live: { waitingOn: 'approval' },
     });
+    // Real hermes shape (#1181 re-review): hermes fires
+    // `session-status {status:'idle', waitingOn:'approval'}` alongside the
+    // permission prompt, and the legacy compat mapping strips the waitingOn for
+    // the `idle` case — so the binder sees a BARE idle mid-approval. It must
+    // ignore it: never finalize (which would let pump dispatch a concurrent
+    // turn) and never clobber the waiting state / re-arm the watchdog.
+    this.emitPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      live: {
+        status: 'idle',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: null,
+      },
+    });
   }
 
   async interrupt(input: AgentInterruptInputV2): Promise<void> {
@@ -1374,6 +1392,48 @@ describe('channel-agent-binder — approval round-trip + watchdog pause (Amendme
     await binder.interrupt(CH, 'mock'); // operator recovery
     await waitFor(() => a.sendCalls.length === 2, 4000); // parked turn drained
     expect(a.interruptCalls).toHaveLength(1);
+    expect(a.sendCalls).toHaveLength(2);
+  });
+
+  it('the trailing idle live-state during an approval never finalizes the turn (#1181 re-review)', async () => {
+    const built: ApprovalAdapter[] = [];
+    const { binder, store } = makeBinder({
+      build: (t) => {
+        const a = new ApprovalAdapter(t);
+        built.push(a);
+        return a;
+      },
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
+      watchdogMs: 25,
+    });
+    const t1 = post(store, binder, '@mock please approve', ['mock']);
+    await waitFor(() => built.length === 1 && built[0]!.sendCalls.length === 1);
+    const a = built[0]!;
+    await waitFor(() =>
+      systemRows(store).some((m) => m.body.text.includes('requests approval'))
+    );
+    // Queue a second turn behind the parked (approval-pending) turn.
+    post(store, binder, '@mock two', ['mock']);
+
+    // Well past the 25ms watchdog: the trailing bare `idle` live-state must NOT
+    // have finalized the turn (which would pump T2) nor re-armed the watchdog
+    // (which would force-drain the parked turn and pump T2). Without the guard
+    // this is where the concurrent turn leaks.
+    await new Promise((r) => setTimeout(r, 90));
+    expect(a.sendCalls).toHaveLength(1); // T2 NOT pumped — turn stayed parked
+    // Presence stayed 'waiting' — never flipped to idle/thinking mid-approval.
+    expect(
+      (await binder.rosterForChannel(CH)).find((r) => r.id === 'mock')!.binding
+        ?.status
+    ).toBe('waiting');
+
+    // Resolving the approval resumes the turn: it completes normally, then T2 drains.
+    const requestId = `appr-chturn-${t1.id}-mock`;
+    await binder.respondToApproval(CH, 'mock', requestId, { kind: 'accept' });
+    await waitFor(() => agentReplies(store, 'mock').length === 1, 4000);
+    expect(agentReplies(store, 'mock')[0]!.body.text).toBe('approved and done');
+    await waitFor(() => a.sendCalls.length === 2, 4000); // queued turn drained
     expect(a.sendCalls).toHaveLength(2);
   });
 });
