@@ -522,9 +522,11 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       const rootMessageId = req.params['rootMessageId'] ?? '';
       const filter: ChannelHistoryFilter = {};
       const beforeSeq = parseSeqQuery(req.query['beforeSeq']);
-      if (beforeSeq !== undefined) filter.beforeSeq = beforeSeq;
       const afterSeq = parseSeqQuery(req.query['afterSeq']);
+      // Match the established history precedence: when both cursors are
+      // supplied, afterSeq selects forward pagination and beforeSeq is ignored.
       if (afterSeq !== undefined) filter.afterSeq = afterSeq;
+      else if (beforeSeq !== undefined) filter.beforeSeq = beforeSeq;
       const limit = parseHistoryLimit(req.query['limit']);
       // One extra row makes row-limit pagination observable without a COUNT.
       filter.limit = limit + 1;
@@ -603,11 +605,18 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     // Public thread writes identify the message being replied to as `threadId`.
     // The store derives the canonical root and persists this supplied id as the
     // immediate parent; callers cannot forge a root id.
+    const suppliedThreadId = body['threadId'];
     const threadId =
-      typeof body['threadId'] === 'string' && body['threadId'].length > 0
-        ? body['threadId']
+      typeof suppliedThreadId === 'string' && suppliedThreadId.length > 0
+        ? suppliedThreadId
         : undefined;
-    if ('threadId' in body && threadId === undefined) {
+    // JSON null is the protocol's explicit no-thread value and is equivalent
+    // to omitting the field. Empty strings and other non-strings are malformed.
+    if (
+      'threadId' in body &&
+      suppliedThreadId !== null &&
+      threadId === undefined
+    ) {
       sendGatewayError(
         res,
         'INVALID_ARGUMENT',

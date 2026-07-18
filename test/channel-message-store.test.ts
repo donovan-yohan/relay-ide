@@ -195,6 +195,58 @@ describe('channel-message-store streaming lifecycle', () => {
     // A cursor below the agent row excludes it.
     expect(s.listResyncRows('topic:c', 1, 500)).toHaveLength(0);
   });
+
+  it('keeps replyCount on point reads, finalization rows, and resync replacements', () => {
+    const s = store();
+    const root = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: {
+        sessionId: 'root-session',
+        turnId: 'root-turn',
+        itemId: 'root',
+      },
+    });
+    s.finalizeStream(root.id, { text: 'root', status: 'complete' });
+    const statuses = ['complete', 'failed', 'interrupted'] as const;
+    for (const [index, status] of statuses.entries()) {
+      const reply = s.beginStream({
+        channelId: 'topic:c',
+        sender: AGENT,
+        source: {
+          sessionId: `reply-session-${index}`,
+          turnId: `reply-turn-${index}`,
+          itemId: `reply-${index}`,
+        },
+        parentMessageId: root.id,
+      });
+      s.finalizeStream(reply.id, { text: status, status });
+    }
+    const streaming = s.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source: {
+        sessionId: 'reply-session-stream',
+        turnId: 'reply-turn-stream',
+        itemId: 'reply-stream',
+      },
+      parentMessageId: root.id,
+    });
+    expect(streaming.status).toBe('streaming');
+
+    // replyCount intentionally includes every persisted reply status: a thread
+    // badge counts rows, not only cleanly completed agent output.
+    expect(s.getMessage(root.id)?.replyCount).toBe(4);
+    expect(
+      s.finalizeStream(root.id, { text: 'ignored', status: 'failed' })
+        ?.replyCount
+    ).toBe(4);
+    expect(
+      s
+        .listResyncRows('topic:c', Number.MAX_SAFE_INTEGER, 500)
+        .find((message) => message.id === root.id)?.replyCount
+    ).toBe(4);
+  });
 });
 
 describe('channel-message-store posts, threads, idempotency', () => {
@@ -277,6 +329,59 @@ describe('channel-message-store posts, threads, idempotency', () => {
     expect(
       s.threadHistory('topic:c', root.id).map((message) => message.id)
     ).toEqual([root.id, reply.id, nested.id]);
+  });
+
+  it('plans thread history as a root PK probe plus thread-index range', () => {
+    const p = dbPath();
+    const s = store(p);
+    const root = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'root',
+    });
+    s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: 'reply',
+      parentMessageId: root.id,
+    });
+
+    const raw = new Database(p, { readonly: true });
+    cleanup.push(() => raw.close());
+    // Keep this SQL structurally identical to threadHistory's forward query so
+    // the regression test proves the defining invariant behind the UNION: one
+    // root-id lookup plus a range over idx_chm_thread, never a channel walk.
+    const plan = raw
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT m.*,
+                (SELECT COUNT(*) FROM channel_messages replies
+                 WHERE replies.thread_id = m.id) AS reply_count
+           FROM (
+             SELECT root.* FROM channel_messages root
+              WHERE root.id = @rootMessageId
+                AND root.channel_id = @channelId AND seq > @afterSeq
+             UNION ALL
+             SELECT thread_reply.*
+               FROM channel_messages thread_reply INDEXED BY idx_chm_thread
+              WHERE thread_reply.thread_id = @rootMessageId
+                AND thread_reply.channel_id = @channelId AND seq > @afterSeq
+           ) m
+          ORDER BY m.seq ASC LIMIT @limit`
+      )
+      .all({
+        rootMessageId: root.id,
+        channelId: 'topic:c',
+        afterSeq: 0,
+        limit: 51,
+      }) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail).join('\n');
+    expect(details).toMatch(/SEARCH root USING INDEX .*\(id=\?\)/);
+    expect(details).toMatch(
+      /SEARCH thread_reply USING INDEX idx_chm_thread \(thread_id=\? AND seq>\?\)/
+    );
+    expect(details).not.toContain('idx_chm_channel_seq');
+    expect(details).not.toMatch(/SCAN (?:root|thread_reply)/);
   });
 
   it('rejects a body over the 256KB cap', () => {

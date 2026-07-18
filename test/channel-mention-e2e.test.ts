@@ -352,6 +352,8 @@ describe('mention routing — end-to-end via the router', () => {
     const reply = agentReply(h.store, h.channelId)[0]!;
     expect(reply.sender.id).toBe('agent:mock');
     expect(reply.body.text).toBe('Mock v2 response complete.');
+    expect(reply.threadId).toBeNull();
+    expect(reply.parentMessageId).toBeNull();
     // cursor advanced to the trigger seq
     expect(
       h.store.getBinding(h.channelId, 'mock')?.providerSession[

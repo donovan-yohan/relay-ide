@@ -425,7 +425,16 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
     throw error;
   }
 
-  const selectById = db.prepare('SELECT * FROM channel_messages WHERE id = ?');
+  // Point reads can be emitted directly on the WS lane (stream finalization and
+  // catch-up replacement), so they must carry the same derived replyCount as a
+  // timeline history row. Otherwise a replace-by-id reducer can erase a count
+  // that was already visible to the client.
+  const selectById = db.prepare(
+    `SELECT m.*,
+            (SELECT COUNT(*) FROM channel_messages replies
+             WHERE replies.thread_id = m.id) AS reply_count
+     FROM channel_messages m WHERE m.id = ?`
+  );
   const selectBySource = db.prepare(
     `SELECT * FROM channel_messages
      WHERE source_session_id IS @sessionId
@@ -753,53 +762,58 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       // Router pagination asks for one lookahead row, hence MAX + 1 here while
       // the public page size remains capped at CHANNEL_HISTORY_MAX_LIMIT.
       const limit = cleanLimit(filter.limit, CHANNEL_HISTORY_MAX_LIMIT + 1);
-      const clauses = [
-        'm.channel_id = @channelId',
-        '(m.id = @rootMessageId OR m.thread_id = @rootMessageId)',
-      ];
       const params: Record<string, unknown> = {
         channelId,
         rootMessageId,
         limit,
       };
+      let seqClause = '';
+      let order = 'DESC';
       if (typeof filter.afterSeq === 'number') {
-        clauses.push('m.seq > @afterSeq');
         params['afterSeq'] = filter.afterSeq;
-        const rows = db
-          .prepare(
-            `SELECT m.*,
-                    (SELECT COUNT(*) FROM channel_messages replies
-                     WHERE replies.thread_id = m.id) AS reply_count
-             FROM channel_messages m WHERE ${clauses.join(' AND ')}
-             ORDER BY m.seq ASC LIMIT @limit`
-          )
-          .all(params) as ChannelMessageRow[];
-        return rows.map(rowToMessage);
-      }
-      if (typeof filter.beforeSeq === 'number') {
-        clauses.push('m.seq < @beforeSeq');
+        seqClause = 'AND seq > @afterSeq';
+        order = 'ASC';
+      } else if (typeof filter.beforeSeq === 'number') {
         params['beforeSeq'] = filter.beforeSeq;
+        seqClause = 'AND seq < @beforeSeq';
       }
+
+      // Keep the root-inclusive contract without an OR predicate. The root is
+      // a single primary-key probe and replies are an idx_chm_thread range;
+      // thread reads therefore scale with thread size, not channel size.
       const rows = db
         .prepare(
           `SELECT m.*,
                   (SELECT COUNT(*) FROM channel_messages replies
                    WHERE replies.thread_id = m.id) AS reply_count
-           FROM channel_messages m WHERE ${clauses.join(' AND ')}
-           ORDER BY m.seq DESC LIMIT @limit`
+           FROM (
+             SELECT root.* FROM channel_messages root
+              WHERE root.id = @rootMessageId
+                AND root.channel_id = @channelId ${seqClause}
+             UNION ALL
+             SELECT thread_reply.*
+               FROM channel_messages thread_reply INDEXED BY idx_chm_thread
+              WHERE thread_reply.thread_id = @rootMessageId
+                AND thread_reply.channel_id = @channelId ${seqClause}
+           ) m
+           ORDER BY m.seq ${order} LIMIT @limit`
         )
         .all(params) as ChannelMessageRow[];
-      return rows.reverse().map(rowToMessage);
+      if (order === 'DESC') rows.reverse();
+      return rows.map(rowToMessage);
     },
 
     listResyncRows(channelId, uptoSeq, limit) {
       const bounded = Math.max(1, Math.min(1000, Math.floor(limit)));
       const rows = db
         .prepare(
-          `SELECT * FROM channel_messages
-           WHERE channel_id = @channelId AND seq <= @uptoSeq
-             AND source_session_id IS NOT NULL
-           ORDER BY seq DESC LIMIT @limit`
+          `SELECT m.*,
+                  (SELECT COUNT(*) FROM channel_messages replies
+                   WHERE replies.thread_id = m.id) AS reply_count
+             FROM channel_messages m
+            WHERE m.channel_id = @channelId AND m.seq <= @uptoSeq
+              AND m.source_session_id IS NOT NULL
+            ORDER BY m.seq DESC LIMIT @limit`
         )
         .all({ channelId, uptoSeq, limit: bounded }) as ChannelMessageRow[];
       return rows.reverse().map(rowToMessage);
