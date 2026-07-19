@@ -400,6 +400,22 @@ export type CodexClientFactory = (
   options: CodexAppServerClientOptions
 ) => CodexAppServerClient;
 
+/**
+ * Native Codex can notify `turn/completed` before the last agentMessage's
+ * `item/completed`. Keep the Relay turn alive briefly so that terminal output
+ * item remains observable (and durably persisted by channel listeners) before
+ * teardown clears native item identity.
+ */
+export const CODEX_TERMINAL_ITEM_GRACE_MS = 250;
+
+interface DeferredTurnCompletion {
+  status: 'completed';
+  usage?: AgentUsageV2;
+  error?: string;
+  nativeDurationMs?: number;
+  timer: NodeJS.Timeout;
+}
+
 // ── Main adapter class ─────────────────────────────────────────────────────
 
 export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
@@ -439,6 +455,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   // Item tracking
   private providerExtensionSeq = 0;
   private readonly itemMap = new Map<string, string>(); // nativeItemId → relayItemId
+  private readonly openAgentMessageNativeIds = new Set<string>();
+  private deferredTurnCompletion: DeferredTurnCompletion | null = null;
   private readonly toolArgumentsByNativeId = new Map<
     string,
     Record<string, unknown>
@@ -655,6 +673,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.activeTurnId = input.turnId;
     this.activeStartedAt = startedAt;
     this.completedActiveTurn = false;
+    this.openAgentMessageNativeIds.clear();
+    this.clearDeferredTurnCompletion();
 
     this.emitPatch({
       type: 'agent-turn-started-v2',
@@ -722,6 +742,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     nativeDurationMs?: number
   ): void {
     if (this.completedActiveTurn || this.activeTurnId === null) return;
+    this.clearDeferredTurnCompletion();
     this.completedActiveTurn = true;
     const turnId = this.activeTurnId;
     const completedAt = nowIso();
@@ -749,6 +770,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     // ids and streamed reasoning/token buffers across turns grows without bound
     // on an always-on channel binding.
     this.itemMap.clear();
+    this.openAgentMessageNativeIds.clear();
     this.toolArgumentsByNativeId.clear();
     this.tokenUsageBuffer.clear();
     this.reasoningSummaryBuffers.clear();
@@ -766,6 +788,61 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       queueLength: this.queue.length,
       error: error ?? null,
     });
+  }
+
+  private clearDeferredTurnCompletion(): void {
+    if (!this.deferredTurnCompletion) return;
+    clearTimeout(this.deferredTurnCompletion.timer);
+    this.deferredTurnCompletion = null;
+  }
+
+  private deferCompletedTurnUntilTerminalItems(
+    usage?: AgentUsageV2,
+    error?: string,
+    nativeDurationMs?: number
+  ): boolean {
+    if (this.openAgentMessageNativeIds.size === 0) return false;
+    this.clearDeferredTurnCompletion();
+    const timer = setTimeout(() => {
+      const pending = this.deferredTurnCompletion;
+      if (!pending) return;
+      this.deferredTurnCompletion = null;
+      this.completeActiveTurn(
+        pending.status,
+        pending.usage,
+        pending.error,
+        pending.nativeDurationMs
+      );
+      this.drainQueue();
+    }, CODEX_TERMINAL_ITEM_GRACE_MS);
+    timer.unref?.();
+    this.deferredTurnCompletion = {
+      status: 'completed',
+      ...(usage !== undefined ? { usage } : {}),
+      ...(error !== undefined ? { error } : {}),
+      ...(nativeDurationMs !== undefined ? { nativeDurationMs } : {}),
+      timer,
+    };
+    return true;
+  }
+
+  private completeDeferredTurnIfReady(): void {
+    if (
+      this.openAgentMessageNativeIds.size > 0 ||
+      !this.deferredTurnCompletion
+    ) {
+      return;
+    }
+    const pending = this.deferredTurnCompletion;
+    this.deferredTurnCompletion = null;
+    clearTimeout(pending.timer);
+    this.completeActiveTurn(
+      pending.status,
+      pending.usage,
+      pending.error,
+      pending.nativeDurationMs
+    );
+    this.drainQueue();
   }
 
   private drainQueue(): void {
@@ -875,6 +952,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.providerSessionId = null;
     this.slashCommandsLoaded = false;
     this.itemMap.clear();
+    this.openAgentMessageNativeIds.clear();
+    this.clearDeferredTurnCompletion();
     this.toolArgumentsByNativeId.clear();
     this.tokenUsageBuffer.clear();
     this.reasoningSummaryBuffers.clear();
@@ -1096,12 +1175,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       if (nativeTurnId) this.tokenUsageBuffer.delete(nativeTurnId);
     }
 
-    this.completeActiveTurn(
-      status,
-      usage,
-      errorMessage || undefined,
-      nativeDurationMs
-    );
+    const error = errorMessage || undefined;
+    if (
+      status === 'completed' &&
+      this.deferCompletedTurnUntilTerminalItems(usage, error, nativeDurationMs)
+    ) {
+      return;
+    }
+    this.completeActiveTurn(status, usage, error, nativeDurationMs);
     this.drainQueue();
   }
 
@@ -1194,6 +1275,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'agentMessage': {
         const relayId = `msg-${this.activeTurnId}-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
+        if (nativeId) this.openAgentMessageNativeIds.add(nativeId);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1461,6 +1543,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             ...(nativeId ? { providerItemId: nativeId } : {}),
           },
         });
+        // Listener delivery is synchronous: only after the terminal item patch
+        // is observable (and channel listeners have persisted it) may the
+        // deferred turn boundary release item identity and live state.
+        this.openAgentMessageNativeIds.delete(nativeId);
+        this.completeDeferredTurnIfReady();
         break;
 
       case 'reasoning': {

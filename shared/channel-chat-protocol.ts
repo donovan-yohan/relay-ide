@@ -21,8 +21,13 @@ export type ChannelMessageKind = 'message' | 'system';
 export type ChannelMessageStatus =
   | 'streaming'
   | 'complete'
+  | 'truncated'
   | 'interrupted'
   | 'failed';
+export type ChannelTruncationReason =
+  | 'size-limit'
+  | 'missing-terminal'
+  | 'restart';
 export type ChannelBodyFormat = 'markdown' | 'text';
 
 export interface ChannelSenderRef {
@@ -121,7 +126,7 @@ export interface ChannelMessageDeltaEventV1 extends ChannelEventBaseV1 {
 
 export interface ChannelMessageCompletedEventV1 extends ChannelEventBaseV1 {
   type: 'channel-message-completed-v1';
-  /** authoritative full row; status complete|interrupted|failed */
+  /** authoritative full row; status complete|truncated|interrupted|failed */
   message: ChannelMessage;
 }
 
@@ -148,6 +153,7 @@ const MESSAGE_KINDS = new Set<string>(['message', 'system']);
 const MESSAGE_STATUSES = new Set<string>([
   'streaming',
   'complete',
+  'truncated',
   'interrupted',
   'failed',
 ]);

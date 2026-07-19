@@ -120,6 +120,7 @@ function post(
 type ScriptMode =
   | { mode: 'stall' }
   | { mode: 'reply'; text: string }
+  | { mode: 'reply-items'; texts: string[] }
   | { mode: 'reject' }
   | { mode: 'reject-once-then-reply'; text: string };
 
@@ -167,11 +168,15 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
     }
     if (this.script.mode === 'reject') throw new Error('transport down');
     if (this.script.mode === 'stall') return; // resolve, never complete
-    this.runReply(input.turnId, this.script.text);
+    this.runReplyItems(
+      input.turnId,
+      this.script.mode === 'reply-items'
+        ? this.script.texts
+        : [this.script.text]
+    );
   }
 
-  private runReply(turnId: string, text: string): void {
-    const itemId = `assistant-${turnId}`;
+  private runReplyItems(turnId: string, texts: string[]): void {
     this.emitPatch({
       type: 'agent-turn-started-v2',
       sessionId: this.sid,
@@ -184,33 +189,36 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
         startedAt: 't',
       },
     });
-    this.emitPatch({
-      type: 'agent-item-started-v2',
-      sessionId: this.sid,
-      timestamp: 't',
-      turnId,
-      item: { type: 'assistantMessage', id: itemId, text: '' },
-    });
-    this.emitPatch({
-      type: 'agent-item-delta-v2',
-      sessionId: this.sid,
-      timestamp: 't',
-      turnId,
-      itemId,
-      delta: { text },
-    });
-    this.emitPatch({
-      type: 'agent-item-updated-v2',
-      sessionId: this.sid,
-      timestamp: 't',
-      turnId,
-      item: {
-        type: 'assistantMessage',
-        id: itemId,
-        text,
-        status: 'completed',
-      },
-    });
+    for (const [index, text] of texts.entries()) {
+      const itemId = `assistant-${turnId}-${index}`;
+      this.emitPatch({
+        type: 'agent-item-started-v2',
+        sessionId: this.sid,
+        timestamp: 't',
+        turnId,
+        item: { type: 'assistantMessage', id: itemId, text: '' },
+      });
+      this.emitPatch({
+        type: 'agent-item-delta-v2',
+        sessionId: this.sid,
+        timestamp: 't',
+        turnId,
+        itemId,
+        delta: { text },
+      });
+      this.emitPatch({
+        type: 'agent-item-updated-v2',
+        sessionId: this.sid,
+        timestamp: 't',
+        turnId,
+        item: {
+          type: 'assistantMessage',
+          id: itemId,
+          text,
+          status: 'completed',
+        },
+      });
+    }
     this.emitPatch({
       type: 'agent-turn-completed-v2',
       sessionId: this.sid,
@@ -1440,6 +1448,54 @@ describe('channel-agent-binder — delivery + idempotency', () => {
 });
 
 describe('channel-agent-binder — agent-to-agent brake', () => {
+  it('counts one provider turn once across item rows and mention fanout', async () => {
+    const build = (agentType: string) =>
+      agentType === 'a'
+        ? new ScriptedAdapter('a', {
+            mode: 'reply-items',
+            texts: ['one @b @c', 'two @b', 'three @b', 'four @b'],
+          })
+        : new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' });
+    const { binder, store } = makeBinder({
+      build,
+      targets: [
+        {
+          id: 'a',
+          displayName: 'A',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+        {
+          id: 'b',
+          displayName: 'B',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+        {
+          id: 'c',
+          displayName: 'C',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['a', 'b', 'c'],
+    });
+
+    post(store, binder, '@a go', ['a', 'b', 'c']);
+    await waitFor(() => agentReplies(store, 'b').length === 4);
+    await waitFor(() => agentReplies(store, 'c').length === 1);
+    expect(agentReplies(store, 'b')).toHaveLength(4);
+    expect(agentReplies(store, 'c')).toHaveLength(1);
+    expect(
+      systemRows(store).filter((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    ).toHaveLength(0);
+  });
+
   it('caps consecutive agent turns and a human post resets the brake', async () => {
     const build = (agentType: string) =>
       new ScriptedAdapter(agentType, {

@@ -7,6 +7,7 @@ import {
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
   type ChannelMessage,
   type ChannelSenderRef,
+  type ChannelTruncationReason,
 } from '../shared/channel-chat-protocol.js';
 
 const logger = createLogger('channel-agent-bridge');
@@ -20,10 +21,11 @@ const logger = createLogger('channel-agent-bridge');
 // Translation table (§6.3):
 //   agent-item-started-v2 (assistantMessage) / first text delta → beginStream + created(streaming)
 //   agent-item-delta-v2 (text)                                   → coalesced delta + debounced updateStreamText
-//   agent-item-updated-v2 (final assistantMessage) / turn-completed → finalize('complete') + completed
+//   terminal agent-item-updated-v2 (assistantMessage)            → finalize('complete') + completed
+//   turn-completed / idle without terminal item evidence         → finalize('truncated') + completed
 //   agent-error-v2                                               → finalize('failed') + completed
-//   bound session dies/disposed mid-stream (unbind)             → finalize('interrupted') + completed
-//   non-text items / live-state                                 → NOT mirrored (mechanics stay in agentSessionV2)
+//   bound session dies/disposed mid-stream (unbind)              → finalize('truncated') + completed
+//   non-text items                                              → NOT mirrored (mechanics stay in agentSessionV2)
 
 /** debounce partial-text flush to disk (same shape as relay-state-db throttled scheduler). */
 const FLUSH_DEBOUNCE_MS = 500;
@@ -32,15 +34,23 @@ const FLUSH_MAX_WAIT_MS = 2000;
 export const CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX = 256;
 
 interface BridgeStream {
+  streamKey: string;
   sourceKey: string;
   messageId: string;
   turnId: string;
+  /** Canonical item identity persisted in source_item_id. */
   itemId: string;
   text: string;
   byteLength: number;
-  closed: boolean;
+  state: 'open' | 'terminal-observed' | 'released';
   flushTimer: NodeJS.Timeout | null;
   firstScheduledAt: number | null;
+}
+
+interface AssistantItemAlias {
+  turnId: string;
+  streamKey: string;
+  canonicalItemId: string;
 }
 
 export interface BindSessionToChannelInput {
@@ -57,7 +67,7 @@ export interface BindSessionToChannelInput {
    * 'complete'` rows ONLY (#1167 §8). Bridge-authored replies bypass
    * `postToChannel`, so `onMessagePosted` never fires for them — this is the sole
    * hook that lets a spawned channel agent's reply trigger another agent
-   * (agent-to-agent mentions). Interrupted/failed rows never fire it.
+   * (agent-to-agent mentions). Truncated/interrupted/failed rows never fire it.
    */
   onAssistantMessageFinalized?: (message: ChannelMessage) => void;
   /** Optional bounded-load diagnostic seam; never affects delivery. */
@@ -74,7 +84,7 @@ export interface ChannelBridgeRetentionSnapshot {
 /**
  * Bind a live adapter session's patch stream to a channel. Returns an unbind
  * function; calling it unsubscribes the patch listener and finalizes any still-
- * open stream as `interrupted` (session death mid-stream leaves no stuck ghost).
+ * open stream as `truncated` (session death mid-stream leaves no stuck ghost).
  */
 export function bindSessionToChannel(
   input: BindSessionToChannelInput
@@ -85,7 +95,7 @@ export function bindSessionToChannel(
   // stream. Plan/reasoning/tool items also carry `delta.text` on real adapters
   // (e.g. the codex-native plan item `plan-<turnId>`), and §6.3 mirrors ONLY
   // assistantMessage text — so a delta for any other item type is dropped.
-  const assistantItemTurnIds = new Map<string, string>();
+  const assistantItemAliases = new Map<string, AssistantItemAlias>();
   // Turn ids that opened at least one channel-message stream. A `turn-completed`
   // for a turn absent here produced ZERO message rows — a silent finalization
   // that gets a warn log (#1181, defect 4) rather than passing unnoticed.
@@ -98,6 +108,27 @@ export function bindSessionToChannel(
     itemId: string
   ): string {
     return `${sessionId}\u0000${turnId}\u0000${itemId}`;
+  }
+
+  function canonicalAssistantItemId(item: {
+    id: string;
+    providerItemId?: string;
+  }): string {
+    // Provider message ids can contain multiple legitimate text slots. The
+    // item identity (native provider item when available, otherwise Relay id)
+    // is the operation boundary; Claude normalizes stream/echo aliases to the
+    // same Relay item id at its emitter.
+    return item.providerItemId ?? item.id;
+  }
+
+  function bridgeStreamKey(turnId: string, canonicalItemId: string): string {
+    return `${turnId}\u0000${canonicalItemId}`;
+  }
+
+  function forgetAliasesForStream(streamKey: string): void {
+    for (const [aliasId, alias] of assistantItemAliases) {
+      if (alias.streamKey === streamKey) assistantItemAliases.delete(aliasId);
+    }
   }
 
   function rememberFinalizedItem(key: string): void {
@@ -117,7 +148,7 @@ export function bindSessionToChannel(
     }
     input.onRetentionSnapshot({
       openStreams: streams.size,
-      assistantItemIds: assistantItemTurnIds.size,
+      assistantItemIds: assistantItemAliases.size,
       turnsWithRows: turnsWithRows.size,
       retainedTextBytes,
     });
@@ -132,15 +163,16 @@ export function bindSessionToChannel(
 
   function openStream(
     turnId: string,
-    itemId: string,
+    canonicalItemId: string,
     sessionId: string,
     initialText: string
   ): BridgeStream | null {
-    const existing = streams.get(itemId);
+    const streamKey = bridgeStreamKey(turnId, canonicalItemId);
+    const existing = streams.get(streamKey);
     if (existing) return existing;
-    const sourceKey = itemSourceKey(sessionId, turnId, itemId);
+    const sourceKey = itemSourceKey(sessionId, turnId, canonicalItemId);
     if (recentFinalizedItemKeys.has(sourceKey)) {
-      assistantItemTurnIds.delete(itemId);
+      forgetAliasesForStream(streamKey);
       reportRetention();
       return null;
     }
@@ -148,7 +180,7 @@ export function bindSessionToChannel(
     const message = store.beginStream({
       channelId,
       sender,
-      source: { sessionId, turnId, itemId },
+      source: { sessionId, turnId, itemId: canonicalItemId },
       ...(initialText ? { text: initialText } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),
     });
@@ -157,23 +189,24 @@ export function bindSessionToChannel(
       // duplicate final is a pure no-op: never recreate the hub accumulator or
       // turn-retention state for a stream that cannot receive more deltas.
       rememberFinalizedItem(sourceKey);
-      assistantItemTurnIds.delete(itemId);
+      forgetAliasesForStream(streamKey);
       reportRetention();
       return null;
     }
     turnsWithRows.add(turnId);
     const stream: BridgeStream = {
+      streamKey,
       sourceKey,
       messageId: message.id,
       turnId,
-      itemId,
+      itemId: canonicalItemId,
       text: message.body.text,
       byteLength: Buffer.byteLength(message.body.text, 'utf8'),
-      closed: false,
+      state: 'open',
       flushTimer: null,
       firstScheduledAt: null,
     };
-    streams.set(itemId, stream);
+    streams.set(streamKey, stream);
     hub.beginStreamBroadcast(message);
     reportRetention();
     return stream;
@@ -191,7 +224,7 @@ export function bindSessionToChannel(
     stream.flushTimer = setTimeout(() => {
       stream.flushTimer = null;
       stream.firstScheduledAt = null;
-      if (stream.closed) return;
+      if (stream.state === 'released') return;
       try {
         store.updateStreamText(stream.messageId, stream.text);
       } catch (err) {
@@ -202,11 +235,11 @@ export function bindSessionToChannel(
   }
 
   function appendDelta(stream: BridgeStream, text: string): void {
-    if (stream.closed || text.length === 0) return;
+    if (stream.state === 'released' || text.length === 0) return;
     const addBytes = Buffer.byteLength(text, 'utf8');
     if (stream.byteLength + addBytes > CHANNEL_MESSAGE_BODY_MAX_BYTES) {
       // 256KB accumulator cap: force-finalize truncated, drop remaining deltas.
-      finalize(stream, 'complete', stream.text, true);
+      finalize(stream, 'truncated', stream.text, 'size-limit');
       return;
     }
     stream.text += text;
@@ -217,18 +250,27 @@ export function bindSessionToChannel(
 
   function finalize(
     stream: BridgeStream,
-    status: 'complete' | 'interrupted' | 'failed',
+    requestedStatus: 'complete' | 'truncated' | 'interrupted' | 'failed',
     text: string,
-    truncated = false
+    requestedTruncationReason?: ChannelTruncationReason
   ): void {
-    if (stream.closed) {
-      streams.delete(stream.itemId);
-      assistantItemTurnIds.delete(stream.itemId);
+    if (stream.state === 'released') {
+      streams.delete(stream.streamKey);
+      forgetAliasesForStream(stream.streamKey);
       rememberFinalizedItem(stream.sourceKey);
       reportRetention();
       return;
     }
-    stream.closed = true;
+    // `complete` is a proof-bearing state, not a synonym for "the turn ended".
+    // A terminal assistant output-item patch must have been observed first.
+    const status =
+      requestedStatus === 'complete' && stream.state !== 'terminal-observed'
+        ? 'truncated'
+        : requestedStatus;
+    const truncationReason =
+      status === 'truncated'
+        ? (requestedTruncationReason ?? 'missing-terminal')
+        : undefined;
     if (stream.flushTimer) {
       clearTimeout(stream.flushTimer);
       stream.flushTimer = null;
@@ -238,17 +280,20 @@ export function bindSessionToChannel(
       message = store.finalizeStream(stream.messageId, {
         text,
         status,
-        ...(truncated ? { truncated: true } : {}),
+        ...(truncationReason ? { truncationReason } : {}),
+        ...(truncationReason === 'size-limit' ? { truncated: true } : {}),
       });
     } catch (err) {
       logger.warn('channel bridge finalize failed:', err);
-    } finally {
-      // The durable row owns completed output. Never retain full streamed text
-      // or provider item ids for the lifetime of the channel binding.
-      streams.delete(stream.itemId);
-      assistantItemTurnIds.delete(stream.itemId);
-      reportRetention();
+      return;
     }
+    stream.state = 'released';
+    // The durable row owns completed output. Never retain full streamed text
+    // or provider item ids for the lifetime of the channel binding. This is a
+    // write-ahead boundary: store finalization precedes release and broadcast.
+    streams.delete(stream.streamKey);
+    forgetAliasesForStream(stream.streamKey);
+    reportRetention();
     if (!message) return;
     rememberFinalizedItem(stream.sourceKey);
     hub.completeStreamBroadcast(message);
@@ -258,7 +303,7 @@ export function bindSessionToChannel(
       logger.warn('channel bridge member upsert failed:', err);
     }
     // #1167 §8: only a cleanly-completed assistant reply may trigger downstream
-    // agent-to-agent mentions. Interrupted/failed rows never fan out.
+    // agent-to-agent mentions. Truncated/interrupted/failed rows never fan out.
     if (status === 'complete' && input.onAssistantMessageFinalized) {
       try {
         input.onAssistantMessageFinalized(message);
@@ -270,10 +315,10 @@ export function bindSessionToChannel(
 
   function finalizeTurn(
     turnId: string | undefined,
-    status: 'complete' | 'interrupted' | 'failed'
+    status: 'complete' | 'truncated' | 'interrupted' | 'failed'
   ): void {
     for (const stream of streams.values()) {
-      if (stream.closed) continue;
+      if (stream.state === 'released') continue;
       if (turnId !== undefined && stream.turnId !== turnId) continue;
       finalize(stream, status, stream.text);
     }
@@ -295,12 +340,12 @@ export function bindSessionToChannel(
     }
     if (turnId === undefined) {
       turnsWithRows.clear();
-      assistantItemTurnIds.clear();
+      assistantItemAliases.clear();
       reportRetention();
     } else {
       turnsWithRows.delete(turnId);
-      for (const [itemId, itemTurnId] of assistantItemTurnIds) {
-        if (itemTurnId === turnId) assistantItemTurnIds.delete(itemId);
+      for (const [itemId, alias] of assistantItemAliases) {
+        if (alias.turnId === turnId) assistantItemAliases.delete(itemId);
       }
       reportRetention();
     }
@@ -310,26 +355,46 @@ export function bindSessionToChannel(
     switch (patch.type) {
       case 'agent-item-started-v2': {
         if (patch.item.type === 'assistantMessage') {
-          assistantItemTurnIds.set(patch.item.id, patch.turnId);
+          const canonicalItemId = canonicalAssistantItemId(patch.item);
+          const streamKey = bridgeStreamKey(patch.turnId, canonicalItemId);
+          assistantItemAliases.set(patch.item.id, {
+            turnId: patch.turnId,
+            streamKey,
+            canonicalItemId,
+          });
+          // Materialize at start even when empty. Codex may deliver the native
+          // turn boundary before its final item; if the adapter's bounded grace
+          // expires, this durable shell must resolve as missing-terminal rather
+          // than making the whole handoff disappear.
           openStream(
             patch.turnId,
-            patch.item.id,
+            canonicalItemId,
             patch.sessionId,
-            patch.item.text ?? ''
+            patch.item.text
           );
+          reportRetention();
         }
         break;
       }
       case 'agent-item-delta-v2': {
         if (typeof patch.delta.text !== 'string') break;
-        let stream: BridgeStream | null | undefined = streams.get(patch.itemId);
+        if (patch.delta.text.length === 0) break;
+        const alias = assistantItemAliases.get(patch.itemId);
+        if (!alias) break;
+        let stream: BridgeStream | null | undefined = streams.get(
+          alias.streamKey
+        );
         if (!stream) {
           // Lazy-open ONLY for an item started as an assistantMessage — never for
           // plan/reasoning/tool items (whose text is not mirrored, §6.3) nor for
           // an item whose type we have not seen. Mirroring a plan-item delta here
           // would persist plan text as an agent-authored channel message.
-          if (!assistantItemTurnIds.has(patch.itemId)) break;
-          stream = openStream(patch.turnId, patch.itemId, patch.sessionId, '');
+          stream = openStream(
+            patch.turnId,
+            alias.canonicalItemId,
+            patch.sessionId,
+            ''
+          );
         }
         if (!stream) break;
         appendDelta(stream, patch.delta.text);
@@ -337,9 +402,14 @@ export function bindSessionToChannel(
       }
       case 'agent-item-updated-v2': {
         if (patch.item.type !== 'assistantMessage') break;
-        let stream: BridgeStream | null | undefined = streams.get(
-          patch.item.id
-        );
+        const canonicalItemId = canonicalAssistantItemId(patch.item);
+        const streamKey = bridgeStreamKey(patch.turnId, canonicalItemId);
+        assistantItemAliases.set(patch.item.id, {
+          turnId: patch.turnId,
+          streamKey,
+          canonicalItemId,
+        });
+        let stream: BridgeStream | null | undefined = streams.get(streamKey);
         if (!stream) {
           // A completed assistantMessage that never opened a stream — no
           // `started`, no text delta — is a non-streamed reply delivered as a
@@ -347,15 +417,28 @@ export function bindSessionToChannel(
           // #1181). Materialize the row directly so the reply is not silently
           // dropped; openStream seeds it with the final text and finalize closes
           // it in the same tick.
+          if (!patch.item.text) {
+            forgetAliasesForStream(streamKey);
+            reportRetention();
+            break;
+          }
           stream = openStream(
             patch.turnId,
-            patch.item.id,
+            canonicalItemId,
             patch.sessionId,
-            patch.item.text ?? ''
+            patch.item.text
           );
         }
         if (!stream) break;
-        finalize(stream, 'complete', patch.item.text ?? '');
+        const finalText = patch.item.text || stream.text;
+        if (patch.item.status === 'completed') {
+          stream.state = 'terminal-observed';
+          finalize(stream, 'complete', finalText);
+        } else if (patch.item.status === 'failed') {
+          finalize(stream, 'failed', finalText);
+        } else if (patch.item.status === 'cancelled') {
+          finalize(stream, 'interrupted', finalText);
+        }
         break;
       }
       case 'agent-turn-completed-v2': {
@@ -371,6 +454,15 @@ export function bindSessionToChannel(
         finalizeTurn(patch.turnId, status);
         break;
       }
+      case 'agent-live-state-updated-v2': {
+        if (patch.live.status === 'idle') {
+          // Idle is a teardown boundary when an adapter omitted (or delayed)
+          // turn-completed. `complete` is downgraded to `truncated` per stream
+          // unless its terminal output-item update was already observed.
+          finalizeTurn(patch.live.activeTurnId ?? undefined, 'complete');
+        }
+        break;
+      }
       case 'agent-error-v2': {
         // An error is terminal for bridge-owned output even when a provider
         // never follows it with turn/completed.
@@ -379,7 +471,7 @@ export function bindSessionToChannel(
       }
       default:
         // Non-text items (commandExecution/fileChange/approvals/reasoning),
-        // agent-live-state-updated-v2, session snapshots — not mirrored.
+        // Session snapshots and non-text items are not mirrored.
         break;
     }
   }
@@ -389,10 +481,12 @@ export function bindSessionToChannel(
   return () => {
     unlisten();
     for (const stream of streams.values()) {
-      if (!stream.closed) finalize(stream, 'interrupted', stream.text);
+      if (stream.state !== 'released') {
+        finalize(stream, 'truncated', stream.text);
+      }
     }
     streams.clear();
-    assistantItemTurnIds.clear();
+    assistantItemAliases.clear();
     turnsWithRows.clear();
     recentFinalizedItemKeys.clear();
     reportRetention();

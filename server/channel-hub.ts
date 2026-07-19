@@ -329,7 +329,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       mode = 'catchup';
       // Reconnect catch-up must also refresh rows at or below the cursor whose
       // status changed while the client was disconnected — specifically a stream
-      // that finalized (streaming → complete/interrupted/failed) without adding a
+      // that finalized (streaming → complete/truncated/interrupted/failed) without adding a
       // new seq. `history({ afterSeq })` alone never resends those, leaving a
       // permanently stuck streaming row. Agent-origin rows are the only ones that
       // mutate in place, so re-send their CURRENT state; the reducer replaces the

@@ -227,7 +227,14 @@ export function createChannelAgentBinder(
 
   const live = new Map<string, LiveBinding>();
   const inflight = new Map<string, Promise<LiveBinding>>();
-  const consecutiveAgentTurns = new Map<string, number>();
+  const consecutiveAgentTurns = new Map<
+    string,
+    {
+      count: number;
+      allowedTurnKeys: Set<string>;
+      paused: boolean;
+    }
+  >();
   const unavailableRowAt = new Map<string, number>();
   let statusBroadcaster: ChannelAgentStatusBroadcaster | null = null;
   let targetsCache: { at: number; value: MentionTarget[] } | null = null;
@@ -1034,27 +1041,49 @@ export function createChannelAgentBinder(
     return out;
   }
 
+  function agentTurnBrakeKey(message: ChannelMessage): string {
+    if (message.source?.sessionId && message.source.turnId) {
+      return `${message.source.sessionId}\u0000${message.source.turnId}`;
+    }
+    // Gateway agent posts do not yet carry provider turn identity. Treat each
+    // durable post as one turn instead of collapsing unrelated agent activity.
+    return `message:${message.id}`;
+  }
+
   /**
    * Route an AGENT-authored turn's mentions under the consecutive-agent brake
-   * (Amendment 5): each routed mention counts toward MAX_CONSECUTIVE_AGENT_TURNS
-   * and the chain pauses (with a system row) once the cap is reached. Shared by
-   * bound-session replies AND gateway-agent posts so neither can escape the
-   * token-spend guard between human turns.
+   * (Amendment 5). The brake counts a durable provider turn once, keyed by
+   * (source session, source turn), regardless of how many assistant item rows
+   * or mention targets that turn fans out to. Shared by bound-session replies
+   * AND gateway-agent posts so neither can escape the token-spend guard between
+   * human turns.
    */
   function routeWithBrake(message: ChannelMessage, frameworks: string[]): void {
-    for (const framework of frameworks) {
-      const count = consecutiveAgentTurns.get(message.channelId) ?? 0;
-      if (count >= MAX_CONSECUTIVE_AGENT_TURNS) {
-        // Bounds total agent-token spend between human turns. Reset happens on
-        // the next human (browser / gateway-human) post.
-        postSystemRow(
-          message.channelId,
-          `Mention chain paused — ${count} agent turns without a human.`,
-          { parentMessageId: parentForTrigger(message) }
-        );
-        break;
+    if (frameworks.length === 0) return;
+    const turnKey = agentTurnBrakeKey(message);
+    let state = consecutiveAgentTurns.get(message.channelId);
+    if (!state) {
+      state = { count: 0, allowedTurnKeys: new Set(), paused: false };
+      consecutiveAgentTurns.set(message.channelId, state);
+    }
+    if (!state.allowedTurnKeys.has(turnKey)) {
+      if (state.paused || state.count >= MAX_CONSECUTIVE_AGENT_TURNS) {
+        if (!state.paused) {
+          state.paused = true;
+          // Bounds total agent-token spend between human turns. Reset happens
+          // on the next human (browser / gateway-human) post.
+          postSystemRow(
+            message.channelId,
+            `Mention chain paused — ${state.count} agent turns without a human.`,
+            { parentMessageId: parentForTrigger(message) }
+          );
+        }
+        return;
       }
-      consecutiveAgentTurns.set(message.channelId, count + 1);
+      state.allowedTurnKeys.add(turnKey);
+      state.count += 1;
+    }
+    for (const framework of frameworks) {
       routeOne(message, framework);
     }
   }
@@ -1082,7 +1111,7 @@ export function createChannelAgentBinder(
       routeWithBrake(message, frameworks);
       return;
     }
-    consecutiveAgentTurns.set(message.channelId, 0);
+    consecutiveAgentTurns.delete(message.channelId);
     for (const framework of frameworks) {
       routeOne(message, framework);
     }

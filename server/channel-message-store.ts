@@ -13,6 +13,7 @@ import {
   type ChannelMessageId,
   type ChannelMessageKind,
   type ChannelMessageStatus,
+  type ChannelTruncationReason,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
 
@@ -31,12 +32,34 @@ import {
 //    row deletion — that would break gap-free seq. Future mutation lands as new
 //    events over retained rows.
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
 const CHANNEL_SUMMARY_PREVIEW_MAX_CHARS = 200;
 
 export type ChannelThreadHistoryQueryMode = 'default' | 'after' | 'before';
+
+/** Stable logical row identity for duplicate-safe derived counters. */
+function logicalMessageIdentitySql(alias: string): string {
+  return `CASE
+    WHEN ${alias}.source_session_id IS NOT NULL
+     AND ${alias}.source_turn_id IS NOT NULL
+     AND ${alias}.source_item_id IS NOT NULL
+    THEN 'source:' || hex(${alias}.source_session_id) || ':' ||
+         hex(${alias}.source_turn_id) || ':' || hex(${alias}.source_item_id)
+    ELSE 'row:' || ${alias}.id
+  END`;
+}
+
+function logicalMessageCountSql(alias: string): string {
+  return `COUNT(DISTINCT ${logicalMessageIdentitySql(alias)})`;
+}
+
+function replyCountSql(rootAlias: string): string {
+  return `(SELECT ${logicalMessageCountSql('replies')}
+             FROM channel_messages replies
+            WHERE replies.thread_id = ${rootAlias}.id)`;
+}
 
 /** Production query builder exported so query-plan tests exercise exact SQL. */
 export function buildChannelThreadHistorySql(
@@ -50,8 +73,7 @@ export function buildChannelThreadHistorySql(
         : '';
   const order = mode === 'after' ? 'ASC' : 'DESC';
   return `SELECT m.*,
-                  (SELECT COUNT(*) FROM channel_messages replies
-                   WHERE replies.thread_id = m.id) AS reply_count
+                  ${replyCountSql('m')} AS reply_count
            FROM (
              SELECT root.* FROM channel_messages root
               WHERE root.id = @rootMessageId
@@ -73,7 +95,7 @@ CREATE TABLE IF NOT EXISTS channel_messages (
   kind              TEXT NOT NULL DEFAULT 'message'
                       CHECK (kind IN ('message','system')),
   status            TEXT NOT NULL DEFAULT 'complete'
-                      CHECK (status IN ('streaming','complete','interrupted','failed')),
+                      CHECK (status IN ('streaming','complete','truncated','interrupted','failed')),
   sender_kind       TEXT NOT NULL CHECK (sender_kind IN ('human','agent','system')),
   sender_id         TEXT NOT NULL,
   sender_display    TEXT,
@@ -97,7 +119,9 @@ CREATE INDEX IF NOT EXISTS idx_chm_thread
   ON channel_messages(thread_id, seq) WHERE thread_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chm_source_dedupe
   ON channel_messages(source_session_id, source_turn_id, source_item_id)
-  WHERE source_session_id IS NOT NULL;
+  WHERE source_session_id IS NOT NULL
+    AND source_turn_id IS NOT NULL
+    AND source_item_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chm_client_dedupe
   ON channel_messages(channel_id, sender_id, client_message_id)
   WHERE client_message_id IS NOT NULL;
@@ -165,6 +189,8 @@ interface BindingRow {
 
 export interface ChannelMessageMeta {
   mentions?: ChannelMention[];
+  truncationReason?: ChannelTruncationReason;
+  /** Legacy UI marker reserved exclusively for the 256KB size limit. */
   truncated?: boolean;
   [key: string]: unknown;
 }
@@ -192,7 +218,12 @@ export interface BeginStreamInput {
 
 export interface FinalizeStreamInput {
   text: string;
-  status: Extract<ChannelMessageStatus, 'complete' | 'interrupted' | 'failed'>;
+  status: Extract<
+    ChannelMessageStatus,
+    'complete' | 'truncated' | 'interrupted' | 'failed'
+  >;
+  truncationReason?: ChannelTruncationReason;
+  /** Legacy alias for `truncationReason: 'size-limit'`. */
   truncated?: boolean;
 }
 
@@ -231,7 +262,7 @@ export interface ChannelBinding {
 
 export interface StaleStreamSweepResult {
   channelId: string;
-  interruptedIds: ChannelMessageId[];
+  truncatedIds: ChannelMessageId[];
   systemMessage: ChannelMessage;
 }
 
@@ -270,7 +301,7 @@ export interface ChannelMessageStore {
    * Rows a reconnecting client may still hold as stale `streaming` copies:
    * agent-origin rows (source triple set) at or below the reconnect cursor, in
    * their CURRENT state, nearest the cursor first. Only agent streams mutate in
-   * place (streaming → complete/interrupted/failed without a new seq), so this is
+   * place (streaming → complete/truncated/interrupted/failed without a new seq), so this is
    * the exact set catch-up must re-send to heal a stream that finalized while the
    * client was disconnected. Bounded by `limit`.
    */
@@ -434,6 +465,58 @@ function runMigrations(db: Database.Database): void {
       db.exec(SCHEMA_SQL);
       db.prepare('UPDATE schema_version SET version = ?').run(SCHEMA_VERSION);
     })();
+    return;
+  }
+  if (current < 2) {
+    db.transaction(() => {
+      // SQLite cannot widen a CHECK constraint in place. Rebuild only the
+      // message table, preserving every durable row and its sequence/source
+      // identity, then recreate its indexes against the replacement table.
+      db.exec(`
+        CREATE TABLE channel_messages_v2 (
+          id                TEXT PRIMARY KEY,
+          channel_id        TEXT NOT NULL,
+          seq               INTEGER NOT NULL,
+          kind              TEXT NOT NULL DEFAULT 'message'
+                              CHECK (kind IN ('message','system')),
+          status            TEXT NOT NULL DEFAULT 'complete'
+                              CHECK (status IN ('streaming','complete','truncated','interrupted','failed')),
+          sender_kind       TEXT NOT NULL CHECK (sender_kind IN ('human','agent','system')),
+          sender_id         TEXT NOT NULL,
+          sender_display    TEXT,
+          thread_id         TEXT,
+          parent_message_id TEXT,
+          body_text         TEXT NOT NULL DEFAULT '',
+          body_format       TEXT NOT NULL DEFAULT 'markdown',
+          meta_json         TEXT,
+          source_session_id TEXT,
+          source_turn_id    TEXT,
+          source_item_id    TEXT,
+          client_message_id TEXT,
+          created_at        TEXT NOT NULL,
+          updated_at        TEXT NOT NULL,
+          completed_at      TEXT,
+          UNIQUE (channel_id, seq)
+        );
+        INSERT INTO channel_messages_v2
+        SELECT * FROM channel_messages;
+        DROP TABLE channel_messages;
+        ALTER TABLE channel_messages_v2 RENAME TO channel_messages;
+        CREATE INDEX idx_chm_channel_seq
+          ON channel_messages(channel_id, seq);
+        CREATE INDEX idx_chm_thread
+          ON channel_messages(thread_id, seq) WHERE thread_id IS NOT NULL;
+        CREATE UNIQUE INDEX idx_chm_source_dedupe
+          ON channel_messages(source_session_id, source_turn_id, source_item_id)
+          WHERE source_session_id IS NOT NULL
+            AND source_turn_id IS NOT NULL
+            AND source_item_id IS NOT NULL;
+        CREATE UNIQUE INDEX idx_chm_client_dedupe
+          ON channel_messages(channel_id, sender_id, client_message_id)
+          WHERE client_message_id IS NOT NULL;
+      `);
+      db.prepare('UPDATE schema_version SET version = 2').run();
+    })();
   }
 }
 
@@ -460,20 +543,21 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
   // that was already visible to the client.
   const selectById = db.prepare(
     `SELECT m.*,
-            (SELECT COUNT(*) FROM channel_messages replies
-             WHERE replies.thread_id = m.id) AS reply_count
+            ${replyCountSql('m')} AS reply_count
      FROM channel_messages m WHERE m.id = ?`
   );
   const selectBySource = db.prepare(
-    `SELECT * FROM channel_messages
-     WHERE source_session_id IS @sessionId
-       AND source_turn_id IS @turnId
-       AND source_item_id IS @itemId`
+    `SELECT m.*, ${replyCountSql('m')} AS reply_count
+       FROM channel_messages m
+      WHERE m.source_session_id IS @sessionId
+        AND m.source_turn_id IS @turnId
+        AND m.source_item_id IS @itemId`
   );
   const selectByClientId = db.prepare(
-    `SELECT * FROM channel_messages
-     WHERE channel_id = @channelId AND sender_id = @senderId
-       AND client_message_id = @clientMessageId`
+    `SELECT m.*, ${replyCountSql('m')} AS reply_count
+       FROM channel_messages m
+      WHERE m.channel_id = @channelId AND m.sender_id = @senderId
+        AND m.client_message_id = @clientMessageId`
   );
 
   // Single atomic INSERT: seq is allocated inside the same statement via
@@ -481,8 +565,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
   // statement (incl. the subquery), so concurrent inserts serialize correctly;
   // UNIQUE(channel_id, seq) is the loud backstop for any residual race
   // (dev/prod config-dir overlap) — a constraint failure, never a silent reorder.
-  const insertMessage = db.prepare(
-    `INSERT INTO channel_messages (
+  const insertMessageSql = `INSERT INTO channel_messages (
        id, channel_id, seq, kind, status, sender_kind, sender_id, sender_display,
        thread_id, parent_message_id, body_text, body_format, meta_json,
        source_session_id, source_turn_id, source_item_id, client_message_id,
@@ -494,7 +577,15 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
        @threadId, @parentMessageId, @bodyText, @bodyFormat, @metaJson,
        @sourceSessionId, @sourceTurnId, @sourceItemId, @clientMessageId,
        @createdAt, @updatedAt, @completedAt
-     )`
+     )`;
+  const insertMessage = db.prepare(insertMessageSql);
+  const insertSourceMessage = db.prepare(
+    `${insertMessageSql}
+     ON CONFLICT(source_session_id, source_turn_id, source_item_id)
+       WHERE source_session_id IS NOT NULL
+         AND source_turn_id IS NOT NULL
+         AND source_item_id IS NOT NULL
+     DO NOTHING`
   );
 
   function insertRow(params: Record<string, unknown>): ChannelMessageRow {
@@ -512,6 +603,32 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       throw error;
     }
     return selectById.get(params['id']) as ChannelMessageRow;
+  }
+
+  function insertSourceRow(params: Record<string, unknown>): ChannelMessageRow {
+    try {
+      const result = insertSourceMessage.run(params);
+      if (result.changes > 0) {
+        return selectById.get(params['id']) as ChannelMessageRow;
+      }
+      const existing = selectBySource.get({
+        sessionId: params['sourceSessionId'],
+        turnId: params['sourceTurnId'],
+        itemId: params['sourceItemId'],
+      }) as ChannelMessageRow | undefined;
+      if (existing) return existing;
+      throw new Error('source-dedupe insert ignored without an existing row');
+    } catch (error) {
+      if (String(error).includes('UNIQUE constraint failed')) {
+        throw new ChannelMessageStoreError(
+          409,
+          'channel_message_seq_conflict',
+          'channel message seq/uniqueness conflict',
+          { id: params['id'] }
+        );
+      }
+      throw error;
+    }
   }
 
   function resolveThread(
@@ -629,8 +746,8 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
     },
 
     beginStream(input) {
-      // Idempotent: single-process synchronous check-then-insert is race-free;
-      // idx_chm_source_dedupe is the loud backstop for any cross-process retry.
+      // Fast replay path; the INSERT ... ON CONFLICT below is the atomic
+      // cross-handle/process backstop when two writers observe a miss together.
       const existing = selectBySource.get({
         sessionId: input.source.sessionId,
         turnId: input.source.turnId ?? null,
@@ -643,7 +760,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const threadId = resolveThread(input.channelId, input.parentMessageId);
       const now = nowIso();
       const id = createMessageId();
-      const row = insertRow({
+      const row = insertSourceRow({
         id,
         channelId: input.channelId,
         kind: 'message',
@@ -690,7 +807,18 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       assertBodySize(input.text);
       const now = nowIso();
       const meta = parseMeta(row.meta_json) ?? {};
-      if (input.truncated) meta.truncated = true;
+      const truncationReason =
+        input.truncationReason ??
+        (input.truncated
+          ? 'size-limit'
+          : input.status === 'truncated'
+            ? 'missing-terminal'
+            : undefined);
+      if (truncationReason) meta.truncationReason = truncationReason;
+      // Existing clients render this boolean as "256kb limit", so lifecycle
+      // loss must never set it. The typed reason remains available in meta.
+      if (truncationReason === 'size-limit') meta.truncated = true;
+      else delete meta.truncated;
       db.prepare(
         `UPDATE channel_messages
          SET body_text = @text, status = @status, meta_json = @metaJson,
@@ -734,8 +862,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         const rows = db
           .prepare(
             `SELECT m.*,
-                    (SELECT COUNT(*) FROM channel_messages replies
-                     WHERE replies.thread_id = m.id) AS reply_count
+                    ${replyCountSql('m')} AS reply_count
              FROM channel_messages m WHERE ${clauses.join(' AND ')}
              ORDER BY m.seq ASC LIMIT @limit`
           )
@@ -750,8 +877,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const rows = db
         .prepare(
           `SELECT m.*,
-                  (SELECT COUNT(*) FROM channel_messages replies
-                   WHERE replies.thread_id = m.id) AS reply_count
+                  ${replyCountSql('m')} AS reply_count
            FROM channel_messages m WHERE ${clauses.join(' AND ')}
            ORDER BY m.seq DESC LIMIT @limit`
         )
@@ -820,8 +946,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const rows = db
         .prepare(
           `SELECT m.*,
-                  (SELECT COUNT(*) FROM channel_messages replies
-                   WHERE replies.thread_id = m.id) AS reply_count
+                  ${replyCountSql('m')} AS reply_count
              FROM channel_messages m
             WHERE m.channel_id = @channelId AND m.seq <= @uptoSeq
               AND m.source_session_id IS NOT NULL
@@ -844,7 +969,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const rows = db
         .prepare(
           `SELECT last.* FROM (
-             SELECT channel_id, MAX(seq) AS max_seq, COUNT(*) AS cnt
+             SELECT channel_id, MAX(seq) AS max_seq
              FROM channel_messages GROUP BY channel_id
            ) agg
            JOIN channel_messages last
@@ -856,7 +981,8 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const counts = new Map<string, number>();
       for (const c of db
         .prepare(
-          'SELECT channel_id, COUNT(*) AS cnt FROM channel_messages GROUP BY channel_id'
+          `SELECT channel_id, ${logicalMessageCountSql('channel_messages')} AS cnt
+             FROM channel_messages GROUP BY channel_id`
         )
         .all() as Array<{ channel_id: string; cnt: number }>) {
         counts.set(c.channel_id, c.cnt);
@@ -876,7 +1002,8 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const count = (
         db
           .prepare(
-            'SELECT COUNT(*) AS cnt FROM channel_messages WHERE channel_id = ?'
+            `SELECT ${logicalMessageCountSql('channel_messages')} AS cnt
+               FROM channel_messages WHERE channel_id = ?`
           )
           .get(channelId) as { cnt: number }
       ).cnt;
@@ -976,24 +1103,38 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       for (const { channel_id: channelId } of channels) {
         const stale = db
           .prepare(
-            "SELECT id FROM channel_messages WHERE channel_id = ? AND status = 'streaming'"
+            "SELECT id, meta_json FROM channel_messages WHERE channel_id = ? AND status = 'streaming'"
           )
-          .all(channelId) as Array<{ id: string }>;
+          .all(channelId) as Array<{ id: string; meta_json: string | null }>;
         const now = nowIso();
-        db.prepare(
+        const finalizeRestart = db.prepare(
           `UPDATE channel_messages
-           SET status = 'interrupted', updated_at = @now, completed_at = @now
-           WHERE channel_id = @channelId AND status = 'streaming'`
-        ).run({ channelId, now });
+           SET status = 'truncated', meta_json = @metaJson,
+               updated_at = @now, completed_at = @now
+           WHERE id = @id AND status = 'streaming'`
+        );
+        db.transaction(() => {
+          for (const row of stale) {
+            const meta = parseMeta(row.meta_json) ?? {};
+            meta.truncationReason = 'restart';
+            // Never surface restart loss as the legacy 256KB-limit marker.
+            delete meta.truncated;
+            finalizeRestart.run({
+              id: row.id,
+              metaJson: JSON.stringify(meta),
+              now,
+            });
+          }
+        })();
         const systemMessage = appendCompleteImpl({
           channelId,
           kind: 'system',
           sender: { kind: 'system', id: 'system' },
-          text: 'Agent reply interrupted by restart.',
+          text: 'Agent reply truncated because Relay restarted before terminal output.',
         });
         results.push({
           channelId,
-          interruptedIds: stale.map((s) => s.id as ChannelMessageId),
+          truncatedIds: stale.map((s) => s.id as ChannelMessageId),
           systemMessage,
         });
       }
