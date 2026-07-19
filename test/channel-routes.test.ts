@@ -299,6 +299,9 @@ describe('channel routes — image attachments', () => {
     });
     expect(served.status).toBe(200);
     expect(served.headers.get('content-type')).toBe('image/png');
+    expect(served.headers.get('cache-control')).toBe(
+      'private, max-age=31536000, immutable'
+    );
     expect(served.headers.get('x-content-type-options')).toBe('nosniff');
     const servedBytes = Buffer.from(await served.arrayBuffer());
     expect(servedBytes).toHaveLength(
@@ -309,6 +312,56 @@ describe('channel routes — image attachments', () => {
       width: 7,
       height: 5,
     });
+
+    const missing = await fetch(`${serveUrl}-missing`, {
+      headers: {
+        Authorization: 'Bearer test',
+        'x-relay-capabilities': 'context:read',
+      },
+    });
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get('cache-control')).toBe('no-store');
+    expect(missing.headers.get('cache-control')).not.toContain('immutable');
+  });
+
+  it('does not cache a send failure after the attachment path exists', async () => {
+    const h = await harness({ withAuth: true });
+    const [attachment] = await h.attachmentStore.ingestMany([
+      {
+        bytes: await sharp({
+          create: {
+            width: 3,
+            height: 2,
+            channels: 3,
+            background: '#0f62fe',
+          },
+        })
+          .png()
+          .toBuffer(),
+        alt: 'unavailable.png',
+      },
+    ]);
+    if (!attachment) throw new Error('attachment ingest failed');
+    const record = h.attachmentStore.get(attachment.id);
+    if (!record) throw new Error('attachment lookup failed');
+
+    // A directory passes the route's existence check but sendFile cannot serve
+    // it, deterministically exercising the callback error path.
+    fs.rmSync(record.payloadPath);
+    fs.mkdirSync(record.payloadPath);
+
+    const response = await fetch(
+      `http://127.0.0.1:${h.port}/channels/${encodeURIComponent(h.channelId)}/attachments/${encodeURIComponent(attachment.id)}`,
+      {
+        headers: {
+          Authorization: 'Bearer test',
+          'x-relay-capabilities': 'context:read',
+        },
+      }
+    );
+    expect(response.status).toBe(404);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('cache-control')).not.toContain('immutable');
   });
 
   it('rejects unsupported payloads, oversized files, and more than four images', async () => {

@@ -15,6 +15,7 @@ import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
 import {
   bindSessionToChannel,
   CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX,
+  CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN,
 } from '../server/channel-agent-bridge.js';
 import type { ChannelBridgeRetentionSnapshot } from '../server/channel-agent-bridge.js';
 import type { ChannelAttachmentStore } from '../server/channel-attachments.js';
@@ -1126,6 +1127,77 @@ describe('channel-agent-bridge lifecycle', () => {
         .history('topic:failed-image')
         .find((message) => message.source?.itemId === 'img-failed')?.body.text
     ).toBe('[Agent image unavailable: @claude.png]');
+  });
+
+  it('caps agent-produced images per turn and states the omission once', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-image-cap-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const source = path.join(dir, 'generated.png');
+    fs.writeFileSync(source, Buffer.from('agent image fixture'));
+    const part: ChannelImagePart = {
+      type: 'image',
+      id: 'cha:capped-agent-image',
+      mime: 'image/png',
+      w: 2,
+      h: 3,
+      bytes: 19,
+    };
+    const attachmentStore = {
+      ingest: vi.fn(async () => part),
+    } as unknown as ChannelAttachmentStore;
+    bindSessionToChannel({
+      channelId: 'topic:image-cap',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      attachmentStore,
+      hub,
+    });
+
+    for (
+      let index = 0;
+      index < CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN + 3;
+      index++
+    ) {
+      adapter.broadcastPatch({
+        type: 'agent-item-started-v2',
+        sessionId: 's',
+        timestamp: 't',
+        turnId: 'turn-image-cap',
+        item: {
+          type: 'imageView',
+          id: `img-${index}`,
+          source,
+          status: 'running',
+        },
+      });
+    }
+    adapter.broadcastPatch(turnCompleted('s', 'turn-image-cap'));
+
+    await vi.waitFor(() =>
+      expect(attachmentStore.ingest).toHaveBeenCalledTimes(
+        CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN
+      )
+    );
+    await vi.waitFor(() =>
+      expect(store.history('topic:image-cap')).toHaveLength(
+        CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN + 1
+      )
+    );
+    const messages = store.history('topic:image-cap');
+    expect(messages.filter((message) => message.parts?.length)).toHaveLength(
+      CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN
+    );
+    expect(
+      messages.filter(
+        (message) =>
+          message.kind === 'system' &&
+          message.body.text ===
+            `One or more agent images were omitted after the per-turn limit of ${CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN}.`
+      )
+    ).toHaveLength(1);
   });
 
   it('drops a deferred clean callback on unbind when no terminal arrives', () => {

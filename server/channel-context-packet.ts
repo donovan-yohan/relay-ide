@@ -31,6 +31,15 @@ export const PACKET_IMAGE_MAX_RAW_BYTES = 10 * 1024 * 1024;
 export const CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES = 6 * 1024 * 1024;
 /** Transient callback-only metadata; never persisted by the image bridge. */
 export const PACKET_IMAGE_DEGRADATION_META_KEY = '__relayImageDegradationNotes';
+/** Adapter audit: only these framework lanes consume local image attachments. */
+export const PACKET_FRAMEWORK_IMAGE_SUPPORT: Readonly<Record<string, boolean>> =
+  Object.freeze({
+    claude: true,
+    codex: true,
+    hermes: true,
+    mock: true,
+    opencode: false,
+  });
 
 const OMITTED_MARKER = '[…earlier messages omitted]';
 const ROW_TRUNCATED_SUFFIX = '…[truncated]';
@@ -280,8 +289,22 @@ export function resolveMentionContextPacket(
       ? CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES
       : PACKET_IMAGE_MAX_RAW_BYTES;
   let rawBytes = 0;
+  const seenAttachmentIds = new Set<string>();
   for (const image of packet.images) {
     const part = image.part;
+    // A chained mention may retain the same attachment through more than one
+    // row. Delivery is sender-neutral and content-addressed, so the first
+    // occurrence in packet priority order wins.
+    if (seenAttachmentIds.has(part.id)) continue;
+    seenAttachmentIds.add(part.id);
+    if (
+      PACKET_FRAMEWORK_IMAGE_SUPPORT[packet.framework.toLowerCase()] !== true
+    ) {
+      notes.push(
+        `[image attachment not deliverable to ${packet.framework}: ${part.alt?.trim() || part.id}, ${part.w}x${part.h}]`
+      );
+      continue;
+    }
     const record = attachmentStore?.get(part.id) ?? null;
     let payloadExists = false;
     if (record) {

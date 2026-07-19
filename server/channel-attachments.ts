@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -114,18 +114,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function outputPipeline(
   format: keyof typeof MIME_BY_FORMAT,
-  image: Sharp
+  image: Sharp,
+  options: { animated: boolean; quality: 95 | 85 | 75 }
 ): Sharp {
-  const rotated = image.rotate();
+  // libvips cannot auto-orient multi-page images. Re-encoding without rotate
+  // still strips metadata while preserving every animation frame.
+  const sanitized = options.animated ? image : image.rotate();
   switch (format) {
     case 'png':
-      return rotated.png();
+      return sanitized.png();
     case 'jpeg':
-      return rotated.jpeg({ quality: 95 });
+      return sanitized.jpeg({ quality: options.quality });
     case 'webp':
-      return rotated.webp({ quality: 95 });
+      return sanitized.webp({ quality: options.quality });
     case 'gif':
-      return rotated.gif();
+      return sanitized.gif();
   }
 }
 
@@ -161,6 +164,7 @@ async function sanitizeImage(input: ChannelAttachmentIngestInput): Promise<{
   }
 
   let format: keyof typeof MIME_BY_FORMAT;
+  let animated: boolean;
   try {
     const metadata = await sharp(input.bytes, {
       animated: true,
@@ -179,6 +183,7 @@ async function sanitizeImage(input: ChannelAttachmentIngestInput): Promise<{
       );
     }
     format = metadata.format;
+    animated = (metadata.pages ?? 1) > 1;
   } catch (error) {
     if (error instanceof ChannelAttachmentStoreError) throw error;
     throw new ChannelAttachmentStoreError(
@@ -192,13 +197,21 @@ async function sanitizeImage(input: ChannelAttachmentIngestInput): Promise<{
   let width: number;
   let height: number;
   try {
-    const result = await outputPipeline(
-      format,
-      sharp(input.bytes, {
-        animated: true,
-        limitInputPixels: CHANNEL_IMAGE_MAX_PIXELS,
-      })
-    ).toBuffer({ resolveWithObject: true });
+    const qualities: readonly (95 | 85 | 75)[] =
+      format === 'jpeg' || format === 'webp' ? [95, 85, 75] : [95];
+    let result: Awaited<ReturnType<Sharp['toBuffer']>> | undefined;
+    for (const quality of qualities) {
+      result = await outputPipeline(
+        format,
+        sharp(input.bytes, {
+          animated: true,
+          limitInputPixels: CHANNEL_IMAGE_MAX_PIXELS,
+        }),
+        { animated, quality }
+      ).toBuffer({ resolveWithObject: true });
+      if (result.data.length <= CHANNEL_IMAGE_MAX_BYTES) break;
+    }
+    if (!result) throw new Error('image sanitizer produced no output');
     sanitized = result.data;
     width = result.info.width;
     height = result.info.pageHeight ?? result.info.height;
@@ -304,6 +317,52 @@ export function createChannelAttachmentStore(input: {
     return row ? rowToRecord(row) : null;
   }
 
+  async function statPayloadSize(payloadPath: string): Promise<number | null> {
+    try {
+      return (await fs.promises.stat(payloadPath)).size;
+    } catch (error) {
+      if (isRecord(error) && error['code'] === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  async function publishPayloadAtomically(
+    payloadPath: string,
+    bytes: Buffer
+  ): Promise<void> {
+    const tempPath = path.join(
+      path.dirname(payloadPath),
+      `.${path.basename(payloadPath)}.${process.pid}.${randomUUID()}.tmp`
+    );
+    const handle = await fs.promises.open(tempPath, 'wx', 0o600);
+    try {
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      const existingSize = await statPayloadSize(payloadPath);
+      if (existingSize === bytes.length) return;
+      try {
+        // Same-directory rename keeps readers from ever observing a partial
+        // payload. Concurrent writers publish identical content-addressed
+        // bytes, so a last-complete-writer win is safe.
+        await fs.promises.rename(tempPath, payloadPath);
+      } catch (error) {
+        if (!isRecord(error) || error['code'] !== 'EEXIST') throw error;
+        const racedSize = await statPayloadSize(payloadPath);
+        if (racedSize === bytes.length) return;
+        // Some platforms do not replace an existing path via rename. Only
+        // remove a known wrong-sized payload before retrying publication.
+        await fs.promises.unlink(payloadPath);
+        await fs.promises.rename(tempPath, payloadPath);
+      }
+    } finally {
+      await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
+    }
+  }
+
   async function persistPrepared(
     prepared: Awaited<ReturnType<typeof sanitizeImage>>
   ): Promise<ChannelImagePart> {
@@ -317,11 +376,7 @@ export function createChannelAttachmentStore(input: {
     );
     await fs.promises.mkdir(dir, { recursive: true });
     const payloadPath = path.join(dir, `${sha256}${extension}`);
-    try {
-      await fs.promises.writeFile(payloadPath, prepared.bytes, { flag: 'wx' });
-    } catch (error) {
-      if (!isRecord(error) || error['code'] !== 'EEXIST') throw error;
-    }
+    await publishPayloadAtomically(payloadPath, prepared.bytes);
     insert.run({
       id,
       sha256,

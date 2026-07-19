@@ -41,6 +41,8 @@ const FLUSH_DEBOUNCE_MS = 500;
 const FLUSH_MAX_WAIT_MS = 2000;
 /** Bounded dedupe tombstones for late provider replay after a row finalized. */
 export const CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX = 256;
+/** Bound agent-produced image ingestion and durable rows per provider turn. */
+export const CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN = 8;
 
 interface BridgeStream {
   streamKey: string;
@@ -64,6 +66,8 @@ interface AssistantItemAlias {
 
 interface TurnImageState {
   pending: number;
+  admitted: number;
+  limitNoted: boolean;
   parts: ChannelImagePart[];
   failureNotes: string[];
   deferredMessages: ChannelMessage[];
@@ -274,6 +278,8 @@ export function bindSessionToChannel(
     if (existing) return existing;
     const created: TurnImageState = {
       pending: 0,
+      admitted: 0,
+      limitNoted: false,
       parts: [],
       failureNotes: [],
       deferredMessages: [],
@@ -390,6 +396,21 @@ export function bindSessionToChannel(
       logger.warn('channel bridge image member upsert failed:', err);
     }
     return true;
+  }
+
+  function publishImageLimitNote(parentMessageId: string | undefined): void {
+    try {
+      const message = store.appendComplete({
+        channelId,
+        kind: 'system',
+        sender: { kind: 'system', id: 'system' },
+        text: `One or more agent images were omitted after the per-turn limit of ${CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN}.`,
+        ...(parentMessageId ? { parentMessageId } : {}),
+      });
+      hub.broadcastCreated(message);
+    } catch (err) {
+      logger.warn('channel bridge image limit note failed:', err);
+    }
   }
 
   async function mirrorAgentImage(
@@ -541,12 +562,21 @@ export function bindSessionToChannel(
     switch (patch.type) {
       case 'agent-item-started-v2': {
         if (patch.item.type === 'imageView') {
+          const state = imageState(patch.turnId);
+          const parentMessageId = input.parentMessageIdForTurn?.(patch.turnId);
+          if (state.admitted >= CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN) {
+            if (!state.limitNoted) {
+              state.limitNoted = true;
+              publishImageLimitNote(parentMessageId);
+            }
+            break;
+          }
+          state.admitted += 1;
           // Reserve the turn synchronously before async file ingest so a fast
           // turn-completed boundary neither logs a false empty-turn warning nor
           // leaves a late turnsWithRows entry retained after completion.
           turnsWithRows.add(patch.turnId);
-          const parentMessageId = input.parentMessageIdForTurn?.(patch.turnId);
-          imageState(patch.turnId).pending += 1;
+          state.pending += 1;
           void mirrorAgentImage(patch, parentMessageId);
           break;
         }

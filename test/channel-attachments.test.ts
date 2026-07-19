@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   CHANNEL_IMAGE_MAX_BYTES,
+  CHANNEL_IMAGE_MAX_PIXELS,
   ChannelAttachmentStoreError,
   createChannelAttachmentStore,
   type ChannelAttachmentStore,
@@ -43,6 +44,39 @@ async function image(
     },
   });
   return input[format]().toBuffer();
+}
+
+function deterministicNoise(width: number, height: number): Buffer {
+  const bytes = Buffer.allocUnsafe(width * height * 3);
+  let state = 0x12345678;
+  for (let index = 0; index < bytes.length; index += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    bytes[index] = state & 0xff;
+  }
+  return bytes;
+}
+
+async function animatedImage(format: 'gif' | 'webp'): Promise<Buffer> {
+  const width = 3;
+  const pageHeight = 2;
+  const pages = 2;
+  const pixels = Buffer.alloc(width * pageHeight * pages * 4);
+  for (let index = 0; index < pixels.length; index += 4) {
+    const secondPage = index >= width * pageHeight * 4;
+    pixels[index + (secondPage ? 2 : 0)] = 255;
+    pixels[index + 3] = 255;
+  }
+  const animation = sharp(pixels, {
+    raw: {
+      width,
+      height: pageHeight * pages,
+      channels: 4,
+      pageHeight,
+    },
+  });
+  return animation[format]({ loop: 0, delay: [80, 120] }).toBuffer();
 }
 
 describe('channel attachment store', () => {
@@ -114,6 +148,20 @@ describe('channel attachment store', () => {
     });
   });
 
+  it('rejects a compressed image whose decoded pixels exceed the cap', async () => {
+    const store = makeStore();
+    const width = 8_000;
+    const height = Math.floor(CHANNEL_IMAGE_MAX_PIXELS / width) + 1;
+    const compressed = await image('png', width, height);
+    expect(compressed.length).toBeLessThan(CHANNEL_IMAGE_MAX_BYTES);
+    expect(width * height).toBeGreaterThan(CHANNEL_IMAGE_MAX_PIXELS);
+
+    await expect(store.ingest({ bytes: compressed })).rejects.toMatchObject({
+      status: 400,
+      code: 'channel_image_invalid',
+    });
+  });
+
   it('auto-orients, strips EXIF, and records post-sanitize dimensions', async () => {
     const store = makeStore();
     const withExif = await sharp({
@@ -147,6 +195,59 @@ describe('channel attachment store', () => {
       store.get(second.id)?.payloadPath
     );
   });
+
+  it('atomically heals a partial content-addressed payload', async () => {
+    const store = makeStore();
+    const source = await image('png', 12, 8);
+    const first = await store.ingest({ bytes: source });
+    const payloadPath = store.get(first.id)!.payloadPath;
+    const completePayload = fs.readFileSync(payloadPath);
+    fs.writeFileSync(payloadPath, completePayload.subarray(0, 7));
+
+    const retried = await store.ingest({ bytes: source });
+
+    expect(retried.id).toBe(first.id);
+    expect(fs.readFileSync(payloadPath)).toEqual(completePayload);
+    expect(
+      fs
+        .readdirSync(path.dirname(payloadPath))
+        .filter((name) => name.endsWith('.tmp'))
+    ).toEqual([]);
+  });
+
+  it('reduces JPEG quality when a compliant input grows past the cap', async () => {
+    const store = makeStore();
+    const width = 2_700;
+    const height = 2_200;
+    const source = await sharp(deterministicNoise(width, height), {
+      raw: { width, height, channels: 3 },
+    })
+      .jpeg({ quality: 90 })
+      .toBuffer();
+    const quality95 = await sharp(source).jpeg({ quality: 95 }).toBuffer();
+    expect(source.length).toBeLessThan(CHANNEL_IMAGE_MAX_BYTES);
+    expect(quality95.length).toBeGreaterThan(CHANNEL_IMAGE_MAX_BYTES);
+
+    const part = await store.ingest({ bytes: source });
+
+    expect(part).toMatchObject({ mime: 'image/jpeg', w: width, h: height });
+    expect(part.bytes).toBeLessThanOrEqual(CHANNEL_IMAGE_MAX_BYTES);
+  });
+
+  it.each(['gif', 'webp'] as const)(
+    'preserves all frames when sanitizing animated %s images',
+    async (format) => {
+      const store = makeStore();
+      const part = await store.ingest({ bytes: await animatedImage(format) });
+      const metadata = await sharp(store.get(part.id)!.payloadPath, {
+        animated: true,
+      }).metadata();
+
+      expect(part).toMatchObject({ w: 3, h: 2 });
+      expect(metadata.pages).toBe(2);
+      expect(metadata.pageHeight).toBe(2);
+    }
+  );
 
   it('canonicalizes posted refs and rejects missing payload ids', async () => {
     const store = makeStore();

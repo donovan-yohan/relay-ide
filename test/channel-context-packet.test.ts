@@ -7,6 +7,7 @@ import {
   buildMentionContextPacket,
   buildMentionContextPacketEnvelope,
   CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES,
+  PACKET_FRAMEWORK_IMAGE_SUPPORT,
   PACKET_IMAGE_MAX_COUNT,
   PACKET_MAX_ROWS,
   PACKET_ROW_MAX_CHARS,
@@ -158,6 +159,94 @@ describe('buildMentionContextPacket', () => {
       expect(resolved.content).toBe(
         'packet\n\n[Relay image attachment unavailable: missing diagram]'
       );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('states framework degradation instead of silently dropping OpenCode images', () => {
+    const part = {
+      ...imagePart('cha:opencode-image'),
+      alt: 'architecture diagram',
+      w: 640,
+      h: 480,
+    };
+    let storeReads = 0;
+    const resolved = resolveMentionContextPacket(
+      {
+        content: 'packet',
+        framework: 'opencode',
+        retainedMessageIds: ['chm:trigger'],
+        images: [{ part, messageId: 'chm:trigger', trigger: true }],
+      },
+      {
+        get: () => {
+          storeReads += 1;
+          return null;
+        },
+      } as ChannelAttachmentStore
+    );
+
+    expect(PACKET_FRAMEWORK_IMAGE_SUPPORT.opencode).toBe(false);
+    expect(PACKET_FRAMEWORK_IMAGE_SUPPORT.mock).toBe(true);
+    expect(storeReads).toBe(0);
+    expect(resolved.attachments).toEqual([]);
+    expect(resolved.content).toBe(
+      'packet\n\n[image attachment not deliverable to opencode: architecture diagram, 640x480]'
+    );
+  });
+
+  it('dedupes a chained attachment id in packet priority order', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'packet-image-dedupe-'));
+    const payloadPath = path.join(dir, 'shared.png');
+    fs.writeFileSync(payloadPath, Buffer.from('fixture'));
+    const triggerPart = {
+      ...imagePart('cha:shared'),
+      alt: 'trigger copy',
+    };
+    const contextPart = {
+      ...imagePart('cha:shared'),
+      alt: 'context copy',
+    };
+    let storeReads = 0;
+    const store = {
+      get: () => {
+        storeReads += 1;
+        return {
+          part: triggerPart,
+          sha256: 'shared',
+          payloadPath,
+          createdAt: 't',
+        };
+      },
+    } as ChannelAttachmentStore;
+
+    try {
+      const resolved = resolveMentionContextPacket(
+        {
+          content: 'packet',
+          framework: 'claude',
+          retainedMessageIds: ['chm:context', 'chm:trigger'],
+          images: [
+            {
+              part: triggerPart,
+              messageId: 'chm:trigger',
+              trigger: true,
+            },
+            {
+              part: contextPart,
+              messageId: 'chm:context',
+              trigger: false,
+            },
+          ],
+        },
+        store
+      );
+      expect(storeReads).toBe(1);
+      expect(resolved.attachments).toEqual([
+        { type: 'image', path: payloadPath, mimeType: 'image/png' },
+      ]);
+      expect(resolved.content).toBe('packet');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -1483,33 +1483,25 @@ describe('channel-agent-binder — delivery + idempotency', () => {
     } as ChannelAttachmentStore;
     const { binder, store, sessions } = makeBinder({
       build: () =>
-        new ScriptedAdapter('x', {
+        new ScriptedAdapter('mock', {
           mode: 'reject-once-then-reply',
           text: 'ok',
         }),
-      targets: [
-        {
-          id: 'x',
-          displayName: 'X',
-          kind: 'framework',
-          available: true,
-          reason: null,
-        },
-      ],
-      knownProviderIds: ['x'],
+      targets: MOCK_TARGETS,
+      knownProviderIds: ['mock'],
       attachmentStore,
     });
-    const mentions = parseMentions('@x inspect', ['x']);
+    const mentions = parseMentions('@mock inspect', ['mock']);
     const trigger = store.appendComplete({
       channelId: CH,
       sender: OPERATOR,
-      text: '@x inspect',
+      text: '@mock inspect',
       mentions,
       parts: [part],
     });
     binder.handleMessagePosted(trigger, mentions);
 
-    await waitFor(() => agentReplies(store, 'x').length === 1);
+    await waitFor(() => agentReplies(store, 'mock').length === 1);
     const adapter = sessions.adapterFor(
       sessions.firstSessionId()
     ) as ScriptedAdapter;

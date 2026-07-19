@@ -621,6 +621,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
       const attachmentId = req.params['attachmentId'] ?? '';
       const record = attachmentStore.get(attachmentId);
       if (!record || !existsSync(record.payloadPath)) {
+        res.set('Cache-Control', 'no-store');
         sendGatewayError(
           res,
           'NOT_FOUND',
@@ -633,28 +634,34 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         );
         return;
       }
-      res.set({
-        'Content-Type': record.part.mime,
-        'Content-Length': String(record.part.bytes),
-        'Content-Disposition': 'inline',
-        'Cache-Control': 'private, max-age=31536000, immutable',
-        ETag: `"sha256-${record.sha256}"`,
-        'X-Content-Type-Options': 'nosniff',
-      });
-      res.sendFile(record.payloadPath, (error) => {
-        if (!error) return;
-        if (res.headersSent) {
-          res.destroy(error);
-        } else {
-          sendGatewayError(
-            res,
-            'NOT_FOUND',
-            'channel attachment not found',
-            false,
-            { attachmentId, reasonCode: 'CHANNEL_ATTACHMENT_NOT_FOUND' }
-          );
+      res.sendFile(
+        record.payloadPath,
+        {
+          headers: {
+            'Content-Type': record.part.mime,
+            'Content-Length': String(record.part.bytes),
+            'Content-Disposition': 'inline',
+            'Cache-Control': 'private, max-age=31536000, immutable',
+            ETag: `"sha256-${record.sha256}"`,
+            'X-Content-Type-Options': 'nosniff',
+          },
+        },
+        (error) => {
+          if (!error) return;
+          if (res.headersSent) {
+            res.destroy(error);
+          } else {
+            res.set('Cache-Control', 'no-store');
+            sendGatewayError(
+              res,
+              'NOT_FOUND',
+              'channel attachment not found',
+              false,
+              { attachmentId, reasonCode: 'CHANNEL_ATTACHMENT_NOT_FOUND' }
+            );
+          }
         }
-      });
+      );
     }
   );
 
