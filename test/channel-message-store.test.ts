@@ -87,6 +87,74 @@ describe('channel-message-store schema migration', () => {
         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
         '2026-01-01T00:00:00.000Z'
       );
+      INSERT INTO channel_messages VALUES (
+        'chm:claude-live-keeper', 'topic:live-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'synthetic live duplicate', 'markdown', '{"providerId":"claude"}',
+        'session-live', 'turn-live', 'msg-turn-live-provider-1', NULL,
+        '2026-07-18T12:00:12.892Z', '2026-07-18T12:00:12.892Z',
+        '2026-07-18T12:00:12.892Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:claude-live-duplicate', 'topic:live-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'synthetic live duplicate', 'markdown', '{"providerId":"claude"}',
+        'session-live', 'turn-live', 'msg-turn-live-provider-0', NULL,
+        '2026-07-18T12:00:12.893Z', '2026-07-18T12:00:12.893Z',
+        '2026-07-18T12:00:12.891Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:reply-to-duplicate', 'topic:live-heal', 3, 'message', 'complete',
+        'human', 'human:operator', 'operator', 'chm:claude-live-duplicate',
+        'chm:claude-live-duplicate', 'reply', 'markdown', NULL,
+        NULL, NULL, NULL, NULL,
+        '2026-07-18T12:00:13.000Z', '2026-07-18T12:00:13.000Z',
+        '2026-07-18T12:00:13.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:tail', 'topic:live-heal', 4, 'message', 'complete',
+        'human', 'human:operator', 'operator', NULL, NULL, 'tail', 'markdown',
+        NULL, NULL, NULL, NULL, NULL,
+        '2026-07-18T12:00:14.000Z', '2026-07-18T12:00:14.000Z',
+        '2026-07-18T12:00:14.000Z'
+      );
+      INSERT INTO channel_agent_bindings VALUES (
+        'topic:live-heal', 'claude', 'session-live',
+        '{"claudeSessionId":"session-live","lastDeliveredSeq":3}',
+        '2026-07-18T12:00:00.000Z', '2026-07-18T12:00:00.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:legitimate-item-0', 'topic:no-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'same legitimate body', 'markdown', '{"providerId":"claude"}',
+        'session-no-heal', 'turn-no-heal', 'msg-turn-no-heal-provider-0', NULL,
+        '2026-07-18T12:00:20.000Z', '2026-07-18T12:00:20.000Z',
+        '2026-07-18T12:00:20.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:legitimate-item-1', 'topic:no-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'same legitimate body', 'markdown', '{"providerId":"claude"}',
+        'session-no-heal', 'turn-no-heal', 'msg-turn-no-heal-provider-1', NULL,
+        '2026-07-18T12:00:20.001Z', '2026-07-18T12:00:20.001Z',
+        '2026-07-18T12:00:20.001Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:late-alias-1', 'topic:late-no-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'same late body', 'markdown', '{"providerId":"claude"}',
+        'session-late', 'turn-late', 'msg-turn-late-provider-1', NULL,
+        '2026-07-18T12:00:30.000Z', '2026-07-18T12:00:30.000Z',
+        '2026-07-18T12:00:30.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:late-alias-0', 'topic:late-no-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'same late body', 'markdown', '{"providerId":"claude"}',
+        'session-late', 'turn-late', 'msg-turn-late-provider-0', NULL,
+        '2026-07-18T12:00:30.501Z', '2026-07-18T12:00:30.501Z',
+        '2026-07-18T12:00:30.001Z'
+      );
     `);
     legacy.close();
 
@@ -108,6 +176,64 @@ describe('channel-message-store schema migration', () => {
       truncated: true,
       meta: { truncationReason: 'size-limit' },
     });
+
+    const healed = migrated.history('topic:live-heal', { limit: 20 });
+    expect(healed.map((message) => [message.id, message.seq])).toEqual([
+      ['chm:claude-live-keeper', 1],
+      ['chm:reply-to-duplicate', 2],
+      ['chm:tail', 3],
+    ]);
+    expect(migrated.getMessage('chm:claude-live-duplicate')).toBeNull();
+    expect(migrated.getMessage('chm:reply-to-duplicate')).toMatchObject({
+      threadId: 'chm:claude-live-keeper',
+      parentMessageId: 'chm:claude-live-keeper',
+    });
+    expect(
+      migrated.threadHistory('topic:live-heal', 'chm:claude-live-keeper')
+    ).toHaveLength(2);
+    expect(migrated.getMessage('chm:claude-live-keeper')?.replyCount).toBe(1);
+    expect(
+      migrated.getBinding('topic:live-heal', 'claude')?.providerSession[
+        'lastDeliveredSeq'
+      ]
+    ).toBe(2);
+    expect(migrated.latestSeq('topic:live-heal')).toBe(3);
+    expect(
+      migrated
+        .history('topic:no-heal', { limit: 20 })
+        .map((message) => message.id)
+    ).toEqual(['chm:legitimate-item-0', 'chm:legitimate-item-1']);
+    expect(
+      migrated
+        .history('topic:late-no-heal', { limit: 20 })
+        .map((message) => message.id)
+    ).toEqual(['chm:late-alias-1', 'chm:late-alias-0']);
+    expect(
+      migrated.appendComplete({
+        channelId: 'topic:live-heal',
+        sender: HUMAN,
+        text: 'post-migration',
+      }).seq
+    ).toBe(4);
+
+    // Reopening a v2 database is an idempotent no-op: the healed row set,
+    // references, gap-free sequence, and translated delivery cursor survive.
+    const reopened = store(file);
+    expect(
+      reopened
+        .history('topic:live-heal', { limit: 20 })
+        .map((message) => [message.id, message.seq])
+    ).toEqual([
+      ['chm:claude-live-keeper', 1],
+      ['chm:reply-to-duplicate', 2],
+      ['chm:tail', 3],
+      [expect.any(String), 4],
+    ]);
+    expect(
+      reopened.getBinding('topic:live-heal', 'claude')?.providerSession[
+        'lastDeliveredSeq'
+      ]
+    ).toBe(2);
 
     const inspect = new Database(file, { readonly: true });
     cleanup.push(() => inspect.close());
@@ -361,55 +487,6 @@ describe('channel-message-store streaming lifecycle', () => {
         .listResyncRows('topic:c', Number.MAX_SAFE_INTEGER, 500)
         .find((message) => message.id === root.id)?.replyCount
     ).toBe(4);
-  });
-
-  it('derives reply and channel counts from distinct durable source rows', () => {
-    const p = dbPath();
-    const s = store(p);
-    const root = s.appendComplete({
-      channelId: 'topic:c',
-      sender: HUMAN,
-      text: 'root',
-    });
-    const reply = s.beginStream({
-      channelId: 'topic:c',
-      sender: AGENT,
-      source: { sessionId: 'sess-1', turnId: 'turn-1', itemId: 'item-1' },
-      parentMessageId: root.id,
-    });
-    s.finalizeStream(reply.id, { text: 'reply', status: 'complete' });
-
-    // Mutation-shaped fixture: bypass the public idempotent insert and inject a
-    // physical replay of the same source row. Derived counters must still count
-    // the durable source identity once.
-    const raw = new Database(p);
-    cleanup.push(() => raw.close());
-    raw.exec('DROP INDEX idx_chm_source_dedupe');
-    raw
-      .prepare(
-        `INSERT INTO channel_messages (
-           id, channel_id, seq, kind, status, sender_kind, sender_id,
-           sender_display, thread_id, parent_message_id, body_text, body_format,
-           meta_json, source_session_id, source_turn_id, source_item_id,
-           client_message_id, created_at, updated_at, completed_at
-         )
-         SELECT @duplicateId, channel_id, @duplicateSeq, kind, status,
-                sender_kind, sender_id, sender_display, thread_id,
-                parent_message_id, body_text, body_format, meta_json,
-                source_session_id, source_turn_id, source_item_id,
-                client_message_id, created_at, updated_at, completed_at
-           FROM channel_messages WHERE id = @sourceId`
-      )
-      .run({
-        duplicateId: 'chm:duplicate-source-replay',
-        duplicateSeq: 3,
-        sourceId: reply.id,
-      });
-
-    expect(s.history('topic:c')).toHaveLength(3);
-    expect(s.getMessage(root.id)?.replyCount).toBe(1);
-    expect(s.getChannelSummary('topic:c')?.messageCount).toBe(2);
-    expect(s.listChannelSummaries()[0]?.messageCount).toBe(2);
   });
 });
 

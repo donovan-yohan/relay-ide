@@ -796,6 +796,20 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.deferredTurnCompletion = null;
   }
 
+  private flushDeferredTurnCompletion(): boolean {
+    const pending = this.deferredTurnCompletion;
+    if (!pending) return false;
+    this.deferredTurnCompletion = null;
+    clearTimeout(pending.timer);
+    this.completeActiveTurn(
+      pending.status,
+      pending.usage,
+      pending.error,
+      pending.nativeDurationMs
+    );
+    return true;
+  }
+
   private deferCompletedTurnUntilTerminalItems(
     usage?: AgentUsageV2,
     error?: string,
@@ -804,16 +818,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     if (this.openAgentMessageNativeIds.size === 0) return false;
     this.clearDeferredTurnCompletion();
     const timer = setTimeout(() => {
-      const pending = this.deferredTurnCompletion;
-      if (!pending) return;
-      this.deferredTurnCompletion = null;
-      this.completeActiveTurn(
-        pending.status,
-        pending.usage,
-        pending.error,
-        pending.nativeDurationMs
-      );
-      this.drainQueue();
+      if (this.flushDeferredTurnCompletion()) this.drainQueue();
     }, CODEX_TERMINAL_ITEM_GRACE_MS);
     timer.unref?.();
     this.deferredTurnCompletion = {
@@ -833,16 +838,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     ) {
       return;
     }
-    const pending = this.deferredTurnCompletion;
-    this.deferredTurnCompletion = null;
-    clearTimeout(pending.timer);
-    this.completeActiveTurn(
-      pending.status,
-      pending.usage,
-      pending.error,
-      pending.nativeDurationMs
-    );
-    this.drainQueue();
+    if (this.flushDeferredTurnCompletion()) this.drainQueue();
   }
 
   private drainQueue(): void {
@@ -935,6 +931,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.pendingInputRequests.clear();
     this.approvalMeta.clear();
     this.inputRequestMeta.clear();
+
+    // A provider-completed turn waiting only on the terminal-item grace still
+    // owns its authoritative usage/boundary. Publish it before client.stop()
+    // can emit close and before teardown clears the deferred record.
+    this.flushDeferredTurnCompletion();
 
     if (this.client) {
       try {

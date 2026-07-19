@@ -1066,18 +1066,20 @@ export function createChannelAgentBinder(
       state = { count: 0, allowedTurnKeys: new Set(), paused: false };
       consecutiveAgentTurns.set(message.channelId, state);
     }
+    // Pause is a per-dispatch safety check, not a turn-admission check. A turn
+    // may legitimately finalize several assistant items, but none may route
+    // after another turn has paused the channel.
+    if (state.paused) return;
     if (!state.allowedTurnKeys.has(turnKey)) {
-      if (state.paused || state.count >= MAX_CONSECUTIVE_AGENT_TURNS) {
-        if (!state.paused) {
-          state.paused = true;
-          // Bounds total agent-token spend between human turns. Reset happens
-          // on the next human (browser / gateway-human) post.
-          postSystemRow(
-            message.channelId,
-            `Mention chain paused — ${state.count} agent turns without a human.`,
-            { parentMessageId: parentForTrigger(message) }
-          );
-        }
+      if (state.count >= MAX_CONSECUTIVE_AGENT_TURNS) {
+        state.paused = true;
+        // Bounds total agent-token spend between human turns. Reset happens
+        // on the next human (browser / gateway-human) post.
+        postSystemRow(
+          message.channelId,
+          `Mention chain paused — ${state.count} agent turns without a human.`,
+          { parentMessageId: parentForTrigger(message) }
+        );
         return;
       }
       state.allowedTurnKeys.add(turnKey);

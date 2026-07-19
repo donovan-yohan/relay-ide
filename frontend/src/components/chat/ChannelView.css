@@ -381,10 +381,15 @@
 }
 
 .ch-msg--streaming,
+.ch-msg--truncated,
 .ch-msg--interrupted,
 .ch-msg--failed {
   border-left-width: 2px;
   border-left-style: solid;
+}
+
+.ch-msg--truncated {
+  border-left-color: var(--status-warning);
 }
 
 .ch-msg--interrupted {
@@ -466,7 +471,7 @@
 }
 
 .ch-msg__tag--truncated {
-  color: var(--text-muted);
+  color: var(--status-warning);
 }
 
 /* Thread entry point: outline-only informational navigation, matching the

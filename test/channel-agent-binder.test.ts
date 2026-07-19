@@ -115,6 +115,29 @@ function post(
   return message;
 }
 
+function postAgentTurnRow(
+  store: ChannelMessageStore,
+  binder: ChannelAgentBinder,
+  turnId: string,
+  itemId: string,
+  text: string,
+  knownIds: string[]
+): ChannelMessage {
+  const mentions = parseMentions(text, knownIds);
+  const stream = store.beginStream({
+    channelId: CH,
+    sender: AGENT_SENDER,
+    source: { sessionId: 'session:orchestrator', turnId, itemId },
+    ...(mentions.length ? { mentions } : {}),
+  });
+  const message = store.finalizeStream(stream.id, {
+    text,
+    status: 'complete',
+  })!;
+  binder.handleMessagePosted(message, mentions);
+  return message;
+}
+
 // ── scripted adapter (deterministic, no timers) ──────────────────────────────
 
 type ScriptMode =
@@ -1489,11 +1512,75 @@ describe('channel-agent-binder — agent-to-agent brake', () => {
     await waitFor(() => agentReplies(store, 'c').length === 1);
     expect(agentReplies(store, 'b')).toHaveLength(4);
     expect(agentReplies(store, 'c')).toHaveLength(1);
+
+    // Four rows consumed one provider-turn count, not four row counts: a second
+    // distinct turn still routes instead of immediately tripping the cap.
+    postAgentTurnRow(
+      store,
+      binder,
+      'turn-after-multi-item',
+      'item-0',
+      '@b after',
+      ['a', 'b', 'c']
+    );
+    await waitFor(() => agentReplies(store, 'b').length === 5);
+    expect(agentReplies(store, 'b')).toHaveLength(5);
     expect(
       systemRows(store).filter((message) =>
         message.body.text.includes('Mention chain paused')
       )
     ).toHaveLength(0);
+  });
+
+  it('blocks later rows of an admitted turn after another turn pauses the channel', async () => {
+    const { binder, store } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' }),
+      targets: [
+        {
+          id: 'b',
+          displayName: 'B',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['b'],
+    });
+
+    for (let index = 0; index < MAX_CONSECUTIVE_AGENT_TURNS; index += 1) {
+      postAgentTurnRow(
+        store,
+        binder,
+        `turn-${index}`,
+        'item-0',
+        `@b row ${index}`,
+        ['b']
+      );
+    }
+    await waitFor(
+      () => agentReplies(store, 'b').length === MAX_CONSECUTIVE_AGENT_TURNS
+    );
+
+    postAgentTurnRow(store, binder, 'turn-cap', 'item-0', '@b pause', ['b']);
+    await waitFor(() =>
+      systemRows(store).some((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    );
+
+    // turn-0 was admitted before the pause. Its later item must still pass the
+    // per-dispatch pause check and never enqueue another downstream turn.
+    postAgentTurnRow(store, binder, 'turn-0', 'item-late', '@b late row', [
+      'b',
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(agentReplies(store, 'b')).toHaveLength(MAX_CONSECUTIVE_AGENT_TURNS);
+    expect(
+      systemRows(store).filter((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    ).toHaveLength(1);
   });
 
   it('caps consecutive agent turns and a human post resets the brake', async () => {

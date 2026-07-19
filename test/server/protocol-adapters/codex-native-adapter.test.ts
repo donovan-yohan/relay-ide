@@ -578,6 +578,55 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     }
   });
 
+  it('flushes a deferred provider completion with usage exactly once on teardown', async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, client, patches } = await setupAndSend(
+        'turn-terminal-teardown'
+      );
+      client.feedNotification('item/started', {
+        item: { type: 'agentMessage', id: 'message-held-open' },
+      });
+      client.feedNotification('thread/tokenUsageUpdated', {
+        threadId: 'thread-1',
+        turnId: 'native-turn-teardown',
+        tokenUsage: {
+          last: { inputTokens: 21, outputTokens: 8, totalTokens: 29 },
+        },
+      });
+      client.feedNotification('turn/completed', {
+        threadId: 'thread-1',
+        turn: { id: 'native-turn-teardown', status: 'completed' },
+      });
+      expect(
+        patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toHaveLength(0);
+
+      await adapter.disconnect();
+      const completed = patches.filter(
+        (patch) => patch.type === 'agent-turn-completed-v2'
+      );
+      expect(completed).toEqual([
+        expect.objectContaining({
+          turnId: 'turn-terminal-teardown',
+          status: 'completed',
+          usage: expect.objectContaining({
+            inputTokens: 21,
+            outputTokens: 8,
+            totalTokens: 29,
+          }),
+        }),
+      ]);
+
+      await vi.advanceTimersByTimeAsync(CODEX_TERMINAL_ITEM_GRACE_MS);
+      expect(
+        patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('persists an empty start as missing-terminal when the Codex grace expires', async () => {
     vi.useFakeTimers();
     const dir = fs.mkdtempSync(

@@ -3,6 +3,8 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { createLogger } from './logger.js';
+
 import {
   CHANNEL_CHAT_PROTOCOL_VERSION,
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
@@ -33,30 +35,15 @@ import {
 //    events over retained rows.
 
 const SCHEMA_VERSION = 2;
+const logger = createLogger('channel-message-store');
 export const CHANNEL_HISTORY_DEFAULT_LIMIT = 50;
 export const CHANNEL_HISTORY_MAX_LIMIT = 200;
 const CHANNEL_SUMMARY_PREVIEW_MAX_CHARS = 200;
 
 export type ChannelThreadHistoryQueryMode = 'default' | 'after' | 'before';
 
-/** Stable logical row identity for duplicate-safe derived counters. */
-function logicalMessageIdentitySql(alias: string): string {
-  return `CASE
-    WHEN ${alias}.source_session_id IS NOT NULL
-     AND ${alias}.source_turn_id IS NOT NULL
-     AND ${alias}.source_item_id IS NOT NULL
-    THEN 'source:' || hex(${alias}.source_session_id) || ':' ||
-         hex(${alias}.source_turn_id) || ':' || hex(${alias}.source_item_id)
-    ELSE 'row:' || ${alias}.id
-  END`;
-}
-
-function logicalMessageCountSql(alias: string): string {
-  return `COUNT(DISTINCT ${logicalMessageIdentitySql(alias)})`;
-}
-
 function replyCountSql(rootAlias: string): string {
-  return `(SELECT ${logicalMessageCountSql('replies')}
+  return `(SELECT COUNT(*)
              FROM channel_messages replies
             WHERE replies.thread_id = ${rootAlias}.id)`;
 }
@@ -446,6 +433,195 @@ function buildMeta(input: {
   return Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
 }
 
+const CHANNEL_MESSAGE_COLUMNS = `
+  id, channel_id, seq, kind, status, sender_kind, sender_id, sender_display,
+  thread_id, parent_message_id, body_text, body_format, meta_json,
+  source_session_id, source_turn_id, source_item_id, client_message_id,
+  created_at, updated_at, completed_at
+`;
+
+interface LegacyClaudeEchoAliasCandidate {
+  keeper_id: string;
+  duplicate_id: string;
+  channel_id: string;
+  keeper_item_id: string;
+  duplicate_item_id: string;
+  keeper_created_at: string;
+  duplicate_created_at: string;
+  keeper_completed_at: string;
+  duplicate_completed_at: string;
+}
+
+function legacyClaudeItemBase(
+  itemId: string,
+  suffix: '-1' | '-0'
+): string | null {
+  return itemId.endsWith(suffix) ? itemId.slice(0, -suffix.length) : null;
+}
+
+/**
+ * Heal only the exact pre-v2 Claude stream/echo alias observed in dogfood:
+ * adjacent `...-1` then `...-0` rows whose timestamps fit the bounded dogfood
+ * signature (the echo was created within 500ms and both terminal timestamps
+ * were within 5ms), and whose durable content/structure are otherwise
+ * identical. This is deliberately narrower than same-body/turn dedupe because
+ * a turn may contain legitimate, identical assistant items.
+ *
+ * Deleted aliases are migration-only exceptions to the append-only runtime
+ * contract. References are repointed to the earliest durable id, affected
+ * channels are resequenced in-place, and persisted agent-delivery cursors are
+ * translated before resequencing. Browser-local read cursors cannot be
+ * translated here; full-snapshot head clamping remains their recovery lane.
+ */
+function healLegacyClaudeEchoAliases(db: Database.Database): number {
+  const candidates = db
+    .prepare(
+      `SELECT keeper.id AS keeper_id,
+              duplicate.id AS duplicate_id,
+              keeper.channel_id AS channel_id,
+              keeper.source_item_id AS keeper_item_id,
+              duplicate.source_item_id AS duplicate_item_id,
+              keeper.created_at AS keeper_created_at,
+              duplicate.created_at AS duplicate_created_at,
+              keeper.completed_at AS keeper_completed_at,
+              duplicate.completed_at AS duplicate_completed_at
+         FROM channel_messages keeper
+         JOIN channel_messages duplicate
+           ON duplicate.channel_id = keeper.channel_id
+          AND duplicate.seq = keeper.seq + 1
+          AND duplicate.source_session_id = keeper.source_session_id
+          AND duplicate.source_turn_id = keeper.source_turn_id
+          AND duplicate.sender_kind = keeper.sender_kind
+          AND duplicate.sender_id = keeper.sender_id
+          AND duplicate.sender_display IS keeper.sender_display
+          AND duplicate.kind = keeper.kind
+          AND duplicate.status = keeper.status
+          AND duplicate.thread_id IS keeper.thread_id
+          AND duplicate.parent_message_id IS keeper.parent_message_id
+          AND duplicate.body_text = keeper.body_text
+          AND duplicate.body_format = keeper.body_format
+          AND duplicate.meta_json IS keeper.meta_json
+        WHERE keeper.sender_kind = 'agent'
+          AND keeper.sender_id = 'agent:claude'
+          AND keeper.kind = 'message'
+          AND keeper.status = 'complete'
+          AND keeper.completed_at IS NOT NULL
+          AND duplicate.completed_at IS NOT NULL
+          AND keeper.source_session_id IS NOT NULL
+          AND keeper.source_turn_id IS NOT NULL
+          AND keeper.source_item_id GLOB '*-1'
+          AND duplicate.source_item_id GLOB '*-0'`
+    )
+    .all() as LegacyClaudeEchoAliasCandidate[];
+
+  const affectedChannels = new Set<string>();
+  const duplicateIds = new Set<string>();
+  const reparentThread = db.prepare(
+    'UPDATE channel_messages SET thread_id = ? WHERE thread_id = ?'
+  );
+  const reparentDirect = db.prepare(
+    'UPDATE channel_messages SET parent_message_id = ? WHERE parent_message_id = ?'
+  );
+  const deleteDuplicate = db.prepare(
+    'DELETE FROM channel_messages WHERE id = ?'
+  );
+
+  for (const candidate of candidates) {
+    const keeperBase = legacyClaudeItemBase(candidate.keeper_item_id, '-1');
+    const duplicateBase = legacyClaudeItemBase(
+      candidate.duplicate_item_id,
+      '-0'
+    );
+    const keeperAt = Date.parse(candidate.keeper_created_at);
+    const duplicateAt = Date.parse(candidate.duplicate_created_at);
+    const keeperCompletedAt = Date.parse(candidate.keeper_completed_at);
+    const duplicateCompletedAt = Date.parse(candidate.duplicate_completed_at);
+    if (
+      keeperBase === null ||
+      duplicateBase === null ||
+      keeperBase !== duplicateBase ||
+      !Number.isFinite(keeperAt) ||
+      !Number.isFinite(duplicateAt) ||
+      !Number.isFinite(keeperCompletedAt) ||
+      !Number.isFinite(duplicateCompletedAt) ||
+      duplicateAt < keeperAt ||
+      duplicateAt - keeperAt > 500 ||
+      Math.abs(duplicateCompletedAt - keeperCompletedAt) > 5 ||
+      duplicateIds.has(candidate.duplicate_id)
+    ) {
+      continue;
+    }
+
+    reparentThread.run(candidate.keeper_id, candidate.duplicate_id);
+    reparentDirect.run(candidate.keeper_id, candidate.duplicate_id);
+    deleteDuplicate.run(candidate.duplicate_id);
+    duplicateIds.add(candidate.duplicate_id);
+    affectedChannels.add(candidate.channel_id);
+  }
+
+  const selectBindings = db.prepare(
+    `SELECT channel_id, agent_framework, provider_session_json
+       FROM channel_agent_bindings WHERE channel_id = ?`
+  );
+  const translateSeq = db.prepare(
+    `SELECT COUNT(*) AS count FROM channel_messages
+      WHERE channel_id = ? AND seq <= ?`
+  );
+  const updateBinding = db.prepare(
+    `UPDATE channel_agent_bindings SET provider_session_json = ?
+      WHERE channel_id = ? AND agent_framework = ?`
+  );
+  const selectOrderedIds = db.prepare(
+    'SELECT id FROM channel_messages WHERE channel_id = ? ORDER BY seq ASC'
+  );
+  const setSeq = db.prepare(
+    'UPDATE channel_messages SET seq = ? WHERE channel_id = ? AND id = ?'
+  );
+
+  for (const channelId of affectedChannels) {
+    const bindings = selectBindings.all(channelId) as Array<{
+      channel_id: string;
+      agent_framework: string;
+      provider_session_json: string;
+    }>;
+    for (const binding of bindings) {
+      try {
+        const providerSession = JSON.parse(
+          binding.provider_session_json
+        ) as Record<string, unknown>;
+        const cursor = providerSession['lastDeliveredSeq'];
+        if (typeof cursor !== 'number' || !Number.isFinite(cursor)) continue;
+        const translated = translateSeq.get(channelId, cursor) as {
+          count: number;
+        };
+        updateBinding.run(
+          JSON.stringify({
+            ...providerSession,
+            lastDeliveredSeq: translated.count,
+          }),
+          channelId,
+          binding.agent_framework
+        );
+      } catch {
+        // Invalid legacy provider state is preserved byte-for-byte; migration
+        // must not turn an unrelated malformed binding into DB unavailability.
+      }
+    }
+
+    const ordered = selectOrderedIds.all(channelId) as Array<{ id: string }>;
+    // The negative lane avoids transient UNIQUE(channel_id, seq) collisions
+    // while retaining exact order and durable message ids.
+    for (const [index, row] of ordered.entries()) {
+      setSeq.run(-(index + 1), channelId, row.id);
+    }
+    for (const [index, row] of ordered.entries()) {
+      setSeq.run(index + 1, channelId, row.id);
+    }
+  }
+
+  return duplicateIds.size;
+}
+
 function runMigrations(db: Database.Database): void {
   db.exec(
     'CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)'
@@ -468,7 +644,7 @@ function runMigrations(db: Database.Database): void {
     return;
   }
   if (current < 2) {
-    db.transaction(() => {
+    const healed = db.transaction(() => {
       // SQLite cannot widen a CHECK constraint in place. Rebuild only the
       // message table, preserving every durable row and its sequence/source
       // identity, then recreate its indexes against the replacement table.
@@ -498,10 +674,15 @@ function runMigrations(db: Database.Database): void {
           completed_at      TEXT,
           UNIQUE (channel_id, seq)
         );
-        INSERT INTO channel_messages_v2
-        SELECT * FROM channel_messages;
+        INSERT INTO channel_messages_v2 (${CHANNEL_MESSAGE_COLUMNS})
+        SELECT ${CHANNEL_MESSAGE_COLUMNS} FROM channel_messages;
         DROP TABLE channel_messages;
         ALTER TABLE channel_messages_v2 RENAME TO channel_messages;
+      `);
+
+      const healedCount = healLegacyClaudeEchoAliases(db);
+
+      db.exec(`
         CREATE INDEX idx_chm_channel_seq
           ON channel_messages(channel_id, seq);
         CREATE INDEX idx_chm_thread
@@ -516,7 +697,14 @@ function runMigrations(db: Database.Database): void {
           WHERE client_message_id IS NOT NULL;
       `);
       db.prepare('UPDATE schema_version SET version = 2').run();
+      return healedCount;
     })();
+    if (healed > 0) {
+      logger.info(
+        'channel schema v2 healed %d historical Claude echo duplicate row(s)',
+        healed
+      );
+    }
   }
 }
 
@@ -981,7 +1169,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const counts = new Map<string, number>();
       for (const c of db
         .prepare(
-          `SELECT channel_id, ${logicalMessageCountSql('channel_messages')} AS cnt
+          `SELECT channel_id, COUNT(*) AS cnt
              FROM channel_messages GROUP BY channel_id`
         )
         .all() as Array<{ channel_id: string; cnt: number }>) {
@@ -1002,7 +1190,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       const count = (
         db
           .prepare(
-            `SELECT ${logicalMessageCountSql('channel_messages')} AS cnt
+            `SELECT COUNT(*) AS cnt
                FROM channel_messages WHERE channel_id = ?`
           )
           .get(channelId) as { cnt: number }

@@ -44,6 +44,19 @@ async function firstVisibleAnchor(
 }
 
 test.describe('smoke channel timeline scroll UX (#1193)', () => {
+  test('surfaces a missing-terminal truncation at the timeline last hop (#1188)', async ({
+    page,
+  }) => {
+    const timeline = await openFixture(page);
+    await page.getByTestId('append-truncated').click();
+
+    const row = timeline.locator('[data-channel-message-seq="71"]');
+    await expect(row).toHaveClass(/ch-msg--truncated/);
+    await expect(row.locator('.ch-msg__tag--truncated')).toHaveText(
+      'truncated · missing terminal'
+    );
+  });
+
   test('opens at the newest message', async ({ page }) => {
     const timeline = await openFixture(page);
     await expect.poll(() => bottomDistance(timeline)).toBeLessThanOrEqual(1);

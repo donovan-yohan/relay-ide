@@ -33,6 +33,14 @@ function message(
   };
 }
 
+function truncatedMessage(seq: number): ChannelMessage {
+  return {
+    ...message(seq, 'partial terminal report'),
+    status: 'truncated',
+    meta: { truncationReason: 'missing-terminal' },
+  };
+}
+
 const INITIAL_MESSAGES = Array.from({ length: 50 }, (_, index) =>
   message(index + 21)
 );
@@ -69,6 +77,13 @@ function Fixture(): React.ReactElement {
           id: 'human:operator',
         }),
       ];
+    });
+  }, []);
+
+  const appendTruncated = useCallback(() => {
+    setMessages((current) => {
+      const seq = (current[current.length - 1]?.seq ?? 0) + 1;
+      return [...current, truncatedMessage(seq)];
     });
   }, []);
 
@@ -140,6 +155,9 @@ function Fixture(): React.ReactElement {
         </button>
         <button data-testid="append-own" onClick={appendOwn}>
           append own
+        </button>
+        <button data-testid="append-truncated" onClick={appendTruncated}>
+          append truncated
         </button>
         <button data-testid="grow-stream" onClick={growStream}>
           grow stream
