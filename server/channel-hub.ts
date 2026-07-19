@@ -42,6 +42,14 @@ const CATCHUP_MAX_ROWS = 500;
  * client paginates the remainder via `channels.history`.
  */
 const DEFAULT_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+/**
+ * Defense-in-depth bounds for events produced re-entrantly while a subscriber's
+ * connect-time snapshot is being sent. In production the better-sqlite3 snapshot
+ * read is synchronous, but the queue must still have a hard ceiling: SQLite is
+ * the durable catch-up buffer, so an overflowing client can reconnect by seq.
+ */
+const DEFAULT_CONNECT_QUEUE_MAX_EVENTS = CATCHUP_MAX_ROWS;
+const DEFAULT_CONNECT_QUEUE_MAX_BYTES = DEFAULT_SNAPSHOT_MAX_BYTES;
 
 /**
  * Minimal socket surface the hub needs. The real `ws` WebSocket satisfies it;
@@ -61,6 +69,7 @@ interface Subscriber {
   /** live events queue here until the connect-time snapshot has been sent. */
   buffering: boolean;
   queue: ChannelEventV1[];
+  queueBytes: number;
   snapshotLatestSeq: number;
   snapshotInFlight: Map<string, number>;
   /** suppressing deltas after a high-watermark breach until the buffer drains. */
@@ -98,6 +107,10 @@ export interface ChannelHubOptions {
   badgeBroadcaster?: ChannelBadgeBroadcaster;
   /** byte budget for one snapshot/catch-up assembly (defaults to 4MB). */
   snapshotMaxBytes?: number;
+  /** connect-time live queue event cap (defaults to the catch-up row cap). */
+  connectQueueMaxEvents?: number;
+  /** connect-time live queue byte cap (defaults to 4MB). */
+  connectQueueMaxBytes?: number;
 }
 
 export interface ChannelHub {
@@ -120,7 +133,12 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
   const store = options.store;
   const coalesceMs = options.coalesceMs ?? DEFAULT_COALESCE_MS;
   const channelExists = options.channelExists ?? (() => true);
-  const snapshotMaxBytes = options.snapshotMaxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES;
+  const snapshotMaxBytes =
+    options.snapshotMaxBytes ?? DEFAULT_SNAPSHOT_MAX_BYTES;
+  const connectQueueMaxEvents =
+    options.connectQueueMaxEvents ?? DEFAULT_CONNECT_QUEUE_MAX_EVENTS;
+  const connectQueueMaxBytes =
+    options.connectQueueMaxBytes ?? DEFAULT_CONNECT_QUEUE_MAX_BYTES;
   let badgeBroadcaster = options.badgeBroadcaster ?? null;
 
   const subscribers = new Map<string, Set<Subscriber>>();
@@ -216,7 +234,16 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
     if (!set) return;
     for (const sub of [...set]) {
       if (sub.buffering) {
+        const eventBytes = Buffer.byteLength(JSON.stringify(event), 'utf8');
+        if (
+          sub.queue.length >= connectQueueMaxEvents ||
+          sub.queueBytes + eventBytes > connectQueueMaxBytes
+        ) {
+          closeSubscriber(sub, CHANNEL_WS_BACKPRESSURE_CLOSE_CODE);
+          continue;
+        }
         sub.queue.push(event);
+        sub.queueBytes += eventBytes;
         continue;
       }
       deliver(sub, event);
@@ -407,6 +434,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
         channelId,
         buffering: true,
         queue: [],
+        queueBytes: 0,
         snapshotLatestSeq: 0,
         snapshotInFlight: new Map(),
         lagging: false,
@@ -429,6 +457,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
         }
       }
       deliver(sub, snapshot);
+      if (ws.readyState !== WS_OPEN) return;
 
       // Flush queued live events with dedupe: drop committed events with
       // seq <= snapshot endSeq; drop deltas with deltaIndex <= the snapshot's
@@ -436,6 +465,7 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
       // deltaIndex, NOT seq); always forward completed (idempotent replace-by-id).
       const queued = sub.queue;
       sub.queue = [];
+      sub.queueBytes = 0;
       sub.buffering = false;
       for (const event of queued) {
         if (

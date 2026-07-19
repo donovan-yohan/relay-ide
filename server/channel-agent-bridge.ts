@@ -57,6 +57,15 @@ export interface BindSessionToChannelInput {
    * (agent-to-agent mentions). Interrupted/failed rows never fire it.
    */
   onAssistantMessageFinalized?: (message: ChannelMessage) => void;
+  /** Optional bounded-load diagnostic seam; never affects delivery. */
+  onRetentionSnapshot?: (snapshot: ChannelBridgeRetentionSnapshot) => void;
+}
+
+export interface ChannelBridgeRetentionSnapshot {
+  openStreams: number;
+  assistantItemIds: number;
+  turnsWithRows: number;
+  retainedTextBytes: number;
 }
 
 /**
@@ -73,11 +82,25 @@ export function bindSessionToChannel(
   // stream. Plan/reasoning/tool items also carry `delta.text` on real adapters
   // (e.g. the codex-native plan item `plan-<turnId>`), and §6.3 mirrors ONLY
   // assistantMessage text — so a delta for any other item type is dropped.
-  const assistantItemIds = new Set<string>();
+  const assistantItemTurnIds = new Map<string, string>();
   // Turn ids that opened at least one channel-message stream. A `turn-completed`
   // for a turn absent here produced ZERO message rows — a silent finalization
   // that gets a warn log (#1181, defect 4) rather than passing unnoticed.
   const turnsWithRows = new Set<string>();
+
+  function reportRetention(): void {
+    if (!input.onRetentionSnapshot) return;
+    let retainedTextBytes = 0;
+    for (const stream of streams.values()) {
+      retainedTextBytes += stream.byteLength;
+    }
+    input.onRetentionSnapshot({
+      openStreams: streams.size,
+      assistantItemIds: assistantItemTurnIds.size,
+      turnsWithRows: turnsWithRows.size,
+      retainedTextBytes,
+    });
+  }
 
   const sender: ChannelSenderRef = {
     kind: 'agent',
@@ -94,7 +117,6 @@ export function bindSessionToChannel(
   ): BridgeStream {
     const existing = streams.get(itemId);
     if (existing) return existing;
-    turnsWithRows.add(turnId);
     const parentMessageId = input.parentMessageIdForTurn?.(turnId);
     const message = store.beginStream({
       channelId,
@@ -103,18 +125,35 @@ export function bindSessionToChannel(
       ...(initialText ? { text: initialText } : {}),
       ...(parentMessageId ? { parentMessageId } : {}),
     });
+    if (message.status !== 'streaming') {
+      // Source-triple dedupe returned an already-finalized durable row. A late
+      // duplicate final is a pure no-op: never recreate the hub accumulator or
+      // turn-retention state for a stream that cannot receive more deltas.
+      return {
+        messageId: message.id,
+        turnId,
+        itemId,
+        text: message.body.text,
+        byteLength: Buffer.byteLength(message.body.text, 'utf8'),
+        closed: true,
+        flushTimer: null,
+        firstScheduledAt: null,
+      };
+    }
+    turnsWithRows.add(turnId);
     const stream: BridgeStream = {
       messageId: message.id,
       turnId,
       itemId,
       text: message.body.text,
       byteLength: Buffer.byteLength(message.body.text, 'utf8'),
-      closed: message.status !== 'streaming',
+      closed: false,
       flushTimer: null,
       firstScheduledAt: null,
     };
     streams.set(itemId, stream);
     hub.beginStreamBroadcast(message);
+    reportRetention();
     return stream;
   }
 
@@ -160,7 +199,12 @@ export function bindSessionToChannel(
     text: string,
     truncated = false
   ): void {
-    if (stream.closed) return;
+    if (stream.closed) {
+      streams.delete(stream.itemId);
+      assistantItemTurnIds.delete(stream.itemId);
+      reportRetention();
+      return;
+    }
     stream.closed = true;
     if (stream.flushTimer) {
       clearTimeout(stream.flushTimer);
@@ -175,7 +219,12 @@ export function bindSessionToChannel(
       });
     } catch (err) {
       logger.warn('channel bridge finalize failed:', err);
-      return;
+    } finally {
+      // The durable row owns completed output. Never retain full streamed text
+      // or provider item ids for the lifetime of the channel binding.
+      streams.delete(stream.itemId);
+      assistantItemTurnIds.delete(stream.itemId);
+      reportRetention();
     }
     if (!message) return;
     hub.completeStreamBroadcast(message);
@@ -197,7 +246,8 @@ export function bindSessionToChannel(
 
   function finalizeTurn(
     turnId: string | undefined,
-    status: 'complete' | 'interrupted' | 'failed'
+    status: 'complete' | 'interrupted' | 'failed',
+    terminal = true
   ): void {
     for (const stream of streams.values()) {
       if (stream.closed) continue;
@@ -220,13 +270,20 @@ export function bindSessionToChannel(
         turnId,
       });
     }
+    if (terminal && turnId !== undefined) {
+      turnsWithRows.delete(turnId);
+      for (const [itemId, itemTurnId] of assistantItemTurnIds) {
+        if (itemTurnId === turnId) assistantItemTurnIds.delete(itemId);
+      }
+      reportRetention();
+    }
   }
 
   function handlePatch(patch: AgentPatchV2): void {
     switch (patch.type) {
       case 'agent-item-started-v2': {
         if (patch.item.type === 'assistantMessage') {
-          assistantItemIds.add(patch.item.id);
+          assistantItemTurnIds.set(patch.item.id, patch.turnId);
           openStream(
             patch.turnId,
             patch.item.id,
@@ -244,7 +301,7 @@ export function bindSessionToChannel(
           // plan/reasoning/tool items (whose text is not mirrored, §6.3) nor for
           // an item whose type we have not seen. Mirroring a plan-item delta here
           // would persist plan text as an agent-authored channel message.
-          if (!assistantItemIds.has(patch.itemId)) break;
+          if (!assistantItemTurnIds.has(patch.itemId)) break;
           stream = openStream(patch.turnId, patch.itemId, patch.sessionId, '');
         }
         appendDelta(stream, patch.delta.text);
@@ -284,7 +341,10 @@ export function bindSessionToChannel(
         break;
       }
       case 'agent-error-v2': {
-        finalizeTurn(patch.turnId, 'failed');
+        // Adapters emit the authoritative turn-completed patch after the error;
+        // keep the row marker until then so that terminal patch does not produce
+        // a false "no message rows" warning.
+        finalizeTurn(patch.turnId, 'failed', false);
         break;
       }
       default:
@@ -301,5 +361,9 @@ export function bindSessionToChannel(
     for (const stream of streams.values()) {
       if (!stream.closed) finalize(stream, 'interrupted', stream.text);
     }
+    streams.clear();
+    assistantItemTurnIds.clear();
+    turnsWithRows.clear();
+    reportRetention();
   };
 }

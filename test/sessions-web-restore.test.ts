@@ -48,6 +48,8 @@ const deleteWebSession = vi.fn();
 const scheduleWebSessionUpsert = vi.fn();
 const resumeSession = vi.fn();
 const reconnect = vi.fn();
+const connect = vi.fn();
+const disconnect = vi.fn();
 
 class RestoreFailureAdapter implements ProtocolAdapterV2 {
   readonly agentType = 'claude';
@@ -56,9 +58,12 @@ class RestoreFailureAdapter implements ProtocolAdapterV2 {
   readonly status: AdapterStatus = 'connected';
   private handlers = new Set<AgentPatchHandlerV2>();
 
-  async connect(_config: AdapterConfig): Promise<void> {}
+  async connect(config: AdapterConfig): Promise<void> {
+    await connect(config);
+  }
   async disconnect(): Promise<void> {
     this.handlers.clear();
+    await disconnect();
   }
   async reconnect(): Promise<void> {
     await reconnect();
@@ -79,7 +84,13 @@ class RestoreFailureAdapter implements ProtocolAdapterV2 {
   emit(patch: AgentPatchV2): void {
     for (const handler of this.handlers) handler(patch);
   }
+  broadcastPatch(patch: AgentPatchV2): void {
+    this.emit(patch);
+  }
 }
+
+let latestAdapter: RestoreFailureAdapter | undefined;
+const createdAdapters: RestoreFailureAdapter[] = [];
 
 vi.mock('../server/relay-state-db.js', () => ({
   loadAllWebSessions,
@@ -89,7 +100,11 @@ vi.mock('../server/relay-state-db.js', () => ({
 }));
 
 vi.mock('../server/protocol-adapters/index.js', () => ({
-  createAdapterV2: () => new RestoreFailureAdapter(),
+  createAdapterV2: () => {
+    latestAdapter = new RestoreFailureAdapter();
+    createdAdapters.push(latestAdapter);
+    return latestAdapter;
+  },
 }));
 
 describe('web session restore failure recovery', () => {
@@ -105,6 +120,10 @@ describe('web session restore failure recovery', () => {
     scheduleWebSessionUpsert.mockReset();
     reconnect.mockReset();
     resumeSession.mockReset();
+    connect.mockReset();
+    disconnect.mockReset();
+    latestAdapter = undefined;
+    createdAdapters.length = 0;
   });
 
   afterEach(async () => {
@@ -178,7 +197,9 @@ describe('web session restore failure recovery', () => {
     const restored = await sessions.restoreFromDisk(configDir);
 
     expect(restored).toBe(1);
-    expect(resumeSession).toHaveBeenCalledWith('stored-provider-session');
+    await vi.waitFor(() =>
+      expect(resumeSession).toHaveBeenCalledWith('stored-provider-session')
+    );
     expect(reconnect).not.toHaveBeenCalled();
 
     const session = sessions.get('web-restore-failure');
@@ -189,8 +210,11 @@ describe('web session restore failure recovery', () => {
     expect(session.needsBranchRename).toBe(true);
     expect(session.workspaceId).toBe('workspace-1');
     expect(session.additionalDirs).toEqual([path.join(configDir, 'extra')]);
-    expect(session.status).toBe('disconnected');
-    expect(session.agentState).toBe('error');
+    await vi.waitFor(() => {
+      expect(session.restoreState).toBe('reattach-failed');
+      expect(session.status).toBe('disconnected');
+      expect(session.agentState).toBe('error');
+    });
     expect(session.controlState).toMatchObject({
       controlMode: 'co-driven',
       controlFreshness: 'fresh',
@@ -209,6 +233,251 @@ describe('web session restore failure recovery', () => {
       )
     ).toBe(true);
     expect(upsertWebSessionNow).toHaveBeenLastCalledWith(session);
+  });
+
+  it('materializes a hanging transport as restoring, then fails it at the hard deadline', async () => {
+    connect.mockImplementationOnce(() => new Promise<void>(() => {}));
+    loadAllWebSessions.mockReturnValueOnce([
+      {
+        id: 'web-restore-hangs',
+        vendor: 'claude',
+        vendorSessionId: 'stored-provider-session',
+        cwd: configDir,
+        repoPath: null,
+        worktreePath: null,
+        branchName: null,
+        displayName: 'hung transport',
+        workspaceId: null,
+        agentSessionV2: emptyAgentSessionV2({
+          id: 'web-restore-hangs',
+          provider: 'claude',
+          cwd: configDir,
+          capabilities,
+          providerSession: { claudeSessionId: 'stored-provider-session' },
+        }),
+        meta: {
+          type: 'agent',
+          agent: 'claude',
+          customCommand: null,
+          runtimeOwnership: 'attached',
+          hookToken: 'hung-restored-hook-token',
+          adapterType: 'claude',
+        },
+        createdAt: Date.now() - 10_000,
+        lastActivity: Date.now() - 5_000,
+        status: 'active',
+      },
+    ]);
+
+    const sessions = await import('../server/sessions.js');
+    sessions.configure({ port: 4567, configDir });
+
+    const restored = await sessions.restoreFromDisk(
+      configDir,
+      undefined,
+      undefined,
+      { webSessionReattachTimeoutMs: 20 }
+    );
+
+    expect(restored).toBe(1);
+    const session = sessions.get('web-restore-hangs');
+    expect(session?.mode).toBe('web');
+    if (session?.mode !== 'web') throw new Error('expected web session');
+    expect(session.restoreState).toBe('restoring');
+    expect(sessions.list()).toContainEqual(
+      expect.objectContaining({
+        id: 'web-restore-hangs',
+        restoreState: 'restoring',
+      })
+    );
+    expect(resumeSession).not.toHaveBeenCalled();
+
+    await vi.waitFor(() => {
+      expect(session.restoreState).toBe('reattach-failed');
+      expect(session.agentSessionV2.live.status).toBe('disconnected');
+      expect(disconnect).toHaveBeenCalled();
+    });
+    expect(sessions.list()).toContainEqual(
+      expect.objectContaining({
+        id: 'web-restore-hangs',
+        restoreState: 'reattach-failed',
+      })
+    );
+  });
+
+  it('keeps timeout failure authoritative when a late resume settles', async () => {
+    let settleResume: (() => void) | undefined;
+    resumeSession.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          settleResume = resolve;
+        })
+    );
+    loadAllWebSessions.mockReturnValueOnce([
+      {
+        id: 'web-restore-late',
+        vendor: 'claude',
+        vendorSessionId: 'stored-provider-session',
+        cwd: configDir,
+        repoPath: null,
+        worktreePath: null,
+        branchName: null,
+        displayName: 'late transport',
+        workspaceId: null,
+        agentSessionV2: emptyAgentSessionV2({
+          id: 'web-restore-late',
+          provider: 'claude',
+          cwd: configDir,
+          capabilities,
+          providerSession: { claudeSessionId: 'stored-provider-session' },
+        }),
+        meta: {
+          type: 'agent',
+          agent: 'claude',
+          customCommand: null,
+          runtimeOwnership: 'attached',
+          hookToken: 'late-restored-hook-token',
+          adapterType: 'claude',
+        },
+        createdAt: Date.now() - 10_000,
+        lastActivity: Date.now() - 5_000,
+        status: 'active',
+      },
+    ]);
+
+    const sessions = await import('../server/sessions.js');
+    sessions.configure({ port: 4567, configDir });
+    await sessions.restoreFromDisk(configDir, undefined, undefined, {
+      webSessionReattachTimeoutMs: 20,
+    });
+    const session = sessions.get('web-restore-late');
+    if (session?.mode !== 'web') throw new Error('expected web session');
+
+    await vi.waitFor(() =>
+      expect(session.restoreState).toBe('reattach-failed')
+    );
+    settleResume?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    latestAdapter?.emit({
+      type: 'agent-live-state-updated-v2',
+      sessionId: session.id,
+      timestamp: new Date().toISOString(),
+      live: {
+        status: 'idle',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: null,
+      },
+    });
+
+    expect(session.restoreState).toBe('reattach-failed');
+    expect(session.status).toBe('disconnected');
+    expect(session.agentSessionV2.live.status).toBe('disconnected');
+    expect(disconnect.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('isolates Continue Here from a superseded restore that settles late', async () => {
+    let settleResume: (() => void) | undefined;
+    resumeSession.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          settleResume = resolve;
+        })
+    );
+    loadAllWebSessions.mockReturnValueOnce([
+      {
+        id: 'web-restore-superseded',
+        vendor: 'claude',
+        vendorSessionId: 'stored-provider-session',
+        cwd: configDir,
+        repoPath: null,
+        worktreePath: null,
+        branchName: null,
+        displayName: 'superseded transport',
+        workspaceId: null,
+        agentSessionV2: emptyAgentSessionV2({
+          id: 'web-restore-superseded',
+          provider: 'claude',
+          cwd: configDir,
+          capabilities,
+          providerSession: { claudeSessionId: 'stored-provider-session' },
+        }),
+        meta: {
+          type: 'agent',
+          agent: 'claude',
+          customCommand: null,
+          runtimeOwnership: 'attached',
+          hookToken: 'superseded-restored-hook-token',
+          adapterType: 'claude',
+        },
+        createdAt: Date.now() - 10_000,
+        lastActivity: Date.now() - 5_000,
+        status: 'active',
+      },
+    ]);
+
+    const sessions = await import('../server/sessions.js');
+    sessions.configure({ port: 4567, configDir });
+    await sessions.restoreFromDisk(configDir, undefined, undefined, {
+      webSessionReattachTimeoutMs: 20,
+    });
+    const session = sessions.get('web-restore-superseded');
+    if (session?.mode !== 'web') throw new Error('expected web session');
+    const staleAdapter = session.adapterV2;
+
+    await vi.waitFor(() =>
+      expect(session.restoreState).toBe('reattach-failed')
+    );
+    await sessions.continueHereWeb(session.id);
+
+    expect(createdAdapters).toHaveLength(2);
+    expect(session.adapterV2).not.toBe(staleAdapter);
+    const freshAdapter = session.adapterV2 as RestoreFailureAdapter;
+    freshAdapter.emit({
+      type: 'agent-live-state-updated-v2',
+      sessionId: session.id,
+      timestamp: new Date().toISOString(),
+      live: {
+        status: 'idle',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: null,
+      },
+    });
+    expect(session.agentSessionV2.live.status).toBe('idle');
+
+    settleResume?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    staleAdapter.emit({
+      type: 'agent-live-state-updated-v2',
+      sessionId: session.id,
+      timestamp: new Date().toISOString(),
+      live: {
+        status: 'disconnected',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        error: 'late stale restore',
+      },
+    });
+    freshAdapter.emit({
+      type: 'agent-live-state-updated-v2',
+      sessionId: session.id,
+      timestamp: new Date().toISOString(),
+      live: {
+        status: 'working',
+        activeTurnId: 'fresh-turn',
+        waitingOn: null,
+        activeRequestIds: [],
+        error: null,
+      },
+    });
+
+    expect(session.adapterV2).toBe(freshAdapter);
+    expect(session.agentSessionV2.live.status).toBe('working');
+    expect(session.agentState).toBe('processing');
   });
 
   it('restores persisted free web sessions without synthesizing repo bindings', async () => {
@@ -250,7 +519,9 @@ describe('web session restore failure recovery', () => {
     const restored = await sessions.restoreFromDisk(configDir);
 
     expect(restored).toBe(1);
-    expect(resumeSession).toHaveBeenCalledWith('stored-free-provider-session');
+    await vi.waitFor(() =>
+      expect(resumeSession).toHaveBeenCalledWith('stored-free-provider-session')
+    );
 
     const session = sessions.get('web-restore-free');
     expect(session).toBeTruthy();
@@ -319,7 +590,9 @@ describe('web session restore failure recovery', () => {
     const restored = await sessions.restoreFromDisk(configDir);
 
     expect(restored).toBe(1);
-    expect(resumeSession).toHaveBeenCalledWith('resp_stored');
+    await vi.waitFor(() =>
+      expect(resumeSession).toHaveBeenCalledWith('resp_stored')
+    );
     expect(reconnect).not.toHaveBeenCalled();
   });
 });

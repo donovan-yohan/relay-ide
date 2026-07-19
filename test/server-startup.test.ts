@@ -100,7 +100,10 @@ async function expectJsonStatus<T>(
   return body;
 }
 
-async function rawUpgradeStatus(port: number, pathName: string): Promise<number> {
+async function rawUpgradeStatus(
+  port: number,
+  pathName: string
+): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
       socket.write(
@@ -159,6 +162,14 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
 
   try {
     const port = await waitForListeningPort(child);
+
+    const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({
+      status: 'ok',
+      lagMs: expect.any(Number),
+      rss: expect.any(Number),
+    });
 
     // Hit GET /auth/status — should work without auth
     const res = await fetch(`http://127.0.0.1:${port}/auth/status`);
@@ -257,7 +268,9 @@ test('legacy disabled PIN sentinel allows first-run setup instead of lockout', a
 });
 
 test('NO_PIN does not bypass protected browser or CLI gateway auth paths', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-pin-no-bypass-'));
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-no-pin-no-bypass-')
+  );
   const configPath = path.join(tmpDir, 'config.json');
   fs.writeFileSync(
     configPath,
@@ -305,7 +318,9 @@ test('NO_PIN does not bypass protected browser or CLI gateway auth paths', async
 });
 
 test('protected hub accepts grant-backed CLI actor credential for nodes.list without browser-cookie fallback', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-cli-actor-protected-'));
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-cli-actor-protected-')
+  );
   const configPath = path.join(tmpDir, 'config.json');
   const pin = '246810';
   fs.writeFileSync(
@@ -400,7 +415,11 @@ test('protected hub accepts grant-backed CLI actor credential for nodes.list wit
         'x-relay-capabilities': 'session:read',
       },
     });
-    await expectJsonStatus<{ nodes: unknown[] }>(actorNodes, 200, 'actor nodes.list');
+    await expectJsonStatus<{ nodes: unknown[] }>(
+      actorNodes,
+      200,
+      'actor nodes.list'
+    );
 
     const nodeCredentialNodes = await fetch(`${base}/nodes`, {
       headers: {

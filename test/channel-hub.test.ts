@@ -9,6 +9,7 @@ import {
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import {
+  CHANNEL_WS_BACKPRESSURE_CLOSE_CODE,
   createChannelHub,
   type ChannelHub,
   type ChannelSocket,
@@ -87,6 +88,35 @@ function hubWith(
 }
 
 describe('channel-hub fan-out', () => {
+  it('bounds the connect-time live queue and relies on durable reconnect catch-up', () => {
+    const s = store();
+    const hub = hubWith(s, { connectQueueMaxEvents: 3 });
+    const sock = fakeSocket();
+    const ordinarySend = sock.send;
+    let injected = false;
+    sock.send = function (data: string) {
+      ordinarySend.call(this, data);
+      if (injected) return;
+      injected = true;
+      // Re-entrant delivery is a defense-in-depth stand-in for live traffic at
+      // the snapshot boundary. The fourth queued event must close, not retain.
+      for (let index = 0; index < 4; index++) {
+        const message = s.appendComplete({
+          channelId: 'topic:c',
+          sender: HUMAN,
+          text: `queued-${index}`,
+        });
+        hub.broadcastCreated(message);
+      }
+    };
+
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq: null });
+
+    expect(sock.closed).toBe(CHANNEL_WS_BACKPRESSURE_CLOSE_CODE);
+    expect(hub.subscriberCount('topic:c')).toBe(0);
+    expect(s.latestSeq('topic:c')).toBe(4); // reconnect can replay every row
+  });
+
   it('delivers a committed post to every subscriber', () => {
     const s = store();
     const hub = hubWith(s);

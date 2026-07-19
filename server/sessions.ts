@@ -26,7 +26,7 @@ import { cleanupCodexHooksAdapter } from './codex-hooks-adapter.js';
 import type { CreatePtyParams } from './pty-handler.js';
 import {
   createWebSession,
-  reconnectWebSession,
+  reconnectWebSessionAdapter,
   continueHereWebSession,
   type CreateWebParams,
 } from './web-session-handler.js';
@@ -52,6 +52,7 @@ import {
 import { buildSessionEvent } from './session-attribution.js';
 import { createLogger } from './logger.js';
 import type { SessionLane } from '../shared/session-lane.js';
+import type { AdapterConfig } from './protocol-adapter.js';
 import {
   deriveSessionDurability,
   type SessionDurabilityNodeStatus,
@@ -1060,6 +1061,9 @@ function list(): SessionSummary[] {
         idle: s.idle,
         customCommand: s.customCommand,
         status: s.status,
+        ...(s.restoreState !== undefined
+          ? { restoreState: s.restoreState }
+          : {}),
         durability,
         needsBranchRename: !!s.needsBranchRename,
         agentState: s.agentState,
@@ -1987,8 +1991,20 @@ function restoreSession(
   create(createParams);
 }
 
+const DEFAULT_WEB_SESSION_REATTACH_TIMEOUT_MS = 15_000;
+const webSessionRestoreAttempts = new Map<
+  string,
+  { generation: number; adapter: WebSession['adapterV2'] }
+>();
+let webSessionRestoreShutdown = false;
+
+interface RestoreFromDiskOptions {
+  webSessionReattachTimeoutMs?: number;
+}
+
 async function restoreWebSessionFromDb(
-  row: import('./relay-state-db.js').LoadedWebSessionRow
+  row: import('./relay-state-db.js').LoadedWebSessionRow,
+  reattachTimeoutMs: number
 ): Promise<void> {
   // Restore persisted adapter runtime settings so the reconnected session
   // matches what was originally running rather than reverting to defaults.
@@ -2032,11 +2048,11 @@ async function restoreWebSessionFromDb(
   // persisted DB row with a freshly-initialized blank transcript before we
   // copy back agentSessionV2 below — a process death in that window would
   // lose the session.
-  const { session } = await createWebSession(
+  const { session, config } = await createWebSession(
     createParams,
     sessions,
     fireBackendStateIfChanged,
-    { skipInitialPersist: true }
+    { skipInitialPersist: true, deferConnect: true }
   );
 
   // Replace the freshly-created blank transcript with the persisted one.
@@ -2052,6 +2068,7 @@ async function restoreWebSessionFromDb(
   session.createdAt = new Date(row.createdAt).toISOString();
   session.lastActivity = new Date(row.lastActivity).toISOString();
   session.status = row.status === 'archived' ? 'disconnected' : row.status;
+  session.restoreState = 'restoring';
 
   // Derive runtime state from the persisted live snapshot, mirroring the
   // mapping in web-session-handler's adapter listener.
@@ -2077,14 +2094,104 @@ async function restoreWebSessionFromDb(
   // (vendor may not assign a new id, but live status flips).
   upsertWebSessionNow(session);
 
-  // If the adapter supports resume and we have a stored vendor session ID,
-  // reconnect via resumeSession so the provider continues the conversation.
-  // On failure, surface a single client-source errorMessage into the timeline
-  // and leave session disconnected — user must start a fresh session.
+  // Provider transport startup and resume are deliberately detached from the
+  // restore caller. The HTTP listener is already accepting requests when this
+  // function is invoked, and a dead provider can therefore never block auth or
+  // health request handling during boot.
+  void reattachRestoredWebSession(session, config, reattachTimeoutMs).catch(
+    (err) => {
+      if (webSessionRestoreShutdown) return;
+      logger.error(
+        `Detached reattach failed for web session ${session.id}`,
+        err
+      );
+    }
+  );
+}
+
+async function reattachRestoredWebSession(
+  session: WebSession,
+  config: AdapterConfig,
+  timeoutMs: number
+): Promise<void> {
+  if (webSessionRestoreShutdown) return;
+  const priorAttempt = webSessionRestoreAttempts.get(session.id);
+  const generation = (priorAttempt?.generation ?? 0) + 1;
+  const attemptAdapter = session.adapterV2;
+  webSessionRestoreAttempts.set(session.id, {
+    generation,
+    adapter: attemptAdapter,
+  });
+
+  const isCurrentAttempt = (): boolean =>
+    !webSessionRestoreShutdown &&
+    webSessionRestoreAttempts.get(session.id)?.generation === generation &&
+    session.adapterV2 === attemptAdapter &&
+    session.restoreState === 'restoring';
+
+  const attempt = (async () => {
+    if (!isCurrentAttempt()) return;
+    await attemptAdapter.connect(config);
+    // Timeout/failure fencing: a late transport connect must not continue into
+    // provider resume after this attempt has already been declared failed.
+    if (!isCurrentAttempt()) return;
+    await reconnectWebSessionAdapter(session, attemptAdapter);
+    // Resume may ignore disconnect and settle after its deadline. Check the
+    // generation again before allowing the adapter to remain connected.
+    if (!isCurrentAttempt()) {
+      await attemptAdapter.disconnect().catch(() => {});
+    }
+  })();
+
+  // Promise.race observes rejection, while this continuation guarantees a
+  // late successful handshake is torn down instead of becoming an orphaned
+  // live transport after the timeout path returned.
+  void attempt.then(
+    () => {
+      if (!isCurrentAttempt()) {
+        void attemptAdapter.disconnect().catch(() => {});
+      }
+    },
+    () => {}
+  );
+
+  let timeout: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(
+        new Error(`provider reattach timed out after ${String(timeoutMs)}ms`)
+      );
+    }, timeoutMs);
+    timeout.unref();
+  });
+
   try {
-    await reconnectWebSession(session);
+    await Promise.race([attempt, timedOut]);
+    if (!isCurrentAttempt()) return;
+    webSessionRestoreAttempts.delete(session.id);
+    delete session.restoreState;
+    fireBackendStateIfChanged(session);
+    upsertWebSessionNow(session);
   } catch (err) {
+    if (!isCurrentAttempt()) return;
+    webSessionRestoreAttempts.delete(session.id);
+    session.restoreState = 'reattach-failed';
+    // Best effort cancellation makes a hung provider release its transport.
+    // Do not await disconnect: failure state must become visible immediately,
+    // even when the provider's cleanup path is itself wedged.
+    void attemptAdapter.disconnect().catch(() => {});
     surfaceResumeFailure(session, err);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function cancelBackgroundRestores(): void {
+  webSessionRestoreShutdown = true;
+  const attempts = Array.from(webSessionRestoreAttempts.values());
+  webSessionRestoreAttempts.clear();
+  for (const { adapter } of attempts) {
+    void adapter.disconnect().catch(() => {});
   }
 }
 
@@ -2394,13 +2501,16 @@ async function restorePendingSessionsFromDisk(
   );
 }
 
-async function restoreWebSessionsFromDb(): Promise<number> {
+async function restoreWebSessionsFromDb(
+  reattachTimeoutMs: number
+): Promise<number> {
   let restored = 0;
   // Web sessions live in relay-state.db. No staleness wipe — DB rows persist
   // until user archives or closes the session.
   for (const row of loadAllWebSessions()) {
+    if (webSessionRestoreShutdown) break;
     try {
-      await restoreWebSessionFromDb(row);
+      await restoreWebSessionFromDb(row, reattachTimeoutMs);
       restored++;
     } catch (err) {
       logger.error(
@@ -2415,14 +2525,19 @@ async function restoreWebSessionsFromDb(): Promise<number> {
 async function restoreFromDisk(
   configDir: string,
   workspaces?: string[],
-  frameworks?: Record<string, Partial<AgentFramework>>
+  frameworks?: Record<string, Partial<AgentFramework>>,
+  options: RestoreFromDiskOptions = {}
 ): Promise<number> {
+  webSessionRestoreShutdown = false;
   const restoredPty = await restorePendingSessionsFromDisk(
     configDir,
     workspaces,
     frameworks
   );
-  const restoredWeb = await restoreWebSessionsFromDb();
+  const restoredWeb = await restoreWebSessionsFromDb(
+    options.webSessionReattachTimeoutMs ??
+      DEFAULT_WEB_SESSION_REATTACH_TIMEOUT_MS
+  );
   syncDisplayNameCounters();
   return restoredPty + restoredWeb;
 }
@@ -2567,6 +2682,12 @@ async function continueHereWeb(sessionId: string): Promise<void> {
     return;
   }
 
+  const replaceTimedOutAdapter = session.restoreState === 'reattach-failed';
+  // Manual cold recovery supersedes the failed boot-reattach fence. The
+  // continue-here flow disconnects and re-registers adapter listeners before
+  // establishing its fresh provider session.
+  delete session.restoreState;
+
   const config = {
     cwd: session.cwd,
     port: defaultPort ?? 3456,
@@ -2584,7 +2705,9 @@ async function continueHereWeb(sessionId: string): Promise<void> {
       : {}),
   };
 
-  await continueHereWebSession(session, config, fireBackendStateIfChanged);
+  await continueHereWebSession(session, config, fireBackendStateIfChanged, {
+    replaceAdapter: replaceTimedOutAdapter,
+  });
 }
 
 export {
@@ -2622,6 +2745,7 @@ export {
   nextAgentName,
   serializeAll,
   restoreFromDisk,
+  cancelBackgroundRestores,
   getSessionMeta,
   getAllSessionMeta,
   populateMetaCache,

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import type { AdapterConfig } from '../server/protocol-adapter-v2.js';
@@ -13,6 +13,7 @@ import {
 } from '../server/channel-message-store.js';
 import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
 import { bindSessionToChannel } from '../server/channel-agent-bridge.js';
+import type { ChannelBridgeRetentionSnapshot } from '../server/channel-agent-bridge.js';
 
 const cleanup: Array<() => void> = [];
 
@@ -84,6 +85,39 @@ function assistantUpdated(
 }
 
 describe('channel-agent-bridge lifecycle', () => {
+  it('releases completed stream text and item ids after every turn', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });
+    await adapter.connect(config('sess-retention'));
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
+    const unbind = bindSessionToChannel({
+      channelId: 'topic:retention',
+      agentFramework: 'mock',
+      adapter,
+      store,
+      hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
+    });
+    cleanup.push(unbind);
+
+    for (let turn = 0; turn < 50; turn++) {
+      await adapter.sendMessage({
+        turnId: `turn-${turn}`,
+        content: `stream turn ${turn}`,
+      });
+      expect(retained).toEqual({
+        openStreams: 0,
+        assistantItemIds: 0,
+        turnsWithRows: 0,
+        retainedTextBytes: 0,
+      });
+    }
+
+    expect(store.history('topic:retention', { limit: 100 })).toHaveLength(50);
+  });
+
   it('mirrors a full assistant turn as an attributed complete row', async () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 });
@@ -209,26 +243,47 @@ describe('channel-agent-bridge lifecycle', () => {
     });
   });
 
-  it('does not double-commit on re-emitted patches (source triple dedupe)', () => {
+  it('treats a duplicate final after turn completion as a pure no-op', () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2();
+    const beginBroadcast = vi.spyOn(hub, 'beginStreamBroadcast');
+    const completeBroadcast = vi.spyOn(hub, 'completeStreamBroadcast');
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
     bindSessionToChannel({
       channelId: 'topic:r',
       agentFramework: 'claude',
       adapter,
       store,
       hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
     });
     adapter.broadcastPatch(assistantStarted('s', 'turn', 'a1'));
     adapter.broadcastPatch(assistantStarted('s', 'turn', 'a1')); // re-emit
     adapter.broadcastPatch(assistantUpdated('s', 'turn', 'a1', 'full'));
-    adapter.broadcastPatch(assistantUpdated('s', 'turn', 'a1', 'full-again')); // stream closed
+    adapter.broadcastPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      status: 'completed',
+    });
+    adapter.broadcastPatch(assistantUpdated('s', 'turn', 'a1', 'full-again'));
 
     const messages = store.history('topic:r');
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       status: 'complete',
       body: { text: 'full' },
+    });
+    expect(beginBroadcast).toHaveBeenCalledTimes(1);
+    expect(completeBroadcast).toHaveBeenCalledTimes(1);
+    expect(retained).toEqual({
+      openStreams: 0,
+      assistantItemIds: 0,
+      turnsWithRows: 0,
+      retainedTextBytes: 0,
     });
   });
 

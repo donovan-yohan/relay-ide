@@ -125,6 +125,25 @@ function collectPatches(adapter: CodexNativeProtocolAdapter): AgentPatchV2[] {
   return patches;
 }
 
+function retentionCounts(adapter: CodexNativeProtocolAdapter) {
+  const state = adapter as unknown as {
+    itemMap: Map<unknown, unknown>;
+    tokenUsageBuffer: Map<unknown, unknown>;
+    reasoningSummaryBuffers: Map<unknown, unknown>;
+    reasoningDetailBuffers: Map<unknown, unknown>;
+    approvalMeta: Map<unknown, unknown>;
+    inputRequestMeta: Map<unknown, unknown>;
+  };
+  return {
+    itemIds: state.itemMap.size,
+    tokenUsage: state.tokenUsageBuffer.size,
+    reasoningSummary: state.reasoningSummaryBuffers.size,
+    reasoningDetail: state.reasoningDetailBuffers.size,
+    approvalMeta: state.approvalMeta.size,
+    inputRequestMeta: state.inputRequestMeta.size,
+  };
+}
+
 function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
@@ -1150,6 +1169,7 @@ describe('CodexNativeProtocolAdapter — approval flows', () => {
     const response = client.calls.find((c) => c.method === '__respond:10');
     expect(response).toBeDefined();
     expect(response?.params).toMatchObject({ decision: 'accept' });
+    expect(retentionCounts(adapter).approvalMeta).toBe(0);
 
     // Verify approval item emitted
     expect(patches).toEqual(
@@ -1442,6 +1462,7 @@ describe('CodexNativeProtocolAdapter — input requests', () => {
       contentItems: [{ id: 'q1', value: 'Alice' }],
       success: true,
     });
+    expect(retentionCounts(adapter).inputRequestMeta).toBe(0);
 
     await adapter.disconnect();
   });
@@ -1450,6 +1471,66 @@ describe('CodexNativeProtocolAdapter — input requests', () => {
 // ── Queue ─────────────────────────────────────────────────────────────────────
 
 describe('CodexNativeProtocolAdapter — queue', () => {
+  it('releases transient provider output indexes at each turn boundary', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    factory.lastClient?.serverResponses.set('thread/start', {
+      thread: { id: 'thread-retention' },
+    });
+    await adapter.connect(config);
+    const client = factory.lastClient!;
+
+    for (let turn = 0; turn < 25; turn++) {
+      const relayTurnId = `turn-retention-${turn}`;
+      const nativeTurnId = `native-retention-${turn}`;
+      await adapter.sendMessage({ turnId: relayTurnId, content: 'stream' });
+      client.feedNotification('turn/started', {
+        turn: { id: nativeTurnId },
+      });
+      client.feedNotification('item/started', {
+        turnId: nativeTurnId,
+        item: { id: `item-${turn}`, type: 'agentMessage' },
+      });
+      client.feedNotification('item/started', {
+        turnId: nativeTurnId,
+        item: { id: `reasoning-${turn}`, type: 'reasoning' },
+      });
+      client.feedNotification('item/reasoning/summaryTextDelta', {
+        turnId: nativeTurnId,
+        itemId: `reasoning-${turn}`,
+        delta: 'thinking',
+      });
+      client.feedNotification('item/reasoning/textDelta', {
+        turnId: nativeTurnId,
+        itemId: `reasoning-${turn}`,
+        delta: 'detail',
+      });
+      client.feedNotification('thread/tokenUsageUpdated', {
+        turnId: nativeTurnId,
+        tokenUsage: { total: { totalTokens: 10 } },
+      });
+
+      expect(retentionCounts(adapter)).toMatchObject({
+        itemIds: 2,
+        tokenUsage: 1,
+        reasoningSummary: 1,
+        reasoningDetail: 1,
+      });
+      client.feedNotification('turn/completed', {
+        threadId: 'thread-retention',
+        turn: { id: nativeTurnId, status: 'completed' },
+      });
+      expect(retentionCounts(adapter)).toMatchObject({
+        itemIds: 0,
+        tokenUsage: 0,
+        reasoningSummary: 0,
+        reasoningDetail: 0,
+      });
+    }
+
+    await adapter.disconnect();
+  });
+
   it('queues second send while turn active, drains after turn/completed', async () => {
     const factory = makeStubFactory();
     const adapter = new CodexNativeProtocolAdapter(factory);

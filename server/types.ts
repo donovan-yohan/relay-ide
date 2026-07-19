@@ -57,6 +57,7 @@ export type EventSourceType = 'hooks' | 'plugin' | 'parser' | 'timer';
 export type ContinuePolicy = 'always' | 'never';
 export type BranchLifecycleState = 'active' | 'stale' | 'merged';
 export type SessionStatus = 'active' | 'disconnected';
+export type SessionRestoreState = 'restoring' | 'reattach-failed';
 export type SessionMode = 'pty' | 'web';
 export type TerminalBackend = 'relay-pty';
 
@@ -346,6 +347,8 @@ interface BaseSession {
   idle: boolean;
   customCommand: string | null;
   status: SessionStatus;
+  /** Background provider reattach state for sessions materialized at boot. */
+  restoreState?: SessionRestoreState;
   needsBranchRename: boolean;
   agentState: AgentState;
   workspaceId?: string;
@@ -483,6 +486,8 @@ export interface SessionSummary {
   /** PTY sessions only */
   terminalBackend?: TerminalBackend;
   status: SessionStatus;
+  /** Background provider reattach state for sessions materialized at boot. */
+  restoreState?: SessionRestoreState;
   /**
    * Derived durability state (#614). Coarse `status` stays for backward
    * compatibility; consumers reasoning about reattach/process ownership
