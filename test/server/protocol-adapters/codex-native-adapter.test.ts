@@ -627,6 +627,81 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     }
   });
 
+  it('flushes a deferred provider completion before handling client close', async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, client, patches } = await setupAndSend(
+        'turn-terminal-close'
+      );
+      client.feedNotification('item/started', {
+        item: { type: 'reasoning', id: 'reasoning-held-open' },
+      });
+      client.feedNotification('item/reasoning/summaryTextDelta', {
+        itemId: 'reasoning-held-open',
+        delta: 'provider-completed reasoning',
+        summaryIndex: 0,
+      });
+      client.feedNotification('thread/tokenUsageUpdated', {
+        threadId: 'thread-1',
+        turnId: 'native-turn-close',
+        tokenUsage: {
+          last: { inputTokens: 34, outputTokens: 13, totalTokens: 47 },
+        },
+      });
+      client.feedNotification('turn/completed', {
+        threadId: 'thread-1',
+        turn: {
+          id: 'native-turn-close',
+          status: 'completed',
+          durationMs: 4321,
+        },
+      });
+      expect(
+        patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toHaveLength(0);
+
+      client.emit('close', 0);
+
+      expect(
+        patches.filter(
+          (patch) =>
+            patch.type === 'agent-item-updated-v2' &&
+            patch.item.type === 'reasoning' &&
+            patch.item.status === 'completed'
+        )
+      ).toEqual([
+        expect.objectContaining({
+          item: expect.objectContaining({
+            summary: 'provider-completed reasoning',
+            status: 'completed',
+          }),
+        }),
+      ]);
+      expect(
+        patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toEqual([
+        expect.objectContaining({
+          turnId: 'turn-terminal-close',
+          status: 'completed',
+          durationMs: 4321,
+          usage: expect.objectContaining({
+            inputTokens: 34,
+            outputTokens: 13,
+            totalTokens: 47,
+          }),
+        }),
+      ]);
+
+      await vi.advanceTimersByTimeAsync(CODEX_TERMINAL_ITEM_GRACE_MS);
+      expect(
+        patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toHaveLength(1);
+      await adapter.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('persists an empty start as missing-terminal when the Codex grace expires', async () => {
     vi.useFakeTimers();
     const dir = fs.mkdtempSync(
@@ -851,6 +926,84 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       )
     ).toHaveLength(1);
     await adapter.disconnect();
+  });
+
+  it('reasoning: id-less item/completed terminalizes streamed content', async () => {
+    const { adapter, client, patches } = await setupAndSend(
+      'turn-reasoning-idless-completed'
+    );
+    client.feedNotification('item/started', {
+      item: { type: 'reasoning' },
+    });
+    client.feedNotification('item/reasoning/summaryTextDelta', {
+      delta: 'id-less summary',
+      summaryIndex: 0,
+    });
+    client.feedNotification('item/reasoning/textDelta', {
+      delta: 'id-less detail',
+      contentIndex: 0,
+    });
+    client.feedNotification('item/completed', {
+      item: { type: 'reasoning' },
+    });
+
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-item-updated-v2' &&
+          patch.item.type === 'reasoning' &&
+          patch.item.status === 'completed'
+      )
+    ).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({
+          id: 'reasoning-turn-reasoning-idless-completed-',
+          summary: 'id-less summary',
+          detail: 'id-less detail',
+          status: 'completed',
+        }),
+      }),
+    ]);
+    await adapter.disconnect();
+  });
+
+  it('reasoning: turn completion terminalizes an id-less open item', async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, client, patches } = await setupAndSend(
+        'turn-reasoning-idless-fallback'
+      );
+      client.feedNotification('item/started', {
+        item: { type: 'reasoning' },
+      });
+      client.feedNotification('item/reasoning/summaryTextDelta', {
+        delta: 'id-less buffered summary',
+        summaryIndex: 0,
+      });
+      client.feedNotification('turn/completed', {
+        turn: { id: 'native-turn-1', status: 'completed' },
+      });
+
+      expect(
+        patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toBe(false);
+      await vi.advanceTimersByTimeAsync(CODEX_TERMINAL_ITEM_GRACE_MS);
+
+      expect(reducePatches(patches).turns[0]?.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'reasoning-turn-reasoning-idless-fallback-',
+            type: 'reasoning',
+            summary: 'id-less buffered summary',
+            status: 'completed',
+            card: expect.objectContaining({ status: 'completed' }),
+          }),
+        ])
+      );
+      await adapter.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reasoning: item/completed without summary falls back to streamed buffer', async () => {

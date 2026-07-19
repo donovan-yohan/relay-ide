@@ -460,7 +460,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   private providerExtensionSeq = 0;
   private readonly itemMap = new Map<string, string>(); // nativeItemId → relayItemId
   private readonly openAgentMessageNativeIds = new Set<string>();
-  private readonly openReasoningNativeIds = new Set<string>();
+  private readonly openReasoningByRelayId = new Map<string, string>();
   private deferredTurnCompletion: DeferredTurnCompletion | null = null;
   private readonly toolArgumentsByNativeId = new Map<
     string,
@@ -679,7 +679,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.activeStartedAt = startedAt;
     this.completedActiveTurn = false;
     this.openAgentMessageNativeIds.clear();
-    this.openReasoningNativeIds.clear();
+    this.openReasoningByRelayId.clear();
     this.clearDeferredTurnCompletion();
 
     this.emitPatch({
@@ -778,7 +778,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     // on an always-on channel binding.
     this.itemMap.clear();
     this.openAgentMessageNativeIds.clear();
-    this.openReasoningNativeIds.clear();
+    this.openReasoningByRelayId.clear();
     this.toolArgumentsByNativeId.clear();
     this.tokenUsageBuffer.clear();
     this.reasoningSummaryBuffers.clear();
@@ -825,7 +825,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   ): boolean {
     if (
       this.openAgentMessageNativeIds.size === 0 &&
-      this.openReasoningNativeIds.size === 0
+      this.openReasoningByRelayId.size === 0
     ) {
       return false;
     }
@@ -847,7 +847,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   private completeDeferredTurnIfReady(): void {
     if (
       this.openAgentMessageNativeIds.size > 0 ||
-      this.openReasoningNativeIds.size > 0 ||
+      this.openReasoningByRelayId.size > 0 ||
       !this.deferredTurnCompletion
     ) {
       return;
@@ -867,9 +867,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           ? 'failed'
           : 'cancelled';
 
-    for (const nativeId of this.openReasoningNativeIds) {
-      const relayId = this.itemMap.get(nativeId);
-      if (!relayId) continue;
+    for (const [relayId, nativeId] of this.openReasoningByRelayId) {
       const summary = this.reasoningSummaryBuffers.get(relayId) ?? '';
       const detail = this.reasoningDetailBuffers.get(relayId) ?? '';
       this.emitPatch({
@@ -891,7 +889,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       this.reasoningSummaryBuffers.delete(relayId);
       this.reasoningDetailBuffers.delete(relayId);
     }
-    this.openReasoningNativeIds.clear();
+    this.openReasoningByRelayId.clear();
   }
 
   private drainQueue(): void {
@@ -963,7 +961,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       if (this._status === 'connected') {
         const turnId = this.activeTurnId;
         if (turnId !== null && !this.completedActiveTurn) {
-          this.completeActiveTurn('interrupted');
+          const flushedDeferredCompletion = this.flushDeferredTurnCompletion();
+          if (!flushedDeferredCompletion) {
+            this.completeActiveTurn('interrupted');
+          }
         }
         this._status = 'disconnected';
         this.client = null;
@@ -1016,7 +1017,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.slashCommandsLoaded = false;
     this.itemMap.clear();
     this.openAgentMessageNativeIds.clear();
-    this.openReasoningNativeIds.clear();
+    this.openReasoningByRelayId.clear();
     this.clearDeferredTurnCompletion();
     this.toolArgumentsByNativeId.clear();
     this.tokenUsageBuffer.clear();
@@ -1361,7 +1362,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'reasoning': {
         const relayId = `reasoning-${this.activeTurnId}-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
-        if (nativeId) this.openReasoningNativeIds.add(nativeId);
+        this.openReasoningByRelayId.set(relayId, nativeId);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1616,7 +1617,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         break;
 
       case 'reasoning': {
-        if (!this.openReasoningNativeIds.has(nativeId)) break;
+        if (!this.openReasoningByRelayId.has(relayId)) break;
         // Current Codex app-server ships `summary` / `content` as string[];
         // older versions used `{ type, text }[]`. Flatten either shape and
         // fall back to streamed buffers when completion omits them.
@@ -1644,7 +1645,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             ...(nativeId ? { providerItemId: nativeId } : {}),
           },
         });
-        this.openReasoningNativeIds.delete(nativeId);
+        this.openReasoningByRelayId.delete(relayId);
         this.completeDeferredTurnIfReady();
         break;
       }
