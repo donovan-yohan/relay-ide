@@ -618,6 +618,11 @@ describe('selectChannelRailTree', () => {
           grouping: { parentTopicId: 'topic:a1' },
         }),
         makeTopic({
+          id: 'topic:a-grandchild',
+          workspaceId: 'ws:a',
+          grouping: { parentTopicId: 'topic:a-child' },
+        }),
+        makeTopic({
           id: dmA,
           workspaceId: 'ws:a',
           routingDefaults: { providerId: 'claude' },
@@ -654,6 +659,14 @@ describe('selectChannelRailTree', () => {
     expect(
       tree.groups[1]!.channels[0]!.children.map((node) => node.item.id)
     ).toEqual(['topic:a-child']);
+    // Structural parity lives in this shared selector output. Desktop may gate
+    // descendants behind expansion while mobile renders recursively, but neither
+    // consumer owns a second grouping source.
+    expect(
+      tree.groups[1]!.channels[0]!.children[0]!.children.map(
+        (node) => node.item.id
+      )
+    ).toEqual(['topic:a-grandchild']);
     expect(tree.groups[1]!.directMessages.map((node) => node.item.id)).toEqual([
       dmA,
     ]);

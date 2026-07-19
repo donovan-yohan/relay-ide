@@ -132,7 +132,10 @@ describe('TopicSidebarView', () => {
 
   async function renderView(
     props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {},
-    options: { advancedMode?: boolean } = {}
+    options: {
+      advancedMode?: boolean;
+      onRender?: React.ProfilerOnRenderCallback;
+    } = {}
   ) {
     useUiStore.setState({
       advancedMode: options.advancedMode ?? props.showAdvancedDetail === true,
@@ -140,18 +143,25 @@ describe('TopicSidebarView', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    const view = React.createElement(TopicSidebarView, {
+      topics: [makeTopic()],
+      sessions: [makeSession({ id: 's1', displayName: 'Frontend lane' })],
+      surfaces: [makeSurface()],
+      onSelectSession,
+      ...props,
+    });
     await act(async () => {
       root.render(
         React.createElement(
           QueryClientProvider,
           { client: queryClient },
-          React.createElement(TopicSidebarView, {
-            topics: [makeTopic()],
-            sessions: [makeSession({ id: 's1', displayName: 'Frontend lane' })],
-            surfaces: [makeSurface()],
-            onSelectSession,
-            ...props,
-          })
+          options.onRender
+            ? React.createElement(
+                React.Profiler,
+                { id: 'topic-sidebar', onRender: options.onRender },
+                view
+              )
+            : view
         )
       );
     });
@@ -266,6 +276,25 @@ describe('TopicSidebarView', () => {
       )
     ).toBeNull();
     localStorage.removeItem(channelLastReadKey('topic:alpha'));
+  });
+
+  it('does not commit the sidebar for unrelated channel activity', async () => {
+    let commits = 0;
+    await renderView(
+      {
+        topics: [makeTopic({ id: 'topic:relevant' })],
+        sessions: [],
+        surfaces: [],
+      },
+      { onRender: () => commits++ }
+    );
+    const committedBeforeUnrelatedActivity = commits;
+
+    await act(async () => {
+      useChannelActivityStore.getState().recordActivity('topic:unrelated', 1);
+    });
+
+    expect(commits).toBe(committedBeforeUnrelatedActivity);
   });
 
   it('reveals mechanical detail only in advanced mode and hands evidence to the repo dashboard', async () => {
@@ -1963,11 +1992,49 @@ describe('TopicSidebarView', () => {
       '.topic-mobile-row'
     ) as HTMLButtonElement;
     expect(container.querySelector('.topic-mobile-actions')).toBeNull();
-    expect(row.textContent).toContain('open');
-    expect(row.title).toContain('open channel timeline');
+    expect(row.querySelector('.topic-mobile-row__cta')?.textContent).toBe(
+      'open'
+    );
+    expect(row.title).toBe('open channel timeline');
     await act(async () => row.click());
     expect(onSelectSession).not.toHaveBeenCalled();
     expect(useUiStore.getState().activeChannelId).toBe('topic:alpha');
+  });
+
+  it('resumes an attachable derived session without opening a channel timeline', async () => {
+    useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:derived-session',
+          source: 'derived',
+          linkedRefs: { sessionIds: ['s1'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'Derived lane',
+          status: 'active',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
+    expect(row.querySelector('.topic-mobile-row__cta')?.textContent).toBe(
+      'resume'
+    );
+    expect(row.title).toContain('resume chat Derived lane');
+
+    await act(async () => row.click());
+
+    expect(onSelectSession).toHaveBeenCalledTimes(1);
+    expect(onSelectSession).toHaveBeenCalledWith('s1');
+    expect(useUiStore.getState().activeChannelId).toBeNull();
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
   });
 
   it('renders bounded topic history search without changing the thin-line layout', async () => {

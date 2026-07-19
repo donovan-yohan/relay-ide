@@ -78,6 +78,7 @@ export interface TopicNavSurfaceRef {
 
 export interface TopicNavItem {
   id: WorkspaceTopicId;
+  source: WorkspaceTopic['source'];
   workspaceId: WorkspaceTopic['workspaceId'];
   parentId: WorkspaceTopicId | null;
   title: string;
@@ -204,9 +205,7 @@ export function selectChannelRailTree(
     return {
       channels,
       directMessages,
-      unread: [...channels, ...directMessages].some(
-        (node) => node.unread || node.children.some(hasUnreadNode)
-      ),
+      unread: [...channels, ...directMessages].some(hasUnreadNode),
     };
   };
 
@@ -722,6 +721,7 @@ export function buildTopicNavModel(input: {
     const dmProviderId = isDmChannel(topic);
     return {
       id: topic.id,
+      source: topic.source,
       workspaceId: topic.workspaceId,
       parentId: topic.grouping.parentTopicId ?? null,
       title: topic.display.title,

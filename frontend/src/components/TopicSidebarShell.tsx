@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useShallow } from 'zustand/react/shallow';
 import {
   CircleAlert,
   Folder,
@@ -1129,6 +1130,12 @@ function TopicMobileAttentionRow({
   const action = topicPrimaryAction(item);
   const session = topicPrimarySession(item);
   const resumeDisabledReason = sessionAttachDisabledReason(session);
+  const resumesDerivedSession = Boolean(
+    item.source === 'derived' &&
+    action.label === 'resume' &&
+    session &&
+    !resumeDisabledReason
+  );
   const rowStyle = { '--topic-depth': depth } as CSSProperties;
   return (
     <button
@@ -1139,9 +1146,11 @@ function TopicMobileAttentionRow({
       data-unread={unread ? 'true' : 'false'}
       onClick={() => onSelect(item.id)}
       title={
-        action.label === 'resume'
-          ? 'open channel timeline'
-          : (resumeDisabledReason ?? action.detail)
+        resumesDerivedSession && session
+          ? `resume chat ${session.label}`
+          : action.label === 'resume'
+            ? 'open channel timeline'
+            : (resumeDisabledReason ?? action.detail)
       }
       aria-current={selected ? 'page' : undefined}
     >
@@ -1153,7 +1162,11 @@ function TopicMobileAttentionRow({
         </span>
       </span>
       <span className="topic-mobile-row__cta">
-        {action.label === 'resume' ? 'open' : action.label}
+        {resumesDerivedSession
+          ? 'resume'
+          : action.label === 'resume'
+            ? 'open'
+            : action.label}
       </span>
       <span className="topic-mobile-row__trail">
         {unread ? (
@@ -2215,7 +2228,18 @@ export function TopicSidebarView({
   );
   const activeChannelId = useUiStore((s) => s.activeChannelId);
   const advancedMode = useUiStore((s) => s.advancedMode);
-  const channelActivity = useChannelActivityStore();
+  const activityIds = useMemo(
+    () => model.items.map((item) => item.id),
+    [model.items]
+  );
+  const relevantActivity = useChannelActivityStore(
+    useShallow((state) =>
+      activityIds.flatMap((id) => [
+        state.latestSeqByChannel[id],
+        state.lastReadByChannel[id],
+      ])
+    )
+  );
   const workspaceNameById = useMemo(
     () =>
       new Map(workspaces.map((workspace) => [workspace.id, workspace.name])),
@@ -2223,16 +2247,21 @@ export function TopicSidebarView({
   );
   // Resolve unread once (including the persisted last-read fallback) and feed
   // the same pure rail projection to desktop and mobile.
-  const unreadByChannel = Object.fromEntries(
-    model.items.map((item) => [
-      item.id,
-      channelActivity.latestSeqByChannel[item.id] !== undefined &&
-        hasUnseenActivity(item.id, activeChannelId),
-    ])
+  const unreadByChannel = useMemo(
+    () =>
+      Object.fromEntries(
+        model.items.map((item, index) => [
+          item.id,
+          relevantActivity[index * 2] !== undefined &&
+            hasUnseenActivity(item.id, activeChannelId),
+        ])
+      ),
+    [activeChannelId, model.items, relevantActivity]
   );
-  const railTree = selectChannelRailTree(model, workspaces, {
-    unreadByChannel,
-  });
+  const railTree = useMemo(
+    () => selectChannelRailTree(model, workspaces, { unreadByChannel }),
+    [model, unreadByChannel, workspaces]
+  );
   const firstId = model.rootIds[0] ?? model.items[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(firstId);
   const [mobileControlTopicId, setMobileControlTopicId] = useState<
@@ -2292,11 +2321,24 @@ export function TopicSidebarView({
       const actionable =
         action?.label === 'approve' || action?.label === 'reply';
       setMobileControlTopicId(actionable ? id : null);
+      const session = item ? topicPrimarySession(item) : null;
+      const resumesDerivedSession = Boolean(
+        item?.source === 'derived' &&
+        action?.label === 'resume' &&
+        session &&
+        !sessionAttachDisabledReason(session) &&
+        onSelectSession
+      );
+      if (resumesDerivedSession && session) {
+        onSelectSession?.(session.selectKey);
+        useUiStore.getState().closeSidebar();
+        return;
+      }
       if (!actionable && topicsById.get(id)?.source === 'persisted') {
         useUiStore.getState().closeSidebar();
       }
     },
-    [model.byId, select, topicsById]
+    [model.byId, onSelectSession, select, topicsById]
   );
   useEffect(() => {
     if (!mobileControlTopicId) return;
