@@ -29,6 +29,10 @@ import type {
 } from '../../../shared/workflow-run.js';
 import type { RosterAttention } from '../../../shared/agent-roster.js';
 import {
+  parseMentions,
+  type ChannelMessage,
+} from '../../../shared/channel-chat-protocol.js';
+import {
   createGlobalSessionId,
   DEFAULT_LOCAL_NODE_ID,
 } from '../../../shared/identity.js';
@@ -42,6 +46,7 @@ import {
   fetchHubNodes,
   fetchAgentRoster,
   fetchChannelRoster,
+  fetchChannelHistory,
   fetchWorkflowRuns,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
@@ -129,6 +134,8 @@ const DISCONNECTED_SESSION_CONTROL_REASON =
 const TOPIC_LATEST_STATUS_MAX_LENGTH = 96;
 const WORKFLOW_RUNS_LIMIT = 5;
 const MOBILE_COCKPIT_ROSTER_BATCH_SIZE = 12;
+const CURRENT_OPERATOR_SENDER_ID = 'human:operator';
+const CURRENT_OPERATOR_MENTION_NAME = 'operator';
 const EMPTY_WORKFLOW_RUNS: WorkflowRunProjection[] = [];
 
 function useMobileCockpitViewport(): boolean {
@@ -146,6 +153,19 @@ function useMobileCockpitViewport(): boolean {
     return () => media.removeEventListener('change', update);
   }, []);
   return matches;
+}
+
+function messageMentionsCurrentOperator(message: ChannelMessage): boolean {
+  if (message.sender.id === CURRENT_OPERATOR_SENDER_ID) return false;
+  // Browser-authored channel posts are canonically `human:operator` with the
+  // display name `Operator` (channel-chat-router deriveSender). Persisted
+  // mentions come from this same parser; parse older rows when metadata is
+  // absent rather than introducing a cockpit-only regex/tokenizer.
+  const mentions = message.mentions ?? parseMentions(message.body.text);
+  return mentions.some(
+    (mention) =>
+      mention.raw.slice(1).toLowerCase() === CURRENT_OPERATOR_MENTION_NAME
+  );
 }
 
 function boundedTopicLatestStatus(value: string): string {
@@ -1883,6 +1903,7 @@ function TopicMobileCockpit({
   tree,
   unreadByChannel,
   statusByChannelAgent,
+  mentionsMeByChannel,
   rosterAttentionBySessionKey,
   selectedId,
   onSelect,
@@ -1894,6 +1915,7 @@ function TopicMobileCockpit({
   tree: ChannelRailTree;
   unreadByChannel: Readonly<Record<string, boolean>>;
   statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  mentionsMeByChannel: Readonly<Record<string, boolean>>;
   rosterAttentionBySessionKey: Readonly<Record<string, RosterAttention>>;
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -1958,6 +1980,7 @@ function TopicMobileCockpit({
         tree={tree}
         unreadByChannel={unreadByChannel}
         statusByChannelAgent={statusByChannelAgent}
+        mentionsMeByChannel={mentionsMeByChannel}
         rosterAttentionBySessionKey={rosterAttentionBySessionKey}
         onSelect={onSelect}
         actionLabelForItem={(item) => topicPrimaryAction(item).label}
@@ -2391,6 +2414,16 @@ export function TopicSidebarView({
       ),
     [activeChannelId, model.items, relevantActivity]
   );
+  const latestSeqByChannel = useMemo(
+    () =>
+      Object.fromEntries(
+        activityIds.flatMap((id, index) => {
+          const latestSeq = relevantActivity[index * 2];
+          return typeof latestSeq === 'number' ? [[id, latestSeq]] : [];
+        })
+      ),
+    [activityIds, relevantActivity]
+  );
   // The channel roster endpoint is per-channel, so reconcile only while the
   // mobile cockpit is actually open. High-signal rows lead rolling batches;
   // every persisted channel is eventually covered without a request burst.
@@ -2458,6 +2491,47 @@ export function TopicSidebarView({
     rosterQueries
       .slice(currentRosterBatchStart, activeRosterBatchEnd)
       .every((query) => !query.isPending && !query.isFetching);
+  const latestUnreadTargets = useMemo(
+    () =>
+      rosterChannelIds.flatMap((channelId, index) => {
+        const rosterQuery = rosterQueries[index];
+        const latestSeq = latestSeqByChannel[channelId];
+        return unreadByChannel[channelId] &&
+          typeof latestSeq === 'number' &&
+          rosterQuery &&
+          !rosterQuery.isPending &&
+          !rosterQuery.isFetching
+          ? [{ channelId, latestSeq }]
+          : [];
+      }),
+    [latestSeqByChannel, rosterChannelIds, rosterQueries, unreadByChannel]
+  );
+  const latestUnreadQueries = useQueries({
+    queries: latestUnreadTargets.map(({ channelId, latestSeq }) => ({
+      queryKey: ['channel-history', channelId, 'latest-unread', latestSeq],
+      queryFn: () => fetchChannelHistory(channelId, { limit: 1 }),
+      staleTime: Number.POSITIVE_INFINITY,
+      gcTime: 60_000,
+      retry: false,
+    })),
+  });
+  const currentRosterBatchIds = rosterChannelIds.slice(
+    currentRosterBatchStart,
+    activeRosterBatchEnd
+  );
+  const latestUnreadQueryByChannel = new Map(
+    latestUnreadTargets.map((target, index) => [
+      target.channelId,
+      latestUnreadQueries[index],
+    ])
+  );
+  const currentMentionBatchSettled = currentRosterBatchIds.every(
+    (channelId) => {
+      if (!unreadByChannel[channelId]) return true;
+      const query = latestUnreadQueryByChannel.get(channelId);
+      return Boolean(query && !query.isPending && !query.isFetching);
+    }
+  );
   useEffect(() => {
     if (rosterBatch.scope !== rosterBatchScope) {
       setRosterBatch({
@@ -2468,6 +2542,7 @@ export function TopicSidebarView({
     }
     if (
       currentRosterBatchSettled &&
+      currentMentionBatchSettled &&
       rosterBatch.end < allRosterChannelIds.length
     ) {
       setRosterBatch((current) => ({
@@ -2480,11 +2555,26 @@ export function TopicSidebarView({
     }
   }, [
     allRosterChannelIds.length,
+    currentMentionBatchSettled,
     currentRosterBatchSettled,
     rosterBatch.end,
     rosterBatch.scope,
     rosterBatchScope,
   ]);
+  const mentionsMeByChannel = useMemo(() => {
+    const mentioned: Record<string, boolean> = {};
+    latestUnreadTargets.forEach((target, index) => {
+      const message = latestUnreadQueries[index]?.data?.messages.at(-1);
+      if (
+        message &&
+        message.seq === target.latestSeq &&
+        messageMentionsCurrentOperator(message)
+      ) {
+        mentioned[target.channelId] = true;
+      }
+    });
+    return mentioned;
+  }, [latestUnreadQueries, latestUnreadTargets]);
   const effectiveStatusByChannelAgent = useMemo(() => {
     const effective: Record<string, ChannelAgentStatus> = {
       ...statusByChannelAgent,
@@ -2733,6 +2823,7 @@ export function TopicSidebarView({
         tree={railTree}
         unreadByChannel={unreadByChannel}
         statusByChannelAgent={effectiveStatusByChannelAgent}
+        mentionsMeByChannel={mentionsMeByChannel}
         rosterAttentionBySessionKey={rosterAttentionBySessionKey}
         selectedId={selectedId}
         onSelect={selectMobile}

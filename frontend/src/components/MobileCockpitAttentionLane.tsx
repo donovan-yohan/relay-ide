@@ -21,6 +21,7 @@ interface MobileCockpitAttentionLaneProps {
   tree: ChannelRailTree;
   unreadByChannel: Readonly<Record<string, boolean>>;
   statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  mentionsMeByChannel: Readonly<Record<string, boolean>>;
   rosterAttentionBySessionKey: Readonly<Record<string, RosterAttention>>;
   onSelect: (id: string) => void;
   actionLabelForItem: (item: TopicNavItem) => string;
@@ -306,6 +307,7 @@ export function MobileCockpitAttentionLane({
   tree,
   unreadByChannel,
   statusByChannelAgent,
+  mentionsMeByChannel,
   rosterAttentionBySessionKey,
   onSelect,
   actionLabelForItem,
@@ -318,9 +320,16 @@ export function MobileCockpitAttentionLane({
       selectCockpitAttentionRows(tree, {
         unreadByChannel,
         statusByChannelAgent,
+        mentionsMeByChannel,
         rosterAttentionBySessionKey,
       }),
-    [rosterAttentionBySessionKey, statusByChannelAgent, tree, unreadByChannel]
+    [
+      mentionsMeByChannel,
+      rosterAttentionBySessionKey,
+      statusByChannelAgent,
+      tree,
+      unreadByChannel,
+    ]
   );
 
   return (

@@ -262,6 +262,41 @@ describe('selectCockpitAttentionRows', () => {
     expect(rows).toEqual([]);
   });
 
+  it('ranks a mentioned unread row above an otherwise-equal unread row', () => {
+    const tree = makeTree([
+      makeNode('topic:plain-unread'),
+      makeNode('topic:mentioned-unread'),
+    ]);
+    const rows = selectCockpitAttentionRows(tree, {
+      unreadByChannel: {
+        'topic:plain-unread': true,
+        'topic:mentioned-unread': true,
+      },
+      mentionsMeByChannel: { 'topic:mentioned-unread': true },
+      statusByChannelAgent: {},
+      nowMs: NOW_MS,
+    });
+
+    expect(rows.map((row) => row.item.id)).toEqual([
+      'topic:mentioned-unread',
+      'topic:plain-unread',
+    ]);
+  });
+
+  it('promotes a mentioned row even when it is not unread', () => {
+    const rows = selectCockpitAttentionRows(
+      makeTree([makeNode('topic:mentioned'), makeNode('topic:plain')]),
+      {
+        unreadByChannel: {},
+        mentionsMeByChannel: { 'topic:mentioned': true },
+        statusByChannelAgent: {},
+        nowMs: NOW_MS,
+      }
+    );
+
+    expect(rows.map((row) => row.item.id)).toEqual(['topic:mentioned']);
+  });
+
   it('breaks score ties by pinned, updatedAt, title, then original order', () => {
     const same = {
       tone: 'attention' as const,

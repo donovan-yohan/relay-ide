@@ -30,6 +30,8 @@ export interface CockpitAttentionScoreContext {
 export interface CockpitAttentionSelectionContext {
   unreadByChannel: Readonly<Record<string, boolean>>;
   statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  /** Precomputed newest-message mention signal; text parsing stays upstream. */
+  mentionsMeByChannel?: Readonly<Record<string, boolean>>;
   /**
    * Roster attention keyed by a TopicNavSessionRef id or selectKey. Each topic
    * joins its own sessions and caps their combined inbox contribution.
@@ -146,6 +148,7 @@ export function selectCockpitAttentionRows(
 
   const ranked = flattened.flatMap((node, originalIndex) => {
     const unread = ctx.unreadByChannel[node.item.id] ?? node.unread;
+    const mentionsMe = ctx.mentionsMeByChannel?.[node.item.id] ?? false;
     const statuses = statusesForChannel(node.item.id, ctx.statusByChannelAgent);
     const waiting = statuses.includes('waiting');
     const rosterAttention = rosterAttentionForItem(
@@ -155,6 +158,7 @@ export function selectCockpitAttentionRows(
     const eligible =
       !node.item.muted &&
       (unread ||
+        mentionsMe ||
         node.item.tone === 'attention' ||
         node.item.tone === 'error' ||
         waiting ||
@@ -170,6 +174,7 @@ export function selectCockpitAttentionRows(
         originalIndex,
         score: computeCockpitAttentionScore(node.item, {
           unread,
+          mentionsMe,
           ...(effectiveStatus ? { effectiveStatus } : {}),
           pendingInboxCount: rosterAttention.pendingInboxCount,
           nowMs,
