@@ -93,10 +93,27 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   }
 
   const isHuman = message.sender.kind === 'human';
+  const truncationReason =
+    message.status === 'truncated'
+      ? message.meta?.['truncationReason']
+      : message.truncated
+        ? 'size-limit'
+        : undefined;
+  const truncationLabel =
+    truncationReason === 'missing-terminal'
+      ? 'truncated · missing terminal'
+      : truncationReason === 'restart'
+        ? 'truncated · restart'
+        : truncationReason === 'size-limit'
+          ? 'truncated · 256kb limit'
+          : message.status === 'truncated'
+            ? 'truncated'
+            : null;
   const rowClasses = [
     'ch-msg',
     isHuman ? 'ch-msg--user' : null,
     message.status === 'streaming' ? 'ch-msg--streaming' : null,
+    message.status === 'truncated' ? 'ch-msg--truncated' : null,
     message.status === 'interrupted' ? 'ch-msg--interrupted' : null,
     message.status === 'failed' ? 'ch-msg--failed' : null,
   ]
@@ -148,9 +165,9 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       {message.status === 'failed' ? (
         <span className="ch-msg__tag ch-msg__tag--failed">failed</span>
       ) : null}
-      {message.truncated ? (
+      {truncationLabel ? (
         <span className="ch-msg__tag ch-msg__tag--truncated">
-          truncated · 256kb limit
+          {truncationLabel}
         </span>
       ) : null}
       {message.threadId === null && replyCount > 0 && onOpenThread ? (

@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { CodexNativeProtocolAdapter } from '../../../server/protocol-adapters/codex-native-adapter.js';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { bindSessionToChannel } from '../../../server/channel-agent-bridge.js';
+import { createChannelHub } from '../../../server/channel-hub.js';
+import { createChannelMessageStore } from '../../../server/channel-message-store.js';
+import {
+  CODEX_TERMINAL_ITEM_GRACE_MS,
+  CodexNativeProtocolAdapter,
+} from '../../../server/protocol-adapters/codex-native-adapter.js';
 import type { CodexClientFactory } from '../../../server/protocol-adapters/codex-native-adapter.js';
 import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
 import type {
@@ -15,6 +24,10 @@ import {
   type AgentPatchV2,
 } from '../../../shared/agent-chat-protocol-v2.js';
 import codexDetailFixture from '../../fixtures/agent-detail/codex.js';
+import {
+  CODEX_TERMINAL_ORDERING_FIXTURES,
+  CODEX_TRIPLE_FINAL_FIXTURE,
+} from '../../fixtures/channel-chat/codex-terminal-ordering.js';
 
 vi.mock('../../../server/logger.js', () => ({
   createLogger: () => ({
@@ -435,6 +448,245 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     );
 
     await adapter.disconnect();
+  });
+
+  it.each([
+    {
+      fixture: CODEX_TERMINAL_ORDERING_FIXTURES.partialThenLateFinal,
+      expectedTexts: ['Partial handoff completed.'],
+    },
+    {
+      fixture: CODEX_TERMINAL_ORDERING_FIXTURES.emptyStartThenLateFinal,
+      expectedTexts: ['Synthetic terminal handoff.'],
+    },
+    {
+      fixture: CODEX_TERMINAL_ORDERING_FIXTURES.twoItemsLastLate,
+      expectedTexts: ['First durable output.', 'Last output is durable.'],
+    },
+  ])(
+    'emits every terminal assistant item before Relay turn teardown: $fixture.name',
+    async ({ fixture, expectedTexts }) => {
+      const { adapter, client, patches } = await setupAndSend(
+        'turn-terminal-ordering'
+      );
+
+      for (const notification of fixture.notifications) {
+        client.feedNotification(notification.method, notification.params);
+      }
+
+      const assistantFinals = patches.filter(
+        (patch) =>
+          patch.type === 'agent-item-updated-v2' &&
+          patch.item.type === 'assistantMessage'
+      );
+      const turnCompletedIndex = patches.findIndex(
+        (patch) => patch.type === 'agent-turn-completed-v2'
+      );
+      expect(assistantFinals.map((patch) => patch.item.text)).toEqual(
+        expectedTexts
+      );
+      expect(assistantFinals).toHaveLength(expectedTexts.length);
+      expect(turnCompletedIndex).toBeGreaterThan(
+        Math.max(...assistantFinals.map((patch) => patches.indexOf(patch)))
+      );
+
+      await adapter.disconnect();
+    }
+  );
+
+  it('persists one row and one downstream finalization for the sanitized Codex triple-final shape', async () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-codex-triple-final-')
+    );
+    const store = createChannelMessageStore(path.join(dir, 'channel-chat.db'));
+    const hub = createChannelHub({ store, channelExists: () => true });
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    const onAssistantMessageFinalized = vi.fn();
+    let unbind = () => {};
+    try {
+      factory.lastClient.serverResponses.set('thread/start', {
+        thread: { id: 'thread-triple-final' },
+      });
+      await adapter.connect(config);
+      unbind = bindSessionToChannel({
+        channelId: 'topic:triple-final',
+        agentFramework: 'codex',
+        adapter,
+        store,
+        hub,
+        onAssistantMessageFinalized,
+      });
+      await adapter.sendMessage({
+        turnId: 'turn-triple-final',
+        content: 'synthetic prompt',
+      });
+      factory.lastClient.feedNotification('turn/started', {
+        turn: { id: 'native-turn' },
+      });
+      for (const notification of CODEX_TRIPLE_FINAL_FIXTURE.notifications) {
+        factory.lastClient.feedNotification(
+          notification.method,
+          notification.params
+        );
+      }
+
+      expect(store.history('topic:triple-final')).toEqual([
+        expect.objectContaining({
+          status: 'complete',
+          body: { text: 'Synthetic durable answer.', format: 'markdown' },
+          source: expect.objectContaining({
+            sessionId: config.sessionId,
+            turnId: 'turn-triple-final',
+            itemId: 'message-replayed',
+          }),
+        }),
+      ]);
+      expect(onAssistantMessageFinalized).toHaveBeenCalledOnce();
+      await adapter.disconnect();
+    } finally {
+      unbind();
+      hub.close();
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('releases a completed native turn after the terminal-item grace expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, client, patches } = await setupAndSend(
+        'turn-terminal-timeout'
+      );
+      client.feedNotification('item/started', {
+        item: { type: 'agentMessage', id: 'message-never-finalized' },
+      });
+      client.feedNotification('turn/completed', {
+        turn: { id: 'native-turn', status: 'completed' },
+      });
+      expect(
+        patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(CODEX_TERMINAL_ITEM_GRACE_MS);
+      expect(
+        patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toBe(true);
+      await adapter.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('flushes a deferred provider completion with usage exactly once on teardown', async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, client, patches } = await setupAndSend(
+        'turn-terminal-teardown'
+      );
+      client.feedNotification('item/started', {
+        item: { type: 'agentMessage', id: 'message-held-open' },
+      });
+      client.feedNotification('thread/tokenUsageUpdated', {
+        threadId: 'thread-1',
+        turnId: 'native-turn-teardown',
+        tokenUsage: {
+          last: { inputTokens: 21, outputTokens: 8, totalTokens: 29 },
+        },
+      });
+      client.feedNotification('turn/completed', {
+        threadId: 'thread-1',
+        turn: { id: 'native-turn-teardown', status: 'completed' },
+      });
+      expect(
+        patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toHaveLength(0);
+
+      await adapter.disconnect();
+      const completed = patches.filter(
+        (patch) => patch.type === 'agent-turn-completed-v2'
+      );
+      expect(completed).toEqual([
+        expect.objectContaining({
+          turnId: 'turn-terminal-teardown',
+          status: 'completed',
+          usage: expect.objectContaining({
+            inputTokens: 21,
+            outputTokens: 8,
+            totalTokens: 29,
+          }),
+        }),
+      ]);
+
+      await vi.advanceTimersByTimeAsync(CODEX_TERMINAL_ITEM_GRACE_MS);
+      expect(
+        patches.filter((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('persists an empty start as missing-terminal when the Codex grace expires', async () => {
+    vi.useFakeTimers();
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-codex-terminal-timeout-')
+    );
+    const store = createChannelMessageStore(path.join(dir, 'channel-chat.db'));
+    const hub = createChannelHub({ store, channelExists: () => true });
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    let unbind = () => {};
+    try {
+      factory.lastClient.serverResponses.set('thread/start', {
+        thread: { id: 'thread-terminal-timeout' },
+      });
+      await adapter.connect(config);
+      unbind = bindSessionToChannel({
+        channelId: 'topic:terminal-timeout',
+        agentFramework: 'codex',
+        adapter,
+        store,
+        hub,
+      });
+      await adapter.sendMessage({
+        turnId: 'turn-terminal-timeout',
+        content: 'synthetic prompt',
+      });
+      factory.lastClient.feedNotification('turn/started', {
+        turn: { id: 'native-turn-terminal-timeout' },
+      });
+      factory.lastClient.feedNotification('item/started', {
+        item: { type: 'agentMessage', id: 'message-without-terminal' },
+      });
+      factory.lastClient.feedNotification('turn/completed', {
+        turn: { id: 'native-turn-terminal-timeout', status: 'completed' },
+      });
+
+      expect(store.history('topic:terminal-timeout')).toEqual([
+        expect.objectContaining({
+          status: 'streaming',
+          body: expect.objectContaining({ text: '' }),
+        }),
+      ]);
+      await vi.advanceTimersByTimeAsync(CODEX_TERMINAL_ITEM_GRACE_MS);
+      const terminal = store.history('topic:terminal-timeout');
+      expect(terminal).toEqual([
+        expect.objectContaining({
+          status: 'truncated',
+          body: { text: '', format: 'markdown' },
+          meta: { truncationReason: 'missing-terminal' },
+        }),
+      ]);
+      expect(terminal[0]?.truncated).toBeUndefined();
+      await adapter.disconnect();
+    } finally {
+      unbind();
+      hub.close();
+      store.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+      vi.useRealTimers();
+    }
   });
 
   it('reasoning: summary delta + part added', async () => {
@@ -1659,6 +1911,13 @@ describe('CodexNativeProtocolAdapter — queue', () => {
         reasoningSummary: 1,
         reasoningDetail: 1,
       });
+      client.feedNotification('item/completed', {
+        item: {
+          id: `item-${turn}`,
+          type: 'agentMessage',
+          text: 'terminal output',
+        },
+      });
       client.feedNotification('turn/completed', {
         threadId: 'thread-retention',
         turn: { id: nativeTurnId, status: 'completed' },
@@ -2151,6 +2410,12 @@ describe('CodexNativeProtocolAdapter — independent concurrent sessions', () =>
     cb.feedNotification('item/agentMessage/delta', {
       itemId: 'ib',
       delta: 'B-reply',
+    });
+    ca.feedNotification('item/completed', {
+      item: { type: 'agentMessage', id: 'ia', text: 'A-reply' },
+    });
+    cb.feedNotification('item/completed', {
+      item: { type: 'agentMessage', id: 'ib', text: 'B-reply' },
     });
     ca.feedNotification('turn/completed', {
       turn: { id: 'na', status: 'completed' },

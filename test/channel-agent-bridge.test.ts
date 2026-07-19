@@ -83,7 +83,13 @@ function assistantUpdated(
     sessionId,
     timestamp: 't',
     turnId,
-    item: { type: 'assistantMessage', id: itemId, text },
+    item: {
+      type: 'assistantMessage',
+      id: itemId,
+      text,
+      status: 'completed',
+      completedAt: 't',
+    },
   };
 }
 
@@ -260,6 +266,8 @@ describe('channel-agent-bridge lifecycle', () => {
     });
     adapter.broadcastPatch(assistantStarted('s', 'turn-a', 'item-a'));
     adapter.broadcastPatch(assistantStarted('s', 'turn-b', 'item-b'));
+    adapter.broadcastPatch(textDelta('s', 'turn-a', 'item-a', 'partial a'));
+    adapter.broadcastPatch(textDelta('s', 'turn-b', 'item-b', 'partial b'));
     adapter.broadcastPatch({
       type: 'agent-error-v2',
       sessionId: 's',
@@ -279,7 +287,7 @@ describe('channel-agent-bridge lifecycle', () => {
     });
   });
 
-  it('finalizes an open stream as interrupted when the session is unbound mid-stream', () => {
+  it('finalizes an open stream as truncated when the session is unbound mid-stream', () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2();
     const unbind = bindSessionToChannel({
@@ -296,9 +304,11 @@ describe('channel-agent-bridge lifecycle', () => {
     const messages = store.history('topic:d');
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
-      status: 'interrupted',
+      status: 'truncated',
       body: { text: 'hi' },
+      meta: { truncationReason: 'missing-terminal' },
     });
+    expect(messages[0]?.truncated).toBeUndefined();
   });
 
   it('treats a duplicate final after turn completion as a pure no-op', () => {
@@ -306,6 +316,7 @@ describe('channel-agent-bridge lifecycle', () => {
     const adapter = new MockProtocolAdapterV2();
     const beginBroadcast = vi.spyOn(hub, 'beginStreamBroadcast');
     const completeBroadcast = vi.spyOn(hub, 'completeStreamBroadcast');
+    const onAssistantMessageFinalized = vi.fn();
     let retained: ChannelBridgeRetentionSnapshot | null = null;
     bindSessionToChannel({
       channelId: 'topic:r',
@@ -313,6 +324,7 @@ describe('channel-agent-bridge lifecycle', () => {
       adapter,
       store,
       hub,
+      onAssistantMessageFinalized,
       onRetentionSnapshot: (snapshot) => {
         retained = snapshot;
       },
@@ -337,6 +349,7 @@ describe('channel-agent-bridge lifecycle', () => {
     });
     expect(beginBroadcast).toHaveBeenCalledTimes(1);
     expect(completeBroadcast).toHaveBeenCalledTimes(1);
+    expect(onAssistantMessageFinalized).toHaveBeenCalledOnce();
     expect(retained).toEqual({
       openStreams: 0,
       assistantItemIds: 0,
@@ -379,7 +392,13 @@ describe('channel-agent-bridge lifecycle', () => {
       assistantStarted('session-gemini', 'turn-replay', 'item-replay')
     );
     replayAdapter.broadcastPatch(
+      textDelta('session-gemini', 'turn-replay', 'item-replay', 'replay')
+    );
+    replayAdapter.broadcastPatch(
       assistantStarted('session-gemini', 'turn-replay', 'item-replay')
+    );
+    replayAdapter.broadcastPatch(
+      textDelta('session-gemini', 'turn-replay', 'item-replay', 'replay')
     );
 
     expect(beginStore).toHaveBeenCalledTimes(1);
@@ -426,6 +445,9 @@ describe('channel-agent-bridge lifecycle', () => {
     adapter.broadcastPatch(
       assistantStarted('session-gemini', `turn-${newest}`, `item-${newest}`)
     );
+    adapter.broadcastPatch(
+      textDelta('session-gemini', `turn-${newest}`, `item-${newest}`, 'replay')
+    );
     expect(beginStore).not.toHaveBeenCalled();
 
     // The oldest tombstone was evicted, so one durable lookup refreshes it;
@@ -434,7 +456,13 @@ describe('channel-agent-bridge lifecycle', () => {
       assistantStarted('session-gemini', 'turn-0', 'item-0')
     );
     adapter.broadcastPatch(
+      textDelta('session-gemini', 'turn-0', 'item-0', 'replay')
+    );
+    adapter.broadcastPatch(
       assistantStarted('session-gemini', 'turn-0', 'item-0')
+    );
+    adapter.broadcastPatch(
+      textDelta('session-gemini', 'turn-0', 'item-0', 'replay')
     );
     expect(beginStore).toHaveBeenCalledOnce();
     expect(beginBroadcast).not.toHaveBeenCalled();
@@ -498,6 +526,229 @@ describe('channel-agent-bridge lifecycle', () => {
       status: 'complete',
       body: { text: 'ok' },
     });
+  });
+
+  it('marks a partial row truncated when turn completion races ahead of its terminal item', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:turn-race',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch(assistantStarted('s', 'turn', 'message'));
+    adapter.broadcastPatch(
+      textDelta('s', 'turn', 'message', 'Partial handoff')
+    );
+    adapter.broadcastPatch(turnCompleted('s', 'turn'));
+    // A late terminal item can no longer silently relabel the partial row as
+    // complete or create a duplicate after the source identity was released.
+    adapter.broadcastPatch(
+      assistantUpdated('s', 'turn', 'message', 'Complete handoff text.')
+    );
+
+    expect(store.history('topic:turn-race')).toEqual([
+      expect.objectContaining({
+        status: 'truncated',
+        body: { text: 'Partial handoff', format: 'markdown' },
+        meta: { truncationReason: 'missing-terminal' },
+      }),
+    ]);
+    expect(store.history('topic:turn-race')[0]?.truncated).toBeUndefined();
+  });
+
+  it('persists the terminal item before releasing and broadcasting turn completion', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const finalizeStore = vi.spyOn(store, 'finalizeStream');
+    const completeBroadcast = vi.spyOn(hub, 'completeStreamBroadcast');
+    bindSessionToChannel({
+      channelId: 'topic:write-ahead',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch(assistantStarted('s', 'turn', 'message'));
+    adapter.broadcastPatch(textDelta('s', 'turn', 'message', 'Partial'));
+    adapter.broadcastPatch(
+      assistantUpdated('s', 'turn', 'message', 'Final durable handoff.')
+    );
+
+    expect(store.history('topic:write-ahead')).toEqual([
+      expect.objectContaining({
+        status: 'complete',
+        body: { text: 'Final durable handoff.', format: 'markdown' },
+      }),
+    ]);
+    expect(finalizeStore.mock.invocationCallOrder[0]).toBeLessThan(
+      completeBroadcast.mock.invocationCallOrder[0]!
+    );
+    adapter.broadcastPatch(turnCompleted('s', 'turn'));
+    expect(finalizeStore).toHaveBeenCalledOnce();
+  });
+
+  it('resolves substantial streaming output as truncated on idle fallback', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:idle',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch(assistantStarted('s', 'turn', 'message'));
+    adapter.broadcastPatch(textDelta('s', 'turn', 'message', 'Still open'));
+    adapter.broadcastPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: 's',
+      timestamp: 't',
+      live: {
+        status: 'idle',
+        activeTurnId: 'turn',
+        waitingOn: null,
+        activeRequestIds: [],
+        proposedPlanItemId: null,
+        queueLength: 0,
+        fastModeAvailable: false,
+        error: null,
+      },
+    });
+
+    expect(store.history('topic:idle')).toEqual([
+      expect.objectContaining({
+        status: 'truncated',
+        meta: { truncationReason: 'missing-terminal' },
+      }),
+    ]);
+    expect(store.history('topic:idle')[0]?.truncated).toBeUndefined();
+  });
+
+  it('resolves an empty streaming row as truncated on idle fallback', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:idle-empty',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch(assistantStarted('s', 'turn', 'message'));
+    adapter.broadcastPatch({
+      type: 'agent-live-state-updated-v2',
+      sessionId: 's',
+      timestamp: 't',
+      live: {
+        status: 'idle',
+        activeTurnId: null,
+        waitingOn: null,
+        activeRequestIds: [],
+        proposedPlanItemId: null,
+        queueLength: 0,
+        fastModeAvailable: false,
+        error: null,
+      },
+    });
+
+    expect(store.history('topic:idle-empty')).toEqual([
+      expect.objectContaining({
+        status: 'truncated',
+        body: { text: '', format: 'markdown' },
+        meta: { truncationReason: 'missing-terminal' },
+      }),
+    ]);
+  });
+
+  it('materializes an empty assistant start as truncated when its terminal item is missing', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
+    bindSessionToChannel({
+      channelId: 'topic:empty-start',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
+    });
+    adapter.broadcastPatch(assistantStarted('s', 'turn', 'message'));
+    adapter.broadcastPatch(turnCompleted('s', 'turn'));
+
+    expect(store.history('topic:empty-start')).toEqual([
+      expect.objectContaining({
+        status: 'truncated',
+        body: { text: '', format: 'markdown' },
+        meta: { truncationReason: 'missing-terminal' },
+      }),
+    ]);
+    expect(store.history('topic:empty-start')[0]?.truncated).toBeUndefined();
+    expect(retained).toEqual({
+      openStreams: 0,
+      assistantItemIds: 0,
+      turnsWithRows: 0,
+      retainedTextBytes: 0,
+    });
+  });
+
+  it('canonicalizes provider-item aliases to one durable row', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const onAssistantMessageFinalized = vi.fn();
+    bindSessionToChannel({
+      channelId: 'topic:aliases',
+      agentFramework: 'claude',
+      adapter,
+      store,
+      hub,
+      onAssistantMessageFinalized,
+    });
+    for (const itemId of ['relay-message-0', 'relay-message-1']) {
+      adapter.broadcastPatch({
+        type: 'agent-item-started-v2',
+        sessionId: 's',
+        timestamp: 't',
+        turnId: 'turn',
+        item: {
+          type: 'assistantMessage',
+          id: itemId,
+          providerItemId: 'provider-item',
+          text: '',
+          status: 'running',
+        },
+      });
+    }
+    adapter.broadcastPatch(
+      textDelta('s', 'turn', 'relay-message-0', 'Live partial')
+    );
+    adapter.broadcastPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      item: {
+        type: 'assistantMessage',
+        id: 'relay-message-1',
+        providerItemId: 'provider-item',
+        text: 'Canonical final.',
+        status: 'completed',
+        completedAt: 't',
+      },
+    });
+
+    expect(store.history('topic:aliases')).toEqual([
+      expect.objectContaining({
+        status: 'complete',
+        body: { text: 'Canonical final.', format: 'markdown' },
+        source: expect.objectContaining({ itemId: 'provider-item' }),
+      }),
+    ]);
+    expect(onAssistantMessageFinalized).toHaveBeenCalledOnce();
   });
 
   it('does not mirror plan-item (or unknown-item) text deltas', () => {
@@ -574,9 +825,10 @@ describe('channel-agent-bridge lifecycle', () => {
     const messages = store.history('topic:cap');
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
-      status: 'complete',
+      status: 'truncated',
       truncated: true,
       body: { text: 'start ' },
+      meta: { truncationReason: 'size-limit' },
     });
   });
 });

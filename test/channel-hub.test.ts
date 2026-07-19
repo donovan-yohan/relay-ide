@@ -393,8 +393,9 @@ describe('channel-hub snapshot correctness', () => {
 
     // Stream finalizes WHILE the client is gone (no new seq allocated).
     const finalMsg = s.finalizeStream(streaming.id, {
-      text: 'final answer',
-      status: 'complete',
+      text: 'partial answer',
+      status: 'truncated',
+      truncationReason: 'missing-terminal',
     });
     hub.completeStreamBroadcast(finalMsg!);
 
@@ -407,8 +408,10 @@ describe('channel-hub snapshot correctness', () => {
     for (const e of reconnect.sent) state = applyChannelEventV1(state, e);
 
     const row = state.byId[streaming.id];
-    expect(row?.status).toBe('complete'); // no permanently stuck streaming row
-    expect(row?.body.text).toBe('final answer');
+    expect(row?.status).toBe('truncated'); // no permanently stuck streaming row
+    expect(row?.body.text).toBe('partial answer');
+    expect(row?.meta).toEqual({ truncationReason: 'missing-terminal' });
+    expect(row?.truncated).toBeUndefined();
     expect(state.needsCatchup).toBe(false);
   });
 

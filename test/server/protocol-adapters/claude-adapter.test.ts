@@ -1566,6 +1566,95 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     await adapter.disconnect();
   });
 
+  it('keeps multiple text slots when non-text blocks shift raw stream indexes', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+
+    await adapter.sendMessage({ turnId: 'turn-slots', content: 'go' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'message_start', message: { id: 'm-slots' } },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking' },
+      },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: 'plan' },
+      },
+    });
+    child.serverWrite({
+      type: 'stream_event',
+      event: { type: 'content_block_stop', index: 0 },
+    });
+    for (const [index, text] of [
+      [1, 'first'],
+      [2, 'second'],
+    ] as const) {
+      child.serverWrite({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index,
+          content_block: { type: 'text' },
+        },
+      });
+      child.serverWrite({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index,
+          delta: { type: 'text_delta', text },
+        },
+      });
+      child.serverWrite({
+        type: 'stream_event',
+        event: { type: 'content_block_stop', index },
+      });
+    }
+    // The echo omits thinking, so its two text blocks are ordinals 0 and 1
+    // even though the stream addressed them by raw indexes 1 and 2.
+    child.serverWrite({
+      type: 'assistant',
+      message: {
+        id: 'm-slots',
+        content: [
+          { type: 'text', text: 'first' },
+          { type: 'text', text: 'second' },
+        ],
+      },
+    });
+    child.serverWrite(successResult());
+
+    await waitFor(() =>
+      patches.some((p) => p.type === 'agent-turn-completed-v2')
+    );
+    const turn = reduce(patches).turns.find((t) => t.id === 'turn-slots')!;
+    const assistantMsgs = turn.items.filter(
+      (item) => item.type === 'assistantMessage'
+    );
+    expect(assistantMsgs).toHaveLength(2);
+    expect(
+      assistantMsgs.map((item) =>
+        item.type === 'assistantMessage' ? item.text : ''
+      )
+    ).toEqual(['first', 'second']);
+
+    await adapter.disconnect();
+  });
+
   it('does not preempt an outstanding approval with the stuck-turn kill; auto-deny keeps the turn alive', async () => {
     const harness = makeHarness();
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
@@ -1756,6 +1845,92 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     ).toMatchObject({
       claudeSessionId: '00000000-0000-4000-8000-000000000001',
     });
+
+    await adapter.disconnect();
+  });
+
+  it('replays sanitized text-index drift as one assistant item', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-index-drift', content: 'hello' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.join(
+      here,
+      '..',
+      '..',
+      'fixtures',
+      'claude-stream',
+      'text-index-drift.jsonl'
+    );
+    const lines = fs
+      .readFileSync(fixturePath, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+    for (const line of lines) child.serverWrite(JSON.parse(line));
+
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+    const turn = reduce(patches).turns.find(
+      (candidate) => candidate.id === 'turn-index-drift'
+    )!;
+    const assistantMsgs = turn.items.filter(
+      (item) => item.type === 'assistantMessage'
+    );
+    expect(assistantMsgs).toHaveLength(1);
+    expect(assistantMsgs[0]).toMatchObject({
+      text: 'synthetic answer',
+      status: 'completed',
+    });
+
+    await adapter.disconnect();
+  });
+
+  it('replays two blank-id assistant messages as distinct items in one turn', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-blank-ids', content: 'hello' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const fixturePath = path.join(
+      here,
+      '..',
+      '..',
+      'fixtures',
+      'claude-stream',
+      'two-blank-message-ids.jsonl'
+    );
+    const lines = fs
+      .readFileSync(fixturePath, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+    for (const line of lines) child.serverWrite(JSON.parse(line));
+
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+    const turn = reduce(patches).turns.find(
+      (candidate) => candidate.id === 'turn-blank-ids'
+    )!;
+    const assistantMsgs = turn.items.filter(
+      (item) => item.type === 'assistantMessage'
+    );
+    expect(assistantMsgs).toHaveLength(2);
+    expect(
+      assistantMsgs.map((item) =>
+        item.type === 'assistantMessage' ? item.text : ''
+      )
+    ).toEqual(['synthetic first', 'synthetic second']);
+    expect(new Set(assistantMsgs.map((item) => item.id)).size).toBe(2);
 
     await adapter.disconnect();
   });

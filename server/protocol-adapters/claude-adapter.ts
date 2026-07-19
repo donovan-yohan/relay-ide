@@ -644,7 +644,19 @@ export class ClaudeProtocolAdapter
   private readonly streamedReasoningItems = new Set<string>();
   private readonly streamTextBuffers = new Map<string, string>();
   private readonly streamReasoningBuffers = new Map<string, string>();
+  // Stream-json addresses deltas/stops by the raw Anthropic content-block
+  // index. The later top-level `assistant` echo can omit non-text blocks, so its
+  // array ordinal is not a stable identity for that same text item. Keep the
+  // raw index only as an event-routing alias and assign durable item ids from a
+  // per-kind ordinal within the provider message.
+  private readonly streamTextItemsByRawIndex = new Map<number, string>();
+  private readonly streamReasoningItemsByRawIndex = new Map<number, string>();
+  private streamTextOrdinal = 0;
+  private streamReasoningOrdinal = 0;
   private streamProviderMessageId: string | null = null;
+  private streamMessageIdentity: string | null = null;
+  private streamMessageAwaitingEcho = false;
+  private streamFallbackMessageSeq = 0;
 
   private readonly activeToolUses = new Map<
     string,
@@ -769,7 +781,8 @@ export class ClaudeProtocolAdapter
     this.streamedReasoningItems.clear();
     this.streamTextBuffers.clear();
     this.streamReasoningBuffers.clear();
-    this.streamProviderMessageId = null;
+    this.resetCurrentStreamMessage();
+    this.streamFallbackMessageSeq = 0;
 
     if (dead) await dead.stop().catch(() => undefined);
   }
@@ -808,7 +821,8 @@ export class ClaudeProtocolAdapter
     this.streamedReasoningItems.clear();
     this.streamTextBuffers.clear();
     this.streamReasoningBuffers.clear();
-    this.streamProviderMessageId = null;
+    this.resetCurrentStreamMessage();
+    this.streamFallbackMessageSeq = 0;
 
     this.claudeSessionId = sessionId;
     this._status = 'connected';
@@ -1465,46 +1479,59 @@ export class ClaudeProtocolAdapter
 
   /**
    * Compose a text/thinking stream-item id that folds in the per-API-message
-   * provider message id. The Anthropic content_block `index` restarts at 0 on
+   * provider message id. The semantic ordinal is per kind (text or thinking),
+   * rather than the raw Anthropic content_block `index`: the later `assistant`
+   * echo can omit a thinking/tool block and renumber the remaining text. The
+   * raw index is retained separately only to route stream deltas/stops.
+   *
+   * The semantic ordinal restarts at 0 on
    * every `message_start`, so a turn with two assistant messages (the normal
    * text → tool_use → tool_result → text shape) would otherwise reuse
    * `msg-<turnId>-0`; the reducer upserts by id and the first message's text
-   * would be destroyed. The message id disambiguates. When no message id was
-   * captured (non-streaming path) it falls back to the bare index — a single
-   * assistant message per turn never collides. handleStreamEvent passes the
-   * live `streamProviderMessageId`; handleAssistantMessage passes the echo
-   * message's own id, so the two id schemes align for echo-drop.
+   * would be destroyed. A real provider message id disambiguates when present;
+   * otherwise a per-turn fallback message identity does, and the corresponding
+   * stream/echo views reconcile to that same fallback.
    */
   private streamItemId(
     prefix: 'msg' | 'thinking',
     turnId: string,
     messageId: string | null,
-    index: number
+    ordinal: number
   ): string {
     return messageId
-      ? `${prefix}-${turnId}-${messageId}-${index}`
-      : `${prefix}-${turnId}-${index}`;
+      ? `${prefix}-${turnId}-${messageId}-${ordinal}`
+      : `${prefix}-${turnId}-${ordinal}`;
+  }
+
+  private resetCurrentStreamMessage(): void {
+    this.streamTextItemsByRawIndex.clear();
+    this.streamReasoningItemsByRawIndex.clear();
+    this.streamTextOrdinal = 0;
+    this.streamReasoningOrdinal = 0;
+    this.streamProviderMessageId = null;
+    this.streamMessageIdentity = null;
+    this.streamMessageAwaitingEcho = false;
+  }
+
+  private nextFallbackStreamMessageIdentity(): string {
+    return `anonymous-${++this.streamFallbackMessageSeq}`;
   }
 
   /**
    * Echo-drop guard for `handleAssistantMessage`: has this content block already
-   * been streamed? Checks the provider-id-keyed id AND the bare `${prefix}-
-   * ${turnId}-${index}` id. The bare form matters when the streamed item's
-   * `message_start` carried no message id (`streamProviderMessageId` null): the
-   * streamed item is keyed bare while this echo carries the message's real id,
-   * so the two ids diverge and — without the bare check — the echo would open a
-   * SECOND channel row for one assistant message (bridge opens per item id;
-   * store dedupes per source-triple), the #1181 duplicate-row defect.
+   * been streamed? Canonical stream/echo identities normally match exactly.
+   * The bare check remains as a compatibility fallback for malformed streams
+   * that deliver content blocks without a preceding `message_start`.
    */
   private echoAlreadyStreamed(
     streamed: Set<string>,
     prefix: 'msg' | 'thinking',
     turnId: string,
     id: string,
-    index: number
+    ordinal: number
   ): boolean {
     if (streamed.has(id)) return true;
-    const bareId = this.streamItemId(prefix, turnId, null, index);
+    const bareId = this.streamItemId(prefix, turnId, null, ordinal);
     return streamed.has(bareId);
   }
 
@@ -1520,7 +1547,12 @@ export class ClaudeProtocolAdapter
     if (eventType === 'message_start') {
       const innerMessage = objectField(event.message);
       const id = stringField(innerMessage.id);
+      this.resetCurrentStreamMessage();
       this.streamProviderMessageId = id || null;
+      this.streamMessageIdentity =
+        this.streamProviderMessageId ??
+        this.nextFallbackStreamMessageIdentity();
+      this.streamMessageAwaitingEcho = true;
       return;
     }
 
@@ -1529,12 +1561,14 @@ export class ClaudeProtocolAdapter
       const block = objectField(event.content_block);
       const blockType = stringField(block.type);
       if (blockType === 'text') {
+        if (this.streamTextItemsByRawIndex.has(index)) return;
         const itemId = this.streamItemId(
           'msg',
           turnId,
-          this.streamProviderMessageId,
-          index
+          this.streamMessageIdentity,
+          this.streamTextOrdinal++
         );
+        this.streamTextItemsByRawIndex.set(index, itemId);
         this.streamedTextItems.add(itemId);
         this.streamTextBuffers.set(itemId, '');
         this.emitPatch({
@@ -1555,12 +1589,14 @@ export class ClaudeProtocolAdapter
           },
         });
       } else if (blockType === 'thinking') {
+        if (this.streamReasoningItemsByRawIndex.has(index)) return;
         const itemId = this.streamItemId(
           'thinking',
           turnId,
-          this.streamProviderMessageId,
-          index
+          this.streamMessageIdentity,
+          this.streamReasoningOrdinal++
         );
+        this.streamReasoningItemsByRawIndex.set(index, itemId);
         this.streamedReasoningItems.add(itemId);
         this.streamReasoningBuffers.set(itemId, '');
         this.emitPatch({
@@ -1586,13 +1622,8 @@ export class ClaudeProtocolAdapter
       const delta = objectField(event.delta);
       const deltaType = stringField(delta.type);
       if (deltaType === 'text_delta') {
-        const itemId = this.streamItemId(
-          'msg',
-          turnId,
-          this.streamProviderMessageId,
-          index
-        );
-        if (!this.streamedTextItems.has(itemId)) return;
+        const itemId = this.streamTextItemsByRawIndex.get(index);
+        if (!itemId) return;
         const text = stringField(delta.text);
         const current = this.streamTextBuffers.get(itemId) ?? '';
         this.streamTextBuffers.set(itemId, current + text);
@@ -1605,13 +1636,8 @@ export class ClaudeProtocolAdapter
           delta: { text },
         });
       } else if (deltaType === 'thinking_delta') {
-        const itemId = this.streamItemId(
-          'thinking',
-          turnId,
-          this.streamProviderMessageId,
-          index
-        );
-        if (!this.streamedReasoningItems.has(itemId)) return;
+        const itemId = this.streamReasoningItemsByRawIndex.get(index);
+        if (!itemId) return;
         const text = stringField(delta.thinking);
         const current = this.streamReasoningBuffers.get(itemId) ?? '';
         this.streamReasoningBuffers.set(itemId, current + text);
@@ -1629,19 +1655,9 @@ export class ClaudeProtocolAdapter
 
     if (eventType === 'content_block_stop') {
       const index = typeof event.index === 'number' ? event.index : 0;
-      const textItemId = this.streamItemId(
-        'msg',
-        turnId,
-        this.streamProviderMessageId,
-        index
-      );
-      const reasoningItemId = this.streamItemId(
-        'thinking',
-        turnId,
-        this.streamProviderMessageId,
-        index
-      );
-      if (this.streamedTextItems.has(textItemId)) {
+      const textItemId = this.streamTextItemsByRawIndex.get(index);
+      const reasoningItemId = this.streamReasoningItemsByRawIndex.get(index);
+      if (textItemId) {
         const text = this.streamTextBuffers.get(textItemId) ?? '';
         this.emitPatch({
           type: 'agent-item-updated-v2',
@@ -1660,7 +1676,7 @@ export class ClaudeProtocolAdapter
               : {}),
           },
         });
-      } else if (this.streamedReasoningItems.has(reasoningItemId)) {
+      } else if (reasoningItemId) {
         const text = this.streamReasoningBuffers.get(reasoningItemId) ?? '';
         this.emitPatch({
           type: 'agent-item-updated-v2',
@@ -1685,24 +1701,33 @@ export class ClaudeProtocolAdapter
     turnId: string,
     message: Record<string, unknown>
   ): void {
-    // Key echo-drop by this echo message's own provider id so it matches the
-    // streamed items' ids (both fold in the same message id + content-block
-    // index). Without it, a turn's second assistant message would reuse the
-    // first's `msg-<turnId>-0` and clobber it (§ stream item ids).
+    // Reconcile the echo with the stream's canonical provider/fallback message
+    // identity so a later view cannot open another item for the same content.
     const providerMessageId =
       stringField(objectField(message.message).id) || null;
-    let blockIndex = 0;
+    // A stream-json `message_start` and its later top-level `assistant` echo are
+    // two views of the same provider message. Either view may omit the provider
+    // id, so reconcile the echo to the pending stream identity when the known
+    // ids do not conflict. Separate blank-id messages each receive a fresh
+    // per-turn fallback identity at their own message_start.
+    const canReuseStreamIdentity =
+      this.streamMessageAwaitingEcho &&
+      this.streamMessageIdentity !== null &&
+      (providerMessageId === null ||
+        this.streamProviderMessageId === null ||
+        providerMessageId === this.streamProviderMessageId);
+    const messageIdentity = canReuseStreamIdentity
+      ? this.streamMessageIdentity
+      : (providerMessageId ?? this.nextFallbackStreamMessageIdentity());
+    if (canReuseStreamIdentity) this.streamMessageAwaitingEcho = false;
+    let textOrdinal = 0;
+    let reasoningOrdinal = 0;
     for (const block of contentBlocks(message)) {
       const type = block.type;
-      const itemIndex = blockIndex++;
       if (type === 'text') {
+        const itemIndex = textOrdinal++;
         const text = stringField(block.text);
-        const id = this.streamItemId(
-          'msg',
-          turnId,
-          providerMessageId,
-          itemIndex
-        );
+        const id = this.streamItemId('msg', turnId, messageIdentity, itemIndex);
         if (
           this.echoAlreadyStreamed(
             this.streamedTextItems,
@@ -1754,10 +1779,11 @@ export class ClaudeProtocolAdapter
           },
         });
       } else if (type === 'thinking') {
+        const itemIndex = reasoningOrdinal++;
         const id = this.streamItemId(
           'thinking',
           turnId,
-          providerMessageId,
+          messageIdentity,
           itemIndex
         );
         if (
@@ -2338,7 +2364,8 @@ export class ClaudeProtocolAdapter
     this.streamedReasoningItems.clear();
     this.streamTextBuffers.clear();
     this.streamReasoningBuffers.clear();
-    this.streamProviderMessageId = null;
+    this.resetCurrentStreamMessage();
+    this.streamFallbackMessageSeq = 0;
     this.activeToolUses.clear();
     this.clearPendingApprovals();
     this.approvalWaitStartedMs = null;

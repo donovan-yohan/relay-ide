@@ -115,11 +115,35 @@ function post(
   return message;
 }
 
+function postAgentTurnRow(
+  store: ChannelMessageStore,
+  binder: ChannelAgentBinder,
+  turnId: string,
+  itemId: string,
+  text: string,
+  knownIds: string[]
+): ChannelMessage {
+  const mentions = parseMentions(text, knownIds);
+  const stream = store.beginStream({
+    channelId: CH,
+    sender: AGENT_SENDER,
+    source: { sessionId: 'session:orchestrator', turnId, itemId },
+    ...(mentions.length ? { mentions } : {}),
+  });
+  const message = store.finalizeStream(stream.id, {
+    text,
+    status: 'complete',
+  })!;
+  binder.handleMessagePosted(message, mentions);
+  return message;
+}
+
 // ── scripted adapter (deterministic, no timers) ──────────────────────────────
 
 type ScriptMode =
   | { mode: 'stall' }
   | { mode: 'reply'; text: string }
+  | { mode: 'reply-items'; texts: string[] }
   | { mode: 'reject' }
   | { mode: 'reject-once-then-reply'; text: string };
 
@@ -167,11 +191,15 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
     }
     if (this.script.mode === 'reject') throw new Error('transport down');
     if (this.script.mode === 'stall') return; // resolve, never complete
-    this.runReply(input.turnId, this.script.text);
+    this.runReplyItems(
+      input.turnId,
+      this.script.mode === 'reply-items'
+        ? this.script.texts
+        : [this.script.text]
+    );
   }
 
-  private runReply(turnId: string, text: string): void {
-    const itemId = `assistant-${turnId}`;
+  private runReplyItems(turnId: string, texts: string[]): void {
     this.emitPatch({
       type: 'agent-turn-started-v2',
       sessionId: this.sid,
@@ -184,33 +212,36 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
         startedAt: 't',
       },
     });
-    this.emitPatch({
-      type: 'agent-item-started-v2',
-      sessionId: this.sid,
-      timestamp: 't',
-      turnId,
-      item: { type: 'assistantMessage', id: itemId, text: '' },
-    });
-    this.emitPatch({
-      type: 'agent-item-delta-v2',
-      sessionId: this.sid,
-      timestamp: 't',
-      turnId,
-      itemId,
-      delta: { text },
-    });
-    this.emitPatch({
-      type: 'agent-item-updated-v2',
-      sessionId: this.sid,
-      timestamp: 't',
-      turnId,
-      item: {
-        type: 'assistantMessage',
-        id: itemId,
-        text,
-        status: 'completed',
-      },
-    });
+    for (const [index, text] of texts.entries()) {
+      const itemId = `assistant-${turnId}-${index}`;
+      this.emitPatch({
+        type: 'agent-item-started-v2',
+        sessionId: this.sid,
+        timestamp: 't',
+        turnId,
+        item: { type: 'assistantMessage', id: itemId, text: '' },
+      });
+      this.emitPatch({
+        type: 'agent-item-delta-v2',
+        sessionId: this.sid,
+        timestamp: 't',
+        turnId,
+        itemId,
+        delta: { text },
+      });
+      this.emitPatch({
+        type: 'agent-item-updated-v2',
+        sessionId: this.sid,
+        timestamp: 't',
+        turnId,
+        item: {
+          type: 'assistantMessage',
+          id: itemId,
+          text,
+          status: 'completed',
+        },
+      });
+    }
     this.emitPatch({
       type: 'agent-turn-completed-v2',
       sessionId: this.sid,
@@ -1440,6 +1471,118 @@ describe('channel-agent-binder — delivery + idempotency', () => {
 });
 
 describe('channel-agent-binder — agent-to-agent brake', () => {
+  it('counts one provider turn once across item rows and mention fanout', async () => {
+    const build = (agentType: string) =>
+      agentType === 'a'
+        ? new ScriptedAdapter('a', {
+            mode: 'reply-items',
+            texts: ['one @b @c', 'two @b', 'three @b', 'four @b'],
+          })
+        : new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' });
+    const { binder, store } = makeBinder({
+      build,
+      targets: [
+        {
+          id: 'a',
+          displayName: 'A',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+        {
+          id: 'b',
+          displayName: 'B',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+        {
+          id: 'c',
+          displayName: 'C',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['a', 'b', 'c'],
+    });
+
+    post(store, binder, '@a go', ['a', 'b', 'c']);
+    await waitFor(() => agentReplies(store, 'b').length === 4);
+    await waitFor(() => agentReplies(store, 'c').length === 1);
+    expect(agentReplies(store, 'b')).toHaveLength(4);
+    expect(agentReplies(store, 'c')).toHaveLength(1);
+
+    // Four rows consumed one provider-turn count, not four row counts: a second
+    // distinct turn still routes instead of immediately tripping the cap.
+    postAgentTurnRow(
+      store,
+      binder,
+      'turn-after-multi-item',
+      'item-0',
+      '@b after',
+      ['a', 'b', 'c']
+    );
+    await waitFor(() => agentReplies(store, 'b').length === 5);
+    expect(agentReplies(store, 'b')).toHaveLength(5);
+    expect(
+      systemRows(store).filter((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    ).toHaveLength(0);
+  });
+
+  it('blocks later rows of an admitted turn after another turn pauses the channel', async () => {
+    const { binder, store } = makeBinder({
+      build: (agentType) =>
+        new ScriptedAdapter(agentType, { mode: 'reply', text: 'done' }),
+      targets: [
+        {
+          id: 'b',
+          displayName: 'B',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['b'],
+    });
+
+    for (let index = 0; index < MAX_CONSECUTIVE_AGENT_TURNS; index += 1) {
+      postAgentTurnRow(
+        store,
+        binder,
+        `turn-${index}`,
+        'item-0',
+        `@b row ${index}`,
+        ['b']
+      );
+    }
+    await waitFor(
+      () => agentReplies(store, 'b').length === MAX_CONSECUTIVE_AGENT_TURNS
+    );
+
+    postAgentTurnRow(store, binder, 'turn-cap', 'item-0', '@b pause', ['b']);
+    await waitFor(() =>
+      systemRows(store).some((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    );
+
+    // turn-0 was admitted before the pause. Its later item must still pass the
+    // per-dispatch pause check and never enqueue another downstream turn.
+    postAgentTurnRow(store, binder, 'turn-0', 'item-late', '@b late row', [
+      'b',
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(agentReplies(store, 'b')).toHaveLength(MAX_CONSECUTIVE_AGENT_TURNS);
+    expect(
+      systemRows(store).filter((message) =>
+        message.body.text.includes('Mention chain paused')
+      )
+    ).toHaveLength(1);
+  });
+
   it('caps consecutive agent turns and a human post resets the brake', async () => {
     const build = (agentType: string) =>
       new ScriptedAdapter(agentType, {

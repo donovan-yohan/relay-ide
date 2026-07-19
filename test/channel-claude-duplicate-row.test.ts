@@ -1,5 +1,5 @@
 /**
- * #1181 defect 2 regression: a single Claude assistant reply must persist as
+ * #1184 live-shape regression: a single Claude assistant reply must persist as
  * exactly one channel row, whether or not the streamed item id and the
  * `assistant` echo message id diverge.
  *
@@ -10,8 +10,11 @@
  * adapter's echo-drop misses, the bridge opens a second stream, and the store's
  * source-triple dedupe (session/turn/item) treats them as different → two rows.
  *
- * This replays live-shaped stream-json through the real adapter → bridge →
- * store and asserts one row for both the matching-id and divergent-id shapes.
+ * The dogfood duplicate pairs shared session + turn + body length but differed
+ * only by the final text-item suffix (`-1` from the raw stream index versus
+ * `-0` from the assistant echo's text ordinal). This replays that sanitized
+ * live shape through the real adapter → bridge → store and asserts one row
+ * for both the matching-id and divergent-id shapes.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
@@ -103,7 +106,7 @@ function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
   });
 }
 
-async function replayToRowCount(lines: unknown[]): Promise<number> {
+async function replayToRows(lines: unknown[]) {
   const harness = makeHarness();
   const adapter = new ClaudeProtocolAdapter(
     harness.spawnFn,
@@ -135,7 +138,11 @@ async function replayToRowCount(lines: unknown[]): Promise<number> {
   hub.close();
   store.close();
   fs.rmSync(dir, { recursive: true, force: true });
-  return rows.length;
+  return rows;
+}
+
+async function replayToRowCount(lines: unknown[]): Promise<number> {
+  return (await replayToRows(lines)).length;
 }
 
 describe('claude single reply → one channel row (#1181)', () => {
@@ -144,6 +151,19 @@ describe('claude single reply → one channel row (#1181)', () => {
     const lines = fs
       .readFileSync(
         path.join(here, 'fixtures', 'claude-stream', 'hello.jsonl'),
+        'utf8'
+      )
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l) as unknown);
+    expect(await replayToRowCount(lines)).toBe(1);
+  });
+
+  it('persists one row when the streamed raw index differs from the echo text ordinal', async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const lines = fs
+      .readFileSync(
+        path.join(here, 'fixtures', 'claude-stream', 'text-index-drift.jsonl'),
         'utf8'
       )
       .split('\n')
@@ -219,5 +239,30 @@ describe('claude single reply → one channel row (#1181)', () => {
       },
     ];
     expect(await replayToRowCount(lines)).toBe(1);
+  });
+
+  it('persists two rows for two blank-id assistant messages in one turn', async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const lines = fs
+      .readFileSync(
+        path.join(
+          here,
+          'fixtures',
+          'claude-stream',
+          'two-blank-message-ids.jsonl'
+        ),
+        'utf8'
+      )
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as unknown);
+
+    const rows = await replayToRows(lines);
+    expect(rows.map((row) => row.body.text)).toEqual([
+      'synthetic first',
+      'synthetic second',
+    ]);
+    expect(new Set(rows.map((row) => row.source?.itemId)).size).toBe(2);
+    expect(new Set(rows.map((row) => row.source?.turnId)).size).toBe(1);
   });
 });

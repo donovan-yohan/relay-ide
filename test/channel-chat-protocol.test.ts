@@ -87,6 +87,16 @@ describe('isChannelEventV1 validator matrix', () => {
     expect(isChannelEventV1(delta('chm:1', 0, 'x'))).toBe(true);
     expect(isChannelEventV1(completed(message()))).toBe(true);
     expect(
+      isChannelEventV1(
+        completed(
+          message({
+            status: 'truncated',
+            meta: { truncationReason: 'missing-terminal' },
+          })
+        )
+      )
+    ).toBe(true);
+    expect(
       isChannelEventV1({
         type: 'channel-resync-required-v1',
         channelId: CHANNEL,

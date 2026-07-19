@@ -123,6 +123,19 @@ class RecordingAdapter extends BaseProtocolAdapterV2 {
       delta: { text: this.reply },
     });
     this.emitPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: this.sid,
+      timestamp: 't',
+      turnId: input.turnId,
+      item: {
+        type: 'assistantMessage',
+        id: itemId,
+        text: this.reply,
+        status: 'completed',
+        completedAt: 't',
+      },
+    });
+    this.emitPatch({
       type: 'agent-turn-completed-v2',
       sessionId: this.sid,
       timestamp: 't',

@@ -38,6 +38,215 @@ const AGENT: ChannelSenderRef = {
   providerId: 'claude',
 };
 
+describe('channel-message-store schema migration', () => {
+  it('widens v1 status safely and preserves durable rows', () => {
+    const file = dbPath();
+    const legacy = new Database(file);
+    legacy.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      INSERT INTO schema_version VALUES (1);
+      CREATE TABLE channel_messages (
+        id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, seq INTEGER NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message','system')),
+        status TEXT NOT NULL DEFAULT 'complete'
+          CHECK (status IN ('streaming','complete','interrupted','failed')),
+        sender_kind TEXT NOT NULL CHECK (sender_kind IN ('human','agent','system')),
+        sender_id TEXT NOT NULL, sender_display TEXT, thread_id TEXT,
+        parent_message_id TEXT, body_text TEXT NOT NULL DEFAULT '',
+        body_format TEXT NOT NULL DEFAULT 'markdown', meta_json TEXT,
+        source_session_id TEXT, source_turn_id TEXT, source_item_id TEXT,
+        client_message_id TEXT, created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL, completed_at TEXT,
+        UNIQUE (channel_id, seq)
+      );
+      CREATE INDEX idx_chm_channel_seq ON channel_messages(channel_id, seq);
+      CREATE INDEX idx_chm_thread ON channel_messages(thread_id, seq)
+        WHERE thread_id IS NOT NULL;
+      CREATE UNIQUE INDEX idx_chm_source_dedupe
+        ON channel_messages(source_session_id, source_turn_id, source_item_id)
+        WHERE source_session_id IS NOT NULL;
+      CREATE UNIQUE INDEX idx_chm_client_dedupe
+        ON channel_messages(channel_id, sender_id, client_message_id)
+        WHERE client_message_id IS NOT NULL;
+      CREATE TABLE channel_members (
+        channel_id TEXT NOT NULL, member_kind TEXT NOT NULL,
+        member_id TEXT NOT NULL, joined_at TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (channel_id, member_kind, member_id)
+      );
+      CREATE TABLE channel_agent_bindings (
+        channel_id TEXT NOT NULL, agent_framework TEXT NOT NULL,
+        session_id TEXT, provider_session_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (channel_id, agent_framework)
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:legacy', 'topic:migration', 1, 'message', 'complete',
+        'agent', 'agent:codex', NULL, NULL, NULL, 'preserved', 'markdown',
+        NULL, 'session', 'turn', 'item', NULL,
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:00.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:claude-live-keeper', 'topic:live-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'synthetic live duplicate', 'markdown', '{"providerId":"claude"}',
+        'session-live', 'turn-live', 'msg-turn-live-provider-1', NULL,
+        '2026-07-18T12:00:12.892Z', '2026-07-18T12:00:12.892Z',
+        '2026-07-18T12:00:12.892Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:claude-live-duplicate', 'topic:live-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'synthetic live duplicate', 'markdown', '{"providerId":"claude"}',
+        'session-live', 'turn-live', 'msg-turn-live-provider-0', NULL,
+        '2026-07-18T12:00:12.893Z', '2026-07-18T12:00:12.893Z',
+        '2026-07-18T12:00:12.891Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:reply-to-duplicate', 'topic:live-heal', 3, 'message', 'complete',
+        'human', 'human:operator', 'operator', 'chm:claude-live-duplicate',
+        'chm:claude-live-duplicate', 'reply', 'markdown', NULL,
+        NULL, NULL, NULL, NULL,
+        '2026-07-18T12:00:13.000Z', '2026-07-18T12:00:13.000Z',
+        '2026-07-18T12:00:13.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:tail', 'topic:live-heal', 4, 'message', 'complete',
+        'human', 'human:operator', 'operator', NULL, NULL, 'tail', 'markdown',
+        NULL, NULL, NULL, NULL, NULL,
+        '2026-07-18T12:00:14.000Z', '2026-07-18T12:00:14.000Z',
+        '2026-07-18T12:00:14.000Z'
+      );
+      INSERT INTO channel_agent_bindings VALUES (
+        'topic:live-heal', 'claude', 'session-live',
+        '{"claudeSessionId":"session-live","lastDeliveredSeq":3}',
+        '2026-07-18T12:00:00.000Z', '2026-07-18T12:00:00.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:legitimate-item-0', 'topic:no-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'same legitimate body', 'markdown', '{"providerId":"claude"}',
+        'session-no-heal', 'turn-no-heal', 'msg-turn-no-heal-provider-0', NULL,
+        '2026-07-18T12:00:20.000Z', '2026-07-18T12:00:20.000Z',
+        '2026-07-18T12:00:20.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:legitimate-item-1', 'topic:no-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'same legitimate body', 'markdown', '{"providerId":"claude"}',
+        'session-no-heal', 'turn-no-heal', 'msg-turn-no-heal-provider-1', NULL,
+        '2026-07-18T12:00:20.001Z', '2026-07-18T12:00:20.001Z',
+        '2026-07-18T12:00:20.001Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:late-alias-1', 'topic:late-no-heal', 1, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'same late body', 'markdown', '{"providerId":"claude"}',
+        'session-late', 'turn-late', 'msg-turn-late-provider-1', NULL,
+        '2026-07-18T12:00:30.000Z', '2026-07-18T12:00:30.000Z',
+        '2026-07-18T12:00:30.000Z'
+      );
+      INSERT INTO channel_messages VALUES (
+        'chm:late-alias-0', 'topic:late-no-heal', 2, 'message', 'complete',
+        'agent', 'agent:claude', 'claude', NULL, NULL,
+        'same late body', 'markdown', '{"providerId":"claude"}',
+        'session-late', 'turn-late', 'msg-turn-late-provider-0', NULL,
+        '2026-07-18T12:00:30.501Z', '2026-07-18T12:00:30.501Z',
+        '2026-07-18T12:00:30.001Z'
+      );
+    `);
+    legacy.close();
+
+    const migrated = store(file);
+    expect(migrated.getMessage('chm:legacy')?.body.text).toBe('preserved');
+    const stream = migrated.beginStream({
+      channelId: 'topic:migration',
+      sender: AGENT,
+      source: { sessionId: 'session', turnId: 'turn-2', itemId: 'item-2' },
+    });
+    expect(
+      migrated.finalizeStream(stream.id, {
+        text: 'partial',
+        status: 'truncated',
+        truncated: true,
+      })
+    ).toMatchObject({
+      status: 'truncated',
+      truncated: true,
+      meta: { truncationReason: 'size-limit' },
+    });
+
+    const healed = migrated.history('topic:live-heal', { limit: 20 });
+    expect(healed.map((message) => [message.id, message.seq])).toEqual([
+      ['chm:claude-live-keeper', 1],
+      ['chm:reply-to-duplicate', 2],
+      ['chm:tail', 3],
+    ]);
+    expect(migrated.getMessage('chm:claude-live-duplicate')).toBeNull();
+    expect(migrated.getMessage('chm:reply-to-duplicate')).toMatchObject({
+      threadId: 'chm:claude-live-keeper',
+      parentMessageId: 'chm:claude-live-keeper',
+    });
+    expect(
+      migrated.threadHistory('topic:live-heal', 'chm:claude-live-keeper')
+    ).toHaveLength(2);
+    expect(migrated.getMessage('chm:claude-live-keeper')?.replyCount).toBe(1);
+    expect(
+      migrated.getBinding('topic:live-heal', 'claude')?.providerSession[
+        'lastDeliveredSeq'
+      ]
+    ).toBe(2);
+    expect(migrated.latestSeq('topic:live-heal')).toBe(3);
+    expect(
+      migrated
+        .history('topic:no-heal', { limit: 20 })
+        .map((message) => message.id)
+    ).toEqual(['chm:legitimate-item-0', 'chm:legitimate-item-1']);
+    expect(
+      migrated
+        .history('topic:late-no-heal', { limit: 20 })
+        .map((message) => message.id)
+    ).toEqual(['chm:late-alias-1', 'chm:late-alias-0']);
+    expect(
+      migrated.appendComplete({
+        channelId: 'topic:live-heal',
+        sender: HUMAN,
+        text: 'post-migration',
+      }).seq
+    ).toBe(4);
+
+    // Reopening a v2 database is an idempotent no-op: the healed row set,
+    // references, gap-free sequence, and translated delivery cursor survive.
+    const reopened = store(file);
+    expect(
+      reopened
+        .history('topic:live-heal', { limit: 20 })
+        .map((message) => [message.id, message.seq])
+    ).toEqual([
+      ['chm:claude-live-keeper', 1],
+      ['chm:reply-to-duplicate', 2],
+      ['chm:tail', 3],
+      [expect.any(String), 4],
+    ]);
+    expect(
+      reopened.getBinding('topic:live-heal', 'claude')?.providerSession[
+        'lastDeliveredSeq'
+      ]
+    ).toBe(2);
+
+    const inspect = new Database(file, { readonly: true });
+    cleanup.push(() => inspect.close());
+    expect(
+      (
+        inspect.prepare('SELECT version FROM schema_version').get() as {
+          version: number;
+        }
+      ).version
+    ).toBe(2);
+  });
+});
+
 describe('channel-message-store seq allocation', () => {
   it('assigns strictly monotonic, gap-free seq per channel across interleaved channels', () => {
     const s = store();
@@ -155,6 +364,36 @@ describe('channel-message-store streaming lifecycle', () => {
     expect(s.history('topic:c')).toHaveLength(1);
   });
 
+  it('returns one finalized row when a source triple is replayed through another store handle', () => {
+    const p = dbPath();
+    const firstStore = store(p);
+    const replayStore = store(p);
+    const source = { sessionId: 'sess-1', turnId: 't1', itemId: 'a1' };
+    const first = firstStore.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source,
+      text: 'partial',
+    });
+    firstStore.finalizeStream(first.id, {
+      text: 'durable',
+      status: 'complete',
+    });
+
+    const replay = replayStore.beginStream({
+      channelId: 'topic:c',
+      sender: AGENT,
+      source,
+      text: 'duplicate replay',
+    });
+
+    expect(replay.id).toBe(first.id);
+    expect(replay.status).toBe('complete');
+    expect(replay.body.text).toBe('durable');
+    expect(replayStore.history('topic:c')).toHaveLength(1);
+    expect(replayStore.getChannelSummary('topic:c')?.messageCount).toBe(1);
+  });
+
   it('persists a truncation marker on force-finalize', () => {
     const s = store();
     const begun = s.beginStream({
@@ -164,10 +403,11 @@ describe('channel-message-store streaming lifecycle', () => {
     });
     const final = s.finalizeStream(begun.id, {
       text: 'capped',
-      status: 'complete',
+      status: 'truncated',
       truncated: true,
     });
     expect(final?.truncated).toBe(true);
+    expect(final?.meta).toMatchObject({ truncationReason: 'size-limit' });
     expect(s.getMessage(begun.id)?.truncated).toBe(true);
   });
 
@@ -443,7 +683,7 @@ describe('channel-message-store members and bindings', () => {
 });
 
 describe('channel-message-store boot sweeps', () => {
-  it('flips stale streaming rows to interrupted and appends a system message', () => {
+  it('marks stale streaming rows truncated by restart and appends a system message', () => {
     const s = store();
     const stuck = s.beginStream({
       channelId: 'topic:c',
@@ -452,11 +692,16 @@ describe('channel-message-store boot sweeps', () => {
     });
     const results = s.sweepStaleStreaming();
     expect(results).toHaveLength(1);
-    expect(results[0]?.interruptedIds).toContain(stuck.id);
-    expect(s.getMessage(stuck.id)?.status).toBe('interrupted');
+    expect(results[0]?.truncatedIds).toContain(stuck.id);
+    expect(s.getMessage(stuck.id)).toMatchObject({
+      status: 'truncated',
+      meta: { truncationReason: 'restart' },
+    });
+    expect(s.getMessage(stuck.id)?.truncated).toBeUndefined();
     const system = s.getMessage(results[0]!.systemMessage.id);
     expect(system?.kind).toBe('system');
     expect(system?.sender.kind).toBe('system');
+    expect(system?.body.text).toContain('restarted before terminal output');
   });
 
   it('sweeps orphaned rows for channel ids not in the persisted topic set', () => {
