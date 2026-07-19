@@ -38,7 +38,7 @@ Relay Agentic Development Environment — a hub/node web workspace for AI coding
 | Terminal backend     | `docs/TERMINAL_BACKENDS.md`                  | `relay-pty`-only backend, rejected legacy `tmux-compat` state, cold-resume semantics                                     |
 | Review               | `docs/REVIEW_GUIDANCE.md`                    | Review agent config, question bank, escape log                                                                           |
 | Deployment           | `docs/references/deployment.md`              | Publishing + branching (nightly/master + tags)                                                                           |
-| Devbox deploy        | `docs/references/devbox-hub-deploy.md`       | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene                                  |
+| Devbox deploy        | `docs/references/devbox-hub-deploy.md`       | Shared devbox hub deploy, Mac node-link restart, verification evidence, process hygiene; channel-era daily-driver hub (`relay-daily-hub` systemd unit, `/healthz`, wedge/duplicate-row recovery) |
 | Dogfood recovery     | `docs/references/dogfood-recovery.md`        | Relay-develops-Relay proof loop, recovery, diagnostics, no-force-merge gate                                              |
 | Self-hosting         | `docs/SELF_HOSTING.md`                       | Build Relay with Relay using isolated dev config/ports/process identity                                                  |
 | Security policy      | `docs/SECURITY_POLICY.md`                    | Trust tiers, capability bits, hub ACL defaults, manifest-vs-policy boundary, exact-operation approvals, handshake grants |
