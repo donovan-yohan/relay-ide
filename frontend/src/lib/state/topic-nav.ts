@@ -138,35 +138,80 @@ export interface TopicNavNode {
   displayName: string | null | undefined;
 }
 
-export interface TopicNavWorkspaceGroup {
+export interface ChannelRailNode {
+  item: TopicNavItem;
+  unread: boolean;
+  children: ChannelRailNode[];
+}
+
+export interface ChannelRailSection {
+  channels: ChannelRailNode[];
+  directMessages: ChannelRailNode[];
+  unread: boolean;
+}
+
+export interface ChannelRailWorkspaceGroup extends ChannelRailSection {
   id: string;
   title: string;
   color: string | null;
   icon: string | null;
   pinned: boolean;
-  rootIds: WorkspaceTopicId[];
 }
 
-export interface GroupedTopicNav {
-  groups: TopicNavWorkspaceGroup[];
+export interface ChannelRailTree {
+  groups: ChannelRailWorkspaceGroup[];
   /** Root topics whose workspace is unknown/unset (the "no workspace" lane). */
-  orphanRootIds: WorkspaceTopicId[];
+  orphans: ChannelRailSection;
+}
+
+export interface ChannelRailActivitySnapshot {
+  unreadByChannel: Readonly<Record<string, boolean>>;
 }
 
 /**
- * Group the model's root topics under their workspace (the Discord
- * server→channel shape). Workspaces sort pinned-first then by `order`. When
- * `activeWorkspaceId` is set, collapse to just that workspace (orphans hidden);
- * when null, every workspace group plus the orphan lane is returned. Pure and
- * backward-compatible: with no workspaces, all roots fall into `orphanRootIds`.
+ * One render-neutral channel rail projection shared by desktop and mobile.
+ * Workspaces sort pinned-first then by authored order; root channels retain the
+ * topic model's order and split into regular-channel and direct-message
+ * sections. Descendants stay nested under their canonical root instead of being
+ * flattened into workspace peers. Unread is computed once from the same
+ * activity snapshot for both consumers.
  */
-export function groupTopicsByWorkspace(
+export function selectChannelRailTree(
   model: TopicNavModel,
   workspaces: TopicNavWorkspace[],
-  activeWorkspaceId: string | null
-): GroupedTopicNav {
+  activity: ChannelRailActivitySnapshot
+): ChannelRailTree {
+  const buildNode = (id: WorkspaceTopicId): ChannelRailNode | null => {
+    const item = model.byId.get(id);
+    if (!item) return null;
+    const children = item.childIds
+      .map(buildNode)
+      .filter((node): node is ChannelRailNode => node !== null);
+    return {
+      item,
+      unread: activity.unreadByChannel[item.id] ?? false,
+      children,
+    };
+  };
+  const partition = (ids: WorkspaceTopicId[]): ChannelRailSection => {
+    const channels: ChannelRailNode[] = [];
+    const directMessages: ChannelRailNode[] = [];
+    for (const id of ids) {
+      const node = buildNode(id);
+      if (!node) continue;
+      (node.item.isDirectMessage ? directMessages : channels).push(node);
+    }
+    return {
+      channels,
+      directMessages,
+      unread: [...channels, ...directMessages].some(
+        (node) => node.unread || node.children.some(hasUnreadNode)
+      ),
+    };
+  };
+
   const rootsByWorkspace = new Map<string, WorkspaceTopicId[]>();
-  const orphanRootIds: WorkspaceTopicId[] = [];
+  const orphanIds: WorkspaceTopicId[] = [];
   const knownIds = new Set(workspaces.map((w) => w.id));
   for (const id of model.rootIds) {
     const workspaceId = model.byId.get(id)?.workspaceId;
@@ -175,7 +220,7 @@ export function groupTopicsByWorkspace(
       if (bucket) bucket.push(id);
       else rootsByWorkspace.set(workspaceId, [id]);
     } else {
-      orphanRootIds.push(id);
+      orphanIds.push(id);
     }
   }
 
@@ -186,28 +231,29 @@ export function groupTopicsByWorkspace(
       a.id.localeCompare(b.id)
   );
 
-  const visible =
-    activeWorkspaceId != null
-      ? ordered.filter((w) => w.id === activeWorkspaceId)
-      : ordered;
-
-  const groups: TopicNavWorkspaceGroup[] = visible
-    .map((w) => ({
-      id: w.id,
-      title: w.name,
-      color: w.color,
-      icon: w.icon,
-      pinned: w.pinned,
-      rootIds: rootsByWorkspace.get(w.id) ?? [],
-    }))
-    // Hide empty workspace groups only in the all-workspaces view; keep the
-    // active workspace visible even when it has no channels yet.
-    .filter((g) => activeWorkspaceId != null || g.rootIds.length > 0);
+  const groups: ChannelRailWorkspaceGroup[] = ordered.flatMap((workspace) => {
+    const ids = rootsByWorkspace.get(workspace.id) ?? [];
+    if (ids.length === 0) return [];
+    return [
+      {
+        id: workspace.id,
+        title: workspace.name,
+        color: workspace.color,
+        icon: workspace.icon,
+        pinned: workspace.pinned,
+        ...partition(ids),
+      },
+    ];
+  });
 
   return {
     groups,
-    orphanRootIds: activeWorkspaceId != null ? [] : orphanRootIds,
+    orphans: partition(orphanIds),
   };
+}
+
+function hasUnreadNode(node: ChannelRailNode): boolean {
+  return node.unread || node.children.some(hasUnreadNode);
 }
 
 function basename(path: string | undefined): string | null {

@@ -58,8 +58,10 @@ import { durabilityDisabledReason } from '../lib/session-durability.js';
 import {
   buildTopicNavModel,
   formatTaskRefLabel,
-  groupTopicsByWorkspace,
-  type GroupedTopicNav,
+  selectChannelRailTree,
+  type ChannelRailNode,
+  type ChannelRailSection,
+  type ChannelRailTree,
   type TopicNavItem,
   type TopicNavModel,
   type TopicNavNode,
@@ -1113,39 +1115,32 @@ function TopicDetail({
 }
 
 function TopicMobileAttentionRow({
-  item,
+  node,
+  depth,
   selected,
   onSelect,
-  onSelectSession,
 }: {
-  item: TopicNavItem;
+  node: ChannelRailNode;
+  depth: number;
   selected: boolean;
   onSelect: (id: string) => void;
-  onSelectSession?: ((id: string) => void) | undefined;
 }) {
+  const { item, unread } = node;
   const action = topicPrimaryAction(item);
   const session = topicPrimarySession(item);
   const resumeDisabledReason = sessionAttachDisabledReason(session);
-  const canResume = Boolean(
-    action.label === 'resume' &&
-    session &&
-    !resumeDisabledReason &&
-    onSelectSession
-  );
+  const rowStyle = { '--topic-depth': depth } as CSSProperties;
   return (
     <button
       type="button"
       className={`topic-mobile-row topic-mobile-row--${item.tone}${selected ? ' selected' : ''}`}
-      onClick={() => {
-        if (canResume && session) {
-          onSelectSession?.(session.selectKey);
-          return;
-        }
-        onSelect(item.id);
-      }}
+      style={rowStyle}
+      data-topic-id={item.id}
+      data-unread={unread ? 'true' : 'false'}
+      onClick={() => onSelect(item.id)}
       title={
-        canResume && session
-          ? `resume chat ${session.label}`
+        action.label === 'resume'
+          ? 'open channel timeline'
           : (resumeDisabledReason ?? action.detail)
       }
       aria-current={selected ? 'page' : undefined}
@@ -1157,8 +1152,19 @@ function TopicMobileAttentionRow({
           {topicLatestStatus(item)}
         </span>
       </span>
-      <span className="topic-mobile-row__cta">{action.label}</span>
-      <StatusGlyph tone={item.tone} />
+      <span className="topic-mobile-row__cta">
+        {action.label === 'resume' ? 'open' : action.label}
+      </span>
+      <span className="topic-mobile-row__trail">
+        {unread ? (
+          <span
+            className="topic-row__activity-dot"
+            aria-label="unread activity"
+            title="unread activity"
+          />
+        ) : null}
+        <StatusGlyph tone={item.tone} />
+      </span>
     </button>
   );
 }
@@ -1503,44 +1509,26 @@ function TopicAdvancedDetailGate({
 }
 
 function TopicRow({
-  item,
+  node,
   depth,
-  model,
   expandedIds,
   selectedId,
-  activeChannelId,
   onToggle,
   onSelect,
   onSelectSession,
 }: {
-  item: TopicNavItem;
+  node: ChannelRailNode;
   depth: number;
-  model: TopicNavModel;
   expandedIds: Set<string>;
   selectedId: string | null;
-  activeChannelId: string | null;
   onToggle: (id: string) => void;
   onSelect: (id: string) => void;
   onSelectSession?: ((id: string) => void) | undefined;
 }) {
-  const hasNested = item.childIds.length > 0 || item.participants.length > 0;
+  const { item, unread, children } = node;
+  const hasNested = children.length > 0 || item.participants.length > 0;
   const expanded = expandedIds.has(item.id);
   const selected = selectedId === item.id;
-  // Presence-only activity dot (#1166): re-render when this channel's latest-seq
-  // OR its reactive last-read marker changes (#1178 — the read marker is now in
-  // the store, so reading a channel hides the dot immediately instead of leaving
-  // a stale localStorage read on screen). hasUnseenActivity compares the two.
-  const latestSeq = useChannelActivityStore(
-    (s) => s.latestSeqByChannel[item.id]
-  );
-  const lastReadSeq = useChannelActivityStore(
-    (s) => s.lastReadByChannel[item.id]
-  );
-  const showActivityDot = useMemo(
-    () =>
-      latestSeq !== undefined && hasUnseenActivity(item.id, activeChannelId),
-    [item.id, activeChannelId, latestSeq, lastReadSeq]
-  );
 
   const activate = () => {
     onSelect(item.id);
@@ -1564,6 +1552,8 @@ function TopicRow({
         .filter(Boolean)
         .join(' ')}
       style={rowStyle}
+      data-topic-id={item.id}
+      data-unread={unread ? 'true' : 'false'}
     >
       <div className={rowClassName}>
         <button
@@ -1588,7 +1578,7 @@ function TopicRow({
           </span>
         </button>
         <span className="topic-row__trail" aria-label={item.statusLabel}>
-          {showActivityDot ? (
+          {unread ? (
             <span
               className="topic-row__activity-dot"
               aria-label="unread activity"
@@ -1611,25 +1601,20 @@ function TopicRow({
               ))}
             </ul>
           ) : null}
-          {item.childIds.length > 0 ? (
+          {children.length > 0 ? (
             <ul className="topic-child-list topic-child-list--topics">
-              {item.childIds.map((childId) => {
-                const child = model.byId.get(childId);
-                return child ? (
-                  <TopicRow
-                    key={child.id}
-                    item={child}
-                    depth={depth + 1}
-                    model={model}
-                    expandedIds={expandedIds}
-                    selectedId={selectedId}
-                    activeChannelId={activeChannelId}
-                    onToggle={onToggle}
-                    onSelect={onSelect}
-                    onSelectSession={onSelectSession}
-                  />
-                ) : null;
-              })}
+              {children.map((child) => (
+                <TopicRow
+                  key={child.item.id}
+                  node={child}
+                  depth={depth + 1}
+                  expandedIds={expandedIds}
+                  selectedId={selectedId}
+                  onToggle={onToggle}
+                  onSelect={onSelect}
+                  onSelectSession={onSelectSession}
+                />
+              ))}
             </ul>
           ) : null}
         </>
@@ -1723,40 +1708,97 @@ function topicEmptyStateText(input: {
   return `no chat matches for “${input.searchQuery.trim()}”`;
 }
 
-/** A workspace bucket of mobile topic rows, kept in attention order. */
-interface MobileTopicGroup {
-  id: string;
-  title: string;
-  icon: string | null;
-  items: TopicNavItem[];
+function MobileRailRows({
+  nodes,
+  selectedId,
+  onSelect,
+  depth = 0,
+}: {
+  nodes: ChannelRailNode[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  depth?: number;
+}) {
+  return nodes.map((node) => (
+    <div className="topic-mobile-node" key={node.item.id}>
+      <TopicMobileAttentionRow
+        node={node}
+        depth={depth}
+        selected={selectedId === node.item.id}
+        onSelect={onSelect}
+      />
+      {node.children.length > 0 ? (
+        <MobileRailRows
+          nodes={node.children}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          depth={depth + 1}
+        />
+      ) : null}
+    </div>
+  ));
+}
+
+function MobileRailSection({
+  section,
+  selectedId,
+  onSelect,
+}: {
+  section: ChannelRailSection;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <>
+      <div data-rail-section="channels">
+        <MobileRailRows
+          nodes={section.channels}
+          selectedId={selectedId}
+          onSelect={onSelect}
+        />
+      </div>
+      {section.directMessages.length > 0 ? (
+        <>
+          <div className="topic-mobile-group__dm-header">direct messages</div>
+          <div data-rail-section="direct-messages">
+            <MobileRailRows
+              nodes={section.directMessages}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
+          </div>
+        </>
+      ) : null}
+    </>
+  );
 }
 
 function TopicMobileCockpit({
-  groups,
-  ungrouped,
+  tree,
   selectedId,
   onSelect,
-  onSelectSession,
   onCreateTaskRoom,
   onResumeLast,
 }: {
-  groups: MobileTopicGroup[];
-  ungrouped: TopicNavItem[];
+  tree: ChannelRailTree;
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onSelectSession?: ((id: string) => void) | undefined;
   onCreateTaskRoom?: (() => void) | undefined;
   onResumeLast?: (() => void) | undefined;
 }) {
-  const renderRow = (item: TopicNavItem): ReactNode => (
-    <TopicMobileAttentionRow
-      key={item.id}
-      item={item}
-      selected={selectedId === item.id}
-      onSelect={onSelect}
-      onSelectSession={onSelectSession}
-    />
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(
+    () => new Set()
   );
+  const toggleGroup = useCallback((id: string) => {
+    setCollapsedGroupIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const hasOrphans =
+    tree.orphans.channels.length > 0 || tree.orphans.directMessages.length > 0;
   return (
     <section className="topic-mobile-cockpit" aria-label="mobile chat switcher">
       <div
@@ -1793,35 +1835,66 @@ function TopicMobileCockpit({
         </div>
       </div>
       <div className="topic-mobile-list" aria-label="workspace-grouped chats">
-        {groups.map((group) => (
-          <section
-            key={group.id}
-            className="topic-mobile-group"
-            aria-label={group.title}
-          >
-            <div className="topic-mobile-group__header">
-              {group.icon ? (
-                <span className="topic-mobile-group__icon" aria-hidden="true">
-                  {group.icon}
+        {tree.groups.map((group) => {
+          const expanded = !collapsedGroupIds.has(group.id);
+          return (
+            <section
+              key={group.id}
+              className="topic-mobile-group"
+              aria-label={group.title}
+              data-workspace-id={group.id}
+            >
+              <button
+                type="button"
+                className="topic-mobile-group__header"
+                aria-expanded={expanded}
+                onClick={() => toggleGroup(group.id)}
+              >
+                {group.icon ? (
+                  <span className="topic-mobile-group__icon" aria-hidden="true">
+                    {group.icon}
+                  </span>
+                ) : null}
+                <span className="topic-mobile-group__name">{group.title}</span>
+                {!expanded && group.unread ? (
+                  <span
+                    className="topic-row__activity-dot"
+                    aria-label="unread activity"
+                    title="unread activity"
+                  />
+                ) : null}
+                <span className="topic-mobile-group__toggle" aria-hidden="true">
+                  {expanded ? '−' : '+'}
                 </span>
+              </button>
+              {expanded ? (
+                <MobileRailSection
+                  section={group}
+                  selectedId={selectedId}
+                  onSelect={onSelect}
+                />
               ) : null}
-              <span className="topic-mobile-group__name">{group.title}</span>
-            </div>
-            {group.items.map(renderRow)}
-          </section>
-        ))}
-        {ungrouped.length > 0 && groups.length > 0 ? (
+            </section>
+          );
+        })}
+        {hasOrphans ? (
           <section
             className="topic-mobile-group topic-mobile-group--orphan"
             aria-label="no workspace"
+            data-workspace-id="orphan"
           >
-            <div className="topic-mobile-group__header">
-              <span className="topic-mobile-group__name">no workspace</span>
-            </div>
-            {ungrouped.map(renderRow)}
+            {tree.groups.length > 0 ? (
+              <div className="topic-mobile-group__header topic-mobile-group__header--static">
+                <span className="topic-mobile-group__name">no workspace</span>
+              </div>
+            ) : null}
+            <MobileRailSection
+              section={tree.orphans}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
           </section>
         ) : null}
-        {groups.length === 0 ? ungrouped.map(renderRow) : null}
       </div>
     </section>
   );
@@ -1957,42 +2030,29 @@ function ArchivedToggle({
   );
 }
 
-/** The workspace-grouped chat tree: a section per workspace + an orphan lane. */
-function partitionChannelsAndDms(
-  ids: string[],
-  model: TopicNavModel
-): { channels: string[]; dms: string[] } {
-  const channels: string[] = [];
-  const dms: string[] = [];
-  for (const id of ids) {
-    (model.byId.get(id)?.isDirectMessage ? dms : channels).push(id);
-  }
-  return { channels, dms };
-}
-
 /** Regular channels then, if any, a `direct messages` sub-section (#1166). */
 function ChannelsAndDmsLists({
-  ids,
-  model,
+  section,
   renderRow,
 }: {
-  ids: string[];
-  model: TopicNavModel;
-  renderRow: (id: string) => ReactNode;
+  section: ChannelRailSection;
+  renderRow: (node: ChannelRailNode) => ReactNode;
 }) {
-  const { channels, dms } = partitionChannelsAndDms(ids, model);
   return (
     <>
-      <ul className="topic-tree__list">
-        {channels.map((id) => renderRow(id))}
+      <ul className="topic-tree__list" data-rail-section="channels">
+        {section.channels.map(renderRow)}
       </ul>
-      {dms.length > 0 ? (
+      {section.directMessages.length > 0 ? (
         <>
           <div className="topic-workspace-group__dm-header">
             direct messages
           </div>
-          <ul className="topic-tree__list topic-tree__list--dm">
-            {dms.map((id) => renderRow(id))}
+          <ul
+            className="topic-tree__list topic-tree__list--dm"
+            data-rail-section="direct-messages"
+          >
+            {section.directMessages.map(renderRow)}
           </ul>
         </>
       ) : null}
@@ -2001,21 +2061,20 @@ function ChannelsAndDmsLists({
 }
 
 function GroupedTopicTree({
-  grouped,
-  model,
+  tree,
   renderRow,
 }: {
-  grouped: GroupedTopicNav;
-  model: TopicNavModel;
-  renderRow: (id: string) => ReactNode;
+  tree: ChannelRailTree;
+  renderRow: (node: ChannelRailNode) => ReactNode;
 }) {
   return (
     <div className="topic-tree" aria-label="workspace chats">
-      {grouped.groups.map((group) => (
+      {tree.groups.map((group) => (
         <section
           key={group.id}
           className="topic-workspace-group"
           aria-label={group.title}
+          data-workspace-id={group.id}
         >
           <div className="topic-workspace-group__header">
             {group.icon ? (
@@ -2025,28 +2084,22 @@ function GroupedTopicTree({
             ) : null}
             <span className="topic-workspace-group__name">{group.title}</span>
           </div>
-          <ChannelsAndDmsLists
-            ids={group.rootIds}
-            model={model}
-            renderRow={renderRow}
-          />
+          <ChannelsAndDmsLists section={group} renderRow={renderRow} />
         </section>
       ))}
-      {grouped.orphanRootIds.length > 0 ? (
+      {tree.orphans.channels.length > 0 ||
+      tree.orphans.directMessages.length > 0 ? (
         <section
           className="topic-workspace-group topic-workspace-group--orphan"
           aria-label="no workspace"
+          data-workspace-id="orphan"
         >
-          {grouped.groups.length > 0 ? (
+          {tree.groups.length > 0 ? (
             <div className="topic-workspace-group__header">
               <span className="topic-workspace-group__name">no workspace</span>
             </div>
           ) : null}
-          <ChannelsAndDmsLists
-            ids={grouped.orphanRootIds}
-            model={model}
-            renderRow={renderRow}
-          />
+          <ChannelsAndDmsLists section={tree.orphans} renderRow={renderRow} />
         </section>
       ) : null}
     </div>
@@ -2162,18 +2215,24 @@ export function TopicSidebarView({
   );
   const activeChannelId = useUiStore((s) => s.activeChannelId);
   const advancedMode = useUiStore((s) => s.advancedMode);
+  const channelActivity = useChannelActivityStore();
   const workspaceNameById = useMemo(
     () =>
       new Map(workspaces.map((workspace) => [workspace.id, workspace.name])),
     [workspaces]
   );
-  // Grouping always shows every workspace so the full channel list stays
-  // visible; the active workspace only scopes search (via the scope chip),
-  // not the tree. (The filter arg is exercised for a future rail selection.)
-  const grouped = useMemo(
-    () => groupTopicsByWorkspace(model, workspaces, null),
-    [model, workspaces]
+  // Resolve unread once (including the persisted last-read fallback) and feed
+  // the same pure rail projection to desktop and mobile.
+  const unreadByChannel = Object.fromEntries(
+    model.items.map((item) => [
+      item.id,
+      channelActivity.latestSeqByChannel[item.id] !== undefined &&
+        hasUnseenActivity(item.id, activeChannelId),
+    ])
   );
+  const railTree = selectChannelRailTree(model, workspaces, {
+    unreadByChannel,
+  });
   const firstId = model.rootIds[0] ?? model.items[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(firstId);
   const [mobileControlTopicId, setMobileControlTopicId] = useState<
@@ -2230,11 +2289,14 @@ export function TopicSidebarView({
       select(id);
       const item = model.byId.get(id);
       const action = item ? topicPrimaryAction(item) : null;
-      setMobileControlTopicId(
-        action?.label === 'approve' || action?.label === 'reply' ? id : null
-      );
+      const actionable =
+        action?.label === 'approve' || action?.label === 'reply';
+      setMobileControlTopicId(actionable ? id : null);
+      if (!actionable && topicsById.get(id)?.source === 'persisted') {
+        useUiStore.getState().closeSidebar();
+      }
     },
-    [model.byId, select]
+    [model.byId, select, topicsById]
   );
   useEffect(() => {
     if (!mobileControlTopicId) return;
@@ -2254,22 +2316,20 @@ export function TopicSidebarView({
     );
     onCreateTaskRoom?.();
   }, [onCreateTaskRoom, selectedId, topicsById]);
-  const renderTopicRow = (id: string): ReactNode => {
-    const item = model.byId.get(id);
-    return item ? (
+  const renderTopicRow = (node: ChannelRailNode): ReactNode => {
+    const item = node.item;
+    return (
       <TopicRow
         key={item.id}
-        item={item}
+        node={node}
         depth={0}
-        model={model}
         expandedIds={expandedIds}
         selectedId={selectedId}
-        activeChannelId={activeChannelId}
         onToggle={toggle}
         onSelect={select}
         onSelectSession={onSelectSession}
       />
-    ) : null;
+    );
   };
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
   const selectedTopic = selectedId ? topicsById.get(selectedId) : undefined;
@@ -2290,43 +2350,6 @@ export function TopicSidebarView({
     useSessionsStore.getState().setActiveSessionId(null);
     ui.closeSidebar();
   }, [selectedRepoPath, selectedTopic]);
-  const mobileItems = useMemo(
-    () =>
-      [...model.items].sort((a, b) => {
-        if (a.attentionPriority !== b.attentionPriority) {
-          return b.attentionPriority - a.attentionPriority;
-        }
-        return a.title.localeCompare(b.title);
-      }),
-    [model.items]
-  );
-  // Bucket the attention-sorted mobile rows under their workspace, in the same
-  // pinned-first workspace order the desktop tree uses, so mobile exposes the
-  // same workspace→topic nav (#1088). Rows keep attention order within a group.
-  const { mobileGroups, mobileUngrouped } = useMemo(() => {
-    const groupOrder = new Map(grouped.groups.map((g, index) => [g.id, index]));
-    const buckets = new Map<string, TopicNavItem[]>();
-    const ungrouped: TopicNavItem[] = [];
-    for (const item of mobileItems) {
-      const workspaceId = item.workspaceId;
-      if (workspaceId && groupOrder.has(workspaceId)) {
-        const list = buckets.get(workspaceId);
-        if (list) list.push(item);
-        else buckets.set(workspaceId, [item]);
-      } else {
-        ungrouped.push(item);
-      }
-    }
-    const groups: MobileTopicGroup[] = grouped.groups
-      .filter((g) => buckets.has(g.id))
-      .map((g) => ({
-        id: g.id,
-        title: g.title,
-        icon: g.icon,
-        items: buckets.get(g.id) ?? [],
-      }));
-    return { mobileGroups: groups, mobileUngrouped: ungrouped };
-  }, [mobileItems, grouped.groups]);
   // One-tap resume-last: the select key of the most recently active session
   // across every topic. Null when nothing resumable exists yet.
   const resumeLastSelectKey = useMemo(() => {
@@ -2359,11 +2382,9 @@ export function TopicSidebarView({
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
       />
       <TopicMobileCockpit
-        groups={mobileGroups}
-        ungrouped={mobileUngrouped}
+        tree={railTree}
         selectedId={selectedId}
         onSelect={selectMobile}
-        onSelectSession={onSelectSession}
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
         {...(resumeLastSelectKey && onSelectSession
           ? { onResumeLast: () => onSelectSession(resumeLastSelectKey) }
@@ -2386,11 +2407,7 @@ export function TopicSidebarView({
         canScope={activeWorkspaceId != null}
       />
       <ArchivedToggle showArchived={showArchived} onToggle={onToggleArchived} />
-      <GroupedTopicTree
-        grouped={grouped}
-        model={model}
-        renderRow={renderTopicRow}
-      />
+      <GroupedTopicTree tree={railTree} renderRow={renderTopicRow} />
       <TopicAdvancedDetailGate
         item={selectedItem}
         show={advancedMode && showAdvancedDetail}

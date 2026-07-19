@@ -7,12 +7,21 @@ import { Sidebar } from './components/Sidebar.js';
 import SettingsDialog, {
   type SettingsDialogHandle,
 } from './components/dialogs/SettingsDialog.js';
+import { dmChannelTopicId } from './lib/dm-channels.js';
 import { useChannelActivityStore } from './lib/stores/channel-activity.js';
 import { useSessionsStore } from './lib/stores/sessions.js';
 import { useUiStore } from './lib/stores/ui.js';
 
 const CHANNEL_ID = 'topic:sidebar-smoke';
 const WORKSPACE_ID = 'workspace:sidebar-smoke';
+const SECOND_CHANNEL_ID = 'topic:sidebar-research';
+const SECOND_WORKSPACE_ID = 'workspace:sidebar-research';
+const CHILD_CHANNEL_ID = 'topic:sidebar-smoke-child';
+const ORPHAN_CHANNEL_ID = 'topic:sidebar-orphan';
+const ORPHAN_WORKSPACE_ID = 'workspace:sidebar-missing';
+const CLAUDE_DM_ID = dmChannelTopicId('claude', WORKSPACE_ID);
+const CODEX_DM_ID = dmChannelTopicId('codex', SECOND_WORKSPACE_ID);
+const ORPHAN_DM_ID = dmChannelTopicId('hermes', ORPHAN_WORKSPACE_ID);
 const WORK_CONTEXT_ID = 'wc:sidebar-smoke';
 const NOW = '2026-07-19T00:00:00.000Z';
 
@@ -46,11 +55,73 @@ const topic: WorkspaceTopic = {
   updatedAt: NOW,
 };
 
+function siblingTopic(input: {
+  id: string;
+  workspaceId: string;
+  title: string;
+  providerId?: string;
+  parentId?: string;
+}): WorkspaceTopic {
+  return {
+    ...topic,
+    id: input.id,
+    workspaceId: input.workspaceId,
+    display: { title: input.title, kind: 'topic' },
+    grouping: input.parentId ? { parentTopicId: input.parentId } : {},
+    routingDefaults: {
+      repoPath:
+        input.workspaceId === WORKSPACE_ID
+          ? '/workspace/example'
+          : '/workspace/research',
+      ...(input.providerId ? { providerId: input.providerId } : {}),
+    },
+    linkedRefs: {},
+  };
+}
+
+const topics = [
+  topic,
+  siblingTopic({
+    id: CLAUDE_DM_ID,
+    workspaceId: WORKSPACE_ID,
+    title: 'Claude',
+    providerId: 'claude',
+  }),
+  siblingTopic({
+    id: SECOND_CHANNEL_ID,
+    workspaceId: SECOND_WORKSPACE_ID,
+    title: 'research',
+  }),
+  siblingTopic({
+    id: CODEX_DM_ID,
+    workspaceId: SECOND_WORKSPACE_ID,
+    title: 'Codex',
+    providerId: 'codex',
+  }),
+  siblingTopic({
+    id: CHILD_CHANNEL_ID,
+    workspaceId: WORKSPACE_ID,
+    title: 'engineering child',
+    parentId: CHANNEL_ID,
+  }),
+  siblingTopic({
+    id: ORPHAN_CHANNEL_ID,
+    workspaceId: ORPHAN_WORKSPACE_ID,
+    title: 'orphan channel',
+  }),
+  siblingTopic({
+    id: ORPHAN_DM_ID,
+    workspaceId: ORPHAN_WORKSPACE_ID,
+    title: 'Hermes',
+    providerId: 'hermes',
+  }),
+];
+
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false } },
 });
 queryClient.setQueryData(['workspace-topics'], {
-  topics: [topic],
+  topics,
   truncated: false,
   derived: false,
 });
@@ -67,6 +138,21 @@ queryClient.setQueryData(
       color: null,
       icon: null,
       defaultRepoPath: '/workspace/example',
+      defaultNodeId: null,
+      defaultProvider: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
+    {
+      id: SECOND_WORKSPACE_ID,
+      name: 'Research workspace',
+      status: 'active',
+      order: 1,
+      projectIds: [],
+      pinned: false,
+      color: null,
+      icon: null,
+      defaultRepoPath: '/workspace/research',
       defaultNodeId: null,
       defaultProvider: null,
       createdAt: NOW,
@@ -122,6 +208,7 @@ function Fixture(): React.ReactElement {
             onClick={() => {
               useUiStore.getState().setActiveChannelId(null);
               useChannelActivityStore.getState().recordActivity(CHANNEL_ID, 2);
+              useChannelActivityStore.getState().recordActivity(CODEX_DM_ID, 3);
             }}
           >
             emit unread activity
@@ -132,6 +219,14 @@ function Fixture(): React.ReactElement {
           <output data-testid="evidence-route">
             {activeRepoPath ?? 'none'}:{dashboardTabIntent?.tab ?? 'none'}
           </output>
+          {activeChannelId ? (
+            <section
+              aria-label="channel timeline"
+              data-testid="channel-timeline"
+            >
+              channel timeline: {activeChannelId}
+            </section>
+          ) : null}
         </section>
       </main>
       <SettingsDialog ref={settingsRef} />
