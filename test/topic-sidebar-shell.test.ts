@@ -598,13 +598,14 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).not.toContain('open terminal tab');
   });
 
-  it('gates the mobile reply/control panel with advanced mode', async () => {
+  it('opens an actionable mobile control panel only after its row is tapped in default mode', async () => {
     const props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {
       sessions: [
         makeSession({
           id: 's1',
           displayName: 'Frontend lane',
-          agentState: 'waiting-for-input',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
           controlFreshness: 'fresh',
           mode: 'pty',
         }),
@@ -615,9 +616,114 @@ describe('TopicSidebarView', () => {
     await renderView(props, { advancedMode: false });
     expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    await renderView(props, { advancedMode: true });
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
+    expect(row.textContent).toContain('approve');
+    await act(async () => row.click());
+
     expect(container.querySelector('.topic-mobile-detail')).not.toBeNull();
-    expect(container.textContent).toContain('reply');
+    expect(container.textContent).toContain('approve');
+    expect(container.querySelector('.topic-mobile-control')).not.toBeNull();
+    expect(
+      container.querySelectorAll('.topic-mobile-control__preset')
+    ).toHaveLength(2);
+    const submit = container.querySelector(
+      '.topic-mobile-control__primary'
+    ) as HTMLButtonElement;
+    expect(submit.title).toBe('review and send approve');
+    expect(submit.title).not.toMatch(/audited|live session|terminal|control/i);
+    expect(container.querySelector('.topic-mobile-detail__latest')).toBeNull();
+    expect(container.querySelector('.topic-mobile-detail__meta')).toBeNull();
+    expect(
+      container.querySelector('.topic-mobile-detail__description')
+    ).toBeNull();
+    expect(container.querySelector('.topic-mobile-actions')).toBeNull();
+    expect(container.textContent).not.toContain('carriage return appended');
+    expect(container.textContent).not.toContain('audited control input');
+    expect(container.textContent).not.toContain(
+      'audit/intervention trail preserved'
+    );
+    expect(useUiStore.getState().advancedMode).toBe(false);
+  });
+
+  it('resets default mobile input and preview when one session changes from approve to reply', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    const renderAction = async (
+      agentState: 'permission-prompt' | 'waiting-for-input'
+    ) => {
+      await renderView(
+        {
+          sessions: [
+            makeSession({
+              id: 's1',
+              displayName: 'Frontend lane',
+              agentState,
+              ...(agentState === 'permission-prompt'
+                ? { permissionType: 'approval' as const }
+                : {}),
+              controlFreshness: 'fresh',
+              mode: 'pty',
+            }),
+          ],
+          surfaces: [],
+          onSendInput,
+        },
+        { advancedMode: false }
+      );
+    };
+
+    await renderAction('permission-prompt');
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
+    await act(async () => row.click());
+    const approve = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        '.topic-mobile-control__preset'
+      )
+    ).find((button) => button.textContent === 'approve')!;
+    await act(async () => approve.click());
+    const approvalForm = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+    await act(async () => approvalForm.requestSubmit());
+    expect(container.querySelector('.topic-mobile-confirm')).not.toBeNull();
+    expect(container.textContent).toContain('review before sending');
+
+    await renderAction('waiting-for-input');
+    const replyInput = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    expect(replyInput.value).toBe('');
+    expect(container.querySelector('.topic-mobile-confirm')).toBeNull();
+    expect(container.textContent).not.toContain('approve selected');
+    expect(onSendInput).not.toHaveBeenCalled();
+
+    await act(async () => {
+      replyInput.value = 'ready';
+      replyInput.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: 'ready',
+          inputType: 'insertText',
+        })
+      );
+      replyInput.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const replyForm = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+    await act(async () => replyForm.requestSubmit());
+    expect(container.textContent).toContain('review before sending');
+    await act(async () => replyForm.requestSubmit());
+    expect(onSendInput).toHaveBeenCalledWith('s1', 'ready\r', undefined);
+    expect(container.textContent).toContain('sent');
+    expect(container.textContent).not.toContain('carriage return appended');
+    expect(container.textContent).not.toContain('audited control input');
+    expect(container.textContent).not.toContain(
+      'audit/intervention trail preserved'
+    );
   });
 
   it('shows a search scope toggle only when a workspace is active', async () => {

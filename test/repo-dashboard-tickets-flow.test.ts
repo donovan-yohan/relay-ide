@@ -276,4 +276,30 @@ describe('RepoDashboard ticket flow', () => {
     expect(container.querySelector('.evidence-dashboard')).toBeTruthy();
     expect(useUiStore.getState().repoDashboardTabIntent).toBeNull();
   });
+
+  it('leaves a mismatched repo intent queued and keeps overview active', async () => {
+    const intent = { repoPath: '/repo/b', tab: 'evidence' } as const;
+    useUiStore.getState().requestRepoDashboardTab(intent.repoPath, intent.tab);
+
+    await act(async () => {
+      root.render(
+        React.createElement(RepoDashboard, {
+          repoPath: '/repo/a',
+          workspaceName: 'relay-ide',
+          onNewSession: vi.fn(),
+          onNewWorktree: vi.fn(),
+          onFixConflicts: vi.fn(),
+          onPrAction: vi.fn(),
+          onOpenPrSession: vi.fn(),
+        })
+      );
+    });
+
+    const overviewTab = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'overview'
+    );
+    expect(overviewTab?.classList.contains('tab-btn--active')).toBe(true);
+    expect(container.querySelector('.evidence-dashboard')).toBeNull();
+    expect(useUiStore.getState().repoDashboardTabIntent).toEqual(intent);
+  });
 });
