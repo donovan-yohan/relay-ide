@@ -520,6 +520,26 @@
   border-bottom: 1px solid var(--border);
 }
 
+.topic-room__evidence-link {
+  margin-left: auto;
+  padding: 2px 5px;
+  border: 1px solid var(--status-info);
+  background: transparent;
+  color: var(--status-info);
+  font: inherit;
+  cursor: pointer;
+}
+
+.topic-room__evidence-link:hover {
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+}
+
+.topic-room__evidence-link:focus-visible {
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+  outline: 1px solid var(--status-info);
+  outline-offset: 2px;
+}
+
 .topic-room-session-group,
 .topic-room-session-group ul,
 .topic-orchestration-list,

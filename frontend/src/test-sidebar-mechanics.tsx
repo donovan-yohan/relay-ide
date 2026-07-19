@@ -1,0 +1,142 @@
+import React, { useRef } from 'react';
+import ReactDOM from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { WorkspaceTopic } from '../../shared/workspace-topics.js';
+import './App.css';
+import { Sidebar } from './components/Sidebar.js';
+import SettingsDialog, {
+  type SettingsDialogHandle,
+} from './components/dialogs/SettingsDialog.js';
+import { useChannelActivityStore } from './lib/stores/channel-activity.js';
+import { useSessionsStore } from './lib/stores/sessions.js';
+import { useUiStore } from './lib/stores/ui.js';
+
+const CHANNEL_ID = 'topic:sidebar-smoke';
+const WORKSPACE_ID = 'workspace:sidebar-smoke';
+const WORK_CONTEXT_ID = 'wc:sidebar-smoke';
+const NOW = '2026-07-19T00:00:00.000Z';
+
+const topic: WorkspaceTopic = {
+  schemaVersion: 1,
+  id: CHANNEL_ID,
+  workspaceId: WORKSPACE_ID,
+  source: 'persisted',
+  status: 'active',
+  visibility: 'default',
+  display: {
+    title: 'engineering',
+    description: 'Synthetic sidebar smoke channel',
+    kind: 'topic',
+  },
+  grouping: {},
+  promptDefaults: {},
+  routingDefaults: { repoPath: '/workspace/example' },
+  linkedRefs: {
+    workContextIds: [WORK_CONTEXT_ID],
+    taskRefs: [{ kind: 'github-issue', id: '1194', title: 'sidebar smoke' }],
+  },
+  state: { pinned: false, muted: false },
+  privacy: {
+    classification: 'internal',
+    retention: 'project',
+    redaction: 'summary',
+    rawDefaultsStored: false,
+  },
+  createdAt: NOW,
+  updatedAt: NOW,
+};
+
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+queryClient.setQueryData(['workspace-topics'], {
+  topics: [topic],
+  truncated: false,
+  derived: false,
+});
+queryClient.setQueryData(
+  ['ia-workspaces'],
+  [
+    {
+      id: WORKSPACE_ID,
+      name: 'Relay workspace',
+      status: 'active',
+      order: 0,
+      projectIds: [],
+      pinned: true,
+      color: null,
+      icon: null,
+      defaultRepoPath: '/workspace/example',
+      defaultNodeId: null,
+      defaultProvider: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
+  ]
+);
+queryClient.setQueryData(['workspace-surfaces', 'topic-shell'], []);
+queryClient.setQueryData(['hub-nodes'], []);
+queryClient.setQueryData(['workflow-runs', WORK_CONTEXT_ID, 5], []);
+
+useUiStore.getState().setAdvancedMode(false);
+useUiStore.setState({
+  activeChannelId: null,
+  activeRepoPath: null,
+  activeWorkspaceId: null,
+  analyticsView: null,
+  repoDashboardTabIntent: null,
+  sidebarCollapsed: false,
+  sidebarOpen: true,
+});
+useSessionsStore.setState({ sessions: [], activeSessionId: null });
+useChannelActivityStore.setState({
+  latestSeqByChannel: {},
+  lastReadByChannel: {},
+});
+
+function Fixture(): React.ReactElement {
+  const settingsRef = useRef<SettingsDialogHandle>(null);
+  const activeChannelId = useUiStore((state) => state.activeChannelId);
+  const activeRepoPath = useUiStore((state) => state.activeRepoPath);
+  const dashboardTabIntent = useUiStore(
+    (state) => state.repoDashboardTabIntent
+  );
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <main style={{ display: 'flex', height: '100%' }}>
+        <Sidebar
+          onSelectSession={() => {}}
+          onOpenSettings={() => settingsRef.current?.open('section-advanced')}
+          onNewWorktree={() => {}}
+          onAddWorkspace={() => {}}
+          onOpenAnalytics={() => {}}
+        />
+        <section
+          aria-label="sidebar smoke controls"
+          style={{ padding: 16, flex: 1 }}
+        >
+          <button
+            type="button"
+            data-testid="emit-unread"
+            onClick={() => {
+              useUiStore.getState().setActiveChannelId(null);
+              useChannelActivityStore.getState().recordActivity(CHANNEL_ID, 2);
+            }}
+          >
+            emit unread activity
+          </button>
+          <output data-testid="active-channel">
+            {activeChannelId ?? 'none'}
+          </output>
+          <output data-testid="evidence-route">
+            {activeRepoPath ?? 'none'}:{dashboardTabIntent?.tab ?? 'none'}
+          </output>
+        </section>
+      </main>
+      <SettingsDialog ref={settingsRef} />
+    </QueryClientProvider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')!).render(<Fixture />);

@@ -927,6 +927,7 @@ function TopicDetail({
   onSelectSession,
   onRestoreTopic,
   restoringTopicId,
+  onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem;
   /** Friendly workspace name for the meta strip; omitted entirely (never a raw id) when unresolved. */
@@ -939,6 +940,7 @@ function TopicDetail({
   onSelectSession?: ((id: string) => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
   restoringTopicId?: string | undefined;
+  onOpenEvidenceDashboard?: (() => void) | undefined;
 }) {
   const action = topicPrimaryAction(item);
   const session = topicPrimarySession(item);
@@ -1083,6 +1085,15 @@ function TopicDetail({
         <div className="topic-room__section-header">
           <span>artifacts/surfaces</span>
           <span>{item.surfaces.length + item.artifactIds.length}</span>
+          {onOpenEvidenceDashboard ? (
+            <button
+              type="button"
+              className="topic-room__evidence-link"
+              onClick={onOpenEvidenceDashboard}
+            >
+              open evidence dashboard
+            </button>
+          ) : null}
         </div>
         <TopicRoomSurfaceStrip
           item={item}
@@ -1404,6 +1415,7 @@ function TopicAdvancedDetailGate({
   onSelectSession,
   onRestoreTopic,
   restoringTopicId,
+  onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem | undefined;
   show: boolean;
@@ -1413,6 +1425,7 @@ function TopicAdvancedDetailGate({
   onSelectSession?: ((id: string) => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
   restoringTopicId?: string | undefined;
+  onOpenEvidenceDashboard?: (() => void) | undefined;
 }) {
   const workContextId = item?.workContextIds[0] ?? null;
   const workflowRunsQuery = useQuery({
@@ -1443,6 +1456,7 @@ function TopicAdvancedDetailGate({
         onSelectSession={onSelectSession}
         onRestoreTopic={onRestoreTopic}
         restoringTopicId={restoringTopicId}
+        onOpenEvidenceDashboard={onOpenEvidenceDashboard}
       />
     </div>
   );
@@ -2107,6 +2121,7 @@ export function TopicSidebarView({
     [topics]
   );
   const activeChannelId = useUiStore((s) => s.activeChannelId);
+  const advancedMode = useUiStore((s) => s.advancedMode);
   const workspaceNameById = useMemo(
     () =>
       new Map(workspaces.map((workspace) => [workspace.id, workspace.name])),
@@ -2190,6 +2205,24 @@ export function TopicSidebarView({
     ) : null;
   };
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
+  const selectedTopic = selectedId ? topicsById.get(selectedId) : undefined;
+  const selectedRepoPath = selectedTopic
+    ? resolveTopicActiveContext(selectedTopic).repoPath
+    : null;
+  const openEvidenceDashboard = useCallback(() => {
+    if (!selectedTopic || !selectedRepoPath) return;
+    const context = resolveTopicActiveContext(selectedTopic);
+    const ui = useUiStore.getState();
+    ui.requestRepoDashboardTab(selectedRepoPath, 'evidence');
+    ui.setActiveWorkspaceId(context.workspaceId);
+    ui.setActiveRepoPath(selectedRepoPath);
+    ui.setActiveChannelId(null);
+    ui.setTopicComposerOpen(false);
+    ui.setAnalyticsView(null);
+    ui.setForceOrgCockpit(false);
+    useSessionsStore.getState().setActiveSessionId(null);
+    ui.closeSidebar();
+  }, [selectedRepoPath, selectedTopic]);
   const mobileItems = useMemo(
     () =>
       [...model.items].sort((a, b) => {
@@ -2293,19 +2326,24 @@ export function TopicSidebarView({
       />
       <TopicAdvancedDetailGate
         item={selectedItem}
-        show={showAdvancedDetail}
+        show={advancedMode && showAdvancedDetail}
         workspaceNameById={workspaceNameById}
         surfacesError={surfacesError}
         surfacesLoading={surfacesLoading}
         onSelectSession={onSelectSession}
         onRestoreTopic={onRestoreTopic}
         restoringTopicId={restoringTopicId}
+        {...(selectedRepoPath
+          ? { onOpenEvidenceDashboard: openEvidenceDashboard }
+          : {})}
       />
-      <TopicMobileControlPanelGate
-        item={selectedItem}
-        onSelectSession={onSelectSession}
-        onSendInput={onSendInput}
-      />
+      {advancedMode ? (
+        <TopicMobileControlPanelGate
+          item={selectedItem}
+          onSelectSession={onSelectSession}
+          onSendInput={onSendInput}
+        />
+      ) : null}
     </div>
   );
 }

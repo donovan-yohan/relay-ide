@@ -53,6 +53,13 @@ export type OrgDashboardTab =
   | 'tickets'
   | 'audit';
 
+export type RepoDashboardTab = 'overview' | 'tickets' | 'evidence';
+
+export interface RepoDashboardTabIntent {
+  repoPath: string;
+  tab: RepoDashboardTab;
+}
+
 export interface WorkspaceReviewState {
   activeFilePath: string | null;
   diffSource: DiffSource;
@@ -556,6 +563,8 @@ export interface UiState {
   lastChangedFiles: string[];
   analyticsView: AnalyticsView;
   orgDashboardTab: OrgDashboardTab;
+  /** One-shot, repo-scoped handoff into an existing RepoDashboard tab. */
+  repoDashboardTabIntent: RepoDashboardTabIntent | null;
   /**
    * #1058: the chat/topic spine is the default no-session/no-repo landing.
    * The legacy WorkContext cockpit (`OrgDashboard`) stays reachable via the
@@ -627,6 +636,8 @@ export interface UiState {
   setLastChangedFiles: (files: string[]) => void;
   setAnalyticsView: (v: AnalyticsView) => void;
   setOrgDashboardTab: (tab: OrgDashboardTab) => void;
+  requestRepoDashboardTab: (repoPath: string, tab: RepoDashboardTab) => void;
+  consumeRepoDashboardTabIntent: (repoPath: string) => void;
   setForceOrgCockpit: (v: boolean) => void;
   setTopicComposerOpen: (v: boolean) => void;
   setActiveChannelId: (v: string | null) => void;
@@ -667,6 +678,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   // #1058: 'active-work' is a substrate tab hidden unless advancedMode is on;
   // default to 'prs' so a fresh session never lands on a hidden tab's content.
   orgDashboardTab: loadAdvancedMode() ? 'active-work' : 'prs',
+  repoDashboardTabIntent: null,
   forceOrgCockpit: false,
   topicComposerOpen: false,
   activeChannelId: null,
@@ -1092,6 +1104,13 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setLastChangedFiles: (files) => set({ lastChangedFiles: files }),
   setAnalyticsView: (v) => set({ analyticsView: v }),
   setOrgDashboardTab: (tab) => set({ orgDashboardTab: tab }),
+  requestRepoDashboardTab: (repoPath, tab) =>
+    set({ repoDashboardTabIntent: { repoPath, tab } }),
+  consumeRepoDashboardTabIntent: (repoPath) => {
+    if (get().repoDashboardTabIntent?.repoPath === repoPath) {
+      set({ repoDashboardTabIntent: null });
+    }
+  },
   setForceOrgCockpit: (v) => set({ forceOrgCockpit: v }),
   setTopicComposerOpen: (v) => set({ topicComposerOpen: v }),
   setActiveChannelId: (v) =>
