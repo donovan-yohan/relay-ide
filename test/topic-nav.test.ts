@@ -4,9 +4,10 @@ import type { WorkspaceTopic } from '../shared/workspace-topics.js';
 import {
   buildTopicNavModel,
   formatTaskRefLabel,
-  groupTopicsByWorkspace,
+  selectChannelRailTree,
   type TopicNavWorkspace,
 } from '../frontend/src/lib/state/topic-nav.js';
+import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
 import { makeSession } from './helpers/frontend-factories.js';
 
 function makeWorkspace(
@@ -604,77 +605,126 @@ describe('formatTaskRefLabel', () => {
   });
 });
 
-describe('groupTopicsByWorkspace', () => {
+describe('selectChannelRailTree', () => {
+  const dmA = dmChannelTopicId('claude', 'ws:a');
+  const dmOrphan = dmChannelTopicId('codex', 'ws:unknown');
   const model = () =>
     buildTopicNavModel({
       topics: [
-        makeTopic({ id: 't:a1', workspaceId: 'ws:a' }),
-        makeTopic({ id: 't:b1', workspaceId: 'ws:b' }),
-        makeTopic({ id: 't:orphan', workspaceId: 'ws:unknown' }),
+        makeTopic({ id: 'topic:a1', workspaceId: 'ws:a' }),
+        makeTopic({
+          id: 'topic:a-child',
+          workspaceId: 'ws:a',
+          grouping: { parentTopicId: 'topic:a1' },
+        }),
+        makeTopic({
+          id: 'topic:a-grandchild',
+          workspaceId: 'ws:a',
+          grouping: { parentTopicId: 'topic:a-child' },
+        }),
+        makeTopic({
+          id: dmA,
+          workspaceId: 'ws:a',
+          routingDefaults: { providerId: 'claude' },
+        }),
+        makeTopic({ id: 'topic:b1', workspaceId: 'ws:b' }),
+        makeTopic({ id: 'topic:orphan', workspaceId: 'ws:unknown' }),
+        makeTopic({
+          id: dmOrphan,
+          workspaceId: 'ws:unknown',
+          routingDefaults: { providerId: 'codex' },
+        }),
       ],
       sessions: [],
       surfaces: [],
       derived: false,
     });
 
-  it('groups roots under their workspace and orphans the rest', () => {
-    const grouped = groupTopicsByWorkspace(
+  it('projects one ordered channel/DM tree with nested children and orphans', () => {
+    const tree = selectChannelRailTree(
       model(),
       [
         makeWorkspace({ id: 'ws:a', name: 'A', order: 1 }),
         makeWorkspace({ id: 'ws:b', name: 'B', order: 0 }),
       ],
-      null
+      { unreadByChannel: {} }
     );
-    // Sorted by order: B (0) before A (1).
-    expect(grouped.groups.map((g) => g.id)).toEqual(['ws:b', 'ws:a']);
-    expect(grouped.groups[0]!.rootIds).toEqual(['t:b1']);
-    expect(grouped.groups[1]!.rootIds).toEqual(['t:a1']);
-    expect(grouped.orphanRootIds).toEqual(['t:orphan']);
+    expect(tree.groups.map((group) => group.id)).toEqual(['ws:b', 'ws:a']);
+    expect(tree.groups[0]!.channels.map((node) => node.item.id)).toEqual([
+      'topic:b1',
+    ]);
+    expect(tree.groups[1]!.channels.map((node) => node.item.id)).toEqual([
+      'topic:a1',
+    ]);
+    expect(
+      tree.groups[1]!.channels[0]!.children.map((node) => node.item.id)
+    ).toEqual(['topic:a-child']);
+    // Structural parity lives in this shared selector output. Desktop may gate
+    // descendants behind expansion while mobile renders recursively, but neither
+    // consumer owns a second grouping source.
+    expect(
+      tree.groups[1]!.channels[0]!.children[0]!.children.map(
+        (node) => node.item.id
+      )
+    ).toEqual(['topic:a-grandchild']);
+    expect(tree.groups[1]!.directMessages.map((node) => node.item.id)).toEqual([
+      dmA,
+    ]);
+    expect(tree.orphans.channels.map((node) => node.item.id)).toEqual([
+      'topic:orphan',
+    ]);
+    expect(tree.orphans.directMessages.map((node) => node.item.id)).toEqual([
+      dmOrphan,
+    ]);
   });
 
   it('floats pinned workspaces before order', () => {
-    const grouped = groupTopicsByWorkspace(
+    const tree = selectChannelRailTree(
       model(),
       [
         makeWorkspace({ id: 'ws:a', order: 0, pinned: false }),
         makeWorkspace({ id: 'ws:b', order: 9, pinned: true }),
       ],
-      null
+      { unreadByChannel: {} }
     );
-    expect(grouped.groups.map((g) => g.id)).toEqual(['ws:b', 'ws:a']);
+    expect(tree.groups.map((group) => group.id)).toEqual(['ws:b', 'ws:a']);
   });
 
-  it('collapses to a single workspace and hides orphans when active', () => {
-    const grouped = groupTopicsByWorkspace(
+  it('carries the same unread snapshot through nodes and group summaries', () => {
+    const tree = selectChannelRailTree(
       model(),
       [makeWorkspace({ id: 'ws:a' }), makeWorkspace({ id: 'ws:b' })],
-      'ws:a'
+      {
+        unreadByChannel: {
+          'topic:a-child': true,
+          [dmOrphan]: true,
+        },
+      }
     );
-    expect(grouped.groups.map((g) => g.id)).toEqual(['ws:a']);
-    expect(grouped.orphanRootIds).toEqual([]);
+    const groupA = tree.groups.find((group) => group.id === 'ws:a');
+    expect(groupA?.channels[0]?.unread).toBe(false);
+    expect(groupA?.channels[0]?.children[0]?.unread).toBe(true);
+    expect(groupA?.unread).toBe(true);
+    expect(tree.orphans.directMessages[0]?.unread).toBe(true);
+    expect(tree.orphans.unread).toBe(true);
   });
 
-  it('drops empty groups in the all view but keeps the active one', () => {
-    const grouped = groupTopicsByWorkspace(
-      model(),
-      [makeWorkspace({ id: 'ws:a' }), makeWorkspace({ id: 'ws:empty' })],
-      null
-    );
-    expect(grouped.groups.map((g) => g.id)).toEqual(['ws:a']);
-    const active = groupTopicsByWorkspace(
+  it('drops empty groups and keeps every root in orphans without workspaces', () => {
+    const tree = selectChannelRailTree(
       model(),
       [makeWorkspace({ id: 'ws:empty' })],
-      'ws:empty'
+      { unreadByChannel: {} }
     );
-    expect(active.groups.map((g) => g.id)).toEqual(['ws:empty']);
-    expect(active.groups[0]!.rootIds).toEqual([]);
-  });
-
-  it('puts every root in the orphan lane when there are no workspaces', () => {
-    const grouped = groupTopicsByWorkspace(model(), [], null);
-    expect(grouped.groups).toEqual([]);
-    expect(grouped.orphanRootIds).toEqual(['t:a1', 't:b1', 't:orphan']);
+    expect(tree.groups).toEqual([]);
+    expect(tree.orphans.channels.map((node) => node.item.id)).toEqual([
+      'topic:a1',
+      'topic:b1',
+      'topic:orphan',
+    ]);
+    expect(tree.orphans.directMessages.map((node) => node.item.id)).toEqual([
+      dmA,
+      dmOrphan,
+    ]);
   });
 });
 

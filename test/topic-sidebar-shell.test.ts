@@ -18,7 +18,10 @@ import {
   TopicSidebarView,
 } from '../frontend/src/components/TopicSidebarShell.js';
 import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
-import { useChannelActivityStore } from '../frontend/src/lib/stores/channel-activity.js';
+import {
+  channelLastReadKey,
+  useChannelActivityStore,
+} from '../frontend/src/lib/stores/channel-activity.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { makeSession } from './helpers/frontend-factories.js';
@@ -124,11 +127,15 @@ describe('TopicSidebarView', () => {
       latestSeqByChannel: {},
       lastReadByChannel: {},
     });
+    localStorage.removeItem(channelLastReadKey('topic:alpha'));
   });
 
   async function renderView(
     props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {},
-    options: { advancedMode?: boolean } = {}
+    options: {
+      advancedMode?: boolean;
+      onRender?: React.ProfilerOnRenderCallback;
+    } = {}
   ) {
     useUiStore.setState({
       advancedMode: options.advancedMode ?? props.showAdvancedDetail === true,
@@ -136,18 +143,25 @@ describe('TopicSidebarView', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    const view = React.createElement(TopicSidebarView, {
+      topics: [makeTopic()],
+      sessions: [makeSession({ id: 's1', displayName: 'Frontend lane' })],
+      surfaces: [makeSurface()],
+      onSelectSession,
+      ...props,
+    });
     await act(async () => {
       root.render(
         React.createElement(
           QueryClientProvider,
           { client: queryClient },
-          React.createElement(TopicSidebarView, {
-            topics: [makeTopic()],
-            sessions: [makeSession({ id: 's1', displayName: 'Frontend lane' })],
-            surfaces: [makeSurface()],
-            onSelectSession,
-            ...props,
-          })
+          options.onRender
+            ? React.createElement(
+                React.Profiler,
+                { id: 'topic-sidebar', onRender: options.onRender },
+                view
+              )
+            : view
         )
       );
     });
@@ -209,6 +223,24 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('Claude');
     expect(
       container.querySelector(
+        `.topic-workspace-group [data-topic-id="${dmId}"]`
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(`.topic-mobile-group [data-topic-id="${dmId}"]`)
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '.topic-workspace-group [data-topic-id="topic:alpha"][data-unread="true"]'
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '.topic-mobile-group [data-topic-id="topic:alpha"][data-unread="true"]'
+      )
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
         '.topic-row__activity-dot[aria-label="unread activity"]'
       )
     ).not.toBeNull();
@@ -227,6 +259,42 @@ describe('TopicSidebarView', () => {
     expect(channelButton).toBeTruthy();
     await act(async () => channelButton?.click());
     expect(useUiStore.getState().activeChannelId).toBe('topic:alpha');
+  });
+
+  it('preserves persisted last-read fallback in the shared rail snapshot', async () => {
+    localStorage.setItem(channelLastReadKey('topic:alpha'), '9');
+    useChannelActivityStore.setState({
+      latestSeqByChannel: { 'topic:alpha': 9 },
+      lastReadByChannel: {},
+    });
+
+    await renderView();
+
+    expect(
+      container.querySelector(
+        '[data-topic-id="topic:alpha"][data-unread="true"]'
+      )
+    ).toBeNull();
+    localStorage.removeItem(channelLastReadKey('topic:alpha'));
+  });
+
+  it('does not commit the sidebar for unrelated channel activity', async () => {
+    let commits = 0;
+    await renderView(
+      {
+        topics: [makeTopic({ id: 'topic:relevant' })],
+        sessions: [],
+        surfaces: [],
+      },
+      { onRender: () => commits++ }
+    );
+    const committedBeforeUnrelatedActivity = commits;
+
+    await act(async () => {
+      useChannelActivityStore.getState().recordActivity('topic:unrelated', 1);
+    });
+
+    expect(commits).toBe(committedBeforeUnrelatedActivity);
   });
 
   it('reveals mechanical detail only in advanced mode and hands evidence to the repo dashboard', async () => {
@@ -551,7 +619,8 @@ describe('TopicSidebarView', () => {
     expect(resume.disabled).toBe(true);
   });
 
-  it('resumes a chat when tapping its mobile switcher row instead of opening detail chrome (#1122)', async () => {
+  it('opens a persisted channel timeline when tapping its mobile row (#1205)', async () => {
+    useUiStore.setState({ sidebarOpen: true });
     await renderView({
       topics: [
         makeTopic({
@@ -583,9 +652,109 @@ describe('TopicSidebarView', () => {
     expect(row).not.toBeNull();
     await act(async () => row.click());
 
-    expect(onSelectSession).toHaveBeenCalledTimes(1);
-    expect(onSelectSession).toHaveBeenCalledWith('s-new');
-    expect(useUiStore.getState().activeRepoPath).toBeNull();
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeChannelId).toBe('topic:a');
+    expect(useUiStore.getState().activeRepoPath).toBe('/repo/mobile-detail');
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
+  });
+
+  it('locally collapses and expands a mobile workspace group (#1205)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          display: { title: 'Alpha channel' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      workspaces: [
+        {
+          id: 'ws:a',
+          name: 'engineering',
+          order: 0,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+      ],
+    });
+
+    const group = container.querySelector(
+      '.topic-mobile-group[data-workspace-id="ws:a"]'
+    ) as HTMLElement;
+    const header = group.querySelector(
+      '.topic-mobile-group__header'
+    ) as HTMLButtonElement;
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(group.querySelector('[data-topic-id="topic:a"]')).not.toBeNull();
+
+    await act(async () => header.click());
+    expect(header.getAttribute('aria-expanded')).toBe('false');
+    expect(group.querySelector('[data-topic-id="topic:a"]')).toBeNull();
+
+    await act(async () => header.click());
+    expect(header.getAttribute('aria-expanded')).toBe('true');
+    expect(group.querySelector('[data-topic-id="topic:a"]')).not.toBeNull();
+  });
+
+  it('shows reactive unread state on a collapsed mobile workspace header (#1205)', async () => {
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:a',
+          workspaceId: 'ws:a',
+          display: { title: 'Alpha channel' },
+          linkedRefs: {},
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+      workspaces: [
+        {
+          id: 'ws:a',
+          name: 'engineering',
+          order: 0,
+          pinned: false,
+          color: null,
+          icon: null,
+        },
+      ],
+    });
+
+    const header = container.querySelector(
+      '.topic-mobile-group__header'
+    ) as HTMLButtonElement;
+    await act(async () => header.click());
+    expect(header.querySelector('[aria-label="unread activity"]')).toBeNull();
+
+    await act(async () => {
+      useChannelActivityStore.getState().recordActivity('topic:a', 2);
+    });
+    expect(
+      header.querySelector('[aria-label="unread activity"]')
+    ).not.toBeNull();
+  });
+
+  it('suppresses the no-workspace header consistently for a sole orphan lane', async () => {
+    await renderView({ workspaces: [] });
+
+    const desktopOrphan = container.querySelector(
+      '.topic-workspace-group--orphan'
+    ) as HTMLElement;
+    const mobileOrphan = container.querySelector(
+      '.topic-mobile-group--orphan'
+    ) as HTMLElement;
+    expect(desktopOrphan).not.toBeNull();
+    expect(mobileOrphan).not.toBeNull();
+    expect(
+      desktopOrphan.querySelector('.topic-workspace-group__header')
+    ).toBeNull();
+    expect(
+      mobileOrphan.querySelector('.topic-mobile-group__header')
+    ).toBeNull();
   });
 
   it('hides the mobile detail/control chrome for resumable chat rows (#1122)', async () => {
@@ -599,6 +768,7 @@ describe('TopicSidebarView', () => {
   });
 
   it('opens an actionable mobile control panel only after its row is tapped in default mode', async () => {
+    useUiStore.setState({ sidebarOpen: true });
     const props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {
       sessions: [
         makeSession({
@@ -623,6 +793,7 @@ describe('TopicSidebarView', () => {
     await act(async () => row.click());
 
     expect(container.querySelector('.topic-mobile-detail')).not.toBeNull();
+    expect(useUiStore.getState().sidebarOpen).toBe(true);
     expect(container.textContent).toContain('approve');
     expect(container.querySelector('.topic-mobile-control')).not.toBeNull();
     expect(
@@ -1767,7 +1938,7 @@ describe('TopicSidebarView', () => {
     expect(onSendInput).not.toHaveBeenCalled();
   });
 
-  it('keeps mobile resume enabled when only live input control state is unsafe', async () => {
+  it('keeps resume-last enabled when only live input control state is unsafe', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
     await renderView({
       sessions: [
@@ -1781,21 +1952,18 @@ describe('TopicSidebarView', () => {
       onSendInput,
     });
 
-    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
-      'resume'
-    );
     expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const row = container.querySelector(
-      '.topic-mobile-row'
+    const resumeLast = container.querySelector(
+      '.topic-mobile-cockpit__resume'
     ) as HTMLButtonElement;
-    expect(row.title).toContain('resume chat');
-    await act(async () => row.click());
+    expect(resumeLast.disabled).toBe(false);
+    await act(async () => resumeLast.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
     expect(onSendInput).not.toHaveBeenCalled();
   });
 
-  it('keeps web session input hidden while allowing mobile row resume', async () => {
+  it('keeps web session input hidden while allowing resume-last', async () => {
     await renderView({
       sessions: [
         makeSession({
@@ -1808,29 +1976,65 @@ describe('TopicSidebarView', () => {
       ],
     });
 
-    expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
-      'resume'
-    );
     expect(container.querySelector('.topic-mobile-detail')).toBeNull();
 
-    const row = container.querySelector(
-      '.topic-mobile-row'
+    const resumeLast = container.querySelector(
+      '.topic-mobile-cockpit__resume'
     ) as HTMLButtonElement;
-    await act(async () => row.click());
+    await act(async () => resumeLast.click());
     expect(onSelectSession).toHaveBeenCalledWith('s1');
   });
 
-  it('makes the mobile row itself the explicit resume affordance', async () => {
+  it('makes the mobile row an explicit channel timeline affordance', async () => {
     await renderView();
 
     const row = container.querySelector(
       '.topic-mobile-row'
     ) as HTMLButtonElement;
     expect(container.querySelector('.topic-mobile-actions')).toBeNull();
-    expect(row.textContent).toContain('resume');
-    expect(row.title).toContain('resume chat');
+    expect(row.querySelector('.topic-mobile-row__cta')?.textContent).toBe(
+      'open'
+    );
+    expect(row.title).toBe('open channel timeline');
     await act(async () => row.click());
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeChannelId).toBe('topic:alpha');
+  });
+
+  it('resumes an attachable derived session without opening a channel timeline', async () => {
+    useUiStore.setState({ sidebarOpen: true, activeChannelId: null });
+    await renderView({
+      topics: [
+        makeTopic({
+          id: 'topic:derived-session',
+          source: 'derived',
+          linkedRefs: { sessionIds: ['s1'] },
+        }),
+      ],
+      sessions: [
+        makeSession({
+          id: 's1',
+          displayName: 'Derived lane',
+          status: 'active',
+        }),
+      ],
+      surfaces: [],
+    });
+
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
+    expect(row.querySelector('.topic-mobile-row__cta')?.textContent).toBe(
+      'resume'
+    );
+    expect(row.title).toContain('resume chat Derived lane');
+
+    await act(async () => row.click());
+
+    expect(onSelectSession).toHaveBeenCalledTimes(1);
     expect(onSelectSession).toHaveBeenCalledWith('s1');
+    expect(useUiStore.getState().activeChannelId).toBeNull();
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
   });
 
   it('renders bounded topic history search without changing the thin-line layout', async () => {
