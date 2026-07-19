@@ -100,6 +100,13 @@
   tab-size: 2;
 }
 
+.ch-agent-card__truncated {
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
 .ch-agent-card__code code,
 .ch-agent-card__line {
   display: block;
@@ -119,10 +126,6 @@
 }
 
 @media (max-width: 767px) {
-  .ch-agent-card__size {
-    display: none;
-  }
-
   .ch-agent-card__body {
     max-height: 240px;
   }

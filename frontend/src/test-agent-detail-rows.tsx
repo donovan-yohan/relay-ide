@@ -21,12 +21,20 @@ const fixtures = {
 } as const;
 
 type FixtureProvider = keyof typeof fixtures;
+type FixtureLayout = 'default' | 'card-near-bottom';
 
 function providerFromQuery(): FixtureProvider {
   const raw = new URLSearchParams(window.location.search).get('provider');
   return raw === 'claude' || raw === 'codex' || raw === 'hermes'
     ? raw
     : 'claude';
+}
+
+function layoutFromQuery(): FixtureLayout {
+  return new URLSearchParams(window.location.search).get('layout') ===
+    'card-near-bottom'
+    ? 'card-near-bottom'
+    : 'default';
 }
 
 function anchorItems(provider: AgentProviderV2): AgentAssistantMessageItemV2[] {
@@ -38,15 +46,23 @@ function anchorItems(provider: AgentProviderV2): AgentAssistantMessageItemV2[] {
   }));
 }
 
-function withAnchorRows(session: AgentSessionV2): AgentSessionV2 {
+function withAnchorRows(
+  session: AgentSessionV2,
+  layout: FixtureLayout
+): AgentSessionV2 {
   const turn = session.turns[0];
   if (!turn) return session;
+  const anchors = anchorItems(session.provider);
+  const items =
+    layout === 'card-near-bottom'
+      ? [...anchors.slice(0, 44), ...turn.items, ...anchors.slice(44)]
+      : [...turn.items, ...anchors];
   return {
     ...session,
     turns: [
       {
         ...turn,
-        items: [...turn.items, ...anchorItems(session.provider)],
+        items,
       },
     ],
   };
@@ -54,17 +70,29 @@ function withAnchorRows(session: AgentSessionV2): AgentSessionV2 {
 
 function Fixture(): React.ReactElement {
   const [provider, setProvider] = useState(providerFromQuery);
+  const layout = layoutFromQuery();
   const session = useMemo(
-    () => withAnchorRows(fixtures[provider].session),
-    [provider]
+    () => withAnchorRows(fixtures[provider].session, layout),
+    [layout, provider]
   );
   const turn = session.turns[0]!;
   const itemCount = turn.items.length;
-  const { containerRef, contentRef, bottomRef, handleTimelineScroll } =
-    useAgentTimelineScroll({ timelineId: session.id, itemCount });
+  const {
+    containerRef,
+    contentRef,
+    bottomRef,
+    handleTimelineScroll,
+    prepareUserReflow,
+    scrollToBottom,
+    showJumpToLatest,
+  } = useAgentTimelineScroll({ timelineId: session.id, itemCount });
 
   return (
-    <main className="agent-detail-fixture" data-fixture-provider={provider}>
+    <main
+      className="agent-detail-fixture"
+      data-fixture-provider={provider}
+      data-fixture-layout={layout}
+    >
       <div className="agent-detail-fixture__label">
         <span>{provider} · hand-sanitized structural replay</span>
         <span className="agent-detail-fixture__switches">
@@ -94,10 +122,20 @@ function Fixture(): React.ReactElement {
             session={session}
             onApprove={() => {}}
             onAnswer={() => {}}
+            onDetailCardToggle={prepareUserReflow}
           />
         </div>
         <div ref={bottomRef} />
       </div>
+      {showJumpToLatest ? (
+        <button
+          type="button"
+          className="tl-jump-latest"
+          onClick={scrollToBottom}
+        >
+          jump to latest
+        </button>
+      ) : null}
     </main>
   );
 }

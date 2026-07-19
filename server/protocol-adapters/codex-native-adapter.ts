@@ -219,6 +219,16 @@ function stringField(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
+function diffCounts(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
+    if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
 /**
  * Flatten codex's reasoning array shapes into a single string. Both
  * `summary: Vec<ReasoningItemReasoningSummary>` and
@@ -1765,7 +1775,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { patch: combinedPatch },
+      mode: 'replace',
+      delta: { patch: combinedPatch, card: diffCounts(combinedPatch) },
     });
   }
 

@@ -282,6 +282,49 @@ describe('Hermes Responses SSE hardening', () => {
     }
   });
 
+  async function runCompletedTool(input: {
+    toolName: string;
+    arguments: Record<string, unknown>;
+    output: string;
+  }): Promise<ChatEvent[]> {
+    gateway = await startInlineGateway((send, res) => {
+      send({ type: 'response.created', response: { id: 'resp_tool_fixture' } });
+      send({
+        type: 'response.output_item.added',
+        item: {
+          id: 'item_tool_fixture',
+          type: 'function_call',
+          call_id: 'call_tool_fixture',
+          name: input.toolName,
+          arguments: JSON.stringify(input.arguments),
+        },
+      });
+      send({
+        type: 'response.output_item.done',
+        item: {
+          id: 'item_tool_fixture',
+          type: 'function_call',
+          call_id: 'call_tool_fixture',
+          name: input.toolName,
+          arguments: JSON.stringify(input.arguments),
+          status: 'completed',
+          output: input.output,
+        },
+      });
+      send({
+        type: 'response.completed',
+        response: { id: 'resp_tool_fixture', status: 'completed' },
+      });
+      res.end();
+    });
+    adapter = new HermesProtocolAdapter();
+    const events: ChatEvent[] = [];
+    adapter.on((event) => events.push(event));
+    await adapter.connect(configFor(gateway.endpoint, 'sess-tool-fixture'));
+    await adapter.sendMessage('turn-1', 'synthetic tool fixture');
+    return events;
+  }
+
   it('maps response.error to a chat:error and fails the turn instead of hanging', async () => {
     gateway = await startInlineGateway((send, res) => {
       send({ type: 'response.created', response: { id: 'resp_err' } });
@@ -476,6 +519,90 @@ describe('Hermes Responses SSE hardening', () => {
     });
   });
 
+  it.each([
+    {
+      label: 'added',
+      diff: '--- /dev/null\n+++ b/src/created.ts\n@@ -0,0 +1 @@\n+export const created = true;\n',
+      path: 'src/created.ts',
+      kind: 'added',
+      additions: 1,
+      deletions: 0,
+    },
+    {
+      label: 'deleted',
+      diff: '--- a/src/deleted.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-export const removed = true;\n',
+      path: 'src/deleted.ts',
+      kind: 'deleted',
+      additions: 0,
+      deletions: 1,
+    },
+  ])(
+    'derives $label file path and kind from unified-diff headers when args have only patch input',
+    async ({ diff, path, kind, additions, deletions }) => {
+      const events = await runCompletedTool({
+        toolName: 'apply_patch',
+        arguments: { input: diff },
+        output: diff,
+      });
+
+      expect(
+        events.filter((event) => event.type === 'chat:file-change')
+      ).toEqual([
+        expect.objectContaining({
+          path,
+          kind,
+          additions,
+          deletions,
+          diff,
+        }),
+      ]);
+    }
+  );
+
+  it('keeps plain file-tool output as a tool result instead of promoting it to a diff', async () => {
+    const events = await runCompletedTool({
+      toolName: 'write_file',
+      arguments: { path: '/workspace/example/src/plain.ts' },
+      output: 'wrote 500 synthetic lines',
+    });
+
+    expect(events.some((event) => event.type === 'chat:file-change')).toBe(
+      false
+    );
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'chat:tool-result',
+          toolName: 'write_file',
+          output: 'wrote 500 synthetic lines',
+        }),
+      ])
+    );
+  });
+
+  it('keeps diff-shaped non-edit tool output as a tool result', async () => {
+    const diff =
+      '--- a/src/read-only.ts\n+++ b/src/read-only.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    const events = await runCompletedTool({
+      toolName: 'run_command',
+      arguments: { command: 'git diff -- src/read-only.ts' },
+      output: diff,
+    });
+
+    expect(events.some((event) => event.type === 'chat:file-change')).toBe(
+      false
+    );
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'chat:tool-result',
+          toolName: 'run_command',
+          output: diff,
+        }),
+      ])
+    );
+  });
+
   it('replays the sanitized Hermes detail fixture into normalized cards', async () => {
     gateway = await startInlineGateway((send, res) => {
       for (const event of hermesDetailFixture.nativeEvents) send(event);
@@ -506,6 +633,14 @@ describe('Hermes Responses SSE hardening', () => {
     expect(
       items.filter((item) => item.id === 'tool-call_synthetic_hermes_patch')
     ).toHaveLength(1);
+    const diffItem = items.find(
+      (item) => item.id === 'tool-call_synthetic_hermes_patch'
+    );
+    expect(diffItem).not.toHaveProperty('applyStatus');
+    const fixtureDiffItem = hermesDetailFixture.session.turns
+      .flatMap((turn) => turn.items)
+      .find((item) => item.type === 'fileChange');
+    expect(fixtureDiffItem).not.toHaveProperty('applyStatus');
     const cards = items.flatMap((item) =>
       item.card && item.card.kind !== 'message' ? [item.card] : []
     );

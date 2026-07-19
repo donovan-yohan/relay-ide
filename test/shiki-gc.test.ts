@@ -148,6 +148,19 @@ describe('shiki-gc store', () => {
         useShikiGcStore.getState().setHighlightOutput('nonexistent', ['tokens'])
       ).not.toThrow();
     });
+
+    it('rejects a stale async write whose expected input no longer matches', () => {
+      addEntry('tab1', 'new source', 'json', ['new-tokens'], Date.now());
+
+      useShikiGcStore.getState().setHighlightOutput('tab1', ['stale-tokens'], {
+        source: 'old source',
+        language: 'typescript',
+      });
+
+      expect(
+        useShikiGcStore.getState().entries.get('tab1')?.highlightOutput
+      ).toEqual(['new-tokens']);
+    });
   });
 
   describe('runGc — idle threshold eviction', () => {

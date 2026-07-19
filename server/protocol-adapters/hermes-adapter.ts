@@ -480,6 +480,44 @@ function diffCounts(diff: string): { additions: number; deletions: number } {
   return { additions, deletions };
 }
 
+type HermesDiffKind = 'added' | 'modified' | 'deleted';
+
+function diffHeaderPath(value: string | undefined): string | null {
+  if (!value) return null;
+  const token = value.split('\t', 1)[0]?.trim() ?? '';
+  if (!token || token === '/dev/null') return null;
+  const unquoted =
+    token.startsWith('"') && token.endsWith('"') ? token.slice(1, -1) : token;
+  return unquoted.replace(/^[ab]\//, '');
+}
+
+function hermesDiffTarget(
+  args: Record<string, unknown>,
+  diff: string
+): { path: string; kind: HermesDiffKind } {
+  const oldHeader = /^--- (.+)$/m.exec(diff)?.[1];
+  const newHeader = /^\+\+\+ (.+)$/m.exec(diff)?.[1];
+  const oldIsNull = oldHeader?.split('\t', 1)[0]?.trim() === '/dev/null';
+  const newIsNull = newHeader?.split('\t', 1)[0]?.trim() === '/dev/null';
+  const kind: HermesDiffKind = oldIsNull
+    ? 'added'
+    : newIsNull
+      ? 'deleted'
+      : 'modified';
+  const explicitPath = args['path'] ?? args['file_path'];
+  const headerPath =
+    kind === 'deleted'
+      ? diffHeaderPath(oldHeader)
+      : (diffHeaderPath(newHeader) ?? diffHeaderPath(oldHeader));
+  return {
+    path:
+      typeof explicitPath === 'string' && explicitPath.trim()
+        ? explicitPath
+        : (headerPath ?? 'unknown'),
+    kind,
+  };
+}
+
 /**
  * Concatenate the text of a Responses API `message` output-item. The item shape
  * is `{ type: 'message', role, content: [{ type: 'output_text', text }, …] }`;
@@ -1254,13 +1292,13 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
         isUnifiedDiffOutput(outputText)
       ) {
         const { additions, deletions } = diffCounts(outputText);
-        const pathValue = args['path'] ?? args['file_path'];
+        const target = hermesDiffTarget(args, outputText);
         this.fire({
           type: 'chat:file-change',
           turnId,
           toolCallId: callId,
-          path: typeof pathValue === 'string' ? pathValue : 'unknown',
-          kind: 'modified',
+          path: target.path,
+          kind: target.kind,
           additions,
           deletions,
           diff: outputText,

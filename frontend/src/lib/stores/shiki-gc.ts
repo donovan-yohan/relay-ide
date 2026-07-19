@@ -47,6 +47,11 @@ export interface TabHighlightEntry {
   lastViewedAt: number;
 }
 
+export interface HighlightInputIdentity {
+  source: string;
+  language: string;
+}
+
 interface ShikiGcState {
   /** Per-key highlight entries. */
   entries: Map<string, TabHighlightEntry>;
@@ -64,8 +69,12 @@ interface ShikiGcState {
     language: string,
     highlightOutput: unknown | null
   ) => void;
-  /** Update highlight output only (after async re-highlighting). */
-  setHighlightOutput: (key: string, highlightOutput: unknown | null) => void;
+  /** Update output; expectedInput makes async writers compare-and-set. */
+  setHighlightOutput: (
+    key: string,
+    highlightOutput: unknown | null,
+    expectedInput?: HighlightInputIdentity
+  ) => void;
   /** Record that a tab is being viewed now (refreshes lastViewedAt). */
   touchTab: (key: string) => void;
   /** Remove a tab entry entirely (tab closed). */
@@ -103,10 +112,17 @@ export const useShikiGcStore = create<ShikiGcState>((set, get) => ({
     });
   },
 
-  setHighlightOutput: (key, highlightOutput) => {
+  setHighlightOutput: (key, highlightOutput, expectedInput) => {
     set((state) => {
       const entry = state.entries.get(key);
       if (!entry) return state;
+      if (
+        expectedInput &&
+        (entry.source !== expectedInput.source ||
+          entry.language !== expectedInput.language)
+      ) {
+        return state;
+      }
       const next = new Map(state.entries);
       next.set(key, { ...entry, highlightOutput });
       return { entries: next };

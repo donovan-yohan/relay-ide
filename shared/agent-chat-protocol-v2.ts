@@ -470,6 +470,12 @@ function detailCardTitle(content: string, fallback: string): string {
   return title.length <= 80 ? title : `${title.slice(0, 79).trimEnd()}…`;
 }
 
+function isTerminalDetailStatus(status: AgentDetailCardStatusV2): boolean {
+  return (
+    status === 'completed' || status === 'failed' || status === 'cancelled'
+  );
+}
+
 /**
  * Project a provider-rich item onto the one framework-neutral detail-card
  * shape. This is intentionally exhaustive by item type and contains no
@@ -479,6 +485,7 @@ export function agentDetailCardForItem(
   item: AgentItemV2
 ): AgentDetailCardV2 | undefined {
   const status = detailCardStatus(item);
+  const includeDerivedFields = isTerminalDetailStatus(status);
   switch (item.type) {
     case 'assistantMessage':
     case 'userMessage': {
@@ -487,16 +494,32 @@ export function agentDetailCardForItem(
         kind: 'message',
         title: item.type === 'userMessage' ? 'message' : 'response',
         status,
-        ...(content ? { content, sizeBytes: detailCardBytes(content) } : {}),
+        ...(content
+          ? {
+              content,
+              ...(includeDerivedFields
+                ? { sizeBytes: detailCardBytes(content) }
+                : {}),
+            }
+          : {}),
       };
     }
     case 'reasoning': {
       const content = item.detail || item.summary;
       return {
         kind: 'thought',
-        title: detailCardTitle(item.summary, 'thinking'),
+        title: includeDerivedFields
+          ? detailCardTitle(item.summary, 'thinking')
+          : 'thinking',
         status,
-        ...(content ? { content, sizeBytes: detailCardBytes(content) } : {}),
+        ...(content
+          ? {
+              content,
+              ...(includeDerivedFields
+                ? { sizeBytes: detailCardBytes(content) }
+                : {}),
+            }
+          : {}),
       };
     }
     case 'commandExecution': {
@@ -507,7 +530,14 @@ export function agentDetailCardForItem(
         status,
         command: item.command,
         language: 'bash',
-        ...(content ? { content, sizeBytes: detailCardBytes(content) } : {}),
+        ...(content
+          ? {
+              content,
+              ...(includeDerivedFields
+                ? { sizeBytes: detailCardBytes(content) }
+                : {}),
+            }
+          : {}),
       };
     }
     case 'fileChange': {
@@ -524,8 +554,12 @@ export function agentDetailCardForItem(
         ...(content
           ? {
               content,
-              sizeBytes: detailCardBytes(content),
-              ...diffLineCounts(content),
+              ...(includeDerivedFields
+                ? {
+                    sizeBytes: detailCardBytes(content),
+                    ...diffLineCounts(content),
+                  }
+                : {}),
             }
           : {}),
       };
@@ -548,8 +582,12 @@ export function agentDetailCardForItem(
         ...(content
           ? {
               content,
-              sizeBytes: detailCardBytes(content),
-              ...(isDiff ? diffLineCounts(content) : {}),
+              ...(includeDerivedFields
+                ? {
+                    sizeBytes: detailCardBytes(content),
+                    ...(isDiff ? diffLineCounts(content) : {}),
+                  }
+                : {}),
             }
           : {}),
       };
@@ -630,6 +668,8 @@ export interface AgentItemDeltaPatchV2 extends AgentPatchBaseV2 {
   type: 'agent-item-delta-v2';
   turnId: string;
   itemId: string;
+  /** Append is the streaming default; replace is for authoritative snapshots. */
+  mode?: 'append' | 'replace';
   delta: {
     text?: string;
     output?: string;
@@ -637,6 +677,12 @@ export interface AgentItemDeltaPatchV2 extends AgentPatchBaseV2 {
     detail?: string;
     patch?: string;
     content?: string;
+    status?: AgentDetailCardStatusV2;
+    error?: string;
+    exitCode?: number | null;
+    durationMs?: number;
+    /** Cheap emitter-derived summary for live cards; terminal updates derive all fields. */
+    card?: Pick<AgentDetailCardV2, 'additions' | 'deletions'>;
   };
 }
 
@@ -832,6 +878,9 @@ export function isAgentPatchV2(value: unknown): value is AgentPatchV2 {
       return (
         typeof value.turnId === 'string' &&
         typeof value.itemId === 'string' &&
+        (value.mode === undefined ||
+          value.mode === 'append' ||
+          value.mode === 'replace') &&
         isDelta(value.delta)
       );
     case 'agent-item-updated-v2':
@@ -1037,11 +1086,7 @@ function applyItemDelta(
 
   if (existing) {
     return items.map((item) =>
-      item.id === patch.itemId
-        ? item.card
-          ? withAgentDetailCard(appendItemDelta(item, patch.delta))
-          : appendItemDelta(item, patch.delta)
-        : item
+      item.id === patch.itemId ? applyDeltaToItem(item, patch) : item
     );
   }
 
@@ -1060,6 +1105,65 @@ function applyItemDelta(
       startedAt: patch.timestamp,
     },
   ];
+}
+
+function applyDeltaToItem(
+  item: AgentItemV2,
+  patch: Extract<AgentPatchV2, { type: 'agent-item-delta-v2' }>
+): AgentItemV2 {
+  const next = appendItemDelta(item, patch.delta, patch.mode ?? 'append');
+  const card = item.card;
+  if (next.type === 'assistantMessage' || next.type === 'userMessage') {
+    return next;
+  }
+
+  const status = patch.delta.status ?? card?.status ?? detailCardStatus(next);
+  if (isTerminalDetailStatus(status)) return withAgentDetailCard(next);
+  if (!card) return next;
+
+  let content = card.content;
+  switch (next.type) {
+    case 'reasoning':
+      content = next.detail || next.summary;
+      break;
+    case 'commandExecution':
+      content = next.output;
+      break;
+    case 'fileChange':
+      content = next.patch;
+      break;
+    case 'dynamicToolCall': {
+      const fragment = patch.delta.content;
+      if (typeof fragment === 'string') {
+        const hadOutput =
+          item.type === 'dynamicToolCall' &&
+          typeof item.content === 'string' &&
+          item.content;
+        const separator = hadOutput
+          ? ''
+          : card.content
+            ? '\n\noutput\n'
+            : 'output\n';
+        content =
+          patch.mode === 'replace'
+            ? `${card.content ? `${card.content}\n\n` : ''}output\n${fragment}`
+            : `${card.content ?? ''}${separator}${fragment}`;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  return {
+    ...next,
+    card: {
+      ...card,
+      status,
+      ...(content !== undefined ? { content } : {}),
+      ...(patch.delta.card ?? {}),
+    },
+  } as AgentItemV2;
 }
 
 function completeTurn(
@@ -1089,16 +1193,26 @@ function completeTurn(
 
 function appendItemDelta(
   item: AgentItemV2,
-  delta: AgentItemDeltaPatchV2['delta']
+  delta: AgentItemDeltaPatchV2['delta'],
+  mode: 'append' | 'replace'
 ): AgentItemV2 {
   let next: AgentItemV2 = item;
 
-  next = appendStringField(next, delta, 'text');
-  next = appendStringField(next, delta, 'output');
-  next = appendStringField(next, delta, 'summary');
-  next = appendStringField(next, delta, 'detail');
-  next = appendStringField(next, delta, 'patch');
-  next = appendStringField(next, delta, 'content');
+  next = appendStringField(next, delta, 'text', mode);
+  next = appendStringField(next, delta, 'output', mode);
+  next = appendStringField(next, delta, 'summary', mode);
+  next = appendStringField(next, delta, 'detail', mode);
+  next = appendStringField(next, delta, 'patch', mode);
+  next = appendStringField(next, delta, 'content', mode);
+
+  if (delta.status !== undefined) next = { ...next, status: delta.status };
+  if (delta.error !== undefined) next = { ...next, error: delta.error };
+  if (delta.exitCode !== undefined && next.type === 'commandExecution') {
+    next = { ...next, exitCode: delta.exitCode };
+  }
+  if (delta.durationMs !== undefined && next.type === 'commandExecution') {
+    next = { ...next, durationMs: delta.durationMs };
+  }
 
   return next;
 }
@@ -1106,13 +1220,17 @@ function appendItemDelta(
 function appendStringField<K extends keyof AgentItemDeltaPatchV2['delta']>(
   item: AgentItemV2,
   delta: AgentItemDeltaPatchV2['delta'],
-  key: K
+  key: K,
+  mode: 'append' | 'replace'
 ): AgentItemV2 {
   const fragment = delta[key];
   const current = (item as unknown as Record<string, unknown>)[key];
 
   if (typeof fragment !== 'string') {
     return item;
+  }
+  if (mode === 'replace') {
+    return { ...item, [key]: fragment } as AgentItemV2;
   }
   if (current === undefined) {
     return {
@@ -1428,13 +1546,53 @@ function isPartialLiveState(value: unknown): boolean {
 }
 
 function isDelta(value: unknown): value is AgentItemDeltaPatchV2['delta'] {
-  return (
-    isRecord(value) &&
-    DELTA_STRING_FIELDS.every(
+  if (!isRecord(value)) return false;
+  if (
+    !DELTA_STRING_FIELDS.every(
       (field) =>
         !Object.hasOwn(value, field) || typeof value[field] === 'string'
-    ) &&
-    DELTA_STRING_FIELDS.some((field) => typeof value[field] === 'string')
+    )
+  ) {
+    return false;
+  }
+  if (
+    value.status !== undefined &&
+    !(
+      typeof value.status === 'string' &&
+      DETAIL_CARD_STATUSES.has(value.status as AgentDetailCardStatusV2)
+    )
+  ) {
+    return false;
+  }
+  if (value.error !== undefined && typeof value.error !== 'string')
+    return false;
+  if (
+    value.exitCode !== undefined &&
+    value.exitCode !== null &&
+    typeof value.exitCode !== 'number'
+  ) {
+    return false;
+  }
+  if (value.durationMs !== undefined && typeof value.durationMs !== 'number') {
+    return false;
+  }
+  if (
+    value.card !== undefined &&
+    (!isRecord(value.card) ||
+      (value.card.additions !== undefined &&
+        typeof value.card.additions !== 'number') ||
+      (value.card.deletions !== undefined &&
+        typeof value.card.deletions !== 'number'))
+  ) {
+    return false;
+  }
+  return (
+    DELTA_STRING_FIELDS.some((field) => typeof value[field] === 'string') ||
+    value.status !== undefined ||
+    value.error !== undefined ||
+    value.exitCode !== undefined ||
+    value.durationMs !== undefined ||
+    value.card !== undefined
   );
 }
 

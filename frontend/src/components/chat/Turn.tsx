@@ -35,6 +35,7 @@ interface TurnProps {
   onAnswer: (requestId: string, answers: Record<string, string[]>) => void;
   /** Slash command catalog for skill token highlighting in user messages. */
   slashCommands?: AgentSlashCommandV2[];
+  onDetailCardToggle?: (itemId: string) => void;
 }
 
 const EVENT_VERBOSITY_RANK: Record<EventVerbosity, number> = {
@@ -92,7 +93,8 @@ function renderItem(
   eventVerbosity: EventVerbosity,
   onApprove: (requestId: string, decision: AgentApprovalDecisionV2) => void,
   onAnswer: (requestId: string, answers: Record<string, string[]>) => void,
-  commandIndex: Set<string>
+  commandIndex: Set<string>,
+  onDetailCardToggle?: (itemId: string) => void
 ): React.ReactNode {
   if (!shouldRenderItem(item, eventVerbosity)) return null;
 
@@ -101,7 +103,13 @@ function renderItem(
   // arrive with this same card already attached and updated in place.
   const detailCard = item.card ?? agentDetailCardForItem(item);
   if (detailCard && detailCard.kind !== 'message') {
-    return <AgentDetailCard card={detailCard} itemId={item.id} />;
+    return (
+      <AgentDetailCard
+        card={detailCard}
+        itemId={item.id}
+        {...(onDetailCardToggle ? { onUserToggle: onDetailCardToggle } : {})}
+      />
+    );
   }
 
   switch (item.type) {
@@ -187,6 +195,7 @@ export const Turn: React.FC<TurnProps> = ({
   onApprove,
   onAnswer,
   slashCommands,
+  onDetailCardToggle,
 }) => {
   const commandIndex = slashCommands
     ? buildCommandIndex(slashCommands)
@@ -201,7 +210,8 @@ export const Turn: React.FC<TurnProps> = ({
           eventVerbosity,
           onApprove,
           onAnswer,
-          commandIndex
+          commandIndex,
+          onDetailCardToggle
         );
         if (rendered == null || typeof rendered === 'boolean') {
           return null;

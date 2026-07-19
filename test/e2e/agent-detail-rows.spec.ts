@@ -7,9 +7,12 @@ const fixtures = [claudeFixture, codexFixture, hermesFixture] as const;
 
 async function openFixture(
   page: Page,
-  provider: (typeof fixtures)[number]['provider']
+  provider: (typeof fixtures)[number]['provider'],
+  layout: 'default' | 'card-near-bottom' = 'default'
 ): Promise<Locator> {
-  await page.goto(`/test-agent-detail-rows.html?provider=${provider}`);
+  await page.goto(
+    `/test-agent-detail-rows.html?provider=${provider}&layout=${layout}`
+  );
   await expect(
     page.locator(`[data-fixture-provider="${provider}"]`)
   ).toBeVisible();
@@ -208,5 +211,43 @@ test.describe('smoke agent detail timeline identity (#1198)', () => {
     await expect(
       timeline.locator('[data-agent-item-id="claude-anchor-12"]')
     ).toHaveCount(0);
+  });
+
+  test('a near-bottom card toggle stays anchored and exposes jump-to-latest', async ({
+    page,
+  }) => {
+    const timeline = await openFixture(page, 'codex', 'card-near-bottom');
+    const diff = card(timeline, 'diff');
+    const toggle = diff.locator('.ch-agent-card__toggle');
+    await expect(toggle).toBeInViewport();
+    const before = await toggle.boundingBox();
+    if (!before) throw new Error('missing card toggle geometry');
+
+    await toggle.click();
+
+    await expect(diff.locator('.ch-agent-card__body')).toBeVisible();
+    const after = await toggle.boundingBox();
+    if (!after) throw new Error('missing expanded card toggle geometry');
+    expect(after.y).toBeCloseTo(before.y, 0);
+    await expect(
+      page.getByRole('button', { name: 'jump to latest' })
+    ).toBeVisible();
+    await expect.poll(() => bottomDistance(timeline)).toBeGreaterThan(1);
+
+    await page.getByRole('button', { name: 'jump to latest' }).click();
+    await expect.poll(() => bottomDistance(timeline)).toBeLessThanOrEqual(1);
+  });
+
+  test('mobile keeps diff magnitude visible in the collapsed summary', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 720 });
+    const timeline = await openFixture(page, 'claude');
+    await expect(
+      card(timeline, 'diff').locator('.ch-agent-card__size')
+    ).toBeVisible();
+    await expect(
+      card(timeline, 'diff').locator('.ch-agent-card__size')
+    ).toHaveText('+250 -250');
   });
 });

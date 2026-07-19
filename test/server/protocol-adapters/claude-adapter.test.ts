@@ -552,6 +552,80 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
     await adapter.disconnect();
   });
 
+  it('maps a direct persistent-subprocess file patch into a populated diff card', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-direct-patch', content: 'edit' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+    child.serverWrite({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-session-direct-patch',
+    });
+    child.serverWrite({
+      type: 'assistant',
+      message: {
+        id: 'message-direct-patch',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-direct-patch',
+            name: 'Edit',
+            input: { file_path: '/workspace/example/src/direct.ts' },
+          },
+        ],
+      },
+    });
+    const directPatch =
+      '--- a/src/direct.ts\n+++ b/src/direct.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    child.serverWrite({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-direct-patch',
+            content: directPatch,
+          },
+        ],
+      },
+      tool_use_result: {
+        filePath: '/workspace/example/src/direct.ts',
+        patch: directPatch,
+      },
+    });
+    child.serverWrite(successResult());
+
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+    const file = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'fileChange'
+    );
+    expect(file).toMatchObject({
+      item: {
+        id: 'file-tool-direct-patch',
+        patch: directPatch,
+        status: 'completed',
+        card: {
+          kind: 'diff',
+          path: '/workspace/example/src/direct.ts',
+          content: directPatch,
+          additions: 1,
+          deletions: 1,
+        },
+      },
+    });
+
+    await adapter.disconnect();
+  });
+
   it('replays the sanitized Claude detail fixture into normalized cards', async () => {
     const harness = makeHarness();
     const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());

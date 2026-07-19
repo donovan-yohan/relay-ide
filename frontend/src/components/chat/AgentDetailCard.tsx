@@ -15,7 +15,12 @@ interface AgentDetailCardProps {
   card: AgentDetailCardV2;
   /** Stable outer item id; isolates syntax-highlight cache entries. */
   itemId: string;
+  onUserToggle?: (itemId: string) => void;
 }
+
+export const AGENT_DETAIL_RENDER_MAX_CHARS = 64 * 1024;
+export const AGENT_DETAIL_RENDER_MAX_LINES = 1_000;
+export const AGENT_DETAIL_HIGHLIGHT_MAX_CHARS = 24 * 1024;
 
 function CardIcon({ kind }: Pick<AgentDetailCardV2, 'kind'>) {
   const props = { size: 14, strokeWidth: 1.5, 'aria-hidden': true } as const;
@@ -57,6 +62,10 @@ function byteLabel(bytes: number): string {
   return `${mib < 10 ? mib.toFixed(1) : Math.round(mib)}mb`;
 }
 
+function charLabel(characters: number): string {
+  return `${characters} char${characters === 1 ? '' : 's'}`;
+}
+
 function contentSize(card: AgentDetailCardV2): string | null {
   if (card.kind === 'diff') {
     const additions = card.additions ?? 0;
@@ -64,10 +73,23 @@ function contentSize(card: AgentDetailCardV2): string | null {
     return `+${additions} -${deletions}`;
   }
   const content = card.content ?? '';
-  const bytes = card.sizeBytes ?? new TextEncoder().encode(content).byteLength;
-  if (bytes === 0) return null;
-  const lines = content.split('\n').length;
-  return `${lines} line${lines === 1 ? '' : 's'} · ${byteLabel(bytes)}`;
+  const magnitude = card.sizeBytes ?? content.length;
+  if (magnitude === 0) return null;
+  const magnitudeLabel =
+    card.sizeBytes === undefined
+      ? charLabel(content.length)
+      : byteLabel(card.sizeBytes);
+  if (
+    card.status === 'running' ||
+    content.length > AGENT_DETAIL_RENDER_MAX_CHARS
+  ) {
+    return magnitudeLabel;
+  }
+  let lines = 1;
+  for (let index = 0; index < content.length; index += 1) {
+    if (content.charCodeAt(index) === 10) lines += 1;
+  }
+  return `${lines} line${lines === 1 ? '' : 's'} · ${magnitudeLabel}`;
 }
 
 function lineClass(kind: AgentDetailCardV2['kind'], line: string): string {
@@ -88,38 +110,87 @@ interface CardContentProps {
   itemId: string;
 }
 
+interface BoundedCardContent {
+  content: string;
+  truncated: 'start' | 'end' | null;
+}
+
+function boundCardContent(card: AgentDetailCardV2): BoundedCardContent {
+  const source = card.content ?? '';
+  const keepTail = card.kind === 'output' || card.kind === 'tool_call';
+  const charBounded =
+    source.length <= AGENT_DETAIL_RENDER_MAX_CHARS
+      ? source
+      : keepTail
+        ? source.slice(-AGENT_DETAIL_RENDER_MAX_CHARS)
+        : source.slice(0, AGENT_DETAIL_RENDER_MAX_CHARS);
+  const lines = charBounded.split('\n');
+  const lineTruncated = lines.length > AGENT_DETAIL_RENDER_MAX_LINES;
+  const visibleLines = lineTruncated
+    ? keepTail
+      ? lines.slice(-AGENT_DETAIL_RENDER_MAX_LINES)
+      : lines.slice(0, AGENT_DETAIL_RENDER_MAX_LINES)
+    : lines;
+  return {
+    content: visibleLines.join('\n'),
+    truncated:
+      source.length > AGENT_DETAIL_RENDER_MAX_CHARS
+        ? keepTail
+          ? 'start'
+          : 'end'
+        : lineTruncated
+          ? keepTail
+            ? 'start'
+            : 'end'
+          : null,
+  };
+}
+
 function CardContent({ card, itemId }: CardContentProps) {
-  const content = card.content ?? '';
+  const bounded = useMemo(() => boundCardContent(card), [card]);
+  const content = bounded.content;
   const language = card.kind === 'diff' ? 'diff' : card.language;
   const cacheKey = `agent-detail:${itemId}:${language ?? 'text'}`;
+  const highlightContent =
+    language &&
+    card.status !== 'running' &&
+    content.length <= AGENT_DETAIL_HIGHLIGHT_MAX_CHARS
+      ? content
+      : '';
   const { tokens } = useShikiHighlight(
     cacheKey,
-    language ? content : '',
+    highlightContent,
     language ?? 'text'
   );
   const rawLines = useMemo(() => content.split('\n'), [content]);
 
   return (
-    <pre className="ch-agent-card__code">
-      <code>
-        {rawLines.map((line, lineIndex) => (
-          <span
-            className={lineClass(card.kind, line)}
-            key={`${lineIndex}:${line}`}
-          >
-            {tokens?.[lineIndex]?.map((token, tokenIndex) => (
-              <span
-                key={tokenIndex}
-                style={{ color: token.color ?? 'var(--text)' }}
-              >
-                {token.content}
-              </span>
-            )) ?? line}
-            {'\n'}
-          </span>
-        ))}
-      </code>
-    </pre>
+    <>
+      {bounded.truncated ? (
+        <div className="ch-agent-card__truncated" role="note">
+          {bounded.truncated === 'start'
+            ? 'showing latest bounded output'
+            : 'showing first bounded output'}
+        </div>
+      ) : null}
+      <pre className="ch-agent-card__code">
+        <code>
+          {rawLines.map((line, lineIndex) => (
+            <span className={lineClass(card.kind, line)} key={lineIndex}>
+              {tokens?.[lineIndex]?.map((token, tokenIndex) => (
+                <span
+                  key={tokenIndex}
+                  style={{ color: token.color ?? 'var(--text)' }}
+                >
+                  {token.content}
+                </span>
+              )) ?? line}
+              {'\n'}
+            </span>
+          ))}
+        </code>
+      </pre>
+    </>
   );
 }
 
@@ -130,6 +201,7 @@ function CardContent({ card, itemId }: CardContentProps) {
 export const AgentDetailCard: React.FC<AgentDetailCardProps> = ({
   card,
   itemId,
+  onUserToggle,
 }) => {
   const [expanded, setExpanded] = useState(false);
   const hasContent = Boolean(card.content);
@@ -148,7 +220,10 @@ export const AgentDetailCard: React.FC<AgentDetailCardProps> = ({
         className="ch-agent-card__toggle"
         aria-expanded={expanded}
         disabled={!hasContent}
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => {
+          onUserToggle?.(itemId);
+          setExpanded((value) => !value);
+        }}
       >
         <ChevronRight
           className={`ch-agent-card__chevron${expanded ? ' ch-agent-card__chevron--open' : ''}`}

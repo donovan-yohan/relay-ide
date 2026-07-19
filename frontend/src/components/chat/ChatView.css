@@ -1,10 +1,30 @@
 .chat-view {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
   height: 100%;
   background: var(--bg);
   color: var(--text);
+}
+
+.tl-jump-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 68px;
+  z-index: 2;
+  transform: translateX(-50%);
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--status-info);
+  background: var(--bg);
+  color: var(--status-info);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+
+.tl-jump-latest:hover {
+  background: color-mix(in srgb, var(--status-info) 10%, var(--bg));
 }
 
 /* timeline — matches chat.html lines 120-129 verbatim */

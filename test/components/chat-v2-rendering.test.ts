@@ -737,7 +737,66 @@ describe('chat v2 rendering against chat.html primitives', () => {
     ).toBeTruthy();
   });
 
-  it('opens a new session at newest even when its item count matches a scrolled-up session', async () => {
+  it('keeps an expanded card open through stable-id status and content updates', async () => {
+    const sessionWithOutput = (
+      status: 'running' | 'completed',
+      output: string
+    ): AgentSessionV2 =>
+      makeSession({
+        live: {
+          ...makeSession().live,
+          status: status === 'running' ? 'working' : 'idle',
+        },
+        turns: [
+          {
+            id: 'turn-stream-card',
+            status,
+            inputMessageId: 'user-stream-card',
+            startedAt: timestamp(),
+            items: [
+              {
+                id: 'user-stream-card',
+                type: 'userMessage',
+                text: 'run build',
+                status: 'completed',
+              },
+              {
+                id: 'stable-output-card',
+                type: 'commandExecution',
+                command: 'npm run build',
+                output,
+                status,
+              },
+            ],
+          },
+        ],
+      });
+
+    mocks.session = sessionWithOutput('running', 'building…');
+    await renderChat();
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[data-agent-item-id="stable-output-card"] .ch-agent-card__toggle'
+    );
+    await act(async () => toggle?.click());
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+
+    mocks.session = sessionWithOutput('completed', 'build complete');
+    await renderChat();
+
+    const updatedToggle = container.querySelector<HTMLButtonElement>(
+      '[data-agent-item-id="stable-output-card"] .ch-agent-card__toggle'
+    );
+    expect(updatedToggle).toBe(toggle);
+    expect(updatedToggle?.getAttribute('aria-expanded')).toBe('true');
+    expect(
+      container.querySelector(
+        '[data-agent-item-id="stable-output-card"] .ch-agent-card__body'
+      )?.textContent
+    ).toContain('build complete');
+    expect(container.textContent).not.toContain('building…');
+  });
+
+  it('opens a new session at newest without a smooth transition when its item count matches', async () => {
     const scrollSpy = vi
       .spyOn(Element.prototype, 'scrollIntoView')
       .mockImplementation(() => {});
@@ -769,9 +828,116 @@ describe('chat v2 rendering against chat.html primitives', () => {
       await renderChat('session-b');
 
       expect(timeline?.scrollTop).toBe(1_000);
-      expect(scrollSpy).toHaveBeenCalled();
+      expect(scrollSpy).not.toHaveBeenCalled();
     } finally {
       scrollSpy.mockRestore();
+    }
+  });
+
+  it('preserves the first-visible reader anchor when a toggled card is above the viewport', async () => {
+    class ResizeObserverStub {
+      static instances: ResizeObserverStub[] = [];
+      callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        ResizeObserverStub.instances.push(this);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      trigger() {
+        this.callback([], this as unknown as ResizeObserver);
+      }
+    }
+    ResizeObserverStub.instances = [];
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+
+    const rect = (top: number, bottom: number): DOMRect =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom,
+        left: 0,
+        right: 600,
+        width: 600,
+        height: bottom - top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    try {
+      mocks.session = makeSession({
+        turns: [
+          {
+            id: 'turn-anchor-reflow',
+            status: 'completed',
+            inputMessageId: 'offscreen-card',
+            startedAt: timestamp(),
+            completedAt: timestamp(100),
+            items: [
+              {
+                id: 'offscreen-card',
+                type: 'commandExecution',
+                command: 'npm test',
+                output: 'expanded output',
+                status: 'completed',
+              },
+              {
+                id: 'reader-anchor',
+                type: 'assistantMessage',
+                text: 'reader focal row',
+                status: 'completed',
+              },
+            ],
+          },
+        ],
+      });
+      await renderChat();
+
+      const timeline = container.querySelector<HTMLElement>('.tl')!;
+      const offscreenCard = container.querySelector<HTMLElement>(
+        '[data-agent-item-id="offscreen-card"]'
+      )!;
+      const readerAnchor = container.querySelector<HTMLElement>(
+        '[data-agent-item-id="reader-anchor"]'
+      )!;
+      const toggle = offscreenCard.querySelector<HTMLButtonElement>(
+        '.ch-agent-card__toggle'
+      )!;
+      const observer = ResizeObserverStub.instances.at(-1);
+      expect(observer).toBeTruthy();
+
+      Object.defineProperties(timeline, {
+        scrollHeight: { value: 1_000, configurable: true },
+        clientHeight: { value: 400, configurable: true },
+        scrollTop: { value: 600, configurable: true, writable: true },
+      });
+      vi.spyOn(timeline, 'getBoundingClientRect').mockImplementation(() =>
+        rect(0, 400)
+      );
+      vi.spyOn(offscreenCard, 'getBoundingClientRect').mockImplementation(() =>
+        rect(-100, -60)
+      );
+      let readerTop = 20;
+      vi.spyOn(readerAnchor, 'getBoundingClientRect').mockImplementation(() =>
+        rect(readerTop, readerTop + 30)
+      );
+
+      await act(async () => {
+        timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      });
+      timeline.scrollTop = 50;
+      await act(async () => {
+        timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      });
+
+      await act(async () => toggle.click());
+      readerTop = 340;
+      await act(async () => observer?.trigger());
+
+      expect(timeline.scrollTop).toBe(370);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 
@@ -822,7 +988,8 @@ describe('chat v2 rendering against chat.html primitives', () => {
       await act(async () => {
         observerInstance?.trigger();
       });
-      expect(scrollSpy).toHaveBeenCalled();
+      expect(timeline.scrollTop).toBe(1_000);
+      expect(scrollSpy).not.toHaveBeenCalled();
 
       // Reader scrolled up to read history — a resize (more streamed
       // content) must not yank them back down.
@@ -839,6 +1006,40 @@ describe('chat v2 rendering against chat.html primitives', () => {
         observerInstance?.trigger();
       });
       expect(scrollSpy).not.toHaveBeenCalled();
+      expect(timeline.scrollTop).toBe(50);
+      const jump =
+        container.querySelector<HTMLButtonElement>('.tl-jump-latest');
+      expect(jump).toBeTruthy();
+      await act(async () => jump?.click());
+      expect(timeline.scrollTop).toBe(1_000);
+      expect(container.querySelector('.tl-jump-latest')).toBeNull();
+
+      // A browser may report programmatic-scroll frames after the assignment.
+      // Compare them with the old top: a downward frame far from the bottom
+      // must keep follow engaged and must not resurrect the jump affordance.
+      timeline.scrollTop = 300;
+      await act(async () => {
+        timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      });
+      expect(container.querySelector('.tl-jump-latest')).toBeNull();
+
+      timeline.scrollTop = 600;
+      await act(async () => {
+        timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      });
+      expect(container.querySelector('.tl-jump-latest')).toBeNull();
+      await act(async () => {
+        observerInstance?.trigger();
+      });
+      expect(timeline.scrollTop).toBe(1_000);
+
+      // Once the guarded scroll reaches bottom, a real upward gesture must
+      // disengage follow even though it remains inside the near-bottom band.
+      timeline.scrollTop = 550;
+      await act(async () => {
+        timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      });
+      expect(container.querySelector('.tl-jump-latest')).toBeTruthy();
     } finally {
       scrollSpy.mockRestore();
       vi.unstubAllGlobals();

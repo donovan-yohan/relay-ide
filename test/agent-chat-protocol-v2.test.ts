@@ -482,6 +482,68 @@ describe('Agent Chat Protocol v2', () => {
         status: 'running',
       },
     });
+    expect(withSecond.turns[0]?.items[0]?.card).not.toHaveProperty('sizeBytes');
+
+    const terminal = applyAgentPatchV2(withSecond, {
+      type: 'agent-item-delta-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't-card',
+      itemId: 'exec-1',
+      delta: { status: 'completed', durationMs: 10 },
+    });
+    expect(terminal.turns[0]?.items[0]).toMatchObject({
+      status: 'completed',
+      durationMs: 10,
+      card: {
+        status: 'completed',
+        content: 'one\ntwo\n',
+        sizeBytes: 8,
+      },
+    });
+  });
+
+  it('does not recompute never-rendered message cards on text deltas', () => {
+    const withTurn = applyAgentPatchV2(makeSession(), {
+      type: 'agent-turn-started-v2',
+      sessionId: 's1',
+      timestamp,
+      turn: {
+        id: 't-message-card',
+        status: 'running',
+        inputMessageId: 'user-message-card',
+        items: [],
+        startedAt: timestamp,
+      },
+    });
+    const started = withAgentDetailCards({
+      type: 'agent-item-started-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't-message-card',
+      item: {
+        type: 'assistantMessage',
+        id: 'message-card-1',
+        text: '',
+        status: 'running',
+      },
+    });
+    const withStart = applyAgentPatchV2(withTurn, started);
+    const originalCard = withStart.turns[0]?.items[0]?.card;
+    const withDelta = applyAgentPatchV2(withStart, {
+      type: 'agent-item-delta-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't-message-card',
+      itemId: 'message-card-1',
+      delta: { text: 'streamed text' },
+    });
+
+    expect(withDelta.turns[0]?.items[0]).toMatchObject({
+      text: 'streamed text',
+      status: 'running',
+    });
+    expect(withDelta.turns[0]?.items[0]?.card).toBe(originalCard);
   });
 
   it('does not mis-tag plain file-tool output as a diff', () => {

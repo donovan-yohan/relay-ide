@@ -5,10 +5,41 @@ import {
   mapAgentPatchV2ToChatEvents,
   mapChatEventToAgentPatchV2,
 } from '../shared/agent-chat-v1-compat.js';
-import type { AgentPatchV2 } from '../shared/agent-chat-protocol-v2.js';
+import {
+  applyAgentPatchV2,
+  emptyAgentSessionV2,
+  type AgentPatchV2,
+  type AgentSessionV2,
+} from '../shared/agent-chat-protocol-v2.js';
 import type { ChatEvent } from '../shared/chat-events.js';
 
 const timestamp = '2026-04-25T00:00:00.000Z';
+
+function reduceCompatEvents(events: ChatEvent[]): AgentSessionV2 {
+  let session = emptyAgentSessionV2({
+    id: 'session-1',
+    provider: 'opencode',
+    cwd: '/workspace/example',
+  });
+  session = applyAgentPatchV2(session, {
+    type: 'agent-turn-started-v2',
+    sessionId: 'session-1',
+    timestamp,
+    turn: {
+      id: 'turn-1',
+      status: 'running',
+      inputMessageId: 'input-1',
+      items: [],
+      startedAt: timestamp,
+    },
+  });
+  for (const event of events) {
+    for (const patch of mapChatEventToAgentPatchV2(event)) {
+      session = applyAgentPatchV2(session, patch);
+    }
+  }
+  return session;
+}
 
 describe('Agent Chat v1 compatibility bridge', () => {
   it('maps v1 text deltas to assistant message item deltas', () => {
@@ -226,7 +257,7 @@ describe('Agent Chat v1 compatibility bridge', () => {
     ]);
   });
 
-  it('maps v1 tool-result events to a content-appending item delta keyed by the same tool item id', () => {
+  it('maps v1 tool-result events to terminal content deltas keyed by the same tool item id', () => {
     const event: ChatEvent = {
       type: 'chat:tool-result',
       sessionId: 'session-1',
@@ -247,12 +278,16 @@ describe('Agent Chat v1 compatibility bridge', () => {
         timestamp,
         turnId: 'turn-1',
         itemId: 'tool-call-1',
-        delta: { content: 'file contents' },
+        delta: {
+          content: 'file contents',
+          status: 'completed',
+          durationMs: 12,
+        },
       },
     ]);
   });
 
-  it('drops tool-result events with no output or error to avoid a no-op patch', () => {
+  it('keeps a terminal tool-result update even when it has no body', () => {
     const event: ChatEvent = {
       type: 'chat:tool-result',
       sessionId: 'session-1',
@@ -265,7 +300,101 @@ describe('Agent Chat v1 compatibility bridge', () => {
       durationMs: 12,
     };
 
-    expect(mapChatEventToAgentPatchV2(event)).toEqual([]);
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([
+      {
+        type: 'agent-item-delta-v2',
+        sessionId: 'session-1',
+        timestamp,
+        turnId: 'turn-1',
+        itemId: 'tool-call-1',
+        delta: { status: 'completed', durationMs: 12 },
+      },
+    ]);
+  });
+
+  it('finishes an OpenCode-shaped command result on the original stable item', () => {
+    const session = reduceCompatEvents([
+      {
+        type: 'chat:tool-call',
+        sessionId: 'session-1',
+        timestamp,
+        source: 'opencode',
+        turnId: 'turn-1',
+        toolCallId: 'bash-1',
+        toolName: 'bash',
+        description: '',
+        input: { command: 'npm test' },
+        status: 'running',
+      },
+      {
+        type: 'chat:tool-result',
+        sessionId: 'session-1',
+        timestamp,
+        source: 'opencode',
+        turnId: 'turn-1',
+        toolCallId: 'bash-1',
+        toolName: 'bash',
+        status: 'completed',
+        output: 'PASS\n',
+        exitCode: 0,
+        durationMs: 42,
+      },
+    ]);
+
+    expect(session.turns[0]?.items).toHaveLength(1);
+    expect(session.turns[0]?.items[0]).toMatchObject({
+      id: 'tool-bash-1',
+      type: 'commandExecution',
+      command: 'npm test',
+      output: 'PASS\n',
+      status: 'completed',
+      exitCode: 0,
+      durationMs: 42,
+      card: { kind: 'output', status: 'completed', content: 'PASS\n' },
+    });
+  });
+
+  it('fails an OpenCode-shaped tool result with its error on the original stable item', () => {
+    const session = reduceCompatEvents([
+      {
+        type: 'chat:tool-call',
+        sessionId: 'session-1',
+        timestamp,
+        source: 'opencode',
+        turnId: 'turn-1',
+        toolCallId: 'read-1',
+        toolName: 'read_file',
+        description: '',
+        input: { path: '/workspace/example/missing.ts' },
+        status: 'running',
+      },
+      {
+        type: 'chat:tool-result',
+        sessionId: 'session-1',
+        timestamp,
+        source: 'opencode',
+        turnId: 'turn-1',
+        toolCallId: 'read-1',
+        toolName: 'read_file',
+        status: 'error',
+        durationMs: 7,
+        error: 'synthetic missing file',
+      },
+    ]);
+
+    expect(session.turns[0]?.items).toHaveLength(1);
+    expect(session.turns[0]?.items[0]).toMatchObject({
+      id: 'tool-read-1',
+      type: 'dynamicToolCall',
+      arguments: { path: '/workspace/example/missing.ts' },
+      content: 'synthetic missing file',
+      status: 'failed',
+      error: 'synthetic missing file',
+      card: {
+        kind: 'tool_call',
+        status: 'failed',
+      },
+    });
   });
 
   it('maps a tagged legacy file edit onto the same durable tool entity', () => {
@@ -295,7 +424,6 @@ describe('Agent Chat v1 compatibility bridge', () => {
           providerItemId: 'call-1',
           paths: [{ path: 'demo.ts', status: 'modified' }],
           patch: '@@ -1 +1 @@\n-old\n+new\n',
-          applyStatus: 'applied',
           status: 'completed',
           metadata: {
             source: 'hermes',

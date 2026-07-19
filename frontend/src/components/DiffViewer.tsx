@@ -342,6 +342,7 @@ function useDiffTokenizer(
     if (
       cached &&
       cached.source === sourceKey &&
+      cached.language === lang &&
       cached.highlightOutput !== null
     ) {
       const tokenLines = cached.highlightOutput as ThemedToken[][];
@@ -365,7 +366,10 @@ function useDiffTokenizer(
     tokenizeCode(subsetSource, lang)
       .then((tokenLines) => {
         if (gen !== genRef.current) return;
-        setHighlightOutput(cacheKey, tokenLines);
+        setHighlightOutput(cacheKey, tokenLines, {
+          source: subsetSource,
+          language: lang,
+        });
         const highlighted = rawLines.map((line, i) => ({
           ...line,
           tokens: tokenLines[i] ?? null,

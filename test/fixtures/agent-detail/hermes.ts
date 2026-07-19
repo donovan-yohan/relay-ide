@@ -78,7 +78,6 @@ const fixture = {
     outputTitle: 'node scripts/synthetic-check.mjs',
     outputContent: commandOutput,
     outputLanguage: 'bash',
-    diffItemType: 'fileChange',
   }),
   assertions: {
     thoughtContent,

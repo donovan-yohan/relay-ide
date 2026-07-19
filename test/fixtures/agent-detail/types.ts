@@ -56,7 +56,7 @@ interface FixtureSessionInput {
   outputTitle: string;
   outputContent: string;
   outputLanguage: string;
-  diffItemType: 'fileChange' | 'dynamicToolCall';
+  applyStatus?: 'applied';
 }
 
 function bytes(value: string): number {
@@ -151,29 +151,16 @@ export function makeFixtureSession(input: FixtureSessionInput): AgentSessionV2 {
               sizeBytes: bytes(input.outputContent),
             },
           },
-          input.diffItemType === 'fileChange'
-            ? {
-                id: diffId,
-                providerItemId: `synthetic-${diffId}`,
-                type: 'fileChange',
-                status: 'completed',
-                paths: [{ path: SANITIZED_FIXTURE_PATH, status: 'update' }],
-                patch,
-                applyStatus: 'applied',
-                card: diffCard,
-              }
-            : {
-                id: diffId,
-                providerItemId: `synthetic-${diffId}`,
-                type: 'dynamicToolCall',
-                status: 'completed',
-                namespace: 'fixture',
-                tool: 'apply_patch',
-                content: patch,
-                result: { status: 'completed' },
-                metadata: { contentKind: 'diff' },
-                card: diffCard,
-              },
+          {
+            id: diffId,
+            providerItemId: `synthetic-${diffId}`,
+            type: 'fileChange',
+            status: 'completed',
+            paths: [{ path: SANITIZED_FIXTURE_PATH, status: 'update' }],
+            patch,
+            ...(input.applyStatus ? { applyStatus: input.applyStatus } : {}),
+            card: diffCard,
+          },
         ],
       },
     ],

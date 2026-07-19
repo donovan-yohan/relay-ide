@@ -5,12 +5,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import type { AgentDetailCardV2 } from '../../shared/agent-chat-protocol-v2.js';
 
-vi.mock('../../frontend/src/hooks/useShikiHighlight.js', () => ({
-  useShikiHighlight: () => ({ tokens: null, highlighting: false }),
+const shikiMocks = vi.hoisted(() => ({
+  useShikiHighlight: vi.fn(() => ({ tokens: null, highlighting: false })),
 }));
 
-const { AgentDetailCard } =
-  await import('../../frontend/src/components/chat/AgentDetailCard.js');
+vi.mock('../../frontend/src/hooks/useShikiHighlight.js', () => ({
+  useShikiHighlight: shikiMocks.useShikiHighlight,
+}));
+
+const {
+  AgentDetailCard,
+  AGENT_DETAIL_RENDER_MAX_CHARS,
+  AGENT_DETAIL_RENDER_MAX_LINES,
+} = await import('../../frontend/src/components/chat/AgentDetailCard.js');
 
 let host: HTMLDivElement;
 let root: Root;
@@ -33,6 +40,7 @@ async function toggle(): Promise<void> {
 
 describe('AgentDetailCard', () => {
   beforeEach(() => {
+    shikiMocks.useShikiHighlight.mockClear();
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -140,5 +148,51 @@ describe('AgentDetailCard', () => {
       'final result'
     );
     expect(host.textContent).not.toContain('first result');
+  });
+
+  it('bounds large streaming output and skips Shiki until completion', async () => {
+    const content = Array.from(
+      { length: AGENT_DETAIL_RENDER_MAX_LINES + 250 },
+      (_, index) => `${index}:${'x'.repeat(80)}`
+    ).join('\n');
+    expect(content.length).toBeGreaterThan(AGENT_DETAIL_RENDER_MAX_CHARS);
+    await render({
+      kind: 'output',
+      title: 'npm run build',
+      status: 'running',
+      content,
+      language: 'bash',
+      sizeBytes: content.length,
+    });
+
+    await toggle();
+
+    expect(
+      host.querySelectorAll('.ch-agent-card__line').length
+    ).toBeLessThanOrEqual(AGENT_DETAIL_RENDER_MAX_LINES);
+    expect(host.querySelector('.ch-agent-card__truncated')?.textContent).toBe(
+      'showing latest bounded output'
+    );
+    expect(host.textContent).toContain(
+      `${AGENT_DETAIL_RENDER_MAX_LINES + 249}:`
+    );
+    expect(shikiMocks.useShikiHighlight).toHaveBeenLastCalledWith(
+      'agent-detail:durable-item-1:bash',
+      '',
+      'bash'
+    );
+  });
+
+  it('labels fallback content length as characters, not bytes', async () => {
+    await render({
+      kind: 'output',
+      title: 'unicode output',
+      status: 'running',
+      content: '✓',
+    });
+
+    expect(host.querySelector('.ch-agent-card__size')?.textContent).toBe(
+      '1 char'
+    );
   });
 });

@@ -216,7 +216,6 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
 
     case 'chat:tool-result': {
       const content = event.output || event.error || '';
-      if (!content) return [];
       return [
         {
           type: 'agent-item-delta-v2',
@@ -224,9 +223,19 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
           timestamp: event.timestamp,
           turnId: event.turnId,
           itemId: toolCallItemId(event.toolCallId),
-          delta: isCommandTool(event.toolName)
-            ? { output: content }
-            : { content },
+          delta: {
+            ...(content
+              ? isCommandTool(event.toolName)
+                ? { output: content }
+                : { content }
+              : {}),
+            status: toolCallStatusToItemStatus(event.status),
+            ...(event.error ? { error: event.error } : {}),
+            ...(event.exitCode !== undefined
+              ? { exitCode: event.exitCode }
+              : {}),
+            durationMs: event.durationMs,
+          },
         },
       ];
     }
@@ -250,7 +259,6 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
               },
             ],
             ...(event.diff ? { patch: event.diff } : {}),
-            applyStatus: 'applied',
             status: 'completed',
             metadata: {
               source: event.source,

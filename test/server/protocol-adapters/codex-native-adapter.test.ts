@@ -130,6 +130,16 @@ function collectPatches(adapter: CodexNativeProtocolAdapter): AgentPatchV2[] {
   return patches;
 }
 
+function reducePatches(patches: AgentPatchV2[]) {
+  let session = emptyAgentSessionV2({
+    id: config.sessionId,
+    provider: 'codex',
+    cwd: config.cwd,
+  });
+  for (const patch of patches) session = applyAgentPatchV2(session, patch);
+  return session;
+}
+
 function retentionCounts(adapter: CodexNativeProtocolAdapter) {
   const state = adapter as unknown as {
     itemMap: Map<unknown, unknown>;
@@ -602,7 +612,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     await adapter.disconnect();
   });
 
-  it('fileChange: patch delta then complete', async () => {
+  it('fileChange: cumulative patch updates replace the live body and counts', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-file');
 
     // Authoritative FileUpdateChange shape: kind is tagged union { type: 'add'|'delete'|'update' }
@@ -614,16 +624,63 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       },
     });
     // Authoritative item/fileChange/patchUpdated shape: { changes: FileUpdateChange[] }
+    const firstPatch =
+      '--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-old\n+intermediate\n';
     client.feedNotification('item/fileChange/patchUpdated', {
       itemId: 'fc-1',
       changes: [
         {
           path: 'foo.ts',
           kind: { type: 'update' },
-          diff: '@@ -1,1 +1,2 @@\n+new line\n',
+          diff: firstPatch,
         },
       ],
     });
+    const afterFirst = reducePatches(patches);
+    expect(afterFirst.turns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'fileChange',
+          patch: firstPatch,
+          card: expect.objectContaining({
+            content: firstPatch,
+            additions: 1,
+            deletions: 1,
+          }),
+        }),
+      ])
+    );
+
+    const finalPatch =
+      '--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1,2 @@\n-old\n+final one\n+final two\n';
+    client.feedNotification('item/fileChange/patchUpdated', {
+      itemId: 'fc-1',
+      changes: [
+        {
+          path: 'foo.ts',
+          kind: { type: 'update' },
+          diff: finalPatch,
+        },
+      ],
+    });
+    const midStream = reducePatches(patches);
+    expect(midStream.turns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'fileChange',
+          patch: finalPatch,
+          card: expect.objectContaining({
+            content: finalPatch,
+            additions: 2,
+            deletions: 1,
+          }),
+        }),
+      ])
+    );
+    expect(JSON.stringify(midStream.turns[0]?.items)).not.toContain(
+      'intermediate'
+    );
+
     client.feedNotification('item/completed', {
       item: {
         type: 'fileChange',
@@ -632,7 +689,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
           {
             path: 'foo.ts',
             kind: { type: 'update' },
-            diff: '@@ -1,1 +1,2 @@\n+new line\n',
+            diff: finalPatch,
           },
         ],
         applyStatus: 'applied',
@@ -650,23 +707,27 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         }),
         expect.objectContaining({
           type: 'agent-item-delta-v2',
-          delta: { patch: '@@ -1,1 +1,2 @@\n+new line\n' },
+          mode: 'replace',
+          delta: {
+            patch: finalPatch,
+            card: { additions: 2, deletions: 1 },
+          },
         }),
         expect.objectContaining({
           type: 'agent-item-updated-v2',
           item: expect.objectContaining({
             applyStatus: 'applied',
-            patch: '@@ -1,1 +1,2 @@\n+new line\n',
+            patch: finalPatch,
             card: {
               kind: 'diff',
               title: 'foo.ts',
               status: 'completed',
               language: 'diff',
               path: 'foo.ts',
-              content: '@@ -1,1 +1,2 @@\n+new line\n',
-              additions: 1,
-              deletions: 0,
-              sizeBytes: 26,
+              content: finalPatch,
+              additions: 2,
+              deletions: 1,
+              sizeBytes: new TextEncoder().encode(finalPatch).byteLength,
             },
           }),
         }),
