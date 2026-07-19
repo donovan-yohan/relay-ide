@@ -28,6 +28,7 @@ interface ChannelThreadPanelProps {
   archived: boolean;
   onRestore: () => void;
   restorePending: boolean;
+  fullSnapshotRevision: number;
 }
 
 export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
@@ -42,6 +43,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
   archived,
   onRestore,
   restorePending,
+  fullSnapshotRevision,
 }) => {
   const {
     root,
@@ -51,16 +53,22 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
     loadOlder,
     loading,
     error,
+    rootFloorRevision,
   } = useChannelThread(channelId, rootId, liveMessages);
 
   const replyActivity = useMemo(
     () => deriveReplyCounts(root ? [root, ...replies] : replies),
     [root, replies]
   );
-  const liveReplyGrowth = useLiveReplyGrowth(
-    liveMessages,
-    `${channelId}:${rootId}`
-  );
+  const liveReplyGrowth = useLiveReplyGrowth(liveMessages, {
+    scopeKey: `${channelId}:${rootId}`,
+    fullSnapshotRevision,
+    ...(root
+      ? {
+          authoritativeRoots: [{ message: root, revision: rootFloorRevision }],
+        }
+      : {}),
+  });
   const replyCount = root
     ? displayedReplyCount(
         root,
@@ -87,7 +95,7 @@ export const ChannelThreadPanel: React.FC<ChannelThreadPanelProps> = ({
       className="ch-thread"
       aria-label="channel thread"
       onKeyDown={(event) => {
-        if (event.key !== 'Escape') return;
+        if (event.key !== 'Escape' || event.defaultPrevented) return;
         event.preventDefault();
         onClose();
       }}

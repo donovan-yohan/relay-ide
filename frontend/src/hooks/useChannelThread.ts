@@ -15,6 +15,8 @@ export interface UseChannelThreadState {
   loadOlder: () => Promise<void>;
   loading: boolean;
   error: Error | null;
+  /** Advances whenever a REST page supplies the authoritative root row. */
+  rootFloorRevision: number;
 }
 
 function asError(error: unknown): Error {
@@ -27,6 +29,32 @@ function cursorFromPage(
 ): number | null {
   const earliestReply = messages.find((message) => message.id !== rootId);
   return earliestReply?.seq ?? null;
+}
+
+function mergeThreadPage(
+  current: Map<ChannelMessageId, ChannelMessage>,
+  pageMessages: ChannelMessage[],
+  rootId: ChannelMessageId
+): Map<ChannelMessageId, ChannelMessage> {
+  const next = new Map(current);
+  for (const message of pageMessages) {
+    const retained = next.get(message.id);
+    if (retained === undefined) {
+      next.set(message.id, message);
+      continue;
+    }
+    if (message.id === rootId) {
+      next.set(rootId, {
+        ...message,
+        ...retained,
+        // REST carries the refreshed authoritative floor; the retained row may
+        // carry newer live presentation fields.
+        replyCount: Math.max(message.replyCount ?? 0, retained.replyCount ?? 0),
+      });
+    }
+    // Reply collisions retain the live row (it may still be streaming).
+  }
+  return next;
 }
 
 /**
@@ -46,12 +74,16 @@ export function useChannelThread(
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [rootFloorRevision, setRootFloorRevision] = useState(0);
 
   const requestKeyRef = useRef('');
   const backfillRef = useRef(backfill);
   const cursorRef = useRef<number | null>(null);
   const hasMoreOlderRef = useRef(false);
   const loadingOlderRef = useRef(false);
+  const lastFoldedLiveRowsRef = useRef<Map<ChannelMessageId, ChannelMessage>>(
+    new Map()
+  );
 
   backfillRef.current = backfill;
   hasMoreOlderRef.current = hasMoreOlder;
@@ -62,10 +94,12 @@ export function useChannelThread(
     cursorRef.current = null;
     hasMoreOlderRef.current = false;
     loadingOlderRef.current = false;
+    lastFoldedLiveRowsRef.current.clear();
     setBackfill(new Map());
     setHasMoreOlder(false);
     setLoadingOlder(false);
     setError(null);
+    setRootFloorRevision(0);
 
     if (rootId === null) {
       setLoading(false);
@@ -78,15 +112,16 @@ export function useChannelThread(
     })
       .then((page) => {
         if (requestKeyRef.current !== requestKey) return;
-        // Preserve a root captured from the live reducer when a newest-first
-        // page does not reach it (long threads can omit the root until the
-        // pagination walk reaches the oldest page).
-        const retainedRoot = backfillRef.current.get(rootId);
-        const next = new Map<ChannelMessageId, ChannelMessage>();
-        for (const message of page.messages) next.set(message.id, message);
-        if (retainedRoot !== undefined) next.set(rootId, retainedRoot);
+        const next = mergeThreadPage(
+          backfillRef.current,
+          page.messages,
+          rootId
+        );
         backfillRef.current = next;
         setBackfill(next);
+        if (page.messages.some((message) => message.id === rootId)) {
+          setRootFloorRevision((revision) => revision + 1);
+        }
         cursorRef.current =
           page.nextCursor?.beforeSeq ?? cursorFromPage(page.messages, rootId);
         const more =
@@ -103,20 +138,32 @@ export function useChannelThread(
       });
   }, [channelId, rootId]);
 
-  // The volatile reducer tail can later replace its whole window. Once we have
-  // seen the root live, retain it in the hook-owned map so the pinned panel root
-  // never disappears merely because channel history moved past it.
+  // Fold every live thread row into hook-owned state. A later authoritative
+  // reducer replacement must not erase rows already observed by an open panel.
   useEffect(() => {
     if (rootId === null) return;
-    const liveRoot = liveMessages.find((message) => message.id === rootId);
-    if (
-      liveRoot === undefined ||
-      backfillRef.current.get(rootId) === liveRoot
-    ) {
-      return;
+    let next: Map<ChannelMessageId, ChannelMessage> | null = null;
+    for (const message of liveMessages) {
+      if (message.id !== rootId && message.threadId !== rootId) continue;
+      if (lastFoldedLiveRowsRef.current.get(message.id) === message) continue;
+      lastFoldedLiveRowsRef.current.set(message.id, message);
+      next ??= new Map(backfillRef.current);
+      const retained = next.get(message.id);
+      next.set(
+        message.id,
+        message.id === rootId && retained
+          ? {
+              ...retained,
+              ...message,
+              replyCount: Math.max(
+                retained.replyCount ?? 0,
+                message.replyCount ?? 0
+              ),
+            }
+          : message
+      );
     }
-    const next = new Map(backfillRef.current);
-    next.set(rootId, liveRoot);
+    if (next === null) return;
     backfillRef.current = next;
     setBackfill(next);
   }, [liveMessages, rootId]);
@@ -125,9 +172,21 @@ export function useChannelThread(
     const rows = new Map(backfill);
     if (rootId !== null) {
       for (const message of liveMessages) {
-        if (message.id === rootId || message.threadId === rootId) {
-          rows.set(message.id, message);
-        }
+        if (message.id !== rootId && message.threadId !== rootId) continue;
+        const retained = rows.get(message.id);
+        rows.set(
+          message.id,
+          message.id === rootId && retained
+            ? {
+                ...retained,
+                ...message,
+                replyCount: Math.max(
+                  retained.replyCount ?? 0,
+                  message.replyCount ?? 0
+                ),
+              }
+            : message
+        );
       }
     }
     return rows;
@@ -165,10 +224,12 @@ export function useChannelThread(
         limit: THREAD_HISTORY_PAGE_LIMIT,
       });
       if (requestKeyRef.current !== requestKey) return;
-      const next = new Map(backfillRef.current);
-      for (const message of page.messages) next.set(message.id, message);
+      const next = mergeThreadPage(backfillRef.current, page.messages, rootId);
       backfillRef.current = next;
       setBackfill(next);
+      if (page.messages.some((message) => message.id === rootId)) {
+        setRootFloorRevision((revision) => revision + 1);
+      }
       cursorRef.current =
         page.nextCursor?.beforeSeq ?? cursorFromPage(page.messages, rootId);
       const more =
@@ -193,5 +254,6 @@ export function useChannelThread(
     loadOlder,
     loading,
     error,
+    rootFloorRevision,
   };
 }

@@ -676,6 +676,36 @@
   text-transform: lowercase;
 }
 
+.ch-history-paused {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.ch-history-continue {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.ch-history-continue:hover {
+  border-color: var(--status-info);
+  color: var(--status-info);
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+}
+
 /* catch-up banner — mirrors .tl-resume-banner, sticky at top of scroll area */
 .ch-catchup-banner {
   position: sticky;

@@ -216,6 +216,32 @@ describe('ChannelTimeline scroll model (#1193)', () => {
     expect(timeline().scrollTop).toBe(200);
   });
 
+  it('restores the visible reader anchor across a non-following reflow', async () => {
+    await render([message(1), message(2)]);
+    const firstRow = host.querySelector<HTMLElement>(
+      '[data-channel-message-seq="1"]'
+    );
+    if (!firstRow) throw new Error('missing first message row');
+    let rowTop = 40;
+    firstRow.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: rowTop,
+        top: rowTop,
+        left: 0,
+        right: 100,
+        bottom: rowTop + 20,
+        width: 100,
+        height: 20,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    await userScroll(200);
+
+    rowTop = 80;
+    await act(async () => resizeCallback?.([], {} as ResizeObserver));
+    expect(timeline().scrollTop).toBe(240);
+  });
+
   it('disengages follow when scrolling to the top of a low-overflow timeline before prepend growth', async () => {
     timelineScrollHeight = 400;
     timelineClientHeight = 300;

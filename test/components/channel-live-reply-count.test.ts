@@ -130,4 +130,49 @@ describe('live reply count above a persisted floor', () => {
       '111 replies'
     );
   });
+
+  it('does not invent growth before the first tracked root floor', async () => {
+    const outOfWindow = row('chm:out-of-window', 10, rootId);
+    await render([outOfWindow]);
+    await render([outOfWindow, row('chm:still-no-floor', 11, rootId)]);
+    expect(host.querySelector('.ch-msg__thread-chip')).toBeNull();
+
+    await render([
+      row(rootId, 1, null, 10),
+      outOfWindow,
+      row('chm:still-no-floor', 11, rootId),
+    ]);
+    expect(host.querySelector('.ch-msg__thread-chip')?.textContent).toContain(
+      '10 replies'
+    );
+  });
+
+  it('treats root plus replies in one full snapshot as one authoritative batch', async () => {
+    const initialRoot = row(rootId, 1, null, 1);
+    const replyA = row('chm:snapshot-a', 2, rootId);
+    const replyB = row('chm:snapshot-b', 3, rootId);
+    await render([initialRoot, replyA], 1);
+
+    // The refreshed floor already contains replyB. Re-counting that same-batch
+    // row as growth reproduces the historical 3-vs-2 overcount.
+    await render([row(rootId, 1, null, 2), replyA, replyB], 2);
+    expect(host.querySelector('.ch-msg__thread-chip')?.textContent).toContain(
+      '2 replies'
+    );
+  });
+
+  it('counts unseen full-snapshot replies when their tracked root is absent', async () => {
+    const root = row(rootId, 1, null, 10);
+    const reply10 = row('chm:snapshot-existing', 10, rootId);
+    const reply11 = row('chm:snapshot-unseen', 11, rootId);
+    await render([root, reply10], 1);
+
+    // A truncated replacement has no fresh floor for this root, so its unseen
+    // reply remains live growth rather than being swallowed as authoritative.
+    await render([reply10, reply11], 2);
+    await render([root, reply10, reply11], 2);
+    expect(host.querySelector('.ch-msg__thread-chip')?.textContent).toContain(
+      '11 replies'
+    );
+  });
 });

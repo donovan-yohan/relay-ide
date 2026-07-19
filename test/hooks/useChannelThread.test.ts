@@ -17,6 +17,11 @@ import {
   useChannelThread,
   type UseChannelThreadState,
 } from '../../frontend/src/hooks/useChannelThread.js';
+import { useLiveReplyGrowth } from '../../frontend/src/components/chat/useLiveReplyGrowth.js';
+import {
+  deriveReplyCounts,
+  displayedReplyCount,
+} from '../../frontend/src/lib/chat/channel-timeline-layout.js';
 
 const channelId = 'topic:thread-hook';
 const rootId = 'chm:root' as ChannelMessageId;
@@ -46,6 +51,7 @@ function row(
 let container: HTMLDivElement;
 let reactRoot: Root;
 let latest: UseChannelThreadState;
+let latestDisplayedCount = 0;
 
 function Harness({
   live,
@@ -64,6 +70,41 @@ async function render(
 ): Promise<void> {
   await act(async () => {
     reactRoot.render(React.createElement(Harness, { live, activeRootId }));
+    await Promise.resolve();
+  });
+}
+
+function GrowthHarness({ live }: { live: ChannelMessage[] }) {
+  latest = useChannelThread(channelId, rootId, live);
+  const growth = useLiveReplyGrowth(live, {
+    scopeKey: `${channelId}:${rootId}`,
+    fullSnapshotRevision: 1,
+    ...(latest.root
+      ? {
+          authoritativeRoots: [
+            {
+              message: latest.root,
+              revision: latest.rootFloorRevision,
+            },
+          ],
+        }
+      : {}),
+  });
+  const rows = latest.root ? [latest.root, ...latest.replies] : latest.replies;
+  const derived = deriveReplyCounts(rows);
+  latestDisplayedCount = latest.root
+    ? displayedReplyCount(
+        latest.root,
+        derived.get(rootId),
+        growth.get(rootId) ?? 0
+      )
+    : 0;
+  return null;
+}
+
+async function renderGrowth(live: ChannelMessage[]): Promise<void> {
+  await act(async () => {
+    reactRoot.render(React.createElement(GrowthHarness, { live }));
     await Promise.resolve();
   });
 }
@@ -124,6 +165,13 @@ describe('useChannelThread', () => {
     expect(latest.replies.some((reply) => reply.id === otherReply.id)).toBe(
       false
     );
+
+    await render([]);
+    expect(latest.root?.body.text).toBe('live root');
+    expect(latest.replies.map((reply) => reply.id)).toEqual([
+      fetchedReply.id,
+      liveReply.id,
+    ]);
   });
 
   it('walks backward with the server cursor, dedupes, and keeps seq order', async () => {
@@ -212,5 +260,32 @@ describe('useChannelThread', () => {
     expect(latest.hasMoreOlder).toBe(false);
     await act(async () => latest.loadOlder());
     expect(fetchThreadMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rebases live growth when the initial REST fetch supplies its root floor', async () => {
+    const request = deferred<{
+      messages: ChannelMessage[];
+      hasMore: boolean;
+    }>();
+    fetchThreadMock.mockReturnValueOnce(request.promise);
+    const liveRoot = { ...row(rootId, 1), replyCount: 2 };
+    const reply2 = row('chm:race-reply-2', 2, rootId);
+    const reply3 = row('chm:race-reply-3', 3, rootId);
+
+    await renderGrowth([liveRoot, reply2]);
+    await renderGrowth([liveRoot, reply2, reply3]);
+    expect(latestDisplayedCount).toBe(3);
+
+    await act(async () => {
+      request.resolve({
+        messages: [{ ...liveRoot, replyCount: 3 }, reply2, reply3],
+        hasMore: false,
+      });
+      await request.promise;
+      await Promise.resolve();
+    });
+    expect(latest.root?.replyCount).toBe(3);
+    expect(latest.rootFloorRevision).toBe(1);
+    expect(latestDisplayedCount).toBe(3);
   });
 });

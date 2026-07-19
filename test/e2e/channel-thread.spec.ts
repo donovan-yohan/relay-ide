@@ -3,6 +3,7 @@ import {
   test,
   type APIRequestContext,
   type BrowserContext,
+  type Locator,
   type Page,
 } from '@playwright/test';
 
@@ -108,6 +109,39 @@ async function openChannel(
     'aria-label',
     'connected'
   );
+}
+
+async function captureFirstVisible(
+  log: Locator
+): Promise<{ seq: string; top: number }> {
+  return log.evaluate((element) => {
+    const containerTop = element.getBoundingClientRect().top;
+    const row = Array.from(
+      element.querySelectorAll<HTMLElement>('[data-channel-message-seq]')
+    ).find(
+      (candidate) => candidate.getBoundingClientRect().bottom >= containerTop
+    );
+    if (!row) throw new Error('missing visible message row');
+    return {
+      seq: row.dataset.channelMessageSeq ?? '',
+      top: row.getBoundingClientRect().top - containerTop,
+    };
+  });
+}
+
+async function expectAnchorStable(
+  log: Locator,
+  anchor: { seq: string; top: number }
+): Promise<void> {
+  const row = log.locator(`[data-channel-message-seq="${anchor.seq}"]`);
+  await expect
+    .poll(async () => {
+      const containerBox = await log.boundingBox();
+      const rowBox = await row.boundingBox();
+      if (!containerBox || !rowBox) throw new Error('missing anchor geometry');
+      return rowBox.y - containerBox.y;
+    })
+    .toBeCloseTo(anchor.top, 0);
 }
 
 test.describe.serial('smoke channel thread UI (#1170)', () => {
@@ -234,9 +268,11 @@ test.describe.serial('smoke channel thread UI (#1170)', () => {
     // pages non-geometrically until the root/top-level lane is reachable.
     await openChannel(page, { channelId });
     await expect(page.getByText('load-bearing thread root')).toBeVisible();
-    await expect
-      .poll(() => channelHistoryRequests.length)
-      .toBeGreaterThanOrEqual(3);
+    // One same-cursor failure + three successful distinct cursor pages reaches
+    // this 210-reply root. The failed retry does not spend another page slot.
+    await expect.poll(() => channelHistoryRequests.length).toBe(4);
+    await page.waitForTimeout(500);
+    expect(channelHistoryRequests).toHaveLength(4);
     const rootChip = page.getByRole('button', {
       name: '210 replies — open thread',
     });
@@ -281,8 +317,8 @@ test.describe.serial('smoke channel thread UI (#1170)', () => {
       })
       .toBeCloseTo(anchor.top, 0);
 
-    // 110 replies require two backward pages beyond the newest 50 before the
-    // root-inclusive oldest page is reached.
+    // The thread-history lane itself still walks backward in 50-row pages and
+    // keeps its visible row stable while prepending.
     await scroll.evaluate((element) => {
       element.scrollTop = 0;
       element.dispatchEvent(new Event('scroll'));
@@ -297,6 +333,43 @@ test.describe.serial('smoke channel thread UI (#1170)', () => {
     expect(rootBox).not.toBeNull();
     expect(scrollBox).not.toBeNull();
     expect(rootBox!.y + rootBox!.height).toBeLessThanOrEqual(scrollBox!.y + 1);
+  });
+
+  test('caps automatic channel backfill at four cursor pages and resumes only on demand', async ({
+    context,
+    page,
+  }) => {
+    const { channelId } = await seedThread(context, 310);
+    const channelHistoryRequests: string[] = [];
+    page.on('request', (request) => {
+      const url = request.url();
+      if (
+        request.method() === 'GET' &&
+        url.includes(`/channels/${encodeURIComponent(channelId)}/messages`) &&
+        url.includes('beforeSeq=')
+      ) {
+        channelHistoryRequests.push(url);
+      }
+    });
+
+    await openChannel(page, { channelId });
+    const continuation = page.getByRole('button', {
+      name: 'load older channel history',
+    });
+    await expect(continuation).toBeVisible();
+    await expect.poll(() => channelHistoryRequests.length).toBe(4);
+    await page.waitForTimeout(500);
+    expect(channelHistoryRequests).toHaveLength(4);
+    await expect(page.getByText('load-bearing thread root')).toHaveCount(0);
+
+    await continuation.click();
+    await expect(page.getByText('load-bearing thread root')).toBeVisible();
+    await expect
+      .poll(() => channelHistoryRequests.length)
+      .toBeGreaterThanOrEqual(5);
+    await expect(
+      page.getByRole('button', { name: '310 replies — open thread' })
+    ).toBeVisible();
   });
 
   test('switching roots resets the panel follow lane to the bottom with no stale pill', async ({
@@ -404,6 +477,111 @@ test.describe.serial('smoke channel thread UI (#1170)', () => {
       .toBe(before);
     await expect(page.locator('.ch-main .ch-new-messages')).toHaveCount(0);
     await expect(main.getByText('new hidden reply')).toHaveCount(0);
+  });
+
+  test('Escape dismisses an open thread mention palette before closing the panel', async ({
+    context,
+    page,
+  }) => {
+    const { channelId } = await seedThread(context, 1);
+    await openChannel(page, { channelId });
+    await page.getByRole('button', { name: '1 reply — open thread' }).click();
+
+    const panel = page.locator('.ch-thread');
+    const input = panel.getByRole('textbox', { name: 'message input' });
+    await input.fill('draft survives @');
+    const palette = panel.getByRole('listbox', { name: 'agents' });
+    await expect(palette).toBeVisible();
+
+    await input.press('Escape');
+    await expect(palette).toBeHidden();
+    await expect(panel).toBeVisible();
+    await expect(input).toHaveValue('draft survives @');
+
+    await input.press('Escape');
+    await expect(panel).toHaveCount(0);
+  });
+
+  test('keeps the main composer interactive while a thread is open', async ({
+    context,
+    page,
+  }) => {
+    const { channelId } = await seedThread(context, 1);
+    await openChannel(page, { channelId });
+    await page.getByRole('button', { name: '1 reply — open thread' }).click();
+
+    const panel = page.locator('.ch-thread');
+    const main = page.locator('.ch-main');
+    const mainInput = main.getByRole('textbox', { name: 'message input' });
+    await mainInput.fill('root-level post while thread remains open');
+    await mainInput.press('Enter');
+
+    await expect(
+      main
+        .locator('.ch-tl')
+        .getByText('root-level post while thread remains open')
+    ).toBeVisible();
+    await expect(
+      panel
+        .locator('.ch-thread__scroll')
+        .getByText('root-level post while thread remains open')
+    ).toHaveCount(0);
+    await expect(panel.locator('.ch-thread__header')).toContainText('1 reply');
+    await expect(
+      page.getByRole('button', { name: '1 reply — open thread' })
+    ).toHaveCount(1);
+  });
+
+  test('preserves the main-lane first visible row while opening and closing the desktop split', async ({
+    context,
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await authenticate(context);
+    const channelId = await createChannel(context);
+    let root: PostedMessage | null = null;
+    for (let index = 1; index <= 60; index += 1) {
+      const message = await postMessage(
+        context.request,
+        channelId,
+        `desktop anchor row ${String(index).padStart(2, '0')} ${'wrapping content '.repeat(9)}`
+      );
+      if (index === 30) {
+        root = message;
+        await postMessage(
+          context.request,
+          channelId,
+          'reply that enables the desktop thread chip',
+          root.id
+        );
+      }
+    }
+    expect(root).not.toBeNull();
+
+    await openChannel(page, { channelId });
+    const mainLog = page.locator('.ch-main .ch-tl');
+    await mainLog.evaluate((element) => {
+      element.scrollTop = Math.max(
+        1,
+        element.scrollHeight - element.clientHeight - 500
+      );
+      element.dispatchEvent(new Event('scroll'));
+    });
+    const beforeOpen = await captureFirstVisible(mainLog);
+
+    const chip = page.getByRole('button', {
+      name: '1 reply — open thread',
+    });
+    await chip.evaluate((button) => (button as HTMLButtonElement).click());
+    await expect(page.locator('.ch-thread')).toBeVisible();
+    await expectAnchorStable(mainLog, beforeOpen);
+
+    const beforeClose = await captureFirstVisible(mainLog);
+    await page
+      .getByRole('button', { name: 'close thread' })
+      .evaluate((button) => (button as HTMLButtonElement).click());
+    await expect(page.locator('.ch-thread')).toHaveCount(0);
+    await expectAnchorStable(mainLog, beforeClose);
   });
 
   test('uses a 380px desktop split, a mounted mobile overlay/back, and Escape close', async ({

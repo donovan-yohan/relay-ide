@@ -36,6 +36,7 @@ import { ChannelThreadPanel } from './ChannelThreadPanel.js';
 const READ_WRITE_VISIBLE_GRACE_MS = 10_000;
 const AUTO_BACKFILL_MAX_ATTEMPTS = 3;
 const AUTO_BACKFILL_RETRY_BASE_MS = 200;
+const AUTO_BACKFILL_MAX_CURSOR_PAGES = 4;
 
 interface ChannelViewProps {
   channelId: string;
@@ -170,31 +171,57 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   const hasTopLevelMessages = reducer.messages.some(
     (message) => message.threadId === null
   );
+  const earliestSeq = reducer.messages[0]?.seq;
+  const [replyOnlyBackfillPaused, setReplyOnlyBackfillPaused] = useState(false);
+  const [backfillContinuation, setBackfillContinuation] = useState(0);
   const autoBackfillRef = useRef<{
+    channelId: string;
     cursorKey: string | null;
+    cursorPages: number;
     attempts: number;
     retryTimer: ReturnType<typeof setTimeout> | null;
-  }>({ cursorKey: null, attempts: 0, retryTimer: null });
+  }>({
+    channelId,
+    cursorKey: null,
+    cursorPages: 0,
+    attempts: 0,
+    retryTimer: null,
+  });
   useEffect(() => {
     const state = autoBackfillRef.current;
     const clearRetry = (): void => {
       if (state.retryTimer !== null) clearTimeout(state.retryTimer);
       state.retryTimer = null;
     };
+    if (state.channelId !== channelId) {
+      clearRetry();
+      state.channelId = channelId;
+      state.cursorKey = null;
+      state.cursorPages = 0;
+      state.attempts = 0;
+      setReplyOnlyBackfillPaused(false);
+    }
     if (hasTopLevelMessages || !hasMoreOlder) {
       clearRetry();
       state.cursorKey = null;
+      state.cursorPages = 0;
       state.attempts = 0;
+      setReplyOnlyBackfillPaused(false);
       return;
     }
     if (loadingOlder) return;
-    const earliestSeq = reducer.messages[0]?.seq;
     if (earliestSeq === undefined) return;
     const cursorKey = `${channelId}:${earliestSeq}`;
     if (state.cursorKey !== cursorKey) {
       clearRetry();
+      if (state.cursorPages >= AUTO_BACKFILL_MAX_CURSOR_PAGES) {
+        setReplyOnlyBackfillPaused(true);
+        return;
+      }
       state.cursorKey = cursorKey;
+      state.cursorPages += 1;
       state.attempts = 0;
+      setReplyOnlyBackfillPaused(false);
     }
     if (
       state.retryTimer !== null ||
@@ -215,13 +242,25 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       void loadOlder();
     }, delay);
   }, [
+    backfillContinuation,
     channelId,
+    earliestSeq,
     hasMoreOlder,
     hasTopLevelMessages,
     loadOlder,
     loadingOlder,
-    reducer.messages,
   ]);
+
+  const continueReplyOnlyBackfill = useCallback(() => {
+    const state = autoBackfillRef.current;
+    if (state.retryTimer !== null) clearTimeout(state.retryTimer);
+    state.retryTimer = null;
+    state.cursorKey = null;
+    state.cursorPages = 0;
+    state.attempts = 0;
+    setReplyOnlyBackfillPaused(false);
+    setBackfillContinuation((value) => value + 1);
+  }, []);
 
   useEffect(
     () => () => {
@@ -471,6 +510,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
               fullSnapshotRevision={fullSnapshotRevision}
               needsCatchup={reducer.needsCatchup}
               onResync={resync}
+              replyOnlyBackfillPaused={replyOnlyBackfillPaused}
+              onContinueHistory={continueReplyOnlyBackfill}
               onOpenThread={setActiveThreadRootId}
             />
           ) : (
@@ -505,6 +546,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
             archived={archived}
             onRestore={handleRestore}
             restorePending={restorePending}
+            fullSnapshotRevision={fullSnapshotRevision}
           />
         ) : null}
       </div>

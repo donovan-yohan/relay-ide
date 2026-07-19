@@ -28,6 +28,8 @@ interface ChannelTimelineProps {
   fullSnapshotRevision: number;
   needsCatchup: boolean;
   onResync: () => void;
+  replyOnlyBackfillPaused?: boolean;
+  onContinueHistory?: () => void;
   onOpenThread?: (rootId: ChannelMessageId) => void;
 }
 
@@ -42,6 +44,8 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   fullSnapshotRevision,
   needsCatchup,
   onResync,
+  replyOnlyBackfillPaused = false,
+  onContinueHistory,
   onOpenThread,
 }) => {
   const [showResyncButton, setShowResyncButton] = useState(false);
@@ -51,7 +55,10 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
   // cannot trigger a pill, move an anchor, or create an inline timeline row.
   const topLevelMessages = useMemo(() => selectTopLevel(messages), [messages]);
   const replyCounts = useMemo(() => deriveReplyCounts(messages), [messages]);
-  const replyGrowth = useLiveReplyGrowth(messages, channelId);
+  const replyGrowth = useLiveReplyGrowth(messages, {
+    scopeKey: channelId,
+    fullSnapshotRevision,
+  });
   const nodes = useMemo(
     () => buildTimelineNodes(topLevelMessages, lastReadSeq),
     [topLevelMessages, lastReadSeq]
@@ -108,6 +115,18 @@ export const ChannelTimeline: React.FC<ChannelTimelineProps> = ({
                 resync now
               </button>
             ) : null}
+          </div>
+        ) : null}
+        {replyOnlyBackfillPaused && onContinueHistory ? (
+          <div className="ch-history-paused" role="status">
+            <span>older channel history is available</span>
+            <button
+              type="button"
+              className="ch-history-continue"
+              onClick={onContinueHistory}
+            >
+              load older channel history
+            </button>
           </div>
         ) : null}
         {reachedBeginning ? (

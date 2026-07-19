@@ -186,6 +186,19 @@ export function useFollowingScroll({
     const preserveFollow = (): void => {
       if (anchorRef.current) return;
       if (!shouldFollowRef.current) {
+        const anchor = readerAnchorRef.current;
+        if (anchor) {
+          const row = container.querySelector<HTMLElement>(
+            `[data-channel-message-seq="${anchor.seq}"]`
+          );
+          if (row) {
+            const offsetTop =
+              row.getBoundingClientRect().top -
+              container.getBoundingClientRect().top;
+            container.scrollTop += offsetTop - anchor.offsetTop;
+            lastScrollTopRef.current = container.scrollTop;
+          }
+        }
         readerAnchorRef.current = captureViewportAnchor(container);
         return;
       }
