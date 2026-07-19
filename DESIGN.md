@@ -46,6 +46,15 @@
 - **Merged:** `--status-merged: #a78bfa` — merged PRs, completed state
 - **Info:** `--status-info: #60a5fa` — informational, review actions
 
+### Diff Line Tints
+
+- **Added line:** `--diff-added-bg: color-mix(in srgb, var(--status-success) 9%, transparent)` — restrained green tint behind added lines only
+- **Removed line:** `--diff-removed-bg: color-mix(in srgb, var(--status-error) 9%, transparent)` — restrained red tint behind removed lines only
+
+These tokens are dark-only backgrounds for diff-shaped content. Keep the text
+palette unchanged; the tint communicates line polarity without introducing a
+separate rainbow syntax theme.
+
 ### Repo / Project Identity Colors
 
 12 colors for hash-derived repo/project badge backgrounds. Each bound repo Project gets a deterministic color based on its name; free/non-git and unbound remote tabs do not inherit a repo badge just because their `cwd` looks repo-shaped.

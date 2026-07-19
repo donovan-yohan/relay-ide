@@ -57,6 +57,17 @@ function toolCallStatusToItemStatus(
   }
 }
 
+function isCommandTool(toolName: string): boolean {
+  return /^(?:run[_-]?command|bash|shell|exec|execute[_-]?command)$/i.test(
+    toolName
+  );
+}
+
+function commandFromToolInput(input: Record<string, unknown>): string {
+  const command = input.command ?? input.cmd;
+  return typeof command === 'string' ? command : '';
+}
+
 export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
   switch (event.type) {
     case 'chat:provider-session':
@@ -157,7 +168,30 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
         },
       ];
 
-    case 'chat:tool-call':
+    case 'chat:tool-call': {
+      const status = toolCallStatusToItemStatus(event.status);
+      if (isCommandTool(event.toolName)) {
+        return [
+          {
+            type: 'agent-item-updated-v2',
+            sessionId: event.sessionId,
+            timestamp: event.timestamp,
+            turnId: event.turnId,
+            item: {
+              type: 'commandExecution',
+              id: toolCallItemId(event.toolCallId),
+              providerItemId: event.toolCallId,
+              command: commandFromToolInput(event.input),
+              output: '',
+              status,
+              metadata: compactMetadata({
+                source: event.source,
+                description: event.description || undefined,
+              }),
+            },
+          },
+        ];
+      }
       return [
         {
           type: 'agent-item-updated-v2',
@@ -170,7 +204,7 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
             namespace: event.source,
             tool: event.toolName,
             arguments: event.input,
-            status: toolCallStatusToItemStatus(event.status),
+            status,
             metadata: compactMetadata({
               source: event.source,
               description: event.description || undefined,
@@ -178,6 +212,7 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
           },
         },
       ];
+    }
 
     case 'chat:tool-result': {
       const content = event.output || event.error || '';
@@ -189,10 +224,43 @@ export function mapChatEventToAgentPatchV2(event: ChatEvent): AgentPatchV2[] {
           timestamp: event.timestamp,
           turnId: event.turnId,
           itemId: toolCallItemId(event.toolCallId),
-          delta: { content },
+          delta: isCommandTool(event.toolName)
+            ? { output: content }
+            : { content },
         },
       ];
     }
+
+    case 'chat:file-change':
+      return [
+        {
+          type: 'agent-item-updated-v2',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          turnId: event.turnId,
+          item: {
+            type: 'fileChange',
+            id: toolCallItemId(event.toolCallId),
+            providerItemId: event.toolCallId,
+            paths: [
+              {
+                path: event.path,
+                ...(event.oldPath ? { oldPath: event.oldPath } : {}),
+                status: event.kind,
+              },
+            ],
+            ...(event.diff ? { patch: event.diff } : {}),
+            applyStatus: 'applied',
+            status: 'completed',
+            metadata: {
+              source: event.source,
+              additions: event.additions,
+              deletions: event.deletions,
+              contentKind: 'diff',
+            },
+          },
+        },
+      ];
 
     case 'chat:reasoning':
       return [

@@ -427,6 +427,11 @@ function patchFromFileResult(result: Record<string, unknown>): string {
   const gitPatch = stringField(gitDiff.patch);
   if (gitPatch) return gitPatch;
 
+  // Some persistent-subprocess builds surface the unified patch directly on
+  // tool_use_result instead of nesting it under gitDiff.
+  const directPatch = stringField(result.patch);
+  if (directPatch) return directPatch;
+
   const hunks = result.structuredPatch;
   if (!Array.isArray(hunks)) return '';
   const out: string[] = [];

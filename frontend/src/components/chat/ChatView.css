@@ -367,6 +367,10 @@
 }
 
 /* reasoning block — relay-specific, not in chat.html */
+.turn__item {
+  min-width: 0;
+}
+
 .reasoning {
   border-left: 1px solid var(--border);
   padding-left: 10px;

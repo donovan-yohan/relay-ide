@@ -9,7 +9,12 @@ import type {
   CodexNotification,
   CodexServerRequest,
 } from '../../../server/codex-app-server-client.js';
-import type { AgentPatchV2 } from '../../../shared/agent-chat-protocol-v2.js';
+import {
+  applyAgentPatchV2,
+  emptyAgentSessionV2,
+  type AgentPatchV2,
+} from '../../../shared/agent-chat-protocol-v2.js';
+import codexDetailFixture from '../../fixtures/agent-detail/codex.js';
 
 vi.mock('../../../server/logger.js', () => ({
   createLogger: () => ({
@@ -649,9 +654,53 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         }),
         expect.objectContaining({
           type: 'agent-item-updated-v2',
-          item: expect.objectContaining({ applyStatus: 'applied' }),
+          item: expect.objectContaining({
+            applyStatus: 'applied',
+            patch: '@@ -1,1 +1,2 @@\n+new line\n',
+            card: {
+              kind: 'diff',
+              title: 'foo.ts',
+              status: 'completed',
+              language: 'diff',
+              path: 'foo.ts',
+              content: '@@ -1,1 +1,2 @@\n+new line\n',
+              additions: 1,
+              deletions: 0,
+              sizeBytes: 26,
+            },
+          }),
         }),
       ])
+    );
+
+    await adapter.disconnect();
+  });
+
+  it('replays the sanitized Codex detail fixture into normalized cards', async () => {
+    const { adapter, client, patches } = await setupAndSend('turn-fixture');
+    for (const event of codexDetailFixture.nativeEvents) {
+      client.feedNotification(event.method, event.params);
+    }
+
+    let session = emptyAgentSessionV2({
+      id: 'session-1',
+      provider: 'codex',
+      cwd: '/workspace/example',
+    });
+    for (const patch of patches) session = applyAgentPatchV2(session, patch);
+    const cards = session.turns
+      .flatMap((turn) => turn.items)
+      .flatMap((item) =>
+        item.card && item.card.kind !== 'message' ? [item.card] : []
+      );
+    const expectedCards = codexDetailFixture.session.turns
+      .flatMap((turn) => turn.items)
+      .flatMap((item) =>
+        item.card && item.card.kind !== 'message' ? [item.card] : []
+      );
+    expect(cards).toEqual(expectedCards);
+    expect(codexDetailFixture.sanitization.containsLiveTranscriptBytes).toBe(
+      false
     );
 
     await adapter.disconnect();
@@ -666,7 +715,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         id: 'mcp-1',
         server: 'github',
         tool: 'search',
-        arguments: {},
+        arguments: { query: 'fixture' },
       },
     });
     client.feedNotification('item/completed', {
@@ -695,6 +744,22 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         }),
       ])
     );
+    const completed = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'mcpToolCall'
+    );
+    expect(completed).toMatchObject({
+      item: {
+        id: 'mcp-mcp-1',
+        arguments: { query: 'fixture' },
+        card: {
+          kind: 'tool_call',
+          content: 'input\n{\n  "query": "fixture"\n}\n\noutput\n[]',
+          status: 'completed',
+        },
+      },
+    });
 
     await adapter.disconnect();
   });
@@ -707,7 +772,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         type: 'dynamicToolCall',
         id: 'dyn-1',
         tool: 'myTool',
-        arguments: {},
+        arguments: { query: 'fixture' },
       },
     });
     client.feedNotification('item/completed', {
@@ -719,25 +784,42 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       },
     });
 
-    expect(patches).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'agent-item-started-v2',
-          item: expect.objectContaining({
-            type: 'dynamicToolCall',
-            namespace: 'codex',
-            tool: 'myTool',
-          }),
-        }),
-        expect.objectContaining({
-          type: 'agent-item-updated-v2',
-          item: expect.objectContaining({
-            type: 'dynamicToolCall',
-            result: 'done',
-          }),
-        }),
-      ])
+    const lifecycle = patches.filter(
+      (patch) =>
+        (patch.type === 'agent-item-started-v2' ||
+          patch.type === 'agent-item-updated-v2') &&
+        patch.item.type === 'dynamicToolCall'
     );
+    expect(lifecycle).toHaveLength(2);
+    expect(
+      lifecycle.map((patch) =>
+        patch.type === 'agent-item-started-v2' ||
+        patch.type === 'agent-item-updated-v2'
+          ? patch.item.id
+          : null
+      )
+    ).toEqual(['tool-dyn-1', 'tool-dyn-1']);
+    expect(lifecycle[0]).toMatchObject({
+      item: {
+        arguments: { query: 'fixture' },
+        card: {
+          kind: 'tool_call',
+          content: 'input\n{\n  "query": "fixture"\n}',
+          status: 'running',
+        },
+      },
+    });
+    expect(lifecycle[1]).toMatchObject({
+      item: {
+        arguments: { query: 'fixture' },
+        result: 'done',
+        card: {
+          kind: 'tool_call',
+          content: 'input\n{\n  "query": "fixture"\n}\n\noutput\ndone',
+          status: 'completed',
+        },
+      },
+    });
 
     await adapter.disconnect();
   });

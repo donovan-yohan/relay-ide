@@ -11,7 +11,13 @@ import {
   resolveHermesGatewaySettings,
 } from '../../../server/protocol-adapters/hermes-adapter.js';
 import type { AdapterConfig } from '../../../server/protocol-adapter.js';
+import {
+  applyAgentPatchV2,
+  emptyAgentSessionV2,
+  type AgentPatchV2,
+} from '../../../shared/agent-chat-protocol-v2.js';
 import type { ChatEvent } from '../../../shared/chat-events.js';
+import hermesDetailFixture from '../../fixtures/agent-detail/hermes.js';
 
 const ENV_KEYS = [
   'HOME',
@@ -470,6 +476,50 @@ describe('Hermes Responses SSE hardening', () => {
     });
   });
 
+  it('replays the sanitized Hermes detail fixture into normalized cards', async () => {
+    gateway = await startInlineGateway((send, res) => {
+      for (const event of hermesDetailFixture.nativeEvents) send(event);
+      send({
+        type: 'response.completed',
+        response: { id: 'resp_synthetic_hermes', status: 'completed' },
+      });
+      res.end();
+    });
+
+    const v2 = createAdapterV2('hermes');
+    const patches: AgentPatchV2[] = [];
+    v2.onPatch((patch) => patches.push(patch));
+    try {
+      await v2.connect(configFor(gateway.endpoint, 'sess-diff'));
+      await v2.sendMessage({ turnId: 'turn-1', content: 'patch demo.ts' });
+    } finally {
+      await v2.disconnect();
+    }
+
+    let session = emptyAgentSessionV2({
+      id: 'sess-diff',
+      provider: 'hermes',
+      cwd: '/workspace/example',
+    });
+    for (const patch of patches) session = applyAgentPatchV2(session, patch);
+    const items = session.turns.flatMap((turn) => turn.items);
+    expect(
+      items.filter((item) => item.id === 'tool-call_synthetic_hermes_patch')
+    ).toHaveLength(1);
+    const cards = items.flatMap((item) =>
+      item.card && item.card.kind !== 'message' ? [item.card] : []
+    );
+    const expectedCards = hermesDetailFixture.session.turns
+      .flatMap((turn) => turn.items)
+      .flatMap((item) =>
+        item.card && item.card.kind !== 'message' ? [item.card] : []
+      );
+    expect(cards).toEqual(expectedCards);
+    expect(hermesDetailFixture.sanitization.containsLiveTranscriptBytes).toBe(
+      false
+    );
+  });
+
   it('echoes the submitted user message when the turn starts', async () => {
     gateway = await startInlineGateway((send, res) => {
       send({ type: 'response.created', response: { id: 'resp_user_echo' } });
@@ -529,7 +579,7 @@ describe('Hermes Responses SSE hardening', () => {
     expect(complete).toMatchObject({ role: 'assistant', content: 'Hello' });
   });
 
-  it('streams reasoning summary deltas and completes on done', async () => {
+  it('keeps streamed reasoning when Hermes completes with an empty done text', async () => {
     gateway = await startInlineGateway((send, res) => {
       send({ type: 'response.created', response: { id: 'resp_reason' } });
       send({
@@ -542,7 +592,9 @@ describe('Hermes Responses SSE hardening', () => {
       });
       send({
         type: 'response.reasoning_summary_text.done',
-        text: 'Thinking it through',
+        // Sanitized real gateway shape: Hermes may send an empty authoritative
+        // done field after non-empty deltas. The emitter must not blank the row.
+        text: '',
       });
       send({
         type: 'response.completed',

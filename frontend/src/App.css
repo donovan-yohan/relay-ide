@@ -8,6 +8,10 @@
   --text-muted: #888888;
   --border: #333333;
 
+  /* Diff-shaped agent detail rows — subtle dark-only line tints. */
+  --diff-added-bg: color-mix(in srgb, var(--status-success) 9%, transparent);
+  --diff-removed-bg: color-mix(in srgb, var(--status-error) 9%, transparent);
+
   /* Status colors */
   --status-success: #4ade80;
   --status-error: #f87171;

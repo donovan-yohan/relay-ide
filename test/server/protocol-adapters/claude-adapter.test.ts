@@ -21,6 +21,7 @@ import {
 } from '../../../server/protocol-adapters/claude-adapter.js';
 import type { AdapterConfig } from '../../../server/protocol-adapter-v2.js';
 import type { ClaudeSpawnFn } from '../../../server/claude-stream-client.js';
+import claudeDetailFixture from '../../fixtures/agent-detail/claude.js';
 import {
   applyAgentPatchV2,
   emptyAgentSessionV2,
@@ -492,6 +493,50 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       ])
     );
 
+    const thought = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-started-v2' &&
+        patch.item.type === 'reasoning'
+    );
+    expect(
+      thought?.type === 'agent-item-started-v2' && thought.item.card
+    ).toMatchObject({
+      kind: 'thought',
+      title: 'plan',
+      content: 'plan',
+      status: 'completed',
+    });
+
+    const command = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'commandExecution'
+    );
+    expect(
+      command?.type === 'agent-item-updated-v2' && command.item.card
+    ).toMatchObject({
+      kind: 'output',
+      title: 'echo hi',
+      command: 'echo hi',
+      content: 'hi\n',
+      language: 'bash',
+      status: 'completed',
+    });
+
+    const file = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-started-v2' &&
+        patch.item.type === 'fileChange'
+    );
+    expect(
+      file?.type === 'agent-item-started-v2' && file.item.card
+    ).toMatchObject({
+      kind: 'diff',
+      title: '/repo/a.ts',
+      path: '/repo/a.ts',
+      status: 'pending',
+    });
+
     const mcpUpdate = patches.find(
       (p) => p.type === 'agent-item-updated-v2' && p.item.type === 'mcpToolCall'
     );
@@ -503,6 +548,42 @@ describe('ClaudeProtocolAdapter (stream-json subprocess)', () => {
       tool: 'create_issue',
       status: 'completed',
     });
+
+    await adapter.disconnect();
+  });
+
+  it('replays the sanitized Claude detail fixture into normalized cards', async () => {
+    const harness = makeHarness();
+    const adapter = new ClaudeProtocolAdapter(harness.spawnFn, inertRegistry());
+    const patches = collectPatches(adapter);
+    await adapter.connect(baseConfig());
+    await adapter.sendMessage({ turnId: 'turn-fixture', content: 'fixture' });
+    const child = harness.latest().child;
+    await child.waitForFrames(1);
+
+    for (const event of claudeDetailFixture.nativeEvents) {
+      child.serverWrite(event);
+    }
+    child.serverWrite(successResult());
+    await waitFor(() =>
+      patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+    );
+
+    const session = reduce(patches);
+    const cards = session.turns
+      .flatMap((turn) => turn.items)
+      .flatMap((item) =>
+        item.card && item.card.kind !== 'message' ? [item.card] : []
+      );
+    const expectedCards = claudeDetailFixture.session.turns
+      .flatMap((turn) => turn.items)
+      .flatMap((item) =>
+        item.card && item.card.kind !== 'message' ? [item.card] : []
+      );
+    expect(cards).toEqual(expectedCards);
+    expect(claudeDetailFixture.sanitization.containsLiveTranscriptBytes).toBe(
+      false
+    );
 
     await adapter.disconnect();
   });

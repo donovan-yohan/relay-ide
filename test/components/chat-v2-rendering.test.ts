@@ -187,9 +187,9 @@ describe('chat v2 rendering against chat.html primitives', () => {
     mocks.session = null;
   });
 
-  async function renderChat() {
+  async function renderChat(sessionId = 'session-1') {
     await act(async () => {
-      root.render(React.createElement(ChatView, { sessionId: 'session-1' }));
+      root.render(React.createElement(ChatView, { sessionId }));
     });
   }
 
@@ -237,10 +237,10 @@ describe('chat v2 rendering against chat.html primitives', () => {
       '.turn-header',
       '.turn-footer',
       '.tl-text--user',
-      '.tcard',
-      '.tcard__h',
-      '.tcard__body',
-      '.fc-row',
+      '.ch-agent-card[data-agent-card-kind="output"]',
+      '.ch-agent-card[data-agent-card-kind="diff"]',
+      '.ch-agent-card[data-agent-card-kind="tool_call"]',
+      '.ch-agent-card__toggle',
       '.acard',
       '.turn-footer--running',
       '.queue',
@@ -260,6 +260,7 @@ describe('chat v2 rendering against chat.html primitives', () => {
       'frontend/src/components/chat/Composer.tsx'
     );
     expect(container.textContent).toContain('2 queued');
+    expect(container.querySelector('.ch-agent-card__body')).toBeNull();
   });
 
   it('forwards all approval decisions through the v2 socket callback', async () => {
@@ -641,7 +642,7 @@ describe('chat v2 rendering against chat.html primitives', () => {
     expect(imgLink?.textContent).toContain('a diagram');
   });
 
-  it('shows a truncated reasoning summary in <summary>, falling back to "thinking"', async () => {
+  it('shows a truncated thought card title, falling back to "thinking"', async () => {
     const longSummary =
       'Investigating the composer regression across every provider adapter and slash-command handler before proposing a fix';
     mocks.session = makeSession({
@@ -687,13 +688,91 @@ describe('chat v2 rendering against chat.html primitives', () => {
     await renderChat();
 
     const summaries = Array.from(
-      container.querySelectorAll('.reasoning summary')
+      container.querySelectorAll(
+        '.ch-agent-card[data-agent-card-kind="thought"] .ch-agent-card__title'
+      )
     ).map((el) => el.textContent);
 
     expect(summaries[0]).toBe('checking the socket reconnect path');
     expect(summaries[1]).toBe(`${longSummary.slice(0, 79)}…`);
     expect(summaries[1]?.length).toBeLessThanOrEqual(80);
     expect(summaries[2]).toBe('thinking');
+  });
+
+  it('excludes hidden provider items from the visible anchor candidates', async () => {
+    mocks.session = makeSession({
+      turns: [
+        {
+          id: 'turn-anchor-visibility',
+          status: 'completed',
+          inputMessageId: 'user-anchor-visibility',
+          startedAt: timestamp(),
+          items: [
+            {
+              id: 'hidden-provider-row',
+              type: 'providerExtension',
+              namespace: 'mock',
+              payload: { kind: 'trace-only' },
+              metadata: { eventVisibility: 'trace' },
+              status: 'completed',
+            },
+            {
+              id: 'visible-anchor-row',
+              type: 'assistantMessage',
+              text: 'visible anchor',
+              status: 'completed',
+            },
+          ],
+        },
+      ],
+    });
+
+    await renderChat();
+
+    expect(
+      container.querySelector('[data-agent-item-id="hidden-provider-row"]')
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-agent-item-id="visible-anchor-row"]')
+    ).toBeTruthy();
+  });
+
+  it('opens a new session at newest even when its item count matches a scrolled-up session', async () => {
+    const scrollSpy = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(() => {});
+
+    try {
+      mocks.session = makeSession({ id: 'session-a' });
+      await renderChat('session-a');
+      const timeline = container.querySelector<HTMLElement>('.tl');
+      expect(timeline).toBeTruthy();
+      Object.defineProperty(timeline, 'scrollHeight', {
+        value: 1_000,
+        configurable: true,
+      });
+      Object.defineProperty(timeline, 'clientHeight', {
+        value: 300,
+        configurable: true,
+      });
+      Object.defineProperty(timeline, 'scrollTop', {
+        value: 100,
+        configurable: true,
+        writable: true,
+      });
+      await act(async () => {
+        timeline?.dispatchEvent(new Event('scroll', { bubbles: true }));
+      });
+      scrollSpy.mockClear();
+
+      mocks.session = makeSession({ id: 'session-b' });
+      await renderChat('session-b');
+
+      expect(timeline?.scrollTop).toBe(1_000);
+      expect(scrollSpy).toHaveBeenCalled();
+    } finally {
+      scrollSpy.mockRestore();
+    }
   });
 
   it('auto-follows the bottom as streamed content resizes the timeline, without yanking a scrolled-up reader', async () => {
@@ -737,6 +816,7 @@ describe('chat v2 rendering against chat.html primitives', () => {
       Object.defineProperty(timeline, 'scrollTop', {
         value: 650,
         configurable: true,
+        writable: true,
       });
       scrollSpy.mockClear();
       await act(async () => {
@@ -749,6 +829,10 @@ describe('chat v2 rendering against chat.html primitives', () => {
       Object.defineProperty(timeline, 'scrollTop', {
         value: 50,
         configurable: true,
+        writable: true,
+      });
+      await act(async () => {
+        timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
       });
       scrollSpy.mockClear();
       await act(async () => {

@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import './ChatView.css';
 import { useAgentChatSocket } from '../../hooks/useAgentChatSocket.js';
 import { createBrowserId } from '../../lib/browserId.js';
@@ -36,6 +42,121 @@ interface ChatViewProps {
   sessionId: string | null;
 }
 
+interface ReaderAnchor {
+  itemId: string;
+  offsetTop: number;
+}
+
+function captureReaderAnchor(container: HTMLDivElement): ReaderAnchor | null {
+  const containerTop = container.getBoundingClientRect().top;
+  const items = container.querySelectorAll<HTMLElement>('[data-agent-item-id]');
+  for (const item of items) {
+    const rect = item.getBoundingClientRect();
+    if (rect.bottom < containerTop) continue;
+    const itemId = item.dataset.agentItemId;
+    if (!itemId) continue;
+    return { itemId, offsetTop: rect.top - containerTop };
+  }
+  return null;
+}
+
+function findAnchoredItem(
+  container: HTMLDivElement,
+  itemId: string
+): HTMLElement | null {
+  for (const item of container.querySelectorAll<HTMLElement>(
+    '[data-agent-item-id]'
+  )) {
+    if (item.dataset.agentItemId === itemId) return item;
+  }
+  return null;
+}
+
+/**
+ * Exact production scroll model for an agent-detail timeline. Exported so the
+ * static evidence harness can exercise follow intent and anchor restoration
+ * without opening a real adapter WebSocket.
+ */
+interface UseAgentTimelineScrollOptions {
+  timelineId: string | null;
+  itemCount: number;
+}
+
+export function useAgentTimelineScroll({
+  timelineId,
+  itemCount,
+}: UseAgentTimelineScrollOptions) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const shouldFollowRef = useRef(true);
+  const readerAnchorRef = useRef<ReaderAnchor | null>(null);
+  const previousTimelineIdRef = useRef(timelineId);
+
+  // Session identity is part of the scroll state. Equal item counts across two
+  // sessions must not preserve the old reader anchor/follow intent and open the
+  // next conversation halfway up its history.
+  useLayoutEffect(() => {
+    if (previousTimelineIdRef.current === timelineId) return;
+    previousTimelineIdRef.current = timelineId;
+    shouldFollowRef.current = true;
+    readerAnchorRef.current = null;
+    const container = containerRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+    bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+  }, [timelineId]);
+
+  const handleTimelineScroll = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    shouldFollowRef.current = isNearBottom({
+      scrollHeight: container.scrollHeight,
+      scrollTop: container.scrollTop,
+      clientHeight: container.clientHeight,
+    });
+    readerAnchorRef.current = shouldFollowRef.current
+      ? null
+      : captureReaderAnchor(container);
+  }, []);
+
+  // #1197 scroll invariant, reused for agent-detail rows: follow intent is
+  // sticky while at the bottom; a reader who scrolled up keeps the same first
+  // visible item at the same offset when streaming or card expansion reflows
+  // content above it.
+  useEffect(() => {
+    const container = containerRef.current;
+    const content = contentRef.current;
+    if (!container || !content) return;
+
+    const preserveViewport = () => {
+      if (shouldFollowRef.current) {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        return;
+      }
+      const anchor = readerAnchorRef.current;
+      if (anchor) {
+        const item = findAnchoredItem(container, anchor.itemId);
+        if (item) {
+          const offsetTop =
+            item.getBoundingClientRect().top -
+            container.getBoundingClientRect().top;
+          container.scrollTop += offsetTop - anchor.offsetTop;
+        }
+      }
+      readerAnchorRef.current = captureReaderAnchor(container);
+    };
+
+    preserveViewport();
+
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(preserveViewport);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [itemCount, timelineId]);
+
+  return { bottomRef, containerRef, contentRef, handleTimelineScroll };
+}
+
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const {
     session,
@@ -47,9 +168,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     continueHere,
     pushClientError,
   } = useAgentChatSocket(sessionId);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
   const [eventVerbosity, setEventVerbosity] =
     React.useState<EventVerbosity>('normal');
 
@@ -59,36 +177,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     [session]
   );
 
-  // Auto-follow the bottom of the timeline as new items arrive AND as a
-  // single streaming item (e.g. an assistantMessage growing via deltas)
-  // grows the content height without changing itemCount. A ResizeObserver on
-  // the content wrapper catches both cases; scrolling only happens if the
-  // user was already near the bottom, so scrolling up to read history is
-  // never interrupted.
-  useEffect(() => {
-    const container = containerRef.current;
-    const content = contentRef.current;
-    if (!container || !content) return;
-
-    const followIfNearBottom = () => {
-      if (
-        isNearBottom({
-          scrollHeight: container.scrollHeight,
-          scrollTop: container.scrollTop,
-          clientHeight: container.clientHeight,
-        })
-      ) {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }
-    };
-
-    followIfNearBottom();
-
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(followIfNearBottom);
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, [itemCount]);
+  const { bottomRef, containerRef, contentRef, handleTimelineScroll } =
+    useAgentTimelineScroll({ timelineId: sessionId, itemCount });
 
   const isActive = useMemo(
     () =>
@@ -182,6 +272,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         role="log"
         aria-live="polite"
         aria-label="message timeline"
+        onScroll={handleTimelineScroll}
       >
         {(canResume || resumeFailed) && (
           <div className="tl-resume-banner">

@@ -135,6 +135,43 @@ export interface AgentTurnV2 {
   usage?: AgentUsageV2;
 }
 
+/**
+ * Framework-neutral presentation contract for an agent detail row (#1198).
+ *
+ * Adapters still retain their richer typed item payloads, while renderers read
+ * this ACP-shaped projection exclusively. A stable item id is the durable card
+ * entity: started/updated patches mutate that one entity in place rather than
+ * appending status rows.
+ */
+export type AgentDetailCardKindV2 =
+  | 'message'
+  | 'thought'
+  | 'tool_call'
+  | 'output'
+  | 'diff';
+
+export type AgentDetailCardStatusV2 =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface AgentDetailCardV2 {
+  kind: AgentDetailCardKindV2;
+  title: string;
+  status: AgentDetailCardStatusV2;
+  /** Expandable body. Diff cards carry unified-diff-shaped content here. */
+  content?: string;
+  /** Optional renderer hint; never a provider/framework identifier. */
+  language?: string;
+  command?: string;
+  path?: string;
+  additions?: number;
+  deletions?: number;
+  sizeBytes?: number;
+}
+
 interface AgentItemBaseV2 {
   id: string;
   providerItemId?: string;
@@ -143,6 +180,8 @@ interface AgentItemBaseV2 {
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   error?: string;
   metadata?: Record<string, unknown>;
+  /** Normalized renderer input; adapter boundaries populate this additively. */
+  card?: AgentDetailCardV2;
 }
 
 export interface AgentUserMessageItemV2 extends AgentItemBaseV2 {
@@ -372,6 +411,185 @@ export type AgentItemV2 =
   | AgentHookPromptItemV2
   | AgentProviderExtensionItemV2
   | AgentErrorMessageItemV2;
+
+function detailCardStatus(item: AgentItemV2): AgentDetailCardStatusV2 {
+  return item.status ?? 'pending';
+}
+
+function detailCardText(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function detailCardBytes(content: string): number {
+  return new TextEncoder().encode(content).byteLength;
+}
+
+function diffLineCounts(content: string): {
+  additions: number;
+  deletions: number;
+} {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of content.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions++;
+    if (line.startsWith('-') && !line.startsWith('---')) deletions++;
+  }
+  return { additions, deletions };
+}
+
+function isUnifiedDiff(content: string): boolean {
+  return (
+    /(^|\n)diff --git /.test(content) ||
+    (/(^|\n)--- (?:a\/|\/dev\/null)/.test(content) &&
+      /(^|\n)\+\+\+ (?:b\/|\/dev\/null)/.test(content))
+  );
+}
+
+function toolCardContent(
+  args: Record<string, unknown> | undefined,
+  output: unknown
+): string {
+  const inputText = detailCardText(args);
+  const outputText = detailCardText(output);
+  if (inputText && outputText)
+    return `input\n${inputText}\n\noutput\n${outputText}`;
+  if (inputText) return `input\n${inputText}`;
+  if (outputText) return `output\n${outputText}`;
+  return '';
+}
+
+function detailCardTitle(content: string, fallback: string): string {
+  const title = content.replace(/\s+/g, ' ').trim();
+  if (!title) return fallback;
+  return title.length <= 80 ? title : `${title.slice(0, 79).trimEnd()}…`;
+}
+
+/**
+ * Project a provider-rich item onto the one framework-neutral detail-card
+ * shape. This is intentionally exhaustive by item type and contains no
+ * framework/provider branch.
+ */
+export function agentDetailCardForItem(
+  item: AgentItemV2
+): AgentDetailCardV2 | undefined {
+  const status = detailCardStatus(item);
+  switch (item.type) {
+    case 'assistantMessage':
+    case 'userMessage': {
+      const content = item.text;
+      return {
+        kind: 'message',
+        title: item.type === 'userMessage' ? 'message' : 'response',
+        status,
+        ...(content ? { content, sizeBytes: detailCardBytes(content) } : {}),
+      };
+    }
+    case 'reasoning': {
+      const content = item.detail || item.summary;
+      return {
+        kind: 'thought',
+        title: detailCardTitle(item.summary, 'thinking'),
+        status,
+        ...(content ? { content, sizeBytes: detailCardBytes(content) } : {}),
+      };
+    }
+    case 'commandExecution': {
+      const content = item.output;
+      return {
+        kind: 'output',
+        title: item.command || 'command',
+        status,
+        command: item.command,
+        language: 'bash',
+        ...(content ? { content, sizeBytes: detailCardBytes(content) } : {}),
+      };
+    }
+    case 'fileChange': {
+      const content = item.patch ?? '';
+      const path = item.paths[0]?.path;
+      return {
+        kind: 'diff',
+        title:
+          path ??
+          `${item.paths.length} file${item.paths.length === 1 ? '' : 's'}`,
+        status,
+        language: 'diff',
+        ...(path ? { path } : {}),
+        ...(content
+          ? {
+              content,
+              sizeBytes: detailCardBytes(content),
+              ...diffLineCounts(content),
+            }
+          : {}),
+      };
+    }
+    case 'dynamicToolCall':
+    case 'mcpToolCall': {
+      const tool = item.tool;
+      const output =
+        item.type === 'dynamicToolCall'
+          ? item.content || detailCardText(item.result)
+          : item.progress || detailCardText(item.result);
+      const content = toolCardContent(item.arguments, output);
+      const isDiff =
+        item.metadata?.contentKind === 'diff' || isUnifiedDiff(content);
+      return {
+        kind: isDiff ? 'diff' : 'tool_call',
+        title: tool || 'tool',
+        status,
+        ...(isDiff ? { language: 'diff' } : {}),
+        ...(content
+          ? {
+              content,
+              sizeBytes: detailCardBytes(content),
+              ...(isDiff ? diffLineCounts(content) : {}),
+            }
+          : {}),
+      };
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** Add or refresh the normalized card without mutating the provider item. */
+export function withAgentDetailCard(item: AgentItemV2): AgentItemV2 {
+  const card = agentDetailCardForItem(item);
+  if (!card) return item;
+  return { ...item, card } as AgentItemV2;
+}
+
+function withDetailCardsInTurn(turn: AgentTurnV2): AgentTurnV2 {
+  return { ...turn, items: turn.items.map(withAgentDetailCard) };
+}
+
+/** Normalize every item-bearing patch at the adapter emission boundary. */
+export function withAgentDetailCards(patch: AgentPatchV2): AgentPatchV2 {
+  switch (patch.type) {
+    case 'agent-session-snapshot-v2':
+      return {
+        ...patch,
+        session: {
+          ...patch.session,
+          turns: patch.session.turns.map(withDetailCardsInTurn),
+        },
+      };
+    case 'agent-turn-started-v2':
+      return { ...patch, turn: withDetailCardsInTurn(patch.turn) };
+    case 'agent-item-started-v2':
+    case 'agent-item-updated-v2':
+      return { ...patch, item: withAgentDetailCard(patch.item) };
+    default:
+      return patch;
+  }
+}
 
 interface AgentPatchBaseV2 {
   type: AgentPatchV2['type'];
@@ -819,7 +1037,11 @@ function applyItemDelta(
 
   if (existing) {
     return items.map((item) =>
-      item.id === patch.itemId ? appendItemDelta(item, patch.delta) : item
+      item.id === patch.itemId
+        ? item.card
+          ? withAgentDetailCard(appendItemDelta(item, patch.delta))
+          : appendItemDelta(item, patch.delta)
+        : item
     );
   }
 
@@ -957,6 +1179,40 @@ const ITEM_VALIDATORS: Record<string, ItemValidator> = {
     (v.source === 'agent' || v.source === 'client'),
 };
 
+const DETAIL_CARD_KINDS = new Set<AgentDetailCardKindV2>([
+  'message',
+  'thought',
+  'tool_call',
+  'output',
+  'diff',
+]);
+
+const DETAIL_CARD_STATUSES = new Set<AgentDetailCardStatusV2>([
+  'pending',
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
+function isDetailCard(value: unknown): value is AgentDetailCardV2 {
+  return (
+    isRecord(value) &&
+    typeof value.kind === 'string' &&
+    DETAIL_CARD_KINDS.has(value.kind as AgentDetailCardKindV2) &&
+    typeof value.title === 'string' &&
+    typeof value.status === 'string' &&
+    DETAIL_CARD_STATUSES.has(value.status as AgentDetailCardStatusV2) &&
+    (value.content === undefined || typeof value.content === 'string') &&
+    (value.language === undefined || typeof value.language === 'string') &&
+    (value.command === undefined || typeof value.command === 'string') &&
+    (value.path === undefined || typeof value.path === 'string') &&
+    (value.additions === undefined || typeof value.additions === 'number') &&
+    (value.deletions === undefined || typeof value.deletions === 'number') &&
+    (value.sizeBytes === undefined || typeof value.sizeBytes === 'number')
+  );
+}
+
 function isItem(value: unknown): value is AgentItemV2 {
   if (
     !isRecord(value) ||
@@ -966,7 +1222,11 @@ function isItem(value: unknown): value is AgentItemV2 {
     return false;
   }
   const validator = ITEM_VALIDATORS[value.type];
-  return validator ? validator(value) : false;
+  return (
+    !!validator &&
+    validator(value) &&
+    (value.card === undefined || isDetailCard(value.card))
+  );
 }
 
 function isSession(value: unknown): value is AgentSessionV2 {

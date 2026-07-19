@@ -1,9 +1,4 @@
-import {
-  createHighlighter,
-  type Highlighter,
-  type BundledLanguage,
-} from 'shiki';
-import type { ThemedToken } from 'shiki';
+import type { BundledLanguage, Highlighter, ThemedToken } from 'shiki';
 import { createLogger } from './logger.js';
 
 export type { ThemedToken };
@@ -58,13 +53,20 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 
 export function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({
-      themes: [tuiTheme],
-      langs: PRELOAD_LANGS,
-    }).catch((err) => {
-      highlighterPromise = null; // allow retry on next call
-      throw err;
-    });
+    // Keep Shiki and its grammars out of the initial UI chunk. Agent detail
+    // cards mount highlighted content only after expansion, so the first code
+    // block pays this cost on demand and every later block reuses the singleton.
+    highlighterPromise = import('shiki')
+      .then(({ createHighlighter }) =>
+        createHighlighter({
+          themes: [tuiTheme],
+          langs: PRELOAD_LANGS,
+        })
+      )
+      .catch((err) => {
+        highlighterPromise = null; // allow retry on next call
+        throw err;
+      });
   }
   return highlighterPromise;
 }
@@ -105,7 +107,10 @@ export async function tokenizeCode(
     try {
       await highlighter.loadLanguage(resolvedLang);
     } catch (err: unknown) {
-      logger.warn(`Failed to load "${resolvedLang}", falling back to javascript`, err);
+      logger.warn(
+        `Failed to load "${resolvedLang}", falling back to javascript`,
+        err
+      );
       resolvedLang = 'javascript';
     }
   }

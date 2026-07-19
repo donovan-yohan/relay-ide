@@ -268,6 +268,46 @@ describe('Agent Chat v1 compatibility bridge', () => {
     expect(mapChatEventToAgentPatchV2(event)).toEqual([]);
   });
 
+  it('maps a tagged legacy file edit onto the same durable tool entity', () => {
+    const event: ChatEvent = {
+      type: 'chat:file-change',
+      sessionId: 'session-1',
+      timestamp,
+      source: 'hermes',
+      turnId: 'turn-1',
+      toolCallId: 'call-1',
+      path: 'demo.ts',
+      kind: 'modified',
+      additions: 1,
+      deletions: 1,
+      diff: '@@ -1 +1 @@\n-old\n+new\n',
+    };
+
+    expect(mapChatEventToAgentPatchV2(event)).toEqual([
+      {
+        type: 'agent-item-updated-v2',
+        sessionId: 'session-1',
+        timestamp,
+        turnId: 'turn-1',
+        item: {
+          type: 'fileChange',
+          id: 'tool-call-1',
+          providerItemId: 'call-1',
+          paths: [{ path: 'demo.ts', status: 'modified' }],
+          patch: '@@ -1 +1 @@\n-old\n+new\n',
+          applyStatus: 'applied',
+          status: 'completed',
+          metadata: {
+            source: 'hermes',
+            additions: 1,
+            deletions: 1,
+            contentKind: 'diff',
+          },
+        },
+      },
+    ]);
+  });
+
   it('maps v1 reasoning events to a reasoning item update', () => {
     const event: ChatEvent = {
       type: 'chat:reasoning',
