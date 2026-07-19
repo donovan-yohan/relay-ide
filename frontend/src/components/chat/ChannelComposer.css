@@ -66,6 +66,94 @@
   font-size: var(--font-size-xs);
 }
 
+.ch-composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px 0;
+}
+
+.ch-composer__attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 320px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.ch-composer__attachment--uploading {
+  border-color: var(--status-warning);
+}
+
+.ch-composer__attachment--failed {
+  border-color: color-mix(in srgb, var(--status-error) 50%, transparent);
+}
+
+.ch-composer__attachment-thumb {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.ch-composer__attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ch-composer__attachment-status {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ch-composer__attachment--uploading .ch-composer__attachment-status {
+  color: var(--status-warning);
+}
+
+.ch-composer__attachment--failed .ch-composer__attachment-status {
+  color: var(--status-error);
+}
+
+.ch-composer__attachment-retry,
+.ch-composer__attachment-remove {
+  flex-shrink: 0;
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.ch-composer__attachment-retry:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.ch-composer__attachment-remove:hover {
+  border-color: var(--status-error);
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+}
+
+.ch-composer__attachment-error {
+  padding: 4px 10px 0;
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
 .ch-composer__attach {
   background: transparent;
   border: 1px solid var(--border);
@@ -125,5 +213,14 @@
   .ch-composer__bar {
     gap: 4px;
     padding: 3px 4px;
+  }
+
+  .ch-composer__attachments {
+    padding-right: 4px;
+    padding-left: 4px;
+  }
+
+  .ch-composer__attachment {
+    max-width: 100%;
   }
 }

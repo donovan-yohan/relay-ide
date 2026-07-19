@@ -20,6 +20,7 @@ import {
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
+import type { ChannelAttachmentStore } from '../server/channel-attachments.js';
 import {
   CHANNEL_BINDING_YOLO_DEFAULT,
   createChannelAgentBinder,
@@ -34,6 +35,7 @@ import { createWebSession } from '../server/web-session-handler.js';
 import type { WorkspaceTopicStore } from '../server/workspace-topics.js';
 import {
   parseMentions,
+  type ChannelImagePart,
   type ChannelMessage,
   type ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
@@ -157,6 +159,7 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
     streaming: true,
   };
   readonly sendCalls: string[] = [];
+  readonly sendInputs: AgentSendMessageInputV2[] = [];
   private _status: AdapterStatus = 'disconnected';
   private sid = 'scripted';
   private rejected = false;
@@ -185,6 +188,7 @@ class ScriptedAdapter extends BaseProtocolAdapterV2 {
 
   async sendMessage(input: AgentSendMessageInputV2): Promise<void> {
     this.sendCalls.push(input.turnId);
+    this.sendInputs.push(input);
     if (this.script.mode === 'reject-once-then-reply' && !this.rejected) {
       this.rejected = true;
       throw new Error('transport down');
@@ -845,6 +849,7 @@ function makeBinder(cfg: {
   throwOnCreate?: boolean;
   yolo?: boolean;
   gate?: Promise<void>;
+  attachmentStore?: ChannelAttachmentStore;
 }): {
   binder: ChannelAgentBinder;
   store: ChannelMessageStore;
@@ -858,6 +863,7 @@ function makeBinder(cfg: {
   });
   const binder = createChannelAgentBinder({
     store,
+    ...(cfg.attachmentStore ? { attachmentStore: cfg.attachmentStore } : {}),
     hub,
     topicStore: cfg.topicStore ?? null,
     sessions: sessions.sessions,
@@ -1449,6 +1455,69 @@ describe('channel-agent-binder — delivery + idempotency', () => {
     expect(adapter.sendCalls[0]).toBe(expected);
     expect(adapter.sendCalls[1]).toBe(expected); // retry reuses the SAME turnId
     expect(sessions.spawns()).toBe(1);
+  });
+
+  it('resolves image refs once and preserves attachments across a send retry', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'binder-image-retry-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const payloadPath = path.join(dir, 'fixture.png');
+    fs.writeFileSync(payloadPath, Buffer.from('fixture'));
+    const part: ChannelImagePart = {
+      type: 'image',
+      id: 'cha:retry-image',
+      mime: 'image/png',
+      w: 1,
+      h: 1,
+      bytes: 7,
+    };
+    const attachmentStore = {
+      get: (id: string) =>
+        id === part.id
+          ? {
+              part,
+              sha256: 'retry-image',
+              payloadPath,
+              createdAt: 't',
+            }
+          : null,
+    } as ChannelAttachmentStore;
+    const { binder, store, sessions } = makeBinder({
+      build: () =>
+        new ScriptedAdapter('x', {
+          mode: 'reject-once-then-reply',
+          text: 'ok',
+        }),
+      targets: [
+        {
+          id: 'x',
+          displayName: 'X',
+          kind: 'framework',
+          available: true,
+          reason: null,
+        },
+      ],
+      knownProviderIds: ['x'],
+      attachmentStore,
+    });
+    const mentions = parseMentions('@x inspect', ['x']);
+    const trigger = store.appendComplete({
+      channelId: CH,
+      sender: OPERATOR,
+      text: '@x inspect',
+      mentions,
+      parts: [part],
+    });
+    binder.handleMessagePosted(trigger, mentions);
+
+    await waitFor(() => agentReplies(store, 'x').length === 1);
+    const adapter = sessions.adapterFor(
+      sessions.firstSessionId()
+    ) as ScriptedAdapter;
+    expect(adapter.sendInputs).toHaveLength(2);
+    expect(adapter.sendInputs[0]!.attachments).toEqual([
+      { type: 'image', path: payloadPath, mimeType: 'image/png' },
+    ]);
+    expect(adapter.sendInputs[1]).toEqual(adapter.sendInputs[0]);
   });
 
   it('advances the delivery cursor only after a send is accepted', async () => {

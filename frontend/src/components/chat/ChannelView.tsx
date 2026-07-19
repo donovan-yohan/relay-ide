@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import type { ChannelMessagePart } from '../../../../shared/channel-chat-protocol.js';
 import './ChannelView.css';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useChannelChatSocket } from '../../hooks/useChannelChatSocket.js';
@@ -151,18 +152,27 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   }, [channelId, queryClient]);
 
   const handleSend = useCallback(
-    async (text: string, clientMessageId: string) => {
-      await post(text, { clientMessageId });
+    async (
+      text: string,
+      clientMessageId: string,
+      parts: ChannelMessagePart[]
+    ) => {
+      await post(text, { clientMessageId, parts });
     },
     [post]
   );
 
   const handleThreadSend = useCallback(
-    async (text: string, clientMessageId: string) => {
+    async (
+      text: string,
+      clientMessageId: string,
+      parts: ChannelMessagePart[]
+    ) => {
       if (activeThreadRootId === null) return;
       await post(text, {
         clientMessageId,
         threadId: activeThreadRootId,
+        parts,
       });
     },
     [activeThreadRootId, post]

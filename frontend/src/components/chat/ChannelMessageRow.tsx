@@ -4,6 +4,7 @@ import type {
   ChannelMessageId,
 } from '../../../../shared/channel-chat-protocol.js';
 import { AssistantMarkdown } from './AssistantMarkdown.js';
+import { ChannelImagePart } from './ChannelImagePart.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
 import { respondChannelApproval } from '../../lib/api.js';
 
@@ -127,14 +128,16 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
         } as React.CSSProperties)
       : undefined;
 
-  const body =
+  const hasText = message.body.text.length > 0;
+  const body = hasText ? (
     message.body.format === 'markdown' ? (
       <div className="ch-msg__body">
         <AssistantMarkdown text={message.body.text} keyPrefix={message.id} />
       </div>
     ) : (
       <pre className="ch-msg__text ch-msg__body">{message.body.text}</pre>
-    );
+    )
+  ) : null;
 
   return (
     <div
@@ -142,7 +145,7 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       style={streamStyle}
       data-channel-message-seq={message.seq}
     >
-      {message.body.format === 'markdown' ? (
+      {message.body.format === 'markdown' && (hasText || streaming) ? (
         <div className="ch-msg__body-wrap">
           {body}
           {streaming ? (
@@ -157,6 +160,18 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       ) : (
         body
       )}
+      {message.parts && message.parts.length > 0 ? (
+        <div className="ch-msg__parts" aria-label="image attachments">
+          {message.parts.map((part, index) => (
+            <ChannelImagePart
+              key={part.id}
+              channelId={channelId}
+              part={part}
+              ordinal={index + 1}
+            />
+          ))}
+        </div>
+      ) : null}
       {message.status === 'interrupted' ? (
         <span className="ch-msg__tag ch-msg__tag--interrupted">
           interrupted

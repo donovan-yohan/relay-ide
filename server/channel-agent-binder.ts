@@ -3,16 +3,19 @@ import os from 'node:os';
 import { createLogger } from './logger.js';
 import { bindSessionToChannel } from './channel-agent-bridge.js';
 import {
-  buildMentionContextPacket,
+  buildMentionContextPacketEnvelope,
   PACKET_MAX_ROWS,
+  resolveMentionContextPacket,
+  type ResolvedMentionContextPacket,
 } from './channel-context-packet.js';
+import type { ChannelAttachmentStore } from './channel-attachments.js';
 import {
   CHANNEL_HISTORY_MAX_LIMIT,
   type ChannelBinding,
   type ChannelMessageStore,
 } from './channel-message-store.js';
 import type { ChannelHub } from './channel-hub.js';
-import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
+import type { Attachment, ProtocolAdapterV2 } from './protocol-adapter-v2.js';
 import type { CreateWebParams } from './web-session-handler.js';
 import type { Session, WebSession } from './types.js';
 import type { WorkspaceTopicStore } from './workspace-topics.js';
@@ -108,6 +111,8 @@ export interface BinderSessions {
 
 export interface ChannelAgentBinderDeps {
   store: ChannelMessageStore;
+  /** Content-addressed image lane; production injects the config-dir store. */
+  attachmentStore?: ChannelAttachmentStore | null;
   hub: ChannelHub;
   topicStore: WorkspaceTopicStore | null;
   sessions: BinderSessions;
@@ -163,6 +168,8 @@ export interface LiveBinding {
   turnZeroFallbackUnsafe: boolean;
   /** Context packet for the active turn (kept so a retry re-sends identical content). */
   activeContent: string | null;
+  /** Resolved local payloads retained with activeContent across retry/rebind. */
+  activeAttachments: Attachment[];
   sawStream: boolean;
   waitingOn: string | null;
   queue: QueuedTurn[];
@@ -399,6 +406,7 @@ export function createChannelAgentBinder(
       parentMessageIdByTurn: new Map(),
       turnZeroFallbackUnsafe: false,
       activeContent: null,
+      activeAttachments: [],
       sawStream: false,
       waitingOn: null,
       queue: [],
@@ -442,6 +450,9 @@ export function createChannelAgentBinder(
       agentFramework: framework,
       adapter: session.adapterV2,
       store,
+      ...(deps.attachmentStore
+        ? { attachmentStore: deps.attachmentStore }
+        : {}),
       hub,
       displayName,
       parentMessageIdForTurn: (turnId) => parentForTurn(binding, turnId),
@@ -595,7 +606,10 @@ export function createChannelAgentBinder(
     sendTurn(binding, next.trigger);
   }
 
-  function buildPacket(binding: LiveBinding, trigger: ChannelMessage): string {
+  function buildPacket(
+    binding: LiveBinding,
+    trigger: ChannelMessage
+  ): ResolvedMentionContextPacket {
     const topic = topicStore?.get(binding.channelId);
     const title = topic?.display.title ?? binding.channelId;
     const row = store.getBinding(binding.channelId, binding.framework);
@@ -625,13 +639,16 @@ export function createChannelAgentBinder(
         })
         .filter((r) => r.seq < trigger.seq);
     }
-    return buildMentionContextPacket({
-      channelTitle: title,
-      framework: binding.framework,
-      rows,
-      trigger,
-      lastDeliveredSeq,
-    });
+    return resolveMentionContextPacket(
+      buildMentionContextPacketEnvelope({
+        channelTitle: title,
+        framework: binding.framework,
+        rows,
+        trigger,
+        lastDeliveredSeq,
+      }),
+      deps.attachmentStore
+    );
   }
 
   function sendTurn(binding: LiveBinding, trigger: ChannelMessage): void {
@@ -643,9 +660,9 @@ export function createChannelAgentBinder(
     // AFTER activeTurnId was set (and before the watchdog armed), the binding
     // wedged 'turn-active' forever with no in-flight turn — the queue filled and
     // every later mention dropped. On a throw we surface a row and keep draining.
-    let content: string;
+    let packet: ResolvedMentionContextPacket;
     try {
-      content = buildPacket(binding, trigger);
+      packet = buildPacket(binding, trigger);
     } catch (err) {
       logger.warn('channel binder packet build failed:', err);
       postSystemRow(
@@ -673,7 +690,8 @@ export function createChannelAgentBinder(
     );
     binding.sawStream = false;
     binding.waitingOn = null;
-    binding.activeContent = content;
+    binding.activeContent = packet.content;
+    binding.activeAttachments = packet.attachments;
     setStatus(binding, 'thinking');
     armWatchdog(binding);
     deliver(binding, adapter, turnId, trigger);
@@ -689,6 +707,9 @@ export function createChannelAgentBinder(
       .sendMessage({
         turnId,
         content: binding.activeContent ?? '',
+        ...(binding.activeAttachments.length > 0
+          ? { attachments: binding.activeAttachments }
+          : {}),
         // Deterministic per routed (message, framework) turn (Amendment 3): a
         // retry reuses the same turn identity. `clientMessageId` is forward-compat
         // only — no adapter dedupes on it today.
@@ -773,6 +794,7 @@ export function createChannelAgentBinder(
     if (binding.activeTurnId === null) return;
     binding.activeTurnId = null;
     binding.activeContent = null;
+    binding.activeAttachments = [];
     binding.waitingOn = null;
     binding.sawStream = false;
     disarmWatchdog(binding);
@@ -1147,6 +1169,7 @@ export function createChannelAgentBinder(
       binding.activeTurnId = null;
       binding.parentMessageIdByTurn.clear();
       binding.activeContent = null;
+      binding.activeAttachments = [];
       binding.waitingOn = null;
       binding.announcedApprovals.clear();
       setStatus(binding, 'idle');

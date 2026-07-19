@@ -41,8 +41,10 @@ import type {
   WorkspaceTopicSearchResponse,
 } from '../../../shared/workspace-topics.js';
 import type {
+  ChannelImagePart,
   ChannelMessage,
   ChannelMessageId,
+  ChannelMessagePart,
 } from '../../../shared/channel-chat-protocol.js';
 import type {
   WorkflowRunProjection,
@@ -1828,6 +1830,7 @@ export async function postChannelMessage(
   input: {
     text: string;
     format?: 'markdown' | 'text';
+    parts?: ChannelMessagePart[];
     threadId?: string;
     parentMessageId?: string;
     clientMessageId: string;
@@ -1844,6 +1847,49 @@ export async function postChannelMessage(
     })
   );
   return data.message;
+}
+
+/**
+ * Upload channel images into the durable attachment lane. The browser never
+ * supplies attachment metadata: the server sniffs, sanitizes, measures, and
+ * returns canonical sender-neutral image parts.
+ */
+export async function uploadChannelImages(
+  channelId: string,
+  files: readonly File[]
+): Promise<ChannelImagePart[]> {
+  const form = new FormData();
+  for (const file of files) form.append('images', file, file.name || 'image');
+  const data = await json<{ attachments: ChannelImagePart[] }>(
+    await fetch(`/channels/${encodeURIComponent(channelId)}/attachments`, {
+      method: 'POST',
+      headers: { 'x-relay-capabilities': 'context:write' },
+      body: form,
+    })
+  );
+  return Array.isArray(data.attachments) ? data.attachments : [];
+}
+
+/**
+ * Capability headers cannot be attached by a plain <img src>. Fetch the
+ * authenticated binary explicitly, then let the caller render an object URL.
+ */
+export async function fetchChannelAttachmentBlob(
+  channelId: string,
+  attachmentId: string,
+  signal?: AbortSignal
+): Promise<Blob> {
+  const response = await fetch(
+    `/channels/${encodeURIComponent(channelId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    {
+      headers: { 'x-relay-capabilities': 'context:read' },
+      ...(signal ? { signal } : {}),
+    }
+  );
+  if (!response.ok) {
+    throw await httpErrorFromResponse(response, 'image unavailable');
+  }
+  return response.blob();
 }
 
 // ── Channel agent roster + control (#1167, slice 4) ─────────────────────────

@@ -1,10 +1,19 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
 import { createLogger } from './logger.js';
 import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
 import type { AgentPatchV2 } from '../shared/agent-chat-protocol-v2.js';
 import type { ChannelHub } from './channel-hub.js';
 import type { ChannelMessageStore } from './channel-message-store.js';
 import {
+  CHANNEL_IMAGE_MAX_BYTES,
+  type ChannelAttachmentStore,
+} from './channel-attachments.js';
+import { PACKET_IMAGE_DEGRADATION_META_KEY } from './channel-context-packet.js';
+import {
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
+  type ChannelImagePart,
   type ChannelMessage,
   type ChannelSenderRef,
   type ChannelTruncationReason,
@@ -53,11 +62,21 @@ interface AssistantItemAlias {
   canonicalItemId: string;
 }
 
+interface TurnImageState {
+  pending: number;
+  parts: ChannelImagePart[];
+  failureNotes: string[];
+  deferredMessages: ChannelMessage[];
+  terminal: boolean;
+}
+
 export interface BindSessionToChannelInput {
   channelId: string;
   agentFramework: string;
   adapter: ProtocolAdapterV2;
   store: ChannelMessageStore;
+  /** Shared sender-neutral attachment lane for agent-produced image items. */
+  attachmentStore?: ChannelAttachmentStore | null;
   hub: ChannelHub;
   displayName?: string;
   /** Resolve the immediate parent for a routed turn, if it began in a thread. */
@@ -101,6 +120,8 @@ export function bindSessionToChannel(
   // that gets a warn log (#1181, defect 4) rather than passing unnoticed.
   const turnsWithRows = new Set<string>();
   const recentFinalizedItemKeys = new Set<string>();
+  const turnImages = new Map<string, TurnImageState>();
+  let closed = false;
 
   function itemSourceKey(
     sessionId: string,
@@ -248,6 +269,174 @@ export function bindSessionToChannel(
     scheduleFlush(stream);
   }
 
+  function imageState(turnId: string): TurnImageState {
+    const existing = turnImages.get(turnId);
+    if (existing) return existing;
+    const created: TurnImageState = {
+      pending: 0,
+      parts: [],
+      failureNotes: [],
+      deferredMessages: [],
+      terminal: false,
+    };
+    turnImages.set(turnId, created);
+    return created;
+  }
+
+  function invokeAssistantFinalized(
+    turnId: string,
+    message: ChannelMessage
+  ): void {
+    if (!input.onAssistantMessageFinalized) return;
+    const state = turnImages.get(turnId);
+    const combinedParts = [...(message.parts ?? []), ...(state?.parts ?? [])];
+    const failureNotes = state?.failureNotes ?? [];
+    const augmented =
+      combinedParts.length > 0 || failureNotes.length > 0
+        ? {
+            ...message,
+            ...(combinedParts.length > 0 ? { parts: combinedParts } : {}),
+            ...(failureNotes.length > 0
+              ? {
+                  meta: {
+                    ...(message.meta ?? {}),
+                    [PACKET_IMAGE_DEGRADATION_META_KEY]: failureNotes,
+                  },
+                }
+              : {}),
+          }
+        : message;
+    try {
+      input.onAssistantMessageFinalized(augmented);
+    } catch (err) {
+      logger.warn('channel bridge onAssistantMessageFinalized failed:', err);
+    }
+  }
+
+  function queueAssistantFinalized(
+    turnId: string,
+    message: ChannelMessage
+  ): void {
+    const state = imageState(turnId);
+    state.deferredMessages.push(message);
+    if (state.terminal && state.pending === 0) {
+      for (const deferred of state.deferredMessages.splice(0)) {
+        invokeAssistantFinalized(turnId, deferred);
+      }
+      turnImages.delete(turnId);
+    }
+  }
+
+  function settleTurnImage(
+    turnId: string,
+    part?: ChannelImagePart,
+    failureNote?: string
+  ): void {
+    const state = turnImages.get(turnId);
+    if (!state) return;
+    if (part) state.parts.push(part);
+    if (failureNote) state.failureNotes.push(failureNote);
+    state.pending = Math.max(0, state.pending - 1);
+    if (state.pending > 0 || !state.terminal) return;
+    for (const message of state.deferredMessages.splice(0)) {
+      invokeAssistantFinalized(turnId, message);
+    }
+    turnImages.delete(turnId);
+  }
+
+  function markTurnImagesTerminal(turnId: string | undefined): void {
+    const entries =
+      turnId === undefined
+        ? [...turnImages.entries()]
+        : ([[turnId, turnImages.get(turnId)]] as const);
+    for (const [id, state] of entries) {
+      if (!state) continue;
+      state.terminal = true;
+      if (state.pending > 0) continue;
+      for (const message of state.deferredMessages.splice(0)) {
+        invokeAssistantFinalized(id, message);
+      }
+      turnImages.delete(id);
+    }
+  }
+
+  function publishImageRow(
+    patch: Extract<AgentPatchV2, { type: 'agent-item-started-v2' }>,
+    parentMessageId: string | undefined,
+    text: string,
+    parts: NonNullable<ChannelMessage['parts']> = []
+  ): boolean {
+    if (closed) return false;
+    const itemId = canonicalAssistantItemId(patch.item);
+    const started = store.beginStream({
+      channelId,
+      sender,
+      source: { sessionId: patch.sessionId, turnId: patch.turnId, itemId },
+      text,
+      ...(parts.length > 0 ? { parts } : {}),
+      ...(parentMessageId ? { parentMessageId } : {}),
+    });
+    if (started.status !== 'streaming') return true;
+    hub.beginStreamBroadcast(started);
+    const message = store.finalizeStream(started.id, {
+      text,
+      status: 'complete',
+    });
+    if (!message) return false;
+    hub.completeStreamBroadcast(message);
+    try {
+      store.upsertMember({ channelId, kind: 'agent', id: sender.id });
+    } catch (err) {
+      logger.warn('channel bridge image member upsert failed:', err);
+    }
+    return true;
+  }
+
+  async function mirrorAgentImage(
+    patch: Extract<AgentPatchV2, { type: 'agent-item-started-v2' }>,
+    parentMessageId: string | undefined
+  ): Promise<void> {
+    if (patch.item.type !== 'imageView') return;
+    const source = patch.item.source;
+    const label = (path.basename(source) || 'image')
+      .replace(/[\r\n\t]/g, ' ')
+      .slice(0, 120);
+    let deliveredPart: ChannelImagePart | undefined;
+    let failureNote: string | undefined;
+    try {
+      if (!input.attachmentStore || !path.isAbsolute(source)) {
+        throw new Error(
+          'attachment lane unavailable or image path is not local'
+        );
+      }
+      const stat = await fs.promises.stat(source);
+      if (!stat.isFile() || stat.size > CHANNEL_IMAGE_MAX_BYTES) {
+        throw new Error('image payload is missing or exceeds the size cap');
+      }
+      const part = await input.attachmentStore.ingest({
+        bytes: await fs.promises.readFile(source),
+        ...(patch.item.description ? { alt: patch.item.description } : {}),
+      });
+      if (publishImageRow(patch, parentMessageId, '', [part])) {
+        deliveredPart = part;
+      }
+    } catch (err) {
+      failureNote = label;
+      logger.warn('channel bridge agent image ingest failed:', err);
+      try {
+        publishImageRow(
+          patch,
+          parentMessageId,
+          `[Agent image unavailable: ${label}]`
+        );
+      } catch (publishErr) {
+        logger.warn('channel bridge agent image fallback failed:', publishErr);
+      }
+    } finally {
+      settleTurnImage(patch.turnId, deliveredPart, failureNote);
+    }
+  }
+
   function finalize(
     stream: BridgeStream,
     requestedStatus: 'complete' | 'truncated' | 'interrupted' | 'failed',
@@ -305,11 +494,7 @@ export function bindSessionToChannel(
     // #1167 §8: only a cleanly-completed assistant reply may trigger downstream
     // agent-to-agent mentions. Truncated/interrupted/failed rows never fan out.
     if (status === 'complete' && input.onAssistantMessageFinalized) {
-      try {
-        input.onAssistantMessageFinalized(message);
-      } catch (err) {
-        logger.warn('channel bridge onAssistantMessageFinalized failed:', err);
-      }
+      queueAssistantFinalized(stream.turnId, message);
     }
   }
 
@@ -322,6 +507,7 @@ export function bindSessionToChannel(
       if (turnId !== undefined && stream.turnId !== turnId) continue;
       finalize(stream, status, stream.text);
     }
+    markTurnImagesTerminal(turnId);
     // #1181 defect 4: a cleanly-completed bound-agent turn that produced no
     // channel message row is a silent failure (the reply never reached the
     // channel). Log it — but never post a system row — so the gap is diagnosable
@@ -354,6 +540,16 @@ export function bindSessionToChannel(
   function handlePatch(patch: AgentPatchV2): void {
     switch (patch.type) {
       case 'agent-item-started-v2': {
+        if (patch.item.type === 'imageView') {
+          // Reserve the turn synchronously before async file ingest so a fast
+          // turn-completed boundary neither logs a false empty-turn warning nor
+          // leaves a late turnsWithRows entry retained after completion.
+          turnsWithRows.add(patch.turnId);
+          const parentMessageId = input.parentMessageIdForTurn?.(patch.turnId);
+          imageState(patch.turnId).pending += 1;
+          void mirrorAgentImage(patch, parentMessageId);
+          break;
+        }
         if (patch.item.type === 'assistantMessage') {
           const canonicalItemId = canonicalAssistantItemId(patch.item);
           const streamKey = bridgeStreamKey(patch.turnId, canonicalItemId);
@@ -479,6 +675,7 @@ export function bindSessionToChannel(
   const unlisten = adapter.onPatch(handlePatch);
 
   return () => {
+    closed = true;
     unlisten();
     for (const stream of streams.values()) {
       if (stream.state !== 'released') {
@@ -488,6 +685,7 @@ export function bindSessionToChannel(
     streams.clear();
     assistantItemAliases.clear();
     turnsWithRows.clear();
+    turnImages.clear();
     recentFinalizedItemKeys.clear();
     reportRetention();
   };

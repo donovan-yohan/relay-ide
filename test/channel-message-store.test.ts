@@ -491,6 +491,69 @@ describe('channel-message-store streaming lifecycle', () => {
 });
 
 describe('channel-message-store posts, threads, idempotency', () => {
+  it('round-trips image parts at the message boundary without leaking storage metadata', () => {
+    const s = store();
+    const image = {
+      type: 'image' as const,
+      id: 'cha:abc123' as const,
+      mime: 'image/webp' as const,
+      w: 640,
+      h: 480,
+      bytes: 2048,
+      alt: 'whiteboard sketch',
+    };
+    const created = s.appendComplete({
+      channelId: 'topic:c',
+      sender: HUMAN,
+      text: '',
+      parts: [image],
+    });
+
+    expect(created.parts).toEqual([image]);
+    expect(created.meta ?? {}).not.toHaveProperty('parts');
+    expect(s.getMessage(created.id)).toMatchObject({
+      body: { text: '' },
+      parts: [image],
+    });
+    expect(s.history('topic:c')).toMatchObject([{ parts: [image] }]);
+    expect(() =>
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: HUMAN,
+        text: '',
+        parts: Array.from({ length: 5 }, () => image),
+      })
+    ).toThrow(/at most 4 valid image parts/);
+
+    const maxAlt = { ...image, alt: 'a'.repeat(500) };
+    expect(
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: HUMAN,
+        text: '',
+        parts: [maxAlt],
+      }).parts
+    ).toEqual([maxAlt]);
+    const oversizedAlt = { ...image, alt: 'a'.repeat(501) };
+    expect(() =>
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: HUMAN,
+        text: '',
+        parts: [oversizedAlt],
+      })
+    ).toThrow(/valid image parts/);
+    expect(() =>
+      s.appendComplete({
+        channelId: 'topic:c',
+        sender: HUMAN,
+        text: '',
+        meta: { parts: [oversizedAlt] },
+      })
+    ).toThrow(/valid image parts/);
+    expect(s.history('topic:c')).toHaveLength(2);
+  });
+
   it('returns the original row for a repeated clientMessageId', () => {
     const s = store();
     const first = s.appendComplete({

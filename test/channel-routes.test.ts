@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import express from 'express';
+import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -23,6 +24,11 @@ import {
   type ChannelSocket,
 } from '../server/channel-hub.js';
 import { createChannelChatRouter } from '../server/channel-chat-router.js';
+import {
+  CHANNEL_IMAGE_MAX_BYTES,
+  createChannelAttachmentStore,
+  type ChannelAttachmentStore,
+} from '../server/channel-attachments.js';
 import {
   createWorkspaceTopicStore,
   type WorkspaceTopicStore,
@@ -44,13 +50,19 @@ function tmpDir(): string {
 interface Harness {
   port: number;
   store: ChannelMessageStore;
+  attachmentStore: ChannelAttachmentStore;
   topicStore: WorkspaceTopicStore;
   hub: ChannelHub;
   channelId: string;
 }
 
 async function harness(
-  options: { withStore?: boolean; historyMaxBytes?: number } = {}
+  options: {
+    withStore?: boolean;
+    withAttachmentStore?: boolean;
+    historyMaxBytes?: number;
+    withAuth?: boolean;
+  } = {}
 ): Promise<Harness> {
   const dir = tmpDir();
   const topicStore = createWorkspaceTopicStore({
@@ -60,6 +72,11 @@ async function harness(
   cleanup.push(() => topicStore.close());
   const store = createChannelMessageStore(path.join(dir, 'channel-chat.db'));
   cleanup.push(() => store.close());
+  const attachmentStore = createChannelAttachmentStore({
+    dbPath: path.join(dir, 'channel-attachments.db'),
+    payloadRoot: path.join(dir, 'channel-attachments', 'payloads'),
+  });
+  cleanup.push(() => attachmentStore.close());
   const hub = createChannelHub({
     store,
     channelExists: (id) => Boolean(topicStore.get(id)),
@@ -84,8 +101,18 @@ async function harness(
   app.use(
     createChannelChatRouter({
       store: options.withStore === false ? null : store,
+      attachmentStore:
+        options.withAttachmentStore === false ? null : attachmentStore,
       hub,
       topicStore,
+      ...(options.withAuth
+        ? {
+            requireAuth: (req, res, next) => {
+              if (req.header('authorization') === 'Bearer test') return next();
+              res.sendStatus(401);
+            },
+          }
+        : {}),
       ...(options.historyMaxBytes !== undefined
         ? { historyMaxBytes: options.historyMaxBytes }
         : {}),
@@ -96,7 +123,14 @@ async function harness(
   cleanup.push(() => server.close());
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('no address');
-  return { port: address.port, store, topicStore, hub, channelId: topic.id };
+  return {
+    port: address.port,
+    store,
+    attachmentStore,
+    topicStore,
+    hub,
+    channelId: topic.id,
+  };
 }
 
 async function req<T>(input: {
@@ -133,6 +167,206 @@ function fakeSocket(): ChannelSocket & { sent: ChannelEventV1[] } {
     on() {},
   };
 }
+
+async function uploadImages(input: {
+  port: number;
+  channelId: string;
+  images: Array<{ bytes: Buffer; name: string; mime: string }>;
+  authorization?: string;
+  capabilities?: string;
+}): Promise<Response> {
+  const form = new FormData();
+  for (const image of input.images) {
+    form.append(
+      'images',
+      new Blob([new Uint8Array(image.bytes)], { type: image.mime }),
+      image.name
+    );
+  }
+  return fetch(
+    `http://127.0.0.1:${input.port}/channels/${encodeURIComponent(input.channelId)}/attachments`,
+    {
+      method: 'POST',
+      headers: {
+        ...(input.authorization ? { Authorization: input.authorization } : {}),
+        'x-relay-capabilities': input.capabilities ?? 'context:write',
+      },
+      body: form,
+    }
+  );
+}
+
+describe('channel routes — image attachments', () => {
+  it('authenticates upload/serve, canonicalizes message refs, and serves sanitized bytes', async () => {
+    const h = await harness({ withAuth: true });
+    const png = await sharp({
+      create: {
+        width: 7,
+        height: 5,
+        channels: 3,
+        background: '#24a148',
+      },
+    })
+      .png()
+      .toBuffer();
+
+    const unauthorizedUpload = await uploadImages({
+      port: h.port,
+      channelId: h.channelId,
+      images: [{ bytes: png, name: 'status.png', mime: 'image/png' }],
+    });
+    expect(unauthorizedUpload.status).toBe(401);
+
+    const upload = await uploadImages({
+      port: h.port,
+      channelId: h.channelId,
+      images: [
+        {
+          bytes: png,
+          name: 'status.png',
+          mime: 'application/octet-stream',
+        },
+      ],
+      authorization: 'Bearer test',
+    });
+    expect(upload.status).toBe(201);
+    const uploadBody = (await upload.json()) as {
+      attachments: Array<Record<string, unknown>>;
+    };
+    expect(uploadBody.attachments).toHaveLength(1);
+    expect(uploadBody.attachments[0]).toMatchObject({
+      type: 'image',
+      mime: 'image/png',
+      w: 7,
+      h: 5,
+      alt: 'status.png',
+    });
+    const attachmentId = String(uploadBody.attachments[0]?.['id']);
+
+    const posted = await req<{
+      message: {
+        body: { text: string };
+        parts: Array<Record<string, unknown>>;
+      };
+    }>({
+      port: h.port,
+      method: 'POST',
+      url: `/channels/${encodeURIComponent(h.channelId)}/messages`,
+      headers: { Authorization: 'Bearer test' },
+      body: {
+        text: '',
+        parts: [
+          {
+            type: 'image',
+            id: attachmentId,
+            mime: 'image/gif',
+            w: 999,
+            h: 999,
+            bytes: 1,
+            alt: '  deployment status  ',
+          },
+        ],
+      },
+    });
+    expect(posted.status).toBe(201);
+    expect(posted.body.message).toMatchObject({
+      body: { text: '' },
+      parts: [
+        {
+          id: attachmentId,
+          mime: 'image/png',
+          w: 7,
+          h: 5,
+          alt: 'deployment status',
+        },
+      ],
+    });
+
+    const serveUrl = `http://127.0.0.1:${h.port}/channels/${encodeURIComponent(h.channelId)}/attachments/${encodeURIComponent(attachmentId)}`;
+    expect((await fetch(serveUrl)).status).toBe(401);
+    expect(
+      (
+        await fetch(serveUrl, {
+          headers: { Authorization: 'Bearer test' },
+        })
+      ).status
+    ).toBe(403);
+    const served = await fetch(serveUrl, {
+      headers: {
+        Authorization: 'Bearer test',
+        'x-relay-capabilities': 'context:read',
+      },
+    });
+    expect(served.status).toBe(200);
+    expect(served.headers.get('content-type')).toBe('image/png');
+    expect(served.headers.get('x-content-type-options')).toBe('nosniff');
+    const servedBytes = Buffer.from(await served.arrayBuffer());
+    expect(servedBytes).toHaveLength(
+      Number(uploadBody.attachments[0]?.['bytes'])
+    );
+    expect(await sharp(servedBytes).metadata()).toMatchObject({
+      format: 'png',
+      width: 7,
+      height: 5,
+    });
+  });
+
+  it('rejects unsupported payloads, oversized files, and more than four images', async () => {
+    const h = await harness();
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'
+    );
+    expect(
+      (
+        await uploadImages({
+          port: h.port,
+          channelId: h.channelId,
+          images: [{ bytes: svg, name: 'unsafe.svg', mime: 'image/svg+xml' }],
+        })
+      ).status
+    ).toBe(415);
+
+    expect(
+      (
+        await uploadImages({
+          port: h.port,
+          channelId: h.channelId,
+          images: [
+            {
+              bytes: Buffer.alloc(CHANNEL_IMAGE_MAX_BYTES + 1),
+              name: 'large.png',
+              mime: 'image/png',
+            },
+          ],
+        })
+      ).status
+    ).toBe(413);
+
+    const png = await sharp({
+      create: {
+        width: 1,
+        height: 1,
+        channels: 3,
+        background: '#000000',
+      },
+    })
+      .png()
+      .toBuffer();
+    expect(
+      (
+        await uploadImages({
+          port: h.port,
+          channelId: h.channelId,
+          images: Array.from({ length: 5 }, (_, index) => ({
+            bytes: png,
+            name: `image-${index}.png`,
+            mime: 'image/png',
+          })),
+        })
+      ).status
+    ).toBe(400);
+  });
+});
 
 describe('channel routes — attribution', () => {
   it('rejects a client-supplied sender field with 400', async () => {

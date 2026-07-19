@@ -7,22 +7,46 @@ import React, {
 } from 'react';
 import './ChannelComposer.css';
 import { useQuery } from '@tanstack/react-query';
+import type {
+  ChannelImagePart,
+  ChannelMessagePart,
+} from '../../../../shared/channel-chat-protocol.js';
 import { createBrowserId } from '../../lib/browserId.js';
-import { fetchChannelRoster } from '../../lib/api.js';
+import { fetchChannelRoster, uploadChannelImages } from '../../lib/api.js';
 import { detectTrigger } from './slashTrigger.js';
 import { MentionPalette, filterRoster } from './MentionPalette.js';
 
 const LINE_BREAK_INPUT_TYPES = new Set(['insertLineBreak', 'insertParagraph']);
 const LINE_BREAK_BEFOREINPUT_SKIP_WINDOW_MS = 500;
-const IMAGE_ATTACH_TOOLTIP =
-  'image attachments are coming in a future update — the channel API does not accept them yet';
+const ALLOWED_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
+export const CHANNEL_COMPOSER_MAX_IMAGES = 4;
+export const CHANNEL_COMPOSER_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+interface PendingImage {
+  localId: string;
+  file: File;
+  name: string;
+  previewUrl: string;
+  status: 'uploading' | 'ready' | 'failed';
+  part?: ChannelImagePart;
+  error?: string;
+}
 
 interface ChannelComposerProps {
   channelId: string;
   channelTitle: string;
   placeholder?: string;
   /** Idempotent send: the SAME clientMessageId is reused across manual retries. */
-  onSend: (text: string, clientMessageId: string) => Promise<void>;
+  onSend: (
+    text: string,
+    clientMessageId: string,
+    parts: ChannelMessagePart[]
+  ) => Promise<void>;
   postPending: boolean;
   /** 503 CHANNEL_STORE_UNAVAILABLE — persistent inline banner, input stays live. */
   storeDown: boolean;
@@ -49,10 +73,128 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   // until a send succeeds, so a flaky connection never double-posts.
   const clientIdRef = useRef<string | null>(null);
   const sendingRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const imagesRef = useRef<PendingImage[]>([]);
   const [draft, setDraft] = useState('');
   const [caret, setCaret] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
+  const [images, setImages] = useState<PendingImage[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+
+  const updateImages = useCallback(
+    (update: (current: PendingImage[]) => PendingImage[]) => {
+      setImages((current) => {
+        const next = update(current);
+        imagesRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
+  const revokePreview = useCallback((image: PendingImage) => {
+    if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
+  }, []);
+
+  useEffect(
+    () => () => {
+      for (const image of imagesRef.current) revokePreview(image);
+    },
+    [revokePreview]
+  );
+
+  const uploadImage = useCallback(
+    async (image: PendingImage) => {
+      updateImages((current) =>
+        current.map((entry) => {
+          if (entry.localId !== image.localId) return entry;
+          const { part: _part, error: _error, ...rest } = entry;
+          return { ...rest, status: 'uploading' };
+        })
+      );
+      try {
+        const [part] = await uploadChannelImages(channelId, [image.file]);
+        if (!part) throw new Error('upload returned no attachment');
+        updateImages((current) =>
+          current.map((entry) => {
+            if (entry.localId !== image.localId) return entry;
+            const { error: _error, ...rest } = entry;
+            return { ...rest, status: 'ready', part };
+          })
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'upload failed';
+        updateImages((current) =>
+          current.map((entry) => {
+            if (entry.localId !== image.localId) return entry;
+            const { part: _part, ...rest } = entry;
+            return { ...rest, status: 'failed', error: message };
+          })
+        );
+      }
+    },
+    [channelId, updateImages]
+  );
+
+  const addImageFiles = useCallback(
+    (files: FileList | readonly File[]) => {
+      const candidates = Array.from(files);
+      const accepted: File[] = [];
+      let error: string | null = null;
+      for (const file of candidates) {
+        if (!ALLOWED_IMAGE_MIMES.has(file.type)) {
+          error = 'unsupported image type — use png, jpeg, webp, or gif';
+          continue;
+        }
+        if (file.size > CHANNEL_COMPOSER_MAX_IMAGE_BYTES) {
+          error = `${file.name || 'image'} is too large — max 5mb`;
+          continue;
+        }
+        accepted.push(file);
+      }
+
+      const slots = Math.max(
+        0,
+        CHANNEL_COMPOSER_MAX_IMAGES - imagesRef.current.length
+      );
+      const selected = accepted.slice(0, slots);
+      if (accepted.length > slots) error = 'up to 4 images per message';
+      setAttachmentError(error);
+      if (selected.length === 0) return;
+
+      const additions = selected.map<PendingImage>((file) => ({
+        localId: createBrowserId('attachment'),
+        file,
+        name: file.name || 'image',
+        previewUrl:
+          typeof URL.createObjectURL === 'function'
+            ? URL.createObjectURL(file)
+            : '',
+        status: 'uploading',
+      }));
+      const next = [...imagesRef.current, ...additions];
+      imagesRef.current = next;
+      setImages(next);
+      for (const image of additions) void uploadImage(image);
+    },
+    [uploadImage]
+  );
+
+  const removeImage = useCallback(
+    (localId: string) => {
+      const target = imagesRef.current.find(
+        (image) => image.localId === localId
+      );
+      if (target) revokePreview(target);
+      updateImages((current) =>
+        current.filter((image) => image.localId !== localId)
+      );
+      setAttachmentError(null);
+    },
+    [revokePreview, updateImages]
+  );
 
   // @mention trigger (#1167). Broader boundary than slash (`(@x`, `hey,@x` are
   // mentions) — see slashTrigger.detectTrigger. Roster is fetched lazily on the
@@ -104,17 +246,40 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
 
   const submit = useCallback(() => {
     const content = draft.trim();
-    if (!content || sendingRef.current) return;
+    if (sendingRef.current) return;
+    if (images.some((image) => image.status === 'uploading')) {
+      setAttachmentError('wait for image uploads to finish');
+      return;
+    }
+    if (images.some((image) => image.status === 'failed')) {
+      setAttachmentError('retry or remove failed images before sending');
+      return;
+    }
+    const parts = images.flatMap((image) => (image.part ? [image.part] : []));
+    if (!content && parts.length === 0) return;
+    const submittedImageIds = new Set(images.map((image) => image.localId));
+    const submittedImages = images;
     if (!clientIdRef.current) clientIdRef.current = createBrowserId('chm');
     const clientMessageId = clientIdRef.current;
     sendingRef.current = true;
-    void onSend(content, clientMessageId)
+    void onSend(content, clientMessageId, parts)
       .then(() => {
         // Success: the row arrives via the socket, not this promise. Reset the
         // draft and idempotency key so the next message is a fresh attempt.
         clientIdRef.current = null;
         setDraft('');
         setCaret(0);
+        for (const image of submittedImages) revokePreview(image);
+        updateImages((current) =>
+          current.filter((image) => !submittedImageIds.has(image.localId))
+        );
+        if (
+          imagesRef.current.every((image) =>
+            submittedImageIds.has(image.localId)
+          )
+        ) {
+          setAttachmentError(null);
+        }
       })
       .catch(() => {
         // Keep the draft AND the same clientMessageId so a retry (press enter
@@ -123,7 +288,7 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
       .finally(() => {
         sendingRef.current = false;
       });
-  }, [draft, onSend]);
+  }, [draft, images, onSend, revokePreview, updateImages]);
 
   // Splice the selected AVAILABLE agent into the draft as plain `@<id> ` text
   // (no rich pill), replacing the active trigger span.
@@ -229,33 +394,36 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
     return () => textarea.removeEventListener('beforeinput', handleBeforeInput);
   }, [handleBeforeInput]);
 
-  // Paste/drop of image files is detected and swallowed (no text paste of
-  // binary) — the attach affordance is visibly present but inert in slice 3.
-  const swallowImagePaste = useCallback(
+  const handleImagePaste = useCallback(
     (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
       const items = e.clipboardData?.items;
       if (!items) return;
+      const files: File[] = [];
       for (const item of Array.from(items)) {
         if (item.kind === 'file' && item.type.startsWith('image/')) {
-          e.preventDefault();
-          return;
+          const file = item.getAsFile();
+          if (file) files.push(file);
         }
       }
+      if (files.length === 0) return;
+      e.preventDefault();
+      addImageFiles(files);
     },
-    []
+    [addImageFiles]
   );
 
-  const swallowImageDrop = useCallback(
+  const handleImageDrop = useCallback(
     (e: React.DragEvent<HTMLTextAreaElement>) => {
       const dropped = e.dataTransfer?.files;
-      if (
-        dropped &&
-        Array.from(dropped).some((f) => f.type.startsWith('image/'))
-      ) {
-        e.preventDefault();
-      }
+      if (!dropped || dropped.length === 0) return;
+      const images = Array.from(dropped).filter((file) =>
+        file.type.startsWith('image/')
+      );
+      if (images.length === 0) return;
+      e.preventDefault();
+      addImageFiles(images);
     },
-    []
+    [addImageFiles]
   );
 
   if (archived) {
@@ -309,18 +477,83 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
           onKeyUp={updateCaret}
           onClick={updateCaret}
           onSelect={updateCaret}
-          onPaste={swallowImagePaste}
-          onDrop={swallowImageDrop}
+          onPaste={handleImagePaste}
+          onDrop={handleImageDrop}
           onDragOver={(e) => e.preventDefault()}
         />
       </div>
+      {images.length > 0 ? (
+        <div
+          className="ch-composer__attachments"
+          aria-label="image attachments"
+        >
+          {images.map((image) => (
+            <span
+              key={image.localId}
+              className={`ch-composer__attachment ch-composer__attachment--${image.status}`}
+              title={image.error ?? image.name}
+            >
+              {image.previewUrl ? (
+                <img
+                  className="ch-composer__attachment-thumb"
+                  src={image.previewUrl}
+                  alt=""
+                />
+              ) : null}
+              <span className="ch-composer__attachment-name">{image.name}</span>
+              <span className="ch-composer__attachment-status" role="status">
+                {image.status === 'uploading'
+                  ? 'uploading…'
+                  : image.status === 'failed'
+                    ? 'failed'
+                    : 'ready'}
+              </span>
+              {image.status === 'failed' ? (
+                <button
+                  type="button"
+                  className="ch-composer__attachment-retry"
+                  onClick={() => void uploadImage(image)}
+                >
+                  retry
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="ch-composer__attachment-remove"
+                aria-label={`remove ${image.name}`}
+                onClick={() => removeImage(image.localId)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {attachmentError ? (
+        <div className="ch-composer__attachment-error" role="alert">
+          {attachmentError}
+        </div>
+      ) : null}
       <div className="ch-composer__bar">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          hidden
+          onChange={(event) => {
+            if (event.currentTarget.files)
+              addImageFiles(event.currentTarget.files);
+            event.currentTarget.value = '';
+          }}
+        />
         <button
           type="button"
           className="ch-composer__attach"
           aria-label="attach image"
-          title={IMAGE_ATTACH_TOOLTIP}
-          disabled
+          title="attach image"
+          disabled={images.length >= CHANNEL_COMPOSER_MAX_IMAGES}
+          onClick={() => fileInputRef.current?.click()}
         >
           +img
         </button>

@@ -6,6 +6,7 @@ import {
   type Locator,
   type Page,
 } from '@playwright/test';
+import { TINY_CHANNEL_PNG_BASE64 } from '../fixtures/channel-image.js';
 
 const PIN = '1170-thread-ui';
 const CAPS = {
@@ -111,6 +112,23 @@ async function openChannel(
   );
 }
 
+async function pasteTinyPng(input: Locator): Promise<void> {
+  await input.evaluate((element, base64) => {
+    const binary = atob(base64);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const file = new File([bytes], 'tiny-channel.png', { type: 'image/png' });
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    element.dispatchEvent(
+      new ClipboardEvent('paste', {
+        clipboardData: transfer,
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+  }, TINY_CHANNEL_PNG_BASE64);
+}
+
 async function captureFirstVisible(
   log: Locator
 ): Promise<{ seq: string; top: number }> {
@@ -145,6 +163,81 @@ async function expectAnchorStable(
 }
 
 test.describe.serial('smoke channel thread UI (#1170)', () => {
+  test('pastes, posts, and opens authenticated images in the main lane and thread panel (#1203)', async ({
+    context,
+    page,
+  }) => {
+    await authenticate(context);
+    const channelId = await createChannel(context);
+    const root = await postMessage(
+      context.request,
+      channelId,
+      'image thread root'
+    );
+    await postMessage(context.request, channelId, 'seed reply', root.id);
+    const attachmentReads: string[] = [];
+    page.on('request', (request) => {
+      if (
+        request.method() === 'GET' &&
+        request.url().includes('/attachments/')
+      ) {
+        attachmentReads.push(
+          request.headers()['x-relay-capabilities'] ?? 'missing'
+        );
+      }
+    });
+
+    await openChannel(page, { channelId });
+    const main = page.locator('.ch-main');
+    const mainInput = main.getByRole('textbox', { name: 'message input' });
+    await pasteTinyPng(mainInput);
+    await expect(main.locator('.ch-composer__attachment-status')).toHaveText(
+      'ready'
+    );
+    await mainInput.press('Enter');
+
+    const mainImage = main.locator('.ch-image-part').last();
+    await expect(mainImage).toBeVisible();
+    await expect(mainImage).toHaveCSS('height', '96px');
+    await expect(mainImage.locator('img')).toHaveAttribute(
+      'alt',
+      'tiny-channel.png'
+    );
+    await mainImage.click();
+    await expect(
+      page.getByRole('dialog', { name: 'full-size image' })
+    ).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(
+      page.getByRole('dialog', { name: 'full-size image' })
+    ).toHaveCount(0);
+
+    await page.getByRole('button', { name: '1 reply — open thread' }).click();
+    const panel = page.locator('.ch-thread');
+    const threadInput = panel.getByRole('textbox', { name: 'message input' });
+    await pasteTinyPng(threadInput);
+    await expect(panel.locator('.ch-composer__attachment-status')).toHaveText(
+      'ready'
+    );
+    await threadInput.press('Enter');
+
+    const threadImage = panel.locator('.ch-image-part').last();
+    await expect(threadImage.locator('img')).toBeVisible();
+    await threadImage.click();
+    await expect(
+      page.getByRole('dialog', { name: 'full-size image' })
+    ).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(
+      page.getByRole('dialog', { name: 'full-size image' })
+    ).toHaveCount(0);
+    await expect(panel).toBeVisible();
+    expect(attachmentReads.length).toBeGreaterThanOrEqual(2);
+    expect(attachmentReads.every((value) => value === 'context:read')).toBe(
+      true
+    );
+  });
+
   test('opens the panel from the reply chip with a pinned root and thread composer', async ({
     context,
     page,

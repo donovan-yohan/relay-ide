@@ -24,8 +24,58 @@ import {
   type CodexServerRequest,
 } from '../codex-app-server-client.js';
 import { createLogger } from '../logger.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const logger = createLogger('codex-native-adapter');
+
+type CodexTurnInput =
+  | { type: 'text'; text: string }
+  | { type: 'localImage'; path: string };
+
+/**
+ * Convert Relay's established local-path image attachment lane to the Codex
+ * app-server v2 `UserInput` contract. Channel image payloads are always local
+ * content-addressed files; URL fetching is deliberately out of scope here.
+ * Any attachment that cannot be represented stays visible as a text note.
+ */
+export function buildCodexTurnInput(
+  content: string,
+  attachments: AgentSendMessageInputV2['attachments'] = []
+): CodexTurnInput[] {
+  const inputs: CodexTurnInput[] = [{ type: 'text', text: content }];
+  const unavailable: string[] = [];
+
+  for (const attachment of attachments) {
+    if (attachment.type !== 'image') continue;
+    const localPath = attachment.path;
+    let usable = path.isAbsolute(localPath);
+    if (usable) {
+      try {
+        usable = fs.statSync(localPath).isFile();
+      } catch {
+        usable = false;
+      }
+    }
+    if (usable) {
+      inputs.push({ type: 'localImage', path: localPath });
+    } else {
+      unavailable.push(path.basename(localPath) || 'image');
+    }
+  }
+
+  if (unavailable.length > 0) {
+    const text = inputs[0];
+    if (text?.type === 'text') {
+      text.text += unavailable
+        .map(
+          (name) => `\n\n[Relay image attachment unavailable to Codex: ${name}]`
+        )
+        .join('');
+    }
+  }
+  return inputs;
+}
 
 // ── Web-session capability status ──────────────────────────────────────────
 //
@@ -721,7 +771,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     try {
       await this.client.call('turn/start', {
         threadId: this.providerSessionId,
-        input: [{ type: 'text', text: input.content }],
+        input: buildCodexTurnInput(input.content, input.attachments),
         ...(this.pendingModelOverride
           ? { model: this.pendingModelOverride }
           : {}),
