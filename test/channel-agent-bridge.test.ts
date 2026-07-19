@@ -15,8 +15,19 @@ import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
 import {
   bindSessionToChannel,
   CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX,
+  CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN,
 } from '../server/channel-agent-bridge.js';
 import type { ChannelBridgeRetentionSnapshot } from '../server/channel-agent-bridge.js';
+import type { ChannelAttachmentStore } from '../server/channel-attachments.js';
+import {
+  buildMentionContextPacketEnvelope,
+  PACKET_IMAGE_DEGRADATION_META_KEY,
+} from '../server/channel-context-packet.js';
+import {
+  parseMentions,
+  type ChannelImagePart,
+  type ChannelMessage,
+} from '../shared/channel-chat-protocol.js';
 
 const cleanup: Array<() => void> = [];
 
@@ -740,6 +751,7 @@ describe('channel-agent-bridge lifecycle', () => {
         completedAt: 't',
       },
     });
+    adapter.broadcastPatch(turnCompleted('s', 'turn'));
 
     expect(store.history('topic:aliases')).toEqual([
       expect.objectContaining({
@@ -779,7 +791,443 @@ describe('channel-agent-bridge lifecycle', () => {
     expect(store.history('topic:plan')).toHaveLength(0);
   });
 
-  it('does not mirror non-text items', () => {
+  it('stores agent-produced imageView output as a sender-neutral image part', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-agent-image-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const source = path.join(dir, 'generated.png');
+    fs.writeFileSync(source, Buffer.from('agent image fixture'));
+    const part: ChannelImagePart = {
+      type: 'image',
+      id: 'cha:agent-image',
+      mime: 'image/png',
+      w: 2,
+      h: 3,
+      bytes: 19,
+    };
+    const attachmentStore = {
+      ingest: vi.fn(async () => part),
+    } as unknown as ChannelAttachmentStore;
+    bindSessionToChannel({
+      channelId: 'topic:image',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      attachmentStore,
+      hub,
+    });
+
+    adapter.broadcastPatch({
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn-image',
+      item: {
+        type: 'imageView',
+        id: 'img-1',
+        source,
+        status: 'running',
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(store.history('topic:image')).toHaveLength(1);
+    });
+    expect(attachmentStore.ingest).toHaveBeenCalledWith({
+      bytes: Buffer.from('agent image fixture'),
+    });
+    expect(store.history('topic:image')[0]).toMatchObject({
+      status: 'complete',
+      sender: { kind: 'agent', providerId: 'codex' },
+      body: { text: '' },
+      parts: [part],
+      source: { sessionId: 's', turnId: 'turn-image', itemId: 'img-1' },
+    });
+  });
+
+  it('captures the thread parent before a fast turn completion clears it', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-image-parent-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const source = path.join(dir, 'generated.png');
+    fs.writeFileSync(source, Buffer.from('agent image fixture'));
+    const root = store.appendComplete({
+      channelId: 'topic:image-parent',
+      sender: { kind: 'human', id: 'human:operator' },
+      text: 'root',
+    });
+    const part: ChannelImagePart = {
+      type: 'image',
+      id: 'cha:threaded-agent-image',
+      mime: 'image/png',
+      w: 2,
+      h: 3,
+      bytes: 19,
+    };
+    let releaseIngest!: (part: ChannelImagePart) => void;
+    const ingest = new Promise<ChannelImagePart>((resolve) => {
+      releaseIngest = resolve;
+    });
+    const attachmentStore = {
+      ingest: vi.fn(() => ingest),
+    } as unknown as ChannelAttachmentStore;
+    let parentMessageId: string | undefined = root.id;
+    bindSessionToChannel({
+      channelId: 'topic:image-parent',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      attachmentStore,
+      hub,
+      parentMessageIdForTurn: () => parentMessageId,
+    });
+
+    adapter.broadcastPatch({
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn-fast',
+      item: {
+        type: 'imageView',
+        id: 'img-fast',
+        source,
+        status: 'running',
+      },
+    });
+    parentMessageId = undefined;
+    adapter.broadcastPatch(turnCompleted('s', 'turn-fast'));
+    releaseIngest(part);
+
+    await vi.waitFor(() => {
+      expect(store.history('topic:image-parent')).toHaveLength(2);
+    });
+    const image = store
+      .history('topic:image-parent')
+      .find((message) => message.source?.itemId === 'img-fast');
+    expect(image).toMatchObject({
+      threadId: root.id,
+      parentMessageId: root.id,
+      parts: [part],
+    });
+  });
+
+  it('waits for same-turn image ingest before routing an assistant mention', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-image-mention-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const source = path.join(dir, 'generated.png');
+    fs.writeFileSync(source, Buffer.from('agent image fixture'));
+    const part: ChannelImagePart = {
+      type: 'image',
+      id: 'cha:mention-agent-image',
+      mime: 'image/png',
+      w: 2,
+      h: 3,
+      bytes: 19,
+    };
+    let releaseIngest!: (part: ChannelImagePart) => void;
+    const ingest = new Promise<ChannelImagePart>((resolve) => {
+      releaseIngest = resolve;
+    });
+    const attachmentStore = {
+      ingest: vi.fn(() => ingest),
+    } as unknown as ChannelAttachmentStore;
+    const finalized = vi.fn();
+    bindSessionToChannel({
+      channelId: 'topic:image-mention',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      attachmentStore,
+      hub,
+      onAssistantMessageFinalized: finalized,
+    });
+
+    adapter.broadcastPatch({
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn-mention',
+      item: {
+        type: 'imageView',
+        id: 'img-mention',
+        source,
+        status: 'running',
+      },
+    });
+    adapter.broadcastPatch(assistantStarted('s', 'turn-mention', 'a-mention'));
+    adapter.broadcastPatch(
+      assistantUpdated(
+        's',
+        'turn-mention',
+        'a-mention',
+        '@hermes describe this image'
+      )
+    );
+    adapter.broadcastPatch(turnCompleted('s', 'turn-mention'));
+    expect(finalized).not.toHaveBeenCalled();
+
+    releaseIngest(part);
+    await vi.waitFor(() => expect(finalized).toHaveBeenCalledTimes(1));
+    const routed = finalized.mock.calls[0]![0] as ChannelMessage;
+    expect(routed.body.text).toBe('@hermes describe this image');
+    expect(routed.parts).toEqual([part]);
+    const durable = store.history('topic:image-mention');
+    const assistant = durable.find(
+      (message) => message.source?.itemId === 'a-mention'
+    )!;
+    const image = durable.find(
+      (message) => message.source?.itemId === 'img-mention'
+    )!;
+    expect(routed.seq).toBe(assistant.seq);
+    expect(image.seq).toBeGreaterThan(assistant.seq);
+  });
+
+  it('holds an assistant mention for an imageView that starts later in the turn', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-late-image-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const source = path.join(dir, 'late.png');
+    fs.writeFileSync(source, Buffer.from('late image fixture'));
+    const part: ChannelImagePart = {
+      type: 'image',
+      id: 'cha:late-agent-image',
+      mime: 'image/png',
+      w: 3,
+      h: 2,
+      bytes: 18,
+    };
+    let releaseIngest!: (part: ChannelImagePart) => void;
+    const ingest = new Promise<ChannelImagePart>((resolve) => {
+      releaseIngest = resolve;
+    });
+    const attachmentStore = {
+      ingest: vi.fn(() => ingest),
+    } as unknown as ChannelAttachmentStore;
+    const finalized = vi.fn();
+    bindSessionToChannel({
+      channelId: 'topic:late-image',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      attachmentStore,
+      hub,
+      onAssistantMessageFinalized: finalized,
+    });
+
+    adapter.broadcastPatch(assistantStarted('s', 'turn-late', 'a-late'));
+    adapter.broadcastPatch(
+      assistantUpdated(
+        's',
+        'turn-late',
+        'a-late',
+        '@hermes inspect the later image'
+      )
+    );
+    expect(finalized).not.toHaveBeenCalled();
+
+    adapter.broadcastPatch({
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn-late',
+      item: {
+        type: 'imageView',
+        id: 'img-late',
+        source,
+        status: 'running',
+      },
+    });
+    adapter.broadcastPatch(turnCompleted('s', 'turn-late'));
+    expect(finalized).not.toHaveBeenCalled();
+
+    releaseIngest(part);
+    await vi.waitFor(() => expect(finalized).toHaveBeenCalledTimes(1));
+    const routed = finalized.mock.calls[0]![0] as ChannelMessage;
+    expect(routed.body.text).toBe('@hermes inspect the later image');
+    expect(routed.parts).toEqual([part]);
+    const durable = store.history('topic:late-image');
+    const assistant = durable.find(
+      (message) => message.source?.itemId === 'a-late'
+    )!;
+    const image = durable.find(
+      (message) => message.source?.itemId === 'img-late'
+    )!;
+    expect(routed.seq).toBe(assistant.seq);
+    expect(image.seq).toBeGreaterThan(assistant.seq);
+  });
+
+  it('states an @-filename failure without creating an extra mention', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const finalized = vi.fn();
+    bindSessionToChannel({
+      channelId: 'topic:failed-image',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      attachmentStore: {
+        ingest: vi.fn(),
+      } as unknown as ChannelAttachmentStore,
+      hub,
+      onAssistantMessageFinalized: finalized,
+    });
+
+    adapter.broadcastPatch(assistantStarted('s', 'turn-failed', 'a-failed'));
+    adapter.broadcastPatch(
+      assistantUpdated(
+        's',
+        'turn-failed',
+        'a-failed',
+        '@hermes inspect the missing image'
+      )
+    );
+    adapter.broadcastPatch({
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn-failed',
+      item: {
+        type: 'imageView',
+        id: 'img-failed',
+        source: '/missing/@claude.png',
+        status: 'running',
+      },
+    });
+    adapter.broadcastPatch(turnCompleted('s', 'turn-failed'));
+
+    await vi.waitFor(() => expect(finalized).toHaveBeenCalledTimes(1));
+    const routed = finalized.mock.calls[0]![0] as ChannelMessage;
+    expect(routed.parts).toBeUndefined();
+    expect(routed.body.text).toBe('@hermes inspect the missing image');
+    expect(routed.meta?.[PACKET_IMAGE_DEGRADATION_META_KEY]).toEqual([
+      '@claude.png',
+    ]);
+    expect(
+      parseMentions(routed.body.text, ['hermes', 'claude']).map(
+        (mention) => mention.providerId
+      )
+    ).toEqual(['hermes']);
+    const packet = buildMentionContextPacketEnvelope({
+      channelTitle: 'failed-image',
+      framework: 'hermes',
+      rows: [],
+      trigger: routed,
+      lastDeliveredSeq: 0,
+    });
+    expect(packet.content).toContain(
+      '[Relay image attachment unavailable: @claude.png]'
+    );
+    expect(
+      store
+        .history('topic:failed-image')
+        .find((message) => message.source?.itemId === 'img-failed')?.body.text
+    ).toBe('[Agent image unavailable: @claude.png]');
+  });
+
+  it('caps agent-produced images per turn and states the omission once', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-image-cap-'));
+    cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const source = path.join(dir, 'generated.png');
+    fs.writeFileSync(source, Buffer.from('agent image fixture'));
+    const part: ChannelImagePart = {
+      type: 'image',
+      id: 'cha:capped-agent-image',
+      mime: 'image/png',
+      w: 2,
+      h: 3,
+      bytes: 19,
+    };
+    const attachmentStore = {
+      ingest: vi.fn(async () => part),
+    } as unknown as ChannelAttachmentStore;
+    bindSessionToChannel({
+      channelId: 'topic:image-cap',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      attachmentStore,
+      hub,
+    });
+
+    for (
+      let index = 0;
+      index < CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN + 3;
+      index++
+    ) {
+      adapter.broadcastPatch({
+        type: 'agent-item-started-v2',
+        sessionId: 's',
+        timestamp: 't',
+        turnId: 'turn-image-cap',
+        item: {
+          type: 'imageView',
+          id: `img-${index}`,
+          source,
+          status: 'running',
+        },
+      });
+    }
+    adapter.broadcastPatch(turnCompleted('s', 'turn-image-cap'));
+
+    await vi.waitFor(() =>
+      expect(attachmentStore.ingest).toHaveBeenCalledTimes(
+        CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN
+      )
+    );
+    await vi.waitFor(() =>
+      expect(store.history('topic:image-cap')).toHaveLength(
+        CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN + 1
+      )
+    );
+    const messages = store.history('topic:image-cap');
+    expect(messages.filter((message) => message.parts?.length)).toHaveLength(
+      CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN
+    );
+    expect(
+      messages.filter(
+        (message) =>
+          message.kind === 'system' &&
+          message.body.text ===
+            `One or more agent images were omitted after the per-turn limit of ${CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN}.`
+      )
+    ).toHaveLength(1);
+  });
+
+  it('drops a deferred clean callback on unbind when no terminal arrives', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    const finalized = vi.fn();
+    const unbind = bindSessionToChannel({
+      channelId: 'topic:deferred-unbind',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+      onAssistantMessageFinalized: finalized,
+    });
+    adapter.broadcastPatch(assistantStarted('s', 'turn-unbind', 'a-unbind'));
+    adapter.broadcastPatch(
+      assistantUpdated(
+        's',
+        'turn-unbind',
+        'a-unbind',
+        '@hermes never route this'
+      )
+    );
+    expect(finalized).not.toHaveBeenCalled();
+
+    unbind();
+    expect(finalized).not.toHaveBeenCalled();
+  });
+
+  it('does not mirror non-renderable items', () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2();
     bindSessionToChannel({

@@ -6,6 +6,7 @@ import {
   isChannelEventV1,
   mergeHistoryPage,
   type ChannelMessage,
+  type ChannelMessagePart,
   type ChannelReducerState,
 } from '../../../shared/channel-chat-protocol.js';
 import {
@@ -66,7 +67,11 @@ export interface UseChannelChatSocketState {
   fullSnapshotRevision: number;
   post: (
     text: string,
-    opts?: { clientMessageId?: string; threadId?: string }
+    opts?: {
+      clientMessageId?: string;
+      threadId?: string;
+      parts?: ChannelMessagePart[];
+    }
   ) => Promise<ChannelMessage>;
   postPending: boolean;
   postError: HttpError | null;
@@ -403,7 +408,11 @@ export function useChannelChatSocket(
   const post = useCallback(
     async (
       text: string,
-      opts?: { clientMessageId?: string; threadId?: string }
+      opts?: {
+        clientMessageId?: string;
+        threadId?: string;
+        parts?: ChannelMessagePart[];
+      }
     ): Promise<ChannelMessage> => {
       const cid = channelIdRef.current;
       if (!cid) throw new Error('no active channel');
@@ -417,6 +426,7 @@ export function useChannelChatSocket(
         return await postChannelMessage(cid, {
           text,
           clientMessageId,
+          ...(opts?.parts !== undefined ? { parts: opts.parts } : {}),
           ...(opts?.threadId !== undefined ? { threadId: opts.threadId } : {}),
         });
       } catch (err) {

@@ -130,6 +130,64 @@ describe('isChannelEventV1 validator matrix', () => {
       isChannelEventV1(created({ ...message(), body: { text: 1 } as never }))
     ).toBe(false);
   });
+
+  it('validates image attachment parts without permitting SVG or forged dimensions', () => {
+    const valid = message({
+      body: { text: '', format: 'markdown' },
+      parts: [
+        {
+          type: 'image',
+          id: 'cha:abc123',
+          mime: 'image/png',
+          w: 320,
+          h: 180,
+          bytes: 1024,
+          alt: 'diagram',
+        },
+      ],
+    });
+    expect(isChannelEventV1(created(valid))).toBe(true);
+    expect(
+      isChannelEventV1(
+        created({
+          ...valid,
+          parts: [{ ...valid.parts![0]!, alt: 'a'.repeat(500) }],
+        })
+      )
+    ).toBe(true);
+    expect(
+      isChannelEventV1(
+        created({
+          ...valid,
+          parts: [{ ...valid.parts![0]!, alt: 'a'.repeat(501) }],
+        })
+      )
+    ).toBe(false);
+    expect(
+      isChannelEventV1(
+        created({
+          ...valid,
+          parts: [{ ...valid.parts![0]!, mime: 'image/svg+xml' } as never],
+        })
+      )
+    ).toBe(false);
+    expect(
+      isChannelEventV1(
+        created({
+          ...valid,
+          parts: [{ ...valid.parts![0]!, w: 0 }],
+        })
+      )
+    ).toBe(false);
+    expect(
+      isChannelEventV1(
+        created({
+          ...valid,
+          parts: [{ ...valid.parts![0]!, id: 'attachment:abc' } as never],
+        })
+      )
+    ).toBe(false);
+  });
 });
 
 describe('applyChannelEventV1 reducer', () => {

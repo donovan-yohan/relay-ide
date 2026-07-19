@@ -234,6 +234,10 @@ import {
   initChannelMessageStore,
   type ChannelMessageStore,
 } from './channel-message-store.js';
+import {
+  initChannelAttachmentStore,
+  type ChannelAttachmentStore,
+} from './channel-attachments.js';
 import { createChannelHub, type ChannelHub } from './channel-hub.js';
 import { createChannelChatRouter } from './channel-chat-router.js';
 import {
@@ -1723,6 +1727,20 @@ function initChannelMessageStoreBestEffort(
   }
 }
 
+function initChannelAttachmentStoreBestEffort(
+  configDir: string
+): ChannelAttachmentStore | null {
+  try {
+    return initChannelAttachmentStore(configDir);
+  } catch (err) {
+    logger.warn(
+      'Channel attachment store disabled: failed to initialize:',
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 /**
  * Routable framework targets for @-mention routing (#1167): builtin/configured
  * frameworks gated on `supportsWebSessions` + web availability, plus `mock` when
@@ -2024,6 +2042,8 @@ async function main(): Promise<void> {
   const prOverseerStore = initPrOverseerStoreBestEffort(configDir);
   const workContextMessageStore =
     initWorkContextMessageStoreBestEffort(configDir);
+  const channelAttachmentStore =
+    initChannelAttachmentStoreBestEffort(configDir);
   // Channel conversation core (#1165). Own SQLite (`channel-chat.db`); routes and
   // the /ws/channels lane degrade when init fails — a failed channel store never
   // takes down the hub or the untouched /ws/:sessionId lane. Boot order: init →
@@ -2060,6 +2080,7 @@ async function main(): Promise<void> {
   const channelAgentBinder: ChannelAgentBinder | null = channelMessageStore
     ? createChannelAgentBinder({
         store: channelMessageStore,
+        attachmentStore: channelAttachmentStore,
         hub: channelHub,
         topicStore: workspaceTopicStore,
         sessions: {
@@ -2788,6 +2809,7 @@ async function main(): Promise<void> {
   app.use(
     createChannelChatRouter({
       store: channelMessageStore,
+      attachmentStore: channelAttachmentStore,
       hub: channelHub,
       topicStore: workspaceTopicStore,
       binder: channelAgentBinder,
@@ -5891,6 +5913,7 @@ async function main(): Promise<void> {
         channelAgentBinder?.close();
         channelHub.close();
         channelMessageStore?.close();
+        channelAttachmentStore?.close();
         closeInterventionLog();
         broadcastEvent('server-restarting');
       }
@@ -5982,6 +6005,7 @@ async function main(): Promise<void> {
     channelAgentBinder?.close();
     channelHub.close();
     channelMessageStore?.close();
+    channelAttachmentStore?.close();
     closeInterventionLog();
     for (const s of localRelayNode.sessions.list()) {
       try {

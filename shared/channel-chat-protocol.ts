@@ -10,11 +10,33 @@
 // impossible because no reducer field is shared between senders.
 
 export const CHANNEL_CHAT_PROTOCOL_VERSION = 1 as const;
+export const CHANNEL_MESSAGE_MAX_IMAGE_PARTS = 4;
+export const CHANNEL_IMAGE_ALT_MAX_LENGTH = 500;
 
 /** 256KB per-message body cap, parity with WORK_CONTEXT_MESSAGE_PAYLOAD_MAX_BYTES. */
 export const CHANNEL_MESSAGE_BODY_MAX_BYTES = 256 * 1024;
 
 export type ChannelMessageId = `chm:${string}`;
+export type ChannelAttachmentId = `cha:${string}`;
+
+export type ChannelImageMime =
+  | 'image/png'
+  | 'image/jpeg'
+  | 'image/webp'
+  | 'image/gif';
+
+/** Sender-neutral durable image reference. Raw bytes never enter the message row. */
+export interface ChannelImagePart {
+  type: 'image';
+  id: ChannelAttachmentId;
+  mime: ChannelImageMime;
+  w: number;
+  h: number;
+  bytes: number;
+  alt?: string;
+}
+
+export type ChannelMessagePart = ChannelImagePart;
 
 export type ChannelSenderKind = 'human' | 'agent' | 'system';
 export type ChannelMessageKind = 'message' | 'system';
@@ -67,6 +89,8 @@ export interface ChannelMessage {
   status: ChannelMessageStatus;
   sender: ChannelSenderRef;
   body: { text: string; format: ChannelBodyFormat };
+  /** Typed parts persisted as content-addressed refs inside `meta_json.parts`. */
+  parts?: ChannelMessagePart[];
   threadId: ChannelMessageId | null;
   parentMessageId: ChannelMessageId | null;
   /** Number of replies whose canonical thread root is this message. */
@@ -158,6 +182,37 @@ const MESSAGE_STATUSES = new Set<string>([
   'failed',
 ]);
 const BODY_FORMATS = new Set<string>(['markdown', 'text']);
+const IMAGE_MIMES = new Set<string>([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
+
+export function isChannelMessagePart(
+  value: unknown
+): value is ChannelMessagePart {
+  return (
+    isRecord(value) &&
+    value.type === 'image' &&
+    typeof value.id === 'string' &&
+    value.id.startsWith('cha:') &&
+    typeof value.mime === 'string' &&
+    IMAGE_MIMES.has(value.mime) &&
+    typeof value.w === 'number' &&
+    Number.isSafeInteger(value.w) &&
+    value.w > 0 &&
+    typeof value.h === 'number' &&
+    Number.isSafeInteger(value.h) &&
+    value.h > 0 &&
+    typeof value.bytes === 'number' &&
+    Number.isSafeInteger(value.bytes) &&
+    value.bytes > 0 &&
+    (value.alt === undefined ||
+      (typeof value.alt === 'string' &&
+        value.alt.length <= CHANNEL_IMAGE_ALT_MAX_LENGTH))
+  );
+}
 
 function isSenderRef(value: unknown): value is ChannelSenderRef {
   return (
@@ -199,6 +254,14 @@ export function isChannelMessage(value: unknown): value is ChannelMessage {
     typeof value.body.text !== 'string' ||
     typeof value.body.format !== 'string' ||
     !BODY_FORMATS.has(value.body.format)
+  ) {
+    return false;
+  }
+  if (
+    value.parts !== undefined &&
+    (!Array.isArray(value.parts) ||
+      value.parts.length > CHANNEL_MESSAGE_MAX_IMAGE_PARTS ||
+      !value.parts.every(isChannelMessagePart))
   ) {
     return false;
   }

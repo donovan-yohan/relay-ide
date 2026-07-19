@@ -1,4 +1,11 @@
-import type { ChannelMessage } from '../shared/channel-chat-protocol.js';
+import fs from 'node:fs';
+
+import type {
+  ChannelImagePart,
+  ChannelMessage,
+} from '../shared/channel-chat-protocol.js';
+import type { ChannelAttachmentStore } from './channel-attachments.js';
+import type { Attachment } from './protocol-adapter-v2.js';
 
 // Pure context-packet builder for @-mention routing (#1167, slice 4). No I/O:
 // store rows in, prompt string out — fully unit-testable. The binder fetches the
@@ -12,6 +19,27 @@ export const PACKET_MAX_ROWS = 20;
 export const PACKET_ROW_MAX_CHARS = 2000;
 /** Whole-packet byte budget — oldest context rows drop until under (never the trigger). */
 export const PACKET_MAX_BYTES = 24 * 1024;
+/** Provider turns receive at most four images, regardless of retained row count. */
+export const PACKET_IMAGE_MAX_COUNT = 4;
+/** General raw-image ceiling bounds synchronous adapter encoding work. */
+export const PACKET_IMAGE_MAX_RAW_BYTES = 10 * 1024 * 1024;
+/**
+ * Claude frames images as base64 inside one JSONL stdin frame. Six raw MiB
+ * expands to eight MiB, leaving over a MiB below its 9.5MB line ceiling for
+ * packet text, JSON syntax, and per-block metadata.
+ */
+export const CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES = 6 * 1024 * 1024;
+/** Transient callback-only metadata; never persisted by the image bridge. */
+export const PACKET_IMAGE_DEGRADATION_META_KEY = '__relayImageDegradationNotes';
+/** Adapter audit: only these framework lanes consume local image attachments. */
+export const PACKET_FRAMEWORK_IMAGE_SUPPORT: Readonly<Record<string, boolean>> =
+  Object.freeze({
+    claude: true,
+    codex: true,
+    hermes: true,
+    mock: true,
+    opencode: false,
+  });
 
 const OMITTED_MARKER = '[…earlier messages omitted]';
 const ROW_TRUNCATED_SUFFIX = '…[truncated]';
@@ -37,8 +65,36 @@ export interface BuildMentionContextPacketInput {
   lastDeliveredSeq: number;
 }
 
+/** Stable packet result retained across adapter retry/rebind. */
+export interface MentionContextPacketEnvelope {
+  content: string;
+  framework: string;
+  /** Exact context-row selection after row/byte trimming, followed by trigger. */
+  retainedMessageIds: string[];
+  /** Trigger-first, then newest-context-first sender-neutral image refs. */
+  images: Array<{
+    part: ChannelImagePart;
+    messageId: string;
+    trigger: boolean;
+  }>;
+}
+
+export interface ResolvedMentionContextPacket {
+  content: string;
+  attachments: Attachment[];
+}
+
 function senderLabel(message: ChannelMessage): string {
   return message.sender.displayName ?? message.sender.id;
+}
+
+function imageDegradationNotes(message: ChannelMessage): string[] {
+  const raw = message.meta?.[PACKET_IMAGE_DEGRADATION_META_KEY];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((value): value is string => typeof value === 'string')
+    .slice(0, PACKET_IMAGE_MAX_COUNT)
+    .map((value) => value.slice(0, 120));
 }
 
 /**
@@ -99,9 +155,9 @@ function renderRow(message: ChannelMessage): string {
  * A reused session with no interim rows collapses to header + footer only — the
  * provider already holds the conversation, so re-sending it wastes tokens.
  */
-export function buildMentionContextPacket(
+export function buildMentionContextPacketEnvelope(
   input: BuildMentionContextPacketInput
-): string {
+): MentionContextPacketEnvelope {
   const header = `[Relay channel #${input.channelTitle} — you are @${input.framework}, one participant in a multi-party chat]`;
   const threadRootId = input.trigger.threadId;
 
@@ -151,6 +207,9 @@ export function buildMentionContextPacket(
   const footer = [
     `[${triggerLabel} mentioned you — reply to this message; your reply is posted to the channel]`,
     triggerText,
+    ...imageDegradationNotes(input.trigger).map(
+      (label) => `[Relay image attachment unavailable: ${label}]`
+    ),
   ].join('\n');
 
   const assemble = (rows: ChannelMessage[], omitted: boolean): string => {
@@ -184,5 +243,107 @@ export function buildMentionContextPacket(
     omittedEarlier = true;
     packet = assemble(contextRows, omittedEarlier);
   }
-  return packet;
+  const retainedMessages = [...contextRows, input.trigger];
+  const images = [
+    ...(input.trigger.parts ?? []).map((part) => ({
+      part,
+      messageId: input.trigger.id,
+      trigger: true,
+    })),
+    ...[...contextRows].reverse().flatMap((message) =>
+      (message.parts ?? []).map((part) => ({
+        part,
+        messageId: message.id,
+        trigger: false,
+      }))
+    ),
+  ];
+  return {
+    content: packet,
+    framework: input.framework,
+    retainedMessageIds: retainedMessages.map((message) => message.id),
+    images,
+  };
+}
+
+/** Backward-compatible text-only projection used outside the channel binder. */
+export function buildMentionContextPacket(
+  input: BuildMentionContextPacketInput
+): string {
+  return buildMentionContextPacketEnvelope(input).content;
+}
+
+/**
+ * Resolve durable attachment refs to the established adapter local-path lane.
+ * Missing records or payloads remain explicit in packet text; they are never
+ * silently dropped or fetched from a remote URL.
+ */
+export function resolveMentionContextPacket(
+  packet: MentionContextPacketEnvelope,
+  attachmentStore: ChannelAttachmentStore | null | undefined
+): ResolvedMentionContextPacket {
+  const attachments: Attachment[] = [];
+  const notes: string[] = [];
+  const rawByteLimit =
+    packet.framework === 'claude'
+      ? CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES
+      : PACKET_IMAGE_MAX_RAW_BYTES;
+  let rawBytes = 0;
+  const seenAttachmentIds = new Set<string>();
+  for (const image of packet.images) {
+    const part = image.part;
+    // A chained mention may retain the same attachment through more than one
+    // row. Delivery is sender-neutral and content-addressed, so the first
+    // occurrence in packet priority order wins.
+    if (seenAttachmentIds.has(part.id)) continue;
+    seenAttachmentIds.add(part.id);
+    if (
+      PACKET_FRAMEWORK_IMAGE_SUPPORT[packet.framework.toLowerCase()] !== true
+    ) {
+      notes.push(
+        `[image attachment not deliverable to ${packet.framework}: ${part.alt?.trim() || part.id}, ${part.w}x${part.h}]`
+      );
+      continue;
+    }
+    const record = attachmentStore?.get(part.id) ?? null;
+    let payloadExists = false;
+    if (record) {
+      try {
+        payloadExists = fs.statSync(record.payloadPath).isFile();
+      } catch {
+        payloadExists = false;
+      }
+    }
+    if (!record || !payloadExists) {
+      notes.push(
+        `[Relay image attachment unavailable: ${part.alt?.trim() || part.id}]`
+      );
+      continue;
+    }
+    if (attachments.length >= PACKET_IMAGE_MAX_COUNT) {
+      notes.push(
+        `[Relay image attachment omitted: ${part.alt?.trim() || part.id} (packet image count limit)]`
+      );
+      continue;
+    }
+    if (rawBytes + record.part.bytes > rawByteLimit) {
+      notes.push(
+        `[Relay image attachment omitted: ${part.alt?.trim() || part.id} (packet image byte limit)]`
+      );
+      continue;
+    }
+    attachments.push({
+      type: 'image',
+      path: record.payloadPath,
+      mimeType: record.part.mime,
+    });
+    rawBytes += record.part.bytes;
+  }
+  return {
+    content:
+      notes.length > 0
+        ? `${packet.content}\n\n${notes.join('\n')}`
+        : packet.content,
+    attachments,
+  };
 }

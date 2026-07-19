@@ -8,12 +8,15 @@ import { createLogger } from './logger.js';
 import {
   CHANNEL_CHAT_PROTOCOL_VERSION,
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
+  CHANNEL_MESSAGE_MAX_IMAGE_PARTS,
+  isChannelMessagePart,
   type ChannelBodyFormat,
   type ChannelMemberRef,
   type ChannelMention,
   type ChannelMessage,
   type ChannelMessageId,
   type ChannelMessageKind,
+  type ChannelMessagePart,
   type ChannelMessageStatus,
   type ChannelTruncationReason,
   type ChannelSenderRef,
@@ -176,6 +179,7 @@ interface BindingRow {
 
 export interface ChannelMessageMeta {
   mentions?: ChannelMention[];
+  parts?: ChannelMessagePart[];
   truncationReason?: ChannelTruncationReason;
   /** Legacy UI marker reserved exclusively for the 256KB size limit. */
   truncated?: boolean;
@@ -191,6 +195,7 @@ export interface AppendCompleteInput {
   parentMessageId?: string;
   clientMessageId?: string;
   mentions?: ChannelMention[];
+  parts?: ChannelMessagePart[];
   meta?: ChannelMessageMeta;
 }
 
@@ -201,6 +206,7 @@ export interface BeginStreamInput {
   text?: string;
   parentMessageId?: string;
   mentions?: ChannelMention[];
+  parts?: ChannelMessagePart[];
 }
 
 export interface FinalizeStreamInput {
@@ -342,6 +348,20 @@ function assertBodySize(text: string): void {
   }
 }
 
+function assertMessageParts(parts: ChannelMessagePart[] | undefined): void {
+  if (!parts) return;
+  if (
+    parts.length > CHANNEL_MESSAGE_MAX_IMAGE_PARTS ||
+    !parts.every(isChannelMessagePart)
+  ) {
+    throw new ChannelMessageStoreError(
+      400,
+      'channel_message_parts_invalid',
+      `channel message accepts at most ${CHANNEL_MESSAGE_MAX_IMAGE_PARTS} valid image parts`
+    );
+  }
+}
+
 function cleanLimit(
   limit: unknown,
   maxLimit = CHANNEL_HISTORY_MAX_LIMIT
@@ -399,11 +419,24 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
   if (meta?.mentions && Array.isArray(meta.mentions)) {
     message.mentions = meta.mentions;
   }
+  if (
+    Array.isArray(meta?.parts) &&
+    meta.parts.length > 0 &&
+    meta.parts.every(isChannelMessagePart)
+  ) {
+    message.parts = meta.parts;
+  }
   // Surface app-level meta (e.g. #1167 approval payloads) while keeping the
   // internal routing keys off the wire — providerId rides `sender.providerId`,
   // mentions/truncated have dedicated fields above.
   if (meta) {
-    const { providerId: _pid, mentions: _m, truncated: _t, ...rest } = meta;
+    const {
+      providerId: _pid,
+      mentions: _m,
+      parts: _parts,
+      truncated: _t,
+      ...rest
+    } = meta;
     if (Object.keys(rest).length > 0) message.meta = rest;
   }
   if (row.source_session_id) {
@@ -421,13 +454,17 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
 
 function buildMeta(input: {
   mentions?: ChannelMention[];
+  parts?: ChannelMessagePart[];
   truncated?: boolean;
   providerId?: string;
   extra?: ChannelMessageMeta;
 }): string | null {
+  assertMessageParts(input.extra?.parts);
+  assertMessageParts(input.parts);
   const meta: ChannelMessageMeta = { ...(input.extra ?? {}) };
   if (input.mentions && input.mentions.length > 0)
     meta.mentions = input.mentions;
+  if (input.parts && input.parts.length > 0) meta.parts = input.parts;
   if (input.truncated) meta.truncated = true;
   if (input.providerId) meta['providerId'] = input.providerId;
   return Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
@@ -871,6 +908,8 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
 
   function appendCompleteImpl(input: AppendCompleteInput): ChannelMessage {
     assertBodySize(input.text);
+    assertMessageParts(input.parts);
+    assertMessageParts(input.meta?.parts);
     if (input.clientMessageId) {
       const existing = selectByClientId.get({
         channelId: input.channelId,
@@ -896,6 +935,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       bodyFormat: input.format ?? 'markdown',
       metaJson: buildMeta({
         ...(input.mentions ? { mentions: input.mentions } : {}),
+        ...(input.parts ? { parts: input.parts } : {}),
         ...(input.sender.providerId
           ? { providerId: input.sender.providerId }
           : {}),
@@ -945,6 +985,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
 
       const initialText = input.text ?? '';
       assertBodySize(initialText);
+      assertMessageParts(input.parts);
       const threadId = resolveThread(input.channelId, input.parentMessageId);
       const now = nowIso();
       const id = createMessageId();
@@ -962,6 +1003,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         bodyFormat: 'markdown',
         metaJson: buildMeta({
           ...(input.mentions ? { mentions: input.mentions } : {}),
+          ...(input.parts ? { parts: input.parts } : {}),
           ...(input.sender.providerId
             ? { providerId: input.sender.providerId }
             : {}),

@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import type {
   ChannelMessage,
   ChannelMessageId,
+  ChannelMessagePart,
 } from '../../../../shared/channel-chat-protocol.js';
 import { useChannelThread } from '../../hooks/useChannelThread.js';
 import {
@@ -22,7 +23,11 @@ interface ChannelThreadPanelProps {
   rootId: ChannelMessageId;
   liveMessages: ChannelMessage[];
   onClose: () => void;
-  onSend: (text: string, clientMessageId: string) => Promise<void>;
+  onSend: (
+    text: string,
+    clientMessageId: string,
+    parts: ChannelMessagePart[]
+  ) => Promise<void>;
   postPending: boolean;
   storeDown: boolean;
   archived: boolean;

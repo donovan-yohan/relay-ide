@@ -1,12 +1,23 @@
 import { describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import {
   buildMentionContextPacket,
+  buildMentionContextPacketEnvelope,
+  CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES,
+  PACKET_FRAMEWORK_IMAGE_SUPPORT,
+  PACKET_IMAGE_MAX_COUNT,
   PACKET_MAX_ROWS,
   PACKET_ROW_MAX_CHARS,
   PACKET_MAX_BYTES,
+  resolveMentionContextPacket,
 } from '../server/channel-context-packet.js';
+import type { ChannelAttachmentStore } from '../server/channel-attachments.js';
 import type {
+  ChannelAttachmentId,
+  ChannelImagePart,
   ChannelMessage,
   ChannelSenderRef,
 } from '../shared/channel-chat-protocol.js';
@@ -64,7 +75,300 @@ function inThread(
   };
 }
 
+function imagePart(id: string): ChannelImagePart {
+  return {
+    type: 'image',
+    id: id as ChannelAttachmentId,
+    mime: 'image/png',
+    w: 1,
+    h: 1,
+    bytes: 8,
+  };
+}
+
 describe('buildMentionContextPacket', () => {
+  it('carries image refs only for the exact retained rows and trigger', () => {
+    const rows = Array.from({ length: PACKET_MAX_ROWS + 2 }, (_, index) => {
+      const seq = index + 1;
+      return {
+        ...msg(seq, OPERATOR, `row ${seq}`),
+        parts: [imagePart(`cha:row-${seq}`)],
+      };
+    });
+    const trigger = {
+      ...msg(PACKET_MAX_ROWS + 3, OPERATOR, '@claude inspect'),
+      parts: [imagePart('cha:trigger')],
+    };
+
+    const packet = buildMentionContextPacketEnvelope({
+      channelTitle: 'general',
+      framework: 'claude',
+      rows,
+      trigger,
+      lastDeliveredSeq: 0,
+    });
+
+    expect(packet.retainedMessageIds).toEqual([
+      ...rows.slice(-PACKET_MAX_ROWS).map((row) => row.id),
+      trigger.id,
+    ]);
+    expect(packet.images.map((image) => image.part.id)).toEqual([
+      'cha:trigger',
+      ...rows
+        .slice(-PACKET_MAX_ROWS)
+        .reverse()
+        .map((row) => row.parts[0]!.id),
+    ]);
+  });
+
+  it('resolves local payloads and states missing ones in packet text', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'channel-packet-image-'));
+    const payloadPath = path.join(dir, 'present.png');
+    fs.writeFileSync(payloadPath, Buffer.from('fixture'));
+    const present = imagePart('cha:present');
+    const missing = { ...imagePart('cha:missing'), alt: 'missing diagram' };
+    const store = {
+      get: (id: string) =>
+        id === present.id
+          ? {
+              part: present,
+              sha256: 'present',
+              payloadPath,
+              createdAt: 't',
+            }
+          : null,
+    } as ChannelAttachmentStore;
+
+    try {
+      const resolved = resolveMentionContextPacket(
+        {
+          content: 'packet',
+          framework: 'hermes',
+          retainedMessageIds: ['chm:trigger'],
+          images: [present, missing].map((part) => ({
+            part,
+            messageId: 'chm:trigger',
+            trigger: true,
+          })),
+        },
+        store
+      );
+      expect(resolved.attachments).toEqual([
+        { type: 'image', path: payloadPath, mimeType: 'image/png' },
+      ]);
+      expect(resolved.content).toBe(
+        'packet\n\n[Relay image attachment unavailable: missing diagram]'
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('states framework degradation instead of silently dropping OpenCode images', () => {
+    const part = {
+      ...imagePart('cha:opencode-image'),
+      alt: 'architecture diagram',
+      w: 640,
+      h: 480,
+    };
+    let storeReads = 0;
+    const resolved = resolveMentionContextPacket(
+      {
+        content: 'packet',
+        framework: 'opencode',
+        retainedMessageIds: ['chm:trigger'],
+        images: [{ part, messageId: 'chm:trigger', trigger: true }],
+      },
+      {
+        get: () => {
+          storeReads += 1;
+          return null;
+        },
+      } as ChannelAttachmentStore
+    );
+
+    expect(PACKET_FRAMEWORK_IMAGE_SUPPORT.opencode).toBe(false);
+    expect(PACKET_FRAMEWORK_IMAGE_SUPPORT.mock).toBe(true);
+    expect(storeReads).toBe(0);
+    expect(resolved.attachments).toEqual([]);
+    expect(resolved.content).toBe(
+      'packet\n\n[image attachment not deliverable to opencode: architecture diagram, 640x480]'
+    );
+  });
+
+  it('dedupes a chained attachment id in packet priority order', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'packet-image-dedupe-'));
+    const payloadPath = path.join(dir, 'shared.png');
+    fs.writeFileSync(payloadPath, Buffer.from('fixture'));
+    const triggerPart = {
+      ...imagePart('cha:shared'),
+      alt: 'trigger copy',
+    };
+    const contextPart = {
+      ...imagePart('cha:shared'),
+      alt: 'context copy',
+    };
+    let storeReads = 0;
+    const store = {
+      get: () => {
+        storeReads += 1;
+        return {
+          part: triggerPart,
+          sha256: 'shared',
+          payloadPath,
+          createdAt: 't',
+        };
+      },
+    } as ChannelAttachmentStore;
+
+    try {
+      const resolved = resolveMentionContextPacket(
+        {
+          content: 'packet',
+          framework: 'claude',
+          retainedMessageIds: ['chm:context', 'chm:trigger'],
+          images: [
+            {
+              part: triggerPart,
+              messageId: 'chm:trigger',
+              trigger: true,
+            },
+            {
+              part: contextPart,
+              messageId: 'chm:context',
+              trigger: false,
+            },
+          ],
+        },
+        store
+      );
+      expect(storeReads).toBe(1);
+      expect(resolved.attachments).toEqual([
+        { type: 'image', path: payloadPath, mimeType: 'image/png' },
+      ]);
+      expect(resolved.content).toBe('packet');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('delivers at most four Hermes images, trigger first then newest context', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'packet-hermes-cap-'));
+    const triggerParts = [
+      imagePart('cha:trigger-1'),
+      imagePart('cha:trigger-2'),
+    ];
+    const rows = Array.from({ length: 4 }, (_, index) => ({
+      ...msg(index + 1, OPERATOR, `context ${index + 1}`),
+      parts: [imagePart(`cha:context-${index + 1}`)],
+    }));
+    const trigger = {
+      ...msg(5, OPERATOR, '@hermes inspect'),
+      parts: triggerParts,
+    };
+    const allParts = [...triggerParts, ...rows.flatMap((row) => row.parts)];
+    const records = new Map(
+      allParts.map((part) => {
+        const payloadPath = path.join(dir, `${part.id.slice(4)}.png`);
+        fs.writeFileSync(payloadPath, Buffer.from('x'));
+        return [
+          part.id,
+          { part, sha256: part.id, payloadPath, createdAt: 't' },
+        ] as const;
+      })
+    );
+    const store = {
+      get: (id: string) => records.get(id as ChannelAttachmentId) ?? null,
+    } as ChannelAttachmentStore;
+
+    try {
+      const resolved = resolveMentionContextPacket(
+        buildMentionContextPacketEnvelope({
+          channelTitle: 'general',
+          framework: 'hermes',
+          rows,
+          trigger,
+          lastDeliveredSeq: 0,
+        }),
+        store
+      );
+      expect(resolved.attachments).toHaveLength(PACKET_IMAGE_MAX_COUNT);
+      expect(
+        resolved.attachments.map((item) => path.basename(item.path))
+      ).toEqual([
+        'trigger-1.png',
+        'trigger-2.png',
+        'context-4.png',
+        'context-3.png',
+      ]);
+      expect(resolved.content).toContain(
+        '[Relay image attachment omitted: cha:context-2 (packet image count limit)]'
+      );
+      expect(resolved.content).toContain(
+        '[Relay image attachment omitted: cha:context-1 (packet image count limit)]'
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps Claude raw images below the conservative JSONL/base64 budget', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'packet-claude-cap-'));
+    const triggerOne = {
+      ...imagePart('cha:trigger-large'),
+      bytes: 4 * 1024 * 1024,
+    };
+    const triggerTwo = {
+      ...imagePart('cha:trigger-overflow'),
+      bytes: 3 * 1024 * 1024,
+    };
+    const context = {
+      ...imagePart('cha:context-fits'),
+      bytes: 2 * 1024 * 1024,
+    };
+    const parts = [triggerOne, triggerTwo, context];
+    const records = new Map(
+      parts.map((part) => {
+        const payloadPath = path.join(dir, `${part.id.slice(4)}.png`);
+        fs.writeFileSync(payloadPath, Buffer.from('x'));
+        return [
+          part.id,
+          { part, sha256: part.id, payloadPath, createdAt: 't' },
+        ] as const;
+      })
+    );
+    const store = {
+      get: (id: string) => records.get(id as ChannelAttachmentId) ?? null,
+    } as ChannelAttachmentStore;
+    const row = { ...msg(1, OPERATOR, 'context'), parts: [context] };
+    const trigger = {
+      ...msg(2, OPERATOR, '@claude inspect'),
+      parts: [triggerOne, triggerTwo],
+    };
+
+    try {
+      const resolved = resolveMentionContextPacket(
+        buildMentionContextPacketEnvelope({
+          channelTitle: 'general',
+          framework: 'claude',
+          rows: [row],
+          trigger,
+          lastDeliveredSeq: 0,
+        }),
+        store
+      );
+      expect(CLAUDE_PACKET_IMAGE_MAX_RAW_BYTES).toBe(6 * 1024 * 1024);
+      expect(
+        resolved.attachments.map((item) => path.basename(item.path))
+      ).toEqual(['trigger-large.png', 'context-fits.png']);
+      expect(resolved.content).toContain(
+        '[Relay image attachment omitted: cha:trigger-overflow (packet image byte limit)]'
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('renders the exact golden packet (own rows skipped, sender labels, footer)', () => {
     const rows = [
       msg(1, OPERATOR, 'hey team, the build is red'),

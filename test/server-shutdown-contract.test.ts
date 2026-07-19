@@ -30,8 +30,11 @@ describe('server shutdown store closing contract', () => {
     );
     expect(gracefulShutdownSource).toContain('agentPresenceStore?.close();');
     expect(gracefulShutdownSource).toContain('workspaceSurfaceStore?.close();');
+    expect(gracefulShutdownSource).toContain(
+      'channelAttachmentStore?.close();'
+    );
     expect(gracefulShutdownSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+closeInterventionLog\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);\s+closeInterventionLog\(\);/
     );
   });
 
@@ -51,8 +54,9 @@ describe('server shutdown store closing contract', () => {
     expect(updateRestartSource).toContain('workContextArtifactStore?.close();');
     expect(updateRestartSource).toContain('workContextMessageStore?.close();');
     expect(updateRestartSource).toContain('workspaceSurfaceStore?.close();');
+    expect(updateRestartSource).toContain('channelAttachmentStore?.close();');
     expect(updateRestartSource).toMatch(
-      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);/
+      /contextPacketStore\?\.close\(\);\s+agentPresenceStore\?\.close\(\);\s+workContextArtifactStore\?\.close\(\);\s+workflowRunStore\?\.close\(\);\s+automationRunStore\?\.close\(\);\s+workspaceSurfaceStore\?\.close\(\);\s+workspaceTopicStore\?\.close\(\);\s+prOverseerStore\?\.close\(\);\s+workContextMessageStore\?\.close\(\);\s+channelAgentBinder\?\.close\(\);\s+channelHub\.close\(\);\s+channelMessageStore\?\.close\(\);\s+channelAttachmentStore\?\.close\(\);/
     );
   });
 });

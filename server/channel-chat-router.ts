@@ -1,5 +1,8 @@
+import { existsSync } from 'node:fs';
+
 import { Router } from 'express';
 import type { Request, RequestHandler, Response } from 'express';
+import multer from 'multer';
 
 import type { RelayCliGatewayErrorCode } from '../shared/cli-gateway-contract.js';
 import {
@@ -15,6 +18,12 @@ import {
   type ChannelMessageStore,
 } from './channel-message-store.js';
 import type { ChannelHub } from './channel-hub.js';
+import {
+  CHANNEL_IMAGE_MAX_BYTES,
+  CHANNEL_IMAGE_MAX_PER_MESSAGE,
+  ChannelAttachmentStoreError,
+  type ChannelAttachmentStore,
+} from './channel-attachments.js';
 import {
   ChannelAgentNoActiveTurnError,
   ChannelAgentNotFoundError,
@@ -107,6 +116,7 @@ function budgetHistoryPage(
 
 export interface ChannelChatRouterDeps {
   store: ChannelMessageStore | null;
+  attachmentStore?: ChannelAttachmentStore | null;
   hub: ChannelHub;
   topicStore: WorkspaceTopicStore | null;
   /** @-mention routing binder (#1167); roster/interrupt/approval routes 503 without it. */
@@ -236,6 +246,21 @@ function storeOr503(
   return null;
 }
 
+function attachmentStoreOr503(
+  res: Response,
+  store: ChannelAttachmentStore | null | undefined
+): ChannelAttachmentStore | null {
+  if (store) return store;
+  sendGatewayError(
+    res,
+    'SERVER_UNAVAILABLE',
+    'channel attachment store unavailable',
+    true,
+    { reasonCode: 'CHANNEL_ATTACHMENT_STORE_UNAVAILABLE' }
+  );
+  return null;
+}
+
 function topicStoreOr503(
   res: Response,
   topicStore: WorkspaceTopicStore | null
@@ -291,6 +316,19 @@ function deriveSender(req: Request): ChannelSenderRef {
 }
 
 function mapStoreError(res: Response, error: unknown): void {
+  if (error instanceof ChannelAttachmentStoreError) {
+    const code: RelayCliGatewayErrorCode =
+      error.status === 404 ? 'NOT_FOUND' : 'INVALID_ARGUMENT';
+    sendGatewayError(
+      res,
+      code,
+      error.message,
+      false,
+      { reasonCode: error.code.toUpperCase(), ...(error.details ?? {}) },
+      error.status
+    );
+    return;
+  }
   if (error instanceof ChannelMessageStoreError) {
     if (error.status === 413) {
       sendGatewayError(
@@ -372,6 +410,7 @@ function postToChannel(
     parentMessageId?: string;
     clientMessageId?: string;
     mentions: ReturnType<typeof parseMentions>;
+    parts?: import('../shared/channel-chat-protocol.js').ChannelMessagePart[];
   }
 ): ChannelMessage {
   const message = store.appendComplete({
@@ -386,6 +425,7 @@ function postToChannel(
       ? { clientMessageId: input.clientMessageId }
       : {}),
     ...(input.mentions.length ? { mentions: input.mentions } : {}),
+    ...(input.parts?.length ? { parts: input.parts } : {}),
   });
   store.upsertMember({
     channelId: input.channelId,
@@ -413,6 +453,15 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     deps.requireWriteActorAuth?.('channels.interrupt') ?? auth;
   const approvalAuth =
     deps.requireWriteActorAuth?.('channels.respond-approval') ?? auth;
+  const uploadImages = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: CHANNEL_IMAGE_MAX_BYTES,
+      files: CHANNEL_IMAGE_MAX_PER_MESSAGE,
+      fields: 0,
+      parts: CHANNEL_IMAGE_MAX_PER_MESSAGE,
+    },
+  }).array('images', CHANNEL_IMAGE_MAX_PER_MESSAGE);
 
   /** Persisted, non-derived channel guard shared by the #1167 agent routes. */
   function requirePersistedChannel(
@@ -511,6 +560,111 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     }
   });
 
+  router.post('/channels/:id/attachments', postAuth, (req, res) => {
+    if (denyMissingCapability(req, res, [CONTEXT_WRITE])) return;
+    const topic = requirePersistedChannel(req, res);
+    if (!topic) return;
+    if (topic.status === 'archived') {
+      sendGatewayError(res, 'SESSION_CONFLICT', 'channel is archived', false, {
+        channelId: topic.id,
+        reasonCode: 'CHANNEL_ARCHIVED',
+      });
+      return;
+    }
+    const attachmentStore = attachmentStoreOr503(res, deps.attachmentStore);
+    if (!attachmentStore) return;
+
+    uploadImages(req, res, (uploadError: unknown) => {
+      if (uploadError) {
+        const isLimit = uploadError instanceof multer.MulterError;
+        const tooLarge = isLimit && uploadError.code === 'LIMIT_FILE_SIZE';
+        sendGatewayError(
+          res,
+          'INVALID_ARGUMENT',
+          tooLarge
+            ? 'image exceeds 5MB cap'
+            : `invalid image upload: ${uploadError instanceof Error ? uploadError.message : String(uploadError)}`,
+          false,
+          {
+            reasonCode: tooLarge
+              ? 'CHANNEL_IMAGE_TOO_LARGE'
+              : 'CHANNEL_IMAGE_UPLOAD_INVALID',
+          },
+          tooLarge ? 413 : 400
+        );
+        return;
+      }
+      const files = Array.isArray(req.files)
+        ? (req.files as Express.Multer.File[])
+        : [];
+      void attachmentStore
+        .ingestMany(
+          files.map((file) => ({
+            bytes: file.buffer,
+            ...(file.mimetype ? { declaredMime: file.mimetype } : {}),
+            ...(file.originalname ? { alt: file.originalname } : {}),
+          }))
+        )
+        .then((attachments) => res.status(201).json({ attachments }))
+        .catch((error: unknown) => mapStoreError(res, error));
+    });
+  });
+
+  router.get(
+    '/channels/:id/attachments/:attachmentId',
+    historyAuth,
+    (req, res) => {
+      if (denyMissingCapability(req, res, [CONTEXT_READ])) return;
+      if (!requirePersistedChannel(req, res)) return;
+      const attachmentStore = attachmentStoreOr503(res, deps.attachmentStore);
+      if (!attachmentStore) return;
+      const attachmentId = req.params['attachmentId'] ?? '';
+      const record = attachmentStore.get(attachmentId);
+      if (!record || !existsSync(record.payloadPath)) {
+        res.set('Cache-Control', 'no-store');
+        sendGatewayError(
+          res,
+          'NOT_FOUND',
+          'channel attachment not found',
+          false,
+          {
+            attachmentId,
+            reasonCode: 'CHANNEL_ATTACHMENT_NOT_FOUND',
+          }
+        );
+        return;
+      }
+      res.sendFile(
+        record.payloadPath,
+        {
+          headers: {
+            'Content-Type': record.part.mime,
+            'Content-Length': String(record.part.bytes),
+            'Content-Disposition': 'inline',
+            'Cache-Control': 'private, max-age=31536000, immutable',
+            ETag: `"sha256-${record.sha256}"`,
+            'X-Content-Type-Options': 'nosniff',
+          },
+        },
+        (error) => {
+          if (!error) return;
+          if (res.headersSent) {
+            res.destroy(error);
+          } else {
+            res.set('Cache-Control', 'no-store');
+            sendGatewayError(
+              res,
+              'NOT_FOUND',
+              'channel attachment not found',
+              false,
+              { attachmentId, reasonCode: 'CHANNEL_ATTACHMENT_NOT_FOUND' }
+            );
+          }
+        }
+      );
+    }
+  );
+
   router.get(
     '/channels/:id/threads/:rootMessageId',
     threadHistoryAuth,
@@ -592,10 +746,38 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
     }
 
     const text = body['text'];
-    if (typeof text !== 'string' || text.length === 0) {
-      sendGatewayError(res, 'INVALID_ARGUMENT', 'text is required', false, {
-        field: 'text',
-      });
+    if (typeof text !== 'string') {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'text must be a string',
+        false,
+        {
+          field: 'text',
+        }
+      );
+      return;
+    }
+    let parts: import('../shared/channel-chat-protocol.js').ChannelMessagePart[] =
+      [];
+    if (body['parts'] !== undefined) {
+      const attachmentStore = attachmentStoreOr503(res, deps.attachmentStore);
+      if (!attachmentStore) return;
+      try {
+        parts = attachmentStore.canonicalizeParts(body['parts']);
+      } catch (error) {
+        mapStoreError(res, error);
+        return;
+      }
+    }
+    if (text.length === 0 && parts.length === 0) {
+      sendGatewayError(
+        res,
+        'INVALID_ARGUMENT',
+        'text or at least one image part is required',
+        false,
+        { fields: ['text', 'parts'] }
+      );
       return;
     }
     const format =
@@ -683,6 +865,7 @@ export function createChannelChatRouter(deps: ChannelChatRouterDeps): Router {
         ...(parentMessageId ? { parentMessageId } : {}),
         ...(clientMessageId ? { clientMessageId } : {}),
         mentions,
+        ...(parts.length ? { parts } : {}),
       });
       res.status(201).json({ message });
     } catch (error) {

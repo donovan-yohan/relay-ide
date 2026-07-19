@@ -7,6 +7,7 @@ import { bindSessionToChannel } from '../../../server/channel-agent-bridge.js';
 import { createChannelHub } from '../../../server/channel-hub.js';
 import { createChannelMessageStore } from '../../../server/channel-message-store.js';
 import {
+  buildCodexTurnInput,
   CODEX_TERMINAL_ITEM_GRACE_MS,
   CodexNativeProtocolAdapter,
 } from '../../../server/protocol-adapters/codex-native-adapter.js';
@@ -347,6 +348,60 @@ describe('CodexNativeProtocolAdapter — sendMessage', () => {
     });
 
     await adapter.disconnect();
+  });
+
+  it('maps local image attachments to app-server localImage inputs', async () => {
+    const factory = makeStubFactory();
+    const adapter = new CodexNativeProtocolAdapter(factory);
+    collectPatches(adapter);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-local-image-'));
+    const imagePath = path.join(dir, 'fixture.png');
+    fs.writeFileSync(imagePath, Buffer.from('fixture'));
+
+    try {
+      factory.lastClient?.serverResponses.set('thread/start', {
+        thread: { id: 'thread-1' },
+      });
+      await adapter.connect(config);
+      const client = factory.lastClient!;
+
+      await adapter.sendMessage({
+        turnId: 'turn-image',
+        content: 'describe this image',
+        attachments: [
+          { type: 'image', path: imagePath, mimeType: 'image/png' },
+        ],
+      });
+
+      const turnStart = client.calls.find((c) => c.method === 'turn/start');
+      expect(turnStart?.params).toMatchObject({
+        input: [
+          { type: 'text', text: 'describe this image' },
+          { type: 'localImage', path: imagePath },
+        ],
+      });
+
+      await adapter.disconnect();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('states unavailable images in text instead of silently dropping them', () => {
+    expect(
+      buildCodexTurnInput('describe', [
+        {
+          type: 'image',
+          path: '/missing/relay-fixture.png',
+          mimeType: 'image/png',
+        },
+      ])
+    ).toEqual([
+      {
+        type: 'text',
+        text: 'describe\n\n[Relay image attachment unavailable to Codex: relay-fixture.png]',
+      },
+    ]);
   });
 
   it('emits turn-started and user-message item on sendMessage', async () => {

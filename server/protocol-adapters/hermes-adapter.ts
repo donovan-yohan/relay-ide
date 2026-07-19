@@ -693,12 +693,29 @@ export function buildResponsesInput(
 ): string | Array<{ role: 'user'; content: ResponsesContentPart[] }> {
   const images = (attachments ?? []).filter((a) => a.type === 'image');
   if (images.length === 0) return content;
-  const parts: ResponsesContentPart[] = [{ type: 'input_text', text: content }];
+  const textPart: ResponsesContentPart & { type: 'input_text' } = {
+    type: 'input_text',
+    text: content,
+  };
+  const parts: ResponsesContentPart[] = [textPart];
+  const unavailable: string[] = [];
   for (const image of images) {
     const url = readFile
       ? attachmentToResponsesImageUrl(image, readFile)
       : attachmentToResponsesImageUrl(image);
-    if (url) parts.push({ type: 'input_image', image_url: url });
+    if (url) {
+      parts.push({ type: 'input_image', image_url: url });
+    } else {
+      unavailable.push(path.basename(image.path) || 'image');
+    }
+  }
+  if (unavailable.length > 0) {
+    textPart.text += unavailable
+      .map(
+        (name) =>
+          `\n\n[image attachment not deliverable to hermes: ${name}, dimensions unavailable]`
+      )
+      .join('');
   }
   return [{ role: 'user', content: parts }];
 }
