@@ -7,7 +7,12 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useShallow } from 'zustand/react/shallow';
 import {
   CircleAlert,
@@ -22,6 +27,7 @@ import type {
   WorkflowRunSessionLink,
   WorkflowRunState,
 } from '../../../shared/workflow-run.js';
+import type { RosterAttention } from '../../../shared/agent-roster.js';
 import {
   createGlobalSessionId,
   DEFAULT_LOCAL_NODE_ID,
@@ -34,12 +40,17 @@ import {
 } from '../../../shared/workspace-topics.js';
 import {
   fetchHubNodes,
+  fetchAgentRoster,
+  fetchChannelRoster,
   fetchWorkflowRuns,
   fetchWorkspaceSurfaces,
   fetchWorkspaceTopics,
+  interruptChannelAgent,
+  postChannelMessage,
   restoreWorkspaceTopic,
   searchWorkspaceTopics,
   sendSessionInput,
+  type ChannelAgentStatus,
 } from '../lib/api.js';
 import { deriveColor } from '../lib/colors.js';
 import { resolveSenderIdentity } from '../lib/chat/sender-identity.js';
@@ -54,6 +65,11 @@ import { formatRelativeTimeCompact } from '../lib/utils.js';
 import { useSessionsStore } from '../lib/stores/sessions.js';
 import { useUiStore } from '../lib/stores/ui.js';
 import { useToastStore } from '../lib/stores/toasts.js';
+import {
+  channelAgentStatusKey,
+  resolveEffectiveAgentStatus,
+  useChannelAgentStatusStore,
+} from '../lib/stores/channel-agent-status.js';
 import { useIaWorkspacesQuery } from '../lib/hooks/use-ia-workspaces.js';
 import { durabilityDisabledReason } from '../lib/session-durability.js';
 import {
@@ -73,6 +89,11 @@ import {
   type TopicNavTone,
 } from '../lib/state/topic-nav.js';
 import { MarqueeText } from './MarqueeText.js';
+import {
+  CockpitPresenceChip,
+  MobileCockpitAttentionLane,
+  MobileCockpitRowActions,
+} from './MobileCockpitAttentionLane.js';
 import './TopicSidebarShell.css';
 
 function AttentionIcon({ tone }: { tone: TopicNavItem['tone'] }) {
@@ -107,7 +128,25 @@ const DISCONNECTED_SESSION_CONTROL_REASON =
   'session offline/disconnected — controls unavailable until reconnect';
 const TOPIC_LATEST_STATUS_MAX_LENGTH = 96;
 const WORKFLOW_RUNS_LIMIT = 5;
+const MOBILE_COCKPIT_ROSTER_BATCH_SIZE = 12;
 const EMPTY_WORKFLOW_RUNS: WorkflowRunProjection[] = [];
+
+function useMobileCockpitViewport(): boolean {
+  const [matches, setMatches] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(max-width: 600px)').matches
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined;
+    const media = window.matchMedia('(max-width: 600px)');
+    const update = () => setMatches(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  return matches;
+}
 
 function boundedTopicLatestStatus(value: string): string {
   const trimmed = value.trim();
@@ -1117,11 +1156,21 @@ function TopicDetail({
 
 function TopicMobileAttentionRow({
   node,
+  statusByChannelAgent,
+  onNudge,
+  onInterrupt,
   depth,
   selected,
   onSelect,
 }: {
   node: ChannelRailNode;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  onNudge: (
+    channelId: string,
+    text: string,
+    clientMessageId: string
+  ) => Promise<void>;
+  onInterrupt: (channelId: string, agentId: string) => Promise<void>;
   depth: number;
   selected: boolean;
   onSelect: (id: string) => void;
@@ -1138,47 +1187,59 @@ function TopicMobileAttentionRow({
   );
   const rowStyle = { '--topic-depth': depth } as CSSProperties;
   return (
-    <button
-      type="button"
-      className={`topic-mobile-row topic-mobile-row--${item.tone}${selected ? ' selected' : ''}`}
-      style={rowStyle}
-      data-topic-id={item.id}
-      data-unread={unread ? 'true' : 'false'}
-      onClick={() => onSelect(item.id)}
-      title={
-        resumesDerivedSession && session
-          ? `resume chat ${session.label}`
-          : action.label === 'resume'
-            ? 'open channel timeline'
-            : (resumeDisabledReason ?? action.detail)
-      }
-      aria-current={selected ? 'page' : undefined}
-    >
-      <TopicBadge item={item} />
-      <span className="topic-mobile-row__main">
-        <span className="topic-mobile-row__title">{item.title}</span>
-        <span className="topic-mobile-row__status">
-          {topicLatestStatus(item)}
+    <div className="topic-mobile-row-shell">
+      <button
+        type="button"
+        className={`topic-mobile-row topic-mobile-row--${item.tone}${selected ? ' selected' : ''}`}
+        style={rowStyle}
+        data-topic-id={item.id}
+        data-unread={unread ? 'true' : 'false'}
+        onClick={() => onSelect(item.id)}
+        title={
+          resumesDerivedSession && session
+            ? `resume chat ${session.label}`
+            : action.label === 'resume'
+              ? 'open channel timeline'
+              : (resumeDisabledReason ?? action.detail)
+        }
+        aria-current={selected ? 'page' : undefined}
+      >
+        <CockpitPresenceChip
+          item={item}
+          statuses={statusByChannelAgent}
+          unread={unread}
+        />
+        <span className="topic-mobile-row__main">
+          <span className="topic-mobile-row__title">{item.title}</span>
+          <span className="topic-mobile-row__status">
+            {topicLatestStatus(item)}
+          </span>
         </span>
-      </span>
-      <span className="topic-mobile-row__cta">
-        {resumesDerivedSession
-          ? 'resume'
-          : action.label === 'resume'
-            ? 'open'
-            : action.label}
-      </span>
-      <span className="topic-mobile-row__trail">
-        {unread ? (
-          <span
-            className="topic-row__activity-dot"
-            aria-label="unread activity"
-            title="unread activity"
-          />
-        ) : null}
-        <StatusGlyph tone={item.tone} />
-      </span>
-    </button>
+        <span className="topic-mobile-row__cta">
+          {resumesDerivedSession
+            ? 'resume'
+            : action.label === 'resume'
+              ? 'open'
+              : action.label}
+        </span>
+        <span className="topic-mobile-row__trail">
+          {unread ? (
+            <span
+              className="topic-row__activity-dot"
+              aria-label="unread activity"
+              title="unread activity"
+            />
+          ) : null}
+          <StatusGlyph tone={item.tone} />
+        </span>
+      </button>
+      <MobileCockpitRowActions
+        item={item}
+        statuses={statusByChannelAgent}
+        onNudge={onNudge}
+        onInterrupt={onInterrupt}
+      />
+    </div>
   );
 }
 
@@ -1723,11 +1784,21 @@ function topicEmptyStateText(input: {
 
 function MobileRailRows({
   nodes,
+  statusByChannelAgent,
+  onNudge,
+  onInterrupt,
   selectedId,
   onSelect,
   depth = 0,
 }: {
   nodes: ChannelRailNode[];
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  onNudge: (
+    channelId: string,
+    text: string,
+    clientMessageId: string
+  ) => Promise<void>;
+  onInterrupt: (channelId: string, agentId: string) => Promise<void>;
   selectedId: string | null;
   onSelect: (id: string) => void;
   depth?: number;
@@ -1736,6 +1807,9 @@ function MobileRailRows({
     <div className="topic-mobile-node" key={node.item.id}>
       <TopicMobileAttentionRow
         node={node}
+        statusByChannelAgent={statusByChannelAgent}
+        onNudge={onNudge}
+        onInterrupt={onInterrupt}
         depth={depth}
         selected={selectedId === node.item.id}
         onSelect={onSelect}
@@ -1743,6 +1817,9 @@ function MobileRailRows({
       {node.children.length > 0 ? (
         <MobileRailRows
           nodes={node.children}
+          statusByChannelAgent={statusByChannelAgent}
+          onNudge={onNudge}
+          onInterrupt={onInterrupt}
           selectedId={selectedId}
           onSelect={onSelect}
           depth={depth + 1}
@@ -1754,10 +1831,20 @@ function MobileRailRows({
 
 function MobileRailSection({
   section,
+  statusByChannelAgent,
+  onNudge,
+  onInterrupt,
   selectedId,
   onSelect,
 }: {
   section: ChannelRailSection;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  onNudge: (
+    channelId: string,
+    text: string,
+    clientMessageId: string
+  ) => Promise<void>;
+  onInterrupt: (channelId: string, agentId: string) => Promise<void>;
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
@@ -1766,6 +1853,9 @@ function MobileRailSection({
       <div data-rail-section="channels">
         <MobileRailRows
           nodes={section.channels}
+          statusByChannelAgent={statusByChannelAgent}
+          onNudge={onNudge}
+          onInterrupt={onInterrupt}
           selectedId={selectedId}
           onSelect={onSelect}
         />
@@ -1776,6 +1866,9 @@ function MobileRailSection({
           <div data-rail-section="direct-messages">
             <MobileRailRows
               nodes={section.directMessages}
+              statusByChannelAgent={statusByChannelAgent}
+              onNudge={onNudge}
+              onInterrupt={onInterrupt}
               selectedId={selectedId}
               onSelect={onSelect}
             />
@@ -1788,14 +1881,28 @@ function MobileRailSection({
 
 function TopicMobileCockpit({
   tree,
+  unreadByChannel,
+  statusByChannelAgent,
+  rosterAttentionBySessionKey,
   selectedId,
   onSelect,
+  onNudge,
+  onInterrupt,
   onCreateTaskRoom,
   onResumeLast,
 }: {
   tree: ChannelRailTree;
+  unreadByChannel: Readonly<Record<string, boolean>>;
+  statusByChannelAgent: Readonly<Record<string, ChannelAgentStatus>>;
+  rosterAttentionBySessionKey: Readonly<Record<string, RosterAttention>>;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onNudge: (
+    channelId: string,
+    text: string,
+    clientMessageId: string
+  ) => Promise<void>;
+  onInterrupt: (channelId: string, agentId: string) => Promise<void>;
   onCreateTaskRoom?: (() => void) | undefined;
   onResumeLast?: (() => void) | undefined;
 }) {
@@ -1847,6 +1954,18 @@ function TopicMobileCockpit({
           </button>
         </div>
       </div>
+      <MobileCockpitAttentionLane
+        tree={tree}
+        unreadByChannel={unreadByChannel}
+        statusByChannelAgent={statusByChannelAgent}
+        rosterAttentionBySessionKey={rosterAttentionBySessionKey}
+        onSelect={onSelect}
+        actionLabelForItem={(item) => topicPrimaryAction(item).label}
+        statusTextForItem={topicLatestStatus}
+        onNudge={onNudge}
+        onInterrupt={onInterrupt}
+      />
+      <div className="topic-cockpit__all-chats-header">all chats</div>
       <div className="topic-mobile-list" aria-label="workspace-grouped chats">
         {tree.groups.map((group) => {
           const expanded = !collapsedGroupIds.has(group.id);
@@ -1883,6 +2002,9 @@ function TopicMobileCockpit({
               {expanded ? (
                 <MobileRailSection
                   section={group}
+                  statusByChannelAgent={statusByChannelAgent}
+                  onNudge={onNudge}
+                  onInterrupt={onInterrupt}
                   selectedId={selectedId}
                   onSelect={onSelect}
                 />
@@ -1903,6 +2025,9 @@ function TopicMobileCockpit({
             ) : null}
             <MobileRailSection
               section={tree.orphans}
+              statusByChannelAgent={statusByChannelAgent}
+              onNudge={onNudge}
+              onInterrupt={onInterrupt}
               selectedId={selectedId}
               onSelect={onSelect}
             />
@@ -2228,6 +2353,8 @@ export function TopicSidebarView({
   );
   const activeChannelId = useUiStore((s) => s.activeChannelId);
   const advancedMode = useUiStore((s) => s.advancedMode);
+  const sidebarOpen = useUiStore((s) => s.sidebarOpen);
+  const mobileCockpitViewport = useMobileCockpitViewport();
   const activityIds = useMemo(
     () => model.items.map((item) => item.id),
     [model.items]
@@ -2239,6 +2366,12 @@ export function TopicSidebarView({
         state.lastReadByChannel[id],
       ])
     )
+  );
+  const statusByChannelAgent = useChannelAgentStatusStore(
+    (state) => state.statusByChannelAgent
+  );
+  const statusUpdatedAtByChannelAgent = useChannelAgentStatusStore(
+    (state) => state.updatedAtByChannelAgent
   );
   const workspaceNameById = useMemo(
     () =>
@@ -2258,6 +2391,163 @@ export function TopicSidebarView({
       ),
     [activeChannelId, model.items, relevantActivity]
   );
+  // The channel roster endpoint is per-channel, so reconcile only while the
+  // mobile cockpit is actually open. High-signal rows lead rolling batches;
+  // every persisted channel is eventually covered without a request burst.
+  // Query keys intentionally match ChannelView for cache reuse.
+  const allRosterChannelIds = useMemo(() => {
+    if (!mobileCockpitViewport || !sidebarOpen) return [];
+    const rawPresencePriority = (item: TopicNavItem): number => {
+      const prefix = `${item.id} `;
+      const statuses = Object.entries(statusByChannelAgent).flatMap(
+        ([key, status]) => (key.startsWith(prefix) ? [status] : [])
+      );
+      if (statuses.includes('waiting')) return 5;
+      if (statuses.some((status) => status !== 'idle')) return 4;
+      if (item.tone === 'attention' || item.tone === 'error') return 3;
+      if (unreadByChannel[item.id]) return 2;
+      if (item.pinned) return 1;
+      return 0;
+    };
+    return model.items
+      .filter((item) => item.source === 'persisted')
+      .sort(
+        (a, b) =>
+          rawPresencePriority(b) - rawPresencePriority(a) ||
+          b.attentionPriority - a.attentionPriority ||
+          Number(b.pinned) - Number(a.pinned) ||
+          b.updatedAt.localeCompare(a.updatedAt) ||
+          a.id.localeCompare(b.id)
+      )
+      .map((item) => item.id);
+  }, [
+    mobileCockpitViewport,
+    model.items,
+    sidebarOpen,
+    statusByChannelAgent,
+    unreadByChannel,
+  ]);
+  const rosterBatchScope = JSON.stringify(allRosterChannelIds);
+  const [rosterBatch, setRosterBatch] = useState({
+    scope: '',
+    end: MOBILE_COCKPIT_ROSTER_BATCH_SIZE,
+  });
+  const rosterBatchEnd =
+    rosterBatch.scope === rosterBatchScope
+      ? rosterBatch.end
+      : MOBILE_COCKPIT_ROSTER_BATCH_SIZE;
+  const rosterChannelIds = useMemo(
+    () => allRosterChannelIds.slice(0, rosterBatchEnd),
+    [allRosterChannelIds, rosterBatchEnd]
+  );
+  const rosterQueries = useQueries({
+    queries: rosterChannelIds.map((channelId) => ({
+      queryKey: ['channel-roster', channelId],
+      queryFn: () => fetchChannelRoster(channelId),
+      staleTime: 30_000,
+      retry: false,
+    })),
+  });
+  const activeRosterBatchEnd = rosterChannelIds.length;
+  const currentRosterBatchStart = Math.max(
+    0,
+    activeRosterBatchEnd - MOBILE_COCKPIT_ROSTER_BATCH_SIZE
+  );
+  const currentRosterBatchSettled =
+    activeRosterBatchEnd > 0 &&
+    rosterQueries
+      .slice(currentRosterBatchStart, activeRosterBatchEnd)
+      .every((query) => !query.isPending && !query.isFetching);
+  useEffect(() => {
+    if (rosterBatch.scope !== rosterBatchScope) {
+      setRosterBatch({
+        scope: rosterBatchScope,
+        end: MOBILE_COCKPIT_ROSTER_BATCH_SIZE,
+      });
+      return;
+    }
+    if (
+      currentRosterBatchSettled &&
+      rosterBatch.end < allRosterChannelIds.length
+    ) {
+      setRosterBatch((current) => ({
+        ...current,
+        end: Math.min(
+          allRosterChannelIds.length,
+          current.end + MOBILE_COCKPIT_ROSTER_BATCH_SIZE
+        ),
+      }));
+    }
+  }, [
+    allRosterChannelIds.length,
+    currentRosterBatchSettled,
+    rosterBatch.end,
+    rosterBatch.scope,
+    rosterBatchScope,
+  ]);
+  const effectiveStatusByChannelAgent = useMemo(() => {
+    const effective: Record<string, ChannelAgentStatus> = {
+      ...statusByChannelAgent,
+    };
+    rosterQueries.forEach((query, index) => {
+      const channelId = rosterChannelIds[index];
+      if (!channelId || !query.data) return;
+      const rosterById = new Map(query.data.map((entry) => [entry.id, entry]));
+      const candidateAgentIds = new Set(rosterById.keys());
+      const prefix = `${channelId} `;
+      for (const key of Object.keys(statusByChannelAgent)) {
+        if (key.startsWith(prefix))
+          candidateAgentIds.add(key.slice(prefix.length));
+      }
+      for (const agentId of candidateAgentIds) {
+        const entry = rosterById.get(agentId);
+        const key = channelAgentStatusKey(channelId, agentId);
+        const status = resolveEffectiveAgentStatus({
+          socketStatus: statusByChannelAgent[key],
+          socketUpdatedAt: statusUpdatedAtByChannelAgent[key],
+          rosterStatus: entry?.binding?.status,
+          rosterUpdatedAt: query.dataUpdatedAt,
+          streaming: false,
+        });
+        // A fresh unbound roster row supersedes a stale idle socket entry. A
+        // newer active socket transition still wins through the resolver.
+        if (entry?.binding == null && status === 'idle') delete effective[key];
+        else effective[key] = status;
+      }
+    });
+    return effective;
+  }, [
+    rosterChannelIds,
+    rosterQueries,
+    statusByChannelAgent,
+    statusUpdatedAtByChannelAgent,
+  ]);
+  const mobileAgentRosterQuery = useQuery({
+    queryKey: ['agent-roster', 'mobile-cockpit', 200],
+    queryFn: () =>
+      fetchAgentRoster({
+        includeTerminals: false,
+        needsAttention: true,
+        limit: 200,
+      }),
+    enabled: mobileCockpitViewport && sidebarOpen,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const rosterAttentionBySessionKey = useMemo(() => {
+    const attentionBySessionKey: Record<string, RosterAttention> = {};
+    for (const entry of mobileAgentRosterQuery.data?.entries ?? []) {
+      attentionBySessionKey[entry.sessionId] = entry.attention;
+      if (entry.globalSessionId) {
+        attentionBySessionKey[entry.globalSessionId] = entry.attention;
+      } else if (entry.nodeId) {
+        attentionBySessionKey[
+          createGlobalSessionId(entry.nodeId, entry.sessionId)
+        ] = entry.attention;
+      }
+    }
+    return attentionBySessionKey;
+  }, [mobileAgentRosterQuery.data]);
   const railTree = useMemo(
     () => selectChannelRailTree(model, workspaces, { unreadByChannel }),
     [model, unreadByChannel, workspaces]
@@ -2339,6 +2629,22 @@ export function TopicSidebarView({
       }
     },
     [model.byId, onSelectSession, select, topicsById]
+  );
+  const postMobileNudge = useCallback(
+    async (channelId: string, text: string, clientMessageId: string) => {
+      await postChannelMessage(channelId, {
+        text,
+        format: 'text',
+        clientMessageId,
+      });
+    },
+    []
+  );
+  const interruptMobileAgent = useCallback(
+    async (channelId: string, agentId: string) => {
+      await interruptChannelAgent(channelId, agentId);
+    },
+    []
   );
   useEffect(() => {
     if (!mobileControlTopicId) return;
@@ -2425,8 +2731,13 @@ export function TopicSidebarView({
       />
       <TopicMobileCockpit
         tree={railTree}
+        unreadByChannel={unreadByChannel}
+        statusByChannelAgent={effectiveStatusByChannelAgent}
+        rosterAttentionBySessionKey={rosterAttentionBySessionKey}
         selectedId={selectedId}
         onSelect={selectMobile}
+        onNudge={postMobileNudge}
+        onInterrupt={interruptMobileAgent}
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
         {...(resumeLastSelectKey && onSelectSession
           ? { onResumeLast: () => onSelectSession(resumeLastSelectKey) }

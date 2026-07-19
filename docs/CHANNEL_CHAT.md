@@ -166,7 +166,7 @@ prompts only, no burn. Proof matrix:
 | #1168 | Claude subprocess adapter (native stream-json, warm pool, `--resume`).                                                                                                            |
 | #1169 | Multi-agent live proof + Codex revive.                                                                                                                                            |
 | #1170 | Threads (`parent_message_id` / `thread_id`).                                                                                                                                      |
-| #1171 | Mobile cockpit (mission control).                                                                                                                                                 |
+| #1171 | Mobile cockpit (mission control). **SHIPPED** — ranked attention, herdr presence, nudges, and rolled-up run status over the shared channel tree.                                  |
 | #1172 | Tauri desktop suite (backlog).                                                                                                                                                    |
 
 ## Kill list (PLANNED removal)

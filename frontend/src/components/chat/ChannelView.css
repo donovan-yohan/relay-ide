@@ -97,6 +97,8 @@
 }
 
 .ch-agent-chip__dot {
+  /* #1191: the header keeps its legacy status colors; the mobile cockpit uses
+     cockpit-presence.ts (streaming -> working/warning, waiting -> blocked/error). */
   width: 6px;
   height: 6px;
   border-radius: 50%;

@@ -80,6 +80,10 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-sidebar-mechanics.html'
   );
+  buildInputs['test-mobile-cockpit'] = resolve(
+    import.meta.dirname,
+    'test-mobile-cockpit.html'
+  );
 }
 
 export default defineConfig({
