@@ -82,6 +82,116 @@ grep '"version"' ~/.local/opt/node-v24.16.0-linux-x64/lib/node_modules/relay-ide
 
 Confirm the version matches the expected nightly before restarting the service.
 
+## Daily-driver hub (channel chat era)
+
+Since the channel-chat era (issue #1202, epic #1163) a dedicated **daily-driver hub** runs on this box alongside the dogfood devbox hub. It is a separate deployment with its own port (`3459`), config dir (`~/.config/relay-ide/daily-hub/`), and `systemd --user` unit — do not confuse it with the `:3456` dogfood hub in the sections above. Every command in this section targets the daily driver. Treat `config.json` (it holds `pinHash`) as auth-bearing: never paste it into an issue or PR comment.
+
+### Service unit
+
+The daily driver runs as a `systemd --user` service so it survives logout and reboot. Unit file: `~/.config/systemd/user/relay-daily-hub.service`.
+
+```ini
+[Unit]
+Description=Relay daily-driver hub (channel chat)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=NODE_OPTIONS=--max-old-space-size=4096
+ExecStart=%h/.local/opt/node-v24.16.0-linux-x64/bin/relay-ide hub --port 3459 --host 0.0.0.0 --config %h/.config/relay-ide/daily-hub/config.json
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+- `NODE_OPTIONS=--max-old-space-size=4096` is the #1196 heap-leak mitigation; keep it.
+- `Restart=on-failure` restarts after a crash but not after a clean `stop`.
+- Enable linger once so the service runs without an active login session and comes back after reboot:
+
+```bash
+loginctl enable-linger donovanyohan
+systemctl --user daemon-reload
+systemctl --user enable --now relay-daily-hub.service
+systemctl --user status relay-daily-hub.service --no-pager
+```
+
+### Install / update
+
+Install or update the package into the **node-24 opt prefix the service runs from**, then restart:
+
+```bash
+PREFIX=/home/donovanyohan/.local/opt/node-v24.16.0-linux-x64
+npm i -g --prefix "$PREFIX" relay-ide@nightly
+systemctl --user restart relay-daily-hub.service
+# verify the version the service will actually run:
+node -e "console.log(require('$PREFIX/lib/node_modules/relay-ide/package.json').version)"
+```
+
+The `--prefix` is not optional. A plain `npm i -g` installs into the Hermes profile prefix (`NPM_CONFIG_PREFIX`) instead of the node-24 opt tree, so the package updates but the service keeps running the old version. Always confirm the printed version before claiming the update landed.
+
+### Config dir
+
+`~/.config/relay-ide/daily-hub/` holds `config.json` (with `pinHash`) plus all runtime SQLite:
+
+- `channel-chat.db`
+- `workspace-topics.db`
+- `ia.db`
+- `agent-presence.db`
+- `work-context-messages.db`
+- `work-contexts.db`
+- `context-packets.db`
+
+This was migrated out of the old `/tmp` dev dirs, which did not survive reboot. Keep the config dir on durable storage; do not point the daily driver at a `/tmp` path again.
+
+### Health check
+
+```bash
+curl -s http://127.0.0.1:3459/healthz
+```
+
+A healthy hub returns HTTP 200 with `{"status":"ok","lagMs":N,"rss":BYTES}` — the #1200 endpoint. When `lagMs` exceeds the threshold the endpoint returns HTTP 503 with `"status":"degraded"`. Poll `/healthz` rather than checking the port alone: a wedged hub can still hold `:3459` while serving nothing (see #1196), so a port-only check reports a false green.
+
+### Recovery — wedged or dead-session hub
+
+If the hub wedges on boot (event loop blocked ~60s while restoring dead sessions, #1196), or a mention post hangs with `Auth(AuthorizationRequired)` in the log:
+
+```bash
+DAILY_HUB=~/.config/relay-ide/daily-hub
+systemctl --user stop relay-daily-hub.service
+# only if stale bindings are the cause:
+sqlite3 "$DAILY_HUB/channel-chat.db" "DELETE FROM channel_agent_bindings;"
+systemctl --user start relay-daily-hub.service
+curl -s http://127.0.0.1:3459/healthz
+```
+
+The #1200 lazy-restore usually prevents the boot wedge now. The last resort is the fresh-config-dir workaround: start from a clean config dir carrying only `config.json` and the channel/workspace/presence DBs (`channel-chat.db`, `workspace-topics.db`, `agent-presence.db`) with zero serialized sessions.
+
+### Duplicate-row healing (channel-chat v1 → v2)
+
+The v1 → v2 `channel-chat` migration (#1207) heals historical Claude echo duplicates on the first boot at schema v2 (it logs `channel schema v2 healed N historical Claude echo duplicate row(s)`). If it heals 0 rows in-situ but duplicates are still visible (hot-WAL state, #1209), force the heal to re-run against the flushed database:
+
+```bash
+DAILY_HUB=~/.config/relay-ide/daily-hub
+systemctl --user stop relay-daily-hub.service
+sqlite3 "$DAILY_HUB/channel-chat.db" "SELECT version FROM schema_version;"   # confirm it reads 2
+sqlite3 "$DAILY_HUB/channel-chat.db" "UPDATE schema_version SET version = 1;" # reset to 1
+systemctl --user start relay-daily-hub.service   # reopen re-runs the v1 -> v2 heal
+systemctl --user status relay-daily-hub.service --no-pager
+```
+
+`schema_version` is a single-row table in `channel-chat.db`; the heal pass runs whenever the recorded version is below 2, so resetting it to 1 and reopening re-runs the dedupe and lands back at v2.
+
+### npm publish lag (#1215)
+
+A `nightly` merge occasionally does not trigger the Publish-to-npm workflow, so the `@nightly` npm channel lags the git head. The next merge self-heals it. Before updating the daily driver, confirm the channel actually advanced to the commit you want:
+
+```bash
+npm view relay-ide@nightly version
+```
+
+Compare that against the target commit's expected version. If `@nightly` still points at the old version, wait for the next publish (or the next merge) rather than deploying a stale package and assuming it is current.
+
 ## Mac node-link update/restart
 
 Restart the Mac node link when node-side code changed, the protocol version changed, or hub verification reports `macbook-relay-node` as offline, stale, or incompatible. A hub-only UI/routing change does not require a node restart.
