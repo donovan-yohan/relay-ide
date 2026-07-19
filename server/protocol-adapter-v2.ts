@@ -6,6 +6,7 @@ import type {
 } from './protocol-adapter.js';
 import {
   isAgentPatchV2,
+  withAgentDetailCards,
   type AgentApprovalDecisionV2,
   type AgentCapabilitySetV2,
   type AgentPatchV2,
@@ -123,7 +124,8 @@ export abstract class BaseProtocolAdapterV2 implements ProtocolAdapterV2 {
   }
 
   protected emitPatch(patch: AgentPatchV2): void {
-    if (!isAgentPatchV2(patch)) {
+    const normalizedPatch = withAgentDetailCards(patch);
+    if (!isAgentPatchV2(normalizedPatch)) {
       logger.error(`[${this.agentType}] invalid AgentPatchV2:`, patch);
       throw new Error(
         `[${this.agentType}] attempted to emit invalid AgentPatchV2`
@@ -132,7 +134,7 @@ export abstract class BaseProtocolAdapterV2 implements ProtocolAdapterV2 {
 
     for (const handler of [...this.handlers]) {
       try {
-        handler(patch);
+        handler(normalizedPatch);
       } catch (err) {
         logger.error(`[${this.agentType}] AgentPatchV2 handler error:`, err);
       }

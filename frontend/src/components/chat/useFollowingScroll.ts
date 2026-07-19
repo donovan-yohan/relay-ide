@@ -7,7 +7,10 @@ import {
   type RefObject,
 } from 'react';
 import type { ChannelMessage } from '../../../../shared/channel-chat-protocol.js';
-import { isNearBottom } from './scrollNearBottom.js';
+import {
+  deriveFollowIntent,
+  readTimelineScrollMetrics,
+} from './followingScrollPrimitives.js';
 
 const LOAD_OLDER_SCROLL_THRESHOLD_PX = 80;
 
@@ -15,20 +18,6 @@ interface ViewportAnchor {
   seq: number;
   offsetTop: number;
   earliestSeqBefore: number | undefined;
-}
-
-interface ScrollMetrics {
-  scrollHeight: number;
-  scrollTop: number;
-  clientHeight: number;
-}
-
-function scrollMetrics(container: HTMLDivElement): ScrollMetrics {
-  return {
-    scrollHeight: container.scrollHeight,
-    scrollTop: container.scrollTop,
-    clientHeight: container.clientHeight,
-  };
 }
 
 function captureViewportAnchor(
@@ -234,7 +223,7 @@ export function useFollowingScroll({
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
-    const metrics = scrollMetrics(container);
+    const metrics = readTimelineScrollMetrics(container);
     const scrollTopChanged =
       Math.abs(metrics.scrollTop - lastScrollTopRef.current) > 1;
     const pendingAnchor = anchorRef.current;
@@ -248,14 +237,7 @@ export function useFollowingScroll({
       }
     }
 
-    const maxScrollTop = Math.max(
-      0,
-      metrics.scrollHeight - metrics.clientHeight
-    );
-    const movingUp = metrics.scrollTop < lastScrollTopRef.current - 1;
-    const atBottom =
-      maxScrollTop === 0 || maxScrollTop - metrics.scrollTop <= 1;
-    const follow = atBottom || (!movingUp && isNearBottom(metrics));
+    const { follow } = deriveFollowIntent(metrics, lastScrollTopRef.current);
     shouldFollowRef.current = follow;
     lastScrollTopRef.current = metrics.scrollTop;
     if (follow) {

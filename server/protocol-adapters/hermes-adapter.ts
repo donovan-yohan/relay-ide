@@ -456,6 +456,68 @@ function parseToolArguments(value: unknown): Record<string, unknown> {
   }
 }
 
+function isHermesFileEditTool(toolName: string): boolean {
+  return /^(?:apply[_-]?patch|edit|multi[_-]?edit|write|write[_-]?file)$/i.test(
+    toolName
+  );
+}
+
+function isUnifiedDiffOutput(output: string): boolean {
+  return (
+    /(^|\n)diff --git /.test(output) ||
+    (/(^|\n)--- (?:a\/|\/dev\/null)/.test(output) &&
+      /(^|\n)\+\+\+ (?:b\/|\/dev\/null)/.test(output))
+  );
+}
+
+function diffCounts(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions++;
+    if (line.startsWith('-') && !line.startsWith('---')) deletions++;
+  }
+  return { additions, deletions };
+}
+
+type HermesDiffKind = 'added' | 'modified' | 'deleted';
+
+function diffHeaderPath(value: string | undefined): string | null {
+  if (!value) return null;
+  const token = value.split('\t', 1)[0]?.trim() ?? '';
+  if (!token || token === '/dev/null') return null;
+  const unquoted =
+    token.startsWith('"') && token.endsWith('"') ? token.slice(1, -1) : token;
+  return unquoted.replace(/^[ab]\//, '');
+}
+
+function hermesDiffTarget(
+  args: Record<string, unknown>,
+  diff: string
+): { path: string; kind: HermesDiffKind } {
+  const oldHeader = /^--- (.+)$/m.exec(diff)?.[1];
+  const newHeader = /^\+\+\+ (.+)$/m.exec(diff)?.[1];
+  const oldIsNull = oldHeader?.split('\t', 1)[0]?.trim() === '/dev/null';
+  const newIsNull = newHeader?.split('\t', 1)[0]?.trim() === '/dev/null';
+  const kind: HermesDiffKind = oldIsNull
+    ? 'added'
+    : newIsNull
+      ? 'deleted'
+      : 'modified';
+  const explicitPath = args['path'] ?? args['file_path'];
+  const headerPath =
+    kind === 'deleted'
+      ? diffHeaderPath(oldHeader)
+      : (diffHeaderPath(newHeader) ?? diffHeaderPath(oldHeader));
+  return {
+    path:
+      typeof explicitPath === 'string' && explicitPath.trim()
+        ? explicitPath
+        : (headerPath ?? 'unknown'),
+    kind,
+  };
+}
+
 /**
  * Concatenate the text of a Responses API `message` output-item. The item shape
  * is `{ type: 'message', role, content: [{ type: 'output_text', text }, …] }`;
@@ -1221,15 +1283,37 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
     });
     const output = item['output'];
     if (output !== undefined && output !== null) {
-      this.fire({
-        type: 'chat:tool-result',
-        turnId,
-        toolCallId: callId,
-        toolName,
-        status: isIncomplete ? 'error' : 'completed',
-        output: typeof output === 'string' ? output : JSON.stringify(output),
-        durationMs: 0,
-      });
+      const outputText =
+        typeof output === 'string' ? output : JSON.stringify(output);
+      const args = parseToolArguments(rawArgs);
+      if (
+        !isIncomplete &&
+        isHermesFileEditTool(toolName) &&
+        isUnifiedDiffOutput(outputText)
+      ) {
+        const { additions, deletions } = diffCounts(outputText);
+        const target = hermesDiffTarget(args, outputText);
+        this.fire({
+          type: 'chat:file-change',
+          turnId,
+          toolCallId: callId,
+          path: target.path,
+          kind: target.kind,
+          additions,
+          deletions,
+          diff: outputText,
+        });
+      } else {
+        this.fire({
+          type: 'chat:tool-result',
+          turnId,
+          toolCallId: callId,
+          toolName,
+          status: isIncomplete ? 'error' : 'completed',
+          output: outputText,
+          durationMs: 0,
+        });
+      }
     }
     this._pendingToolCalls.delete(itemId);
   }
@@ -1250,7 +1334,14 @@ export class HermesProtocolAdapter extends BaseProtocolAdapter {
 
   private handleReasoningSummaryDone(event: SseEvent, turnId: string): void {
     const text = event.data['text'];
-    const content = typeof text === 'string' ? text : this._reasoningBuffer;
+    // Hermes can finish a streamed reasoning summary with `text: ""`. The
+    // completion update is authoritative in the v2 reducer, so forwarding that
+    // empty string used to replace the accumulated thought with a bodyless
+    // completed row. Preserve the streamed buffer unless done carries content.
+    const content =
+      typeof text === 'string' && text.length > 0
+        ? text
+        : this._reasoningBuffer;
     this.fire({
       type: 'chat:reasoning',
       turnId,

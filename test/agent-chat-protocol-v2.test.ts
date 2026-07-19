@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyAgentPatchV2,
+  agentDetailCardForItem,
   emptyAgentSessionV2,
   isAgentPatchV2,
+  withAgentDetailCards,
 } from '../shared/agent-chat-protocol-v2.js';
 import type { AgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 
@@ -422,5 +424,141 @@ describe('Agent Chat Protocol v2', () => {
         startedAt: timestamp,
       },
     ]);
+  });
+
+  it('keeps one normalized card entity current across output deltas', () => {
+    const withTurn = applyAgentPatchV2(makeSession(), {
+      type: 'agent-turn-started-v2',
+      sessionId: 's1',
+      timestamp,
+      turn: {
+        id: 't-card',
+        status: 'running',
+        inputMessageId: 'user-card',
+        items: [],
+        startedAt: timestamp,
+      },
+    });
+    const started = withAgentDetailCards({
+      type: 'agent-item-started-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't-card',
+      item: {
+        type: 'commandExecution',
+        id: 'exec-1',
+        command: 'npm test',
+        output: '',
+        status: 'running',
+      },
+    });
+    const withStart = applyAgentPatchV2(withTurn, started);
+    const withFirst = applyAgentPatchV2(withStart, {
+      type: 'agent-item-delta-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't-card',
+      itemId: 'exec-1',
+      delta: { output: 'one\n' },
+    });
+    const withSecond = applyAgentPatchV2(withFirst, {
+      type: 'agent-item-delta-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't-card',
+      itemId: 'exec-1',
+      delta: { output: 'two\n' },
+    });
+
+    expect(withSecond.turns[0]?.items).toHaveLength(1);
+    expect(withSecond.turns[0]?.items[0]).toMatchObject({
+      id: 'exec-1',
+      output: 'one\ntwo\n',
+      card: {
+        kind: 'output',
+        title: 'npm test',
+        content: 'one\ntwo\n',
+        language: 'bash',
+        status: 'running',
+      },
+    });
+    expect(withSecond.turns[0]?.items[0]?.card).not.toHaveProperty('sizeBytes');
+
+    const terminal = applyAgentPatchV2(withSecond, {
+      type: 'agent-item-delta-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't-card',
+      itemId: 'exec-1',
+      delta: { status: 'completed', durationMs: 10 },
+    });
+    expect(terminal.turns[0]?.items[0]).toMatchObject({
+      status: 'completed',
+      durationMs: 10,
+      card: {
+        status: 'completed',
+        content: 'one\ntwo\n',
+        sizeBytes: 8,
+      },
+    });
+  });
+
+  it('does not recompute never-rendered message cards on text deltas', () => {
+    const withTurn = applyAgentPatchV2(makeSession(), {
+      type: 'agent-turn-started-v2',
+      sessionId: 's1',
+      timestamp,
+      turn: {
+        id: 't-message-card',
+        status: 'running',
+        inputMessageId: 'user-message-card',
+        items: [],
+        startedAt: timestamp,
+      },
+    });
+    const started = withAgentDetailCards({
+      type: 'agent-item-started-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't-message-card',
+      item: {
+        type: 'assistantMessage',
+        id: 'message-card-1',
+        text: '',
+        status: 'running',
+      },
+    });
+    const withStart = applyAgentPatchV2(withTurn, started);
+    const originalCard = withStart.turns[0]?.items[0]?.card;
+    const withDelta = applyAgentPatchV2(withStart, {
+      type: 'agent-item-delta-v2',
+      sessionId: 's1',
+      timestamp,
+      turnId: 't-message-card',
+      itemId: 'message-card-1',
+      delta: { text: 'streamed text' },
+    });
+
+    expect(withDelta.turns[0]?.items[0]).toMatchObject({
+      text: 'streamed text',
+      status: 'running',
+    });
+    expect(withDelta.turns[0]?.items[0]?.card).toBe(originalCard);
+  });
+
+  it('does not mis-tag plain file-tool output as a diff', () => {
+    expect(
+      agentDetailCardForItem({
+        type: 'dynamicToolCall',
+        id: 'write-1',
+        namespace: 'fixture',
+        tool: 'Write',
+        content: 'wrote 500 lines to demo.ts\n@@ -12 ms from baseline',
+        status: 'completed',
+      })
+    ).toMatchObject({
+      kind: 'tool_call',
+      content: 'output\nwrote 500 lines to demo.ts\n@@ -12 ms from baseline',
+    });
   });
 });

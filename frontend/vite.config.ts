@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import { resolve } from 'node:path';
@@ -9,6 +9,7 @@ import {
   getDevFrontendHost,
   getDevFrontendPort,
 } from './dev-server.js';
+import { shikiLazyChunkViolation } from './src/lib/shiki-lazy-chunk-gate.js';
 
 // Resolve via Node's module resolution so it works in worktrees, monorepos,
 // and any node_modules layout without hard-coded relative paths.
@@ -17,6 +18,21 @@ const xtermDir = path.dirname(
 );
 const addonWebgpu = path.resolve(xtermDir, 'addons', 'addon-webgpu');
 const includeE2eFixtures = process.env.RELAY_IDE_E2E_FIXTURES === '1';
+
+/** Build-time backpressure: syntax grammars must stay off the eager UI path. */
+export function shikiLazyChunkGate(): Plugin {
+  return {
+    name: 'relay-shiki-lazy-chunk-gate',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const chunks = Object.values(bundle).flatMap((output) =>
+        output.type === 'chunk' ? [output] : []
+      );
+      const violation = shikiLazyChunkViolation(chunks);
+      if (violation) this.error(violation);
+    },
+  };
+}
 
 const buildInputs: Record<string, string> = {
   main: resolve(import.meta.dirname, 'index.html'),
@@ -56,11 +72,15 @@ if (includeE2eFixtures) {
     import.meta.dirname,
     'test-channel-thread.html'
   );
+  buildInputs['test-agent-detail-rows'] = resolve(
+    import.meta.dirname,
+    'test-agent-detail-rows.html'
+  );
 }
 
 export default defineConfig({
   root: import.meta.dirname,
-  plugins: [react()],
+  plugins: [react(), shikiLazyChunkGate()],
   resolve: {
     alias: {
       $lib: path.resolve(import.meta.dirname, 'src/lib'),

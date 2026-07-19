@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import './ChatView.css';
 import { useAgentChatSocket } from '../../hooks/useAgentChatSocket.js';
 import { createBrowserId } from '../../lib/browserId.js';
@@ -8,7 +14,10 @@ import {
   type ComposerSendAttachment,
 } from './Composer.js';
 import { QueueChips } from './QueueChips.js';
-import { isNearBottom } from './scrollNearBottom.js';
+import {
+  deriveFollowIntent,
+  readTimelineScrollMetrics,
+} from './followingScrollPrimitives.js';
 import { Turn, type EventVerbosity } from './Turn.js';
 import type { AgentSlashCommandV2 } from '../../../../shared/agent-chat-protocol-v2.js';
 
@@ -36,6 +45,224 @@ interface ChatViewProps {
   sessionId: string | null;
 }
 
+interface ReaderAnchor {
+  itemId: string;
+  offsetTop: number;
+}
+
+function captureReaderAnchor(container: HTMLDivElement): ReaderAnchor | null {
+  const containerTop = container.getBoundingClientRect().top;
+  const items = container.querySelectorAll<HTMLElement>('[data-agent-item-id]');
+  let low = 0;
+  let high = items.length - 1;
+  let firstVisible = -1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const rect = items[middle]!.getBoundingClientRect();
+    if (rect.bottom >= containerTop) {
+      firstVisible = middle;
+      high = middle - 1;
+    } else {
+      low = middle + 1;
+    }
+  }
+  if (firstVisible < 0) return null;
+  const item = items[firstVisible]!;
+  const itemId = item.dataset.agentItemId;
+  if (!itemId) return null;
+  return {
+    itemId,
+    offsetTop: item.getBoundingClientRect().top - containerTop,
+  };
+}
+
+function findAnchoredItem(
+  container: HTMLDivElement,
+  itemId: string
+): HTMLElement | null {
+  return container.querySelector<HTMLElement>(
+    `[data-agent-item-id="${CSS.escape(itemId)}"]`
+  );
+}
+
+/**
+ * Exact production scroll model for an agent-detail timeline. Exported so the
+ * static evidence harness can exercise follow intent and anchor restoration
+ * without opening a real adapter WebSocket.
+ */
+interface UseAgentTimelineScrollOptions {
+  timelineId: string | null;
+  itemCount: number;
+}
+
+interface AgentTimelineScrollState {
+  bottomRef: React.RefObject<HTMLDivElement | null>;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  contentRef: React.RefObject<HTMLDivElement | null>;
+  handleTimelineScroll: () => void;
+  prepareUserReflow: (itemId: string) => void;
+  scrollToBottom: () => void;
+  showJumpToLatest: boolean;
+}
+
+export function useAgentTimelineScroll({
+  timelineId,
+  itemCount,
+}: UseAgentTimelineScrollOptions): AgentTimelineScrollState {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const shouldFollowRef = useRef(true);
+  const readerAnchorRef = useRef<ReaderAnchor | null>(null);
+  const userReflowAnchorRef = useRef<ReaderAnchor | null>(null);
+  const previousTimelineIdRef = useRef(timelineId);
+  const lastScrollTopRef = useRef(0);
+  const programmaticFollowUntilRef = useRef(0);
+  const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
+
+  const scrollToBottom = useCallback((): void => {
+    const container = containerRef.current;
+    if (!container) return;
+    const previousScrollTop = container.scrollTop;
+    shouldFollowRef.current = true;
+    readerAnchorRef.current = null;
+    userReflowAnchorRef.current = null;
+    setShowJumpToLatest(false);
+    // Direct assignment matches #1197 and avoids smooth-scroll frames that can
+    // masquerade as reader input. The guard remains for any browser-emitted
+    // intermediate/programmatic frames.
+    programmaticFollowUntilRef.current = performance.now() + 500;
+    container.scrollTop = container.scrollHeight;
+    // Keep the pre-scroll baseline until the browser reports the scroll. This
+    // makes every downward intermediate frame programmatic while a genuine
+    // upward gesture still disengages follow immediately.
+    lastScrollTopRef.current = previousScrollTop;
+  }, []);
+
+  // Session identity is part of the scroll state. Equal item counts across two
+  // sessions must not preserve the old reader anchor/follow intent and open the
+  // next conversation halfway up its history.
+  useLayoutEffect(() => {
+    if (previousTimelineIdRef.current === timelineId) return;
+    previousTimelineIdRef.current = timelineId;
+    shouldFollowRef.current = true;
+    readerAnchorRef.current = null;
+    userReflowAnchorRef.current = null;
+    programmaticFollowUntilRef.current = 0;
+    scrollToBottom();
+  }, [timelineId, scrollToBottom]);
+
+  const handleTimelineScroll = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const metrics = readTimelineScrollMetrics(container);
+    const intent = deriveFollowIntent(metrics, lastScrollTopRef.current);
+    const inProgrammaticFollow =
+      performance.now() <= programmaticFollowUntilRef.current &&
+      !intent.movingUp;
+    if (inProgrammaticFollow) {
+      shouldFollowRef.current = true;
+      readerAnchorRef.current = null;
+      if (intent.atBottom) programmaticFollowUntilRef.current = 0;
+    } else {
+      programmaticFollowUntilRef.current = 0;
+      shouldFollowRef.current = intent.follow;
+      readerAnchorRef.current = intent.follow
+        ? null
+        : captureReaderAnchor(container);
+      setShowJumpToLatest(!intent.follow);
+    }
+    lastScrollTopRef.current = metrics.scrollTop;
+  }, []);
+
+  const prepareUserReflow = useCallback((itemId: string): void => {
+    const container = containerRef.current;
+    if (!container) return;
+    const item = findAnchoredItem(container, itemId);
+    if (!item) return;
+    const containerRect = container.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    const toggledCardIsVisible =
+      itemRect.bottom >= containerRect.top &&
+      itemRect.top <= containerRect.bottom;
+    const toggledCardAnchor = {
+      itemId,
+      offsetTop: itemRect.top - containerRect.top,
+    };
+    // A visible card header is the user's focal point. If the card is above
+    // or below the viewport (for example, a programmatic fixture click), keep
+    // the current first-visible row fixed instead of jumping to the card.
+    const anchor = toggledCardIsVisible
+      ? toggledCardAnchor
+      : (captureReaderAnchor(container) ?? toggledCardAnchor);
+    userReflowAnchorRef.current = anchor;
+    readerAnchorRef.current = anchor;
+    shouldFollowRef.current = false;
+    programmaticFollowUntilRef.current = 0;
+    setShowJumpToLatest(true);
+  }, []);
+
+  // #1197 scroll invariant, reused for agent-detail rows: follow intent is
+  // sticky while at the bottom; a reader who scrolled up keeps the same first
+  // visible item at the same offset when streaming or card expansion reflows
+  // content above it.
+  useEffect(() => {
+    const container = containerRef.current;
+    const content = contentRef.current;
+    if (!container || !content) return;
+
+    const preserveViewport = () => {
+      const userAnchor = userReflowAnchorRef.current;
+      if (userAnchor) {
+        userReflowAnchorRef.current = null;
+        const item = findAnchoredItem(container, userAnchor.itemId);
+        if (item) {
+          const offsetTop =
+            item.getBoundingClientRect().top -
+            container.getBoundingClientRect().top;
+          container.scrollTop += offsetTop - userAnchor.offsetTop;
+          lastScrollTopRef.current = container.scrollTop;
+        }
+        readerAnchorRef.current = captureReaderAnchor(container);
+        return;
+      }
+      if (shouldFollowRef.current) {
+        scrollToBottom();
+        return;
+      }
+      const anchor = readerAnchorRef.current;
+      if (anchor) {
+        const item = findAnchoredItem(container, anchor.itemId);
+        if (item) {
+          const offsetTop =
+            item.getBoundingClientRect().top -
+            container.getBoundingClientRect().top;
+          container.scrollTop += offsetTop - anchor.offsetTop;
+          lastScrollTopRef.current = container.scrollTop;
+        }
+      }
+      readerAnchorRef.current = captureReaderAnchor(container);
+    };
+
+    preserveViewport();
+
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(preserveViewport);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [itemCount, timelineId, scrollToBottom]);
+
+  return {
+    bottomRef,
+    containerRef,
+    contentRef,
+    handleTimelineScroll,
+    prepareUserReflow,
+    scrollToBottom,
+    showJumpToLatest,
+  };
+}
+
 export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
   const {
     session,
@@ -47,9 +274,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     continueHere,
     pushClientError,
   } = useAgentChatSocket(sessionId);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
   const [eventVerbosity, setEventVerbosity] =
     React.useState<EventVerbosity>('normal');
 
@@ -59,36 +283,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
     [session]
   );
 
-  // Auto-follow the bottom of the timeline as new items arrive AND as a
-  // single streaming item (e.g. an assistantMessage growing via deltas)
-  // grows the content height without changing itemCount. A ResizeObserver on
-  // the content wrapper catches both cases; scrolling only happens if the
-  // user was already near the bottom, so scrolling up to read history is
-  // never interrupted.
-  useEffect(() => {
-    const container = containerRef.current;
-    const content = contentRef.current;
-    if (!container || !content) return;
-
-    const followIfNearBottom = () => {
-      if (
-        isNearBottom({
-          scrollHeight: container.scrollHeight,
-          scrollTop: container.scrollTop,
-          clientHeight: container.clientHeight,
-        })
-      ) {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }
-    };
-
-    followIfNearBottom();
-
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(followIfNearBottom);
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, [itemCount]);
+  const {
+    bottomRef,
+    containerRef,
+    contentRef,
+    handleTimelineScroll,
+    prepareUserReflow,
+    scrollToBottom,
+    showJumpToLatest,
+  } = useAgentTimelineScroll({ timelineId: sessionId, itemCount });
 
   const isActive = useMemo(
     () =>
@@ -182,6 +385,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         role="log"
         aria-live="polite"
         aria-label="message timeline"
+        onScroll={handleTimelineScroll}
       >
         {(canResume || resumeFailed) && (
           <div className="tl-resume-banner">
@@ -236,6 +440,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
                 onApprove={approve}
                 onAnswer={answer}
                 slashCommands={mergedSlashCommands}
+                onDetailCardToggle={prepareUserReflow}
               />
             ))}
             <QueueChips session={session} />
@@ -243,6 +448,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId }) => {
         )}
         <div ref={bottomRef} />
       </div>
+      {showJumpToLatest ? (
+        <button
+          type="button"
+          className="tl-jump-latest"
+          onClick={scrollToBottom}
+        >
+          jump to latest
+        </button>
+      ) : null}
       <Composer
         onSend={handleSend}
         onInterrupt={handleInterrupt}

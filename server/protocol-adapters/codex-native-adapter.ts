@@ -219,6 +219,16 @@ function stringField(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
+function diffCounts(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
+    if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
 /**
  * Flatten codex's reasoning array shapes into a single string. Both
  * `summary: Vec<ReasoningItemReasoningSummary>` and
@@ -429,6 +439,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   // Item tracking
   private providerExtensionSeq = 0;
   private readonly itemMap = new Map<string, string>(); // nativeItemId → relayItemId
+  private readonly toolArgumentsByNativeId = new Map<
+    string,
+    Record<string, unknown>
+  >();
   private pendingModelOverride: string | null = null;
 
   // Reasoning streaming buffers, keyed by relayItemId. Used to preserve the
@@ -735,6 +749,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     // ids and streamed reasoning/token buffers across turns grows without bound
     // on an always-on channel binding.
     this.itemMap.clear();
+    this.toolArgumentsByNativeId.clear();
     this.tokenUsageBuffer.clear();
     this.reasoningSummaryBuffers.clear();
     this.reasoningDetailBuffers.clear();
@@ -860,6 +875,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.providerSessionId = null;
     this.slashCommandsLoaded = false;
     this.itemMap.clear();
+    this.toolArgumentsByNativeId.clear();
     this.tokenUsageBuffer.clear();
     this.reasoningSummaryBuffers.clear();
     this.reasoningDetailBuffers.clear();
@@ -1299,6 +1315,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'mcpToolCall': {
         const relayId = `mcp-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
+        const args = isRecord(item['arguments']) ? item['arguments'] : {};
+        this.toolArgumentsByNativeId.set(nativeId, args);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1310,7 +1328,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             server: stringField(item['server']),
             tool: stringField(item['tool']),
-            arguments: isRecord(item['arguments']) ? item['arguments'] : {},
+            arguments: args,
             status: 'running',
             startedAt: nowIso(),
           },
@@ -1321,6 +1339,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'dynamicToolCall': {
         const relayId = `tool-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
+        const args = isRecord(item['arguments']) ? item['arguments'] : {};
+        this.toolArgumentsByNativeId.set(nativeId, args);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1332,7 +1352,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             namespace: 'codex',
             tool: stringField(item['tool']),
-            arguments: isRecord(item['arguments']) ? item['arguments'] : {},
+            arguments: args,
             status: 'running',
             startedAt: nowIso(),
           },
@@ -1344,6 +1364,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         const relayId = `collab-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
         const nativeTool = stringField(item['tool']);
+        const args = isRecord(item['arguments']) ? item['arguments'] : {};
+        this.toolArgumentsByNativeId.set(nativeId, args);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1355,7 +1377,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             namespace: 'codex',
             tool: `collab:${nativeTool}`,
-            arguments: isRecord(item['arguments']) ? item['arguments'] : {},
+            arguments: args,
             status: 'running',
             startedAt: nowIso(),
           },
@@ -1520,6 +1542,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             status: kindType || 'edited',
           };
         });
+        // `item/completed` is authoritative and replaces the reducer entity.
+        // Carry the final apply-patch payload forward; otherwise the preceding
+        // patchUpdated delta is discarded and a completed diff card goes blank.
+        const patch = changes
+          .filter(isRecord)
+          .map((change) => stringField(change['diff']))
+          .filter(Boolean)
+          .join('\n');
         this.emitPatch({
           type: 'agent-item-updated-v2',
           sessionId: this.config.sessionId,
@@ -1533,6 +1563,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
               paths.length > 0
                 ? paths
                 : [{ path: 'unknown', status: 'edited' }],
+            ...(patch ? { patch } : {}),
             applyStatus,
             status: 'completed',
             completedAt,
@@ -1541,7 +1572,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         break;
       }
 
-      case 'mcpToolCall':
+      case 'mcpToolCall': {
+        const args = isRecord(item['arguments'])
+          ? item['arguments']
+          : (this.toolArgumentsByNativeId.get(nativeId) ?? {});
+        this.toolArgumentsByNativeId.delete(nativeId);
         this.emitPatch({
           type: 'agent-item-updated-v2',
           sessionId: this.config.sessionId,
@@ -1553,12 +1588,14 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             server: stringField(item['server']),
             tool: stringField(item['tool']),
+            arguments: args,
             result: item['result'],
             status: 'completed',
             completedAt,
           },
         });
         break;
+      }
 
       case 'dynamicToolCall':
       case 'collabAgentToolCall': {
@@ -1566,6 +1603,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
           itemType === 'collabAgentToolCall'
             ? `collab:${stringField(item['tool'])}`
             : stringField(item['tool']);
+        const args = isRecord(item['arguments'])
+          ? item['arguments']
+          : (this.toolArgumentsByNativeId.get(nativeId) ?? {});
+        this.toolArgumentsByNativeId.delete(nativeId);
         this.emitPatch({
           type: 'agent-item-updated-v2',
           sessionId: this.config.sessionId,
@@ -1577,6 +1618,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             providerItemId: nativeId,
             namespace: 'codex',
             tool,
+            arguments: args,
             result: item['result'],
             status: 'completed',
             completedAt,
@@ -1733,7 +1775,8 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       timestamp: nowIso(),
       turnId: this.activeTurnId,
       itemId: relayId,
-      delta: { patch: combinedPatch },
+      mode: 'replace',
+      delta: { patch: combinedPatch, card: diffCounts(combinedPatch) },
     });
   }
 

@@ -9,7 +9,12 @@ import type {
   CodexNotification,
   CodexServerRequest,
 } from '../../../server/codex-app-server-client.js';
-import type { AgentPatchV2 } from '../../../shared/agent-chat-protocol-v2.js';
+import {
+  applyAgentPatchV2,
+  emptyAgentSessionV2,
+  type AgentPatchV2,
+} from '../../../shared/agent-chat-protocol-v2.js';
+import codexDetailFixture from '../../fixtures/agent-detail/codex.js';
 
 vi.mock('../../../server/logger.js', () => ({
   createLogger: () => ({
@@ -123,6 +128,16 @@ function collectPatches(adapter: CodexNativeProtocolAdapter): AgentPatchV2[] {
   const patches: AgentPatchV2[] = [];
   adapter.onPatch((patch) => patches.push(patch));
   return patches;
+}
+
+function reducePatches(patches: AgentPatchV2[]) {
+  let session = emptyAgentSessionV2({
+    id: config.sessionId,
+    provider: 'codex',
+    cwd: config.cwd,
+  });
+  for (const patch of patches) session = applyAgentPatchV2(session, patch);
+  return session;
 }
 
 function retentionCounts(adapter: CodexNativeProtocolAdapter) {
@@ -597,7 +612,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     await adapter.disconnect();
   });
 
-  it('fileChange: patch delta then complete', async () => {
+  it('fileChange: cumulative patch updates replace the live body and counts', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-file');
 
     // Authoritative FileUpdateChange shape: kind is tagged union { type: 'add'|'delete'|'update' }
@@ -609,16 +624,63 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       },
     });
     // Authoritative item/fileChange/patchUpdated shape: { changes: FileUpdateChange[] }
+    const firstPatch =
+      '--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-old\n+intermediate\n';
     client.feedNotification('item/fileChange/patchUpdated', {
       itemId: 'fc-1',
       changes: [
         {
           path: 'foo.ts',
           kind: { type: 'update' },
-          diff: '@@ -1,1 +1,2 @@\n+new line\n',
+          diff: firstPatch,
         },
       ],
     });
+    const afterFirst = reducePatches(patches);
+    expect(afterFirst.turns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'fileChange',
+          patch: firstPatch,
+          card: expect.objectContaining({
+            content: firstPatch,
+            additions: 1,
+            deletions: 1,
+          }),
+        }),
+      ])
+    );
+
+    const finalPatch =
+      '--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1,2 @@\n-old\n+final one\n+final two\n';
+    client.feedNotification('item/fileChange/patchUpdated', {
+      itemId: 'fc-1',
+      changes: [
+        {
+          path: 'foo.ts',
+          kind: { type: 'update' },
+          diff: finalPatch,
+        },
+      ],
+    });
+    const midStream = reducePatches(patches);
+    expect(midStream.turns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'fileChange',
+          patch: finalPatch,
+          card: expect.objectContaining({
+            content: finalPatch,
+            additions: 2,
+            deletions: 1,
+          }),
+        }),
+      ])
+    );
+    expect(JSON.stringify(midStream.turns[0]?.items)).not.toContain(
+      'intermediate'
+    );
+
     client.feedNotification('item/completed', {
       item: {
         type: 'fileChange',
@@ -627,7 +689,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
           {
             path: 'foo.ts',
             kind: { type: 'update' },
-            diff: '@@ -1,1 +1,2 @@\n+new line\n',
+            diff: finalPatch,
           },
         ],
         applyStatus: 'applied',
@@ -645,13 +707,61 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         }),
         expect.objectContaining({
           type: 'agent-item-delta-v2',
-          delta: { patch: '@@ -1,1 +1,2 @@\n+new line\n' },
+          mode: 'replace',
+          delta: {
+            patch: finalPatch,
+            card: { additions: 2, deletions: 1 },
+          },
         }),
         expect.objectContaining({
           type: 'agent-item-updated-v2',
-          item: expect.objectContaining({ applyStatus: 'applied' }),
+          item: expect.objectContaining({
+            applyStatus: 'applied',
+            patch: finalPatch,
+            card: {
+              kind: 'diff',
+              title: 'foo.ts',
+              status: 'completed',
+              language: 'diff',
+              path: 'foo.ts',
+              content: finalPatch,
+              additions: 2,
+              deletions: 1,
+              sizeBytes: new TextEncoder().encode(finalPatch).byteLength,
+            },
+          }),
         }),
       ])
+    );
+
+    await adapter.disconnect();
+  });
+
+  it('replays the sanitized Codex detail fixture into normalized cards', async () => {
+    const { adapter, client, patches } = await setupAndSend('turn-fixture');
+    for (const event of codexDetailFixture.nativeEvents) {
+      client.feedNotification(event.method, event.params);
+    }
+
+    let session = emptyAgentSessionV2({
+      id: 'session-1',
+      provider: 'codex',
+      cwd: '/workspace/example',
+    });
+    for (const patch of patches) session = applyAgentPatchV2(session, patch);
+    const cards = session.turns
+      .flatMap((turn) => turn.items)
+      .flatMap((item) =>
+        item.card && item.card.kind !== 'message' ? [item.card] : []
+      );
+    const expectedCards = codexDetailFixture.session.turns
+      .flatMap((turn) => turn.items)
+      .flatMap((item) =>
+        item.card && item.card.kind !== 'message' ? [item.card] : []
+      );
+    expect(cards).toEqual(expectedCards);
+    expect(codexDetailFixture.sanitization.containsLiveTranscriptBytes).toBe(
+      false
     );
 
     await adapter.disconnect();
@@ -666,7 +776,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         id: 'mcp-1',
         server: 'github',
         tool: 'search',
-        arguments: {},
+        arguments: { query: 'fixture' },
       },
     });
     client.feedNotification('item/completed', {
@@ -695,6 +805,22 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         }),
       ])
     );
+    const completed = patches.find(
+      (patch) =>
+        patch.type === 'agent-item-updated-v2' &&
+        patch.item.type === 'mcpToolCall'
+    );
+    expect(completed).toMatchObject({
+      item: {
+        id: 'mcp-mcp-1',
+        arguments: { query: 'fixture' },
+        card: {
+          kind: 'tool_call',
+          content: 'input\n{\n  "query": "fixture"\n}\n\noutput\n[]',
+          status: 'completed',
+        },
+      },
+    });
 
     await adapter.disconnect();
   });
@@ -707,7 +833,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         type: 'dynamicToolCall',
         id: 'dyn-1',
         tool: 'myTool',
-        arguments: {},
+        arguments: { query: 'fixture' },
       },
     });
     client.feedNotification('item/completed', {
@@ -719,25 +845,42 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       },
     });
 
-    expect(patches).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'agent-item-started-v2',
-          item: expect.objectContaining({
-            type: 'dynamicToolCall',
-            namespace: 'codex',
-            tool: 'myTool',
-          }),
-        }),
-        expect.objectContaining({
-          type: 'agent-item-updated-v2',
-          item: expect.objectContaining({
-            type: 'dynamicToolCall',
-            result: 'done',
-          }),
-        }),
-      ])
+    const lifecycle = patches.filter(
+      (patch) =>
+        (patch.type === 'agent-item-started-v2' ||
+          patch.type === 'agent-item-updated-v2') &&
+        patch.item.type === 'dynamicToolCall'
     );
+    expect(lifecycle).toHaveLength(2);
+    expect(
+      lifecycle.map((patch) =>
+        patch.type === 'agent-item-started-v2' ||
+        patch.type === 'agent-item-updated-v2'
+          ? patch.item.id
+          : null
+      )
+    ).toEqual(['tool-dyn-1', 'tool-dyn-1']);
+    expect(lifecycle[0]).toMatchObject({
+      item: {
+        arguments: { query: 'fixture' },
+        card: {
+          kind: 'tool_call',
+          content: 'input\n{\n  "query": "fixture"\n}',
+          status: 'running',
+        },
+      },
+    });
+    expect(lifecycle[1]).toMatchObject({
+      item: {
+        arguments: { query: 'fixture' },
+        result: 'done',
+        card: {
+          kind: 'tool_call',
+          content: 'input\n{\n  "query": "fixture"\n}\n\noutput\ndone',
+          status: 'completed',
+        },
+      },
+    });
 
     await adapter.disconnect();
   });

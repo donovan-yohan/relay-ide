@@ -6,9 +6,10 @@ import type {
   AgentSlashCommandV2,
   AgentTurnV2,
 } from '../../../../shared/agent-chat-protocol-v2.js';
+import { agentDetailCardForItem } from '../../../../shared/agent-chat-protocol-v2.js';
+import { AgentDetailCard } from './AgentDetailCard.js';
 import { ApprovalCard } from './ApprovalCard.js';
 import { AssistantMarkdown } from './AssistantMarkdown.js';
-import { FileChangeRow } from './FileChangeRow.js';
 import {
   CompactionCard,
   HookPromptCard,
@@ -18,7 +19,6 @@ import {
 } from './MediaCard.js';
 import { PlanCard } from './PlanCard.js';
 import { QuestionCard } from './QuestionCard.js';
-import { ToolCard } from './ToolCard.js';
 import { TurnFooter } from './TurnFooter.js';
 import { TurnHeader } from './TurnHeader.js';
 import { renderProviderExtension } from './extensions/registry.js';
@@ -35,6 +35,7 @@ interface TurnProps {
   onAnswer: (requestId: string, answers: Record<string, string[]>) => void;
   /** Slash command catalog for skill token highlighting in user messages. */
   slashCommands?: AgentSlashCommandV2[];
+  onDetailCardToggle?: (itemId: string) => void;
 }
 
 const EVENT_VERBOSITY_RANK: Record<EventVerbosity, number> = {
@@ -87,25 +88,29 @@ function renderUserMessage(
   );
 }
 
-const REASONING_LABEL_MAX_LEN = 80;
-
-/** Single-line, truncated label for the reasoning <summary>; falls back to 'thinking'. */
-function reasoningLabel(summary: string | undefined): string {
-  if (!summary) return 'thinking';
-  const singleLine = summary.replace(/\s+/g, ' ').trim();
-  if (!singleLine) return 'thinking';
-  if (singleLine.length <= REASONING_LABEL_MAX_LEN) return singleLine;
-  return `${singleLine.slice(0, REASONING_LABEL_MAX_LEN - 1).trimEnd()}…`;
-}
-
 function renderItem(
   item: AgentItemV2,
   eventVerbosity: EventVerbosity,
   onApprove: (requestId: string, decision: AgentApprovalDecisionV2) => void,
   onAnswer: (requestId: string, answers: Record<string, string[]>) => void,
-  commandIndex: Set<string>
+  commandIndex: Set<string>,
+  onDetailCardToggle?: (itemId: string) => void
 ): React.ReactNode {
   if (!shouldRenderItem(item, eventVerbosity)) return null;
+
+  // Persisted sessions predating #1198 may not carry `card` yet. Project their
+  // provider-neutral item type at render time, while live adapter patches
+  // arrive with this same card already attached and updated in place.
+  const detailCard = item.card ?? agentDetailCardForItem(item);
+  if (detailCard && detailCard.kind !== 'message') {
+    return (
+      <AgentDetailCard
+        card={detailCard}
+        itemId={item.id}
+        {...(onDetailCardToggle ? { onUserToggle: onDetailCardToggle } : {})}
+      />
+    );
+  }
 
   switch (item.type) {
     case 'userMessage':
@@ -115,18 +120,13 @@ function renderItem(
         <AssistantMarkdown text={item.text} keyPrefix={item.id} />
       ) : null;
     case 'reasoning':
-      return (
-        <details className="reasoning" open={item.visibility === 'full'}>
-          <summary>{reasoningLabel(item.summary)}</summary>
-          <pre className="tl-text">{item.detail ?? item.summary}</pre>
-        </details>
-      );
+      return null;
     case 'commandExecution':
     case 'dynamicToolCall':
     case 'mcpToolCall':
-      return <ToolCard item={item} />;
+      return null;
     case 'fileChange':
-      return <FileChangeRow item={item} />;
+      return null;
     case 'approval':
       return <ApprovalCard item={item} onApprove={onApprove} />;
     case 'providerExtension':
@@ -195,6 +195,7 @@ export const Turn: React.FC<TurnProps> = ({
   onApprove,
   onAnswer,
   slashCommands,
+  onDetailCardToggle,
 }) => {
   const commandIndex = slashCommands
     ? buildCommandIndex(slashCommands)
@@ -203,11 +204,28 @@ export const Turn: React.FC<TurnProps> = ({
   return (
     <div className="turn" role="group" aria-label={`turn ${index + 1}`}>
       <TurnHeader turn={turn} />
-      {turn.items.map((item) => (
-        <React.Fragment key={item.id}>
-          {renderItem(item, eventVerbosity, onApprove, onAnswer, commandIndex)}
-        </React.Fragment>
-      ))}
+      {turn.items.map((item) => {
+        const rendered = renderItem(
+          item,
+          eventVerbosity,
+          onApprove,
+          onAnswer,
+          commandIndex,
+          onDetailCardToggle
+        );
+        if (rendered == null || typeof rendered === 'boolean') {
+          return null;
+        }
+        return (
+          <div
+            className="turn__item"
+            data-agent-item-id={item.id}
+            key={item.id}
+          >
+            {rendered}
+          </div>
+        );
+      })}
       {turn.error && (
         <div className="tl-error">
           <span>error</span>
