@@ -31,8 +31,12 @@ import { useUiStore } from '../../lib/stores/ui.js';
 import { AgentBadge } from '../AgentBadge.js';
 import { ChannelTimeline } from './ChannelTimeline.js';
 import { ChannelComposer } from './ChannelComposer.js';
+import { ChannelThreadPanel } from './ChannelThreadPanel.js';
 
 const READ_WRITE_VISIBLE_GRACE_MS = 10_000;
+const AUTO_BACKFILL_MAX_ATTEMPTS = 3;
+const AUTO_BACKFILL_RETRY_BASE_MS = 200;
+const AUTO_BACKFILL_MAX_CURSOR_PAGES = 4;
 
 interface ChannelViewProps {
   channelId: string;
@@ -56,6 +60,12 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
   } = useChannelChatSocket(channelId);
   const queryClient = useQueryClient();
   const setActiveChannelId = useUiStore((s) => s.setActiveChannelId);
+  const activeThreadRootId = useUiStore((s) => s.activeThreadRootId);
+  const setActiveThreadRootId = useUiStore((s) => s.setActiveThreadRootId);
+
+  useEffect(() => {
+    setActiveThreadRootId(null);
+  }, [channelId, setActiveThreadRootId]);
 
   // Self-derive DM-ness: ChannelSummaryView does not expose routingDefaults, so
   // fetch the topic (cached) and run the pure id derivation. Cheaper than
@@ -145,6 +155,119 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
       await post(text, { clientMessageId });
     },
     [post]
+  );
+
+  const handleThreadSend = useCallback(
+    async (text: string, clientMessageId: string) => {
+      if (activeThreadRootId === null) return;
+      await post(text, {
+        clientMessageId,
+        threadId: activeThreadRootId,
+      });
+    },
+    [activeThreadRootId, post]
+  );
+
+  const hasTopLevelMessages = reducer.messages.some(
+    (message) => message.threadId === null
+  );
+  const earliestSeq = reducer.messages[0]?.seq;
+  const [replyOnlyBackfillPaused, setReplyOnlyBackfillPaused] = useState(false);
+  const [backfillContinuation, setBackfillContinuation] = useState(0);
+  const autoBackfillRef = useRef<{
+    channelId: string;
+    cursorKey: string | null;
+    cursorPages: number;
+    attempts: number;
+    retryTimer: ReturnType<typeof setTimeout> | null;
+  }>({
+    channelId,
+    cursorKey: null,
+    cursorPages: 0,
+    attempts: 0,
+    retryTimer: null,
+  });
+  useEffect(() => {
+    const state = autoBackfillRef.current;
+    const clearRetry = (): void => {
+      if (state.retryTimer !== null) clearTimeout(state.retryTimer);
+      state.retryTimer = null;
+    };
+    if (state.channelId !== channelId) {
+      clearRetry();
+      state.channelId = channelId;
+      state.cursorKey = null;
+      state.cursorPages = 0;
+      state.attempts = 0;
+      setReplyOnlyBackfillPaused(false);
+    }
+    if (hasTopLevelMessages || !hasMoreOlder) {
+      clearRetry();
+      state.cursorKey = null;
+      state.cursorPages = 0;
+      state.attempts = 0;
+      setReplyOnlyBackfillPaused(false);
+      return;
+    }
+    if (loadingOlder) return;
+    if (earliestSeq === undefined) return;
+    const cursorKey = `${channelId}:${earliestSeq}`;
+    if (state.cursorKey !== cursorKey) {
+      clearRetry();
+      if (state.cursorPages >= AUTO_BACKFILL_MAX_CURSOR_PAGES) {
+        setReplyOnlyBackfillPaused(true);
+        return;
+      }
+      state.cursorKey = cursorKey;
+      state.cursorPages += 1;
+      state.attempts = 0;
+      setReplyOnlyBackfillPaused(false);
+    }
+    if (
+      state.retryTimer !== null ||
+      state.attempts >= AUTO_BACKFILL_MAX_ATTEMPTS
+    ) {
+      return;
+    }
+    if (state.attempts === 0) {
+      state.attempts = 1;
+      void loadOlder();
+      return;
+    }
+    const delay = AUTO_BACKFILL_RETRY_BASE_MS * 2 ** (state.attempts - 1);
+    state.retryTimer = setTimeout(() => {
+      if (state.cursorKey !== cursorKey) return;
+      state.retryTimer = null;
+      state.attempts += 1;
+      void loadOlder();
+    }, delay);
+  }, [
+    backfillContinuation,
+    channelId,
+    earliestSeq,
+    hasMoreOlder,
+    hasTopLevelMessages,
+    loadOlder,
+    loadingOlder,
+  ]);
+
+  const continueReplyOnlyBackfill = useCallback(() => {
+    const state = autoBackfillRef.current;
+    if (state.retryTimer !== null) clearTimeout(state.retryTimer);
+    state.retryTimer = null;
+    state.cursorKey = null;
+    state.cursorPages = 0;
+    state.attempts = 0;
+    setReplyOnlyBackfillPaused(false);
+    setBackfillContinuation((value) => value + 1);
+  }, []);
+
+  useEffect(
+    () => () => {
+      const timer = autoBackfillRef.current.retryTimer;
+      if (timer !== null) clearTimeout(timer);
+    },
+    []
   );
 
   // Agent presence chips (#1167). One chip per agent that is bound (roster
@@ -272,7 +395,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
     );
   }
 
-  const hasMessages = reducer.messages.length > 0;
+  const hasHistory =
+    reducer.messages.length > 0 || hasMoreOlder || loadingOlder;
 
   return (
     <div className="ch-view" role="main" aria-label="channel">
@@ -372,35 +496,60 @@ export const ChannelView: React.FC<ChannelViewProps> = ({ channelId }) => {
         />
       </div>
 
-      {hasMessages ? (
-        <ChannelTimeline
-          messages={reducer.messages}
-          lastReadSeq={lastReadSeq}
-          channelId={channelId}
-          channelTitle={title}
-          hasMoreOlder={hasMoreOlder}
-          loadingOlder={loadingOlder}
-          loadOlder={loadOlder}
-          fullSnapshotRevision={fullSnapshotRevision}
-          needsCatchup={reducer.needsCatchup}
-          onResync={resync}
-        />
-      ) : (
-        <div className="ch-empty">
-          <span>{emptyCopy}</span>
-        </div>
-      )}
+      <div className="ch-body">
+        <div className="ch-main">
+          {hasHistory ? (
+            <ChannelTimeline
+              messages={reducer.messages}
+              lastReadSeq={lastReadSeq}
+              channelId={channelId}
+              channelTitle={title}
+              hasMoreOlder={hasMoreOlder}
+              loadingOlder={loadingOlder}
+              loadOlder={loadOlder}
+              fullSnapshotRevision={fullSnapshotRevision}
+              needsCatchup={reducer.needsCatchup}
+              onResync={resync}
+              replyOnlyBackfillPaused={replyOnlyBackfillPaused}
+              onContinueHistory={continueReplyOnlyBackfill}
+              onOpenThread={setActiveThreadRootId}
+            />
+          ) : (
+            <div className="ch-empty">
+              <span>{emptyCopy}</span>
+            </div>
+          )}
 
-      <ChannelComposer
-        channelId={channelId}
-        channelTitle={title}
-        onSend={handleSend}
-        postPending={postPending}
-        storeDown={storeDown}
-        archived={archived}
-        onRestore={handleRestore}
-        restorePending={restorePending}
-      />
+          <ChannelComposer
+            channelId={channelId}
+            channelTitle={title}
+            onSend={handleSend}
+            postPending={postPending}
+            storeDown={storeDown}
+            archived={archived}
+            onRestore={handleRestore}
+            restorePending={restorePending}
+          />
+        </div>
+
+        {activeThreadRootId !== null ? (
+          <ChannelThreadPanel
+            key={activeThreadRootId}
+            channelId={channelId}
+            channelTitle={title}
+            rootId={activeThreadRootId}
+            liveMessages={reducer.messages}
+            onClose={() => setActiveThreadRootId(null)}
+            onSend={handleThreadSend}
+            postPending={postPending}
+            storeDown={storeDown}
+            archived={archived}
+            onRestore={handleRestore}
+            restorePending={restorePending}
+            fullSnapshotRevision={fullSnapshotRevision}
+          />
+        ) : null}
+      </div>
     </div>
   );
 };

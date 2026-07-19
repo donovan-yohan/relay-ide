@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { ChannelMessageId } from '../../../../shared/channel-chat-protocol.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const SIDEBAR_WIDTH_KEY = 'claude-remote-sidebar-width';
@@ -579,6 +580,8 @@ export interface UiState {
    * never persisted (a fresh reload lands on the chat home, not a stale channel).
    */
   activeChannelId: string | null;
+  /** #1170: currently open channel thread. Session-transient; never persisted. */
+  activeThreadRootId: ChannelMessageId | null;
   activeModal: ActiveModal;
   collapsedWorkspaces: Set<string>;
   /**
@@ -627,6 +630,7 @@ export interface UiState {
   setForceOrgCockpit: (v: boolean) => void;
   setTopicComposerOpen: (v: boolean) => void;
   setActiveChannelId: (v: string | null) => void;
+  setActiveThreadRootId: (v: ChannelMessageId | null) => void;
   setActiveModal: (v: ActiveModal) => void;
   toggleWorkspaceCollapse: (path: string) => void;
   isWorkspaceCollapsed: (path: string) => boolean;
@@ -666,6 +670,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   forceOrgCockpit: false,
   topicComposerOpen: false,
   activeChannelId: null,
+  activeThreadRootId: null,
   activeModal: null,
   lastChangedFiles: [],
   collapsedWorkspaces: loadCollapsedWorkspaces(),
@@ -1089,7 +1094,9 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setOrgDashboardTab: (tab) => set({ orgDashboardTab: tab }),
   setForceOrgCockpit: (v) => set({ forceOrgCockpit: v }),
   setTopicComposerOpen: (v) => set({ topicComposerOpen: v }),
-  setActiveChannelId: (v) => set({ activeChannelId: v }),
+  setActiveChannelId: (v) =>
+    set({ activeChannelId: v, activeThreadRootId: null }),
+  setActiveThreadRootId: (v) => set({ activeThreadRootId: v }),
   setActiveModal: (v) => set({ activeModal: v }),
 
   saveRightSidebarWidth: () =>

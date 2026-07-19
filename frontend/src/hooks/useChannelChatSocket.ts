@@ -66,7 +66,7 @@ export interface UseChannelChatSocketState {
   fullSnapshotRevision: number;
   post: (
     text: string,
-    opts?: { clientMessageId?: string }
+    opts?: { clientMessageId?: string; threadId?: string }
   ) => Promise<ChannelMessage>;
   postPending: boolean;
   postError: HttpError | null;
@@ -403,7 +403,7 @@ export function useChannelChatSocket(
   const post = useCallback(
     async (
       text: string,
-      opts?: { clientMessageId?: string }
+      opts?: { clientMessageId?: string; threadId?: string }
     ): Promise<ChannelMessage> => {
       const cid = channelIdRef.current;
       if (!cid) throw new Error('no active channel');
@@ -414,7 +414,11 @@ export function useChannelChatSocket(
         // No optimistic insert — the server's channel-message-created-v1
         // broadcast (received over this same open socket) is the sole source of
         // truth for the row appearing, matching the reducer's idempotent replay.
-        return await postChannelMessage(cid, { text, clientMessageId });
+        return await postChannelMessage(cid, {
+          text,
+          clientMessageId,
+          ...(opts?.threadId !== undefined ? { threadId: opts.threadId } : {}),
+        });
       } catch (err) {
         if (err instanceof HttpError) setPostError(err);
         throw err;

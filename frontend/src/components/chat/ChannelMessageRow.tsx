@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import type { ChannelMessage } from '../../../../shared/channel-chat-protocol.js';
+import type {
+  ChannelMessage,
+  ChannelMessageId,
+} from '../../../../shared/channel-chat-protocol.js';
 import { AssistantMarkdown } from './AssistantMarkdown.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
 import { respondChannelApproval } from '../../lib/api.js';
@@ -24,12 +27,18 @@ interface ChannelMessageRowProps {
   message: ChannelMessage;
   channelId: string;
   variant?: 'default' | 'system';
+  replyCount?: number;
+  lastReplyHint?: string;
+  onOpenThread?: (rootId: ChannelMessageId) => void;
 }
 
 export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
   message,
   channelId,
   variant = 'default',
+  replyCount = 0,
+  lastReplyHint,
+  onOpenThread,
 }) => {
   const streaming = message.status === 'streaming';
   const blinking = useIdleBlink(message.body.text, streaming);
@@ -116,11 +125,6 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
       style={streamStyle}
       data-channel-message-seq={message.seq}
     >
-      {message.parentMessageId ? (
-        <div className="ch-msg__reply" aria-hidden="true">
-          ↳ reply
-        </div>
-      ) : null}
       {message.body.format === 'markdown' ? (
         <div className="ch-msg__body-wrap">
           {body}
@@ -148,6 +152,21 @@ export const ChannelMessageRow: React.FC<ChannelMessageRowProps> = ({
         <span className="ch-msg__tag ch-msg__tag--truncated">
           truncated · 256kb limit
         </span>
+      ) : null}
+      {message.threadId === null && replyCount > 0 && onOpenThread ? (
+        <button
+          type="button"
+          className="ch-msg__thread-chip"
+          onClick={() => onOpenThread(message.id)}
+          aria-label={`${replyCount} repl${replyCount === 1 ? 'y' : 'ies'} — open thread`}
+        >
+          <span className="ch-msg__thread-chip__count">
+            {replyCount} repl{replyCount === 1 ? 'y' : 'ies'}
+          </span>
+          {lastReplyHint ? (
+            <span className="ch-msg__thread-chip__hint">{lastReplyHint}</span>
+          ) : null}
+        </button>
       ) : null}
     </div>
   );

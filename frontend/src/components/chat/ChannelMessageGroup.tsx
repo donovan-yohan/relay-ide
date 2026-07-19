@@ -1,14 +1,19 @@
 import React from 'react';
 import type {
   ChannelMessage,
+  ChannelMessageId,
   ChannelSenderRef,
 } from '../../../../shared/channel-chat-protocol.js';
 import { AgentBadge } from '../AgentBadge.js';
 import { resolveSenderIdentity } from '../../lib/chat/sender-identity.js';
+import {
+  displayedReplyCount,
+  type DerivedReplyCount,
+} from '../../lib/chat/channel-timeline-layout.js';
 import { ChannelMessageRow } from './ChannelMessageRow.js';
 
 /** Compact wall-clock time, lowercase (DESIGN.md casing law), e.g. `3:42pm`. */
-function formatGroupTime(iso: string): string {
+export function formatGroupTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
   let hours = date.getHours();
@@ -23,12 +28,18 @@ interface ChannelMessageGroupProps {
   sender: ChannelSenderRef;
   messages: ChannelMessage[];
   channelId: string;
+  replyCounts?: Map<ChannelMessageId, DerivedReplyCount>;
+  replyGrowth?: Map<ChannelMessageId, number>;
+  onOpenThread?: (rootId: ChannelMessageId) => void;
 }
 
 export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
   sender,
   messages,
   channelId,
+  replyCounts,
+  replyGrowth,
+  onOpenThread,
 }) => {
   const identity = resolveSenderIdentity(sender);
   const first = messages[0];
@@ -58,13 +69,25 @@ export const ChannelMessageGroup: React.FC<ChannelMessageGroupProps> = ({
         </div>
       ) : null}
       <div className="ch-group__messages">
-        {messages.map((message) => (
-          <ChannelMessageRow
-            key={message.id}
-            message={message}
-            channelId={channelId}
-          />
-        ))}
+        {messages.map((message) => {
+          const derived = replyCounts?.get(message.id);
+          return (
+            <ChannelMessageRow
+              key={message.id}
+              message={message}
+              channelId={channelId}
+              replyCount={displayedReplyCount(
+                message,
+                derived,
+                replyGrowth?.get(message.id) ?? 0
+              )}
+              {...(derived?.lastReplyAt
+                ? { lastReplyHint: formatGroupTime(derived.lastReplyAt) }
+                : {})}
+              {...(onOpenThread ? { onOpenThread } : {})}
+            />
+          );
+        })}
       </div>
     </div>
   );

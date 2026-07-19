@@ -20,6 +20,7 @@ const IMAGE_ATTACH_TOOLTIP =
 interface ChannelComposerProps {
   channelId: string;
   channelTitle: string;
+  placeholder?: string;
   /** Idempotent send: the SAME clientMessageId is reused across manual retries. */
   onSend: (text: string, clientMessageId: string) => Promise<void>;
   postPending: boolean;
@@ -34,6 +35,7 @@ interface ChannelComposerProps {
 export const ChannelComposer: React.FC<ChannelComposerProps> = ({
   channelId,
   channelTitle,
+  placeholder,
   onSend,
   postPending,
   storeDown,
@@ -290,7 +292,10 @@ export const ChannelComposer: React.FC<ChannelComposerProps> = ({
         <textarea
           ref={textareaRef}
           className="ch-composer__ta"
-          placeholder={`message #${channelTitle}…  ·  @ to mention · shift+enter for newline`}
+          placeholder={
+            placeholder ??
+            `message #${channelTitle}…  ·  @ to mention · shift+enter for newline`
+          }
           value={draft}
           rows={1}
           enterKeyHint="send"
