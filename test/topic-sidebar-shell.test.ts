@@ -17,6 +17,8 @@ import {
   TopicSidebarShell,
   TopicSidebarView,
 } from '../frontend/src/components/TopicSidebarShell.js';
+import { dmChannelTopicId } from '../frontend/src/lib/dm-channels.js';
+import { useChannelActivityStore } from '../frontend/src/lib/stores/channel-activity.js';
 import { useSessionsStore } from '../frontend/src/lib/stores/sessions.js';
 import { useUiStore } from '../frontend/src/lib/stores/ui.js';
 import { makeSession } from './helpers/frontend-factories.js';
@@ -91,6 +93,15 @@ describe('TopicSidebarView', () => {
 
   beforeEach(() => {
     globalThis.ResizeObserver = ResizeObserverStub as typeof ResizeObserver;
+    useUiStore.setState({
+      advancedMode: false,
+      repoDashboardTabIntent: null,
+      activeChannelId: null,
+    });
+    useChannelActivityStore.setState({
+      latestSeqByChannel: {},
+      lastReadByChannel: {},
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -102,13 +113,26 @@ describe('TopicSidebarView', () => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
     useSessionsStore.setState({ sessions: [] });
+    useUiStore.setState({
+      advancedMode: false,
+      repoDashboardTabIntent: null,
+      activeChannelId: null,
+    });
     useUiStore.getState().setActiveRepoPath(null);
     useUiStore.getState().setActiveWorkspaceId(null);
+    useChannelActivityStore.setState({
+      latestSeqByChannel: {},
+      lastReadByChannel: {},
+    });
   });
 
   async function renderView(
-    props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {}
+    props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {},
+    options: { advancedMode?: boolean } = {}
   ) {
+    useUiStore.setState({
+      advancedMode: options.advancedMode ?? props.showAdvancedDetail === true,
+    });
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -140,6 +164,98 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).toContain('Thin-line topic detail');
     expect(container.textContent).toContain('Frontend lane');
     expect(container.textContent).toContain('preview');
+    expect(container.textContent).toContain('artifacts/surfaces');
+    expect(
+      container.querySelector('.topic-room__evidence-link')
+    ).not.toBeNull();
+  });
+
+  it('keeps the default rail to workspaces, channels/DMs, compact presence, and unread state', async () => {
+    const dmId = dmChannelTopicId('claude', 'workspace:alpha');
+    useChannelActivityStore.setState({
+      latestSeqByChannel: { 'topic:alpha': 9 },
+      lastReadByChannel: { 'topic:alpha': 3 },
+    });
+
+    await renderView(
+      {
+        showAdvancedDetail: true,
+        topics: [
+          makeTopic(),
+          makeTopic({
+            id: dmId,
+            display: { title: 'Claude' },
+            routingDefaults: { providerId: 'claude' },
+            linkedRefs: {},
+          }),
+        ],
+        workspaces: [
+          {
+            id: 'workspace:alpha',
+            name: 'engineering',
+            order: 0,
+            pinned: false,
+            color: null,
+            icon: null,
+          },
+        ],
+      },
+      { advancedMode: false }
+    );
+
+    expect(container.textContent).toContain('engineering');
+    expect(container.textContent).toContain('Build UI shell');
+    expect(container.textContent).toContain('direct messages');
+    expect(container.textContent).toContain('Claude');
+    expect(
+      container.querySelector(
+        '.topic-row__activity-dot[aria-label="unread activity"]'
+      )
+    ).not.toBeNull();
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+    expect(container.querySelector('.topic-room')).toBeNull();
+    expect(container.textContent).not.toContain('task room');
+    expect(container.textContent).not.toContain('primary action');
+    expect(container.textContent).not.toContain('orchestration');
+    expect(container.textContent).not.toContain('raw terminal attach');
+    expect(container.querySelector('.topic-participants')).toBeNull();
+    expect(container.querySelector('.topic-child-row__button')).not.toBeNull();
+
+    const channelButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('.topic-row__main')
+    ).find((button) => button.textContent?.includes('Build UI shell'));
+    expect(channelButton).toBeTruthy();
+    await act(async () => channelButton?.click());
+    expect(useUiStore.getState().activeChannelId).toBe('topic:alpha');
+  });
+
+  it('reveals mechanical detail only in advanced mode and hands evidence to the repo dashboard', async () => {
+    await renderView({ showAdvancedDetail: true }, { advancedMode: true });
+
+    expect(
+      container.querySelector('.topic-shell__advanced-detail')
+    ).not.toBeNull();
+    expect(container.querySelector('.topic-room')).not.toBeNull();
+    expect(container.textContent).toContain('task room');
+    expect(container.textContent).toContain('primary action');
+    expect(container.textContent).toContain('sessions');
+    expect(container.textContent).toContain('artifacts/surfaces');
+    expect(container.textContent).toContain('raw terminal attach');
+    expect(container.querySelector('.topic-participants')).not.toBeNull();
+
+    const evidenceLink = container.querySelector(
+      '.topic-room__evidence-link'
+    ) as HTMLButtonElement;
+    expect(evidenceLink).not.toBeNull();
+    await act(async () => evidenceLink.click());
+
+    expect(useUiStore.getState().activeWorkspaceId).toBe('workspace:alpha');
+    expect(useUiStore.getState().activeRepoPath).toBe('/repo/relay');
+    expect(useUiStore.getState().activeChannelId).toBeNull();
+    expect(useUiStore.getState().repoDashboardTabIntent).toEqual({
+      repoPath: '/repo/relay',
+      tab: 'evidence',
+    });
   });
 
   it('renders WorkContext orchestration runs with clickable visible lanes', async () => {
@@ -232,6 +348,43 @@ describe('TopicSidebarView', () => {
     expect(workerButton).toBeTruthy();
     await act(async () => (workerButton as HTMLButtonElement).click());
     expect(onSelectSession).toHaveBeenCalledWith('global:worker');
+  });
+
+  it('does not fetch WorkContext workflow runs until advanced mode is enabled', async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ workflowRuns: [] })
+    ) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', fetchMock);
+    const props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {
+      showAdvancedDetail: true,
+      topics: [
+        makeTopic({
+          linkedRefs: { workContextIds: ['wc:relay'] },
+        }),
+      ],
+      sessions: [],
+      surfaces: [],
+    };
+
+    await renderView(props, { advancedMode: false });
+    await act(async () => {
+      await flushQueryEffects();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(container.querySelector('.topic-shell__advanced-detail')).toBeNull();
+
+    await renderView(props, { advancedMode: true });
+    await act(async () => {
+      await flushQueryEffects();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/workflow-runs?workContextId=wc%3Arelay&limit=5',
+      { headers: { 'x-relay-capabilities': 'context:read' } }
+    );
+    expect(
+      container.querySelector('.topic-shell__advanced-detail')
+    ).not.toBeNull();
   });
 
   it('keeps collapsed topic rows free of linked-item and recency metadata', async () => {
@@ -445,22 +598,132 @@ describe('TopicSidebarView', () => {
     expect(container.textContent).not.toContain('open terminal tab');
   });
 
-  it('keeps the mobile control panel available for reply/approval states', async () => {
-    await renderView({
+  it('opens an actionable mobile control panel only after its row is tapped in default mode', async () => {
+    const props: Partial<React.ComponentProps<typeof TopicSidebarView>> = {
       sessions: [
         makeSession({
           id: 's1',
           displayName: 'Frontend lane',
-          agentState: 'waiting-for-input',
+          agentState: 'permission-prompt',
+          permissionType: 'approval',
           controlFreshness: 'fresh',
           mode: 'pty',
         }),
       ],
       surfaces: [],
-    });
+    };
+
+    await renderView(props, { advancedMode: false });
+    expect(container.querySelector('.topic-mobile-detail')).toBeNull();
+
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
+    expect(row.textContent).toContain('approve');
+    await act(async () => row.click());
 
     expect(container.querySelector('.topic-mobile-detail')).not.toBeNull();
-    expect(container.textContent).toContain('reply');
+    expect(container.textContent).toContain('approve');
+    expect(container.querySelector('.topic-mobile-control')).not.toBeNull();
+    expect(
+      container.querySelectorAll('.topic-mobile-control__preset')
+    ).toHaveLength(2);
+    const submit = container.querySelector(
+      '.topic-mobile-control__primary'
+    ) as HTMLButtonElement;
+    expect(submit.title).toBe('review and send approve');
+    expect(submit.title).not.toMatch(/audited|live session|terminal|control/i);
+    expect(container.querySelector('.topic-mobile-detail__latest')).toBeNull();
+    expect(container.querySelector('.topic-mobile-detail__meta')).toBeNull();
+    expect(
+      container.querySelector('.topic-mobile-detail__description')
+    ).toBeNull();
+    expect(container.querySelector('.topic-mobile-actions')).toBeNull();
+    expect(container.textContent).not.toContain('carriage return appended');
+    expect(container.textContent).not.toContain('audited control input');
+    expect(container.textContent).not.toContain(
+      'audit/intervention trail preserved'
+    );
+    expect(useUiStore.getState().advancedMode).toBe(false);
+  });
+
+  it('resets default mobile input and preview when one session changes from approve to reply', async () => {
+    const onSendInput = vi.fn().mockResolvedValue({ ok: true });
+    const renderAction = async (
+      agentState: 'permission-prompt' | 'waiting-for-input'
+    ) => {
+      await renderView(
+        {
+          sessions: [
+            makeSession({
+              id: 's1',
+              displayName: 'Frontend lane',
+              agentState,
+              ...(agentState === 'permission-prompt'
+                ? { permissionType: 'approval' as const }
+                : {}),
+              controlFreshness: 'fresh',
+              mode: 'pty',
+            }),
+          ],
+          surfaces: [],
+          onSendInput,
+        },
+        { advancedMode: false }
+      );
+    };
+
+    await renderAction('permission-prompt');
+    const row = container.querySelector(
+      '.topic-mobile-row'
+    ) as HTMLButtonElement;
+    await act(async () => row.click());
+    const approve = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        '.topic-mobile-control__preset'
+      )
+    ).find((button) => button.textContent === 'approve')!;
+    await act(async () => approve.click());
+    const approvalForm = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+    await act(async () => approvalForm.requestSubmit());
+    expect(container.querySelector('.topic-mobile-confirm')).not.toBeNull();
+    expect(container.textContent).toContain('review before sending');
+
+    await renderAction('waiting-for-input');
+    const replyInput = container.querySelector(
+      '.topic-mobile-control input'
+    ) as HTMLInputElement;
+    expect(replyInput.value).toBe('');
+    expect(container.querySelector('.topic-mobile-confirm')).toBeNull();
+    expect(container.textContent).not.toContain('approve selected');
+    expect(onSendInput).not.toHaveBeenCalled();
+
+    await act(async () => {
+      replyInput.value = 'ready';
+      replyInput.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: 'ready',
+          inputType: 'insertText',
+        })
+      );
+      replyInput.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const replyForm = container.querySelector(
+      '.topic-mobile-control'
+    ) as HTMLFormElement;
+    await act(async () => replyForm.requestSubmit());
+    expect(container.textContent).toContain('review before sending');
+    await act(async () => replyForm.requestSubmit());
+    expect(onSendInput).toHaveBeenCalledWith('s1', 'ready\r', undefined);
+    expect(container.textContent).toContain('sent');
+    expect(container.textContent).not.toContain('carriage return appended');
+    expect(container.textContent).not.toContain('audited control input');
+    expect(container.textContent).not.toContain(
+      'audit/intervention trail preserved'
+    );
   });
 
   it('shows a search scope toggle only when a workspace is active', async () => {
@@ -1128,22 +1391,25 @@ describe('TopicSidebarView', () => {
 
   it('bounds mobile topic latest status from raw activity text', async () => {
     const longToolName = 'tool-name-'.repeat(30);
-    await renderView({
-      topics: [
-        makeTopic({
-          linkedRefs: { sessionIds: ['waiting-session'] },
-        }),
-      ],
-      sessions: [
-        makeSession({
-          id: 'waiting-session',
-          displayName: 'waiting lane',
-          agentState: 'waiting-for-input',
-          currentActivity: { tool: longToolName },
-        }),
-      ],
-      surfaces: [],
-    });
+    await renderView(
+      {
+        topics: [
+          makeTopic({
+            linkedRefs: { sessionIds: ['waiting-session'] },
+          }),
+        ],
+        sessions: [
+          makeSession({
+            id: 'waiting-session',
+            displayName: 'waiting lane',
+            agentState: 'waiting-for-input',
+            currentActivity: { tool: longToolName },
+          }),
+        ],
+        surfaces: [],
+      },
+      { advancedMode: true }
+    );
 
     const mobileRowStatus = container.querySelector(
       '.topic-mobile-row__status'
@@ -1170,18 +1436,21 @@ describe('TopicSidebarView', () => {
 
   it('uses a two-step audited mobile reply preview before sending input', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'approval',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          controlFreshness: 'fresh',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'approval',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            controlFreshness: 'fresh',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     const input = container.querySelector(
       '.topic-mobile-control input'
@@ -1213,18 +1482,21 @@ describe('TopicSidebarView', () => {
 
   it('offers explicit approve and deny presets before audited mobile approval send', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'approval',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          controlFreshness: 'fresh',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'approval',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            controlFreshness: 'fresh',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     const denyPreset = Array.from(
       container.querySelectorAll('.topic-mobile-control__preset')
@@ -1250,20 +1522,23 @@ describe('TopicSidebarView', () => {
 
   it('sends audited mobile replies to the local session id when linked by global id', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],
-      sessions: [
-        makeSession({
-          id: 'local-session',
-          globalSessionId: 'global:agent-1',
-          displayName: 'global approval',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          controlFreshness: 'fresh',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        topics: [makeTopic({ linkedRefs: { sessionIds: ['global:agent-1'] } })],
+        sessions: [
+          makeSession({
+            id: 'local-session',
+            globalSessionId: 'global:agent-1',
+            displayName: 'global approval',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            controlFreshness: 'fresh',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     const input = container.querySelector(
       '.topic-mobile-control input'
@@ -1293,19 +1568,22 @@ describe('TopicSidebarView', () => {
 
   it('disables disconnected mobile controls before submit', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'offline approval',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          controlFreshness: 'fresh',
-          status: 'disconnected',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'offline approval',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            controlFreshness: 'fresh',
+            status: 'disconnected',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     const input = container.querySelector(
       '.topic-mobile-control input'
@@ -1329,27 +1607,30 @@ describe('TopicSidebarView', () => {
   });
 
   it('disables stale/offline mobile resume while preserving artifact handoff', async () => {
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'offline idle session',
-          agentState: 'idle',
-          idle: true,
-          status: 'disconnected',
-          controlFreshness: 'fresh',
-        }),
-      ],
-      surfaces: [
-        makeSurface({
-          id: 'surface:log',
-          kind: 'logs',
-          label: 'Last known artifact',
-          openMode: 'copy',
-          command: 'relay artifact show surface:log',
-        }),
-      ],
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'offline idle session',
+            agentState: 'idle',
+            idle: true,
+            status: 'disconnected',
+            controlFreshness: 'fresh',
+          }),
+        ],
+        surfaces: [
+          makeSurface({
+            id: 'surface:log',
+            kind: 'logs',
+            label: 'Last known artifact',
+            openMode: 'copy',
+            command: 'relay artifact show surface:log',
+          }),
+        ],
+      },
+      { advancedMode: true }
+    );
 
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'waiting'
@@ -1384,18 +1665,21 @@ describe('TopicSidebarView', () => {
 
   it('keeps permission/question mobile input fail-closed when control freshness is omitted', async () => {
     const onSendInput = vi.fn().mockResolvedValue({ ok: true });
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'approval awaiting freshness',
-          agentState: 'permission-prompt',
-          permissionType: 'approval',
-          status: 'active',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'approval awaiting freshness',
+            agentState: 'permission-prompt',
+            permissionType: 'approval',
+            status: 'active',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'approve'
@@ -1436,18 +1720,21 @@ describe('TopicSidebarView', () => {
     expect(onSendInput).not.toHaveBeenCalled();
 
     vi.clearAllMocks();
-    await renderView({
-      sessions: [
-        makeSession({
-          id: 's1',
-          displayName: 'question awaiting freshness',
-          agentState: 'permission-prompt',
-          permissionType: 'question',
-          status: 'active',
-        }),
-      ],
-      onSendInput,
-    });
+    await renderView(
+      {
+        sessions: [
+          makeSession({
+            id: 's1',
+            displayName: 'question awaiting freshness',
+            agentState: 'permission-prompt',
+            permissionType: 'question',
+            status: 'active',
+          }),
+        ],
+        onSendInput,
+      },
+      { advancedMode: true }
+    );
 
     expect(container.querySelector('.topic-mobile-row')?.textContent).toContain(
       'reply'

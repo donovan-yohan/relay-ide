@@ -927,6 +927,7 @@ function TopicDetail({
   onSelectSession,
   onRestoreTopic,
   restoringTopicId,
+  onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem;
   /** Friendly workspace name for the meta strip; omitted entirely (never a raw id) when unresolved. */
@@ -939,6 +940,7 @@ function TopicDetail({
   onSelectSession?: ((id: string) => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
   restoringTopicId?: string | undefined;
+  onOpenEvidenceDashboard?: (() => void) | undefined;
 }) {
   const action = topicPrimaryAction(item);
   const session = topicPrimarySession(item);
@@ -1083,6 +1085,15 @@ function TopicDetail({
         <div className="topic-room__section-header">
           <span>artifacts/surfaces</span>
           <span>{item.surfaces.length + item.artifactIds.length}</span>
+          {onOpenEvidenceDashboard ? (
+            <button
+              type="button"
+              className="topic-room__evidence-link"
+              onClick={onOpenEvidenceDashboard}
+            >
+              open evidence dashboard
+            </button>
+          ) : null}
         </div>
         <TopicRoomSurfaceStrip
           item={item}
@@ -1154,10 +1165,12 @@ function TopicMobileAttentionRow({
 
 function TopicMobileControlPanel({
   item,
+  showDiagnostics,
   onSelectSession,
   onSendInput,
 }: {
   item: TopicNavItem;
+  showDiagnostics: boolean;
   onSelectSession?: ((id: string) => void) | undefined;
   onSendInput: TopicSendInput;
 }) {
@@ -1184,7 +1197,7 @@ function TopicMobileControlPanel({
     setInputValue('');
     setPendingValue(null);
     setStatus(null);
-  }, [item.id, session?.id, session?.selectKey]);
+  }, [action.label, item.id, session?.id, session?.selectKey]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1194,16 +1207,26 @@ function TopicMobileControlPanel({
     if (value !== inputValue) setInputValue(value);
     if (pendingValue !== value) {
       setPendingValue(value);
-      setStatus('preview ready · tap send again to record the intervention');
+      setStatus(
+        showDiagnostics
+          ? 'preview ready · tap send again to record the intervention'
+          : 'review before sending'
+      );
       return;
     }
     setSending(true);
-    setStatus('sending audited control input...');
+    setStatus(
+      showDiagnostics ? 'sending audited control input...' : 'sending…'
+    );
     try {
       await onSendInput(session.id, `${value}\r`, session.nodeId ?? undefined);
       setInputValue('');
       setPendingValue(null);
-      setStatus('sent · audit/intervention trail preserved by session control');
+      setStatus(
+        showDiagnostics
+          ? 'sent · audit/intervention trail preserved by session control'
+          : 'sent'
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`failed: ${message}`);
@@ -1253,19 +1276,27 @@ function TopicMobileControlPanel({
         </div>
         <TopicBadge item={item} />
       </div>
-      <p className="topic-mobile-detail__latest">{topicLatestStatus(item)}</p>
-      <div className="topic-mobile-detail__meta">
-        <span>{item.kindLabel}</span>
-        {item.routingLabel ? <span>{item.routingLabel}</span> : null}
-        {session ? (
-          <span>
-            {session.agent} · {session.type}
-          </span>
-        ) : null}
-        {session?.nodeLabel ? <span>{session.nodeLabel}</span> : null}
-      </div>
-      {item.description ? (
-        <p className="topic-mobile-detail__description">{item.description}</p>
+      {showDiagnostics ? (
+        <>
+          <p className="topic-mobile-detail__latest">
+            {topicLatestStatus(item)}
+          </p>
+          <div className="topic-mobile-detail__meta">
+            <span>{item.kindLabel}</span>
+            {item.routingLabel ? <span>{item.routingLabel}</span> : null}
+            {session ? (
+              <span>
+                {session.agent} · {session.type}
+              </span>
+            ) : null}
+            {session?.nodeLabel ? <span>{session.nodeLabel}</span> : null}
+          </div>
+          {item.description ? (
+            <p className="topic-mobile-detail__description">
+              {item.description}
+            </p>
+          ) : null}
+        </>
       ) : null}
 
       <form className="topic-mobile-control" onSubmit={handleSubmit}>
@@ -1316,7 +1347,11 @@ function TopicMobileControlPanel({
           type="submit"
           className="topic-mobile-control__primary"
           disabled={!canSend || inputValue.trim().length === 0 || sending}
-          title={action.disabledReason ?? action.detail}
+          title={
+            showDiagnostics
+              ? (action.disabledReason ?? action.detail)
+              : `review and send ${action.label}`
+          }
         >
           {pendingValue === inputValue.trimEnd() && pendingValue
             ? `send ${action.label}`
@@ -1328,44 +1363,57 @@ function TopicMobileControlPanel({
         <div className="topic-mobile-confirm" role="status">
           <span>confirmation preview</span>
           <code>{pendingValue}</code>
-          <span>{session?.label} · carriage return appended</span>
+          <span>
+            {session?.label} ·{' '}
+            {showDiagnostics
+              ? 'carriage return appended'
+              : 'review before sending'}
+          </span>
         </div>
       ) : null}
 
-      <div className="topic-mobile-actions" aria-label="topic quick actions">
-        <button
-          type="button"
-          disabled={!canResume}
-          onClick={handleResume}
-          title={
-            resumeDisabledReason ?? 'open the linked Relay tab for this topic'
-          }
-        >
-          resume topic
-        </button>
-        <button
-          type="button"
-          disabled={!canResume}
-          onClick={handleResume}
-          title={
-            resumeDisabledReason ??
-            'same linked Relay tab as resume; raw PTY is the fallback once open'
-          }
-        >
-          open terminal tab
-        </button>
-        <button
-          type="button"
-          disabled={!topSurface?.target}
-          onClick={handleSurface}
-        >
-          {topSurface ? `${topSurface.kind} artifact` : 'artifact'}
-        </button>
-      </div>
-      {action.disabledReason ? (
-        <p className="topic-mobile-disabled">
-          controls disabled: {action.disabledReason}
-        </p>
+      {showDiagnostics ? (
+        <>
+          <div
+            className="topic-mobile-actions"
+            aria-label="topic quick actions"
+          >
+            <button
+              type="button"
+              disabled={!canResume}
+              onClick={handleResume}
+              title={
+                resumeDisabledReason ??
+                'open the linked Relay tab for this topic'
+              }
+            >
+              resume topic
+            </button>
+            <button
+              type="button"
+              disabled={!canResume}
+              onClick={handleResume}
+              title={
+                resumeDisabledReason ??
+                'same linked Relay tab as resume; raw PTY is the fallback once open'
+              }
+            >
+              open terminal tab
+            </button>
+            <button
+              type="button"
+              disabled={!topSurface?.target}
+              onClick={handleSurface}
+            >
+              {topSurface ? `${topSurface.kind} artifact` : 'artifact'}
+            </button>
+          </div>
+          {action.disabledReason ? (
+            <p className="topic-mobile-disabled">
+              controls disabled: {action.disabledReason}
+            </p>
+          ) : null}
+        </>
       ) : null}
       {status ? (
         <p className="topic-mobile-status" role="status">
@@ -1378,10 +1426,12 @@ function TopicMobileControlPanel({
 
 function TopicMobileControlPanelGate({
   item,
+  showDiagnostics,
   onSelectSession,
   onSendInput,
 }: {
   item: TopicNavItem | undefined;
+  showDiagnostics: boolean;
   onSelectSession?: ((id: string) => void) | undefined;
   onSendInput: TopicSendInput;
 }) {
@@ -1389,6 +1439,7 @@ function TopicMobileControlPanelGate({
   return (
     <TopicMobileControlPanel
       item={item}
+      showDiagnostics={showDiagnostics}
       onSelectSession={onSelectSession}
       onSendInput={onSendInput}
     />
@@ -1404,6 +1455,7 @@ function TopicAdvancedDetailGate({
   onSelectSession,
   onRestoreTopic,
   restoringTopicId,
+  onOpenEvidenceDashboard,
 }: {
   item: TopicNavItem | undefined;
   show: boolean;
@@ -1413,6 +1465,7 @@ function TopicAdvancedDetailGate({
   onSelectSession?: ((id: string) => void) | undefined;
   onRestoreTopic?: ((topicId: string) => void) | undefined;
   restoringTopicId?: string | undefined;
+  onOpenEvidenceDashboard?: (() => void) | undefined;
 }) {
   const workContextId = item?.workContextIds[0] ?? null;
   const workflowRunsQuery = useQuery({
@@ -1443,6 +1496,7 @@ function TopicAdvancedDetailGate({
         onSelectSession={onSelectSession}
         onRestoreTopic={onRestoreTopic}
         restoringTopicId={restoringTopicId}
+        onOpenEvidenceDashboard={onOpenEvidenceDashboard}
       />
     </div>
   );
@@ -2107,6 +2161,7 @@ export function TopicSidebarView({
     [topics]
   );
   const activeChannelId = useUiStore((s) => s.activeChannelId);
+  const advancedMode = useUiStore((s) => s.advancedMode);
   const workspaceNameById = useMemo(
     () =>
       new Map(workspaces.map((workspace) => [workspace.id, workspace.name])),
@@ -2121,6 +2176,9 @@ export function TopicSidebarView({
   );
   const firstId = model.rootIds[0] ?? model.items[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(firstId);
+  const [mobileControlTopicId, setMobileControlTopicId] = useState<
+    string | null
+  >(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(
     () => new Set(model.rootIds)
   );
@@ -2156,6 +2214,7 @@ export function TopicSidebarView({
   const select = useCallback(
     (id: string) => {
       setSelectedId(id);
+      setMobileControlTopicId(null);
       const topic = topicsById.get(id);
       applyTopicActiveContext(topic);
       if (topic?.source === 'persisted') {
@@ -2166,6 +2225,29 @@ export function TopicSidebarView({
     },
     [topicsById]
   );
+  const selectMobile = useCallback(
+    (id: string) => {
+      select(id);
+      const item = model.byId.get(id);
+      const action = item ? topicPrimaryAction(item) : null;
+      setMobileControlTopicId(
+        action?.label === 'approve' || action?.label === 'reply' ? id : null
+      );
+    },
+    [model.byId, select]
+  );
+  useEffect(() => {
+    if (!mobileControlTopicId) return;
+    if (selectedId !== mobileControlTopicId) {
+      setMobileControlTopicId(null);
+      return;
+    }
+    const item = model.byId.get(mobileControlTopicId);
+    const action = item ? topicPrimaryAction(item) : null;
+    if (action?.label !== 'approve' && action?.label !== 'reply') {
+      setMobileControlTopicId(null);
+    }
+  }, [mobileControlTopicId, model.byId, selectedId]);
   const openCreateTaskRoom = useCallback(() => {
     applyTopicActiveContext(
       selectedId ? topicsById.get(selectedId) : undefined
@@ -2190,6 +2272,24 @@ export function TopicSidebarView({
     ) : null;
   };
   const selectedItem = selectedId ? model.byId.get(selectedId) : undefined;
+  const selectedTopic = selectedId ? topicsById.get(selectedId) : undefined;
+  const selectedRepoPath = selectedTopic
+    ? resolveTopicActiveContext(selectedTopic).repoPath
+    : null;
+  const openEvidenceDashboard = useCallback(() => {
+    if (!selectedTopic || !selectedRepoPath) return;
+    const context = resolveTopicActiveContext(selectedTopic);
+    const ui = useUiStore.getState();
+    ui.requestRepoDashboardTab(selectedRepoPath, 'evidence');
+    ui.setActiveWorkspaceId(context.workspaceId);
+    ui.setActiveRepoPath(selectedRepoPath);
+    ui.setActiveChannelId(null);
+    ui.setTopicComposerOpen(false);
+    ui.setAnalyticsView(null);
+    ui.setForceOrgCockpit(false);
+    useSessionsStore.getState().setActiveSessionId(null);
+    ui.closeSidebar();
+  }, [selectedRepoPath, selectedTopic]);
   const mobileItems = useMemo(
     () =>
       [...model.items].sort((a, b) => {
@@ -2262,7 +2362,7 @@ export function TopicSidebarView({
         groups={mobileGroups}
         ungrouped={mobileUngrouped}
         selectedId={selectedId}
-        onSelect={select}
+        onSelect={selectMobile}
         onSelectSession={onSelectSession}
         {...(onCreateTaskRoom ? { onCreateTaskRoom: openCreateTaskRoom } : {})}
         {...(resumeLastSelectKey && onSelectSession
@@ -2293,19 +2393,25 @@ export function TopicSidebarView({
       />
       <TopicAdvancedDetailGate
         item={selectedItem}
-        show={showAdvancedDetail}
+        show={advancedMode && showAdvancedDetail}
         workspaceNameById={workspaceNameById}
         surfacesError={surfacesError}
         surfacesLoading={surfacesLoading}
         onSelectSession={onSelectSession}
         onRestoreTopic={onRestoreTopic}
         restoringTopicId={restoringTopicId}
+        {...(selectedRepoPath
+          ? { onOpenEvidenceDashboard: openEvidenceDashboard }
+          : {})}
       />
-      <TopicMobileControlPanelGate
-        item={selectedItem}
-        onSelectSession={onSelectSession}
-        onSendInput={onSendInput}
-      />
+      {advancedMode || mobileControlTopicId === selectedItem?.id ? (
+        <TopicMobileControlPanelGate
+          item={selectedItem}
+          showDiagnostics={advancedMode}
+          onSelectSession={onSelectSession}
+          onSendInput={onSendInput}
+        />
+      ) : null}
     </div>
   );
 }
