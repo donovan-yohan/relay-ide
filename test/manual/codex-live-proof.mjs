@@ -13,6 +13,10 @@
  *
  * Usage (from the worktree root, after `npm run build:server`):
  *   RELAY_CODEX_LIVE_PROOF=1 node test/manual/codex-live-proof.mjs
+ *
+ * Capture one reasoning-enabled turn for a hand-sanitized structural fixture:
+ *   RELAY_CODEX_LIVE_PROOF=1 RELAY_CODEX_REASONING_CAPTURE=1 \
+ *     node test/manual/codex-live-proof.mjs
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import * as os from 'node:os';
@@ -39,7 +43,11 @@ const { CodexNativeProtocolAdapter } = await import(
   )
 );
 
-const PROMPT = 'Reply with exactly "ok" and nothing else.';
+const reasoningCapture = process.env.RELAY_CODEX_REASONING_CAPTURE === '1';
+const reasoningEffort = process.env.RELAY_CODEX_REASONING_EFFORT || 'low';
+const PROMPT = reasoningCapture
+  ? 'Compute the sum of the squares from 1 through 40, factor the result into primes, and reply with exactly the prime factorization.'
+  : 'Reply with exactly "ok" and nothing else.';
 const rawChunks = [];
 
 // Wrap the real spawn so we can tee stdout for a permanent (uncommitted)
@@ -80,9 +88,24 @@ const config = {
   sessionId: 'codex-live-proof',
   hookToken: 'live-proof',
   configDir: os.tmpdir(),
-  // DI: the adapter forwards `extra.spawn` to the app-server client so we can
-  // tee the raw transcript. No operator args are injected.
-  extra: { spawn: teeSpawn },
+  // DI: the adapter forwards these capture-only settings to the app-server
+  // client. They never alter Relay's production Codex defaults.
+  extra: {
+    spawn: teeSpawn,
+    ...(reasoningCapture
+      ? {
+          args: [
+            'app-server',
+            '--listen',
+            'stdio://',
+            '-c',
+            'model_reasoning_summary="detailed"',
+            '-c',
+            `model_reasoning_effort="${reasoningEffort}"`,
+          ],
+        }
+      : {}),
+  },
 };
 
 const TIMEOUT_MS = 120_000;
@@ -128,6 +151,21 @@ try {
   }
 
   const tail = patches.slice(-10).map((p) => {
+    if (p.type === 'agent-item-delta-v2' && reasoningCapture) {
+      const deltaShape = Object.entries(p.delta)
+        .map(([field, value]) => {
+          const type = typeof value;
+          const length =
+            typeof value === 'string'
+              ? Buffer.byteLength(value, 'utf8')
+              : Array.isArray(value)
+                ? value.length
+                : null;
+          return `${field}:${type}:length=${length ?? 'n/a'}`;
+        })
+        .join(',');
+      return `${p.type}(${deltaShape})`;
+    }
     if (p.type === 'agent-item-delta-v2')
       return `${p.type}(${JSON.stringify(p.delta)})`;
     if (p.type === 'agent-turn-completed-v2')
@@ -145,7 +183,7 @@ try {
   // leak private account/environment data.
   const rawPath = path.join(
     os.tmpdir(),
-    `relay-codex-live-proof-${process.pid}.jsonl`
+    `relay-codex-${reasoningCapture ? 'reasoning-' : ''}live-proof-${process.pid}.jsonl`
   );
   fs.writeFileSync(rawPath, Buffer.concat(rawChunks));
 
@@ -156,8 +194,13 @@ try {
           completion.type === 'agent-turn-completed-v2' &&
           completion.status === 'completed',
         completionStatus: completion.status ?? completion.type,
-        assistantText,
-        threadId,
+        ...(reasoningCapture
+          ? {
+              assistantTextPresent: assistantText.length > 0,
+              threadIdPresent:
+                typeof threadId === 'string' && threadId.length > 0,
+            }
+          : { assistantText, threadId }),
         ttftMs,
         totalMs,
         patchCount: patches.length,
