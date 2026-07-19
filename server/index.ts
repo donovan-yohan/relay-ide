@@ -5999,14 +5999,37 @@ async function main(): Promise<void> {
   // previous process hasn't released the port yet (launchd KeepAlive restarts).
   const MAX_RETRIES = 5;
   let attempt = 0;
+
+  const configuredReattachTimeoutMs = positiveIntegerEnv(
+    'RELAY_IDE_WEB_SESSION_REATTACH_TIMEOUT_MS'
+  );
+  // Integration-test-only ordering seam. Normal startup never sleeps: the
+  // hold is accepted only under NODE_ENV=test and defaults to zero. Keeping it
+  // inside the exact function handed to restoreSessionsAfterListen means the
+  // real-process regression fails if this function is moved/awaited before
+  // server.listen().
+  const testStartupRestoreHoldMs =
+    process.env['NODE_ENV'] === 'test'
+      ? (positiveIntegerEnv('RELAY_IDE_TEST_STARTUP_RESTORE_HOLD_MS') ?? 0)
+      : 0;
+  async function restoreStartupSessions(): Promise<number> {
+    if (testStartupRestoreHoldMs > 0) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, testStartupRestoreHoldMs)
+      );
+    }
+    return restoreFromDisk(
+      configDir,
+      getConfig().repos ?? [],
+      getConfig().frameworks,
+      configuredReattachTimeoutMs === undefined
+        ? undefined
+        : { webSessionReattachTimeoutMs: configuredReattachTimeoutMs }
+    );
+  }
   cancelStartupRestore = restoreSessionsAfterListen(
     server,
-    () =>
-      restoreFromDisk(
-        configDir,
-        getConfig().repos ?? [],
-        getConfig().frameworks
-      ),
+    restoreStartupSessions,
     {
       restored: (restoredCount) => {
         if (restoredCount === 0) return;
@@ -6044,6 +6067,17 @@ async function main(): Promise<void> {
     }
   });
   tryListen();
+}
+
+function positiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    logger.warn(`Ignoring ${name}: expected a positive integer number of ms.`);
+    return undefined;
+  }
+  return parsed;
 }
 
 main().catch((err) => {

@@ -1,10 +1,17 @@
-import { test, expect } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import { hashPin } from '../server/auth.js';
+import {
+  closeRelayStateDb,
+  initRelayStateDb,
+  upsertWebSessionNow,
+} from '../server/relay-state-db.js';
+import type { SessionSummary, WebSession } from '../server/types.js';
+import { emptyAgentSessionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
   CLI_GATEWAY_ACTOR_AUDIENCE,
   CLI_GATEWAY_READ_SCOPE_TASK_REF,
@@ -16,6 +23,11 @@ const SERVER_SCRIPT = path.resolve(
   'dist',
   'server',
   'index.js'
+);
+const HANGING_CODEX_APP_SERVER = path.resolve(
+  import.meta.dirname,
+  'fixtures',
+  'hanging-codex-app-server.mjs'
 );
 
 if (!fs.existsSync(SERVER_SCRIPT)) {
@@ -82,6 +94,100 @@ function startServer(opts: StartServerOpts): ChildProcess {
     env: { ...process.env, ...opts.env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+}
+
+function captureOutput(child: ChildProcess): {
+  stdout(): string;
+  stderr(): string;
+} {
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (chunk: Buffer) => {
+    stdout += chunk.toString();
+  });
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  return {
+    stdout: () => stdout,
+    stderr: () => stderr,
+  };
+}
+
+function seedHangingCodexSession(configDir: string): void {
+  const id = 'startup-hanging-codex';
+  const now = new Date().toISOString();
+  const session = {
+    mode: 'web',
+    id,
+    type: 'agent',
+    agent: 'codex',
+    cwd: configDir,
+    displayName: 'Restored hanging Codex',
+    createdAt: now,
+    lastActivity: now,
+    idle: true,
+    customCommand: null,
+    status: 'active',
+    needsBranchRename: false,
+    agentState: 'idle',
+    adapterV2: {
+      disconnect: async () => {},
+    },
+    adapterType: 'codex',
+    agentSessionV2: emptyAgentSessionV2({
+      id,
+      provider: 'codex',
+      cwd: configDir,
+      capabilities: { resume: true },
+      providerSession: { threadId: 'thread-that-never-reattaches' },
+      config: {
+        providerOptions: {
+          command: process.execPath,
+          args: [HANGING_CODEX_APP_SERVER],
+        },
+      },
+    }),
+    agentPatchesV2: [],
+    protocolVersion: 2,
+    currentTurnId: null,
+    runtimeOwnership: 'spawned',
+    hookToken: 'startup-hanging-codex-hook',
+    hooksActive: true,
+  } as unknown as WebSession;
+
+  initRelayStateDb(configDir);
+  try {
+    upsertWebSessionNow(session);
+  } finally {
+    closeRelayStateDb();
+  }
+}
+
+async function waitForRestoredSession(
+  baseUrl: string,
+  cookie: string,
+  predicate: (session: SessionSummary) => boolean,
+  timeoutMs = 5_000
+): Promise<SessionSummary> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const response = await fetch(`${baseUrl}/sessions`, {
+      headers: { cookie },
+    });
+    if (response.ok) {
+      const sessions = (await response.json()) as SessionSummary[];
+      const session = sessions.find(
+        (candidate) =>
+          candidate.id === 'startup-hanging-codex' && predicate(candidate)
+      );
+      if (session) return session;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(
+    'restored hanging Codex session did not reach expected state'
+  );
 }
 
 function cookieFromSetCookie(headers: Headers): string {
@@ -176,6 +282,96 @@ test('server starts without PIN in non-TTY mode and serves /auth/status', async 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { hasPIN: boolean };
     expect(body.hasPIN).toBe(false);
+  } finally {
+    await killAndWait(child);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('real server listens before a hanging serialized-session restore', async () => {
+  const tmpDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'relay-listen-before-restore-')
+  );
+  const configPath = path.join(tmpDir, 'config.json');
+  const pin = '246810';
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      port: 0,
+      host: '127.0.0.1',
+      pinHash: await hashPin(pin),
+      cookieTTL: '1h',
+    })
+  );
+  seedHangingCodexSession(tmpDir);
+
+  const child = startServer({
+    env: {
+      RELAY_IDE_CONFIG: configPath,
+      RELAY_IDE_PORT: '0',
+      RELAY_IDE_WEB_SESSION_REATTACH_TIMEOUT_MS: '500',
+      RELAY_IDE_TEST_STARTUP_RESTORE_HOLD_MS: '1000',
+      NODE_ENV: 'test',
+      HOME: tmpDir,
+    },
+  });
+  const output = captureOutput(child);
+
+  try {
+    const port = await waitForListeningPort(child);
+    const baseUrl = `http://127.0.0.1:${String(port)}`;
+
+    const [health, authStatus] = await Promise.all([
+      fetch(`${baseUrl}/healthz`),
+      fetch(`${baseUrl}/auth/status`),
+    ]);
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({ status: 'ok' });
+    expect(authStatus.status).toBe(200);
+    await expect(authStatus.json()).resolves.toEqual({ hasPIN: true });
+    // The real startup restore function is still held. This proves both public
+    // routes answered while restore remained incomplete.
+    expect(output.stdout()).not.toContain(
+      'Restored 1 session(s) from previous update.'
+    );
+
+    const login = await fetch(`${baseUrl}/auth`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+    expect(login.status).toBe(200);
+    const cookie = cookieFromSetCookie(login.headers);
+
+    await waitForRestoredSession(
+      baseUrl,
+      cookie,
+      (session) => session.restoreState === 'restoring'
+    );
+    const failed = await waitForRestoredSession(
+      baseUrl,
+      cookie,
+      (session) => session.restoreState === 'reattach-failed'
+    );
+    expect(failed).toMatchObject({
+      status: 'disconnected',
+      agentState: 'error',
+      restoreState: 'reattach-failed',
+    });
+
+    await vi.waitFor(() =>
+      expect(output.stdout()).toContain(
+        'Restored 1 session(s) from previous update.'
+      )
+    );
+    const listeningAt = output
+      .stdout()
+      .indexOf('relay-ide listening on 127.0.0.1:');
+    const restoredAt = output
+      .stdout()
+      .indexOf('Restored 1 session(s) from previous update.');
+    expect(listeningAt, output.stderr()).toBeGreaterThanOrEqual(0);
+    expect(restoredAt, output.stderr()).toBeGreaterThan(listeningAt);
   } finally {
     await killAndWait(child);
     fs.rmSync(tmpDir, { recursive: true, force: true });

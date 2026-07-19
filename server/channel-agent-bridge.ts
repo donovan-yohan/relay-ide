@@ -28,8 +28,11 @@ const logger = createLogger('channel-agent-bridge');
 /** debounce partial-text flush to disk (same shape as relay-state-db throttled scheduler). */
 const FLUSH_DEBOUNCE_MS = 500;
 const FLUSH_MAX_WAIT_MS = 2000;
+/** Bounded dedupe tombstones for late provider replay after a row finalized. */
+export const CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX = 256;
 
 interface BridgeStream {
+  sourceKey: string;
   messageId: string;
   turnId: string;
   itemId: string;
@@ -87,6 +90,24 @@ export function bindSessionToChannel(
   // for a turn absent here produced ZERO message rows — a silent finalization
   // that gets a warn log (#1181, defect 4) rather than passing unnoticed.
   const turnsWithRows = new Set<string>();
+  const recentFinalizedItemKeys = new Set<string>();
+
+  function itemSourceKey(
+    sessionId: string,
+    turnId: string,
+    itemId: string
+  ): string {
+    return `${sessionId}\u0000${turnId}\u0000${itemId}`;
+  }
+
+  function rememberFinalizedItem(key: string): void {
+    recentFinalizedItemKeys.delete(key);
+    recentFinalizedItemKeys.add(key);
+    if (recentFinalizedItemKeys.size <= CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX)
+      return;
+    const oldest = recentFinalizedItemKeys.values().next().value;
+    if (oldest !== undefined) recentFinalizedItemKeys.delete(oldest);
+  }
 
   function reportRetention(): void {
     if (!input.onRetentionSnapshot) return;
@@ -114,9 +135,15 @@ export function bindSessionToChannel(
     itemId: string,
     sessionId: string,
     initialText: string
-  ): BridgeStream {
+  ): BridgeStream | null {
     const existing = streams.get(itemId);
     if (existing) return existing;
+    const sourceKey = itemSourceKey(sessionId, turnId, itemId);
+    if (recentFinalizedItemKeys.has(sourceKey)) {
+      assistantItemTurnIds.delete(itemId);
+      reportRetention();
+      return null;
+    }
     const parentMessageId = input.parentMessageIdForTurn?.(turnId);
     const message = store.beginStream({
       channelId,
@@ -129,19 +156,14 @@ export function bindSessionToChannel(
       // Source-triple dedupe returned an already-finalized durable row. A late
       // duplicate final is a pure no-op: never recreate the hub accumulator or
       // turn-retention state for a stream that cannot receive more deltas.
-      return {
-        messageId: message.id,
-        turnId,
-        itemId,
-        text: message.body.text,
-        byteLength: Buffer.byteLength(message.body.text, 'utf8'),
-        closed: true,
-        flushTimer: null,
-        firstScheduledAt: null,
-      };
+      rememberFinalizedItem(sourceKey);
+      assistantItemTurnIds.delete(itemId);
+      reportRetention();
+      return null;
     }
     turnsWithRows.add(turnId);
     const stream: BridgeStream = {
+      sourceKey,
       messageId: message.id,
       turnId,
       itemId,
@@ -202,6 +224,7 @@ export function bindSessionToChannel(
     if (stream.closed) {
       streams.delete(stream.itemId);
       assistantItemTurnIds.delete(stream.itemId);
+      rememberFinalizedItem(stream.sourceKey);
       reportRetention();
       return;
     }
@@ -227,6 +250,7 @@ export function bindSessionToChannel(
       reportRetention();
     }
     if (!message) return;
+    rememberFinalizedItem(stream.sourceKey);
     hub.completeStreamBroadcast(message);
     try {
       store.upsertMember({ channelId, kind: 'agent', id: sender.id });
@@ -246,8 +270,7 @@ export function bindSessionToChannel(
 
   function finalizeTurn(
     turnId: string | undefined,
-    status: 'complete' | 'interrupted' | 'failed',
-    terminal = true
+    status: 'complete' | 'interrupted' | 'failed'
   ): void {
     for (const stream of streams.values()) {
       if (stream.closed) continue;
@@ -270,7 +293,11 @@ export function bindSessionToChannel(
         turnId,
       });
     }
-    if (terminal && turnId !== undefined) {
+    if (turnId === undefined) {
+      turnsWithRows.clear();
+      assistantItemTurnIds.clear();
+      reportRetention();
+    } else {
       turnsWithRows.delete(turnId);
       for (const [itemId, itemTurnId] of assistantItemTurnIds) {
         if (itemTurnId === turnId) assistantItemTurnIds.delete(itemId);
@@ -295,7 +322,7 @@ export function bindSessionToChannel(
       }
       case 'agent-item-delta-v2': {
         if (typeof patch.delta.text !== 'string') break;
-        let stream = streams.get(patch.itemId);
+        let stream: BridgeStream | null | undefined = streams.get(patch.itemId);
         if (!stream) {
           // Lazy-open ONLY for an item started as an assistantMessage — never for
           // plan/reasoning/tool items (whose text is not mirrored, §6.3) nor for
@@ -304,12 +331,15 @@ export function bindSessionToChannel(
           if (!assistantItemTurnIds.has(patch.itemId)) break;
           stream = openStream(patch.turnId, patch.itemId, patch.sessionId, '');
         }
+        if (!stream) break;
         appendDelta(stream, patch.delta.text);
         break;
       }
       case 'agent-item-updated-v2': {
         if (patch.item.type !== 'assistantMessage') break;
-        let stream = streams.get(patch.item.id);
+        let stream: BridgeStream | null | undefined = streams.get(
+          patch.item.id
+        );
         if (!stream) {
           // A completed assistantMessage that never opened a stream — no
           // `started`, no text delta — is a non-streamed reply delivered as a
@@ -324,6 +354,7 @@ export function bindSessionToChannel(
             patch.item.text ?? ''
           );
         }
+        if (!stream) break;
         finalize(stream, 'complete', patch.item.text ?? '');
         break;
       }
@@ -341,10 +372,9 @@ export function bindSessionToChannel(
         break;
       }
       case 'agent-error-v2': {
-        // Adapters emit the authoritative turn-completed patch after the error;
-        // keep the row marker until then so that terminal patch does not produce
-        // a false "no message rows" warning.
-        finalizeTurn(patch.turnId, 'failed', false);
+        // An error is terminal for bridge-owned output even when a provider
+        // never follows it with turn/completed.
+        finalizeTurn(patch.turnId, 'failed');
         break;
       }
       default:
@@ -364,6 +394,7 @@ export function bindSessionToChannel(
     streams.clear();
     assistantItemTurnIds.clear();
     turnsWithRows.clear();
+    recentFinalizedItemKeys.clear();
     reportRetention();
   };
 }

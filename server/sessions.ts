@@ -27,6 +27,8 @@ import type { CreatePtyParams } from './pty-handler.js';
 import {
   createWebSession,
   reconnectWebSessionAdapter,
+  retireWebSessionAdapter,
+  setWebSessionRestoreSnapshotFence,
   continueHereWebSession,
   type CreateWebParams,
 } from './web-session-handler.js';
@@ -1153,6 +1155,7 @@ function kill(id: string): void {
   if (session.mode === 'pty') {
     void terminatePtySession(session, 'explicit-session-kill');
   } else {
+    supersedeWebSessionRestore(session);
     // Web session: disconnect adapter (tears down network connections and event handlers)
     session.adapterV2?.disconnect().catch(() => {
       // Adapter may already be disconnected — still proceed with cleanup
@@ -1994,7 +1997,11 @@ function restoreSession(
 const DEFAULT_WEB_SESSION_REATTACH_TIMEOUT_MS = 15_000;
 const webSessionRestoreAttempts = new Map<
   string,
-  { generation: number; adapter: WebSession['adapterV2'] }
+  {
+    generation: number;
+    adapter: WebSession['adapterV2'];
+    session: WebSession;
+  }
 >();
 let webSessionRestoreShutdown = false;
 
@@ -2056,7 +2063,12 @@ async function restoreWebSessionFromDb(
   );
 
   // Replace the freshly-created blank transcript with the persisted one.
-  session.agentSessionV2 = row.agentSessionV2;
+  const persistedAgentSessionV2 = structuredClone(row.agentSessionV2);
+  const persistedProviderSession =
+    persistedAgentSessionV2.providerSession === undefined
+      ? undefined
+      : { ...persistedAgentSessionV2.providerSession };
+  session.agentSessionV2 = structuredClone(persistedAgentSessionV2);
   session.customCommand = row.meta.customCommand;
   if (row.meta.needsBranchRename) {
     session.needsBranchRename = true;
@@ -2098,21 +2110,24 @@ async function restoreWebSessionFromDb(
   // restore caller. The HTTP listener is already accepting requests when this
   // function is invoked, and a dead provider can therefore never block auth or
   // health request handling during boot.
-  void reattachRestoredWebSession(session, config, reattachTimeoutMs).catch(
-    (err) => {
-      if (webSessionRestoreShutdown) return;
-      logger.error(
-        `Detached reattach failed for web session ${session.id}`,
-        err
-      );
-    }
-  );
+  void reattachRestoredWebSession(
+    session,
+    config,
+    reattachTimeoutMs,
+    persistedAgentSessionV2,
+    persistedProviderSession
+  ).catch((err) => {
+    if (webSessionRestoreShutdown) return;
+    logger.error(`Detached reattach failed for web session ${session.id}`, err);
+  });
 }
 
 async function reattachRestoredWebSession(
   session: WebSession,
   config: AdapterConfig,
-  timeoutMs: number
+  timeoutMs: number,
+  persistedAgentSessionV2: WebSession['agentSessionV2'],
+  persistedProviderSession: Record<string, string> | undefined
 ): Promise<void> {
   if (webSessionRestoreShutdown) return;
   const priorAttempt = webSessionRestoreAttempts.get(session.id);
@@ -2121,24 +2136,59 @@ async function reattachRestoredWebSession(
   webSessionRestoreAttempts.set(session.id, {
     generation,
     adapter: attemptAdapter,
+    session,
   });
+
+  const deleteOwnAttempt = (): void => {
+    const current = webSessionRestoreAttempts.get(session.id);
+    if (
+      current?.generation === generation &&
+      current.adapter === attemptAdapter &&
+      current.session === session
+    ) {
+      webSessionRestoreAttempts.delete(session.id);
+    }
+  };
 
   const isCurrentAttempt = (): boolean =>
     !webSessionRestoreShutdown &&
+    sessions.get(session.id) === session &&
     webSessionRestoreAttempts.get(session.id)?.generation === generation &&
+    webSessionRestoreAttempts.get(session.id)?.adapter === attemptAdapter &&
+    webSessionRestoreAttempts.get(session.id)?.session === session &&
     session.adapterV2 === attemptAdapter &&
     session.restoreState === 'restoring';
 
+  setWebSessionRestoreSnapshotFence(attemptAdapter, true);
   const attempt = (async () => {
-    if (!isCurrentAttempt()) return;
+    if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
+      return;
+    }
     await attemptAdapter.connect(config);
     // Timeout/failure fencing: a late transport connect must not continue into
     // provider resume after this attempt has already been declared failed.
-    if (!isCurrentAttempt()) return;
+    if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
+      return;
+    }
+    // Provider connect snapshots describe a blank transport wrapper, not the
+    // durable Relay transcript. Restore the captured state (including the
+    // provider resume identity) before resume chooses its vendor session id.
+    session.agentSessionV2 = structuredClone(persistedAgentSessionV2);
+    if (persistedProviderSession !== undefined) {
+      session.agentSessionV2.providerSession = {
+        ...persistedProviderSession,
+      };
+    } else {
+      delete session.agentSessionV2.providerSession;
+    }
+    upsertWebSessionNow(session);
     await reconnectWebSessionAdapter(session, attemptAdapter);
     // Resume may ignore disconnect and settle after its deadline. Check the
     // generation again before allowing the adapter to remain connected.
     if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
       await attemptAdapter.disconnect().catch(() => {});
     }
   })();
@@ -2149,6 +2199,7 @@ async function reattachRestoredWebSession(
   void attempt.then(
     () => {
       if (!isCurrentAttempt()) {
+        deleteOwnAttempt();
         void attemptAdapter.disconnect().catch(() => {});
       }
     },
@@ -2167,14 +2218,20 @@ async function reattachRestoredWebSession(
 
   try {
     await Promise.race([attempt, timedOut]);
-    if (!isCurrentAttempt()) return;
-    webSessionRestoreAttempts.delete(session.id);
+    if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
+      return;
+    }
+    deleteOwnAttempt();
     delete session.restoreState;
     fireBackendStateIfChanged(session);
     upsertWebSessionNow(session);
   } catch (err) {
-    if (!isCurrentAttempt()) return;
-    webSessionRestoreAttempts.delete(session.id);
+    if (!isCurrentAttempt()) {
+      deleteOwnAttempt();
+      return;
+    }
+    deleteOwnAttempt();
     session.restoreState = 'reattach-failed';
     // Best effort cancellation makes a hung provider release its transport.
     // Do not await disconnect: failure state must become visible immediately,
@@ -2182,8 +2239,23 @@ async function reattachRestoredWebSession(
     void attemptAdapter.disconnect().catch(() => {});
     surfaceResumeFailure(session, err);
   } finally {
+    setWebSessionRestoreSnapshotFence(attemptAdapter, false);
     if (timeout) clearTimeout(timeout);
   }
+}
+
+function supersedeWebSessionRestore(session: WebSession): void {
+  const attempt = webSessionRestoreAttempts.get(session.id);
+  const adapter =
+    attempt?.session === session ? attempt.adapter : session.adapterV2;
+  if (attempt?.session === session) {
+    webSessionRestoreAttempts.delete(session.id);
+  }
+  // Failure/timeout transitions remove their attempt record before the old
+  // transport necessarily settles. Retire the live adapter regardless so
+  // deleting restoreState cannot briefly reopen its patch handler.
+  retireWebSessionAdapter(adapter);
+  void adapter.disconnect().catch(() => {});
 }
 
 function cancelBackgroundRestores(): void {
@@ -2191,6 +2263,7 @@ function cancelBackgroundRestores(): void {
   const attempts = Array.from(webSessionRestoreAttempts.values());
   webSessionRestoreAttempts.clear();
   for (const { adapter } of attempts) {
+    retireWebSessionAdapter(adapter);
     void adapter.disconnect().catch(() => {});
   }
 }
@@ -2666,8 +2739,10 @@ async function continueHereWeb(sessionId: string): Promise<void> {
   // Only allow the recovery flow when the session is in a disconnected/failed
   // state. An active or waiting session should not have its adapter torn down
   // by a stale or unexpected client command.
+  const replaceRestoreAdapter = session.restoreState !== undefined;
   const liveStatus = session.agentSessionV2.live.status;
   const isDisconnected =
+    replaceRestoreAdapter ||
     liveStatus === 'disconnected' ||
     session.adapterV2.status === 'disconnected';
   if (!isDisconnected) {
@@ -2682,7 +2757,9 @@ async function continueHereWeb(sessionId: string): Promise<void> {
     return;
   }
 
-  const replaceTimedOutAdapter = session.restoreState === 'reattach-failed';
+  if (replaceRestoreAdapter) {
+    supersedeWebSessionRestore(session);
+  }
   // Manual cold recovery supersedes the failed boot-reattach fence. The
   // continue-here flow disconnects and re-registers adapter listeners before
   // establishing its fresh provider session.
@@ -2706,7 +2783,7 @@ async function continueHereWeb(sessionId: string): Promise<void> {
   };
 
   await continueHereWebSession(session, config, fireBackendStateIfChanged, {
-    replaceAdapter: replaceTimedOutAdapter,
+    replaceAdapter: replaceRestoreAdapter,
   });
 }
 

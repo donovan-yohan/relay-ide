@@ -126,6 +126,11 @@ export interface ChannelHub {
   setBadgeBroadcaster(broadcaster: ChannelBadgeBroadcaster): void;
   channelExists(channelId: string): boolean;
   subscriberCount(channelId: string): number;
+  /** Internal load-harness diagnostic; connect queues must drain back to zero. */
+  retentionSnapshot(): {
+    connectQueueEvents: number;
+    connectQueueBytes: number;
+  };
   close(): void;
 }
 
@@ -566,6 +571,18 @@ export function createChannelHub(options: ChannelHubOptions): ChannelHub {
 
     subscriberCount(channelId) {
       return subscribers.get(channelId)?.size ?? 0;
+    },
+
+    retentionSnapshot() {
+      let connectQueueEvents = 0;
+      let connectQueueBytes = 0;
+      for (const channelSubscribers of subscribers.values()) {
+        for (const subscriber of channelSubscribers) {
+          connectQueueEvents += subscriber.queue.length;
+          connectQueueBytes += subscriber.queueBytes;
+        }
+      }
+      return { connectQueueEvents, connectQueueBytes };
     },
 
     close() {

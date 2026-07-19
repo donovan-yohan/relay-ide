@@ -24,6 +24,56 @@ import {
 import { createLocalCompatibilitySessionEnvelope } from '../shared/session-envelope.js';
 
 const logger = createLogger('web-session');
+const restoreSnapshotFencedAdapters = new WeakSet<ProtocolAdapterV2>();
+const retiredWebSessionAdapters = new WeakSet<ProtocolAdapterV2>();
+const webSessionPatchSubscribers = new WeakMap<
+  WebSession,
+  Set<(patch: AgentPatchV2) => void>
+>();
+
+export function onWebSessionPatch(
+  session: WebSession,
+  handler: (patch: AgentPatchV2) => void
+): () => void {
+  let subscribers = webSessionPatchSubscribers.get(session);
+  if (!subscribers) {
+    subscribers = new Set();
+    webSessionPatchSubscribers.set(session, subscribers);
+  }
+  subscribers.add(handler);
+  return () => {
+    subscribers?.delete(handler);
+    if (subscribers?.size === 0) webSessionPatchSubscribers.delete(session);
+  };
+}
+
+function notifyWebSessionPatchSubscribers(
+  session: WebSession,
+  patch: AgentPatchV2
+): void {
+  for (const handler of webSessionPatchSubscribers.get(session) ?? []) {
+    try {
+      handler(patch);
+    } catch (err) {
+      logger.warn('web session patch subscriber failed', err);
+    }
+  }
+}
+
+export function retireWebSessionAdapter(adapter: ProtocolAdapterV2): void {
+  retiredWebSessionAdapters.add(adapter);
+}
+
+export function setWebSessionRestoreSnapshotFence(
+  adapter: ProtocolAdapterV2,
+  fenced: boolean
+): void {
+  if (fenced) {
+    restoreSnapshotFencedAdapters.add(adapter);
+  } else {
+    restoreSnapshotFencedAdapters.delete(adapter);
+  }
+}
 
 export interface CreateWebParams {
   id?: string;
@@ -126,11 +176,20 @@ export async function createWebSession(
   sessionsMap.set(id, session);
 
   adapterV2.onPatch((patch) => {
+    if (sessionsMap.get(id) !== session) return;
     if (session.adapterV2 !== adapterV2) return;
+    if (retiredWebSessionAdapters.has(adapterV2)) return;
+    if (
+      patch.type === 'agent-session-snapshot-v2' &&
+      restoreSnapshotFencedAdapters.has(adapterV2)
+    ) {
+      return;
+    }
     // A timed-out boot reattach is authoritative. Providers that resolve or
     // emit after cancellation must not resurrect the failed session.
     if (session.restoreState === 'reattach-failed') return;
     handleAgentPatchV2(session, patch, onBackendStateChanged);
+    notifyWebSessionPatchSubscribers(session, patch);
   });
 
   const config: AdapterConfig = {
@@ -266,7 +325,9 @@ export async function continueHereWebSession(
   // down by a stale or unexpected client command.
   const liveStatus = session.agentSessionV2.live.status;
   const isDisconnected =
-    liveStatus === 'disconnected' || staleAdapter.status === 'disconnected';
+    options.replaceAdapter === true ||
+    liveStatus === 'disconnected' ||
+    staleAdapter.status === 'disconnected';
   if (!isDisconnected) {
     logger.warn(
       'continue-here: ignoring request for non-disconnected session (skipping)',
@@ -277,6 +338,14 @@ export async function continueHereWebSession(
       }
     );
     return false;
+  }
+
+  const replacementAdapter = options.replaceAdapter
+    ? createAdapterV2(session.adapterType)
+    : undefined;
+  if (replacementAdapter) {
+    session.adapterV2 = replacementAdapter;
+    session.runtimeOwnership = replacementAdapter.runtimeOwnership;
   }
 
   // Bug 2 fix: emit the synthetic sessionBreak BEFORE disconnect so that all
@@ -310,6 +379,9 @@ export async function continueHereWebSession(
     applyWebSessionPatchV2(session, itemPatch);
     // Broadcast to all live onPatch listeners (session reducer + WS forwarders).
     staleAdapter.broadcastPatch(itemPatch);
+    if (replacementAdapter) {
+      notifyWebSessionPatchSubscribers(session, itemPatch);
+    }
   }
 
   logger.info('continue-here: disconnecting current adapter', {
@@ -342,19 +414,14 @@ export async function continueHereWebSession(
     };
   }
 
-  const adapterV2 = options.replaceAdapter
-    ? createAdapterV2(session.adapterType)
-    : staleAdapter;
-  if (options.replaceAdapter) {
-    session.adapterV2 = adapterV2;
-    session.runtimeOwnership = adapterV2.runtimeOwnership;
-  }
+  const adapterV2 = replacementAdapter ?? staleAdapter;
 
   // Register the reducer on the replacement adapter. Identity fencing keeps
   // late patches from the superseded provider from mutating this session.
   adapterV2.onPatch((patch) => {
     if (session.adapterV2 !== adapterV2) return;
     handleAgentPatchV2(session, patch, onBackendStateChanged);
+    notifyWebSessionPatchSubscribers(session, patch);
   });
 
   logger.info('continue-here: connecting fresh adapter session', {
