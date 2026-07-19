@@ -1,4 +1,5 @@
 import type { WorkbenchLayout } from '../../../shared/workbench-layout-types.js';
+import type { AgentRoster } from '../../../shared/agent-roster.js';
 import type {
   AnchorRef,
   AnchorState,
@@ -1926,6 +1927,44 @@ export async function fetchChannelRoster(
     })
   );
   return Array.isArray(data.roster) ? data.roster : [];
+}
+
+/**
+ * Read the redaction-safe global agent roster. The HTTP route predates the
+ * shared `AgentRoster` envelope and names its entries field `roster`; normalize
+ * that transport detail here so frontend consumers use the shared contract.
+ */
+export async function fetchAgentRoster(
+  options: {
+    includeTerminals?: boolean;
+    needsAttention?: boolean;
+    limit?: number;
+  } = {}
+): Promise<AgentRoster> {
+  const params = new URLSearchParams();
+  params.set('includeTerminals', String(options.includeTerminals ?? false));
+  if (options.needsAttention !== undefined) {
+    params.set('needsAttention', String(options.needsAttention));
+  }
+  const limit = Math.max(1, Math.min(200, Math.trunc(options.limit ?? 200)));
+  params.set('limit', String(limit));
+  const data = await json<{
+    roster?: AgentRoster['entries'];
+    generatedAt?: string;
+    count?: number;
+    nodeId?: string;
+  }>(
+    await fetch(`/roster?${params.toString()}`, {
+      headers: { 'x-relay-capabilities': 'session:read' },
+    })
+  );
+  const entries = Array.isArray(data.roster) ? data.roster : [];
+  return {
+    generatedAt: typeof data.generatedAt === 'string' ? data.generatedAt : '',
+    count: typeof data.count === 'number' ? data.count : entries.length,
+    entries,
+    ...(typeof data.nodeId === 'string' ? { nodeId: data.nodeId } : {}),
+  };
 }
 
 /**

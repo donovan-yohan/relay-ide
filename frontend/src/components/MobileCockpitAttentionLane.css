@@ -1,0 +1,207 @@
+.topic-cockpit__attention {
+  display: grid;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.topic-cockpit__attention-header,
+.topic-cockpit__all-chats-header {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.topic-cockpit__attention-clear {
+  min-height: 44px;
+  padding: 14px 10px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.topic-cockpit__attention-list {
+  display: grid;
+}
+
+.topic-cockpit__attention-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 44px;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+
+.topic-cockpit__attention-row:last-child {
+  border-bottom: 0;
+}
+
+.topic-cockpit__attention-main {
+  display: grid;
+  grid-template-columns: var(--icon-slot-width) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 5px 4px 5px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+.topic-cockpit__attention-main:hover,
+.topic-cockpit__attention-main:focus-visible {
+  background: var(--surface-hover);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.topic-cockpit__attention-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.topic-cockpit__attention-title,
+.topic-cockpit__attention-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topic-cockpit__attention-title {
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+}
+
+.topic-cockpit__attention-status {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.cockpit-presence {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-slot-width);
+  height: var(--icon-slot-width);
+  color: var(--cockpit-presence-color);
+}
+
+.cockpit-presence__glyph {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-width: 1.5;
+}
+
+.cockpit-presence__dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--cockpit-presence-color);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.cockpit-presence--working .cockpit-presence__dot,
+.cockpit-presence--blocked .cockpit-presence__dot,
+.cockpit-presence--done .cockpit-presence__dot {
+  background: var(--cockpit-presence-color);
+}
+
+.cockpit-presence--idle .cockpit-presence__dot,
+.cockpit-presence--unknown .cockpit-presence__dot {
+  opacity: 0.7;
+}
+
+.topic-cockpit__attention-actions {
+  display: flex;
+  align-items: stretch;
+  margin-left: auto;
+}
+
+.topic-cockpit__attention-action,
+.topic-cockpit__nudge button {
+  min-width: var(--action-slot-width);
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  text-transform: lowercase;
+}
+
+.topic-cockpit__attention-action:hover:not(:disabled),
+.topic-cockpit__attention-action:focus-visible,
+.topic-cockpit__nudge button:hover:not(:disabled),
+.topic-cockpit__nudge button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.topic-cockpit__attention-action--interrupt {
+  border-color: color-mix(in srgb, var(--status-error) 50%, var(--border));
+  color: var(--status-error);
+}
+
+.topic-cockpit__attention-action:disabled,
+.topic-cockpit__nudge button:disabled {
+  opacity: 0.45;
+}
+
+.topic-cockpit__nudge {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 44px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.topic-cockpit__nudge input {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-size-sm);
+}
+
+.topic-cockpit__nudge input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.topic-cockpit__nudge-status {
+  grid-column: 1 / -1;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+@media (max-width: 600px) {
+  .topic-cockpit__attention {
+    display: grid;
+  }
+}

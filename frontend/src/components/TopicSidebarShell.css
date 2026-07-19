@@ -1136,7 +1136,7 @@
 
   .topic-mobile-row {
     display: grid;
-    grid-template-columns: var(--topic-badge-size) minmax(0, 1fr) auto 18px;
+    grid-template-columns: var(--icon-slot-width) minmax(0, 1fr) auto 18px;
     align-items: center;
     gap: 8px;
     width: 100%;
@@ -1150,6 +1150,25 @@
     font-family: inherit;
     text-align: left;
     touch-action: manipulation;
+  }
+
+  .topic-mobile-row-shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .topic-mobile-row-shell .topic-mobile-row {
+    width: auto;
+  }
+
+  .topic-mobile-row-shell .topic-cockpit__attention-actions {
+    grid-column: 2;
+  }
+
+  .topic-mobile-row-shell .topic-cockpit__nudge,
+  .topic-mobile-row-shell .topic-cockpit__nudge-status {
+    grid-column: 1 / -1;
   }
 
   .topic-mobile-row.selected,
