@@ -9,6 +9,8 @@ import { promisify } from 'node:util';
 
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import { createHealthMonitor } from './health.js';
+import { restoreSessionsAfterListen } from './startup-restore.js';
 
 import {
   loadConfig,
@@ -2129,6 +2131,8 @@ async function main(): Promise<void> {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+  const healthMonitor = createHealthMonitor();
+  app.get('/healthz', healthMonitor.handler);
 
   function authenticatedBrowserSession(req: express.Request): boolean {
     const token = req.cookies && req.cookies.token;
@@ -4007,20 +4011,6 @@ async function main(): Promise<void> {
     });
     res.json(result);
   });
-
-  // Restore sessions from a previous update restart
-  const restoredCount = await restoreFromDisk(
-    configDir,
-    getConfig().repos ?? [],
-    getConfig().frameworks
-  );
-  if (restoredCount > 0) {
-    logger.info(`Restored ${restoredCount} session(s) from previous update.`);
-    // Start git watching for restored sessions
-    for (const session of localRelayNode.sessions.list()) {
-      gitWatcher.watch(session.cwd);
-    }
-  }
 
   startTelemetry({
     getActiveSessions: sessions.list,
@@ -5956,13 +5946,17 @@ async function main(): Promise<void> {
   const devInstance =
     process.env.RELAY_IDE_DEV_INSTANCE === '1' ||
     process.env.RELAY_IDE_SELF_HOST === '1';
+  let cancelStartupRestore = (): void => {};
   async function gracefulShutdown() {
+    cancelStartupRestore();
+    sessions.cancelBackgroundRestores();
     const restartReason = devInstance ? 'dev-restart' : 'signal-shutdown';
     broadcastEvent('server-restarting', { reason: restartReason });
     await stopPolling();
     stopEventBatching();
     stopTelemetry();
     closeAnalytics();
+    healthMonitor.stop();
     branchWatcher.close();
     refWatcher.close();
     gitWatcher.close();
@@ -6005,6 +5999,55 @@ async function main(): Promise<void> {
   // previous process hasn't released the port yet (launchd KeepAlive restarts).
   const MAX_RETRIES = 5;
   let attempt = 0;
+
+  const configuredReattachTimeoutMs = positiveIntegerEnv(
+    'RELAY_IDE_WEB_SESSION_REATTACH_TIMEOUT_MS'
+  );
+  // Integration-test-only ordering seam. Normal startup never sleeps: the
+  // hold is accepted only under NODE_ENV=test and defaults to zero. Keeping it
+  // inside the exact function handed to restoreSessionsAfterListen means the
+  // real-process regression fails if this function is moved/awaited before
+  // server.listen().
+  const testStartupRestoreHoldMs =
+    process.env['NODE_ENV'] === 'test'
+      ? (positiveIntegerEnv('RELAY_IDE_TEST_STARTUP_RESTORE_HOLD_MS') ?? 0)
+      : 0;
+  async function restoreStartupSessions(): Promise<number> {
+    if (testStartupRestoreHoldMs > 0) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, testStartupRestoreHoldMs)
+      );
+    }
+    return restoreFromDisk(
+      configDir,
+      getConfig().repos ?? [],
+      getConfig().frameworks,
+      configuredReattachTimeoutMs === undefined
+        ? undefined
+        : { webSessionReattachTimeoutMs: configuredReattachTimeoutMs }
+    );
+  }
+  cancelStartupRestore = restoreSessionsAfterListen(
+    server,
+    restoreStartupSessions,
+    {
+      restored: (restoredCount) => {
+        if (restoredCount === 0) return;
+        logger.info(
+          `Restored ${restoredCount} session(s) from previous update.`
+        );
+        for (const session of localRelayNode.sessions.list()) {
+          gitWatcher.watch(session.cwd);
+        }
+      },
+      failed: (err) => {
+        logger.error(
+          'Background session restore failed:',
+          err instanceof Error ? err.message : String(err)
+        );
+      },
+    }
+  );
   function tryListen() {
     server.listen(startupConfig.port, startupConfig.host, () => {
       const addr = server.address() as import('node:net').AddressInfo;
@@ -6024,6 +6067,17 @@ async function main(): Promise<void> {
     }
   });
   tryListen();
+}
+
+function positiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    logger.warn(`Ignoring ${name}: expected a positive integer number of ms.`);
+    return undefined;
+  }
+  return parsed;
 }
 
 main().catch((err) => {

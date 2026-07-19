@@ -32,6 +32,7 @@
     "agent-browser": "node dist/scripts/agent-browser-cli.js",
     "test": "vitest run",
     "test:smoke:multi-node": "vitest run test/hub-cross-node-pty.test.ts test/multi-node-smoke.test.ts",
+    "diagnose:channel-memory": "npm run build:server && node --expose-gc dist/scripts/channel-memory-load.js",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug",

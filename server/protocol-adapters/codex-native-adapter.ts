@@ -617,6 +617,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const resolver = this.pendingApprovals.get(input.requestId);
     if (!resolver) return;
     this.pendingApprovals.delete(input.requestId);
+    this.approvalMeta.delete(input.requestId);
     resolver(input.decision);
   }
 
@@ -625,6 +626,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     const resolver = this.pendingInputRequests.get(requestId);
     if (!resolver) return;
     this.pendingInputRequests.delete(requestId);
+    this.inputRequestMeta.delete(requestId);
     resolver({ answers: input.answers });
   }
 
@@ -727,6 +729,15 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       ...(usage !== undefined ? { usage } : {}),
       ...(error !== undefined ? { error } : {}),
     });
+
+    // These maps translate provider output ids only while the current turn is
+    // live. The canonical V2 transcript owns completed items; retaining native
+    // ids and streamed reasoning/token buffers across turns grows without bound
+    // on an always-on channel binding.
+    this.itemMap.clear();
+    this.tokenUsageBuffer.clear();
+    this.reasoningSummaryBuffers.clear();
+    this.reasoningDetailBuffers.clear();
 
     this.activeTurnId = null;
     this.nativeActiveTurnId = null;

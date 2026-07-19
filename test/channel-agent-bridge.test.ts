@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MockProtocolAdapterV2 } from '../server/protocol-adapters/mock-v2-adapter.js';
 import type { AdapterConfig } from '../server/protocol-adapter-v2.js';
@@ -12,7 +12,11 @@ import {
   type ChannelMessageStore,
 } from '../server/channel-message-store.js';
 import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
-import { bindSessionToChannel } from '../server/channel-agent-bridge.js';
+import {
+  bindSessionToChannel,
+  CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX,
+} from '../server/channel-agent-bridge.js';
+import type { ChannelBridgeRetentionSnapshot } from '../server/channel-agent-bridge.js';
 
 const cleanup: Array<() => void> = [];
 
@@ -83,7 +87,50 @@ function assistantUpdated(
   };
 }
 
+function turnCompleted(sessionId: string, turnId: string): AgentPatchV2 {
+  return {
+    type: 'agent-turn-completed-v2',
+    sessionId,
+    timestamp: 't',
+    turnId,
+    status: 'completed',
+  };
+}
+
 describe('channel-agent-bridge lifecycle', () => {
+  it('releases completed stream text and item ids after every turn', async () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });
+    await adapter.connect(config('sess-retention'));
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
+    const unbind = bindSessionToChannel({
+      channelId: 'topic:retention',
+      agentFramework: 'mock',
+      adapter,
+      store,
+      hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
+    });
+    cleanup.push(unbind);
+
+    for (let turn = 0; turn < 50; turn++) {
+      await adapter.sendMessage({
+        turnId: `turn-${turn}`,
+        content: `stream turn ${turn}`,
+      });
+      expect(retained).toEqual({
+        openStreams: 0,
+        assistantItemIds: 0,
+        turnsWithRows: 0,
+        retainedTextBytes: 0,
+      });
+    }
+
+    expect(store.history('topic:retention', { limit: 100 })).toHaveLength(50);
+  });
+
   it('mirrors a full assistant turn as an attributed complete row', async () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2({ connectMs: 1, stepMs: 1 });
@@ -162,12 +209,16 @@ describe('channel-agent-bridge lifecycle', () => {
   it('finalizes as failed on agent-error-v2 keeping the partial text', () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2();
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
     bindSessionToChannel({
       channelId: 'topic:e',
       agentFramework: 'claude',
       adapter,
       store,
       hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
     });
     adapter.broadcastPatch(assistantStarted('s', 'turn', 'a1'));
     adapter.broadcastPatch(textDelta('s', 'turn', 'a1', 'partial'));
@@ -184,6 +235,47 @@ describe('channel-agent-bridge lifecycle', () => {
     expect(messages[0]).toMatchObject({
       status: 'failed',
       body: { text: 'partial' },
+    });
+    expect(retained).toEqual({
+      openStreams: 0,
+      assistantItemIds: 0,
+      turnsWithRows: 0,
+      retainedTextBytes: 0,
+    });
+  });
+
+  it('releases every turn when a terminal agent error has no turn id', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
+    bindSessionToChannel({
+      channelId: 'topic:error-all',
+      agentFramework: 'gemini',
+      adapter,
+      store,
+      hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
+    });
+    adapter.broadcastPatch(assistantStarted('s', 'turn-a', 'item-a'));
+    adapter.broadcastPatch(assistantStarted('s', 'turn-b', 'item-b'));
+    adapter.broadcastPatch({
+      type: 'agent-error-v2',
+      sessionId: 's',
+      timestamp: 't',
+      message: 'transport closed',
+    });
+
+    expect(store.history('topic:error-all')).toEqual([
+      expect.objectContaining({ status: 'failed' }),
+      expect.objectContaining({ status: 'failed' }),
+    ]);
+    expect(retained).toEqual({
+      openStreams: 0,
+      assistantItemIds: 0,
+      turnsWithRows: 0,
+      retainedTextBytes: 0,
     });
   });
 
@@ -209,26 +301,148 @@ describe('channel-agent-bridge lifecycle', () => {
     });
   });
 
-  it('does not double-commit on re-emitted patches (source triple dedupe)', () => {
+  it('treats a duplicate final after turn completion as a pure no-op', () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2();
+    const beginBroadcast = vi.spyOn(hub, 'beginStreamBroadcast');
+    const completeBroadcast = vi.spyOn(hub, 'completeStreamBroadcast');
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
     bindSessionToChannel({
       channelId: 'topic:r',
       agentFramework: 'claude',
       adapter,
       store,
       hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
     });
     adapter.broadcastPatch(assistantStarted('s', 'turn', 'a1'));
     adapter.broadcastPatch(assistantStarted('s', 'turn', 'a1')); // re-emit
     adapter.broadcastPatch(assistantUpdated('s', 'turn', 'a1', 'full'));
-    adapter.broadcastPatch(assistantUpdated('s', 'turn', 'a1', 'full-again')); // stream closed
+    adapter.broadcastPatch({
+      type: 'agent-turn-completed-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      status: 'completed',
+    });
+    adapter.broadcastPatch(assistantUpdated('s', 'turn', 'a1', 'full-again'));
 
     const messages = store.history('topic:r');
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       status: 'complete',
       body: { text: 'full' },
+    });
+    expect(beginBroadcast).toHaveBeenCalledTimes(1);
+    expect(completeBroadcast).toHaveBeenCalledTimes(1);
+    expect(retained).toEqual({
+      openStreams: 0,
+      assistantItemIds: 0,
+      turnsWithRows: 0,
+      retainedTextBytes: 0,
+    });
+  });
+
+  it('bounds Gemini-style replayed starts against a finalized durable row', () => {
+    const { store, hub } = makeStore();
+    const firstAdapter = new MockProtocolAdapterV2();
+    const unbindFirst = bindSessionToChannel({
+      channelId: 'topic:replay',
+      agentFramework: 'gemini',
+      adapter: firstAdapter,
+      store,
+      hub,
+    });
+    firstAdapter.broadcastPatch(
+      assistantUpdated('session-gemini', 'turn-replay', 'item-replay', 'done')
+    );
+    unbindFirst();
+
+    const beginStore = vi.spyOn(store, 'beginStream');
+    const beginBroadcast = vi.spyOn(hub, 'beginStreamBroadcast');
+    const replayAdapter = new MockProtocolAdapterV2();
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
+    bindSessionToChannel({
+      channelId: 'topic:replay',
+      agentFramework: 'gemini',
+      adapter: replayAdapter,
+      store,
+      hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
+    });
+
+    replayAdapter.broadcastPatch(
+      assistantStarted('session-gemini', 'turn-replay', 'item-replay')
+    );
+    replayAdapter.broadcastPatch(
+      assistantStarted('session-gemini', 'turn-replay', 'item-replay')
+    );
+
+    expect(beginStore).toHaveBeenCalledTimes(1);
+    expect(beginBroadcast).not.toHaveBeenCalled();
+    expect(store.history('topic:replay')).toHaveLength(1);
+    expect(retained).toEqual({
+      openStreams: 0,
+      assistantItemIds: 0,
+      turnsWithRows: 0,
+      retainedTextBytes: 0,
+    });
+  });
+
+  it('bounds finalized-item replay tombstones while preserving dedupe', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
+    bindSessionToChannel({
+      channelId: 'topic:tombstones',
+      agentFramework: 'gemini',
+      adapter,
+      store,
+      hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
+    });
+
+    for (
+      let index = 0;
+      index <= CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX;
+      index++
+    ) {
+      const turnId = `turn-${index}`;
+      adapter.broadcastPatch(
+        assistantUpdated('session-gemini', turnId, `item-${index}`, 'done')
+      );
+      adapter.broadcastPatch(turnCompleted('session-gemini', turnId));
+    }
+
+    const beginStore = vi.spyOn(store, 'beginStream');
+    const beginBroadcast = vi.spyOn(hub, 'beginStreamBroadcast');
+    const newest = CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX;
+    adapter.broadcastPatch(
+      assistantStarted('session-gemini', `turn-${newest}`, `item-${newest}`)
+    );
+    expect(beginStore).not.toHaveBeenCalled();
+
+    // The oldest tombstone was evicted, so one durable lookup refreshes it;
+    // subsequent replay is served by the bounded tombstone without another hit.
+    adapter.broadcastPatch(
+      assistantStarted('session-gemini', 'turn-0', 'item-0')
+    );
+    adapter.broadcastPatch(
+      assistantStarted('session-gemini', 'turn-0', 'item-0')
+    );
+    expect(beginStore).toHaveBeenCalledOnce();
+    expect(beginBroadcast).not.toHaveBeenCalled();
+    expect(retained).toEqual({
+      openStreams: 0,
+      assistantItemIds: 0,
+      turnsWithRows: 0,
+      retainedTextBytes: 0,
     });
   });
 

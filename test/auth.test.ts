@@ -130,7 +130,9 @@ test('isPinConfigured treats legacy disabled sentinel and unsupported hashes as 
   expect(isPinConfigured(hash)).toBe(true);
   expect(isPinConfigured('disabled')).toBe(false);
   expect(
-    isPinConfigured('$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012')
+    isPinConfigured(
+      '$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012'
+    )
   ).toBe(false);
   expect(isPinConfigured('')).toBe(false);
   expect(isPinConfigured(undefined)).toBe(false);
@@ -264,7 +266,8 @@ const expectedInventoryCoverage = [
   },
   {
     surface: 'browser webhook management APIs',
-    middleware: 'requireAuth via createWebhookManagerRouter mounted at /webhooks/manage',
+    middleware:
+      'requireAuth via createWebhookManagerRouter mounted at /webhooks/manage',
     acceptedLanes: ['browser-session'],
     routes: [
       'POST /webhooks/manage/setup',
@@ -361,6 +364,7 @@ const expectedInventoryCoverage = [
     acceptedLanes: ['public-local-only'],
     routes: [
       '/health',
+      '/healthz',
       '/auth/status',
       'POST /auth/setup',
       'POST /auth',
@@ -412,7 +416,8 @@ test('auth route lane inventory exactly matches asserted route coverage', () => 
 test('auth route lane inventory keeps credential classes distinct', () => {
   const routeToLanes = new Map<string, string[]>();
   for (const entry of AUTH_ROUTE_LANE_INVENTORY) {
-    for (const route of entry.routes) routeToLanes.set(route, entry.acceptedLanes);
+    for (const route of entry.routes)
+      routeToLanes.set(route, entry.acceptedLanes);
   }
 
   expect(routeToLanes.get('WS /hub/node-link')).toEqual(['node-credential']);

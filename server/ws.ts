@@ -14,6 +14,7 @@ import { loadConfig } from './config.js';
 import { verifyCookieToken } from './auth.js';
 import { validateScopedToken } from './browser-content.js';
 import { createAgentSessionSnapshotPatch } from './web-session-v2-state.js';
+import { onWebSessionPatch } from './web-session-handler.js';
 import type { AgentApprovalDecisionV2 } from '../shared/agent-chat-protocol-v2.js';
 import {
   DEFAULT_LOCAL_NODE_ID,
@@ -1087,7 +1088,7 @@ function setupWebSocket(
       // Web session — JSON relay
       const patchReplayStart = session.agentPatchesV2.length;
       const snapshotPatch = createAgentSessionSnapshotPatch(session);
-      const unlistenV2 = session.adapterV2.onPatch((patch) => {
+      const unlistenV2 = onWebSessionPatch(session, (patch) => {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(patch));
       });
 

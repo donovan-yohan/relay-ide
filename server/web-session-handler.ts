@@ -3,6 +3,7 @@ import type { WebSession, Session } from './types.js';
 import type { AgentType } from './types.js';
 import { createAdapterV2 } from './protocol-adapters/index.js';
 import type { AdapterConfig } from './protocol-adapter.js';
+import type { ProtocolAdapterV2 } from './protocol-adapter-v2.js';
 import type {
   AgentPatchV2,
   AgentSessionBreakItemV2,
@@ -23,6 +24,56 @@ import {
 import { createLocalCompatibilitySessionEnvelope } from '../shared/session-envelope.js';
 
 const logger = createLogger('web-session');
+const restoreSnapshotFencedAdapters = new WeakSet<ProtocolAdapterV2>();
+const retiredWebSessionAdapters = new WeakSet<ProtocolAdapterV2>();
+const webSessionPatchSubscribers = new WeakMap<
+  WebSession,
+  Set<(patch: AgentPatchV2) => void>
+>();
+
+export function onWebSessionPatch(
+  session: WebSession,
+  handler: (patch: AgentPatchV2) => void
+): () => void {
+  let subscribers = webSessionPatchSubscribers.get(session);
+  if (!subscribers) {
+    subscribers = new Set();
+    webSessionPatchSubscribers.set(session, subscribers);
+  }
+  subscribers.add(handler);
+  return () => {
+    subscribers?.delete(handler);
+    if (subscribers?.size === 0) webSessionPatchSubscribers.delete(session);
+  };
+}
+
+function notifyWebSessionPatchSubscribers(
+  session: WebSession,
+  patch: AgentPatchV2
+): void {
+  for (const handler of webSessionPatchSubscribers.get(session) ?? []) {
+    try {
+      handler(patch);
+    } catch (err) {
+      logger.warn('web session patch subscriber failed', err);
+    }
+  }
+}
+
+export function retireWebSessionAdapter(adapter: ProtocolAdapterV2): void {
+  retiredWebSessionAdapters.add(adapter);
+}
+
+export function setWebSessionRestoreSnapshotFence(
+  adapter: ProtocolAdapterV2,
+  fenced: boolean
+): void {
+  if (fenced) {
+    restoreSnapshotFencedAdapters.add(adapter);
+  } else {
+    restoreSnapshotFencedAdapters.delete(adapter);
+  }
+}
 
 export interface CreateWebParams {
   id?: string;
@@ -51,8 +102,8 @@ export async function createWebSession(
   params: CreateWebParams,
   sessionsMap: Map<string, Session>,
   onBackendStateChanged: (session: Session) => void,
-  options: { skipInitialPersist?: boolean } = {}
-): Promise<{ session: WebSession }> {
+  options: { skipInitialPersist?: boolean; deferConnect?: boolean } = {}
+): Promise<{ session: WebSession; config: AdapterConfig }> {
   const id = params.id ?? crypto.randomBytes(8).toString('hex');
   const adapterV2 = createAdapterV2(params.agentType);
   const activeRuntime = adapterV2;
@@ -125,7 +176,20 @@ export async function createWebSession(
   sessionsMap.set(id, session);
 
   adapterV2.onPatch((patch) => {
+    if (sessionsMap.get(id) !== session) return;
+    if (session.adapterV2 !== adapterV2) return;
+    if (retiredWebSessionAdapters.has(adapterV2)) return;
+    if (
+      patch.type === 'agent-session-snapshot-v2' &&
+      restoreSnapshotFencedAdapters.has(adapterV2)
+    ) {
+      return;
+    }
+    // A timed-out boot reattach is authoritative. Providers that resolve or
+    // emit after cancellation must not resurrect the failed session.
+    if (session.restoreState === 'reattach-failed') return;
     handleAgentPatchV2(session, patch, onBackendStateChanged);
+    notifyWebSessionPatchSubscribers(session, patch);
   });
 
   const config: AdapterConfig = {
@@ -141,14 +205,16 @@ export async function createWebSession(
     ...(params.extra !== undefined ? { extra: params.extra } : {}),
   };
 
-  try {
-    await adapterV2.connect(config);
-  } catch (err) {
-    // Clean up zombie: remove from map and disconnect adapter to clear handlers
-    sessionsMap.delete(id);
-    await adapterV2.disconnect().catch(() => {});
-    session.agentState = 'error';
-    throw err;
+  if (!options.deferConnect) {
+    try {
+      await adapterV2.connect(config);
+    } catch (err) {
+      // Clean up zombie: remove from map and disconnect adapter to clear handlers
+      sessionsMap.delete(id);
+      await adapterV2.disconnect().catch(() => {});
+      session.agentState = 'error';
+      throw err;
+    }
   }
 
   logger.info('web session created', { id, agentType: params.agentType });
@@ -160,7 +226,7 @@ export async function createWebSession(
     upsertWebSessionNow(session);
   }
 
-  return { session };
+  return { session, config };
 }
 
 /**
@@ -193,7 +259,13 @@ function extractProviderSessionId(
  * which performs a clean transport-level reconnect with no history.
  */
 export async function reconnectWebSession(session: WebSession): Promise<void> {
-  const adapterV2 = session.adapterV2;
+  return reconnectWebSessionAdapter(session, session.adapterV2);
+}
+
+export async function reconnectWebSessionAdapter(
+  session: WebSession,
+  adapterV2: ProtocolAdapterV2
+): Promise<void> {
   const capabilities = adapterV2.capabilities;
   const providerSession = session.agentSessionV2.providerSession;
 
@@ -230,11 +302,10 @@ export async function reconnectWebSession(session: WebSession): Promise<void> {
  * 1. Emit a synthetic `sessionBreak` divider patch BEFORE disconnecting so
  *    all currently-registered onPatch listeners (session state reducer +
  *    per-WebSocket forwarders) receive and forward it to connected clients.
- * 2. Disconnect the current adapter (clears the handler set).
+ * 2. Best-effort disconnect the current adapter.
  * 3. Clear the stored vendor session ID from the in-memory session so that
  *    a subsequent `reconnectWebSession` (or any DB read) sees no stale ID.
- * 4. Re-register the session-level state reducer/persistence handler so new
- *    patches from the fresh connection are processed correctly.
+ * 4. Replace it with a new adapter instance and register the state reducer.
  * 5. Call `adapter.connect()` with the same config but no resume argument.
  *
  * The Relay session ID (`session.id`) is never changed — all URLs and
@@ -243,9 +314,10 @@ export async function reconnectWebSession(session: WebSession): Promise<void> {
 export async function continueHereWebSession(
   session: WebSession,
   config: AdapterConfig,
-  onBackendStateChanged: (session: Session) => void
+  onBackendStateChanged: (session: Session) => void,
+  options: { replaceAdapter?: boolean } = {}
 ): Promise<boolean> {
-  const adapterV2 = session.adapterV2;
+  const staleAdapter = session.adapterV2;
 
   // Issue 6 fix: guard against accidental teardown of an active session.
   // Only proceed when the session live state is disconnected or the adapter
@@ -253,17 +325,27 @@ export async function continueHereWebSession(
   // down by a stale or unexpected client command.
   const liveStatus = session.agentSessionV2.live.status;
   const isDisconnected =
-    liveStatus === 'disconnected' || adapterV2.status === 'disconnected';
+    options.replaceAdapter === true ||
+    liveStatus === 'disconnected' ||
+    staleAdapter.status === 'disconnected';
   if (!isDisconnected) {
     logger.warn(
       'continue-here: ignoring request for non-disconnected session (skipping)',
       {
         id: session.id,
         liveStatus,
-        adapterStatus: adapterV2.status,
+        adapterStatus: staleAdapter.status,
       }
     );
     return false;
+  }
+
+  const replacementAdapter = options.replaceAdapter
+    ? createAdapterV2(session.adapterType)
+    : undefined;
+  if (replacementAdapter) {
+    session.adapterV2 = replacementAdapter;
+    session.runtimeOwnership = replacementAdapter.runtimeOwnership;
   }
 
   // Bug 2 fix: emit the synthetic sessionBreak BEFORE disconnect so that all
@@ -296,7 +378,10 @@ export async function continueHereWebSession(
     // Apply to session state and push to agentPatchesV2 for reconnect replay.
     applyWebSessionPatchV2(session, itemPatch);
     // Broadcast to all live onPatch listeners (session reducer + WS forwarders).
-    adapterV2.broadcastPatch(itemPatch);
+    staleAdapter.broadcastPatch(itemPatch);
+    if (replacementAdapter) {
+      notifyWebSessionPatchSubscribers(session, itemPatch);
+    }
   }
 
   logger.info('continue-here: disconnecting current adapter', {
@@ -304,13 +389,22 @@ export async function continueHereWebSession(
     agentType: session.adapterType,
   });
 
-  await adapterV2.disconnect().catch((err: unknown) => {
-    // Non-fatal: adapter may already be in a bad state after resume failure.
-    logger.warn('continue-here: disconnect error (continuing anyway)', {
-      id: session.id,
-      err: String(err),
+  const disconnectStaleAdapter = staleAdapter
+    .disconnect()
+    .catch((err: unknown) => {
+      // Non-fatal: adapter may already be in a bad state after resume failure.
+      logger.warn('continue-here: disconnect error (continuing anyway)', {
+        id: session.id,
+        err: String(err),
+      });
     });
-  });
+  if (options.replaceAdapter) {
+    // A timed-out provider may never finish cleanup. The replacement adapter
+    // is isolated, so stale cleanup stays detached from the fresh connection.
+    void disconnectStaleAdapter;
+  } else {
+    await disconnectStaleAdapter;
+  }
 
   // Clear vendor session ID so no stale resume ID remains in memory.
   if (session.agentSessionV2.providerSession !== undefined) {
@@ -320,13 +414,14 @@ export async function continueHereWebSession(
     };
   }
 
-  // Bug 1 fix: re-register the session-level state reducer/persistence handler.
-  // disconnect() clears all handlers registered via onPatch, including the one
-  // set up at session-create time in createWebSession. Without re-registering,
-  // patches from the fresh connect are not applied to session state and not
-  // persisted to the DB.
+  const adapterV2 = replacementAdapter ?? staleAdapter;
+
+  // Register the reducer on the replacement adapter. Identity fencing keeps
+  // late patches from the superseded provider from mutating this session.
   adapterV2.onPatch((patch) => {
+    if (session.adapterV2 !== adapterV2) return;
     handleAgentPatchV2(session, patch, onBackendStateChanged);
+    notifyWebSessionPatchSubscribers(session, patch);
   });
 
   logger.info('continue-here: connecting fresh adapter session', {
