@@ -20,11 +20,32 @@ const fixture = {
   nativeEvents: [
     {
       method: 'item/started',
-      params: { item: { type: 'reasoning', id: 'reason_synthetic_codex' } },
+      params: {
+        threadId: 'thread_synthetic_codex',
+        turnId: 'turn_synthetic_codex',
+        startedAtMs: 1_000,
+        item: {
+          type: 'reasoning',
+          id: 'reason_synthetic_codex',
+          summary: [],
+          content: [],
+        },
+      },
+    },
+    {
+      method: 'item/reasoning/summaryPartAdded',
+      params: {
+        threadId: 'thread_synthetic_codex',
+        turnId: 'turn_synthetic_codex',
+        itemId: 'reason_synthetic_codex',
+        summaryIndex: 0,
+      },
     },
     {
       method: 'item/reasoning/summaryTextDelta',
       params: {
+        threadId: 'thread_synthetic_codex',
+        turnId: 'turn_synthetic_codex',
         itemId: 'reason_synthetic_codex',
         delta: thoughtContent,
         summaryIndex: 0,
@@ -33,10 +54,14 @@ const fixture = {
     {
       method: 'item/completed',
       params: {
+        threadId: 'thread_synthetic_codex',
+        turnId: 'turn_synthetic_codex',
+        completedAtMs: 2_000,
         item: {
           type: 'reasoning',
           id: 'reason_synthetic_codex',
-          summary: [{ type: 'summary_text', text: thoughtContent }],
+          summary: [thoughtContent],
+          content: [],
         },
       },
     },

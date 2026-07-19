@@ -230,15 +230,19 @@ function diffCounts(diff: string): { additions: number; deletions: number } {
 }
 
 /**
- * Flatten codex's reasoning array shapes into a single string. Both
- * `summary: Vec<ReasoningItemReasoningSummary>` and
- * `content: Vec<ReasoningItemContent>` use `{ type, text }` entries.
+ * Flatten Codex's reasoning arrays into a single string. Current app-server
+ * emits `string[]`; older versions used `{ type, text }[]` entries.
  */
 function flattenReasoningTextEntries(value: unknown): string {
   if (!Array.isArray(value)) return '';
   return value
-    .filter(isRecord)
-    .map((entry) => stringField(entry['text']))
+    .map((entry) =>
+      typeof entry === 'string'
+        ? entry
+        : isRecord(entry)
+          ? stringField(entry['text'])
+          : ''
+    )
     .filter((text) => text.length > 0)
     .join('\n\n');
 }
@@ -456,6 +460,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   private providerExtensionSeq = 0;
   private readonly itemMap = new Map<string, string>(); // nativeItemId → relayItemId
   private readonly openAgentMessageNativeIds = new Set<string>();
+  private readonly openReasoningNativeIds = new Set<string>();
   private deferredTurnCompletion: DeferredTurnCompletion | null = null;
   private readonly toolArgumentsByNativeId = new Map<
     string,
@@ -674,6 +679,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.activeStartedAt = startedAt;
     this.completedActiveTurn = false;
     this.openAgentMessageNativeIds.clear();
+    this.openReasoningNativeIds.clear();
     this.clearDeferredTurnCompletion();
 
     this.emitPatch({
@@ -746,6 +752,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.completedActiveTurn = true;
     const turnId = this.activeTurnId;
     const completedAt = nowIso();
+    this.terminalizeOpenReasoningItems(status, completedAt);
     // Prefer native durationMs if provided, else compute from startedAt
     const durationMs =
       nativeDurationMs ??
@@ -771,6 +778,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     // on an always-on channel binding.
     this.itemMap.clear();
     this.openAgentMessageNativeIds.clear();
+    this.openReasoningNativeIds.clear();
     this.toolArgumentsByNativeId.clear();
     this.tokenUsageBuffer.clear();
     this.reasoningSummaryBuffers.clear();
@@ -815,7 +823,12 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     error?: string,
     nativeDurationMs?: number
   ): boolean {
-    if (this.openAgentMessageNativeIds.size === 0) return false;
+    if (
+      this.openAgentMessageNativeIds.size === 0 &&
+      this.openReasoningNativeIds.size === 0
+    ) {
+      return false;
+    }
     this.clearDeferredTurnCompletion();
     const timer = setTimeout(() => {
       if (this.flushDeferredTurnCompletion()) this.drainQueue();
@@ -834,11 +847,51 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
   private completeDeferredTurnIfReady(): void {
     if (
       this.openAgentMessageNativeIds.size > 0 ||
+      this.openReasoningNativeIds.size > 0 ||
       !this.deferredTurnCompletion
     ) {
       return;
     }
     if (this.flushDeferredTurnCompletion()) this.drainQueue();
+  }
+
+  private terminalizeOpenReasoningItems(
+    turnStatus: 'completed' | 'interrupted' | 'failed',
+    completedAt: string
+  ): void {
+    if (!this.config || this.activeTurnId === null) return;
+    const status =
+      turnStatus === 'completed'
+        ? 'completed'
+        : turnStatus === 'failed'
+          ? 'failed'
+          : 'cancelled';
+
+    for (const nativeId of this.openReasoningNativeIds) {
+      const relayId = this.itemMap.get(nativeId);
+      if (!relayId) continue;
+      const summary = this.reasoningSummaryBuffers.get(relayId) ?? '';
+      const detail = this.reasoningDetailBuffers.get(relayId) ?? '';
+      this.emitPatch({
+        type: 'agent-item-updated-v2',
+        sessionId: this.config.sessionId,
+        timestamp: completedAt,
+        turnId: this.activeTurnId,
+        item: {
+          type: 'reasoning',
+          id: relayId,
+          summary,
+          ...(detail ? { detail } : {}),
+          visibility: 'summary',
+          status,
+          completedAt,
+          ...(nativeId ? { providerItemId: nativeId } : {}),
+        },
+      });
+      this.reasoningSummaryBuffers.delete(relayId);
+      this.reasoningDetailBuffers.delete(relayId);
+    }
+    this.openReasoningNativeIds.clear();
   }
 
   private drainQueue(): void {
@@ -934,8 +987,17 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
 
     // A provider-completed turn waiting only on the terminal-item grace still
     // owns its authoritative usage/boundary. Publish it before client.stop()
-    // can emit close and before teardown clears the deferred record.
-    this.flushDeferredTurnCompletion();
+    // can emit close and before teardown clears the deferred record. Otherwise
+    // an explicitly disconnected active turn is interrupted here so open
+    // reasoning cards become terminal before their identity/buffers are lost.
+    const flushedDeferredCompletion = this.flushDeferredTurnCompletion();
+    if (
+      !flushedDeferredCompletion &&
+      this.activeTurnId !== null &&
+      !this.completedActiveTurn
+    ) {
+      this.completeActiveTurn('interrupted');
+    }
 
     if (this.client) {
       try {
@@ -954,6 +1016,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
     this.slashCommandsLoaded = false;
     this.itemMap.clear();
     this.openAgentMessageNativeIds.clear();
+    this.openReasoningNativeIds.clear();
     this.clearDeferredTurnCompletion();
     this.toolArgumentsByNativeId.clear();
     this.tokenUsageBuffer.clear();
@@ -1298,6 +1361,7 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
       case 'reasoning': {
         const relayId = `reasoning-${this.activeTurnId}-${nativeId}`;
         this.itemMap.set(nativeId, relayId);
+        if (nativeId) this.openReasoningNativeIds.add(nativeId);
         this.emitPatch({
           type: 'agent-item-started-v2',
           sessionId: this.config.sessionId,
@@ -1552,10 +1616,10 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
         break;
 
       case 'reasoning': {
-        // Codex ships ReasoningItem with `summary: Vec<ReasoningItemReasoningSummary>`
-        // and optional `content: Vec<ReasoningItemContent>`. Each entry has a
-        // `text` field. Flatten to plain strings; fall back to streamed buffers
-        // when the completion payload omits them.
+        if (!this.openReasoningNativeIds.has(nativeId)) break;
+        // Current Codex app-server ships `summary` / `content` as string[];
+        // older versions used `{ type, text }[]`. Flatten either shape and
+        // fall back to streamed buffers when completion omits them.
         const summaryFromPayload = flattenReasoningTextEntries(item['summary']);
         const detailFromPayload = flattenReasoningTextEntries(item['content']);
         const summary =
@@ -1577,8 +1641,11 @@ export class CodexNativeProtocolAdapter extends BaseProtocolAdapterV2 {
             visibility: 'summary',
             status: 'completed',
             completedAt,
+            ...(nativeId ? { providerItemId: nativeId } : {}),
           },
         });
+        this.openReasoningNativeIds.delete(nativeId);
+        this.completeDeferredTurnIfReady();
         break;
       }
 

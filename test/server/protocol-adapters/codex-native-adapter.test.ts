@@ -737,7 +737,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
     await adapter.disconnect();
   });
 
-  it('reasoning: item/completed with structured summary array preserves text', async () => {
+  it('reasoning: legacy object arrays preserve summary and detail text', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-r2');
 
     client.feedNotification('item/started', {
@@ -748,7 +748,7 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       delta: 'partial summary text',
       summaryIndex: 0,
     });
-    // Authoritative codex ReasoningItem shape: summary is Vec<{type, text}>
+    // Older app-server versions used Vec<{type, text}> for both fields.
     client.feedNotification('item/completed', {
       item: {
         type: 'reasoning',
@@ -756,6 +756,10 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
         summary: [
           { type: 'summary_text', text: 'final summary part one' },
           { type: 'summary_text', text: 'final summary part two' },
+        ],
+        content: [
+          { type: 'reasoning_text', text: 'detail part one' },
+          { type: 'reasoning_text', text: 'detail part two' },
         ],
       },
     });
@@ -775,8 +779,77 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       expect(completed.item.summary).toBe(
         'final summary part one\n\nfinal summary part two'
       );
+      expect(completed.item.detail).toBe('detail part one\n\ndetail part two');
     }
 
+    await adapter.disconnect();
+  });
+
+  it('reasoning: current string arrays preserve summary and detail text', async () => {
+    const { adapter, client, patches } = await setupAndSend('turn-r-strings');
+
+    client.feedNotification('item/started', {
+      item: {
+        type: 'reasoning',
+        id: 'reason-strings',
+        summary: [],
+        content: [],
+      },
+    });
+    client.feedNotification('item/completed', {
+      item: {
+        type: 'reasoning',
+        id: 'reason-strings',
+        summary: ['summary part one', 'summary part two'],
+        content: ['detail part one', 'detail part two'],
+      },
+    });
+
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-item-updated-v2' &&
+          patch.item.type === 'reasoning' &&
+          patch.item.status === 'completed'
+      )
+    ).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({
+          summary: 'summary part one\n\nsummary part two',
+          detail: 'detail part one\n\ndetail part two',
+        }),
+      }),
+    ]);
+
+    await adapter.disconnect();
+  });
+
+  it('reasoning: duplicate item/completed emits one terminal update', async () => {
+    const { adapter, client, patches } = await setupAndSend(
+      'turn-r-duplicate-completion'
+    );
+    client.feedNotification('item/started', {
+      item: { type: 'reasoning', id: 'reason-duplicate' },
+    });
+    const completion = {
+      item: {
+        type: 'reasoning',
+        id: 'reason-duplicate',
+        summary: ['terminal summary'],
+        content: [],
+      },
+    };
+    client.feedNotification('item/completed', completion);
+    client.feedNotification('item/completed', completion);
+
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-item-updated-v2' &&
+          patch.item.type === 'reasoning' &&
+          patch.item.status === 'completed'
+      )
+    ).toHaveLength(1);
     await adapter.disconnect();
   });
 
@@ -813,6 +886,131 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
 
     await adapter.disconnect();
   });
+
+  it('reasoning: turn completion terminalizes an item missing item/completed', async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, client, patches } = await setupAndSend(
+        'turn-reasoning-fallback'
+      );
+      client.feedNotification('item/started', {
+        item: { type: 'reasoning', id: 'reason-fallback' },
+      });
+      client.feedNotification('item/reasoning/summaryTextDelta', {
+        itemId: 'reason-fallback',
+        delta: 'buffered summary',
+        summaryIndex: 0,
+      });
+      client.feedNotification('item/reasoning/textDelta', {
+        itemId: 'reason-fallback',
+        delta: 'buffered detail',
+        contentIndex: 0,
+      });
+      client.feedNotification('turn/completed', {
+        turn: { id: 'native-turn-1', status: 'completed' },
+      });
+
+      expect(
+        patches.some((patch) => patch.type === 'agent-turn-completed-v2')
+      ).toBe(false);
+      await vi.advanceTimersByTimeAsync(CODEX_TERMINAL_ITEM_GRACE_MS);
+
+      const session = reducePatches(patches);
+      expect(session.turns[0]).toMatchObject({ status: 'completed' });
+      expect(session.turns[0]?.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'reasoning',
+            summary: 'buffered summary',
+            detail: 'buffered detail',
+            status: 'completed',
+            card: expect.objectContaining({
+              kind: 'thought',
+              content: 'buffered detail',
+              status: 'completed',
+            }),
+          }),
+        ])
+      );
+      await adapter.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reasoning: disconnect terminalizes an active item and turn exactly once', async () => {
+    const { adapter, client, patches } = await setupAndSend(
+      'turn-reasoning-disconnect'
+    );
+    client.feedNotification('item/started', {
+      item: { type: 'reasoning', id: 'reason-disconnect' },
+    });
+    client.feedNotification('item/reasoning/summaryTextDelta', {
+      itemId: 'reason-disconnect',
+      delta: 'summary before disconnect',
+      summaryIndex: 0,
+    });
+
+    await adapter.disconnect();
+
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-item-updated-v2' &&
+          patch.item.type === 'reasoning' &&
+          patch.item.status === 'cancelled'
+      )
+    ).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({
+          summary: 'summary before disconnect',
+          status: 'cancelled',
+        }),
+      }),
+    ]);
+    expect(
+      patches.filter(
+        (patch) =>
+          patch.type === 'agent-turn-completed-v2' &&
+          patch.turnId === 'turn-reasoning-disconnect' &&
+          patch.status === 'interrupted'
+      )
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    ['failed', 'failed'],
+    ['interrupted', 'cancelled'],
+  ] as const)(
+    'reasoning: %s turn terminalizes open reasoning as %s',
+    async (turnStatus, itemStatus) => {
+      const { adapter, client, patches } = await setupAndSend(
+        `turn-reasoning-${turnStatus}`
+      );
+      client.feedNotification('item/started', {
+        item: { type: 'reasoning', id: `reason-${turnStatus}` },
+      });
+      client.feedNotification('item/reasoning/summaryTextDelta', {
+        itemId: `reason-${turnStatus}`,
+        delta: `${turnStatus} summary`,
+        summaryIndex: 0,
+      });
+      client.feedNotification('turn/completed', {
+        turn: { id: 'native-turn-1', status: turnStatus },
+      });
+
+      expect(reducePatches(patches).turns[0]?.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'reasoning',
+            status: itemStatus,
+            card: expect.objectContaining({ status: itemStatus }),
+          }),
+        ])
+      );
+      await adapter.disconnect();
+    }
+  );
 
   it('commandExecution: output delta then complete', async () => {
     const { adapter, client, patches } = await setupAndSend('turn-cmd');
@@ -995,12 +1193,31 @@ describe('CodexNativeProtocolAdapter — notifications', () => {
       client.feedNotification(event.method, event.params);
     }
 
-    let session = emptyAgentSessionV2({
-      id: 'session-1',
-      provider: 'codex',
-      cwd: '/workspace/example',
-    });
-    for (const patch of patches) session = applyAgentPatchV2(session, patch);
+    const reasoningDeltaIndex = patches.findIndex(
+      (patch) =>
+        patch.type === 'agent-item-delta-v2' &&
+        patch.delta.summary === codexDetailFixture.assertions.thoughtContent
+    );
+    expect(reasoningDeltaIndex).toBeGreaterThanOrEqual(0);
+    const streamingSession = reducePatches(
+      patches.slice(0, reasoningDeltaIndex + 1)
+    );
+    expect(streamingSession.turns[0]?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'reasoning',
+          summary: codexDetailFixture.assertions.thoughtContent,
+          status: 'running',
+          card: expect.objectContaining({
+            kind: 'thought',
+            content: codexDetailFixture.assertions.thoughtContent,
+            status: 'running',
+          }),
+        }),
+      ])
+    );
+
+    const session = reducePatches(patches);
     const cards = session.turns
       .flatMap((turn) => turn.items)
       .flatMap((item) =>
@@ -1916,6 +2133,14 @@ describe('CodexNativeProtocolAdapter — queue', () => {
           id: `item-${turn}`,
           type: 'agentMessage',
           text: 'terminal output',
+        },
+      });
+      client.feedNotification('item/completed', {
+        item: {
+          id: `reasoning-${turn}`,
+          type: 'reasoning',
+          summary: ['thinking'],
+          content: ['detail'],
         },
       });
       client.feedNotification('turn/completed', {
