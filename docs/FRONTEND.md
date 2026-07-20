@@ -1,6 +1,10 @@
 # Frontend
 
-React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and Vite. The frontend provides tab-first terminal surfaces, active session management, right-rail utilities, and repo/worktree affordances when the active tab has a verified repo binding.
+React 19 SPA for Relay. Built with TypeScript, Zustand, TanStack Query, and
+Vite. The primary collaboration surface is a channel timeline: workspaces group
+channels and DMs, agents participate through mentions, and the conversation can
+open threads, images, approvals, and terminal/file working surfaces without
+becoming identical to a provider process.
 
 ## Current State
 
@@ -8,11 +12,29 @@ React 19 SPA for Relay IDE. Built with TypeScript, Zustand, TanStack Query, and 
 - Vite builds `frontend/` to `dist/frontend/`; Express serves compiled output in production
 - Source dev uses `npm run dev`: real backend on `127.0.0.1:3457`, Vite HMR frontend on `127.0.0.1:5173`, with REST and `/ws/*` requests proxied so frontend code keeps relative fetch/WebSocket URLs
 - Self-host dev uses `npm run dev:self`: same supervised backend + Vite HMR loop, but with per-worktree allocated ports and isolated config under `~/.config/relay-ide/self-host/` so Relay can safely build Relay inside an installed Relay session
+- `TopicSidebarShell` is the visible workspace/channel navigation on desktop and
+  mobile. Selecting a channel mounts `ChatHome -> ChannelView`; the default
+  no-session landing is the topic/channel composer.
+- `ChannelView` owns the durable conversation surface: timeline, composer,
+  unread/reconnect state, roster/presence, and thread panel. New channels and
+  DMs never use the legacy session-centric `ChatView`.
+- The mobile cockpit derives its attention rows from the same channel tree and
+  exposes bounded open/nudge/interrupt/reply actions rather than a separate
+  mobile mutation model.
 - xterm.js consumed as npm dependency (`@xterm/xterm`, `@xterm/addon-fit`); it remains the browser renderer while `relay-pty`/libghostty-vt owns server-side session/process execution. Browser reconnect can reattach to a live Relay process; server restart is cold resume from saved metadata/scrollback only.
 - Current implementation still has repo-centric state (`activeRepoPath`, `repoPath`, `worktreePath`) in App/sidebar/session paths; docs should describe that as the local repo Project/Bench case, not the full IA model
 - `WorkspaceTab` session tabs can carry `nodeId`; non-local terminal creation routes through `/hub/nodes/:nodeId/sessions`, and PTY sockets route through `/nodes/:nodeId/ws/sessions/:sessionId`
-- Utility rail context is derived from the active tab/session: local repo tabs expose file/git resources, remote tabs show explicit remote unavailable states until #428, and free/non-git local tabs can browse files without git widgets
-- Mobile-first responsive design with touch toolbar (hidden on desktop)
+- Utility rail context is derived from the active tab/session: local repo tabs
+  expose file/git resources, online remote tabs browse files through `fs.list`
+  while remote git actions remain unavailable, and free/non-git local tabs can
+  browse files without git widgets
+- Native channel image messages accept bounded PNG/JPEG/GIF/WebP attachments;
+  authenticated attachment URLs render through `ChannelImagePart`.
+- Legacy `ChatView`/`Turn` is still reachable for restored or API-created
+  `mode: 'web'` sessions. It is compatibility code pending migration, not proof
+  of the primary channel path.
+- Mobile-first responsive design with a channel attention cockpit and a
+  terminal touch toolbar (both hidden where their desktop counterparts apply)
 
 ## Product Vocabulary and Tab Context (#444)
 
@@ -34,21 +56,27 @@ Worker/agent status is decoration, not hierarchy: **Project = what; Worker = who
 - Preserve legacy localStorage/API keys such as `claude-remote-active-workspace`, `claude-remote-workspace-sessions`, `relay-utility-rail::<path>`, `repoPath`, `worktreePath`, and `globalSessionId`; add adapter/view-model names around them instead of destructive renames.
 - The active context is the active **Tab** plus optional Project/Instance/Bench/repo binding. Avoid global “active repo” copy unless the tab actually has a repo binding.
 - The utility rail is tab-contextual. Its header and unavailable states should describe the active tab anchor: local repo tab, remote node tab, or free/non-git tab.
-- “Not a git repo”, “remote files unavailable until file RPC lands”, and “no pinned projects” are normal empty/unavailable states, not red failure states.
+- “Not a git repo”, “remote node unavailable”, and “no pinned projects” are
+  normal empty/unavailable states, not red failure states.
 - PR/git widgets read from explicit workspace pins and active-tab anchors; they must not silently fall back to a stale local repo when a remote/free tab is active.
 
-### First-wave implementation lane map
+### Migration guardrails
 
-1. Add vocabulary/view-model adapters for active tab anchor, project path/repo binding, utility-rail state key, and last-session recall while reading old storage keys.
-2. Make a copy-only pass on low-risk surfaces: add/connect flow, sidebar empty states, command palette placeholders/actions, and right-rail unavailable messages.
-3. Defer full #473 right-rail/create-tab migration, #428 remote file RPC, and broad sidebar IA reshaping to their own implementation PRs.
-4. Keep destructive git worktree actions and git/PR panels using git words where they are literal.
+1. Keep vocabulary/view-model adapters reading legacy storage and API keys.
+2. Keep remote file reads on the shipped `fs.list` contract and fail closed for
+   remote git actions until a verified remote-git contract exists.
+3. Keep destructive git worktree actions and git/PR panels using git words where
+   they are literal.
 
 ## Tab-first IA Status
 
 Relay's product vocabulary is `View -> Workspace -> Project -> Instance -> Bench -> Tab`. The frontend should use those nouns for product IA and keep repo/worktree/session language for git/process-specific surfaces:
 
-- **Implemented now:** session/file `WorkspaceTab` layout, optional session `nodeId`, node-aware terminal creation and PTY routing, active-tab-derived utility rail context, guarded rail states for remote and non-git tabs, six-layer identity helpers, persisted IA Workspace grouping, workspace topic APIs, and bounded CLI file RPC.
+- **Implemented now:** durable channel/DM timelines, provider mentions, threads,
+  native image parts, mobile attention controls, session/file `WorkspaceTab`
+  layout, optional session `nodeId`, node-aware terminal creation and PTY
+  routing, active-tab-derived utility rail context, persisted IA Workspace
+  grouping, workspace topic APIs, and bounded CLI file RPC.
 - **Compatibility still present:** the right rail follows active tab/session context, while App/sidebar/PR/dashboard/session creation still use `activeRepoPath`, `repoPath`, and `worktreePath` where the flow is git-specific or not yet lifted to product IA nouns.
 - **Still deferred:** repo-wide vocabulary/API renames, full non-git Project/Instance/Bench CRUD, environment inheritance, and any high-risk write/control UX not backed by current contracts and tests.
 - **Documentation rule:** say "active tab" when describing the visible surface; say "repo/worktree" only for the current local repo Project/Bench case or legacy API fields.
@@ -57,8 +85,15 @@ Relay's product vocabulary is `View -> Workspace -> Project -> Instance -> Bench
 
 | Component                               | Role                                                                                                                                                                                                                     |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `App.tsx`                               | Root layout: left sidebar + SplitPaneLayout hosting WorkspaceArea and WorkspaceUtilityRail for session view; dashboard / PR top bar + tabs for non-session views                                                         |
+| `App.tsx`                               | Root layout and mutually-exclusive channel/session/dashboard routing; session view hosts WorkspaceArea and WorkspaceUtilityRail                                                                                          |
 | `Sidebar.tsx`                           | Left-nav shell: renders `TopicSidebarShell`, the desktop left nav                                                                                                                                                        |
+| `TopicSidebarShell.tsx`                 | Shared workspace/channel/DM navigation model; desktop tree plus mobile cockpit attention lane                                                                                                                            |
+| `ChatHome.tsx`                          | Primary chat landing and route switch: active channel -> `ChannelView`, legacy web session -> compatibility `ChatView`, otherwise topic composer                                                                         |
+| `chat/ChannelView.tsx`                  | Durable channel surface: socket/history state, header/roster, timeline, composer, thread panel, archive/recovery states                                                                                                  |
+| `chat/ChannelTimeline.tsx`              | Ordered live/history rows, grouping, unread marker, catch-up pagination, and scroll anchoring                                                                                                                            |
+| `chat/ChannelComposer.tsx`              | Text, roster mention completion, idempotent submit, and bounded native image upload                                                                                                                                      |
+| `chat/ChannelThreadPanel.tsx`           | Channel-scoped thread history and replies over the same message contract                                                                                                                                                 |
+| `MobileCockpitAttentionLane.tsx`        | Ranked mobile attention/presence rows with open, short nudge, and interrupt actions                                                                                                                                      |
 | `CommandPalette.tsx`                    | Terminal-style command palette with action registry                                                                                                                                                                      |
 | `PrTopBar.tsx`                          | Dynamic PR/CI bar with branch switcher, target branch switcher, diff stats, merge conflict detection, action buttons                                                                                                     |
 | `RepoDashboard.tsx`                     | Repo-bound dashboard: PRs with merge status, activity feed, CTAs; shown only when the selected workspace/repo is the active local context                                                                                |
@@ -133,22 +168,26 @@ State is managed via Zustand stores and React hooks. Pure logic modules live und
 
 ### Pure Logic Modules (`frontend/src/lib/state/`)
 
-| Module             | Role                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `display-state.ts` | Pure display state machine: `transitionDisplayState(current, event) -> newState`, `shouldNotify(from, to)` — 6 states: initializing, running, unseen-idle, seen-idle, permission, inactive                                                                                                                                                                                                                                      |
-| `sidebar-items.ts` | Pure `buildSidebarItems()` function: maintains legacy `SidebarItem[]` reconciliation for session/unread state while the visible desktop left nav is `TopicSidebarShell`                                                                                                                                                                                                                                                         |
-| `view-tree.ts`     | Pure, read-only view-spine derive (#444): `buildViewTree()` projects repos/worktrees/sessions/workspace-groups + `/nodes` status into a `Workspace -> Project -> Instance -> Bench` tree (Tab counts as leaves, dedup across nodes by repo remote, free/remote lane); `applyLens()` applies the recent/all/this-host lenses; `benchCreatePayload()` resolves the git-bench `+ tab` create payload. No persistence, no new fetch |
-| `attention.ts`     | State priority scoring: `STATE_SCORES` mapping, `highestPriorityState()`, `isAttentionState()` for repo-level aggregation                                                                                                                                                                                                                                                                                                       |
-| `unread-logic.ts`  | Unread/attention state transition logic                                                                                                                                                                                                                                                                                                                                                                                         |
-| `toasts.store.ts`  | Toast notification state                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Module                 | Role                                                                                                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `display-state.ts`     | Pure display state machine: `transitionDisplayState(current, event) -> newState`, `shouldNotify(from, to)` — 6 states: initializing, running, unseen-idle, seen-idle, permission, inactive |
+| `sidebar-items.ts`     | Pure `buildSidebarItems()` function: maintains legacy `SidebarItem[]` reconciliation for session/unread state while the visible desktop left nav is `TopicSidebarShell`                    |
+| `topic-nav.ts`         | Pure workspace/channel/DM tree derivation shared by desktop navigation and the mobile cockpit                                                                                              |
+| `cockpit-attention.ts` | Ranks channel rows requiring operator attention without creating a mobile-only data model                                                                                                  |
+| `cockpit-presence.ts`  | Derives visible mobile agent presence from channel status and unread state                                                                                                                 |
+| `attention.ts`         | State priority scoring: `STATE_SCORES` mapping, `highestPriorityState()`, `isAttentionState()` for repo-level aggregation                                                                  |
+| `unread-logic.ts`      | Unread/attention state transition logic                                                                                                                                                    |
+| `toasts.store.ts`      | Toast notification state                                                                                                                                                                   |
 
 ### Hooks (`frontend/src/hooks/`)
 
-| Hook                    | Role                                                                                |
-| ----------------------- | ----------------------------------------------------------------------------------- |
-| `useEventSocket.ts`     | WebSocket connection to `/ws/events` with auto-reconnect, heartbeat, event dispatch |
-| `useSessionHandlers.ts` | Session CRUD operations, state transitions, PTY lifecycle                           |
-| `useActionRegistry.ts`  | Action registry integration for CommandPalette                                      |
+| Hook                      | Role                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `useEventSocket.ts`       | WebSocket connection to `/ws/events` with auto-reconnect, heartbeat, event dispatch  |
+| `useChannelChatSocket.ts` | Durable channel snapshot/history/live reducer, reconnect, catch-up, and post actions |
+| `useChannelThread.ts`     | Thread-root history and live reply merge over channel messages                       |
+| `useSessionHandlers.ts`   | Session CRUD operations, state transitions, PTY lifecycle                            |
+| `useActionRegistry.ts`    | Action registry integration for CommandPalette                                       |
 
 | `useAppShortcuts.ts` | Global keyboard shortcuts (Cmd+T, Cmd+K, etc.) |
 | `useScrollOverflow.ts` | Detects text overflow for MarqueeText behavior |
@@ -186,6 +225,9 @@ The first converted launch path (#859) is `sessions.create`. `sessionCreateActio
 ## WebSocket Reconnection
 
 - **Event socket** (`/ws/events`): auto-reconnect with fixed 3-second delay
+- **Channel socket** (`/ws/channels/:channelId`): server-to-client snapshots and
+  live events with durable sequence catch-up, visibility/heartbeat liveness
+  checks, and reducer-driven resync on gaps
 - **PTY socket** (`/ws/:sessionId`): exponential backoff (1s, 2s, 4s, 8s, capped at 10s, max 30 attempts)
 - Close code 1000 = session ended — no reconnect
 - Before PTY reconnect, client verifies session still exists via `GET /sessions`
@@ -197,7 +239,9 @@ The first converted launch path (#859) is `sessions.create`. `sessionCreateActio
 - **Tab bar "+" dropdown** has three options: "New Agent" (instant create with workspace defaults via `createSession()`), "New Terminal" (instant create via `createSession()` with `type: 'terminal'`), "Customize..." (opens `CustomizeSessionDialog` which also calls `createSession()`). `Cmd/Ctrl+T` triggers instant agent creation. New tabs auto-name as "Agent 1", "Terminal 1" etc. and append rightmost
 - All session/item actions are accessed via a "..." context menu button (ContextMenu component). Menu items vary by state: Active → Rename, Kill; Inactive worktree → Customize, Resume, Resume (YOLO), Delete; Idle repo → Customize, New Worktree
 - "Customize" opens NewSessionDialog pre-filled with the item's workspace and branch (for worktrees). All session creation flows go through the single `createSession()` function → `POST /sessions`
-- Topic and ViewSpine rows derive visible session labels from the session `displayName` first, then cwd/bench labels; git branch metadata appears only for verified git benches
+- Topic/session rows derive visible labels from the channel/topic title or
+  session `displayName` first, then cwd/bench labels; git branch metadata appears
+  only for verified git benches
 - Session/action row secondary metadata should stay contextual: timestamps/activity, branch only when git-bound, and no repo badge/branch leak into free or remote tabs
 - PRs tab uses `PrRepoGroup` components — each repo group independently fetches PRs via `@tanstack/react-query` `useQuery`
 - Filters (root, repo, search) live below the tab bar
@@ -208,7 +252,10 @@ The first converted launch path (#859) is `sessions.create`. `sessionCreateActio
 - Cookie TTL uses human-readable format: `s` (seconds), `m` (minutes), `h` (hours), `d` (days). Default: `24h`
 - **Utility rail + tabs** — `SplitPaneLayout` wraps the active Tab view with `WorkspaceArea` (session/file/diff/html tabs) and `WorkspaceUtilityRail` (right, visible/hidden via the PR top-bar toggle). The rail has a fixed-width icon strip at the far right; the selected utility pane renders immediately to its left, and clicking the active icon clears the selected pane while keeping the icon strip. Utility rail state is currently persisted with legacy workspace/path keys in the UI store; migration code should preserve those keys while exposing a tab-anchor/state-key adapter. `openFileTab()`/`closeFileTab()` drive file tabs inside WorkspaceArea.
 - **Cross-node terminal tabs (#443)** — `WorkspaceTab` session variant carries an optional `nodeId`. When set, `ws.ts` `connectPtySocket` routes via `/nodes/:nodeId/ws/sessions/:sessionId` (resolved through `parseGlobalSessionId` or `session.nodeId`). `WorkspaceTabBar` renders a per-tab node badge (label + heartbeat dot) sourced from `SummaryContext.findNode`, which `WorkspaceArea` populates from `useQuery(['hub-nodes'], fetchHubNodes)`. The tab-bar `+` button is replaced by `TerminalNodePicker` — a dropdown listing "this host" plus paired nodes; only `online` nodes are selectable. Choosing a node calls `createAgentSession({ type: 'terminal', nodeId })`; the layout reconciler picks the new session up via `sessions[]` → `sessionToWorkspaceTab` (which copies `session.nodeId` onto the tab).
-- **Node identity in sidebar/session rows (#864)** — tab chrome and topic/view-spine rows should show remote node identity only when the row is anchored to a non-local node; local-node sessions stay quiet, remote sessions show label + heartbeat state without fabricating repo context.
+- **Node identity in sidebar/session rows (#864)** — tab chrome and topic/session
+  rows should show remote node identity only when the row is anchored to a
+  non-local node; local-node sessions stay quiet, remote sessions show label +
+  heartbeat state without fabricating repo context.
 
 ### Entrypoint sweep for tab-first IA
 
@@ -218,20 +265,22 @@ Keep these entrypoints aligned when changing tab/session semantics:
 - **Tab-plus picker:** `WorkspaceTabBar` uses `TerminalNodePicker` for terminal creation. It lists `this host` plus paired nodes, disables non-online nodes. Remote file browsing is available for online nodes via `fs.list` (#428); remote git actions remain unavailable.
 - **Command palette / action registry:** `useActionRegistry()` registers session/workspace/PR actions. Contextual actions may still depend on `workspacePath` / `activeRepoPath`; treat those as repo-bound actions, not global active-tab truth.
 - **Restore/resume:** `useSessionHandlers()`, session restore, and worktree resume paths still prefer `repoPath` / `worktreePath`. Remote/global session identity uses `nodeId` / `globalSessionId` when present.
-- **Sidebar / right rail:** Sidebar navigation is topic-first by default with ViewSpine as an opt-in IA tree; the right rail derives `stateKey`, anchor label, file resource path, and git resource path from active session context via `deriveUtilityRailContext()`.
+- **Sidebar / right rail:** Sidebar navigation is the workspace/channel tree;
+  the right rail derives `stateKey`, anchor label, file resource path, and git
+  resource path from active session context via `deriveUtilityRailContext()`.
 - **Close/delete:** Session close can route through `killSession(id, nodeId)` for remote sessions. Worktree delete remains git-worktree-specific and should only appear for local repo Project/Bench rows.
 - **Hooks/stores:** `useUiStore` still persists rail state by a string key; for remote tabs that key is `node:<nodeId>:<cwd>` (shipped via #479). `useSessionsStore` still has repo enrichment APIs; use them only when a repo binding is verified.
 
 ### Tab and rail states
 
-| active tab state               | anchor shown                                                                                     | files panel                                                           | git/branch/review panels            | implementation status                                                           |
-| ------------------------------ | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------- |
-| local repo tab                 | `local · <repoPath or worktreePath>` plus `[repo]` badge                                         | local cwd file browser                                                | enabled when git context exists     | implemented current path                                                        |
-| remote node tab, online        | `<nodeId> · <remote cwd>` with no repo badge unless a future verified remote repo binding exists | remote files via `fs.list` (#428)                                     | `remote git unavailable` until #428 | terminal + remote file browse implemented; remote git planned                   |
-| free/non-git local tab         | `local · <cwd>` with no repo badge                                                               | local cwd file browser                                                | `no git context`                    | implemented by utility rail guards                                              |
-| offline/stale remote tab       | `<nodeId> · <last known cwd>` plus node status in tab chrome                                     | no live remote browsing                                               | no live git actions                 | explicit offline copy is planned; current guards are generic unavailable states |
-| missing cwd / no workspace ctx | `local` or node label only                                                                       | `no workspace context`                                                | `no workspace context`              | guard exists in `deriveUtilityRailContext()`                                    |
-| cwd exists, no repo binding    | `<nodeId or local> · <cwd>` with no repo badge                                                   | local files when local; remote files via `fs.list` (#428) when online | no repo/git widgets                 | implemented for local free folders; remote file browse shipped (#428)           |
+| active tab state               | anchor shown                                                                                     | files panel                                                           | git/branch/review panels        | implementation status                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------- |
+| local repo tab                 | `local · <repoPath or worktreePath>` plus `[repo]` badge                                         | local cwd file browser                                                | enabled when git context exists | implemented current path                                                        |
+| remote node tab, online        | `<nodeId> · <remote cwd>` with no repo badge unless a future verified remote repo binding exists | remote files via `fs.list` (#428)                                     | `remote git unavailable`        | terminal + remote file browse implemented; remote git planned                   |
+| free/non-git local tab         | `local · <cwd>` with no repo badge                                                               | local cwd file browser                                                | `no git context`                | implemented by utility rail guards                                              |
+| offline/stale remote tab       | `<nodeId> · <last known cwd>` plus node status in tab chrome                                     | no live remote browsing                                               | no live git actions             | explicit offline copy is planned; current guards are generic unavailable states |
+| missing cwd / no workspace ctx | `local` or node label only                                                                       | `no workspace context`                                                | `no workspace context`          | guard exists in `deriveUtilityRailContext()`                                    |
+| cwd exists, no repo binding    | `<nodeId or local> · <cwd>` with no repo badge                                                   | local files when local; remote files via `fs.list` (#428) when online | no repo/git widgets             | implemented for local free folders; remote file browse shipped (#428)           |
 
 Right rail rules:
 
@@ -244,6 +293,9 @@ Right rail rules:
 
 ## Mobile Touch & Input
 
+- `MobileCockpitAttentionLane` is the primary mobile mission-control summary:
+  attention ranking, agent presence, open/reply, bounded nudge, and interrupt.
+  It consumes the desktop channel tree and the normal channel APIs.
 - Custom touch scroll replaces xterm.js built-in (smoother UX); handlers use `addEventListener({ passive: false })` on `document`
 - Long-press (500ms) triggers mobile text-selection controls over the Relay terminal surface; do not document tmux copy-mode as the current selection substrate.
 - `MobileInput` uses event-intent architecture: `beforeinput` captures intent, `input` dispatches to typed handlers (insert, delete, replacement, paste). Autocorrect at cursor-0 (iOS Safari bug) is recovered by sending backspaces + corrected text instead of reverting
@@ -254,5 +306,6 @@ Right rail rules:
 
 ## See Also
 
+- [Channel conversations](CHANNEL_CHAT.md) — primary UI and routing contract
 - [Architecture](ARCHITECTURE.md) — full data flow and API routes
 - [Design](DESIGN.md) — backend patterns, auth flow, session types

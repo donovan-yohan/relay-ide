@@ -1,5 +1,14 @@
 # Chat-first Relay simplification — audit & implementation ladder
 
+> **Historical implementation record (superseded).** This document captures
+> epic #1058 as verified on 2026-07-01. Its topic/session-shaped surface audit,
+> status table, branch ledger, and remaining-work claims are frozen historical
+> evidence, not the current roadmap or architecture. The shipped model is now
+> **channel = conversation, DM = channel, agent = participant**; start with
+> [`CHANNEL_CHAT.md`](./CHANNEL_CHAT.md), [`README.md`](../README.md), and the
+> current GitHub issues. Legacy `ChatView`/`Turn` remains only for web-session
+> compatibility until those rows are migrated or retired.
+
 Planning artifact for epic **#1058** (chat-first Relay web simplification and
 Hermes gateway). Combines the #1059 product/IA audit and the #1060
 implementation ladder. Verified against `nightly` HEAD `e8d43e0` (2026-07-01).

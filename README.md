@@ -1,10 +1,36 @@
 # relay-ide
 
-Relay IDE is an agentic development environment for running AI coding agents and terminals from a browser or CLI. A Relay hub hosts the web UI and stable JSON gateway; local or remote nodes provide shells, agent CLIs, repo inventory, and `relay-pty`/libghostty-vt terminal session execution. `relay-pty` is the only supported terminal backend; legacy `tmux-compat` state is unsupported and not restored. Repos and worktrees are first-class development context, but they are optional bindings on sessions/tabs rather than the definition of a workspace.
+Relay is a self-hosted workspace where people and coding agents work together in
+durable conversations. Open a channel for a project or an ops stream, mention
+`@claude`, `@codex`, or another configured agent, and follow the work in one
+shared timeline. A direct message is the same model with two participants. The
+conversation stays primary while terminals, files, diffs, and other working
+surfaces remain available when you need to go deeper.
 
-## Current model
+Relay is built for the daily-driver loop: keep one hub reachable from your
+browser, phone, or tablet; connect the machines that own your repos and tools as
+nodes; then talk to agents without treating every process as a separate chat.
+Channel messages support Markdown, threads, streamed replies, approval controls,
+and native image attachments. On mobile, Relay becomes a mission-control
+cockpit for attention, status, nudges, interrupts, and short replies rather than
+trying to be a phone-sized code editor.
 
-Relay's current direction uses this IA vocabulary:
+## How Relay fits together
+
+- **Channel = conversation.** Messages, threads, humans, and agents share one
+  durable timeline.
+- **DM = channel.** A direct message is a channel scoped to one human and one
+  agent; it does not create a separate chat architecture.
+- **Agent = participant.** An `@mention` routes work to the agent adapter bound
+  to that channel. The backing process/session is execution infrastructure, not
+  the conversation identity.
+- **Hub = control plane.** The hub owns the browser UI, durable channel data,
+  routing, authentication, and the stable JSON gateway.
+- **Node = execution plane.** Local or remote nodes expose agent CLIs, shells,
+  repo inventory, files, and `relay-pty` terminal execution. The hub machine is
+  also the default local node.
+
+For the wider workbench, Relay uses this six-layer vocabulary:
 
 - View — a UI mode or surface.
 - Workspace — a saved grouping/config layer for related projects, repos, defaults, and visual organization. It is not synonymous with one repo.
@@ -13,7 +39,10 @@ Relay's current direction uses this IA vocabulary:
 - Bench — an arrangement of working surfaces.
 - Tab — the leaf working surface: terminal, agent session, file/diff/html surface, PR view, or other active context.
 
-Current docs and UI copy should use these nouns for product IA. Repo/worktree flows remain supported as git-specific context carried by sessions and tabs.
+Repos and worktrees remain first-class git context, but they are optional
+bindings on Projects, Benches, sessions, and tabs rather than the definition of
+a Workspace. See [Channel Chat](docs/CHANNEL_CHAT.md) and
+[Architecture](docs/ARCHITECTURE.md) for the current contracts.
 
 ## Prerequisites
 
@@ -53,6 +82,10 @@ relay-ide pin reset
 ```
 
 Do not expose Relay directly to the public internet. For phone/tablet use, prefer Tailscale and open `http://<tailscale-ip>:3456` from another device on the same tailnet.
+
+For the maintained shared-hub deployment, health checks, process identity, and
+recovery sequence, follow the
+[daily-driver devbox runbook](docs/references/devbox-hub-deploy.md).
 
 ## Source development
 
@@ -103,6 +136,9 @@ Commands:
   install            Alias for relay-ide hub install
   uninstall          Alias for relay-ide hub uninstall
   status             Alias for relay-ide hub status
+  cockpit [--json]   Read-first terminal cockpit: what needs operator attention
+    get <work-context-id> [--json]
+                     Show one cockpit item with safe follow-up commands
   manifest           Print local node capability manifest as JSON
   v1 ... --json      Versioned CLI gateway JSON contract for nodes/sessions/files
   diag               Collect local diagnostics
@@ -133,6 +169,8 @@ Commands:
     list                               Forward to git worktree list
   browser            Open an HTML file in the remote viewer
     <path>             Path to HTML file
+  v1 work-context-artifacts publish --artifact-file <json>|--view-file <json> --work-context-id <id> --json
+                     Publish a handoff artifact or agent-authored static HTML view artifact
   pin                Manage authentication PIN
     reset              Reset the PIN (interactive, requires TTY)
 
@@ -181,12 +219,35 @@ relay-ide node link --hub http://hub.example:3456
 
 `relay-ide node pair <hub>` is the interactive device-code flow and sends one heartbeat after approval (pair-only, no service). `relay-ide node pair --hub <url> --pair-token <token>` is the token-based pairing flow for automation/operator grants; `relay-ide node connect` is an alias for that flow. `relay-ide node install` installs relay-ide globally and optionally sets up the local service (no pairing). Hub commands can inspect paired nodes and retrieve node logs through the documented CLI surfaces above.
 
-## Features
+## What is shipped
+
+### Channels, DMs, and agent participation
+
+- Workspace channels and agent DMs render in the primary browser timeline.
+- `@mentions` resolve against the channel roster, spawn or reuse a provider
+  session, and stream the attributed response back into that conversation.
+- Claude, Codex, OpenCode, and Hermes are built-in provider definitions;
+  configuration can override them or add custom providers.
+- Channel history is durable and ordered. Threads, unread state, reconnect and
+  catch-up, interrupt/approval actions, and bounded agent-to-agent fan-out are
+  part of the channel path.
+- Up to four PNG, JPEG, GIF, or WebP images can be attached to a message. Relay
+  validates and stores them locally, renders them in the timeline, and passes
+  native image inputs to compatible adapters.
+
+### Mobile mission control
+
+- A ranked attention lane rolls up channels and DMs that need approval, input,
+  or review.
+- Presence reflects agent thinking, streaming, waiting, idle, and error states.
+- Operators can open the conversation, send a short nudge, or interrupt eligible
+  work from the mobile cockpit.
+- Full terminals remain an escape hatch; broad code editing is not the mobile
+  product goal.
 
 ### Agent and terminal sessions
 
 - Launch agent or terminal sessions from the browser or stable JSON gateway.
-- Built-in framework definitions exist for Claude Code, Codex, OpenCode, and Hermes; config can override or add frameworks.
 - Session rows carry agent type, node/cwd/repo/worktree context when available, state, scrollback, and reconnect behavior. Browser reconnect can reattach to a live Relay process; Relay server restart is cold resume from saved metadata/scrollback, not live child-process continuity.
 - Scriptable gateway commands let adapters list/create/attach/detach/kill/rename sessions, stream raw PTY output, send bounded input, publish artifacts, and call typed supervisor actions without private browser or node-link APIs.
 - `worktree add` is a git helper that creates a worktree and launches the configured agent command for that repo context.
@@ -206,6 +267,9 @@ relay-ide node link --hub http://hub.example:3456
 
 ### UI surfaces
 
+- The default no-session landing is the channel/topic composer. Selecting a
+  channel opens the durable conversation timeline; terminal and file work
+  remains available through session tabs and the workbench.
 - Browser terminal rendering uses xterm.js. Process ownership is handled by `relay-pty`/libghostty-vt, the only supported terminal backend.
 - Active Work and workbench/control surfaces organize WorkContexts, nodes, actors, artifacts, approvals, and capability-gated actions; terminal attach is one surface, not the whole product.
 - The frontend is React 19 with Zustand and TanStack Query.

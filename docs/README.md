@@ -1,13 +1,27 @@
 # Relay IDE documentation
 
-This index separates current source-of-truth docs from historical plans and spikes. Treat files in `docs/plans/`, `docs/spikes/`, and `docs/superpowers/plans/` as time-stamped design/implementation records unless another current doc explicitly promotes their behavior as shipped.
+This index separates current source-of-truth docs from historical plans and
+spikes. For a newcomer, the shortest accurate path is:
+
+1. [`../README.md`](../README.md) — install, run, and the product mental model.
+2. [`CHANNEL_CHAT.md`](./CHANNEL_CHAT.md) — channel = conversation, DM =
+   channel, agent = participant.
+3. [`ARCHITECTURE.md`](./ARCHITECTURE.md) — hub/node ownership, storage,
+   protocols, and module boundaries.
+4. [`references/devbox-hub-deploy.md`](./references/devbox-hub-deploy.md) — the
+   maintained daily-driver shared-hub runbook.
+
+Treat files in `docs/plans/`, `docs/spikes/`, and
+`docs/superpowers/plans/` as time-stamped design/implementation records unless
+another current doc explicitly promotes their behavior as shipped.
 
 ## Current source of truth
 
 | Area                  | File                                    | Use it for                                                                                   |
 | --------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Top-level agent map   | `../AGENTS.md`                          | Repo conventions, command quick reference, compact docs map                                  |
-| User onboarding       | `../README.md`                          | Install, run, CLI, config, hub/node overview                                                 |
+| User onboarding       | `../README.md`                          | Channel-era product model, install, run, CLI, config, hub/node overview                      |
+| Channel conversations | `CHANNEL_CHAT.md`                       | Shipped channel/DM/participant model, routing, durability, images, mobile, compatibility     |
 | Product/design system | `../DESIGN.md`                          | Product positioning, visual language, spacing/color/button rules                             |
 | Architecture          | `ARCHITECTURE.md`                       | Module boundaries, API routes, data flow, ADR index                                          |
 | Boo/session substrate | `BOO_PHILOSOPHY.md`                     | Scriptable session substrate audit, rendered-screen gaps, operator-cockpit roadmap           |
@@ -22,7 +36,6 @@ This index separates current source-of-truth docs from historical plans and spik
 | Handshake grants      | `OPERATOR_HANDSHAKE_GRANTS.md`          | One-time operator grant ceremony copy, lane separation, validation, audit/redaction contract |
 | Session durability    | `SESSION_DURABILITY.md`                 | Process-owner vs attach-handle, derived durability state machine, transition emission        |
 | WSL2 nodes            | `WSL2_RELAY_NODE_SUPPORT.md`            | Windows/WSL2 node bootstrap, service mode, known limits                                      |
-| Channel chat          | `CHANNEL_CHAT.md`                       | Slack-style workspace chat vision (epic #1163): channel=conversation, agents-as-participants  |
 | Provider guide        | `provider-guide.md`                     | Authoring/configuring agent framework providers (Claude/Codex/OpenCode/Hermes/custom)        |
 | Terminal backend      | `TERMINAL_BACKENDS.md`                  | `relay-pty`-only backend, rejected legacy `tmux-compat` state, cold-resume semantics         |
 | Review                | `REVIEW_GUIDANCE.md`                    | Reviewer prompts, risk areas, escape log                                                     |
@@ -36,6 +49,20 @@ This index separates current source-of-truth docs from historical plans and spik
 | Federated dev         | `FEDERATED_DEV.md`                      | Multi-machine dev workflow and version-skew handling                                         |
 | Federated Relay       | `federated-relay.md`                    | Hub/node architecture, pairing, routing, ADR history                                         |
 | Learnings             | `LEARNINGS.md`                          | Durable repo learnings gathered across sessions                                              |
+
+## Current product baseline
+
+- The browser's primary collaboration surface is a durable channel timeline.
+- A DM reuses the channel model; it is not a separate session-chat protocol.
+- Agents participate through server-owned `(channel, provider)` bindings and
+  attributed durable rows. Provider sessions can be replaced without replacing
+  the conversation.
+- The hub owns UI, channel data, routing, authentication, and gateway contracts.
+  Nodes own local tools, repos, files, and terminal/agent execution.
+- Desktop combines conversation with working surfaces. Mobile is a bounded
+  attention/control cockpit with short-message actions, not a full editor.
+- The old session-centric `ChatView` is compatibility for legacy web sessions,
+  not the product model for new work.
 
 ## Vocabulary baseline
 
@@ -69,9 +96,17 @@ These directories are useful evidence, but they are not current product docs by 
 | `adrs/`                   | Accepted/current ADR files where present. Older ADR summaries may still live in `federated-relay.md` or `ARCHITECTURE.md`.                     |
 | `RMUX_HELPER_PROTOCOL.md` | Historical prototype boundary. Current runtime behavior is `relay-pty`; rmux remains diagnostic/prototype-only unless a new issue promotes it. |
 
+Individual root-level documents can also be historical. In particular,
+`CHAT_FIRST_SIMPLIFICATION.md` is a frozen #1058 audit/ladder superseded by the
+channel architecture. `WEB_CHAT.md` is a retired redirect; its old
+session-centric content is git history, not a current contract.
+
 ## Guardrails for future doc edits
 
 - Evidence first: source files, tests, package scripts, and CLI help beat old plans.
+- Channel features must be proved through the live `ChannelView`/timeline,
+  router, or channel protocol seams. Isolated legacy `ChatView`/`Turn` fixtures
+  do not prove the primary channel.
 - Keep shipped claims tied to current source files, tests, and CLI help: remote file/log RPCs, approval UX/auth strength, and IA persistence should be described only at the level implemented today.
 - Do not overclaim Boo-style primitives as shipped: rendered-screen wait, a primary WorkContext cockpit, and live child-process continuity across Relay server restart remain follow-up work unless the current docs/code prove otherwise. `relay-pty` can cold-resume from saved metadata/scrollback after restart; it is not a supervisor.
 - Keep `AGENTS.md` compact; add details here or in focused docs instead.

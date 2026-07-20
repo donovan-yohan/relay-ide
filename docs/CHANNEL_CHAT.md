@@ -1,178 +1,179 @@
-# Channel Chat — Slack-style workspace interface
+# Channel conversations
 
-> **Status: mostly PLANNED (epic #1163).** This doc is the direction, not a
-> shipped contract. It marks each claim **SHIPPED** (verified in current code)
-> or **PLANNED** (epic/slice target). It replaces the retired `WEB_CHAT.md`,
-> which described the session-centric v1 chat surface now being torn out.
+> **Status: current shipped architecture.** Verified 2026-07-20 against the
+> channel store, router, hub, binder, adapters, React channel surface, mobile
+> cockpit, and their tests. This document supersedes the retired
+> `WEB_CHAT.md` session-centric design and the historical
+> `CHAT_FIRST_SIMPLIFICATION.md` implementation ladder.
 
-## Vision (PLANNED)
+Relay's primary collaboration unit is a durable conversation, not an agent
+process.
 
-Relay's UI becomes a Slack-style workspace. Workspaces live in a left rail;
-channels live in a per-workspace sidebar; each channel is a durable, multi-party
-conversation where humans and agents (`@claude` / `@codex` / `@hermes`) talk in
-one shared timeline. Two surfaces, one substrate:
+- **Channel = conversation.** Humans and multiple agents share one ordered
+  timeline.
+- **DM = channel.** A direct message is a workspace channel whose routing
+  metadata identifies one agent participant.
+- **Agent = participant.** Mentioning `@claude`, `@codex`, `@opencode`,
+  `@hermes`, or a configured provider routes work to that participant. The
+  backing adapter session is execution infrastructure and may be spawned,
+  reused, rebound, interrupted, or recovered without changing channel identity.
+- **Thread = channel-scoped branch.** Replies retain the channel's durable
+  sequence while carrying `threadId` and `parentMessageId` relationships.
 
-- **Desktop** — full working suite: terminal, file browser, editor, embedded
-  browser, chat, and deep pane integrations, arranged around the conversation.
-- **Mobile** — mission control: watch runs, nudge agents, triage attention. Not
-  a code editor; a cockpit.
+The desktop web UI pairs the conversation with terminal, file, diff, and
+artifact surfaces. The mobile UI is a mission-control cockpit: it ranks work
+that needs attention, shows agent presence, and offers bounded controls and
+short replies. It is not a phone-sized editor.
 
-All-dark, black theme only (see `DESIGN.md`, owned separately — do not restyle
-here).
+## Current user path
 
-## Architecture pivot (PLANNED)
+1. `TopicSidebarShell` renders workspaces, channels, and DMs from one channel
+   tree on desktop and mobile.
+2. Selecting a channel writes `activeChannelId`; `ChatHome` mounts
+   `ChannelView` in the primary pane.
+3. `ChannelView` composes `ChannelTimeline`, `ChannelComposer`, and the optional
+   `ChannelThreadPanel`.
+4. A human post is written once through the channel router. `@mentions` are
+   resolved by the server-side binder and delivered to the matching provider
+   adapter.
+5. Adapter patches are translated by `channel-agent-bridge.ts` into attributed,
+   durable channel rows and streamed to connected browsers.
 
-The old model was **session = conversation** (one chat bound to one agent
-process). The pivot inverts it:
+The default no-session landing is the topic/channel composer. Terminal sessions
+remain first-class working surfaces, but selecting a terminal and selecting a
+channel are separate navigation states; one must not silently render as the
+other.
 
-- **Channel = conversation.** Agents are _participants_ in a channel, not the
-  channel itself.
-- **DM = a 2-member channel** (one human, one agent). No separate DM primitive.
-- **@-mention routes** a message into an adapter session bound to
-  `(channel, agent)`. The session is **spawned on first mention** and its
-  streamed replies are attributed to that agent inside the channel timeline.
-- **Single-node first.** Cross-node chat routing is deferred; channel + agents
-  live on one node for the initial slices.
+## Implementation map
 
-## Mapping to existing primitives (SHIPPED substrate, PLANNED wiring)
+| Concern                                                            | Current owner                                              |
+| ------------------------------------------------------------------ | ---------------------------------------------------------- |
+| Workspace/channel identity                                         | `server/ia-store.ts`, `server/workspace-topics.ts`         |
+| Durable messages                                                   | `server/channel-message-store.ts` (`channel-chat.db`)      |
+| Message/thread protocol                                            | `shared/channel-chat-protocol.ts`                          |
+| REST history, post, attachment, roster, interrupt, approval routes | `server/channel-chat-router.ts`                            |
+| Live fan-out and catch-up                                          | `server/channel-hub.ts`, `/ws/channels/:channelId`         |
+| Mention routing and per-agent binding                              | `server/channel-agent-binder.ts`                           |
+| Bounded mention history                                            | `server/channel-context-packet.ts`                         |
+| Adapter-patch translation                                          | `server/channel-agent-bridge.ts`                           |
+| Browser conversation surface                                       | `frontend/src/components/chat/Channel*.tsx`                |
+| Socket/reducer lifecycle                                           | `frontend/src/hooks/useChannelChatSocket.ts`               |
+| DM identity helpers                                                | `frontend/src/lib/dm-channels.ts`                          |
+| Mobile attention and presence                                      | `MobileCockpitAttentionLane.tsx`, `lib/state/cockpit-*.ts` |
 
-The substrate below already exists in code; the channel-chat product is new
-wiring over it. Verified 2026-07-17 against source:
+## Durable message and live-stream contract
 
-| Concept         | Primitive (SHIPPED)                                                                 | Notes                                                                                                                                                                                                                                                      |
-| --------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Workspace       | `ia_workspaces` (`server/ia-store.ts`, epic #1021)                                  | Rail entries: `status`, `pinned`, `color`, `icon`, `default_repo_path`, `default_node_id`.                                                                                                                                                                 |
-| Channel         | `workspace_topics` (`server/workspace-topics.ts`)                                   | Record carries `routingDefaults`, `promptDefaults`, and channel `kind` = repo/product-area/journal/ops/research/topic. Channel identity = topic id.                                                                                                        |
-| Message store   | `channel_messages` (`server/channel-message-store.ts`, #1165 SHIPPED)               | New durable `channel-chat.db`: per-channel gap-free `seq`, streaming lifecycle, `sender_kind`/`sender_id`, `thread_id`/`parent_message_id`, `source_*` bridge provenance. `work_context_messages` is agent-mail (#945), a deliberately separate substrate. |
-| Mention targets | Agent roster (`shared/agent-roster.ts`, #952/#953)                                  | `RosterEntry.provider` = framework id (`claude`/`codex`/`hermes`); derived per live session.                                                                                                                                                               |
-| Agent transport | `ProtocolAdapterV2` (`server/protocol-adapter-v2.ts`, `protocol-adapters/index.ts`) | v2 registry: `mock`, `claude`, `codex` (native), `opencode`/`hermes` via legacy bridge.                                                                                                                                                                    |
+`channel_messages` is the replay source of truth. Each channel has gap-free
+monotonic sequence numbers with a database uniqueness backstop. Rows carry
+server-derived sender identity, message lifecycle status, optional thread
+relationships, source provenance, and bounded message parts. Streaming replies
+begin as a durable row, accept debounced partial updates, and finalize in place.
+On boot, stale streams are finalized as truncated with a restart reason.
 
-**Verification nuance:** the roster is _derived from live sessions_ and keyed by
-`sessionId` + `provider`, not a persistent per-agent handle registry. So
-`@claude` resolves to a framework/provider id, and spawn-on-first-mention must
-bind `(channel, agent-framework)` and create the session — it cannot assume a
-roster row already exists. This is new wiring, not a contradiction.
+The `ChannelEventV1` WebSocket protocol supports snapshots, created rows,
+streaming deltas, completed rows, and resync requests. The client reducer
+quarantines malformed or out-of-order deltas and asks for catch-up instead of
+guessing. Snapshots and history pages are byte-bounded; reconnect and unread
+arithmetic use durable sequence ranges rather than an in-memory event ring.
 
-## Claude integration decision (HARD — do not soften)
+Writes stay on REST (`channels.post`); the channel WebSocket is server-to-client.
+Browser posts and scoped CLI-gateway posts converge on the same internal
+`postToChannel` path. `clientMessageId` and source provenance make retries
+idempotent.
 
-**No Anthropic Agent SDK.** Claude participation is a **persistent
-`claude --input-format stream-json --output-format stream-json` subprocess per
-conversation**, following the pattern in
-[dkapo88/claude-code-openai-server](https://github.com/dkapo88/claude-code-openai-server)
-(`feat/native-image-passthrough`) — but **re-implemented natively in the Relay
-TypeScript backend**. No Python sidecar, no OpenAI-shaped shim.
+## Agent participation
 
-- **Warm process across turns** — keep the subprocess alive so OAuth CLI billing
-  applies (not per-request API billing).
-- **Warm pool + idle eviction** — pooled subprocesses, evicted when idle.
-- **`--resume` cold recovery** — reattach a conversation after eviction/restart.
-- **Image passthrough** — native image input through the stream-json channel.
-- **Later:** MCP loopback so the subprocess gets channel-native tools — read
-  channel history, read the roster, post back into the thread.
+`channel-agent-binder.ts` owns the mention loop:
 
-The current `ClaudeProtocolAdapter` (`claude-adapter.ts`) already implements this
-shape: a persistent `claude` subprocess driven over stream-json (no
-`@anthropic-ai/claude-agent-sdk`), with web sessions advertised
-(`supportsWebSessions: true`) as of #1168 (closes #300). (Historically it drove
-Claude through the Agent SDK `query()` and was de-advertised for web sessions
-under #300.)
+1. observe a posted message;
+2. parse provider mentions;
+3. single-flight spawn, reuse, or rebind one web adapter session for the
+   `(channel, provider)` pair;
+4. build a bounded context packet from durable channel history;
+5. send the turn to the adapter;
+6. translate adapter patches back into the channel through the bridge.
 
-## Slice 2 — Channel core (SHIPPED, #1165)
+The per-binding queue is bounded. Delivery advances only after adapter send
+acceptance, and deterministic turn ids make retries safe. Agent-to-agent
+mentions are allowed, with a consecutive-agent-turn brake to stop runaway
+fan-out. Interrupt and approval responses use explicit channel routes and
+capability checks; waiting on a human approval pauses the watchdog rather than
+force-draining the turn.
 
-The conversation substrate is live and fully additive (`web_sessions`, `/ws/:sessionId`,
-agent mail, and every adapter are untouched):
+The browser roster is provider-oriented. It reports configured availability and
+live binding state; it is not a persistent directory of immortal agent
+identities.
 
-- **Durable store** `server/channel-message-store.ts` (`channel-chat.db`): atomic
-  single-statement `seq` allocation with a `UNIQUE(channel_id, seq)` backstop,
-  streaming rows (begin → debounced partial-text flush → finalize in place),
-  boot sweep of stale `streaming` → `interrupted` (+ system message), orphan GC
-  against the topic store, source-triple and `clientMessageId` idempotency, 256KB
-  per-message cap. **Unread arithmetic must count by seq range; catch-up is always
-  DB-backed** (the durable seq log is the replay buffer — there is no event ring).
-- **Wire protocol** `shared/channel-chat-protocol.ts`: `ChannelEventV1` (snapshot /
-  created / delta / completed / resync-required), a runtime validator, a pure
-  self-diagnosing reducer (gap → `needsCatchup`, `deltaIndex` + quarantine per
-  message), and `parseMentions`. **`AgentPatchV2` is not extended** — a server-side
-  bridge translates instead, so no adapter changes.
-- **Fan-out** `server/channel-hub.ts` + `GET /ws/channels/:channelId?sinceSeq=N`:
-  server→client only, register-before-snapshot connect with snapshot/live dedupe,
-  50ms delta coalescing, per-socket backpressure (suppress deltas → resync → 4409),
-  and coarse `channel-activity` sidebar badges on `/ws/events`. Connect flushes
-  pending accumulator text before the snapshot (so a mid-stream connector never
-  double-renders); catch-up also re-sends any streaming row that finalized while
-  the client was disconnected; a cursor ahead of the server head forces a full
-  snapshot (client reset); snapshot/catch-up assembly is byte-bounded (~4MB →
-  `truncated`, client pages the rest via `channels.history`).
-- **Verbs** `server/channel-chat-router.ts`: `channels.list/get/history/post`
-  (REST-only writes, one internal `postToChannel`). **Sender is server-derived from
-  the auth lane, never the request body**; derived/archived topics are rejected;
-  the verbs are wired into the CLI-gateway capability map. `channels.history`
-  responses are byte-bounded (~4MB); on overflow they return `hasMore: true` and a
-  `nextCursor` (`afterSeq`/`beforeSeq`) so the client fetches the remainder in pages.
-- **Adapter→channel bridge** `server/channel-agent-bridge.ts`: `AgentPatchV2` →
-  channel lifecycle translation. Now wired by #1167; `agent-turn-completed-v2`
-  finalizes the row with the turn's real status (`interrupted`/`failed`, not always
-  `complete`), and an optional `onAssistantMessageFinalized` hook fires on cleanly
-  completed rows to drive agent-to-agent mentions.
-- **@-mention routing (#1167)** `server/channel-agent-binder.ts`: one module owns
-  the loop — subscribe `hub.onMessagePosted` → resolve mentions (`providerId` only)
-  → single-flight ensure a `(channel, framework)` web session (spawn | reuse |
-  rebind) → wire the bridge → build a context packet (`server/channel-context-packet.ts`,
-  pure) → `adapter.sendMessage`. Browser posts and CLI-gateway-actor posts route
-  identically. Spawns default to **yolo/permission-bypass** (MVP constant
-  `CHANNEL_BINDING_YOLO_DEFAULT`) so routing never wedges on an approval; the
-  approval-render path stays wired. Per-binding FIFO turn queue (cap 8), a per-turn
-  watchdog that pauses on `waitingOn` (never force-drains a human approval), a
-  single-node cross-node guard, deterministic `turnId = chturn-<messageId>-<framework>`
-  (retry reuses it), an at-least-once delivery cursor
-  (`binding.providerSession.lastDeliveredSeq`, advanced only on send acceptance),
-  and a per-channel **consecutive-agent-turn brake** (`MAX_CONSECUTIVE_AGENT_TURNS=4`,
-  reset on any human/gateway post) bounding agent-to-agent fan-out.
-  - **Context packet** (`buildMentionContextPacket`): header addressing the agent
-    - up to 20 recent rows after the cursor and before the trigger (own rows
-      skipped, `[…earlier messages omitted]` when capped, 2 000-char/row + 24 KB caps)
-    - a footer restating the trigger. A reused session with no interim rows collapses
-      to header + footer only.
-  - **Verbs** `server/channel-chat-router.ts`: `GET /channels/:id/roster`
-    (`channels.roster`, `context:read`) — per-request framework availability +
-    live binding status; `POST /channels/:id/agents/:agentId/interrupt`
-    (`channels.interrupt`) and `POST .../approvals` (`channels.respond-approval`),
-    both `context:write`. Status transitions ride `/ws/events` as
-    `channel-agent-status`.
+## Provider sessions
 
-**Privacy note:** channel message bodies are stored **raw**, with no redaction
-pipeline (unlike the `work_context_messages` sanitizer,
-`shared/work-context-message.ts`). This is consistent with `agent_session_v2_json`
-today, but is a standing privacy posture decision to revisit before any
-`visibility:'shared'` / multi-user channel.
+Provider adapters implement `ProtocolAdapterV2`. Claude uses a persistent
+`claude` stream-json subprocess per conversation, with warm reuse, idle
+eviction, and resume metadata; it does not use the Anthropic Agent SDK. Codex
+has a native adapter, while OpenCode and Hermes participate through their
+registered adapter implementations. Provider processes can fail or restart;
+the channel remains the durable conversation identity.
 
-## Live proof gate (PLANNED)
+Single-node routing is the current channel constraint. The hub/node platform
+can execute PTY work on remote nodes, but cross-node channel-agent binding is
+not yet a general routing contract.
 
-Token-frugal testing against **real** Claude / Codex accounts — hello-world
-prompts only, no burn. Proof matrix:
+## Native images
 
-1. DM each agent (2-member channel round-trip).
-2. Agent-to-agent mention (one agent `@`-mentions another in a channel).
-3. Multiple agents live in one channel at once.
+The composer accepts up to four PNG, JPEG, GIF, or WebP files. The attachment
+route validates type, count, and size, stores payloads under the configured
+runtime directory, and records bounded `image` parts on the message. The
+timeline renders those parts through authenticated channel attachment URLs.
+Mention delivery passes image inputs to compatible provider adapters rather
+than flattening them into prose.
 
-## Ladder (epic #1163)
+Image payloads and channel text are private local runtime data. They are not
+redacted before storage and must not be copied into public issues or evidence
+artifacts by default.
 
-| Slice | Scope                                                                                                                                                                             |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| #1164 | Debt clear — retire v1 chat surface / kill-list items below.                                                                                                                      |
-| #1165 | Channel core — channel = conversation model over the substrate.                                                                                                                   |
-| #1166 | Channel UI + DM-as-channel.                                                                                                                                                       |
-| #1167 | `@`-mentions — route mention → `(channel, agent)` session, spawn-on-first. **SHIPPED** — roster autocomplete, spawn-on-first-mention, streamed replies, interrupt/approval verbs. |
-| #1168 | Claude subprocess adapter (native stream-json, warm pool, `--resume`).                                                                                                            |
-| #1169 | Multi-agent live proof + Codex revive.                                                                                                                                            |
-| #1170 | Threads (`parent_message_id` / `thread_id`).                                                                                                                                      |
-| #1171 | Mobile cockpit (mission control). **SHIPPED** — ranked attention, herdr presence, nudges, and rolled-up run status over the shared channel tree.                                  |
-| #1172 | Tauri desktop suite (backlog).                                                                                                                                                    |
+## Mobile cockpit
 
-## Kill list (PLANNED removal)
+The mobile channel tree and desktop sidebar consume the same navigation model.
+`MobileCockpitAttentionLane` ranks approval/input needs, failures, running work,
+and unread conversations. Presence derives from channel agent status and
+roster attention. Operators can open a row, approve or reply in context, send a
+bounded nudge, or interrupt eligible work. These controls call the same channel
+contracts as desktop; there is no mobile-only mutation path.
 
-- Session-centric chat UI (one chat ↔ one agent process).
-- v1 chat protocol remnants (`ChatEvent` v1 path, `ProtocolAdapter` v1 surface).
-- Legacy sidebar surfaces: `ViewSpineTree`, `WorkspaceBar`.
-- Light theme (black-only).
-- `docs/WEB_CHAT.md` itself (retired by this doc).
+## Compatibility boundary
+
+The old session-centric `ChatView`/`Turn` tree is not the primary launch path
+and new channel/DM creation does not use it. It is still a compatibility surface
+for restored or API-created legacy `mode: 'web'` sessions, so it must not be
+deleted until those sessions have a migration or explicit retirement policy.
+Tests that mount `Turn` directly prove that component only; they do not prove
+the live channel timeline.
+
+The removed v1 sidebar/protocol paths and the retired `WEB_CHAT.md` must not be
+presented as current architecture. Historical plans remain useful evidence but
+do not override this document or the implementation.
+
+## Security and privacy boundaries
+
+- Message sender identity is derived from the authenticated lane, never from a
+  client-provided sender object.
+- Browser routes require the PIN-authenticated browser session; scoped gateway
+  actors require the relevant `context:read` or `context:write` capability.
+- Archived or derived topics reject writes.
+- Channel bodies and images are stored raw in the hub runtime directory. Unlike
+  WorkContext message envelopes, they do not pass through a redaction pipeline.
+- Shared/multi-user visibility remains a separate privacy and authorization
+  decision; current private-hub behavior must not be overclaimed as multi-tenant
+  collaboration.
+
+## Remaining work
+
+- Migrate or explicitly retire legacy `mode: 'web'` sessions before deleting
+  `ChatView`/`Turn` compatibility code.
+- Generalize channel-agent routing across nodes with explicit locality,
+  capability, and failure semantics.
+- Complete live multi-provider dogfood evidence for each supported adapter as
+  credentials and provider availability permit.
+- Revisit retention, export, redaction, and visibility policy before shared or
+  multi-user channels.
+- Tauri desktop packaging remains backlog; the web app is the supported desktop
+  surface today.

@@ -5,14 +5,29 @@ If you want to familiarize yourself with the codebase, you are in the right plac
 
 ## Bird's Eye View
 
-Relay IDE is a federated workbench and control plane for agentic development across online devices, accessed through a hub-served web UI and stable CLI gateway. A user opens the web UI in a browser, authenticates with a PIN, and gets a tab connected to an agent/terminal session running either on the hub machine or on a paired Relay node. Sessions use the direct `relay-pty`/libghostty-vt terminal backend; `tmux-compat` is unsupported legacy state and is not restored. The hub manages auth, UI, routing, node registry state, reverse node-link RPC, aggregated repo inventory, Active Work read model, capability/audit policy, and local hub-as-node sessions; each node owns its own PTY/session execution and local filesystem/git checkout state. External agent brains (Hermes, Claude, Codex, custom) integrate as hub-level session peers through the versioned `relay-ide v1 ... --json` CLI gateway, not by speaking the internal node-link protocol (ADR-017).
+Relay is a federated workbench and control plane for agentic development across
+devices, accessed through a hub-served web UI and stable CLI gateway. The
+primary collaboration unit is a durable channel: humans and agents share one
+ordered conversation, while provider sessions remain replaceable execution
+bindings. DMs are channels with one agent participant (ADR-020).
+
+The hub owns authentication, UI, durable channel data, mention routing, node
+registry state, reverse node-link RPC, aggregated repo inventory, Active Work,
+capability/audit policy, and local hub-as-node sessions. Each node owns its PTY
+and agent execution plus local filesystem/git state. Interactive sessions use
+`relay-pty`/libghostty-vt; `tmux-compat` is unsupported legacy state and is not
+restored. External agent brains integrate as hub-level session peers through
+provider adapters and the versioned `relay-ide v1 ... --json` gateway, not by
+speaking the internal node-link protocol (ADR-017).
 
 Product boundary: Relay is a federated workbench/control plane for shared identity, routing, context handoff, bounded inspection/control, and audit trails across existing tools. It is not a replacement for Hermes Agent, GitHub, Kanban, process supervisors, or native Claude/Codex/OpenCode/Hermes CLIs, and it must not scrape raw Hermes profile databases, provider auth, env, or unbounded transcripts/logs. `docs/WORKBENCH_BOUNDARY.md` is the canonical source for #552 workbench nouns (`WorkContext`, `Actor`, `TaskRef`, `Artifact`, `AuditEvent`, `CapabilityGrant`, etc.) and mobile/pair/dogfood journey acceptance criteria.
 
 `docs/BOO_PHILOSOPHY.md` captures the current Boo-style session substrate audit. In this architecture, raw PTY streams, typed supervisor actions, and future rendered-screen/model APIs are separate contracts. The browser terminal renderer is not the adapter-facing source of truth; stable automation must go through `relay-ide v1 ... --json` or documented APIs.
 
-Input: browser keystrokes, session management commands, clipboard images.
-Output: terminal rendering via xterm.js, real-time session state updates.
+Input: channel posts and images, browser keystrokes, scoped gateway actions,
+and session management commands. Output: durable channel timelines, mobile
+attention/control projections, terminal rendering via xterm.js, and real-time
+channel/session state updates.
 
 The system has two compilation targets: a TypeScript + ESM backend (Express + node-pty + terminal backends + WebSocket) compiled to `dist/`, and a React 19 frontend (Zustand + TanStack Query + Vite) compiled to `dist/frontend/`.
 
@@ -54,13 +69,22 @@ Keep these names precise where they describe implemented plumbing:
 
 ### `server/`
 
-69 TypeScript modules (including `adapters/`, `output-parsers/`, and `protocol-adapters/` subdirectories) compiled to `dist/server/` via `tsc`. Modules communicate via ESM `import` statements.
+TypeScript modules (including `adapters/`, `features/`, `output-parsers/`, and
+`protocol-adapters/`) compile to `dist/server/` via `tsc` and communicate with
+ESM imports.
 
 | Module                                                 | Role                                                                                                                                                                                                                                                               |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `index.ts`                                             | Composition root: Express app, REST routes, auth middleware, static serving                                                                                                                                                                                        |
 | `workspaces.ts`                                        | Legacy repo-folder compatibility router: dashboard, settings, CI status, branch switch, path autocomplete. These `/workspaces` routes are not the future six-layer Workspace entity source of truth.                                                               |
 | `workspace-groups.ts`                                  | Current workspace grouping CRUD for user-organized repo groups; compatibility surface until six-layer Workspace/Project persistence lands.                                                                                                                         |
+| `workspace-topics.ts`                                  | Workspace-scoped channel/topic identity and routing defaults                                                                                                                                                                                                       |
+| `channel-message-store.ts`                             | Durable ordered channel messages, streaming lifecycle, idempotency, retention, and thread/source indexes in `channel-chat.db`                                                                                                                                      |
+| `channel-chat-router.ts`                               | Channel history/post/thread/attachment/roster/interrupt/approval REST contracts with server-derived sender identity                                                                                                                                                |
+| `channel-hub.ts`                                       | Server-to-client channel snapshots, live fan-out, bounded catch-up, coalescing, and backpressure/resync                                                                                                                                                            |
+| `channel-agent-binder.ts`                              | Provider mention resolution, `(channel, provider)` session binding, bounded queues/context packets, and agent-to-agent turn brake                                                                                                                                  |
+| `channel-agent-bridge.ts`                              | Translates provider adapter patches into attributed durable channel rows                                                                                                                                                                                           |
+| `channel-attachments.ts`                               | Validates and stores bounded native image payloads for channel message parts                                                                                                                                                                                       |
 | `sessions.ts`                                          | Session registry: routes `create()` to pty-handler, lifecycle ops, restore/reattach, idle sweep                                                                                                                                                                    |
 | `pty-handler.ts`                                       | PTY session creation via node-pty and the `relay-pty`/libghostty-vt backend, scrollback buffering (256KB), cold-resume metadata restore, continue-retry                                                                                                            |
 | `git.ts`                                               | Git/GitHub CLI integration: branches, activity feed, CI status, PR lookup, branch switch, branch lifecycle state computation (`ensureBranchLocal`, `isPrMerged`, `computeBranchLifecycleState`); exports `extractOwnerRepo` and `buildRepoMap` for webhook-manager |
@@ -96,7 +120,7 @@ Keep these names precise where they describe implemented plumbing:
 | `opencode-relay.ts`                                    | OpenCode agent transport relay: WebSocket/SSE proxy that bridges web sessions to the OpenCode CLI                                                                                                                                                                  |
 | `protocol-adapter.ts`                                  | Abstract `ProtocolAdapter` base class; concrete adapters live in `protocol-adapters/{claude,codex,opencode,hermes,mock}.ts`                                                                                                                                        |
 | `telemetry.ts` / `telemetry-adapter.ts`                | Framework-neutral telemetry bus + abstract adapter; concrete adapters in `adapters/{claude,codex,opencode}-telemetry.ts` self-register at import time                                                                                                              |
-| `web-session-handler.ts`                               | Request/response handler for web-chat sessions (non-PTY): creation, input delivery, event streaming via `ChatEvent`                                                                                                                                                |
+| `web-session-handler.ts`                               | Compatibility handler for legacy session-centric web sessions; new channels/DMs use the channel router/binder path                                                                                                                                                 |
 | `frameworks.ts`                                        | Agent framework registry client surface: resolves configured/built-in agent frameworks, probes CLI availability, and surfaces runtime web availability where supported                                                                                             |
 | `node-manifest.ts`                                     | Local node capability manifest: probes platform/arch/hostname/version, WSL, service manager, `relay-pty`, git/clipboard/browser/gh/tailscale/ssh, and agent tool availability non-fatally                                                                          |
 | `local-node.ts`                                        | Local node state: identity, manifest, repo inventory, credential storage, and heartbeat sender for the current machine when acting as a node                                                                                                                       |
@@ -119,7 +143,9 @@ Compiled by both `tsconfig.json` (server build) and `frontend/tsconfig.json` (Vi
 
 | Module                         | Role                                                                                                                                                                                                              |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chat-events.ts`               | `ChatEvent` discriminated union and type guards — the wire protocol for web-chat transcripts                                                                                                                      |
+| `chat-events.ts`               | Legacy session-centric `ChatEvent` compatibility protocol; new conversations use `channel-chat-protocol.ts`                                                                                                       |
+| `channel-chat-protocol.ts`     | Durable channel message/thread/part contracts, live event validator, mention parsing, and self-diagnosing reducer                                                                                                 |
+| `agent-roster.ts`              | Provider roster availability, live binding status, and attention projections                                                                                                                                      |
 | `control-state.ts`             | Product control-state summary and tab intervention event contracts; keeps `controlMode` independent from transport `mode`                                                                                         |
 | `work-context.ts`              | Versioned WorkContext contract linking actors, tasks, node/session/project/repo/bench refs, artifacts, audit refs, capability refs, and privacy metadata without requiring raw logs/transcripts                   |
 | `mobile-input-pipeline.ts`     | Pure-function event-intent pipeline for mobile virtual keyboard input — consumed by the React `MobileInput` component; unit-tested via JSON fixtures                                                              |
@@ -133,26 +159,26 @@ Compiled by both `tsconfig.json` (server build) and `frontend/tsconfig.json` (Vi
 | `pipeline-handoff-artifact.ts` | PipelineHandoffArtifact schema: pipeline stages (implementation/qa/review/release), evidence dispositions, command statuses, risk levels, and append-only exact-head handoff layers                               |
 | `cli-gateway-contract.ts`      | Versioned `relay-ide v1 ... --json` adapter contract: `RelayCliGatewayCommand` verb union, CLI argv shapes, per-command input/output/error schemas, and capability hints (source of truth for adapter generation) |
 
-**Architecture Invariant:** `index.ts` is the composition root and MUST NOT be imported by other modules. Cross-module dependencies flow downward: `index.ts` imports all others; `ws.ts` may import `sessions`; `sessions.ts` imports `pty-handler`; `workspaces.ts` imports `git` and `config`; `hooks.ts` receives `sessions`, `git`, `config`, `analytics`, `telemetry`, and `push` via a `HookDeps` injection seam (composition root wires them; `hooks.ts` does statically import those modules to type the deps but does not invoke them directly from module scope); all other modules are self-contained. **Exception:** `analytics.ts`, `push.ts`, and `logger.ts` are pure output dependencies (fire-and-forget) imported by multiple modules — this is acceptable because they have no effect on callers' control flow. Each module owns a single concern and confines its npm dependencies (e.g., only `auth.ts` depends on crypto.scrypt, only `pty-handler.ts` depends on node-pty, only `analytics.ts` depends on better-sqlite3, only `push.ts` depends on web-push). The `output-parsers/` module confines all output-parsing logic and may depend on `types.ts` only — it MUST NOT import from `utils.ts` or any other server module. There are currently 142 server modules, including modules in the `adapters/`, `context-adapters/`, `features/`, `output-parsers/`, `protocol-adapters/`, and `provider-state/` subdirectories.
+**Architecture Invariant:** `index.ts` is the composition root and MUST NOT be imported by other modules. Cross-module dependencies flow downward: `index.ts` imports all others; `ws.ts` may import `sessions`; `sessions.ts` imports `pty-handler`; `workspaces.ts` imports `git` and `config`; `hooks.ts` receives `sessions`, `git`, `config`, `analytics`, `telemetry`, and `push` via a `HookDeps` injection seam (composition root wires them; `hooks.ts` does statically import those modules to type the deps but does not invoke them directly from module scope); all other modules are self-contained. **Exception:** `analytics.ts`, `push.ts`, and `logger.ts` are pure output dependencies (fire-and-forget) imported by multiple modules — this is acceptable because they have no effect on callers' control flow. Each module owns a single concern and confines its npm dependencies (e.g., only `auth.ts` depends on crypto.scrypt, only `pty-handler.ts` depends on node-pty, only `analytics.ts` depends on better-sqlite3, only `push.ts` depends on web-push). The `output-parsers/` module confines all output-parsing logic and may depend on `types.ts` only — it MUST NOT import from `utils.ts` or any other server module.
 
 ### `frontend/`
 
 React 19 SPA built by Vite, output to `dist/frontend/`. Express serves the compiled output.
 
-| Path                                  | Role                                                                                                                                                                                                                                                                          |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `frontend/src/components/`            | React 19 TSX components (Terminal, Sidebar, TopicSidebarShell, PrTopBar, WorkspaceArea, RepoDashboard, CommandPalette, dialogs, etc.)                                                                                                                                         |
-| `frontend/src/lib/state/`             | Pure logic modules (`display-state.ts` — 6-state display state machine, `sidebar-items.ts` — legacy SidebarItem reconciliation for session/unread state, `attention.ts` — state priority scoring, `view-tree.ts` — read-only #444 view-spine derive over existing store data) |
-| `frontend/src/hooks/`                 | React hooks for state and side effects (`useEventSocket`, `useSessionHandlers`, `useActionRegistry`, etc.)                                                                                                                                                                    |
-| `frontend/src/lib/api.ts`             | REST API client functions                                                                                                                                                                                                                                                     |
-| `frontend/src/lib/ws.ts`              | WebSocket connection management (PTY relay + event channel)                                                                                                                                                                                                                   |
-| `frontend/src/lib/types.ts`           | Frontend TypeScript interfaces                                                                                                                                                                                                                                                |
-| `frontend/src/lib/actions/`           | Command center action registry: types, pure registry logic (`registry.ts`), reactive hook wrapper, and co-located action definitions in `definitions/`                                                                                                                        |
-| `frontend/src/lib/notifications.ts`   | Browser Notification API wrapper, service worker registration, Web Push subscription                                                                                                                                                                                          |
-| `frontend/src/lib/utils.ts`           | Shared utilities (path display, relative time formatting, device detection)                                                                                                                                                                                                   |
-| `frontend/src/lib/pr-state.ts`        | PR lifecycle state machine: derives action from PR state + CI + mergeable + unresolved comments                                                                                                                                                                               |
-| `frontend/src/lib/file-tree-utils.ts` | Pure file tree functions: `buildChangedFilesTree`, `flattenVisibleNodes`, `findMostRecentlyChanged`, `parseLineReference`, status badge helpers                                                                                                                               |
-| `frontend/src/lib/analytics.ts`       | Frontend analytics: batch event collection, `data-track` attribute integration                                                                                                                                                                                                |
+| Path                                  | Role                                                                                                                                                       |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `frontend/src/components/`            | React components for the channel timeline/composer/threads, shared desktop/mobile channel tree, mobile cockpit, terminals, workbench surfaces, and dialogs |
+| `frontend/src/lib/state/`             | Pure display/session state plus `topic-nav.ts` and `cockpit-*` channel navigation/attention/presence projections                                           |
+| `frontend/src/hooks/`                 | React hooks for channel snapshot/live/history/thread state, event sockets, session handlers, and action registry                                           |
+| `frontend/src/lib/api.ts`             | REST API client functions                                                                                                                                  |
+| `frontend/src/lib/ws.ts`              | WebSocket connection management (PTY relay + event channel)                                                                                                |
+| `frontend/src/lib/types.ts`           | Frontend TypeScript interfaces                                                                                                                             |
+| `frontend/src/lib/actions/`           | Command center action registry: types, pure registry logic (`registry.ts`), reactive hook wrapper, and co-located action definitions in `definitions/`     |
+| `frontend/src/lib/notifications.ts`   | Browser Notification API wrapper, service worker registration, Web Push subscription                                                                       |
+| `frontend/src/lib/utils.ts`           | Shared utilities (path display, relative time formatting, device detection)                                                                                |
+| `frontend/src/lib/pr-state.ts`        | PR lifecycle state machine: derives action from PR state + CI + mergeable + unresolved comments                                                            |
+| `frontend/src/lib/file-tree-utils.ts` | Pure file tree functions: `buildChangedFilesTree`, `flattenVisibleNodes`, `findMostRecentlyChanged`, `parseLineReference`, status badge helpers            |
+| `frontend/src/lib/analytics.ts`       | Frontend analytics: batch event collection, `data-track` attribute integration                                                                             |
 
 **Architecture Invariant:** The frontend does NOT vendor any libraries. xterm.js, xterm-addon-fit, `react`, `zustand`, and `@tanstack/react-query` are npm dependencies. State lives in Zustand stores and React hooks, not in component files (PR data is an exception — managed via TanStack Query cache).
 
@@ -169,6 +195,23 @@ Unit/integration tests use `vitest` (migrated from `node:test` on 2026-04-03). T
 **Architecture Invariant:** Single unit/integration test runner (`vitest`). Unit/integration tests MUST NOT require a running server instance.
 
 ## Data Flow
+
+**Channel conversation:**
+
+```text
+Browser ChannelComposer --POST /channels/:id/messages--> channel-chat-router
+        ChannelTimeline <--WS /ws/channels/:id--------- channel-hub
+                                                         |
+                                   channel-message-store (durable seq log)
+                                                         |
+                   @mention -> channel-agent-binder -> provider adapter session
+                                                         |
+                   attributed rows <- channel-agent-bridge <- AgentPatchV2
+```
+
+The durable store is the replay source of truth. WebSocket delivery is a live
+projection; reconnects catch up by sequence. Provider sessions can be replaced
+without changing the channel or DM identity.
 
 **PTY relay:**
 
@@ -231,92 +274,104 @@ Browser-level tabs and panes can be rearranged freely without becoming the proce
 
 ## REST API
 
-| Method   | Path                                     | Description                                                                                                                                              |
-| -------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST`   | `/auth`                                  | Authenticate with PIN, returns session cookie                                                                                                            |
-| `GET`    | `/sessions`                              | List active sessions                                                                                                                                     |
-| `POST`   | `/sessions`                              | Create local agent/terminal Tab process; current local contract requires `repoPath`, with `worktreePath` selecting cwd when set                          |
-| `PATCH`  | `/sessions/:id`                          | Rename session                                                                                                                                           |
-| `DELETE` | `/sessions/:id`                          | Terminate session                                                                                                                                        |
-| `POST`   | `/sessions/:id/image`                    | Upload clipboard image                                                                                                                                   |
-| `GET`    | `/branches`                              | List local and remote branches                                                                                                                           |
-| `GET`    | `/worktrees`                             | List inactive git worktrees managed by the local node                                                                                                    |
-| `DELETE` | `/worktrees`                             | Remove worktree, prune refs, delete branch                                                                                                               |
-| `GET`    | `/workspaces`                            | Legacy: list configured repo/workspace folders with git info; not the future Workspace entity CRUD                                                       |
-| `POST`   | `/workspaces`                            | Legacy: add a repo/folder path (body: `{path}`)                                                                                                          |
-| `DELETE` | `/workspaces`                            | Remove workspace folder                                                                                                                                  |
-| `GET`    | `/workspaces/dashboard`                  | Aggregated PRs + activity for a workspace (`?path=X`)                                                                                                    |
-| `GET`    | `/workspaces/settings`                   | Per-workspace settings (`?path=X`)                                                                                                                       |
-| `PATCH`  | `/workspaces/settings`                   | Update per-workspace settings                                                                                                                            |
-| `GET`    | `/workspaces/pr`                         | PR info for a branch (`?path=X&branch=Y`)                                                                                                                |
-| `GET`    | `/workspaces/ci-status`                  | CI check results (`?path=X&branch=Y`)                                                                                                                    |
-| `POST`   | `/workspaces/branch`                     | Switch branch (`?path=X`, body: `{branch}`)                                                                                                              |
-| `GET`    | `/workspaces/browse`                     | Browse filesystem directories (and files with `includeFiles=true`) for tree UI (`?path=X&prefix=Y&showHidden=bool&includeFiles=bool`)                    |
-| `POST`   | `/workspaces/bulk`                       | Add multiple workspace paths at once (body: `{paths}`)                                                                                                   |
-| `GET`    | `/workspaces/autocomplete`               | Path prefix autocomplete (`?prefix=X`)                                                                                                                   |
-| `POST`   | `/workspaces/worktree`                   | Git-specific Bench compatibility: create a worktree with mountain name (`?path=X`)                                                                       |
-| `GET`    | `/workspaces/current-branch`             | Current checked-out branch (`?path=X`)                                                                                                                   |
-| `GET`    | `/api/node/manifest`                     | Local node manifest: platform/arch/hostname/version, WSL, service manager, and non-fatal capability/tool probes; CLI mirror is `relay-ide manifest`      |
-| `POST`   | `/hub/pair-tokens`                       | Create a short-lived relay-node pair token with redacted-safe SSH/Tailscale/local bootstrap command variants                                             |
-| `POST`   | `/hub/pairing/exchange`                  | Exchange a one-time pair token for a persistent revocable node credential                                                                                |
-| `POST`   | `/hub/node-heartbeat`                    | Authenticated relay-node heartbeat using the persistent node credential                                                                                  |
-| `GET`    | `/nodes`                                 | List paired nodes with heartbeat status, reverse-link connection state, manifest capability summary, and hub-owned ACL policy summary                    |
-| `GET`    | `/hub/repo-inventory`                    | Aggregate local + node-reported repo inventory by canonical git remote identity                                                                          |
-| `POST`   | `/hub/nodes/:nodeId/sessions`            | Route terminal/agent session creation to an online node over reverse-link RPC; RPC body uses `repoPath`, `worktreePath`, and `cwd`                       |
-| `DELETE` | `/hub/nodes/:nodeId/sessions/:sessionId` | Kill a node-local session through reverse-link RPC                                                                                                       |
-| `DELETE` | `/nodes/:nodeId`                         | Revoke a paired node credential                                                                                                                          |
-| `GET`    | `/version`                               | Check for npm updates                                                                                                                                    |
-| `POST`   | `/update`                                | Self-update via npm                                                                                                                                      |
-| `GET`    | `/config/defaultAgent`                   | Get default coding agent                                                                                                                                 |
-| `PATCH`  | `/config/defaultAgent`                   | Set default coding agent (`claude` or `codex`)                                                                                                           |
-| `POST`   | `/hooks/stop`                            | Hook callback: set session state to idle (localhost-only, per-session token auth)                                                                        |
-| `POST`   | `/hooks/notification`                    | Hook callback: permission-prompt or waiting-for-input state (localhost-only, per-session token auth)                                                     |
-| `POST`   | `/hooks/prompt-submit`                   | Hook callback: set processing state, trigger branch rename on first message (localhost-only, per-session token auth)                                     |
-| `POST`   | `/hooks/session-end`                     | Hook callback: session cleanup dedup (localhost-only, per-session token auth)                                                                            |
-| `POST`   | `/hooks/tool-use`                        | Hook callback: set currentActivity (tool name + detail) (localhost-only, per-session token auth)                                                         |
-| `POST`   | `/hooks/tool-result`                     | Hook callback: clear currentActivity (localhost-only, per-session token auth)                                                                            |
-| `POST`   | `/webhooks/manage/setup`                 | Create GitHub webhook + start smee client for current workspace (`?path=X`)                                                                              |
-| `DELETE` | `/webhooks/manage/setup`                 | Delete GitHub webhook and stop smee client (`?path=X`)                                                                                                   |
-| `GET`    | `/webhooks/manage/status`                | Webhook health state (smee connected, last event timestamp)                                                                                              |
-| `POST`   | `/webhooks/manage/reload`                | Reload smee client from saved config                                                                                                                     |
-| `POST`   | `/webhooks/manage/ping`                  | Send test ping to smee channel                                                                                                                           |
-| `POST`   | `/webhooks/manage/repos`                 | Add a repo to the webhook-managed set (body: `{path}`)                                                                                                   |
-| `POST`   | `/webhooks/manage/repos/remove`          | Remove a repo from the webhook-managed set (body: `{path}`)                                                                                              |
-| `POST`   | `/webhooks/manage/backfill`              | Auto-provision webhooks for all repos that don't have one                                                                                                |
-| `GET`    | `/workspaces/changed-files`              | List changed files in a repo (`?path=X&base=ref`)                                                                                                        |
-| `GET`    | `/workspaces/divergence`                 | Branch divergence, line delta, dirty summary, base candidates, and capped side-specific commits (`?path=X&base=ref`)                                     |
-| `GET`    | `/workspaces/file-diff`                  | Get unified diff for a single file (`?path=X&file=Y&base=ref`)                                                                                           |
-| `GET`    | `/workspace-evidence/roots`              | List capability-tagged workspace evidence roots across nodes (flat list; client filters by `repoPath`/`workspaceId`)                                     |
-| `POST`   | `/workspace-evidence/list`               | List directory entries for a resolved root ref (body: `{rootRef, path?, maxEntries?}`)                                                                   |
-| `POST`   | `/workspace-evidence/stat`               | Stat a single path within a root (body: `{rootRef, path?}`)                                                                                              |
-| `POST`   | `/workspace-evidence/read`               | Read bounded UTF-8 file content within a root (body: `{rootRef, path, maxBytes?}`)                                                                       |
-| `POST`   | `/workspace-evidence/preview`            | Bounded read-only file preview; returns 200 with `preview.state`/`preview.kind` for oversized/binary/unsupported (body: `{rootRef, path, maxBytes?}`)    |
-| `GET`    | `/work-contexts`                         | List WorkContext envelopes                                                                                                                               |
-| `POST`   | `/work-contexts`                         | Create a WorkContext envelope                                                                                                                            |
-| `POST`   | `/work-contexts/from-task-ref`           | Create or resolve a WorkContext from a `TaskRef` (idempotent on task identity)                                                                           |
-| `GET`    | `/work-contexts/active`                  | Active Work read model: WorkContexts joined to local + node sessions                                                                                     |
-| `GET`    | `/work-contexts/:id`                     | Fetch one WorkContext (CLI-gateway actor-token read lane supported)                                                                                      |
-| `PATCH`  | `/work-contexts/:id`                     | Update WorkContext fields                                                                                                                                |
-| `GET`    | `/work-contexts/:id/resume`              | Resume packet for a WorkContext (CLI-gateway actor-token read lane supported)                                                                            |
-| `POST`   | `/work-contexts/:id/events`              | Append an audit/lifecycle event to a WorkContext                                                                                                         |
-| `POST`   | `/work-contexts/:id/link`                | Link a node/session/project/repo/bench ref to a WorkContext                                                                                              |
-| `POST`   | `/work-contexts/:id/sessions`            | Attach or create a session bound to a WorkContext                                                                                                        |
-| `POST`   | `/workflow-runs`                         | Publish a bounded WorkContext-scoped workflow run projection, including optional Relay orchestration topology (`workflow-runs.publish`; `context:write`) |
-| `PATCH`  | `/workflow-runs/:id`                     | Update workflow run state/progress/links/orchestration topology with optional expected-version guard (`workflow-runs.update`; `context:write`)           |
-| `GET`    | `/workflow-runs`                         | List workflow runs by WorkContext, optional state/runtime filters (`workflow-runs.list`; `context:read`)                                                 |
-| `GET`    | `/workflow-runs/:id`                     | Fetch one workflow run projection (`workflow-runs.get`; `context:read`)                                                                                  |
-| `POST`   | `/pipeline-handoff-artifacts`            | Attach a PipelineHandoffArtifact layer to a WorkContext (`handoff-artifacts.attach`; `context:write`)                                                    |
-| `GET`    | `/pipeline-handoff-artifacts`            | List bounded artifact metadata (`handoff-artifacts.list`; `context:read`)                                                                                |
-| `GET`    | `/pipeline-handoff-artifacts/:id`        | Show one artifact with payload-integrity validation (`handoff-artifacts.show`; `context:read`)                                                           |
-| `GET`    | `/pipeline-handoff-artifacts/:id/copy`   | Bounded public-safe summary copy; never raw payload bytes (`handoff-artifacts.copy`; `context:read`)                                                     |
-| `GET`    | `/supervisor/sessions`                   | Supervisor read model of scoped sessions (`supervisor.sessions`; scoped-session auth)                                                                    |
-| `POST`   | `/supervisor/actions/:action`            | Typed supervisor action (snapshot/send-text/submit) with per-target results (`supervisor.*`; scoped-session auth)                                        |
+| Method   | Path                                      | Description                                                                                                                                              |
+| -------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/auth`                                   | Authenticate with PIN, returns session cookie                                                                                                            |
+| `GET`    | `/sessions`                               | List active sessions                                                                                                                                     |
+| `POST`   | `/sessions`                               | Create local agent/terminal Tab process; current local contract requires `repoPath`, with `worktreePath` selecting cwd when set                          |
+| `PATCH`  | `/sessions/:id`                           | Rename session                                                                                                                                           |
+| `DELETE` | `/sessions/:id`                           | Terminate session                                                                                                                                        |
+| `POST`   | `/sessions/:id/image`                     | Upload clipboard image                                                                                                                                   |
+| `GET`    | `/channels/:id`                           | Channel summary and current sequence head                                                                                                                |
+| `GET`    | `/channels/:id/messages`                  | Byte-bounded durable channel history with sequence pagination                                                                                            |
+| `POST`   | `/channels/:id/messages`                  | Idempotent channel or thread post; sender is derived from the authenticated lane                                                                         |
+| `POST`   | `/channels/:id/attachments`               | Validate and store bounded native image attachments                                                                                                      |
+| `GET`    | `/channels/:id/attachments/:attachmentId` | Serve an authenticated channel image payload                                                                                                             |
+| `GET`    | `/channels/:id/threads/:rootMessageId`    | Byte-bounded thread history rooted in the same channel sequence                                                                                          |
+| `GET`    | `/channels/:id/roster`                    | Provider availability and live channel-binding status                                                                                                    |
+| `POST`   | `/channels/:id/agents/:agentId/interrupt` | Request interruption of the bound provider turn                                                                                                          |
+| `POST`   | `/channels/:id/agents/:agentId/approvals` | Respond to a pending provider approval                                                                                                                   |
+| `GET`    | `/branches`                               | List local and remote branches                                                                                                                           |
+| `GET`    | `/worktrees`                              | List inactive git worktrees managed by the local node                                                                                                    |
+| `DELETE` | `/worktrees`                              | Remove worktree, prune refs, delete branch                                                                                                               |
+| `GET`    | `/workspaces`                             | Legacy: list configured repo/workspace folders with git info; not the future Workspace entity CRUD                                                       |
+| `POST`   | `/workspaces`                             | Legacy: add a repo/folder path (body: `{path}`)                                                                                                          |
+| `DELETE` | `/workspaces`                             | Remove workspace folder                                                                                                                                  |
+| `GET`    | `/workspaces/dashboard`                   | Aggregated PRs + activity for a workspace (`?path=X`)                                                                                                    |
+| `GET`    | `/workspaces/settings`                    | Per-workspace settings (`?path=X`)                                                                                                                       |
+| `PATCH`  | `/workspaces/settings`                    | Update per-workspace settings                                                                                                                            |
+| `GET`    | `/workspaces/pr`                          | PR info for a branch (`?path=X&branch=Y`)                                                                                                                |
+| `GET`    | `/workspaces/ci-status`                   | CI check results (`?path=X&branch=Y`)                                                                                                                    |
+| `POST`   | `/workspaces/branch`                      | Switch branch (`?path=X`, body: `{branch}`)                                                                                                              |
+| `GET`    | `/workspaces/browse`                      | Browse filesystem directories (and files with `includeFiles=true`) for tree UI (`?path=X&prefix=Y&showHidden=bool&includeFiles=bool`)                    |
+| `POST`   | `/workspaces/bulk`                        | Add multiple workspace paths at once (body: `{paths}`)                                                                                                   |
+| `GET`    | `/workspaces/autocomplete`                | Path prefix autocomplete (`?prefix=X`)                                                                                                                   |
+| `POST`   | `/workspaces/worktree`                    | Git-specific Bench compatibility: create a worktree with mountain name (`?path=X`)                                                                       |
+| `GET`    | `/workspaces/current-branch`              | Current checked-out branch (`?path=X`)                                                                                                                   |
+| `GET`    | `/api/node/manifest`                      | Local node manifest: platform/arch/hostname/version, WSL, service manager, and non-fatal capability/tool probes; CLI mirror is `relay-ide manifest`      |
+| `POST`   | `/hub/pair-tokens`                        | Create a short-lived relay-node pair token with redacted-safe SSH/Tailscale/local bootstrap command variants                                             |
+| `POST`   | `/hub/pairing/exchange`                   | Exchange a one-time pair token for a persistent revocable node credential                                                                                |
+| `POST`   | `/hub/node-heartbeat`                     | Authenticated relay-node heartbeat using the persistent node credential                                                                                  |
+| `GET`    | `/nodes`                                  | List paired nodes with heartbeat status, reverse-link connection state, manifest capability summary, and hub-owned ACL policy summary                    |
+| `GET`    | `/hub/repo-inventory`                     | Aggregate local + node-reported repo inventory by canonical git remote identity                                                                          |
+| `POST`   | `/hub/nodes/:nodeId/sessions`             | Route terminal/agent session creation to an online node over reverse-link RPC; RPC body uses `repoPath`, `worktreePath`, and `cwd`                       |
+| `DELETE` | `/hub/nodes/:nodeId/sessions/:sessionId`  | Kill a node-local session through reverse-link RPC                                                                                                       |
+| `DELETE` | `/nodes/:nodeId`                          | Revoke a paired node credential                                                                                                                          |
+| `GET`    | `/version`                                | Check for npm updates                                                                                                                                    |
+| `POST`   | `/update`                                 | Self-update via npm                                                                                                                                      |
+| `GET`    | `/config/defaultAgent`                    | Get default coding agent                                                                                                                                 |
+| `PATCH`  | `/config/defaultAgent`                    | Set default coding agent (`claude` or `codex`)                                                                                                           |
+| `POST`   | `/hooks/stop`                             | Hook callback: set session state to idle (localhost-only, per-session token auth)                                                                        |
+| `POST`   | `/hooks/notification`                     | Hook callback: permission-prompt or waiting-for-input state (localhost-only, per-session token auth)                                                     |
+| `POST`   | `/hooks/prompt-submit`                    | Hook callback: set processing state, trigger branch rename on first message (localhost-only, per-session token auth)                                     |
+| `POST`   | `/hooks/session-end`                      | Hook callback: session cleanup dedup (localhost-only, per-session token auth)                                                                            |
+| `POST`   | `/hooks/tool-use`                         | Hook callback: set currentActivity (tool name + detail) (localhost-only, per-session token auth)                                                         |
+| `POST`   | `/hooks/tool-result`                      | Hook callback: clear currentActivity (localhost-only, per-session token auth)                                                                            |
+| `POST`   | `/webhooks/manage/setup`                  | Create GitHub webhook + start smee client for current workspace (`?path=X`)                                                                              |
+| `DELETE` | `/webhooks/manage/setup`                  | Delete GitHub webhook and stop smee client (`?path=X`)                                                                                                   |
+| `GET`    | `/webhooks/manage/status`                 | Webhook health state (smee connected, last event timestamp)                                                                                              |
+| `POST`   | `/webhooks/manage/reload`                 | Reload smee client from saved config                                                                                                                     |
+| `POST`   | `/webhooks/manage/ping`                   | Send test ping to smee channel                                                                                                                           |
+| `POST`   | `/webhooks/manage/repos`                  | Add a repo to the webhook-managed set (body: `{path}`)                                                                                                   |
+| `POST`   | `/webhooks/manage/repos/remove`           | Remove a repo from the webhook-managed set (body: `{path}`)                                                                                              |
+| `POST`   | `/webhooks/manage/backfill`               | Auto-provision webhooks for all repos that don't have one                                                                                                |
+| `GET`    | `/workspaces/changed-files`               | List changed files in a repo (`?path=X&base=ref`)                                                                                                        |
+| `GET`    | `/workspaces/divergence`                  | Branch divergence, line delta, dirty summary, base candidates, and capped side-specific commits (`?path=X&base=ref`)                                     |
+| `GET`    | `/workspaces/file-diff`                   | Get unified diff for a single file (`?path=X&file=Y&base=ref`)                                                                                           |
+| `GET`    | `/workspace-evidence/roots`               | List capability-tagged workspace evidence roots across nodes (flat list; client filters by `repoPath`/`workspaceId`)                                     |
+| `POST`   | `/workspace-evidence/list`                | List directory entries for a resolved root ref (body: `{rootRef, path?, maxEntries?}`)                                                                   |
+| `POST`   | `/workspace-evidence/stat`                | Stat a single path within a root (body: `{rootRef, path?}`)                                                                                              |
+| `POST`   | `/workspace-evidence/read`                | Read bounded UTF-8 file content within a root (body: `{rootRef, path, maxBytes?}`)                                                                       |
+| `POST`   | `/workspace-evidence/preview`             | Bounded read-only file preview; returns 200 with `preview.state`/`preview.kind` for oversized/binary/unsupported (body: `{rootRef, path, maxBytes?}`)    |
+| `GET`    | `/work-contexts`                          | List WorkContext envelopes                                                                                                                               |
+| `POST`   | `/work-contexts`                          | Create a WorkContext envelope                                                                                                                            |
+| `POST`   | `/work-contexts/from-task-ref`            | Create or resolve a WorkContext from a `TaskRef` (idempotent on task identity)                                                                           |
+| `GET`    | `/work-contexts/active`                   | Active Work read model: WorkContexts joined to local + node sessions                                                                                     |
+| `GET`    | `/work-contexts/:id`                      | Fetch one WorkContext (CLI-gateway actor-token read lane supported)                                                                                      |
+| `PATCH`  | `/work-contexts/:id`                      | Update WorkContext fields                                                                                                                                |
+| `GET`    | `/work-contexts/:id/resume`               | Resume packet for a WorkContext (CLI-gateway actor-token read lane supported)                                                                            |
+| `POST`   | `/work-contexts/:id/events`               | Append an audit/lifecycle event to a WorkContext                                                                                                         |
+| `POST`   | `/work-contexts/:id/link`                 | Link a node/session/project/repo/bench ref to a WorkContext                                                                                              |
+| `POST`   | `/work-contexts/:id/sessions`             | Attach or create a session bound to a WorkContext                                                                                                        |
+| `POST`   | `/workflow-runs`                          | Publish a bounded WorkContext-scoped workflow run projection, including optional Relay orchestration topology (`workflow-runs.publish`; `context:write`) |
+| `PATCH`  | `/workflow-runs/:id`                      | Update workflow run state/progress/links/orchestration topology with optional expected-version guard (`workflow-runs.update`; `context:write`)           |
+| `GET`    | `/workflow-runs`                          | List workflow runs by WorkContext, optional state/runtime filters (`workflow-runs.list`; `context:read`)                                                 |
+| `GET`    | `/workflow-runs/:id`                      | Fetch one workflow run projection (`workflow-runs.get`; `context:read`)                                                                                  |
+| `POST`   | `/pipeline-handoff-artifacts`             | Attach a PipelineHandoffArtifact layer to a WorkContext (`handoff-artifacts.attach`; `context:write`)                                                    |
+| `GET`    | `/pipeline-handoff-artifacts`             | List bounded artifact metadata (`handoff-artifacts.list`; `context:read`)                                                                                |
+| `GET`    | `/pipeline-handoff-artifacts/:id`         | Show one artifact with payload-integrity validation (`handoff-artifacts.show`; `context:read`)                                                           |
+| `GET`    | `/pipeline-handoff-artifacts/:id/copy`    | Bounded public-safe summary copy; never raw payload bytes (`handoff-artifacts.copy`; `context:read`)                                                     |
+| `GET`    | `/supervisor/sessions`                    | Supervisor read model of scoped sessions (`supervisor.sessions`; scoped-session auth)                                                                    |
+| `POST`   | `/supervisor/actions/:action`             | Typed supervisor action (snapshot/send-text/submit) with per-target results (`supervisor.*`; scoped-session auth)                                        |
 
 > The same router also serves `/work-context-artifacts*` (publish/list/show/pin/unpin/export/doctor) as the generic alias of the `/pipeline-handoff-artifacts*` paths above.
 
 ## WebSocket Channels
 
 - `/ws/:sessionId` — PTY session relay: raw binary terminal I/O + resize JSON. Close code 1000 = PTY exited.
+- `/ws/channels/:channelId?sinceSeq=N` — Authenticated server-to-client channel
+  snapshots/live events. The durable store supplies catch-up; writes stay on
+  REST.
 - `/nodes/:nodeId/ws/sessions/:sessionId` — Browser-to-hub endpoint for routed node PTY sessions. The hub proxies bytes to/from the node's reverse-link `pty` channel.
 - `/hub/node-link` — Node-to-hub reverse WebSocket. Authenticates with the node credential Bearer token and carries `control`, `rpc`, `events`, and `pty` JSON envelopes.
 - `/ws/events` — Server-to-client broadcast (`worktrees-changed`, `session-idle-changed`, `files-changed` with `changedFiles: string[]`).
@@ -339,25 +394,26 @@ Browser-facing channels require authentication via `token` cookie verified durin
 > committed; older entries are summarized below until backfilled. Regenerate
 > with `/adr:update`.
 
-| ADR     | Topic                                                                                                                                                                                    |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ADR-001 | Modular server architecture (composition root, dependency flow)                                                                                                                          |
-| ADR-003 | PTY session management (relay-pty substrate, in-memory state, scrollback, CLAUDECODE stripping; tmux substrate is historical)                                                            |
-| ADR-004 | PIN authentication (scrypt, browser-session cookies, rate limiting)                                                                                                                      |
-| ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)                                                                                                              |
-| ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)                                                                                                                       |
-| ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)                                                                                                                 |
-| ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)                                                                                                                 |
-| ADR-009 | Hub/Node Federation (hub accepts node registrations via reverse WebSocket; nodes own data plane; hub owns routing/aggregation)                                                           |
-| ADR-010 | Node-Initiated Outbound Links (nodes dial hub to avoid NAT/firewall inbound)                                                                                                             |
-| ADR-011 | Agent-driven browser automation (`server/agent-browser.ts`, Playwright)                                                                                                                  |
-| ADR-012 | Pair-Token/Credential Lifecycle (short-lived pair token → persistent revocable node credential; SHA256 storage; immediate revocation)                                                    |
-| ADR-013 | Capability Manifest (nodes self-report probes; hub gates routing on capability state)                                                                                                    |
-| ADR-014 | Repo Identity Aggregation (canonical git/GitHub remote identity across nodes; local paths node-specific)                                                                                 |
-| ADR-015 | Core relay primitives are domain-agnostic; repo/git is a feature layer ([`docs/adrs/ADR-015-core-primitives-domain-agnostic.md`](./adrs/ADR-015-core-primitives-domain-agnostic.md))     |
-| ADR-016 | Node-to-node isolation invariant; inter-node traffic flows through the hub ([`docs/adrs/ADR-016-node-to-node-isolation.md`](./adrs/ADR-016-node-to-node-isolation.md))                   |
-| ADR-017 | Agent brains are hub-level peers of Relay sessions, not protocol clients ([`docs/adrs/ADR-017-brain-as-peer-cli-session-events.md`](./adrs/ADR-017-brain-as-peer-cli-session-events.md)) |
-| ADR-018 | Command-mediated handoff and supervisor contract ([`docs/adrs/ADR-018-command-mediated-handoff-supervisor.md`](./adrs/ADR-018-command-mediated-handoff-supervisor.md))                   |
-| ADR-019 | Context-packet storage and primitive ([`docs/adrs/ADR-019-context-packet-storage-and-primitive.md`](./adrs/ADR-019-context-packet-storage-and-primitive.md))                             |
+| ADR     | Topic                                                                                                                                                                                         |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ADR-001 | Modular server architecture (composition root, dependency flow)                                                                                                                               |
+| ADR-003 | PTY session management (relay-pty substrate, in-memory state, scrollback, CLAUDECODE stripping; tmux substrate is historical)                                                                 |
+| ADR-004 | PIN authentication (scrypt, browser-session cookies, rate limiting)                                                                                                                           |
+| ADR-005 | Vitest as unit/integration test runner (migrated from node:test 2026-04-03)                                                                                                                   |
+| ADR-006 | Dual distribution (npm global + local dev, CLI flags via env vars)                                                                                                                            |
+| ADR-007 | WebSocket dual channels (PTY relay + event broadcast, debounced watcher)                                                                                                                      |
+| ADR-008 | TypeScript + ESM (strict mode, .js extensions, node: prefix, Node >= 24)                                                                                                                      |
+| ADR-009 | Hub/Node Federation (hub accepts node registrations via reverse WebSocket; nodes own data plane; hub owns routing/aggregation)                                                                |
+| ADR-010 | Node-Initiated Outbound Links (nodes dial hub to avoid NAT/firewall inbound)                                                                                                                  |
+| ADR-011 | Agent-driven browser automation (`server/agent-browser.ts`, Playwright)                                                                                                                       |
+| ADR-012 | Pair-Token/Credential Lifecycle (short-lived pair token → persistent revocable node credential; SHA256 storage; immediate revocation)                                                         |
+| ADR-013 | Capability Manifest (nodes self-report probes; hub gates routing on capability state)                                                                                                         |
+| ADR-014 | Repo Identity Aggregation (canonical git/GitHub remote identity across nodes; local paths node-specific)                                                                                      |
+| ADR-015 | Core relay primitives are domain-agnostic; repo/git is a feature layer ([`docs/adrs/ADR-015-core-primitives-domain-agnostic.md`](./adrs/ADR-015-core-primitives-domain-agnostic.md))          |
+| ADR-016 | Node-to-node isolation invariant; inter-node traffic flows through the hub ([`docs/adrs/ADR-016-node-to-node-isolation.md`](./adrs/ADR-016-node-to-node-isolation.md))                        |
+| ADR-017 | Agent brains are hub-level peers of Relay sessions, not protocol clients ([`docs/adrs/ADR-017-brain-as-peer-cli-session-events.md`](./adrs/ADR-017-brain-as-peer-cli-session-events.md))      |
+| ADR-018 | Command-mediated handoff and supervisor contract ([`docs/adrs/ADR-018-command-mediated-handoff-supervisor.md`](./adrs/ADR-018-command-mediated-handoff-supervisor.md))                        |
+| ADR-019 | Context-packet storage and primitive ([`docs/adrs/ADR-019-context-packet-storage-and-primitive.md`](./adrs/ADR-019-context-packet-storage-and-primitive.md))                                  |
+| ADR-020 | Channel is the durable conversation; DMs reuse channels and agents are replaceable participants ([`docs/adrs/ADR-020-channel-is-conversation.md`](./adrs/ADR-020-channel-is-conversation.md)) |
 
 > ADR-002 (vanilla JS frontend) was superseded by the Svelte 5 migration, which was subsequently superseded by the React 19 migration. `hooks.ts` does not yet have a dedicated ADR.
