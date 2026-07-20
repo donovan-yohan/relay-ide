@@ -397,8 +397,8 @@ export function createRepoFeatureRouter(
   // authoritative cross-node inventory reports `/hub/repo-inventory` uses,
   // joined with hub node status (online/stale/offline) and optional workspace
   // grouping. Non-destructive: pure read/derive, no persistence/migration. This
-  // is the server source-of-truth the frontend `view-tree` derive can later
-  // consume instead of deriving client-side.
+  // is the server source-of-truth frontend navigation can consume instead of
+  // deriving the model client-side.
   router.get('/hub/ia/tree', requireAuth, async (_req, res) => {
     try {
       const reports = [...repoInventoryFeature.listInventoryReports()];

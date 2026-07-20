@@ -12,7 +12,7 @@ import type {
  * Media/compact-message cards for the chat timeline. Renders web searches,
  * viewed images, generated images, compaction summaries, and hook prompts as
  * compact product-quality cards instead of the raw `<pre>` fallbacks. Follows
- * the ToolCard visual pattern: 1px outline, lowercase labels, monospace, no
+ * the compact-card visual pattern: 1px outline, lowercase labels, monospace, no
  * filled backgrounds (see DESIGN.md).
  */
 

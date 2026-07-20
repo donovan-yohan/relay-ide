@@ -2,9 +2,9 @@
 // six-layer IA read model — Project (with ProjectIdentity) → Instance → Bench —
 // from the AUTHORITATIVE server-side data: per-node `RepoInventoryReport`s
 // (config.repos + worktree scan) joined with hub node status (online/stale/
-// offline). This mirrors, server-side, the structural part of the CLIENT derive
-// in `frontend/src/lib/state/view-tree.ts` so the frontend can LATER switch from
-// its client-derive to this server source-of-truth.
+// offline). This is the server-owned canonical repo/worktree IA tree exposed by
+// `GET /hub/ia/tree`. The current frontend navigation does not consume this
+// endpoint; it remains driven by TopicSidebarShell and its existing stores.
 //
 // NON-DESTRUCTIVE: pure read/derive. ZERO persistence, ZERO DB writes, ZERO
 // migration, ZERO new tables. No I/O and no clock reads in the pure builder
@@ -25,9 +25,9 @@
 //
 // Tab COUNTS are intentionally OUT OF SCOPE here: a `RepoInventoryReport` carries
 // no session data, and cross-node session aggregation is a separate read model
-// (`server/hub-session-aggregator.ts`). The client derive layers tab counts from
-// its own `sessions` store; the server tree exposes the durable repo/worktree
-// structure the frontend can join sessions onto.
+// (`server/hub-session-aggregator.ts`). This server tree exposes only the
+// durable repo/worktree structure; consumers must join session data separately
+// when they need Tab counts.
 
 import {
   DEFAULT_LOCAL_NODE_ID,
@@ -43,10 +43,7 @@ import {
   type ProjectIdentity,
 } from '../../shared/project.js';
 import { createBenchId, type BenchId } from '../../shared/bench.js';
-import {
-  createWorkspaceId,
-  type WorkspaceId,
-} from '../../shared/workspace.js';
+import { createWorkspaceId, type WorkspaceId } from '../../shared/workspace.js';
 import type { HubNodeStatus } from '../../shared/relay-node-protocol.js';
 import type {
   RepoInventoryReport,

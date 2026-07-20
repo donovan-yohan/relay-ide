@@ -349,43 +349,6 @@
   background: var(--surface-hover);
 }
 
-/* fc-row — matches chat.html lines 284-294 */
-.fc-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  font-size: 0.8125rem;
-}
-
-.fc-row__path {
-  color: var(--text);
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fc-row__stats {
-  display: flex;
-  gap: 6px;
-  font-size: 0.7rem;
-  white-space: nowrap;
-}
-.fc-row__add {
-  color: var(--status-success);
-}
-.fc-row__del {
-  color: var(--status-error);
-}
-.fc-row__kind {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-  min-width: 56px;
-  text-align: right;
-}
-
 /* reasoning block — relay-specific, not in chat.html */
 .turn__item {
   min-width: 0;
