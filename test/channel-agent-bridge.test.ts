@@ -14,8 +14,14 @@ import {
 import { createChannelHub, type ChannelHub } from '../server/channel-hub.js';
 import {
   bindSessionToChannel,
+  boundChannelAgentDetail,
+  CHANNEL_BRIDGE_DETAIL_COMMAND_MAX_CHARS,
   CHANNEL_BRIDGE_FINALIZED_ITEM_CACHE_MAX,
   CHANNEL_BRIDGE_IMAGE_MAX_PER_TURN,
+  CHANNEL_BRIDGE_DETAIL_ITEM_ID_MAX_CHARS,
+  CHANNEL_BRIDGE_DETAIL_LANGUAGE_MAX_CHARS,
+  CHANNEL_BRIDGE_DETAIL_PATH_MAX_CHARS,
+  CHANNEL_BRIDGE_DETAIL_TITLE_MAX_CHARS,
 } from '../server/channel-agent-bridge.js';
 import type { ChannelBridgeRetentionSnapshot } from '../server/channel-agent-bridge.js';
 import type { ChannelAttachmentStore } from '../server/channel-attachments.js';
@@ -24,6 +30,7 @@ import {
   PACKET_IMAGE_DEGRADATION_META_KEY,
 } from '../server/channel-context-packet.js';
 import {
+  CHANNEL_AGENT_DETAIL_MAX_BYTES,
   parseMentions,
   type ChannelImagePart,
   type ChannelMessage,
@@ -114,7 +121,297 @@ function turnCompleted(sessionId: string, turnId: string): AgentPatchV2 {
   };
 }
 
+function reasoningStarted(
+  sessionId: string,
+  turnId: string,
+  itemId: string
+): AgentPatchV2 {
+  return {
+    type: 'agent-item-started-v2',
+    sessionId,
+    timestamp: 't',
+    turnId,
+    item: {
+      type: 'reasoning',
+      id: itemId,
+      summary: '',
+      status: 'running',
+    },
+  };
+}
+
+function reasoningUpdated(
+  sessionId: string,
+  turnId: string,
+  itemId: string,
+  status: 'completed' | 'failed' | 'cancelled',
+  summary: string
+): AgentPatchV2 {
+  return {
+    type: 'agent-item-updated-v2',
+    sessionId,
+    timestamp: 't',
+    turnId,
+    item: {
+      type: 'reasoning',
+      id: itemId,
+      summary,
+      status,
+      completedAt: 't',
+    },
+  };
+}
+
 describe('channel-agent-bridge lifecycle', () => {
+  it('strictly bounds escaping-heavy detail content and every metadata scalar', () => {
+    const huge = '\u0000'.repeat(300 * 1024);
+    const detail = boundChannelAgentDetail(`reason-${huge}`, {
+      kind: 'thought',
+      title: huge,
+      status: 'running',
+      content: huge,
+      language: huge,
+      command: huge,
+      path: huge,
+    });
+    expect(
+      Buffer.byteLength(JSON.stringify(detail), 'utf8')
+    ).toBeLessThanOrEqual(CHANNEL_AGENT_DETAIL_MAX_BYTES);
+    expect(detail.itemId.length).toBeLessThanOrEqual(
+      CHANNEL_BRIDGE_DETAIL_ITEM_ID_MAX_CHARS
+    );
+    expect(detail.card.title.length).toBeLessThanOrEqual(
+      CHANNEL_BRIDGE_DETAIL_TITLE_MAX_CHARS
+    );
+    expect(detail.card.language?.length).toBeLessThanOrEqual(
+      CHANNEL_BRIDGE_DETAIL_LANGUAGE_MAX_CHARS
+    );
+    expect(detail.card.command?.length).toBeLessThanOrEqual(
+      CHANNEL_BRIDGE_DETAIL_COMMAND_MAX_CHARS
+    );
+    expect(detail.card.path?.length).toBeLessThanOrEqual(
+      CHANNEL_BRIDGE_DETAIL_PATH_MAX_CHARS
+    );
+    expect(detail.card.content!.length).toBeLessThan(64 * 1024);
+  });
+
+  it('keeps truncated detail item ids stable and collision-resistant', () => {
+    const sharedPrefix = 'provider-item-'.repeat(100);
+    const first = boundChannelAgentDetail(`${sharedPrefix}:first`, {
+      kind: 'thought',
+      title: 'thinking',
+      status: 'running',
+    });
+    const second = boundChannelAgentDetail(`${sharedPrefix}:second`, {
+      kind: 'thought',
+      title: 'thinking',
+      status: 'running',
+    });
+
+    expect(first.itemId).toHaveLength(CHANNEL_BRIDGE_DETAIL_ITEM_ID_MAX_CHARS);
+    expect(second.itemId).toHaveLength(CHANNEL_BRIDGE_DETAIL_ITEM_ID_MAX_CHARS);
+    expect(first.itemId).not.toBe(second.itemId);
+    expect(first.itemId).toMatch(/#[a-f0-9]{24}$/);
+    expect(
+      boundChannelAgentDetail(`${sharedPrefix}:first`, {
+        kind: 'thought',
+        title: 'thinking',
+        status: 'running',
+      }).itemId
+    ).toBe(first.itemId);
+  });
+
+  it('projects only known card fields before sizing durable metadata', () => {
+    const pollutedCard = {
+      kind: 'thought',
+      title: 'thinking',
+      status: 'running',
+      content: 'bounded thought',
+      providerPayload: 'x'.repeat(512 * 1024),
+      nestedProviderPayload: { secret: 'y'.repeat(512 * 1024) },
+    } as Parameters<typeof boundChannelAgentDetail>[1] &
+      Record<string, unknown>;
+
+    const detail = boundChannelAgentDetail('reason-known-fields', pollutedCard);
+    expect(detail.card).toEqual({
+      kind: 'thought',
+      title: 'thinking',
+      status: 'running',
+      content: 'bounded thought',
+      sizeBytes: 15,
+    });
+    expect(detail.card).not.toHaveProperty('providerPayload');
+    expect(detail.card).not.toHaveProperty('nestedProviderPayload');
+    expect(Buffer.byteLength(JSON.stringify(detail), 'utf8')).toBeLessThan(
+      CHANNEL_AGENT_DETAIL_MAX_BYTES
+    );
+  });
+
+  it('bounds live card and reasoning accumulators and reports detail retention', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    let retained: ChannelBridgeRetentionSnapshot | null = null;
+    bindSessionToChannel({
+      channelId: 'topic:detail-retention',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+      onRetentionSnapshot: (snapshot) => {
+        retained = snapshot;
+      },
+    });
+    adapter.broadcastPatch(reasoningStarted('s', 'turn', 'reason'));
+    for (let index = 0; index < 4; index++) {
+      adapter.broadcastPatch({
+        type: 'agent-item-delta-v2',
+        sessionId: 's',
+        timestamp: 't',
+        turnId: 'turn',
+        itemId: 'reason',
+        delta: { summary: `${index}:${'x'.repeat(128 * 1024)}` },
+      });
+    }
+
+    expect(retained).toMatchObject({
+      openDetailStreams: 1,
+      detailItemIds: 1,
+      turnsWithRows: 1,
+    });
+    expect(retained!.retainedDetailBytes).toBeLessThan(200 * 1024);
+    expect(
+      store.history('topic:detail-retention')[0]?.agentDetail?.card.content
+        ?.length
+    ).toBeLessThanOrEqual(64 * 1024);
+
+    adapter.broadcastPatch(turnCompleted('s', 'turn'));
+    expect(retained).toEqual({
+      openStreams: 0,
+      openDetailStreams: 0,
+      assistantItemIds: 0,
+      detailItemIds: 0,
+      turnsWithRows: 0,
+      retainedTextBytes: 0,
+      retainedDetailBytes: 0,
+    });
+  });
+
+  it.each(
+    (['completed', 'failed', 'interrupted'] as const).flatMap((turnStatus) =>
+      (['completed', 'failed', 'cancelled'] as const).map((itemStatus) => [
+        turnStatus,
+        itemStatus,
+      ])
+    )
+  )(
+    'allows provisional turn %s to transition once to explicit item %s',
+    (turnStatus, itemStatus) => {
+      const { store, hub } = makeStore();
+      const adapter = new MockProtocolAdapterV2();
+      const completeBroadcast = vi.spyOn(hub, 'completeStreamBroadcast');
+      bindSessionToChannel({
+        channelId: 'topic:detail-terminal-matrix',
+        agentFramework: 'codex',
+        adapter,
+        store,
+        hub,
+      });
+      adapter.broadcastPatch(reasoningStarted('s', 'turn', 'reason'));
+      adapter.broadcastPatch({
+        type: 'agent-turn-completed-v2',
+        sessionId: 's',
+        timestamp: 't',
+        turnId: 'turn',
+        status: turnStatus,
+      });
+
+      adapter.broadcastPatch(
+        reasoningUpdated(
+          's',
+          'turn',
+          'reason',
+          itemStatus,
+          `first explicit ${itemStatus}`
+        )
+      );
+      const explicitRowStatus =
+        itemStatus === 'completed'
+          ? 'complete'
+          : itemStatus === 'failed'
+            ? 'failed'
+            : 'interrupted';
+      expect(store.history('topic:detail-terminal-matrix')).toEqual([
+        expect.objectContaining({
+          status: explicitRowStatus,
+          agentDetail: expect.objectContaining({
+            card: expect.objectContaining({
+              status: itemStatus,
+              content: `first explicit ${itemStatus}`,
+            }),
+          }),
+        }),
+      ]);
+
+      // Explicit terminal is absorbing: duplicate/conflicting replay cannot
+      // rewrite either row status or card payload.
+      adapter.broadcastPatch(
+        reasoningUpdated('s', 'turn', 'reason', 'failed', 'conflicting replay')
+      );
+      expect(store.history('topic:detail-terminal-matrix')[0]).toMatchObject({
+        status: explicitRowStatus,
+        agentDetail: {
+          card: {
+            status: itemStatus,
+            content: `first explicit ${itemStatus}`,
+          },
+        },
+      });
+      expect(completeBroadcast).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it('lets a restart-provisional detail resolve once, then absorbs replay', () => {
+    const { store, hub } = makeStore();
+    const firstAdapter = new MockProtocolAdapterV2();
+    const unbindFirst = bindSessionToChannel({
+      channelId: 'topic:detail-restart',
+      agentFramework: 'codex',
+      adapter: firstAdapter,
+      store,
+      hub,
+    });
+    firstAdapter.broadcastPatch(reasoningStarted('s', 'turn', 'reason'));
+    store.sweepStaleStreaming();
+    unbindFirst();
+    expect(store.history('topic:detail-restart')[0]).toMatchObject({
+      status: 'truncated',
+      meta: { truncationReason: 'restart' },
+      agentDetail: { card: { status: 'cancelled' } },
+    });
+
+    const resumedAdapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:detail-restart',
+      agentFramework: 'codex',
+      adapter: resumedAdapter,
+      store,
+      hub,
+    });
+    resumedAdapter.broadcastPatch(
+      reasoningUpdated('s', 'turn', 'reason', 'completed', 'resumed terminal')
+    );
+    resumedAdapter.broadcastPatch(
+      reasoningUpdated('s', 'turn', 'reason', 'failed', 'late conflict')
+    );
+    expect(store.history('topic:detail-restart')[0]).toMatchObject({
+      status: 'complete',
+      agentDetail: {
+        card: { status: 'completed', content: 'resumed terminal' },
+      },
+    });
+    expect(store.history('topic:detail-restart')[0]?.meta).toBeUndefined();
+  });
+
   it('releases completed stream text and item ids after every turn', async () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2({ connectMs: 0, stepMs: 0 });
@@ -139,13 +436,16 @@ describe('channel-agent-bridge lifecycle', () => {
       });
       expect(retained).toEqual({
         openStreams: 0,
+        openDetailStreams: 0,
         assistantItemIds: 0,
+        detailItemIds: 0,
         turnsWithRows: 0,
         retainedTextBytes: 0,
+        retainedDetailBytes: 0,
       });
     }
 
-    expect(store.history('topic:retention', { limit: 100 })).toHaveLength(50);
+    expect(store.getChannelSummary('topic:retention')?.messageCount).toBe(250);
   });
 
   it('mirrors a full assistant turn as an attributed complete row', async () => {
@@ -164,8 +464,9 @@ describe('channel-agent-bridge lifecycle', () => {
     await adapter.sendMessage({ turnId: 'turn-1', content: 'hello' });
 
     const messages = store.history('topic:test');
-    expect(messages).toHaveLength(1);
-    const message = messages[0]!;
+    expect(messages).toHaveLength(5);
+    expect(messages.filter((row) => row.agentDetail)).toHaveLength(4);
+    const message = messages.find((row) => !row.agentDetail)!;
     expect(message.status).toBe('complete');
     expect(message.sender).toMatchObject({
       kind: 'agent',
@@ -214,9 +515,10 @@ describe('channel-agent-bridge lifecycle', () => {
     ]);
 
     const messages = store.history('topic:c');
-    expect(messages).toHaveLength(2);
-    const claude = messages.find((m) => m.sender.id === 'agent:claude');
-    const codex = messages.find((m) => m.sender.id === 'agent:codex');
+    expect(messages).toHaveLength(10);
+    const prose = messages.filter((message) => !message.agentDetail);
+    const claude = prose.find((m) => m.sender.id === 'agent:claude');
+    const codex = prose.find((m) => m.sender.id === 'agent:codex');
     expect(claude?.body.text).toBe('Mock v2 response complete.');
     expect(codex?.body.text).toBe('Mock v2 response complete.');
     expect(claude?.source?.sessionId).toBe('s1');
@@ -255,9 +557,12 @@ describe('channel-agent-bridge lifecycle', () => {
     });
     expect(retained).toEqual({
       openStreams: 0,
+      openDetailStreams: 0,
       assistantItemIds: 0,
+      detailItemIds: 0,
       turnsWithRows: 0,
       retainedTextBytes: 0,
+      retainedDetailBytes: 0,
     });
   });
 
@@ -292,9 +597,12 @@ describe('channel-agent-bridge lifecycle', () => {
     ]);
     expect(retained).toEqual({
       openStreams: 0,
+      openDetailStreams: 0,
       assistantItemIds: 0,
+      detailItemIds: 0,
       turnsWithRows: 0,
       retainedTextBytes: 0,
+      retainedDetailBytes: 0,
     });
   });
 
@@ -363,9 +671,12 @@ describe('channel-agent-bridge lifecycle', () => {
     expect(onAssistantMessageFinalized).toHaveBeenCalledOnce();
     expect(retained).toEqual({
       openStreams: 0,
+      openDetailStreams: 0,
       assistantItemIds: 0,
+      detailItemIds: 0,
       turnsWithRows: 0,
       retainedTextBytes: 0,
+      retainedDetailBytes: 0,
     });
   });
 
@@ -417,9 +728,12 @@ describe('channel-agent-bridge lifecycle', () => {
     expect(store.history('topic:replay')).toHaveLength(1);
     expect(retained).toEqual({
       openStreams: 0,
+      openDetailStreams: 0,
       assistantItemIds: 0,
+      detailItemIds: 0,
       turnsWithRows: 0,
       retainedTextBytes: 0,
+      retainedDetailBytes: 0,
     });
   });
 
@@ -479,9 +793,12 @@ describe('channel-agent-bridge lifecycle', () => {
     expect(beginBroadcast).not.toHaveBeenCalled();
     expect(retained).toEqual({
       openStreams: 0,
+      openDetailStreams: 0,
       assistantItemIds: 0,
+      detailItemIds: 0,
       turnsWithRows: 0,
       retainedTextBytes: 0,
+      retainedDetailBytes: 0,
     });
   });
 
@@ -701,9 +1018,12 @@ describe('channel-agent-bridge lifecycle', () => {
     expect(store.history('topic:empty-start')[0]?.truncated).toBeUndefined();
     expect(retained).toEqual({
       openStreams: 0,
+      openDetailStreams: 0,
       assistantItemIds: 0,
+      detailItemIds: 0,
       turnsWithRows: 0,
       retainedTextBytes: 0,
+      retainedDetailBytes: 0,
     });
   });
 
@@ -1227,7 +1547,7 @@ describe('channel-agent-bridge lifecycle', () => {
     expect(finalized).not.toHaveBeenCalled();
   });
 
-  it('does not mirror non-renderable items', () => {
+  it('mirrors reasoning and command items as stable typed channel cards', () => {
     const { store, hub } = makeStore();
     const adapter = new MockProtocolAdapterV2();
     bindSessionToChannel({
@@ -1251,7 +1571,140 @@ describe('channel-agent-bridge lifecycle', () => {
       turnId: 'turn',
       item: { type: 'reasoning', id: 'r1', summary: 'thinking' },
     });
-    expect(store.history('topic:n')).toHaveLength(0);
+    adapter.broadcastPatch(turnCompleted('s', 'turn'));
+
+    const details = store.history('topic:n');
+    expect(details).toHaveLength(2);
+    expect(details.map((message) => message.source?.itemId)).toEqual([
+      'c1',
+      'r1',
+    ]);
+    expect(details.map((message) => message.agentDetail)).toEqual([
+      expect.objectContaining({
+        itemId: 'c1',
+        card: expect.objectContaining({
+          kind: 'output',
+          title: 'ls',
+          status: 'completed',
+        }),
+      }),
+      expect.objectContaining({
+        itemId: 'r1',
+        card: expect.objectContaining({
+          kind: 'thought',
+          content: 'thinking',
+          status: 'completed',
+        }),
+      }),
+    ]);
+  });
+
+  it('preserves reasoning deltas when turn completion supplies the terminal boundary', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:reasoning',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch({
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      item: {
+        type: 'reasoning',
+        id: 'reason-1',
+        providerItemId: 'provider-reason-1',
+        summary: '',
+        status: 'running',
+      },
+    });
+    adapter.broadcastPatch({
+      type: 'agent-item-delta-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      itemId: 'reason-1',
+      delta: { summary: 'inspect ', detail: 'inspect the live channel' },
+    });
+    adapter.broadcastPatch(turnCompleted('s', 'turn'));
+
+    const [message] = store.history('topic:reasoning');
+    expect(message).toMatchObject({
+      seq: 1,
+      status: 'complete',
+      source: {
+        sessionId: 's',
+        turnId: 'turn',
+        itemId: 'provider-reason-1',
+      },
+      agentDetail: {
+        itemId: 'provider-reason-1',
+        card: {
+          kind: 'thought',
+          status: 'completed',
+          content: 'inspect the live channel',
+        },
+      },
+    });
+  });
+
+  it('applies a late authoritative detail update without appending a second row', () => {
+    const { store, hub } = makeStore();
+    const adapter = new MockProtocolAdapterV2();
+    bindSessionToChannel({
+      channelId: 'topic:late-detail',
+      agentFramework: 'codex',
+      adapter,
+      store,
+      hub,
+    });
+    adapter.broadcastPatch({
+      type: 'agent-item-started-v2',
+      sessionId: 's',
+      timestamp: 't',
+      turnId: 'turn',
+      item: {
+        type: 'reasoning',
+        id: 'reason-1',
+        summary: '',
+        status: 'running',
+      },
+    });
+    adapter.broadcastPatch(turnCompleted('s', 'turn'));
+    const before = store.history('topic:late-detail')[0]!;
+
+    adapter.broadcastPatch({
+      type: 'agent-item-updated-v2',
+      sessionId: 's',
+      timestamp: 't2',
+      turnId: 'turn',
+      item: {
+        type: 'reasoning',
+        id: 'reason-1',
+        summary: 'late provider summary',
+        detail: 'late authoritative reasoning detail',
+        status: 'completed',
+      },
+    });
+
+    const after = store.history('topic:late-detail');
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({
+      id: before.id,
+      seq: before.seq,
+      agentDetail: {
+        itemId: 'reason-1',
+        card: {
+          kind: 'thought',
+          status: 'completed',
+          content: 'late authoritative reasoning detail',
+        },
+      },
+    });
   });
 
   it('force-finalizes truncated when the in-flight text exceeds the 256KB cap', () => {

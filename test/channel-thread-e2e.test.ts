@@ -195,14 +195,18 @@ describe('channel thread mention round trip', () => {
         .history(harness.channelId, { limit: 20 })
         .some(
           (message) =>
-            message.sender.id === 'agent:mock' && message.status === 'complete'
+            message.sender.id === 'agent:mock' &&
+            message.status === 'complete' &&
+            !message.agentDetail
         )
     );
     const agentReply = harness.store
       .history(harness.channelId, { limit: 20 })
       .find(
         (message) =>
-          message.sender.id === 'agent:mock' && message.status === 'complete'
+          message.sender.id === 'agent:mock' &&
+          message.status === 'complete' &&
+          !message.agentDetail
       );
     expect(agentReply).toMatchObject({
       body: { text: 'Mock v2 response complete.' },
@@ -217,11 +221,12 @@ describe('channel thread mention round trip', () => {
       root.message.id,
       { limit: 20 }
     );
-    expect(thread.map((message) => message.id)).toEqual([
-      root.message.id,
-      trigger.message.id,
-      agentReply!.id,
-    ]);
-    expect(harness.store.getMessage(root.message.id)?.replyCount).toBe(2);
+    expect(
+      thread
+        .filter((message) => !message.agentDetail)
+        .map((message) => message.id)
+    ).toEqual([root.message.id, trigger.message.id, agentReply!.id]);
+    expect(thread.filter((message) => message.agentDetail)).toHaveLength(4);
+    expect(harness.store.getMessage(root.message.id)?.replyCount).toBe(6);
   });
 });

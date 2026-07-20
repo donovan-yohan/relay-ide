@@ -225,6 +225,65 @@ describe('channel-hub fan-out', () => {
     }
   });
 
+  it('debounces persisted card rows and transports the latest Codex-shaped update through the reducer', () => {
+    vi.useFakeTimers();
+    const s = store();
+    const hub = hubWith(s, { coalesceMs: 50 });
+    const sock = fakeSocket();
+    hub.handleConnection(sock, { channelId: 'topic:c', sinceSeq: null });
+    const started = s.beginStream({
+      channelId: 'topic:c',
+      sender: { kind: 'agent', id: 'agent:codex', providerId: 'codex' },
+      source: {
+        sessionId: 'session_synthetic_codex',
+        turnId: 'turn_synthetic_codex',
+        itemId: 'reason_synthetic_codex',
+      },
+      agentDetail: {
+        itemId: 'reason_synthetic_codex',
+        card: { kind: 'thought', title: 'thinking', status: 'running' },
+      },
+    });
+    hub.beginStreamBroadcast(started);
+    const partial = s.updateAgentDetail(started.id, {
+      itemId: 'reason_synthetic_codex',
+      card: {
+        kind: 'thought',
+        title: 'thinking',
+        status: 'running',
+        content: 'Codex synthetic thought: verify the reducer',
+      },
+    })!;
+    hub.updateStreamBroadcast(partial);
+    const latest = s.updateAgentDetail(started.id, {
+      itemId: 'reason_synthetic_codex',
+      card: {
+        kind: 'thought',
+        title: 'thinking',
+        status: 'running',
+        content:
+          'Codex synthetic thought: verify the reducer contract before applying the patch.',
+      },
+    })!;
+    hub.updateStreamBroadcast(latest);
+
+    expect(
+      sock.sent.filter((event) => event.type === 'channel-message-updated-v1')
+    ).toHaveLength(0);
+    vi.advanceTimersByTime(50);
+    const updates = sock.sent.filter(
+      (event) => event.type === 'channel-message-updated-v1'
+    );
+    expect(updates).toHaveLength(1);
+
+    let state = initialChannelReducerState('topic:c');
+    for (const event of sock.sent) state = applyChannelEventV1(state, event);
+    expect(state.byId[started.id]?.agentDetail?.card.content).toBe(
+      latest.agentDetail?.card.content
+    );
+    expect(state.needsCatchup).toBe(false);
+  });
+
   it('serves (sinceSeq, head] then live with seq continuity across the boundary', () => {
     const s = store();
     for (let i = 1; i <= 3; i++) {

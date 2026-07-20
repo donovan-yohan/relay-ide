@@ -7,9 +7,12 @@ import { createLogger } from './logger.js';
 
 import {
   CHANNEL_CHAT_PROTOCOL_VERSION,
+  CHANNEL_AGENT_DETAIL_MAX_BYTES,
   CHANNEL_MESSAGE_BODY_MAX_BYTES,
   CHANNEL_MESSAGE_MAX_IMAGE_PARTS,
   isChannelMessagePart,
+  isChannelAgentDetail,
+  type ChannelAgentDetail,
   type ChannelBodyFormat,
   type ChannelMemberRef,
   type ChannelMention,
@@ -183,6 +186,9 @@ export interface ChannelMessageMeta {
   truncationReason?: ChannelTruncationReason;
   /** Legacy UI marker reserved exclusively for the 256KB size limit. */
   truncated?: boolean;
+  agentDetail?: ChannelAgentDetail;
+  /** Internal lifecycle marker; stripped before rows cross the wire. */
+  agentDetailTerminalAuthority?: 'provisional' | 'explicit';
   [key: string]: unknown;
 }
 
@@ -207,6 +213,7 @@ export interface BeginStreamInput {
   parentMessageId?: string;
   mentions?: ChannelMention[];
   parts?: ChannelMessagePart[];
+  agentDetail?: ChannelAgentDetail;
 }
 
 export interface FinalizeStreamInput {
@@ -218,6 +225,14 @@ export interface FinalizeStreamInput {
   truncationReason?: ChannelTruncationReason;
   /** Legacy alias for `truncationReason: 'size-limit'`. */
   truncated?: boolean;
+  agentDetail?: ChannelAgentDetail;
+  /** Detail rows distinguish turn/restart fallback from item-level terminal. */
+  agentDetailTerminalAuthority?: 'provisional' | 'explicit';
+}
+
+export interface ResolveProvisionalAgentDetailTerminalResult {
+  message: ChannelMessage | null;
+  transitioned: boolean;
 }
 
 export interface ChannelSummary {
@@ -276,6 +291,16 @@ export interface ChannelMessageStore {
   appendComplete(input: AppendCompleteInput): ChannelMessage;
   beginStream(input: BeginStreamInput): ChannelMessage;
   updateStreamText(id: string, text: string): ChannelMessage | null;
+  updateAgentDetail(
+    id: string,
+    detail: ChannelAgentDetail
+  ): ChannelMessage | null;
+  resolveProvisionalAgentDetailTerminal(
+    id: string,
+    input: Pick<FinalizeStreamInput, 'text' | 'status'> & {
+      agentDetail: ChannelAgentDetail;
+    }
+  ): ResolveProvisionalAgentDetailTerminalResult;
   finalizeStream(id: string, input: FinalizeStreamInput): ChannelMessage | null;
   getMessage(id: string): ChannelMessage | null;
   findByClientMessage(
@@ -362,6 +387,42 @@ function assertMessageParts(parts: ChannelMessagePart[] | undefined): void {
   }
 }
 
+function assertAgentDetail(detail: ChannelAgentDetail | undefined): void {
+  if (detail === undefined) return;
+  if (
+    !isChannelAgentDetail(detail) ||
+    Buffer.byteLength(JSON.stringify(detail), 'utf8') >
+      CHANNEL_AGENT_DETAIL_MAX_BYTES
+  ) {
+    throw new ChannelMessageStoreError(
+      413,
+      'channel_agent_detail_too_large',
+      'channel agent detail is invalid or exceeds the 256KB cap'
+    );
+  }
+}
+
+function assertMessagePayloadSize(
+  text: string,
+  detail: ChannelAgentDetail | undefined
+): void {
+  assertBodySize(text);
+  assertAgentDetail(detail);
+  const bytes =
+    Buffer.byteLength(text, 'utf8') +
+    (detail === undefined
+      ? 0
+      : Buffer.byteLength(JSON.stringify(detail), 'utf8'));
+  if (bytes > CHANNEL_MESSAGE_BODY_MAX_BYTES) {
+    throw new ChannelMessageStoreError(
+      413,
+      'channel_message_payload_too_large',
+      'combined channel message body and agent detail exceed the 256KB cap',
+      { bytes, maxBytes: CHANNEL_MESSAGE_BODY_MAX_BYTES }
+    );
+  }
+}
+
 function cleanLimit(
   limit: unknown,
   maxLimit = CHANNEL_HISTORY_MAX_LIMIT
@@ -426,6 +487,9 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
   ) {
     message.parts = meta.parts;
   }
+  if (isChannelAgentDetail(meta?.agentDetail)) {
+    message.agentDetail = meta.agentDetail;
+  }
   // Surface app-level meta (e.g. #1167 approval payloads) while keeping the
   // internal routing keys off the wire — providerId rides `sender.providerId`,
   // mentions/truncated have dedicated fields above.
@@ -434,6 +498,8 @@ function rowToMessage(row: ChannelMessageRow): ChannelMessage {
       providerId: _pid,
       mentions: _m,
       parts: _parts,
+      agentDetail: _agentDetail,
+      agentDetailTerminalAuthority: _agentDetailTerminalAuthority,
       truncated: _t,
       ...rest
     } = meta;
@@ -460,6 +526,7 @@ function buildMeta(input: {
   extra?: ChannelMessageMeta;
 }): string | null {
   assertMessageParts(input.extra?.parts);
+  assertAgentDetail(input.extra?.agentDetail);
   assertMessageParts(input.parts);
   const meta: ChannelMessageMeta = { ...(input.extra ?? {}) };
   if (input.mentions && input.mentions.length > 0)
@@ -907,7 +974,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
   }
 
   function appendCompleteImpl(input: AppendCompleteInput): ChannelMessage {
-    assertBodySize(input.text);
+    assertMessagePayloadSize(input.text, input.meta?.agentDetail);
     assertMessageParts(input.parts);
     assertMessageParts(input.meta?.parts);
     if (input.clientMessageId) {
@@ -984,7 +1051,7 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       if (existing) return rowToMessage(existing);
 
       const initialText = input.text ?? '';
-      assertBodySize(initialText);
+      assertMessagePayloadSize(initialText, input.agentDetail);
       assertMessageParts(input.parts);
       const threadId = resolveThread(input.channelId, input.parentMessageId);
       const now = nowIso();
@@ -1004,6 +1071,9 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
         metaJson: buildMeta({
           ...(input.mentions ? { mentions: input.mentions } : {}),
           ...(input.parts ? { parts: input.parts } : {}),
+          ...(input.agentDetail
+            ? { extra: { agentDetail: input.agentDetail } }
+            : {}),
           ...(input.sender.providerId
             ? { providerId: input.sender.providerId }
             : {}),
@@ -1020,13 +1090,69 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
     },
 
     updateStreamText(id, text) {
-      assertBodySize(text);
       const row = selectById.get(id) as ChannelMessageRow | undefined;
       if (!row) return null;
+      assertMessagePayloadSize(text, parseMeta(row.meta_json)?.agentDetail);
       db.prepare(
         'UPDATE channel_messages SET body_text = @text, updated_at = @now WHERE id = @id'
       ).run({ id, text, now: nowIso() });
       return getMessageById(id);
+    },
+
+    updateAgentDetail(id, detail) {
+      const row = selectById.get(id) as ChannelMessageRow | undefined;
+      if (!row) return null;
+      assertMessagePayloadSize(row.body_text, detail);
+      const meta = parseMeta(row.meta_json) ?? {};
+      meta.agentDetail = detail;
+      db.prepare(
+        `UPDATE channel_messages
+         SET meta_json = @metaJson, updated_at = @now
+         WHERE id = @id AND status = 'streaming'`
+      ).run({
+        id,
+        metaJson: JSON.stringify(meta),
+        now: nowIso(),
+      });
+      return getMessageById(id);
+    },
+
+    resolveProvisionalAgentDetailTerminal(id, input) {
+      const row = selectById.get(id) as ChannelMessageRow | undefined;
+      if (!row) return { message: null, transitioned: false };
+      const currentMeta = parseMeta(row.meta_json) ?? {};
+      if (currentMeta.agentDetailTerminalAuthority !== 'provisional') {
+        return { message: rowToMessage(row), transitioned: false };
+      }
+      assertMessagePayloadSize(input.text, input.agentDetail);
+      const meta: ChannelMessageMeta = {
+        ...currentMeta,
+        agentDetail: input.agentDetail,
+        agentDetailTerminalAuthority: 'explicit',
+      };
+      delete meta.truncationReason;
+      delete meta.truncated;
+      const now = nowIso();
+      const result = db
+        .prepare(
+          `UPDATE channel_messages
+           SET body_text = @text, status = @status, meta_json = @metaJson,
+               updated_at = @now, completed_at = @now
+           WHERE id = @id
+             AND status != 'streaming'
+             AND json_extract(meta_json, '$.agentDetailTerminalAuthority') = 'provisional'`
+        )
+        .run({
+          id,
+          text: input.text,
+          status: input.status,
+          metaJson: JSON.stringify(meta),
+          now,
+        });
+      return {
+        message: getMessageById(id),
+        transitioned: result.changes === 1,
+      };
     },
 
     finalizeStream(id, input) {
@@ -1034,9 +1160,19 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
       if (!row) return null;
       // Idempotent replay: finalizing an already-final row is a no-op.
       if (row.status !== 'streaming') return rowToMessage(row);
-      assertBodySize(input.text);
+      assertMessagePayloadSize(
+        input.text,
+        input.agentDetail ?? parseMeta(row.meta_json)?.agentDetail
+      );
       const now = nowIso();
       const meta = parseMeta(row.meta_json) ?? {};
+      if (input.agentDetail) {
+        assertAgentDetail(input.agentDetail);
+        meta.agentDetail = input.agentDetail;
+      }
+      if (input.agentDetailTerminalAuthority) {
+        meta.agentDetailTerminalAuthority = input.agentDetailTerminalAuthority;
+      }
       const truncationReason =
         input.truncationReason ??
         (input.truncated
@@ -1347,6 +1483,13 @@ export function createChannelMessageStore(dbPath: string): ChannelMessageStore {
           for (const row of stale) {
             const meta = parseMeta(row.meta_json) ?? {};
             meta.truncationReason = 'restart';
+            if (isChannelAgentDetail(meta.agentDetail)) {
+              meta.agentDetail = {
+                ...meta.agentDetail,
+                card: { ...meta.agentDetail.card, status: 'cancelled' },
+              };
+              meta.agentDetailTerminalAuthority = 'provisional';
+            }
             // Never surface restart loss as the legacy 256KB-limit marker.
             delete meta.truncated;
             finalizeRestart.run({

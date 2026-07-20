@@ -41,9 +41,60 @@ function truncatedMessage(seq: number): ChannelMessage {
   };
 }
 
-const INITIAL_MESSAGES = Array.from({ length: 50 }, (_, index) =>
-  message(index + 21)
-);
+function detailMessage(
+  seq: number,
+  card: NonNullable<ChannelMessage['agentDetail']>['card']
+): ChannelMessage {
+  return {
+    ...message(seq, '', {
+      kind: 'agent',
+      id: 'agent:codex',
+      providerId: 'codex',
+    }),
+    agentDetail: { itemId: `detail-${seq}`, card },
+  };
+}
+
+const LARGE_OUTPUT = Array.from(
+  { length: 500 },
+  (_, index) => `const fixtureLine${index + 1} = ${index + 1};`
+).join('\n');
+const LARGE_DIFF = [
+  '--- a/frontend/src/channel-card.ts',
+  '+++ b/frontend/src/channel-card.ts',
+  '@@ -1,250 +1,250 @@',
+  ...Array.from({ length: 250 }, (_, index) => `-old line ${index + 1}`),
+  ...Array.from({ length: 250 }, (_, index) => `+new line ${index + 1}`),
+].join('\n');
+
+const INITIAL_MESSAGES = [
+  ...Array.from({ length: 47 }, (_, index) => message(index + 21)),
+  detailMessage(68, {
+    kind: 'thought',
+    title: 'inspect the channel renderer',
+    status: 'completed',
+    content: 'reasoning content persisted on the durable channel row',
+  }),
+  detailMessage(69, {
+    kind: 'output',
+    title: 'generate fixture output',
+    status: 'completed',
+    content: LARGE_OUTPUT,
+    language: 'typescript',
+    sizeBytes: new TextEncoder().encode(LARGE_OUTPUT).byteLength,
+  }),
+  detailMessage(70, {
+    kind: 'diff',
+    title: 'frontend/src/channel-card.ts',
+    path: 'frontend/src/channel-card.ts',
+    status: 'completed',
+    content: LARGE_DIFF,
+    language: 'diff',
+    additions: 250,
+    deletions: 250,
+    sizeBytes: new TextEncoder().encode(LARGE_DIFF).byteLength,
+  }),
+];
 
 function Fixture(): React.ReactElement {
   const [messages, setMessages] = useState(INITIAL_MESSAGES);
@@ -115,6 +166,34 @@ function Fixture(): React.ReactElement {
     });
   }, []);
 
+  const applyDetailRowUpdate = useCallback(() => {
+    setMessages((current) =>
+      current.map((row) =>
+        row.seq === 67
+          ? {
+              ...row,
+              status: 'streaming',
+              sender: {
+                kind: 'agent',
+                id: 'agent:codex',
+                providerId: 'codex',
+              },
+              body: { text: '', format: 'markdown' },
+              agentDetail: {
+                itemId: 'reason-live-browser',
+                card: {
+                  kind: 'thought',
+                  title: 'thinking',
+                  status: 'running',
+                  content: 'authoritative debounced browser row',
+                },
+              },
+            }
+          : row
+      )
+    );
+  }, []);
+
   const loadOlder = useCallback(async () => {
     if (!hasMoreOlder) return;
     setLoadingOlder(true);
@@ -161,6 +240,9 @@ function Fixture(): React.ReactElement {
         </button>
         <button data-testid="grow-stream" onClick={growStream}>
           grow stream
+        </button>
+        <button data-testid="update-detail-row" onClick={applyDetailRowUpdate}>
+          update detail row
         </button>
         <button
           data-testid="snapshot-overlap"

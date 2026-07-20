@@ -44,6 +44,84 @@ async function firstVisibleAnchor(
 }
 
 test.describe('smoke channel timeline scroll UX (#1193)', () => {
+  test('renders durable agent cards on the real channel host (#1198/#1206)', async ({
+    page,
+  }) => {
+    const timeline = await openFixture(page);
+    const thought = timeline.locator(
+      '[data-channel-message-seq="68"] .ch-agent-card'
+    );
+    const output = timeline.locator(
+      '[data-channel-message-seq="69"] .ch-agent-card'
+    );
+    const diff = timeline.locator(
+      '[data-channel-message-seq="70"] .ch-agent-card'
+    );
+
+    await expect(thought).toHaveAttribute('data-agent-card-kind', 'thought');
+    await expect(thought.locator('.ch-agent-card__body')).toHaveCount(0);
+    await thought.locator('.ch-agent-card__toggle').click();
+    await expect(thought.locator('.ch-agent-card__body')).toContainText(
+      'reasoning content persisted on the durable channel row'
+    );
+
+    await expect(output.locator('.ch-agent-card__toggle')).toContainText(
+      '500 lines'
+    );
+    await expect(output.locator('.ch-agent-card__body')).toHaveCount(0);
+    await output.locator('.ch-agent-card__toggle').click();
+    const outputBody = output.locator('.ch-agent-card__body');
+    await expect(outputBody).toBeVisible();
+    await expect(
+      output.locator('.ch-agent-card__line span[style*="color"]')
+    ).not.toHaveCount(0);
+    expect(
+      await outputBody.evaluate(
+        (element) => element.scrollHeight > element.clientHeight
+      )
+    ).toBe(true);
+
+    await expect(diff.locator('.ch-agent-card__toggle')).toContainText(
+      '+250 -250'
+    );
+    await diff.locator('.ch-agent-card__toggle').click();
+    await expect(diff.locator('.ch-agent-card__line--added')).toHaveCount(250);
+    await expect(diff.locator('.ch-agent-card__line--removed')).toHaveCount(
+      250
+    );
+    const [addedTint, removedTint] = await Promise.all([
+      diff
+        .locator('.ch-agent-card__line--added')
+        .first()
+        .evaluate((element) => getComputedStyle(element).backgroundColor),
+      diff
+        .locator('.ch-agent-card__line--removed')
+        .first()
+        .evaluate((element) => getComputedStyle(element).backgroundColor),
+    ]);
+    expect(addedTint).not.toBe('rgba(0, 0, 0, 0)');
+    expect(removedTint).not.toBe('rgba(0, 0, 0, 0)');
+    expect(addedTint).not.toBe(removedTint);
+    await expect.poll(() => bottomDistance(timeline)).toBeLessThanOrEqual(1);
+  });
+
+  test('rerenders an authoritative full-row streaming card update', async ({
+    page,
+  }) => {
+    const timeline = await openFixture(page);
+    const row = timeline.locator('[data-channel-message-seq="67"]');
+    await expect(row.locator('.ch-agent-card')).toHaveCount(0);
+    await page.getByTestId('update-detail-row').click();
+
+    const card = row.locator('.ch-agent-card');
+    await expect(card).toHaveAttribute('data-agent-card-kind', 'thought');
+    await expect(card.locator('.ch-agent-card__status')).toHaveText('running');
+    await card.locator('.ch-agent-card__toggle').click();
+    await expect(card.locator('.ch-agent-card__body')).toContainText(
+      'authoritative debounced browser row'
+    );
+  });
+
   test('surfaces a missing-terminal truncation at the timeline last hop (#1188)', async ({
     page,
   }) => {
