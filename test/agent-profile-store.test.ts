@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -11,9 +12,11 @@ import {
 import {
   AgentProfileStoreError,
   createAgentProfileStore,
+  rethrowConstraint,
   type AgentProfileStore,
   type SeedFramework,
 } from '../server/agent-profile-store.js';
+import { listConfiguredFrameworks } from '../server/frameworks.js';
 
 vi.mock('../server/logger.js', () => ({
   createLogger: () => ({
@@ -110,6 +113,102 @@ describe('seedBuiltIns — one built-in default per configured framework', () =>
     expect(inserted).toBe(0);
     expect(store.getDefaultForProvider('claude')?.id).toBe(custom.id);
   });
+
+  it('self-heals a provider left with ZERO defaults (#1241 FIX 2)', () => {
+    const store = makeStore();
+    store.seedBuiltIns([{ id: 'claude' }]);
+    const builtInId = builtInAgentProfileId('claude');
+
+    // Drive the provider into a zero-default state: promote a user profile
+    // (demotes the built-in survivor to is_default = 0), then delete the
+    // promoted default — leaving one row for 'claude' with NO default at all.
+    const custom = store.create({ providerId: 'claude', displayName: 'Temp' });
+    store.setDefault(custom.id);
+    expect(store.get(builtInId)?.isDefault).toBe(false);
+    store.delete(custom.id);
+    expect(store.getDefaultForProvider('claude')).toBeNull();
+
+    // Seeding must HEAL the invariant: promote the surviving built-in row back
+    // to the sole default rather than leaving the vendor default-less (the old
+    // INSERT OR IGNORE path could not restore it because the PK already existed).
+    const inserted = store.seedBuiltIns([{ id: 'claude' }]);
+    expect(inserted).toBe(0); // a promotion, not a NEW row
+    const healed = store.getDefaultForProvider('claude');
+    expect(healed?.id).toBe(builtInId);
+    expect(healed?.isDefault).toBe(true);
+    expect(healed?.isBuiltIn).toBe(true);
+    const claudeRows = store.list({ providerId: 'claude' });
+    expect(claudeRows).toHaveLength(1);
+    expect(claudeRows.filter((p) => p.isDefault)).toHaveLength(1);
+
+    // Idempotent after healing: a further seed changes nothing.
+    expect(store.seedBuiltIns([{ id: 'claude' }])).toBe(0);
+    expect(store.getDefaultForProvider('claude')?.id).toBe(builtInId);
+    expect(store.list({ providerId: 'claude' })).toHaveLength(1);
+  });
+});
+
+describe('best-effort init survives a malformed custom framework (#1241 FIX 1)', () => {
+  // A hand-edited / half-registered fully-custom framework: config loading does
+  // NOT validate command/continueArgs/yoloArgs/parserType/eventSource/capabilities,
+  // so resolveFramework throws for it only at enumeration time.
+  const malformedFrameworks = {
+    'broken-custom': { id: 'broken-custom', displayName: 'Broken Custom' },
+  };
+
+  it('listConfiguredFrameworks throws for the malformed entry', () => {
+    // This is the throw that, pre-fix, escaped the best-effort guard: it was the
+    // argument evaluated OUTSIDE the try/catch, so it crashed hub boot.
+    expect(() => listConfiguredFrameworks(malformedFrameworks)).toThrow(
+      /broken-custom/
+    );
+  });
+
+  it('guarded init degrades to no profile rows instead of crashing boot', () => {
+    // Mirrors server/index.ts initAgentProfileStoreBestEffort AFTER FIX 1: the
+    // framework enumeration runs INSIDE the try, so a resolution throw degrades
+    // to "store with no seeded rows" rather than propagating and setting
+    // exitCode = 1. (index.ts self-runs main() on import, so the wrapper itself
+    // is not unit-importable; this reproduces its exact shape.)
+    function initGuarded(
+      dbPath: string,
+      frameworks?: Parameters<typeof listConfiguredFrameworks>[0]
+    ): AgentProfileStore | null {
+      let store: AgentProfileStore | null = null;
+      try {
+        store = createAgentProfileStore(dbPath);
+        store.seedBuiltIns(listConfiguredFrameworks(frameworks));
+        return store;
+      } catch {
+        store?.close();
+        return null;
+      }
+    }
+
+    const badDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-agent-profile-test-')
+    );
+    tmpDirs.push(badDir);
+    let badStore: AgentProfileStore | null = null;
+    expect(() => {
+      badStore = initGuarded(
+        path.join(badDir, 'agent-profiles.db'),
+        malformedFrameworks
+      );
+    }).not.toThrow();
+    // Boot survived; the guard returned null (no rows seeded) rather than throwing.
+    expect(badStore).toBeNull();
+
+    // The clean all-builtin case still seeds normally through the same path.
+    const goodDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-agent-profile-test-')
+    );
+    tmpDirs.push(goodDir);
+    const goodStore = initGuarded(path.join(goodDir, 'agent-profiles.db'));
+    expect(goodStore).not.toBeNull();
+    openStores.push(goodStore!);
+    expect(goodStore!.list().length).toBeGreaterThan(0);
+  });
 });
 
 describe('one-default-per-provider invariant (enforcement CHOICE: reject)', () => {
@@ -142,6 +241,71 @@ describe('one-default-per-provider invariant (enforcement CHOICE: reject)', () =
     expect(
       store.list({ providerId: 'claude' }).filter((p) => p.isDefault)
     ).toHaveLength(1);
+  });
+
+  it('maps the raced partial-index violation to agent_profile_default_exists (#1241 FIX 3)', () => {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'relay-agent-profile-test-')
+    );
+    tmpDirs.push(dir);
+    const dbPath = path.join(dir, 'agent-profiles.db');
+    const store = createAgentProfileStore(dbPath);
+    openStores.push(store);
+    store.seedBuiltIns([{ id: 'claude' }]); // one default row for claude
+
+    // create()'s pre-check makes the partial-index branch unreachable in-process,
+    // so reproduce a cross-process race: raw-insert a SECOND default row for the
+    // same provider directly against the store's db file, bypassing the pre-check.
+    const raw = new Database(dbPath);
+    let realErr: unknown;
+    try {
+      raw
+        .prepare(
+          `INSERT INTO agent_profiles (id, provider_id, is_default, is_built_in, profile_json, created_at, updated_at)
+           VALUES (?, ?, 1, 1, '{}', 'now', 'now')`
+        )
+        .run('agent-profile:claude:raced', 'claude');
+    } catch (err) {
+      realErr = err;
+    } finally {
+      raw.close();
+    }
+    // The real SQLite message names the COLUMN (provider_id), not the index —
+    // this is exactly the token rethrowConstraint now keys on.
+    expect(realErr).toBeInstanceOf(Error);
+    expect((realErr as Error).message).toMatch(/agent_profiles\.provider_id/);
+
+    // rethrowConstraint maps that real message to the default-exists code
+    // (previously mis-reported as agent_profile_id_exists).
+    try {
+      rethrowConstraint(realErr, 'claude');
+      throw new Error('expected rethrowConstraint to throw');
+    } catch (mapped) {
+      expect(mapped).toBeInstanceOf(AgentProfileStoreError);
+      expect((mapped as AgentProfileStoreError).code).toBe(
+        'agent_profile_default_exists'
+      );
+      expect((mapped as AgentProfileStoreError).status).toBe(409);
+    }
+  });
+
+  it('maps an id (primary-key) collision to agent_profile_id_exists (#1241 FIX 3)', () => {
+    // The PK-collision message names agent_profiles.id — the id-exists branch.
+    try {
+      rethrowConstraint(
+        new Error('UNIQUE constraint failed: agent_profiles.id'),
+        'claude'
+      );
+      throw new Error('expected rethrowConstraint to throw');
+    } catch (mapped) {
+      expect(mapped).toBeInstanceOf(AgentProfileStoreError);
+      expect((mapped as AgentProfileStoreError).code).toBe(
+        'agent_profile_id_exists'
+      );
+    }
+    // A non-constraint error is rethrown unchanged (not remapped to a store error).
+    const other = new Error('database is locked');
+    expect(() => rethrowConstraint(other, 'claude')).toThrow(other);
   });
 
   it('allows creating additional NON-default profiles for a provider', () => {

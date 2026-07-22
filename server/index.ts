@@ -1645,11 +1645,16 @@ function presenceActorIdFromRequest(req: express.Request): string | undefined {
  */
 function initAgentProfileStoreBestEffort(
   configDir: string,
-  frameworks: readonly { id: string }[]
+  config: Config
 ): AgentProfileStore | null {
   try {
     const store = initAgentProfileStore(configDir);
-    store.seedBuiltIns(frameworks);
+    // Enumerate configured frameworks INSIDE the guard: resolveFramework throws
+    // for a malformed fully-custom framework entry (missing command/args/parser/
+    // capabilities) that config loading does not validate. Keeping it here lets
+    // that resolution throw degrade to "no profile rows" instead of escaping the
+    // best-effort guard and crashing hub boot.
+    store.seedBuiltIns(listConfiguredFrameworks(config.frameworks));
     return store;
   } catch (err) {
     logger.warn(
@@ -2068,7 +2073,7 @@ async function main(): Promise<void> {
   // "no profile rows" rather than failing boot. NO live-row re-key ships here.
   const agentProfileStore = initAgentProfileStoreBestEffort(
     configDir,
-    listConfiguredFrameworks(getConfig().frameworks)
+    getConfig()
   );
 
   // WorkContext artifact store (#889/#890). Own SQLite/payload files; routes

@@ -111,9 +111,12 @@ export interface AgentProfileStore {
   setDefault(profileId: string): AgentProfile;
   delete(id: string): boolean;
   /**
-   * Seed exactly one `isBuiltIn`+`isDefault` profile per configured framework.
-   * Idempotent: re-running neither duplicates nor flips existing rows.
-   * Returns the number of NEW built-in default rows inserted.
+   * Seed/repair exactly one `isBuiltIn`+`isDefault` profile per configured
+   * framework. Idempotent when a default already exists (no duplicate, no flip);
+   * self-healing when a provider has a survivor row but zero defaults (promotes
+   * the survivor at the stable built-in PK, or inserts a built-in default,
+   * atomically). Returns the number of NEW built-in default rows inserted —
+   * in-place promotions/repairs are not counted.
    */
   seedBuiltIns(frameworks: readonly SeedFramework[]): number;
 }
@@ -156,19 +159,20 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
        @id, @providerId, @isDefault, @isBuiltIn, @profileJson, @createdAt, @updatedAt
      )`
   );
-  const insertIgnore = db.prepare(
-    `INSERT OR IGNORE INTO agent_profiles (
-       id, provider_id, is_default, is_built_in, profile_json, created_at, updated_at
-     ) VALUES (
-       @id, @providerId, @isDefault, @isBuiltIn, @profileJson, @createdAt, @updatedAt
-     )`
-  );
   const clearDefault = db.prepare(
     `UPDATE agent_profiles SET is_default = 0, profile_json = ?, updated_at = ?
      WHERE id = ?`
   );
   const setDefaultRow = db.prepare(
     `UPDATE agent_profiles SET is_default = 1, profile_json = ?, updated_at = ?
+     WHERE id = ?`
+  );
+  // Self-heal a zero-default vendor: force a survivor at the stable built-in PK
+  // to be the built-in default. Sets is_built_in = 1 (not just is_default) so a
+  // demoted user row promoted here honors the isDefault+isBuiltIn contract.
+  const promoteBuiltInDefault = db.prepare(
+    `UPDATE agent_profiles
+       SET is_default = 1, is_built_in = 1, profile_json = ?, updated_at = ?
      WHERE id = ?`
   );
   const deleteById = db.prepare('DELETE FROM agent_profiles WHERE id = ?');
@@ -319,7 +323,41 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
         for (const framework of frameworks) {
           const providerId = readTrimmed(framework.id);
           if (!providerId) continue;
+
+          // Idempotent: a default (built-in OR user-chosen) already exists —
+          // leave it untouched so re-seeding never duplicates or flips a live
+          // default. This also keeps seeding non-destructive of a user's choice.
+          if (selectDefaultForProvider.get(providerId)) continue;
+
+          // Self-healing: the provider has NO default (e.g. its default row was
+          // demoted or deleted, leaving a survivor at is_default = 0). Restore
+          // exactly one built-in default atomically inside this transaction,
+          // consistent with setDefault's flip. Because the pre-check above proved
+          // no default exists, promoting/inserting cannot collide with the
+          // partial one-default-per-provider unique index.
           const id = builtInAgentProfileId(providerId);
+          const existing = selectById.get(id) as AgentProfileRow | undefined;
+          if (existing) {
+            // A survivor lives at the stable built-in PK but is not the default:
+            // promote it in place (never a duplicate row), preserving any overlay
+            // content while forcing the built-in-default flags on.
+            const survivor = rowToProfileSafe(existing);
+            const healed: AgentProfile = survivor
+              ? { ...survivor, isDefault: true, isBuiltIn: true }
+              : {
+                  id,
+                  providerId,
+                  displayName: '',
+                  avatar: null,
+                  isDefault: true,
+                  isBuiltIn: true,
+                };
+            promoteBuiltInDefault.run(JSON.stringify(healed), nowIso, id);
+            // A heal is not a NEW row; the return count tracks inserts only.
+            continue;
+          }
+
+          // No row at the stable built-in PK — insert the thin built-in default.
           // Thin overlay: empty displayName = "inherit vendor label from catalog".
           const profile: AgentProfile = {
             id,
@@ -329,12 +367,7 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
             isDefault: true,
             isBuiltIn: true,
           };
-          // Idempotent by stable PK: OR IGNORE never duplicates or flips an
-          // existing row (built-in or user-created). If some other profile is
-          // already the vendor default, the partial unique index would reject a
-          // second default — so pre-check and skip to stay non-destructive.
-          if (selectDefaultForProvider.get(providerId)) continue;
-          const changes = insertIgnore.run({
+          inserted += insert.run({
             id,
             providerId,
             isDefault: 1,
@@ -343,7 +376,6 @@ export function createAgentProfileStore(dbPath: string): AgentProfileStore {
             createdAt: nowIso,
             updatedAt: nowIso,
           }).changes;
-          inserted += changes;
         }
       });
       seed();
@@ -428,10 +460,20 @@ function buildProfile(
   return profile;
 }
 
-function rethrowConstraint(err: unknown, providerId: string): never {
+/**
+ * Map a UNIQUE-constraint failure onto a typed store error. Exported for tests:
+ * the create() pre-check makes the partial-index branch reachable only under a
+ * cross-process race, so it is exercised directly with the real SQLite messages.
+ */
+export function rethrowConstraint(err: unknown, providerId: string): never {
   const message = err instanceof Error ? err.message : String(err);
-  if (/UNIQUE constraint failed: agent_profiles\b/i.test(message)) {
-    if (/idx_agent_profiles_one_default/i.test(message)) {
+  if (/UNIQUE constraint failed: agent_profiles\./i.test(message)) {
+    // SQLite names the COLUMN, not the index, in a UNIQUE violation message:
+    //   two-defaults (partial unique index) -> "...agent_profiles.provider_id"
+    //   id collision (primary key)          -> "...agent_profiles.id"
+    // Distinguish on the column token so a raced second default maps to the
+    // right code instead of being mis-reported as an id collision.
+    if (/agent_profiles\.provider_id\b/i.test(message)) {
       throw new AgentProfileStoreError(
         409,
         'agent_profile_default_exists',
